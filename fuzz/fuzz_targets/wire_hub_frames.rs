@@ -4,6 +4,7 @@
 //! gives it whole to `decode`. A reply of the retired kind 3 gives `Error::Kind`. The
 //! lost seqs of each frame of a complete session and the ranges of its frames with a
 //! sample tile the seqs from the open position on, and a latest session loses none.
+//! `Frames::live` is the open position, then the end of the last frame with a sample.
 //!
 //! Input: one byte, whose low 3 bits are the places of the session less 1 and whose
 //! bit 3 makes the session latest, then the messages from the home (`fuzz::messages`).
@@ -19,7 +20,7 @@ use types::channel;
 use types::frame::key_set::{Group, Interner, KeySet};
 use types::frame::{Form, Path, Range};
 use types::sample::{Scalar, Type};
-use wire::hub::{Due, Error, Frames, Head, Mode, Open, Reader, Step};
+use wire::hub::{Due, Error, Frames, FromHome, Head, Mode, Open, Reader, Step};
 
 /// What one step gave, with a frame's series copied out.
 #[derive(Debug, PartialEq)]
@@ -33,6 +34,7 @@ enum Seen {
         range: Option<Range>,
         series: Vec<Option<Vec<u8>>>,
         lost: ops::Range<u64>,
+        live: u64,
     },
     /// The error of `Frames::open`, `decode`, or `received`, which stops the stream.
     Message(Error),
@@ -76,6 +78,7 @@ impl Seen {
                     .map(|entry| frame.series(entry).map(<[u8]>::to_vec))
                     .collect(),
                 lost: frames.lost(),
+                live: frames.live(),
             },
         }
     }
@@ -100,7 +103,14 @@ fn run(places: u8, mode: Mode, bytes: &[u8], in_place: bool) -> Vec<Seen> {
     // A head is due after the open and after each frame.
     let mut reply = true;
     let mut frames = match opened {
-        Ok((frames, live)) => {
+        Ok(frames) => {
+            let decoded = Reader::new(&open).decode(first);
+            let Ok(FromHome::Opened { live }) = decoded else {
+                panic!(
+                    "frames opened, but a reader of the first message gave {decoded:?}"
+                );
+            };
+            assert_eq!(frames.live(), live, "live is not the open position");
             seen.push(Seen::Opened(live));
             frames
         }
@@ -136,14 +146,14 @@ fn run(places: u8, mode: Mode, bytes: &[u8], in_place: bool) -> Vec<Seen> {
                         into.copy_from_slice(message);
                         frames.received(message.len())
                     }
-                    _ => frames.decode(message),
+                    _ => frames.decode(Some(message)),
                 }
             }
             Ok(Due::Message) => {
                 let Some(message) = messages.next() else {
                     break;
                 };
-                let step = frames.decode(message);
+                let step = frames.decode(Some(message));
                 if reply && message.first() == Some(&3) {
                     let refused = matches!(step, Err(Error::Kind { kind: 3 }));
                     assert!(refused, "the retired kind 3 gave {step:?}");
@@ -160,26 +170,38 @@ fn run(places: u8, mode: Mode, bytes: &[u8], in_place: bool) -> Vec<Seen> {
             }
         }
     }
-    seen.push(Seen::Finished(frames.finished()));
+    let finished = frames.decode(None).expect_err("a finish is not valid");
+    seen.push(Seen::Finished(finished));
     seen
 }
 
 /// Checks that each frame of `seen` has the path and range of the head before it, and
 /// that the lost seqs of each frame of a complete session and the ranges of its frames
-/// with a sample tile the seqs from the open position on.
+/// with a sample tile the seqs from the open position on. The `live` of each frame is
+/// the open position, then the end of the last frame with a sample.
 fn check(seen: &[Seen], latest: bool) {
     let mut head = None;
     let mut covered = None;
+    let mut passed = None;
     for step in seen {
         match step {
-            Seen::Opened(live) => covered = Some(*live),
+            Seen::Opened(live) => (covered, passed) = (Some(*live), Some(*live)),
             Seen::Head(next) => head = Some(*next),
             Seen::Frame {
-                path, range, lost, ..
+                path,
+                range,
+                lost,
+                live,
+                ..
             } => {
                 let head = head.take().expect("a frame came with no head");
                 assert_eq!(*path, head.path, "the frame changed its path");
                 assert_eq!(*range, Some(head.range), "the frame changed its range");
+                let passed = passed.as_mut().expect("a frame came before opened");
+                if head.range.count > 0 {
+                    *passed = head.range.end().expect("the reader refused it");
+                }
+                assert_eq!(*live, *passed, "live is not the end of the last sample");
                 if latest || head.range.count == 0 {
                     assert_eq!(*lost, 0..0, "a frame lost seqs it could not lose");
                     continue;

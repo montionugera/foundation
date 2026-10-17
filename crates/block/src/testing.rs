@@ -37,7 +37,8 @@ impl Scarce {
 }
 
 // SAFETY: each method is the one of `Heap`, or a `commit` that refuses and changes
-// no byte.
+// no byte. A purge gives back each unit of `ALIGN` bytes in its range, so it gives
+// back each whole page. A discard does nothing, as on `Heap`.
 unsafe impl Memory for Scarce {
     fn base(&self) -> NonNull<u8> {
         self.heap.base()
@@ -57,6 +58,12 @@ unsafe impl Memory for Scarce {
     fn purge(&self, offset: usize, len: usize) {
         self.system.discharge(offset, len);
         self.heap.purge(offset, len);
+    }
+
+    fn discard(&self, _offset: usize, _len: usize) {}
+
+    fn page(&self) -> usize {
+        self.heap.page()
     }
 }
 
@@ -145,6 +152,19 @@ fn units(range: Range<usize>) -> Range<usize> {
 #[cfg(not(loom))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pool_on_it_gives_the_pages_of_a_free_block_to_another_size() {
+        let budget = 2 * crate::footprint(8192);
+        let config = crate::Config::new(budget as u64).expect("a small budget");
+        let (memory, _switch) = Scarce::new(config.reservation());
+        let pool = crate::Pool::new(config, memory);
+        let held = pool.alloc(8192).expect("the budget has room");
+        drop(pool.alloc(8192).expect("the budget has room"));
+        let small = pool.alloc(64).expect("the free block gives a page");
+        assert_eq!(pool.committed(), budget - 4096 + 128);
+        drop((held, small));
+    }
 
     #[test]
     fn a_clone_controls_the_same_memory() {
