@@ -117,3 +117,25 @@ fn a_source_is_a_variable_of_the_data_type_base_data_type() {
     })
     .expect("the run ends");
 }
+
+#[test]
+fn doubles_is_the_encoding_of_an_array_of_the_doubles_1_5_and_2_5() {
+    let expected = [
+        &[0x8B, 2, 0, 0, 0][..],
+        &1.5_f64.to_le_bytes(),
+        &2.5_f64.to_le_bytes(),
+    ]
+    .concat();
+    assert_eq!(super::doubles(), expected);
+}
+
+#[test]
+fn a_scalar_takes_a_type_of_at_most_63() {
+    assert_eq!(super::scalar(63, &[1]), [63, 1]);
+    let panic = std::panic::catch_unwind(|| super::scalar(64, &[]))
+        .expect_err("64 is past the mask");
+    assert_eq!(
+        panic.downcast_ref::<String>().map(String::as_str),
+        Some("a built-in type of at most 63")
+    );
+}
