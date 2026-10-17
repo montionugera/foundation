@@ -1,24 +1,27 @@
 use std::ffi::{CStr, CString};
 use std::future;
 use std::net::SocketAddr;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 use ::sim::{Sim, node};
 use env::net::{Listener, tcp};
 use types::quality::Quality;
 
-use super::{Served, Variables, serve};
+use super::{Served, Variables, serve, tree};
 use crate::client::Client;
+use crate::client::browse::{Class, Description, Page, Reference, Unit};
 use crate::event;
 use crate::ffi::Status;
 use crate::node::Node;
-use crate::value::{Fault, Value};
+use crate::node::ns0::{self, HAS_COMPONENT, ORGANIZES};
+use crate::value::{Fault, Type, Value};
 
 const SPIKE: &str = "ns=3;s=SpikeData";
 const DIP: &str = "ns=3;i=7";
 const BAD: Quality = Quality(0x8000_0000);
 const CLAMPED: Quality = Quality(0x0030_0000);
 const UNCERTAIN: Quality = Quality(0x4090_0000);
+const BAD_USER_ACCESS_DENIED: Status = Status(0x801F_0000);
 const QUALITIES: [Quality; 4] = [Quality::GOOD, CLAMPED, UNCERTAIN, BAD];
 /// The reads of a variable with each of [`QUALITIES`] in turn.
 const READS: [Result<Value, Fault>; 4] = [
@@ -293,6 +296,302 @@ fn a_panic_in_the_wall_of_a_server_aborts() {
     assert!(
         stderr.contains("panic in a function that cannot unwind"),
         "{stderr}"
+    );
+}
+
+/// Serves no variables, and gives the output of `body` with a client of the server.
+fn with_tree<T: Send + 'static>(
+    body: impl AsyncFnOnce(&mut Client) -> T + Send + 'static,
+) -> T {
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    sim.run_on(&node, move |node, _| async move {
+        let listener = listen(&node);
+        let url =
+            CString::new(format!("opc.tcp://{}", listener.local())).expect("no NUL");
+        let mut rng = node.entropy().rng();
+        let mut out = None;
+        let until = async {
+            let mut client = connect(&node, &mut rng, &url).await.expect("connect");
+            out = Some(body(&mut client).await);
+            client.close().await;
+        };
+        let mut served = node.entropy().rng();
+        let variables = Variables::new(&[]);
+        let wall = event::Time::monotonic(node.clock()).wall;
+        serve(
+            node.clock(),
+            wall,
+            node.net(),
+            listener,
+            &mut served,
+            &variables,
+            until,
+        )
+        .await;
+        out.expect("the body ends")
+    })
+    .expect("the run ends")
+}
+
+/// The node of the name `name` in namespace `namespace`.
+fn named(namespace: u16, name: &str) -> Node {
+    format!("ns={namespace};s={name}").parse().expect("a node")
+}
+
+/// A reference of the type `via` in namespace 0 to the node `name` of namespace 1,
+/// with the browse and display name `text`.
+fn reference(name: &str, text: &str, class: Class, via: u32) -> Reference {
+    Reference {
+        node: Some(named(1, name)),
+        name: text.to_owned(),
+        display: text.to_owned(),
+        class,
+        via: Some(Node::ns0(via)),
+    }
+}
+
+/// The names of the variables of `Plant/Types`, in the order of their ids.
+const TYPES: [&str; 15] = [
+    "Boolean",
+    "SByte",
+    "Byte",
+    "Int16",
+    "UInt16",
+    "Int32",
+    "UInt32",
+    "Int64",
+    "UInt64",
+    "Float",
+    "Double",
+    "String",
+    "DateTime",
+    "Guid",
+    "ByteString",
+];
+
+/// Each page of a browse of `node`, which follows each continuation point.
+async fn pages(client: &mut Client, node: &Node) -> Vec<Page> {
+    let most = NonZeroU32::MAX;
+    let mut pages = vec![
+        client
+            .browse(node, most)
+            .await
+            .expect("a browse")
+            .expect("a node"),
+    ];
+    while let Some(point) = pages.last_mut().and_then(|page| page.next.take()) {
+        pages.push(client.browse_next(point).await.expect("a browse next"));
+    }
+    pages
+}
+
+/// The references of each page of `pages`.
+fn references(pages: Vec<Page>) -> Vec<Vec<Reference>> {
+    pages.into_iter().map(|page| page.references).collect()
+}
+
+#[test]
+fn a_client_browses_the_tree_from_objects() {
+    let (objects, plant, line, types, odd) = with_tree(async |client| {
+        let objects = pages(client, &Node::ns0(ns0::OBJECTS)).await;
+        let plant = pages(client, &named(1, "Plant")).await;
+        let line = pages(client, &named(1, "Plant.Line")).await;
+        let types = pages(client, &named(1, "Plant.Types")).await;
+        let odd = pages(client, &named(1, "Plant.Odd")).await;
+        (objects, plant, line, types, odd)
+    });
+    let plant_folder = reference("Plant", "Plant", Class::Object, ORGANIZES);
+    let objects: Vec<Reference> = objects
+        .into_iter()
+        .flat_map(|page| page.references)
+        .collect();
+    assert!(objects.contains(&plant_folder), "{objects:?}");
+    assert_eq!(
+        references(plant),
+        [[
+            reference("Plant.Types", "Types", Class::Object, ORGANIZES),
+            reference("Plant.Odd", "Odd", Class::Object, ORGANIZES),
+            reference("Plant.Line", "Line", Class::Object, HAS_COMPONENT),
+        ]]
+    );
+    let variable = |name: &str| {
+        let node = format!("Plant.Line.{name}");
+        reference(&node, name, Class::Variable, HAS_COMPONENT)
+    };
+    assert_eq!(
+        references(line),
+        [vec![
+            plant_folder,
+            variable("Temperature"),
+            variable("Speed"),
+            variable("Mode"),
+            variable("Profile"),
+            variable("Locked"),
+            variable("Recipe"),
+        ]]
+    );
+    let types: Vec<Vec<Reference>> = references(types);
+    let expected: Vec<Reference> = (TYPES.iter())
+        .map(|name| {
+            let node = format!("Plant.Types.{name}");
+            reference(&node, name, Class::Variable, HAS_COMPONENT)
+        })
+        .collect();
+    let mut first = expected;
+    let second = first.split_off(8);
+    assert_eq!(types, [first, second]);
+    let level = |via| reference("Plant.Odd.Level", "Level", Class::Variable, via);
+    assert_eq!(
+        references(odd),
+        [[
+            Reference {
+                node: None,
+                ..reference("guid", "guid", Class::Object, ORGANIZES)
+            },
+            level(ORGANIZES),
+            level(HAS_COMPONENT),
+            Reference {
+                node: Some(named(1, "Plant.Odd.Twin")),
+                ..level(HAS_COMPONENT)
+            },
+        ]]
+    );
+}
+
+#[test]
+fn a_client_describes_each_variable_of_the_tree() {
+    let line = [
+        "Temperature",
+        "Speed",
+        "Mode",
+        "Profile",
+        "Locked",
+        "Recipe",
+    ];
+    let nodes: Vec<Node> = (TYPES.iter().map(|name| format!("Plant.Types.{name}")))
+        .chain(line.iter().map(|name| format!("Plant.Line.{name}")))
+        .chain([tree::LEVEL, tree::TWIN].map(str::to_owned))
+        .map(|name| named(1, &name))
+        .collect();
+    let described = with_tree(async move |client| client.describe(&nodes).await);
+    let description = |base: Option<u32>, rank: i32, access: u8| Description {
+        base,
+        rank: Some(rank),
+        access: Some(access),
+        unit: None,
+    };
+    let mut expected: Vec<Description> = (1..=15)
+        .map(|base| description(Some(base), -1, 1))
+        .collect();
+    expected.extend([
+        Description {
+            unit: Some(Unit {
+                text: Some("°C".to_owned()),
+                code: Some("CEL".to_owned()),
+            }),
+            ..description(Some(11), -1, 1)
+        },
+        description(Some(11), -1, 1),
+        description(Some(6), -1, 1),
+        description(Some(11), 1, 1),
+        description(Some(11), -1, 0),
+        description(None, -1, 1),
+        description(Some(11), -1, 1),
+        description(Some(11), -1, 1),
+    ]);
+    assert_eq!(described, Ok(expected));
+}
+
+#[test]
+fn a_read_of_each_variable_of_the_tree_gives_its_value() {
+    let names: Vec<String> = (TYPES.iter().map(|name| format!("Plant.Types.{name}")))
+        .chain(
+            [
+                "Temperature",
+                "Speed",
+                "Mode",
+                "Profile",
+                "Locked",
+                "Recipe",
+            ]
+            .map(|name| format!("Plant.Line.{name}")),
+        )
+        .chain(["Plant.Odd.Level".to_owned(), "Plant.Odd.Twin".to_owned()])
+        .collect();
+    let reads = with_tree(async move |client| {
+        let mut reads = Vec::new();
+        for name in &names {
+            reads.push(client.read_one(&named(1, name)).await);
+        }
+        reads
+    });
+    let mistyped = |name: &str| Err(Fault::of_type(Type::named(name)));
+    assert_eq!(
+        reads,
+        [
+            Ok(Value::Bool(true)),
+            Ok(Value::I8(-8)),
+            Ok(Value::U8(8)),
+            Ok(Value::I16(-16)),
+            Ok(Value::U16(16)),
+            Ok(Value::I32(-32)),
+            Ok(Value::U32(32)),
+            Ok(Value::I64(-64)),
+            Ok(Value::U64(64)),
+            Ok(Value::F32(0.5)),
+            Ok(Value::F64(0.25)),
+            mistyped("String"),
+            mistyped("DateTime"),
+            mistyped("Guid"),
+            mistyped("ByteString"),
+            Ok(Value::F64(21.5)),
+            Ok(Value::F64(1.25)),
+            Ok(Value::I32(0)),
+            mistyped("array of Double"),
+            Err(Fault::status(BAD_USER_ACCESS_DENIED)),
+            mistyped("ExtensionObject"),
+            Ok(Value::F64(2.5)),
+            Ok(Value::F64(3.5)),
+        ]
+    );
+}
+
+#[test]
+fn a_server_panics_on_a_variable_of_a_node_of_the_tree() {
+    let reserved = tree::NS0_TYPES.map(|number| format!("ns=0;i={number}"));
+    for text in reserved.iter().chain([&format!("ns=1;s={}", tree::SPEED)]) {
+        a_server_panics_on_a_variable_of(text);
+    }
+}
+
+/// Asserts that a serve panics on the variable `text`.
+fn a_server_panics_on_a_variable_of(text: &str) {
+    let text = text.to_owned();
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    let run = sim.run_on(&node, move |node, _| async move {
+        let mut rng = node.entropy().rng();
+        let variables = Variables::new(&[&text]);
+        serve(
+            node.clock(),
+            event::Time::monotonic(node.clock()).wall,
+            node.net(),
+            listen(&node),
+            &mut rng,
+            &variables,
+            async {},
+        )
+        .await;
+    });
+    let Err(::sim::Error::Panicked { message, .. }) = run else {
+        panic!("the serve panics: {run:?}");
+    };
+    assert!(
+        message.starts_with(
+            "assertion `left == right` failed: open62541 refused the node"
+        ),
+        "{message}"
     );
 }
 

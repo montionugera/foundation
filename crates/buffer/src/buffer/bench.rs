@@ -123,29 +123,84 @@ impl Deadline {
         state.synced(&mut self.sealed, carrying, tail);
         tails
     }
+
+    /// A [`Deadline::new(indexes, 4096 + PHASE)`](Self::new), after the deadlines of
+    /// `commit(1)` past two laps and up to the one before a trim: the next deadline
+    /// trims a step and writes a checkpoint.
+    ///
+    /// # Panics
+    ///
+    /// When `indexes` is 0, since the ring then never trims, or as [`new`](Self::new)
+    /// does.
+    #[must_use]
+    pub fn trimming(indexes: u32) -> Self {
+        assert!(indexes > 0, "a deadline of no indexes never trims");
+        let blocks = 4096 + crate::bench::PHASE;
+        let mut deadline = Self::new(indexes, blocks);
+        let mut commits = 0..=2 * blocks;
+        while deadline.state.writer.head() <= 2 * blocks * BLOCK {
+            commits.next().expect("each deadline writes a block");
+            deadline.commit(1);
+        }
+        let mut trimmed = || {
+            let tail = deadline.state.writer.tail();
+            deadline.commit(1);
+            deadline.state.writer.tail() != tail
+        };
+        let lap = "a full ring trims within one lap";
+        (0..blocks).find(|_| trimmed()).expect(lap);
+        let period = (0..blocks).position(|_| trimmed()).expect(lap);
+        for _ in 0..period {
+            deadline.commit(1);
+        }
+        deadline
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::bench::PHASE;
+    use crate::bench::most_between_trims;
 
-    /// Reads the private `state`: `commit` gives only the tails of the carry record,
-    /// and a deadline with no trim shows only later, as the panic of a full ring. No
-    /// public call shows that each deadline trims and writes a checkpoint.
+    /// After the warm-up of the `wal` bench, the deadlines of 1 and of 32 indexes
+    /// trim over more than 10 laps, and each writes a checkpoint only when it trims.
+    /// It reads the private `state`: `commit` gives only the tails of the carry
+    /// record.
     #[test]
-    fn each_deadline_after_the_warm_up_trims_and_writes_a_checkpoint() {
-        let blocks = 64 + PHASE;
-        let mut deadline = Deadline::new(1, blocks);
-        for _ in 0..2 * 64 {
-            deadline.commit(1);
+    fn each_sample_of_deadlines_trims_and_checkpoints_each_trim() {
+        for (indexes, most) in [(1, 29), (32, 15)] {
+            let mut deadline = Deadline::new(indexes, 64 + PHASE);
+            for _ in 0..2 * 64 {
+                deadline.commit(1);
+            }
+            let commit = || {
+                let (tail, header) =
+                    (deadline.state.writer.tail(), deadline.state.header);
+                deadline.commit(1);
+                let trimmed = deadline.state.writer.tail() != tail;
+                let checkpointed = deadline.state.header != header;
+                assert_eq!(checkpointed, trimmed, "a checkpoint comes with each trim");
+                deadline.state.writer.tail()
+            };
+            assert_eq!(most_between_trims(11 * 64, commit), most, "{indexes}");
         }
-        for _ in 0..10 * blocks {
-            let tail = deadline.state.writer.tail();
-            let header = deadline.state.header;
-            deadline.commit(1);
-            assert_ne!(deadline.state.writer.tail(), tail, "the deadline trims");
-            assert_ne!(deadline.state.header, header, "the deadline checkpoints");
+    }
+
+    /// The deadline after `trimming` of 1 and of 32 indexes, as the `deadline_trim`
+    /// bench times it, trims a step, carries no tail, and writes a checkpoint. It reads
+    /// the private `state`: `commit` gives only the tails of the carry record.
+    #[test]
+    fn the_deadline_after_trimming_trims_a_step() {
+        for (indexes, freed) in [(1, 101 * BLOCK), (32, 102 * BLOCK)] {
+            let mut deadline = Deadline::trimming(indexes);
+            let (tail, header) = (deadline.state.writer.tail(), deadline.state.header);
+            let area = (4096 + PHASE) * BLOCK;
+            assert_eq!(deadline.state.writer.layout().area(), area, "{indexes}");
+            assert!(deadline.state.writer.head() > 2 * area, "{indexes}");
+            assert_eq!(deadline.commit(1), 0, "{indexes}");
+            assert_eq!(deadline.state.writer.tail() - tail, freed, "{indexes}");
+            assert_ne!(deadline.state.header, header, "{indexes}");
         }
     }
 
@@ -153,6 +208,12 @@ mod tests {
     fn a_deadline_of_no_indexes_takes_no_entry() {
         let mut deadline = Deadline::new(0, 64 + PHASE);
         assert_eq!((deadline.commit(2), deadline.commit(2)), (0, 0));
+    }
+
+    #[test]
+    #[should_panic(expected = "a deadline of no indexes never trims")]
+    fn trimming_of_no_indexes_panics() {
+        let _deadline = Deadline::trimming(0);
     }
 
     #[test]

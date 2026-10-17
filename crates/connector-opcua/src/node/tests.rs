@@ -6,7 +6,7 @@ fn name(text: &str) -> Key {
     Key::Name(Name::new(text).expect("a name that is not empty"))
 }
 
-fn node() -> impl Strategy<Value = Node> {
+pub(crate) fn node() -> impl Strategy<Value = Node> {
     let key = prop_oneof![
         any::<u32>().prop_map(Key::Number),
         ".{1,64}".prop_map(|name| Key::Name(Name::new(&name).expect("1 to 64 chars"))),

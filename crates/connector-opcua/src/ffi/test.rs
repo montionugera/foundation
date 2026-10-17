@@ -177,19 +177,6 @@ unsafe extern "C" {
         chunks: u32,
     ) -> *mut Server;
     pub(crate) fn UA_Server_run_startup(server: *mut Server) -> u32;
-    pub(crate) fn shim_server_add_scalar(
-        server: *mut Server,
-        node: Node<'_>,
-        value: *const super::Scalar,
-        kind: u16,
-    ) -> u32;
-    pub(crate) fn shim_server_add_doubles(server: *mut Server, node: Node<'_>) -> u32;
-    pub(crate) fn shim_server_add_string(server: *mut Server, node: Node<'_>) -> u32;
-    pub(crate) fn shim_server_add_bytes(
-        server: *mut Server,
-        node: Node<'_>,
-        size: usize,
-    ) -> u32;
     pub(crate) fn shim_server_limits(
         server: *mut Server,
         buffer: u32,
@@ -198,6 +185,7 @@ unsafe extern "C" {
     );
     pub(crate) fn shim_client_receive(client: *mut super::Client, size: u32);
     pub(crate) fn shim_server_reads(server: *mut Server, most: u32);
+    pub(crate) fn shim_server_references(server: *mut Server, most: u32);
     pub(crate) fn shim_server_browses(server: *mut Server, browse: u32, translate: u32);
     pub(crate) fn shim_server_count_browses(server: *mut Server) -> *const usize;
     pub(crate) fn UA_Client_getConnectionAttribute(
@@ -239,6 +227,8 @@ unsafe extern "C" {
         data_type: Node<'_>,
         rank: i32,
         access: u8,
+        encoded: *const u8,
+        size: usize,
     ) -> u32;
     pub(crate) fn shim_server_add_data_type(
         server: *mut Server,
