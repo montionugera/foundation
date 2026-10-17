@@ -15,6 +15,7 @@
 //! thread.
 
 use std::fmt;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::Path;
 
 #[cfg(target_os = "macos")]
