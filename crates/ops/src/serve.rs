@@ -448,9 +448,9 @@ impl<'a> Check<'a> {
         }
     }
 
-    /// `Denied` unless `subject` may run the connector `name`: `apply`, then `admin`
-    /// on it, as `apply` of a connector needs.
-    fn runs(&self, name: &Name) -> Result<(), Error> {
+    /// `Denied` unless `subject` may open a session to the device of the connector
+    /// `name` with its secrets: `apply`, then `admin`, on `name`.
+    fn opens(&self, name: &Name) -> Result<(), Error> {
         self.names(Action::Apply, [name])?;
         self.names(Action::Admin, [name])
     }
@@ -486,8 +486,8 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Body, Error
         return Err(check.denied(Action::Plan, On::Spec));
     }
     let (base, applied) = spec.newest()?;
-    // A subject that may not run a connector learns nothing of its sources.
-    let readable = |name: &Name| check.runs(name).is_ok();
+    // A subject that may not open a connector learns nothing of its sources.
+    let readable = |name: &Name| check.opens(name).is_ok();
     let (output, plan) = files.plan(node, base, &applied, readable).await?;
     let mut reply = Body::line(&Answer::Done { output: &output })?;
     reply.add(&plan.encode())?;
@@ -571,9 +571,9 @@ async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
 }
 
 /// The reply of `browse`: its output. It checks, in this order, that the files read,
-/// that they hold the connector, that `subject` may run it, that it runs on this node,
-/// that the start and the match parse, and that the request gives no match with a
-/// cursor.
+/// that they hold the connector, that `subject` may open it ([`Check::opens`]), that it
+/// runs on this node, that the start and the match parse, and that the request gives
+/// no match with a cursor.
 async fn browse(node: &Node, subject: &Name, request: Browse) -> Result<Body, Error> {
     let files = Documents::read(&request.files, &node.front_ends)?;
     let name: Name = request.connector.parse().map_err(|error| Error::Argument {
@@ -584,7 +584,7 @@ async fn browse(node: &Node, subject: &Name, request: Browse) -> Result<Body, Er
     })?;
     let connector = files.connector(&name)?;
     let spec = used::spec(&node.mesh).await?;
-    Check::new(&spec, subject).runs(&name)?;
+    Check::new(&spec, subject).opens(&name)?;
     if connector.node() != &node.name {
         return Err(Error::BrowseNode {
             connector: name,
