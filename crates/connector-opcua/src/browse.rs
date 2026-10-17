@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 use connector::browse::{self, Access, Child, Cursor, Entry, Facts, Page, Shape};
 use connector::kind::Error;
@@ -39,14 +39,21 @@ pub(crate) struct Server<'a> {
     /// What each cursor of this browse goes on from, by its folder and the count of
     /// references of the folder before its page.
     points: BTreeMap<(Node, usize), Held>,
+    /// The count of points that this browse held so far, which orders them by use.
+    uses: u64,
     /// The bytes of the `seen` of each of `points`.
     held: usize,
+    /// The count of pages with no references between the last reference before each
+    /// cursor that this browse gave and no page used since, and its point.
+    given: BTreeMap<(Node, usize), usize>,
 }
 
 /// Where the page of a cursor starts.
 struct Held {
     /// The continuation point of the next page of the server.
     point: Point,
+    /// The value of `Server::uses` when this browse held the point.
+    used: u64,
     /// What the references of the folder before the point gave.
     seen: Seen,
     /// The count of references from the point that are before the page.
@@ -69,45 +76,60 @@ impl<'a> Server<'a> {
         Self {
             client,
             points: BTreeMap::new(),
+            uses: 0,
             held: 0,
+            given: BTreeMap::new(),
         }
     }
 
     /// Gives the references of `folder` from the count `before`, what the references
     /// before them gave, and the continuation point after them with the count of its
-    /// references still to skip. A cursor of this browse goes on with `BrowseNext`.
-    /// Else, or when the server no longer holds its point, it browses `folder` again
-    /// from its start and skips `before` references. It reads pages of the server while
-    /// each gives only references to skip, so it gives no references and a held point
-    /// after a page with none. A browse again for a cursor also reads past pages with
-    /// none, so that a cursor of a page with no entries goes on in a new browse, at
-    /// most [`browse::VISITS`] of them. `before` is `None` for the first page, and is a
+    /// references still to skip and the count of pages with no references between the
+    /// last reference before it and it. A cursor whose point this browse holds goes on
+    /// with `BrowseNext`. Else, or when the server freed its point, it browses `folder`
+    /// again from its start and skips `before` references. It reads past each page of
+    /// the server that gives only references to skip, and past at most
+    /// [`browse::VISITS`] pages with none while it skips. Then a cursor that this
+    /// browse gave reads past the pages with none that it passed, so it gives the page
+    /// that a held cursor gives. A cursor that this browse did not give reads past at
+    /// most [`browse::VISITS`] pages with none, so that a cursor of a page with no
+    /// entries goes on in a new browse. After each other page with none, it gives no
+    /// references and a held point. `before` is `None` for the first page, and is a
     /// count past [`SKIP`] only for a cursor that this browse holds. `None` when the
     /// server does not have `folder`.
     ///
     /// # Errors
     ///
-    /// The status of a Browse or `BrowseNext` that fails, [`Failure::Empty`] when a
-    /// browse again reads past more pages with none, and as [`Server::fits`].
+    /// `BadContinuationPointInvalid` when the server freed a point past [`SKIP`], the
+    /// status of a Browse or `BrowseNext` that fails, [`Failure::Empty`] when a browse
+    /// for a cursor that this browse did not give reads past more pages with none, and
+    /// as [`Server::fits`].
     async fn references(
         &mut self,
         folder: &Node,
         before: Option<usize>,
-    ) -> Result<Option<(Vec<Reference>, Seen, Option<(Point, usize)>)>, Error> {
-        let again = before.is_some();
-        let before = before.unwrap_or(0);
-        let held = self.points.remove(&(folder.clone(), before));
+    ) -> Result<Option<(Vec<Reference>, Seen, Option<(Point, usize, usize)>)>, Error>
+    {
+        let key = (folder.clone(), before.unwrap_or(0));
+        let since = self.given.remove(&key);
+        let again = before.is_some() && since.is_none();
+        let before = key.1;
+        let held = self.points.remove(&key);
         if let Some(held) = &held {
             self.held -= held.seen.bytes;
         }
-        let (mut page, mut seen, mut left, again) = if let Some(held) = held {
+        let (mut page, mut seen, mut left, mut run) = if let Some(held) = held {
             match self.client.browse_next(held.point).await {
-                Ok(page) => (page, held.seen, held.left, false),
+                Ok(page) => {
+                    let run =
+                        since.expect("invariant: this browse gave each held point");
+                    (page, held.seen, held.left, run)
+                }
                 Err(Status::BAD_CONTINUATION_POINT_INVALID) if before <= SKIP => {
                     let Some(page) = self.first(folder).await? else {
                         return Ok(None);
                     };
-                    (page, Seen::default(), before, true)
+                    (page, Seen::default(), before, 0)
                 }
                 Err(status) => return Err(failed(status)),
             }
@@ -115,10 +137,16 @@ impl<'a> Server<'a> {
             let Some(page) = self.first(folder).await? else {
                 return Ok(None);
             };
-            (page, Seen::default(), before, again)
+            (page, Seen::default(), before, 0)
         };
         let mut empty = 0;
         loop {
+            // A page before the last reference to skip is not after the cursor.
+            run = if page.references.is_empty() && left == 0 {
+                run + 1
+            } else {
+                0
+            };
             let skipped = left.min(page.references.len());
             let rest = page.references.split_off(skipped);
             for reference in &page.references {
@@ -128,7 +156,9 @@ impl<'a> Server<'a> {
             }
             self.fits(&seen)?;
             left -= skipped;
-            let past = skipped > 0 || again && empty < browse::VISITS;
+            let past = skipped > 0
+                || left == 0 && since.is_some_and(|since| run <= since)
+                || (again || left > 0) && empty < browse::VISITS;
             match page.next {
                 Some(point) if rest.is_empty() && past => {
                     empty += usize::from(skipped == 0);
@@ -138,7 +168,10 @@ impl<'a> Server<'a> {
                 Some(_) if rest.is_empty() && again => {
                     return Err(device(Failure::Empty));
                 }
-                next => return Ok(Some((rest, seen, next.map(|point| (point, left))))),
+                next => {
+                    let next = next.map(|point| (point, left, run));
+                    return Ok(Some((rest, seen, next)));
+                }
             }
         }
     }
@@ -156,10 +189,50 @@ impl<'a> Server<'a> {
     }
 
     /// Gives the first page of `folder`, or `None` when the server does not have it.
+    /// When this browse holds as many points as the server holds for a session, or
+    /// [`browse::DEPTH`] when the server gives no bound, it first releases one point,
+    /// as [`Server::release`] picks it. On `BadNoContinuationPoints`, it releases each
+    /// point that [`Server::release`] can and browses once more.
     async fn first(&mut self, folder: &Node) -> Result<Option<client::Page>, Error> {
         let most = u32::try_from(browse::LIMIT).ok().and_then(NonZeroU32::new);
         let most = most.expect("invariant: `LIMIT` is a u32 that is not 0");
-        self.client.browse(folder, most).await.map_err(failed)
+        let bound = self.client.points().await.map_err(failed)?;
+        let bound = bound.map_or(browse::DEPTH, NonZeroUsize::get);
+        if self.points.len() >= bound {
+            self.release(1).await?;
+        }
+        match self.client.browse(folder, most).await {
+            Err(Status::BAD_NO_CONTINUATION_POINTS) => {
+                self.release(usize::MAX).await?;
+                self.client.browse(folder, most).await
+            }
+            browsed => browsed,
+        }
+        .map_err(failed)
+    }
+
+    /// Releases the `most` points that this browse used least lately of those whose
+    /// cursor can browse its folder again, at a count of at most [`SKIP`].
+    async fn release(&mut self, most: usize) -> Result<(), Error> {
+        let mut held: Vec<(u64, (Node, usize))> = self
+            .points
+            .iter()
+            .filter(|((_, before), _)| *before <= SKIP)
+            .map(|(key, held)| (held.used, key.clone()))
+            .collect();
+        held.sort_unstable_by_key(|(used, _)| *used);
+        let points: Vec<Point> = held
+            .into_iter()
+            .take(most)
+            .map(|(_, key)| {
+                let held = self.points.remove(&key);
+                let held =
+                    held.expect("invariant: each key of `held` is a key of `points`");
+                self.held -= held.seen.bytes;
+                held.point
+            })
+            .collect();
+        self.client.release(&points).await.map_err(failed)
     }
 
     /// Gives the shape of each of `references`, with one `Client::describe` of its
@@ -265,21 +338,33 @@ impl browse::Device for Server<'_> {
             && let Some(earlier) = self.points.remove(&(folder.clone(), after))
         {
             self.held -= earlier.seen.bytes;
+            self.client
+                .release(&[earlier.point])
+                .await
+                .map_err(failed)?;
         }
         self.fits(&seen)?;
         let references: Vec<&Reference> = kept.iter().map(|(_, _, it)| it).collect();
         let shapes = self.shapes(&references).await.map_err(failed)?;
         let entries = kept.into_iter().zip(shapes);
         let entries = entries.map(|((name, tag, _), shape)| Child { name, tag, shape });
-        let next = next.map(|(point, left)| {
+        let mut cursor = None;
+        if let Some((point, left, run)) = next {
+            self.uses += 1;
             self.held += seen.bytes;
-            let held = Held { point, seen, left };
+            let held = Held {
+                point,
+                used: self.uses,
+                seen,
+                left,
+            };
+            self.given.insert((folder.clone(), after), run);
             self.points.insert((folder, after), held);
-            Cursor::new(after.to_string())
-        });
+            cursor = Some(Cursor::new(after.to_string()));
+        }
         Ok(Some(Page {
             entries: entries.collect(),
-            next,
+            next: cursor,
         }))
     }
 

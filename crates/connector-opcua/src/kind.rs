@@ -128,10 +128,14 @@ impl kind::Kind for Kind {
     /// it. In one folder, a second reference to a node gives no entry, and a name that
     /// an earlier entry has gets ` (<tag>)` after it. A cursor of an earlier browse
     /// skips the references before its page again, so it assumes that the server
-    /// keeps their order. The browse keeps at most 16 MiB of the tags and names of
-    /// the references before its pages. Then it closes the session, as `run` does.
-    /// The header of each request holds the mesh time of the node, which it reads
-    /// before the connect.
+    /// keeps their order. Other than points at a count past 100 000 and those of the
+    /// walk of a data type, it holds at most as many continuation points as the server
+    /// holds for a session (`MaxBrowseContinuationPoints`, or 64 when the server gives
+    /// 0, no value, or a value that is not a `UInt16`), and releases the point that it
+    /// used least lately, of those at a count of at most 100 000, for a new one. The
+    /// browse keeps at most 16 MiB of the tags and names of the references before its
+    /// pages. Then it closes the session, as `run` does. The header of each request
+    /// holds the mesh time of the node, which it reads before the connect.
     ///
     /// # Errors
     ///
@@ -140,8 +144,8 @@ impl kind::Kind for Kind {
     /// 100 000 references. [`Error::Retry`] when the node has no mesh time, as
     /// [`browse::Context::time`] gives it. [`Error::Device`] when the connect, a
     /// Browse, a `BrowseNext`, or a Read fails, when the tags and names that the browse
-    /// keeps pass 16 MiB, and when a browse for a cursor reads past
-    /// [`browse::VISITS`] pages of the server with no references. The errors of
+    /// keeps pass 16 MiB, and when a browse for a cursor of an earlier browse reads
+    /// past [`browse::VISITS`] pages of the server with no references. The errors of
     /// [`browse::walk`].
     fn browse(
         &self,
@@ -510,8 +514,8 @@ pub(crate) enum Failure {
     Browse(Status),
     /// The tags and names before the pages of a browse pass [`crate::browse::BYTES`].
     Names,
-    /// A browse again for a cursor reads past [`connector::browse::VISITS`] pages of
-    /// the server with no references.
+    /// A browse for a cursor of an earlier browse reads past
+    /// [`connector::browse::VISITS`] pages of the server with no references.
     Empty,
 }
 
