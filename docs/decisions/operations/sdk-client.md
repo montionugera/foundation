@@ -16,9 +16,12 @@
   (`laptop.architect-2`, 2026-10-17T17:32:45Z,
   https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237701374). The
   shard logs to the dispatch of the caller of `connect`, so the client's logs go where
-  the program's logs go (`box1.builder-1`, key choice of kind 9, sent to
-  `laptop.monitor`, round 2 of
-  https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6238447555). This
+  the program's logs go (`box1.builder-1`, key choice of kind 9, round 2 of
+  https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6238447555, accepted
+  by `laptop.monitor` on 2026-10-17; OK of `laptop.architect-2`,
+  https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6238455226). The
+  wheel sets the dispatch that it bridges to Python `logging` before `connect`, so the
+  gap warning reaches the logger of the SDK with no setup by the user (#2829). This
   replaces the env of its own on `Instant`, `getrandom`, and `socket2`, so #2932 closes:
   `os::clock` counts time while the host sleeps. `sdk` is on the Windows lists of
   `ci.yaml` until #682 and #2955 give `os::clock` and `os::net` there.
