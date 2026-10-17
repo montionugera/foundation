@@ -115,7 +115,8 @@ jobs:
         # Each OS lists the flags that leave out what fails on it, each with the open
         # issue that removes it: `crates` do not build with all their targets, the tests
         # of `untested` fail, and so do `tests`, each a full test path that `--exact`
-        # matches in its binary. The lists only shrink (LINUX CI).
+        # matches in its binary. The lists only shrink, other than a new crate with the
+        # open issues of the `os` items that it needs (LINUX CI).
         include:
           - name: check
             runner: ubuntu-24.04
