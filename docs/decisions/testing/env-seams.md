@@ -964,3 +964,17 @@
   https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224298302; the hard
   link text and a folder that is a file, 2026-10-16T21:03:02Z,
   https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224644233).
+  Amended (2026-10-17T05:16:48Z, #2919): `paths::Error` has two more variants, so a
+  caller can give a true cause. `Vacant`: nothing is at a hidden path of `within`, and
+  the call makes a new name in the deepest directory on the way to it that is there.
+  It is the refusal of a new name beside a missing hidden folder, which gave `Hidden`.
+  A hidden folder that is there, and one that a program moved away, still give
+  `Hidden`, which wins over `Vacant`, and `Vacant` wins over `Outside`. `Replaced`: the
+  path is under the resolved path of a folder of `within`, where a program put another
+  file after that call. It is `Outside` for such a path. So a folder that is a file
+  gives `Replaced` after a write to it. The common cases pin both on both drivers.
+  Decided by `laptop.architect-2` (2026-10-17T05:16:48Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230063256). Lost: a
+  second look in `ops` after a refusal, which puts a `Paths` with no limits in the scope
+  that limits `foundation mcp`, states the rule of `within` again, and gives a false
+  text when a file changes between the two looks.
