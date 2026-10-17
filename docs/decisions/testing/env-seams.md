@@ -1093,4 +1093,6 @@
   of a short step where nothing is there, 2026-10-17T16:30:59Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236681131; the count
   of the `..` that takes the path above a step, 2026-10-17T16:38:50Z,
-  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236820865).
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236820865; the folders
+  of a limit before its hidden folders, 2026-10-17T16:59:11Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237152656).
