@@ -291,10 +291,13 @@ mod tests {
         let server = |vars| {
             let builds = compiler::configure(Path::new("/copy"), "", "a.c", env(vars));
             let shim = builds.unwrap().shim;
-            shim.get_files().any(|file| file.ends_with("src/server.c"))
+            let file = shim.get_files().any(|file| file.ends_with("src/server.c"));
+            let internal = Path::new("/copy/src").display().to_string();
+            let args = args(&tool(shim, "/missing/gcc"));
+            (file, includes(&args).contains(&internal.as_str()))
         };
-        assert!(!server(&[FUZZING]));
-        assert!(server(&[FUZZING, ("CARGO_FEATURE_SIM", "1")]));
+        assert_eq!(server(&[FUZZING]), (false, false));
+        assert_eq!(server(&[FUZZING, ("CARGO_FEATURE_SIM", "1")]), (true, true));
     }
 
     /// `configure` checks the compiler that `sanitize` picks, so a sanitizer moves a

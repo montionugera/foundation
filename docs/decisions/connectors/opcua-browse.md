@@ -49,17 +49,17 @@
   bytes, each an ASCII capital letter or digit, so `P1` (`%`) reads, else `None`
   (`laptop.architect-2`, same link). The kind gives the plain name of a node to its
   first reference in the order of the server, and the skip of a cursor assumes that the
-  server keeps the order of the references of a folder (OPCUA KIND). Later step, in PR
-  5b2 of #2705 (#2969): bound the continuation points of a walk
-  (`MaxBrowseContinuationPoints`), and test it against the sim server with the bound at
-  1 and at 2. It merges before the CLI or MCP gives browse to a user (the split of PR 5,
-  2026-10-16T22:54:58Z:
+  server keeps the order of the references of a folder (OPCUA KIND). `Client::points`
+  gives the `MaxBrowseContinuationPoints` of the server, read once with the limits of a
+  Browse and a Translate, and `Client::release` releases points of its session. The kind
+  bounds the points of a walk with them (OPCUA KIND), tested against the sim server with
+  the bound at 1 and at 2. The bound merges before the CLI or MCP gives browse to a user
+  (the split of PR 5, 2026-10-16T22:54:58Z:
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6226218426, OK by
   `laptop.architect-2`, 2026-10-17T03:22:56Z:
-  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6228993285). The
-  one table of the built-in types that this record asked for became the decode by match
-  of OPCUA KIND (`laptop.architect-2`,
-  2026-10-16T22:17:22Z:
+  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6228993285). The one
+  table of the built-in types that this record asked for became the decode by match of
+  OPCUA KIND (`laptop.architect-2`, 2026-10-16T22:17:22Z:
   https://github.com/synnaxlabs/foundation/pull/2931#issuecomment-6225757093). Later
   step, #2981: bound the browses at once in `connector`. It merges before the CLI or MCP
   gives browse to a user (`laptop.architect-2`, 2026-10-17T04:05:28Z:

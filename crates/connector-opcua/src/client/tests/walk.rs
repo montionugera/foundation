@@ -352,6 +352,426 @@ fn pages_with_no_entries_end_at_the_budget_of_a_walk() {
     assert_eq!(found.end, End::Budget);
 }
 
+/// A setup with a tree that a walk of [`everything`] holds 4 points of at once, with
+/// the point of the Objects folder when it also holds the variable of
+/// `Server::report_points`: the folders `root/a/c`, `root/a/d`, `root/a/e`,
+/// and `root/b`, two variables in each of `b`, `c`, `d`, and `e`, and one reference in
+/// each page of the server. The folder `a` has a lower number than its parent `root`,
+/// so the order of the keys of the points is not the order of their use.
+fn nested(server: &Server) {
+    let folder = |number| Node {
+        namespace: 1,
+        key: Key::Number(number),
+    };
+    server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+    server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+    let folders = [
+        (6001, ROOT, c"a"),
+        (6002, ROOT, c"b"),
+        (6003, folder(6001), c"c"),
+        (6004, folder(6001), c"d"),
+        (6005, folder(6001), c"e"),
+    ];
+    for (number, parent, name) in folders {
+        server.add_folder(&folder(number), &parent, ORGANIZES, name, name);
+    }
+    for (number, parent) in [(7010, 6002), (7020, 6003), (7030, 6004), (7040, 6005)] {
+        for (offset, name) in [c"x", c"y"].into_iter().enumerate() {
+            let offset = u32::try_from(offset).expect("a u32");
+            server.add_variable(&Variable {
+                node: folder(number + offset),
+                parent: folder(parent),
+                reference: HAS_COMPONENT,
+                name,
+                data_type: DOUBLE,
+                rank: -1,
+                access: server::READ,
+                value: None,
+            });
+        }
+    }
+    server.cap_references(1);
+}
+
+fn everything() -> Query {
+    Query {
+        start: "root".parse().expect("a path"),
+        scope: Scope::Match("**".parse().expect("a pattern")),
+        values: Values::Skipped,
+    }
+}
+
+/// What a walk of `query` gives after `setup` when the server gives `most` as its
+/// `MaxBrowseContinuationPoints`, as [`counted`] gives it.
+fn held(
+    setup: fn(&Server),
+    query: Query,
+    most: u16,
+) -> (Result<Found, Error>, usize, usize) {
+    counted(
+        move |server| {
+            setup(server);
+            server.report_points(most);
+        },
+        query,
+    )
+}
+
+/// What a walk of `query` gives after `setup`, the most points that the session held,
+/// and the count of Browse requests.
+fn counted(
+    setup: impl FnOnce(&Server) + Send + 'static,
+    query: Query,
+) -> (Result<Found, Error>, usize, usize) {
+    let (out, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            setup(peer.server);
+            let count = peer.server.count();
+            let mut client = peer.connected().await;
+            let found = browse::walk(&mut Browse::new(&mut client), &query).await;
+            client.close().await;
+            (found, count.points(), count.browses())
+        })
+        .await
+    });
+    out
+}
+
+/// With no bound from the server, a walk holds a point for each open folder: the
+/// Objects folder, `root`, `root/a`, and `root/a/c`. With a bound of 1 or 2, it holds
+/// no more, and gives the same entries. At the bound of 2, it releases the point of
+/// `root`, used least lately, so it browses `root` once more and `root/a` no more.
+#[test]
+fn a_walk_holds_no_more_points_than_the_server_holds_for_a_session() {
+    let (unbound, points, browses) = held(nested, everything(), 0);
+    let unbound = unbound.expect("found");
+    assert_eq!(unbound.entries.len(), 8, "{:?}", unbound.entries);
+    assert_eq!((points, browses), (4, 7));
+    for (most, count) in [(1, 10), (2, 8)] {
+        let (found, points, browses) = held(nested, everything(), most);
+        assert_eq!(found.expect("found").entries, unbound.entries);
+        assert_eq!(
+            (points, browses),
+            (usize::from(most), count),
+            "bound {most}"
+        );
+    }
+}
+
+/// Gives each server message to `rewrite`, and makes the result of the Browse
+/// response of the count `nth` from 1 `BadNoContinuationPoints`.
+fn refusing(nth: usize) -> impl FnMut(&mut Vec<u8>) + Send + 'static {
+    let mut browses = 0;
+    move |message: &mut Vec<u8>| {
+        if response(message) != Some(BROWSE_RESPONSE) {
+            return;
+        }
+        browses += 1;
+        if browses == nth {
+            // The response header of open62541 is 24 bytes, then the count of results.
+            assert_eq!(message[52..56], 1_i32.to_le_bytes(), "one result");
+            assert_eq!(message[56..60], [0; 4], "a Good result");
+            let status = Status::BAD_NO_CONTINUATION_POINTS.0.to_le_bytes();
+            message[56..60].copy_from_slice(&status);
+        }
+    }
+}
+
+/// The server refuses a point for the Browse of `root/a/c`, while the walk holds the
+/// points of Objects, `root`, and `root/a`: the walk releases each, browses `c` again,
+/// and gives each entry. It then browses `root` and `a` again for their next pages, 10
+/// Browse requests in all, against 7 with no refusal.
+#[test]
+fn a_browse_that_the_server_gives_no_point_releases_its_points_and_browses_again() {
+    let (unbound, ..) = held(nested, everything(), 0);
+    let browses = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&browses);
+    let mut refuse = refusing(4);
+    let rewrite = move |message: &mut Vec<u8>| {
+        if response(message) == Some(BROWSE_RESPONSE) {
+            counted.fetch_add(1, Ordering::Relaxed);
+        }
+        refuse(message);
+    };
+    let setup = |server: &Server| {
+        nested(server);
+        server.report_points(0);
+    };
+    let found = relayed_browse(setup, rewrite, async |server| {
+        browse::walk(server, &everything()).await
+    });
+    assert_eq!(
+        found.expect("found").entries,
+        unbound.expect("found").entries
+    );
+    assert_eq!(browses.load(Ordering::Relaxed), 10);
+}
+
+/// The server refuses a point for the first Browse, of the Objects folder, when the
+/// walk holds none to release: the walk browses once again.
+#[test]
+fn a_browse_that_the_server_gives_no_point_with_none_held_browses_again() {
+    let (unbound, ..) = held(nested, everything(), 0);
+    let found = relayed_browse(nested, refusing(1), async |server| {
+        browse::walk(server, &everything()).await
+    });
+    assert_eq!(
+        found.expect("found").entries,
+        unbound.expect("found").entries
+    );
+}
+
+/// The server refuses a point for the Browse of `root/a/c`, while the walk holds the
+/// points of Objects, `root`, and `root/a`, and again after the walk releases them.
+#[test]
+fn a_second_refusal_after_a_release_fails() {
+    let mut first = refusing(4);
+    let mut second = refusing(5);
+    let setup = |server: &Server| {
+        nested(server);
+        server.report_points(0);
+    };
+    let rewrite = move |message: &mut Vec<u8>| {
+        first(message);
+        second(message);
+    };
+    let found = relayed_browse(setup, rewrite, async |server| {
+        browse::walk(server, &everything()).await
+    });
+    let Err(Error::Device(source)) = found else {
+        panic!("not a device error: {found:?}");
+    };
+    assert_eq!(
+        source.to_string(),
+        "the browse failed with BadNoContinuationPoints"
+    );
+}
+
+/// A setup with the loop `root/f/g/f`, a variable in `f` and in `g`, and one reference
+/// in each page of the server.
+fn looped(server: &Server) {
+    let folder = |number| Node {
+        namespace: 1,
+        key: Key::Number(number),
+    };
+    server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+    server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+    server.add_folder(&folder(6001), &ROOT, ORGANIZES, c"f", c"f");
+    server.add_folder(&folder(6002), &folder(6001), ORGANIZES, c"g", c"g");
+    for (number, parent, name) in [(7001, 6001, c"x"), (7002, 6002, c"w")] {
+        server.add_variable(&Variable {
+            node: folder(number),
+            parent: folder(parent),
+            reference: HAS_COMPONENT,
+            name,
+            data_type: DOUBLE,
+            rank: -1,
+            access: server::READ,
+            value: None,
+        });
+    }
+    server.add_reference(&folder(6002), ORGANIZES, &folder(6001));
+    server.cap_references(1);
+}
+
+/// A walk of a pattern of fixed depth through a loop opens `f` and `g` more than once,
+/// so a page gives a cursor that the walk holds. It releases the earlier point, so it
+/// holds no more points than the bound.
+#[test]
+fn a_folder_open_twice_in_a_walk_holds_no_more_points_than_the_bound() {
+    for pattern in ["*/*/*/*/*", "*/*/*/*/*/*/*"] {
+        let query = |pattern: &str| Query {
+            start: "root".parse().expect("a path"),
+            scope: Scope::Match(pattern.parse().expect("a pattern")),
+            values: Values::Skipped,
+        };
+        let (unbound, ..) = held(looped, query(pattern), 0);
+        let unbound = unbound.expect("found").entries;
+        for most in 2..=4 {
+            let (found, points, _) = held(looped, query(pattern), most);
+            assert_eq!(found.expect("found").entries, unbound, "{pattern} {most}");
+            assert!(points <= usize::from(most), "{pattern} {most}: {points}");
+        }
+    }
+}
+
+/// A setup with the chain `root/f1/f2/f3/f4/f5`, a variable in `root` and in each of
+/// `f1` to `f4`, and one reference in each page of the server, so that a walk holds a
+/// point for the Objects folder, `root`, and `f1` to `f4` at once.
+fn chain(server: &Server) {
+    let folder = |number| Node {
+        namespace: 1,
+        key: Key::Number(number),
+    };
+    server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+    server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+    let mut parent = ROOT;
+    for (number, name) in (6001..).zip([c"f1", c"f2", c"f3", c"f4", c"f5"]) {
+        server.add_folder(&folder(number), &parent, ORGANIZES, name, name);
+        server.add_variable(&Variable {
+            node: folder(number + 1000),
+            parent: parent.clone(),
+            reference: HAS_COMPONENT,
+            name: c"x",
+            data_type: DOUBLE,
+            rank: -1,
+            access: server::READ,
+            value: None,
+        });
+        parent = folder(number);
+    }
+    server.cap_references(1);
+}
+
+/// A server that gives 0 as its bound bounds a walk at `DEPTH` (64), so a walk holds
+/// the points of the Objects folder, `root`, and `f1` to `f4` at once.
+#[test]
+fn a_walk_with_a_bound_of_0_holds_a_point_for_each_open_folder() {
+    let (found, points, _) = held(chain, everything(), 0);
+    assert_eq!(found.expect("found").entries.len(), 5);
+    assert_eq!(points, 6);
+}
+
+/// A server with no `MaxBrowseContinuationPoints`, or with a `UInt32` of 1 as it,
+/// bounds a walk at `DEPTH`, as one that gives 0 does. The variable `ns=1;i=2735` is
+/// not the bound: it gives the Objects folder a second reference, as the other does.
+#[test]
+fn a_walk_with_no_bound_of_the_server_holds_a_point_for_each_open_folder() {
+    let absent = |server: &Server| {
+        chain(server);
+        let node = Node {
+            namespace: 1,
+            key: Key::Number(2735),
+        };
+        server.add_scalar(&node, Value::U32(1));
+    };
+    let wide = |server: &Server| {
+        chain(server);
+        server.add_scalar(&Node::ns0(2735), Value::U32(1));
+    };
+    let setups: [fn(&Server); 2] = [absent, wide];
+    for (index, setup) in setups.into_iter().enumerate() {
+        let (found, points, _) = counted(setup, everything());
+        assert_eq!(found.expect("found").entries.len(), 5, "setup {index}");
+        assert_eq!(points, 6, "setup {index}");
+    }
+}
+
+/// Gives each server message to `rewrite`, and makes the service result of the first
+/// message whose response is `kind` and that `pick` accepts `BadInternalError`.
+fn faulting(
+    kind: [u8; 4],
+    mut pick: impl FnMut(&[u8]) -> bool + Send + 'static,
+) -> impl FnMut(&mut Vec<u8>) + Send + 'static {
+    let mut done = false;
+    move |message: &mut Vec<u8>| {
+        let response = message.get(24..28).is_some_and(|got| got == kind);
+        if !done && message.starts_with(b"MSG") && response && pick(message) {
+            done = true;
+            // The type of the response, then its time and request handle.
+            let status = Status::BAD_INTERNAL_ERROR.0.to_le_bytes();
+            message[40..44].copy_from_slice(&status);
+        }
+    }
+}
+
+fn internal_error(found: Result<Found, Error>) {
+    let Err(Error::Device(source)) = found else {
+        panic!("not a device error: {found:?}");
+    };
+    assert_eq!(
+        source.to_string(),
+        "the browse failed with BadInternalError"
+    );
+}
+
+/// The first Read after the connect is of the bound of the server and the limits of a
+/// Browse and a Translate. It fails, so the walk fails.
+#[test]
+fn a_walk_whose_read_of_the_bound_fails_fails() {
+    const READ_RESPONSE: [u8; 4] = [0x01, 0x00, 0x7A, 0x02];
+    let connected = Arc::new(AtomicBool::new(false));
+    let armed = Arc::clone(&connected);
+    let rewrite = faulting(READ_RESPONSE, move |_| armed.load(Ordering::Relaxed));
+    let found = relayed_browse(nested, rewrite, async move |server| {
+        connected.store(true, Ordering::Relaxed);
+        browse::walk(server, &everything()).await
+    });
+    internal_error(found);
+}
+
+/// Whether the `BrowseNext` response `message` is that of a release: one result with
+/// no reference, which no page of a tree with one reference in each page gives.
+fn released(message: &[u8]) -> bool {
+    // The results start at 52: their count, then the status, the point, and the count
+    // of the references of the first.
+    let point = i32::from_le_bytes(message[60..64].try_into().expect("4 bytes"));
+    let at = 64 + usize::try_from(point.max(0)).expect("a size");
+    message[52..56] == 1_i32.to_le_bytes()
+        && i32::from_le_bytes(message[at..at + 4].try_into().expect("4 bytes")) <= 0
+}
+
+/// The `BrowseNext` that releases the first point at the bound of 1 fails, so the walk
+/// fails.
+#[test]
+fn a_walk_whose_release_fails_fails() {
+    let setup = |server: &Server| {
+        nested(server);
+        server.report_points(1);
+    };
+    let found = relayed_browse(
+        setup,
+        faulting(BROWSE_NEXT_RESPONSE, released),
+        async |server| browse::walk(server, &everything()).await,
+    );
+    internal_error(found);
+}
+
+/// With no bound release, the first release of a walk of `*/*/*/*/*` through a loop is
+/// of the earlier point of a folder that it opens twice. It fails, so the walk fails.
+#[test]
+fn a_walk_whose_release_of_a_point_of_a_folder_open_twice_fails_fails() {
+    let setup = |server: &Server| {
+        looped(server);
+        server.report_points(0);
+    };
+    let query = Query {
+        start: "root".parse().expect("a path"),
+        scope: Scope::Match("*/*/*/*/*".parse().expect("a pattern")),
+        values: Values::Skipped,
+    };
+    let found = relayed_browse(
+        setup,
+        faulting(BROWSE_NEXT_RESPONSE, released),
+        async move |server| browse::walk(server, &query).await,
+    );
+    internal_error(found);
+}
+
+/// The release after the refusal of the Browse of `root/a/c`, the first `BrowseNext`
+/// after it, fails, so the walk fails.
+#[test]
+fn a_walk_whose_release_after_a_refusal_fails_fails() {
+    let setup = |server: &Server| {
+        nested(server);
+        server.report_points(0);
+    };
+    let mut browses = 0;
+    let mut refuse = refusing(4);
+    let mut fault = faulting(BROWSE_NEXT_RESPONSE, |_| true);
+    let rewrite = move |message: &mut Vec<u8>| {
+        browses += usize::from(response(message) == Some(BROWSE_RESPONSE));
+        refuse(message);
+        if browses >= 4 {
+            fault(message);
+        }
+    };
+    let found = relayed_browse(setup, rewrite, async |server| {
+        browse::walk(server, &everything()).await
+    });
+    internal_error(found);
+}
+
 /// The references of `root` in a page each, the second rewritten to the class
 /// `ObjectType`, which the client drops, so the second page of the server has no
 /// references. A new browse of each cursor, as a `Scope::Level` browse of the kind
@@ -683,11 +1103,16 @@ fn sized(extra: usize) -> impl FnOnce(&Server) + Send + 'static {
     }
 }
 
-/// The browse of [`sized`] reads the first page of `a` `opens` times and holds its
-/// point, so it keeps 64 KiB for it, and the pages of `b` keep `BYTES - 64 KiB + extra`
-/// at its last page.
-fn budget(extra: usize, opens: usize) -> Result<usize, Error> {
-    let setup = sized(extra);
+/// The browse of [`sized`], whose server gives `most` as its
+/// `MaxBrowseContinuationPoints`, reads the first page of `a` `opens` times and holds
+/// its point, so it keeps 64 KiB for it, and the pages of `b` keep
+/// `BYTES - 64 KiB + extra` at its last page.
+fn budget(extra: usize, most: u16, opens: usize) -> Result<usize, Error> {
+    let sized = sized(extra);
+    let setup = move |server: &Server| {
+        sized(server);
+        server.report_points(most);
+    };
     relayed_browse(
         setup,
         |_| {},
@@ -715,12 +1140,12 @@ fn budget(extra: usize, opens: usize) -> Result<usize, Error> {
 #[test]
 fn a_browse_keeps_the_tags_and_names_of_its_budget() {
     assert_eq!(BYTES, 16 * 4096 + 4080 * 4096);
-    assert_eq!(budget(0, 1).expect("the pages of `b`"), 4080);
+    assert_eq!(budget(0, 0, 1).expect("the pages of `b`"), 4080);
 }
 
 #[test]
 fn a_browse_that_keeps_more_than_its_budget_fails() {
-    let found = budget(1, 1);
+    let found = budget(1, 0, 1);
     let Err(Error::Device(source)) = found else {
         panic!("not a device error: {found:?}");
     };
@@ -730,12 +1155,19 @@ fn a_browse_that_keeps_more_than_its_budget_fails() {
     );
 }
 
+/// At the bound of 1, the first Browse of `b` releases the point of `a`, and with it
+/// the 64 KiB that the browse kept for that point.
+#[test]
+fn a_browse_frees_the_budget_of_each_point_that_it_releases() {
+    assert_eq!(budget(1, 1, 1).expect("the pages of `b`"), 4080);
+}
+
 /// The second page of `a` from its start gives the cursor of the first, so the browse
-/// keeps the 64 KiB of `a` once, and one more byte passes the budget.
+/// releases the earlier point and keeps the 64 KiB of `a` once.
 #[test]
 fn a_folder_open_twice_keeps_its_budget_once() {
-    assert_eq!(budget(0, 2).expect("the pages of `b`"), 4080);
-    let found = budget(1, 2);
+    assert_eq!(budget(0, 0, 2).expect("the pages of `b`"), 4080);
+    let found = budget(1, 0, 2);
     let Err(Error::Device(source)) = found else {
         panic!("not a device error: {found:?}");
     };
@@ -825,4 +1257,134 @@ fn a_cursor_past_the_skip_bound_whose_point_the_server_freed_fails() {
         source.to_string(),
         "the browse failed with BadContinuationPointInvalid"
     );
+}
+
+/// What a walk of everything gives at the bound of `most` over 12 003 folders under
+/// `root` in a page each, each with a variable, where the relay empties the page of
+/// each place for which `empty` is true.
+fn with_variables(
+    most: u16,
+    empty: impl Fn(usize) -> bool + Send + 'static,
+) -> Result<Found, Error> {
+    let numbered = numbered(12_003);
+    let setup = move |server: &Server| {
+        numbered(server);
+        server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+        for (number, parent) in (40_000..52_003).zip(20_000..32_003) {
+            server.add_variable(&Variable {
+                node: Node {
+                    namespace: 1,
+                    key: Key::Number(number),
+                },
+                parent: Node {
+                    namespace: 1,
+                    key: Key::Number(parent),
+                },
+                reference: HAS_COMPONENT,
+                name: c"x",
+                data_type: DOUBLE,
+                rank: -1,
+                access: server::READ,
+                value: None,
+            });
+        }
+        server.report_points(most);
+    };
+    let rewrite = placed(move |message, _, place| {
+        if empty(place) {
+            emptied(message);
+        }
+    });
+    walked(setup, rewrite, everything())
+}
+
+/// The pages of places 1 to 6000 and 6002 to 12 001 have no references. At the bound of
+/// 1, each open folder releases the point of `root`, and its cursor goes on as a held
+/// one does, so the walk gives what the walk with no bound gives.
+#[test]
+fn a_walk_at_the_bound_past_pages_with_no_references_gives_what_an_unbound_walk_gives()
+{
+    let empty = |place| (1..=6000).contains(&place) || (6002..=12_001).contains(&place);
+    let unbound = with_variables(0, empty).expect("found");
+    assert_eq!(unbound.entries.len(), 2, "{unbound:?}");
+    assert_eq!(unbound.end, End::Budget);
+    let bound = with_variables(1, empty).expect("found");
+    assert_eq!((bound.entries, bound.end), (unbound.entries, unbound.end));
+}
+
+/// The pages of places 1 to 4000, 4002 to 8001, and 8003 to 12 001 have no references.
+/// A released cursor past pages with no references does not give those pages again,
+/// so the walk at the bound of 1 gives what the walk with no bound gives.
+#[test]
+fn a_released_cursor_does_not_give_its_pages_with_no_references_again() {
+    let empty = |place| {
+        (1..=4000).contains(&place)
+            || (4002..=8001).contains(&place)
+            || (8003..=12_001).contains(&place)
+    };
+    let unbound = with_variables(0, empty).expect("found");
+    assert_eq!(unbound.entries.len(), 3, "{unbound:?}");
+    let bound = with_variables(1, empty).expect("found");
+    assert_eq!((bound.entries, bound.end), (unbound.entries, unbound.end));
+}
+
+/// 12 003 references of `root` in a page each, the pages of places 1 to 12 001 with no
+/// references. The relay frees the point of `root` at the page of place 6000, and the
+/// walk browses `root` again from its start and ends at its budget, as a walk with a
+/// held point does.
+#[test]
+fn a_walk_whose_point_the_server_freed_ends_at_its_budget() {
+    let mut freed = false;
+    let rewrite = placed(move |message, _, place| {
+        if place == 6000 && !freed {
+            assert_eq!(response(message), Some(BROWSE_NEXT_RESPONSE));
+            freed = true;
+            let invalid = Status::BAD_CONTINUATION_POINT_INVALID.0.to_le_bytes();
+            message[56..60].copy_from_slice(&invalid);
+        } else if (1..=12_001).contains(&place) {
+            emptied(message);
+        }
+    });
+    let found = walked(numbered(12_003), rewrite, everything());
+    assert_eq!(found.expect("found").end, End::Budget);
+}
+
+/// 6003 references of `root` in a page each, the pages of places 1 to 6000 with no
+/// references. The relay frees the point of `root` at the page of place 5000, and the
+/// walk does not get the pages before it again, so it ends as a walk with a held point
+/// does.
+#[test]
+fn a_walk_whose_point_the_server_freed_does_not_give_its_empty_pages_again() {
+    let mut freed = false;
+    let rewrite = placed(move |message, _, place| {
+        if place == 5000 && !freed {
+            freed = true;
+            let invalid = Status::BAD_CONTINUATION_POINT_INVALID.0.to_le_bytes();
+            message[56..60].copy_from_slice(&invalid);
+        } else if (1..=6000).contains(&place) {
+            emptied(message);
+        }
+    });
+    let found = walked(numbered(6_003), rewrite, everything());
+    assert_eq!(found.expect("found").end, End::Done);
+}
+
+/// 10 003 references of `root` in a page each, the pages of places 1 to 10 001 with no
+/// references. At the bound of 1, the Browse of `n00000` releases the point of `root`,
+/// and the walk still ends at its budget.
+#[test]
+fn a_walk_at_the_bound_ends_at_its_budget_past_pages_with_no_references() {
+    for most in [0, 1] {
+        let rewrite = placed(|message, _, place| {
+            if (1..=10_001).contains(&place) {
+                emptied(message);
+            }
+        });
+        let setup = move |server: &Server| {
+            numbered(10_003)(server);
+            server.report_points(most);
+        };
+        let found = walked(setup, rewrite, everything());
+        assert_eq!(found.expect("found").end, End::Budget, "bound {most}");
+    }
 }
