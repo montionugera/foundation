@@ -1199,6 +1199,11 @@
   `Vacant`, since a call makes no other name, and only after it passes each other limit.
   A step short of it, and a read, pass where a write gives `Vacant`, so beside a hidden
   folder that is not there, `work/none/x` and a path below a loop or a link to nothing
-  give the error of their resolve. Decided by `laptop.architect-2`
+  give the error of their resolve. Supersedes the order "`Hidden`, then `Outside` or
+  `Replaced`" of item 1 of
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230731316:
+  `Replaced`, as `Outside`, comes before `Hidden`. Decided by `laptop.architect-2`
   (2026-10-17T20:57:47Z,
-  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6240944707).
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6240944707;
+  `Replaced` before `Hidden`, 2026-10-17T21:04:57Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6241042085).
