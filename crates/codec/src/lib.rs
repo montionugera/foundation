@@ -1883,6 +1883,17 @@ mod tests {
             encoded
         }
 
+        /// Encodes `values` as samples of `scalar` with `encoder`, and returns the bytes.
+        fn write(encoder: &mut Encoder, scalar: Scalar, values: &[f64]) -> Vec<u8> {
+            let values = floats(scalar, values);
+            let mut out = vec![0; max_len(Type::Scalar(scalar), values.len())];
+            let len = encoder
+                .encode(values.len() / scalar.width(), &values, &mut out)
+                .expect("the values hold the samples");
+            out.truncate(len);
+            out
+        }
+
         /// The exponent, factor, and exception count bytes in the header of an ALP
         /// vector of samples of `width` bytes.
         fn fields(width: usize, vector: &[u8]) -> [u8; 4] {
@@ -1965,15 +1976,7 @@ mod tests {
                 let four: Vec<f64> =
                     (0..1_024).map(|k| f64::from(k % 89) / 16.0).collect();
                 let mut encoder = Encoder::new(Type::Scalar(scalar));
-                let mut write = |values: &[f64]| {
-                    let values = floats(scalar, values);
-                    let mut out = vec![0; max_len(Type::Scalar(scalar), values.len())];
-                    let len = encoder
-                        .encode(values.len() / width, &values, &mut out)
-                        .expect("the values hold the samples");
-                    out.truncate(len);
-                    out
-                };
+                let mut write = |values: &[f64]| write(&mut encoder, scalar, values);
                 let first = write(&two);
                 assert_eq!(first[0], vector::ALP, "{scalar:?}");
                 assert_eq!(fields(width, &first)[..2], [2, 0], "{scalar:?}");
@@ -1981,6 +1984,32 @@ mod tests {
                 let after = write(&four);
                 assert_eq!(after[0], vector::ALP, "{scalar:?}");
                 assert_eq!(fields(width, &after)[..2], [4, 0], "{scalar:?}");
+            }
+        }
+
+        /// Four quarters take 24 bytes as ALP and as delta.
+        #[test]
+        fn keeps_the_integer_codecs_when_alp_is_not_smaller() {
+            let values = [1_000.0, 1_000.25, 1_000.5, 1_000.75];
+            let encoded = check(Scalar::F64, &floats(Scalar::F64, &values));
+            assert_eq!((encoded[0], encoded.len()), (vector::DELTA, 24));
+        }
+
+        /// A vector of one sample does not search the pairs, and a vector of two does.
+        /// Its integers keep `e` = 0, so quarters after it do not use ALP.
+        #[test]
+        fn searches_the_pairs_at_the_first_vector_of_two_samples() {
+            for scalar in FLOATS {
+                let quarters: Vec<f64> =
+                    (0..1_024).map(|k| f64::from(k % 89) / 4.0).collect();
+                let mut encoder = Encoder::new(Type::Scalar(scalar));
+                write(&mut encoder, scalar, &[0.5]);
+                let after = write(&mut encoder, scalar, &quarters);
+                assert_eq!(after[0], vector::ALP, "{scalar:?}");
+                let mut encoder = Encoder::new(Type::Scalar(scalar));
+                write(&mut encoder, scalar, &[1.0, 2.0]);
+                let after = write(&mut encoder, scalar, &quarters);
+                assert_ne!(after[0], vector::ALP, "{scalar:?}");
             }
         }
 

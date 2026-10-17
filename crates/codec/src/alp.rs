@@ -154,7 +154,8 @@ pub(crate) fn signed<const W: usize>(value: u64) -> i64 {
     value.wrapping_shl(shift).cast_signed().wrapping_shr(shift)
 }
 
-/// The integers and exceptions of some samples under one pair.
+/// The integers and exceptions of some samples under one pair. `min` and `max` are 0
+/// when each sample is an exception.
 struct Stats {
     min: i64,
     max: i64,
@@ -178,29 +179,24 @@ impl Stats {
                 None => stats.exceptions = stats.exceptions.strict_add(1),
             }
         }
+        if stats.min > stats.max {
+            (stats.min, stats.max) = (0, 0);
+        }
         stats
     }
 
-    /// The smallest integer, or 0 when each sample is an exception, as `W` bytes.
+    /// The smallest integer, as `W` bytes.
     fn reference<const W: usize>(&self) -> u64 {
-        if self.min > self.max {
-            0
-        } else {
-            self.min.cast_unsigned() & word::mask(W)
-        }
+        self.min.cast_unsigned() & word::mask(W)
     }
 
     /// The bits of the integers less the reference.
     fn bits(&self) -> u8 {
-        if self.min > self.max {
-            0
-        } else {
-            int::width(
-                self.max
-                    .cast_unsigned()
-                    .wrapping_sub(self.min.cast_unsigned()),
-            )
-        }
+        int::width(
+            self.max
+                .cast_unsigned()
+                .wrapping_sub(self.min.cast_unsigned()),
+        )
     }
 
     /// The bits of the samples in an ALP body, without padding.
@@ -382,5 +378,78 @@ mod tests {
         pairs.search::<8>(&chunk);
         let pair = |exponent, factor| Pair { exponent, factor };
         assert_eq!(pairs.top[..pairs.len], [pair(0, 0), pair(2, 0)]);
+    }
+
+    /// The factor divides on encode and multiplies on decode: 0.5 is 5 under `e` = 2
+    /// and `f` = 1.
+    #[test]
+    fn codes_with_a_factor() {
+        let pair = Pair {
+            exponent: 2,
+            factor: 1,
+        };
+        assert_eq!(
+            Coder::<4>::new(pair).exact(0.5_f32.to_bits().into()),
+            Some(5)
+        );
+        assert_eq!(Coder::<8>::new(pair).exact(0.5_f64.to_bits()), Some(5));
+    }
+
+    #[test]
+    fn gives_a_reference_and_bits_of_0_when_each_sample_is_an_exception() {
+        let stats =
+            Stats::of::<8>([f64::NAN.to_bits(); 4].into_iter(), Pair::default());
+        assert_eq!((stats.reference::<8>(), stats.bits()), (0, 0));
+    }
+
+    #[test]
+    fn gives_the_integer_as_reference_when_each_sample_has_it() {
+        let stats = Stats::of::<8>([7.0_f64.to_bits(); 4].into_iter(), Pair::default());
+        assert_eq!((stats.reference::<8>(), stats.bits()), (7, 0));
+    }
+
+    /// The pair that `best` picks from `top`, pairs `(e, f)` in that order, over odd
+    /// quarters: `(0, 0)`, `(1, 0)`, and `(1, 1)` take no sample, `(2, 0)` and `(3, 1)`
+    /// take each.
+    fn best(top: &[(u8, u8)]) -> Pair {
+        let picked: Vec<u64> = (0..RUN)
+            .map(|k| {
+                let k = f64::from(u32::try_from(k).expect("a small k"));
+                ((2.0 * k + 1.0) / 4.0).to_bits()
+            })
+            .collect();
+        let mut pairs = Pairs::default();
+        for (slot, (exponent, factor)) in pairs.top.iter_mut().zip(top) {
+            *slot = Pair {
+                exponent: *exponent,
+                factor: *factor,
+            };
+        }
+        pairs.len = top.len();
+        pairs.best::<8>(&picked).0
+    }
+
+    #[test]
+    fn picks_the_smaller_pair_after_one_that_is_not_smaller() {
+        let pair = Pair {
+            exponent: 2,
+            factor: 0,
+        };
+        assert_eq!(best(&[(0, 0), (2, 0)]), pair);
+        assert_eq!(best(&[(1, 0), (0, 0), (2, 0)]), pair);
+    }
+
+    #[test]
+    fn keeps_the_first_of_two_pairs_of_one_size() {
+        let pair = Pair {
+            exponent: 2,
+            factor: 0,
+        };
+        assert_eq!(best(&[(2, 0), (3, 1)]), pair);
+    }
+
+    #[test]
+    fn stops_after_two_pairs_in_a_row_that_are_not_smaller() {
+        assert_eq!(best(&[(0, 0), (1, 0), (1, 1), (2, 0)]), Pair::default());
     }
 }
