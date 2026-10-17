@@ -1132,12 +1132,24 @@ pub(super) mod tests {
     }
 
     /// Each frame that the session `key` takes now, then the [`Next`] after them.
+    ///
+    /// # Panics
+    ///
+    /// If the session takes more frames than `readers` holds.
     fn drain(readers: &mut Readers, key: impl Into<Key>) -> (Vec<Frame>, Next) {
         let key = key.into();
+        // Without a bound, a session that takes a frame again fills the memory of
+        // the host.
+        let held = readers.queue.len()
+            + readers.flows.iter().map(|f| f.waiting.len()).sum::<usize>()
+            + usize::from(readers.newest.is_some());
         let mut frames = Vec::new();
         loop {
             match readers.take(key) {
-                Next::Frame(frame) => frames.push(frame),
+                Next::Frame(frame) => {
+                    assert!(frames.len() < held, "session {key:?} takes a frame again");
+                    frames.push(frame);
+                }
                 end @ (Next::Empty | Next::Disk { .. }) => {
                     return (frames, end);
                 }
@@ -2820,6 +2832,7 @@ pub(super) mod tests {
                 let mut taken_bytes = 0;
                 let mut got = 0;
                 while let Next::Frame(frame) = readers.take(prompt.into()) {
+                    assert!(got < count, "the session takes a frame again");
                     got += 1;
                     taken_bytes += frame.charge();
                     readers.grant(prompt, taken_bytes + WINDOW);
