@@ -50,13 +50,14 @@ enum Create {
     Strings(fn() -> Vec<&'static str>),
 }
 
-const SHAPES: [Shape; 30] = [
+const SHAPES: [Shape; 31] = [
     Shape::new("adc16.s1", Scalar::I16, create_adc16_s1, 3.933, EVERY),
     Shape::new("adc16.s256", Scalar::I16, create_adc16_s256, 1.352, FULL),
     Shape::new("adc16.white", Scalar::I16, create_adc16_white, 0.994, FULL),
     Shape::new("adc24.s6", Scalar::I32, create_adc24_s6, 4.615, EVERY),
     Shape::new("adc24.s100", Scalar::I32, create_adc24_s100, 3.131, FULL),
-    Shape::new("f64.cal", Scalar::F64, create_f64_cal, 0.994, FULL),
+    Shape::new("f64.cal", Scalar::F64, create_f64_cal, 1.604, FULL),
+    Shape::new("f32.cal", Scalar::F32, create_f32_cal, 2.989, EVERY),
     Shape::new("u8.state", Scalar::U8, create_state, 229.0, EVERY),
     Shape::new("u32.state", Scalar::U32, create_state, 422.0, FULL),
     Shape::new("ts.fixed", Scalar::Stamp, create_ts_fixed, 339.6, FULL),
@@ -128,7 +129,7 @@ impl Shape {
             name,
             data_type,
             create: Create::Elements(create_imu),
-            ratio: 0.999,
+            ratio: 1.165,
             lens: EVERY,
         }
     }
@@ -324,6 +325,16 @@ fn create_f64_cal() -> Vec<i64> {
         0.002 + 1.25e-6 * count + 3e-15 * count * count
     });
     volts.map(|volt| volt.to_bits().cast_signed()).collect()
+}
+
+/// The volts of `f64.cal` as `f32` bits.
+fn create_f32_cal() -> Vec<i64> {
+    let volts = create_f64_cal().into_iter().map(|bits| {
+        #[expect(clippy::cast_possible_truncation, reason = "an `f32` sample")]
+        let volt = f64::from_bits(bits.cast_unsigned()) as f32;
+        i64::from(volt.to_bits())
+    });
+    volts.collect()
 }
 
 /// One of 4 states, each held for 1,000 to 9,999 samples.
