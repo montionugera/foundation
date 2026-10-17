@@ -208,9 +208,9 @@ impl Entry {
 }
 
 impl Set {
-    /// A set that carries no index, with the records of the newest named entry of
-    /// each index in the buffer, by slot, which the first carry of each index
-    /// restores.
+    /// A set that carries no index, with the records of the newest entry of each
+    /// named part of each index in the buffer, by slot, which the first carry of each
+    /// index restores.
     pub(crate) fn new(mut records: hash::Map<Slot, Vec<Record>>) -> Self {
         records.retain(|_, records| !records.is_empty());
         Self {

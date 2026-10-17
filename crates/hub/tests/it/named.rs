@@ -913,7 +913,8 @@ fn opens_no_named_complete_reader_when_no_part_of_the_records_has_room() {
             "a latest reader opens"
         );
         drop(opened.pop());
-        // A closed record keeps its room until the entry that drops it commits.
+        // A closed record keeps its room until the close reaches the shard and the
+        // entry that drops it appends.
         test.clock.sleep(SETTLE).await;
         assert!(
             test.hub.reader(open(448)).await.is_ok(),

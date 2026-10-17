@@ -46,8 +46,9 @@
   An append writes only the parts whose records changed, in part order, and stops at the
   first part that finds no block or no room. A part that finds no block or no room keeps
   the state of its last entry, and a record that the append added at or past it loses
-  its room. In memory, each carried index keeps the part and the last state of each key:
-  at most about 257,728 bytes of names, plus about 90 bytes for each key.
+  its room. In memory, each index whose parts hold a record, carried or not, keeps the
+  part and the last state of each key: at most about 257,728 bytes of names, plus about
+  90 bytes for each key.
   It appends after a named open, a close, and a takeover, and at a tick when a record
   changed: an ack that moved a named position, or a hold that ended at the mesh
   midpoint. The tick comes each second while a named complete reader is open, or
@@ -82,8 +83,9 @@
   the warning event of the rulings below. The room of a removed record goes free when
   the entry that drops it appends, not at its commit: decided by `laptop.architect`
   (2026-10-17T03:20:57Z:
-  https://github.com/synnaxlabs/foundation/pull/2967#issuecomment-6228975494), which
-  revises item 1 of 6227434486.
+  https://github.com/synnaxlabs/foundation/pull/2967#issuecomment-6228975494).
+  Supersedes
+  https://github.com/synnaxlabs/foundation/issues/2833#issuecomment-6227434486 item 1.
   Decided by `laptop.architect` (2026-10-16T05:22:26Z:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208708096;
   `Unrecorded` and the trim gap until #406: 2026-10-16T07:08:03Z:
