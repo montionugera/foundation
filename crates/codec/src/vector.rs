@@ -9,7 +9,7 @@
 //! | 1 | FFOR | reference | `sample - reference`, packed |
 //! | 2 | delta | first, base | `sample - previous - base` after the first, packed |
 //! | 3 | RLE | run count (`u16`) | the run values, then the run lengths (`u16`) |
-//! | 4 | ALP | reference, exponent (`u8`), factor (`u8`), exception count (`u16`) | `n - reference`, packed, then the exception values, then their positions (`u16`) |
+//! | 4 | ALP | reference, `e`, `f`, exception count (`u16`) | below |
 //!
 //! Fields are samples unless marked. Sample arithmetic is modulo 2^b, where b is the
 //! bit count of a sample. Delta packs one residual for each sample after the first.
@@ -17,13 +17,16 @@
 //! the sortable integers of its samples, in unsigned order: a float with its sign bit
 //! set has each bit flipped, and any other only its sign bit (`float::sortable`).
 //!
-//! ALP is for `f32` and `f64` only. Its reference and each `n` are signed integers of
-//! the sample width. Sample `i` is `n * P[f] * N[e]` in the sample's float type, two
-//! multiplications from the left, with no fused multiply-add, where `n` is
-//! `reference + residual i`. `P[i]` is `10^i`, and `N[i]` is the float nearest to
-//! `10^-i`. Then each exception value replaces the sample at its position. The
-//! exponent `e` is at most 18 for `f64` and 10 for `f32`, the factor `f` is at most `e`,
-//! the exception count is at most the sample count, and each position is under it.
+//! ALP is for `f32` and `f64` only. The exponent `e` and the factor `f` are `u8`. The
+//! body is `n - reference` for each sample, packed and padded to the sample width, then
+//! one value (a sample) for each exception, then one position (`u16`) for each. The
+//! reference and each `n` are signed integers of the sample width. Sample `i` is `n` as
+//! the sample's float type, times `P[f]`, times `N[e]`, each step rounded to nearest,
+//! with no fused multiply-add, where `n` is `reference + residual i`. `P[i]` is
+//! `10^i`, and `N[i]` is the float nearest to `10^-i`. Then each exception value
+//! replaces the sample at its position. `e` is at most 18 for `f64` and 10 for `f32`,
+//! `f` is at most `e`, the exception count is at most the sample count, and each
+//! position is under it.
 
 use std::{iter, mem};
 
