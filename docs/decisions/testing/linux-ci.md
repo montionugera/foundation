@@ -66,4 +66,6 @@
     (https://github.com/synnaxlabs/foundation/issues/2995#issuecomment-6229925039): "A
     feature set that does not build on Windows, and that Linux CI passes, breaks that
     rule." Each OS is its own job, beside the test jobs, so it adds no wall time while
-    it is not the slowest job of the run.
+    it is not the slowest job of the run. The times of the three jobs go on #2954, and
+    a feature job that becomes the slowest job of the run goes back to `laptop.monitor`
+    with its time.
