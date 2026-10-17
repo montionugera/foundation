@@ -369,16 +369,15 @@
   deprecates; and `ops.outside` with no folders, which shows the agent no way out.
   Amended (2026-10-16T04:45:05Z, #2526): one MCP server talks to one node, picked at
   start with `foundation mcp --data <dir>`, and a tool call cannot pick another. A
-  failed `plan`, `apply`, `status`, or `browse` is a tool result with `isError` and
-  the text
-  `{"errors": [...]}`, while an unknown tool and a malformed request or argument stay a
-  JSON-RPC error. Each operation of `foundation --help` but `start` and `mcp` is a tool,
-  with the output schema of its `--json`. `version`, `docs`, `status`, and `browse` have
-  `readOnlyHint`; `plan` and `apply` have `destructiveHint`, since the `out` of `plan`
-  replaces a file that is there, so a client that asks the person before a destructive
-  tool asks for `plan` too. `foundation mcp` reaches its node at the first tool call
-  that needs it, keeps that session, and reaches again only at the call after a
-  failure of a reach or a request. `node` reads standard input on an I/O thread of
+  failed `plan`, `apply`, `status`, or `browse` is a tool result with `isError` and the
+  text `{"errors": [...]}`, while an unknown tool and a malformed request or argument
+  stay a JSON-RPC error. Each operation of `foundation --help` but `start` and `mcp` is
+  a tool, with the output schema of its `--json`. `version`, `docs`, `status`, and
+  `browse` have `readOnlyHint`; `plan` and `apply` have `destructiveHint`, since the
+  `out` of `plan` replaces a file that is there, so a client that asks the person before
+  a destructive tool asks for `plan` too. `foundation mcp` reaches its node at the first
+  tool call that needs it, keeps that session, and reaches again only at the call after
+  a failure of a reach or a request. `node` reads standard input on an I/O thread of
   `os` and gives `ops::cli` an async source of lines, so the shard that serves runs
   while it waits for a line, and a kept session sends its keep-alive.
   Decided by the person, "Yeah that's fine" (2026-10-16T04:45:05Z, relayed by
@@ -424,18 +423,17 @@
   number, an `i64` or `u64` its decimal text such as `"9007199254740993"`, a finite
   float a number, a float that is not finite `"NaN"`, `"Infinity"`, or `"-Infinity"`, a
   stamp RFC 3339 text in UTC with nine fraction digits, a span its text such as
-  `"250us"`, and a UUID its hyphenated text. The text form uses the same texts. `end`
-  is `"done"`, `{"next":"<cursor>"}`, `"limit"`, or
-  `"budget"`. The text gives one line for each entry: `<path>/` for a folder, `<path>
-  <type> <unit> <access>` and then the value with `values` for a point, and `<path>
-  unreadable: <reason>`. A fact that the device cannot know is `?`, so each line keeps
-  its columns, and the unit is its text, else its code. Then one end line: `more:
-  --cursor <cursor>`, `More than 500 points match, the most for one browse; narrow the
-  pattern or the start`, or `The browse stopped at its budget, so more may match; narrow
-  the pattern or the start`. `done` adds no line, and a browse with no entries gives
-  `The browse found no entries.` The text of `budget` names no count, since `DEPTH` and
-  a later budget of compared bytes also end a walk with it. The plan is by
-  `laptop.integrator-2` (2026-10-17T05:11:19Z,
+  `"250us"`, and a UUID its hyphenated text. The text form uses the same texts. `end` is
+  `"done"`, `{"next":"<cursor>"}`, `"limit"`, or `"budget"`. The text gives one line for
+  each entry: `<path>/` for a folder, `<path> <type> <unit> <access>` and then the value
+  with `values` for a point, and `<path> unreadable: <reason>`. A fact that the device
+  cannot know is `?`, so each line keeps its columns, and the unit is its text, else its
+  code. Then one end line: `more: --cursor <cursor>`, `More than 500 points match, the
+  most for one browse; narrow the pattern or the start`, or `The browse stopped at its
+  budget, so more may match; narrow the pattern or the start`. `done` adds no line, and
+  a browse with no entries gives `The browse found no entries.` The text of `budget`
+  names no count, since `DEPTH` and a later budget of compared bytes also end a walk
+  with it. The plan is by `laptop.integrator-2` (2026-10-17T05:11:19Z,
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6230008460),
   approved by `laptop.architect-2` (2026-10-17T05:14:44Z,
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6230042870), whose
