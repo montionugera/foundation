@@ -11,6 +11,7 @@ use types::sample::{self, Scalar, Type};
 
 use super::{RELAY, Relay, relayed, run, serve};
 use crate::browse::Server as Browse;
+use crate::ffi::Status;
 use crate::node::ns0::{self, HAS_COMPONENT, ORGANIZES};
 use crate::node::{Key, Name, Node};
 use crate::server::{self, Server, Variable};
@@ -328,4 +329,133 @@ fn pages_with_no_entries_end_at_the_budget_of_a_walk() {
     };
     let found = walked(setup, rewrite, query).expect("found");
     assert_eq!(found.end, End::Budget);
+}
+
+/// A setup with a tree that a walk of [`everything`] holds 4 points of at once, with
+/// the point of the Objects folder: the folders `root/a/c`, `root/a/d`, and `root/b`, two variables in each of `b`, `c`,
+/// and `d`, and one reference in each page of the server.
+fn nested(server: &Server) {
+    let folder = |number| Node {
+        namespace: 1,
+        key: Key::Number(number),
+    };
+    server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+    server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+    let folders = [
+        (7001, ROOT, c"a"),
+        (7002, ROOT, c"b"),
+        (7003, folder(7001), c"c"),
+        (7004, folder(7001), c"d"),
+    ];
+    for (number, parent, name) in folders {
+        server.add_folder(&folder(number), &parent, ORGANIZES, name, name);
+    }
+    for (number, parent) in [(7010, 7002), (7020, 7003), (7030, 7004)] {
+        for (offset, name) in [c"x", c"y"].into_iter().enumerate() {
+            let offset = u32::try_from(offset).expect("a u32");
+            server.add_variable(&Variable {
+                node: folder(number + offset),
+                parent: folder(parent),
+                reference: HAS_COMPONENT,
+                name,
+                data_type: DOUBLE,
+                rank: -1,
+                access: server::READ,
+                value: None,
+            });
+        }
+    }
+    server.cap_references(1);
+}
+
+fn everything() -> Query {
+    Query {
+        start: "root".parse().expect("a path"),
+        scope: Scope::Match("**".parse().expect("a pattern")),
+        values: Values::Skipped,
+    }
+}
+
+/// What a walk of [`everything`] in [`nested`] gives when the server gives `most` as
+/// its `MaxBrowseContinuationPoints`, and the most points that the session held.
+fn held(most: u16) -> (Result<Found, Error>, usize) {
+    let (out, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            nested(peer.server);
+            peer.server.report_points(most);
+            let browses = peer.server.count_browses();
+            let mut client = peer.connected().await;
+            let found =
+                browse::walk(&mut Browse::new(&mut client), &everything()).await;
+            client.close().await;
+            (found, browses.points())
+        })
+        .await
+    });
+    out
+}
+
+/// With no bound from the server, a walk holds a point for each open folder: the
+/// Objects folder, `root`, `root/a`, and `root/a/c`. With a bound of 1 or 2, it holds no more, and gives the same entries.
+#[test]
+fn a_walk_holds_no_more_points_than_the_server_holds_for_a_session() {
+    let (unbound, points) = held(0);
+    let unbound = unbound.expect("found");
+    assert_eq!(unbound.entries.len(), 6, "{:?}", unbound.entries);
+    assert_eq!(points, 4);
+    for most in [1, 2] {
+        let (found, points) = held(most);
+        assert_eq!(found.expect("found").entries, unbound.entries);
+        assert_eq!(points, usize::from(most));
+    }
+}
+
+/// Gives each server message to `rewrite`, and makes the result of the Browse
+/// response of the count `nth` from 1 `BadNoContinuationPoints`.
+fn refusing(nth: usize) -> impl FnMut(&mut Vec<u8>) + Send + 'static {
+    let mut browses = 0;
+    move |message: &mut Vec<u8>| {
+        if response(message) != Some(BROWSE_RESPONSE) {
+            return;
+        }
+        browses += 1;
+        if browses == nth {
+            // The response header of open62541 is 24 bytes, then the count of results.
+            assert_eq!(message[52..56], 1_i32.to_le_bytes(), "one result");
+            assert_eq!(message[56..60], [0; 4], "a Good result");
+            let status = Status::BAD_NO_CONTINUATION_POINTS.0.to_le_bytes();
+            message[56..60].copy_from_slice(&status);
+        }
+    }
+}
+
+/// The server refuses a point for the Browse of `root/a`, after those of the Objects
+/// folder and `root`, while the walk holds the point of `root`: the walk releases that
+/// point, browses `a` again, and gives each entry.
+#[test]
+fn a_browse_that_the_server_gives_no_point_releases_one_and_browses_again() {
+    let (unbound, _) = held(0);
+    let found = relayed_browse(nested, refusing(3), async |server| {
+        browse::walk(server, &everything()).await
+    });
+    assert_eq!(
+        found.expect("found").entries,
+        unbound.expect("found").entries
+    );
+}
+
+/// The server refuses a point for the first Browse, of the Objects folder, when the
+/// walk holds none to release.
+#[test]
+fn a_browse_that_the_server_gives_no_point_with_none_held_fails() {
+    let found = relayed_browse(nested, refusing(1), async |server| {
+        browse::walk(server, &everything()).await
+    });
+    let Err(Error::Device(source)) = found else {
+        panic!("not a device error: {found:?}");
+    };
+    assert_eq!(
+        source.to_string(),
+        "the browse failed with BadNoContinuationPoints"
+    );
 }

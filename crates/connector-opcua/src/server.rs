@@ -355,20 +355,33 @@ impl Server {
         }
     }
 
-    /// Counts each Browse request that the server processes from now.
+    /// Counts each Browse request that the server processes from now, and the most
+    /// continuation points that one session holds.
     ///
     /// # Panics
     ///
-    /// If open62541 cannot allocate the count.
+    /// If open62541 cannot allocate the counts.
     #[cfg(test)]
     pub(crate) fn count_browses(&self) -> Browses<'_> {
         // SAFETY: the server lives.
-        let count = unsafe { ffi::test::shim_server_count_browses(self.raw()) };
+        let counts = unsafe { ffi::test::shim_server_count_browses(self.raw()) };
         Browses {
-            count: NonNull::new(count.cast_mut())
-                .expect("open62541 allocates the count"),
+            counts: NonNull::new(counts.cast_mut())
+                .expect("open62541 allocates the counts"),
             server: std::marker::PhantomData,
         }
+    }
+
+    /// Adds the variable `ns=0;i=2735` that gives `most` as the
+    /// `MaxBrowseContinuationPoints` of the server. The server holds 32 points for each
+    /// session, whatever it gives.
+    ///
+    /// # Panics
+    ///
+    /// On a second call, as open62541 refuses the second add of the variable.
+    #[cfg(test)]
+    pub(crate) fn report_points(&self, most: u16) {
+        self.add_scalar(&Node::ns0(2735), Value::U16(most));
     }
 
     /// Adds the folder `node` with the browse name `name` and the display name
@@ -642,7 +655,7 @@ pub(crate) struct Limits {
 #[cfg(test)]
 pub(crate) struct Browses<'s> {
     /// Lives until the delete of the server.
-    count: NonNull<usize>,
+    counts: NonNull<ffi::test::Counts>,
     server: std::marker::PhantomData<&'s Server>,
 }
 
@@ -651,7 +664,14 @@ impl Browses<'_> {
     /// Gives the count.
     pub(crate) fn get(&self) -> usize {
         // SAFETY: the server lives, and runs on this thread.
-        unsafe { self.count.read() }
+        unsafe { self.counts.as_ref().browses }
+    }
+
+    /// Gives the most continuation points that one session held when the server
+    /// processed a request, from the count.
+    pub(crate) fn points(&self) -> usize {
+        // SAFETY: as `get`.
+        unsafe { self.counts.as_ref().points }
     }
 }
 

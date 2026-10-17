@@ -128,7 +128,10 @@ impl kind::Kind for Kind {
     /// it. In one folder, a second reference to a node gives no entry, and a name that
     /// an earlier entry has gets ` (<tag>)` after it. A cursor of an earlier browse
     /// skips the references before its page again, so it assumes that the server
-    /// keeps their order. Then it closes the session, as `run` does. The header of
+    /// keeps their order. It holds at most as many continuation points as the server
+    /// holds for a session (`MaxBrowseContinuationPoints`, or 64 when it gives 0), and
+    /// releases the point that it used least lately for a new one. Then it closes the
+    /// session, as `run` does. The header of
     /// each request holds the mesh time of the node, which it reads before the
     /// connect.
     ///

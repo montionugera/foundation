@@ -26,8 +26,9 @@ const DATA_TYPE: u32 = 64;
 /// The attributes `DataType`, `ValueRank`, and `UserAccessLevel`.
 const FACTS: [u32; 3] = [14, 15, 18];
 
-/// The variables `MaxNodesPerBrowse` and `MaxNodesPerTranslateBrowsePathsToNodeIds`.
-const BOUNDS: [u32; 2] = [11710, 11712];
+/// The variables `MaxNodesPerBrowse`, `MaxNodesPerTranslateBrowsePathsToNodeIds`, and
+/// `MaxBrowseContinuationPoints`.
+const BOUNDS: [u32; 3] = [11710, 11712, 2735];
 
 /// The `namespaceUri` of an `EUInformation` whose `unitId` is a code of UN/CEFACT
 /// Recommendation 20.
@@ -157,6 +158,8 @@ pub(super) struct Bounds {
     browse: Option<NonZeroUsize>,
     /// Its `MaxNodesPerTranslateBrowsePathsToNodeIds`.
     translate: Option<NonZeroUsize>,
+    /// Its `MaxBrowseContinuationPoints`.
+    points: Option<NonZeroUsize>,
 }
 
 impl Client {
@@ -208,6 +211,27 @@ impl Client {
         page(&answer)
     }
 
+    /// Releases `point`, a point of this client's session.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::browse`].
+    pub(crate) async fn release(&mut self, point: Point) -> Result<(), Status> {
+        let request = Request::browse_next(&[&point.0], true);
+        self.serve(&request).await.map(drop)
+    }
+
+    /// Gives the most continuation points that the server holds for a session, its
+    /// `MaxBrowseContinuationPoints`, or `None` when it gives 0 or no `UInt16`. It reads
+    /// the bounds of the server once per client, as [`Client::describe`] does.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::read`].
+    pub(crate) async fn points(&mut self) -> Result<Option<NonZeroUsize>, Status> {
+        Ok(self.bounds().await?.points)
+    }
+
     /// Gives the description of each variable of `nodes`, in order. A fact that the
     /// server does not give, or gives with a status that is not Good, is `None`. It
     /// splits each request by the limit of the server for its service
@@ -248,7 +272,8 @@ impl Client {
         Ok(descriptions)
     }
 
-    /// Reads the [`Bounds`] of the server at the first call, as [`limit`] gives each.
+    /// Reads the [`Bounds`] of the server at the first call, as [`limit`] gives each,
+    /// and the points as a `UInt16` above 0.
     async fn bounds(&mut self) -> Result<Bounds, Status> {
         if let Some(bounds) = self.bounds {
             return Ok(bounds);
@@ -256,12 +281,17 @@ impl Client {
         let nodes = BOUNDS.map(Node::ns0);
         let nodes = self.numbered(&nodes);
         let values = self.read(&nodes).await?;
-        let [browse, translate] = values else {
+        let [browse, translate, points] = values else {
             panic!("invariant: a read gives one value for each node");
+        };
+        let points = match points {
+            Ok(Value::U16(most)) => NonZeroUsize::new(usize::from(*most)),
+            _ => None,
         };
         let bounds = Bounds {
             browse: limit(browse),
             translate: limit(translate),
+            points,
         };
         self.bounds = Some(bounds);
         Ok(bounds)
@@ -414,14 +444,14 @@ impl Client {
                     }
                 }
             }
-            self.release(&points, most).await?;
+            self.release_each(&points, most).await?;
         }
     }
 
     /// Releases each continuation point of `points`, with `BrowseNext` requests of at
     /// most `most` points. A point whose request alone does not fit one message stays
     /// until the session ends.
-    async fn release(
+    async fn release_each(
         &mut self,
         points: &[Vec<u8>],
         most: Option<NonZeroUsize>,

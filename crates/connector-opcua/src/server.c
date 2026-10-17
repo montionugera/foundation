@@ -8,6 +8,8 @@
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #include <open62541/client.h>
 #include <open62541/server_config_default.h>
+/* For the continuation points that each session holds. */
+#include "server/ua_server_internal.h"
 #pragma GCC diagnostic pop
 
 #include <string.h>
@@ -80,12 +82,21 @@ void shim_server_browses(UA_Server *server, UA_UInt32 browse, UA_UInt32 translat
     config->maxNodesPerTranslateBrowsePathsToNodeIds = translate;
 }
 
-/* A logger that counts the Browse requests of its server, and passes each message to
- * the logger before it. */
+/* The counts of a `shim_counter`. */
+typedef struct {
+    /* The Browse requests. */
+    size_t browses;
+    /* The most continuation points that one session held at a message. */
+    size_t points;
+} shim_counts;
+
+/* A logger that counts the Browse requests of its server and the continuation points
+ * of its sessions, and passes each message to the logger before it. */
 typedef struct {
     UA_Logger logger;
     const UA_Logger *next;
-    size_t browses;
+    UA_Server *server;
+    shim_counts counts;
 } shim_counter;
 
 static void count_message(void *context, UA_LogLevel level, UA_LogCategory category,
@@ -97,15 +108,22 @@ static void count_message(void *context, UA_LogLevel level, UA_LogCategory categ
     size_t length = strlen(msg);
     if(length >= sizeof(browse) - 1 &&
        strcmp(msg + length - (sizeof(browse) - 1), browse) == 0)
-        counter->browses++;
+        counter->counts.browses++;
+    session_list_entry *entry;
+    LIST_FOREACH(entry, &counter->server->sessions, pointers) {
+        size_t held = entry->session.continuationPointsSize;
+        if(held > counter->counts.points)
+            counter->counts.points = held;
+    }
     counter->next->log(counter->next->context, level, category, msg, args);
 }
 
 static void count_clear(UA_Logger *logger) { UA_free(logger->context); }
 
-/* Counts each Browse request that `server` processes from now, and gives the count,
- * which lives until the delete of `server`, or NULL when out of memory. */
-const size_t *shim_server_count_browses(UA_Server *server) {
+/* Counts each Browse request that `server` processes from now, and the most
+ * continuation points that one of its sessions holds, and gives the counts, which live
+ * until the delete of `server`, or NULL when out of memory. */
+const shim_counts *shim_server_count_browses(UA_Server *server) {
     shim_counter *counter = (shim_counter *)UA_calloc(1, sizeof(*counter));
     if(!counter)
         return NULL;
@@ -114,8 +132,9 @@ const size_t *shim_server_count_browses(UA_Server *server) {
     counter->logger.log = count_message;
     counter->logger.context = counter;
     counter->logger.clear = count_clear;
+    counter->server = server;
     config->logging = &counter->logger;
-    return &counter->browses;
+    return &counter->counts;
 }
 
 /* Sets the receive buffer size that `client` gives in its next HEL. */

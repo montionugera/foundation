@@ -1,7 +1,6 @@
 use std::ffi::CString;
 use std::future;
 use std::net::SocketAddr;
-use std::num::NonZeroUsize;
 
 use ::sim::{Sim, node};
 use connector::browse::{Device, End, Found, Query, Scope, Values};

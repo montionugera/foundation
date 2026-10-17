@@ -348,9 +348,10 @@ mod tests {
         for path in ["/missing/gcc", "/missing/clang"] {
             let shim = args(&tool(shim.clone(), path));
             let common = copy.join("arch/common").display().to_string();
+            let internal = copy.join("src").display().to_string();
             assert_eq!(
                 includes(&shim),
-                [dirs[0].as_str(), &dirs[1], &common, src],
+                [dirs[0].as_str(), &dirs[1], &common, &internal, src],
                 "{path}: {shim:?}"
             );
             for arg in ["-Wall", "-Wextra", "-Werror", "-std=c99", &header] {
