@@ -1,7 +1,7 @@
 //! A connector of the `opcua` kind whose writes pass the room of the ring of its home
-//! ends its call with `Ok` in bounded sim steps. Each commit trims the ring, so no
-//! write is lost, and the last status is the end of the run. While a read holds the
-//! ring, the writes fill it, and the status shows the lost writes.
+//! ends its call with `Ok` in bounded sim steps. The commits trim the ring when it
+//! needs room, so no write is lost, and the last status is the end of the run. While a
+//! read holds the ring, the writes fill it, and the status shows the lost writes.
 
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]

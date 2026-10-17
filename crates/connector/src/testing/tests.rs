@@ -396,9 +396,9 @@ fn a_refused_config_opens_a_connector_that_ends_with_its_diagnostics() {
 }
 
 /// A run whose status reader sleeps past the room of the ring of its home reads each
-/// status frame, with no gap: the first, then one for the counts of each second. Each
-/// commit trims the frames before it, so the home applies each frame, and the frames
-/// fit the window of the reader.
+/// status frame, with no gap: the first, then one for the counts of each second. The
+/// commits trim the oldest frames when the ring needs their room, so the home applies
+/// each frame, and the frames fit the window of the reader.
 #[test]
 fn a_run_whose_status_reader_sleeps_past_its_ring_reads_each_frame() {
     on_rig(
