@@ -93,3 +93,21 @@
   decode by match, with no table of the built-in types: `laptop.architect-2`,
   2026-10-16T22:17:22Z
   (https://github.com/synnaxlabs/foundation/pull/2931#issuecomment-6225757093).
+  Browse: the kind browses from the Objects folder (`i=85`) on one session, which it
+  closes at the end, and gives `Error::Device` when the connect, a Browse, a
+  `BrowseNext`, or a Read fails. The header of each request holds the time of the clock,
+  not the wall time, since a browse has no mesh time. An entry is one forward
+  `HierarchicalReferences` reference: an Object or a View is a folder, and a Variable is
+  a point with its type, unit, and `access`, or is unreadable with a reason: the server
+  does not let the user read it, its value rank is that of an array, or its type is
+  another built-in type. A node that `Node` cannot hold (a GUID or opaque key, a name
+  that is empty or not UTF-8, or another server) is unreadable, with the text of its ID
+  as its tag, so `import` refuses it by tag (key choice e, sent to `laptop.monitor`). In
+  the pages of one folder, a second reference to a node gives no entry, a name that an
+  earlier entry has gets ` (<tag>)` after it, and an empty name is the tag. The text of
+  a cursor is the count of references of the folder before its page, and a cursor that
+  is not a count gives `opcua.bad-cursor`. The browse keeps the continuation point of
+  each cursor that it gives; a cursor with no point, or whose point the server freed
+  (`BadContinuationPointInvalid`), browses the folder again from its start and skips
+  that count, so its names are the same. A node whose Read alone does not fit one
+  message of the server gives no value.
