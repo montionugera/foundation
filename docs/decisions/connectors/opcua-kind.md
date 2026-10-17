@@ -93,21 +93,34 @@
   decode by match, with no table of the built-in types: `laptop.architect-2`,
   2026-10-16T22:17:22Z
   (https://github.com/synnaxlabs/foundation/pull/2931#issuecomment-6225757093).
-  Browse: the kind browses from the Objects folder (`i=85`) on one session, which it
-  closes at the end, and gives `Error::Device` when the connect, a Browse, a
-  `BrowseNext`, or a Read fails. The header of each request holds the time of the clock,
-  not the wall time, since a browse has no mesh time. An entry is one forward
-  `HierarchicalReferences` reference: an Object or a View is a folder, and a Variable is
-  a point with its type, unit, and `access`, or is unreadable with a reason: the server
-  does not let the user read it, its value rank is that of an array, or its type is
-  another built-in type. A node that `Node` cannot hold (a GUID or opaque key, a name
-  that is empty or not UTF-8, or another server) is unreadable, with the text of its ID
-  as its tag, so `import` refuses it by tag (key choice e, sent to `laptop.monitor`). In
-  the pages of one folder, a second reference to a node gives no entry, a name that an
-  earlier entry has gets ` (<tag>)` after it, and an empty name is the tag. The text of
-  a cursor is the count of references of the folder before its page, and a cursor that
-  is not a count gives `opcua.bad-cursor`. The browse keeps the continuation point of
-  each cursor that it gives; a cursor with no point, or whose point the server freed
-  (`BadContinuationPointInvalid`), browses the folder again from its start and skips
-  that count, so its names are the same. A node whose Read alone does not fit one
-  message of the server gives no value.
+  Browse (`laptop.architect-2`, 2026-10-16T21:14:25Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6224815609): the
+  kind browses from the Objects folder (`i=85`) on one session, which it closes at the
+  end, and gives `Error::Device` when the connect, a Browse, a `BrowseNext`, or a Read
+  fails. The header of each request holds the time of the clock, not the wall time,
+  since a browse has no mesh time. An entry is one forward `HierarchicalReferences`
+  reference: an Object or a View is a folder, and a Variable is a point with its type,
+  unit, and `access`, or is unreadable with a reason: the server does not let the user
+  read it, its value rank is that of an array, or its type is another built-in type. A
+  node that `Node` cannot hold (a GUID or opaque key, a name that is empty or not UTF-8,
+  or another server) is unreadable, so `import` refuses it by shape. Its tag is the text
+  of its ID, with `%` and each byte that is not UTF-8 as `%XX`, and `s%=` in place of
+  the `s=` of a name, so no node ID that the kind reads has it (key choices e and f, the
+  plan, 2026-10-16T21:13:48Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6224806107). In the
+  pages of one folder, a second reference to a node gives no entry, a name that an
+  earlier entry has gets ` (<tag>)` after it, and an empty name is the tag. So the plain
+  name goes to the first reference in the order of the server. The text of a cursor is
+  the count of references of the folder before its page, and a cursor that is not a
+  count gives `opcua.bad-cursor`. The browse keeps the continuation point of each cursor
+  that it gives. A page of the server with no references gives a page with no entries
+  and a cursor, so the budget of `browse::walk` counts it. A cursor with no point, or
+  whose point the server freed (`BadContinuationPointInvalid`), browses the folder again
+  from its start and skips that count. A skip assumes that the server keeps the order of
+  the references of the folder: when the server changes that order, a skip can drop or
+  repeat a reference, and a name with ` (<tag>)` after it can move to another node. A
+  skip is at most 100 000 references, and a cursor with no point past that count gives
+  `opcua.bad-cursor`. So a browse keeps the key and the name of at most 100 000 +
+  `VISITS` + `LIMIT` nodes of each folder. Until PR 5b2 of #2705 (#2969), a server that
+  gives `BadNoContinuationPoints` fails the browse with `Error::Device` and its status.
+  A node whose Read alone does not fit one message of the server gives no value.
