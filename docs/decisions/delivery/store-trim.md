@@ -138,3 +138,21 @@
   refusal figures after 396 and 398 commits and the rise against a reach at the low mark
   are approved by `laptop.architect` (#2943, 2026-10-16T23:14:08Z, item 4):
   https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6226442923.
+  As built (#160 step 3d): with `Config::trimmed`, the open trims as a commit does, with
+  nothing queued. It first syncs the records that it walked, because a checkpoint never
+  passes a record that is not durable. It then writes the checkpoint of the trim and its
+  restart record, in a block that was free before the trim, and one sync makes both
+  durable. Only then does it release the trimmed records. A crash that keeps the
+  checkpoint and not the restart record opens from the new tail over records that
+  nothing wrote over, and a crash that keeps the restart record and not the checkpoint
+  is an open with no trim. When no block is free, the open writes the checkpoint alone,
+  syncs, releases, then writes its restart record in a freed block and syncs. So an open
+  that trims adds one sync, and two when no block is free. When `kept` stops the trim
+  before a block is free, the open gives `Error::Full`. Decided by `laptop.architect`
+  (#160, 2026-10-14T01:40:03Z, order (a)):
+  https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6158968102, which
+  supersedes the order of
+  https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6035839192
+  (2026-10-07T10:16:33Z): there, the restart record could go over a freed record in the
+  sync of the new checkpoint, and a crash that kept the record and the old checkpoint
+  lost the first record of the walk.
