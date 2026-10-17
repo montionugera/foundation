@@ -3292,8 +3292,11 @@ mod tests {
         fn exit(&self, _: &tracing::span::Id) {}
     }
 
-    /// The status frames of [`tally`], and its events of `connector::status`.
-    fn tally_logged(kind: impl Kind + 'static) -> (Vec<Written>, Vec<String>) {
+    /// The status frames of [`tally_until`], and its events of `connector::status`.
+    fn tally_logged(
+        kind: impl Kind + 'static,
+        cancel: Option<Span>,
+    ) -> (Vec<Written>, Vec<String>) {
         let mut sim = sim::Sim::new(sim::Config::default());
         let node = sim.node(sim::node::Config::default());
         let lines = Arc::new(Mutex::new(Vec::new()));
@@ -3309,7 +3312,7 @@ mod tests {
             .logged(log)
             .start(config, move |tasks| async move {
                 let (statuses, _) =
-                    tally_on(own, tasks, kind, &["samples"], None).await;
+                    tally_on(own, tasks, kind, &["samples"], cancel).await;
                 *slot.lock().expect("no panic holds the lock") = Some(statuses);
             });
         drop(start.expect("a shard with no core starts"));
@@ -3337,7 +3340,7 @@ mod tests {
             ctx.clock().sleep(ms(1_900)).await;
             Ok(())
         });
-        let (statuses, lines) = tally_logged(kind);
+        let (statuses, lines) = tally_logged(kind, None);
         let errors = statuses
             .iter()
             .map(|(at, _, error, _)| (*at, error.as_str()));
@@ -3351,6 +3354,17 @@ mod tests {
         assert_eq!(
             shown.collect::<Vec<_>>(),
             [r#"message=error error="x""#, r#"message=error error="y""#]
+        );
+    }
+
+    #[test]
+    fn names_the_class_of_an_end_in_its_line() {
+        let kind = counted(|_| async { Err(Error::Device("jammed".into())) });
+        let (_, lines) = tally_logged(kind, Some(ms(500)));
+        let ended = lines.iter().find(|line| line.starts_with("message=ended"));
+        assert_eq!(
+            ended.map(String::as_str),
+            Some(r#"message=ended class="device" error="jammed""#)
         );
     }
 
