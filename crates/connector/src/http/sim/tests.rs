@@ -685,3 +685,104 @@ fn a_cancel_closes_a_stream_with_a_request_that_hyper_did_not_read() {
     assert_eq!(read.len(), 131_072);
     assert!(read.starts_with("HTTP/1.1 200 OK\r\n"), "{read:.40}");
 }
+
+#[test]
+fn a_request_that_reaches_a_stream_after_its_close_resets_it() {
+    let mut network = Network::new();
+    let (client, remote, until) = (
+        network.client.clone(),
+        network.remote,
+        network.until.clone(),
+    );
+    let out = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&out);
+    let handle = network
+        .client
+        .shards()
+        .start(shard("client"), move |_| async move {
+            let config = tcp::Config {
+                remote,
+                options: super::super::OPTIONS,
+            };
+            let mut tcp = client
+                .net()
+                .connect(&config)
+                .await
+                .expect("the server listens");
+            client.clock().sleep(Span::SECOND).await;
+            write(&mut tcp, b"GET /a HTTP/1.1\r\nhost: server\r\n\r\n").await;
+            until.cancel();
+            client.clock().sleep(Span::SECOND).await;
+            *slot.lock().expect("no panic under the lock") = Some(read(&mut tcp).await);
+        })
+        .expect("the shard starts");
+    network.handles.push(handle);
+    network.sim.run_for(Span::MINUTE).expect("the run ends");
+    let ended = network
+        .ended
+        .lock()
+        .expect("no panic under the lock")
+        .take();
+    assert_eq!(ended, Some((Ok(()), 0)));
+    let read = out.lock().expect("no panic under the lock").take();
+    let reset = End::Failed("10.0.0.2:8086 reset the stream".into());
+    assert_eq!(read, Some(reset));
+}
+
+#[test]
+fn an_upload_that_goes_on_after_the_close_resets_the_stream() {
+    let mut network = Network::new();
+    let (client, remote, until) = (
+        network.client.clone(),
+        network.remote,
+        network.until.clone(),
+    );
+    let out = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&out);
+    let handle = network
+        .client
+        .shards()
+        .start(shard("client"), move |_| async move {
+            let config = tcp::Config {
+                remote,
+                options: super::super::OPTIONS,
+            };
+            let mut tcp = client
+                .net()
+                .connect(&config)
+                .await
+                .expect("the server listens");
+            let head =
+                "POST /a HTTP/1.1\r\nhost: server\r\ncontent-length: 1000000\r\n\r\n";
+            write(&mut tcp, head.as_bytes()).await;
+            let chunk = "a".repeat(100_000);
+            write(&mut tcp, chunk.as_bytes()).await;
+            until.cancel();
+            let mut rest = chunk.as_bytes();
+            let mut failed = None;
+            while !rest.is_empty() {
+                match poll_fn(|cx| tcp.poll_write(cx, &[IoSlice::new(rest)])).await {
+                    Ok(n) => rest = rest.get(n..).expect("a write fits its buffer"),
+                    Err(error) => {
+                        failed = Some(error.to_string());
+                        break;
+                    }
+                }
+            }
+            client.clock().sleep(Span::SECOND).await;
+            let read = read(&mut tcp).await;
+            *slot.lock().expect("no panic under the lock") = Some((failed, read));
+        })
+        .expect("the shard starts");
+    network.handles.push(handle);
+    network.sim.run_for(Span::MINUTE).expect("the run ends");
+    let ended = network
+        .ended
+        .lock()
+        .expect("no panic under the lock")
+        .take();
+    assert_eq!(ended, Some((Ok(()), 0)));
+    let reset = "10.0.0.2:8086 reset the stream";
+    let read = out.lock().expect("no panic under the lock").take();
+    assert_eq!(read, Some((Some(reset.into()), End::Failed(reset.into()))));
+}
