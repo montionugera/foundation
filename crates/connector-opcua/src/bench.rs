@@ -1,12 +1,14 @@
 //! Runs the event loop of open62541 alone, and a connection manager with a server and
 //! clients on it, for benchmarks and allocation tests. [`client`] runs a server with
 //! clients that each have their own manager. [`kind`] writes the frames of the `opcua`
-//! kind with no server. Not part of the contract of the crate.
+//! kind with no server. [`value`] decodes the values of a read. Not part of the
+//! contract of the crate.
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 pub mod client;
 pub mod kind;
+pub mod value;
 
 use std::cell::Cell;
 use std::ffi::{CString, c_void};

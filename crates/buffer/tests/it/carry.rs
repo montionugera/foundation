@@ -136,3 +136,71 @@ fn a_reopen_after_trims_counts_on_from_the_holder_of_entries_with_no_samples() {
     })
     .expect("the buffer ends");
 }
+
+/// Paths 1 to 8 write once, then 400 commits of path 9 in records of 4 blocks turn
+/// a ring of 512 blocks three times, so each of paths 1 to 8 is carried. The trims
+/// write at most one checkpoint for each step of 100 blocks of records, and the
+/// open writes one more.
+#[test]
+fn a_full_ring_writes_one_checkpoint_for_each_step() {
+    let (mut sim, node) = create_node(0);
+    let (seqs, durables) = sim
+        .run_on(&node, |node, tasks| async move {
+            let config = || Config {
+                layout: layout(512 * BLOCK, 4 * 4096 - 9),
+                trimmed: true,
+                ..node_config(&node, tasks.clone(), DIR)
+            };
+            let first = config();
+            let pool = Rc::clone(&first.pool);
+            let clock = node.clock();
+            let mut slots = Slots::new();
+            let buffer = Buffer::open(first, &mut slots).await.expect("opens");
+            let once: Vec<Entry> = (1..=8)
+                .map(|index| {
+                    let slot = slots.index(key(index));
+                    entry(index, slot, Path::Live, 0, 1, Some(1), Parts::default())
+                })
+                .collect();
+            buffer.append(once).expect("the ring has room");
+            buffer.committed().await.expect("commits");
+            let nine = slots.index(key(9));
+            let part = pool.alloc(3 * 4096).expect("a block").freeze();
+            for seq in 0..400 {
+                let last = i64::try_from(seq).expect("a small seq") + 1;
+                let parts = Parts::from(part.clone());
+                let data = entry(9, nine, Path::Live, seq, 1, Some(last), parts);
+                append_within(&buffer, &clock, &[data], 100)
+                    .await
+                    .expect("the ring frees room");
+                buffer.committed().await.expect("commits");
+            }
+            let ending = buffer.ended();
+            drop(buffer);
+            ending.await.expect("ends");
+            let ring = node.files().open(FilePath::new(RING), Mode::Read).await;
+            let ring = ring.expect("the ring opens");
+            let mut seqs = Vec::new();
+            for at in [0, BLOCK] {
+                let block = pool.alloc(to_usize(BLOCK)).expect("a block");
+                let header = ring.read_at(at, block).await.expect("reads");
+                let seq = header[SEQ_AT..SEQ_AT + 8].try_into().expect("8 bytes");
+                seqs.push(u64::from_le_bytes(seq));
+            }
+            drop(ring);
+            let mut slots = Slots::new();
+            let buffer = Buffer::open(config(), &mut slots).await.expect("reopens");
+            let durables: Vec<u64> = (1..=8)
+                .map(|index| buffer.durable(slots.index(key(index)), Path::Live).seq)
+                .collect();
+            let ending = buffer.ended();
+            drop(buffer);
+            ending.await.expect("ends");
+            (seqs, durables)
+        })
+        .expect("the buffer ends");
+    assert_eq!(durables, vec![1; 8], "each path is carried");
+    let checkpoints = seqs.into_iter().max().expect("two blocks") + 1;
+    let blocks = 1 + 400 * 4;
+    assert!(checkpoints <= blocks / 100 + 1, "{checkpoints} checkpoints");
+}

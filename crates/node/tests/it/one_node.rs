@@ -569,6 +569,7 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
             counts: Some(BTreeMap::from([
                 ("confirmed".into(), 0),
                 ("lost".into(), 0),
+                ("oversized".into(), 0),
             ])),
             error: Some(Error {
                 class: "retry".into(),

@@ -49,7 +49,8 @@ fn meanwhile<T: Send + 'static, F: Future<Output = T> + 'static>(
     value.expect("the body ends in a millisecond")
 }
 
-/// The bytes of the file `address` of `files`, or `None` when the file is not there.
+/// The bytes of the file `address` of `files`, or `None` when the file is not there
+/// or has no bytes, as a crash in the open that makes it can leave it.
 ///
 /// # Panics
 ///
@@ -59,6 +60,9 @@ async fn read(files: &env::files::Files) -> Option<[u8; LEN]> {
         Err(env::files::Error::NotFound { .. }) => return None,
         file => file.expect("opens"),
     };
+    if file.len() == 0 {
+        return None;
+    }
     assert_eq!(file.len(), LEN as u64, "a file of 99 bytes");
     let pool = block::Pool::heap(block::Config::new(4096).expect("the budget fits"));
     let into = pool.alloc(LEN).expect("a block");

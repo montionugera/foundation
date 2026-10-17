@@ -14,7 +14,7 @@ fn with_writer<T: Send + 'static>(
     config: sim::node::Config,
     main: impl AsyncFnOnce(Writer, env::clock::Clock) -> T + Send + 'static,
 ) -> T {
-    run_with(config, |node, tasks| async move {
+    run_with(0, config, |node, tasks| async move {
         let (hub, _) = hub::testing::open(env(&node, tasks)).await;
         let status = create_status("plant.stamp");
         hub.set_definitions(status.iter().map(|(name, def)| (name, def)));

@@ -15,11 +15,15 @@
 )]
 
 mod bits;
+mod float;
 mod int;
 mod text;
 mod vector;
 mod word;
 
+use std::convert::identity;
+
+use int::Order;
 use std::{fmt, iter, mem};
 
 use types::sample::{Scalar, Sides, Type};
@@ -354,6 +358,48 @@ impl Variable {
     /// Panics when `raw` is shorter than the ends and padding of `count` samples. The
     /// iterator panics at the first end that is not valid for `raw`.
     pub fn samples(self, count: usize, raw: &[u8]) -> impl Iterator<Item = &[u8]> {
+        let (ends, elements) = self.split(count, raw);
+        let width = self.element.width();
+        let mut start = 0_usize;
+        ends.iter().enumerate().map(move |(index, end)| {
+            let end = usize::try_from(u32::from_le_bytes(*end))
+                .expect("invariant: a usize holds a u32");
+            let sample = elements_in(elements, width, index, start, end);
+            start = end;
+            sample
+        })
+    }
+
+    /// The sample at `index` of `raw`, a raw series of `count` samples, as the bytes
+    /// of its elements. [`decode`] gives such a series. O(1). Copies nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `raw` is shorter than the ends and padding of `count` samples, when
+    /// `index` is not below `count`, or when the ends of sample `index` are not valid
+    /// for `raw`.
+    #[must_use]
+    pub fn sample(self, count: usize, raw: &[u8], index: usize) -> &[u8] {
+        assert!(
+            index < count,
+            "sample {index} is not below the count {count}"
+        );
+        let (ends, elements) = self.split(count, raw);
+        let end = |at: usize| {
+            let end = ends.get(at).expect("invariant: `split` gives `count` ends");
+            usize::try_from(u32::from_le_bytes(*end))
+                .expect("invariant: a usize holds a u32")
+        };
+        let start = index.checked_sub(1).map_or(0, end);
+        elements_in(elements, self.element.width(), index, start, end(index))
+    }
+
+    /// The `count` ends of `raw` and its elements.
+    ///
+    /// # Panics
+    ///
+    /// When `raw` is shorter than the ends and padding of `count` samples.
+    fn split(self, count: usize, raw: &[u8]) -> (&[[u8; 4]], &[u8]) {
         let front = self
             .element
             .front(count)
@@ -366,25 +412,7 @@ impl Variable {
             );
         };
         let (head, elements) = raw.split_at(front.start);
-        let ends = head.split_at(front.ends).0.as_chunks::<4>().0;
-        let width = self.element.width();
-        let mut start = 0_usize;
-        ends.iter().enumerate().map(move |(index, end)| {
-            let end = usize::try_from(u32::from_le_bytes(*end))
-                .expect("invariant: a usize holds a u32");
-            let sample = end
-                .checked_mul(width)
-                .and_then(|stop| elements.get(start.checked_mul(width)?..stop));
-            let Some(sample) = sample else {
-                panic!(
-                    "sample {index} ends at {end}, not in {start}..={} of {width}-byte \
-                     elements",
-                    elements.len().strict_div(width)
-                );
-            };
-            start = end;
-            sample
-        })
+        (head.split_at(front.ends).0.as_chunks::<4>().0, elements)
     }
 
     /// The elements of `sample`.
@@ -542,6 +570,31 @@ enum Shape {
     },
 }
 
+/// The bytes of the elements `start..end` of `elements`, sample `index`, each element
+/// `width` bytes.
+///
+/// # Panics
+///
+/// When `elements` does not hold them.
+fn elements_in(
+    elements: &[u8],
+    width: usize,
+    index: usize,
+    start: usize,
+    end: usize,
+) -> &[u8] {
+    let sample = end
+        .checked_mul(width)
+        .and_then(|stop| elements.get(start.checked_mul(width)?..stop));
+    let Some(sample) = sample else {
+        panic!(
+            "sample {index} ends at {end}, not in {start}..={} of {width}-byte elements",
+            elements.len().strict_div(width)
+        );
+    };
+    sample
+}
+
 impl Shape {
     fn of(data_type: Type) -> Self {
         match data_type {
@@ -672,23 +725,34 @@ impl Ends {
 /// How the codecs see a sample type.
 #[derive(Clone, Copy, Debug)]
 enum Layout {
-    /// Integers of 8, 16, 32, or 64 bits. Every codec applies.
-    Int8 {
-        signed: bool,
+    /// Samples of 8, 16, 32, or 64 bits. Every codec applies, to the integers of the
+    /// samples or to the sortable integers of floats.
+    Bits8 {
+        number: Number,
     },
-    Int16 {
-        signed: bool,
+    Bits16 {
+        number: Number,
     },
-    Int32 {
-        signed: bool,
+    Bits32 {
+        number: Number,
     },
-    Int64 {
-        signed: bool,
+    Bits64 {
+        number: Number,
     },
     /// Other samples of `width` bytes, stored raw.
     Raw {
         width: usize,
     },
+}
+
+/// The number that the bits of a sample hold. Floats are a field and not variants of
+/// [`Layout`]: two more variants made each decode call about 15 to 50 instructions
+/// longer.
+#[derive(Clone, Copy, Debug)]
+enum Number {
+    Unsigned,
+    Signed,
+    Float,
 }
 
 /// The raw bytes of variable samples before their elements: the ends, then padding.
@@ -714,19 +778,30 @@ impl Front {
 
 impl Layout {
     /// The layout of the ends of a variable series.
-    const END: Self = Self::Int32 { signed: false };
+    const END: Self = Self::Bits32 {
+        number: Number::Unsigned,
+    };
 
     fn of(scalar: Scalar) -> Self {
+        let (signed, unsigned) = (Number::Signed, Number::Unsigned);
         match scalar {
-            Scalar::I8 => Self::Int8 { signed: true },
-            Scalar::U8 => Self::Int8 { signed: false },
-            Scalar::I16 => Self::Int16 { signed: true },
-            Scalar::U16 => Self::Int16 { signed: false },
-            Scalar::I32 => Self::Int32 { signed: true },
-            Scalar::U32 => Self::Int32 { signed: false },
-            Scalar::I64 | Scalar::Stamp | Scalar::Span => Self::Int64 { signed: true },
-            Scalar::U64 => Self::Int64 { signed: false },
-            Scalar::Bool | Scalar::F32 | Scalar::F64 | Scalar::Uuid => Self::Raw {
+            Scalar::I8 => Self::Bits8 { number: signed },
+            Scalar::U8 => Self::Bits8 { number: unsigned },
+            Scalar::I16 => Self::Bits16 { number: signed },
+            Scalar::U16 => Self::Bits16 { number: unsigned },
+            Scalar::I32 => Self::Bits32 { number: signed },
+            Scalar::U32 => Self::Bits32 { number: unsigned },
+            Scalar::I64 | Scalar::Stamp | Scalar::Span => {
+                Self::Bits64 { number: signed }
+            }
+            Scalar::U64 => Self::Bits64 { number: unsigned },
+            Scalar::F32 => Self::Bits32 {
+                number: Number::Float,
+            },
+            Scalar::F64 => Self::Bits64 {
+                number: Number::Float,
+            },
+            Scalar::Bool | Scalar::Uuid => Self::Raw {
                 width: scalar.width(),
             },
         }
@@ -734,10 +809,10 @@ impl Layout {
 
     const fn width(self) -> usize {
         match self {
-            Self::Int8 { .. } => 1,
-            Self::Int16 { .. } => 2,
-            Self::Int32 { .. } => 4,
-            Self::Int64 { .. } => 8,
+            Self::Bits8 { .. } => 1,
+            Self::Bits16 { .. } => 2,
+            Self::Bits32 { .. } => 4,
+            Self::Bits64 { .. } => 8,
             Self::Raw { width } => width,
         }
     }
@@ -818,17 +893,23 @@ impl Layout {
     /// Encodes one vector into the front of `out` and returns its length.
     fn encode(self, chunk: &[u8], out: &mut [u8]) -> usize {
         match self {
-            Self::Int8 { signed } => {
-                vector::write::<1>(chunk, int::plan::<1>(chunk, signed), out)
+            Self::Bits32 {
+                number: Number::Float,
+            } => float::encode::<4>(chunk, out),
+            Self::Bits64 {
+                number: Number::Float,
+            } => float::encode::<8>(chunk, out),
+            Self::Bits8 { number } => {
+                int::encode::<1>(chunk, number.order(), identity, out)
             }
-            Self::Int16 { signed } => {
-                vector::write::<2>(chunk, int::plan::<2>(chunk, signed), out)
+            Self::Bits16 { number } => {
+                int::encode::<2>(chunk, number.order(), identity, out)
             }
-            Self::Int32 { signed } => {
-                vector::write::<4>(chunk, int::plan::<4>(chunk, signed), out)
+            Self::Bits32 { number } => {
+                int::encode::<4>(chunk, number.order(), identity, out)
             }
-            Self::Int64 { signed } => {
-                vector::write::<8>(chunk, int::plan::<8>(chunk, signed), out)
+            Self::Bits64 { number } => {
+                int::encode::<8>(chunk, number.order(), identity, out)
             }
             Self::Raw { width } => vector::write_raw(chunk, width, out),
         }
@@ -837,11 +918,28 @@ impl Layout {
     /// Writes the samples of one vector into `out`, which holds exactly them.
     fn decode(self, vector: &Vector<'_>, out: &mut [u8]) {
         match self {
-            Self::Int8 { .. } => vector.decode::<1>(out),
-            Self::Int16 { .. } => vector.decode::<2>(out),
-            Self::Int32 { .. } => vector.decode::<4>(out),
-            Self::Int64 { .. } => vector.decode::<8>(out),
+            Self::Bits32 {
+                number: Number::Float,
+            } => float::decode::<4>(vector, out),
+            Self::Bits64 {
+                number: Number::Float,
+            } => float::decode::<8>(vector, out),
+            Self::Bits8 { .. } => vector.decode::<1>(out, identity),
+            Self::Bits16 { .. } => vector.decode::<2>(out, identity),
+            Self::Bits32 { .. } => vector.decode::<4>(out, identity),
+            Self::Bits64 { .. } => vector.decode::<8>(out, identity),
             Self::Raw { .. } => vector.copy(out),
+        }
+    }
+}
+
+impl Number {
+    /// The order in which the codecs compare the integers of the samples. The sortable
+    /// integers of floats compare unsigned.
+    const fn order(self) -> Order {
+        match self {
+            Self::Signed => Order::Signed,
+            Self::Unsigned | Self::Float => Order::Unsigned,
         }
     }
 }
@@ -1009,7 +1107,8 @@ mod tests {
         Scalar::Stamp,
         Scalar::Span,
     ];
-    const OTHERS: [Scalar; 4] = [Scalar::Bool, Scalar::F32, Scalar::F64, Scalar::Uuid];
+    const FLOATS: [Scalar; 2] = [Scalar::F32, Scalar::F64];
+    const OTHERS: [Scalar; 2] = [Scalar::Bool, Scalar::Uuid];
 
     /// Encodes `count` samples of `data_type` in `values` and checks that the bytes do
     /// not depend on what `out` held.
@@ -1069,7 +1168,8 @@ mod tests {
 
     /// Any sample type.
     fn any_type() -> impl Strategy<Value = Type> {
-        let scalar = || prop::sample::select([INTS.as_slice(), &OTHERS].concat());
+        let scalar =
+            || prop::sample::select([INTS.as_slice(), &FLOATS, &OTHERS].concat());
         prop_oneof![
             scalar().prop_map(Type::Scalar),
             (scalar(), 0..4_u32)
@@ -1199,6 +1299,62 @@ mod tests {
             );
             check(Scalar::I8, [3, -4], &[0, 0, 3, 0xfc]);
             check(Scalar::F32, [1], &[0, 0, 0, 0, 1, 0, 0, 0]);
+            check(Scalar::Bool, [1, 1, 1], &[0, 0, 1, 1, 1]);
+        }
+
+        #[test]
+        fn writes_the_sortable_bits_of_floats() {
+            let floats = |value: f32| bytes(4, [i128::from(value.to_bits()); 3]);
+            assert_eq!(
+                encode(Scalar::F32, &floats(1.0)),
+                [1, 0, 0, 0, 0x80, 0xbf, 0, 0]
+            );
+            assert_eq!(
+                encode(Scalar::F32, &floats(-1.0)),
+                [1, 0, 0xff, 0xff, 0x7f, 0x40, 0, 0]
+            );
+            let steps: Vec<u8> = [-0.0_f64, 0.0, f64::from_bits(1)]
+                .into_iter()
+                .cycle()
+                .take(40)
+                .flat_map(f64::to_le_bytes)
+                .collect();
+            assert_eq!(
+                encode(Scalar::F64, &steps)[..18],
+                [
+                    1, 2, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, //
+                    0xff, 0x7f, 0, 0, 0, 0, 0, 0, //
+                    0x24, 0x49,
+                ]
+            );
+        }
+
+        /// The sortable integers of -1.0 and 1.0 are about 2^63 apart, so FFOR and delta
+        /// need 63 bits and the vector stays raw.
+        #[test]
+        fn keeps_a_vector_across_zero_raw() {
+            let ramp: Vec<u8> = (0..1024_i32)
+                .map(|i| -1.0 + 2.0 * f64::from(i) / 1023.0)
+                .flat_map(f64::to_le_bytes)
+                .collect();
+            let encoded = encode(Scalar::F64, &ramp);
+            assert_eq!(encoded[..2], [0, 0]);
+            assert_eq!(encoded.len(), 8 + ramp.len());
+        }
+
+        /// The sortable integers of the subnormals and zeros next to 0.0 are 3 apart, so
+        /// FFOR needs 2 bits. In signed order they are far apart and delta, with 3 bits,
+        /// wins.
+        #[test]
+        fn orders_the_sortable_integers_of_floats_as_unsigned() {
+            let f64s = [-5e-324, -0.0, 0.0, 5e-324_f64];
+            let f32s = [-1e-45, -0.0, 0.0, 1e-45_f32];
+            let f64s: Vec<u8> =
+                (0..1024).flat_map(|i| f64s[i % 4].to_le_bytes()).collect();
+            let f32s: Vec<u8> =
+                (0..1024).flat_map(|i| f32s[i % 4].to_le_bytes()).collect();
+            assert_eq!(encode(Scalar::F64, &f64s)[..2], [1, 2]);
+            assert_eq!(encode(Scalar::F32, &f32s)[..2], [1, 2]);
         }
 
         #[test]
@@ -1259,14 +1415,14 @@ mod tests {
 
         #[test]
         fn writes_nothing_for_no_samples() {
-            for scalar in INTS.into_iter().chain(OTHERS) {
+            for scalar in INTS.into_iter().chain(FLOATS).chain(OTHERS) {
                 assert_eq!(encode(scalar, &[]), [], "{scalar:?}");
             }
         }
 
         #[test]
         fn refuses_values_that_do_not_fit_the_count() {
-            for scalar in INTS.into_iter().chain(OTHERS) {
+            for scalar in INTS.into_iter().chain(FLOATS).chain(OTHERS) {
                 let width = scalar.width();
                 let mut out = [7; 64];
                 for (count, len) in
@@ -1422,6 +1578,68 @@ mod tests {
                 .collect()
         }
 
+        /// The bits of the floats of `scalar` whose sortable integers are `keys`.
+        fn floats(scalar: Scalar, keys: &[u8]) -> Vec<u8> {
+            match scalar {
+                Scalar::F32 => keys
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .flat_map(|sortable| {
+                        word::store::<4>(float::bits::<4>(word::load(sortable)))
+                    })
+                    .collect(),
+                _ => keys
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .flat_map(|sortable| {
+                        word::store::<8>(float::bits::<8>(word::load(sortable)))
+                    })
+                    .collect(),
+            }
+        }
+
+        #[test]
+        fn keeps_the_bits_of_each_class_of_float() {
+            let classes = [
+                0.0,
+                -0.0,
+                f64::MIN_POSITIVE,
+                f64::from_bits(1),
+                -f64::from_bits(1),
+                f64::MAX,
+                f64::MIN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NAN,
+                -f64::NAN,
+                f64::from_bits(0x7ff0_0000_0000_0001),
+                1.5,
+                -2.25,
+            ];
+            let runs = classes.iter().flat_map(|value| iter::repeat_n(*value, 70));
+            let tags = [
+                (runs.clone().collect::<Vec<f64>>(), vector::RLE),
+                (classes.repeat(70), vector::RAW),
+            ];
+            for (values, tag) in tags {
+                let wide: Vec<u8> =
+                    values.iter().flat_map(|v| v.to_le_bytes()).collect();
+                assert_eq!(check(Scalar::F64, &wide)[0], tag);
+                #[expect(
+                    clippy::as_conversions,
+                    clippy::cast_possible_truncation,
+                    reason = "each class of f32"
+                )]
+                let narrow: Vec<u8> = values
+                    .iter()
+                    .flat_map(|value| (*value as f32).to_le_bytes())
+                    .collect();
+                assert_eq!(check(Scalar::F32, &narrow)[0], tag);
+            }
+        }
+
         fn check(scalar: Scalar, values: &[u8]) -> Vec<u8> {
             let count = values.len() / scalar.width();
             let encoded = encode(scalar, values);
@@ -1474,6 +1692,56 @@ mod tests {
                 let mut out = vec![0; values.len()];
                 prop_assert_eq!(decode(data_type, count, &encoded, &mut out), Ok(()));
                 prop_assert_eq!(out, values);
+            }
+
+            #[test]
+            fn every_float_codec(
+                scalar in select(&FLOATS),
+                tag in 0..4_u8,
+                len in select(&[0, 1, 1_023, 1_024, 1_025]),
+                words in proptest::collection::vec(any::<u64>(), 1_026),
+            ) {
+                let keys = samples(scalar, tag, len, &words);
+                let values = floats(scalar, &keys);
+                let encoded = check(scalar, &values);
+                if len >= 1_023 {
+                    prop_assert_eq!(encoded[0], tag, "{:?} at {}", scalar, len);
+                }
+            }
+
+            #[test]
+            fn floats_as_the_unsigned_integers_of_their_sortable_bits(
+                scalar in select(&FLOATS),
+                tag in 0..4_u8,
+                len in 0..2_100_usize,
+                words in proptest::collection::vec(any::<u64>(), 2_101),
+            ) {
+                let keys = samples(scalar, tag, len, &words);
+                let unsigned = match scalar {
+                    Scalar::F32 => Scalar::U32,
+                    _ => Scalar::U64,
+                };
+                let values = floats(scalar, &keys);
+                let vector = VECTOR_LEN * scalar.width();
+                for (chunk, keys) in values.chunks(vector).zip(keys.chunks(vector)) {
+                    let encoded = check(scalar, chunk);
+                    let expected = encode(unsigned, keys);
+                    prop_assert_eq!(encoded[0], expected[0]);
+                    if encoded[0] == 0 {
+                        prop_assert_eq!(encoded.len(), expected.len());
+                    } else {
+                        prop_assert_eq!(encoded, expected);
+                    }
+                }
+            }
+
+            #[test]
+            fn any_float_series(
+                scalar in select(&FLOATS),
+                values in proptest::collection::vec(any::<u8>(), 0..2_100 * 8),
+            ) {
+                let width = scalar.width();
+                check(scalar, &values[..values.len() / width * width]);
             }
 
             #[test]
@@ -1579,6 +1847,10 @@ mod tests {
             delta[..2].copy_from_slice(&[2, 64]);
             delta[24..].fill(0xff);
             accepts(Scalar::U64, 2, &delta, &[[0; 8], [0xff; 8]].concat());
+            let mut ffor = [0; 24];
+            ffor[..2].copy_from_slice(&[1, 64]);
+            ffor[16..].fill(0xff);
+            accepts(Scalar::F64, 1, &ffor, &i64::MAX.to_le_bytes());
         }
 
         #[test]
@@ -1609,6 +1881,8 @@ mod tests {
             check(Scalar::U64, 3, &[3, 0, 1, 0, 0, 0, 0], &truncated(0, 24, 7));
             check(Scalar::U8, 3, &[3, 0, 1, 0, 7], &truncated(0, 7, 5));
             check(Scalar::Uuid, 1, &[0; 31], &truncated(0, 32, 31));
+            check(Scalar::F32, 3, &[3, 0, 1], &truncated(0, 4, 3));
+            check(Scalar::F64, 3, &[3, 0, 1, 0, 0, 0, 0], &truncated(0, 24, 7));
         }
 
         #[test]
@@ -1623,6 +1897,10 @@ mod tests {
         fn rejects_unknown_tags() {
             for tag in 4..=u8::MAX {
                 check(Scalar::U8, 1, &[tag, 0, 0], &Error::Tag { vector: 0, tag });
+            }
+            for scalar in FLOATS {
+                let tag = 4;
+                check(scalar, 1, &[tag; 32], &Error::Tag { vector: 0, tag });
             }
             for (scalar, tag) in
                 OTHERS.into_iter().flat_map(|s| (1..4).map(move |t| (s, t)))
@@ -1640,7 +1918,15 @@ mod tests {
             check(Scalar::U64, 1, &[1, 65], &width(65, 64));
             check(Scalar::U8, 1, &[0, 1, 5], &width(1, 0));
             check(Scalar::F32, 1, &[0, 32, 0, 0, 0, 0, 0, 0], &width(32, 0));
+            check(Scalar::F32, 1, &[1, 33, 0, 0, 0, 0, 0, 0], &width(33, 32));
+            check(Scalar::F64, 1, &[2, 65, 0, 0, 0, 0, 0, 0], &width(65, 64));
             check(Scalar::U8, 1, &[3, 1, 1, 0, 5, 1, 0], &width(1, 0));
+            check(
+                Scalar::F32,
+                1,
+                &[3, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+                &width(1, 0),
+            );
         }
 
         #[test]
@@ -1653,6 +1939,12 @@ mod tests {
             check(Scalar::U8, 3, &[3, 0, 1, 0, 7, 2, 0], &runs(2));
             check(Scalar::U8, 3, &[3, 0, 1, 0, 7, 4, 0], &runs(4));
             check(Scalar::U8, 3, &[3, 0, 0, 0], &runs(0));
+            check(
+                Scalar::F32,
+                3,
+                &[3, 0, 1, 0, 0, 0, 0x80, 0xbf, 2, 0, 0, 0],
+                &runs(2),
+            );
             check(
                 Scalar::U8,
                 3,
@@ -1814,7 +2106,7 @@ mod tests {
 
             #[test]
             fn never_panics_on_random_bytes(
-                scalar in prop_oneof![select(&INTS), select(&OTHERS)],
+                scalar in prop_oneof![select(&INTS), select(&FLOATS), select(&OTHERS)],
                 count in 0..2_100_usize,
                 bytes in proptest::collection::vec(any::<u8>(), 0..64),
             ) {
@@ -1831,7 +2123,7 @@ mod tests {
 
             #[test]
             fn never_panics_on_changed_encodings(
-                scalar in select(&INTS),
+                scalar in prop_oneof![select(&INTS), select(&FLOATS)],
                 values in proptest::collection::vec(0..4_u8, 1..2_100 * 8),
                 at in any::<prop::sample::Index>(),
                 byte in any::<u8>(),
@@ -1978,7 +2270,7 @@ mod tests {
         proptest! {
             #[test]
             fn gives_what_decode_and_validate_give(
-                scalar in prop_oneof![select(&INTS), select(&OTHERS)],
+                scalar in prop_oneof![select(&INTS), select(&FLOATS), select(&OTHERS)],
                 values in proptest::collection::vec(0..4_u8, 0..2_100 * 8),
                 skew in prop_oneof![3 => Just(0_isize), 1 => -2..=2_isize],
                 change in weighted(0.25, (any::<Index>(), any::<u8>())),
@@ -2626,7 +2918,9 @@ mod tests {
         use super::*;
 
         const STRING: Variable = Variable {
-            element: Layout::Int8 { signed: false },
+            element: Layout::Bits8 {
+                number: Number::Unsigned,
+            },
         };
 
         fn list(element: Scalar) -> Variable {
@@ -2778,7 +3072,8 @@ mod tests {
         }
 
         fn any_case() -> impl Strategy<Value = (Type, Vec<Vec<u8>>)> {
-            let scalar = prop::sample::select([INTS.as_slice(), &OTHERS].concat());
+            let scalar =
+                prop::sample::select([INTS.as_slice(), &FLOATS, &OTHERS].concat());
             prop_oneof![
                 any_samples(1, 40, true).prop_map(|samples| (Type::String, samples)),
                 any_samples(1, 40, false).prop_map(|samples| (Type::Bytes, samples)),
@@ -2811,8 +3106,42 @@ mod tests {
                 prop_assert_eq!(&decoded, &values);
                 let read: Vec<&[u8]> = form.samples(samples.len(), &decoded).collect();
                 let samples: Vec<&[u8]> = samples.iter().map(Vec::as_slice).collect();
-                prop_assert_eq!(read, samples);
+                prop_assert_eq!(&read, &samples);
+                for (index, sample) in samples.iter().enumerate() {
+                    prop_assert_eq!(form.sample(samples.len(), &decoded, index), *sample);
+                }
             }
+        }
+
+        #[test]
+        #[should_panic(expected = "sample 3 is not below the count 3")]
+        fn sample_panics_at_an_index_not_below_the_count() {
+            let (count, raw) = variable::<&[u8]>(1, &[b"a", b"", b"bc"]);
+            let _sample = STRING.sample(count, &raw, count);
+        }
+
+        #[test]
+        #[should_panic(expected = "7 bytes do not hold the ends of 2 samples")]
+        fn sample_panics_when_raw_is_shorter_than_the_ends() {
+            let _sample = STRING.sample(2, &[0; 7], 0);
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "sample 1 ends at 1, not in 2..=3 of 1-byte elements"
+        )]
+        fn sample_panics_at_an_end_that_decreases() {
+            let raw = raw(&[2, 1], 1, b"abc");
+            let _sample = STRING.sample(2, &raw, 1);
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "sample 0 ends at 2, not in 0..=1 of 2-byte elements"
+        )]
+        fn sample_panics_at_an_end_past_the_elements() {
+            let raw = raw(&[2], 2, &[1, 0]);
+            let _sample = list(Scalar::U16).sample(1, &raw, 0);
         }
     }
 }

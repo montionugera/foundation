@@ -56,13 +56,18 @@
   definitions, is the status until the supervisor writes its first frame
   (https://github.com/synnaxlabs/foundation/issues/2531). When the reader of a connector
   does not open or ends for another cause, `status` fails with `ops.channel-read`, which
-  names the connector and gives the text of the hub. `status` needs `read` on each
-  status channel of a connector through the `Check` of `plan` and `apply`, and leaves
-  out each connector without it. When the subject reads no connector of the node, also
-  when the node places none or uses no spec, `status` needs `read` on the name of the
-  node. With it, the reply is the output with no connector, and with no grant, it is
-  `ops.denied` with `On::Nothing`, so the reply does not tell whether the node places a
-  connector that the subject does not read (`laptop.architect`, 2026-10-13T02:42:31Z,
+  names the connector and gives the text of the hub. `status` needs `read` on the label
+  of a connector and on each of its status channels through the `Check` of `plan` and
+  `apply`, and leaves out each connector without it (`laptop.architect-2`,
+  2026-10-15T17:09:58Z,
+  https://github.com/synnaxlabs/foundation/issues/2608#issuecomment-6197837592, which
+  supersedes item (b) of
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135757072). When
+  the subject reads no connector of the node, also when the node places none or uses no
+  spec, `status` needs `read` on the name of the node. With it, the reply is the output
+  with no connector, and with no grant, it is `ops.denied` with `On::Nothing`, so the
+  reply does not tell whether the node places a connector that the subject does not read
+  (`laptop.architect`, 2026-10-13T02:42:31Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724, which
   supersedes "A spec with no connector on the node gives an empty list" of item 5 of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119;
@@ -73,18 +78,36 @@
   of the node is a name of the check (SERVE ACCESS). The text of the output with no
   connector is the line `You can read no connector on this node.`, which is true in each
   of these cases (`laptop.architect-2`, 2026-10-13T22:11:03Z,
-  https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156268301). When
-  #1028 checks each open of the hub, the check of the status channels moves there,
-  `serve` leaves out each connector whose open the hub refuses, and the check on the
-  node stays in `serve`, as it opens no reader (`laptop.architect-2`,
-  2026-10-13T22:33:54Z,
+  https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156268301). When the
+  subject has `read` on the name of the node, the output also gives `roots`: the
+  `source` of the read of the OS roots at the start, each failure in full while the
+  failures and the `source` hold at most 1 MiB of memory, and the count `unlisted` of
+  the rest. A `source` of more than 1 MiB keeps no failure. With no failure, `roots`
+  holds none. With no grant, `roots` is `null`, so a caller tells the two apart. When
+  the read had a failure, the text gives them after the connectors as `OS roots:`
+  lines (`laptop.architect-2`, 2026-10-17T04:59:46Z, #2945:
+  https://github.com/synnaxlabs/foundation/issues/2945#issuecomment-6229906709;
+  the memory of each failure: `laptop.architect-2`, 2026-10-17T05:23:16Z, #2996:
+  https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230135838; the
+  `source` in the bound: `laptop.architect-2`, 2026-10-17T06:22:40Z, #2996:
+  https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230639091). When
+  #1028 makes the home check each reader open, the check of the status channels moves
+  there. `serve` then leaves out each connector whose reader open the home refuses
+  through the hub. The checks of the label of a connector and of the node stay in
+  `serve`, as they open no reader (`laptop.architect-2`, 2026-10-13T22:33:54Z,
   https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156645922, which
   supersedes "and leaves `serve`" of item 5 of
-  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119).
-  Deferred to https://github.com/synnaxlabs/foundation/issues/2530: the time of the next
-  restart and MCP. Lost: `serve` replies with the text, so that `--json` and MCP each
-  need a second reply; `status` asks the supervisors, a second source of status with its
-  own access check. Decided by `laptop.architect-2` (2026-10-13T00:58:53Z,
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119; the
+  check of the label, `laptop.architect-2`, 2026-10-17T03:32:26Z,
+  https://github.com/synnaxlabs/foundation/pull/2979#issuecomment-6229081007, which
+  supersedes "and the check on the node stays in `serve`" of
+  https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156645922; the form,
+  `laptop.architect`, 2026-10-17T03:45:30Z,
+  https://github.com/synnaxlabs/foundation/pull/2979#issuecomment-6229214071). Deferred
+  to https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart
+  and MCP. Lost: `serve` replies with the text, so that `--json` and MCP each need a
+  second reply; `status` asks the supervisors, a second source of status with its own
+  access check. Decided by `laptop.architect-2` (2026-10-13T00:58:53Z,
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119, which
   supersedes "The operation" of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186; the text

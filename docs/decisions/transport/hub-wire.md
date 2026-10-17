@@ -311,3 +311,54 @@
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6206217799; lost:
   a hold of the program reader on #2725 and #2790, and a public variant of `program`
   that no case gives).
+  Amended (#2790): `Behind` is removed: `wire::hub::Reply::Behind`, `FromHome::Behind`,
+  `Step::Behind`, and `Error::Ended`, with `delivery::Next::Behind`,
+  `home::reader::Next::Behind`, and `hub::reader::Ended::Behind`. Reply kind 3 stays
+  retired: where a reply is due, a message of kind 3 gives `Error::Kind { kind: 3 }`,
+  so a reader stops the stream as `MALFORMED` and a program's reader gives
+  `Error::Reply` of it. Kind 3 stays reserved: no new reply takes it, so a peer of
+  another version never reads a new reply as `Behind` (`laptop.monitor`, go on the
+  key choice of kind (f), 2026-10-16T21:05Z:
+  https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6227366041). The
+  home finishes its stream only after the reader finished its own (`laptop.architect`,
+  2026-10-17T00:30:34Z:
+  https://github.com/synnaxlabs/foundation/pull/2959#issuecomment-6227359257), so
+  `wire::hub::Reader::finished` gives the error of each finish, `Unfinished` inside a
+  body and `Finished` at each other point, in place of `Reader::end`
+  (`laptop.architect`, 2026-10-16T20:56:06Z:
+  https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6224535856; plan:
+  https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6224525816).
+  Supersedes these sentences above: "or `Behind`" of the messages that the home sends;
+  "The home sends `Behind` after the last frame before the first frame of the session
+  that the buffer lost, then finishes its stream. The reader's `next` gives each frame
+  before it, then `Ended::Behind`."; "A message after `Behind` is not valid"
+  (https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6046877541); the
+  `Behind` half of "`Behind` and `Credit` in a latest session are not valid"
+  (https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6047310321), where
+  the refusal of `Credit` in a latest session stands; "The `Ended` state and the mode
+  flag of `Reader`, for `Behind`, cost a body message up to +0.37 ns and a frame up to
+  +1 ns."; "3 (behind, no fields, by the Behind rule ...)" of the byte form of `Reply`;
+  the #1631 amendment
+  (https://github.com/synnaxlabs/foundation/issues/1689#issuecomment-6050026992); and
+  the `Step::Behind` arm of the program's reader
+  (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6206217799).
+  Amended (#2790, PR 2): the end of the stream is one more input.
+  `wire::hub::Frames::decode` takes `Option<&[u8]>`, so `Frames::finished` goes
+  (`laptop.architect`, 2026-10-17T00:30:34Z:
+  https://github.com/synnaxlabs/foundation/pull/2959#issuecomment-6227359257, item 1).
+  `Reader::decode` takes it too, `None` gives the error of the finish at that point and
+  changes nothing (`laptop.architect`, 2026-10-17T07:11:33Z:
+  https://github.com/synnaxlabs/foundation/pull/3009#issuecomment-6231063968, item 1),
+  and `Reader::finished` is private. `Frames::open` gives the frames alone, and
+  `Frames::live` gives the open position, then the end of the last frame with a
+  sample, from one `Gaps` that a latest session keeps too. The mode stays in
+  `Reader`, which both the reader's node and the program make for a session
+  (`laptop.architect`, 2026-10-17T06:34:47Z:
+  https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6230737986, items
+  1 and 3; lost: a mode argument of `Frames::open`, which a program maps from the
+  client mode).
+  Supersedes "and gives its `live` with the frames" of `Frames::open` above
+  (https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206979704), and
+  "`wire::hub::Reader::finished` gives the error of each finish" above
+  (https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6224535856):
+  `decode(None)` gives it now.

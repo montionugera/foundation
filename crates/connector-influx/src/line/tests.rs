@@ -629,6 +629,31 @@ proptest! {
     }
 
     #[test]
+    fn each_string_and_bytes_field_parses_back(
+        string in prop_oneof![any::<String>(), "[\"\\\\\n\r\t\0 ,=a-zé😀]*"],
+        bytes in proptest::collection::vec(any::<u8>(), 0..64),
+    ) {
+        let measurement = Measurement::new("m", &[]).unwrap();
+        let fields = [measurement.field("s").unwrap(), measurement.field("b").unwrap()];
+        let mut out = Vec::new();
+        let mut line = measurement.begin(&mut out);
+        line.string(&fields[0], string.as_bytes());
+        line.bytes(&fields[1], &bytes);
+        prop_assert_eq!(line.end(Stamp::from_nanos(1)), 2);
+        let parsed = influxdb_line_protocol::parse_lines(text(&out)).next();
+        let parsed = parsed.unwrap().unwrap();
+        let strings: Vec<String> = parsed.field_set.iter().map(|(_, value)| {
+            let influxdb_line_protocol::FieldValue::String(value) = value else {
+                panic!("not a string: {value:?}");
+            };
+            value.as_str().into()
+        }).collect();
+        prop_assert_eq!(&strings[0], &string);
+        let mut decoded = [0; 64];
+        prop_assert_eq!(Base64::decode(&strings[1], &mut decoded).unwrap(), &bytes[..]);
+    }
+
+    #[test]
     fn refuses_a_refused_character_anywhere(
         name in name(),
         at in any::<proptest::sample::Index>(),

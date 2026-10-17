@@ -1,6 +1,36 @@
 //! A simulated OPC UA server for the tests of other crates: the open62541 test server,
 //! with no security, that serves variables of the `DataType` `BaseDataType`, each with
 //! a Double value, and records each read that it answers.
+//!
+//! It also serves one fixed tree to browse and import. Each node id other than that of
+//! `Plant.Odd.guid` is `ns=1;s=` and the path with `.`, such as
+//! `ns=1;s=Plant.Line.Speed`:
+//!
+//! - `Plant`, a folder that the Objects folder `Organizes`.
+//! - `Plant.Types`, a folder that `Plant` organizes, with one variable of each type
+//!   `Boolean`, `SByte`, `Byte`, `Int16`, `UInt16`, `Int32`, `UInt32`, `Int64`,
+//!   `UInt64`, `Float`, `Double`, `String`, `DateTime`, `Guid`, and `ByteString`,
+//!   named as its type, each with a fixed value.
+//! - `Plant.Line`, a folder of `Plant` by `HasComponent`, which organizes `Plant`, a
+//!   loop. Its components:
+//!   - `Temperature`, the Double 21.5, with the property `EngineeringUnits` `°C`
+//!     (UN/CEFACT `CEL`);
+//!   - `Speed`, the value 1.25 of the data type `ns=1;s=Speed`, a subtype of Double;
+//!   - `Mode`, the value 0 of `ns=1;s=Mode`, a subtype of `Enumeration`;
+//!   - `Profile`, an array of the Doubles 1.5 and 2.5;
+//!   - `Locked`, a Double that a client cannot read;
+//!   - `Recipe`, of `ns=1;s=Recipe`, a subtype of `Structure`.
+//! - `Plant.Odd`, a folder that `Plant` organizes, with:
+//!   - `guid`, a folder of the node id `ns=1;g=00000001-0002-0003-0400-000000000000`;
+//!   - `Level`, the Double 2.5, by `HasComponent` and again by `Organizes`;
+//!   - `Twin`, the Double 3.5 with the browse name `Level`.
+//!
+//! The tree also adds the data types `ns=1;s=Speed`, `ns=1;s=Mode`, and
+//! `ns=1;s=Recipe`, and the types Double (`ns=0;i=11`), `Structure` (`ns=0;i=22`), and
+//! `Enumeration` (`ns=0;i=29`), which the namespace 0 of the build lacks. The
+//! variables of the tree hold their values with no change, and the server does not
+//! record their reads. A page of a Browse holds at most 8 references, so `Plant.Types`
+//! takes two pages.
 
 use std::collections::BTreeMap;
 use std::ffi::CString;
@@ -261,12 +291,14 @@ pub struct Served {
 /// the wall time of the server, which a client compares with the time of each channel
 /// token: give the wall time of the client's node. Call it on a thread that `env`
 /// started. A drop of the future while it waits, after a poll that gives `Pending`,
-/// leaks the server and can keep the port of `listener` bound.
+/// leaks the server and can keep the port of `listener` bound. It also serves the tree
+/// of the module doc.
 ///
 /// # Panics
 ///
 /// If open62541 refuses the server, a namespace, a variable, or a step of the close.
-/// If a variable has the number 0, which open62541 would serve at a free number.
+/// If a variable has the number 0, which open62541 would serve at a free number. If a
+/// variable has the node id of a node that the tree adds.
 ///
 /// # Aborts
 ///
@@ -293,6 +325,8 @@ pub async fn serve(
     #[cfg(test)]
     let (most, session, fixed) = variables.hooks();
     let add = |server: &mut Server| {
+        server.cap_references(tree::REFERENCES);
+        tree::add(server);
         #[cfg(test)]
         if let Some(most) = most {
             server.refuse_reads_past(most);
@@ -346,3 +380,4 @@ fn state_node() -> Node {
 
 #[cfg(test)]
 mod tests;
+pub(crate) mod tree;

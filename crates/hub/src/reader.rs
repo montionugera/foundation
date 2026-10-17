@@ -198,8 +198,6 @@ impl Lens {
 pub enum Ended {
     /// The shard's buffer failed, or a read from disk of the reader failed.
     Buffer(env::files::Error),
-    /// No case gives it; #2790 removes it.
-    Behind,
     /// A channel of the reader was removed from the definitions.
     Removed(channel::Key),
     /// A later open of the same subject and name took over the session.
@@ -230,7 +228,6 @@ impl fmt::Display for Ended {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Buffer(error) => write!(f, "the buffer of the shard failed: {error}"),
-            Self::Behind => f.write_str("the home ended the session"),
             Self::Removed(key) => {
                 write!(f, "channel {key} was removed: open a new reader")
             }
@@ -277,15 +274,14 @@ pub enum Error {
     },
     /// The reader is named and the node has no mesh time yet. Open it again later.
     Unsynced,
-    /// The reader is named and complete, holds no record, and the records of the
-    /// named readers of the index would pass `limit` bytes, the most that one entry of
-    /// the home's buffer holds. Close a named reader of the index whose hold is zero,
-    /// wait for a hold to end, or open this one unnamed. A reader that holds a record
-    /// opens over the limit, records nothing, and the home writes a warning event: a
-    /// restart of the home after its old hold ends resumes it at the live tail, until
-    /// #2833.
+    /// The reader is named and complete, its open adds a record, and no part of the
+    /// named records of the index has room for it: the records of the index hold
+    /// close to `limit` bytes. Close a named reader of the index whose hold is zero,
+    /// wait for a hold to end, or open this one unnamed. A reopen or a takeover never
+    /// gives it. The room of a closed reader's record is free when the entry that
+    /// drops it appends, at the close or a later tick.
     Full {
-        /// The most bytes of one entry.
+        /// The most bytes of the records of the named readers of one index.
         limit: usize,
     },
     /// The reader is named and complete, and the home had no room to record its
@@ -325,7 +321,8 @@ impl fmt::Display for Error {
             ),
             Self::Full { limit } => write!(
                 f,
-                "the records of the named readers of the index would pass {limit} bytes"
+                "no part of the named records of the index has room for the reader: \
+                 the records of an index hold at most {limit} bytes"
             ),
             Self::Unrecorded => f.write_str(
                 "the home had no room to record the position of the named reader: \
@@ -684,8 +681,6 @@ impl Reader {
 pub(crate) enum Stop {
     /// The shard's buffer failed, or a read from disk of the session failed.
     Buffer(env::files::Error),
-    /// No case gives it; #2790 removes it.
-    Behind,
     /// The shard's pool had no block for a read from disk or its frames.
     Pool(block::Error),
     /// A channel of the session was removed from the definitions.
@@ -716,7 +711,6 @@ impl From<Stop> for Ended {
     fn from(stop: Stop) -> Self {
         match stop {
             Stop::Buffer(error) => Self::Buffer(error),
-            Stop::Behind => Self::Behind,
             Stop::Pool(error) => Self::Pool(error),
             Stop::Removed(key) => Self::Removed(key),
             Stop::Replaced => Self::Replaced,
@@ -1179,7 +1173,6 @@ fn poll_take(
             return Poll::Ready(Err(failed.clone()));
         }
         (Next::Disk(disk), None) => return Poll::Ready(Ok(Taken::Disk(disk))),
-        (Next::Behind, _) => return Poll::Ready(Err(Stop::Behind)),
         (Next::Empty, None) => {}
     }
     if let Some(error) = &state.failed {

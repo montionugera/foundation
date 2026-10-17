@@ -15,6 +15,7 @@
 //! thread.
 
 use std::fmt;
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
 use std::path::Path;
 
 #[cfg(target_os = "macos")]
@@ -23,39 +24,38 @@ use std::path::Path;
     reason = "rustix has no call that allocates all of a file"
 )]
 mod allocate;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #682
 #[expect(unsafe_code, reason = "the clock is an OS call")]
 mod clock;
 mod cores;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
 mod dir;
 mod entropy;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
 mod files;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
 mod host;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #477
 #[expect(unsafe_code, reason = "a pool's memory is an OS mapping")]
 pub mod memory;
-#[cfg(all(feature = "net", any(target_os = "linux", target_os = "macos")))]
+#[cfg(all(feature = "net", any(target_os = "linux", target_os = "macos")))] // #2955
 mod net;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
 mod paths;
-mod roots;
+pub mod roots;
 mod shards;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #2957
 #[expect(unsafe_code, reason = "a signal mask is an OS call")]
 mod signal;
 mod thread;
 mod threads;
 mod unwind;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #682
 #[expect(unsafe_code, reason = "the wall clock is an OS call")]
 mod wall;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
 pub use files::Disk;
-pub use roots::Roots;
 
 /// The monotonic clock of this node, which counts time while the machine sleeps. Each
 /// call starts a new clock at `Monotonic(0)`. Clones read the same clock. Never
@@ -67,7 +67,7 @@ pub use roots::Roots;
 /// machine, and later under load. A sleep that waits across a suspend completes up to
 /// 1 s late. A timer wakes its task early at most a second after each poll, until it
 /// is due.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #682
 #[must_use]
 pub fn clock() -> env::clock::Clock {
     env::clock::Clock::new(clock::Driver::new())
@@ -84,7 +84,7 @@ pub fn clock() -> env::clock::Clock {
 /// # Panics
 ///
 /// A read panics when the OS refuses a later call.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #682
 pub fn wall() -> Result<env::wall::Wall, Error> {
     wall::read().map_err(Error::Wall)?;
     Ok(env::wall::Wall::new(wall::Driver))
@@ -157,7 +157,7 @@ pub fn threads() -> Result<env::threads::Threads, Error> {
 ///
 /// A poll of [`env::net::Net::connect`], or a poll that registers a socket, on a
 /// thread with no Tokio runtime or with no I/O driver.
-#[cfg(all(feature = "net", any(target_os = "linux", target_os = "macos")))]
+#[cfg(all(feature = "net", any(target_os = "linux", target_os = "macos")))] // #2955
 #[must_use]
 pub fn net() -> env::net::Net {
     env::net::Net::new(net::Driver)
@@ -187,7 +187,7 @@ pub fn net() -> env::net::Net {
 ///
 /// The home directory is the one that `std::env::home_dir` gives: `HOME`, else the
 /// entry of this user in the user database.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
 #[must_use]
 pub fn paths() -> env::paths::Paths {
     env::paths::Paths::new(paths::Driver)
@@ -214,7 +214,7 @@ pub fn paths() -> env::paths::Paths {
 ///   directory on another device than that holder, such as a mount point of another
 ///   file system: that entry is the mount's to keep.
 /// - [`Error::Thread`] when the I/O thread cannot start.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
 pub fn files(
     dir: &Path,
     threads: &env::threads::Threads,
@@ -230,29 +230,13 @@ pub fn files(
 ///
 /// - [`Error::Dir`] when `dir/data` is not there or the OS cannot open it.
 /// - [`Error::Thread`] when the I/O thread cannot start.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
 pub fn stored(
     dir: &Path,
     threads: &env::threads::Threads,
     name: &str,
 ) -> Result<(Disk, env::thread::Handle), Error> {
     Disk::stored(dir, threads, name)
-}
-
-/// Reads the CA certificates of the OS store: the certificate files on Linux, and the
-/// keychain on macOS. When `SSL_CERT_FILE` is set, or `SSL_CERT_DIR` holds a path that
-/// is not empty, it reads only that file and those paths, on each OS. A path that is
-/// not there, or a `SSL_CERT_DIR` path that is not a directory, gives a failure and no
-/// root of the OS store. On Linux, a `SSL_CERT_DIR` of only `:` characters also reads
-/// the directory of that whole name in the working directory, when it is there. It
-/// blocks on the reads, and gives the whole store in memory.
-#[must_use]
-pub fn roots() -> Roots {
-    let read = rustls_native_certs::load_native_certs();
-    Roots {
-        certificates: read.certs.into_iter().map(|der| der.to_vec()).collect(),
-        failures: read.errors.iter().map(ToString::to_string).collect(),
-    }
 }
 
 /// Holds SIGINT and SIGTERM: the first that comes does not end the process, and the
@@ -269,7 +253,7 @@ pub fn roots() -> Roots {
 /// # Errors
 ///
 /// [`Error::Thread`] when the thread that waits for them cannot start.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #2957
 pub fn interrupt() -> Result<impl Future<Output = ()> + Send + 'static, Error> {
     signal::hold().map_err(Error::Thread)
 }

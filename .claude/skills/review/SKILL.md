@@ -178,8 +178,10 @@ gets no push.
 
 The `reviewer`, `architecture`, and `breaker` agents each make their own worktree, so
 no two share a copy. Never give one another path: its permission check refuses every
-command outside that worktree. Remove each worktree when its agent returns
-(`git worktree remove --force <path>`).
+command outside that worktree. Remove each worktree when its agent returns, by the
+exact path that its task notification gives (`git worktree remove --force <path>`).
+Never loop over `.claude/worktrees` or `git worktree list`: the worktrees of other
+sessions are there too.
 
 ## Findings
 

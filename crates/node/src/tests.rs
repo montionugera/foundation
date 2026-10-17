@@ -96,9 +96,9 @@ fn config<M>(
         name: "edge".parse().expect("a name"),
         settings: crate::Settings::default(),
         vars: std::collections::BTreeMap::new(),
-        roots: os::Roots {
+        roots: os::roots::Roots {
             certificates: vec![CA.to_vec()],
-            failures: Vec::new(),
+            ..os::roots::Roots::default()
         },
         log: crate::Log {
             writer: Box::new(std::io::sink()),
@@ -4448,7 +4448,7 @@ pub(crate) mod port {
         const OPEN: Span = Span::from_nanos(10_000_000);
         /// The time after [`OPEN`], in nanoseconds, at which the failed write of
         /// [`fail_write_at_open`] stops the group in the sim.
-        const WRITE: i64 = 98_549;
+        const WRITE: i64 = 43_081;
 
         /// Why the group stops when a write of [`LOG`] fails.
         fn write_failed() -> ::mesh::Stopped {
@@ -4754,6 +4754,7 @@ pub(crate) mod port {
                 clock,
                 name,
                 secrets: connector::testing::create_secrets(files),
+                roots: ops::roots::Failures::new(String::new(), Vec::new()),
             }))
         }
 
@@ -5920,7 +5921,7 @@ pub(crate) mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], seven idle tasks that wake at that
+        /// `join` gives the panic. At [`WRITE`], six idle tasks that wake at that
         /// instant make the sim run the group's stop, then this task, before the node
         /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
@@ -5931,7 +5932,7 @@ pub(crate) mod port {
             fail_write_at_open(&node, &host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
-            for _ in 0..7 {
+            for _ in 0..6 {
                 let own = host.clone();
                 node.spawn(move |_| async move {
                     own.clock().sleep_until(at).await;
@@ -6319,7 +6320,7 @@ pub(crate) mod port {
             let starts = (0..200).map(|step| step * 13_000);
             let opens = starts.chain((0..42).map(|step| 2_626_000 + step * 52_000));
             let opens = opens.map(|after| (after, false));
-            let writes = (0..13).map(|step| (1_700_553_000 + step * 7_000, true));
+            let writes = (0..13).map(|step| (1_700_526_000 + step * 7_000, true));
             for (after, write) in opens.chain(writes) {
                 let mut sim = sim::Sim::new(sim::Config::default());
                 let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
@@ -7294,12 +7295,62 @@ pub(crate) mod port {
             let connectors = concat!(
                 r#"{"output":{"connectors":[{"name":"plant.influx","kind":"influx","#,
                 r#""state":"stopped","address":"http://influx:8086","restarts":0,"#,
-                r#""counts":{"confirmed":0,"lost":0},"error":{"class":"config","text":"#,
+                r#""counts":{"confirmed":0,"lost":0,"oversized":0},"#,
+                r#""error":{"class":"config","text":"#,
                 r#""the selector matches no channel. Select a channel that the spec "#,
-                r#"defines"},"note":null}]}}"#,
+                r#"defines"},"note":null}],"roots":null}}"#,
                 "\n",
             );
             assert_eq!(reply, connectors);
+        }
+
+        /// `status` through `operate` gives each failure of the read of the OS roots
+        /// of the node, in full, past the 16 that the log lists.
+        #[test]
+        fn status_gives_each_failure_of_the_roots_in_full() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let founding = region(&[member(OWN, &KEY, &host)]);
+            let mut failures: Vec<String> =
+                (0..17).map(|n| format!("failure {n}")).collect();
+            failures.push(format!("head {} tail", "x".repeat(3000)));
+            let node = Node::start(Config {
+                region: Region::Given(founding),
+                roots: os::roots::Roots {
+                    failures: failures.clone(),
+                    ..os::roots::Roots::default()
+                },
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            let watch = format!(
+                "subject \"plant.operator\" {{ keys = [\"{OPERATOR}\"] }}\n\
+                 access \"plant.watch\" {{\n  subjects = \"plant.operator\"\n  \
+                 select = \"plant.node{OWN}\"\n  allow = [read]\n}}\n"
+            );
+            let (node, _) = applied_on(&mut sim, node, watch);
+            let replied = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&replied);
+            node.operate(move |ops| async move {
+                let subject = "plant.operator".parse().expect("a name");
+                let reply = ops::serve(&ops, &subject, b"{\"status\":{}}\n").await;
+                *out.lock().unwrap() = Some(reply);
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let reply = replied.lock().unwrap().take().expect("a reply");
+            let reply: serde_json::Value =
+                serde_json::from_slice(&reply).expect("JSON");
+            let roots = serde_json::json!({
+                "source": "the OS store",
+                "failures": failures,
+                "unlisted": 0,
+            });
+            let expected = serde_json::json!({
+                "output": { "connectors": [], "roots": roots },
+            });
+            assert_eq!(reply, expected);
         }
 
         /// The node runs a `modbus` connector that an apply places on it. With no
@@ -7334,7 +7385,7 @@ pub(crate) mod port {
                 r#""state":"restarting","address":"plc:502","restarts":6,"#,
                 r#""counts":{"in":0,"lost":0,"missed":0},"error":{"class":"device","#,
                 r#""text":"the lookup of plc failed: name plc has no address"},"#,
-                r#""note":null}]}}"#,
+                r#""note":null}],"roots":null}}"#,
                 "\n",
             );
             assert_eq!(reply, connectors);
@@ -7572,9 +7623,9 @@ pub(crate) mod port {
             );
             let node = Node::start(Config {
                 region: Region::Given(region(&[member(OWN, &KEY, &host)])),
-                roots: os::Roots {
+                roots: os::roots::Roots {
                     certificates: vec![b"not DER".to_vec(), CA.to_vec()],
-                    failures: Vec::new(),
+                    ..os::roots::Roots::default()
                 },
                 ..config(&host, Size::MEBIBYTE, Box::new(heap))
             });

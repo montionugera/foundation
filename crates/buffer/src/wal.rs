@@ -46,6 +46,10 @@ const _: () = assert!(HEADER_LEN + RESTART_LEN <= ALIGN, "a restart record fits"
 /// the tails. This holds after any count of opens.
 const SPARE: u64 = REOPEN + OWED + REOPEN;
 
+/// The bytes from the low mark to the high mark of a trim on a large ring. A trim
+/// that no hold stops frees to the first record end at or past the high mark.
+const STEP: u64 = 100 * BLOCK;
+
 /// The room that a record of `kind` leaves free.
 ///
 /// # Panics
@@ -485,6 +489,9 @@ pub(crate) struct Writer {
     /// The offsets of the last wrap skip, empty before the first. The live part
     /// holds at most one wrap that is not synced, as it is at most one area long.
     skip: Range<u64>,
+    /// The chain value after the last record walked, until
+    /// [`restart`](Self::restart) places its record there.
+    walked: Option<u32>,
 }
 
 impl Writer {
@@ -495,7 +502,7 @@ impl Writer {
     }
 
     /// The offset of the tail.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "sim"))]
     pub(crate) fn tail(&self) -> u64 {
         self.tail
     }
@@ -518,7 +525,38 @@ impl Writer {
         let mut cursor = Cursor::new(layout, tail, TABLE);
         let zeros = vec![0; cursor.window().len];
         assert_eq!(cursor.next(&zeros), Ok(Step::End), "an empty ring");
-        cursor.writer(offset, 9).expect("the restart record fits").0
+        let mut writer = cursor.writer();
+        writer.restart(9).expect("the restart record fits");
+        writer
+    }
+
+    /// Places and seals the restart record with `chain`, a new random value, as
+    /// the body, and counts it as synced. The chain continues from `chain`. The
+    /// caller syncs the record before the first commit.
+    ///
+    /// # Errors
+    ///
+    /// [`Full`] when the record does not fit before the tail. No state changes,
+    /// so a call after a [`release`](Self::release) can place it. No release helps
+    /// when the head is at the end of the offsets: the ring is full for good.
+    ///
+    /// # Panics
+    ///
+    /// After a call that placed the record.
+    pub(crate) fn restart(&mut self, chain: u32) -> Result<Sealed, Full> {
+        let walked = self
+            .walked
+            .expect("invariant: one restart record follows the walk");
+        let plan = self.plan(Kind::Restart, RESTART_LEN)?;
+        self.walked = None;
+        let body = chain.to_le_bytes();
+        let (sealed, ends) = plan.seal(walked, [&body[..]]);
+        let record = Position {
+            offset: plan.next,
+            chain,
+        };
+        self.synced(Ends { record, ..ends });
+        Ok(sealed)
     }
 
     /// Plans a data record with a body of `len` bytes. It leaves [`SPARE`] free.
@@ -565,12 +603,15 @@ impl Writer {
         carry::count(body).min(self.layout.tails_max())
     }
 
-    /// The offset that the trim of the next commit wants to move the tail to, when
-    /// that commit is as large as the records not yet synced. A path whose holder
-    /// is before it needs a carry now.
+    /// The high mark of the trim of the next commit, when that commit is as large
+    /// as the records not yet synced. A path whose holder is before it needs a
+    /// carry now. So a path is carried once each lead less step bytes, where a reach
+    /// at the low mark carried it once each lead bytes: up to twice as often on a
+    /// ring whose step is half its lead.
     pub(crate) fn reach(&self) -> u64 {
         let queued = self.queued();
-        self.want(self.head.saturating_add(queued), queued)
+        let (_, high) = self.marks(self.head.saturating_add(queued), queued);
+        high
     }
 
     /// Plans a record of `kind` with a body of `len` bytes. It leaves the room of
@@ -672,23 +713,27 @@ impl Writer {
         }
     }
 
-    /// The tail that frees the oldest synced records, up to the first boundary
-    /// that leaves the headroom free. `None` when the headroom is free, or when no
-    /// record can go. The tail never passes the last synced record, or the offset
-    /// `kept`: the oldest record that must stay. Once the tail is durable,
+    /// The tail that frees the oldest synced records, up to the first boundary at
+    /// or past the high mark. `None` when the tail is at or past the low mark, or
+    /// when no record can go. The tail never passes the last synced record, or the
+    /// offset `kept`: the oldest record that must stay. So a trim that stops short
+    /// of the low mark trims again at the next commit, and one that stops past it
+    /// waits until the low mark passes the tail. Once the tail is durable,
     /// [`release`](Self::release) frees the records.
     ///
-    /// The headroom is three times the larger of the largest record and the records
-    /// not yet synced, and the three blocks that [`append`](Self::append) leaves free.
-    /// The space of a trim is free only at its release. From one trim to the release
-    /// of the next, the ring takes the records of two commits and the blocks that one
-    /// wrap skips.
+    /// The low mark leaves the headroom free before the head: three times the larger
+    /// of the largest record and the records not yet synced, and the three blocks
+    /// that [`append`](Self::append) leaves free. The high mark is the low mark once
+    /// the head moves on by a step: the smaller of [`STEP`] and half of the area less
+    /// the headroom. The space of a trim is free only at its release. From a tail at
+    /// the low mark to the release of the next trim, the ring takes the records of
+    /// two commits and the blocks that one wrap skips.
     pub(crate) fn trimmed(&self, kept: Option<u64>) -> Option<Position> {
-        let want = self.want(self.head, self.queued());
-        if want <= self.tail {
+        let (low, high) = self.marks(self.head, self.queued());
+        if low <= self.tail {
             return None;
         }
-        let enough = self.ends.partition_point(|end| end.offset < want);
+        let enough = self.ends.partition_point(|end| end.offset < high);
         let free = self
             .ends
             .partition_point(|end| kept.is_none_or(|kept| end.offset <= kept));
@@ -712,13 +757,14 @@ impl Writer {
         queued
     }
 
-    /// The offset that a trim wants the tail at, with the head at `head` and
-    /// `queued` bytes of records not yet synced: the headroom of
-    /// [`trimmed`](Self::trimmed) before the head.
-    fn want(&self, head: u64, queued: u64) -> u64 {
+    /// The low and high marks of [`trimmed`](Self::trimmed), with the head at
+    /// `head` and `queued` bytes of records not yet synced.
+    fn marks(&self, head: u64, queued: u64) -> (u64, u64) {
         let room = queued.max(self.layout.window).saturating_mul(3);
         let lead = self.layout.area.saturating_sub(SPARE + room);
-        head.saturating_sub(lead)
+        let step = STEP.min(lead / 2);
+        let high = head.saturating_add(step).saturating_sub(lead);
+        (head.saturating_sub(lead), high)
     }
 
     /// The bytes that a record may take and leave `spare` bytes free: the area not
@@ -1047,47 +1093,26 @@ impl Cursor {
     }
 
     /// Makes the writer that continues the ring after the last data or carry
-    /// record walked, or from the tail when the walk read none, with the records
-    /// before the offset `tail` released, and seals its restart record with `chain`,
-    /// a new random value, as the body. The chain continues from `chain`.
-    ///
-    /// # Errors
-    ///
-    /// [`Full`] when the restart record does not fit before `tail`. A later tail
-    /// needs a new walk. No tail helps when the head is at the end of the offsets:
-    /// the ring is full for good.
+    /// record walked, or from the tail when the walk read none. It places no
+    /// record: [`Writer::restart`] places the restart record.
     ///
     /// # Panics
     ///
-    /// Before [`Step::End`], or when `tail` is before the tail of the walk or past
-    /// the end of its last data or carry record.
-    pub(crate) fn writer(
-        self,
-        tail: u64,
-        chain: u32,
-    ) -> Result<(Writer, Sealed), Full> {
+    /// Before [`Step::End`].
+    pub(crate) fn writer(self) -> Writer {
         assert!(self.ended, "invariant: the chain ends at the last step");
         let Self { head, mut ends, .. } = self;
         // The restart record goes over the records after the last data or carry
         // record.
         ends.truncate(ends.partition_point(|end| end.offset <= head.offset));
-        let mut writer = Writer {
+        Writer {
             layout: self.layout,
             tail: self.tail,
             head: head.offset,
             ends,
             skip: 0..0,
-        };
-        writer.release(tail);
-        let plan = writer.plan(Kind::Restart, RESTART_LEN)?;
-        let body = chain.to_le_bytes();
-        let (sealed, ends) = plan.seal(head.chain, [&body[..]]);
-        // The open syncs the restart record before the first commit, and the chain
-        // continues from its body.
-        let offset = plan.next;
-        let record = Position { offset, chain };
-        writer.synced(Ends { record, ..ends });
-        Ok((writer, sealed))
+            walked: Some(head.chain),
+        }
     }
 }
 
@@ -1096,6 +1121,7 @@ mod tests {
     use super::*;
     use env::files::SECTOR;
     use proptest::prelude::*;
+    use std::ops::RangeInclusive;
     use std::{iter, mem, slice};
 
     const BLOCKS: u64 = 19;
@@ -1230,7 +1256,8 @@ mod tests {
             let area = vec![0; index(layout.area)];
             let (_, cursor, _) =
                 walk_in(layout, &area, START).expect("a zeroed area is valid");
-            let (writer, sealed) = cursor.writer(0, 1).expect("the ring is empty");
+            let mut writer = cursor.writer();
+            let sealed = writer.restart(1).expect("the ring is empty");
             let mut ring = Self {
                 layout,
                 area,
@@ -1359,12 +1386,14 @@ mod tests {
 
         /// Trims and checks the tail against the records of the model, which are
         /// all synced: the headroom is three of the largest record and the three
-        /// blocks that each append keeps. The tail is the first boundary that leaves
-        /// it free, or the last one that `kept` permits.
+        /// blocks that each append keeps. A trim starts when the tail leaves less
+        /// free, and the tail is the first boundary a step past that, or the last
+        /// one that `kept` permits.
         fn check_trim(&mut self, kept: Option<u64>) {
             let (area, head, old) = (self.layout.area, self.head.offset, self.tail);
-            let room = 3 * self.layout.window + SPARE;
-            let short = |tail: u64| area - (head - tail) < room;
+            let lead = area - (3 * self.layout.window + SPARE);
+            let short = |tail: u64| head - tail > lead;
+            let high = (head + STEP.min(lead / 2)).saturating_sub(lead);
             let bounds = self.bounds();
             let free = bounds.iter();
             let free: Vec<&Position> = free
@@ -1381,9 +1410,9 @@ mod tests {
                     let found = found.expect("a trim past the record that must stay");
                     let before =
                         found.checked_sub(1).map_or(old, |before| *free[before]);
-                    assert!(short(before.offset), "a trim past {before:?} to {tail:?}");
+                    assert!(before.offset < high, "a trim past {before:?} to {tail:?}");
                     assert!(
-                        !short(tail.offset) || found + 1 == free.len(),
+                        tail.offset >= high || found + 1 == free.len(),
                         "a trim to {tail:?} that stops short"
                     );
                 }
@@ -1420,7 +1449,8 @@ mod tests {
         fn reopen(&mut self, chain: u32) -> Result<Vec<Vec<u8>>, Full> {
             let (data, cursor) = self.walk();
             let head = cursor.head;
-            let (writer, sealed) = cursor.writer(self.tail.offset, chain)?;
+            let mut writer = cursor.writer();
+            let sealed = writer.restart(chain)?;
             while self.live.back().is_some_and(|live| live.data.is_none()) {
                 self.live.pop_back();
             }
@@ -1721,8 +1751,8 @@ mod tests {
                 let mut cursor = Cursor::new(layout, at(tail, 0), PIECE);
                 let zeros = vec![0; cursor.window().len];
                 prop_assert_eq!(cursor.next(&zeros), Ok(Step::End));
-                let (mut writer, _) =
-                    cursor.writer(tail * 4096, 1).expect("the ring is empty");
+                let mut writer = cursor.writer();
+                writer.restart(1).expect("the ring is empty");
                 prop_assert_eq!(writer.append(body_max).map(drop), Ok(()));
             }
         }
@@ -1742,7 +1772,9 @@ mod tests {
                 ..cursor
             };
             cursor.ended = true;
-            cursor.writer(tail * 4096, 9).expect("the ring has room").0
+            let mut writer = cursor.writer();
+            writer.restart(9).expect("the ring has room");
+            writer
         }
 
         proptest! {
@@ -1911,11 +1943,17 @@ mod tests {
         fn filled(records: u32) -> Writer {
             let layout = Layout::new(16 * 4096, 4087).expect("the sizes make a ring");
             let mut writer = Writer::empty(layout, 0);
-            for chain in 1..=records {
-                let ends = queue(&mut writer, 8, chain).expect("the ring has room");
+            push(&mut writer, 1..=records);
+            writer
+        }
+
+        /// Places a synced record of one block for each chain of `chains`. The
+        /// record of chain `n` ends at block `n + 1`.
+        fn push(writer: &mut Writer, chains: RangeInclusive<u32>) {
+            for chain in chains {
+                let ends = queue(writer, 8, chain).expect("the ring has room");
                 writer.synced(ends);
             }
-            writer
         }
 
         /// Places a record of `len` bytes and gives its boundaries, with `chain`
@@ -1936,23 +1974,71 @@ mod tests {
             assert_eq!(filled(9).trimmed(None), None);
         }
 
+        /// The ring of [`filled`] has a lead of 10 blocks past the headroom of 6, so
+        /// a step is 5 blocks.
         #[test]
-        fn trimmed_frees_records_until_three_of_the_largest_record_fit() {
-            assert_eq!(filled(10).trimmed(None), Some(at(1, 9)));
-            assert_eq!(filled(11).trimmed(None), Some(at(2, 1)));
+        fn a_small_ring_steps_half_its_lead() {
+            assert_eq!(filled(10).trimmed(None), Some(at(6, 5)));
+            assert_eq!(filled(11).trimmed(None), Some(at(7, 6)));
         }
 
+        /// A ring of 1024 blocks whose largest record takes 4: the lead is 1009
+        /// blocks, so a step is 100. Each later record moves the low mark one block,
+        /// and the next trim waits until it passes the tail.
+        #[test]
+        fn a_trim_at_the_low_mark_frees_a_step() {
+            let layout = Layout::new(1024 * 4096, BODY_MAX).expect("a ring");
+            let mut writer = Writer::empty(layout, 0);
+            push(&mut writer, 1..=1009);
+            assert_eq!(writer.trimmed(None), Some(at(101, 100)));
+            writer.release(101 * 4096);
+            for chain in 1010..=1109 {
+                push(&mut writer, chain..=chain);
+                assert_eq!(writer.trimmed(None), None, "the trim after {chain}");
+            }
+            push(&mut writer, 1110..=1110);
+            assert_eq!(writer.trimmed(None), Some(at(202, 201)));
+        }
+
+        /// Two queued records make the headroom 9 blocks and the lead 7, so the
+        /// low mark is at 3 blocks and the high mark at 6.5. Once they sync, the low
+        /// mark is at the tail.
         #[test]
         fn trimmed_leaves_three_times_the_records_not_yet_synced_free() {
-            let mut writer = filled(8);
-            let queued: Vec<Ends> = (9..=11)
+            let mut writer = filled(7);
+            let queued: Vec<Ends> = (8..=9)
                 .map(|chain| queue(&mut writer, 8, chain).expect("the ring has room"))
                 .collect();
-            assert_eq!(writer.trimmed(None), Some(at(8, 7)));
+            assert_eq!(writer.trimmed(None), Some(at(7, 6)));
             for ends in queued {
                 writer.synced(ends);
             }
-            assert_eq!(writer.trimmed(None), Some(at(2, 1)));
+            assert_eq!(writer.trimmed(None), None);
+        }
+
+        /// The low mark is at 3 blocks and the high mark at 8. A hold at 4 stops the
+        /// trim past the low mark, so the next trim waits for the low mark to pass
+        /// it, though the hold is gone.
+        #[test]
+        fn a_trim_held_past_the_low_mark_waits_for_the_next_low_mark() {
+            let mut writer = filled(12);
+            assert_eq!(writer.trimmed(Some(4 * 4096)), Some(at(4, 3)));
+            writer.release(4 * 4096);
+            push(&mut writer, 13..=13);
+            assert_eq!(writer.trimmed(None), None);
+            push(&mut writer, 14..=14);
+            assert_eq!(writer.trimmed(None), Some(at(10, 9)));
+        }
+
+        /// A hold at 2 stops the trim short of the low mark at 3 blocks, so the trim
+        /// of the next commit goes on to its high mark.
+        #[test]
+        fn a_trim_held_short_of_the_low_mark_trims_again_at_the_next_commit() {
+            let mut writer = filled(12);
+            assert_eq!(writer.trimmed(Some(2 * 4096)), Some(at(2, 1)));
+            writer.release(2 * 4096);
+            push(&mut writer, 13..=13);
+            assert_eq!(writer.trimmed(None), Some(at(9, 8)));
         }
 
         #[test]
@@ -1969,7 +2055,8 @@ mod tests {
         #[test]
         fn trimmed_stops_at_the_record_that_must_stay() {
             let mut writer = filled(12);
-            assert_eq!(writer.trimmed(None), Some(at(3, 2)));
+            assert_eq!(writer.trimmed(None), Some(at(8, 7)));
+            assert_eq!(writer.trimmed(Some(6 * 4096)), Some(at(6, 5)));
             assert_eq!(writer.trimmed(Some(2 * 4096)), Some(at(2, 1)));
             assert_eq!(writer.trimmed(Some(4096)), Some(at(1, 9)));
             writer.release(4096);
@@ -1977,66 +2064,80 @@ mod tests {
         }
 
         /// A ring of 32 blocks: one record of 4 blocks queued after it skips 3 blocks
-        /// leaves a headroom of 15 blocks, not 24. A record of one block after it
-        /// makes the headroom 18 blocks.
+        /// leaves a headroom of 15 blocks, not 24, so the low mark is at 19 blocks
+        /// and the high mark at 27.5. A record of one block after it makes the
+        /// headroom 18 blocks, so the low mark is at 23, not 32.
         #[test]
         fn trimmed_leaves_the_blocks_of_a_queued_wrap_out_of_the_headroom() {
             let mut writer = Writer::empty(wide(), 0);
-            for chain in 1..=28 {
-                let ends = queue(&mut writer, 8, chain).expect("the ring has room");
-                writer.synced(ends);
-            }
+            push(&mut writer, 1..=28);
             writer.release(9 * 4096);
             let ends = queue(&mut writer, BODY_MAX, 99).expect("the ring has room");
             assert_eq!(ends.wrap.map(|wrap| wrap.offset), Some(32 * 4096));
             assert_eq!(writer.head(), 36 * 4096);
-            assert_eq!(writer.trimmed(None), Some(at(19, 18)));
-            let next = queue(&mut writer, 8, 100).expect("the ring has room");
-            assert_eq!(writer.trimmed(None), Some(at(23, 22)));
-            writer.synced(ends);
-            writer.synced(next);
-            assert_eq!(writer.trimmed(None), Some(at(20, 19)), "all synced");
+            assert_eq!(writer.trimmed(None), Some(at(28, 27)));
+            queue(&mut writer, 8, 100).expect("the ring has room");
+            writer.release(22 * 4096);
+            assert_eq!(writer.trimmed(None), Some(at(29, 28)));
+            writer.release(23 * 4096);
+            assert_eq!(writer.trimmed(None), None);
         }
 
-        /// A record not synced before the wrap: the skip of 3 blocks stays out.
+        /// A ring of 32 blocks: once a record of 4 blocks queued after a skip of 3
+        /// blocks and a record of 1 block sync, the headroom is 15 blocks again, so
+        /// the low mark is at 20 blocks and the high mark at 28.5.
+        #[test]
+        fn trimmed_gives_back_the_headroom_of_a_queued_wrap_once_it_syncs() {
+            let mut writer = Writer::empty(wide(), 0);
+            push(&mut writer, 1..=28);
+            writer.release(9 * 4096);
+            let ends = queue(&mut writer, BODY_MAX, 99).expect("the ring has room");
+            let next = queue(&mut writer, 8, 100).expect("the ring has room");
+            writer.synced(ends);
+            writer.synced(next);
+            writer.release(19 * 4096);
+            assert_eq!(writer.trimmed(None), Some(at(29, 28)), "all synced");
+            writer.release(20 * 4096);
+            assert_eq!(writer.trimmed(None), None);
+        }
+
+        /// A record not synced before the wrap: the skip of 3 blocks stays out, so
+        /// the headroom is 18 blocks and the low mark is at 22, not 31.
         #[test]
         fn trimmed_leaves_out_a_wrap_queued_after_a_record_not_synced() {
             let mut writer = Writer::empty(wide(), 0);
-            for chain in 1..=27 {
-                let ends = queue(&mut writer, 8, chain).expect("the ring has room");
-                writer.synced(ends);
-            }
-            writer.release(8 * 4096);
+            push(&mut writer, 1..=27);
+            writer.release(21 * 4096);
             queue(&mut writer, 8, 28).expect("the ring has room");
             let ends = queue(&mut writer, BODY_MAX, 99).expect("the ring has room");
             assert_eq!(ends.wrap.map(|wrap| wrap.offset), Some(32 * 4096));
-            assert_eq!(writer.trimmed(None), Some(at(22, 21)));
+            assert_eq!(writer.trimmed(None), Some(at(28, 27)));
+            writer.release(22 * 4096);
+            assert_eq!(writer.trimmed(None), None);
         }
 
-        /// The skipped blocks of a wrap are enough for the headroom, so the trim
-        /// frees the wrap record and keeps the record after it.
+        /// The high mark of 31.5 blocks is in the blocks that a wrap skips, so the
+        /// trim frees the wrap record and keeps the record after it.
         #[test]
         fn trimmed_frees_a_wrap_record_and_keeps_its_record() {
             let mut ring = Ring::with(wide());
             let long = [7; BODY_MAX];
-            let fill = |ring: &mut Ring| {
+            let fill = |ring: &mut Ring, kept| {
                 ring.append(&long).expect("the ring has room");
-                ring.trim(None).map(|tail| tail.offset / 4096)
+                ring.trim(kept).map(|tail| tail.offset / 4096)
             };
-            let tails: Vec<Option<u64>> = (0..8).map(|_| fill(&mut ring)).collect();
-            let (first, last) = tails.split_at(4);
-            assert_eq!(first, [None; 4]);
-            assert_eq!(last, [Some(5), Some(9), Some(13), Some(21)]);
+            let tails: Vec<Option<u64>> =
+                (0..7).map(|_| fill(&mut ring, None)).collect();
+            assert_eq!(tails, [None, None, None, None, Some(13), None, None]);
+            assert_eq!(fill(&mut ring, Some(21 * 4096)), Some(21));
             let wrapped = ring.live.back().expect("a record").clone();
             assert_eq!(
                 (wrapped.start.offset, wrapped.offset),
                 (29 * 4096, 32 * 4096)
             );
-            let tails: Vec<Option<u64>> = (0..2).map(|_| fill(&mut ring)).collect();
-            assert_eq!(tails, [Some(25), Some(29)]);
             ring.append(&long).expect("the ring has room");
             assert_eq!(ring.trim(None), wrapped.wrap);
-            assert_eq!(ring.walk().0.len(), 4);
+            assert_eq!(ring.walk().0.len(), 2);
         }
 
         /// Runs commits as the commit task does, and gives the first refusal with
@@ -2102,48 +2203,61 @@ mod tests {
             assert_eq!(turns(256, [20, 28], 8), None);
         }
 
-        /// Fills a ring of 1024 blocks with commits of 40 records of one block, then
-        /// runs the two commits of `then`. Each record comes while the commit
-        /// before it syncs.
-        fn stepped(then: [usize; 2]) -> Option<(usize, Full)> {
+        /// Fills a ring of 1024 blocks with `fill` commits of 50 records of one
+        /// block, then runs the commits of `then`. Each record comes while the
+        /// commit before it syncs. A step of 100 blocks is two commits, so the tail
+        /// is at the low mark before each commit whose number is a multiple of three.
+        fn stepped(fill: usize, then: [usize; 2]) -> Option<(usize, Full)> {
             let layout = Layout::new(1024 * 4096, BODY_MAX).expect("a ring");
-            let counts = iter::repeat_n(40, 400).chain(then);
+            let counts = iter::repeat_n(50, fill).chain(then);
             steady(layout, counts.map(|count| (vec![8; count], vec![])))
         }
 
-        /// The headroom of a trim is free at its release, after the next commit is
-        /// in the ring and before the one after it.
+        /// With the tail at the low mark, the headroom is free at the release of
+        /// the next trim, after the next commit is in the ring and before the one
+        /// after it. So that commit fits in twice the commit before it, and it and
+        /// the next fit in three times it.
         #[test]
         fn the_two_commits_after_a_trim_fit_in_three_times_its_commit() {
-            assert_eq!(stepped([80, 40]), None);
-            assert_eq!(stepped([60, 60]), None);
+            assert_eq!(stepped(396, [100, 50]), None);
+            assert_eq!(stepped(398, [75, 75]), None);
             let full = Full {
                 needed: 4096,
                 free: 0,
             };
-            assert_eq!(stepped([81, 40]), Some((400, full)));
-            assert_eq!(stepped([60, 61]), Some((401, full)));
+            assert_eq!(stepped(396, [101, 50]), Some((396, full)));
+            assert_eq!(stepped(398, [75, 76]), Some((399, full)));
         }
 
-        /// Fills a ring of 1024 blocks with `fill` commits of 40 records of one
-        /// block, then runs a commit of `count` largest records and a commit of 40
+        /// Fills a ring of 1024 blocks with `fill` commits of 50 records of one
+        /// block, then runs a commit of `count` largest records and a commit of 50
         /// records of one block. Each record comes while the commit before it syncs.
+        /// The tail is at the low mark before the commit of largest records when
+        /// `fill` is a multiple of three, as [`stepped`] says.
         fn jumped(fill: usize, count: usize) -> Option<(usize, Full)> {
             let layout = Layout::new(1024 * 4096, BODY_MAX).expect("a ring");
-            let then = [vec![BODY_MAX; count], vec![8; 40]];
-            let commits = iter::repeat_n(vec![8; 40], fill).chain(then);
+            let then = [vec![BODY_MAX; count], vec![8; 50]];
+            let commits = iter::repeat_n(vec![8; 50], fill).chain(then);
             steady(layout, commits.map(|lens| (lens, vec![])))
         }
 
+        /// With the tail at the low mark, 25 records of 4 blocks fill the headroom
+        /// after a commit of 50 blocks. The commit after 60 wraps and skips 3
+        /// blocks, so 25 no longer fit.
         #[test]
         fn a_wrap_takes_the_blocks_that_it_skips_from_the_headroom() {
-            assert_eq!(jumped(40, 20), None);
-            assert_eq!(jumped(51, 19), None);
+            assert_eq!(jumped(57, 25), None);
+            let full = Full {
+                needed: 16384,
+                free: 0,
+            };
+            assert_eq!(jumped(57, 26), Some((57, full)));
+            assert_eq!(jumped(60, 24), None);
             let full = Full {
                 needed: 16384,
                 free: 4096,
             };
-            assert_eq!(jumped(51, 20), Some((51, full)));
+            assert_eq!(jumped(60, 25), Some((60, full)));
         }
 
         /// A trim cannot free the commit in its sync, so the ring must hold three
@@ -2426,22 +2540,32 @@ mod tests {
             }
         }
 
-        /// With each record synced, the want of the next trim is three of the
-        /// largest record and the three kept blocks behind the head. A queued record
-        /// of the largest size moves it by twice its size: once as the head, once as
-        /// the commit that syncs it.
+        /// With each record synced, the reach is the high mark of the next trim: a
+        /// step past the low mark, which is three of the largest record and the
+        /// three kept blocks behind the head. A queued record of the largest size
+        /// moves it by twice its size: once as the head, once as the commit that
+        /// syncs it.
         #[test]
-        fn reach_is_the_want_of_the_next_trim() {
+        fn reach_is_the_high_mark_of_the_next_trim() {
             let mut writer = Writer::empty(layout(), 0);
             for chain in 0..9 {
                 let ends = queue(&mut writer, 1, chain).expect("the ring has room");
                 writer.synced(ends);
             }
-            assert_eq!(writer.reach(), 6 * 4096);
+            assert_eq!(writer.reach(), 8 * 4096);
             let tail = writer.trimmed(None).map(Position::offset);
             assert_eq!(tail, Some(writer.reach()));
             queue(&mut writer, BODY_MAX, 9).expect("the ring has room");
-            assert_eq!(writer.reach(), 14 * 4096);
+            assert_eq!(writer.reach(), 16 * 4096);
+        }
+
+        /// The ring of [`filled`] has a lead of 10 blocks and a step of 5. While the
+        /// low mark is at 0, the high mark is 5 blocks less than the head, not a step
+        /// past 0, so no path needs a carry before the ring fills.
+        #[test]
+        fn reach_grows_from_zero_while_the_ring_fills() {
+            let reach = |records| filled(records).reach() / 4096;
+            assert_eq!([4, 5, 9].map(reach), [0, 1, 5]);
         }
 
         /// A commit marks its records synced and frees the records before the tail
@@ -2458,9 +2582,9 @@ mod tests {
                 .map(|chain| queue(&mut writer, 1, chain).expect("the ring has room"))
                 .collect();
             let tail = writer.trimmed(None);
-            assert_eq!(tail.map(Position::offset), Some(8 * 4096));
+            assert_eq!(tail.map(Position::offset), Some(10 * 4096));
             writer.committed(ends, tail);
-            assert_eq!(writer.tail(), 8 * 4096);
+            assert_eq!(writer.tail(), 10 * 4096);
             writer.release(12 * 4096);
             assert_eq!(writer.tail(), 12 * 4096);
         }
@@ -2558,7 +2682,8 @@ mod tests {
         fn starts_a_writer_with_a_restart_record_at_the_head() {
             let area = vec![0; index(AREA)];
             let (_, cursor) = walk(&area, START).expect("a zeroed area is valid");
-            let (writer, sealed) = cursor.writer(0, 77).expect("the ring is empty");
+            let mut writer = cursor.writer();
+            let sealed = writer.restart(77).expect("the ring is empty");
             let body = 77u32.to_le_bytes();
             let (header, _) = record::header(START.chain, Kind::Restart, [&body[..]]);
             let record = Write { place: 0, header };
@@ -2571,11 +2696,11 @@ mod tests {
         #[test]
         #[should_panic(expected = "the chain ends at the last step")]
         fn panics_on_a_writer_before_the_end() {
-            let _writer = Cursor::new(layout(), START, PIECE).writer(0, 1);
+            let _writer = Cursor::new(layout(), START, PIECE).writer();
         }
 
         #[test]
-        fn refuses_a_writer_when_the_ring_is_full_until_the_tail_moves() {
+        fn refuses_a_restart_that_does_not_fit_until_a_release() {
             let mut ring = Ring::new();
             for _ in 1..BLOCKS {
                 ring.fill(b"a").expect("the ring has room");
@@ -2585,10 +2710,22 @@ mod tests {
                 needed: 4096,
                 free: 0,
             };
-            assert_eq!(cursor.writer(0, 1).map(drop), Err(full));
-            let (_, cursor) = walk(&ring.area, START).expect("a valid ring");
-            let (writer, sealed) = cursor.writer(4096, 1).expect("one block is free");
+            let mut writer = cursor.writer();
+            let before = (writer.head(), writer.tail());
+            assert_eq!(writer.restart(1), Err(full));
+            assert_eq!((writer.head(), writer.tail()), before);
+            writer.release(4096);
+            let sealed = writer.restart(1).expect("one block is free");
             assert_eq!((sealed.record.place, writer.head()), (0, 20 * 4096));
+        }
+
+        #[test]
+        #[should_panic(expected = "one restart record follows the walk")]
+        fn panics_on_a_second_restart() {
+            let (_, cursor) = Ring::new().walk();
+            let mut writer = cursor.writer();
+            writer.restart(1).expect("the ring is empty");
+            writer.restart(2).map(drop).expect("panics first");
         }
 
         /// Each open writes its restart record right after the last data record,
@@ -2616,15 +2753,16 @@ mod tests {
             let three = ring.live.back().expect("three records").clone();
             ring.reopen(5).expect("the restart record fits");
             let restart = ring.head;
-            ring.append(&[8; BODY_MAX]).expect("the ring has room");
+            ring.append(&[8; ALIGN]).expect("the ring has room");
             assert_eq!(ring.trim(Some(three.offset)), Some(three.start));
-            assert_eq!(ring.walk().0, [vec![7; BODY_MAX], vec![8; BODY_MAX]]);
+            assert_eq!(ring.walk().0, [vec![7; BODY_MAX], vec![8; ALIGN]]);
             assert_eq!(ring.trim(None), Some(restart));
-            assert_eq!(ring.walk().0, [vec![8; BODY_MAX]]);
+            assert_eq!(ring.walk().0, [vec![8; ALIGN]]);
         }
 
-        /// A ring with the same records trims to the same tail after a reopen: the
-        /// restart record of the first open goes, and no data record.
+        /// A trim after a reopen lands on the end of a data record that the walk
+        /// read, with its chain value: the restart record of the first open goes,
+        /// and the step of 8.5 blocks frees 9 data records.
         #[test]
         fn gives_the_writer_the_end_of_an_earlier_restart_record() {
             let mut ring = Ring::with(wide());
@@ -2632,9 +2770,10 @@ mod tests {
                 ring.append(b"a").expect("the ring has room");
             }
             assert_eq!(ring.trim(None), None);
+            let tenth = ring.live[10].start;
             ring.reopen(5).expect("the restart record fits");
-            assert_eq!(ring.trim(None), Some(at(1, 1)));
-            assert_eq!(ring.walk().0.len(), 16);
+            assert_eq!(ring.trim(None), Some(tenth));
+            assert_eq!(ring.walk().0.len(), 7);
         }
 
         /// An open of a ring that `append` filled puts its restart record in a kept
@@ -2668,7 +2807,7 @@ mod tests {
             ring.writer.synced(ends);
             assert_eq!(ring.writer.head(), 18 * 4096);
             let tail = ring.trim(None).map(Position::offset);
-            assert_eq!(tail, Some(14 * 4096), "the headroom is 15 blocks");
+            assert_eq!(tail, Some(16 * 4096), "a step of 2 past a headroom of 15");
         }
 
         /// The restart record of an open goes over the records after the last data
@@ -2709,7 +2848,8 @@ mod tests {
                 let read = cursor.next(&area[block * ALIGN..(block + 1) * ALIGN]);
                 assert_eq!(read, Ok(step), "block {block}");
             }
-            let (writer, sealed) = cursor.writer(0, 6).expect("the ring has room");
+            let mut writer = cursor.writer();
+            let sealed = writer.restart(6).expect("the ring has room");
             assert_eq!((sealed.record.place, writer.head()), (2 * 4096, 3 * 4096));
         }
 
@@ -2753,7 +2893,7 @@ mod tests {
         )]
         fn panics_on_a_tail_past_the_last_data_record() {
             let (_, cursor) = Ring::new().walk();
-            let _writer = cursor.writer(4096, 2);
+            cursor.writer().release(4096);
         }
 
         /// The smallest ring holds one restart record after any number of opens
@@ -2772,7 +2912,8 @@ mod tests {
                         other => panic!("the open of {chain} read {other:?}"),
                     }
                 }
-                let (mut writer, sealed) = cursor.writer(0, chain).expect("it fits");
+                let mut writer = cursor.writer();
+                let sealed = writer.restart(chain).expect("it fits");
                 let place = index(sealed.record.place);
                 area[place..place + HEADER_LEN].copy_from_slice(&sealed.record.header);
                 area[place + HEADER_LEN..place + HEADER_LEN + RESTART_LEN]
@@ -2864,7 +3005,7 @@ mod tests {
                 needed: 4096,
                 free: 4095,
             };
-            assert_eq!(cursor.writer(header.tail.offset(), 1).map(drop), Err(full));
+            assert_eq!(cursor.writer().restart(1), Err(full));
         }
 
         #[test]

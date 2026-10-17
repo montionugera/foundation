@@ -54,20 +54,27 @@ macro_rules! tests {
             a_last_link_to_nothing_through_a_link_is_not_found,
             a_link_to_a_file_with_a_slash_fails,
             a_resolve_of_a_link_to_nothing_with_a_slash_is_not_found,
-            within_gives_not_found_for_a_hidden_folder_that_is_not_there,
+            within_hides_a_hidden_folder_that_is_not_there,
+            within_hides_a_bad_link_beside_a_hidden_folder_that_is_not_there,
+            within_hides_a_hidden_file_that_a_write_replaces,
+            within_holds_nothing_in_a_file_that_a_write_replaces,
+            within_hides_a_hidden_folder_that_the_limits_refuse,
             a_directory_made_takes_files,
             a_directory_made_again_or_through_a_link_is_ok,
             a_directory_under_one_that_is_not_there_is_not_found,
             a_directory_on_a_file_or_a_link_to_nothing_fails,
             a_directory_outside_is_not_made,
             within_makes_no_directory_on_a_link_that_does_not_resolve,
+            within_keeps_its_limits_on_a_path_that_does_not_resolve,
+            within_agrees_with_free_on_each_end_of_a_link_that_does_not_resolve,
             a_directory_on_a_link_to_nothing_and_a_dot_is_not_found,
             a_directory_on_a_link_to_nothing_and_a_slash_fails,
             a_directory_on_a_file_and_a_slash_fails,
             a_directory_on_a_link_to_a_file_and_a_slash_fails,
             a_directory_on_a_file_and_a_dot_fails,
             a_directory_of_a_dot_and_a_slash_is_not_made,
-            within_refuses_a_hidden_folder_that_is_a_file,
+            within_hides_a_hidden_folder_that_is_a_file,
+            within_hides_a_hidden_file_on_each_end_from_make_dir,
             within_checks_no_hidden_folder_past_its_limits,
             a_directory_through_a_file_fails,
             a_directory_of_the_root_is_ok,
@@ -415,6 +422,9 @@ pub(crate) fn within_resolves_its_folders(host: &Host<'_>) {
     let none = [dir.join("none/work")];
     assert_eq!(paths.within(&none, &[]).err(), Some(Error::NotFound));
     assert_eq!(paths.within(&work, &none).err(), Some(Error::NotFound));
+    let last = [dir.join("none")];
+    assert_eq!(paths.within(&last, &[]).err(), Some(Error::NotFound));
+    assert_eq!(paths.within(&work, &last).err(), None);
     let file = [dir.join("b.hcl/data")];
     let through = Some(Error::Io {
         code: NOT_DIRECTORY,
@@ -469,15 +479,88 @@ pub(crate) fn a_resolve_of_a_link_to_nothing_with_a_slash_is_not_found(
     }
 }
 
-pub(crate) fn within_gives_not_found_for_a_hidden_folder_that_is_not_there(
+pub(crate) fn within_hides_a_hidden_folder_that_is_not_there(host: &Host<'_>) {
+    let (paths, dir) = (host.paths, host.dir);
+    (host.make_dir)(&dir.join("work"));
+    (host.make_dir)(&dir.join("work/sub"));
+    let base = paths.resolve(dir).unwrap();
+    let data = base.join("work/data");
+    let within = paths
+        .within(&[base.join("work")], slice::from_ref(&data))
+        .unwrap();
+    assert_eq!(within.make_dir(&data), Err(Error::Hidden));
+    assert_eq!(within.write(&data, b"x"), Err(Error::Hidden));
+    // Each new name beside it, so no name in other case or other form makes it.
+    assert_eq!(within.make_dir(&base.join("work/DATA")), Err(Error::Hidden));
+    assert_eq!(
+        within.write(&base.join("work/b.hcl"), b"x"),
+        Err(Error::Hidden)
+    );
+    assert_eq!(within.write(&base.join("work/sub/b.hcl"), b"x"), Ok(()));
+    assert_eq!(paths.read(&data, ALL), Err(Error::NotFound));
+    paths.make_dir(&data).unwrap();
+    paths.write(&data.join("admin.key"), b"x").unwrap();
+    let key = within.read(&data.join("admin.key"), 1);
+    assert_eq!(key, Err(Error::Hidden));
+}
+
+pub(crate) fn within_hides_a_bad_link_beside_a_hidden_folder_that_is_not_there(
     host: &Host<'_>,
 ) {
     let (paths, dir) = (host.paths, host.dir);
     (host.make_dir)(&dir.join("work"));
     let base = paths.resolve(dir).unwrap();
-    let hidden = [base.join("work/data")];
-    let within = paths.within(&[base.join("work")], &hidden);
-    assert_eq!(within.err(), Some(Error::NotFound));
+    let data = base.join("work/data");
+    let within = paths
+        .within(&[base.join("work")], slice::from_ref(&data))
+        .unwrap();
+    (host.make_link)(&base.join("work/loop"), &base.join("work/loop"));
+    (host.make_link)(&base.join("work/to-none"), &base.join("work/none"));
+    (host.make_link)(&data, &base.join("work/none"));
+    (host.make_link)(&base.join("work/to-data"), &data);
+    assert_eq!(within.make_dir(&base.join("work/new")), Err(Error::Hidden));
+    let names = ["work/loop", "work/to-none", "work/data", "work/to-data"];
+    let made = names.map(|name| within.make_dir(&base.join(name)));
+    assert_eq!(made, [Err(Error::Hidden); 4], "{names:?}");
+}
+
+pub(crate) fn within_hides_a_hidden_file_that_a_write_replaces(host: &Host<'_>) {
+    let (_, base) = within_work(host);
+    let file = base.join("work/a.hcl");
+    (host.make_link)(&base.join("work/link"), &file);
+    let within = host
+        .paths
+        .within(&[base.join("work")], slice::from_ref(&file))
+        .unwrap();
+    host.paths.write(&file, b"new").unwrap();
+    assert_eq!(within.read(&file, 3), Err(Error::Hidden));
+    let link = base.join("work/link");
+    assert_eq!(within.read(&link, 3), Err(Error::Hidden));
+}
+
+/// A write makes a new file, as the rename of a write of `os` does, so a folder of
+/// `folders` that is a file holds nothing after it.
+pub(crate) fn within_holds_nothing_in_a_file_that_a_write_replaces(host: &Host<'_>) {
+    let (_, base) = within_work(host);
+    let file = base.join("work/a.hcl");
+    let within = host.paths.within(slice::from_ref(&file), &[]).unwrap();
+    assert_eq!(within.read(&file, 1), Ok(Found::File(b"x".to_vec())));
+    host.paths.write(&file, b"y").unwrap();
+    assert_eq!(within.read(&file, 1), Err(Error::Outside));
+}
+
+/// A hidden folder that the limits of the handle refuse, but that is there, still
+/// hides what a later folder holds.
+pub(crate) fn within_hides_a_hidden_folder_that_the_limits_refuse(host: &Host<'_>) {
+    let (_, base) = within_work(host);
+    let data = base.join("work/data");
+    let outer = host.paths.within(slice::from_ref(&data), &[]).unwrap();
+    let inner = outer
+        .within(slice::from_ref(&data), &[base.join("work")])
+        .unwrap();
+    let key = data.join("admin.key");
+    assert_eq!(inner.read(&key, 1), Err(Error::Hidden));
+    assert_eq!(outer.read(&key, 1), Ok(Found::File(b"x".to_vec())));
 }
 
 pub(crate) fn a_directory_made_takes_files(host: &Host<'_>) {
@@ -558,6 +641,65 @@ pub(crate) fn within_makes_no_directory_on_a_link_that_does_not_resolve(
     }
 }
 
+pub(crate) fn within_keeps_its_limits_on_a_path_that_does_not_resolve(host: &Host<'_>) {
+    let (within, base) = within_work(host);
+    for name in ["work/data/loop", "loop", "workshop/loop"] {
+        (host.make_link)(&base.join(name), &base.join(name));
+    }
+    (host.make_link)(&base.join("work/out"), &base.join("workshop"));
+    (host.make_link)(
+        &base.join("work/data/to-none"),
+        &base.join("work/data/none"),
+    );
+    (host.make_link)(&base.join("to-none"), &base.join("none"));
+    for (name, limit) in [
+        ("work/data/loop", Error::Hidden),
+        ("work/data/loop/.", Error::Hidden),
+        ("work/data/admin.key/x", Error::Hidden),
+        ("work/data/to-none", Error::Hidden),
+        ("loop", Error::Outside),
+        ("to-none", Error::Outside),
+        ("b.hcl/x", Error::Outside),
+        ("work/out/loop", Error::Outside),
+        ("work/out/loop/", Error::Outside),
+    ] {
+        assert_eq!(within.make_dir(&base.join(name)), Err(limit), "{name}");
+    }
+}
+
+pub(crate) fn within_agrees_with_free_on_each_end_of_a_link_that_does_not_resolve(
+    host: &Host<'_>,
+) {
+    let (within, base) = within_work(host);
+    let work = base.join("work");
+    for (name, target) in [
+        ("loop", "loop"),
+        ("to-bad", "a.hcl/x"),
+        ("to-file-slash", "a.hcl/"),
+    ] {
+        (host.make_link)(&work.join(name), &work.join(target));
+    }
+    for name in [
+        "loop",
+        "loop/",
+        "loop/.",
+        "loop//",
+        "loop/x",
+        "to-bad",
+        "to-bad/",
+        "to-bad/.",
+        "to-file-slash",
+        "to-file-slash/",
+        "a.hcl/",
+        "a.hcl/.",
+        "a.hcl/x",
+    ] {
+        let path = work.join(name);
+        let free = host.paths.make_dir(&path);
+        assert_eq!(within.make_dir(&path), free, "{name}");
+    }
+}
+
 pub(crate) fn a_directory_through_a_file_fails(host: &Host<'_>) {
     let (paths, dir) = (host.paths, host.dir);
     paths.write(&dir.join("data"), b"x").unwrap();
@@ -634,15 +776,28 @@ pub(crate) fn a_directory_on_a_file_and_a_dot_fails(host: &Host<'_>) {
     );
 }
 
-pub(crate) fn within_refuses_a_hidden_folder_that_is_a_file(host: &Host<'_>) {
+pub(crate) fn within_hides_a_hidden_folder_that_is_a_file(host: &Host<'_>) {
     let (_, base) = within_work(host);
+    let file = base.join("work/a.hcl");
     let within = host
         .paths
-        .within(&[base.join("work")], &[base.join("work/a.hcl")]);
-    let error = Err(Error::Io {
-        code: NOT_DIRECTORY,
-    });
-    assert_eq!(within.map(|_| ()), error);
+        .within(&[base.join("work")], slice::from_ref(&file))
+        .unwrap();
+    assert_eq!(within.read(&file, 1), Err(Error::Hidden));
+    let beside = base.join("work/b.hcl");
+    assert_eq!(within.write(&beside, b"x"), Ok(()));
+}
+
+pub(crate) fn within_hides_a_hidden_file_on_each_end_from_make_dir(host: &Host<'_>) {
+    let (_, base) = within_work(host);
+    let file = base.join("work/a.hcl");
+    let within = host
+        .paths
+        .within(&[base.join("work")], slice::from_ref(&file))
+        .unwrap();
+    let names = ["work/a.hcl", "work/a.hcl/x", "work/a.hcl/", "work/a.hcl/."];
+    let made = names.map(|name| within.make_dir(&base.join(name)));
+    assert_eq!(made, [Err(Error::Hidden); 4], "{names:?}");
 }
 
 pub(crate) fn within_checks_no_hidden_folder_past_its_limits(host: &Host<'_>) {

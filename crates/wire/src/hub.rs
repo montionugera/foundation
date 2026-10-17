@@ -24,7 +24,7 @@
 //! - [`Credit`]: kind 3, then `limit_bytes` (`u64`).
 //! - [`Reply`]: kind 1 (opened), then `live` (`u64`). Kind 2 (head): path (`u8`, live
 //!   0, backfill 1), seq (`u64`), count (`u32`), and the series count (`u32`). Kind 3
-//!   (behind).
+//!   is retired.
 //! - [`keys`]: each channel key (`u128`).
 //! - [`ends`]: place and end (each `u32`) for each series.
 
@@ -50,7 +50,7 @@ const CREDIT: u8 = 3;
 
 const OPENED: u8 = 1;
 const HEAD: u8 = 2;
-const BEHIND: u8 = 3;
+// Reply kind 3 is retired: no reply takes it.
 
 /// Stop code: the home does not know a channel of the open.
 pub const UNKNOWN: u32 = 16;
@@ -256,9 +256,6 @@ pub enum Reply {
     },
     /// The head of one frame. The run of its [`ends`] follows, then its body.
     Head(Head),
-    /// The home ends the session. No message follows it: the home then finishes its
-    /// stream. No case gives it; #2790 removes it.
-    Behind,
 }
 
 /// The head of one frame that the home sends.
@@ -280,7 +277,6 @@ impl Reply {
     #[must_use]
     pub fn encoded_len(&self) -> usize {
         match self {
-            Self::Behind => 1,
             Self::Opened { .. } => 9,
             Self::Head(_) => 18,
         }
@@ -299,7 +295,6 @@ impl Reply {
                 out.put(&[OPENED]);
                 out.put(&live.to_le_bytes());
             }
-            Self::Behind => out.put(&[BEHIND]),
             Self::Head(head) => {
                 assert!(head.series > 0, "a head names at least one series");
                 assert!(
@@ -334,10 +329,6 @@ impl Reply {
                 let live = u64::from_le_bytes(*fields.take()?);
                 fields.end()?;
                 Ok(Self::Opened { live })
-            }
-            BEHIND => {
-                fields.end()?;
-                Ok(Self::Behind)
             }
             HEAD => {
                 let [path] = *fields.take()?;
@@ -548,7 +539,7 @@ pub enum Error {
         kind: u8,
     },
     /// A message comes before the session is open: a credit before the open, or a
-    /// head or a behind before opened.
+    /// head before opened.
     Unopened {
         /// The kind byte of the message.
         kind: u8,
@@ -585,8 +576,6 @@ pub enum Error {
         /// The bytes that remain in the body.
         remain: usize,
     },
-    /// A message comes after the home ended the session with `Behind`.
-    Ended,
     /// A message that only a complete session has comes in a latest session.
     Latest {
         /// The kind byte of the message.
@@ -597,7 +586,7 @@ pub enum Error {
         /// The bytes of the body that did not come.
         remain: usize,
     },
-    /// The home finished the stream outside a body, before it ended the session.
+    /// The home finished the stream outside a body.
     Finished,
 }
 
@@ -660,9 +649,6 @@ impl fmt::Display for Error {
                 f,
                 "the body message has {len} bytes, and {remain} remain in the body"
             ),
-            Self::Ended => {
-                f.write_str("a hub message came after the home ended the session")
-            }
             Self::Latest { kind } => write!(
                 f,
                 "the hub message has kind {kind}, which a latest session does not have"
@@ -672,7 +658,7 @@ impl fmt::Display for Error {
                 "the stream ended with {remain} bytes of its body to come"
             ),
             Self::Finished => {
-                f.write_str("the home finished the stream before it ended the session")
+                f.write_str("the home finished the stream outside a body")
             }
         }
     }
@@ -970,7 +956,6 @@ mod tests {
                 }),
                 [1, 8, 7, 6, 5, 4, 3, 2, 1]
             );
-            assert_eq!(encode_reply(Reply::Behind), [3]);
             let backfill = head(Path::Backfill, 0x0102_0304_0506_0708, 0x0a0b_0c0d, 3);
             assert_eq!(
                 encode_reply(backfill),
@@ -990,14 +975,18 @@ mod tests {
 
         #[test]
         fn refuses_unknown_kinds_before_the_length() {
-            check_kinds(Reply::decode, &[1, 2, 3], &[1, 9, 18]);
+            check_kinds(Reply::decode, &[1, 2], &[1, 9, 18]);
+        }
+
+        #[test]
+        fn refuses_the_retired_kind_of_behind() {
+            assert_eq!(Reply::decode(&[3]), Err(Error::Kind { kind: 3 }));
         }
 
         #[test]
         fn refuses_each_wrong_length() {
             check(Reply::decode, 1, &[1, 2, 8, 10, 18]);
             check(Reply::decode, 2, &[1, 2, 17, 19]);
-            check(Reply::decode, 3, &[2, 18]);
         }
 
         #[test]
@@ -1364,10 +1353,6 @@ mod tests {
                 "the body message has 11 bytes, and 10 remain in the body",
             ),
             (
-                Error::Ended,
-                "a hub message came after the home ended the session",
-            ),
-            (
                 Error::Latest { kind: 3 },
                 "the hub message has kind 3, which a latest session does not have",
             ),
@@ -1377,7 +1362,7 @@ mod tests {
             ),
             (
                 Error::Finished,
-                "the home finished the stream before it ended the session",
+                "the home finished the stream outside a body",
             ),
         ];
         for (error, text) in cases {
@@ -1397,7 +1382,6 @@ mod tests {
         let path = prop_oneof![Just(Path::Live), Just(Path::Backfill)];
         prop_oneof![
             any::<u64>().prop_map(|live| Reply::Opened { live }),
-            Just(Reply::Behind),
             (path, any::<u64>(), any::<u32>(), 1..=u32::MAX).prop_map(
                 |(path, seq, count, series)| {
                     head(
@@ -1476,6 +1460,11 @@ mod tests {
         #[test]
         fn round_trips_a_reply(reply in reply()) {
             prop_assert_eq!(Reply::decode(&encode_reply(reply)), Ok(reply));
+        }
+
+        #[test]
+        fn encodes_no_reply_of_the_retired_kind(reply in reply()) {
+            prop_assert_ne!(encode_reply(reply)[0], 3);
         }
 
         #[test]
