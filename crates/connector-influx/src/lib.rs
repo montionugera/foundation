@@ -214,9 +214,9 @@ impl kind::Kind for Kind {
     /// or `matrix` type, with `influx.unsigned` for a `u64` channel to a
     /// [`Target::Database`], and with `influx.bad-channel` for a channel name that is
     /// not a valid field key. The error of [`hub::reader::Ended`] when the reader
-    /// ends. Only the reads at the start: [`Error::Retry`] or [`Error::Config`] from
-    /// [`Context::secret`] when a read fails, and [`Error::Retry`] when the token holds
-    /// a byte that an HTTP header cannot hold, and when the `ca` holds no PEM
+    /// ends. From the reads at the start only: [`Error::Retry`] or [`Error::Config`]
+    /// from [`Context::secret`] when a read fails, and [`Error::Retry`] when the token
+    /// holds a byte that an HTTP header cannot hold, and when the `ca` holds no PEM
     /// certificate or one that does not parse.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         send::run(ctx)

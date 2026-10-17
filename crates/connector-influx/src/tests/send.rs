@@ -957,12 +957,12 @@ fn keeps_the_answer_of_influx_after_a_401_with_a_long_source_and_body() {
 }
 
 /// Runs a plant whose InfluxDB answers the first request 401, at which the token file
-/// holds `bad`, and `new` from 5 s after the start. Gives the `Authorization` header of
-/// each request, the errors, the classes, the points stored, and each value of
-/// `restarts`.
+/// holds `bad`, and `new` from 5 s after the start. Asserts that the run stores the
+/// sample with no restart, and gives the `Authorization` header of each request, the
+/// errors, and the classes.
 fn after_a_bad_token(
     bad: &'static [u8],
-) -> (Vec<Option<String>>, Vec<String>, Vec<u8>, usize, Vec<u64>) {
+) -> (Vec<Option<String>>, Vec<String>, Vec<u8>) {
     run(move |node, tasks| async move {
         let plant = Plant::new(node.clone(), tasks).await;
         let paths = node.paths();
@@ -987,7 +987,8 @@ fn after_a_bad_token(
         let classes = plant.classes.borrow().clone();
         let points = plant.store.borrow().points("telemetry", &[]).count();
         let restarts = plant.restarts.borrow().clone();
-        (auth, errors, classes, points, restarts)
+        assert_eq!((points, restarts), (1, vec![0]), "the run keeps the batch");
+        (auth, errors, classes)
     })
 }
 
@@ -1010,25 +1011,21 @@ fn keeps_the_batch_when_the_token_is_gone_after_a_401() {
                 String::new(),
             ],
             vec![0, RETRY, 0],
-            1,
-            vec![0],
         )
     );
 }
 
 #[test]
 fn keeps_the_batch_at_a_token_that_a_header_cannot_hold_after_a_401() {
-    let (auth, errors, _, points, restarts) = after_a_bad_token(b"t0\nken\n");
+    let (auth, errors, _) = after_a_bad_token(b"t0\nken\n");
     assert_eq!(
-        (auth, errors.get(2), points, restarts),
+        (auth, errors.get(2)),
         (
             vec![Some("Token old".to_owned()), Some("Token new".to_owned())],
             Some(&format!(
                 "the token file(\"{TOKEN_FILE}\") holds a byte that an HTTP header \
                  cannot hold. Write the token with no control byte"
             )),
-            1,
-            vec![0],
         )
     );
 }
@@ -2171,11 +2168,11 @@ fn retries_a_tls_failure_with_a_ca_in_the_run() {
 }
 
 /// Runs a plant whose InfluxDB serves [`Certificate::OtherCa`], with `ca` read from
-/// `file(CA_FILE)`, which holds [`CA`] at the start and each text of `writes` from its
+/// `file(CA_FILE)`, which holds [`CA`] at the start and each text of `texts` from its
 /// second after the first sample. Gives the points stored, the errors, and each value
 /// of `class` and of `restarts`.
 fn after_a_new_ca(
-    writes: &'static [(i64, &'static [u8])],
+    texts: &'static [(i64, &'static [u8])],
 ) -> (usize, Vec<String>, Vec<u8>, Vec<u64>) {
     run_tls(move |node, tasks| async move {
         let paths = node.paths();
@@ -2190,7 +2187,7 @@ fn after_a_new_ca(
         let first = writer.now().nanos();
         write(&mut writer, first, &[(1.0, 2.0)]);
         let mut slept = 0;
-        for &(second, text) in writes {
+        for &(second, text) in texts {
             let wait = (second - slept) * 1_000_000_000;
             plant.clock.sleep(Span::from_nanos(wait)).await;
             slept = second;
