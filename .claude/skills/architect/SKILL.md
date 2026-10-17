@@ -57,7 +57,8 @@ A PR that changes a public surface or a crate's dependencies gets your review be
 person's:
 
 1. Launch a fresh `architecture` agent with the PR number and the decisions section.
-   Remove its worktree when it returns (`git worktree remove --force <path>`).
+   Remove its worktree when it returns, by the exact path that its task notification
+   gives (`git worktree remove --force <path>`), never by a loop.
 2. Check yourself that the surface matches its interface issue and the decisions, and
    that each new public item has a caller on the milestone path.
 3. Post one PR comment. Start it with your name line, then your rating and summary of
