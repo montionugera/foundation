@@ -63,7 +63,12 @@
   plus 53.7 B: 70.7 B for a handoff of 17 B, 126.7 B for a named part of 73 B,
   309.7 B for 256 B, and 4085.7 B for 4032 B, against 22.3 B before the copy. At
   100,000 logs with a handoff and a named part, that is 19.7 MB against 4.5 MB, and
-  an open holds one copy of the largest tag more until it returns (10.4 MB for 73 B).
+  the open peaks at 80.19 MB against 40.02 MB before the copy (box2, sim files,
+  100,000 indexes with an entry of 17 B and one of 73 B): the walk's map of tagged
+  entries and its sorted `Vec` hold 24.9 MB above the kept state until the open
+  returns. `laptop.architect` accepted the peak for 406-1 (#3056,
+  2026-10-17T21:24:52Z,
+  https://github.com/synnaxlabs/foundation/pull/3056#issuecomment-6241330619).
   `laptop.architect` accepted this cost under P1 for what it buys: a carry fills from
   memory with no file read and no new failure, and `newest` and `Shard::open` are
   sync with no error. It supersedes the 48 B bound of `HANDOFF` above, and the 84 B,
