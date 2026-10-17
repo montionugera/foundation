@@ -43,42 +43,30 @@ pub fn read() -> Roots {
 }
 
 /// Where a read of the roots looks, which `SSL_CERT_FILE` and `SSL_CERT_DIR` pick.
-/// Its text is `the OS store`, or `SSL_CERT_FILE=<path>` when the file is set and
+/// With no file and no directory, it is the store of the OS: the certificate files on
+/// Linux, the keychain on macOS. Its text is `the OS store`, or `SSL_CERT_FILE=<path>` when the file is set and
 /// `SSL_CERT_DIR=<paths>`, the paths joined by the separator of the OS (`:`, or `;` on
 /// Windows), when a directory is, with a space between the two.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum Source {
-    /// The store of the OS: the certificate files on Linux, the keychain on macOS.
-    #[default]
-    Store,
-    /// The file and the directories that the environment names, in place of the store.
-    /// It holds a file or at least one directory.
-    Paths {
-        /// The path of `SSL_CERT_FILE`, when it is set.
-        file: Option<PathBuf>,
-        /// Each path of `SSL_CERT_DIR` that is not empty, in order.
-        dirs: Vec<PathBuf>,
-    },
+pub struct Source {
+    /// The path of `SSL_CERT_FILE`, when it is set.
+    pub file: Option<PathBuf>,
+    /// Each path of `SSL_CERT_DIR` that is not empty, in order.
+    pub dirs: Vec<PathBuf>,
 }
 
 impl Source {
-    /// The source that the values of `SSL_CERT_FILE` and `SSL_CERT_DIR` pick: their
-    /// paths when `file` is set or `dirs` holds a path that is not empty, else the
-    /// store.
+    /// The source that the values of `SSL_CERT_FILE` and `SSL_CERT_DIR` pick.
     pub(crate) fn of(file: Option<&OsStr>, dirs: Option<&OsStr>) -> Self {
-        let dirs: Vec<PathBuf> = dirs
-            .map(|dirs| {
-                std::env::split_paths(dirs)
-                    .filter(|path| !path.as_os_str().is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
-        if file.is_none() && dirs.is_empty() {
-            return Self::Store;
-        }
-        Self::Paths {
+        Self {
             file: file.map(PathBuf::from),
-            dirs,
+            dirs: dirs
+                .map(|dirs| {
+                    std::env::split_paths(dirs)
+                        .filter(|path| !path.as_os_str().is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 }
@@ -88,10 +76,10 @@ const SEPARATOR: char = if cfg!(windows) { ';' } else { ':' };
 
 impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (file, dirs) = match self {
-            Self::Store => return f.write_str("the OS store"),
-            Self::Paths { file, dirs } => (file, dirs),
-        };
+        let Self { file, dirs } = self;
+        if file.is_none() && dirs.is_empty() {
+            return f.write_str("the OS store");
+        }
         if let Some(file) = file {
             write!(f, "SSL_CERT_FILE={}", file.display())?;
             if !dirs.is_empty() {
@@ -122,7 +110,7 @@ mod tests {
     #[test]
     fn no_path_of_the_environment_picks_the_store() {
         for dirs in [None, Some(""), Some(":"), Some("::")] {
-            assert_eq!(of(None, dirs), Source::Store, "SSL_CERT_DIR={dirs:?}");
+            assert_eq!(of(None, dirs), Source::default(), "SSL_CERT_DIR={dirs:?}");
         }
         assert_eq!(of(None, None).to_string(), "the OS store");
     }
@@ -132,7 +120,7 @@ mod tests {
         let source = of(Some(""), Some(":"));
         assert_eq!(
             source,
-            Source::Paths {
+            Source {
                 file: Some(PathBuf::new()),
                 dirs: Vec::new(),
             }
@@ -145,7 +133,7 @@ mod tests {
         let source = of(None, Some(":/b::/a:"));
         assert_eq!(
             source,
-            Source::Paths {
+            Source {
                 file: None,
                 dirs: vec![PathBuf::from("/b"), PathBuf::from("/a")],
             }
@@ -155,7 +143,7 @@ mod tests {
 
     #[test]
     fn the_directories_are_joined_by_the_separator_of_the_os() {
-        let source = Source::Paths {
+        let source = Source {
             file: None,
             dirs: vec![PathBuf::from("a"), PathBuf::from("b")],
         };
