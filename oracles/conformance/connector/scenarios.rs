@@ -1,0 +1,527 @@
+//! The scenarios that each connector kind passes, and [`suite!`], which runs each of
+//! them on the [`Device`] of one kind.
+//!
+//! Each scenario runs two sim nodes: the plant, with a rig and the connector, and the
+//! device, with the kind's simulator.
+
+use std::cell::RefCell;
+use std::future::poll_fn;
+use std::net::SocketAddr;
+use std::pin::{Pin, pin};
+use std::rc::Rc;
+use std::task::Poll;
+
+use ::sim::node::Node;
+use ::sim::{Crash, Sim, link};
+use connector::cancel::Token;
+use connector::kind::{Error, Table};
+use connector::status::{Class, Reading, State};
+use connector::testing::{Rig, Run};
+use document::Document;
+use document::diagnostic::{Code, Diagnostic};
+use env::clock::Clock;
+use env::tasks::Tasks;
+use types::name::Name;
+use types::time::Span;
+
+/// What the suite of one kind gives the scenarios.
+pub struct Device {
+    /// The name of the kind in `kinds`.
+    pub kind: &'static str,
+    /// The table that holds the kind.
+    pub kinds: fn() -> Table,
+    /// Defines on the rig what a connector of the kind needs, starts each writer that
+    /// feeds it until `until`, and gives the config of one connector that reaches the
+    /// device at `device`.
+    pub setup: for<'a> fn(Plant<'a>) -> Pin<Box<dyn Future<Output = Document> + 'a>>,
+    /// Runs the kind's simulator on `address` of the device node until `until`, then
+    /// closes each connection and returns.
+    pub serve: fn(Serve) -> Pin<Box<dyn Future<Output = ()>>>,
+    /// The count that grows while data moves.
+    pub progress: &'static str,
+    /// Configs that the kind's check refuses, each with its exact diagnostics.
+    pub refused: fn() -> Vec<(Document, Vec<Diagnostic>)>,
+}
+
+/// The plant that [`Device::setup`] defines on.
+pub struct Plant<'a> {
+    pub rig: &'a Rig,
+    /// The plant node, which runs the rig.
+    pub node: &'a Node,
+    /// The tasks of the shard of the rig.
+    pub tasks: &'a Tasks,
+    /// The address of the device.
+    pub device: SocketAddr,
+    /// Cancelled once the scenario ends.
+    pub until: &'a Token,
+}
+
+/// The inputs of [`Device::serve`].
+pub struct Serve {
+    /// The device node.
+    pub node: Node,
+    /// The tasks of the shard of the simulator.
+    pub tasks: Tasks,
+    /// The address to bind.
+    pub address: SocketAddr,
+    pub until: Token,
+}
+
+/// Expands to one test for each scenario, on `$device`, a [`Device`].
+macro_rules! suite {
+    ($device:expr) => {
+        #[test]
+        fn starts() {
+            $crate::scenarios::starts(&$device);
+        }
+
+        #[test]
+        fn heals_once_an_absent_device_serves() {
+            $crate::scenarios::heals_once_an_absent_device_serves(&$device);
+        }
+
+        #[test]
+        fn heals_after_the_device_stops() {
+            $crate::scenarios::heals_after_the_device_stops(&$device);
+        }
+
+        #[test]
+        fn heals_after_the_device_crashes() {
+            $crate::scenarios::heals_after_the_device_crashes(&$device);
+        }
+
+        #[test]
+        fn stops_while_it_runs() {
+            $crate::scenarios::stops_while_it_runs(&$device);
+        }
+
+        #[test]
+        fn stops_in_a_backoff() {
+            $crate::scenarios::stops_in_a_backoff(&$device);
+        }
+
+        #[test]
+        fn stops_in_a_connect() {
+            $crate::scenarios::stops_in_a_connect(&$device);
+        }
+
+        #[test]
+        fn refuses_each_config_with_its_diagnostics() {
+            $crate::scenarios::refuses_each_config_with_its_diagnostics(&$device);
+        }
+
+        #[test]
+        fn stops_at_a_write_channel_that_the_hub_does_not_define() {
+            $crate::scenarios::stops_at_a_write_channel_that_the_hub_does_not_define(
+                &$device,
+            );
+        }
+    };
+}
+
+pub(crate) use suite;
+
+const SEED: u64 = 1;
+/// The port of the device.
+const PORT: u16 = 9000;
+/// The span of each run of the sim between two asks of the plant.
+const STEP: Span = Span::from_nanos(100_000_000);
+/// How soon a connector of a device that serves is Running with progress.
+const START: Span = Span::from_nanos(10_000_000_000);
+/// How soon a connector of an absent device restarts twice.
+const ABSENT: Span = Span::MINUTE;
+/// How soon a connector shows an error once its device is lost.
+const LOST: Span = Span::from_nanos(30_000_000_000);
+/// How soon a connector heals: the backoff cap of 1 min, plus 10 s.
+const HEAL: Span = Span::from_nanos(70_000_000_000);
+/// How soon [`Run::stop`] returns.
+const STOP: Span = Span::from_nanos(5_000_000_000);
+/// The name of each connector of the scenarios.
+const CONNECTOR: &str = "plant.device";
+
+/// The plant side of a scenario.
+struct Scene {
+    device: &'static Device,
+    rig: Rig,
+    node: Node,
+    tasks: Tasks,
+    /// The device node.
+    host: Node,
+    address: SocketAddr,
+    /// Cancelled once the script returns, for [`Plant::until`].
+    until: Token,
+    /// Cancelled to ask for a crash of the device node.
+    crash: Token,
+    /// Cancelled once the device node crashed.
+    crashed: Token,
+}
+
+/// A simulator that [`Scene::serve`] started.
+struct Served {
+    until: Token,
+    /// Cancelled once the simulator returned.
+    ended: Token,
+}
+
+impl Scene {
+    /// Defines what the kind needs, and gives the config of its connector.
+    async fn setup(&self) -> Document {
+        let plant = Plant {
+            rig: &self.rig,
+            node: &self.node,
+            tasks: &self.tasks,
+            device: self.address,
+            until: &self.until,
+        };
+        (self.device.setup)(plant).await
+    }
+
+    /// Starts the kind's simulator on a new shard of the device node.
+    fn serve(&self) -> Served {
+        let (until, ended) = (Token::new(), Token::new());
+        let (node, address) = (self.host.clone(), self.address);
+        let (stop, end, serve) = (until.clone(), ended.clone(), self.device.serve);
+        let started = self.host.shards().start(shard("device"), move |tasks| {
+            async move {
+                let until = stop;
+                serve(Serve {
+                    node,
+                    tasks,
+                    address,
+                    until,
+                })
+                .await;
+                end.cancel();
+            }
+        });
+        drop(started.expect("the device shard starts"));
+        Served { until, ended }
+    }
+
+    /// Stops the simulator, and waits until it returned.
+    async fn stop(&self, served: Served) {
+        served.until.cancel();
+        served.ended.wait().await;
+    }
+
+    /// Crashes the device node with [`Crash::Power`], so no segment of its streams
+    /// reaches the plant.
+    async fn crash(&self) {
+        self.crash.cancel();
+        self.crashed.wait().await;
+    }
+
+    async fn supervise(&self, config: Document) -> Run {
+        let name = CONNECTOR.parse().expect("a valid name");
+        self.rig.supervise(self.device.kind, name, config).await
+    }
+
+    /// The progress count of `reading`.
+    fn progress(&self, reading: &Reading) -> u64 {
+        let progress: Name = self.device.progress.parse().expect("a valid name");
+        let Some(&count) = reading.counts.get(&progress) else {
+            panic!("the status has no count {progress}: {reading:?}")
+        };
+        count
+    }
+
+    /// Waits until the connector is Running with no error and progress above `from`.
+    async fn running(&self, run: &mut Run, within: Span, from: u64) -> Reading {
+        let done = |reading: &Reading| {
+            reading.state == State::Running
+                && reading.error.is_none()
+                && self.progress(reading) > from
+        };
+        run.until(within, done).await
+    }
+
+    /// Gives what `future` gives, and panics when it takes longer than `within`.
+    async fn within<T>(&self, within: Span, what: &str, future: impl Future<Output = T>) -> T {
+        let clock: Clock = self.node.clock();
+        let (mut late, mut future) = (pin!(clock.sleep(within)), pin!(future));
+        let given = poll_fn(|cx| match future.as_mut().poll(cx) {
+            Poll::Ready(given) => Poll::Ready(Some(given)),
+            Poll::Pending => late.as_mut().poll(cx).map(|()| None),
+        });
+        given
+            .await
+            .unwrap_or_else(|| panic!("{what} takes more than {within}"))
+    }
+}
+
+fn shard(name: &str) -> env::shards::Config {
+    env::shards::Config {
+        name: name.into(),
+        core: None,
+    }
+}
+
+/// Runs `script` on the plant node of a new sim, after `prepare` sets the links of
+/// the sim. Crashes the device node at each ask of the script, between two runs. Once
+/// the script returns, the run of the sim must end: a task or a stream that the
+/// script left keeps it from its end.
+fn run<S, F>(device: &'static Device, prepare: fn(&mut Sim, &Node, &Node), script: S)
+where
+    S: FnOnce(Rc<Scene>) -> F + Send + 'static,
+    F: Future<Output = ()> + 'static,
+{
+    let mut sim = Sim::new(::sim::Config {
+        seed: SEED,
+        ..::sim::Config::default()
+    });
+    let (plant, host) = (
+        sim.node(::sim::node::Config::default()),
+        sim.node(::sim::node::Config::default()),
+    );
+    prepare(&mut sim, &plant, &host);
+    let (crash, crashed, done) = (Token::new(), Token::new(), Token::new());
+    let (node, inputs) = (plant.clone(), (host.clone(), crash.clone(), crashed.clone()));
+    let end = done.clone();
+    let started = plant.shards().start(shard("plant"), move |tasks| async move {
+        let env = hub::testing::Env {
+            files: node.files(),
+            clock: node.clock(),
+            wall: node.wall(),
+            entropy: node.entropy(),
+            tasks: tasks.clone(),
+        };
+        let rig = Rig::open(env, node.net(), (device.kinds)()).await;
+        let (host, crash, crashed) = inputs;
+        let address = SocketAddr::new(host.addresses()[0], PORT);
+        let scene = Rc::new(Scene {
+            device,
+            rig,
+            node,
+            tasks,
+            host,
+            address,
+            until: Token::new(),
+            crash,
+            crashed,
+        });
+        script(Rc::clone(&scene)).await;
+        scene.until.cancel();
+        end.cancel();
+    });
+    drop(started.expect("the plant shard starts"));
+    while !done.cancelled() {
+        sim.run_for(STEP).expect("the run goes on");
+        if crash.cancelled() && !crashed.cancelled() {
+            sim.crash(&host, Crash::Power);
+            crashed.cancel();
+        }
+    }
+    sim.run().expect("each task of the run ends");
+}
+
+/// No link changes.
+fn direct(_: &mut Sim, _: &Node, _: &Node) {}
+
+/// Within 10 s: Running, no error, no restart, and progress above 0.
+pub fn starts(device: &'static Device) {
+    run(device, direct, move |scene| async move {
+        let config = scene.setup().await;
+        let served = scene.serve();
+        let mut run = scene.supervise(config).await;
+        let reading = scene.running(&mut run, START, 0).await;
+        assert_eq!(reading.restarts, 0, "{reading:?}");
+        run.stop().await.expect("the run ends with no error");
+        scene.stop(served).await;
+    });
+}
+
+/// With no simulator, within 1 min: Restarting, class Device or Retry, never Config,
+/// and restarts that grow. Then the simulator starts, and the connector heals.
+pub fn heals_once_an_absent_device_serves(device: &'static Device) {
+    run(device, direct, move |scene| async move {
+        let config = scene.setup().await;
+        let mut run = scene.supervise(config).await;
+        let done = |reading: &Reading| {
+            let config = matches!(reading.error, Some((Class::Config, _)));
+            config || (reading.state == State::Restarting && reading.restarts >= 2)
+        };
+        let reading = run.until(ABSENT, done).await;
+        let class = reading.error.as_ref().map(|(class, _)| *class);
+        assert!(
+            matches!(class, Some(Class::Device | Class::Retry)),
+            "{reading:?}"
+        );
+        let from = scene.progress(&reading);
+        let served = scene.serve();
+        scene.running(&mut run, HEAL, from).await;
+        run.stop().await.expect("the run ends with no error");
+        scene.stop(served).await;
+    });
+}
+
+/// The simulator stops, each connection closed. The connector heals once it serves
+/// again.
+pub fn heals_after_the_device_stops(device: &'static Device) {
+    run(device, direct, move |scene| async move {
+        lost(&scene, |scene, served| {
+            Box::pin(async move { scene.stop(served).await })
+        })
+        .await;
+    });
+}
+
+/// The device node crashes, so no close reaches the plant. The connector heals once
+/// the device serves again.
+pub fn heals_after_the_device_crashes(device: &'static Device) {
+    run(device, direct, move |scene| async move {
+        lost(&scene, |scene, served| {
+            drop(served);
+            Box::pin(scene.crash())
+        })
+        .await;
+    });
+}
+
+/// The device is lost to `lose` while the connector runs. Within 30 s: an error of
+/// class Device or Retry. Then the simulator starts again: the connector heals, and
+/// no count goes down.
+async fn lost<'a>(
+    scene: &'a Scene,
+    lose: impl FnOnce(&'a Scene, Served) -> Pin<Box<dyn Future<Output = ()> + 'a>>,
+) {
+    let config = scene.setup().await;
+    let served = scene.serve();
+    let mut run = scene.supervise(config).await;
+    let last = RefCell::new(scene.running(&mut run, START, 0).await);
+    // Each reading of the run, as `Run::until` gives none but the last.
+    let seen = |reading: &Reading| {
+        let mut last = last.borrow_mut();
+        let down = |(name, count): (&Name, &u64)| {
+            reading.counts.get(name).is_none_or(|now| now < count)
+        };
+        let went = last.counts.iter().find(|&count| down(count));
+        assert!(went.is_none(), "{went:?} went down: {reading:?}");
+        assert!(reading.restarts >= last.restarts, "{reading:?}");
+        *last = reading.clone();
+    };
+    lose(scene, served).await;
+    let error = |reading: &Reading| {
+        seen(reading);
+        reading.error.is_some()
+    };
+    let reading = run.until(LOST, error).await;
+    let class = reading.error.as_ref().map(|(class, _)| *class);
+    assert!(
+        matches!(class, Some(Class::Device | Class::Retry)),
+        "{reading:?}"
+    );
+    let from = scene.progress(&reading);
+    let served = scene.serve();
+    let healed = |reading: &Reading| {
+        seen(reading);
+        reading.state == State::Running
+            && reading.error.is_none()
+            && scene.progress(reading) > from
+    };
+    run.until(HEAL, healed).await;
+    run.stop().await.expect("the run ends with no error");
+    scene.stop(served).await;
+}
+
+/// `Run::stop` of `run` gives `Ok` within 5 s, and the plant then holds no stream.
+async fn stopped(scene: &Scene, run: Run) {
+    let end = scene.within(STOP, "the stop", run.stop()).await;
+    end.expect("the run ends with no error");
+    assert_eq!(scene.node.streams(), 0, "the plant holds no stream");
+}
+
+/// Stops the connector while it runs.
+pub fn stops_while_it_runs(device: &'static Device) {
+    run(device, direct, move |scene| async move {
+        let config = scene.setup().await;
+        let served = scene.serve();
+        let mut run = scene.supervise(config).await;
+        scene.running(&mut run, START, 0).await;
+        stopped(&scene, run).await;
+        scene.stop(served).await;
+    });
+}
+
+/// Stops the connector in the backoff after a failed connect.
+pub fn stops_in_a_backoff(device: &'static Device) {
+    run(device, direct, move |scene| async move {
+        let config = scene.setup().await;
+        let mut run = scene.supervise(config).await;
+        let backoff = |reading: &Reading| reading.state == State::Restarting;
+        run.until(ABSENT, backoff).await;
+        stopped(&scene, run).await;
+    });
+}
+
+/// Stops the connector while it connects to a device whose link delays each packet
+/// by 1 h. Waits on #3040 for the form of a link that loses each packet.
+pub fn stops_in_a_connect(device: &'static Device) {
+    let slow = |sim: &mut Sim, plant: &Node, host: &Node| {
+        let delay = link::Config {
+            delay: Span::HOUR,
+            ..link::Config::default()
+        };
+        sim.link(plant, host, delay);
+    };
+    run(device, slow, |scene| async move {
+        let config = scene.setup().await;
+        let served = scene.serve();
+        let run = scene.supervise(config).await;
+        scene.node.clock().sleep(Span::SECOND).await;
+        assert_eq!(scene.node.streams(), 1, "the plant connects");
+        stopped(&scene, run).await;
+        scene.stop(served).await;
+    });
+}
+
+/// Each config of [`Device::refused`] gives exactly its diagnostics from the check,
+/// and the same [`Error::Config`] from a supervised run.
+pub fn refuses_each_config_with_its_diagnostics(device: &'static Device) {
+    run(device, direct, move |scene| async move {
+        let kinds = (device.kinds)();
+        let refused = (device.refused)();
+        assert!(!refused.is_empty(), "the kind refuses a config");
+        for (config, diagnostics) in refused {
+            let checked = kinds.check(device.kind, None, &config);
+            assert_eq!(checked.map(drop), Err(diagnostics.clone()), "{config:?}");
+            let run = scene.supervise(config).await;
+            match run.stop().await {
+                Err(Error::Config(given)) => assert_eq!(given, diagnostics),
+                other => panic!("a config error, not {other:?}"),
+            }
+        }
+    });
+}
+
+/// For a kind whose check gives writes, a write channel that the hub does not define
+/// gives Stopped, class Config, no restart, and the text of
+/// `connector.unknown-channel`.
+pub fn stops_at_a_write_channel_that_the_hub_does_not_define(device: &'static Device) {
+    run(device, direct, move |scene| async move {
+        let config = scene.setup().await;
+        let checked = (device.kinds)().check(device.kind, None, &config);
+        let writes = checked.expect("the config of the setup checks").writes;
+        let Some(missing) = writes.first() else {
+            return;
+        };
+        scene.rig.remove(std::slice::from_ref(missing));
+        let served = scene.serve();
+        let mut run = scene.supervise(config).await;
+        let stopped = |reading: &Reading| reading.state == State::Stopped;
+        let reading = run.until(START, stopped).await;
+        let unknown = Diagnostic::new(
+            Code::new("connector.unknown-channel"),
+            None,
+            format!("no channel is named {missing}"),
+            "Define the channel in the spec".into(),
+        );
+        let text = Error::Config(vec![unknown.clone()]).to_string();
+        let given = (reading.restarts, reading.error.clone());
+        assert_eq!(given, (0, Some((Class::Config, text))), "{reading:?}");
+        match run.stop().await {
+            Err(Error::Config(given)) => assert_eq!(given, [unknown]),
+            other => panic!("a config error, not {other:?}"),
+        }
+        scene.stop(served).await;
+    });
+}
