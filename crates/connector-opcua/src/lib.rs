@@ -115,7 +115,8 @@ mod tests {
 
     /// The builds of `compiler::builds`, for `TARGET` and with the compiler `path`.
     fn builds(path: &str) -> compiler::Builds {
-        let mut builds = compiler::builds(Path::new("/copy"), "-std=c99", "a.c");
+        let copy = Path::new("/copy");
+        let mut builds = compiler::builds(copy, "-std=c99", "a.c", "/crypto".into());
         for build in [&mut builds.library, &mut builds.shim] {
             child::tool(build.compiler(path), TARGET);
         }
@@ -278,14 +279,15 @@ mod tests {
         if !child::running() {
             return;
         }
-        let configure_with = |vars| {
-            compiler::configure(
-                Path::new("/copy"),
-                "",
-                "a.c",
-                Path::new("/crypto"),
-                env(vars),
-            )
+        let configure_in = |vars: Vars<'_>| {
+            let vars: Vec<_> = vars
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect();
+            compiler::configure(Path::new("/copy"), "", "a.c", &vars)
+        };
+        let configure_with = |vars: Vars<'_>| {
+            configure_in(&[vars, &[("DEP_AWS_LC_0_45_0_INCLUDE", "/crypto")]].concat())
         };
         let configure =
             |vars| configure_with(vars).map(|builds| builds.address_sanitized);
@@ -308,19 +310,21 @@ mod tests {
         };
         assert_eq!(server(&[FUZZING]), (false, false));
         assert_eq!(server(&[FUZZING, ("CARGO_FEATURE_SIM", "1")]), (true, true));
-        let builds = configure_with(&[FUZZING]).unwrap();
-        let crypto = [builds.library, builds.shim].map(|build| {
-            let args = args(&tool(build, "/missing/gcc"));
-            includes(&args).contains(&"/crypto")
-        });
-        assert_eq!(crypto, [true, false]);
+        let libcrypto = configure_with(&[FUZZING]).unwrap().libcrypto;
+        assert_eq!(libcrypto, Path::new("/crypto"));
+        assert_eq!(
+            configure_in(&[FUZZING]).map(|builds| builds.libcrypto),
+            Err("connector-opcua: the build script has 0 variables \
+                 DEP_AWS_LC_<version>_INCLUDE, not one: []"
+                .to_string())
+        );
     }
 
     #[test]
-    fn crypto_takes_the_one_include_of_aws_lc() {
+    fn libcrypto_takes_the_one_include_of_aws_lc() {
         let vars = |vars: &[(&str, &str)]| {
             let vars = vars.iter().map(|(n, v)| ((*n).to_owned(), (*v).to_owned()));
-            compiler::crypto(vars.collect::<Vec<_>>())
+            compiler::libcrypto(&vars.collect::<Vec<_>>())
         };
         let include = ("DEP_AWS_LC_0_45_0_INCLUDE", "/a");
         let others = [
@@ -344,6 +348,19 @@ mod tests {
                 2,
                 "[(\"DEP_AWS_LC_0_45_0_INCLUDE\", \"/a\"), \
                  (\"DEP_AWS_LC_0_46_0_INCLUDE\", \"/f\")]"
+            )
+        );
+    }
+
+    #[test]
+    fn prefix_reads_the_define_of_aws_lc() {
+        let header = "#ifndef X\n#define BORINGSSL_PREFIX aws_lc_0_45_0 \n#endif\n";
+        assert_eq!(compiler::prefix(header), Ok("aws_lc_0_45_0_".to_owned()));
+        assert_eq!(
+            compiler::prefix("#define BORINGSSL_PREFIX_SYMBOLS_H\n"),
+            Err(
+                "connector-opcua: the headers of aws-lc-sys define no BORINGSSL_PREFIX"
+                    .to_owned()
             )
         );
     }
@@ -381,8 +398,9 @@ mod tests {
             return;
         }
         let copy = Path::new("/copy");
+        let flags = "-Ideps\n-Iinclude\n-std=c99";
         let compiler::Builds { library, shim, .. } =
-            compiler::builds(copy, "-Ideps\n-Iinclude\n-std=c99", "a.c\nsrc/b.c");
+            compiler::builds(copy, flags, "a.c\nsrc/b.c", "/crypto".into());
         assert_eq!(
             library.get_files().collect::<Vec<_>>(),
             [copy.join("a.c"), copy.join("src/b.c")]
@@ -409,7 +427,11 @@ mod tests {
             }
             let library = args(&tool(library.clone(), path));
             assert!(library.contains(&header), "{path}: {library:?}");
-            assert_eq!(includes(&library), dirs, "{path}: {library:?}");
+            assert_eq!(
+                includes(&library),
+                [dirs[0].as_str(), &dirs[1], "/crypto"],
+                "{path}: {library:?}"
+            );
             assert!(
                 library.iter().any(|a| a == "-std=c99"),
                 "{path}: {library:?}"

@@ -199,7 +199,7 @@ fn shim_compiler() -> cc::Tool {
     let copy = std::path::Path::new(ROOT).join("../../patches/open62541");
     let flags = std::fs::read_to_string(copy.join("flags.txt")).unwrap();
     let target = env!("CONNECTOR_OPCUA_TARGET");
-    let mut shim = crate::compiler::builds(&copy, &flags, "").shim;
+    let mut shim = crate::compiler::builds(&copy, &flags, "", LIBCRYPTO.into()).shim;
     crate::compiler::sim(&mut shim, &copy);
     shim.target(target)
         .host(target)
@@ -414,7 +414,7 @@ fn the_copy_links_the_timer() {
     assert_eq!(distinct.len(), functions.len());
 }
 
-/// Each symbol outside the copy, `shim.c`, `server.c`, and the libcrypto ([`crypto`])
+/// Each symbol outside the copy, `shim.c`, `server.c`, and the libcrypto ([`PREFIX`])
 /// that they may name in glibc: on x86-64 with GCC or Clang at each optimization level,
 /// and on 64-bit Arm with Clang at `-O2` and `-moutline-atomics`. Only
 /// `UA_CertificateUtils_getThumbprint` of the OpenSSL plugins calls `malloc` and
@@ -469,27 +469,22 @@ const OUTSIDE: [&str; 45] = [
 ];
 
 /// The prefix that the headers of the libcrypto of `aws-lc-sys` give each of its
-/// symbols. `cargo xtask open62541` lists each that the copy may name.
-fn crypto() -> String {
-    let dir = std::path::Path::new(env!("CONNECTOR_OPCUA_CRYPTO"));
-    let path = dir.join("openssl/boringssl_prefix_symbols.h");
-    let text = std::fs::read_to_string(&path).unwrap();
-    let prefix = text
-        .lines()
-        .find_map(|line| line.strip_prefix("#define BORINGSSL_PREFIX "));
-    format!("{}_", prefix.expect("names the prefix").trim())
-}
+/// symbols, with the `_` that ends it. `cargo xtask open62541` lists each that the
+/// copy may name.
+const PREFIX: &str = env!("CONNECTOR_OPCUA_PREFIX");
+
+/// The include directory of the libcrypto of `aws-lc-sys`.
+const LIBCRYPTO: &str = env!("CONNECTOR_OPCUA_LIBCRYPTO");
 
 #[test]
-fn crypto_gives_the_prefix_of_aws_lc() {
-    let prefix = crypto();
-    let version = prefix
+fn the_prefix_names_a_version_of_aws_lc() {
+    let version = PREFIX
         .strip_prefix("aws_lc_")
         .and_then(|v| v.strip_suffix('_'));
     let numbers = version.map(|v| v.split('_').map(str::parse::<u32>).collect());
     assert!(
         matches!(numbers, Some(Ok(n)) if Vec::len(&n) == 3),
-        "{prefix}"
+        "{PREFIX}"
     );
 }
 
@@ -574,24 +569,19 @@ fn the_c_names_only_the_listed_symbols_outside_it() {
     let outside: Vec<&str> =
         undefined.difference(&defined).map(String::as_str).collect();
     assert!(outside.contains(&"connector_opcua_malloc"), "{outside:?}");
-    let prefix = crypto();
     let unlisted: Vec<&str> = outside
         .into_iter()
         .filter(|name| {
             !(OUTSIDE.contains(name)
-                || name.starts_with(&prefix)
+                || name.starts_with(PREFIX)
                 || (cfg!(asan) && sanitizer(name)))
         })
         .collect();
     assert!(unlisted.is_empty(), "the C names {unlisted:?}");
 }
 
-/// Neither the shim nor the test server takes a value from the PCG32 generator of the
-/// copy, which OPEN62541 SOURCE bars for each nonce, key, and session token of
-/// Foundation code.
-#[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "needs GNU nm")]
-fn the_shim_draws_nothing_from_the_generator_of_the_copy() {
+/// The undefined symbols of the objects of `shim.c` and the test server `server.c`.
+fn shim_undefined() -> std::collections::BTreeSet<String> {
     let shim: Vec<_> = std::fs::read_dir(env!("OUT_DIR"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -605,11 +595,39 @@ fn the_shim_draws_nothing_from_the_generator_of_the_copy() {
     for name in ["UA_Client_newWithConfig", "UA_Server_newWithConfig"] {
         assert!(undefined.contains(name), "{name} in {undefined:?}");
     }
+    undefined
+}
+
+/// Neither the shim nor the test server takes a value from the PCG32 generator of the
+/// copy, which OPEN62541 SOURCE bars for each nonce, key, and session token of
+/// Foundation code.
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "needs GNU nm")]
+fn the_shim_draws_nothing_from_the_generator_of_the_copy() {
+    let undefined = shim_undefined();
     let drawn: Vec<_> = ["UA_UInt32_random", "UA_Guid_random"]
         .into_iter()
         .filter(|name| undefined.contains(*name))
         .collect();
     assert!(drawn.is_empty(), "the shim calls {drawn:?}");
+}
+
+/// [`OUTSIDE`] admits the libcrypto and the allocator and console of libc for the
+/// OpenSSL plugins of the copy, which `cargo xtask open62541` keys. Neither the shim nor
+/// the test server names one, so neither calls aws-lc unseen nor frees a block of
+/// `src/alloc.rs` with `free`.
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "needs GNU nm")]
+fn the_shim_names_neither_the_libcrypto_nor_the_allocator_of_libc() {
+    let named: Vec<_> = shim_undefined()
+        .into_iter()
+        .filter(|name| {
+            name.starts_with(PREFIX)
+                || ["malloc", "free", "fgets", "fwrite", "stdin"]
+                    .contains(&name.as_str())
+        })
+        .collect();
+    assert!(named.is_empty(), "the shim names {named:?}");
 }
 
 /// The directory of the crate.
@@ -1361,16 +1379,29 @@ fn the_copy_holds_only_the_three_current_policies() {
     );
 }
 
-/// Checks the reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
-/// open62541`: the default config of a client has only the policy `None`, and the
-/// production code names no security policy and no function that adds one, other
-/// than the stubs that abort.
+/// The name of the stub of `shim.c` that `line` defines or refuses:
+/// `REFUSE_RSA(name)`, `REFUSE_ECC(name)`, `UA_StatusCode name(`, or `refuse("name");`.
+fn stub(line: &str) -> Option<&str> {
+    let refused = line.strip_prefix("REFUSE_RSA(");
+    let refused = refused.or_else(|| line.strip_prefix("REFUSE_ECC("));
+    let defined = || line.strip_prefix("UA_StatusCode ")?.split_once('(');
+    let named = || line.trim().strip_prefix("refuse(\"")?.strip_suffix("\");");
+    refused
+        .and_then(|rest| rest.strip_suffix(')'))
+        .or_else(|| defined().map(|(name, _)| name))
+        .or_else(named)
+}
+
+/// Checks the reasons of the clock keys of `encryptUserIdentityTokenEcc` and
+/// `openSSL_verifyChain` in `cargo xtask open62541`: the default config of a client has
+/// only the policy `None`, and the production code names no security policy, no
+/// certificate group, and no function that adds one, other than at the stubs of
+/// `shim.c` that abort.
 #[test]
 fn the_production_code_gives_a_client_no_security_policy() {
     let policy = |name: &str| {
-        (name.starts_with("UA_SecurityPolicy_")
-            && !REFUSED.contains(&name)
-            && name != "UA_SecurityPolicy_Filestore")
+        name.starts_with("UA_SecurityPolicy_")
+            || name.starts_with("UA_CertificateGroup_")
             || [
                 "UA_ClientConfig_setDefaultEncryption",
                 "UA_ClientConfig_setAuthenticationCert",
@@ -1379,8 +1410,25 @@ fn the_production_code_gives_a_client_no_security_policy() {
             ]
             .contains(&name)
     };
-    let named = named_in_production(&root(), policy);
-    assert!(named.is_empty(), "names {named:?}");
+    let shim = root().join("src/shim.c");
+    let text = std::fs::read_to_string(&shim).unwrap();
+    let stubs: Vec<_> = (1..)
+        .zip(text.lines())
+        .filter_map(|(line, text)| Some((line, stub(text).filter(|n| policy(n))?)))
+        .collect();
+    let names: std::collections::BTreeSet<_> = stubs.iter().map(|(_, n)| *n).collect();
+    let refused = REFUSED.iter().filter(|name| policy(name));
+    let mut expected: std::collections::BTreeSet<_> = refused.copied().collect();
+    expected.extend([
+        "UA_CertificateGroup_Filestore",
+        "UA_SecurityPolicy_Filestore",
+    ]);
+    assert_eq!(names, expected);
+    let at_stubs: Vec<_> = stubs
+        .iter()
+        .map(|(line, name)| format!("{}:{line}: {name}", shim.display()))
+        .collect();
+    assert_eq!(named_in_production(&root(), policy), at_stubs);
 }
 
 /// When this test binary links the address sanitizer, the sanitizer instruments the C
@@ -1438,7 +1486,7 @@ fn the_c_on_64_bit_arm_names_only_the_listed_symbols_outside_it() {
                     None => preprocess.arg(flag),
                 };
             }
-            preprocess.arg(concat!("-I", env!("CONNECTOR_OPCUA_CRYPTO")));
+            preprocess.arg(format!("-I{LIBCRYPTO}"));
             let status = preprocess
                 .arg(copy.join(source))
                 .arg("-o")
@@ -1469,13 +1517,12 @@ fn the_c_on_64_bit_arm_names_only_the_listed_symbols_outside_it() {
         undefined.contains("connector_opcua_malloc"),
         "{undefined:?}"
     );
-    let prefix = crypto();
     let unlisted: Vec<String> = undefined
         .into_iter()
         .filter(|name| {
             !(defined.contains(name)
                 || OUTSIDE.contains(&name.as_str())
-                || name.starts_with(&prefix))
+                || name.starts_with(PREFIX))
         })
         .collect();
     assert!(unlisted.is_empty(), "the C names {unlisted:?}");
