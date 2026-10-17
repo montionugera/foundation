@@ -1291,11 +1291,14 @@ mod tests {
         assert_large(&mut area, &batch, limit);
     }
 
+    /// The first tagged entry over [`Layout::ENTRY_MAX_MIN`] names the limit, and the
+    /// same bytes with tag 0 fit.
     #[test]
     fn refuses_a_tagged_entry_over_entry_max_min() {
         let mut area = Area::with_body_max(60_000);
         let over = parts(&area.pool, &[&[7; 2_000], &[7; 2_033]]);
         let at = parts(&area.pool, &[&[7; 4_032]]);
+        let later = parts(&area.pool, &[&[7; 4_100]]);
         area.pool = pool(1 << 16);
         assert_eq!(area.block_max(), 6_657);
         let tagged = Header {
@@ -1305,6 +1308,7 @@ mod tests {
         let batch = [
             entry(header(2, Path::Live, 0), Parts::default()),
             entry(tagged, over.clone()),
+            entry(tagged, later),
         ];
         let limit = Limit::Tagged {
             len: 4_033,
