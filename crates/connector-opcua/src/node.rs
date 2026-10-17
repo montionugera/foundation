@@ -34,7 +34,6 @@ pub(crate) mod ns0 {
     /// The data type `Enumeration`.
     pub(crate) const ENUMERATION: u32 = 29;
     /// The Objects folder.
-    #[cfg(any(test, feature = "sim"))]
     pub(crate) const OBJECTS: u32 = 85;
     /// The reference type `Organizes`.
     #[cfg(any(test, feature = "sim"))]

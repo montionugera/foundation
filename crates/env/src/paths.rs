@@ -247,16 +247,19 @@ impl Paths {
             path.parent(),
             path.file_name(),
         ) {
-            // A link to nothing or a loop does not resolve. The call makes nothing
-            // through a link at `path`, so its directory is what the limits check: no
-            // folder is at a name that does not resolve.
-            (Err(Error::NotFound | Error::Io { .. }), Some(dir), Some(_)) => {
+            // A link to nothing, a loop, or a file with `/` at the end does not
+            // resolve. The call makes nothing through a link at `path`, so the limits
+            // check its name in its directory, with the key of the file at that
+            // name. A link that does not resolve has no key.
+            (Err(Error::NotFound | Error::Io { .. }), Some(dir), Some(name)) => {
                 let dir = if dir.as_os_str().is_empty() {
                     Path::new(".")
                 } else {
                     dir
                 };
-                self.allowed(dir, &self.driver.resolve(dir)?, Call::Make)?;
+                let own = self.driver.key(&dir.join(name)).ok();
+                let resolved = self.driver.resolve(dir)?.join(name);
+                self.allowed(own, &resolved, Call::Make)?;
                 self.driver.make_dir(path)?;
                 // A link that does not resolve can still lead to a directory, which
                 // the place does not hold. A directory made at the place resolves.
@@ -275,14 +278,20 @@ impl Paths {
         if self.limits.is_empty() {
             return Ok(());
         }
-        self.allowed(path, &self.driver.resolve(path)?, call)
+        let resolved = self.driver.resolve(path)?;
+        self.allowed(self.key(path)?, &resolved, call)
     }
 
-    /// `Ok` when `path`, which resolves to `resolved`, passes each limit for `call`.
-    fn allowed(&self, path: &Path, resolved: &Path, call: Call) -> Result<(), Error> {
-        // The key of the file itself comes from `path`, as the call reaches it: the
-        // resolved path of a new name can be longer than the host takes.
-        let own = self.key(path)?;
+    /// `Ok` when the file at `resolved`, whose key is `own`, passes each limit for
+    /// `call`. `None` is a name with no key: nothing, or a link that does not resolve.
+    /// The caller takes `own` from the path as the call reaches it: the resolved path
+    /// of a new name can be longer than the host takes.
+    fn allowed(
+        &self,
+        own: Option<Key>,
+        resolved: &Path,
+        call: Call,
+    ) -> Result<(), Error> {
         let mut dirs = Vec::new();
         for dir in resolved.ancestors().skip(1) {
             dirs.push(self.driver.key(dir)?);
@@ -664,15 +673,21 @@ mod tests {
 
     #[test]
     fn make_dir_checks_a_path_that_does_not_resolve_by_its_place() {
-        let free = Paths::new(One::default());
-        let paths = free.within(&["/none".into()], &[]).unwrap();
+        // A new `One` for each path: a made directory makes each name in `/none`
+        // resolve.
+        let within = |folder: &str| {
+            let free = Paths::new(One::default());
+            free.within(&[folder.into()], &[]).unwrap()
+        };
         assert_eq!(
-            paths.make_dir(Path::new("/none/deep")),
+            within("/none").make_dir(Path::new("/none/deep")),
             Err(Error::NotFound)
         );
-        assert_eq!(paths.make_dir(Path::new("/none/link")), Ok(()));
-        let paths = free.within(&["/work".into()], &[]).unwrap();
-        assert_eq!(paths.make_dir(Path::new("/none/a")), Err(Error::Outside));
+        assert_eq!(within("/none").make_dir(Path::new("/none/link")), Ok(()));
+        for path in ["/none/a", "/none/deep"] {
+            let made = within("/work").make_dir(Path::new(path));
+            assert_eq!(made, Err(Error::Outside), "{path}");
+        }
     }
 
     #[test]

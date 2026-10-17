@@ -4,14 +4,12 @@
 use std::num::NonZeroU8;
 use std::str;
 
-use block::Block;
-use buffer::{Buffer, Entry, Layout};
+use buffer::{Buffer, Layout};
 use control::{Handoff, Writer};
 use types::authority::Authority;
-use types::channel::{self, Slot};
+use types::channel::Slot;
 use types::frame::Path;
 use types::name::Name;
-use types::time::Stamp;
 
 use crate::state;
 
@@ -25,43 +23,21 @@ const _: () = assert!(
     "a handoff fits one entry of any ring"
 );
 
-/// The buffer entry that records `handoff` on the live path of the index `index` at
-/// `slot`, at seq `first` and mesh time `stored_at`. Its body is a block from `pool`,
-/// or no part when no writer holds control.
-///
-/// # Errors
-///
-/// [`block::Error`] when `pool` has no block for the bytes.
-pub(crate) fn entry(
-    pool: &block::Pool,
-    handoff: Handoff<'_>,
-    index: channel::Key,
-    slot: Slot,
-    first: u64,
-    stored_at: Stamp,
-) -> Result<Entry, block::Error> {
-    let body = body(pool, handoff)?;
-    Ok(state::entry(TAG, body, index, slot, first, stored_at))
+/// Appends the entry that records `handoff`, alone, with `head`, and returns what
+/// [`state::append`] does.
+pub(crate) fn append(buffer: &Buffer, handoff: Handoff<'_>, head: state::Head) -> bool {
+    state::append(buffer, TAG, body(handoff).as_deref(), head)
 }
 
-/// The body of the entry that records `handoff`: a block from `pool`, or `None` when
-/// no writer holds control.
-///
-/// # Errors
-///
-/// [`block::Error`] when `pool` has no block for the bytes.
-fn body(
-    pool: &block::Pool,
-    handoff: Handoff<'_>,
-) -> Result<Option<Block>, block::Error> {
-    let Some(holder) = handoff.to else {
-        return Ok(None);
-    };
+/// The body of the entry that records `handoff`, or `None` when no writer holds
+/// control.
+fn body(handoff: Handoff<'_>) -> Option<Vec<u8>> {
+    let holder = handoff.to?;
     let subject = holder.subject.as_str().as_bytes();
-    let mut block = pool.alloc(1 + subject.len())?;
-    block[0] = holder.authority.0;
-    block[1..].copy_from_slice(subject);
-    Ok(Some(block.freeze()))
+    let mut body = Vec::with_capacity(1 + subject.len());
+    body.push(holder.authority.0);
+    body.extend_from_slice(subject);
+    Some(body)
 }
 
 /// The holder that the newest durable handoff of each index in `buffer` names, with
@@ -110,57 +86,11 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::common::{create_pool, key};
 
     fn writer(subject: &str, authority: u8) -> Writer {
         Writer {
             subject: subject.parse().expect("a valid name"),
             authority: Authority(authority),
-        }
-    }
-
-    mod entry {
-        use super::*;
-
-        #[test]
-        fn records_the_holder_on_the_live_path_at_first() {
-            let holder = writer("plant.pump-1", 7);
-            let stored_at = Stamp::from_nanos(9);
-
-            let entry = entry(
-                &create_pool(4096),
-                Handoff { to: Some(&holder) },
-                key(Slot::new(4)),
-                Slot::new(4),
-                12,
-                stored_at,
-            )
-            .expect("room");
-
-            let place = (entry.index, entry.slot, entry.path, entry.first);
-            assert_eq!(place, (key(Slot::new(4)), Slot::new(4), Path::Live, 12));
-            assert_eq!(
-                (entry.samples, entry.stored_at, entry.tag),
-                (None, stored_at, 1)
-            );
-            let parts: Vec<_> =
-                entry.parts.into_iter().map(|part| part.to_vec()).collect();
-            assert_eq!(parts, [b"\x07plant.pump-1".to_vec()]);
-        }
-
-        #[test]
-        fn has_no_part_when_no_writer_holds_control() {
-            let entry = entry(
-                &create_pool(4096),
-                Handoff { to: None },
-                key(Slot::new(4)),
-                Slot::new(4),
-                12,
-                Stamp::from_nanos(9),
-            )
-            .expect("room");
-
-            assert_eq!(entry.parts.into_iter().count(), 0);
         }
     }
 
@@ -171,57 +101,23 @@ mod tests {
         fn writes_the_authority_then_the_subject() {
             let holder = writer("plant.pump-1", 7);
 
-            let body = body(&create_pool(4096), Handoff { to: Some(&holder) })
-                .expect("room")
-                .expect("a holder");
+            let body = body(Handoff { to: Some(&holder) }).expect("a holder");
 
-            assert_eq!(&body[..], b"\x07plant.pump-1");
+            assert_eq!(body, b"\x07plant.pump-1");
         }
 
         #[test]
         fn writes_the_largest_body_for_the_longest_subject() {
             let holder = writer(&"b".repeat(Name::MAX_BYTES), 7);
 
-            let body = body(&create_pool(4096), Handoff { to: Some(&holder) })
-                .expect("room")
-                .expect("a holder");
+            let body = body(Handoff { to: Some(&holder) }).expect("a holder");
 
             assert_eq!(body.len(), MAX_BYTES);
         }
 
         #[test]
-        fn takes_no_block_when_no_writer_holds_control() {
-            let pool = create_pool(4096);
-
-            let body = body(&pool, Handoff { to: None }).expect("no block");
-
-            assert!(body.is_none(), "a block for no holder: {body:?}");
-            assert_eq!(pool.committed(), 0);
-        }
-
-        #[test]
-        fn returns_the_pool_error_when_the_pool_is_full() {
-            let pool = create_pool(4096);
-            let mut held = Vec::new();
-            while let Ok(block) = pool.alloc(4) {
-                held.push(block);
-            }
-            let available = 4096 - pool.committed();
-            let holder = writer("ops", 1);
-
-            let error = body(&pool, Handoff { to: Some(&holder) }).expect_err("full");
-
-            assert_eq!(
-                error,
-                block::Error::Exhausted {
-                    requested: 4,
-                    available,
-                }
-            );
-            assert_eq!(
-                error.to_string(),
-                format!("pool is full: asked for 4 bytes, {available} bytes free")
-            );
+        fn has_no_body_when_no_writer_holds_control() {
+            assert_eq!(body(Handoff { to: None }), None);
         }
     }
 
@@ -278,9 +174,7 @@ mod tests {
             ))
         ) {
             let holder = holder.map(|(subject, authority)| writer(&subject, authority));
-            let pool = create_pool(4096);
-
-            let body = body(&pool, Handoff { to: holder.as_ref() }).expect("room");
+            let body = body(Handoff { to: holder.as_ref() });
             let bytes = body.as_deref().unwrap_or_default();
 
             prop_assert!(bytes.len() <= MAX_BYTES);

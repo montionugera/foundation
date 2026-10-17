@@ -825,7 +825,10 @@
   Lost: a check that `within` makes the hidden folder, which writes in a call that only
   limits; a resolve of `<hidden>/.` as the check, which `os` resolves to `Ok` when the
   folder is not there; and a read of the folder, which blocks on a pipe and fails on a
-  folder with no read bit. Decided by `laptop.architect-2` (item B of
+  folder with no read bit. Lost also, for the error of the resolve after the make: a
+  fallback by errno, which puts OS codes in `env`, and a driver mode that does not
+  follow a link at the path after `EEXIST`, a new seam for the same result. Decided by
+  `laptop.architect-2` (item B of
   https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6209932709; the plan
   of `laptop.integrator-2`, 2026-10-16T08:06:32Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6211011171, approved
@@ -997,3 +1000,20 @@
   second look in `ops` after a refusal, which puts a `Paths` with no limits in the scope
   that limits `foundation mcp`, states the rule of `within` again, and gives a false
   text when a file changes between the two looks.
+  Amended (2026-10-17T06:14:25Z, #2895): `make_dir` of a path that does not resolve
+  checks its name in its resolved directory, with the key of the file at that name,
+  before the driver makes it. So a loop or a link to nothing beside a hidden folder that
+  is not there, or in a hidden folder that a program moves away, gives `Hidden`, not
+  `Io` 17, and so does a hidden file at a path that ends in `/` or `/.`. `Io` 17 still
+  comes where the name passes the limits. Supersedes "`make_dir` of a path that does not
+  resolve checks its resolved directory, since no folder is at a name that does not
+  resolve" of the amendment of 2026-10-16T17:13:18Z. Decided by `laptop.architect-2`
+  (2026-10-17T06:14:25Z,
+  https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417; the end in
+  `/` or `/.`, 2026-10-17T06:28:33Z,
+  https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230686685).
+  Amended (2026-10-17T06:14:25Z, #3006): with `Vacant` of #2919, that loop or link to
+  nothing beside a hidden folder that is not there gives `Vacant`, not `Hidden`. One in
+  a hidden folder that a program moved away still gives `Hidden`. Decided by
+  `laptop.architect-2` (2026-10-17T06:14:25Z,
+  https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417).

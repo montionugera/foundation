@@ -5,12 +5,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
 use std::num::{NonZeroU32, NonZeroUsize};
 
+use types::sample::Scalar;
+
 use super::service::{self, Answer, Item, Request, Sizes};
 use super::{Client, id_bytes, limit};
 use crate::ffi::{self, Service, Status};
 use crate::node::ns0::{ENUMERATION, HAS_SUBTYPE};
 use crate::node::{Key, Node};
-use crate::value::Value;
+use crate::value::{SCALARS, Value};
 
 /// `HierarchicalReferences`.
 const HIERARCHICAL: u32 = 33;
@@ -24,8 +26,9 @@ const DATA_TYPE: u32 = 64;
 /// The attributes `DataType`, `ValueRank`, and `UserAccessLevel`.
 const FACTS: [u32; 3] = [14, 15, 18];
 
-/// The variables `MaxNodesPerBrowse` and `MaxNodesPerTranslateBrowsePathsToNodeIds`.
-const BOUNDS: [u32; 2] = [11710, 11712];
+/// The variables `MaxNodesPerBrowse`, `MaxNodesPerTranslateBrowsePathsToNodeIds`, and
+/// `MaxBrowseContinuationPoints`.
+const BOUNDS: [u32; 3] = [11710, 11712, 2735];
 
 /// The `namespaceUri` of an `EUInformation` whose `unitId` is a code of UN/CEFACT
 /// Recommendation 20.
@@ -57,9 +60,8 @@ pub(crate) struct Point(Vec<u8>);
 /// A reference to a node.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Reference {
-    /// The node, or `None` when its key is a GUID or opaque, or a name that is empty
-    /// or not UTF-8, or it is a node of another server.
-    pub(crate) node: Option<Node>,
+    /// The node, or its text when [`Node`] cannot hold it.
+    pub(crate) node: Result<Node, Foreign>,
     /// The text of its browse name.
     pub(crate) name: String,
     /// The text of its display name.
@@ -70,27 +72,74 @@ pub(crate) struct Reference {
     pub(crate) via: Option<Node>,
 }
 
+/// A node of a [`Reference`] that [`Node`] cannot hold.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Foreign {
+    /// The bytes of its text in the form of OPC 10000-6, 5.3.1.10, such as
+    /// `ns=1;g=<guid>`, with the bytes of a name as the server gave them.
+    pub(crate) text: Vec<u8>,
+    pub(crate) cause: Cause,
+}
+
+/// Why [`Node`] cannot hold a node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cause {
+    /// Its key is a GUID or opaque.
+    Key,
+    /// Its key is a name that is empty or not UTF-8.
+    Name,
+    /// It is a node of another server, or of a namespace by its URI.
+    Remote,
+}
+
 /// The node class of a [`Reference`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Class {
     Object,
     Variable,
     View,
+    /// A class that the request did not ask for.
+    Other,
 }
 
 /// What a server says of a variable.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Description {
-    /// The id in namespace 0 of the built-in type of its data type, such as 11 for
-    /// Double, as [`base`] gives it. `None` also when a type on the walk has an id
-    /// that is not a number or a name.
-    pub(crate) base: Option<u32>,
+    /// The built-in type of its data type, as [`base`] gives it. `None` also when a
+    /// type on the walk has an id that is not a number or a name.
+    pub(crate) base: Option<Base>,
     /// Its `ValueRank`: -1 for a scalar.
     pub(crate) rank: Option<i32>,
     /// Its `UserAccessLevel`.
     pub(crate) access: Option<u8>,
     /// Its `EngineeringUnits`.
     pub(crate) unit: Option<Unit>,
+}
+
+/// The built-in type of the data type of a variable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Base {
+    /// A type from Boolean to Double, which a read decodes, as its sample type.
+    Scalar(Scalar),
+    /// Another built-in type, by its name, such as `String`.
+    Other(&'static str),
+}
+
+impl Base {
+    /// Gives the base of the built-in type of the id `id` in namespace 0.
+    ///
+    /// # Panics
+    ///
+    /// If `id` is not of a built-in type, 1 to 25.
+    pub(crate) fn of(id: u32) -> Self {
+        let index = usize::try_from(id - 1).expect("invariant: a u32 fits a usize");
+        // The index of a built-in type in `UA_TYPES` is its id less 1, as `shim.c`
+        // asserts, and `SCALARS` is at the same index.
+        match SCALARS.get(index) {
+            Some(&scalar) => Self::Scalar(scalar),
+            None => Self::Other(ffi::types()[index].name()),
+        }
+    }
 }
 
 /// The `EUInformation` of a variable.
@@ -111,15 +160,18 @@ pub(super) struct Bounds {
     browse: Option<NonZeroUsize>,
     /// Its `MaxNodesPerTranslateBrowsePathsToNodeIds`.
     translate: Option<NonZeroUsize>,
+    /// Its `MaxBrowseContinuationPoints`.
+    points: Option<NonZeroUsize>,
 }
 
 impl Client {
-    /// Browses the forward hierarchical references of `node` and their subtypes, to
-    /// the node classes Object, Variable, and View, and gives the first page of at
-    /// most `most` references, in server order. It asks for fewer when an answer of
-    /// `most` references, each with its texts at 256 bytes, would be past one message
-    /// that the client takes, but for at least 1. `None` when the server does not have
-    /// `node`.
+    /// Browses the forward hierarchical references of `node` and their subtypes, to the
+    /// node classes Object, Variable, and View, and gives the first page of at most
+    /// `most` references, in server order, with [`Class::Other`] for a reference of
+    /// another class from a server that does not filter by class. It asks for fewer
+    /// when an answer of `most` references, each with its texts at 256 bytes, would be
+    /// past one message that the client takes, but for at least 1. `None` when the
+    /// server does not have `node`.
     ///
     /// # Errors
     ///
@@ -162,6 +214,37 @@ impl Client {
         page(&answer)
     }
 
+    /// Releases each of `points`, points of this client's session, with `BrowseNext`
+    /// requests of at most the `MaxNodesPerBrowse` of the server. A point whose
+    /// request alone does not fit one message stays until the session ends.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::browse`], for each request that it sends.
+    pub(crate) async fn release(&mut self, points: &[Point]) -> Result<(), Status> {
+        let most = self.bounds().await?.browse;
+        let sizes = Sizes::points(self.token);
+        let split =
+            self.split(points.len(), most, &sizes, |index| points[index].0.len());
+        for range in split.ranges {
+            let points: Vec<&[u8]> =
+                points[range].iter().map(|point| &point.0[..]).collect();
+            self.serve(&Request::browse_next(&points, true)).await?;
+        }
+        Ok(())
+    }
+
+    /// Gives the most continuation points that the server holds for a session, its
+    /// `MaxBrowseContinuationPoints`, or `None` when it gives 0 or no `UInt16`. It
+    /// reads the bounds of the server once per client, as [`Client::describe`] does.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::read`].
+    pub(crate) async fn points(&mut self) -> Result<Option<NonZeroUsize>, Status> {
+        Ok(self.bounds().await?.points)
+    }
+
     /// Gives the description of each variable of `nodes`, in order. A fact that the
     /// server does not give, or gives with a status that is not Good, is `None`. It
     /// splits each request by the limit of the server for its service
@@ -202,22 +285,26 @@ impl Client {
         Ok(descriptions)
     }
 
-    /// Reads the [`Bounds`] of the server at the first call, as [`limit`] gives each.
+    /// Reads the [`Bounds`] of the server at the first call, as [`limit`] gives each,
+    /// and the points as a `UInt16` above 0.
     async fn bounds(&mut self) -> Result<Bounds, Status> {
         if let Some(bounds) = self.bounds {
             return Ok(bounds);
         }
         let nodes = BOUNDS.map(Node::ns0);
-        let nodes = self
-            .nodes(&nodes)
-            .expect("invariant: a read of two nodes by number fits one message");
+        let nodes = self.numbered(&nodes);
         let values = self.read(&nodes).await?;
-        let [browse, translate] = values else {
+        let [browse, translate, points] = values else {
             panic!("invariant: a read gives one value for each node");
+        };
+        let points = match points {
+            Ok(Value::U16(most)) => NonZeroUsize::new(usize::from(*most)),
+            _ => None,
         };
         let bounds = Bounds {
             browse: limit(browse),
             translate: limit(translate),
+            points,
         };
         self.bounds = Some(bounds);
         Ok(bounds)
@@ -314,15 +401,15 @@ impl Client {
     /// client has not browsed, until [`base`] knows each of `types`, with Browse
     /// requests of at most `most` nodes, and gives the base of each. It adds to
     /// `supertypes` the first supertype of each Good result, and releases the
-    /// continuation point of a type with more. A result that is not Good, or a type whose request or answer
-    /// does not fit one message, gives no base in this call, and the next call browses
-    /// that type again.
+    /// continuation point of a type with more. A result that is not Good, or a type
+    /// whose request or answer does not fit one message, gives no base in this call,
+    /// and the next call browses that type again.
     async fn walk(
         &mut self,
         types: &[Option<Node>],
         most: Option<NonZeroUsize>,
         supertypes: &mut BTreeMap<Node, Option<Node>>,
-    ) -> Result<Vec<Option<u32>>, Status> {
+    ) -> Result<Vec<Option<Base>>, Status> {
         let build = |raw: &[ffi::Node<'_>]| {
             Request::browse(raw, HAS_SUBTYPE, true, DATA_TYPE, NonZeroU32::MIN)
         };
@@ -359,40 +446,24 @@ impl Client {
                 answer.has(range.len())?;
                 for (offset, index) in range.enumerate() {
                     let mut first = None;
-                    let browsed = answer
-                        .browsed(offset, |found| first = first.take().or(found.node));
+                    let browsed = answer.browsed(offset, |found| {
+                        first = first.take().or(found.node.ok());
+                    });
                     if let Ok(point) = browsed {
                         supertypes.insert(missing[index].clone(), first);
-                        points.extend(point);
+                        points.extend(point.map(Point));
                     } else {
                         failed.insert(missing[index].clone());
                     }
                 }
             }
-            self.release(&points, most).await?;
+            self.release(&points).await?;
         }
-    }
-
-    /// Releases each continuation point of `points`, with `BrowseNext` requests of at
-    /// most `most` points. A point whose request alone does not fit one message stays
-    /// until the session ends.
-    async fn release(
-        &mut self,
-        points: &[Vec<u8>],
-        most: Option<NonZeroUsize>,
-    ) -> Result<(), Status> {
-        let sizes = Sizes::points(self.token);
-        let split = self.split(points.len(), most, &sizes, |index| points[index].len());
-        for range in split.ranges {
-            let points: Vec<&[u8]> = points[range].iter().map(Vec::as_slice).collect();
-            self.serve(&Request::browse_next(&points, true)).await?;
-        }
-        Ok(())
     }
 }
 
 /// Gives the page of the one result of `answer`, a Browse or `BrowseNext` answer, with
-/// each reference of the classes of [`CLASSES`].
+/// each reference, and [`Class::Other`] for a class out of [`CLASSES`].
 ///
 /// # Errors
 ///
@@ -406,8 +477,7 @@ fn page(answer: &Answer) -> Result<Page, Status> {
             1 => Class::Object,
             2 => Class::Variable,
             128 => Class::View,
-            // A server that does not filter by the class of the request.
-            _ => return,
+            _ => Class::Other,
         };
         references.push(Reference {
             node: found.node,
@@ -443,13 +513,13 @@ fn base(
     supertypes: &BTreeMap<Node, Option<Node>>,
     failed: &BTreeSet<Node>,
     data_type: &Node,
-) -> Result<Option<u32>, Node> {
+) -> Result<Option<Base>, Node> {
     let mut at = data_type;
     for _ in 0..=STEPS {
         if let (0, Key::Number(id)) = (at.namespace, &at.key) {
             match *id {
-                1..=21 | 23 | 25 => return Ok(Some(*id)),
-                ENUMERATION => return Ok(Some(INT32)),
+                1..=21 | 23 | 25 => return Ok(Some(Base::of(*id))),
+                ENUMERATION => return Ok(Some(Base::of(INT32))),
                 22 | 24 | 26..=28 => return Ok(None),
                 _ => {}
             }

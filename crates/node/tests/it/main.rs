@@ -204,6 +204,37 @@ fn status_runs_on_the_node() {
     );
 }
 
+/// `status` gives each failure of the read of the OS roots of the running node, past
+/// the 16 that its log lists.
+#[test]
+fn status_gives_each_failure_of_the_roots_of_the_node() {
+    let mut rig = Rig::new();
+    let dir = rig.dir.join("roots");
+    std::fs::create_dir(&dir).expect("make the roots directory");
+    let bad = "-----BEGIN CERTIFICATE-----\n!!\n-----END CERTIFICATE-----\n";
+    for n in 0..17 {
+        let path = dir.join(format!("{n}.pem"));
+        std::fs::write(path, bad).expect("write a root");
+    }
+    let dir = dir.to_str().expect("a UTF-8 path");
+    rig.var("SSL_CERT_DIR", dir);
+    rig.start();
+    let output = rig.run(&["status", "--json"], b"");
+    assert_eq!(text(&output.stderr), "");
+    let roots = status::roots(&output.stdout).expect("the failures of the roots");
+    let file = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/it/ca.pem");
+    assert_eq!(
+        roots.source,
+        format!("SSL_CERT_FILE={file} SSL_CERT_DIR={dir}")
+    );
+    let failure =
+        "failed to read PEM from file: base64 decode error: InvalidCharacter(33)";
+    assert_eq!(
+        (roots.failures, roots.unlisted),
+        (vec![failure.to_owned(); 17], 0)
+    );
+}
+
 /// `status --data` reaches the node of that data directory, and `status` with no flag
 /// reaches none in `foundation-data`.
 #[test]
