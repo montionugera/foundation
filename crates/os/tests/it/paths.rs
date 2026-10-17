@@ -293,6 +293,44 @@ fn a_folder_that_a_program_moves_and_makes_again_holds_nothing() {
     });
 }
 
+/// APFS ignores the case of a name, so a folder made again in another case is the
+/// folder that a program replaced.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_folder_made_again_in_other_case_is_replaced() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        fs::rename(base.join("work"), base.join("old")).unwrap();
+        fs::create_dir(base.join("WORK")).unwrap();
+        host.paths.write(&base.join("WORK/a.hcl"), b"y").unwrap();
+        let lower = within.read(&base.join("work/a.hcl"), 1);
+        let upper = within.read(&base.join("WORK/a.hcl"), 1);
+        let resolved = host.paths.resolve(&base.join("work/a.hcl"));
+        assert_eq!(
+            (lower, upper),
+            (Err(Error::Replaced), Err(Error::Replaced)),
+            "{resolved:?}"
+        );
+    });
+}
+
+/// The old folder stays, so the host cannot give the new one its key.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_folder_made_again_read_in_other_case_is_replaced() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        let read = within.read(&base.join("WORK/a.hcl"), 1);
+        assert_eq!(read, Ok(Found::File(b"x".to_vec())));
+        fs::rename(base.join("work"), base.join("old")).unwrap();
+        fs::create_dir(base.join("work")).unwrap();
+        host.paths.write(&base.join("work/a.hcl"), b"y").unwrap();
+        let upper = within.read(&base.join("WORK/a.hcl"), 1);
+        let resolved = host.paths.resolve(&base.join("WORK/a.hcl"));
+        assert_eq!(upper, Err(Error::Replaced), "{resolved:?}");
+    });
+}
+
 /// A hidden file that is not there, at a short path through a relative link, whose
 /// resolved path is one byte past the longest path of the OS.
 #[test]
@@ -1115,9 +1153,11 @@ fn within_makes_no_file_at_a_hidden_name_in_other_case() {
     });
 }
 
-/// A program replaces the folder with a link to a directory outside it.
+/// A program replaces the folder with a link to a directory outside it. A path through
+/// the link, and the same file by the name of that directory, resolve under the folder
+/// by the path that it resolves to now, so the folder is replaced.
 #[test]
-fn a_folder_that_a_link_replaces_holds_nothing_outside() {
+fn a_folder_that_a_link_replaces_is_replaced() {
     run(|host| {
         let (_, base) = cases::within_work(host);
         let work = base.join("work");
@@ -1126,7 +1166,7 @@ fn a_folder_that_a_link_replaces_holds_nothing_outside() {
         symlink(base.join("workshop"), &work).unwrap();
         let read = within.read(&work.join("a.hcl"), 1);
         let direct = within.read(&base.join("workshop/a.hcl"), 1);
-        assert_eq!((read, direct), (Err(Error::Outside), Err(Error::Outside)));
+        assert_eq!((read, direct), (Err(Error::Replaced), Err(Error::Replaced)));
     });
 }
 

@@ -52,26 +52,26 @@ impl Paths {
     /// case, and a bind mount, reach the same folder. A folder of `folders` holds a
     /// path only while the file at its resolved path is the file that was there at this
     /// call, so one that a program renames away or replaces holds nothing until a new
-    /// call of `within`, and a path under its resolved path fails with
-    /// [`Error::Replaced`]. One that a program removes and makes again holds nothing
-    /// too, unless the host gives the new folder the key of the old one, as ext4 can. A
-    /// write replaces a file, so a folder that is a file holds nothing after a write to
-    /// it, also through this handle. Each call takes the file at each hidden folder
-    /// again, from the path that the caller gave, so a hidden file that a write
-    /// replaces, and a hidden folder made after this call, are hidden. A path also
-    /// fails with [`Error::Hidden`] when a directory on its way is the folder that was
-    /// at a hidden path at this call, so a hidden folder that a program renames away
-    /// stays hidden, but not its own listing, and a directory that the host gives the
-    /// key of a hidden folder that it removed hides what it holds. While nothing is at
-    /// a hidden path, a write or a `make_dir` that makes a new name in the deepest
-    /// directory on its way that is there fails with [`Error::Vacant`], also for a name
-    /// that does not make that path, unless the limits refuse it with
-    /// [`Error::Hidden`], [`Error::Outside`], or [`Error::Replaced`]. A read there
-    /// finds nothing, and fails with [`Error::NotFound`]. A folder whose file a call
-    /// cannot take holds nothing at that call. The limits of `self` hold too, so a
-    /// handle never reaches more than the one it came from. The check and the call are
-    /// two steps: a symbolic link that another program makes between them can lead the
-    /// call out.
+    /// call of `within`, and a path that resolves under it, by its resolved path at
+    /// this call or by the one that it resolves to now, fails with [`Error::Replaced`].
+    /// One that a program removes and makes again holds nothing too, unless the host
+    /// gives the new folder the key of the old one, as ext4 can. A write replaces a
+    /// file, so a folder that is a file holds nothing after a write to it, also through
+    /// this handle. Each call takes the file at each hidden folder again, from the path
+    /// that the caller gave, so a hidden file that a write replaces, and a hidden
+    /// folder made after this call, are hidden. A path also fails with
+    /// [`Error::Hidden`] when a directory on its way is the folder that was at a hidden
+    /// path at this call, so a hidden folder that a program renames away stays hidden,
+    /// but not its own listing, and a directory that the host gives the key of a hidden
+    /// folder that it removed hides what it holds. While nothing is at a hidden path, a
+    /// write or a `make_dir` that makes a new name in the deepest directory on its way
+    /// that is there fails with [`Error::Vacant`], also for a name that does not make
+    /// that path, unless the limits refuse it with [`Error::Hidden`],
+    /// [`Error::Outside`], or [`Error::Replaced`]. A read there finds nothing, and
+    /// fails with [`Error::NotFound`]. A folder whose file a call cannot take holds
+    /// nothing at that call. The limits of `self` hold too, so a handle never reaches
+    /// more than the one it came from. The check and the call are two steps: a symbolic
+    /// link that another program makes between them can lead the call out.
     ///
     /// # Errors
     ///
@@ -316,8 +316,14 @@ impl Paths {
                 keys.contains(was) && now(dir) == Some(*was)
             };
             if !limit.folders.iter().any(held) {
-                let replaced = limit.folders.iter().any(|(dir, was)| {
-                    resolved.starts_with(dir) && now(dir) != Some(*was)
+                // A folder that the path resolves under, then or now, holds it
+                // unless its key changed.
+                let replaced = limit.folders.iter().any(|(dir, _)| {
+                    resolved.starts_with(dir)
+                        || self
+                            .driver
+                            .resolve(dir)
+                            .is_ok_and(|to| resolved.starts_with(to))
                 });
                 return Err(if replaced {
                     Error::Replaced
@@ -427,8 +433,10 @@ pub enum Error {
     /// [`Paths::make_dir`] makes a new name in the deepest directory on the way to it
     /// that is there.
     Vacant,
-    /// The path is under the resolved path of a folder of [`Paths::within`], where a
-    /// program put another file after that call.
+    /// The path resolves under a folder of [`Paths::within`], by the path that the
+    /// folder resolved to at that call or by the one that it resolves to now, and a
+    /// program replaced the folder after that call: its path names another file, or
+    /// nothing.
     Replaced,
 }
 

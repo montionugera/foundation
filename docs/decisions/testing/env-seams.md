@@ -974,13 +974,15 @@
   A hidden folder that is there, and one that a program moved away, still give
   `Hidden`, which wins over `Vacant`. `Outside` and `Replaced` win over `Vacant`.
   A read gives `NotFound` where a write gives `Vacant`.
-  `Replaced`: the path is under the resolved path of a folder of `within`, where a
-  program put another
-  file after that call. It is `Outside` for such a path. So a folder that is a file
-  gives `Replaced` after a write to it. The common cases pin both on both drivers.
+  `Replaced`: the path resolves under a folder of `within`, by the path that the
+  folder resolved to at that call or by the one that it resolves to now, and a program
+  replaced the folder after that call: its path names another file, or nothing. It is
+  `Outside` for such a path. So a folder that is a file gives `Replaced` after a write
+  to it, and so does a folder that a program makes again in other case or replaces
+  with a link. The common cases pin both on both drivers.
   Decided by `laptop.architect-2` (2026-10-17T05:16:48Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230063256; the
-  order and a read, 2026-10-17T06:33:57Z,
+  order, a read, and `Replaced` by the path now, 2026-10-17T06:33:57Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230731316). Lost: a
   second look in `ops` after a refusal, which puts a `Paths` with no limits in the scope
   that limits `foundation mcp`, states the rule of `within` again, and gives a false

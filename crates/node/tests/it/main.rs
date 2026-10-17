@@ -788,6 +788,82 @@ fn mcp_refuses_a_file_in_a_folder_made_again() {
     assert_eq!(mcp.close().status.code(), Some(0));
 }
 
+/// A folder of `--files` made again in another case, on a file system that ignores
+/// case, is a folder that a program replaced.
+#[cfg(target_os = "macos")]
+#[test]
+fn mcp_refuses_a_file_in_a_folder_made_again_in_other_case() {
+    let rig = Rig::new();
+    let folder = rig.dir.join("cfg");
+    std::fs::create_dir(&folder).expect("a make");
+    std::fs::write(folder.join("plant.hcl"), "").expect("a write");
+    let resolved = std::fs::canonicalize(&folder).expect("a resolve");
+    let mut mcp = rig.talk(&["mcp", "--data", "plant", "--files", "cfg"]);
+    let plan = |id| {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\
+             \"params\":{{\"name\":\"plan\",\"arguments\":{{\"files\":\
+             [\"cfg/plant.hcl\"]}}}}}}\n"
+        )
+    };
+    let replies = status_reply(1, Err(unreached()));
+    mcp.ask(&plan(1), &replies);
+    std::fs::rename(&folder, rig.dir.join("cfg.old")).expect("a move");
+    std::fs::create_dir(rig.dir.join("CFG")).expect("a make");
+    std::fs::write(rig.dir.join("CFG/plant.hcl"), "").expect("a write");
+    let changed = serde_json::json!({
+        "code": "ops.folder-changed",
+        "message": format!(
+            "`cfg/plant.hcl` is under a folder of this MCP server ({}) that a program \
+             replaced after it started",
+            resolved.display()
+        ),
+        "fix": "Start `foundation mcp` again",
+        "notes": [],
+    });
+    let got = mcp.answer(&plan(2));
+    assert_eq!(format!("{got}\n"), status_reply(2, Err(changed)));
+    assert_eq!(mcp.close().status.code(), Some(0));
+}
+
+/// A folder of `--files` that a program replaces with a link is a folder that a
+/// program replaced, though the path now resolves outside it.
+#[test]
+fn mcp_refuses_a_file_in_a_folder_replaced_by_a_link() {
+    let rig = Rig::new();
+    let folder = rig.dir.join("cfg");
+    std::fs::create_dir(&folder).expect("a make");
+    std::fs::write(folder.join("plant.hcl"), "").expect("a write");
+    let resolved = std::fs::canonicalize(&folder).expect("a resolve");
+    let mut mcp = rig.talk(&["mcp", "--data", "plant", "--files", "cfg"]);
+    let plan = |id| {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\
+             \"params\":{{\"name\":\"plan\",\"arguments\":{{\"files\":\
+             [\"cfg/plant.hcl\"]}}}}}}\n"
+        )
+    };
+    let replies = status_reply(1, Err(unreached()));
+    mcp.ask(&plan(1), &replies);
+    std::fs::rename(&folder, rig.dir.join("old")).expect("a move");
+    std::fs::create_dir(rig.dir.join("new")).expect("a make");
+    std::fs::write(rig.dir.join("new/plant.hcl"), "").expect("a write");
+    std::os::unix::fs::symlink("new", &folder).expect("a link");
+    let changed = serde_json::json!({
+        "code": "ops.folder-changed",
+        "message": format!(
+            "`cfg/plant.hcl` is under a folder of this MCP server ({}) that a program \
+             replaced after it started",
+            resolved.display()
+        ),
+        "fix": "Start `foundation mcp` again",
+        "notes": [],
+    });
+    let got = mcp.answer(&plan(2));
+    assert_eq!(format!("{got}\n"), status_reply(2, Err(changed)));
+    assert_eq!(mcp.close().status.code(), Some(0));
+}
+
 /// A client starts `foundation mcp` at `/`, as the decision says one may, as a user who
 /// cannot write `/`.
 #[test]
