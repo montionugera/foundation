@@ -398,8 +398,6 @@ struct Ring {
     added: u64,
     /// The number of the first item that the next carry walks.
     scanned: u64,
-    /// Whether the ring refused an append since the last commit.
-    starved: bool,
 }
 
 impl Ring {
@@ -420,7 +418,6 @@ impl Ring {
             items: VecDeque::new(),
             added: 0,
             scanned: 0,
-            starved: false,
         }
     }
 
@@ -619,22 +616,17 @@ impl Ring {
         });
     }
 
-    /// A commit of the data record of `batch`, if any: the entries and the blocks of
-    /// the record. Gives the start of the record.
-    fn commit(&mut self, batch: Option<(Vec<(usize, bool)>, usize)>) -> Option<u128> {
-        self.starved = false;
+    /// A commit of the data record of `entries` in `blocks` blocks, with its trim
+    /// and its carry record. Gives the start of the data record.
+    fn commit(&mut self, entries: Vec<(usize, bool)>, blocks: usize) -> u128 {
         let mut planned = Vec::new();
-        let (mut head, mut queued) = (self.end, 0);
-        let data = batch.map(|(entries, blocks)| {
-            queued = (blocks * BLOCK) as u128;
-            let start = self.plan(&mut planned, head, queued, FREE_DATA);
-            head = start + queued;
-            planned.push(Record {
-                start,
-                end: head,
-                kind: Kind::Data(entries),
-            });
-            start
+        let queued = (blocks * BLOCK) as u128;
+        let data = self.plan(&mut planned, self.end, queued, FREE_DATA);
+        let mut head = data + queued;
+        planned.push(Record {
+            start: data,
+            end: head,
+            kind: Kind::Data(entries),
         });
         let trim = self.trimmed(head, queued);
         if let Some(tail) = trim {
@@ -642,9 +634,6 @@ impl Ring {
         }
         let (_, reach) = Self::marks((head + queued).min(OFFSET_LAST), queued);
         let carried = self.carried(reach, self.tails(head));
-        if data.is_none() && trim.is_none() && carried.is_empty() {
-            return None;
-        }
         let tails: Vec<(usize, bool)> = carried
             .iter()
             .map(|&path| (path, self.logs[path].stamped))
@@ -696,7 +685,7 @@ impl Ring {
         self.end = self.data;
         self.logs = [Log::default(); PATH_COUNT];
         self.items.clear();
-        (self.added, self.scanned, self.starved) = (0, 0, false);
+        (self.added, self.scanned) = (0, 0);
         for at in 0..self.records.len() {
             let Record { start, kind, .. } = self.records[at].clone();
             match kind {
@@ -773,7 +762,6 @@ impl Room {
             items: VecDeque::new(),
             added: 0,
             scanned: 0,
-            starved: false,
         };
         ring.restart();
         Self(Some(ring))
@@ -832,13 +820,11 @@ impl Room {
     /// Whether an append of a record of `blocks` blocks fits after the last record.
     /// It leaves three blocks free: for the restart record of the next open, the
     /// carry record of the commit after it, and the restart record of a later open.
-    /// A refusal wakes a commit.
-    fn take(&mut self, blocks: usize) -> Fit {
-        let Some(ring) = &mut self.0 else {
+    fn take(&self, blocks: usize) -> Fit {
+        let Some(ring) = &self.0 else {
             return Fit::Unknown;
         };
         let fit = ring.cost(ring.end, (blocks * BLOCK) as u128, FREE_DATA);
-        ring.starved |= fit.is_err();
         fit.map_or_else(|full| full, |_| Fit::Fits)
     }
 
@@ -846,14 +832,7 @@ impl Room {
     /// with the path of each entry and whether it has samples. Gives the start of
     /// the record.
     fn commit(&mut self, entries: Vec<(usize, bool)>, blocks: usize) -> Option<u128> {
-        self.0.as_mut()?.commit(Some((entries, blocks)))
-    }
-
-    /// The commit that a refused append wakes when no append follows it.
-    fn woken(&mut self) {
-        if let Some(ring) = self.0.as_mut().filter(|ring| ring.starved) {
-            ring.commit(None);
-        }
+        Some(self.0.as_mut()?.commit(entries, blocks))
     }
 
     /// The entries of each path of the build in the records before `tail`.
@@ -1279,9 +1258,11 @@ async fn build(shard: &Shard, input: &Input) -> Built {
             );
             continue;
         }
-        if !took(taken, room.take(blocks)) {
-            continue;
-        }
+        // The area holds one largest record of each commit (`BLOCKS`).
+        assert!(
+            took(taken, room.take(blocks)),
+            "the ring refused the one record of a commit"
+        );
         next = firsts;
         let start = room
             .commit(kinds, blocks)
@@ -1291,7 +1272,6 @@ async fn build(shard: &Shard, input: &Input) -> Built {
             written[index][path].push((start, entry));
         }
     }
-    room.woken();
     let tails = tails(&buffer, &slots);
     let ended = buffer.ended();
     drop(buffer);
