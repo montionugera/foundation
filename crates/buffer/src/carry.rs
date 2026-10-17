@@ -498,6 +498,56 @@ mod tests {
             })
     }
 
+    fn any_entry() -> impl Strategy<Value = (Header, Vec<u8>)> {
+        (
+            any::<u128>(),
+            prop::bool::ANY,
+            any::<u64>(),
+            any::<i64>(),
+            1..=u64::MAX,
+            1..=u8::MAX,
+            prop::collection::vec(any::<u8>(), 0..256),
+        )
+            .prop_map(
+                |(index, backfill, first, stored_at, given, tag, bytes)| {
+                    let header = Header {
+                        index: channel::Key::from_u128(index),
+                        path: if backfill { Path::Backfill } else { Path::Live },
+                        first,
+                        stored_at: Stamp::from_nanos(stored_at),
+                        kind: Kind::Record(NonZeroU64::new(given).expect("from 1")),
+                        tag,
+                        bytes: u32::try_from(bytes.len()).expect("under 256"),
+                    };
+                    (header, bytes)
+                },
+            )
+    }
+
+    #[test]
+    fn gives_back_the_most_tails_and_entries() {
+        let most = u64::try_from(TAILS_MAX).expect("fits");
+        let tails: Vec<_> = (0..most).map(|at| tail(at, Some(1))).collect();
+        let entries: Vec<_> = (0..ENTRIES_MAX)
+            .map(|at| {
+                let bytes = vec![u8::try_from(at % 251).expect("under 251"); at % 7];
+                let len = u32::try_from(bytes.len()).expect("under 7");
+                (
+                    header(u8::try_from(at % 255 + 1).expect("from 1"), len),
+                    bytes,
+                )
+            })
+            .collect();
+        let given: Vec<_> = entries
+            .iter()
+            .map(|(header, bytes)| (*header, &bytes[..]))
+            .collect();
+        let body = with_entries(&tails, &given);
+        let bytes = entries.iter().map(|(_, bytes)| bytes.len()).sum();
+        assert_eq!(body.len(), body_len(TAILS_MAX, ENTRIES_MAX, bytes));
+        assert_eq!(whole(&body), Ok((tails, entries)));
+    }
+
     proptest! {
         #[test]
         fn gives_back_the_tails_it_wrote(
@@ -508,19 +558,9 @@ mod tests {
 
         #[test]
         fn gives_back_the_tails_and_the_entries_it_wrote(
-            tails in prop::collection::vec(any_tail(), 0..8),
-            entries in prop::collection::vec(
-                (1..=u8::MAX, prop::collection::vec(any::<u8>(), 0..64)),
-                0..8,
-            ),
+            tails in prop::collection::vec(any_tail(), 0..64),
+            entries in prop::collection::vec(any_entry(), 0..64),
         ) {
-            let entries: Vec<_> = entries
-                .into_iter()
-                .map(|(tag, bytes)| {
-                    let len = u32::try_from(bytes.len()).expect("fits");
-                    (header(tag, len), bytes)
-                })
-                .collect();
             let given: Vec<_> = entries
                 .iter()
                 .map(|(header, bytes)| (*header, &bytes[..]))
