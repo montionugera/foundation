@@ -96,8 +96,8 @@ impl Rig {
     }
 
     /// Removes `names` from the definitions that the rig holds, and sets the rest on
-    /// the hub, which then removes their channels. A name that the rig does not hold is
-    /// not an error.
+    /// the hub, so the hub drops the channels of `names`. A name that the rig does not
+    /// hold is not an error.
     ///
     /// # Panics
     ///

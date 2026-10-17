@@ -1,6 +1,6 @@
 use std::future::poll_fn;
 use std::io::IoSlice;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
 use ::sim::{Sim, node};
@@ -420,68 +420,10 @@ fn ends_the_stream_of_an_http2_preface_with_no_answer() {
     assert_eq!(network.seen(), [""; 0]);
 }
 
-#[test]
-fn gives_the_error_of_a_failed_accept_and_serves_the_streams_it_accepted() {
-    let mut network = Network::new();
-    let (net, clock, remote) =
-        (network.client.net(), network.client.clock(), network.remote);
-    let out = Arc::new(Mutex::new(Vec::new()));
-    let slot = Arc::clone(&out);
-    let handle = network
-        .client
-        .shards()
-        .start(shard("client"), move |tasks| async move {
-            let client = Client::new(Config {
-                net: net.clone(),
-                clock: clock.clone(),
-                tasks,
-                timeout: TIMEOUT,
-                body_max: 1024,
-                tls: None,
-            });
-            for path in ["/before", "/after"] {
-                let request = Request::post(format!("http://{remote}{path}"))
-                    .body(Bytes::new())
-                    .expect("a valid request");
-                let response = client.send(request).await.expect("an answer");
-                slot.lock()
-                    .expect("no panic under the lock")
-                    .push(response.status());
-                clock.sleep(Span::SECOND).await;
-            }
-            let config = tcp::Config {
-                remote,
-                options: super::super::OPTIONS,
-            };
-            let refused = net.connect(&config).await.map(drop);
-            assert_eq!(refused, Err(net::Error::Refused { remote }));
-        })
-        .expect("the shard starts");
-    network.handles.push(handle);
-    network
-        .sim
-        .run_for(Span::from_nanos(500_000_000))
-        .expect("the run goes on");
-    network.server.fail_listener(remote);
-    network.sim.run_for(Span::MINUTE).expect("the run ends");
-    let ended = network
-        .ended
-        .lock()
-        .expect("no panic under the lock")
-        .take();
-    assert_eq!(ended, Some((Err(net::Error::Io { code: 5 }), 1)));
-    assert_eq!(
-        *out.lock().expect("no panic under the lock"),
-        [StatusCode::OK; 2]
-    );
-    assert_eq!(
-        network.seen(),
-        ["POST /before HTTP/1.1 ", "POST /after HTTP/1.1 "]
-    );
-}
-
-#[test]
-fn a_cancel_ends_each_stream_and_returns_once_their_tasks_ended() {
+/// Opens an idle stream to the server, then runs `stop` 500 ms into the run. Gives
+/// what `serve` gave, how a read of the idle stream ended, and how a later connect
+/// ended.
+fn stopped(stop: fn(&Network)) -> (Option<Ended>, Option<Peer>) {
     let mut network = Network::new();
     let (net, remote) = (network.client.net(), network.remote);
     let out = Arc::new(Mutex::new(None));
@@ -496,25 +438,51 @@ fn a_cancel_ends_each_stream_and_returns_once_their_tasks_ended() {
             };
             let mut idle = net.connect(&config).await.expect("the server listens");
             let mut bytes = [0; 16];
-            let ended = poll_fn(|cx| idle.poll_read(cx, &mut bytes)).await;
-            let refused = net.connect(&config).await.map(drop);
-            *slot.lock().expect("no panic under the lock") = Some((ended, refused));
+            let read = poll_fn(|cx| idle.poll_read(cx, &mut bytes)).await;
+            let connect = net.connect(&config).await.map(drop);
+            *slot.lock().expect("no panic under the lock") = Some((read, connect));
         })
         .expect("the shard starts");
     network.handles.push(handle);
     let half = Span::from_nanos(500_000_000);
     network.sim.run_for(half).expect("the run goes on");
     assert_eq!(network.server.streams(), 1);
-    network.until.cancel();
+    stop(&network);
     network.sim.run_for(Span::MINUTE).expect("the run ends");
     let ended = network
         .ended
         .lock()
         .expect("no panic under the lock")
         .take();
+    let client = out.lock().expect("no panic under the lock").take();
+    (ended, client)
+}
+
+/// How a read of an idle stream and a later connect ended.
+type Peer = (Result<usize, net::Error>, Result<(), net::Error>);
+
+#[test]
+fn a_cancel_ends_each_stream_and_returns_once_they_ended() {
+    let (ended, client) = stopped(|network| network.until.cancel());
+    let remote = SocketAddr::new(Ipv4Addr::new(10, 0, 0, 2).into(), PORT);
     assert_eq!(ended, Some((Ok(()), 0)));
     assert_eq!(
-        out.lock().expect("no panic under the lock").take(),
+        client,
+        Some((
+            Err(net::Error::Reset { remote }),
+            Err(net::Error::Refused { remote })
+        ))
+    );
+}
+
+#[test]
+fn a_failed_accept_ends_each_stream_and_gives_its_error_once_they_ended() {
+    let (ended, client) =
+        stopped(|network| network.server.fail_listener(network.remote));
+    let remote = SocketAddr::new(Ipv4Addr::new(10, 0, 0, 2).into(), PORT);
+    assert_eq!(ended, Some((Err(net::Error::Io { code: 5 }), 0)));
+    assert_eq!(
+        client,
         Some((
             Err(net::Error::Reset { remote }),
             Err(net::Error::Refused { remote })

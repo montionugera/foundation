@@ -433,7 +433,7 @@ impl Table {
         self
     }
 
-    /// Gives the name of each kind, in the order of the names.
+    /// Gives the name of each kind, in byte order.
     pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.kinds.keys().copied()
     }

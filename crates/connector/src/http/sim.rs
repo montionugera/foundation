@@ -71,14 +71,14 @@ pub fn ca() -> Roots {
 /// too long and 431 when its head is too long, and its stream ends. An HTTP/2 preface
 /// ends the stream with no answer.
 ///
-/// It runs until `until` is cancelled. It then drops `listener`, drops each stream it
-/// accepted with no close, and returns once the task of each stream ended. Dropping
-/// the future stops only the accepts: each stream it accepted runs on until `until`.
+/// It runs until `until` is cancelled or the listener fails. It then drops `listener`
+/// and each stream it accepted, with no close. On each return, each stream that it
+/// accepted has ended. Dropping the future stops only the accepts: each stream it
+/// accepted runs on until `until`.
 ///
 /// # Errors
 ///
-/// The error of the listener, at once when it fails before the cancel. Each stream it
-/// accepted runs on until `until`.
+/// The error of the listener, when it fails before the cancel.
 pub async fn serve(
     listener: Listener,
     tasks: Tasks,
@@ -170,13 +170,16 @@ pub(super) async fn run(
     tls: Option<Arc<ServerConfig>>,
     answer: impl Fn(Request<Bytes>) -> Response<Bytes> + 'static,
 ) -> Result<(), net::Error> {
-    let group = Group::new(tasks);
-    let accepted = until.race(accept(listener, &group, &until, tls, answer));
-    if let Some(Err(error)) = accepted.await {
-        return Err(error);
-    }
+    let (group, streams) = (Group::new(tasks), until.child());
+    let accepted = until
+        .race(accept(listener, &group, &streams, tls, answer))
+        .await;
+    streams.cancel();
     group.ended().await;
-    Ok(())
+    match accepted {
+        Some(Err(error)) => Err(error),
+        None => Ok(()),
+    }
 }
 
 /// Serves each stream that `listener` accepts on its own task of `group`, until
