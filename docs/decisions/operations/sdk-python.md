@@ -19,7 +19,16 @@
   close during another close waits for it to end and gives `None`, and only the close
   that ends the session raises. The binding keeps the closed state, and `sdk` does not
   change (`laptop.architect-2`, 2026-10-17T20:59:42Z,
-  https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6240961945). The
+  https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6240961945). A
+  process that forks from the program does not own the client: in it, a close gives
+  `None`, and neither a close nor a drop ends the session (`laptop.architect-2`,
+  2026-10-17T21:42:45Z,
+  https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241627570). In a
+  forked process, each later call of `Client` that sends to the client's thread raises
+  `RuntimeError` at once, with a text that names the process that connected and says to
+  connect again in this process. The first PR with such a call adds the check and a
+  test that forks (`laptop.monitor`'s condition, 2026-10-17T21:43:25Z,
+  https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241641584). The
   surface and the errors are key choices of kinds 2 and 9 that `laptop.monitor`
   accepted at 2026-10-17T18:44:46Z
   (https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6240907801). This
