@@ -146,7 +146,7 @@ class ClientTest(unittest.TestCase):
         time.sleep(CLOSED)
         self.assertIsNone(client.close())
 
-    def test_a_with_block_that_raised_gets_no_note_when_the_close_succeeds(self) -> None:
+    def test_a_raised_block_gets_no_note_when_the_close_succeeds(self) -> None:
         with self.assertRaises(KeyError) as raised:
             with self.node.connect():
                 raise KeyError("in the block")
