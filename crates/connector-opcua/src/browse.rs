@@ -132,19 +132,20 @@ impl<'a> Server<'a> {
 
     /// Gives the first page of `folder`, or `None` when the server does not have it.
     /// When this browse holds as many points as the server holds for a session, or
-    /// [`browse::DEPTH`] when the server gives no bound, it first releases a point, as
-    /// [`Server::release`] picks it. On `BadNoContinuationPoints`, it releases one and
-    /// browses once more.
+    /// [`browse::DEPTH`] when the server gives no bound, it first releases one point, as
+    /// [`Server::release`] picks it. On `BadNoContinuationPoints`, it releases each
+    /// point that [`Server::release`] can and browses once more.
     async fn first(&mut self, folder: &Node) -> Result<Option<client::Page>, Error> {
         let most = u32::try_from(browse::LIMIT).ok().and_then(NonZeroU32::new);
         let most = most.expect("invariant: `LIMIT` is a u32 that is not 0");
         let bound = self.client.points().await.map_err(failed)?;
         let bound = bound.map_or(browse::DEPTH, NonZeroUsize::get);
         if self.points.len() >= bound {
-            self.release().await?;
+            self.release(1).await?;
         }
         match self.client.browse(folder, most).await {
-            Err(Status::BAD_NO_CONTINUATION_POINTS) if self.release().await? => {
+            Err(Status::BAD_NO_CONTINUATION_POINTS) => {
+                self.release(usize::MAX).await?;
                 self.client.browse(folder, most).await
             }
             browsed => browsed,
@@ -152,21 +153,22 @@ impl<'a> Server<'a> {
         .map_err(failed)
     }
 
-    /// Releases the point that this browse used least lately of those whose cursor
-    /// can browse its folder again, at a count of at most [`SKIP`], and gives whether
-    /// it held one.
-    async fn release(&mut self) -> Result<bool, Error> {
-        let held = self
+    /// Releases the `most` points that this browse used least lately of those whose
+    /// cursor can browse its folder again, at a count of at most [`SKIP`].
+    async fn release(&mut self, most: usize) -> Result<(), Error> {
+        let mut held: Vec<(u64, (Node, usize))> = self
             .points
             .iter()
-            .filter(|((_, before), _)| *before <= SKIP);
-        let Some((key, _)) = held.min_by_key(|(_, held)| held.used) else {
-            return Ok(false);
-        };
-        let key = key.clone();
-        let held = self.points.remove(&key).expect("a held point");
-        self.client.release(&[held.point]).await.map_err(failed)?;
-        Ok(true)
+            .filter(|((_, before), _)| *before <= SKIP)
+            .map(|(key, held)| (held.used, key.clone()))
+            .collect();
+        held.sort_unstable_by_key(|(used, _)| *used);
+        let points: Vec<Point> = held
+            .into_iter()
+            .take(most)
+            .map(|(_, key)| self.points.remove(&key).expect("a held point").point)
+            .collect();
+        self.client.release(&points).await.map_err(failed)
     }
 
     /// Gives the shape of each of `references`, with one `Client::describe` of its

@@ -524,7 +524,8 @@ fn moved_cursor(before: usize, released: bool) -> Result<Option<Page>, Error> {
         let held = server.points.remove(&(node.clone(), 8)).expect("a point");
         server.points.insert((node.clone(), before), held);
         if released {
-            assert!(server.release().await.expect("a release"));
+            server.release(1).await.expect("a release");
+            assert!(server.points.is_empty());
         } else {
             for _ in 0..32 {
                 let page = server.client.browse(&node, NonZeroU32::MIN).await;
@@ -551,18 +552,18 @@ fn a_cursor_at_the_skip_bound_with_no_point_browses_again() {
 /// folder again.
 #[test]
 fn releases_no_point_past_the_skip_bound() {
-    let (released, held) = on_server(async |server| {
+    let held = on_server(async |server| {
         let folder = entry("Plant/Types", "Plant.Types", Shape::Folder);
         let first = server.level(Some(&folder), None).await.expect("a page");
         assert!(first.expect("a folder").next.is_some());
         let node: Node = tag("Plant.Types").parse().expect("a node");
         let held = server.points.remove(&(node.clone(), 8)).expect("a point");
         server.points.insert((node.clone(), 100_001), held);
-        let released = server.release().await.expect("a release");
-        (released, server.points.keys().cloned().collect::<Vec<_>>())
+        server.release(usize::MAX).await.expect("a release");
+        server.points.keys().cloned().collect::<Vec<_>>()
     });
     let node: Node = tag("Plant.Types").parse().expect("a node");
-    assert_eq!((released, held), (false, vec![(node, 100_001)]));
+    assert_eq!(held, [(node, 100_001)]);
 }
 
 #[test]
