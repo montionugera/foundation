@@ -663,7 +663,10 @@ mod tests {
     /// Runs without root, on a holder that cannot sync (`EINVAL`), the case that the
     /// root test of `os::files` does not reach.
     #[test]
-    #[cfg_attr(not(target_os = "linux"), ignore = "needs sysfs")]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "only Linux: macOS has no mount point whose holder cannot sync"
+    )]
     fn make_of_a_mount_point_does_not_sync_its_holder() {
         let point = Path::new("/sys/fs/cgroup");
         let device = |path: &str| fs::stat(path).unwrap().st_dev;
