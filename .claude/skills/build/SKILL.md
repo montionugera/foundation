@@ -16,9 +16,9 @@ when its PR merges, `mcp__factory__next` clears it and starts `/build` again.
 ## Take an issue
 
 1. `git fetch origin`. Work only in your own worktree. Remove a subagent worktree only
-   by the exact path that its task notification gives. Never loop over
-   `.claude/worktrees` or `git worktree list`: the worktrees of other sessions are
-   there too.
+   by the exact path that its task notification gives, other than after a crash or a
+   restart (`docs/coordination.md`, "Worktrees"). Never loop over `.claude/worktrees` or
+   `git worktree list`: the worktrees of other sessions are there too.
 2. An open issue labeled `owner:$FACTORY_NAME` comes first: resume it from its last
    state comment. Skip one labeled `blocked` while an issue that it waits on is open or
    a question on it has no answer. When neither holds, remove `blocked` and resume it.

@@ -40,9 +40,11 @@ a breaker worktree, or a cargo-mutants copy. Each takes 1 to 9 GiB. Delete a cop
 your own session made by the exact path that its task notification or its command gave.
 Never loop over `.claude/worktrees` or `git worktree list`: the worktrees of other
 sessions are there too. Delete a copy of another session only after a crash or a
-restart: `laptop.monitor` asks each session of the machine which copies it still uses,
-and the session of that machine that it names deletes each other copy, one exact path at
-a time. On 2026-10-05 stale copies filled the disk, and Bash failed in every local
+restart, in this order: the session of that machine that `laptop.monitor` names lists
+the copies of the machine once, `laptop.monitor` asks each session of the machine which
+copies of that list it still uses, and the named session deletes each copy of that list
+that no session uses, one exact path at a time. It never deletes a copy that is not on
+that list. On 2026-10-05 stale copies filled the disk, and Bash failed in every local
 session.
 
 ## Heavy runs on the laptop
