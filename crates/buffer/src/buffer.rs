@@ -69,8 +69,8 @@ pub struct Config {
     /// The longest time an entry waits for its group commit to start. An entry
     /// queued during a commit longer than `commit` waits until that commit ends.
     pub commit: Span,
-    /// Each commit frees the oldest records that no path needs, when the ring needs
-    /// their room. False until the open trims too.
+    /// The open and each commit free the oldest records that no path needs, when
+    /// the ring needs their room.
     pub trimmed: bool,
 }
 
@@ -648,8 +648,10 @@ impl Buffer {
     /// no checkpoint holds no record: the open makes it again. Each recovered index
     /// gets its slot from `slots`. Starts the commit task. Each tail it reports is
     /// durable. It reads the header and the records from the ring's tail and writes
-    /// them again, so its time grows with the records. Open one directory at most one
-    /// time at once. Opens at once can fail with `Busy` or `Files(Length)`.
+    /// them again, so its time grows with the records. With [`Config::trimmed`], when
+    /// the free room is under three times the largest record, it frees the oldest
+    /// records that no path needs for its tail. Open one directory at most one time
+    /// at once. Opens at once can fail with `Busy` or `Files(Length)`.
     ///
     /// # Errors
     ///
@@ -658,7 +660,8 @@ impl Buffer {
     /// and [`Error::Invalid`] as each says. [`Error::Budget`] when the budget of `pool`
     /// holds no entry of [`Layout::ENTRY_MAX_MIN`] bytes beside the blocks of a group.
     /// No file changes. [`Error::Full`] when the ring has no block for its restart
-    /// record. [`Error::Pool`] with `TooLarge` when a recovered entry is over the
+    /// record after the open frees what it can: with [`Config::trimmed`], the oldest
+    /// record holds the only durable tail of a path. [`Error::Pool`] with `TooLarge` when a recovered entry is over the
     /// largest block of `pool`, which a read must give it in: a larger pool must open
     /// the ring.
     ///
@@ -683,11 +686,18 @@ impl Buffer {
             min,
         })?;
         let (file, header) = open_ring(&files, &dir, &pool, &entropy, layout).await?;
-        let (cursor, logs) = walk(&file, &pool, &header, slots).await?;
+        let (cursor, mut logs) = walk(&file, &pool, &header, slots).await?;
         let chain = random(&entropy);
-        let (writer, sealed) = cursor.writer(header.tail.offset(), chain)?;
-        write_restart(&file, &pool, sealed, chain).await?;
-        file.sync().await?;
+        let mut writer = cursor.writer();
+        let trim = trimmed.then(|| writer.trimmed(logs.kept())).flatten();
+        let header = restart(
+            &file,
+            &pool,
+            (&mut writer, &mut logs),
+            header,
+            (chain, trim),
+        )
+        .await?;
         let tails = trimmed.then(|| tails_max(&pool));
         let shared = Rc::new(Shared {
             file,
@@ -1151,6 +1161,54 @@ fn recover_carried(
         logs.recover(slot, &tail, offset).map_err(misplaced)?;
     }
     Ok(())
+}
+
+/// Writes and syncs the restart record of an open with `chain` as its body. With a
+/// `trim`, first syncs the walked records, then frees the records before `trim`,
+/// with the checkpoint after `header` in the sync of the restart record when a
+/// block is free for it. Gives the newest checkpoint.
+///
+/// # Errors
+///
+/// [`Error::Full`] when no block is free for the record after the trim, and the
+/// errors of the file calls and the pool.
+async fn restart(
+    file: &File,
+    pool: &Pool,
+    (writer, logs): (&mut Writer, &mut Logs),
+    mut header: Header,
+    (chain, trim): (u32, Option<Position>),
+) -> Result<Header, Error> {
+    let placed = writer.restart(chain);
+    if let Some(tail) = trim {
+        // A crash that kept the checkpoint and lost walked records that the last
+        // process did not sync would lose the tails they hold. A freed block takes
+        // the restart record only after the sync of the checkpoint: a crash that
+        // kept the record and the old checkpoint would lose the first walked record.
+        file.sync().await?;
+        header = header.next(tail);
+        let mut block = pool.alloc(ALIGN)?;
+        let bytes = (&mut *block)
+            .try_into()
+            .expect("invariant: the block is of `ALIGN` bytes");
+        header.write(bytes);
+        file.write_at(header.place(), slice::from_ref(&block.freeze()))
+            .await?;
+        if let Ok(sealed) = placed {
+            write_restart(file, pool, sealed, chain).await?;
+        }
+        file.sync().await?;
+        writer.release(tail.offset());
+        logs.hide(tail.offset());
+    }
+    let sealed = match (trim, placed) {
+        (Some(_), Ok(_)) => return Ok(header),
+        (Some(_), Err(_)) => writer.restart(chain)?,
+        (None, placed) => placed?,
+    };
+    write_restart(file, pool, sealed, chain).await?;
+    file.sync().await?;
+    Ok(header)
 }
 
 /// Writes the restart record `sealed`, whose body is `chain`.
@@ -2613,46 +2671,48 @@ mod tests {
             )
         }
 
-        /// Opens the ring on `node` with commits that trim, holds a read of path 1
-        /// from seq 0, and appends entry `first` of path 2. Gives what the append
-        /// gave, and the [`room`] before the append and after its commit.
-        fn carry_while_held(
+        /// Opens the ring on `node` with commits that trim and commits entry `first`
+        /// of path 2. When `starved`, the commit runs while the test holds each block
+        /// of the pool. Gives the [`room`] after the open and after the commit.
+        fn commit_after_open(
             sim: &mut sim::Sim,
             node: &sim::node::Node,
             first: u64,
-        ) -> (Result<(), Rejected>, Room, Room) {
+            starved: bool,
+        ) -> (Room, Room) {
             let found = Arc::new(Mutex::new(None));
             let given = Arc::clone(&found);
-            let own = node.clone();
             with_trims(
                 sim,
                 node,
-                "carry",
+                "commit",
                 move |buffer, mut slots, pool| async move {
-                    let one = slots.index(channel::Key::from_u128(1));
                     let two = slots.index(channel::Key::from_u128(2));
                     let part = pool.alloc(100).expect("a block").freeze();
-                    let before = room(&buffer);
-                    let (refused, after) = {
-                        let mut read = pin!(read_from(&buffer, one, 0));
-                        let polled =
-                            poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
-                        assert!(polled.is_pending(), "the read waits on a file read");
-                        let batch = [entry(2, two, Path::Live, 3 * first, &part)];
-                        let refused = buffer.append(batch);
-                        own.clock().sleep(Span::from_nanos(3_000_000)).await;
-                        let after = room(&buffer);
-                        read.await;
-                        (refused, after)
-                    };
+                    let opened = room(&buffer);
+                    buffer
+                        .append([entry(2, two, Path::Live, 3 * first, &part)])
+                        .expect("the open freed room");
+                    let mut held = Vec::new();
+                    while starved && let Ok(block) = pool.alloc(1) {
+                        held.push(block);
+                    }
+                    buffer.committed().await.expect("commits");
                     *given.lock().expect("no panic held the lock") =
-                        Some((refused, before, after));
+                        Some((opened, room(&buffer)));
                     buffer
                 },
             );
             let found = found.lock().expect("no panic held the lock").take();
             found.expect("the shard gave the result")
         }
+
+        /// The [`room`] after an open of the ring that [`fill`] leaves: the open frees
+        /// the records before the holder of path 1.
+        const OPENED: Room = (190, 3 * 4096, 62 * 4096, Some(3 * 4096));
+
+        /// The [`room`] after the first commit of [`OPENED`] that has its pool blocks.
+        const CARRIED: Room = (190, 3 * 4096, 64 * 4096, Some(63 * 4096));
 
         /// The durable seq of path 1 after an open of the ring on `node`.
         fn durable_after_open(sim: &mut sim::Sim, node: &sim::node::Node) -> u64 {
@@ -2673,90 +2733,36 @@ mod tests {
             found.expect("the shard gave the result")
         }
 
-        /// The first session fills the ring with no trim. In the second, a read holds
-        /// the record at 4096, and a refused append wakes a commit that writes a
-        /// carry record of path 1 into the owed block and frees only block 0. The
-        /// third open puts its restart record in the last block that a carry record
-        /// may take. Its commit needs no carry, since the walk read the first, so the
-        /// head stays, and it trims past the old holder of path 1.
+        /// The first session fills the ring with no trim. The second open frees the
+        /// records before the holder of path 1, and its first commit carries paths 1
+        /// and 2. The third open walks the carry record, so it frees the records past
+        /// the old holder of path 1, and its commit needs no carry.
         #[test]
-        fn a_commit_after_a_carry_and_an_open_of_a_full_ring_trims_with_no_carry() {
+        fn an_open_after_a_carry_frees_past_the_old_holder() {
             let mut sim = sim::Sim::new(sim::Config::default());
             let node = sim.node(sim::node::Config::default());
             let first = fill(&mut sim, &node);
-            let (refused, before, after) = carry_while_held(&mut sim, &node, first);
-            assert_eq!(refused, Err(FULL));
-            assert_eq!(
-                before,
-                (97, 0, 62 * 4096, Some(3 * 4096)),
-                "the ring is full, and path 1 holds the record at 12288"
-            );
-            assert_eq!(
-                after,
-                (97, 4096, 63 * 4096, Some(62 * 4096)),
-                "the carry takes the owed block, and holds paths 1 and 2"
-            );
-            let found = Arc::new(Mutex::new(None));
-            let given = Arc::clone(&found);
-            let own = node.clone();
-            with_trims(
-                &mut sim,
-                &node,
-                "trim",
-                move |buffer, mut slots, pool| async move {
-                    let one = slots.index(channel::Key::from_u128(1));
-                    let two = slots.index(channel::Key::from_u128(2));
-                    let part = pool.alloc(100).expect("a block").freeze();
-                    let next = || [entry(2, two, Path::Live, 3 * first, &part)];
-                    let opened = room(&buffer);
-                    let commits = buffer.commits();
-                    let refused = buffer.append(next());
-                    own.clock().sleep(Span::from_nanos(3_000_000)).await;
-                    let trimmed = room(&buffer);
-                    let fits = buffer.append(next()).is_ok();
-                    buffer.committed().await.expect("commits");
-                    let tail = buffer.shared.state.borrow().header.tail.offset();
-                    *given.lock().expect("no panic held the lock") = Some((
-                        (opened, trimmed),
-                        refused,
-                        commits + 1 == buffer.commits(),
-                        (fits, tail),
-                        buffer.durable(one, Path::Live).seq,
-                    ));
-                    buffer
-                },
-            );
-            let trimmed = found.lock().expect("no panic held the lock").take();
-            let ((opened, trimmed), refused, one_commit, fits, durable) =
-                trimmed.expect("the shard gave the result");
+            let rooms = commit_after_open(&mut sim, &node, first, false);
+            assert_eq!(rooms, (OPENED, CARRIED), "the commit carries paths 1 and 2");
+            let (opened, committed) =
+                commit_after_open(&mut sim, &node, first + 1, false);
             assert_eq!(
                 opened,
-                (0, 4096, 64 * 4096, Some(62 * 4096)),
-                "the restart record took the last free block"
+                (190, 37 * 4096, 65 * 4096, Some(63 * 4096)),
+                "the open frees past the old holder of path 1"
             );
             assert_eq!(
-                trimmed,
-                (190, 37 * 4096, 64 * 4096, Some(62 * 4096)),
-                "no carry record, and the trim passes the old holder of path 1"
-            );
-            assert_eq!(refused, Err(FULL), "the trim comes after the refusal");
-            assert!(one_commit, "the commit of the trim has no data record");
-            assert_eq!(
-                fits,
-                (true, 37 * 4096),
-                "the commit that the refusal woke trims, and no trim is due after it"
-            );
-            assert_eq!(
-                durable, 9,
-                "the walk read the tail of path 1 from the carry"
+                committed,
+                (190, 37 * 4096, 66 * 4096, Some(63 * 4096)),
+                "the commit writes its data record and no carry record"
             );
             assert_eq!(durable_after_open(&mut sim, &node), 9);
         }
 
-        /// The first session fills the ring with no trim. In the second, the write of
-        /// the carry record that a refused append wakes fails, so no carry record is
-        /// durable. The third open writes over the restart record of the second, so
-        /// its commit has the owed block, and carries.
+        /// The first session fills the ring with no trim. In the second, the open
+        /// frees the records before the holder of path 1, and the write of its first
+        /// commit fails, so no carry record is durable. The third open frees no more,
+        /// writes over the restart record of the second, and its commit carries.
         #[test]
         fn a_commit_after_an_open_past_a_carry_that_was_not_durable_carries() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -2778,47 +2784,43 @@ mod tests {
                         &PathBuf::from("ring/ring"),
                         files::Operation::WriteAt,
                     );
-                    let refused = buffer.append(next());
-                    own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                    buffer.append(next()).expect("the open freed room");
+                    let committed = buffer.committed().await;
                     let failed = buffer.append(next());
                     *given.lock().expect("no panic held the lock") =
-                        Some((opened, refused, failed));
+                        Some((opened, committed, failed));
                     buffer
                 },
             );
             let lost = found.lock().expect("no panic held the lock").take();
-            let (opened, refused, failed) = lost.expect("the shard gave the result");
-            assert_eq!(
-                opened,
-                (97, 0, 62 * 4096, Some(3 * 4096)),
-                "the ring is full, and path 1 holds the record at 12288"
-            );
-            assert_eq!(refused, Err(FULL));
+            let (opened, committed, failed) = lost.expect("the shard gave the result");
+            assert_eq!(opened, OPENED);
             let failed_write = files::Error::Io {
                 path: PathBuf::from("ring/ring"),
                 operation: files::Operation::WriteAt,
                 code: 5,
             };
+            assert_eq!(committed, Err(failed_write.clone()));
             assert_eq!(
                 failed,
                 Err(Rejected::Files(failed_write)),
-                "the failed write of the carry record ends the task"
+                "the failed write of the commit ends the task"
             );
-            let (refused, before, after) = carry_while_held(&mut sim, &node, first);
-            assert_eq!(refused, Err(FULL));
-            assert_eq!(before, opened, "the open wrote over the restart record");
+            let rooms = commit_after_open(&mut sim, &node, first, false);
             assert_eq!(
-                after,
-                (97, 4096, 63 * 4096, Some(62 * 4096)),
-                "the carry takes the owed block, and holds paths 1 and 2"
+                rooms,
+                (OPENED, CARRIED),
+                "the open wrote over the restart record"
             );
         }
 
         /// The first session fills the ring with no trim. In the second, the pool has
-        /// no block when a refused append wakes a commit, so it trims nothing and
-        /// carries nothing. Once the blocks are back, the next refused append wakes a
-        /// commit that carries path 1 and trims, and the one after it trims past the
-        /// old holder of path 1.
+        /// no block when the first commit after the open runs, so it writes its data
+        /// record and carries nothing. Once the blocks are back, the next commit takes
+        /// the last block before the owed block, with no room for a carry record. A
+        /// refused append then wakes a commit that carries paths 1 and 2 into the owed
+        /// block, and the next one wakes a commit that trims past the old holder of
+        /// path 1.
         #[test]
         fn a_commit_with_no_pool_block_trims_and_carries_at_a_later_commit() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -2837,47 +2839,58 @@ mod tests {
                     let next =
                         |n: u64| [entry(2, two, Path::Live, 3 * (first + n), &part)];
                     let mut rooms = vec![room(&buffer)];
+                    buffer.append(next(0)).expect("the open freed room");
                     // Once the blocks of 1 byte drop, their class has none in use, so
                     // the pool gives its room to a block of any size.
                     let mut held = Vec::new();
                     while let Ok(block) = pool.alloc(1) {
                         held.push(block);
                     }
-                    let starved = buffer.append(next(0));
-                    own.clock().sleep(Span::from_nanos(3_000_000)).await;
-                    rooms.push(room(&buffer));
-                    held.clear();
-                    let refused = buffer.append(next(0));
-                    own.clock().sleep(Span::from_nanos(3_000_000)).await;
-                    rooms.push(room(&buffer));
-                    buffer.append(next(0)).expect("the trim gave room");
                     buffer.committed().await.expect("commits");
                     rooms.push(room(&buffer));
+                    held.clear();
+                    buffer.append(next(1)).expect("the ring has room");
+                    buffer.committed().await.expect("commits");
+                    rooms.push(room(&buffer));
+                    let mut refused = Vec::new();
+                    while let Err(full) = buffer.append(next(2)) {
+                        refused.push(full);
+                        own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                        rooms.push(room(&buffer));
+                    }
                     *given.lock().expect("no panic held the lock") =
-                        Some((starved, refused, rooms));
+                        Some((refused, rooms));
                     buffer
                 },
             );
             let found = found.lock().expect("no panic held the lock").take();
-            let (starved, refused, rooms) = found.expect("the shard gave the result");
-            assert_eq!((starved, refused), (Err(FULL), Err(FULL)));
-            let opened = (97, 0, 62 * 4096, Some(3 * 4096));
-            assert_eq!(rooms[..2], [opened, opened], "no block, no trim, no carry");
+            let (refused, rooms) = found.expect("the shard gave the result");
+            assert_eq!(refused, vec![FULL, FULL]);
             assert_eq!(
-                rooms[2],
-                (190, 3 * 4096, 63 * 4096, Some(62 * 4096)),
-                "the carry takes the owed block and holds paths 1 and 2, and the trim \
-                 stops at path 1"
+                rooms[..3],
+                [
+                    OPENED,
+                    (190, 3 * 4096, 63 * 4096, Some(3 * 4096)),
+                    (190, 3 * 4096, 64 * 4096, Some(3 * 4096)),
+                ],
+                "no block, no trim, no carry, then no room for a carry"
             );
             assert_eq!(
                 rooms[3],
-                (190, 37 * 4096, 64 * 4096, Some(62 * 4096)),
+                (97, 3 * 4096, 65 * 4096, Some(64 * 4096)),
+                "the carry takes the owed block and holds paths 1 and 2"
+            );
+            assert_eq!(
+                rooms[4],
+                (190, 38 * 4096, 65 * 4096, Some(64 * 4096)),
                 "the trim passes the old holder of path 1"
             );
         }
 
-        /// A commit with no pool block for its checkpoint hides no record: a read of
-        /// path 1 from seq 0 then gives each entry of the three records.
+        /// After the open and the commit that carries path 1, a refused append wakes
+        /// a commit with no pool block for its checkpoint. It hides no record: a read
+        /// of path 1 from seq 0 gives the gap that the open freed, then the entry at
+        /// seq 6.
         #[test]
         fn a_checkpoint_with_no_pool_block_hides_no_record() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -2894,79 +2907,51 @@ mod tests {
                     let one = slots.index(channel::Key::from_u128(1));
                     let two = slots.index(channel::Key::from_u128(2));
                     let part = pool.alloc(100).expect("a block").freeze();
+                    let next =
+                        |n: u64| [entry(2, two, Path::Live, 3 * (first + n), &part)];
+                    buffer.append(next(0)).expect("the open freed room");
+                    buffer.committed().await.expect("commits");
+                    let carried = room(&buffer);
                     let mut held = Vec::new();
                     while let Ok(block) = pool.alloc(1) {
                         held.push(block);
                     }
-                    let starved =
-                        buffer.append([entry(2, two, Path::Live, 3 * first, &part)]);
+                    let starved = buffer.append(next(1));
                     own.clock().sleep(Span::from_nanos(3_000_000)).await;
                     held.clear();
                     let read = read_from(&buffer, one, 0).await;
                     *given.lock().expect("no panic held the lock") =
-                        Some((starved, read));
+                        Some((carried, starved, read));
                     buffer
                 },
             );
             let found = found.lock().expect("no panic held the lock").take();
-            let (starved, (gap, firsts, _)) = found.expect("the shard gave the result");
+            let (carried, starved, (gap, firsts, _)) =
+                found.expect("the shard gave the result");
+            assert_eq!(carried, CARRIED);
             assert_eq!(starved, Err(FULL));
-            assert_eq!((gap, firsts), (None, vec![0, 3, 6]));
+            assert_eq!((gap, firsts), (Some(0..6), vec![6]));
         }
 
-        /// Runs a trims session in which the pool has one block of 4096 bytes when an
-        /// append of index 2 at seq `3 * first` is refused, and gives the refusal and
-        /// the room after its commit.
-        fn carry_with_one_block(
-            sim: &mut sim::Sim,
-            node: &sim::node::Node,
-            first: u64,
-        ) -> (Result<(), Rejected>, Room) {
-            let found = Arc::new(Mutex::new(None));
-            let given = Arc::clone(&found);
-            let own = node.clone();
-            with_trims(
-                sim,
-                node,
-                "dropped",
-                move |buffer, mut slots, pool| async move {
-                    let two = slots.index(channel::Key::from_u128(2));
-                    let part = pool.alloc(100).expect("a block").freeze();
-                    let next = || [entry(2, two, Path::Live, 3 * first, &part)];
-                    let mut held = Vec::new();
-                    while let Ok(block) = pool.alloc(ALIGN) {
-                        held.push(block);
-                    }
-                    held.pop();
-                    let refused = buffer.append(next());
-                    own.clock().sleep(Span::from_nanos(3_000_000)).await;
-                    *given.lock().expect("no panic held the lock") =
-                        Some((refused, room(&buffer)));
-                    buffer
-                },
-            );
-            let dropped = found.lock().expect("no panic held the lock").take();
-            dropped.expect("the shard gave the result")
-        }
-
-        /// The first session fills the ring with no trim. In the second, the pool has
-        /// one block of 4096 bytes when a refused append wakes a commit: the
-        /// checkpoint takes it, so the commit trims up to path 1, but the carry
-        /// record of path 1 gets no block. The power cuts. The open walks the old
-        /// holder of path 1 and gives its tail. Its first commit carries path 1, and
-        /// the commit after it trims past the old holder.
+        /// The first session fills the ring with no trim. In the second, the open
+        /// frees the records before the holder of path 1, and the pool has no block
+        /// when its first commit runs: the commit writes its data record, and no carry
+        /// record takes a block. The power cuts. The open walks the holder of path 1
+        /// and frees no record, and its restart record takes the owed block. A refused
+        /// append wakes a commit that carries path 1, and the next one wakes a commit
+        /// that trims past the old holder.
         #[test]
         fn a_crash_after_a_carry_with_no_pool_block_opens_and_carries_at_the_next_two_commits()
          {
             let mut sim = sim::Sim::new(sim::Config::default());
             let node = sim.node(sim::node::Config::default());
             let first = fill(&mut sim, &node);
-            let (refused, dropped) = carry_with_one_block(&mut sim, &node, first);
-            assert_eq!(refused, Err(FULL));
+            let (opened, starved) = commit_after_open(&mut sim, &node, first, true);
+            assert_eq!(opened, OPENED);
             assert_eq!(
-                dropped,
-                (190, 3 * 4096, 62 * 4096, Some(3 * 4096)),
-                "the trim stops at path 1, and no carry record takes a block"
+                starved,
+                (190, 3 * 4096, 63 * 4096, Some(3 * 4096)),
+                "the commit writes its data record, and no carry record takes a block"
             );
             sim.crash(&node, sim::Crash::Power);
             let found = Arc::new(Mutex::new(None));
@@ -2983,14 +2968,10 @@ mod tests {
                     let tail = buffer.durable(one, Path::Live);
                     let mut rooms = vec![room(&buffer)];
                     let mut refused = Vec::new();
-                    for n in first..first + 2 {
-                        let next = || [entry(2, two, Path::Live, 3 * n, &part)];
-                        while let Err(full) = buffer.append(next()) {
-                            refused.push(full);
-                            own.clock().sleep(Span::from_nanos(3_000_000)).await;
-                            rooms.push(room(&buffer));
-                        }
-                        buffer.committed().await.expect("commits");
+                    let next = || [entry(2, two, Path::Live, 3 * (first + 1), &part)];
+                    while let Err(full) = buffer.append(next()) {
+                        refused.push(full);
+                        own.clock().sleep(Span::from_nanos(3_000_000)).await;
                         rooms.push(room(&buffer));
                     }
                     *given.lock().expect("no panic held the lock") =
@@ -3005,17 +2986,16 @@ mod tests {
                 stamp: Some(Stamp::from_nanos(9)),
             };
             assert_eq!(tail, walked, "the walk reads the old holder of path 1");
-            assert_eq!(refused, vec![FULL]);
-            assert_eq!(rooms[0], dropped, "the open walks from the trimmed tail");
+            assert_eq!(refused, vec![FULL, FULL]);
             assert_eq!(
-                rooms[1],
-                (190, 3 * 4096, 64 * 4096, Some(63 * 4096)),
-                "the first commit carries paths 1 and 2 after its data record"
-            );
-            assert_eq!(
-                rooms[2],
-                (190, 37 * 4096, 64 * 4096, Some(63 * 4096)),
-                "the commit after it trims past the old holder of path 1"
+                rooms,
+                [
+                    (190, 3 * 4096, 64 * 4096, Some(3 * 4096)),
+                    (97, 3 * 4096, 65 * 4096, Some(64 * 4096)),
+                    (190, 38 * 4096, 65 * 4096, Some(64 * 4096)),
+                ],
+                "the restart record takes the owed block, the first commit carries \
+                 paths 1 and 2, and the one after it trims past the old holder of path 1"
             );
             assert_eq!(durable_after_open(&mut sim, &node), 9);
         }

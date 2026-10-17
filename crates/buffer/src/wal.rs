@@ -489,6 +489,9 @@ pub(crate) struct Writer {
     /// The offsets of the last wrap skip, empty before the first. The live part
     /// holds at most one wrap that is not synced, as it is at most one area long.
     skip: Range<u64>,
+    /// The chain value after the last record walked, until
+    /// [`restart`](Self::restart) places its record there.
+    walked: Option<u32>,
 }
 
 impl Writer {
@@ -522,7 +525,38 @@ impl Writer {
         let mut cursor = Cursor::new(layout, tail, TABLE);
         let zeros = vec![0; cursor.window().len];
         assert_eq!(cursor.next(&zeros), Ok(Step::End), "an empty ring");
-        cursor.writer(offset, 9).expect("the restart record fits").0
+        let mut writer = cursor.writer();
+        writer.restart(9).expect("the restart record fits");
+        writer
+    }
+
+    /// Places and seals the restart record with `chain`, a new random value, as
+    /// the body, and counts it as synced. The chain continues from `chain`. The
+    /// caller syncs the record before the first commit.
+    ///
+    /// # Errors
+    ///
+    /// [`Full`] when the record does not fit before the tail. No state changes,
+    /// so a call after a [`release`](Self::release) can place it. No release helps
+    /// when the head is at the end of the offsets: the ring is full for good.
+    ///
+    /// # Panics
+    ///
+    /// After a call that placed the record.
+    pub(crate) fn restart(&mut self, chain: u32) -> Result<Sealed, Full> {
+        let walked = self
+            .walked
+            .expect("invariant: one restart record follows the walk");
+        let plan = self.plan(Kind::Restart, RESTART_LEN)?;
+        self.walked = None;
+        let body = chain.to_le_bytes();
+        let (sealed, ends) = plan.seal(walked, [&body[..]]);
+        let record = Position {
+            offset: plan.next,
+            chain,
+        };
+        self.synced(Ends { record, ..ends });
+        Ok(sealed)
     }
 
     /// Plans a data record with a body of `len` bytes. It leaves [`SPARE`] free.
@@ -1059,47 +1093,26 @@ impl Cursor {
     }
 
     /// Makes the writer that continues the ring after the last data or carry
-    /// record walked, or from the tail when the walk read none, with the records
-    /// before the offset `tail` released, and seals its restart record with `chain`,
-    /// a new random value, as the body. The chain continues from `chain`.
-    ///
-    /// # Errors
-    ///
-    /// [`Full`] when the restart record does not fit before `tail`. A later tail
-    /// needs a new walk. No tail helps when the head is at the end of the offsets:
-    /// the ring is full for good.
+    /// record walked, or from the tail when the walk read none. It places no
+    /// record: [`Writer::restart`] places the restart record.
     ///
     /// # Panics
     ///
-    /// Before [`Step::End`], or when `tail` is before the tail of the walk or past
-    /// the end of its last data or carry record.
-    pub(crate) fn writer(
-        self,
-        tail: u64,
-        chain: u32,
-    ) -> Result<(Writer, Sealed), Full> {
+    /// Before [`Step::End`].
+    pub(crate) fn writer(self) -> Writer {
         assert!(self.ended, "invariant: the chain ends at the last step");
         let Self { head, mut ends, .. } = self;
         // The restart record goes over the records after the last data or carry
         // record.
         ends.truncate(ends.partition_point(|end| end.offset <= head.offset));
-        let mut writer = Writer {
+        Writer {
             layout: self.layout,
             tail: self.tail,
             head: head.offset,
             ends,
             skip: 0..0,
-        };
-        writer.release(tail);
-        let plan = writer.plan(Kind::Restart, RESTART_LEN)?;
-        let body = chain.to_le_bytes();
-        let (sealed, ends) = plan.seal(head.chain, [&body[..]]);
-        // The open syncs the restart record before the first commit, and the chain
-        // continues from its body.
-        let offset = plan.next;
-        let record = Position { offset, chain };
-        writer.synced(Ends { record, ..ends });
-        Ok((writer, sealed))
+            walked: Some(head.chain),
+        }
     }
 }
 
@@ -1243,7 +1256,8 @@ mod tests {
             let area = vec![0; index(layout.area)];
             let (_, cursor, _) =
                 walk_in(layout, &area, START).expect("a zeroed area is valid");
-            let (writer, sealed) = cursor.writer(0, 1).expect("the ring is empty");
+            let mut writer = cursor.writer();
+            let sealed = writer.restart(1).expect("the ring is empty");
             let mut ring = Self {
                 layout,
                 area,
@@ -1435,7 +1449,8 @@ mod tests {
         fn reopen(&mut self, chain: u32) -> Result<Vec<Vec<u8>>, Full> {
             let (data, cursor) = self.walk();
             let head = cursor.head;
-            let (writer, sealed) = cursor.writer(self.tail.offset, chain)?;
+            let mut writer = cursor.writer();
+            let sealed = writer.restart(chain)?;
             while self.live.back().is_some_and(|live| live.data.is_none()) {
                 self.live.pop_back();
             }
@@ -1736,8 +1751,8 @@ mod tests {
                 let mut cursor = Cursor::new(layout, at(tail, 0), PIECE);
                 let zeros = vec![0; cursor.window().len];
                 prop_assert_eq!(cursor.next(&zeros), Ok(Step::End));
-                let (mut writer, _) =
-                    cursor.writer(tail * 4096, 1).expect("the ring is empty");
+                let mut writer = cursor.writer();
+                writer.restart(1).expect("the ring is empty");
                 prop_assert_eq!(writer.append(body_max).map(drop), Ok(()));
             }
         }
@@ -1757,7 +1772,9 @@ mod tests {
                 ..cursor
             };
             cursor.ended = true;
-            cursor.writer(tail * 4096, 9).expect("the ring has room").0
+            let mut writer = cursor.writer();
+            writer.restart(9).expect("the ring has room");
+            writer
         }
 
         proptest! {
@@ -2665,7 +2682,8 @@ mod tests {
         fn starts_a_writer_with_a_restart_record_at_the_head() {
             let area = vec![0; index(AREA)];
             let (_, cursor) = walk(&area, START).expect("a zeroed area is valid");
-            let (writer, sealed) = cursor.writer(0, 77).expect("the ring is empty");
+            let mut writer = cursor.writer();
+            let sealed = writer.restart(77).expect("the ring is empty");
             let body = 77u32.to_le_bytes();
             let (header, _) = record::header(START.chain, Kind::Restart, [&body[..]]);
             let record = Write { place: 0, header };
@@ -2678,11 +2696,11 @@ mod tests {
         #[test]
         #[should_panic(expected = "the chain ends at the last step")]
         fn panics_on_a_writer_before_the_end() {
-            let _writer = Cursor::new(layout(), START, PIECE).writer(0, 1);
+            let _writer = Cursor::new(layout(), START, PIECE).writer();
         }
 
         #[test]
-        fn refuses_a_writer_when_the_ring_is_full_until_the_tail_moves() {
+        fn refuses_a_restart_that_does_not_fit_until_a_release() {
             let mut ring = Ring::new();
             for _ in 1..BLOCKS {
                 ring.fill(b"a").expect("the ring has room");
@@ -2692,10 +2710,22 @@ mod tests {
                 needed: 4096,
                 free: 0,
             };
-            assert_eq!(cursor.writer(0, 1).map(drop), Err(full));
-            let (_, cursor) = walk(&ring.area, START).expect("a valid ring");
-            let (writer, sealed) = cursor.writer(4096, 1).expect("one block is free");
+            let mut writer = cursor.writer();
+            let before = (writer.head, writer.tail, writer.ends.clone());
+            assert_eq!(writer.restart(1), Err(full));
+            assert_eq!((writer.head, writer.tail, writer.ends.clone()), before);
+            writer.release(4096);
+            let sealed = writer.restart(1).expect("one block is free");
             assert_eq!((sealed.record.place, writer.head()), (0, 20 * 4096));
+        }
+
+        #[test]
+        #[should_panic(expected = "one restart record follows the walk")]
+        fn panics_on_a_second_restart() {
+            let (_, cursor) = Ring::new().walk();
+            let mut writer = cursor.writer();
+            writer.restart(1).expect("the ring is empty");
+            writer.restart(2).map(drop).expect("panics first");
         }
 
         /// Each open writes its restart record right after the last data record,
@@ -2818,7 +2848,8 @@ mod tests {
                 let read = cursor.next(&area[block * ALIGN..(block + 1) * ALIGN]);
                 assert_eq!(read, Ok(step), "block {block}");
             }
-            let (writer, sealed) = cursor.writer(0, 6).expect("the ring has room");
+            let mut writer = cursor.writer();
+            let sealed = writer.restart(6).expect("the ring has room");
             assert_eq!((sealed.record.place, writer.head()), (2 * 4096, 3 * 4096));
         }
 
@@ -2862,7 +2893,7 @@ mod tests {
         )]
         fn panics_on_a_tail_past_the_last_data_record() {
             let (_, cursor) = Ring::new().walk();
-            let _writer = cursor.writer(4096, 2);
+            cursor.writer().release(4096);
         }
 
         /// The smallest ring holds one restart record after any number of opens
@@ -2881,7 +2912,8 @@ mod tests {
                         other => panic!("the open of {chain} read {other:?}"),
                     }
                 }
-                let (mut writer, sealed) = cursor.writer(0, chain).expect("it fits");
+                let mut writer = cursor.writer();
+                let sealed = writer.restart(chain).expect("it fits");
                 let place = index(sealed.record.place);
                 area[place..place + HEADER_LEN].copy_from_slice(&sealed.record.header);
                 area[place + HEADER_LEN..place + HEADER_LEN + RESTART_LEN]
@@ -2973,7 +3005,7 @@ mod tests {
                 needed: 4096,
                 free: 4095,
             };
-            assert_eq!(cursor.writer(header.tail.offset(), 1).map(drop), Err(full));
+            assert_eq!(cursor.writer().restart(1), Err(full));
         }
 
         #[test]
