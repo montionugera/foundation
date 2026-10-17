@@ -879,19 +879,9 @@ mod tests {
         After(Span),
     }
 
-    /// Supervises one connector of [`Script`] with `steps` and `config`, and
-    /// cancels it at `cancel`.
+    /// Supervises one connector of [`Script`] with `steps` and `config` in a sim of
+    /// `seed`, and cancels it at `cancel`.
     fn supervise(
-        kind: &'static str,
-        steps: Vec<Step>,
-        config: Document,
-        cancel: Cancel,
-    ) -> Outcome {
-        supervise_in(0, kind, steps, config, cancel)
-    }
-
-    /// [`supervise`] in a sim of `seed`.
-    fn supervise_in(
         seed: u64,
         kind: &'static str,
         steps: Vec<Step>,
@@ -962,7 +952,7 @@ mod tests {
 
     #[test]
     fn runs_once_and_returns_when_run_returns_ok() {
-        let out = supervise("script", vec![Step::Done], config(), Cancel::Never);
+        let out = supervise(0, "script", vec![Step::Done], config(), Cancel::Never);
         out.result.expect("ok");
         assert_eq!(out.runs, [(Span::ZERO, Some(Span::ZERO))]);
     }
@@ -984,7 +974,7 @@ mod tests {
     #[test]
     fn writes_the_status_of_each_start_and_end_after_a_device_error() {
         let steps = vec![Step::Device(ms(10))];
-        let out = supervise("script", steps, config(), Cancel::After(ms(5_000)));
+        let out = supervise(0, "script", steps, config(), Cancel::After(ms(5_000)));
         let [(_, Some(ended)), (again, _)] = out.runs[..] else {
             panic!("two runs, the first ended: {:?}", out.runs);
         };
@@ -1019,7 +1009,7 @@ mod tests {
     #[test]
     fn writes_the_error_text_and_the_backoff_after_a_device_error() {
         let steps = vec![Step::Device(ms(10))];
-        let out = supervise("script", steps, config(), Cancel::After(ms(5_000)));
+        let out = supervise(0, "script", steps, config(), Cancel::After(ms(5_000)));
         let [(_, Some(ended)), (again, _)] = out.runs[..] else {
             panic!("two runs, the first ended: {:?}", out.runs);
         };
@@ -1040,7 +1030,7 @@ mod tests {
     #[test]
     fn writes_the_error_that_a_run_shows_and_its_clear() {
         let steps = vec![Step::Show(ms(2_000))];
-        let out = supervise("script", steps, config(), Cancel::Never);
+        let out = supervise(0, "script", steps, config(), Cancel::Never);
         let got: Vec<_> = (out.statuses.iter())
             .zip(states(&out.statuses))
             .map(|((at, _, text, _), state)| (*at, state, text.as_str()))
@@ -1059,7 +1049,7 @@ mod tests {
     #[test]
     fn writes_the_note_that_a_run_shows_beside_its_error_until_the_run_ends() {
         let steps = vec![Step::Note(ms(2_000))];
-        let out = supervise("script", steps, config(), Cancel::Never);
+        let out = supervise(0, "script", steps, config(), Cancel::Never);
         let got: Vec<_> = (out.statuses.iter())
             .zip(states(&out.statuses))
             .map(|((at, _, text, note), state)| {
@@ -1079,7 +1069,7 @@ mod tests {
     #[test]
     fn cuts_a_long_note_that_a_run_shows_at_a_char_boundary() {
         let steps = vec![Step::NoteWide(ms(2_000))];
-        let out = supervise("script", steps, config(), Cancel::Never);
+        let out = supervise(0, "script", steps, config(), Cancel::Never);
         let notes: Vec<_> = out.statuses.iter().map(|(.., note)| note.len()).collect();
         assert_eq!(notes, [0, 1_022, 0, 0]);
         assert_eq!(
@@ -1091,7 +1081,7 @@ mod tests {
     #[test]
     fn shows_a_note_whose_text_shows_an_error_as_it_formats() {
         let steps = vec![Step::NoteNested(ms(2_000))];
-        let out = supervise("script", steps, config(), Cancel::Never);
+        let out = supervise(0, "script", steps, config(), Cancel::Never);
         let got: Vec<_> = (out.statuses.iter())
             .map(|(_, _, text, note)| (text.as_str(), note.as_str()))
             .collect();
@@ -1102,7 +1092,7 @@ mod tests {
     #[test]
     fn shows_a_note_whose_text_debugs_its_context() {
         let steps = vec![Step::NoteDebug(ms(2_000))];
-        let out = supervise("script", steps, config(), Cancel::Never);
+        let out = supervise(0, "script", steps, config(), Cancel::Never);
         assert!(
             out.statuses[1].3.starts_with("Context {"),
             "{:?}",
@@ -1114,6 +1104,7 @@ mod tests {
     #[test]
     fn writes_no_note_that_a_task_shows_after_the_run_returned() {
         let out = supervise(
+            0,
             "script",
             vec![Step::NoteLate],
             config(),
@@ -1135,7 +1126,7 @@ mod tests {
         for seed in 0..SEEDS {
             let steps = vec![Step::ShowEnd];
             let cancel = Cancel::After(ms(500));
-            let out = supervise_in(seed, "script", steps, config(), cancel);
+            let out = supervise(seed, "script", steps, config(), cancel);
             let errors = errors(&out.statuses);
             let texts: Vec<_> = errors.iter().map(|(_, t)| *t).collect();
             let classes: Vec<_> = states(&out.statuses).iter().map(|s| s.1).collect();
@@ -1167,7 +1158,7 @@ mod tests {
     #[test]
     fn writes_the_error_that_a_restart_shows_again() {
         let steps = vec![Step::ShowEnd, Step::Show(ms(2_000))];
-        let out = supervise("script", steps, config(), Cancel::Never);
+        let out = supervise(0, "script", steps, config(), Cancel::Never);
         let texts: Vec<_> = errors(&out.statuses).into_iter().map(|(_, t)| t).collect();
         let want = [
             "", "no reply", "no reply", "no reply", "refused", "", "", "",
@@ -1178,7 +1169,7 @@ mod tests {
     #[test]
     fn cuts_the_middle_of_a_long_error_that_a_run_shows() {
         let steps = vec![Step::ShowWide(ms(2_000))];
-        let out = supervise("script", steps, config(), Cancel::Never);
+        let out = supervise(0, "script", steps, config(), Cancel::Never);
         let got: Vec<_> = (states(&out.statuses).into_iter())
             .zip(&out.statuses)
             .map(|(state, (_, _, text, _))| (state, text.as_str()))
@@ -1190,7 +1181,7 @@ mod tests {
     #[test]
     fn writes_a_clear_status_when_a_restart_clears_the_end_before_it() {
         let steps = vec![Step::ShowEnd, Step::Clear(ms(2_000))];
-        let out = supervise("script", steps, config(), Cancel::Never);
+        let out = supervise(0, "script", steps, config(), Cancel::Never);
         let got: Vec<_> = (states(&out.statuses).into_iter())
             .zip(&out.statuses)
             .map(|(state, (at, _, text, _))| (*at, state, text.as_str()))
@@ -1204,7 +1195,7 @@ mod tests {
     /// The state, the class, and the text of each status that a run of `late`, a
     /// [`Step::Late`], gives, cancelled at `cancel`.
     fn supervise_late(late: Step, cancel: Span) -> Vec<((i64, i64, i64), String)> {
-        let out = supervise("script", vec![late], config(), Cancel::After(cancel));
+        let out = supervise(0, "script", vec![late], config(), Cancel::After(cancel));
         out.result.expect("ok after a cancel");
         (out.statuses.iter())
             .zip(states(&out.statuses))
@@ -1273,6 +1264,7 @@ mod tests {
     #[test]
     fn writes_the_text_of_a_retry_error() {
         let out = supervise(
+            0,
             "script",
             vec![Step::Retry, Step::Done],
             config(),
@@ -1412,7 +1404,7 @@ mod tests {
 
     #[test]
     fn writes_the_text_of_a_config_error() {
-        let out = supervise("script", vec![Step::Config], config(), Cancel::Never);
+        let out = supervise(0, "script", vec![Step::Config], config(), Cancel::Never);
         let text = bad().to_string();
         let want = [(Span::ZERO, ""), (Span::ZERO, &*text), (Span::ZERO, &*text)];
         assert_eq!(errors(&out.statuses), want);
@@ -1420,7 +1412,7 @@ mod tests {
 
     #[test]
     fn joins_the_texts_of_the_diagnostics_of_a_config_error() {
-        let out = supervise("script", vec![Step::Configs], config(), Cancel::Never);
+        let out = supervise(0, "script", vec![Step::Configs], config(), Cancel::Never);
         let text = format!("{}; {}", bad(), worse());
         assert_eq!(out.statuses[1].2, text);
     }
@@ -1429,6 +1421,7 @@ mod tests {
     fn writes_no_backoff_when_a_cancel_ends_the_wait() {
         let steps = vec![Step::Device(Span::ZERO)];
         let out = supervise(
+            0,
             "script",
             steps,
             config(),
@@ -1443,6 +1436,7 @@ mod tests {
     #[test]
     fn cuts_the_middle_of_a_long_error_text() {
         let out = supervise(
+            0,
             "script",
             vec![Step::Wide],
             config(),
@@ -1456,6 +1450,7 @@ mod tests {
     #[test]
     fn cuts_a_long_error_text_at_a_char_boundary() {
         let out = supervise(
+            0,
             "script",
             vec![Step::Long],
             config(),
@@ -1611,6 +1606,7 @@ mod tests {
     #[test]
     fn writes_the_class_of_a_retry_error() {
         let out = supervise(
+            0,
             "script",
             vec![Step::Retry, Step::Done],
             config(),
@@ -1667,12 +1663,12 @@ mod tests {
         ];
         for (text, step) in retries {
             let steps = vec![step, Step::Done];
-            let out = supervise("script", steps, config(), Cancel::Never);
+            let out = supervise(0, "script", steps, config(), Cancel::Never);
             assert_eq!(states(&out.statuses), retry, "{text}");
             assert_eq!(errors(&out.statuses)[1], (Span::ZERO, text.as_str()));
         }
         let (_, large) = failed(Failure::Home(Home::Large));
-        let out = supervise("script", vec![large], config(), Cancel::Never);
+        let out = supervise(0, "script", vec![large], config(), Cancel::Never);
         assert_eq!(states(&out.statuses), [(0, 0, 0), (3, 1, 0), (2, 1, 0)]);
         let text = "the frame is too large for one write: split it. Give the connector \
                     fewer channels";
@@ -1687,7 +1683,7 @@ mod tests {
             requested: 16,
             largest: 8,
         });
-        let out = supervise("script", vec![large], config(), Cancel::Never);
+        let out = supervise(0, "script", vec![large], config(), Cancel::Never);
         assert_eq!(states(&out.statuses), [(0, 0, 0), (3, 1, 0), (2, 1, 0)]);
         let text = "no block for the frame: block of 16 bytes is above the largest \
                     block of 8 bytes. Give the connector fewer channels";
@@ -1711,7 +1707,13 @@ mod tests {
             entry: 3,
             entries: 2,
         };
-        supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
+        supervise(
+            0,
+            "script",
+            vec![Step::Draft(error)],
+            config(),
+            Cancel::Never,
+        );
     }
 
     #[test]
@@ -1719,7 +1721,13 @@ mod tests {
                                follows entry 2: entries must increase")]
     fn panics_when_a_kind_returns_series_out_of_order() {
         let error = frame::Error::Unordered { entry: 1, last: 2 };
-        supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
+        supervise(
+            0,
+            "script",
+            vec![Step::Draft(error)],
+            config(),
+            Cancel::Never,
+        );
     }
 
     #[test]
@@ -1727,7 +1735,13 @@ mod tests {
                                present but its index, entry 0, is absent")]
     fn panics_when_a_kind_returns_a_series_with_no_index() {
         let error = frame::Error::IndexAbsent { entry: 2, index: 0 };
-        supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
+        supervise(
+            0,
+            "script",
+            vec![Step::Draft(error)],
+            config(),
+            Cancel::Never,
+        );
     }
 
     /// No draft gives an end of another node.
@@ -1736,24 +1750,30 @@ mod tests {
                                ends do not fit the series")]
     fn panics_when_a_kind_returns_an_end_of_another_node() {
         let error = frame::Error::End(frame::BadEnd::Before { end: 4, start: 8 });
-        supervise("script", vec![Step::Draft(error)], config(), Cancel::Never);
+        supervise(
+            0,
+            "script",
+            vec![Step::Draft(error)],
+            config(),
+            Cancel::Never,
+        );
     }
 
     #[test]
     fn writes_stopped_after_a_config_error_from_run() {
-        let out = supervise("script", vec![Step::Config], config(), Cancel::Never);
+        let out = supervise(0, "script", vec![Step::Config], config(), Cancel::Never);
         assert_eq!(states(&out.statuses), [(0, 0, 0), (3, 1, 0), (2, 1, 0)]);
     }
 
     #[test]
     fn writes_stopped_after_a_run_returns_ok() {
-        let out = supervise("script", vec![Step::Done], config(), Cancel::Never);
+        let out = supervise(0, "script", vec![Step::Done], config(), Cancel::Never);
         assert_eq!(states(&out.statuses), [(0, 0, 0), (3, 0, 0), (2, 0, 0)]);
     }
 
     #[test]
     fn writes_only_stopped_when_cancelled_before_the_call() {
-        let out = supervise("script", vec![Step::Done], config(), Cancel::Now);
+        let out = supervise(0, "script", vec![Step::Done], config(), Cancel::Now);
         assert_eq!(states(&out.statuses), [(2, 0, 0)]);
     }
 
@@ -1761,6 +1781,7 @@ mod tests {
     fn writes_stopped_when_cancelled_during_the_backoff() {
         let steps = vec![Step::Device(Span::ZERO)];
         let out = supervise(
+            0,
             "script",
             steps,
             config(),
@@ -1773,7 +1794,7 @@ mod tests {
     #[test]
     fn writes_no_waiting_after_a_cancel() {
         let steps = vec![Step::Linger(ms(30))];
-        let out = supervise("script", steps, config(), Cancel::After(ms(50)));
+        let out = supervise(0, "script", steps, config(), Cancel::After(ms(50)));
         let want = [(0, 0, 0), (3, 2, 0), (2, 2, 0)];
         assert_eq!(states(&out.statuses), want);
     }
@@ -1781,7 +1802,7 @@ mod tests {
     #[test]
     fn writes_ending_until_the_tasks_of_a_run_end() {
         let steps = vec![Step::Hold(ms(2_000)), Step::Done];
-        let out = supervise("script", steps, config(), Cancel::Never);
+        let out = supervise(0, "script", steps, config(), Cancel::Never);
         let at = |i: usize| out.statuses[i].0;
         let want = [
             (0, 0, 0),
@@ -2438,7 +2459,7 @@ mod tests {
 
     #[test]
     fn writes_no_status_for_a_config_that_does_not_parse() {
-        let out = supervise("modbus", vec![Step::Done], config(), Cancel::Never);
+        let out = supervise(0, "modbus", vec![Step::Done], config(), Cancel::Never);
         assert!(out.statuses.is_empty(), "{:?}", out.statuses);
     }
 
@@ -2450,7 +2471,7 @@ mod tests {
             Step::Device(ms(10)),
             Step::Done,
         ];
-        let out = supervise("script", steps, config(), Cancel::Never);
+        let out = supervise(0, "script", steps, config(), Cancel::Never);
         out.result.expect("ok");
         assert_eq!(out.runs.len(), 4);
         let ceilings = [Span::SECOND, ms(2000), ms(4000)];
@@ -2466,6 +2487,7 @@ mod tests {
     #[test]
     fn restarts_after_a_retry_error() {
         let out = supervise(
+            0,
             "script",
             vec![Step::Retry, Step::Done],
             config(),
@@ -2478,6 +2500,7 @@ mod tests {
     #[test]
     fn restarts_after_a_run_cancels_its_own_token() {
         let out = supervise(
+            0,
             "script",
             vec![Step::Abort, Step::Done],
             config(),
@@ -2491,7 +2514,7 @@ mod tests {
     fn grows_the_waits_after_short_runs() {
         let mut steps = vec![Step::Device(Span::ZERO); 12];
         steps.push(Step::Done);
-        let out = supervise("script", steps, config(), Cancel::Never);
+        let out = supervise(0, "script", steps, config(), Cancel::Never);
         out.result.expect("ok");
         let last = out.runs.last().expect("13 runs").0;
         // With no growth, twelve waits of at most 1 s each.
@@ -2501,7 +2524,7 @@ mod tests {
     #[test]
     fn returns_a_config_error_from_run_without_a_restart() {
         let steps = vec![Step::Config, Step::Done];
-        let out = supervise("script", steps, config(), Cancel::Never);
+        let out = supervise(0, "script", steps, config(), Cancel::Never);
         assert_eq!(config_errors(out.result), [bad()]);
         assert_eq!(out.runs.len(), 1);
     }
@@ -2520,7 +2543,7 @@ mod tests {
             attributes: Map::new(vec![n]).expect("one key"),
             blocks: Vec::new(),
         };
-        let out = supervise("script", vec![Step::Done], config, Cancel::Never);
+        let out = supervise(0, "script", vec![Step::Done], config, Cancel::Never);
         assert_eq!(config_errors(out.result), [bad()]);
         assert!(out.runs.is_empty());
     }
@@ -2539,7 +2562,7 @@ mod tests {
             .expect("one key"),
             blocks: Vec::new(),
         };
-        let out = supervise("script", vec![Step::Done], config, Cancel::Never);
+        let out = supervise(0, "script", vec![Step::Done], config, Cancel::Never);
         assert_eq!(config_errors(out.result), [worse()]);
         assert!(out.runs.is_empty());
         assert!(out.statuses.is_empty(), "{:?}", out.statuses);
@@ -2547,7 +2570,7 @@ mod tests {
 
     #[test]
     fn returns_an_unknown_kind_as_a_config_error() {
-        let out = supervise("modbus", vec![Step::Done], config(), Cancel::Never);
+        let out = supervise(0, "modbus", vec![Step::Done], config(), Cancel::Never);
         let codes: Vec<_> = config_errors(out.result).iter().map(|d| d.code).collect();
         assert_eq!(codes, [Code::new("connector.unknown-kind")]);
         assert!(out.runs.is_empty());
@@ -2556,7 +2579,7 @@ mod tests {
     #[test]
     fn waits_for_the_run_to_return_after_a_cancel() {
         let steps = vec![Step::Linger(ms(30))];
-        let out = supervise("script", steps, config(), Cancel::After(ms(50)));
+        let out = supervise(0, "script", steps, config(), Cancel::After(ms(50)));
         out.result.expect("ok after a cancel");
         assert_eq!(out.runs, [(Span::ZERO, Some(ms(80)))]);
         assert_eq!(out.returned, ms(80), "after the run returned, never before");
@@ -2566,6 +2589,7 @@ mod tests {
     fn returns_at_once_when_cancelled_during_the_backoff() {
         let steps = vec![Step::Device(Span::ZERO)];
         let out = supervise(
+            0,
             "script",
             steps,
             config(),
@@ -2578,7 +2602,7 @@ mod tests {
 
     #[test]
     fn starts_no_run_when_cancelled_before_the_call() {
-        let out = supervise("script", vec![Step::Done], config(), Cancel::Now);
+        let out = supervise(0, "script", vec![Step::Done], config(), Cancel::Now);
         out.result.expect("ok after a cancel");
         assert!(out.runs.is_empty(), "a run started after the cancel");
     }
@@ -2589,7 +2613,7 @@ mod tests {
         steps.push(Step::Device(Span::MINUTE));
         steps.extend(std::iter::repeat_n(Step::Device(Span::ZERO), 3));
         steps.push(Step::Done);
-        let out = supervise("script", steps, config(), Cancel::Never);
+        let out = supervise(0, "script", steps, config(), Cancel::Never);
         out.result.expect("ok");
         let after = out.runs.get(9..).expect("13 runs");
         let first = out.runs.get(8).and_then(|run| run.1).expect("run 8 ended");
@@ -2606,7 +2630,7 @@ mod tests {
         steps.push(Step::Hold(ms(61_000)));
         steps.extend(std::iter::repeat_n(Step::Device(Span::ZERO), 3));
         steps.push(Step::Done);
-        let out = supervise("script", steps, config(), Cancel::Never);
+        let out = supervise(0, "script", steps, config(), Cancel::Never);
         out.result.expect("ok");
         let held = out.runs.get(8).and_then(|run| run.1).expect("run 8 ended");
         let last = out.runs.last().expect("13 runs").0;
@@ -2847,6 +2871,7 @@ mod tests {
     #[test]
     fn waits_for_the_tasks_of_a_run_before_it_returns_a_config_error() {
         let out = supervise(
+            0,
             "script",
             vec![Step::Refuse(ms(2_000))],
             config(),
