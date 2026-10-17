@@ -388,6 +388,23 @@ fn a_working_directory_at_a_moved_link_stays() {
 }
 
 #[test]
+fn a_fault_on_a_relative_path_holds_through_a_move_elsewhere() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/target"));
+    node.make_dir(Path::new("/w"));
+    node.make_dir(Path::new("/x"));
+    node.link_path(Path::new("/w/link"), Path::new("/target"));
+    node.set_working_dir(Path::new("/w/link"));
+    node.fail_path(Path::new("out"), 5);
+    node.move_path(Path::new("/x"), Path::new("/y"));
+    assert_eq!(
+        paths.write(Path::new("out"), b"x"),
+        Err(Error::Io { code: 5 })
+    );
+}
+
+#[test]
 fn a_moved_link_names_its_target_and_a_link_on_the_way_is_followed() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let paths = node.paths();
