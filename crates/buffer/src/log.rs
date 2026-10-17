@@ -538,7 +538,6 @@ impl Budget {
 pub(crate) struct Newest {
     /// The offset of the record that holds it.
     pub(crate) offset: u64,
-    pub(crate) header: Header,
     /// The entry's parts, joined. A later copy of its log and tag reuses it.
     pub(crate) bytes: Vec<u8>,
 }
@@ -697,11 +696,9 @@ impl Logs {
             .entry((slot, header.path, tag))
             .or_insert_with(|| Newest {
                 offset,
-                header: *header,
                 bytes: Vec::new(),
             });
         newest.offset = offset;
-        newest.header = *header;
         newest.bytes.clear();
         for part in parts {
             newest.bytes.extend_from_slice(part);
@@ -1801,12 +1798,10 @@ mod tests {
         };
         let new = Newest {
             offset: 8192,
-            header: tagged(1, Path::Live, 2),
             bytes: bytes(b"new"),
         };
         let two = Newest {
             offset: 4096,
-            header: tagged(2, Path::Live, 2),
             bytes: bytes(b"two"),
         };
         assert_eq!(newest(&logs), [(slot(1), new.clone()), (slot(2), two)]);
