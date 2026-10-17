@@ -988,7 +988,8 @@
   a file gives `Replaced` after a write to it, and so does a folder that a program
   makes again in other case or replaces with a link, and a path into a folder that a
   program moved away. The common cases pin each on both drivers, other than a folder
-  made again in other case, which an `os` test pins on macOS.
+  made again in other case, which an `os` test pins on macOS. A folder whose key
+  cannot be read now gives the error of its key.
   `sim::Node::move_path` renames a file, a link, or a directory of a host from outside
   the node, with its key, so the common cases move a folder away on both drivers. When
   the node's working directory resolves, it stays on the directory that it resolves
@@ -1002,7 +1003,9 @@
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231111995; the
   working directory that a move keeps on the directory that it resolves to,
   2026-10-17T07:41:22Z,
-  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231322001). Lost: a
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231322001; the
+  common cases and the error of a folder key, 2026-10-17T08:26:44Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231727914). Lost: a
   second look in `ops` after a refusal, which puts a `Paths` with no limits in the scope
   that limits `foundation mcp`, states the rule of `within` again, and gives a false
   text when a file changes between the two looks.

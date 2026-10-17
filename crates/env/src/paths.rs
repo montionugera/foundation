@@ -459,7 +459,8 @@ pub enum Error {
     /// replaced a folder of that call after it: the folder's path names another
     /// file, or nothing. The path resolves under that folder, by the path that
     /// the folder resolved to at that call or by the one that it resolves to now,
-    /// or into the directory that the folder was at that call.
+    /// or into the directory that the folder was at that call. A folder whose key
+    /// cannot be read now gives the error of its key.
     Replaced,
 }
 
