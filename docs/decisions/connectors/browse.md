@@ -189,7 +189,13 @@
   (https://github.com/synnaxlabs/foundation/pull/2999#issuecomment-6230284696).
   The operation `browse` of `ops` runs `Supervisor::browse` on the node of the
   connector, for the command line with `--json` and for the MCP tool `browse`. Its
-  checks, its four codes, its JSON, and its text are in OPS OUTPUT. The JSON gives
-  `unit` and `unit_code` as two fields, each `null` when the device cannot know it, as
+  checks, its five codes, its JSON, and its text are in OPS OUTPUT. A browse needs
+  `apply`, then `admin`, on the name of the connector, the rights of an apply of that
+  block and of a remote `plan` that reads its sources, since it opens a session to the
+  device with its secrets. The refusal is `ops.denied` and names the right that is
+  missing (kind (b), accepted by `laptop.monitor` at 2026-10-17T23:02:43Z, on
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6242684265). The
+  JSON gives `unit` and `unit_code` as two fields, each `null` when the device cannot
+  know it, as
   `Facts` holds them (`laptop.architect-2`, 2026-10-17T05:14:44Z, item 2 of
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6230042870).

@@ -444,7 +444,10 @@
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6230042870), whose
   items 2 and 3 replace the one `unit` field and the budget text of the plan, and whose
   last item gives `?`. The type is the text of `types::sample::Type`, which a `type`
-  attribute takes, not the `float64` of the plan. Lost: one `unit` field, which drops
+  attribute takes, not the `float64` of the plan, so a browse output goes into a config
+  as it is (kind (f), accepted by `laptop.monitor` at 2026-10-17T23:02:43Z, on
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6242684265, with
+  `ops.large-browse`). Lost: one `unit` field, which drops
   the code when the device gives a text, so an agent cannot tell which it got.
   `laptop.monitor` accepted kinds (e) and (f) with two conditions on (e), which follow
   the proto3 JSON mapping: an `i64` or `u64` is text, since a JSON number past 2^53
