@@ -22,6 +22,9 @@ const UNSIGNED: Code = Code::new("influx.unsigned");
 
 /// The most lines that a batch takes before [`Batch::full`].
 const LINES_MAX: usize = 5_000;
+/// The most bytes of lines that a batch takes before [`Batch::full`]. A frame goes in
+/// whole, so this leaves 6 MiB for the last frame under the 10 MiB limit of InfluxDB 3.
+const BYTES_MAX: usize = 1 << 22;
 
 /// The lines of the frames added since the last [`Batch::take`], and the reader's
 /// position to ack after them.
@@ -47,6 +50,7 @@ struct Body {
     lines: usize,
     samples: u64,
     lost: u64,
+    oversized: u64,
     times: Vec<u8>,
     /// The samples of each data channel of the frame, by the order of `entries`.
     raw: Vec<Vec<u8>>,
@@ -72,6 +76,9 @@ pub struct Ack {
     pub samples: u64,
     /// The seqs that the gap lines count.
     pub lost: u64,
+    /// The `string` and `bytes` samples left out as a field of over 65,536 bytes as
+    /// written.
+    pub oversized: u64,
 }
 
 /// The data channels seen in the frames of one key set.
@@ -89,21 +96,17 @@ struct Channel {
     convert: Convert,
 }
 
-/// Appends to a line the field of the sample at a given index of a raw series.
-type Convert = fn(&[u8], usize, &line::Field, &mut line::Line<'_>);
+/// Appends to a line the field of the sample at an index of a raw series of a count
+/// of samples: series, count, index.
+type Convert = fn(&[u8], usize, usize, &line::Field, &mut line::Line<'_>);
 
 impl Batch {
-    /// An empty batch of lines of the measurement `name` to `target`, whose gap lines
-    /// name `connector`.
-    ///
-    /// # Panics
-    ///
-    /// When [`Measurement::new`] refuses `name` with no tags.
+    /// An empty batch of lines of `measurement` to `target`, whose gap lines name
+    /// `connector`.
     #[must_use]
-    pub fn new(name: &str, target: &Target, connector: &Name) -> Self {
+    pub fn new(measurement: Measurement, target: &Target, connector: &Name) -> Self {
         Self {
-            measurement: Measurement::new(name, &[])
-                .expect("invariant: config checks the measurement name"),
+            measurement,
             unsigned: target.unsigned(),
             connector: connector.clone(),
             gap: None,
@@ -151,11 +154,11 @@ impl Batch {
         Ok(())
     }
 
-    /// Whether the batch holds at least 5,000 lines, so the caller sends it before it
-    /// adds more.
+    /// Whether the batch holds at least 5,000 lines or 4 MiB of them, so the caller
+    /// sends it before it adds more.
     #[must_use]
     pub const fn full(&self) -> bool {
-        self.body.lines >= LINES_MAX
+        self.body.lines >= LINES_MAX || self.body.bytes.len() >= BYTES_MAX
     }
 
     /// The lines of the frames added, or `None` when no frame was added. Empties the
@@ -171,6 +174,7 @@ impl Batch {
                 position,
                 samples: std::mem::take(&mut self.body.samples),
                 lost: std::mem::take(&mut self.body.lost),
+                oversized: std::mem::take(&mut self.body.oversized),
             },
         })
     }
@@ -233,8 +237,12 @@ impl Body {
             let mut text = measurement.begin(&mut self.bytes);
             for (&at, raw) in self.entries.iter().zip(&self.raw) {
                 let channel = layout.channel(at);
-                (channel.convert)(raw, line, &channel.field, &mut text);
+                (channel.convert)(raw, count, line, &channel.field, &mut text);
             }
+            let oversized = text.oversized();
+            let oversized =
+                u64::try_from(oversized).expect("invariant: usize fits u64");
+            self.oversized = self.oversized.saturating_add(oversized);
             let wrote = text.end(Stamp::from_nanos(i64::from_le_bytes(time)));
             if wrote > 0 {
                 self.lines = self.lines.saturating_add(1);
@@ -317,7 +325,11 @@ fn entry(set: &KeySet, at: usize) -> &key_set::Entry {
 /// `Line` method `$write`.
 macro_rules! read {
     ($scalar:ident, $write:ident, |$value:ident| $field:expr) => {
-        |series: &[u8], index: usize, field: &line::Field, text: &mut line::Line<'_>| {
+        |series: &[u8],
+         _: usize,
+         index: usize,
+         field: &line::Field,
+         text: &mut line::Line<'_>| {
             const WIDTH: usize = Scalar::$scalar.width();
             let sample = series.as_chunks::<WIDTH>().0.get(index);
             let sample =
@@ -332,9 +344,27 @@ macro_rules! read {
     };
 }
 
+/// The conversion of a sample of `Type::$data_type`, whose bytes go to the `Line`
+/// method `$write`.
+macro_rules! variable {
+    ($data_type:ident, $write:ident) => {
+        |series: &[u8],
+         count: usize,
+         index: usize,
+         field: &line::Field,
+         text: &mut line::Line<'_>| {
+            let form = codec::Variable::of(Type::$data_type);
+            let form = form.expect("invariant: the type is variable");
+            text.$write(field, form.sample(count, series, index));
+        }
+    };
+}
+
 /// The conversion of a sample of the data channel at `at` of `received`. A `u64` is
 /// a `u` integer, refused unless `unsigned`; a `timestamp` is its ns since the Unix
-/// epoch, and a `duration` its ns. A NaN or infinite float is left out.
+/// epoch, and a `duration` its ns. A NaN or infinite float is left out. A `uuid`,
+/// `string`, or `bytes` sample is a string field, which [`line::Line`] leaves out
+/// when it is too long.
 fn conversion(
     received: &Received<'_>,
     at: usize,
@@ -360,8 +390,11 @@ fn conversion(
             "Leave the channel out of `select`",
         )
     };
-    let Type::Scalar(scalar) = data_type else {
-        return unwritten();
+    let scalar = match data_type {
+        Type::Scalar(scalar) => scalar,
+        Type::String => return Ok(variable!(String, string)),
+        Type::Bytes => return Ok(variable!(Bytes, bytes)),
+        _ => return unwritten(),
     };
     Ok(match scalar {
         Scalar::Bool => read!(Bool, boolean, |value| value),
@@ -388,6 +421,6 @@ fn conversion(
         Scalar::F64 => read!(F64, float, |value| value),
         Scalar::Stamp => read!(Stamp, integer, |value| value.nanos()),
         Scalar::Span => read!(Span, integer, |value| value.nanos()),
-        Scalar::Uuid => return unwritten(),
+        Scalar::Uuid => read!(Uuid, uuid, |value| u128::from_be_bytes(value)),
     })
 }

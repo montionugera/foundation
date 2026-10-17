@@ -57,35 +57,38 @@ const CONFIRMED: &str = "confirmed";
 /// The count of the seqs that the gap lines count, which InfluxDB took with a 204,
 /// across the runs of one supervisor call.
 const LOST: &str = "lost";
+/// The count of the `string` and `bytes` samples left out as a field of over 65,536
+/// bytes as written, in the batches that the run acks, across the runs of one
+/// supervisor call.
+const OVERSIZED: &str = "oversized";
 
 /// The `influx` kind: writes a reader's samples to InfluxDB.
 #[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct Kind;
 
-/// One influx connector's config.
+/// One influx connector's config. Only
+/// [`Kind::parse`](connector::kind::Kind::parse) of [`Kind`] makes one.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct Config {
     /// The InfluxDB endpoint: a URI that [`connector::http::uri`] takes, with the
     /// scheme `http` or `https`, a path of `/` or none, and no query.
-    pub address: Uri,
+    pub(crate) address: Uri,
     /// Where it writes.
-    pub target: Target,
-    /// The measurement of each line: a name that [`line::Measurement::new`] takes,
-    /// other than [`gap::MEASUREMENT`].
-    pub measurement: String,
+    pub(crate) target: Target,
+    /// The measurement of each line, other than [`gap::MEASUREMENT`].
+    pub(crate) measurement: line::Measurement,
     /// Where the InfluxDB token comes from, sent as `Authorization: Token <value>`
     /// on each request. `None` sends no `Authorization` header. An `http` address
     /// sends it in clear, and an `https` one keeps it from the network.
-    pub token: Option<secret::Source>,
+    pub(crate) token: Option<secret::Source>,
     /// Where the PEM certificates come from that an `https` connect trusts in
     /// addition to the roots of the node, such as a private CA, or the certificate of
     /// a self-signed server with `CA:FALSE`. `None` trusts only the roots of the node.
     /// An `http` address with a `ca` is refused.
-    pub ca: Option<secret::Source>,
+    pub(crate) ca: Option<secret::Source>,
     /// The reader whose samples it writes.
-    pub reader: reader::Settings,
+    pub(crate) reader: reader::Settings,
 }
 
 /// Where a connector writes. Each name has 1 to 4,096 bytes.
@@ -175,14 +178,16 @@ impl kind::Kind for Kind {
         }
     }
 
-    /// Reads the channels of its reader settings, writes none, and names two counts:
-    /// `confirmed`, the samples that InfluxDB took with a 204, and `lost`, the seqs
-    /// that the gap lines of this connector count, which InfluxDB took with a 204.
+    /// Reads the channels of its reader settings, writes none, and names three
+    /// counts: `confirmed`, the samples that InfluxDB took with a 204; `lost`, the
+    /// seqs that the gap lines of this connector count, which InfluxDB took with a
+    /// 204; and `oversized`, the `string` and `bytes` samples left out as a field of
+    /// over 65,536 bytes as written, when their batch is acked.
     fn check(&self, config: &Config) -> Result<Channels, Vec<Diagnostic>> {
         let count = |text: &str| text.parse().expect("invariant: a count is a name");
         Ok(Channels {
             reader: Some(config.reader.clone()),
-            counts: vec![count(CONFIRMED), count(LOST)],
+            counts: vec![count(CONFIRMED), count(LOST), count(OVERSIZED)],
             ..Channels::default()
         })
     }
@@ -192,23 +197,27 @@ impl kind::Kind for Kind {
     /// frame after seqs that the reader did not get, it writes their `live` gap line
     /// ([`gap::MEASUREMENT`]) at the frame's first sample, also when it leaves that
     /// sample's line out. It keeps one request in flight, and acks a batch only after
-    /// InfluxDB answers 204, when it adds the batch's fields to the count `confirmed`
-    /// and the seqs of its gap lines to `lost`. It shows each other answer as its
-    /// error, with the fix for a 400, a 404, or a 422, and sends the batch again after
-    /// a backoff. It reads the token at its start, and again after a 401 or a 403
-    /// before the next attempt. It reads the `ca` at its start, and again after a TLS
-    /// failure before the next attempt.
+    /// InfluxDB answers 204, or with no request when the batch holds no line. At the
+    /// ack it adds the batch's fields to the count `confirmed`, the seqs of its gap
+    /// lines to `lost`, and the samples it left out as over 65,536 bytes to
+    /// `oversized`. It shows each other answer as its error, with the fix for a 400, a
+    /// 404, a 413, or a 422, and sends the batch again after a backoff. It reads the
+    /// token at its start, and again after a 401 or a 403 before the next attempt. It
+    /// reads the `ca` at its start, and again after a TLS failure before the next
+    /// attempt. A read after the start that fails shows its error, keeps the batch and
+    /// the old token or `ca`, and reads again after the next backoff, with no request
+    /// until the read gives a value.
     ///
     /// # Errors
     ///
-    /// [`Error::Config`] with `influx.sample-type` for a channel of a `uuid`, `string`,
-    /// `bytes`, `array`, `list`, or `matrix` type, with `influx.unsigned` for a `u64`
-    /// channel to a [`Target::Database`], and with `influx.bad-channel` for a channel
-    /// name that is not a valid field key. The error of [`hub::reader::Ended`] when the
-    /// reader ends. [`Error::Retry`] or [`Error::Config`] from [`Context::secret`] when
-    /// a read fails, and [`Error::Retry`] when the token holds a byte that an HTTP
-    /// header cannot hold, and when the `ca` holds no PEM certificate or one that does
-    /// not parse.
+    /// [`Error::Config`] with `influx.sample-type` for a channel of an `array`, `list`,
+    /// or `matrix` type, with `influx.unsigned` for a `u64` channel to a
+    /// [`Target::Database`], and with `influx.bad-channel` for a channel name that is
+    /// not a valid field key. The error of [`hub::reader::Ended`] when the reader
+    /// ends. From the reads at the start only: [`Error::Retry`] or [`Error::Config`]
+    /// from [`Context::secret`] when a read fails, and [`Error::Retry`] when the token
+    /// holds a byte that an HTTP header cannot hold, and when the `ca` holds no PEM
+    /// certificate or one that does not parse.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         send::run(ctx)
     }
@@ -337,9 +346,9 @@ fn name(value: &Value, code: Code, noun: &str) -> Result<String, Diagnostic> {
     }
 }
 
-/// Reads a measurement name: a string that [`line::Measurement::new`] takes, other
-/// than [`gap::MEASUREMENT`].
-fn measurement(value: &Value) -> Result<String, Diagnostic> {
+/// Reads a measurement name: a string that [`line::Measurement::new`] takes with no
+/// tags, other than [`gap::MEASUREMENT`].
+fn measurement(value: &Value) -> Result<line::Measurement, Diagnostic> {
     let bad = |message: String| {
         Diagnostic::new(
             BAD_MEASUREMENT,
@@ -357,8 +366,7 @@ fn measurement(value: &Value) -> Result<String, Diagnostic> {
     if **text == *gap::MEASUREMENT {
         return Err(bad(format!("{text:?} is the measurement of the gap lines")));
     }
-    line::Measurement::new(text, &[]).map_err(|error| bad(error.to_string()))?;
-    Ok(text.to_string())
+    line::Measurement::new(text, &[]).map_err(|error| bad(error.to_string()))
 }
 
 #[cfg(test)]

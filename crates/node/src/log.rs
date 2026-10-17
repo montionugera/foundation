@@ -1,8 +1,10 @@
 //! The log of a node: one line for each `tracing` event.
 
+mod queue;
+
 use std::fmt;
 use std::io;
-use std::sync::Mutex;
+use std::panic::PanicHookInfo;
 
 use clock::log::{Mesh, Time};
 use serde::ser::{Serialize, SerializeMap, Serializer};
@@ -15,12 +17,21 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::LookupSpan;
 use types::time::Stamp;
 
+pub use self::queue::Flush;
+pub(crate) use self::queue::Hold;
+use self::queue::Pipe;
+
 /// Where and how the node writes its log: one line for each event at `level` or
 /// above, with the stamp, the level, the target, the message, and the fields.
 pub struct Log {
-    /// Where each line goes, with one write for each line. `main` gives stderr. A
-    /// write blocks the thread of its event until it returns, and each other event of
-    /// the node, on any thread, waits for it. A failed write drops the line.
+    /// Where each line goes, with one write for each line. `main` gives stderr. The
+    /// thread `log` writes each line, so no event waits on a write. A write that fails
+    /// drops its line, and one that panics ends the log. A line drops when 1024 lines
+    /// wait, when it does not fit in 1 MiB with the lines that wait, or after a drop
+    /// until the thread `log` takes the lines that wait. The thread writes at most one
+    /// batch beside the lines that wait, so the log holds at most 2048 lines and 2 MiB,
+    /// beside the panic lines. WARN `dropped` with the field `lines`, the count of
+    /// these lines, comes after the lines before them.
     pub writer: Box<dyn io::Write + Send>,
     /// The form of each line, text or JSON, and the least level of an event that the
     /// log holds.
@@ -35,13 +46,15 @@ impl fmt::Debug for Log {
     }
 }
 
-/// The dispatch that writes each event of `log`'s level or above to `log`, stamped
-/// with the time of `wall` and the mesh time of `mesh`.
-pub(crate) fn dispatch(
+/// The log of `log`, with no thread `log` yet ([`Flush::hold`]): each event of `log`'s
+/// level or above, stamped with the time of `wall` and the mesh time of `mesh`. Its
+/// threads start with `threads`.
+pub(crate) fn open(
     log: Log,
+    threads: &env::threads::Threads,
     wall: env::wall::Wall,
     mesh: clock::Reader,
-) -> Dispatch {
+) -> Flush {
     let Log {
         writer,
         format: ops::Log { json, level },
@@ -50,16 +63,22 @@ pub(crate) fn dispatch(
         json,
         time: clock::log::Reader::new(wall, mesh),
     };
+    Flush::new(writer, line, level, threads)
+}
+
+/// The dispatch that puts each event of `level` or above in `queue`, as one `line`.
+fn dispatch(line: Line, level: tracing::Level, queue: Pipe) -> Dispatch {
     // The doc of `fmt` gives true as the default, though 0.3.23 sets false.
     let lines = layer()
         .event_format(line)
-        .with_writer(Mutex::new(writer))
+        .with_writer(queue)
         .log_internal_errors(false);
     let registry = tracing_subscriber::registry();
     Dispatch::new(registry.with(LevelFilter::from_level(level)).with(lines))
 }
 
 /// Writes each event as one line, in text or in JSON.
+#[derive(Clone, Debug)]
 struct Line {
     json: bool,
     time: clock::log::Reader,
@@ -87,10 +106,53 @@ where
             target: metadata.target(),
             fields,
         };
+        self.write(entry, &mut writer)
+    }
+}
+
+impl Line {
+    /// The count line: WARN `dropped` with the field `lines`, the count `lines`.
+    fn dropped(&self, lines: u64) -> String {
+        let field = ("lines", Value::Unsigned(lines.into()));
+        self.line(tracing::Level::WARN, "node::log", "dropped", field)
+    }
+
+    /// The panic line: ERROR `panicked` with the field `panic`, the text of `info`.
+    fn panicked(&self, info: &PanicHookInfo<'_>) -> String {
+        let field = ("panic", Value::Text(info.to_string()));
+        self.line(tracing::Level::ERROR, "node", "panicked", field)
+    }
+
+    /// The line of an event with `message` and one `field`, stamped now.
+    fn line(
+        &self,
+        level: tracing::Level,
+        target: &str,
+        message: &str,
+        field: (&'static str, Value),
+    ) -> String {
+        #[expect(clippy::disallowed_methods, reason = "only the log stamps lines")]
+        let time = self.time.now();
+        let entry = Entry {
+            time,
+            level,
+            target,
+            fields: Fields {
+                message: Some(message.to_owned()),
+                others: vec![field],
+            },
+        };
+        let mut text = String::new();
+        self.write(entry, &mut Writer::new(&mut text))
+            .expect("invariant: a write to a String does not fail");
+        text
+    }
+
+    fn write(&self, entry: Entry<'_>, w: &mut Writer<'_>) -> fmt::Result {
         if self.json {
-            entry.json(&mut writer)
+            entry.json(w)
         } else {
-            entry.text(&mut writer)
+            entry.text(w)
         }
     }
 }

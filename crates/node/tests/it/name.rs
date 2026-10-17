@@ -10,7 +10,7 @@ use std::sync::mpsc;
 use env::files::{Descriptor, Driver, Mode, Request};
 use types::time::Span;
 
-use crate::common::{files, free, start, start_node, wait};
+use crate::common::{PATIENCE, config, files, free, start, wait};
 use crate::rig::Rig;
 
 /// A read of the name that reads the directory of the mesh only after a first start
@@ -35,7 +35,8 @@ fn a_read_that_spans_a_first_start_gives_the_name() {
     });
     wait(&held);
     let region = node::Region::Stored;
-    let node = start_node(&rig, &shards, &threads, &io, free(), region, |disk| disk);
+    let config = config(&rig, &shards, &threads, &io, free(), region, |disk| disk);
+    let node = node::Node::start(config);
     let (serves, serving) = mpsc::channel();
     node.spawn(move |_| {
         serves.send(()).unwrap();
@@ -43,7 +44,9 @@ fn a_read_that_spans_a_first_start_gives_the_name() {
     });
     wait(&serving);
     node.stop();
+    let flush = node.flush();
     assert_eq!(node.join(), Ok(()));
+    assert!(flush.wait(PATIENCE));
     released.store(true, Ordering::Release);
     assert_eq!(wait(&read), Ok("edge".parse().unwrap()));
     reader.join().unwrap();

@@ -15,7 +15,7 @@ use connector::kind::Table;
 use connector::supervisor::Supervisor;
 use connector::testing;
 use document::value::{self, Value};
-use document::{Attribute, Block, Map};
+use document::{Attribute, Map};
 use env::net::{Listener, tcp};
 use env::tasks::{Group, Tasks};
 use hub::home::Outcome;
@@ -27,7 +27,7 @@ use spec::definition::Definition;
 use types::authority::Authority;
 use types::channel;
 use types::frame::{self, Draft, Form, Label, Path};
-use types::name::{Name, Selector};
+use types::name::Selector;
 use types::quality::Quality;
 
 use super::*;

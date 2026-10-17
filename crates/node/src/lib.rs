@@ -34,6 +34,7 @@ mod task;
 #[cfg(test)]
 #[cfg(not(loom))]
 mod tests;
+mod trust;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -54,7 +55,7 @@ use types::time::{Span, Stamp};
 
 pub use crate::budget::{Budget, budget};
 use crate::handoff::{Give, Take};
-pub use crate::log::Log;
+pub use crate::log::{Flush, Log};
 pub use crate::settings::Settings;
 use crate::stop::{Guard, Stop};
 
@@ -109,13 +110,18 @@ pub struct Config<M> {
     /// gives `std::env::vars_os()`.
     pub vars: BTreeMap<OsString, OsString>,
     /// The CA certificates that each `https` connect of a connector trusts. Main gives
-    /// [`os::roots`]. Shard 0 logs a warning for each failure, for the count of
-    /// certificates that do not parse, and when no certificate is left. It logs each
-    /// of them also with [`Region::Absent`], which runs no connector.
+    /// [`os::roots`]. Shard 0 logs a warning for each of the first 16 failures, its
+    /// text cut to 1024 bytes, one for the count of the rest with the
+    /// [`os::Source`] of the read, cut the same way, one for the count of certificates
+    /// that do not parse, and one when no certificate is left. It logs each of them
+    /// also with [`Region::Absent`], which runs no connector.
     pub roots: os::Roots,
     /// Where and how the node writes its log. Each shard writes the events of its
     /// thread there, and [`Node::join`] the event `stopped`.
     pub log: Log,
+    /// Starts the thread `log`, which writes each line of the log, so no event waits
+    /// on [`Log::writer`]. Its events go nowhere.
+    pub threads: env::threads::Threads,
 }
 
 impl<M> fmt::Debug for Config<M> {
@@ -131,6 +137,7 @@ impl<M> fmt::Debug for Config<M> {
             .field("name", &self.name)
             .field("settings", &self.settings)
             .field("log", &self.log)
+            .field("threads", &self.threads)
             .finish_non_exhaustive()
     }
 }
@@ -174,7 +181,7 @@ pub struct Node {
     /// The node has a region, so shard 0 has an `ops::Node`.
     regional: bool,
     /// Where the node writes its log.
-    log: tracing::Dispatch,
+    log: Flush,
 }
 
 /// A started shard, with its error once it fails.
@@ -245,14 +252,22 @@ impl Node {
         let regional = !matches!(config.region, Region::Absent);
         match plan(&config) {
             Ok(parts) => Self::launch(config, parts, (mesh, time), regional),
-            Err(error) => Self {
-                stop: Stop::default(),
-                shards: Vec::new(),
-                failed: Some(error),
-                queue: task::pair().0,
-                regional,
-                log: log::dispatch(config.log, config.wall, time),
-            },
+            Err(error) => {
+                let log = log::open(config.log, &config.threads, config.wall, time);
+                Self::failed(error, log, regional)
+            }
+        }
+    }
+
+    /// A node that failed with `error` before any shard started.
+    fn failed(error: Error, log: Flush, regional: bool) -> Self {
+        Self {
+            stop: Stop::default(),
+            shards: Vec::new(),
+            failed: Some(error),
+            queue: task::pair().0,
+            regional,
+            log,
         }
     }
 
@@ -277,14 +292,19 @@ impl Node {
             mut files,
             entropy,
             log,
+            threads,
             ..
         } = config;
         let stop = Stop::default();
         let cores = shards.cores().get();
         let handoff::Chain { first, last, links } = handoff::chain(cores);
         let (queue, inbox) = task::pair();
-        let log = log::dispatch(log, wall.clone(), clock.clone());
-        let shards = shards.logged(log.clone());
+        let log = log::open(log, &threads, wall.clone(), clock.clone());
+        let hold = match log.hold() {
+            Ok(hold) => Arc::new(hold),
+            Err(e) => return Self::failed(Error::Start(e), log, regional),
+        };
+        let shards = shards.logged(log.dispatch.clone());
         let serve = Serve {
             interner: last,
             budget: config.budget,
@@ -327,7 +347,14 @@ impl Node {
                 stop: stop.clone(),
             };
             let make = files();
-            let main = move |tasks| open.main(role, make(), pool, tasks, guard);
+            let hold = Arc::clone(&hold);
+            let main = move |tasks| {
+                let main = open.main(role, make(), pool, tasks, guard);
+                async move {
+                    main.await;
+                    drop(hold);
+                }
+            };
             match shards.start(shard, main) {
                 Ok(handle) => started.push(Shard { handle, failed }),
                 Err(e) => {
@@ -396,6 +423,12 @@ impl Node {
         self.stop.set();
     }
 
+    /// A handle that waits for the log to reach its writer, for the end of a process.
+    #[must_use]
+    pub fn flush(&self) -> Flush {
+        self.log.clone()
+    }
+
     /// A handle that stops this node from another thread.
     #[must_use]
     pub fn stopper(&self) -> Stopper {
@@ -403,8 +436,10 @@ impl Node {
     }
 
     /// Blocks until every shard has ended, then writes the event `stopped` to the log:
-    /// INFO, or ERROR with the field `error`. Call it on a thread that `env` did not
-    /// start. Under `sim`, run the sim to its end first.
+    /// INFO, or ERROR with the field `error`. Does not wait for the log to write it:
+    /// call [`Flush::wait`], or under `sim`, run the sim again. When the thread `log`
+    /// cannot start here, the line waits for [`Flush::wait`]. Call it on a thread that
+    /// `env` did not start. Under `sim`, run the sim to its end first.
     ///
     /// # Errors
     ///
@@ -413,25 +448,26 @@ impl Node {
     /// [`Config::listen`] with a multicast IP or the IPv4 broadcast IP, [`Error::Disk`]
     /// for a disk budget that holds no ring on each shard, [`Error::Pool`] for a part
     /// of the pool budget that needs a reservation of more than `usize::MAX` bytes,
-    /// [`Error::Start`] for a shard that could not start or pin, or [`Error::Memory`]
-    /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for a
-    /// data directory that shard 0 could not claim, else [`Error::NoCard`] for a data
-    /// directory with the directory of a mesh and no file `node.key`, or
-    /// [`Error::Directory`] for a check of them that fails, else [`Error::Name`],
-    /// [`Error::Renamed`], [`Error::NoCard`], [`Error::Mesh`], [`Error::Key`], or
-    /// [`Error::Directory`] for a stored name that it could not read or a name it could
-    /// not keep, else [`Error::Port`] for a port that did not bind, else
-    /// [`Error::Buffer`] for the first shard by core whose buffer, or the home over it,
-    /// did not open, [`Error::Budget`] or [`Error::Directory`] for a file `budget` that
-    /// shard 0 could not read or write, [`Error::Key`], [`Error::Admin`], or
-    /// [`Error::Directory`] for a key file that shard 0 could not read or write,
-    /// [`Error::Transport`] for a value of [`Config::settings`] that the transport
-    /// refuses, [`Error::Blob`] for a chunk store or [`Error::Mesh`] for a stored
-    /// region or a mesh that did not open, [`Error::Directory`] for a file `address`
-    /// that shard 0 could not write, or [`Error::Transport`] or [`Error::Group`],
-    /// whichever the node sees stop first, else [`Error::Directory`] for a file
-    /// `address` that shard 0 could not write empty, else [`Error::Panicked`] for the
-    /// first shard by core that panicked. Any failed shard stops the node.
+    /// [`Error::Start`] for the thread `log` or a shard that could not start, or a
+    /// shard that could not pin, or [`Error::Memory`] for a shard with no memory, else
+    /// [`Error::Shards`] or [`Error::Directory`] for a data directory that shard 0
+    /// could not claim, else [`Error::NoCard`] for a data directory with the directory
+    /// of a mesh and no file `node.key`, or [`Error::Directory`] for a check of them
+    /// that fails, else [`Error::Name`], [`Error::Renamed`], [`Error::NoCard`],
+    /// [`Error::Mesh`], [`Error::Key`], or [`Error::Directory`] for a stored name that
+    /// it could not read or a name it could not keep, else [`Error::Port`] for a port
+    /// that did not bind, else [`Error::Buffer`] for the first shard by core whose
+    /// buffer, or the home over it, did not open, [`Error::Budget`] or
+    /// [`Error::Directory`] for a file `budget` that shard 0 could not read or write,
+    /// [`Error::Key`], [`Error::Admin`], or [`Error::Directory`] for a key file that
+    /// shard 0 could not read or write, [`Error::Transport`] for a value of
+    /// [`Config::settings`] that the transport refuses, [`Error::Blob`] for a chunk
+    /// store or [`Error::Mesh`] for a stored region or a mesh that did not open,
+    /// [`Error::Directory`] for a file `address` that shard 0 could not write, or
+    /// [`Error::Transport`] or [`Error::Group`], whichever the node sees stop first,
+    /// else [`Error::Directory`] for a file `address` that shard 0 could not write
+    /// empty, else [`Error::Panicked`] for the first shard by core that panicked. Any
+    /// failed shard stops the node.
     pub fn join(self) -> Result<(), Error> {
         let shards = self.shards.into_iter().map(|shard| {
             // The shard sets `failed` on its own thread, so read it after the join.
@@ -439,10 +475,12 @@ impl Node {
             (joined, shard.failed.get().cloned())
         });
         let joined = error(self.failed, shards.collect());
-        tracing::dispatcher::with_default(&self.log, || match &joined {
+        tracing::dispatcher::with_default(&self.log.dispatch, || match &joined {
             Ok(()) => tracing::info!("stopped"),
             Err(error) => tracing::error!(%error, "stopped"),
         });
+        // A thread that cannot start leaves the line for `Flush::wait`.
+        self.log.resume();
         joined
     }
 }
@@ -866,26 +904,6 @@ struct Serve {
     shards: usize,
 }
 
-/// The roots of `roots`. Logs a warning for each failure of the read, for the count of
-/// certificates that do not parse, and when no certificate is left.
-fn trust(roots: &os::Roots) -> connector::http::Roots {
-    for error in &roots.failures {
-        tracing::warn!(%error, "a part of the OS roots was not read");
-    }
-    let (trusted, skipped) =
-        connector::http::Roots::from_der(roots.certificates.iter().map(Vec::as_slice));
-    if skipped > 0 {
-        tracing::warn!(skipped, "OS roots that do not parse are skipped");
-    }
-    if trusted.empty() {
-        tracing::warn!(
-            "the OS roots hold no certificate, so an https connect with no CA of its \
-             connector fails"
-        );
-    }
-    trusted
-}
-
 /// What shard 0 binds the node's port with, once it claimed the data directory.
 struct Bind {
     listen: SocketAddr,
@@ -1190,7 +1208,7 @@ impl Serve {
                 secret::Resolver::new(vars, files.clone(), &directory::secrets());
             let serve = pin!(async move {
                 // `hold` polls `serve` only once the file `address` holds the address.
-                let trusted = trust(&roots);
+                let trusted = trust::roots(&roots);
                 drop(roots);
                 tracing::info!(%name, address = %address.bound, shards, "started");
                 let region = mesh.clone().map(|mesh| hub::Region {
@@ -1399,7 +1417,7 @@ fn end(
 /// budgets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// A shard could not start or pin.
+    /// A shard or the thread `log` could not start, or a shard could not pin.
     Start(env::thread::Error),
     /// A shard panicked.
     Panicked(env::thread::Panicked),

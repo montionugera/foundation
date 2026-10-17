@@ -5,6 +5,7 @@
 #![cfg(not(loom))]
 
 mod common;
+mod log;
 mod name;
 mod one_node;
 mod port;
@@ -171,7 +172,8 @@ fn status_gives_each_connector_as_json() {
             restarts: Some(0),
             counts: Some(BTreeMap::from([
                 ("confirmed".into(), 0),
-                ("lost".into(), 0)
+                ("lost".into(), 0),
+                ("oversized".into(), 0)
             ])),
             error: Some(status::Error {
                 class: "config".into(),

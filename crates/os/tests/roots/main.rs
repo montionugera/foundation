@@ -2,8 +2,8 @@
 //! `SSL_CERT_FILE` names and the directories that `SSL_CERT_DIR` names. This binary
 //! has no test harness: each case runs it again as a child with its own environment,
 //! since a set of the environment races the threads of a harness. With the argument
-//! `child`, it writes what `os::roots` gives, one line for each certificate and for
-//! each failure.
+//! `child`, it writes what `os::roots` gives: a line for its source, then one for each
+//! certificate and for each failure.
 
 use std::ffi::OsStr;
 use std::fmt::Write as _;
@@ -35,6 +35,10 @@ fn reads_the_certificates_of_the_pem_file_of_ssl_cert_file() {
         lines(&os::Roots {
             certificates: vec![der],
             failures: vec![],
+            source: os::Source::Paths {
+                file: Some(file.clone()),
+                dirs: vec![],
+            },
         }),
         "the certificate of the PEM file"
     );
@@ -44,19 +48,25 @@ fn gives_the_failure_of_a_pem_file_that_is_not_there() {
     let file = Path::new("/nonexistent/roots.pem");
     assert_eq!(
         child(&[("SSL_CERT_FILE", file.as_os_str())]),
-        "failure failed to read PEM from file: No such file or directory (os error 2) \
-         at '/nonexistent/roots.pem'\n",
+        "source SSL_CERT_FILE=/nonexistent/roots.pem\nfailure failed to read PEM from \
+         file: No such file or directory (os error 2) at '/nonexistent/roots.pem'\n",
         "the failure of a missing file"
     );
 }
 
 fn reads_the_certificates_of_the_os_store() {
     let text = child(&[]);
+    let mut lines = text.lines();
+    assert_eq!(
+        lines.next(),
+        Some("source the OS store"),
+        "the source: {text}"
+    );
     assert!(
-        text.lines().all(|line| line.starts_with("certificate ")),
+        lines.all(|line| line.starts_with("certificate ")),
         "the OS store gave a failure: {text}"
     );
-    assert!(text.lines().count() > 0, "the OS store gave no certificate");
+    assert!(text.lines().count() > 1, "the OS store gave no certificate");
 }
 
 fn reads_the_os_store_when_ssl_cert_dir_holds_no_path() {
@@ -83,6 +93,10 @@ fn reads_only_the_files_of_the_directory_of_ssl_cert_dir() {
         lines(&os::Roots {
             certificates: vec![include_bytes!("ca.der").to_vec()],
             failures: vec![],
+            source: os::Source::Paths {
+                file: None,
+                dirs: vec![dir.clone()],
+            },
         }),
         "the certificate of the directory"
     );
@@ -94,22 +108,23 @@ fn gives_only_the_failure_of_a_path_that_is_not_there_or_no_directory() {
         (
             "SSL_CERT_FILE",
             OsStr::new(""),
-            "failure failed to read PEM from file: No such file or directory \
-             (os error 2) at ''\n"
+            "source SSL_CERT_FILE=\nfailure failed to read PEM from file: No such file or \
+             directory (os error 2) at ''\n"
                 .to_owned(),
         ),
         (
             "SSL_CERT_DIR",
             OsStr::new("/nonexistent"),
-            "failure opening directory: No such file or directory (os error 2) at \
-             '/nonexistent'\n"
+            "source SSL_CERT_DIR=/nonexistent\nfailure opening directory: No such file or \
+             directory (os error 2) at '/nonexistent'\n"
                 .to_owned(),
         ),
         (
             "SSL_CERT_DIR",
             file.as_os_str(),
             format!(
-                "failure opening directory: Not a directory (os error 20) at '{}'\n",
+                "source SSL_CERT_DIR={0}\nfailure opening directory: Not a directory (os \
+                 error 20) at '{0}'\n",
                 file.display()
             ),
         ),
@@ -126,7 +141,7 @@ fn gives_only_the_failure_of_a_path_that_is_not_there_or_no_directory() {
 
 /// The lines that the child writes for `roots`.
 fn lines(roots: &os::Roots) -> String {
-    let mut text = String::new();
+    let mut text = format!("source {}\n", roots.source);
     for der in &roots.certificates {
         text.push_str("certificate ");
         for byte in der {
