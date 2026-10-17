@@ -375,6 +375,42 @@ impl Log {
     fn sync(&mut self, header: &Header, offset: u64) -> Result<bool, Fault> {
         let samples = header.samples();
         let (start, _) = self.durable.advance(header.first, samples)?;
+        Ok(self.run(start, samples, offset))
+    }
+
+    /// Moves both tails past the walk's entry `header` of the record at `offset`, as
+    /// [`sync`](Self::sync). The walk feeds each entry as appended and synced, so the
+    /// tails are equal.
+    ///
+    /// # Errors
+    ///
+    /// As [`Logs::walk`]. Nothing changes.
+    ///
+    /// # Panics
+    ///
+    /// As [`sync`](Self::sync).
+    fn walk(&mut self, header: &Header, offset: u64) -> Result<bool, Fault> {
+        let samples = header.samples();
+        let mut durable = self.durable;
+        let (start, walked) = durable.advance(header.first, samples)?;
+        if let (Kind::Record(given), Kind::Record(walked)) = (header.kind, walked)
+            && given != walked
+        {
+            return Err(Fault::Counted {
+                seq: header.first,
+                given: given.get(),
+                walked: walked.get(),
+            });
+        }
+        self.durable = durable;
+        self.appended = durable;
+        Ok(self.run(start, samples, offset))
+    }
+
+    /// Takes the synced entry of `samples` after the mark `start`, in the record at
+    /// `offset`, once the durable tail moved past it. Returns true when it adds a run
+    /// of the record.
+    fn run(&mut self, start: Mark, samples: Option<Samples>, offset: u64) -> bool {
         let newest = self.runs.back().map(|run| run.offset).max(self.holder);
         if let Some(newest) = newest {
             assert!(
@@ -386,10 +422,10 @@ impl Log {
             self.holder = Some(offset);
         }
         if self.runs.back().is_some_and(|run| run.offset == offset) {
-            return Ok(false);
+            return false;
         }
         self.runs.push_back(Run { start, offset });
-        Ok(true)
+        true
     }
 }
 
@@ -920,13 +956,26 @@ impl Logs {
         let (added, at) = self.change(slot, header.index, header.path, |log| {
             log.sync(header, offset)
         })?;
+        self.synced(slot, header, offset, added, at);
+        Ok(())
+    }
+
+    /// Adds the item of the record at `offset` for the log at `at` when its entry
+    /// `header` added a run, and keeps the record for the entry's nonzero tag.
+    fn synced(
+        &mut self,
+        slot: Slot,
+        header: &Header,
+        offset: u64,
+        added: bool,
+        at: u32,
+    ) {
         if added {
             self.items.push(offset, at);
         }
         if let Some(tag) = NonZeroU8::new(header.tag) {
             self.tags.insert((slot, header.path, tag), offset);
         }
-        Ok(())
     }
 
     /// Feeds the recovery walk's entry `header` of the record at `offset`, as
@@ -948,37 +997,35 @@ impl Logs {
         header: &Header,
         offset: u64,
     ) -> Result<(), Invalid> {
+        let invalid = |fault: Fault| fault.on(header.index, header.path);
         let key = (slot, header.path);
-        if let Kind::Record(given) = header.kind
-            && !self.places.contains_key(&key)
-        {
+        let (added, at) = if let Some(&at) = self.places.get(&key) {
+            let log = nth_mut(&mut self.paths, at);
+            assert!(
+                log.index == header.index,
+                "invariant: slot {} holds index {} and index {}",
+                slot.get(),
+                log.index,
+                header.index,
+            );
+            (log.walk(header, offset).map_err(invalid)?, at)
+        } else {
             let mut log = Log::new(header.index, header.path);
-            log.durable = Position {
-                tail: Tail {
-                    seq: header.first,
-                    stamp: None,
-                },
-                given: given.get() - 1,
-            };
-            log.appended = log.durable;
-            self.add(key, log);
-        }
-        self.change(slot, header.index, header.path, |log| {
-            let mut appended = log.appended;
-            let (_, walked) = appended.advance(header.first, header.samples())?;
-            if let (Kind::Record(given), Kind::Record(walked)) = (header.kind, walked)
-                && given != walked
-            {
-                return Err(Fault::Counted {
-                    seq: header.first,
-                    given: given.get(),
-                    walked: walked.get(),
-                });
+            if let Kind::Record(given) = header.kind {
+                log.durable = Position {
+                    tail: Tail {
+                        seq: header.first,
+                        stamp: None,
+                    },
+                    given: given.get() - 1,
+                };
+                log.appended = log.durable;
             }
-            log.appended = appended;
-            Ok(())
-        })?;
-        self.sync(slot, header, offset)
+            let added = log.walk(header, offset).map_err(invalid)?;
+            (added, self.add(key, log))
+        };
+        self.synced(slot, header, offset, added, at);
+        Ok(())
     }
 
     /// Applies `change` to the log of `slot` on `path`, which starts empty when the
