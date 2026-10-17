@@ -244,8 +244,9 @@ impl Paths {
 
     /// Moves the entry at `from` to `to`, both absolute with no `..`, with each entry
     /// under it and their inodes. A link at the last name of either is not followed.
-    /// The working directory becomes the path that it resolves to, moved with `from`
-    /// when it is at or under it, as a host keeps a process on the directory itself.
+    /// The working directory stays on the directory that it resolves to, moved with
+    /// `from` when it is at or under it, as a host keeps a process on the directory
+    /// itself. Its path changes only when it no longer resolves there.
     pub(crate) fn move_entry(&mut self, node: usize, from: &Path, to: &Path) {
         let from = self.entry(node, from);
         let to = self.entry(node, to);
@@ -262,10 +263,8 @@ impl Paths {
             to.display(),
             from.display()
         );
-        let working = self
-            .working
-            .get(&node)
-            .and_then(|dir| self.resolve(node, dir).ok());
+        let given = self.working.get(&node).cloned();
+        let working = given.as_ref().and_then(|dir| self.resolve(node, dir).ok());
         let mut moved: Vec<_> = self.under(node, &from).cloned().collect();
         moved.push(from.clone());
         for path in moved {
@@ -274,12 +273,16 @@ impl Paths {
             let path = to.join(path.strip_prefix(&from).expect("under `from`"));
             self.entries.insert((node, path), entry);
         }
-        if let Some(dir) = working {
+        if let (Some(given), Some(dir)) = (given, working) {
             let dir = match dir.strip_prefix(&from) {
                 Ok(under) => to.join(under),
                 Err(_) => dir,
             };
-            self.working.insert(node, dir);
+            // The text stays while it still resolves there, so a fault keeps its
+            // spelling across a move elsewhere.
+            if self.resolve(node, &given).ok().as_ref() != Some(&dir) {
+                self.working.insert(node, dir);
+            }
         }
     }
 

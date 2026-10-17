@@ -424,6 +424,41 @@ fn a_fault_on_a_relative_path_moves_with_the_working_directory_in_turn() {
 }
 
 #[test]
+fn a_move_elsewhere_keeps_a_fault_on_the_working_directory_as_spelled() {
+    let written = [false, true].map(|moved| {
+        let node = Sim::new(Config::default()).node(node::Config::default());
+        let paths = node.paths();
+        node.make_dir(Path::new("/target"));
+        node.make_dir(Path::new("/x"));
+        node.link_path(Path::new("/w/link"), Path::new("/target"));
+        node.set_working_dir(Path::new("/w/link"));
+        node.fail_path(Path::new("/w/link/out"), 5);
+        if moved {
+            node.move_path(Path::new("/x"), Path::new("/y"));
+        }
+        paths.write(Path::new("out"), b"x")
+    });
+    assert_eq!(written, [Err(Error::Io { code: 5 }); 2], "no move, move of /x");
+}
+
+#[test]
+fn a_fault_follows_no_link_to_match_a_call() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/target"));
+    node.link_path(Path::new("/w/link"), Path::new("/target"));
+    node.set_working_dir(Path::new("/w/link"));
+    node.fail_path(Path::new("out"), 5);
+    node.fail_path(Path::new("/target/out"), 13);
+    let written = [Path::new("/target/out"), Path::new("out")]
+        .map(|path| paths.write(path, b"x"));
+    assert_eq!(
+        written,
+        [Err(Error::Io { code: 13 }), Err(Error::Io { code: 5 })]
+    );
+}
+
+#[test]
 fn a_moved_link_names_its_target_and_a_link_on_the_way_is_followed() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let paths = node.paths();
