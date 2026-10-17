@@ -1407,8 +1407,8 @@ mod tests {
         assert!(group.is_empty());
         assert_eq!(
             limit.to_string(),
-            "the batch needs a carry body of 239 bytes, and a carry record of this \
-             buffer holds at most 238"
+            "the entries of the batch need a carry body of 239 bytes, and a carry \
+             record of this buffer holds at most 238"
         );
         assert_eq!(fit(&mut group, &pair, Some(239)), Ok(()));
         assert_eq!(fit(&mut group, &one, Some(431)), Err(Rejected::Record));

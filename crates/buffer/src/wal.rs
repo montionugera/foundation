@@ -360,9 +360,9 @@ pub enum Limit {
     /// one carry record of a buffer with trims does not hold: each entry as a tail,
     /// and each entry with a nonzero tag also as a copy of its parts.
     Carry {
-        /// Bytes of the carry body of the batch.
+        /// Bytes of the carry body of the batch's entries.
         len: usize,
-        /// The most body bytes of one carry record of the buffer.
+        /// The most body bytes of one carry record of this buffer.
         max: usize,
     },
 }
@@ -396,8 +396,8 @@ impl fmt::Display for Limit {
             ),
             Self::Carry { len, max } => write!(
                 f,
-                "the batch needs a carry body of {len} bytes, and a carry record of \
-                 this buffer holds at most {max}"
+                "the entries of the batch need a carry body of {len} bytes, and a carry \
+                 record of this buffer holds at most {max}"
             ),
         }
     }
