@@ -1207,3 +1207,16 @@
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6240944707;
   `Replaced` before `Hidden`, 2026-10-17T21:04:57Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6241042085).
+  Amended (2026-10-17T21:25:15Z, #3005): a step short of the path that a hidden folder
+  holds is checked against the folders, as one before a `..` is, and passes them only
+  when they hold it or it is a directory on the way to a folder. It still gets no
+  `Hidden` unless the folders of each limit hold it, as the ruling of
+  2026-10-17T17:16:50Z
+  (https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237413267) rules. So
+  with `wide` within `work` and the hidden `work/data` and `work/sub/s`, and `narrow`
+  within `work/sub` from `wide`, `narrow` gives `Outside` for `work/data/l/a.hcl` and
+  `work/data/l/s/a` through a link `l` to `work/sub`, as for `work/data/none/a.hcl`,
+  where `wide` gives `Hidden`. With one limit, a path through a hidden folder outside
+  the folders (`/out/h/l/a` with `l` a link to `/work`) gives `Outside`, where it gave
+  `Ok`. Decided by `laptop.architect-2` (2026-10-17T21:25:15Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6241334906).
