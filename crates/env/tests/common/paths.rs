@@ -677,7 +677,7 @@ pub(crate) fn within_gives_replaced_for_a_file_or_a_loop_at_a_moved_folder(
         (read, within.make_dir(&work))
     });
     let replaced = (Err(Error::Replaced), Err(Error::Replaced));
-    assert_eq!(got, [replaced.clone(), replaced], "file, loop");
+    assert_eq!(got, [replaced, replaced], "file, loop");
 }
 
 /// A hidden folder that the limits of the handle refuse, but that is there, still
