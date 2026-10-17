@@ -131,6 +131,11 @@ macro_rules! suite {
         }
 
         #[test]
+        fn backs_off_while_the_device_does_not_answer() {
+            $crate::scenarios::backs_off_while_the_device_does_not_answer(&$suite);
+        }
+
+        #[test]
         fn heals_after_the_device_stops() {
             $crate::scenarios::heals_after_the_device_stops(&$suite);
         }
@@ -445,6 +450,15 @@ where
 /// No link changes.
 fn direct(_: &mut Sim, _: &Node, _: &Node) {}
 
+/// The link from the plant to the device delays each packet by 1 h.
+fn unanswered(sim: &mut Sim, plant: &Node, device: &Node) {
+    let delay = link::Config {
+        delay: Span::HOUR,
+        ..link::Config::default()
+    };
+    sim.link(plant, device, delay);
+}
+
 /// Within 10 s: Running, no error, no restart, and progress above 0.
 pub(crate) fn starts(suite: &'static Suite) {
     run(suite, direct, move |scene| async move {
@@ -459,7 +473,7 @@ pub(crate) fn starts(suite: &'static Suite) {
 }
 
 /// With no simulator, within 1 min: the backoff of [`Suite::backoff`], and never
-/// class Config. For [`Backoff::Restart`]: Restarting, class Suite or Retry, and
+/// class Config. For [`Backoff::Restart`]: Restarting, class Device or Retry, and
 /// restarts that grow. For [`Backoff::Run`]: Running, class Retry, an error text
 /// that names the device address, no restart, and no progress, and no status in the
 /// next [`HOLD`] that leaves it. Then the simulator starts, and the connector heals.
@@ -471,6 +485,20 @@ pub(crate) fn heals_once_an_absent_device_serves(suite: &'static Suite) {
         let from = scene.progress(&reading);
         let served = scene.serve();
         scene.running(&mut run, HEAL, from).await;
+        run.stop().await.expect("the run ends with no error");
+        scene.stop(served).await;
+    });
+}
+
+/// The simulator serves behind a link that delays each packet by 1 h: as in
+/// [`heals_once_an_absent_device_serves`], within 1 min the backoff of
+/// [`Suite::backoff`], with no status in the next [`HOLD`] that leaves it.
+pub(crate) fn backs_off_while_the_device_does_not_answer(suite: &'static Suite) {
+    run(suite, unanswered, |scene| async move {
+        let config = scene.setup().await;
+        let served = scene.serve();
+        let mut run = scene.supervise(config).await;
+        scene.backed_off(&mut run).await;
         run.stop().await.expect("the run ends with no error");
         scene.stop(served).await;
     });
@@ -500,7 +528,7 @@ pub(crate) fn heals_after_the_device_crashes(suite: &'static Suite) {
 }
 
 /// The device is lost to `lose` while the connector runs. Within 30 s: an error of
-/// class Suite or Retry. Then the simulator starts again: the connector heals, and
+/// class Device or Retry. Then the simulator starts again: the connector heals, and
 /// no count goes down. Each status holds the form of [`Suite::backoff`]: for
 /// [`Backoff::Run`], Running with no restart and no class but Retry; for
 /// [`Backoff::Restart`], restarts that grow by the heal.
@@ -589,14 +617,7 @@ pub(crate) fn stops_in_a_backoff(suite: &'static Suite) {
 /// Stops the connector while it connects to a device whose link delays each packet
 /// by 1 h. Waits on #3040 for the form of a link that loses each packet.
 pub(crate) fn stops_in_a_connect(suite: &'static Suite) {
-    let slow = |sim: &mut Sim, plant: &Node, host: &Node| {
-        let delay = link::Config {
-            delay: Span::HOUR,
-            ..link::Config::default()
-        };
-        sim.link(plant, host, delay);
-    };
-    run(suite, slow, |scene| async move {
+    run(suite, unanswered, |scene| async move {
         let config = scene.setup().await;
         let served = scene.serve();
         let run = scene.supervise(config).await;

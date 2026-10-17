@@ -38,7 +38,11 @@
      grow to 2. `Run`: Running, class Retry, an error text that names the address
      of the device, 0 restarts, and progress 0, and no status of the next 10 s
      leaves it. A status writes only on a change, so this checks each change in the
-     10 s, and none when nothing changes. Then the simulator starts: heals.
+     10 s, and none when nothing changes. Then the simulator starts: heals. In a
+     second form, the device does not answer: the simulator serves behind a link
+     that delays each packet by 1 h, and within 1 min comes the same backoff form,
+     with no heal. Ruling of `laptop.architect-2` at 2026-10-17T22:04:56Z
+     (https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241915192).
   3. **Device lost while running**, in two forms: the simulator stops (each
      connection closed), and the device node crashes (`Sim::crash`, no close reaches
      the plant). Within 30 s: an error of class Device or Retry, in the backoff
