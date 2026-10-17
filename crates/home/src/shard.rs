@@ -6996,6 +6996,42 @@ mod tests {
                     records.filter(|record| record.reader == *reader).count()
                 }
 
+                /// Eight readers fill part 0 and part 1, then frames lap a ring that
+                /// trims, so a trim passes the record of each part. After a power
+                /// cut, each part still has its readers.
+                #[test]
+                fn keeps_each_part_past_a_trim_of_its_record() {
+                    let (mut sim, node) = create_node(216);
+                    sim.run_on(&node, |node, tasks| async move {
+                        let test = Test::new(node, tasks);
+                        let set = two_indexes();
+                        let mut shard = trimming(&test).await;
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        for n in 0..8 {
+                            open_longest(&mut shard, longest(n)).expect("opens");
+                        }
+                        for seq in 0..LAPPED {
+                            let stamp = i64::try_from(seq).expect("fits") + 10;
+                            committed(&test, &mut shard, w, &[stamp]).await;
+                        }
+                    })
+                    .expect("the first run ends");
+                    sim.crash(&node, sim::Crash::Power);
+                    sim.run_on(&node, |node, tasks| async move {
+                        let test = Test::new(node, tasks);
+                        let shard = trimming(&test).await;
+                        for n in 0..8 {
+                            assert_eq!(
+                                records_of(&shard, &longest(n)),
+                                1,
+                                "reader {n}"
+                            );
+                        }
+                    })
+                    .expect("the run after the cut ends");
+                }
+
                 #[test]
                 fn reopens_in_its_part_a_key_whose_removal_found_no_block() {
                     let before = async |test: &Test, shard: &mut Shard, w| {
