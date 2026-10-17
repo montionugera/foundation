@@ -43,6 +43,10 @@
     2026-10-17T03:43Z
     (https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229189616).
   - The format, layer, global, oracle, feature, and dependency checks on Linux only:
-    `box1.builder-1` in #2960. The goal of #2954 asks for a build and the tests on each
-    OS, and these checks read the source and the metadata, which are the same on each
-    OS.
+    `box1.builder-1` in #2960, accepted by `laptop.monitor`
+    (https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229520072). The
+    goal of #2954 asks for a build and the tests on each OS. All but the feature check
+    read the source and the metadata, which are the same on each OS. The feature check
+    builds each feature of each crate, and Clippy and the tests on each OS build all
+    features at once. Lost: a set of features that fails only on macOS or Windows
+    passes.
