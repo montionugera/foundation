@@ -4,7 +4,7 @@
   the tree key of a definition, such as `plant.@access` for an access policy and the
   label for a channel or a connector. The name of a member, as `mesh` gives it, is a
   name of the check too. `status` checks `read` on it when the subject reads no
-  connector of the node. A definition at the same name shares its grant: a grant on a
+  connector of the node. `status` shows a connector only to a subject with `read` on the connector's label and on each of its status channels (`laptop.architect-2`, 2026-10-15T17:09:58Z, https://github.com/synnaxlabs/foundation/issues/2608#issuecomment-6197837592, which supersedes item (b) of https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135757072). A definition at the same name shares its grant: a grant on a
   channel or a connector at the name of a member also gives the empty output of `status`
   on that member. The output then shows no connector, so the shared grant shows nothing
   that the request did not hold. Lost: a check of `<node>.@node_settings`, whose grant
