@@ -2664,10 +2664,10 @@ fn read_aborted(
     aborted: u16,
     abort: fn(&[u8]) -> Vec<u8>,
 ) -> (
-    Vec<Result<f64, Status>>,
-    Result<f64, Status>,
-    Result<f64, Status>,
-    f64,
+    Vec<Result<Value, Fault>>,
+    Result<Value, Fault>,
+    Result<Value, Fault>,
+    Value,
 ) {
     run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
@@ -2692,16 +2692,16 @@ fn read_aborted(
             let mut reads = pin!(async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 // open62541 reads the namespace array after the connect.
-                assert_eq!(client.read(VALUE).await, Ok(peer.value));
+                assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
                 left.set(dropped + aborted);
                 drop_reads(&mut client, dropped).await;
                 let mut answers = Vec::new();
                 for _ in 0..aborted {
-                    answers.push(client.read(VALUE).await);
+                    answers.push(client.read_one(&VALUE).await);
                 }
-                let after = client.read(VALUE).await;
+                let after = client.read_one(&VALUE).await;
                 assert_eq!(left.get(), 0, "the server answered each read");
-                let again = client.read(VALUE).await;
+                let again = client.read_one(&VALUE).await;
                 client.close().await;
                 (answers, after, again)
             });
@@ -2725,7 +2725,10 @@ fn read_aborted(
 #[test]
 fn a_read_after_16_aborted_answers_gives_the_value() {
     let (aborted, after, again, value) = read_aborted(0, 16, too_large);
-    assert_eq!(aborted, vec![Err(Status::BAD_RESPONSE_TOO_LARGE); 16]);
+    assert_eq!(
+        aborted,
+        vec![Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE)); 16]
+    );
     assert_eq!((after, again), (Ok(value), Ok(value)));
 }
 
@@ -2733,7 +2736,10 @@ fn a_read_after_16_aborted_answers_gives_the_value() {
 #[test]
 fn an_abort_with_no_error_ends_its_read_with_bad_decoding_error() {
     let (aborted, after, again, value) = read_aborted(0, 1, empty);
-    assert_eq!(aborted, vec![Err(Status::BAD_DECODING_ERROR)]);
+    assert_eq!(
+        aborted,
+        vec![Err(Fault::status(Status::BAD_DECODING_ERROR))]
+    );
     assert_eq!((after, again), (Ok(value), Ok(value)));
 }
 
@@ -2751,6 +2757,6 @@ fn the_abort_of_a_dropped_read_leaves_the_next_read_its_value() {
 #[test]
 fn an_abort_with_an_unknown_id_ends_no_read() {
     let (aborted, after, again, value) = read_aborted(0, 1, unknown);
-    assert_eq!(aborted, vec![Err(Status::BAD_TIMEOUT)]);
+    assert_eq!(aborted, vec![Err(Fault::status(Status::BAD_TIMEOUT))]);
     assert_eq!((after, again), (Ok(value), Ok(value)));
 }
