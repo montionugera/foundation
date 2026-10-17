@@ -1,4 +1,7 @@
 mod arity;
+#[cfg_attr(unix, path = "chosen_unix.rs")]
+mod chosen;
+mod everywhere;
 mod list;
 mod literal;
 mod missing;
@@ -7,7 +10,9 @@ mod outside;
 mod parse;
 mod passed;
 mod pathed;
+mod reasons;
 mod refused;
+mod r#type;
 mod target;
 #[cfg(unix)]
 mod unix;

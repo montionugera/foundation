@@ -57,3 +57,5 @@ fn w() {}
 fn x() {}
 #[cfg_attr(target_os = "macos", ignore = "only Linux and macOS: macOS has no X")]
 fn y() {}
+#[cfg_attr(all(target_os = "linux", target_arch = "x86_64"), ignore)]
+fn z() {}

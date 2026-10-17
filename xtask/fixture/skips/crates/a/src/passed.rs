@@ -9,7 +9,7 @@ fn c() {}
 fn d() {}
 #[cfg_attr(not(unix), ignore = r#"only Unix: a "case""#)]
 fn e() {}
-#[cfg_attr(windows, ignore = "only Unix, by a (case), with commas")]
+#[cfg_attr(windows, ignore = "only Unix: by a (case), with commas")]
 fn f() {}
 #[cfg_attr(not(target_os = "macos"), ignore = "only macOS")]
 fn g() {}
@@ -38,3 +38,8 @@ fn o() {}
 fn p() {}
 #[cfg_attr(loom, ignore)]
 fn q() {}
+#[ignore = "waits on #1"]
+#[cfg_attr(windows, ignore = "needs a tool")]
+fn r() {}
+#[cfg_attr(test, ignore)]
+fn s() {}
