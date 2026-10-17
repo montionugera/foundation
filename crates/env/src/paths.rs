@@ -903,8 +903,8 @@ mod tests {
         }
         calls.set(0);
         assert_eq!(paths.read(Path::new(&path), 1), Err(Error::NotFound));
-        // On Windows a path with no drive is relative, so the steps of the working
-        // directory come first.
+        // On Windows the walk takes a path with no drive as relative and checks the
+        // steps of the working directory first (#3018).
         assert_eq!(calls.get(), if cfg!(windows) { 19 } else { 16 });
     }
 
