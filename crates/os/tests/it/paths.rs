@@ -478,6 +478,42 @@ fn within_stops_a_long_path_of_steps_that_resolve() {
     });
 }
 
+/// A relative path that the host takes, but not once it is joined to the working
+/// directory, still passes each step.
+#[cfg(target_os = "linux")]
+#[test]
+fn within_checks_a_relative_path_longer_once_joined_by_its_own_prefixes() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        fs::create_dir(base.join("work/s")).unwrap();
+        let hidden = base.join("work/data");
+        let within = host.paths.within(&["/".into()], slice::from_ref(&hidden));
+        let within = within.unwrap();
+        let working = host.paths.resolve(Path::new(".")).unwrap();
+        let up = "../".repeat(working.components().count() - 1);
+        let long = |name: &str| {
+            let mut path = Path::new(&up).join(base.strip_prefix("/").unwrap());
+            path.push("work");
+            let pads = (4095 - path.join(name).as_os_str().len() - 1) / 5;
+            path.push("s/../".repeat(pads));
+            // The host takes the path, but not the join of its directory.
+            let joined = working.join(&path).as_os_str().len();
+            path.push(name);
+            assert!(path.as_os_str().len() < 4096 && joined > 4096, "{joined}");
+            path
+        };
+        let got = [
+            within.read(&long("data/admin.key"), 1).map(|_| ()),
+            within.write(&long("data/admin.key"), b"y"),
+            within.make_dir(&long("data/made")),
+        ];
+        assert_eq!(got, [Err(Error::Hidden); 3]);
+        let read = host.paths.read(&hidden.join("admin.key"), 1);
+        assert_eq!(read, Ok(Found::File(b"x".to_vec())));
+        assert!(!hidden.join("made").exists());
+    });
+}
+
 #[test]
 fn a_write_of_a_name_of_the_longest_length_succeeds() {
     let scratch = Scratch::new();

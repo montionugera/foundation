@@ -69,11 +69,11 @@ impl Paths {
     /// whole path also passes when it is a directory on the way to a folder. The name
     /// of the first prefix that does not resolve must pass them too, at its place with
     /// no key, as a new name there does. A relative path starts at the working
-    /// directory, and the steps of that directory come first. A path whose steps pass
-    /// and that does not resolve gives the error of its resolve. The limits of `self`
-    /// hold too, so a handle never reaches more than the one it came from. The check
-    /// and the call are two steps: a symbolic link that another program makes between
-    /// them can lead the call out.
+    /// directory, which is its first step, and each prefix after it is a prefix of the
+    /// path as given. A path whose steps pass and that does not resolve gives the error
+    /// of its resolve. The limits of `self` hold too, so a handle never reaches more
+    /// than the one it came from. The check and the call are two steps: a symbolic link
+    /// that another program makes between them can lead the call out.
     ///
     /// # Errors
     ///
@@ -222,9 +222,9 @@ impl Paths {
     /// Makes the directory at `path`. Gives `Ok` when a directory is there already. It
     /// makes no directory above it, and none through a symbolic link at `path`. A
     /// directory that it makes gives the group and other users no access. On a handle
-    /// of [`Paths::within`], a path that does not resolve passes the limits by each
-    /// step of the walk of [`Paths::within`], and gives the error of its resolve when
-    /// it still does not resolve after the call.
+    /// of [`Paths::within`], `path` first passes the limits of [`Paths::within`]. When
+    /// `path` does not resolve and the directory is made, the call checks `path` again
+    /// and gives the error of that check.
     ///
     /// # Errors
     ///
@@ -254,23 +254,27 @@ impl Paths {
     }
 
     /// `Ok` with the result of the resolve of `path` when each step of it passes each
-    /// limit: each prefix of its components from `/`, a relative path joined to the
-    /// working directory, that resolves, in order, where a prefix short of `path` also
-    /// passes on the way to a folder, then the name of the first prefix that does not
-    /// resolve, at its place with no key. Else the error of the first step that fails.
+    /// limit: the working directory first for a relative path, then each prefix of its
+    /// components that resolves, in order, where a step short of `path` also passes on
+    /// the way to a folder, then the name of the first prefix that does not resolve, at
+    /// its place with no key. Else the error of the first step that fails.
     fn check(&self, path: &Path) -> Result<Result<(), Error>, Error> {
         if self.limits.is_empty() {
             return Ok(Ok(()));
         }
-        let joined;
-        let mut steps = path;
-        if path.is_relative() && path.components().next().is_some() {
-            joined = self.driver.resolve(Path::new("."))?.join(path);
-            steps = &joined;
-        }
-        let parts: Vec<_> = steps.components().collect();
+        let mut parts: Vec<_> = path.components().collect();
         let mut part = PathBuf::new();
         let mut above = PathBuf::new();
+        // Each prefix is a prefix of `path` and never longer: a prefix joined to the
+        // working directory can be longer than the host takes where `path` is not.
+        if path.is_relative() && !parts.is_empty() {
+            if parts[0] == Component::CurDir {
+                parts.remove(0);
+            }
+            let working = Path::new(".");
+            above = self.driver.resolve(working)?;
+            self.allowed(self.key(working)?, &above, !parts.is_empty())?;
+        }
         for (index, step) in parts.iter().enumerate() {
             part.push(step);
             let short = index + 1 < parts.len();
@@ -538,7 +542,7 @@ mod tests {
                     Err(Error::NotFound)
                 }
                 Ok(rest) => Ok(Path::new("/out").join(rest)),
-                Err(_) => Ok(Path::new("/").join(path)),
+                Err(_) => Ok(Path::new("/").join(path).components().collect()),
             }
         }
 
