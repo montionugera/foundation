@@ -1836,7 +1836,7 @@ fn status_lines(
 const AT: &str = "connector=plant.a kind=flaky";
 
 /// The lines of [`status_lines`] from the first start to the end of the first run:
-/// one for each value that the writer sends, so none for the clear of no error, for
+/// one for each value that the writer takes, so none for the clear of no error, for
 /// `b`, for a value written again, or for `f` at the write of `o`, and two for the one
 /// write of `e` and `m`.
 fn first_run() -> [String; 10] {

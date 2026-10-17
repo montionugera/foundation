@@ -293,7 +293,8 @@ impl Entry<'_> {
                 escape(w, c, c == '\\')?;
             }
         }
-        // The `mesh_time` of the line comes last, so it replaces a field of that name.
+        // The key `mesh_time` is the line's in each state, also near mesh time, where
+        // the line gives none.
         for (name, field) in fields
             .others
             .iter()

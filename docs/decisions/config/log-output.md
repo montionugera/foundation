@@ -186,7 +186,8 @@
   ms/s at once per sample (P1 judgment rejected, `laptop.architect-2`,
   2026-10-17T18:01:03Z,
   https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238199449). A live
-  span `connector` holds 632 B the first time and 297 B after. It is no idle memory,
+  span `connector` holds 632 B for the first span and 297 B for each later one (M3
+  Max, counting allocator). It is no idle memory,
   as a node with default settings runs no connector (`laptop.architect-2`,
   2026-10-17T18:17:23Z,
   https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238435066). The
