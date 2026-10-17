@@ -58,7 +58,8 @@ person's:
 
 1. Launch a fresh `architecture` agent with the PR number and the decisions section.
    Remove its worktree when it returns, by the exact path that its task notification
-   gives (`git worktree remove --force <path>`), never by a loop.
+   gives (`git worktree remove --force <path>`). Never loop over `.claude/worktrees` or
+   `git worktree list`: the worktrees of other sessions are there too.
 2. Check yourself that the surface matches its interface issue and the decisions, and
    that each new public item has a caller on the milestone path.
 3. Post one PR comment. Start it with your name line, then your rating and summary of

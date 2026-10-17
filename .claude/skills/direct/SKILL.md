@@ -22,7 +22,11 @@ the architects (`docs/factory.md`). Read only the decisions section a question n
 ## Each merged PR
 
 For each code PR, launch a fresh `audit` agent (`.claude/agents/audit.md`) with the PR
-number, its merge commit, its issue, and its crates. It checks tests, the review trail,
+number, its merge commit, its issue, and its crates. Remove its worktree when it
+returns, by the exact path that its task notification gives
+(`git worktree remove --force <path>`). Never loop over `.claude/worktrees` or
+`git worktree list`: the worktrees of other sessions are there too. It checks tests,
+the review trail,
 design, performance, and defects, by the rules that `.claude/agents/audit.md` names. It
 never uses a rule in an open PR or in your branch. Check each problem that it reports
 yourself, and drop the ones you cannot confirm. Post its verdict as one comment on the
