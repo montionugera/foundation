@@ -75,19 +75,16 @@ impl Paths {
     /// first that fails gives its error. Only the whole path can give
     /// [`Error::Vacant`], since a call makes no other name. A prefix short of the whole
     /// path is checked against the folders only when a `..` after it takes the path
-    /// above it, or nothing is there, and then also passes when it is a directory on
-    /// the way to a folder. A step fails with [`Error::Hidden`] only when it passes
-    /// the folders of each limit. One that `hidden` holds and that the folders of a
-    /// limit do not hold passes, but the path then fails with [`Error::Outside`] unless
-    /// a later step fails, so a handle never reaches through a hidden folder of the one
-    /// it came from. The name of the first prefix that does not resolve must pass them
-    /// too, at its place with no key, as a new name there does. A relative path starts
-    /// at the working directory: the steps of that directory come first, and each
-    /// prefix after them is a prefix of the path as given. A path whose steps pass and
-    /// that does not resolve gives the error of its resolve. The limits of `self` hold
-    /// too, so a handle never reaches more than the one it came from. The check and the
-    /// call are two steps: a symbolic link that another program makes between them can
-    /// lead the call out.
+    /// above it, nothing is there, or `hidden` holds it, and then also passes when it
+    /// is a directory on the way to a folder. A step meets `hidden` only when it passes
+    /// the folders of each limit. The name of the first prefix that does not resolve
+    /// must pass them too, at its place with no key, as a new name there does. A
+    /// relative path starts at the working directory: the steps of that directory come
+    /// first, and each prefix after them is a prefix of the path as given. A path whose
+    /// steps pass and that does not resolve gives the error of its resolve. The limits
+    /// of `self` hold too, so a handle never reaches more than the one it came from.
+    /// The check and the call are two steps: a symbolic link that another program makes
+    /// between them can lead the call out.
     ///
     /// # Errors
     ///
@@ -273,8 +270,7 @@ impl Paths {
     /// relative path, then each prefix of its components that resolves, in order, where
     /// a step short of `path` meets the folders as its [`Way`] gives, then the name of
     /// the first prefix that does not resolve, at its place with no key. Else the error
-    /// of the first step that fails, or [`Error::Outside`] when a step passes only as
-    /// [`Paths::allowed`] gives `Ok(true)`.
+    /// of the first step that fails.
     fn check(&self, path: &Path, call: Call) -> Result<Result<(), Error>, Error> {
         if self.limits.is_empty() {
             return Ok(Ok(()));
@@ -284,7 +280,6 @@ impl Paths {
             parts.remove(0);
         }
         let mut part = PathBuf::new();
-        let mut through = false;
         let mut above = PathBuf::new();
         // `up[index]` is how many directories above the place before `parts[index]`
         // the rest of the path goes.
@@ -309,12 +304,7 @@ impl Paths {
                 below -= 1;
                 let short = names.peek().is_some() || !parts.is_empty();
                 let back = up[0] > below;
-                through |= self.allowed(
-                    self.key(&above)?,
-                    &above,
-                    Way::of(short, back),
-                    call,
-                )?;
+                self.allowed(self.key(&above)?, &above, Way::of(short, back), call)?;
             }
         }
         for (index, step) in parts.iter().enumerate() {
@@ -327,12 +317,8 @@ impl Paths {
                 break;
             };
             let back = up[index + 1] > 0;
-            through |=
-                self.allowed(self.key(&part)?, &resolved, Way::of(short, back), call)?;
+            self.allowed(self.key(&part)?, &resolved, Way::of(short, back), call)?;
             above = resolved;
-        }
-        if through {
-            return Err(Error::Outside);
         }
         Ok(self.driver.resolve(path).map(|_| ()))
     }
@@ -341,16 +327,14 @@ impl Paths {
     /// host gives for the name that the call reaches, which for a link is the key of
     /// the file that it names, and `None` for a name with no key. The caller takes it
     /// from that name, since the resolved path of a new name can be longer than the
-    /// host takes. `way` gives what the folders ask of it. `Ok(true)` when the step
-    /// passes only since the folders of some limit do not hold it, and a hidden folder
-    /// does: the walk then fails with [`Error::Outside`] unless a later step fails.
+    /// host takes. `way` gives what the folders ask of it.
     fn allowed(
         &self,
         own: Option<Key>,
         resolved: &Path,
         way: Way,
         call: Call,
-    ) -> Result<bool, Error> {
+    ) -> Result<(), Error> {
         let mut dirs = Vec::new();
         for dir in resolved.ancestors().skip(1) {
             dirs.push(self.driver.key(dir)?);
@@ -366,13 +350,33 @@ impl Paths {
                     .any(|up| self.driver.key(up).ok() == Some(own))
             })
         };
-        let passes = |folder| held(folder) || way == Way::Short && above(folder);
-        let inside = || {
-            self.limits
-                .iter()
-                .all(|limit| limit.folders.iter().any(passes))
-        };
-        let down = way == Way::Down && own.is_some();
+        let (mut vacant, mut veiled) = (false, false);
+        for limit in self.limits.iter() {
+            for Hidden {
+                given,
+                resolved,
+                was,
+            } in &limit.hidden
+            {
+                let moved = was.is_some_and(|key| dirs.contains(&key));
+                let hidden = match self.key(given) {
+                    Ok(Some(key)) => keys.contains(&key),
+                    Ok(None) => {
+                        vacant |= own.is_none()
+                            && dirs.first() == self.above(resolved).as_ref();
+                        false
+                    }
+                    Err(_) => false,
+                };
+                veiled |= moved || hidden;
+            }
+        }
+        // A step that a hidden folder holds meets the folders as one before a `..`
+        // does, so it gets `Hidden` only where they hold it, and no later step speaks
+        // for a path through it.
+        let short = way == Way::Short || way == Way::Down && veiled;
+        let passes = |folder| held(folder) || short && above(folder);
+        let down = way == Way::Down && own.is_some() && !veiled;
         if !down
             && let Some(limit) = self
                 .limits
@@ -393,36 +397,13 @@ impl Paths {
                 Error::Outside
             });
         }
-        let (mut vacant, mut through) = (false, false);
-        for limit in self.limits.iter() {
-            for Hidden {
-                given,
-                resolved,
-                was,
-            } in &limit.hidden
-            {
-                let moved = was.is_some_and(|key| dirs.contains(&key));
-                let hidden = match self.key(given) {
-                    Ok(Some(key)) => keys.contains(&key),
-                    Ok(None) => {
-                        vacant |= own.is_none()
-                            && dirs.first() == self.above(resolved).as_ref();
-                        false
-                    }
-                    Err(_) => false,
-                };
-                // Only a step that the folders of each limit hold gets `Hidden`:
-                // elsewhere it would tell what is outside the folders.
-                if (moved || hidden) && (!down || inside()) {
-                    return Err(Error::Hidden);
-                }
-                through |= moved || hidden;
-            }
+        if veiled {
+            return Err(Error::Hidden);
         }
         if vacant && way == Way::End && call == Call::Make {
             return Err(Error::Vacant);
         }
-        Ok(through)
+        Ok(())
     }
 
     /// The key of the deepest directory above `dir` that is there.
@@ -908,6 +889,14 @@ mod tests {
         let inner = outer.within(&["/a/b/c".into()], &["/a".into()]).unwrap();
         assert_eq!(reached(&inner, "/a/b/c/d"), Err(Error::Hidden));
         assert_eq!(reached(&outer, "/a/b/c/d"), Ok(()));
+    }
+
+    #[test]
+    fn a_hidden_folder_above_a_folder_is_outside_as_the_whole_path() {
+        let free = Paths::new(One::default());
+        let paths = free.within(&["/a/b".into()], &["/a".into()]).unwrap();
+        assert_eq!(reached(&paths, "/a"), Err(Error::Outside));
+        assert_eq!(reached(&paths, "/a/b/c/d"), Err(Error::Hidden));
     }
 
     #[test]

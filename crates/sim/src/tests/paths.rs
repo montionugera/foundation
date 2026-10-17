@@ -231,6 +231,23 @@ fn within_keeps_a_narrow_handle_out_of_a_hidden_working_directory() {
 }
 
 #[test]
+fn within_refuses_a_path_through_a_hidden_folder_outside_the_folders() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    for dir in ["/work", "/out/h"] {
+        node.make_dir(Path::new(dir));
+    }
+    node.paths().write(Path::new("/work/a"), b"x").unwrap();
+    node.link_path(Path::new("/out/h/l"), Path::new("/work"));
+    let within = node
+        .paths()
+        .within(&[PathBuf::from("/work")], &[PathBuf::from("/out/h")])
+        .unwrap();
+    let path = Path::new("/out/h/l/a");
+    assert_eq!(within.read(path, 1), Err(Error::Outside));
+    assert_eq!(node.paths().read(path, 1).map(|_| ()), Ok(()));
+}
+
+#[test]
 fn within_follows_a_link_outside_that_names_a_folder() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     for dir in ["/work", "/out"] {

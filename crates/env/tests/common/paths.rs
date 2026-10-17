@@ -642,27 +642,34 @@ pub(crate) fn within_holds_nothing_in_a_folder_made_again(host: &Host<'_>) {
 /// A link in the hidden folder of `wide` names the folder of `narrow`. `wide` refuses
 /// the path through the hidden folder, so `narrow`, made from `wide`, refuses it too,
 /// with the error of a name there that is not, so it tells nothing of what `data`
-/// holds.
+/// holds, also where the link leads into a hidden folder.
 pub(crate) fn within_keeps_a_narrow_handle_out_of_a_hidden_folder_of_its_source(
     host: &Host<'_>,
 ) {
-    let (wide, base) = within_work(host);
-    (host.make_dir)(&base.join("work/sub"));
-    host.paths
-        .write(&base.join("work/sub/a.hcl"), b"x")
-        .unwrap();
+    let base = host.paths.resolve(host.dir).unwrap();
+    for name in ["work", "work/data", "work/sub", "work/sub/s"] {
+        (host.make_dir)(&base.join(name));
+    }
+    for name in ["work/sub/a.hcl", "work/sub/s/a"] {
+        host.paths.write(&base.join(name), b"x").unwrap();
+    }
     (host.make_link)(&base.join("work/data/l"), &base.join("work/sub"));
+    let hidden = [base.join("work/data"), base.join("work/sub/s")];
+    let wide = host.paths.within(&[base.join("work")], &hidden).unwrap();
     let narrow = wide.within(&[base.join("work/sub")], &[]).unwrap();
-    let path = base.join("work/data/l/a.hcl");
-    let wide_read = wide.read(&path, 1).map(|_| ());
-    let narrow_read = narrow.read(&path, 1).map(|_| ());
-    let none = narrow
-        .read(&base.join("work/data/none/a.hcl"), 1)
-        .map(|_| ());
-    assert_eq!(
-        (wide_read, narrow_read, none),
-        (Err(Error::Hidden), Err(Error::Outside), Err(Error::Outside))
-    );
+    for (path, none) in [
+        ("work/data/l/a.hcl", "work/data/none/a.hcl"),
+        ("work/data/l/s/a", "work/data/none/s/a"),
+    ] {
+        let wide_read = wide.read(&base.join(path), 1).map(|_| ());
+        let narrow_read = narrow.read(&base.join(path), 1).map(|_| ());
+        let none = narrow.read(&base.join(none), 1).map(|_| ());
+        assert_eq!(
+            (wide_read, narrow_read, none),
+            (Err(Error::Hidden), Err(Error::Outside), Err(Error::Outside)),
+            "{path}"
+        );
+    }
 }
 
 /// A program replaces the folder with a link to a directory outside it. A path through
