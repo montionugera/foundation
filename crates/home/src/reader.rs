@@ -5,13 +5,14 @@ use std::mem;
 use std::ops::Range;
 use std::sync::Arc;
 
-use buffer::{Buffer, Mark, Stored};
+use buffer::{Buffer, Stored};
 pub use delivery::{Error, Position, named};
 use delivery::{Reader, Readers, Record, Start};
 use types::channel::Slot;
 use types::frame::key_set::KeySet;
 use types::frame::{Frame, Path};
 use types::hash;
+use types::log::Mark;
 use types::time::{Span, Stamp};
 
 pub mod disk;

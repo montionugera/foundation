@@ -387,9 +387,9 @@ mod tests {
     use types::time::Stamp;
 
     use crate::entry::{ENTRIES_MAX, Parts, Samples, table_len};
-    use crate::log::Mark;
     use crate::record::HEADER_LEN;
     use crate::wal::{self, Cursor, Position, Step, Window};
+    use types::log::Mark;
 
     const BLOCKS: u64 = 32;
     const AREA: u64 = BLOCKS * 4096;
@@ -742,7 +742,7 @@ mod tests {
                     let mark = marks.entry((next.index, next.path)).or_insert(Mark::at(0));
                     let bytes = next.parts.concat();
                     let first = mark.seq + next.skip;
-                    *mark = mark.after(first, next.len);
+                    *mark = crate::log::after(*mark, first, next.len);
                     let header = Header {
                         index: key(next.index),
                         path: next.path,
