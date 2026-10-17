@@ -9,8 +9,8 @@ use block::{Block, Pool, Unique};
 use types::channel::Slot;
 
 use crate::entry::{self, Entry, Header, Kind};
-use crate::record;
 use crate::wal::{Ends, Full, Layout, Limit, Plan, Writer};
+use crate::{carry, record};
 
 /// Bytes of the block that holds a record header and the largest entry table: one
 /// block of the pool's 64 KiB class.
@@ -86,6 +86,35 @@ fn need(starts: &[usize], len: usize) -> usize {
     group.saturating_add(parts)
 }
 
+/// The entries of `batch` with a nonzero tag, and their bytes together.
+///
+/// # Errors
+///
+/// [`Limit::Block`] for the first entry over `block_max`, else [`Limit::Tagged`] for
+/// the first entry with a nonzero tag over [`Layout::ENTRY_MAX_MIN`].
+fn copies(batch: &[Entry], block_max: usize) -> Result<(usize, usize), Limit> {
+    let max = Layout::ENTRY_MAX_MIN;
+    let mut tagged = None;
+    let (mut copies, mut copy_len) = (0_usize, 0_usize);
+    for entry in batch {
+        let len = entry.parts.bytes();
+        if len > block_max {
+            return Err(Limit::Block {
+                len,
+                max: block_max,
+            });
+        }
+        if entry.tag != 0 {
+            if tagged.is_none() && len > max {
+                tagged = Some(Limit::Tagged { len, max });
+            }
+            copies = copies.saturating_add(1);
+            copy_len = copy_len.saturating_add(len);
+        }
+    }
+    tagged.map_or(Ok((copies, copy_len)), Err)
+}
+
 /// The entries of one group commit, in append order. The first fit takes the block
 /// for the record header and the table and the block for a wrap header, so that
 /// [`close`](Self::close) and [`Closed::seal`] allocate nothing. [`Sealed::clear`]
@@ -100,6 +129,9 @@ pub(crate) struct Group {
     writes: Vec<Block>,
     /// The bytes of every entry together.
     bytes: usize,
+    /// The entries with a nonzero tag, and their bytes together.
+    copies: usize,
+    copy_len: usize,
     meta: Option<Unique>,
     wrap: Option<Unique>,
 }
@@ -138,9 +170,13 @@ impl Group {
 
     /// Checks that the group can take every entry of `batch`: the record with them
     /// fits the layout and the ring of `writer`, and each entry is at most
-    /// `block_max`. When the group has no blocks, it takes them from `pool`. Counts
-    /// the bytes of the batch in the group, so the caller then gives each entry of
-    /// `batch` to [`take`](Self::take), in order.
+    /// `block_max`. With a `carry_max`, the carry body of each holder that the
+    /// record can have, each entry as a tail and each entry with a nonzero tag also
+    /// as a copy, is at most `carry_max` bytes, unless the record has one entry. So
+    /// one carry record moves every holder of the record. When the group has no
+    /// blocks, it takes them from `pool`. Counts the bytes of the batch in the
+    /// group, so the caller then gives each entry of `batch` to
+    /// [`take`](Self::take), in order.
     ///
     /// # Errors
     ///
@@ -150,6 +186,7 @@ impl Group {
         &mut self,
         pool: &Pool,
         block_max: usize,
+        carry_max: Option<usize>,
         writer: &Writer,
         batch: &[Entry],
     ) -> Result<(), Rejected> {
@@ -162,22 +199,12 @@ impl Group {
         let len = batch.iter().map(|entry| entry.parts.bytes()).sum::<usize>();
         let layout = writer.layout();
         layout.check(count, parts, len).map_err(Rejected::Large)?;
-        let max = Layout::ENTRY_MAX_MIN;
-        let mut tagged = None;
-        for entry in batch {
-            let len = entry.parts.bytes();
-            if len > block_max {
-                return Err(Rejected::Large(Limit::Block {
-                    len,
-                    max: block_max,
-                }));
+        let (copies, copy_len) = copies(batch, block_max).map_err(Rejected::Large)?;
+        if let Some(max) = carry_max.filter(|_| copies > 0 && count > 1) {
+            let len = carry::body_len(count, copies, copy_len);
+            if len > max {
+                return Err(Rejected::Large(Limit::Carry { len, max }));
             }
-            if tagged.is_none() && entry.tag != 0 && len > max {
-                tagged = Some(Limit::Tagged { len, max });
-            }
-        }
-        if let Some(limit) = tagged {
-            return Err(Rejected::Large(limit));
         }
         layout
             .check(
@@ -186,6 +213,15 @@ impl Group {
                 self.bytes.saturating_add(len),
             )
             .map_err(|_over: Limit| Rejected::Record)?;
+        let (copies, copy_len) = (
+            self.copies.saturating_add(copies),
+            self.copy_len.saturating_add(copy_len),
+        );
+        if let Some(max) = carry_max.filter(|_| copies > 0 && !self.is_empty())
+            && carry::body_len(start.saturating_add(count), copies, copy_len) > max
+        {
+            return Err(Rejected::Record);
+        }
         let body = self.body_len_with(count, len);
         if let Err(full) = writer.fits(body) {
             return Err(if self.is_empty() {
@@ -204,6 +240,7 @@ impl Group {
             .bytes
             .checked_add(len)
             .expect("invariant: a body fits in usize");
+        (self.copies, self.copy_len) = (copies, copy_len);
         Ok(())
     }
 
@@ -413,6 +450,7 @@ impl Sealed {
         group.slots.clear();
         group.writes.clear();
         group.bytes = 0;
+        (group.copies, group.copy_len) = (0, 0);
         group
     }
 }
@@ -508,7 +546,7 @@ mod tests {
         writer: &Writer,
         batch: &mut Vec<Entry>,
     ) -> Result<Range<usize>, Rejected> {
-        group.fit(pool, block_max, writer, batch)?;
+        group.fit(pool, block_max, None, writer, batch)?;
         let start = group.headers.len();
         for entry in batch.drain(..) {
             let kind = entry
@@ -700,6 +738,7 @@ mod tests {
                 .fit(
                     &self.pool,
                     self.block_max(),
+                    None,
                     &self.writer,
                     slice::from_ref(&entry),
                 )
@@ -1331,6 +1370,59 @@ mod tests {
             &mut batch,
         );
         assert_eq!(pushed, Ok(0..2), "tag 0 and a tagged entry at the most fit");
+    }
+
+    /// With a `carry_max`, a batch of more than one entry whose carry body passes it
+    /// names [`Limit::Carry`], a group whose record would pass it refuses the batch
+    /// as [`Rejected::Record`], and a batch of one entry or with no tag fits. A
+    /// cleared group counts no copy.
+    #[test]
+    fn keeps_the_carry_body_of_a_record_at_most_carry_max() {
+        let mut area = Area::new();
+        let block_max = area.block_max();
+        let (pool, writer) = (&area.pool, &area.writer);
+        let tagged = Header {
+            tag: 3,
+            ..header(1, Path::Live, 0)
+        };
+        let part = || parts(pool, &[&[7; 100]]);
+        let pair = [
+            entry(tagged, part()),
+            entry(header(2, Path::Live, 0), part()),
+        ];
+        let one = [entry(tagged, part())];
+        let fit = |group: &mut Group, batch: &[Entry], carry_max| {
+            group.fit(pool, block_max, carry_max, writer, batch)?;
+            for entry in batch {
+                group.take(entry.clone(), Kind::Record(NonZeroU64::MIN));
+            }
+            Ok(())
+        };
+        let mut group = Group::default();
+        let limit = Limit::Carry { len: 239, max: 238 };
+        assert_eq!(
+            fit(&mut group, &pair, Some(238)),
+            Err(Rejected::Large(limit))
+        );
+        assert!(group.is_empty());
+        assert_eq!(
+            limit.to_string(),
+            "the batch needs a carry body of 239 bytes, and a carry record of this \
+             buffer holds at most 238"
+        );
+        assert_eq!(fit(&mut group, &pair, Some(239)), Ok(()));
+        assert_eq!(fit(&mut group, &one, Some(431)), Err(Rejected::Record));
+        assert_eq!(fit(&mut group, &one, Some(432)), Ok(()));
+        assert_eq!(fit(&mut Group::default(), &one, Some(0)), Ok(()));
+        let plain = [
+            entry(header(2, Path::Live, 0), part()),
+            entry(header(4, Path::Live, 0), part()),
+        ];
+        assert_eq!(fit(&mut Group::default(), &plain, Some(0)), Ok(()));
+        assert_eq!(fit(&mut Group::default(), &pair, None), Ok(()));
+        let closed = group.close(&mut area.writer);
+        let group = area.commit(closed).clear();
+        assert_eq!((group.copies, group.copy_len), (0, 0));
     }
 
     proptest! {

@@ -420,3 +420,51 @@ fn an_open_whose_oldest_record_holds_a_tagged_entry_is_full() {
             .await;
     });
 }
+
+/// Two tagged entries of each of 3000 indexes, in records of 1000 entries, then
+/// commits of 100 frames over two laps: each commit gets room, and `newest` gives
+/// each entry.
+#[test]
+fn dense_tagged_state_on_a_trimmed_ring_never_stays_full() {
+    run(407, |shard| async move {
+        let shard = trimmed(shard);
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(1024 * BLOCK, 32 * BODY_MAX + 279), &mut slots)
+            .await
+            .expect("opens");
+        let mut expected = [Vec::new(), Vec::new()];
+        for indexes in (1..=3000).collect::<Vec<u32>>().chunks(500) {
+            for &index in indexes {
+                let slot = slots.index(key(index));
+                let mut pair = Vec::new();
+                for (tag, len) in [(1, 17), (2, 73)] {
+                    pair.push(tagged(
+                        index,
+                        slot,
+                        Path::Live,
+                        0,
+                        tag,
+                        shard.block(len),
+                    ));
+                    expected[usize::from(tag - 1)]
+                        .push((slot, kept(&shard.block(len))));
+                }
+                append_within(&buffer, &shard.clock, &pair, 100)
+                    .await
+                    .expect("the ring frees room");
+            }
+            buffer.committed().await.expect("commits");
+        }
+        let data = slots.index(key(9));
+        for round in 0..100 {
+            let batch: Vec<_> = (round * 100..(round + 1) * 100)
+                .map(|seq| frame(&shard, data, seq))
+                .collect();
+            commit(&shard, &buffer, &batch).await;
+        }
+        assert!(trimmed_past_the_start(&buffer, data).await);
+        assert_eq!(newest(&buffer, Path::Live, 1), expected[0]);
+        assert_eq!(newest(&buffer, Path::Live, 2), expected[1]);
+    });
+}

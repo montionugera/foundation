@@ -281,9 +281,10 @@ impl Layout {
     /// parts in all, against the limits of one record of this ring, as
     /// [`Buffer::append`](crate::Buffer::append) does before it queues the batch.
     /// It does not check [`Limit::Block`](crate::Limit::Block), which
-    /// [`Buffer::block_max`](crate::Buffer::block_max) gives, or
+    /// [`Buffer::block_max`](crate::Buffer::block_max) gives,
     /// [`Limit::Tagged`](crate::Limit::Tagged), which only an entry with a nonzero
-    /// tag meets.
+    /// tag meets, or [`Limit::Carry`](crate::Limit::Carry), which only a batch with
+    /// such an entry on a buffer with trims meets.
     ///
     /// # Errors
     ///
@@ -355,6 +356,15 @@ pub enum Limit {
         /// [`Layout::ENTRY_MAX_MIN`].
         max: usize,
     },
+    /// A batch of more than one entry, with a nonzero tag on some, whose holders
+    /// one carry record of a buffer with trims does not hold: each entry as a tail,
+    /// and each entry with a nonzero tag also as a copy of its parts.
+    Carry {
+        /// Bytes of the carry body of the batch.
+        len: usize,
+        /// The most body bytes of one carry record of the buffer.
+        max: usize,
+    },
 }
 
 impl fmt::Display for Limit {
@@ -383,6 +393,11 @@ impl fmt::Display for Limit {
                 f,
                 "an entry with a tag has {len} bytes of parts, and an entry with a tag \
                  holds at most {max}"
+            ),
+            Self::Carry { len, max } => write!(
+                f,
+                "the batch needs a carry body of {len} bytes, and a carry record of \
+                 this buffer holds at most {max}"
             ),
         }
     }

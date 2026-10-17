@@ -290,8 +290,8 @@ struct Shared {
     pool: Rc<Pool>,
     block_max: usize,
     layout: Layout,
-    /// With [`Config::trimmed`], the most body bytes of a carry record that fit
-    /// the largest block of `pool`. Else `None`.
+    /// With [`Config::trimmed`], the most body bytes of a carry record of `layout`
+    /// that fit the largest block of `pool`. Else `None`.
     carry_max: Option<usize>,
     state: RefCell<State>,
 }
@@ -700,7 +700,7 @@ impl Buffer {
         let (cursor, logs) = walk(&file, &pool, &header, slots).await?;
         let mut state = State::new(cursor.writer(), logs, header, random(&entropy));
         restart(&file, &pool, &mut state, trimmed).await?;
-        let carry_max = trimmed.then(|| carry_max(&pool));
+        let carry_max = trimmed.then(|| carry_max(&pool, header.layout));
         let shared = Rc::new(Shared {
             file,
             pool,
@@ -829,14 +829,18 @@ impl Buffer {
         if let Some(error) = &state.failed {
             return Err(Rejected::Files(error.clone()));
         }
-        let (pool, block_max) = (&*shared.pool, shared.block_max);
-        match state.open.fit(pool, block_max, &state.writer, batch) {
+        let (pool, block_max, carry_max) =
+            (&*shared.pool, shared.block_max, shared.carry_max);
+        match state
+            .open
+            .fit(pool, block_max, carry_max, &state.writer, batch)
+        {
             Ok(()) => {}
             Err(group::Rejected::Record) => {
                 state.close_open();
                 state
                     .open
-                    .fit(pool, block_max, &state.writer, batch)
+                    .fit(pool, block_max, carry_max, &state.writer, batch)
                     .map_err(rejected)?;
             }
             Err(full @ group::Rejected::Ring(_)) => {
@@ -894,9 +898,12 @@ impl Buffer {
     }
 }
 
-/// The most body bytes of a carry record that fit the largest block of `pool`.
-fn carry_max(pool: &Pool) -> usize {
-    pool.largest().saturating_sub(HEADER_LEN)
+/// The most body bytes of a carry record of `layout` that fit the largest block of
+/// `pool`.
+fn carry_max(pool: &Pool, layout: Layout) -> usize {
+    pool.largest()
+        .saturating_sub(HEADER_LEN)
+        .min(layout.carry_max())
 }
 
 /// Appends each entry of `batch` to `logs`, in order, and takes it into `open` with

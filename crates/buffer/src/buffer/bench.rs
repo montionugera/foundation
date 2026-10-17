@@ -55,7 +55,7 @@ impl Deadline {
         let config = block::Config::new(1 << 21).expect("the budget fits");
         let pool = Pool::new(config.clone(), Heap::new(config.reservation()));
         let block_max = group::block_max(&pool).expect("the budget holds an entry");
-        let carry_max = carry_max(&pool);
+        let carry_max = carry_max(&pool, layout);
         let part = pool.alloc(PART).expect("the pool has room").freeze();
         let chain = 9;
         let state = State::new(
@@ -136,7 +136,13 @@ impl Deadline {
         let state = &mut self.state;
         state
             .open
-            .fit(&self.pool, self.block_max, &state.writer, &self.batch)
+            .fit(
+                &self.pool,
+                self.block_max,
+                Some(self.carry_max),
+                &state.writer,
+                &self.batch,
+            )
             .expect("the ring and the pool have room for the group");
         take(&mut state.open, &mut state.logs, &mut self.batch);
         let (checkpoint, carrying) =
