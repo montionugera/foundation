@@ -38,8 +38,7 @@ Check:
 - No defense in depth: a second guard for a bug fixed elsewhere, or an error skipped
   to hide a defect.
 - A crate dependency, or a public surface of a crate outside the PR's issue, that
-  changed without an `interface` issue; a public surface of a crate of the issue that
-  changed without the architect's approval of the plan that gives it.
+  changed without an `interface` issue.
 - The 14 red flags in `docs/claude/design.md`. Name each one you find.
 - Complexity: does each new public item, field, and parameter earn its place? Callers
   that repeat the same steps mean the surface is wrong, not that a helper is missing.
