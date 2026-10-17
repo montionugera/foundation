@@ -620,7 +620,7 @@ pub(crate) fn within_holds_nothing_in_a_file_that_a_write_replaces(host: &Host<'
 /// A program moves the folder away and makes it again. A new name in it, and a file of
 /// the moved folder, which keeps its key, are refused as replaced.
 pub(crate) fn within_holds_nothing_in_a_folder_made_again(host: &Host<'_>) {
-    let (_, base) = within_work(host);
+    let (hiding, base) = within_work(host);
     let work = base.join("work");
     let within = host.paths.within(slice::from_ref(&work), &[]).unwrap();
     (host.move_path)(&work, &base.join("old"));
@@ -631,6 +631,8 @@ pub(crate) fn within_holds_nothing_in_a_folder_made_again(host: &Host<'_>) {
         (written, moved),
         (Err(Error::Replaced), Err(Error::Replaced))
     );
+    let hidden = hiding.read(&base.join("old/data/admin.key"), 1);
+    assert_eq!(hidden, Err(Error::Replaced));
     let back = within.read(&base.join("work/../b.hcl"), 1).map(|_| ());
     let outside = within.read(&base.join("b.hcl"), 1).map(|_| ());
     assert_eq!((back, outside), (Err(Error::Replaced), Err(Error::Outside)));
