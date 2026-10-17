@@ -122,21 +122,32 @@
   (`laptop.architect-2`, 2026-10-16T15:14:05Z:
   https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6218554197). Main
   reads the store once, so a change to it takes effect at the next start. Before
-  `started`, shard 0 logs a warning "parts of the OS roots were not read" with the
-  count `failed` of all failures and the `source` of the read, once, when the read has
-  a failure (`laptop.architect-2`, 2026-10-16T22:48:23Z, #2945:
+  `started`, shard 0 logs a warning "parts of the OS roots were not read, and
+  `foundation status` gives each" with the count `failed` of all failures and the
+  `source` of the read, once, when the read has a failure (`laptop.architect-2`,
+  2026-10-16T22:48:23Z, #2945:
   https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6226140961; the
   count `failed`, and the count of the rest with no `source`: `laptop.architect-2`,
   2026-10-17T01:43:59Z, #2949:
   https://github.com/synnaxlabs/foundation/pull/2963#issuecomment-6228097941; this
   warning takes the `source` off the `unlisted` line of
   https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225879413), "a part
-  of the OS roots was not read" with the `error` of each of the first 16 failures,
-  "more parts of the OS roots were not read" with the count `unlisted` of the rest, "OS
+  of the OS roots was not read" with the `error` of each of the first 16 failures, "OS
   roots that do not parse are skipped" with the count `skipped`, and "the OS roots hold
   no certificate, so an https connect with no CA of its connector fails". It logs them
-  also with `Region::Absent`. The cap of 16 failures keeps the warnings from filling
-  the log queue and dropping `started` (`laptop.architect-2`, 2026-10-16T20:40:05Z,
+  also with `Region::Absent`. The first warning is the one count line: no warning
+  counts the failures after the first 16 (#2945). `foundation status` on the running
+  node gives the `source` and each failure, in full, to a subject with `read` on the
+  name of the node, as `roots` in its JSON and as `OS roots:` lines in its text, and
+  leaves `roots` out when the read had no failure. `ops::Roots` keeps the failures in
+  order while their text is at most 1 MiB, and counts the rest as `unlisted`, so the
+  reply stays in its 16 MiB bound. The list comes from the running node, since a shell
+  can read other roots, and a file on disk of the failures is refused
+  (`laptop.architect-2`, 2026-10-16T22:27:09Z, #2945:
+  https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225879413; the plan:
+  https://github.com/synnaxlabs/foundation/issues/2945#issuecomment-6229892971). The
+  cap of 16 failures keeps the warnings from filling the log queue and dropping
+  `started` (`laptop.architect-2`, 2026-10-16T20:40:05Z,
   #2920: https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6224274551).
   For the same reason, an `error` of more than 1024 bytes keeps at most its first and
   last 510 bytes, cut at char boundaries and joined by `…`, as a line of a PEM file can

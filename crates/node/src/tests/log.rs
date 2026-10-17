@@ -278,7 +278,8 @@ fn a_node_warns_of_its_roots_before_it_starts() {
 /// The first warning of a read of the roots with `failed` failures from `source`.
 fn summary(failed: usize, source: &str) -> String {
     format!(
-        "{WARN} parts of the OS roots were not read failed={failed} source=\"{source}\""
+        "{WARN} parts of the OS roots were not read, and `foundation status` gives each \
+         failed={failed} source=\"{source}\""
     )
 }
 
@@ -306,12 +307,9 @@ fn listed(count: usize) -> Vec<String> {
 }
 
 #[test]
-fn a_node_warns_of_the_first_16_failures_of_its_roots_and_counts_the_rest() {
+fn a_node_warns_of_the_count_and_the_first_16_failures_of_its_roots() {
     let mut expected = vec![summary(17, "the OS store")];
     expected.extend(listed(16));
-    expected.push(format!(
-        "{WARN} more parts of the OS roots were not read unlisted=1"
-    ));
     assert_eq!(warned(failed(17)), expected);
 }
 
