@@ -373,6 +373,11 @@ state on `main`.
   from it. OPEN62541 SOURCE bars it for each nonce, key, and session token of Foundation
   code, and states what a security policy that encrypts, or an OPC UA server of
   Foundation, changes first. Neither is built.
+- A certificate that a server sends is untrusted input, and so is a key or a
+  certificate that the node loads. No PEM read of the open62541 copy waits on the
+  console or sets a signal handler: each refuses an encrypted PEM that it has no
+  password for, and a password that does not fit in the buffer of aws-lc (OPEN62541
+  SOURCE).
 
 ### Encoded series
 
