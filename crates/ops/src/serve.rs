@@ -488,9 +488,9 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Body, Error>
     Ok(Body::line(&Answer::Done { output: &effect })?)
 }
 
-/// The reply of `status`: its output. It leaves out each connector on whose status
-/// channels `subject` has no `read`. When it leaves out each connector, or the node
-/// places none, it needs `read` on the name of the node.
+/// The reply of `status`: its output. It leaves out each connector unless `subject`
+/// has `read` on its label and on each of its status channels. When it leaves out each
+/// connector, or the node places none, it needs `read` on the name of the node.
 async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
     let asked = node.clock.now();
     let spec = used::spec(&node.mesh).await?;
