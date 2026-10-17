@@ -206,8 +206,25 @@ fn within_checks_the_working_directory_as_the_first_step_of_a_relative_path() {
         .unwrap();
     node.set_working_dir(Path::new("/out/data"));
     for path in ["a", "./a", "/out/data/a"].map(Path::new) {
-        assert_eq!(within.read(path, 1), Err(Error::Outside), "{path:?}");
+        assert_eq!(within.read(path, 1), Err(Error::Hidden), "{path:?}");
     }
+}
+
+#[test]
+fn within_follows_a_link_outside_that_names_a_folder() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    for dir in ["/work", "/out"] {
+        node.make_dir(Path::new(dir));
+    }
+    node.link_path(Path::new("/out/in"), Path::new("/work"));
+    let within = node.paths().within(&[PathBuf::from("/work")], &[]).unwrap();
+    node.set_working_dir(Path::new("/out"));
+    for path in ["/out/in/a", "in/a"].map(Path::new) {
+        assert_eq!(within.write(path, b"x"), Ok(()), "{path:?}");
+        assert_eq!(within.read(path, 1).map(|_| ()), Ok(()), "{path:?}");
+    }
+    let path = Path::new("in/../in/a");
+    assert_eq!(within.read(path, 1), Err(Error::Outside));
 }
 
 #[test]

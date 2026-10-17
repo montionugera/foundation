@@ -402,7 +402,11 @@ pub(crate) fn within_follows_a_link_out(host: &Host<'_>) {
         let written = within.write(&path, b"y");
         assert_eq!(written, Err(error), "{}", path.display());
     }
+    (host.make_link)(&dir.join("workshop/in"), &dir.join("work"));
     let file = Ok(Found::File(b"x".to_vec()));
+    assert_eq!(within.read(&dir.join("workshop/in/a.hcl"), 1), file);
+    let key = dir.join("workshop/in/data/admin.key");
+    assert_eq!(within.read(&key, 1), Err(Error::Hidden));
     assert_eq!(host.paths.read(&dir.join("b.hcl"), 1), file);
     assert_eq!(
         host.paths.read(&dir.join("workshop/new.plan"), 1),
@@ -895,6 +899,10 @@ pub(crate) fn within_checks_each_step_of_a_path_that_resolves(host: &Host<'_>) {
         assert_eq!(within.read(&path, 1), Err(error), "{name}");
         assert_eq!(within.write(&path, b"x"), Err(error), "{name}");
     }
+    let path = base.join("workshop/sub/../../work/a.hcl");
+    assert_eq!(within.read(&path, 1), Err(Error::Outside));
+    (host.make_dir)(&base.join("workshop/sub"));
+    assert_eq!(within.read(&path, 1), Err(Error::Outside));
     (host.make_dir)(&base.join("x"));
     let path = base.join("x/../work/data/y");
     assert_eq!(within.write(&path, b"x"), Err(Error::Outside));
