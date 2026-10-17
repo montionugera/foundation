@@ -956,27 +956,69 @@ fn keeps_the_answer_of_influx_after_a_401_with_a_long_source_and_body() {
     );
 }
 
-#[test]
-fn ends_the_run_when_the_token_is_gone_after_a_401() {
-    let got = run(|node, tasks| async move {
+/// Runs a plant with no `hold` whose InfluxDB answers the first request 401, at which
+/// the token file holds `bad`, and `new` from `fixed` after that request. Writes a
+/// sample, and a second one 3 s later. Asserts that the run stores both with no
+/// restart, and gives the `Authorization` header of each request, the errors, and the
+/// classes.
+fn after_a_bad_token(
+    bad: &'static [u8],
+    fixed: Span,
+) -> (Vec<Option<String>>, Vec<String>, Vec<u8>) {
+    run(move |node, tasks| async move {
         let plant = Plant::new(node.clone(), tasks).await;
-        node.paths()
+        let paths = node.paths();
+        paths
             .write(std::path::Path::new(TOKEN_FILE), b"old")
             .expect("writes");
         plant
             .answers
             .borrow_mut()
             .push_back((StatusCode::UNAUTHORIZED, "no"));
-        plant.tokens.borrow_mut().push_back(b"");
-        let config = with_token(&plant, "file", TOKEN_FILE);
-        let (auth, errors, _) = send_one(&plant, config).await;
+        plant.tokens.borrow_mut().push_back(bad);
+        let (clock, auth) = (plant.clock.clone(), Rc::clone(&plant.auth));
+        plant.tasks.spawn(async move {
+            while auth.borrow().is_empty() {
+                clock.sleep(Span::from_nanos(1_000)).await;
+            }
+            clock.sleep(fixed).await;
+            paths
+                .write(std::path::Path::new(TOKEN_FILE), b"new")
+                .expect("writes");
+        });
+        let mut config = with_token(&plant, "file", TOKEN_FILE);
+        config.blocks.clear();
+        let run = plant.start(config);
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        for _ in 0..2 {
+            plant.clock.sleep(Span::SECOND).await;
+            let first = writer.now().nanos();
+            write(&mut writer, first, &[(1.0, 2.0)]);
+            plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        }
+        plant.clock.sleep(Span::MINUTE).await;
+        let end = plant.stop(run).await;
+        assert!(end.is_ok(), "ok after a cancel");
+        let points = plant.store.borrow().points("telemetry", &[]).count();
+        let restarts = plant.restarts.borrow().clone();
+        assert_eq!((points, restarts), (2, vec![0]), "the run keeps the batch");
         let classes = plant.classes.borrow().clone();
+        let auth = plant.auth.borrow().clone();
+        let errors = plant.errors.borrow().clone();
         (auth, errors, classes)
-    });
+    })
+}
+
+#[test]
+fn keeps_the_batch_when_the_token_is_gone_after_a_401() {
     assert_eq!(
-        got,
+        after_a_bad_token(b"", Span::from_nanos(4_000_000_000)),
         (
-            vec![Some("Token old".to_owned())],
+            vec![
+                Some("Token old".to_owned()),
+                Some("Token new".to_owned()),
+                Some("Token new".to_owned()),
+            ],
             vec![
                 String::new(),
                 format!(
@@ -984,11 +1026,49 @@ fn ends_the_run_when_the_token_is_gone_after_a_401() {
                      file(\"{TOKEN_FILE}\"): no"
                 ),
                 format!(
-                    "the secret file(\"{TOKEN_FILE}\"): the file {TOKEN_FILE} is \
-                     empty. Write the value to it"
+                    "an attempt failed: the secret file(\"{TOKEN_FILE}\"): \
+                     the file {TOKEN_FILE} is empty. Write the value to it"
                 ),
+                String::new(),
             ],
-            vec![0, RETRY],
+            vec![0, RETRY, 0],
+        )
+    );
+}
+
+#[test]
+fn reads_the_token_again_only_after_the_backoff() {
+    let (_, errors, _) = after_a_bad_token(b"", Span::from_nanos(1_000_000));
+    assert_eq!(
+        errors,
+        [
+            String::new(),
+            format!(
+                "InfluxDB answered 401 Unauthorized. Check the token \
+                 file(\"{TOKEN_FILE}\"): no"
+            ),
+            String::new(),
+        ],
+        "the token is fixed in the backoff"
+    );
+}
+
+#[test]
+fn keeps_the_batch_at_a_token_that_a_header_cannot_hold_after_a_401() {
+    let (auth, errors, _) =
+        after_a_bad_token(b"t0\nken\n", Span::from_nanos(4_000_000_000));
+    assert_eq!(
+        (auth, errors.get(2)),
+        (
+            vec![
+                Some("Token old".to_owned()),
+                Some("Token new".to_owned()),
+                Some("Token new".to_owned()),
+            ],
+            Some(&format!(
+                "an attempt failed: the token file(\"{TOKEN_FILE}\") holds a byte that \
+                 an HTTP header cannot hold. Write the token with no control byte"
+            )),
         )
     );
 }
@@ -2130,11 +2210,14 @@ fn retries_a_tls_failure_with_a_ca_in_the_run() {
     );
 }
 
-/// Runs a plant whose InfluxDB serves [`Certificate::OtherCa`], with `ca` read from
-/// `file(CA_FILE)`, which holds [`CA`] at the start and `fixed` from 5 s after the
-/// first sample. Gives the points stored, the errors, and each value of `class` and
-/// of `restarts`.
-fn after_a_new_ca(fixed: &'static [u8]) -> (usize, Vec<String>, Vec<u8>, Vec<u64>) {
+/// Runs a plant with no `hold` whose InfluxDB serves [`Certificate::OtherCa`], with
+/// `ca` read from `file(CA_FILE)`, which holds [`CA`] at the start and each text of
+/// `texts` from its second after the first sample. Writes a second sample 8 s after
+/// the first. Gives the points stored, the errors, and each value of `class` and of
+/// `restarts`.
+fn after_a_new_ca(
+    texts: &'static [(i64, &'static [u8])],
+) -> (usize, Vec<String>, Vec<u8>, Vec<u64>) {
     run_tls(move |node, tasks| async move {
         let paths = node.paths();
         paths
@@ -2142,16 +2225,29 @@ fn after_a_new_ca(fixed: &'static [u8]) -> (usize, Vec<String>, Vec<u8>, Vec<u64
             .expect("writes");
         let plant =
             Plant::tls(node, tasks, Certificate::OtherCa, Roots::default()).await;
-        let run = plant.start(with_ca(&plant, "file", CA_FILE));
+        let mut config = with_ca(&plant, "file", CA_FILE);
+        config.blocks.clear();
+        let run = plant.start(config);
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
         write(&mut writer, first, &[(1.0, 2.0)]);
-        plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
-        paths
-            .write(std::path::Path::new(CA_FILE), fixed)
-            .expect("writes");
-        plant.clock.sleep(Span::MINUTE).await;
+        let clock = plant.clock.clone();
+        plant.tasks.spawn(async move {
+            let mut slept = 0;
+            for &(second, text) in texts {
+                let wait = (second - slept) * 1_000_000_000;
+                clock.sleep(Span::from_nanos(wait)).await;
+                slept = second;
+                paths
+                    .write(std::path::Path::new(CA_FILE), text)
+                    .expect("writes");
+            }
+        });
+        plant.clock.sleep(Span::from_nanos(8_000_000_000)).await;
+        let second = writer.now().nanos();
+        write(&mut writer, second, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::from_nanos(80_000_000_000)).await;
         let end = plant.stop(run).await;
         assert!(end.is_ok(), "ok after a cancel");
         let points = plant.store.borrow().points("telemetry", &[]).count();
@@ -2164,24 +2260,34 @@ fn after_a_new_ca(fixed: &'static [u8]) -> (usize, Vec<String>, Vec<u8>, Vec<u64
 
 #[test]
 fn reads_again_a_ca_fixed_while_the_node_runs() {
-    let (points, _, _, restarts) = after_a_new_ca(OTHER_CA);
+    let (points, _, _, restarts) = after_a_new_ca(&[(5, OTHER_CA)]);
     assert_eq!(
         (points, restarts),
-        (1, vec![0]),
+        (2, vec![0]),
         "the run reads the fixed ca"
     );
 }
 
 #[test]
-fn ends_the_run_at_a_ca_that_gives_no_root_when_read_again() {
-    let (points, errors, classes, restarts) = after_a_new_ca(b"not a certificate\n");
-    let error = format!(
-        "the ca file(\"{CA_FILE}\") holds no PEM certificate. Write the CA \
-         certificate of the server in PEM"
+fn keeps_the_batch_at_a_ca_that_gives_no_root_when_read_again() {
+    let (points, errors, classes, restarts) =
+        after_a_new_ca(&[(5, b"not a certificate\n"), (20, OTHER_CA)]);
+    let failed = format!(
+        "the write to InfluxDB failed: TLS with server:8086 failed: invalid peer \
+         certificate: UnknownIssuer. Check the ca file(\"{CA_FILE}\")"
+    );
+    let empty = format!(
+        "an attempt failed: the ca file(\"{CA_FILE}\") holds no PEM \
+         certificate. Write the CA certificate of the server in PEM"
     );
     assert_eq!(
-        (points, errors.last(), classes.last(), restarts.len() > 1),
-        (0, Some(&error), Some(&RETRY), true)
+        (points, errors, classes, restarts),
+        (
+            2,
+            vec![String::new(), failed, empty, String::new()],
+            vec![0, RETRY, 0],
+            vec![0]
+        )
     );
 }
 
@@ -2305,7 +2411,8 @@ fn ends_the_run_at_a_ca_that_gives_no_root() {
 #[test]
 fn retries_a_refused_connect_in_the_run_with_a_ca() {
     let got = run_tls(|node, tasks| async move {
-        node.paths()
+        let paths = node.paths();
+        paths
             .write(std::path::Path::new(CA_FILE), CA)
             .expect("writes");
         let plant =
@@ -2315,7 +2422,11 @@ fn retries_a_refused_connect_in_the_run_with_a_ca() {
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
         write(&mut writer, first, &[(1.0, 2.0)]);
-        plant.clock.sleep(Span::from_nanos(6_000_000_000)).await;
+        plant.clock.sleep(Span::from_nanos(500_000_000)).await;
+        paths
+            .write(std::path::Path::new(CA_FILE), b"not a certificate\n")
+            .expect("writes");
+        plant.clock.sleep(Span::from_nanos(5_500_000_000)).await;
         plant.serve();
         plant.clock.sleep(Span::MINUTE).await;
         let end = plant.stop(run).await;
@@ -2328,5 +2439,9 @@ fn retries_a_refused_connect_in_the_run_with_a_ca() {
     let refused = "the write to InfluxDB failed: the connect failed: 10.0.0.1:8086 \
                    refused the connection";
     let errors = vec![String::new(), refused.to_owned(), String::new()];
-    assert_eq!(got, (1, errors, vec![0]), "a refused connect keeps the run");
+    assert_eq!(
+        got,
+        (1, errors, vec![0]),
+        "a refused connect keeps the run and does not read the ca again"
+    );
 }
