@@ -529,7 +529,7 @@
   https://github.com/synnaxlabs/foundation/pull/2109#issuecomment-6074628714). macOS has
   no such flag, and std sets it in a second call on an accepted stream too, so on
   macOS that child may hold the socket and its port, as the doc of `os::net()` says. A
-  Foundation node spawns no process, so only tests see it, and CI runs on Linux. Lost:
+  Foundation node spawns no process, so only tests see it. Lost:
   `POSIX_SPAWN_CLOEXEC_DEFAULT` on the spawn side, which std does not set, and which
   needs a spawn seam and `unsafe` for tests only. Decided by `laptop.architect-2`
   (2026-10-08T21:01:28Z: https://github.com/synnaxlabs/foundation/issues/2000). On

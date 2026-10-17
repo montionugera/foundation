@@ -60,7 +60,7 @@ fn reader(series: u32) -> Reader {
     .encode(&mut out);
     let mut reader = Reader::new(&OPEN);
     for message in [OPENED.as_slice(), &out] {
-        reader.decode(message).expect("the head decodes");
+        reader.decode(Some(message)).expect("the head decodes");
     }
     reader
 }
@@ -75,8 +75,8 @@ fn head() {
     let ((), allocations) = ALLOCATOR.count(|| Reply::Head(head).encode(&mut out));
     assert_eq!(allocations, 0, "the head encode allocated");
     let mut reader = Reader::new(&OPEN);
-    reader.decode(&OPENED).expect("the session opens");
-    let (decoded, allocations) = ALLOCATOR.count(|| match reader.decode(&out) {
+    reader.decode(Some(&OPENED)).expect("the session opens");
+    let (decoded, allocations) = ALLOCATOR.count(|| match reader.decode(Some(&out)) {
         Ok(FromHome::Head(decoded)) => decoded,
         other => panic!("the head did not decode: {other:?}"),
     });
@@ -116,7 +116,7 @@ fn ends(series: u32) {
     let ((), allocations) = ALLOCATOR.count(|| ends::encode(ends, &mut run));
     assert_eq!(allocations, 0, "the encode of {series} ends allocated");
     let mut reader = reader(series);
-    let (last, allocations) = ALLOCATOR.count(|| match reader.decode(&run) {
+    let (last, allocations) = ALLOCATOR.count(|| match reader.decode(Some(&run)) {
         Ok(FromHome::Ends { ends, last: true }) => ends.last(),
         other => panic!("the ends did not decode: {other:?}"),
     });
@@ -126,7 +126,7 @@ fn ends(series: u32) {
     for (index, message) in body.chunks(body.len().div_ceil(2)).enumerate() {
         let ((at, last), allocations) = ALLOCATOR.count(|| {
             let at = reader.body();
-            match reader.decode(message) {
+            match reader.decode(Some(message)) {
                 Ok(FromHome::Body { last, .. }) => (at, last),
                 other => panic!("the body did not decode: {other:?}"),
             }
@@ -152,7 +152,7 @@ fn frames() {
         mode: Mode::Latest,
         channels: 2,
     };
-    let (mut frames, _) =
+    let mut frames =
         Frames::open(Reader::new(&open), set, Some(&OPENED)).expect("opened");
     let mut run = [0; 2 * ends::LEN];
     ends::encode([(0, 16), (1, 32)], &mut run);
@@ -169,8 +169,8 @@ fn frames() {
         })
         .encode(&mut head);
         let (steps, allocations) = ALLOCATOR.count(|| {
-            let head = frames.decode(&head);
-            let ends = frames.decode(&run);
+            let head = frames.decode(Some(&head));
+            let ends = frames.decode(Some(&run));
             (head, ends, matches!(frames.due(), Ok(Due::Draft(_))))
         });
         assert!(
@@ -190,7 +190,7 @@ fn frames() {
                 panic!("a body is due");
             };
             rest[..20].copy_from_slice(&body[..20]);
-            (step, frames.received(20), frames.decode(&body[20..]))
+            (step, frames.received(20), frames.decode(Some(&body[20..])))
         });
         assert_eq!(allocations, 0, "the draft and body of a frame allocated");
         let (Step::More, Ok(Step::More), Ok(Step::Frame(frame))) = step else {
