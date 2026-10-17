@@ -625,17 +625,23 @@ pub(crate) fn within_keeps_its_limits_on_a_path_that_does_not_resolve(host: &Hos
         (host.make_link)(&base.join(name), &base.join(name));
     }
     (host.make_link)(&base.join("work/out"), &base.join("workshop"));
+    (host.make_link)(
+        &base.join("work/data/to-none"),
+        &base.join("work/data/none"),
+    );
+    (host.make_link)(&base.join("to-none"), &base.join("none"));
     for (name, limit) in [
         ("work/data/loop", Error::Hidden),
         ("work/data/loop/.", Error::Hidden),
         ("work/data/admin.key/x", Error::Hidden),
+        ("work/data/to-none", Error::Hidden),
         ("loop", Error::Outside),
+        ("to-none", Error::Outside),
         ("b.hcl/x", Error::Outside),
         ("work/out/loop", Error::Outside),
         ("work/out/loop/", Error::Outside),
     ] {
-        let path = PathBuf::from(format!("{}/{name}", base.display()));
-        assert_eq!(within.make_dir(&path), Err(limit), "{name}");
+        assert_eq!(within.make_dir(&base.join(name)), Err(limit), "{name}");
     }
 }
 
@@ -649,8 +655,7 @@ pub(crate) fn within_agrees_with_free_on_each_end_of_a_link_that_does_not_resolv
         ("to-bad", "a.hcl/x"),
         ("to-file-slash", "a.hcl/"),
     ] {
-        let target = PathBuf::from(format!("{}/{target}", work.display()));
-        (host.make_link)(&work.join(name), &target);
+        (host.make_link)(&work.join(name), &work.join(target));
     }
     for name in [
         "loop",
@@ -667,7 +672,7 @@ pub(crate) fn within_agrees_with_free_on_each_end_of_a_link_that_does_not_resolv
         "a.hcl/.",
         "a.hcl/x",
     ] {
-        let path = PathBuf::from(format!("{}/{name}", work.display()));
+        let path = work.join(name);
         let free = host.paths.make_dir(&path);
         assert_eq!(within.make_dir(&path), free, "{name}");
     }
