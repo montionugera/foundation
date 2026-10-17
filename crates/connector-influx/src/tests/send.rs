@@ -90,6 +90,10 @@ const OTHER_CA: &[u8] = connector::http::sim::OTHER_CA.as_bytes();
 /// 2026-06-01T00:00:00Z, inside the validity of each certificate of `serve_tls` but
 /// `Expired`.
 const JUNE_2026: Stamp = Stamp::from_nanos(1_780_272_000_000_000_000);
+/// The key of the first of the 64 `u8` channels of [`wide_names`].
+const WIDE: u128 = 300;
+/// The body limit of the InfluxDB of a plant, as InfluxDB 3 Core gives by default.
+const BODY_LIMIT: usize = 10 << 20;
 
 /// One request that the InfluxDB of a plant got: its path and query, and its body.
 type Got = (String, String);
@@ -102,7 +106,9 @@ type End = Rc<RefCell<Option<Result<(), Error>>>>;
 /// (5), a channel of each type of [`TYPED`], and the status channels of `influx`, and
 /// an InfluxDB that answers each request with the next answer of its list. After the
 /// last, it writes the body to its store, and answers 204, or 400 when the store
-/// refuses a line. Its store holds the secret `plant.influx_token` (`s3cret`).
+/// refuses a line. It answers 413 to a body over [`BODY_LIMIT`], with no answer of its
+/// list. Its store holds the secret `plant.influx_token` (`s3cret`). The hub also
+/// defines the channels of [`wide_names`].
 struct Plant {
     hub: hub::Hub,
     supervisor: Supervisor,
@@ -237,7 +243,12 @@ impl Plant {
                 let path = std::path::Path::new(TOKEN_FILE);
                 paths.write(path, token).expect("writes the token");
             }
-            let next = next.borrow_mut().pop_front();
+            let large = request.body().len() > BODY_LIMIT;
+            let next = if large {
+                Some((StatusCode::PAYLOAD_TOO_LARGE, "request too large"))
+            } else {
+                next.borrow_mut().pop_front()
+            };
             let next = next.map(|(status, text)| (status, text.to_owned()));
             let (status, text) = next.unwrap_or_else(|| {
                 match store.borrow_mut().write(request.body()) {
@@ -360,6 +371,10 @@ fn define(inputs: &supervisor::Config) {
     let typed =
         TYPED.map(|(text, key, data_type)| (name(text), on(time, key, data_type)));
     definitions.extend(typed);
+    let wide = (WIDE..).zip(wide_names());
+    definitions.extend(
+        wide.map(|(key, text)| (name(&text), on(time, key, Type::Scalar(Scalar::U8)))),
+    );
     inputs
         .hub
         .set_definitions(definitions.iter().map(|(name, def)| (name, def)));
@@ -1499,6 +1514,129 @@ fn reads_no_frame_into_a_batch_of_4_mib_or_more() {
         (got.iter()).map(|(_, body)| body.len()).collect::<Vec<_>>()
     });
     assert_eq!(bytes, [1 << 16, 1 << 16, 64 << 16, 36 << 16]);
+}
+
+/// The names of 64 `u8` channels on `edge.time`, of 240 bytes each, so the line of one
+/// sample time at which each holds 255 is 15,774 bytes, and a ring record of the test
+/// hub holds a frame of over 10 MiB of lines.
+fn wide_names() -> Vec<String> {
+    (0..64)
+        .map(|at| format!("edge.w{at:02}{}", "x".repeat(232)))
+        .collect()
+}
+
+/// Writes one frame through `writer` of `count` sample times at `first` and each
+/// nanosecond after, at which each channel of [`wide_names`] holds 255.
+fn write_wide(writer: &mut hub::writer::Writer, first: i64, count: usize) {
+    let samples = vec![255; count];
+    let columns: Vec<_> = (WIDE..WIDE + 64)
+        .map(|key| (key, samples.as_slice()))
+        .collect();
+    let outcomes = write_raw(writer, first, count, &columns);
+    let applied = (outcomes.iter())
+        .all(|outcome| matches!(outcome, hub::home::Outcome::Applied { .. }));
+    assert!(applied, "the frame applies: {outcomes:?}");
+}
+
+/// What two runs gave with frames of the channels of [`wide_names`].
+struct Wide {
+    /// The count of lines of each request of each run.
+    lines: [Vec<usize>; 2],
+    /// The errors of both runs.
+    errors: Vec<String>,
+    /// The values of `confirmed`, which each run starts at 0.
+    confirmed: Vec<u64>,
+    /// The points that the store holds at the end.
+    points: usize,
+}
+
+/// Runs the connector twice. InfluxDB answers the first requests of the first run with
+/// `answers`, and each later one from its store. The first run writes a frame of the
+/// channels of [`wide_names`] for each count of sample times of `frames`: the first,
+/// then the rest while its request is in flight. The second run writes none.
+fn wide(answers: &[(StatusCode, &'static str)], frames: &'static [usize]) -> Wide {
+    let answers = answers.to_vec();
+    run(move |node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        plant.answers.borrow_mut().extend(answers);
+        let names = wide_names();
+        let names =
+            std::iter::once("edge.time").chain(names.iter().map(String::as_str));
+        let mut writer = plant.writer(&names.collect::<Vec<_>>()).await;
+        let mut lines = Vec::new();
+        for frames in [frames, &[]] {
+            let run = plant.start(plant.config());
+            plant.clock.sleep(Span::SECOND).await;
+            let mut first = writer.now().nanos();
+            for (n, &count) in frames.iter().enumerate() {
+                write_wide(&mut writer, first, count);
+                first += 10_000;
+                if n == 0 {
+                    plant.clock.sleep(Span::from_nanos(100_000_000)).await;
+                }
+            }
+            plant.clock.sleep(Span::from_nanos(10_000_000_000)).await;
+            plant.stop(run).await.expect("ok after a cancel");
+            plant.answers.borrow_mut().clear();
+            let got = std::mem::take(&mut *plant.got.borrow_mut());
+            lines.push(got.iter().map(|(_, body)| body.lines().count()).collect());
+        }
+        Wide {
+            lines: lines.try_into().expect("two runs"),
+            errors: plant.errors.borrow().clone(),
+            confirmed: plant.confirmed.borrow().clone(),
+            points: plant.store.borrow().points("telemetry", &[]).count(),
+        }
+    })
+}
+
+/// A frame of over 6 MiB of lines after a batch of just under 4 MiB goes on in the
+/// next requests, so no request passes the 10 MiB of InfluxDB 3 Core. The run acks
+/// each frame and counts its samples once, with the request of its last line.
+#[test]
+fn sends_a_frame_of_over_6_mib_after_a_batch_of_4_mib_in_more_requests() {
+    let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
+    let wide = wide(&[failed], &[1, 260, 450]);
+    assert_eq!(wide.lines, [vec![1, 1, 266, 266, 178], vec![]]);
+    assert_eq!(
+        wide.errors,
+        ["", "InfluxDB answered 500 Internal Server Error: ", ""]
+    );
+    assert_eq!(wide.confirmed, [0, 64, 711 * 64, 0]);
+    assert_eq!(wide.points, 711);
+}
+
+/// A frame whose lines pass the body limit alone lands in more than one request.
+#[test]
+fn sends_a_frame_over_the_body_limit_in_more_requests() {
+    let wide = wide(&[], &[700]);
+    assert_eq!(wide.lines, [vec![266, 266, 168], vec![]]);
+    assert_eq!(wide.errors, [""]);
+    assert_eq!(wide.confirmed, [0, 700 * 64, 0]);
+    assert_eq!(wide.points, 700);
+}
+
+/// A frame in more requests is acked and counted only after the last of them lands, so
+/// a restart sends each of its lines again.
+#[test]
+fn acks_and_counts_a_frame_in_more_requests_only_after_its_last_request() {
+    let (taken, failed) = (
+        (StatusCode::NO_CONTENT, ""),
+        (StatusCode::INTERNAL_SERVER_ERROR, ""),
+    );
+    let mut answers = vec![taken, taken];
+    answers.extend([failed; 100]);
+    let wide = wide(&answers, &[700]);
+    let [first, second] = wide.lines;
+    assert_eq!(first[..3], [266, 266, 168]);
+    assert!(first[3..].iter().all(|&lines| lines == 168), "{first:?}");
+    assert_eq!(second, [266, 266, 168]);
+    assert_eq!(
+        wide.errors,
+        ["", "InfluxDB answered 500 Internal Server Error: ", ""]
+    );
+    assert_eq!(wide.confirmed, [0, 700 * 64]);
+    assert_eq!(wide.points, 700);
 }
 
 /// What one frame gave: the end of the run once it returned, each request, the stamp

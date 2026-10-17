@@ -155,8 +155,8 @@
   out, and the run goes on. InfluxDB 3 refuses a string field over 65,536 bytes, and the
   docs of InfluxDB 1 and 2 give 64 KB. The count is of the text as written, so each
   version takes each line that the run sends. The count `oversized` gives each sample
-  left out, after the 204 of its batch, or at once when its batch holds no line and so
-  sends no request. Lost: cut the string (a changed value with no sign), or end the run
+  left out, after the 204 of the request of its frame's last line, or with no request
+  when no line waits for one. Lost: cut the string (a changed value with no sign), or end the run
   (one long sample stops a stream). Decided by `laptop.architect-2` on
   2026-10-16T17:35:01Z
   (https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6221149361), on the
@@ -178,7 +178,8 @@
   a `Received::gap` that is not `None`, the run writes its gap line with `path=live`
   before the lines of the frame, at the stamp of the frame's first sample, also when it
   leaves that line out (INFLUX SEQ AND GAPS), in the same batch. The line's `count` is
-  the seqs of the gap only. Each batch acks the position after its last frame. A frame
+  the seqs of the gap only. Each request acks the position after the last frame that
+  ends in it, and a request that only a part of a frame ends in acks none. A frame
   with no sample gives no gap, and its position stays before the gap that the next frame
   with one gives (`hub`), so the run needs no wait of its own. The person chose this
   path ("Ok, this is fine", 2026-10-16T02:03Z, through `laptop.monitor`:
@@ -188,9 +189,11 @@
   supersedes ruling 2 of
   https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206327837, a gap that
   waits for a line with a value. One request is in flight at a time. While it is, the
-  run reads the next batch, up to 5,000 lines or 4 MiB of them, and a frame goes in
-  whole. The 4 MiB leaves 6 MiB for the last frame under the body limit of InfluxDB 3
-  Core (10 MiB), and about 20 MB under that of InfluxDB 1 (25 MB), as
+  run reads the next batch. Before each line, a request body that holds 5,000 lines or
+  4 MiB of them closes, and the line goes in the next one, so the lines of one frame
+  can span requests (#2918). The 4 MiB leaves 6 MiB for the last line under the body
+  limit of InfluxDB 3 Core (10 MiB), and about 20 MB under that of InfluxDB 1 (25 MB),
+  as
   `laptop.architect-2` decided on 2026-10-16T19:34:27Z
   (https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223208198). The run
   keeps the field of each channel that it saw in the frames of one key set. A frame of
@@ -199,8 +202,12 @@
   set is a workload whose frames alternate key sets, as `laptop.architect-2` decided on
   2026-10-13T07:36:47Z
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6140691273). It acks
-  a batch only after a 204. Each other answer, and each failed request, keeps the batch,
-  shows its text with `Context::error`, and sends the batch again after a
+  a frame only after the 204 of the request that holds its last line, so a restart
+  before that sends the whole frame again, and InfluxDB keeps one point for each
+  series, time, and field (#2918, plan
+  https://github.com/synnaxlabs/foundation/issues/2918#issuecomment-6228349089). Each
+  other answer, and each failed request, keeps the request, shows its text with
+  `Context::error`, and sends the request again after a
   `retry::Backoff` of 1 s to 1 min. No answer or failed request ends the run: an action
   in InfluxDB fixes a 400, a 404, a 413, or a 422, and the next try after it lands the
   batch. The reader stays open meanwhile, as in an outage of InfluxDB. The text is
@@ -226,25 +233,24 @@
   (#2841). A 401 and a 403 keep the backoff, since the run reads the token again before
   the next try (#2687). A 413 keeps the backoff too, so a raise of the limit lets the
   held frames go with no sample lost (`laptop.monitor`, 2026-10-16T19:31:19Z,
-  https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223151793). A frame
-  of over 6 MiB of lines can take a request past the 10 MiB of InfluxDB 3 Core, and its
-  413 repeats until a person acts. Trigger for a split of a frame across requests: a
-  frame of over 6 MiB of lines, as `laptop.architect-2` decided on 2026-10-16T19:34:27Z
-  (https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223208198). A frame
-  of a node meets it now, since a ring record of 1 MiB of 64 `u8` channels named as
-  `edge.uNN` is about 13 MiB of lines (#2918). So until #2918 merges, a default node
-  and a default InfluxDB 3 Core can stop the stream, and `laptop.monitor` asked for a
-  cut of a batch before such a frame in #2906 (2026-10-16T20:16:04Z,
-  https://github.com/synnaxlabs/foundation/issues/2918#issuecomment-6223888984). #2918
-  builds the split, and the cut lost, since a frame over the whole limit still stops the
-  stream (`laptop.architect-2`, 2026-10-16T20:16:11Z,
-  https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223891016). It
+  https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223151793). The
+  split of a frame across requests has the trigger of `laptop.architect-2`
+  (2026-10-16T19:34:27Z,
+  https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223208198): a frame
+  of over 6 MiB of lines, which a ring record of 1 MiB of 64 `u8` channels gives (about
+  13 MiB of lines). `laptop.monitor` admitted #2918 as a stall at the defaults
+  (2026-10-16T20:16:04Z,
+  https://github.com/synnaxlabs/foundation/issues/2918#issuecomment-6223888984). A cut
+  of a batch before such a frame lost, since a frame over the whole limit still stops
+  the stream (`laptop.architect-2`, 2026-10-16T20:16:11Z,
+  https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223891016). Only a
+  single line of over 6 MiB can still take a request past 10 MiB. It
   supersedes the trigger of a split of the batch, a server whose body limit is below one
   batch, of https://github.com/synnaxlabs/foundation/pull/2838#issuecomment-6210258673.
-  A 204 clears the error, and adds the fields of the batch to the count `confirmed` with
-  `Count::add`, and the `count` of each gap line of the batch to the count `lost`: the
-  seqs that the gap lines of this connector count, which InfluxDB took with a 204. A
-  batch sent again counts once. A gap that the reader reports again after a restart
+  A 204 clears the error, and adds the fields of each frame that it acks to the count
+  `confirmed` with `Count::add`, and the `count` of each gap line of those frames to the
+  count `lost`: the seqs that the gap lines of this connector count, which InfluxDB took
+  with a 204. A request sent again counts once. A gap that the reader reports again after a restart
   counts again, so `lost` is an upper bound, as the sum of `count` in `foundation_gaps`
   is. Each later out kind names the same count `lost`. It counts sample times of the
   reader's index. The `lost` of `opcua` counts data samples (OPCUA KIND). The ruling did
@@ -265,7 +271,7 @@
   whose request takes longer than the timeout of 10 s is sent again with no end, until
   #2558, as `laptop.architect-2` decided on 2026-10-13T06:20:10Z
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6139570127). A
-  restart within the `hold` of the reader sends the batch in flight again: the next run
+  restart within the `hold` of the reader sends each frame not acked again: the next run
   reads its frames again from disk (#274 B1; `laptop.architect-2`, 2026-10-15T18:05:36Z:
   https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6198895692). With no
   `hold`, or after it, the next run reads from the live frames, so those lines are lost.
