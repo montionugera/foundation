@@ -87,7 +87,7 @@
   supersedes "and leaves `serve`" of item 5 of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119; the
   check of the label, `laptop.architect-2`, 2026-10-17T03:32:26Z,
-  https://github.com/synnaxlabs/foundation/pull/2979#issuecomment-6229081007). Deferred
+  https://github.com/synnaxlabs/foundation/pull/2979#issuecomment-6229081007, which supersedes "and the check on the node stays in `serve`" of https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156645922). Deferred
   to https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart
   and MCP. Lost: `serve` replies with the text, so that `--json` and MCP each need a
   second reply; `status` asks the supervisors, a second source of status with its own
