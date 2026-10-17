@@ -24,14 +24,19 @@
   `status::State` or a third form. The rulings of these two deferrals and of the
   form of scenario 5: `laptop.architect-2`, 2026-10-17T22:04:56Z
   (https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241915192).
+  `laptop.monitor` accepted both deferrals with one condition: each form names the
+  cause and the address of the device, which scenarios 2 and 3 check
+  (https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241940271).
 
   A scenario that runs past 90 s of plant time (`RING`, the sum of the steps of its
   sim) fails. The 4 MiB ring of `home::testing::shard` fills after about 100 s for
   `opcua` and for `influx` (finding 7 of
   https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241787008), and
-  then can lose a status, so a check of an absence can pass. A later suite measures
-  its own fill. The trigger is the merge of #3050, which trims the ring and adds the
-  two tests that fail now
+  then can lose a status, so a check of an absence can pass. The longest scenario
+  runs 20.2 s of plant time (`influx`, the device does not answer), and scenario 2 of
+  `influx` runs 19.7 s (box1, at 2026-10-17). A later suite measures its own fill.
+  The trigger is the merge of #3050, which trims the ring and adds the two tests that
+  fail now
   (https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6241900155). OK of
   `laptop.architect`, 2026-10-17T21:54:10Z:
   https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241806249. The
@@ -39,21 +44,22 @@
   https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241915192.
 
   1. **Starts.** Within 10 s: Running, no error, 0 restarts, and progress above 0.
-  2. **Device absent at start.** No simulator. Within 1 min, the backoff form, never
-     class Config. `Restart`: Restarting, class Device or Retry, and restarts that
-     grow to 2. `Run`: Running, class Retry, an error text that names the address
-     of the device, 0 restarts, and progress 0, and no status of the next 10 s
-     leaves it. A status writes only on a change, so this checks each change in the
-     10 s, and none when nothing changes. Then the simulator starts: heals. In a
-     second form, the device does not answer: the simulator serves behind a link
-     that delays each packet by 1 h, and within 1 min comes the same backoff form,
-     with no heal. Ruling of `laptop.architect-2` at 2026-10-17T22:04:56Z
+  2. **Device absent at start.** No simulator. Within 1 min, the backoff form, an
+     error text that names the address of the device, never class Config.
+     `Restart`: Restarting, class Device or Retry, and restarts that grow to 2.
+     `Run`: Running, class Retry, 0 restarts, and progress 0, and no status of the
+     next 10 s leaves it. A status writes only on a change, so this checks each
+     change in the 10 s, and none when nothing changes. Then the simulator starts:
+     heals. In a second form, the device does not answer: the simulator serves
+     behind a link that delays each packet by 1 h, and within 1 min comes the same
+     backoff form, with no heal. Ruling of `laptop.architect-2` at 2026-10-17T22:04:56Z
      (https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241915192).
   3. **Device lost while running**, in two forms: the simulator stops (each
      connection closed), and the device node crashes (`Sim::crash`, no close reaches
-     the plant). Within 30 s: an error of class Device or Retry, in the backoff
-     form (`Run`: Running and 0 restarts). Then the device comes back: heals, no count
-     and no restart count went down, and for `Restart`, the restarts grew.
+     the plant). Within 30 s: an error of class Device or Retry whose text names the
+     address of the device, in the backoff form (`Run`: Running and 0 restarts).
+     Then the device comes back: heals, no count and no restart count went down, and
+     for `Restart`, the restarts grew.
   4. **Stop.** `Run::stop` gives `Ok` within 5 s while Running, in the backoff form,
      and while the plant connects over a link that delays each packet by 1 h (the
      plant holds 1 stream before the stop). After it, the plant node holds no open

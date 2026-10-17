@@ -296,6 +296,14 @@ impl Scene {
         run.until(within, done).await
     }
 
+    /// Panics unless the error text of `reading` holds the device address.
+    fn named(&self, reading: &Reading) {
+        let address = self.address.to_string();
+        let text = reading.error.as_ref().map(|(_, text)| text.as_str());
+        let named = text.is_some_and(|text| text.contains(&address));
+        assert!(named, "the error names the device: {reading:?}");
+    }
+
     /// Waits until the connector is in the backoff of [`Suite::backoff`] with no
     /// device, and gives the status. For [`Backoff::Run`], no status within [`HOLD`]
     /// after it leaves that backoff. A status writes only on a change, so this checks
@@ -314,12 +322,12 @@ impl Scene {
                     matches!(class, Some(Class::Device | Class::Retry)),
                     "{reading:?}"
                 );
+                self.named(&reading);
                 reading
             }
             Backoff::Run => {
                 let reading =
                     run.until(ABSENT, |reading| reading.error.is_some()).await;
-                let address = self.address.to_string();
                 let held = |reading: &Reading| {
                     let class = reading.error.as_ref().map(|(class, _)| *class);
                     let given = (reading.state, reading.restarts, class);
@@ -329,9 +337,7 @@ impl Scene {
                         "{reading:?}"
                     );
                     assert_eq!(self.progress(reading), 0, "{reading:?}");
-                    let text = reading.error.as_ref().map(|(_, text)| text.as_str());
-                    let named = text.is_some_and(|text| text.contains(&address));
-                    assert!(named, "the error names the device: {reading:?}");
+                    self.named(reading);
                 };
                 held(&reading);
                 let clock: Clock = self.node.clock();
@@ -472,11 +478,11 @@ pub(crate) fn starts(suite: &'static Suite) {
     });
 }
 
-/// With no simulator, within 1 min: the backoff of [`Suite::backoff`], and never
-/// class Config. For [`Backoff::Restart`]: Restarting, class Device or Retry, and
-/// restarts that grow. For [`Backoff::Run`]: Running, class Retry, an error text
-/// that names the device address, no restart, and no progress, and no status in the
-/// next [`HOLD`] that leaves it. Then the simulator starts, and the connector heals.
+/// With no simulator, within 1 min: the backoff of [`Suite::backoff`], an error text
+/// that names the device address, and never class Config. For [`Backoff::Restart`]:
+/// Restarting, class Device or Retry, and restarts that grow. For [`Backoff::Run`]:
+/// Running, class Retry, no restart, and no progress, and no status in the next
+/// [`HOLD`] that leaves it. Then the simulator starts, and the connector heals.
 pub(crate) fn heals_once_an_absent_device_serves(suite: &'static Suite) {
     run(suite, direct, move |scene| async move {
         let config = scene.setup().await;
@@ -528,10 +534,10 @@ pub(crate) fn heals_after_the_device_crashes(suite: &'static Suite) {
 }
 
 /// The device is lost to `lose` while the connector runs. Within 30 s: an error of
-/// class Device or Retry. Then the simulator starts again: the connector heals, and
-/// no count goes down. Each status holds the form of [`Suite::backoff`]: for
-/// [`Backoff::Run`], Running with no restart and no class but Retry; for
-/// [`Backoff::Restart`], restarts that grow by the heal.
+/// class Device or Retry, whose text names the device address. Then the simulator
+/// starts again: the connector heals, and no count goes down. Each status holds the
+/// form of [`Suite::backoff`]: for [`Backoff::Run`], Running with no restart and no
+/// class but Retry; for [`Backoff::Restart`], restarts that grow by the heal.
 async fn lost<'a>(
     scene: &'a Scene,
     lose: impl FnOnce(&'a Scene, Served) -> Pin<Box<dyn Future<Output = ()> + 'a>>,
@@ -569,6 +575,7 @@ async fn lost<'a>(
         matches!(class, Some(Class::Device | Class::Retry)),
         "{reading:?}"
     );
+    scene.named(&reading);
     let from = scene.progress(&reading);
     let served = scene.serve();
     let healed = |reading: &Reading| {
