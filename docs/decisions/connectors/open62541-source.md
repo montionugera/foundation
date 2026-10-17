@@ -855,18 +855,22 @@
   the empty password. `cargo xtask open62541` finds each function of aws-lc that takes a
   `pem_password_cb` in the declarations of the output of `cc -E`, and fails on each name
   of one in the copy other than in a call that gives a callback of `PASSWORDS` at its
-  place (#3017, #3027). It compiles each file with
-  `-Werror=implicit-function-declaration`, so a call of a reader with no declaration
-  fails the check. `AWS_LC` holds the PEM readers, since this check is the one guard of
-  their password. Supersedes "The PEM readers belong in `AWS_LC_KEYS`" of
+  place (#3017, #3027). Its `cc -E` pass includes `openssl/pem.h` in each file, so a
+  declaration of a reader in the copy does not hide the reader from the check. It
+  compiles each file with `-Werror=implicit-function-declaration`, as GCC 14 does by
+  default, so a call with no declaration fails the build on each GCC. `AWS_LC` holds the
+  PEM readers, since this check is the one guard of their password. Supersedes "The PEM
+  readers belong in `AWS_LC_KEYS`" of
   https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231723849, whose
   reason was the read of the console. The callbacks that return -1, and the check that
   reads the functions from the declarations: decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6237471608,
-  2026-10-17 17:20 UTC). The `-Werror` and `AWS_LC` sentences: decided by
-  `laptop.architect-2`
+  2026-10-17 17:20 UTC). The `-Werror` and `AWS_LC` sentences, and the `cc -E` sentence:
+  decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6238536489,
-  2026-10-17 18:26 UTC). `OMITTED` in `cargo
+  2026-10-17 18:26 UTC;
+  https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6238944949,
+  2026-10-17 18:51 UTC). `OMITTED` in `cargo
   xtask open62541` is the closed list of the release files that the library compiles and
   the copy leaves out, each with its reason: the file stores, `create_certificate.c`,
   and each policy file other than `Basic256Sha256`, `Aes128_Sha256_RsaOaep`,

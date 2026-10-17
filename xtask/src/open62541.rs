@@ -1376,7 +1376,7 @@ fn build<'a>(
             // GCC gives cc1 the base name as `-dumpbase`, which cc1 reads as a
             // response file when it starts with `@`. With no stack protector, a
             // reference to its random canary is one that the C makes. A call with no
-            // declaration fails, so `passwords` reads the declaration of each reader.
+            // declaration fails, as on GCC 14.
             cc.current_dir(copy)
                 .args(flags.lines())
                 .args(crypto.flags())
@@ -1388,7 +1388,10 @@ fn build<'a>(
             spawn(cc.arg(Path::new(".").join(source)))
         };
         let compile = compiler(&["-c", "-o", &object.to_string_lossy()])?;
-        children.push((source, object, compile, compiler(&["-E", "-dI"])?));
+        // With `pem.h` in each file, `readers` finds each reader, also one that the
+        // copy declares itself.
+        let preprocess = compiler(&["-E", "-dI", "-include", "openssl/pem.h"])?;
+        children.push((source, object, compile, preprocess));
     }
     children
         .into_iter()
@@ -2450,15 +2453,11 @@ n = read_x(b, 0, 0, 0);
         remove(&root).unwrap();
     }
 
-    #[test]
-    #[cfg(unix)]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
-    fn check_fails_a_read_of_the_copy_with_no_declaration() {
+    /// The result of [`check`] on a copy of the committed copy with `text` after the
+    /// end of `src/util/ua_util.c`, with the prefix of aws-lc.
+    fn check_with_util(name: &str, text: &str) -> (Result<(), Vec<String>>, String) {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let root = temp("undeclared");
+        let root = temp(name);
         std::fs::create_dir(root.join("patches")).unwrap();
         let mut cp = Command::new("cp");
         exec(
@@ -2467,23 +2466,75 @@ n = read_x(b, 0, 0, 0);
                 .arg(root.join("patches")),
         )
         .unwrap();
-        let file = "src/util/ua_util.c";
-        let path = root.join(DEST).join(file);
-        let mut text = std::fs::read_to_string(&path).unwrap();
-        let line = text.lines().count() + 1;
-        text.push_str("void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n");
-        std::fs::write(&path, text).unwrap();
+        let path = root.join(DEST).join(UTIL);
+        let util = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, util + text).unwrap();
         let crypto = Crypto::locked(workspace).unwrap();
-        let errors = check(&root, &crypto).unwrap_err();
+        let result = check(&root, &crypto);
         remove(&root).unwrap();
+        (result, crypto.prefix.clone())
+    }
+
+    const UTIL: &str = "src/util/ua_util.c";
+
+    /// The number of the line after the last line of `src/util/ua_util.c`.
+    fn util_end() -> usize {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let util = std::fs::read_to_string(workspace.join(DEST).join(UTIL)).unwrap();
+        util.lines().count() + 1
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
+    fn check_fails_a_read_of_the_copy_with_no_declaration() {
+        let (result, _) = check_with_util(
+            "undeclared",
+            "void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
+        );
+        let errors = result.unwrap_err();
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(errors[0].starts_with("cc failed: "), "{errors:?}");
         assert!(
             errors[0].contains(&format!(
-                "./{file}:{line}:25: error: implicit declaration of function \
-                 'PEM_read_bio_X509'"
+                "./{UTIL}:{}:25: error: implicit declaration of function \
+                 'PEM_read_bio_X509'",
+                util_end()
             )),
             "{errors:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
+    fn check_finds_a_read_of_the_copy_with_its_own_declaration() {
+        let line = util_end() + 2;
+        let (result, prefix) = check_with_util(
+            "declared",
+            "#include <openssl/base.h>\n\
+             void *PEM_read_bio_X509(void *, void *, void *, void *);\n\
+             void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
+        );
+        assert_eq!(
+            result,
+            Err(vec![
+                format!(
+                    "{UTIL}: {UTIL}:{}: gives `{prefix}PEM_read_bio_X509` the callback \
+                     `void*`, which PASSWORDS does not list",
+                    line - 1
+                ),
+                format!(
+                    "{UTIL}: {UTIL}:{line}: gives `{prefix}PEM_read_bio_X509` the callback \
+                     `0`, which PASSWORDS does not list"
+                ),
+            ])
         );
     }
 
