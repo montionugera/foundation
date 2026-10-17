@@ -3293,7 +3293,7 @@ mod tests {
     }
 
     /// The status frames of [`tally`], and its events of `connector::status`.
-    fn tally_logged(kind: impl Kind + Send + 'static) -> (Vec<Written>, Vec<String>) {
+    fn tally_logged(kind: impl Kind + 'static) -> (Vec<Written>, Vec<String>) {
         let mut sim = sim::Sim::new(sim::Config::default());
         let node = sim.node(sim::node::Config::default());
         let lines = Arc::new(Mutex::new(Vec::new()));

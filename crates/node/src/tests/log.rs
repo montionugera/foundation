@@ -1687,10 +1687,9 @@ fn a_text_line_near_mesh_time_keeps_a_span_field_named_mesh_time() {
     let lines = Lines::default();
     let (mut clock, mesh) = clock::Clock::new(host.clock());
     let source = clock.add();
-    clock.push(
-        source,
-        clock::source::Wall::new(host.wall(), host.clock()).measure(),
-    );
+    #[expect(clippy::disallowed_methods, reason = "the test makes mesh time near")]
+    let measured = clock::source::Wall::new(host.wall(), host.clock()).measure();
+    clock.push(source, measured);
     let format = ops::Log {
         json: false,
         level: tracing::Level::INFO,
