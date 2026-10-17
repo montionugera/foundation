@@ -62,7 +62,9 @@ struct Thread {
 
 impl Client {
     /// Dials `node` over UDP, and blocks until it admits the first hello of
-    /// `subject`. The client then renews the hello until it closes or drops.
+    /// `subject`. The client then renews the hello until it closes or drops. The
+    /// client's thread logs to the `tracing` dispatch that is the default of the
+    /// caller of `connect`.
     ///
     /// # Errors
     ///
