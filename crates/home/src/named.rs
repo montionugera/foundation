@@ -68,8 +68,8 @@ struct Appended {
 /// the last entry of its part keeps of it.
 #[derive(Debug, Default)]
 pub(crate) struct Parts {
-    /// The part of each record, and of each removed one until its removal commits, so
-    /// that a key is in one part only. Sorted by key, with each key once.
+    /// The part of each record that the last entry of its part holds or that a write
+    /// adds. Sorted by key, with each key once.
     keys: Vec<(delivery::named::Key, Placed)>,
 }
 
@@ -88,8 +88,6 @@ enum Kept {
     Added,
     /// The last entry of its part holds it, with these fields.
     Held(Fields),
-    /// An entry of its part dropped it, durable at this count of [`Buffer::commits`].
-    Removed(u64),
 }
 
 /// The fields of a record apart from its key.
@@ -207,7 +205,7 @@ impl Parts {
         records: &[Record],
         head: state::Head,
     ) -> Result<Appended, Full> {
-        self.place(records, buffer.commits())?;
+        self.place(records)?;
         let listed: BTreeMap<_, _> = records
             .iter()
             .map(|record| (&record.reader, record))
@@ -217,13 +215,12 @@ impl Parts {
                 self.keys.retain(|(_, placed)| placed.state != Kept::Added);
                 return Ok(Appended { until: part });
             }
-            self.appended(part, &listed, buffer.durable_at());
+            self.appended(part, &listed);
         }
         Ok(Appended { until: PARTS })
     }
 
-    /// Places each new record of `records` in a part, after it drops each removed
-    /// record whose removal is durable by the count of [`Buffer::commits`] `commits`.
+    /// Places each new record of `records` in a part.
     ///
     /// # Errors
     ///
@@ -232,8 +229,7 @@ impl Parts {
     /// # Panics
     ///
     /// If `records` hold a key twice.
-    fn place(&mut self, records: &[Record], commits: u64) -> Result<(), Full> {
-        self.release(commits);
+    fn place(&mut self, records: &[Record]) -> Result<(), Full> {
         let mut used = [HEAD; PARTS as usize];
         for (key, placed) in &self.keys {
             used[usize::from(placed.part)] += record_len(key);
@@ -309,24 +305,25 @@ impl Parts {
         bodies
     }
 
-    /// Notes that `part` appended an entry durable at the count of
-    /// [`Buffer::commits`] `durable_at`, which holds the records of `listed` in `part`.
+    /// Notes that `part` appended an entry that holds the records of `listed` in
+    /// `part`. A key of `part` that `listed` lacks goes, and its room is free: a
+    /// restart reads a prefix of the appends, so it never reads an add of that key in
+    /// another part without this entry.
     fn appended(
         &mut self,
         part: u8,
         listed: &BTreeMap<&delivery::named::Key, &Record>,
-        durable_at: u64,
     ) {
-        for (key, placed) in &mut self.keys {
+        self.keys.retain_mut(|(key, placed)| {
             if placed.part != part {
-                continue;
+                return true;
             }
-            placed.state = match (listed.get(key), placed.state) {
-                (Some(record), _) => Kept::Held(Fields::from(*record)),
-                (None, Kept::Held(_)) => Kept::Removed(durable_at),
-                (None, kept) => kept,
-            };
-        }
+            let record = listed.get(key);
+            if let Some(record) = record {
+                placed.state = Kept::Held(Fields::from(*record));
+            }
+            record.is_some()
+        });
     }
 
     /// Whether the record of `reader` is in a part before the first that `appended`
@@ -336,13 +333,8 @@ impl Parts {
         placed.is_some_and(|placed| placed.part < appended.until)
     }
 
-    /// Drops each removed record whose removal is durable by the count of
-    /// [`Buffer::commits`] `commits`. Returns whether a part may still hold a record.
-    pub(crate) fn release(&mut self, commits: u64) -> bool {
-        self.keys.retain(|(_, placed)| match placed.state {
-            Kept::Removed(at) => at > commits,
-            Kept::Added | Kept::Held(_) => true,
-        });
+    /// Whether a part holds a record.
+    pub(crate) fn held(&self) -> bool {
         !self.keys.is_empty()
     }
 
@@ -592,11 +584,11 @@ mod tests {
         used
     }
 
-    /// Places `records`, and appends each part that changes, durable at `at`.
-    fn append(parts: &mut Parts, records: &[Record], commits: u64, at: u64) {
-        parts.place(records, commits).expect("room");
+    /// Places `records`, and appends each part that changes.
+    fn append(parts: &mut Parts, records: &[Record]) {
+        parts.place(records).expect("room");
         for (part, _) in changed(parts, records) {
-            parts.appended(part, &listed(records), at);
+            parts.appended(part, &listed(records));
         }
     }
 
@@ -605,7 +597,7 @@ mod tests {
     /// a shard test cannot set up cheaply. The `shard` tests of `records` pin each
     /// state through `open` and `append`. Only these tests pin the room that `place`
     /// counts for a second record that one call adds, as a shard call adds at most
-    /// one.
+    /// one. `shard` checks `held` through its own map, as only memory shows it.
     mod parts {
         use super::*;
 
@@ -614,14 +606,14 @@ mod tests {
             let mut records: Vec<_> = (0..448).map(longest).collect();
             let mut parts = Parts::default();
 
-            parts.place(&records, 0).expect("room");
+            parts.place(&records).expect("room");
             assert_eq!(parts.keys.len(), 448);
 
             for (n, record) in records.iter().enumerate() {
                 assert_eq!(usize::from(part(&parts, record)), n / 7, "record {n}");
             }
             records.push(longest(448));
-            assert_eq!(parts.place(&records, 0), Err(Full));
+            assert_eq!(parts.place(&records), Err(Full));
             assert!(parts.placed(&longest(448).reader).is_none());
         }
 
@@ -629,11 +621,11 @@ mod tests {
         fn adds_no_key_when_a_later_record_has_no_room() {
             let mut records: Vec<_> = (0..448).map(longest).collect();
             let mut parts = Parts::default();
-            parts.place(&records, 0).expect("room");
+            parts.place(&records).expect("room");
             let short = record("a", "b", None, None);
             records.extend([short.clone(), longest(448)]);
 
-            assert_eq!(parts.place(&records, 0), Err(Full));
+            assert_eq!(parts.place(&records), Err(Full));
 
             assert!(parts.placed(&short.reader).is_none());
             assert_eq!(parts.keys.len(), 448);
@@ -643,36 +635,19 @@ mod tests {
         #[should_panic(expected = "is twice in parts, 0 and 0")]
         fn panics_on_records_that_hold_a_key_twice() {
             let records = [longest(0), longest(0)];
-            Parts::default().place(&records, 0).expect("room");
+            Parts::default().place(&records).expect("room");
         }
 
         #[test]
-        fn keeps_a_removed_record_in_its_part_until_its_removal_commits() {
+        fn frees_the_room_of_a_removed_record_when_its_part_appends() {
             let records: Vec<_> = (0..7).map(longest).collect();
             let mut parts = Parts::default();
-            append(&mut parts, &records, 0, 1);
-            append(&mut parts, &records[1..], 1, 5);
+            append(&mut parts, &records);
+            append(&mut parts, &records[1..]);
             let mut added = records[1..].to_vec();
             added.push(longest(7));
 
-            parts.place(&added, 4).expect("room");
-
-            assert_eq!(part(&parts, &longest(7)), 1, "the removal of 0 waits");
-            added.push(longest(0));
-            parts.place(&added, 4).expect("room");
-            assert_eq!(part(&parts, &longest(0)), 0, "it goes back in its part");
-        }
-
-        #[test]
-        fn frees_the_room_of_a_removed_record_when_its_removal_commits() {
-            let records: Vec<_> = (0..7).map(longest).collect();
-            let mut parts = Parts::default();
-            append(&mut parts, &records, 0, 1);
-            append(&mut parts, &records[1..], 1, 5);
-            let mut added = records[1..].to_vec();
-            added.push(longest(7));
-
-            parts.place(&added, 5).expect("room");
+            parts.place(&added).expect("room");
 
             assert_eq!(part(&parts, &longest(7)), 0);
             assert!(parts.placed(&longest(0).reader).is_none());
@@ -682,46 +657,30 @@ mod tests {
         fn keeps_the_room_of_a_record_whose_removal_found_no_append() {
             let records: Vec<_> = (0..7).map(longest).collect();
             let mut parts = Parts::default();
-            append(&mut parts, &records, 0, 1);
-            parts.place(&records[1..], 9).expect("room");
+            append(&mut parts, &records);
+            parts.place(&records[1..]).expect("room");
             let mut added = records[1..].to_vec();
             added.push(longest(7));
 
-            parts.place(&added, 9).expect("room");
+            parts.place(&added).expect("room");
 
             assert_eq!(part(&parts, &longest(7)), 1);
-        }
-
-        #[test]
-        fn frees_the_room_of_a_removed_record_whose_return_found_no_append() {
-            let records: Vec<_> = (0..7).map(longest).collect();
-            let mut parts = Parts::default();
-            append(&mut parts, &records, 0, 1);
-            append(&mut parts, &records[1..], 1, 5);
-            parts.place(&records, 4).expect("room");
-            let mut added = records[1..].to_vec();
-            added.push(longest(7));
-
-            parts.place(&added, 5).expect("room");
-
-            assert_eq!(part(&parts, &longest(7)), 0);
-            assert!(parts.placed(&longest(0).reader).is_none());
         }
 
         #[test]
         fn changes_only_the_parts_whose_records_change() {
             let mut records: Vec<_> = (0..14).map(longest).collect();
             let mut parts = Parts::default();
-            parts.place(&records, 0).expect("room");
+            parts.place(&records).expect("room");
             let changed_now = changed(&parts, &records);
             let parts_of: Vec<_> = changed_now.iter().map(|(part, _)| *part).collect();
             assert_eq!(parts_of, [0, 1]);
             for (part, _) in changed_now {
-                parts.appended(part, &listed(&records), 1);
+                parts.appended(part, &listed(&records));
             }
             records[8].position.live = 9;
 
-            parts.place(&records, 0).expect("room");
+            parts.place(&records).expect("room");
             let changed = changed(&parts, &records);
 
             let mut expected = records[7..].to_vec();
@@ -737,21 +696,21 @@ mod tests {
         fn empties_a_part_whose_records_all_go() {
             let records: Vec<_> = (0..8).map(longest).collect();
             let mut parts = Parts::default();
-            append(&mut parts, &records, 0, 1);
-            parts.place(&records[..7], 1).expect("room");
+            append(&mut parts, &records);
+            parts.place(&records[..7]).expect("room");
 
             assert_eq!(changed(&parts, &records[..7]), [(1, encoded(&[]))]);
 
-            append(&mut parts, &records[..7], 1, 3);
-            parts.place(&records[..7], 3).expect("room");
+            append(&mut parts, &records[..7]);
+            parts.place(&records[..7]).expect("room");
             assert_eq!(changed(&parts, &records[..7]), []);
-            assert_eq!(parts.keys.len(), 7, "the removal of 7 committed");
+            assert_eq!(parts.keys.len(), 7, "7 went when its part appended");
         }
 
         #[test]
         fn appends_no_part_that_never_held_a_record() {
             let mut parts = Parts::default();
-            parts.place(&[], 0).expect("room");
+            parts.place(&[]).expect("room");
             assert_eq!(changed(&parts, &[]), []);
         }
 
@@ -759,7 +718,7 @@ mod tests {
         fn records_a_reader_in_a_part_before_the_first_unappended() {
             let records: Vec<_> = (0..8).map(longest).collect();
             let mut parts = Parts::default();
-            parts.place(&records, 0).expect("room");
+            parts.place(&records).expect("room");
             let appended = Appended { until: 1 };
 
             assert!(parts.recorded(&records[6].reader, appended));
@@ -768,14 +727,14 @@ mod tests {
         }
 
         #[test]
-        fn says_whether_a_part_may_hold_a_record_at_a_release() {
-            let records = [longest(0)];
+        fn says_whether_a_part_holds_a_record() {
             let mut parts = Parts::default();
-            append(&mut parts, &records, 0, 1);
-            append(&mut parts, &[], 1, 2);
+            append(&mut parts, &[longest(0)]);
+            assert!(parts.held());
 
-            assert!(parts.release(1), "the removal waits");
-            assert!(!parts.release(2));
+            append(&mut parts, &[]);
+
+            assert!(!parts.held());
         }
     }
 
@@ -917,7 +876,7 @@ mod tests {
                     records.iter().map(|record| part(&parts, record)).collect();
                 records.push(new.clone());
                 let keys = parts.keys.len();
-                if parts.place(&records, 0).is_ok() {
+                if parts.place(&records).is_ok() {
                     prop_assert_eq!(parts.keys.len(), keys + 1);
                     let at = usize::from(part(&parts, &new));
                     prop_assert!(used[at] + len <= PART_MAX);

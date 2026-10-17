@@ -40,14 +40,14 @@
   its live path, of at most `Layout::ENTRY_MAX_MIN` (4032) bytes: 546 bytes for a record
   of the longest names, so at least 7 records a part and 448 an index. A record stays
   in one part while it exists, and a new one goes in the lowest part with room for it
-  (first fit). A removed record keeps its key and its room in its part until the commit
-  of the entry that drops it, and an add of that key before then goes back in that
-  part, so a key is in one part only. An append writes only the parts whose records
-  changed, in part order, and stops at the first part that finds no block or no room.
-  A part that finds no block keeps the state of its last entry, and a record that the
-  append added at or past it loses its room. In memory, each carried index keeps the
-  part and the last state of each key: at most about 257,728 bytes of names, plus about
-  90 bytes for each key.
+  (first fit). A removed record keeps its key and its room in its part until the entry
+  that drops it appends. An add of that key before then goes back in that part. A
+  restart reads a prefix of the appends of the ring (S4), so a key is in one part only.
+  An append writes only the parts whose records changed, in part order, and stops at the
+  first part that finds no block or no room. A part that finds no block or no room keeps
+  the state of its last entry, and a record that the append added at or past it loses
+  its room. In memory, each carried index keeps the part and the last state of each key:
+  at most about 257,728 bytes of names, plus about 90 bytes for each key.
   It appends after a named open, a close, and a takeover, and at a tick when a record
   changed: an ack that moved a named position, or a hold that ended at the mesh
   midpoint. The tick comes each second while a named complete reader is open, or
@@ -79,7 +79,11 @@
   (2026-10-17T00:37:51Z:
   https://github.com/synnaxlabs/foundation/issues/2833#issuecomment-6227434486), which
   supersedes one entry for each index, the open of a held reader over the limit, and
-  the warning event of the rulings below.
+  the warning event of the rulings below. The room of a removed record goes free when
+  the entry that drops it appends, not at its commit: decided by `laptop.architect`
+  (2026-10-17T03:20:57Z:
+  https://github.com/synnaxlabs/foundation/pull/2967#issuecomment-6228975494), which
+  revises item 1 of 6227434486.
   Decided by `laptop.architect` (2026-10-16T05:22:26Z:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208708096;
   `Unrecorded` and the trim gap until #406: 2026-10-16T07:08:03Z:

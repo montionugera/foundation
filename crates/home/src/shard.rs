@@ -168,8 +168,8 @@ pub struct Shard {
     /// the open restored, or the one that a shed kept.
     kept: hash::Map<Slot, Gate>,
     /// The named records of each index in the buffer, by slot, carried or not: a shed
-    /// index keeps them until its removals commit, so that a later carry places each
-    /// record in the part that holds it.
+    /// index whose entries found no block keeps them, so that a later carry places
+    /// each record in the part that holds it.
     named: hash::Map<Slot, named::Parts>,
     /// When [`advance`](Shard::advance) next restores records, ends holds, and appends
     /// changed records ([`Shard::arm`]).
@@ -418,10 +418,11 @@ impl Shard {
         self.readers.shed(place);
         if let Some(mesh) = self.now() {
             let head = self.head(place, mesh);
-            self.named
-                .entry(slot)
-                .or_default()
-                .append(&self.buffer, &[], head);
+            let parts = self.named.entry(slot).or_default();
+            parts.append(&self.buffer, &[], head);
+            if !parts.held() {
+                self.named.remove(&slot);
+            }
         }
         let last = self.indexes.len() - 1;
         self.places.remove(&slot);
@@ -499,10 +500,6 @@ impl Shard {
             self.record_named(place, monotonic, mesh);
         }
         self.readers.prune();
-        let commits = self.buffer.commits();
-        let places = &self.places;
-        self.named
-            .retain(|slot, parts| places.contains_key(slot) || parts.release(commits));
     }
 
     /// Mesh time now, as the shard stamps each entry and checks each stamp: the
@@ -6803,23 +6800,88 @@ mod tests {
                     });
                 }
 
+                /// Opens `longest(0)` with a hold of zero.
+                fn open_k(shard: &mut Shard) -> complete::Key {
+                    let opened = shard.open_named_complete(
+                        Slot::new(0),
+                        longest(0),
+                        Span::ZERO,
+                        CREDIT,
+                        Charge::Whole,
+                    );
+                    opened.expect("opens").key
+                }
+
+                /// The count of the records of `reader` in the newest named entries
+                /// of the index at slot 0 in the buffer of `shard`.
+                async fn records_of(shard: &Shard, reader: &named::Key) -> usize {
+                    let newest = crate::named::Parts::newest(&shard.buffer).await;
+                    let newest = newest.expect("the newest entries");
+                    let records = newest.get(&Slot::new(0)).map(|(_, records)| records);
+                    let records = records.into_iter().flatten();
+                    records.filter(|record| record.reader == *reader).count()
+                }
+
+                #[test]
+                fn reopens_in_its_part_a_key_whose_removal_found_no_block() {
+                    let before = async |test: &Test, shard: &mut Shard, w| {
+                        let k = open_k(shard);
+                        for n in 1..7 {
+                            open_longest(shard, longest(n)).expect("opens");
+                        }
+                        committed(test, shard, w, &[10, 20]).await;
+                        let blocks = test.fill();
+                        close(shard, k.into());
+                        tick(test, shard).await;
+                        drop(blocks);
+                        open_longest(shard, longest(7)).expect("part 1 has room");
+                        open_k(shard);
+                    };
+                    restart(214, before, async |_, shard: &mut Shard| {
+                        assert_eq!(records_of(shard, &longest(0)).await, 1);
+                        let k = open_longest(shard, longest(0));
+                        let k = k.expect("its record is in one part").key;
+                        shard.committed().await.expect("the commit ends");
+                        let read = caught_up(shard, k, 0).await;
+                        assert_eq!(read, [], "it resumes where its reopen started");
+                    });
+                }
+
+                #[test]
+                fn restores_once_a_key_that_returns_in_another_part() {
+                    for steps in 1..=4 {
+                        let before = async move |test: &Test, shard: &mut Shard, w| {
+                            let k = open_k(shard);
+                            for n in 1..7 {
+                                open_longest(shard, longest(n)).expect("opens");
+                            }
+                            committed(test, shard, w, &[10, 20]).await;
+                            if steps > 1 {
+                                close(shard, k.into());
+                            }
+                            if steps > 2 {
+                                let new = open_longest(shard, longest(7));
+                                new.expect("part 0 has the room of k");
+                            }
+                            if steps > 3 {
+                                open_k(shard);
+                            }
+                        };
+                        restart(215, before, async move |_, shard: &mut Shard| {
+                            let records = records_of(shard, &longest(0)).await;
+                            let expected = usize::from(steps != 2 && steps != 3);
+                            assert_eq!(records, expected, "after step {steps}");
+                            let k = open_longest(shard, longest(0));
+                            k.expect("its record is in one part at most");
+                        });
+                    }
+                }
+
                 /// The case of the approval of #2833: a close whose removal finds
                 /// no block, an add that fills the part, the reopen and a second
                 /// close, then a crash.
                 #[test]
-                fn keeps_a_closed_key_in_its_part_until_its_removal_commits() {
-                    fn open_k(shard: &mut Shard) -> complete::Key {
-                        shard
-                            .open_named_complete(
-                                Slot::new(0),
-                                longest(0),
-                                Span::ZERO,
-                                CREDIT,
-                                Charge::Whole,
-                            )
-                            .expect("opens")
-                            .key
-                    }
+                fn keeps_a_closed_key_in_its_part_until_its_removal_appends() {
                     let before = async |test: &Test, shard: &mut Shard, w| {
                         let k = open_k(shard);
                         for n in 1..7 {
@@ -6994,7 +7056,7 @@ mod tests {
                 }
 
                 #[test]
-                fn keeps_the_parts_of_a_shed_index_until_its_removals_commit() {
+                fn keeps_the_parts_of_a_shed_index_whose_entry_found_no_block() {
                     let before = async |test: &Test, shard: &mut Shard, w| {
                         let ticking = shard.open_named_complete(
                             Slot::new(2),
@@ -7062,6 +7124,8 @@ mod tests {
                         tick(test, shard).await;
                         shard.close_writer(w);
                         shard.shed(Slot::new(0));
+                        // The parts of a shed index show only in memory.
+                        assert!(!shard.named.contains_key(&Slot::new(0)));
                     };
                     restart(204, before, async |_, shard: &mut Shard| {
                         for n in [0, 7] {

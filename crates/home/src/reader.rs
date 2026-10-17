@@ -70,7 +70,8 @@ pub enum Unopened {
     /// for it: the records of the index hold close to `limit` bytes. Close a named
     /// reader of the index whose hold is zero, wait for a hold to end, or open the
     /// reader unnamed. A reopen or a takeover never gives it. The room of a closed
-    /// reader's record is free when its removal commits.
+    /// reader's record is free when the entry that drops it appends, at the close or
+    /// a later tick.
     Full {
         /// The most bytes of the records of the named readers of one index.
         limit: usize,
