@@ -353,7 +353,7 @@ mod tests {
     }
 
     // The trait's own `realloc` allocates before it frees, so it never gives back the
-    // old block. glibc shrinks this block in place.
+    // old block. glibc, macOS, and Windows each shrink this block in place.
     #[test]
     #[cfg_attr(miri, ignore = "Miri does not shrink a block in place")]
     fn shrinks_a_block_in_place_as_the_system_does() {
