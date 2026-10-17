@@ -1611,6 +1611,46 @@ fn a_span_field_named_message_is_a_field_of_an_event_with_no_message() {
     );
 }
 
+#[test]
+fn a_span_with_no_field_adds_no_field() {
+    let line = written(false, || {
+        tracing::error_span!("s")
+            .in_scope(|| tracing::info!(target: "test", n = 1_u64));
+    });
+    assert_eq!(
+        line,
+        "2026-01-01T00:00:00.000000Z INFO test: n=1 mesh_time=none\n"
+    );
+}
+
+#[test]
+fn a_json_line_names_message_once_when_a_later_message_is_not_text() {
+    let line = written(
+        true,
+        || tracing::info!(target: "test", message = 1_u64, "e"),
+    );
+    assert_eq!(
+        line,
+        concat!(
+            r#"{"timestamp":"2026-01-01T00:00:00.000000Z","level":"INFO","#,
+            r#""target":"test","fields":{"message":1},"mesh_time":null}"#,
+            "\n",
+        )
+    );
+}
+
+#[test]
+fn a_text_line_names_mesh_time_once_when_a_span_field_has_that_name() {
+    let line = written(false, || {
+        let span = tracing::error_span!("s", mesh_time = "t");
+        span.in_scope(|| tracing::info!(target: "test", "e"));
+    });
+    assert_eq!(
+        line,
+        "2026-01-01T00:00:00.000000Z INFO test: e mesh_time=none\n"
+    );
+}
+
 /// A kind whose first run shows an error twice, clears it, shows a note, and ends
 /// with `first`. Each later run returns `Ok`.
 struct Flaky {
@@ -1645,11 +1685,12 @@ impl connector::kind::Kind for Flaky {
 }
 
 /// The lines of `connector::status` of the connector `plant.a` of [`Flaky`] that
-/// ends its first run with `first`, over 60 s, each with no stamp and no mesh time.
-fn status_lines(first: fn() -> KindError) -> Vec<String> {
+/// ends its first run with `first`, over 60 s, at `level` and above, each with no
+/// stamp and no mesh time.
+fn status_lines(level: tracing::Level, first: fn() -> KindError) -> Vec<String> {
     let (mut sim, host) = host(1);
     let lines = Lines::default();
-    let log = opened(&host, false, Box::new(lines.clone()));
+    let log = opened_at(&host, false, level, Box::new(lines.clone()));
     let config = env::shards::Config {
         name: "connector".into(),
         core: None,
@@ -1714,7 +1755,7 @@ fn restart() -> [String; 4] {
 
 #[test]
 fn a_connector_logs_each_change_of_its_status_with_its_name_and_kind() {
-    let lines = status_lines(|| KindError::Retry("down".into()));
+    let lines = status_lines(tracing::Level::INFO, || KindError::Retry("down".into()));
     let mut logged = first_run().to_vec();
     logged.push(format!("WARN ended {AT} class=retry error=down"));
     logged.extend(restart());
@@ -1723,7 +1764,8 @@ fn a_connector_logs_each_change_of_its_status_with_its_name_and_kind() {
 
 #[test]
 fn a_connector_logs_a_device_error_as_a_warning() {
-    let lines = status_lines(|| KindError::Device("jammed".into()));
+    let lines =
+        status_lines(tracing::Level::INFO, || KindError::Device("jammed".into()));
     let mut logged = first_run().to_vec();
     logged.push(format!("WARN ended {AT} class=device error=jammed"));
     logged.extend(restart());
@@ -1732,7 +1774,7 @@ fn a_connector_logs_a_device_error_as_a_warning() {
 
 #[test]
 fn a_connector_logs_a_config_error_as_an_error_and_stops() {
-    let lines = status_lines(|| {
+    let lines = status_lines(tracing::Level::INFO, || {
         let code = document::diagnostic::Code::new("test.refused");
         let diagnostic =
             Diagnostic::new(code, None, "no n".to_owned(), "set n".to_owned());
@@ -1743,6 +1785,16 @@ fn a_connector_logs_a_config_error_as_an_error_and_stops() {
         r#"ERROR ended {AT} class=config error="no n. set n""#
     ));
     logged.push(format!("INFO stopped {AT}"));
+    assert_eq!(lines, logged);
+}
+
+#[test]
+fn a_connector_gives_its_name_and_kind_to_each_status_line_at_each_level() {
+    let lines = status_lines(tracing::Level::WARN, || KindError::Retry("down".into()));
+    let logged = [
+        format!(r#"WARN error {AT} error="a b""#),
+        format!("WARN ended {AT} class=retry error=down"),
+    ];
     assert_eq!(lines, logged);
 }
 

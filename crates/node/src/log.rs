@@ -1,6 +1,7 @@
 //! The log of a node: one line for each `tracing` event.
 
 mod queue;
+mod span;
 
 use std::fmt;
 use std::io;
@@ -9,12 +10,11 @@ use std::panic::PanicHookInfo;
 use clock::log::{Mesh, Time};
 use serde::ser::{Serialize, SerializeMap, Serializer};
 use tracing::field::{Field, Visit};
-use tracing::span::{Attributes, Id, Record};
 use tracing::{Dispatch, Event, Subscriber};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
 use tracing_subscriber::fmt::{FmtContext, layer};
-use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::{LookupSpan, Scope};
 use types::time::Stamp;
 
@@ -77,48 +77,7 @@ fn dispatch(line: Line, level: tracing::Level, queue: Pipe) -> Dispatch {
         .log_internal_errors(false);
     let registry = tracing_subscriber::registry();
     let filtered = registry.with(LevelFilter::from_level(level));
-    Dispatch::new(filtered.with(Spans).with(lines))
-}
-
-/// Keeps the fields of each span in its extensions, for the line of each event in it.
-struct Spans;
-
-/// The fields of one span, in the order that it got them.
-struct Spanned(Vec<(&'static str, Value)>);
-
-impl Spanned {
-    /// Sets `name` to `value`, in place when the span has the field.
-    fn set(&mut self, name: &'static str, value: Value) {
-        match self.0.iter_mut().find(|(field, _)| *field == name) {
-            Some((_, old)) => *old = value,
-            None => self.0.push((name, value)),
-        }
-    }
-}
-
-impl<S> Layer<S> for Spans
-where
-    S: Subscriber + for<'a> LookupSpan<'a>,
-{
-    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
-        let span = ctx.span(id).expect("the registry has each new span");
-        let mut fields = Spanned(Vec::new());
-        attrs.record(&mut Values(|field: &Field, value| {
-            fields.set(field.name(), value);
-        }));
-        span.extensions_mut().insert(fields);
-    }
-
-    fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
-        let span = ctx.span(id).expect("the registry has each recorded span");
-        let mut extensions = span.extensions_mut();
-        let fields = extensions
-            .get_mut::<Spanned>()
-            .expect("on_new_span keeps the fields of each span");
-        values.record(&mut Values(|field: &Field, value| {
-            fields.set(field.name(), value);
-        }));
-    }
+    Dispatch::new(filtered.with(span::Keep).with(lines))
 }
 
 /// Writes each event as one line, in text or in JSON.
@@ -144,13 +103,16 @@ where
         let mut fields = Fields::default();
         let spans = ctx.event_scope().into_iter().flat_map(Scope::from_root);
         for span in spans {
-            if let Some(spanned) = span.extensions().get::<Spanned>() {
-                for (name, value) in &spanned.0 {
-                    fields.put(name, value.clone());
-                }
+            let extensions = span.extensions();
+            let kept = extensions.get::<span::Fields>();
+            let kept = kept.expect("span::Keep keeps the fields of each span");
+            for (name, value) in &kept.0 {
+                fields.put(name, value.clone());
             }
         }
-        event.record(&mut Values(|field: &Field, value| fields.add(field, value)));
+        event.record(&mut Visitor(|field: &Field, value| {
+            fields.add(field, value);
+        }));
         let metadata = event.metadata();
         let entry = Entry {
             time,
@@ -231,15 +193,18 @@ impl Fields {
 
     /// Adds the field `name` last, in place of a field of that name before it.
     fn put(&mut self, name: &'static str, value: Value) {
+        if name == "message" {
+            self.message = None;
+        }
         self.others.retain(|(other, _)| *other != name);
         self.others.push((name, value));
     }
 }
 
 /// Gives each field that it visits, with its [`Value`], to its function.
-struct Values<F>(F);
+struct Visitor<F>(F);
 
-impl<F: FnMut(&Field, Value)> Visit for Values<F> {
+impl<F: FnMut(&Field, Value)> Visit for Visitor<F> {
     fn record_i64(&mut self, field: &Field, value: i64) {
         self.0(field, Value::Signed(value.into()));
     }
@@ -317,7 +282,12 @@ impl Entry<'_> {
                 escape(w, c, c == '\\')?;
             }
         }
-        for (name, field) in fields.others {
+        // The `mesh_time` of the line comes last, so it replaces a field of that name.
+        for (name, field) in fields
+            .others
+            .iter()
+            .filter(|(name, _)| *name != "mesh_time")
+        {
             write!(w, " {name}=")?;
             field.write(w)?;
         }
