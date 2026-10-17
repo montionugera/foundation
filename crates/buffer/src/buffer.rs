@@ -661,9 +661,9 @@ impl Buffer {
     /// holds no entry of [`Layout::ENTRY_MAX_MIN`] bytes beside the blocks of a group.
     /// No file changes. [`Error::Full`] when the ring has no block for its restart
     /// record after the open frees what it can: with [`Config::trimmed`], the oldest
-    /// record holds the only durable tail of a path. [`Error::Pool`] with `TooLarge` when a recovered entry is over the
-    /// largest block of `pool`, which a read must give it in: a larger pool must open
-    /// the ring.
+    /// record holds the only durable tail of a path. [`Error::Pool`] with `TooLarge`
+    /// when a recovered entry is over the largest block of `pool`, which a read must
+    /// give it in: a larger pool must open the ring.
     ///
     /// # Panics
     ///
@@ -690,14 +690,8 @@ impl Buffer {
         let chain = random(&entropy);
         let mut writer = cursor.writer();
         let trim = trimmed.then(|| writer.trimmed(logs.kept())).flatten();
-        let header = restart(
-            &file,
-            &pool,
-            (&mut writer, &mut logs),
-            header,
-            (chain, trim),
-        )
-        .await?;
+        let header =
+            restart(&file, &pool, &mut writer, &mut logs, header, chain, trim).await?;
         let tails = trimmed.then(|| tails_max(&pool));
         let shared = Rc::new(Shared {
             file,
@@ -1175,39 +1169,42 @@ fn recover_carried(
 async fn restart(
     file: &File,
     pool: &Pool,
-    (writer, logs): (&mut Writer, &mut Logs),
-    mut header: Header,
-    (chain, trim): (u32, Option<Position>),
+    writer: &mut Writer,
+    logs: &mut Logs,
+    header: Header,
+    chain: u32,
+    trim: Option<Position>,
 ) -> Result<Header, Error> {
     let placed = writer.restart(chain);
-    if let Some(tail) = trim {
-        // A crash that kept the checkpoint and lost walked records that the last
-        // process did not sync would lose the tails they hold. A freed block takes
-        // the restart record only after the sync of the checkpoint: a crash that
-        // kept the record and the old checkpoint would lose the first walked record.
+    let Some(tail) = trim else {
+        write_restart(file, pool, placed?, chain).await?;
         file.sync().await?;
-        header = header.next(tail);
-        let mut block = pool.alloc(ALIGN)?;
-        let bytes = (&mut *block)
-            .try_into()
-            .expect("invariant: the block is of `ALIGN` bytes");
-        header.write(bytes);
-        file.write_at(header.place(), slice::from_ref(&block.freeze()))
-            .await?;
-        if let Ok(sealed) = placed {
-            write_restart(file, pool, sealed, chain).await?;
-        }
-        file.sync().await?;
-        writer.release(tail.offset());
-        logs.hide(tail.offset());
-    }
-    let sealed = match (trim, placed) {
-        (Some(_), Ok(_)) => return Ok(header),
-        (Some(_), Err(_)) => writer.restart(chain)?,
-        (None, placed) => placed?,
+        return Ok(header);
     };
-    write_restart(file, pool, sealed, chain).await?;
+    // A crash that kept the checkpoint and lost walked records that the last process
+    // did not sync would lose the tails they hold. A freed block takes the restart
+    // record only after the sync of the checkpoint: a crash that kept the record and
+    // the old checkpoint would lose the first walked record.
     file.sync().await?;
+    let header = header.next(tail);
+    let mut block = pool.alloc(ALIGN)?;
+    let bytes = (&mut *block)
+        .try_into()
+        .expect("invariant: the block is of `ALIGN` bytes");
+    header.write(bytes);
+    file.write_at(header.place(), slice::from_ref(&block.freeze()))
+        .await?;
+    let late = placed.is_err();
+    if let Ok(sealed) = placed {
+        write_restart(file, pool, sealed, chain).await?;
+    }
+    file.sync().await?;
+    writer.release(tail.offset());
+    logs.hide(tail.offset());
+    if late {
+        write_restart(file, pool, writer.restart(chain)?, chain).await?;
+        file.sync().await?;
+    }
     Ok(header)
 }
 
@@ -2995,7 +2992,7 @@ mod tests {
                     (190, 38 * 4096, 65 * 4096, Some(64 * 4096)),
                 ],
                 "the restart record takes the owed block, the first commit carries \
-                 paths 1 and 2, and the one after it trims past the old holder of path 1"
+                 paths 1 and 2, and the next trims past the old holder of path 1"
             );
             assert_eq!(durable_after_open(&mut sim, &node), 9);
         }
