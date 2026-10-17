@@ -49,24 +49,24 @@ fn build() {
                   of its dependencies only in the environment"
     )]
     let vars: Vec<_> = std::env::vars().collect();
-    let compiler::Builds {
-        mut library,
-        shim,
-        address_sanitized,
+    let (
+        compiler::Builds {
+            mut library,
+            shim,
+            address_sanitized,
+        },
         libcrypto,
-    } = compiler::configure(&copy, &read("flags.txt"), &read("sources.txt"), &vars)
-        .unwrap_or_else(|e| panic!("{e}"));
-    let header = libcrypto.join("openssl/boringssl_prefix_symbols.h");
-    let prefix = std::fs::read_to_string(&header)
-        .map_err(|e| format!("{}: {e}", header.display()))
-        .and_then(|text| compiler::prefix(&text))
+    ) = compiler::configure(&copy, &read("flags.txt"), &read("sources.txt"), &vars)
         .unwrap_or_else(|e| panic!("{e}"));
     // The symbol tests of `link` read both, and the test that compiles the copy for
     // 64-bit Arm includes the libcrypto too.
-    println!("cargo::rustc-env=CONNECTOR_OPCUA_PREFIX={prefix}");
+    println!(
+        "cargo::rustc-env=CONNECTOR_OPCUA_PREFIX={}",
+        libcrypto.prefix
+    );
     println!(
         "cargo::rustc-env=CONNECTOR_OPCUA_LIBCRYPTO={}",
-        libcrypto.display()
+        libcrypto.include.display()
     );
     if address_sanitized {
         println!("cargo::rustc-cfg=asan");

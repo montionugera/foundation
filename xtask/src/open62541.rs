@@ -44,8 +44,8 @@ const CLOCKS: [&str; 3] = [
 
 /// The only (file, function, symbol, access) keys with which a function references a
 /// symbol outside the copy that [`SYMBOLS`] does not admit. A clock counts only as a
-/// call. A test of `connector-opcua` names the function of each clock key and fails
-/// when its reason becomes false. [`AWS_LC_KEYS`] holds the keys of aws-lc.
+/// call. A test of `connector-opcua` names the function of each key of [`CLOCKS`] and
+/// fails when its reason becomes false. [`AWS_LC_KEYS`] holds the keys of aws-lc.
 const FUNCTION_SYMBOLS: [(&str, &str, &str, Access); 25] = [
     // `isdigit` reads the locale, which stays C: nothing calls `setlocale`.
     (
@@ -212,8 +212,10 @@ const FUNCTION_SYMBOLS: [(&str, &str, &str, Access); 25] = [
     ),
 ];
 
-/// The keys of [`FUNCTION_SYMBOLS`] whose symbol is a function of aws-lc, by its name
-/// without the prefix of [`Crypto`]. A key admits only the name with the prefix.
+/// The (file, function, symbol, access) keys of each call of a function of aws-lc that
+/// [`AWS_LC`] does not admit, by its name without the prefix of [`Crypto`]. A key
+/// admits only the name with the prefix. A test of `connector-opcua` names the function
+/// of each key of [`AWS_LC_INPUTS`] and fails when its reason becomes false.
 const AWS_LC_KEYS: [(&str, &str, &str, Access); 26] = [
     // Gives the time of a certificate, which is never NULL, so it reads no clock.
     (
@@ -383,6 +385,16 @@ const AWS_LC_KEYS: [(&str, &str, &str, Access); 26] = [
         "EVP_DigestSignFinal",
         Access::Call,
     ),
+];
+
+/// The functions of aws-lc that the copy calls and that read the clock or, with no
+/// password callback, the console.
+const AWS_LC_INPUTS: [&str; 5] = [
+    "PEM_read_bio_PrivateKey",
+    "PEM_read_bio_X509",
+    "PEM_read_bio_X509_CRL",
+    "PEM_read_bio_X509_REQ",
+    "X509_cmp_current_time",
 ];
 
 /// The release files that the copy holds and the library of our options does not
@@ -583,14 +595,20 @@ impl Crypto {
         let header = include[0].join("openssl/boringssl_prefix_symbols.h");
         let text = std::fs::read_to_string(&header)
             .map_err(|e| format!("{}: {e}", header.display()))?;
-        let prefix = text
+        let prefix = Self::prefix(&text)
+            .ok_or_else(|| format!("{} has no BORINGSSL_PREFIX", header.display()))?;
+        Ok(Self { include, prefix })
+    }
+
+    /// The prefix of the line `#define BORINGSSL_PREFIX <prefix>` of `header`, with the
+    /// `_` that ends it, or `None` when it has no such line with a `<prefix>`.
+    fn prefix(header: &str) -> Option<String> {
+        header
             .lines()
             .find_map(|line| line.strip_prefix("#define BORINGSSL_PREFIX "))
-            .ok_or_else(|| format!("{} has no BORINGSSL_PREFIX", header.display()))?;
-        Ok(Self {
-            include,
-            prefix: format!("{}_", prefix.trim()),
-        })
+            .map(str::trim)
+            .filter(|prefix| !prefix.is_empty())
+            .map(|prefix| format!("{prefix}_"))
     }
 
     /// The `-isystem` flags of its include directories, so [`includes`] admits each
@@ -1432,18 +1450,27 @@ impl Uses {
     /// An error for each key that [`FUNCTION_SYMBOLS`] or [`AWS_LC_KEYS`] does not
     /// list, and for each listed key with no reference.
     fn mismatches(&self) -> Vec<String> {
-        let mut errors =
-            Self::compare(&self.keys, &FUNCTION_SYMBOLS, "FUNCTION_SYMBOLS");
-        errors.extend(Self::compare(&self.crypto, &AWS_LC_KEYS, "AWS_LC_KEYS"));
+        let plain = &FUNCTION_SYMBOLS;
+        let mut errors = Self::compare(&self.keys, plain, "FUNCTION_SYMBOLS", &CLOCKS);
+        let crypto = &AWS_LC_KEYS;
+        errors.extend(Self::compare(
+            &self.crypto,
+            crypto,
+            "AWS_LC_KEYS",
+            &AWS_LC_INPUTS,
+        ));
         errors
     }
 
     /// An error for each key of `keys` that `list`, named `name`, does not hold, and
-    /// for each key of `list` that `keys` does not hold.
+    /// for each key of `list` that `keys` does not hold. The error of a key whose
+    /// symbol is in `inputs`, which read a clock or the console, asks for a check of
+    /// its reason.
     fn compare(
         keys: &BTreeSet<(String, String, String, Access)>,
         list: &[(&str, &str, &str, Access)],
         name: &str,
+        inputs: &[&str],
     ) -> Vec<String> {
         let listed: BTreeSet<(String, String, String, Access)> = list
             .iter()
@@ -1458,11 +1485,12 @@ impl Uses {
             .collect();
         let new = keys.difference(&listed).map(|(file, function, symbol, access)| {
             let verb = access.verb();
-            if CLOCKS.contains(&symbol.as_str()) {
+            if inputs.contains(&symbol.as_str()) {
                 format!(
-                    "{file}: `{function}` {verb} `{symbol}`, a global clock function. \
-                     Find whether a node runs it; if not, add it to {name} with the \
-                     reason and a check of the reason in connector-opcua"
+                    "{file}: `{function}` {verb} `{symbol}`, which reads a clock or \
+                     the console. Find whether a node runs it; if not, add it to \
+                     {name} with the reason and a check of the reason in \
+                     connector-opcua"
                 )
             } else {
                 format!(
@@ -2635,9 +2663,15 @@ End of search list.
 
     /// The error of [`Uses::mismatches`] for a clock call that no list admits.
     fn unlisted_clock(file: &str, function: &str) -> String {
+        unlisted_input(file, function, "UA_DateTime_now", "FUNCTION_SYMBOLS")
+    }
+
+    /// The error of [`Uses::mismatches`] for a call of `symbol`, which reads a clock or
+    /// the console, that `list` does not admit.
+    fn unlisted_input(file: &str, function: &str, symbol: &str, list: &str) -> String {
         format!(
-            "{file}: `{function}` calls `UA_DateTime_now`, a global clock function. \
-             Find whether a node runs it; if not, add it to FUNCTION_SYMBOLS with the \
+            "{file}: `{function}` calls `{symbol}`, which reads a clock or the \
+             console. Find whether a node runs it; if not, add it to {list} with the \
              reason and a check of the reason in connector-opcua"
         )
     }
@@ -2691,7 +2725,7 @@ End of search list.
     }
 
     #[test]
-    fn a_test_of_connector_opcua_names_the_function_of_each_clock_key() {
+    fn a_test_of_connector_opcua_names_the_function_of_each_clock_and_console_key() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let link = workspace.join("crates/connector-opcua/src/link.rs");
         let text = std::fs::read_to_string(link).unwrap();
@@ -2706,11 +2740,15 @@ End of search list.
                 doc.copied().collect::<Vec<_>>().join(" ")
             })
             .collect();
-        for (_, function, symbol, _) in FUNCTION_SYMBOLS {
-            if CLOCKS.contains(&symbol) {
-                let name = format!("`{function}`");
-                assert!(docs.iter().any(|doc| doc.contains(&name)), "{function}");
-            }
+        let plain = FUNCTION_SYMBOLS
+            .iter()
+            .filter(|key| CLOCKS.contains(&key.2));
+        let crypto = AWS_LC_KEYS
+            .iter()
+            .filter(|key| AWS_LC_INPUTS.contains(&key.2));
+        for (_, function, _, _) in plain.chain(crypto) {
+            let name = format!("`{function}`");
+            assert!(docs.iter().any(|doc| doc.contains(&name)), "{function}");
         }
     }
 
@@ -2808,10 +2846,28 @@ End of search list.
                 ),
                 unlisted(file, "UA_nonce", Access::Call, "RAND_bytes"),
                 unlisted(file, "UA_nonce", Access::Call, "other_RAND_bytes"),
-                unlisted_crypto(file, "UA_verify", "X509_cmp_current_time"),
+                unlisted_input(
+                    file,
+                    "UA_verify",
+                    "X509_cmp_current_time",
+                    "AWS_LC_KEYS"
+                ),
                 unlisted_crypto(file, "UA_verify", "fixture_RAND_bytes"),
             ]
         );
+    }
+
+    #[test]
+    fn crypto_prefix_reads_a_define_with_a_prefix() {
+        let header =
+            "#define BORINGSSL_PREFIX_SYMBOLS_H\n#define BORINGSSL_PREFIX a_1 \n";
+        assert_eq!(Crypto::prefix(header), Some("a_1_".to_owned()));
+        for header in [
+            "#define BORINGSSL_PREFIX_SYMBOLS_H\n",
+            "#define BORINGSSL_PREFIX \n",
+        ] {
+            assert_eq!(Crypto::prefix(header), None, "{header}");
+        }
     }
 
     #[test]

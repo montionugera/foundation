@@ -116,7 +116,7 @@ mod tests {
     /// The builds of `compiler::builds`, for `TARGET` and with the compiler `path`.
     fn builds(path: &str) -> compiler::Builds {
         let copy = Path::new("/copy");
-        let mut builds = compiler::builds(copy, "-std=c99", "a.c", "/crypto".into());
+        let mut builds = compiler::builds(copy, "-std=c99", "a.c");
         for build in [&mut builds.library, &mut builds.shim] {
             child::tool(build.compiler(path), TARGET);
         }
@@ -286,11 +286,13 @@ mod tests {
                 .collect();
             compiler::configure(Path::new("/copy"), "", "a.c", &vars)
         };
+        let include = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/libcrypto");
         let configure_with = |vars: Vars<'_>| {
-            configure_in(&[vars, &[("DEP_AWS_LC_0_45_0_INCLUDE", "/crypto")]].concat())
+            let libcrypto = [("DEP_AWS_LC_0_45_0_INCLUDE", include)];
+            configure_in(&[vars, &libcrypto].concat())
         };
         let configure =
-            |vars| configure_with(vars).map(|builds| builds.address_sanitized);
+            |vars| configure_with(vars).map(|(builds, _)| builds.address_sanitized);
         assert_eq!(
             configure(&[]),
             Err("connector-opcua: the compiler /missing/cl.exe is like MSVC; flags.txt \
@@ -302,7 +304,7 @@ mod tests {
         assert_eq!(configure(&[FUZZING]), Ok(false));
         assert_eq!(configure(&[(SANITIZE, "thread")]), Err(refusal("thread")));
         let server = |vars| {
-            let shim = configure_with(vars).unwrap().shim;
+            let shim = configure_with(vars).unwrap().0.shim;
             let file = shim.get_files().any(|file| file.ends_with("src/server.c"));
             let internal = Path::new("/copy/src").display().to_string();
             let args = args(&tool(shim, "/missing/gcc"));
@@ -310,21 +312,34 @@ mod tests {
         };
         assert_eq!(server(&[FUZZING]), (false, false));
         assert_eq!(server(&[FUZZING, ("CARGO_FEATURE_SIM", "1")]), (true, true));
-        let libcrypto = configure_with(&[FUZZING]).unwrap().libcrypto;
-        assert_eq!(libcrypto, Path::new("/crypto"));
+        let (builds, libcrypto) = configure_with(&[FUZZING]).unwrap();
+        let expected = compiler::Libcrypto {
+            include: include.into(),
+            prefix: "aws_lc_0_45_0_".to_owned(),
+        };
+        assert_eq!(libcrypto, expected);
+        let library = args(&tool(builds.library, "/missing/gcc"));
+        assert_eq!(includes(&library), [include]);
+        let missing = |vars: Vars<'_>| configure_in(&[&[FUZZING], vars].concat());
         assert_eq!(
-            configure_in(&[FUZZING]).map(|builds| builds.libcrypto),
+            missing(&[]).map(|(_, libcrypto)| libcrypto),
             Err("connector-opcua: the build script has 0 variables \
                  DEP_AWS_LC_<version>_INCLUDE, not one: []"
                 .to_string())
         );
+        let header = Path::new("/crypto/openssl/boringssl_prefix_symbols.h");
+        let error = std::fs::read_to_string(header).unwrap_err();
+        assert_eq!(
+            missing(&[("DEP_AWS_LC_0_45_0_INCLUDE", "/crypto")]).map(|(_, l)| l),
+            Err(format!("{}: {error}", header.display()))
+        );
     }
 
     #[test]
-    fn libcrypto_takes_the_one_include_of_aws_lc() {
+    fn include_takes_the_one_include_of_aws_lc() {
         let vars = |vars: &[(&str, &str)]| {
             let vars = vars.iter().map(|(n, v)| ((*n).to_owned(), (*v).to_owned()));
-            compiler::libcrypto(&vars.collect::<Vec<_>>())
+            compiler::include(&vars.collect::<Vec<_>>())
         };
         let include = ("DEP_AWS_LC_0_45_0_INCLUDE", "/a");
         let others = [
@@ -356,13 +371,15 @@ mod tests {
     fn prefix_reads_the_define_of_aws_lc() {
         let header = "#ifndef X\n#define BORINGSSL_PREFIX aws_lc_0_45_0 \n#endif\n";
         assert_eq!(compiler::prefix(header), Ok("aws_lc_0_45_0_".to_owned()));
-        assert_eq!(
-            compiler::prefix("#define BORINGSSL_PREFIX_SYMBOLS_H\n"),
-            Err(
-                "connector-opcua: the headers of aws-lc-sys define no BORINGSSL_PREFIX"
-                    .to_owned()
-            )
-        );
+        let error =
+            "connector-opcua: the headers of aws-lc-sys define no BORINGSSL_PREFIX";
+        for header in [
+            "#define BORINGSSL_PREFIX_SYMBOLS_H\n",
+            "#define BORINGSSL_PREFIX \n",
+            "#define BORINGSSL_PREFIX\n",
+        ] {
+            assert_eq!(compiler::prefix(header), Err(error.to_owned()), "{header}");
+        }
     }
 
     /// `configure` checks the compiler that `sanitize` picks, so a sanitizer moves a
@@ -400,7 +417,7 @@ mod tests {
         let copy = Path::new("/copy");
         let flags = "-Ideps\n-Iinclude\n-std=c99";
         let compiler::Builds { library, shim, .. } =
-            compiler::builds(copy, flags, "a.c\nsrc/b.c", "/crypto".into());
+            compiler::builds(copy, flags, "a.c\nsrc/b.c");
         assert_eq!(
             library.get_files().collect::<Vec<_>>(),
             [copy.join("a.c"), copy.join("src/b.c")]
@@ -429,7 +446,7 @@ mod tests {
             assert!(library.contains(&header), "{path}: {library:?}");
             assert_eq!(
                 includes(&library),
-                [dirs[0].as_str(), &dirs[1], "/crypto"],
+                [dirs[0].as_str(), &dirs[1]],
                 "{path}: {library:?}"
             );
             assert!(

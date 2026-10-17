@@ -199,7 +199,7 @@ fn shim_compiler() -> cc::Tool {
     let copy = std::path::Path::new(ROOT).join("../../patches/open62541");
     let flags = std::fs::read_to_string(copy.join("flags.txt")).unwrap();
     let target = env!("CONNECTOR_OPCUA_TARGET");
-    let mut shim = crate::compiler::builds(&copy, &flags, "", LIBCRYPTO.into()).shim;
+    let mut shim = crate::compiler::builds(&copy, &flags, "").shim;
     crate::compiler::sim(&mut shim, &copy);
     shim.target(target)
         .host(target)
@@ -415,12 +415,10 @@ fn the_copy_links_the_timer() {
 }
 
 /// Each symbol outside the copy, `shim.c`, `server.c`, and the libcrypto ([`PREFIX`])
-/// that they may name in glibc: on x86-64 with GCC or Clang at each optimization level,
-/// and on 64-bit Arm with Clang at `-O2` and `-moutline-atomics`. Only
-/// `UA_CertificateUtils_getThumbprint` of the OpenSSL plugins calls `malloc` and
-/// `free`, and it frees the block that it takes, so no block crosses between the
-/// allocator of libc and `src/alloc.rs`.
-const OUTSIDE: [&str; 45] = [
+/// that they may name in glibc, other than [`PLUGINS`]: on x86-64 with GCC or Clang at
+/// each optimization level, and on 64-bit Arm with Clang at `-O2` and
+/// `-moutline-atomics`.
+const OUTSIDE: [&str; 40] = [
     "_GLOBAL_OFFSET_TABLE_",
     "__ctype_b_loc",
     "__errno_location",
@@ -442,12 +440,8 @@ const OUTSIDE: [&str; 45] = [
     "connector_opcua_malloc",
     "connector_opcua_realloc",
     "fflush",
-    "fgets",
     "fprintf",
     "fputs",
-    "free",
-    "fwrite",
-    "malloc",
     "memcmp",
     "memcpy",
     "memmove",
@@ -456,7 +450,6 @@ const OUTSIDE: [&str; 45] = [
     "puts",
     "sprintf",
     "stderr",
-    "stdin",
     "stdout",
     "strcmp",
     "strlen",
@@ -467,6 +460,12 @@ const OUTSIDE: [&str; 45] = [
     "syslog",
     "write",
 ];
+
+/// The symbols outside the copy that only its OpenSSL plugins may name, as
+/// `cargo xtask open62541` keys them. Only `UA_CertificateUtils_getThumbprint` calls
+/// `malloc` and `free`, and it frees the block that it takes, so no block crosses
+/// between the allocator of libc and `src/alloc.rs`.
+const PLUGINS: [&str; 5] = ["fgets", "free", "fwrite", "malloc", "stdin"];
 
 /// The prefix that the headers of the libcrypto of `aws-lc-sys` give each of its
 /// symbols, with the `_` that ends it. `cargo xtask open62541` lists each that the
@@ -494,6 +493,7 @@ fn the_prefix_names_a_version_of_aws_lc() {
 fn the_list_holds_no_lock_and_no_atomic() {
     let held: Vec<_> = OUTSIDE
         .iter()
+        .chain(&PLUGINS)
         .filter(|name| name.starts_with("pthread_") || name.starts_with("__aarch64_"))
         .collect();
     assert!(held.is_empty(), "{held:?}");
@@ -573,6 +573,7 @@ fn the_c_names_only_the_listed_symbols_outside_it() {
         .into_iter()
         .filter(|name| {
             !(OUTSIDE.contains(name)
+                || PLUGINS.contains(name)
                 || name.starts_with(PREFIX)
                 || (cfg!(asan) && sanitizer(name)))
         })
@@ -612,20 +613,16 @@ fn the_shim_draws_nothing_from_the_generator_of_the_copy() {
     assert!(drawn.is_empty(), "the shim calls {drawn:?}");
 }
 
-/// [`OUTSIDE`] admits the libcrypto and the allocator and console of libc for the
-/// OpenSSL plugins of the copy, which `cargo xtask open62541` keys. Neither the shim nor
-/// the test server names one, so neither calls aws-lc unseen nor frees a block of
+/// The symbol checks admit the libcrypto ([`PREFIX`]) and [`PLUGINS`] for the OpenSSL
+/// plugins of the copy, which `cargo xtask open62541` keys. Neither the shim nor the
+/// test server names one, so neither calls aws-lc unseen nor frees a block of
 /// `src/alloc.rs` with `free`.
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "needs GNU nm")]
-fn the_shim_names_neither_the_libcrypto_nor_the_allocator_of_libc() {
+fn the_shim_names_neither_the_libcrypto_nor_the_names_of_the_plugins() {
     let named: Vec<_> = shim_undefined()
         .into_iter()
-        .filter(|name| {
-            name.starts_with(PREFIX)
-                || ["malloc", "free", "fgets", "fwrite", "stdin"]
-                    .contains(&name.as_str())
-        })
+        .filter(|name| name.starts_with(PREFIX) || PLUGINS.contains(&name.as_str()))
         .collect();
     assert!(named.is_empty(), "the shim names {named:?}");
 }
@@ -1393,15 +1390,20 @@ fn stub(line: &str) -> Option<&str> {
 }
 
 /// Checks the reasons of the clock keys of `encryptUserIdentityTokenEcc` and
-/// `openSSL_verifyChain` in `cargo xtask open62541`: the default config of a client has
-/// only the policy `None`, and the production code names no security policy, no
-/// certificate group, and no function that adds one, other than at the stubs of
-/// `shim.c` that abort.
+/// `openSSL_verifyChain`, and of the PEM keys of
+/// `UA_CertificateUtils_comparePublicKeys`, `UA_CertificateUtils_decryptPrivateKey`,
+/// `openSSLLoadLeafCertificate`, `reloadCertificates`, `UA_OpenSSL_LoadPemCertificate`,
+/// `UA_OpenSSL_LoadPemCrl`, and `UA_OpenSSL_LoadPrivateKey`, in `cargo xtask
+/// open62541`: the default config of a client has only the policy `None`, and the
+/// production code names no security policy, no certificate group, no certificate
+/// function, and no function that adds one, other than at the stubs of `shim.c` that
+/// abort.
 #[test]
 fn the_production_code_gives_a_client_no_security_policy() {
     let policy = |name: &str| {
         name.starts_with("UA_SecurityPolicy_")
             || name.starts_with("UA_CertificateGroup_")
+            || name.starts_with("UA_CertificateUtils_")
             || [
                 "UA_ClientConfig_setDefaultEncryption",
                 "UA_ClientConfig_setAuthenticationCert",
@@ -1522,6 +1524,7 @@ fn the_c_on_64_bit_arm_names_only_the_listed_symbols_outside_it() {
         .filter(|name| {
             !(defined.contains(name)
                 || OUTSIDE.contains(&name.as_str())
+                || PLUGINS.contains(&name.as_str())
                 || name.starts_with(PREFIX))
         })
         .collect();
