@@ -63,10 +63,12 @@ impl Paths {
     /// what it holds. While nothing is at a hidden path, a call that makes a new name
     /// in the deepest directory on its way that is there fails with [`Error::Hidden`],
     /// also for a name that does not make that path. A folder whose file a call cannot
-    /// take holds nothing at that call. The limits of `self` hold too, so a handle
-    /// never reaches more than the one it came from. The check and the call are two
-    /// steps: a symbolic link that another program makes between them can lead the call
-    /// out.
+    /// take holds nothing at that call. A path that does not resolve passes or fails
+    /// the limits by the deepest part of it that resolves, without an end `/` or
+    /// `/.`, and gives the error of its resolve when that part passes. The limits of
+    /// `self` hold too, so a handle never reaches more than the one it came from. The
+    /// check and the call are two steps: a symbolic link that another program makes
+    /// between them can lead the call out.
     ///
     /// # Errors
     ///
@@ -238,8 +240,9 @@ impl Paths {
         match (self.check(path), path.parent(), path.file_name()) {
             // A link to nothing, a loop, or a file with `/` at the end does not
             // resolve. The call makes nothing through a link at `path`, so the limits
-            // check its name in its directory, with the key of the file at that
-            // name. A link that does not resolve has no key.
+            // check its name in its directory, with the key that the host gives for
+            // the name. Each error of that key is no key, since an error such as
+            // `Io` 40 for a loop before the check tells what a hidden folder holds.
             (Err(Error::NotFound | Error::Io { .. }), Some(dir), Some(name)) => {
                 let dir = if dir.as_os_str().is_empty() {
                     Path::new(".")
@@ -260,20 +263,33 @@ impl Paths {
         }
     }
 
-    /// `Ok` when `path` passes each limit. A path that does not resolve fails with the
-    /// error of its resolve, as the call would.
+    /// `Ok` when `path` passes each limit. A path that does not resolve is checked by
+    /// the deepest prefix of its components that resolves: an error of that check
+    /// wins, else it fails with the error of its resolve.
     fn check(&self, path: &Path) -> Result<(), Error> {
         if self.limits.is_empty() {
             return Ok(());
         }
-        let resolved = self.driver.resolve(path)?;
-        self.allowed(self.key(path)?, &resolved)
+        let error = match self.driver.resolve(path) {
+            Ok(resolved) => return self.allowed(self.key(path)?, &resolved),
+            Err(error) => error,
+        };
+        let parts: Vec<_> = path.components().collect();
+        for end in (1..=parts.len()).rev() {
+            let part: PathBuf = parts[..end].iter().collect();
+            if let Ok(resolved) = self.driver.resolve(&part) {
+                self.allowed(self.key(&part)?, &resolved)?;
+                break;
+            }
+        }
+        Err(error)
     }
 
-    /// `Ok` when the file at `resolved`, whose key is `own`, passes each limit. `None`
-    /// is a name with no key: nothing, or a link that does not resolve. The caller
-    /// takes `own` from the path as the call reaches it: the resolved path of a new
-    /// name can be longer than the host takes.
+    /// `Ok` when the file at `resolved` passes each limit. `own` is the key that the
+    /// host gives for the name that the call reaches, which for a link is the key of
+    /// the file that it names, and `None` for a name with no key. The caller takes it
+    /// from that name, since the resolved path of a new name can be longer than the
+    /// host takes.
     fn allowed(&self, own: Option<Key>, resolved: &Path) -> Result<(), Error> {
         let mut dirs = Vec::new();
         for dir in resolved.ancestors().skip(1) {

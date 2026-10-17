@@ -979,3 +979,25 @@
   https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417; the end in
   `/` or `/.`, 2026-10-17T06:28:33Z,
   https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230686685).
+  Amended (2026-10-17T06:28:34Z, #3005): on a handle of `within`, a path that does not
+  resolve is checked by the deepest prefix of its components that resolves, with the
+  key of the file at that prefix. Components drop an end `/` and `/.`. An error of that
+  check wins, `Hidden` over `Outside`; else the call gives the error of its resolve. So
+  a hidden file at a path that ends in `/` or `/.`, or with a name after it, gives
+  `Hidden`, not `Io` 20, on `read`, `write`, and `make_dir`; `<hidden>/none/x` gives
+  `Hidden`, not `NotFound`; and a path outside the folders that does not resolve gives
+  `Outside`, not `NotFound`. The arm of `make_dir` still checks its name in its
+  resolved directory, and there each error of the key of the name is no key, not the
+  error of the call, since an error before the check, such as `Io` 40 for a loop, tells
+  what a hidden folder holds. The walk runs only after a failed resolve. Supersedes "A
+  path that does not resolve fails with the error of its resolve" of the amendment of
+  2026-10-16T04:52:58Z, and "The cost of the resolve error of a path: a tool can learn
+  whether a directory outside the folders is there" of the amendment of
+  2026-10-16T05:41:58Z. Lost: a driver call that gives the deepest resolved prefix,
+  one walk but a new seam that `os` and `sim` must both keep, for a path that only
+  fails; a lexical drop of the end `/` only, which leaves `<hidden>/none/x`. Decided by
+  `laptop.architect-2` (2026-10-17T06:28:34Z,
+  https://github.com/synnaxlabs/foundation/issues/3005#issuecomment-6230686853). The
+  rule of the key of the name in `make_dir` is the text that the architecture review
+  of #3000 asked for
+  (https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230706661).

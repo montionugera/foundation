@@ -75,6 +75,8 @@ macro_rules! tests {
             a_directory_of_a_dot_and_a_slash_is_not_made,
             within_hides_a_hidden_folder_that_is_a_file,
             within_hides_a_hidden_file_on_each_end_from_make_dir,
+            within_hides_a_hidden_file_on_each_end,
+            within_checks_a_path_that_does_not_resolve_by_its_deepest_part,
             within_checks_no_hidden_folder_past_its_limits,
             a_directory_through_a_file_fails,
             a_directory_of_the_root_is_ok,
@@ -339,10 +341,11 @@ pub(crate) fn within_gives_not_found_through_a_directory_that_is_not_there(
     let (within, base) = within_work(host);
     for name in ["none/x", "work/none/x", "work/data/none/x", "none/x/../.."] {
         let path = base.join(name);
-        assert_eq!(within.read(&path, 1), Err(Error::NotFound), "{name}");
-        assert_eq!(within.write(&path, b"x"), Err(Error::NotFound), "{name}");
         assert_eq!(host.paths.read(&path, 1), Err(Error::NotFound), "{name}");
     }
+    let path = base.join("work/none/x");
+    assert_eq!(within.read(&path, 1), Err(Error::NotFound));
+    assert_eq!(within.write(&path, b"x"), Err(Error::NotFound));
 }
 
 pub(crate) fn within_reaches_only_its_folders(host: &Host<'_>) {
@@ -798,6 +801,47 @@ pub(crate) fn within_hides_a_hidden_file_on_each_end_from_make_dir(host: &Host<'
     let names = ["work/a.hcl", "work/a.hcl/x", "work/a.hcl/", "work/a.hcl/."];
     let made = names.map(|name| within.make_dir(&base.join(name)));
     assert_eq!(made, [Err(Error::Hidden); 4], "{names:?}");
+}
+
+pub(crate) fn within_hides_a_hidden_file_on_each_end(host: &Host<'_>) {
+    let (_, base) = within_work(host);
+    let file = base.join("work/a.hcl");
+    let within = host
+        .paths
+        .within(&[base.join("work")], slice::from_ref(&file))
+        .unwrap();
+    let ends = ["work/a.hcl/", "work/a.hcl/.", "work/a.hcl/x"];
+    let read = ends.map(|name| within.read(&base.join(name), 1).map(|_| ()));
+    let write = ends.map(|name| within.write(&base.join(name), b"x"));
+    assert_eq!(
+        (read, write),
+        ([Err(Error::Hidden); 3], [Err(Error::Hidden); 3])
+    );
+}
+
+pub(crate) fn within_checks_a_path_that_does_not_resolve_by_its_deepest_part(
+    host: &Host<'_>,
+) {
+    let (within, base) = within_work(host);
+    let through_a_file = Error::Io {
+        code: NOT_DIRECTORY,
+    };
+    for (name, error) in [
+        ("work/data/none/x", Error::Hidden),
+        ("work/data/admin.key/", Error::Hidden),
+        ("work/data/admin.key/x", Error::Hidden),
+        ("none/x", Error::Outside),
+        ("none/x/../..", Error::Outside),
+        ("b.hcl/", Error::Outside),
+        ("b.hcl/x", Error::Outside),
+        ("work/none/x", Error::NotFound),
+        ("work/a.hcl/", through_a_file),
+        ("work/a.hcl/x", through_a_file),
+    ] {
+        let path = base.join(name);
+        assert_eq!(within.read(&path, 1), Err(error), "{name}");
+        assert_eq!(within.write(&path, b"x"), Err(error), "{name}");
+    }
 }
 
 pub(crate) fn within_checks_no_hidden_folder_past_its_limits(host: &Host<'_>) {
