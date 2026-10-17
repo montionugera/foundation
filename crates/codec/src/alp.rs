@@ -37,6 +37,11 @@ const RUNS: usize = 8;
 /// Values after which an encoder searches all pairs again.
 const SEARCH: usize = 102_400;
 
+const _: () = assert!(
+    VECTOR_LEN < 1 << u16::BITS,
+    "the exception count and each position of a vector are u16 fields"
+);
+
 /// The largest exponent for floats of `width` bytes: `10^e` fits an `i64` for 8 bytes,
 /// and is exact in an `f32` for 4.
 pub(crate) fn max_exponent(width: usize) -> u8 {
