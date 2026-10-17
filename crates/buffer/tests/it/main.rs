@@ -7767,6 +7767,62 @@ fn newest_gives_the_entries_in_slot_order() {
     });
 }
 
+/// A newer tagged entry of an index moves its copy to its own record: after a trim
+/// passes the record of the older entry but not the record of the newer, `newest`
+/// gives the newer bytes.
+#[test]
+fn newest_after_a_trim_past_the_older_record_gives_the_newer_entry() {
+    run(190, |shard| async move {
+        let shard = Shard {
+            trimmed: true,
+            ..shard
+        };
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+        let data = |seq| {
+            let last = Some(i64::try_from(seq).expect("a small seq") + 1);
+            entry(2, b, Path::Live, seq, 1, last, shard.block(1000).into())
+        };
+        let newer = 8;
+        for seq in 0..=newer {
+            let tag = match seq {
+                0 => vec![tagged(1, a, Path::Live, 0, 1, shard.block(1))],
+                _ if seq == newer => {
+                    vec![tagged(1, a, Path::Live, 0, 1, shard.block(2))]
+                }
+                _ => Vec::new(),
+            };
+            buffer
+                .append([data(seq)].into_iter().chain(tag))
+                .expect("queues");
+            buffer.committed().await.expect("commits");
+        }
+        let mut between = false;
+        for seq in newer + 1..200 {
+            append_within(&buffer, &shard.clock, &[data(seq)], 100)
+                .await
+                .expect("the ring frees room");
+            buffer.committed().await.expect("commits");
+            let read = buffer
+                .reader()
+                .read(b, Path::Live, mark(0, 0), usize::MAX)
+                .await
+                .expect("reads");
+            let oldest = read.entries.first().expect("an entry").first;
+            if (1..=newer).contains(&oldest) {
+                between = true;
+                let found = newest(&buffer, Path::Live, 1);
+                assert_eq!(found, vec![(a, kept(&shard.block(2)))], "seq {seq}");
+            }
+        }
+        assert!(between, "a trim lands between the two records");
+    });
+}
+
 /// An appended entry that is not durable yet is absent, also while its commit
 /// runs.
 #[test]
