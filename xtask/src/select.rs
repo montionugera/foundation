@@ -93,7 +93,7 @@ pub(crate) fn names_cfg(source: &str, name: &str) -> bool {
 
 /// The index of the `)` that closes a group opened just before `text`, or the
 /// length of `text` when no `)` does.
-fn closing(text: &str) -> usize {
+pub(crate) fn closing(text: &str) -> usize {
     let mut depth = 1;
     for (at, c) in text.char_indices() {
         match c {

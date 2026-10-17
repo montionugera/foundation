@@ -20,6 +20,7 @@ mod review;
 mod sanitizers;
 mod select;
 mod sim;
+mod skips;
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -38,6 +39,7 @@ fn main() -> ExitCode {
         ["layers"] => layers(root),
         ["globals"] => globals::check(root),
         ["oracles"] => oracles::check(root),
+        ["skips"] => skips::check(root),
         [name @ ("loom" | "shuttle")] => cfg::test(root, name),
         ["miri"] => miri::run(root),
         ["sanitizers"] => sanitizers::run(root),
@@ -54,8 +56,8 @@ fn main() -> ExitCode {
         ["queue", "mutants", group] => queue::mutants(group, &gh::api),
         _ => {
             eprintln!(
-                "usage: cargo xtask <layers|globals|oracles|loom>\n       \
-                 cargo xtask <shuttle|miri|sanitizers>\n       \
+                "usage: cargo xtask <layers|globals|oracles|skips>\n       \
+                 cargo xtask <loom|shuttle|miri|sanitizers>\n       \
                  cargo xtask fuzz [seconds]\n       \
                  cargo xtask open62541 [tag]\n       \
                  cargo xtask review <pr> <head sha>\n       \
