@@ -1068,25 +1068,26 @@ fn add_folders(server: &Server, parent: &Node, children: Vec<(u32, String)>) {
     }
 }
 
+/// The folder `a` of [`sized`].
+const A: Node = Node {
+    namespace: 1,
+    key: Key::Number(7001),
+};
+
+/// The folder `b` of [`sized`].
+const B: Node = Node {
+    namespace: 1,
+    key: Key::Number(7002),
+};
+
 /// The folders `a` and `b` under `root`, 16 references in each page of the server,
 /// and children of 4096 bytes of tag and name each: 32 in `a`, and 4080 in `b` with
-/// `extra` more bytes in the name of the first. The server gives `most` as its
-/// `MaxBrowseContinuationPoints`. The browse reads the first page of `a` `opens` times
-/// and holds its point, so it keeps 64 KiB for it, and the pages of `b` keep
-/// `BYTES - 64 KiB + extra` at its last page.
-fn budget(extra: usize, most: u16, opens: usize) -> Result<usize, Error> {
-    const A: Node = Node {
-        namespace: 1,
-        key: Key::Number(7001),
-    };
-    const B: Node = Node {
-        namespace: 1,
-        key: Key::Number(7002),
-    };
+/// `extra` more bytes in the name of the first.
+fn sized(extra: usize) -> impl FnOnce(&Server) + Send + 'static {
     // The tag of each child, such as `ns=1;i=20000`, has 12 bytes.
     let name =
         |number: u32, extra: usize| format!("{number:0>width$}", width = 4084 + extra);
-    let setup = move |server: &Server| {
+    move |server: &Server| {
         server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
         server.add_folder(&A, &ROOT, ORGANIZES, c"a", c"a");
         server.add_folder(&B, &ROOT, ORGANIZES, c"b", c"b");
@@ -1099,6 +1100,17 @@ fn budget(extra: usize, most: u16, opens: usize) -> Result<usize, Error> {
             (30_000..34_080).map(|n| (n, name(n, if n == 30_000 { extra } else { 0 })));
         add_folders(server, &B, b.collect());
         server.cap_references(16);
+    }
+}
+
+/// The browse of [`sized`], whose server gives `most` as its
+/// `MaxBrowseContinuationPoints`, reads the first page of `a` `opens` times and holds
+/// its point, so it keeps 64 KiB for it, and the pages of `b` keep
+/// `BYTES - 64 KiB + extra` at its last page.
+fn budget(extra: usize, most: u16, opens: usize) -> Result<usize, Error> {
+    let sized = sized(extra);
+    let setup = move |server: &Server| {
+        sized(server);
         server.report_points(most);
     };
     relayed_browse(
@@ -1163,6 +1175,39 @@ fn a_folder_open_twice_keeps_its_budget_once() {
         source.to_string(),
         "the tags and names of the browse pass 16 MiB"
     );
+}
+
+/// The browse holds the point of the first page of `a` (64 KiB) and of the pages of
+/// `b` to 32 children before its end (`BYTES - 128 KiB + 1`), then reads the first page
+/// of `a` again. That page gives the cursor that the browse holds, so the browse keeps
+/// `BYTES - 64 KiB + 1` after it, as before it.
+#[test]
+fn a_folder_open_again_near_the_budget_keeps_its_budget() {
+    let found = relayed_browse(
+        sized(1),
+        |_| {},
+        async move |server| {
+            let a = entry("root/a", &A.to_string(), Shape::Folder);
+            let first = server.level(Some(&a), None).await?.expect("a folder");
+            assert_eq!(first.next, Some(Cursor::new("16".to_owned())));
+            let b = entry("root/b", &B.to_string(), Shape::Folder);
+            let mut cursor = None;
+            while cursor != Some(Cursor::new("4048".to_owned())) {
+                let page = server.level(Some(&b), cursor.as_ref()).await?;
+                cursor = page.expect("a folder").next;
+            }
+            let page = server.level(Some(&b), cursor.as_ref()).await?;
+            assert_eq!(
+                page.expect("a folder").next,
+                Some(Cursor::new("4064".to_owned()))
+            );
+            server
+                .level(Some(&a), None)
+                .await
+                .map(|page| page.expect("a folder").next)
+        },
+    );
+    assert_eq!(found.expect("a page"), Some(Cursor::new("16".to_owned())));
 }
 
 /// The relay frees the point of the first cursor past `SKIP` (100 000) when the browse

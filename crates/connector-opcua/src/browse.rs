@@ -306,6 +306,16 @@ impl browse::Device for Server<'_> {
                 kept.push((name, tag, reference));
             }
         }
+        // A folder that a walk opens twice can give a cursor that it holds.
+        if next.is_some()
+            && let Some(earlier) = self.points.remove(&(folder.clone(), after))
+        {
+            self.held -= earlier.seen.bytes;
+            self.client
+                .release(&[earlier.point])
+                .await
+                .map_err(failed)?;
+        }
         self.fits(&seen)?;
         let references: Vec<&Reference> = kept.iter().map(|(_, _, it)| it).collect();
         let shapes = self.shapes(&references).await.map_err(failed)?;
@@ -321,14 +331,7 @@ impl browse::Device for Server<'_> {
                 seen,
                 left,
             };
-            // A folder that a walk opens twice can give a cursor that it holds.
-            if let Some(earlier) = self.points.insert((folder, after), held) {
-                self.held -= earlier.seen.bytes;
-                self.client
-                    .release(&[earlier.point])
-                    .await
-                    .map_err(failed)?;
-            }
+            self.points.insert((folder, after), held);
             cursor = Some(Cursor::new(after.to_string()));
         }
         Ok(Some(Page {
