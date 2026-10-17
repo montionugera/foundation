@@ -48,8 +48,11 @@ fn gives_the_failure_of_a_pem_file_that_is_not_there() {
     let file = Path::new("/nonexistent/roots.pem");
     assert_eq!(
         child(&[("SSL_CERT_FILE", file.as_os_str())]),
-        "source SSL_CERT_FILE=/nonexistent/roots.pem\nfailure failed to read PEM from \
-         file: No such file or directory (os error 2) at '/nonexistent/roots.pem'\n",
+        format!(
+            "source SSL_CERT_FILE=/nonexistent/roots.pem\nfailure failed to read PEM from \
+             file: {} at '/nonexistent/roots.pem'\n",
+            open_failure(file)
+        ),
         "the failure of a missing file"
     );
 }
@@ -77,11 +80,13 @@ fn reads_the_os_store_when_ssl_cert_dir_holds_no_path() {
         lines
     };
     let store = sorted(child(&[]));
-    for dirs in ["", ":"] {
+    let separator = std::env::join_paths(["", ""]).expect("two empty paths join");
+    for dirs in [OsStr::new(""), &separator] {
         assert_eq!(
-            sorted(child(&[("SSL_CERT_DIR", OsStr::new(dirs))])),
+            sorted(child(&[("SSL_CERT_DIR", dirs)])),
             store,
-            "the roots with SSL_CERT_DIR={dirs:?}"
+            "the roots with SSL_CERT_DIR={}",
+            dirs.display()
         );
     }
 }
@@ -108,24 +113,27 @@ fn gives_only_the_failure_of_a_path_that_is_not_there_or_no_directory() {
         (
             "SSL_CERT_FILE",
             OsStr::new(""),
-            "source SSL_CERT_FILE=\nfailure failed to read PEM from file: No such file or \
-             directory (os error 2) at ''\n"
-                .to_owned(),
+            format!(
+                "source SSL_CERT_FILE=\nfailure failed to read PEM from file: {} at ''\n",
+                open_failure(Path::new(""))
+            ),
         ),
         (
             "SSL_CERT_DIR",
             OsStr::new("/nonexistent"),
-            "source SSL_CERT_DIR=/nonexistent\nfailure opening directory: No such file or \
-             directory (os error 2) at '/nonexistent'\n"
-                .to_owned(),
+            format!(
+                "source SSL_CERT_DIR=/nonexistent\nfailure opening directory: {} at \
+                 '/nonexistent'\n",
+                dir_failure(Path::new("/nonexistent"))
+            ),
         ),
         (
             "SSL_CERT_DIR",
             file.as_os_str(),
             format!(
-                "source SSL_CERT_DIR={0}\nfailure opening directory: Not a directory (os \
-                 error 20) at '{0}'\n",
-                file.display()
+                "source SSL_CERT_DIR={0}\nfailure opening directory: {1} at '{0}'\n",
+                file.display(),
+                dir_failure(&file)
             ),
         ),
     ];
@@ -137,6 +145,20 @@ fn gives_only_the_failure_of_a_path_that_is_not_there_or_no_directory() {
             value.display()
         );
     }
+}
+
+/// The OS error of an open of `path` as a file.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test reads the error that rustls-native-certs gets"
+)]
+fn open_failure(path: &Path) -> std::io::Error {
+    std::fs::File::open(path).expect_err("the path is no file")
+}
+
+/// The OS error of a read of `path` as a directory.
+fn dir_failure(path: &Path) -> std::io::Error {
+    std::fs::read_dir(path).expect_err("the path is no directory")
 }
 
 /// The lines that the child writes for `roots`.

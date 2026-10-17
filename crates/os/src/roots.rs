@@ -18,10 +18,12 @@ pub struct Roots {
 
 /// Where a read of the roots looks, which `SSL_CERT_FILE` and `SSL_CERT_DIR` pick.
 /// Its text is `the OS store`, or `SSL_CERT_FILE=<path>` and `SSL_CERT_DIR=<paths>`
-/// with a space between them.
+/// with a space between them. The paths are joined by the separator of the OS: `:`,
+/// or `;` on Windows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Source {
-    /// The store of the OS: the certificate files on Linux, the keychain on macOS.
+    /// The store of the OS: the certificate files on Linux, the keychain on macOS, the
+    /// system store on Windows.
     #[default]
     Store,
     /// The file and the directories that the environment names, in place of the store.
@@ -32,6 +34,9 @@ pub enum Source {
         dirs: Vec<PathBuf>,
     },
 }
+
+/// The separator of the paths of `SSL_CERT_DIR` that `std::env::split_paths` reads.
+const SEPARATOR: char = if cfg!(windows) { ';' } else { ':' };
 
 impl Source {
     /// The source that the values of `SSL_CERT_FILE` and `SSL_CERT_DIR` pick: their
@@ -70,7 +75,7 @@ impl fmt::Display for Source {
         if let Some((first, rest)) = dirs.split_first() {
             write!(f, "SSL_CERT_DIR={}", first.display())?;
             for dir in rest {
-                write!(f, ":{}", dir.display())?;
+                write!(f, "{SEPARATOR}{}", dir.display())?;
             }
         }
         Ok(())
@@ -82,10 +87,13 @@ mod tests {
     use std::ffi::OsStr;
     use std::path::PathBuf;
 
-    use super::Source;
+    use super::{SEPARATOR, Source};
 
+    /// The source of `file` and `dirs`, with each `:` of `dirs` as the separator of the
+    /// OS.
     fn of(file: Option<&str>, dirs: Option<&str>) -> Source {
-        Source::of(file.map(OsStr::new), dirs.map(OsStr::new))
+        let dirs = dirs.map(|dirs| dirs.replace(':', &SEPARATOR.to_string()));
+        Source::of(file.map(OsStr::new), dirs.as_deref().map(OsStr::new))
     }
 
     #[test]
@@ -119,7 +127,7 @@ mod tests {
                 dirs: vec![PathBuf::from("/b"), PathBuf::from("/a")],
             }
         );
-        assert_eq!(source.to_string(), "SSL_CERT_DIR=/b:/a");
+        assert_eq!(source.to_string(), format!("SSL_CERT_DIR=/b{SEPARATOR}/a"));
     }
 
     #[test]
@@ -127,7 +135,7 @@ mod tests {
         let source = of(Some("/roots.pem"), Some("/a:/b"));
         assert_eq!(
             source.to_string(),
-            "SSL_CERT_FILE=/roots.pem SSL_CERT_DIR=/a:/b"
+            format!("SSL_CERT_FILE=/roots.pem SSL_CERT_DIR=/a{SEPARATOR}/b")
         );
     }
 }

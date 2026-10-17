@@ -675,7 +675,7 @@ fn two_writers_of_one_path_each_write_whole() {
 }
 
 /// `link` names a directory or a file at each instant: another thread swaps it with one
-/// rename. A read gives one of the two, never an error.
+/// rename. A read gives one of the two, and on macOS also `Io` 22 (#2964).
 #[test]
 fn a_read_of_a_path_that_swaps_a_directory_for_a_file_gives_one_of_them() {
     let scratch = Scratch::new();
@@ -690,8 +690,9 @@ fn a_read_of_a_path_that_swaps_a_directory_for_a_file_gives_one_of_them() {
             fs::rename(&next, &link).unwrap();
         }
     };
-    let other = race(swap, 5_000, &link, |read| {
-        matches!(read, Ok(Found::File(_) | Found::Directory(_)))
+    let other = race(swap, 5_000, &link, |read| match read {
+        Ok(Found::File(_) | Found::Directory(_)) => true,
+        read => cfg!(target_os = "macos") && *read == Err(Error::Io { code: 22 }),
     });
     assert_eq!(other, None);
 }

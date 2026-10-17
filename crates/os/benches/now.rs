@@ -11,6 +11,7 @@ fn main() {
 }
 
 /// One read of `os::clock`.
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #682
 #[divan::bench(sample_count = 20)]
 fn now(bencher: Bencher<'_, '_>) {
     let clock = os::clock();

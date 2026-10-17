@@ -1,6 +1,3 @@
-//! The cost of one poll of pending sleeps whose deadlines do not change, which a task
-//! pays at each wake for another cause.
-
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -8,10 +5,6 @@ use divan::Bencher;
 use types::time::Span;
 
 const POLLS: u64 = 1_000_000;
-
-fn main() {
-    divan::main();
-}
 
 /// One poll of each of `sleeps` sleeps a minute away, which an earlier poll armed, in
 /// the `block_on` of a current-thread runtime. Its waker counts references with

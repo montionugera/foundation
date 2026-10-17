@@ -389,7 +389,8 @@ fn open_absolute_of_a_directory_that_this_user_cannot_read_gives_eisdir() {
 }
 
 /// `link` names a file or a directory at each instant. An open gives the file or 21,
-/// also when the swap comes between the stat and the open.
+/// also when the swap comes between the stat and the open, and on macOS also 22
+/// (#2964).
 #[test]
 fn open_absolute_of_a_link_that_swaps_a_file_for_a_directory_gives_eisdir() {
     run(|files, data| async move {
@@ -416,6 +417,7 @@ fn open_absolute_of_a_link_that_swaps_a_file_for_a_directory_gives_eisdir() {
         for _ in 0..20_000 {
             match files.open_absolute(&absolute(&link)).await {
                 Ok(_) | Err(Error::Io { code: 21, .. }) => {}
+                Err(Error::Io { code: 22, .. }) if cfg!(target_os = "macos") => {}
                 Err(e) => {
                     other = Some(e);
                     break;

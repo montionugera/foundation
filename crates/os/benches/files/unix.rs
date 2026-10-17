@@ -1,7 +1,3 @@
-//! The cost of a call of an `os::files` handle on the real disk, of a write open and
-//! its close, which take and release the lock of the file, and of a read open and its
-//! close, which take no lock.
-
 use std::path::{Path, PathBuf};
 
 use block::{Block, Pool};
@@ -12,10 +8,6 @@ use env::files::{Files, Mode};
 const CALLS: usize = 1_000;
 const LEN: u64 = 1 << 20;
 const PART: usize = 4_096;
-
-fn main() {
-    divan::main();
-}
 
 /// A file `f` of `LEN` bytes in a directory of its own, and its disk.
 struct Setup {

@@ -5,6 +5,7 @@
 
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
+#![cfg(any(target_os = "linux", target_os = "macos"))] // #2955
 
 #[path = "common/children.rs"]
 #[expect(dead_code, reason = "this binary starts no thread to work")]

@@ -1,7 +1,3 @@
-//! The cost of writes over the loopback, through `os::net` and through a plain Tokio
-//! stream with the same options: one 64-byte round trip, one write of 1 MiB, and 256
-//! writes of 64 bytes back to back. The last two reach the unsent bound.
-
 use std::future::poll_fn;
 use std::io::IoSlice;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -23,10 +19,6 @@ const MESSAGE: [u8; 64] = [7; 64];
 const TRIPS: u32 = 10_000;
 const BULK: usize = 1 << 20;
 const BURST: usize = 256;
-
-fn main() {
-    divan::main();
-}
 
 fn options() -> tcp::Options {
     tcp::Options {

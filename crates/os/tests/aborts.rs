@@ -11,9 +11,7 @@ mod panics;
 /// and asserts that the process aborts at a panic that unwinds into the unwind of
 /// another panic.
 fn assert_aborts(child: impl FnOnce()) {
-    use std::os::unix::process::ExitStatusExt;
     const CHILD: &str = "OS_ABORTS_CHILD";
-    const SIGABRT: i32 = 6;
     #[expect(
         clippy::disallowed_methods,
         reason = "the parent sets it for the child"
@@ -30,11 +28,25 @@ fn assert_aborts(child: impl FnOnce()) {
         .output()
         .unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert_eq!(output.status.signal(), Some(SIGABRT), "{stderr}");
+    assert!(aborted(output.status), "{:?}: {stderr}", output.status);
     assert!(
         stderr.contains("panic in a destructor during cleanup"),
         "{stderr}"
     );
+}
+
+/// Whether `status` is that of an abort: SIGABRT, or on Windows the code of a fast
+/// fail, `STATUS_STACK_BUFFER_OVERRUN`.
+fn aborted(status: std::process::ExitStatus) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.signal() == Some(6)
+    }
+    #[cfg(windows)]
+    {
+        status.code().map(i32::cast_unsigned) == Some(0xC000_0409)
+    }
 }
 
 mod shards {
