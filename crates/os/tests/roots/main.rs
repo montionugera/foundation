@@ -25,6 +25,7 @@ fn main() {
     reads_the_os_store_when_ssl_cert_dir_holds_no_path();
     reads_only_the_files_of_the_directory_of_ssl_cert_dir();
     gives_only_the_failure_of_a_path_that_is_not_there_or_no_directory();
+    gives_the_failures_of_both_paths_when_both_are_set();
 }
 
 fn reads_the_certificates_of_the_pem_file_of_ssl_cert_file() {
@@ -140,6 +141,20 @@ fn gives_only_the_failure_of_a_path_that_is_not_there_or_no_directory() {
 }
 
 /// The lines that the child writes for `roots`.
+fn gives_the_failures_of_both_paths_when_both_are_set() {
+    assert_eq!(
+        child(&[
+            ("SSL_CERT_FILE", OsStr::new("/nonexistent/roots.pem")),
+            ("SSL_CERT_DIR", OsStr::new("/nonexistent")),
+        ]),
+        "source SSL_CERT_FILE=/nonexistent/roots.pem SSL_CERT_DIR=/nonexistent\n\
+         failure failed to read PEM from file: No such file or directory (os error 2) \
+         at '/nonexistent/roots.pem'\nfailure opening directory: No such file or \
+         directory (os error 2) at '/nonexistent'\n",
+        "the roots with both set"
+    );
+}
+
 fn lines(roots: &os::Roots) -> String {
     let mut text = format!("source {}\n", roots.source);
     for der in &roots.certificates {
