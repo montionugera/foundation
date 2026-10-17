@@ -566,6 +566,8 @@ pub(crate) fn within_refuses_a_bad_link_beside_a_hidden_folder_that_is_not_there
     (host.make_link)(&data, &base.join("work/none"));
     (host.make_link)(&base.join("work/to-data"), &data);
     assert_eq!(within.make_dir(&base.join("work/new")), Err(Error::Vacant));
+    let below = within.write(&base.join("work/new/x"), b"x");
+    assert_eq!(below, Err(Error::NotFound));
     for name in ["work/loop", "work/to-none", "work/data", "work/to-data"] {
         let path = base.join(name);
         let made = [within.write(&path, b"x"), within.make_dir(&path)];
@@ -629,6 +631,9 @@ pub(crate) fn within_holds_nothing_in_a_folder_made_again(host: &Host<'_>) {
         (written, moved),
         (Err(Error::Replaced), Err(Error::Replaced))
     );
+    let back = within.read(&base.join("work/../b.hcl"), 1).map(|_| ());
+    let outside = within.read(&base.join("b.hcl"), 1).map(|_| ());
+    assert_eq!((back, outside), (Err(Error::Replaced), Err(Error::Outside)));
 }
 
 /// A program replaces the folder with a link to a directory outside it. A path through
