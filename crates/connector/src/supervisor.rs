@@ -1508,9 +1508,12 @@ mod tests {
         let (run, again, ..) = &statuses[6];
         assert_eq!(again[0], 0, "the next try: {statuses:?}");
         // `backoff` is the wait by the node's clock. After the step, the hub's time
-        // slews toward the wall at the 500 ppm of MESH SLEW.
+        // slews toward the wall at the 500 ppm of MESH SLEW, 1 ns at each 2 us tick.
+        // The wait holds `backoff / 2_000` ticks or one more, and a status write takes
+        // at least the ns after the one before it.
         let (backoff, wait) = (samples[3], between(*at, *run).nanos());
-        assert_eq!(wait - backoff, backoff / 2_000, "{statuses:?}");
+        let gain = wait - backoff - backoff / 2_000;
+        assert!(gain == 0 || gain == 1, "{statuses:?}");
     }
 
     #[test]
@@ -3594,11 +3597,12 @@ mod tests {
     }
 
     /// The caller removes the status channels and cancels as the mesh time arrives.
+    /// The order in which the tasks wake decides whether a run starts at that instant.
     #[test]
     fn returns_at_a_cancel_with_a_removal_as_the_mesh_time_arrives() {
         let (returned, runs, _) = unsynced(Span::SECOND, Span::SECOND, true);
         assert_eq!(returned, Span::SECOND, "the call returns at the cancel");
-        assert_eq!(runs, []);
+        assert!(runs.is_empty() || runs == [Span::SECOND], "{runs:?}");
     }
 
     #[test]
