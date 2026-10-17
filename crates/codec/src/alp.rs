@@ -307,6 +307,7 @@ pub(crate) struct Pairs {
 impl Pairs {
     /// The plan of a vector of floats of `W` bytes: ALP when it is smaller than `best`,
     /// the plan of the integer codecs, and saves 1/8 of raw, else `best`.
+    #[inline(never)]
     pub(crate) fn plan<const W: usize>(&mut self, chunk: &[u8], best: Plan) -> Plan {
         let count = chunk.len().div_euclid(W);
         if count < 2 {
@@ -318,10 +319,18 @@ impl Pairs {
         }
         self.values = self.values.strict_add(count);
         let limit = best.len(count, W);
-        let mut picked = [0; RUN * 8];
-        let picked = pick::<W>(chunk, picked.split_at_mut(RUN.strict_mul(W)).0);
+        let header = vector::header_len(Header::fields(W), W);
+        if limit <= header {
+            return best;
+        }
+        let mut buffer = [0; RUN * 8];
+        let picked = if count <= RUN {
+            chunk
+        } else {
+            pick::<W>(chunk, buffer.split_at_mut(RUN.strict_mul(W)).0)
+        };
         let (pair, size) = self.best::<W>(picked);
-        let estimate = vector::header_len(Header::fields(W), W).strict_add(
+        let estimate = header.strict_add(
             size.strict_mul(count)
                 .div_ceil(picked.len().div_euclid(W).strict_mul(8)),
         );

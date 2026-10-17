@@ -2089,6 +2089,20 @@ mod tests {
             }
         }
 
+        /// The picked samples of the second vector are integers, and a quarter of the
+        /// others are eighths. The whole vector is smaller under `(3, 0)`, but the
+        /// encoder judges the pairs on the picked samples.
+        #[test]
+        fn judges_the_pairs_on_the_picked_samples() {
+            let first = runs([0, 0, 0, 0, 3, 3, 3, 3]);
+            let second: Vec<f64> = (0..1_024)
+                .map(|k| f64::from(k % 64) + if k % 4 == 1 { 0.125 } else { 0.0 })
+                .collect();
+            for scalar in FLOATS {
+                assert_eq!(pair_after(scalar, &first, &second), [0, 0], "{scalar:?}");
+            }
+        }
+
         /// The encoder keeps the first of two pairs of one size, and when each pair
         /// wins 4 runs, the search puts `(0, 0)` first in either order.
         #[test]
