@@ -46,6 +46,10 @@ mod unwind;
 #[cfg(feature = "open62541")]
 mod value;
 
+// The copy calls the libcrypto of `aws-lc-sys`, and no Rust here names the crate, which
+// rustc links only when it is named.
+#[cfg(feature = "open62541")]
+use aws_lc_sys as _;
 #[cfg(feature = "open62541")]
 pub use config::Config;
 #[cfg(feature = "open62541")]
@@ -274,10 +278,17 @@ mod tests {
         if !child::running() {
             return;
         }
-        let configure = |vars| {
-            let builds = compiler::configure(Path::new("/copy"), "", "a.c", env(vars));
-            builds.map(|builds| builds.address_sanitized)
+        let configure_with = |vars| {
+            compiler::configure(
+                Path::new("/copy"),
+                "",
+                "a.c",
+                Path::new("/crypto"),
+                env(vars),
+            )
         };
+        let configure =
+            |vars| configure_with(vars).map(|builds| builds.address_sanitized);
         assert_eq!(
             configure(&[]),
             Err("connector-opcua: the compiler /missing/cl.exe is like MSVC; flags.txt \
@@ -289,8 +300,7 @@ mod tests {
         assert_eq!(configure(&[FUZZING]), Ok(false));
         assert_eq!(configure(&[(SANITIZE, "thread")]), Err(refusal("thread")));
         let server = |vars| {
-            let builds = compiler::configure(Path::new("/copy"), "", "a.c", env(vars));
-            let shim = builds.unwrap().shim;
+            let shim = configure_with(vars).unwrap().shim;
             let file = shim.get_files().any(|file| file.ends_with("src/server.c"));
             let internal = Path::new("/copy/src").display().to_string();
             let args = args(&tool(shim, "/missing/gcc"));
@@ -298,6 +308,44 @@ mod tests {
         };
         assert_eq!(server(&[FUZZING]), (false, false));
         assert_eq!(server(&[FUZZING, ("CARGO_FEATURE_SIM", "1")]), (true, true));
+        let builds = configure_with(&[FUZZING]).unwrap();
+        let crypto = [builds.library, builds.shim].map(|build| {
+            let args = args(&tool(build, "/missing/gcc"));
+            includes(&args).contains(&"/crypto")
+        });
+        assert_eq!(crypto, [true, false]);
+    }
+
+    #[test]
+    fn crypto_takes_the_one_include_of_aws_lc() {
+        let vars = |vars: &[(&str, &str)]| {
+            let vars = vars.iter().map(|(n, v)| ((*n).to_owned(), (*v).to_owned()));
+            compiler::crypto(vars.collect::<Vec<_>>())
+        };
+        let include = ("DEP_AWS_LC_0_45_0_INCLUDE", "/a");
+        let others = [
+            ("DEP_AWS_LC_0_45_0_ROOT", "/b"),
+            ("DEP_AWS_LC_FIPS_0_13_0_INCLUDE", "/c"),
+            ("DEP_AWS_LC_INCLUDE", "/d"),
+            ("DEP_AWS_LC_0_4X_0_INCLUDE", "/e"),
+        ];
+        assert_eq!(vars(&[others[0], include, others[1]]), Ok("/a".into()));
+        let error = |count: usize, found: &str| {
+            Err(format!(
+                "connector-opcua: the build script has {count} variables \
+                 DEP_AWS_LC_<version>_INCLUDE, not one: {found}"
+            ))
+        };
+        assert_eq!(vars(&others), error(0, "[]"));
+        let two = ("DEP_AWS_LC_0_46_0_INCLUDE", "/f");
+        assert_eq!(
+            vars(&[include, two]),
+            error(
+                2,
+                "[(\"DEP_AWS_LC_0_45_0_INCLUDE\", \"/a\"), \
+                 (\"DEP_AWS_LC_0_46_0_INCLUDE\", \"/f\")]"
+            )
+        );
     }
 
     /// `configure` checks the compiler that `sanitize` picks, so a sanitizer moves a

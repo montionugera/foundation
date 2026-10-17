@@ -27,18 +27,40 @@ fn the_global_clocks_give_a_fixed_time() {
     assert_eq!((now, monotonic, offset), (0, 0, 0));
 }
 
-/// The constructors and the members of the event loop that abort.
-const REFUSED: [&str; 9] = [
+/// The constructors that abort, of the event loop and of each policy that the copy
+/// omits, and the members of the event loop that abort.
+const REFUSED: [&str; 19] = [
     "UA_EventLoop_new_POSIX",
     "UA_ConnectionManager_new_POSIX_TCP",
     "UA_ConnectionManager_new_POSIX_UDP",
     "UA_ConnectionManager_new_POSIX_Ethernet",
     "UA_InterruptManager_new_POSIX",
+    "UA_SecurityPolicy_Basic128Rsa15",
+    "UA_SecurityPolicy_Basic256",
+    "UA_SecurityPolicy_EccBrainpoolP256r1",
+    "UA_SecurityPolicy_EccBrainpoolP384r1",
+    "UA_SecurityPolicy_EccCurve25519",
+    "UA_SecurityPolicy_EccCurve448",
+    "UA_SecurityPolicy_EccNistP256",
+    "UA_SecurityPolicy_EccNistP256AesGcm",
+    "UA_SecurityPolicy_EccNistP256ChaChaPoly",
+    "UA_SecurityPolicy_EccNistP384",
     "UA_EventLoop.stop",
     "UA_EventLoop.free",
     "UA_EventLoop.registerEventSource",
     "UA_EventLoop.deregisterEventSource",
 ];
+
+/// The constructors of the file stores, which `shim.c` defines to abort where the copy
+/// names them.
+const FILE_STORES: &[&str] = if cfg!(any(target_os = "linux", windows)) {
+    &[
+        "UA_CertificateGroup_Filestore",
+        "UA_SecurityPolicy_Filestore",
+    ]
+} else {
+    &[]
+};
 
 /// The variable that names the call that `call_refused` makes.
 const CHILD: &str = "CONNECTOR_OPCUA_REFUSED";
@@ -79,8 +101,57 @@ fn call_refused() {
         "UA_InterruptManager_new_POSIX" => unsafe {
             ffi::UA_InterruptManager_new_POSIX(empty())
         },
-        _ => call_member(&name),
+        _ => call_policy(&name),
     };
+}
+
+/// Calls the constructor of the policy or the file store that `name` names.
+fn call_policy(name: &str) -> ! {
+    let (none, logger) = (std::ptr::null_mut(), std::ptr::null());
+    let empty = || Bytes {
+        length: 0,
+        data: std::ptr::null_mut(),
+    };
+    let rsa = |make: ffi::Rsa| {
+        // SAFETY: each aborts before it reads its arguments.
+        unsafe { make(none, empty(), empty(), logger) }
+    };
+    let ecc = |make: ffi::Ecc| {
+        // SAFETY: as above.
+        unsafe { make(none, 0, empty(), empty(), logger) }
+    };
+    let status = match name {
+        "UA_SecurityPolicy_Basic128Rsa15" => rsa(ffi::UA_SecurityPolicy_Basic128Rsa15),
+        "UA_SecurityPolicy_Basic256" => rsa(ffi::UA_SecurityPolicy_Basic256),
+        "UA_SecurityPolicy_EccBrainpoolP256r1" => {
+            ecc(ffi::UA_SecurityPolicy_EccBrainpoolP256r1)
+        }
+        "UA_SecurityPolicy_EccBrainpoolP384r1" => {
+            ecc(ffi::UA_SecurityPolicy_EccBrainpoolP384r1)
+        }
+        "UA_SecurityPolicy_EccCurve25519" => ecc(ffi::UA_SecurityPolicy_EccCurve25519),
+        "UA_SecurityPolicy_EccCurve448" => ecc(ffi::UA_SecurityPolicy_EccCurve448),
+        "UA_SecurityPolicy_EccNistP256" => ecc(ffi::UA_SecurityPolicy_EccNistP256),
+        "UA_SecurityPolicy_EccNistP256AesGcm" => {
+            ecc(ffi::UA_SecurityPolicy_EccNistP256AesGcm)
+        }
+        "UA_SecurityPolicy_EccNistP256ChaChaPoly" => {
+            ecc(ffi::UA_SecurityPolicy_EccNistP256ChaChaPoly)
+        }
+        "UA_SecurityPolicy_EccNistP384" => ecc(ffi::UA_SecurityPolicy_EccNistP384),
+        #[cfg(any(target_os = "linux", windows))]
+        // SAFETY: as above.
+        "UA_CertificateGroup_Filestore" => unsafe {
+            ffi::UA_CertificateGroup_Filestore(none, none, empty(), logger, none)
+        },
+        #[cfg(any(target_os = "linux", windows))]
+        // SAFETY: as above.
+        "UA_SecurityPolicy_Filestore" => unsafe {
+            ffi::UA_SecurityPolicy_Filestore(none, none, empty())
+        },
+        _ => call_member(name),
+    };
+    panic!("{name} gave {:?}", Status(status))
 }
 
 /// Calls the member of the event loop that `name` names.
@@ -112,7 +183,7 @@ fn call_member(name: &str) -> ! {
 
 #[test]
 fn each_refused_call_prints_its_name_and_aborts() {
-    for name in REFUSED {
+    for name in REFUSED.iter().chain(FILE_STORES) {
         let line =
             format!("connector-opcua: open62541 called {name}, which is not built\n");
         crate::child::aborted_in_c("link::call_refused", &[(CHILD, name)], &line);
@@ -343,11 +414,13 @@ fn the_copy_links_the_timer() {
     assert_eq!(distinct.len(), functions.len());
 }
 
-/// Each symbol outside the copy, `shim.c`, and `server.c` that they may name in glibc:
-/// on x86-64 with GCC or Clang at each optimization level, and on 64-bit Arm with Clang
-/// at `-O2` and `-moutline-atomics`. None gives or takes a heap block, so no block
-/// crosses between the allocator of libc and `src/alloc.rs`.
-const OUTSIDE: [&str; 35] = [
+/// Each symbol outside the copy, `shim.c`, `server.c`, and the libcrypto ([`crypto`])
+/// that they may name in glibc: on x86-64 with GCC or Clang at each optimization level,
+/// and on 64-bit Arm with Clang at `-O2` and `-moutline-atomics`. Only
+/// `UA_CertificateUtils_getThumbprint` of the OpenSSL plugins calls `malloc` and
+/// `free`, and it frees the block that it takes, so no block crosses between the
+/// allocator of libc and `src/alloc.rs`.
+const OUTSIDE: [&str; 45] = [
     "_GLOBAL_OFFSET_TABLE_",
     "__ctype_b_loc",
     "__errno_location",
@@ -356,6 +429,7 @@ const OUTSIDE: [&str; 35] = [
     "__memmove_chk",
     "__memset_chk",
     "__printf_chk",
+    "__sprintf_chk",
     "__stack_chk_fail",
     "__stack_chk_guard",
     "__syslog_chk",
@@ -368,22 +442,56 @@ const OUTSIDE: [&str; 35] = [
     "connector_opcua_malloc",
     "connector_opcua_realloc",
     "fflush",
+    "fgets",
     "fprintf",
+    "fputs",
+    "free",
+    "fwrite",
+    "malloc",
     "memcmp",
     "memcpy",
     "memmove",
     "memset",
     "printf",
     "puts",
+    "sprintf",
     "stderr",
+    "stdin",
     "stdout",
     "strcmp",
     "strlen",
     "strncmp",
+    "strncpy",
     "strtod",
+    "strtok_r",
     "syslog",
     "write",
 ];
+
+/// The prefix that the headers of the libcrypto of `aws-lc-sys` give each of its
+/// symbols. `cargo xtask open62541` lists each that the copy may name.
+fn crypto() -> String {
+    let dir = std::path::Path::new(env!("CONNECTOR_OPCUA_CRYPTO"));
+    let path = dir.join("openssl/boringssl_prefix_symbols.h");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let prefix = text
+        .lines()
+        .find_map(|line| line.strip_prefix("#define BORINGSSL_PREFIX "));
+    format!("{}_", prefix.expect("names the prefix").trim())
+}
+
+#[test]
+fn crypto_gives_the_prefix_of_aws_lc() {
+    let prefix = crypto();
+    let version = prefix
+        .strip_prefix("aws_lc_")
+        .and_then(|v| v.strip_suffix('_'));
+    let numbers = version.map(|v| v.split('_').map(str::parse::<u32>).collect());
+    assert!(
+        matches!(numbers, Some(Ok(n)) if Vec::len(&n) == 3),
+        "{prefix}"
+    );
+}
 
 /// At `UA_MULTITHREADING` 0 the copy takes no lock and calls no atomic, so the symbol
 /// tests fail on each such name only while the list holds none.
@@ -466,9 +574,14 @@ fn the_c_names_only_the_listed_symbols_outside_it() {
     let outside: Vec<&str> =
         undefined.difference(&defined).map(String::as_str).collect();
     assert!(outside.contains(&"connector_opcua_malloc"), "{outside:?}");
+    let prefix = crypto();
     let unlisted: Vec<&str> = outside
         .into_iter()
-        .filter(|name| !(OUTSIDE.contains(name) || (cfg!(asan) && sanitizer(name))))
+        .filter(|name| {
+            !(OUTSIDE.contains(name)
+                || name.starts_with(&prefix)
+                || (cfg!(asan) && sanitizer(name)))
+        })
         .collect();
     assert!(unlisted.is_empty(), "the C names {unlisted:?}");
 }
@@ -1225,26 +1338,46 @@ fn the_tests_reach_neither_interrupt_server_nor_random_seed() {
     assert!(reached.is_empty(), "the test binary keeps {reached:?}");
 }
 
-/// Checks the reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
-/// open62541`, with [`the_production_code_gives_a_client_no_security_policy`].
+/// The copy compiles the policy `None` and the three current policies, and no
+/// deprecated or ECC policy.
 #[test]
-fn the_shim_refuses_encryption() {
-    let errors =
-        check_shim("#pragma GCC diagnostic pop", "#define UA_ENABLE_ENCRYPTION");
-    assert!(
-        errors.contains("connector-opcua builds open62541 with encryption off"),
-        "{errors}"
+fn the_copy_holds_only_the_three_current_policies() {
+    let copy = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../patches/open62541");
+    let sources = std::fs::read_to_string(copy.join("sources.txt")).unwrap();
+    let policies: Vec<_> = sources
+        .lines()
+        .filter(|source| source.contains("securitypolicy_"))
+        .collect();
+    assert_eq!(
+        policies,
+        [
+            "plugins/crypto/openssl/securitypolicy_aes128sha256rsaoaep.c",
+            "plugins/crypto/openssl/securitypolicy_aes256sha256rsapss.c",
+            "plugins/crypto/openssl/securitypolicy_basic256sha256.c",
+            "plugins/crypto/openssl/securitypolicy_common.c",
+            "plugins/crypto/ua_securitypolicy_none.c",
+        ]
     );
 }
 
 /// Checks the reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
-/// open62541`: the default config of a client with encryption off has only the policy
-/// `None`, and the production code names no security policy.
+/// open62541`: the default config of a client has only the policy `None`, and the
+/// production code names no security policy and no function that adds one, other
+/// than the stubs that abort.
 #[test]
 fn the_production_code_gives_a_client_no_security_policy() {
     let policy = |name: &str| {
-        name.starts_with("UA_SecurityPolicy")
-            || ["securityPolicies", "authSecurityPolicies"].contains(&name)
+        (name.starts_with("UA_SecurityPolicy_")
+            && !REFUSED.contains(&name)
+            && name != "UA_SecurityPolicy_Filestore")
+            || [
+                "UA_ClientConfig_setDefaultEncryption",
+                "UA_ClientConfig_setAuthenticationCert",
+                "securityPolicies",
+                "authSecurityPolicies",
+            ]
+            .contains(&name)
     };
     let named = named_in_production(&root(), policy);
     assert!(named.is_empty(), "names {named:?}");
@@ -1305,6 +1438,7 @@ fn the_c_on_64_bit_arm_names_only_the_listed_symbols_outside_it() {
                     None => preprocess.arg(flag),
                 };
             }
+            preprocess.arg(concat!("-I", env!("CONNECTOR_OPCUA_CRYPTO")));
             let status = preprocess
                 .arg(copy.join(source))
                 .arg("-o")
@@ -1335,9 +1469,14 @@ fn the_c_on_64_bit_arm_names_only_the_listed_symbols_outside_it() {
         undefined.contains("connector_opcua_malloc"),
         "{undefined:?}"
     );
+    let prefix = crypto();
     let unlisted: Vec<String> = undefined
         .into_iter()
-        .filter(|name| !defined.contains(name) && !OUTSIDE.contains(&name.as_str()))
+        .filter(|name| {
+            !(defined.contains(name)
+                || OUTSIDE.contains(&name.as_str())
+                || name.starts_with(&prefix))
+        })
         .collect();
     assert!(unlisted.is_empty(), "the C names {unlisted:?}");
 }

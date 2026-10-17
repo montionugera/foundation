@@ -49,12 +49,29 @@ fn build() {
                   environment"
     )]
     let env = |name: &str| std::env::var(name).ok();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "cargo gives a build script the metadata of its dependencies only in \
+                  the environment"
+    )]
+    let crypto = compiler::crypto(std::env::vars()).unwrap_or_else(|e| panic!("{e}"));
+    // The test that compiles the copy for 64-bit Arm includes the libcrypto too.
+    println!(
+        "cargo::rustc-env=CONNECTOR_OPCUA_CRYPTO={}",
+        crypto.display()
+    );
     let compiler::Builds {
         mut library,
         shim,
         address_sanitized,
-    } = compiler::configure(&copy, &read("flags.txt"), &read("sources.txt"), env)
-        .unwrap_or_else(|e| panic!("{e}"));
+    } = compiler::configure(
+        &copy,
+        &read("flags.txt"),
+        &read("sources.txt"),
+        &crypto,
+        env,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     if address_sanitized {
         println!("cargo::rustc-cfg=asan");
     }

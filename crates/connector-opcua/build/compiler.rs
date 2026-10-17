@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use cc::{Build, Tool};
 
@@ -29,10 +29,41 @@ pub(crate) struct Builds {
     pub(crate) address_sanitized: bool,
 }
 
+/// Gives the include directory of the libcrypto of `aws-lc-sys`, from `vars`, the
+/// variables of a build script. Cargo gives a build script the `links` metadata of each
+/// direct dependency, and the name of the `links` of `aws-lc-sys` holds its version.
+///
+/// # Errors
+///
+/// When `vars` holds no variable `DEP_AWS_LC_<version>_INCLUDE`, or more than one.
+pub(crate) fn crypto(
+    vars: impl IntoIterator<Item = (String, String)>,
+) -> Result<PathBuf, String> {
+    let found: Vec<_> = vars
+        .into_iter()
+        .filter(|(name, _)| {
+            name.strip_prefix("DEP_AWS_LC_")
+                .and_then(|rest| rest.strip_suffix("_INCLUDE"))
+                .is_some_and(|version| {
+                    version.split('_').all(|n| n.parse::<u32>().is_ok())
+                })
+        })
+        .collect();
+    match <[_; 1]>::try_from(found) {
+        Ok([(_, dir)]) => Ok(PathBuf::from(dir)),
+        Err(found) => Err(format!(
+            "connector-opcua: the build script has {} variables \
+             DEP_AWS_LC_<version>_INCLUDE, not one: {found:?}",
+            found.len()
+        )),
+    }
+}
+
 /// Gives the builds of [`builds`] under the sanitizers of the Rust build, as
-/// [`Builds::sanitize`] does. `env` gives the variables of a build script, and the
-/// shim build holds `src/server.c`, with the `src` folder of the copy on its include
-/// path, when it sets `CARGO_FEATURE_SIM`.
+/// [`Builds::sanitize`] does, with `crypto`, the include directory of the libcrypto,
+/// on the include path of the library. `env` gives the variables of a build script,
+/// and the shim build holds `src/server.c`, with the `src` folder of the copy on its
+/// include path, when it sets `CARGO_FEATURE_SIM`.
 ///
 /// # Errors
 ///
@@ -41,9 +72,12 @@ pub(crate) fn configure(
     copy: &Path,
     flags: &str,
     sources: &str,
+    crypto: &Path,
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<Builds, String> {
     let mut builds = builds(copy, flags, sources);
+    // Only the OpenSSL plugins of the copy include the headers of the libcrypto.
+    builds.library.include(crypto);
     if env("CARGO_FEATURE_SIM").is_some() {
         sim(&mut builds.shim, copy);
     }
