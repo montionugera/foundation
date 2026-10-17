@@ -12,6 +12,7 @@
 //!   the status writer writes no more.
 //! - `clear`: a clear of the shown error, with no poll, after a clear.
 //! - `show`: a show of the same error, with no poll, after it was shown.
+//! - `note`: a note of the same text, with no poll, after it was noted.
 //!
 //! Each figure is ns per step, with the count of the allocations of the steps. Judge
 //! `poll` by its p50. A line panics when its last status state is not `stopped`, or
@@ -56,6 +57,7 @@ fn main() {
         Step::Closed,
         Step::Clear,
         Step::Show,
+        Step::Note,
     ]
     .map(run);
     print(&lines);
@@ -71,6 +73,7 @@ enum Step {
     Closed,
     Clear,
     Show,
+    Note,
 }
 
 impl Step {
@@ -83,6 +86,7 @@ impl Step {
             Self::Closed => "poll + set (closed)",
             Self::Clear => "clear",
             Self::Show => "show",
+            Self::Note => "note",
         }
     }
 }
@@ -128,13 +132,14 @@ impl Kind for Steps {
                     Step::Poll => {}
                     Step::Clear => ctx.clear_error(),
                     Step::Show => ctx.error(&"refused"),
+                    Step::Note => ctx.note(&"steady"),
                     Step::Add => count.add(std::hint::black_box(1)),
                     _ => count.set(std::hint::black_box(i)),
                 };
                 allocations += ALLOCATOR.count(set).1;
                 if !matches!(
                     self.step,
-                    Step::Set | Step::Add | Step::Clear | Step::Show
+                    Step::Set | Step::Add | Step::Clear | Step::Show | Step::Note
                 ) {
                     Yield(false).await;
                 }
