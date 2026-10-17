@@ -2105,9 +2105,10 @@ mod tests {
         assert_eq!(returned, ms(3_000), "returns once the home applied state 2");
     }
 
-    /// The removal at 500 ms closes the writer while its flush sleeps until 1 s. The
-    /// flush ends at that wake, which also polls a restart that the seed draws
-    /// before 1 s. Its timers wake only when due.
+    /// After the removal at 500 ms, the end of the first run at 900 ms gets `Removed`
+    /// and closes the writer, while its flush sleeps until 1 s. The flush ends at
+    /// that wake, which also polls a restart that the seed draws before 1 s. Its
+    /// timers wake only when due.
     #[test]
     fn wakes_a_restart_once_more_after_a_change_of_state_closed_the_sleeping_flush() {
         each_seed("restart before the wake of the flush", |seed| {
