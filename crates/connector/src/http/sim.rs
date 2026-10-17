@@ -14,6 +14,7 @@ use http::header::CONNECTION;
 use http::{HeaderValue, Request, Response, StatusCode};
 use http_body::Body as _;
 use hyper::body::Incoming;
+use hyper::rt::Write as _;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use rustls::ServerConfig;
@@ -73,9 +74,11 @@ pub fn ca() -> Roots {
 /// ends the stream with no answer.
 ///
 /// It runs until `until` is cancelled or the listener fails. It then drops `listener`
-/// and each stream it accepted, with no close. On each return, each stream that it
-/// accepted has ended. Dropping the future stops only the accepts: each stream it
-/// accepted runs on until `until`.
+/// and closes each stream it accepted, with a `close_notify` under TLS, then a FIN. An
+/// answer in flight can be cut. The close waits on no peer: a shutdown that cannot
+/// finish at once, and a stream in its TLS handshake, drop the stream, which resets
+/// it. On each return, each stream that it accepted has ended. Dropping the future
+/// stops only the accepts: each stream it accepted runs on until `until`.
 ///
 /// # Errors
 ///
@@ -210,24 +213,28 @@ async fn accept(
         let (tls, stop) = (tls.clone(), stop.clone());
         // A stream that fails has no one to tell.
         group.tasks().spawn(async move {
-            let served = stop.race(async move {
-                let stream = match tls {
-                    Some(config) => match Stream::server(tcp, config).await {
-                        Ok(stream) => stream,
-                        Err(_) => return,
-                    },
-                    None => Stream::plain(tcp, Rc::default()),
-                };
-                // The person approved this server on the condition that it gets no
-                // timer.
-                let served = http1::Builder::new()
-                    .auto_date_header(false)
-                    .header_read_timeout(None)
-                    .half_close(true)
-                    .serve_connection(stream, service);
-                drop(served.await);
-            });
-            served.await;
+            let stream = match tls {
+                Some(config) => match stop.race(Stream::server(tcp, config)).await {
+                    Some(Ok(stream)) => stream,
+                    Some(Err(_)) | None => return,
+                },
+                None => Stream::plain(tcp, Rc::default()),
+            };
+            // The person approved this server on the condition that it gets no timer.
+            let mut served = http1::Builder::new()
+                .auto_date_header(false)
+                .header_read_timeout(None)
+                .half_close(true)
+                .serve_connection(stream, service);
+            if stop.race(&mut served).await.is_none() {
+                // The close waits on no peer: a shutdown that cannot finish at once
+                // drops the stream, which resets it.
+                let mut stream = served.into_parts().io;
+                drop(
+                    poll_fn(|cx| Poll::Ready(Pin::new(&mut stream).poll_shutdown(cx)))
+                        .await,
+                );
+            }
         });
     }
 }
