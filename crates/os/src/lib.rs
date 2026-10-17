@@ -41,7 +41,7 @@ pub mod memory;
 mod net;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod paths;
-mod roots;
+pub mod roots;
 mod shards;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[expect(unsafe_code, reason = "a signal mask is an OS call")]
@@ -55,7 +55,7 @@ mod wall;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use files::Disk;
-pub use roots::{Roots, Source};
+pub use roots::Roots;
 
 /// The monotonic clock of this node, which counts time while the machine sleeps. Each
 /// call starts a new clock at `Monotonic(0)`. Clones read the same clock. Never
@@ -253,7 +253,7 @@ pub fn roots() -> Roots {
         clippy::disallowed_methods,
         reason = "`load_native_certs` reads these two, and the source states its pick"
     )]
-    let source = Source::of(
+    let source = roots::Source::of(
         std::env::var_os("SSL_CERT_FILE").as_deref(),
         std::env::var_os("SSL_CERT_DIR").as_deref(),
     );

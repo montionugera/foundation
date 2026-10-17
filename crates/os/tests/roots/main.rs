@@ -35,7 +35,7 @@ fn reads_the_certificates_of_the_pem_file_of_ssl_cert_file() {
         lines(&os::Roots {
             certificates: vec![der],
             failures: vec![],
-            source: os::Source::Paths {
+            source: os::roots::Source::Paths {
                 file: Some(file.clone()),
                 dirs: vec![],
             },
@@ -93,7 +93,7 @@ fn reads_only_the_files_of_the_directory_of_ssl_cert_dir() {
         lines(&os::Roots {
             certificates: vec![include_bytes!("ca.der").to_vec()],
             failures: vec![],
-            source: os::Source::Paths {
+            source: os::roots::Source::Paths {
                 file: None,
                 dirs: vec![dir.clone()],
             },

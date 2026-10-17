@@ -279,7 +279,7 @@ fn failing(failures: Vec<String>) -> os::Roots {
     os::Roots {
         certificates: vec![super::CA.to_vec()],
         failures,
-        source: os::Source::Store,
+        source: os::roots::Source::Store,
     }
 }
 
@@ -310,7 +310,7 @@ fn a_node_warns_of_the_first_16_failures_of_its_roots_and_counts_the_rest() {
 #[test]
 fn the_count_of_the_failures_of_the_roots_gives_the_paths_that_were_read() {
     let roots = os::Roots {
-        source: os::Source::Paths {
+        source: os::roots::Source::Paths {
             file: Some("/roots.pem".into()),
             dirs: vec!["/a".into(), "/b".into()],
         },
@@ -333,7 +333,7 @@ fn the_count_of_the_failures_of_the_roots_gives_the_paths_that_were_read() {
 fn a_long_source_of_the_roots_is_cut_on_the_count_line() {
     let dir = format!("/{}", long(3000));
     let roots = os::Roots {
-        source: os::Source::Paths {
+        source: os::roots::Source::Paths {
             file: None,
             dirs: vec![dir.clone().into()],
         },
