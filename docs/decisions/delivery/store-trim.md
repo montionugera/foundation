@@ -162,7 +162,10 @@
   lost the first record of the walk. The first sync of each open, which adds one sync to
   an open with no trim, is from #2970, approved by `laptop.architect`
   (2026-10-17T03:30:04Z):
-  https://github.com/synnaxlabs/foundation/pull/2970#issuecomment-6229057387. Lost: a
+  https://github.com/synnaxlabs/foundation/pull/2970#issuecomment-6229057387, with a
+  failed sync of a commit as a cause and the place after the walk at
+  2026-10-17T04:29:55Z:
+  https://github.com/synnaxlabs/foundation/pull/2970#issuecomment-6229648982. Lost: a
   first sync only when the restart record goes past the room that the older header slot
   keeps, which keeps one sync for most opens with no trim and adds the tail of that slot
   to `Header::decode`.

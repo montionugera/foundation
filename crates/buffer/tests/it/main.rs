@@ -4661,11 +4661,11 @@ fn fail_then_cut(
     (sim, node, failed, second)
 }
 
-/// A failed sync near the end of an open that trims a ring with no free block, then
-/// a power cut during the next open, keeps each tail. The failed sync can
-/// leave the checkpoint of the trim in the cache only, and the next open reads it
-/// there: it writes over the records that it frees only once it is durable. Each
-/// fault fails a sync of the first open: a later fault would fail a sync of the next.
+/// A failed sync near the end of an open that trims a ring with no free block, then a
+/// power cut during the next open, keeps each tail. The failed sync can leave the
+/// checkpoint of the trim in the cache only, and the next open reads it there: it
+/// writes over the records that it frees only once it is durable. Each fault fails a
+/// sync of the first open: a later fault would fail a sync of the next.
 #[test]
 fn a_cut_open_after_a_failed_sync_of_an_open_that_trims_keeps_each_tail() {
     for seed in 0..2 {
@@ -4749,8 +4749,8 @@ fn fail_a_commit_then_cut(
 }
 
 /// A failed sync of a commit that trims, then a power cut during the next open, keeps
-/// each durable tail. The failed sync can leave the checkpoint in the
-/// cache only, and the open reads it there.
+/// each durable tail. The failed sync can leave the checkpoint in the cache only, and
+/// the open reads it there.
 #[test]
 fn a_cut_open_after_a_failed_sync_of_a_commit_that_trims_keeps_each_tail() {
     for seed in 0..2 {
