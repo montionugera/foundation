@@ -649,7 +649,8 @@ pub(crate) fn refuses_each_config_with_its_diagnostics(suite: &'static Suite) {
 
 /// For a kind whose check gives writes, a write channel that the hub does not define
 /// gives Stopped, class Config, no restart, and the text of
-/// `connector.unknown-channel`.
+/// `connector.unknown-channel`. A kind whose check gives no writes passes with no
+/// check, until the read form of #2642.
 pub(crate) fn stops_at_a_write_channel_that_the_hub_does_not_define(
     suite: &'static Suite,
 ) {

@@ -10,14 +10,20 @@
   needs and starts each writer that feeds it, its simulator, the name of its progress
   count, its backoff form, and the configs that its check refuses with their exact
   diagnostics. People own the scenarios. A kind that fails one has a defect, or the
-  person changes the scenario.
+  person changes the scenario. The scenarios cover kinds whose device is a TCP
+  address: a device that is not TCP waits on #3075, until the first suite of a kind
+  with no TCP carrier.
 
   "Heals" means: within `HEAL` (the backoff cap of 1 min, plus 10 s), the state is
   Running, the error is gone, and the progress count grows past its value at the start
   of the heal. The backoff form is `Restart` (the run ends, and the supervisor shows
   Restarting with restarts that grow) or `Run` (the run goes on: Running, class Retry,
   0 restarts, and no progress, as INFLUX KIND locks for `influx`). Scenarios 2, 3,
-  and 4 check the form that the kind names, and refuse the other one.
+  and 4 check the form that the kind names, and refuse the other one. One status
+  state for a run that waits between tries waits on #3076, until the next change of
+  `status::State` or a third form. The rulings of these two deferrals and of the
+  form of scenario 5: `laptop.architect-2`, 2026-10-17T22:04:56Z
+  (https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241915192).
 
   A scenario that runs past 90 s of plant time (`RING`, the sum of the steps of its
   sim) fails. The 4 MiB ring of `home::testing::shard` fills after about 100 s for
@@ -58,6 +64,8 @@
      diagnostics, and `Rig::supervise` ends with the same `Error::Config`. For a kind
      whose check gives writes, a write channel that no spec defines gives
      Stopped, class Config, 0 restarts, and the text of `connector.unknown-channel`.
+     A kind whose check gives no writes passes with no check, until the read form of
+     #2642.
 
   Scenarios 6 (random faults) and 7 (no secret in a status) come in #2642. The
   numbers are tunable by the architect of `connector`. Plan of `laptop.architect-2` at
