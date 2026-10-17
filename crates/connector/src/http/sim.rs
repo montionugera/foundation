@@ -247,10 +247,15 @@ fn close(stream: &mut Stream, cx: &mut Context<'_>) {
         let mut read = ReadBuf::new(&mut bytes);
         match Pin::new(&mut *stream).poll_read(cx, read.unfilled()) {
             Poll::Ready(Ok(())) if !read.filled().is_empty() => {}
-            Poll::Ready(_) | Poll::Pending => break,
+            // An error: the stream has failed, its peer sees it, and `serve` has no
+            // one to tell.
+            Poll::Ready(Ok(()) | Err(_)) | Poll::Pending => break,
         }
     }
-    drop(Pin::new(stream).poll_shutdown(cx));
+    // An error, as of a read.
+    match Pin::new(stream).poll_shutdown(cx) {
+        Poll::Ready(Ok(()) | Err(_)) | Poll::Pending => {}
+    }
 }
 
 async fn respond(
