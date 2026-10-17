@@ -1210,7 +1210,7 @@
   Amended (2026-10-17T21:25:15Z, #3005): a step short of the path that a hidden folder
   holds is checked against the folders, as one before a `..` is, and passes them only
   when they hold it or it is a directory on the way to a folder. It still gets no
-  `Hidden` unless the folders of each limit hold it, as the ruling of
+  `Hidden` unless it passes the folders of each limit, as the ruling of
   2026-10-17T17:16:50Z
   (https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237413267) rules. So
   with `wide` within `work` and the hidden `work/data` and `work/sub/s`, and `narrow`
@@ -1218,5 +1218,19 @@
   `work/data/l/s/a` through a link `l` to `work/sub`, as for `work/data/none/a.hcl`,
   where `wide` gives `Hidden`. With one limit, a path through a hidden folder outside
   the folders (`/out/h/l/a` with `l` a link to `/work`) gives `Outside`, where it gave
-  `Ok`. Decided by `laptop.architect-2` (2026-10-17T21:25:15Z,
+  `Ok`. Supersedes "passes, and the end decides" and "a link in `/out/h` that names a
+  folder leads there, as a link outside the folders does" of the amendment of
+  2026-10-17T07:45:44Z for a step that a hidden folder holds, and "through a link
+  outside the folders that names one" of that amendment for a link in a hidden folder
+  (https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237413267, item 3).
+  Decided by `laptop.architect-2` (2026-10-17T21:25:15Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6241334906).
+  Amended (2026-10-17T21:54:23Z, #3005): a step short of the path that the folders check
+  passes as a directory on the way to a folder only while that folder is there, and else
+  gives `Replaced` when its path is on the way to the path of a folder that a program
+  moved or replaced. So with the folder `work/data/pub` and the hidden `work/data`,
+  after a program moves `pub` to `work/old`, `work/data/pub/a` gives `Replaced`, where
+  it gave `Hidden`. A step before a `..` is one too: with the folders `work/data/pub`
+  and `work/b`, after the same move, `work/data/../b/f` gives `Replaced`, where it read.
+  Decided by `laptop.architect-2` (2026-10-17T21:54:23Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6241808609).
