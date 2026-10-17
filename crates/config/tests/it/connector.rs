@@ -1,12 +1,14 @@
 //! The `connector` block, read from HCL and checked by the kinds of a table.
 
 use config::{Definition, Entry};
-use connector::kind::{Kind as _, Table};
+use connector::kind::{self, Channels, Context, Kind, Table};
 use document::diagnostic::{Code, Diagnostic};
 use document::encoding::DEPTH_MAX;
 use document::value::{self, Value};
 use document::{Attribute, Document, Map, Source};
+use proptest::prelude::*;
 use spec::connector::Connector;
+use spec::definition::Definition as Stored;
 use types::name::Name;
 
 const FIXTURE: &str = include_str!("../../../acceptance/tests/it/fixtures/influx.hcl");
@@ -616,4 +618,126 @@ fn finds_a_connector_beside_a_reserved_connector_of_another_name() {
     let found = config::connector(&[read(text)], &name("plant")).expect("found");
     assert_eq!(found.kind(), &name("opcua"));
     assert_eq!(found.node(), &name("edge"));
+}
+
+/// A kind that takes each config and gives no channels.
+struct Any;
+
+impl Kind for Any {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels::default())
+    }
+
+    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), kind::Error>> {
+        std::future::ready(Ok(()))
+    }
+}
+
+const LABELS: [&str; 6] = ["plant", "Plant", "PLANT", "@plant", "plant.@x", "other"];
+
+/// A `channel` or `connector` block: whether it is a connector, its label, and its
+/// text.
+fn block() -> impl Strategy<Value = (bool, &'static str, String)> {
+    let label = proptest::sample::select(LABELS.to_vec());
+    let kind = proptest::sample::select(vec![
+        "  kind = \"any\"\n",
+        "  kind = fill(\"k\")\n",
+        "",
+    ]);
+    let node = proptest::sample::select(vec![
+        "  node = \"edge\"\n",
+        "  node = fill(\"n\")\n",
+        "",
+    ]);
+    prop_oneof![
+        label.clone().prop_map(|label| {
+            (
+                false,
+                label,
+                format!("channel \"{label}\" {{\n  kind = \"index\"\n}}\n"),
+            )
+        }),
+        (label, kind, node).prop_map(|(label, kind, node)| {
+            (
+                true,
+                label,
+                format!("connector \"{label}\" {{\n{kind}{node}}}\n"),
+            )
+        }),
+    ]
+}
+
+proptest! {
+    /// At each label: a connector that `check` gives, `find` gives; a problem of
+    /// `find` other than `config.no-connector`, `check` gives; and a problem of `check`
+    /// in a `connector` block of the label in any ASCII case makes `find` fail.
+    #[test]
+    fn finds_what_check_finds_at_each_name(
+        blocks in proptest::collection::vec(block(), 1..=4),
+    ) {
+        let text: String = blocks.iter().map(|(.., text)| text.as_str()).collect();
+        let documents = [read(&text)];
+        let checked = config::check(&documents, &Table::new().with("any", Any));
+        let mut start = 0;
+        let mut spans = Vec::new();
+        for (connector, label, text) in &blocks {
+            spans.push((*connector, *label, start..start + text.len()));
+            start += text.len();
+        }
+        for label in LABELS {
+            let Ok(at) = label.parse::<Name>() else {
+                continue;
+            };
+            let found = config::connector(&documents, &at);
+            if let Ok(entries) = &checked
+                && let Some(entry) = entries.get(&at)
+                && let Definition::Spec(Stored::Connector(entry)) = &entry.definition
+            {
+                prop_assert_eq!(found.as_ref(), Ok(entry), "{}", text);
+            }
+            // `check` gives no other problem after a `fill` in any block.
+            let other_fill = blocks.iter().any(|(_, block, text)| {
+                !block.eq_ignore_ascii_case(label) && text.contains("fill(")
+            });
+            if let Err(problems) = &found
+                && !other_fill
+            {
+                let missing = problems
+                    .iter()
+                    .filter(|problem| problem.code.as_str() != "config.no-connector");
+                for problem in missing {
+                    let checked = checked.as_ref().err();
+                    prop_assert!(
+                        checked.is_some_and(|checked| checked.contains(problem)),
+                        "{label}: {problem:?} not in {checked:?}\n{text}",
+                    );
+                }
+            }
+            if let Err(problems) = &checked {
+                let at_block = problems.iter().find(|problem| {
+                    problem.span.is_some_and(|span| {
+                        let offset = usize::try_from(span.start().offset)
+                            .expect("a short text");
+                        spans.iter().any(|(connector, block, range)| {
+                            *connector
+                                && block.eq_ignore_ascii_case(label)
+                                && range.contains(&offset)
+                        })
+                    })
+                });
+                if let Some(problem) = at_block {
+                    prop_assert!(
+                        found.is_err(),
+                        "{label}: {problem:?}, found {found:?}\n{text}",
+                    );
+                }
+            }
+        }
+    }
 }
