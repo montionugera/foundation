@@ -1127,14 +1127,41 @@ mod tests {
         assert_eq!(got, [((0, 0, 0), ""), ((3, 0, 0), ""), ((2, 0, 0), "")]);
     }
 
+    /// The seed draws the first wait, so the restart comes before the cancel at
+    /// 500 ms or not.
     #[test]
     fn writes_the_end_of_a_run_in_place_of_the_error_it_showed() {
-        let steps = vec![Step::ShowEnd];
-        let out = supervise("script", steps, config(), Cancel::After(ms(500)));
-        let texts: Vec<_> = errors(&out.statuses).into_iter().map(|(_, t)| t).collect();
-        assert_eq!(texts, ["", "no reply", "no reply", "no reply"]);
-        let classes: Vec<_> = states(&out.statuses).iter().map(|s| s.1).collect();
-        assert_eq!(classes, [0, 2, 2, 2]);
+        let mut restarted = 0;
+        for seed in 0..SEEDS {
+            let steps = vec![Step::ShowEnd];
+            let cancel = Cancel::After(ms(500));
+            let out = supervise_in(seed, "script", steps, config(), cancel);
+            let errors = errors(&out.statuses);
+            let texts: Vec<_> = errors.iter().map(|(_, t)| *t).collect();
+            let classes: Vec<_> = states(&out.statuses).iter().map(|s| s.1).collect();
+            let wait = errors.get(2).map(|(backoff, _)| *backoff);
+            let ended = ["", "no reply", "no reply", "no reply"];
+            if wait.is_some_and(|wait| wait < ms(500)) {
+                restarted += 1;
+                assert_eq!(out.runs.len(), 2, "seed {seed}: a restart: {:?}", out.runs);
+                assert_eq!(texts[..4], ended, "seed {seed}");
+                assert_eq!(texts[4..], ["", ""], "seed {seed}: the cancel clears it");
+                assert_eq!(classes, [0, 2, 2, 2, 0, 0], "seed {seed}");
+            } else {
+                assert_eq!(
+                    out.runs.len(),
+                    1,
+                    "seed {seed}: no restart: {:?}",
+                    out.runs
+                );
+                assert_eq!(texts, ended, "seed {seed}");
+                assert_eq!(classes, [0, 2, 2, 2], "seed {seed}");
+            }
+        }
+        assert!(
+            0 < restarted && restarted < SEEDS,
+            "{restarted} of {SEEDS} seeds restart before the cancel, not each draw"
+        );
     }
 
     #[test]
@@ -1499,24 +1526,37 @@ mod tests {
 
     #[test]
     fn writes_the_backoff_that_is_left_when_the_home_refused_the_wait() {
-        let steps = vec![Step::Device(Span::ZERO), Step::Hold(ms(2_000))];
-        let (statuses, runs) = refuse_the_last_wait(0, steps, Span::ZERO);
-        let [_, second, third] = runs[..] else {
-            panic!("three runs: {runs:?}");
-        };
-        let (at, samples, ..) = &statuses[5];
-        assert_eq!(samples[..2], [1, 2], "the second wait: {statuses:?}");
-        let again = Span::from_nanos(second.nanos() + ms(3_000).nanos());
-        assert_eq!(*at, again, "written again 1 s after the refusal at the end");
-        let left = Span::from_nanos(samples[3]);
+        let mut longer = 0;
+        for seed in 0..SEEDS {
+            let steps = vec![Step::Device(Span::ZERO), Step::Hold(ms(2_000))];
+            let (statuses, runs) = refuse_the_last_wait(seed, steps, Span::ZERO);
+            let [_, second, third] = runs[..] else {
+                panic!("seed {seed}: three runs: {runs:?}");
+            };
+            let (at, samples, ..) = &statuses[5];
+            assert_eq!(
+                samples[..2],
+                [1, 2],
+                "seed {seed}: the second wait: {statuses:?}"
+            );
+            let again = Span::from_nanos(second.nanos() + ms(3_000).nanos());
+            assert_eq!(
+                *at, again,
+                "seed {seed}: written again 1 s after the refusal at the end"
+            );
+            let left = Span::from_nanos(samples[3]);
+            if left > Span::ZERO {
+                longer += 1;
+            }
+            assert_eq!(
+                left,
+                between(*at, third),
+                "seed {seed}: the wait from the write to the run: {statuses:?}"
+            );
+        }
         assert!(
-            left > Span::ZERO,
-            "the wait is longer than 1 s: {statuses:?}"
-        );
-        assert_eq!(
-            left,
-            between(*at, third),
-            "the wait from the write to the run"
+            0 < longer && longer < SEEDS,
+            "{longer} of {SEEDS} seeds wait longer than 1 s, not each draw"
         );
     }
 
@@ -1967,15 +2007,31 @@ mod tests {
         );
     }
 
+    /// The other writer closes at 5 s, as the frame is written again. The seed
+    /// picks which of the two runs first, so the home applies the frame of 5 s or
+    /// the one of 6 s.
     #[test]
     fn writes_a_last_frame_refused_for_5_s_until_the_home_applies_it() {
-        let (statuses, returned) = refused_until(0, vec![Step::Done], ms(5_000), None);
-        assert_eq!(
-            states(&statuses),
-            [(0, 0, 0), (3, 0, 0), (2, 0, 0)],
-            "each state after the one that the home refused waits for it"
+        let mut first = 0;
+        for seed in 0..SEEDS {
+            let steps = vec![Step::Done];
+            let (statuses, returned) = refused_until(seed, steps, ms(5_000), None);
+            assert_eq!(
+                states(&statuses),
+                [(0, 0, 0), (3, 0, 0), (2, 0, 0)],
+                "seed {seed}: each state after the one that the home refused waits \
+                 for it"
+            );
+            match returned {
+                at if at == ms(5_000) => first += 1,
+                at if at == ms(6_000) => {}
+                at => panic!("seed {seed}: returns at {at:?}, not at 5 s or 6 s"),
+            }
+        }
+        assert!(
+            0 < first && first < SEEDS,
+            "{first} of {SEEDS} seeds close the writer before the write at 5 s"
         );
-        assert_eq!(returned, ms(5_000), "returns once the frame of 5 s applied");
     }
 
     #[test]
@@ -4007,10 +4063,12 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn writes_a_backoff_that_ends_at_the_next_try_after_a_frame_ahead() {
-        let lead = ms(500);
-        let (statuses, again) = run_on(move |node, tasks| async move {
+    /// Runs a `Script` connector whose one run gives a device error after 10 ms, after
+    /// a status frame `lead` ahead, in a sim of `seed`. Gives the status and the start
+    /// of the second run, from the first frame.
+    fn after_a_frame_ahead(seed: u64, lead: Span) -> (Vec<Written>, Span) {
+        let node = sim::node::Config::default();
+        run_with(seed, node, move |node, tasks| async move {
             let script = Script {
                 steps: Mutex::new([Step::Device(ms(10))].into()),
                 ..Script::default()
@@ -4040,17 +4098,42 @@ mod tests {
                 panic!("two runs: {runs:?}");
             };
             (statuses.borrow().clone(), again - start)
-        });
-        let (at, samples, ..) = statuses
-            .iter()
-            .find(|(_, samples, ..)| samples[0] == 1)
-            .expect("a frame of state 1");
-        // `statuses` gives each stamp from the first frame: the one 500 ms ahead.
-        let next = Span::from_nanos(at.nanos() + samples[3]);
-        let run = Span::from_nanos(again.nanos() - lead.nanos());
-        assert_eq!(
-            next, run,
-            "the frame's time plus `backoff` is the next try: {statuses:?}"
+        })
+    }
+
+    /// The seed draws the first wait, so the next try comes before the frame's time
+    /// or after it.
+    #[test]
+    fn writes_a_backoff_that_ends_at_the_next_try_after_a_frame_ahead() {
+        let (lead, mut ahead) = (ms(500), 0);
+        for seed in 0..SEEDS {
+            let (statuses, again) = after_a_frame_ahead(seed, lead);
+            let (at, samples, ..) = statuses
+                .iter()
+                .find(|(_, samples, ..)| samples[0] == 1)
+                .expect("a frame of state 1");
+            // `statuses` gives each stamp from the first frame: the one 500 ms
+            // ahead.
+            let run = Span::from_nanos(again.nanos() - lead.nanos());
+            if samples[3] == 0 {
+                assert!(
+                    run <= *at,
+                    "seed {seed}: no backoff, so the next try passed by the frame's \
+                     time: {statuses:?}"
+                );
+                continue;
+            }
+            ahead += 1;
+            let next = Span::from_nanos(at.nanos() + samples[3]);
+            assert_eq!(
+                next, run,
+                "seed {seed}: the frame's time plus `backoff` is the next try: \
+                 {statuses:?}"
+            );
+        }
+        assert!(
+            0 < ahead && ahead < SEEDS,
+            "{ahead} of {SEEDS} seeds try again after the frame's time, not each draw"
         );
     }
 
@@ -4717,61 +4800,67 @@ mod tests {
     /// of the restart reads key 3.
     #[test]
     fn reads_a_channel_that_a_spec_change_defined_again_with_a_new_key() {
-        let read = read_through(
-            0,
-            Some(settings(Span::ZERO)),
-            |mut ctx, got| async move {
-                let mut reader = ctx.reader().expect("a reader");
-                let next = reader.next().await;
-                let read = next.as_ref().map(|received| series(received, 3));
-                got.lock()
-                    .expect("no panic")
-                    .push(read.map_err(Clone::clone));
-                let _received = next?;
-                Ok(())
-            },
-            |hub, clock| async move {
-                clock.sleep(ms(100)).await;
-                define(&hub, 3);
-                clock.sleep(ms(1_500)).await;
-                let channels = vec![name("plant.value")];
-                let mut writer =
-                    open_writer(&hub, "plant.other", Authority(1), channels).await;
-                let draft = draft_value(&writer, writer.now().nanos(), 7, 3);
-                let outcomes = writer.write(Label::Path(Path::Live), draft);
-                outcomes.expect("the home takes it");
-            },
-        );
-        read.end.expect("ok");
-        let removed = hub::reader::Ended::Removed(channel::Key::from_u128(2));
-        let text = removed.to_string();
-        assert_eq!(read.got, [Err(removed), Ok(vec![7])]);
-        assert_eq!(
-            states(&read.statuses),
-            [
-                (0, 0, 0),
-                (3, 3, 0),
-                (1, 3, 0),
-                (0, 3, 1),
-                (3, 0, 1),
-                (2, 0, 1)
-            ],
-            "{:?}",
-            read.statuses
-        );
-        // The first wait of `RESTART`, with jitter. After short runs it grows to 1 min.
-        let wait = Span::from_nanos(913_547_843);
-        assert_eq!(
-            errors(&read.statuses),
-            [
-                (Span::ZERO, ""),
-                (Span::ZERO, text.as_str()),
-                (wait, text.as_str()),
-                (Span::ZERO, text.as_str()),
-                (Span::ZERO, ""),
-                (Span::ZERO, "")
-            ],
-        );
+        for seed in 0..SEEDS {
+            let read = read_through(
+                seed,
+                Some(settings(Span::ZERO)),
+                |mut ctx, got| async move {
+                    let mut reader = ctx.reader().expect("a reader");
+                    let next = reader.next().await;
+                    let read = next.as_ref().map(|received| series(received, 3));
+                    got.lock()
+                        .expect("no panic")
+                        .push(read.map_err(Clone::clone));
+                    let _received = next?;
+                    Ok(())
+                },
+                |hub, clock| async move {
+                    clock.sleep(ms(100)).await;
+                    define(&hub, 3);
+                    clock.sleep(ms(1_500)).await;
+                    let channels = vec![name("plant.value")];
+                    let mut writer =
+                        open_writer(&hub, "plant.other", Authority(1), channels).await;
+                    let draft = draft_value(&writer, writer.now().nanos(), 7, 3);
+                    let outcomes = writer.write(Label::Path(Path::Live), draft);
+                    outcomes.expect("the home takes it");
+                },
+            );
+            read.end.expect("ok");
+            let removed = hub::reader::Ended::Removed(channel::Key::from_u128(2));
+            let text = removed.to_string();
+            assert_eq!(read.got, [Err(removed), Ok(vec![7])], "seed {seed}");
+            assert_eq!(
+                states(&read.statuses),
+                [
+                    (0, 0, 0),
+                    (3, 3, 0),
+                    (1, 3, 0),
+                    (0, 3, 1),
+                    (3, 0, 1),
+                    (2, 0, 1)
+                ],
+                "seed {seed}: {:?}",
+                read.statuses
+            );
+            let wait = errors(&read.statuses)[2].0;
+            assert!(
+                wait <= RESTART.first,
+                "seed {seed}: the first wait of `RESTART` is at most 1 s: {wait:?}"
+            );
+            assert_eq!(
+                errors(&read.statuses),
+                [
+                    (Span::ZERO, ""),
+                    (Span::ZERO, text.as_str()),
+                    (wait, text.as_str()),
+                    (Span::ZERO, text.as_str()),
+                    (Span::ZERO, ""),
+                    (Span::ZERO, "")
+                ],
+                "seed {seed}"
+            );
+        }
     }
 
     /// One spec change removes `plant.value` and defines it again at key 3. The
@@ -4781,63 +4870,70 @@ mod tests {
     /// backoff.
     #[test]
     fn writes_a_channel_that_a_spec_change_defined_again_with_a_new_key() {
-        let read = read_through(
-            0,
-            None,
-            |ctx, got| async move {
-                let channels = vec![name("plant.value")];
-                let writer = ctx.writer(channels, Authority(1), None).await;
-                let mut writer = writer.expect("opens");
-                let first = got.lock().expect("no panic").is_empty();
-                let (key, sample) = if first { (2, 5) } else { (3, 7) };
-                if first {
-                    ctx.clock().sleep(ms(200)).await;
-                }
-                let draft = draft_value(&writer, writer.now().nanos(), sample, key);
-                let written = writer.write(Label::Path(Path::Live), draft);
-                let applied = |outcomes: &[_]| {
-                    matches!(outcomes, [hub::home::Outcome::Applied { .. }])
-                };
-                let got_written = written.as_deref().map(applied);
-                got.lock()
-                    .expect("no panic")
-                    .push(got_written.map_err(Clone::clone));
-                let _outcomes = written?;
-                Ok(())
-            },
-            |hub, clock| async move {
-                clock.sleep(ms(100)).await;
-                define(&hub, 3);
-            },
-        );
-        read.end.expect("ok");
-        let removed = hub::writer::Failure::Removed(channel::Key::from_u128(2));
-        let text = removed.to_string();
-        assert_eq!(read.got, [Err(removed), Ok(true)]);
-        assert_eq!(
-            states(&read.statuses),
-            [
-                (0, 0, 0),
-                (3, 3, 0),
-                (1, 3, 0),
-                (0, 3, 1),
-                (3, 0, 1),
-                (2, 0, 1)
-            ],
-        );
-        // The first wait of `RESTART`, with jitter. After short runs it grows to 1 min.
-        let wait = Span::from_nanos(913_547_843);
-        assert_eq!(
-            errors(&read.statuses),
-            [
-                (Span::ZERO, ""),
-                (Span::ZERO, text.as_str()),
-                (wait, text.as_str()),
-                (Span::ZERO, text.as_str()),
-                (Span::ZERO, ""),
-                (Span::ZERO, "")
-            ],
-        );
+        for seed in 0..SEEDS {
+            let read = read_through(
+                seed,
+                None,
+                |ctx, got| async move {
+                    let channels = vec![name("plant.value")];
+                    let writer = ctx.writer(channels, Authority(1), None).await;
+                    let mut writer = writer.expect("opens");
+                    let first = got.lock().expect("no panic").is_empty();
+                    let (key, sample) = if first { (2, 5) } else { (3, 7) };
+                    if first {
+                        ctx.clock().sleep(ms(200)).await;
+                    }
+                    let draft = draft_value(&writer, writer.now().nanos(), sample, key);
+                    let written = writer.write(Label::Path(Path::Live), draft);
+                    let applied = |outcomes: &[_]| {
+                        matches!(outcomes, [hub::home::Outcome::Applied { .. }])
+                    };
+                    let got_written = written.as_deref().map(applied);
+                    got.lock()
+                        .expect("no panic")
+                        .push(got_written.map_err(Clone::clone));
+                    let _outcomes = written?;
+                    Ok(())
+                },
+                |hub, clock| async move {
+                    clock.sleep(ms(100)).await;
+                    define(&hub, 3);
+                },
+            );
+            read.end.expect("ok");
+            let removed = hub::writer::Failure::Removed(channel::Key::from_u128(2));
+            let text = removed.to_string();
+            assert_eq!(read.got, [Err(removed), Ok(true)], "seed {seed}");
+            assert_eq!(
+                states(&read.statuses),
+                [
+                    (0, 0, 0),
+                    (3, 3, 0),
+                    (1, 3, 0),
+                    (0, 3, 1),
+                    (3, 0, 1),
+                    (2, 0, 1)
+                ],
+                "seed {seed}"
+            );
+            let wait = errors(&read.statuses)[2].0;
+            assert!(
+                wait <= RESTART.first,
+                "seed {seed}: the first wait of `RESTART` is at most 1 s: {wait:?}"
+            );
+            assert_eq!(
+                errors(&read.statuses),
+                [
+                    (Span::ZERO, ""),
+                    (Span::ZERO, text.as_str()),
+                    (wait, text.as_str()),
+                    (Span::ZERO, text.as_str()),
+                    (Span::ZERO, ""),
+                    (Span::ZERO, "")
+                ],
+                "seed {seed}"
+            );
+        }
     }
 
     #[test]
