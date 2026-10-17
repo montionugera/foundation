@@ -1073,7 +1073,7 @@ async fn walk(
 ) -> Result<(Cursor, Logs), Error> {
     let mut cursor = Cursor::new(header.layout, header.tail, pool.largest());
     let mut logs = Logs::new(header.layout.area());
-    let mut newest = Newest::default();
+    let mut newest = Tagged::default();
     loop {
         let Window { place, len } = cursor.window();
         let bytes = file.read_at(AREA_START + place, pool.alloc(len)?).await?;
@@ -1096,7 +1096,7 @@ async fn walk(
     for ((slot, ..), (offset, entry, at)) in newest {
         let place = AREA_START + header.layout.place(offset);
         let bytes = read::bytes(file, pool, place, at, entry.bytes).await?;
-        logs.copy(slot, &entry, offset, Box::from(&*bytes));
+        logs.copy(slot, &entry, offset, slice::from_ref(&bytes));
     }
     Ok((cursor, logs))
 }
@@ -1114,7 +1114,7 @@ fn recover(
     largest: usize,
     slots: &mut Slots,
     logs: &mut Logs,
-    newest: &mut Newest,
+    newest: &mut Tagged,
 ) -> Result<(), Error> {
     let unread = |_: entry::Invalid| Error::Invalid { offset };
     let misplaced = |_: log::Invalid| Error::Invalid { offset };
