@@ -357,8 +357,8 @@ impl Node {
     /// Moves the file, link, or directory at `from` on the node's host to `to`, as a
     /// rename from outside the node does: it keeps its key, and a directory keeps
     /// what it holds. A link on the way to `from` or `to` is followed, and a link at
-    /// `from` moves itself. The node's working directory moves with it when it is
-    /// `from` or under it.
+    /// `from` moves itself. The node's working directory moves with it when it
+    /// resolves to `from` or under it.
     ///
     /// # Panics
     ///

@@ -990,7 +990,7 @@
   program moved away. The common cases pin each on both drivers.
   `sim::Node::move_path` renames a file, a link, or a directory of a host from outside
   the node, with its key, so the common cases move a folder away on both drivers. The
-  node's working directory moves with it when it is `from` or under it.
+  node's working directory moves with it when it resolves to `from` or under it.
   Decided by `laptop.architect-2` (2026-10-17T05:16:48Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230063256; the
   order, a read, `Replaced` by the path now, and `move_path`, 2026-10-17T06:33:57Z,

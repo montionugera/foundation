@@ -334,6 +334,37 @@ fn a_moved_working_directory_stays_the_working_directory() {
     );
 }
 
+/// A host keeps a process on the directory that a link led to, so a move of the link,
+/// or of the directory that holds it, does not move the working directory.
+#[test]
+fn a_working_directory_through_a_moved_link_stays() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/target/sub"));
+    node.link_path(Path::new("/w/link"), Path::new("/target"));
+    node.set_working_dir(Path::new("/w/link/sub"));
+    node.move_path(Path::new("/w"), Path::new("/old"));
+    assert_eq!(
+        paths.resolve(Path::new(".")),
+        Ok(PathBuf::from("/target/sub"))
+    );
+}
+
+#[test]
+fn a_working_directory_at_a_moved_link_stays() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/target"));
+    node.make_dir(Path::new("/w"));
+    node.link_path(Path::new("/w/link"), Path::new("/target"));
+    node.set_working_dir(Path::new("/w/link"));
+    let within = paths.within(&["/target".into()], &[]).unwrap();
+    node.move_path(Path::new("/w/link"), Path::new("/w/moved"));
+    let resolved = paths.resolve(Path::new("."));
+    let written = within.write(Path::new("out.plan"), b"x");
+    assert_eq!((resolved, written), (Ok(PathBuf::from("/target")), Ok(())));
+}
+
 #[test]
 fn a_moved_link_names_its_target_and_a_link_on_the_way_is_followed() {
     let node = Sim::new(Config::default()).node(node::Config::default());
