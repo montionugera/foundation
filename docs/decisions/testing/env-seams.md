@@ -1006,38 +1006,40 @@
   Amended (2026-10-17T07:45:44Z, #3005): on a handle of `within`, the limits hold on
   each step of every path, not only of a path that does not resolve. Take each prefix of
   the components of the path, in order, without an end `/` or `/.`, the whole path last.
-  A relative path starts at the working directory: the walk takes it joined to the
-  resolved working directory, so the steps of that directory come first, and `../work/a`
-  with the working directory `/out` gives `Outside`, as `/out/../work/a` does. So when
-  the working directory is outside the folders and not on the way to one, each relative
-  path gives `Outside`, also one that leads into a folder; the fix of `ops.outside`
-  names that directory, so the user gives an absolute path. A prefix resolves as
-  `resolve` does, and the walk stops at the first prefix that does not resolve. Each
-  prefix that resolves is checked as the whole path is, and a prefix short of the whole
-  path also passes when it is a directory on the way to a folder, by key. The name of
-  the first prefix that does not resolve is checked at its place, in the resolved prefix
-  before it, with no key, as a new name there is. The first step that fails gives its
-  error. When each passes and the path does not resolve, the call gives the error of its
-  resolve. So `workshop/../work/a.hcl` gives `Outside`, `work/data/../a.hcl` gives
-  `Hidden`, and a loop or a link to nothing in a hidden folder that a program moves away
-  gives `Hidden` on `read` and `write` too. `make_dir` makes the directory only when
-  each step passes. When the path did not resolve, the call checks it again after it
-  makes it, and a path with no last name, such as one that ends in `..`, gets the error
-  of the driver. The check gives an error of a step apart from the result of the
-  resolve, so an error of a step, such as `Io` of a key, makes nothing. The cost is one
-  resolve and one check for each name on each call of such a handle. Only `foundation
-  mcp` makes one. The walk resolves each prefix, and a resolve on `os` walks each name
-  of its prefix, so the cost grows with the cube of the depth: a read of a file 1905
-  names deep in a folder takes 72 s on `os` (Linux, Xeon Platinum 8488C, release), where
-  the free handle takes 214 µs, and the call blocks its thread for that time. Only
-  `foundation mcp` makes such a call, in a process of its own, so no node waits on it. A
-  resolve on `os` fails past the longest path that the host takes, which bounds the
-  walk, and a path stops at its first step that does not resolve. #3018 removes this
-  cost. The cost that stays until #3018: a symbolic link in the folders that names
-  nothing passes by its own place and gives `NotFound`, while one that names a file
-  outside gives `Outside`, or `Hidden` for a file in a hidden folder, so a tool can
-  learn whether the target of such a link is there. Supersedes "the deepest prefix" rule
-  and the rule of the key of the name in `make_dir` of the amendment of
+  A relative path starts at the working directory: the resolved working directory is its
+  first step, and each prefix after it is a prefix of the path as given, never longer
+  than the path, since a join to the working directory can be longer than the host takes
+  where the path is not. `../work/a` with the working directory `/out` gives `Outside`,
+  as `/out/../work/a` does. So when the working directory is outside the folders and not
+  on the way to one, each relative path gives `Outside`, also one that leads into a
+  folder; the fix of `ops.outside` names that directory, so the user gives an absolute
+  path. A prefix resolves as `resolve` does, and the walk stops at the first prefix that
+  does not resolve. Each prefix that resolves is checked as the whole path is, and a
+  prefix short of the whole path also passes when it is a directory on the way to a
+  folder, by key. The name of the first prefix that does not resolve is checked at its
+  place, in the resolved prefix before it, with no key, as a new name there is. The
+  first step that fails gives its error. When each passes and the path does not resolve,
+  the call gives the error of its resolve. So `workshop/../work/a.hcl` gives `Outside`,
+  `work/data/../a.hcl` gives `Hidden`, and a loop or a link to nothing in a hidden
+  folder that a program moves away gives `Hidden` on `read` and `write` too. `make_dir`
+  makes the directory only when each step passes. When the path did not resolve, the
+  call checks it again after it makes it, and a path with no last name, such as one that
+  ends in `..`, gets the error of the driver. The check gives an error of a step apart
+  from the result of the resolve, so an error of a step, such as `Io` of a key, makes
+  nothing. The cost is one resolve and one check for each name of the path, and one more
+  for the working directory of a relative path, on each call of such a handle. Only
+  `foundation mcp` makes one. The walk resolves each prefix, and a resolve on `os` walks
+  each name of its prefix, so the cost grows with the cube of the depth: a read of a
+  file 1905 names deep in a folder takes 72 s on `os` (Linux, Xeon Platinum 8488C,
+  release), where the free handle takes 214 µs, and the call blocks its thread for that
+  time. Only `foundation mcp` makes such a call, in a process of its own, so no node
+  waits on it. A resolve on `os` fails past the longest path that the host takes, which
+  bounds the walk, and a path stops at its first step that does not resolve. #3018
+  removes this cost. The cost that stays until #3018: a symbolic link in the folders
+  that names nothing passes by its own place and gives `NotFound`, while one that names
+  a file outside gives `Outside`, or `Hidden` for a file in a hidden folder, so a tool
+  can learn whether the target of such a link is there. Supersedes "the deepest prefix"
+  rule and the rule of the key of the name in `make_dir` of the amendment of
   2026-10-17T06:28:34Z; the check of a name in `make_dir` of the amendment of
   2026-10-17T06:14:25Z is now a step of the walk for each call, with no key, which
   supersedes its "with the key of the file at that name". For the name of the first
