@@ -198,18 +198,50 @@ jobs:
           cargo clippy -p os --all-features --test root -- -D warnings
           cargo test -p os --all-features --test root
 
+  # The required checks `features`, `features-macos`, and `features-windows`. It runs
+  # as `check` does, and each OS leaves out the `crates` of its entry of `check`.
   features:
     needs: changes
-    if: "!cancelled() && needs.changes.outputs.rust != 'false'"
-    runs-on: ubuntu-24.04
+    if: "!cancelled()"
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: features
+            runner: ubuntu-24.04
+            crates: []
+          - name: features-macos
+            runner: macos-15
+            crates: []
+          - name: features-windows
+            runner: windows-2025
+            crates:
+              - --exclude connector-opcua # #2968
+              - --exclude node # #2968, #682, #2955, #2956, #477, #2957
+              - --exclude acceptance # #2968, #682, #2955, #2956, #477, #2957
+              - --exclude xtask # #2238
+              - --exclude ops # #2971
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUST: ${{ needs.changes.outputs.rust }}
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+      - if: env.RUST != 'false'
+        uses: actions/checkout@v4
+      - if: env.RUST != 'false'
+        uses: Swatinem/rust-cache@v2
+      - if: env.RUST != 'false'
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-hack@0.6.45
       - name: Each feature alone
-        run: cargo hack check --workspace --each-feature --no-dev-deps
+        if: env.RUST != 'false'
+        run: >-
+          cargo hack check --workspace ${{ join(matrix.crates, ' ') }} --each-feature
+          --no-dev-deps
 
   deny:
     needs: changes

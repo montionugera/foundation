@@ -842,39 +842,96 @@ mod tests {
         }
     }
 
-    /// The lines of the job `check` of `ci.yaml`, whose matrix holds one entry for
-    /// each OS.
-    fn check_job() -> Vec<String> {
+    /// The lines of the job `name` of `ci.yaml`, whose matrix holds one entry for each
+    /// OS.
+    fn os_job(name: &str) -> Vec<String> {
         let ci = workflow(&fixture().join("../.."));
         let ci: Vec<&str> = ci.lines().collect();
-        let check = under(&under(&ci, "jobs:"), "  check:");
-        check.into_iter().map(str::to_owned).collect()
+        let job = under(&under(&ci, "jobs:"), &format!("  {name}:"));
+        job.into_iter().map(str::to_owned).collect()
+    }
+
+    /// The lines of the job `check` of `ci.yaml`.
+    fn check_job() -> Vec<String> {
+        os_job("check")
+    }
+
+    /// The `if` of the job, the names of its matrix entries, and the `if` of each of
+    /// `steps`, in order.
+    fn ifs_and_names<'a>(
+        job: &'a [String],
+        steps: &[&str],
+    ) -> (Vec<&'a str>, Vec<&'a str>) {
+        let mut ifs: Vec<&str> = (job.iter().map(String::as_str))
+            .filter(|line| line.starts_with("    if: "))
+            .collect();
+        let names = (job.iter())
+            .filter_map(|line| line.strip_prefix("          - name: "))
+            .collect();
+        for step in steps {
+            let start = (job.iter())
+                .position(|line| *line == format!("      - name: {step}"))
+                .unwrap_or_else(|| panic!("the job has no step `{step}`"));
+            ifs.push(&job[start + 1]);
+        }
+        (ifs, names)
     }
 
     #[test]
     fn the_check_of_each_os_runs_on_each_event_so_that_it_reports_its_name() {
-        let check = check_job();
         // A matrix job that its `if` skips reports one check, named by the unexpanded
-        // expression, and no `check`, `macos`, or `windows`.
-        let ifs: Vec<&str> = (check.iter().map(String::as_str))
-            .filter(|line| line.starts_with("    if: "))
-            .collect();
-        assert_eq!(ifs, ["    if: \"!cancelled()\""]);
-        let names: Vec<&str> = (check.iter())
-            .filter_map(|line| line.strip_prefix("          - name: "))
-            .collect();
-        assert_eq!(names, ["check", "macos", "windows"]);
-        // A step that its `if` skips on an OS passes there.
-        for step in ["Clippy", "Test"] {
-            let start = (check.iter())
-                .position(|line| *line == format!("      - name: {step}"))
-                .unwrap_or_else(|| panic!("the job `check` has no step `{step}`"));
-            assert_eq!(
-                check[start + 1],
-                "        if: \"!cancelled() && env.RUST != 'false'\"",
-                "the `if` of the step `{step}`"
-            );
+        // expression, and none of the names of its entries. A step that its `if` skips
+        // on an OS passes there.
+        let check = check_job();
+        let step = "        if: \"!cancelled() && env.RUST != 'false'\"";
+        assert_eq!(
+            ifs_and_names(&check, &["Clippy", "Test"]),
+            (
+                vec!["    if: \"!cancelled()\"", step, step],
+                vec!["check", "macos", "windows"]
+            )
+        );
+        let features = os_job("features");
+        assert_eq!(
+            ifs_and_names(&features, &["Each feature alone"]),
+            (
+                vec![
+                    "    if: \"!cancelled()\"",
+                    "        if: env.RUST != 'false'"
+                ],
+                vec!["features", "features-macos", "features-windows"]
+            )
+        );
+    }
+
+    /// The `crates` list of each matrix entry of `job`, in order.
+    fn crates(job: &[String]) -> Vec<Vec<&str>> {
+        let (mut lists, mut open): (Vec<Vec<&str>>, bool) = (Vec::new(), false);
+        for line in job {
+            if let Some(item) = line.strip_prefix("              - ") {
+                if let (true, Some(list)) = (open, lists.last_mut()) {
+                    list.push(item);
+                }
+            } else if let Some(key) = line.strip_prefix("            ") {
+                open = key.starts_with("crates:");
+                if open {
+                    lists.push(Vec::new());
+                }
+            }
         }
+        lists
+    }
+
+    #[test]
+    fn the_feature_check_of_each_os_leaves_out_the_crates_of_its_check() {
+        let check = check_job();
+        let check = crates(&check);
+        assert_eq!(check.len(), 3);
+        assert!(
+            check[2]
+                .contains(&"--exclude node # #2968, #682, #2955, #2956, #477, #2957")
+        );
+        assert_eq!(crates(&os_job("features")), check);
     }
 
     #[test]

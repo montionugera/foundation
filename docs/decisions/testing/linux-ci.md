@@ -1,10 +1,13 @@
 - **LINUX CI (2026-10-05, rewritten 2026-10-17)** Each PR runs Clippy and the tests of
   the workspace on Linux (x86-64), macOS (arm64), and Windows (x86-64), in the required
   checks `check`, `macos`, and `windows`: the matrix of the job `check` in `ci.yaml`.
-  Linux on ARM runs in `arm.yaml`. Each job names its runner image (`ubuntu-24.04`,
-  `macos-15`, `windows-2025`), never `-latest`, so that only a PR changes the OS
-  release of a runner (GitHub still updates the tools of each image each week). Only
-  Linux runs the format, layer, global, oracle, feature, and dependency checks, loom,
+  Each PR also checks each feature of each crate alone on the three OSes, in the
+  required checks `features`, `features-macos`, and `features-windows`: the matrix of
+  the job `features`, which leaves out the crates that the entry of its OS in `check`
+  leaves out. Linux on ARM runs in `arm.yaml`. Each job names its runner image
+  (`ubuntu-24.04`, `macos-15`, `windows-2025`), never `-latest`, so that only a PR
+  changes the OS release of a runner (GitHub still updates the tools of each image each
+  week). Only Linux runs the format, layer, global, oracle, and dependency checks, loom,
   shuttle, Miri, the sanitizers, fuzzing, mutants, and the root tests.
   - Each OS lists what fails on it in its entry of the matrix of the job `check`, each
     item with the open issue that removes it: the crates that do not build with all
@@ -52,13 +55,15 @@
     `laptop.monitor` as key choices, and accepted by `laptop.monitor` at
     2026-10-17T03:43Z
     (https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229189616).
-  - The format, layer, global, oracle, feature, and dependency checks on Linux only:
+  - The format, layer, global, oracle, and dependency checks on Linux only:
     `box1.builder-1` in #2960, accepted by `laptop.monitor`
-    (https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229520072). The
-    goal of #2954 asks for a build and the tests on each OS. All but the feature check
-    read the source and the metadata, which are the same on each OS. The feature check
-    builds each feature of each crate, and Clippy and the tests on each OS build all
-    features at once. Lost: a set of features that fails only on macOS or Windows
-    passes. On the condition of that acceptance, the dependency check covers the macOS
-    and Windows targets: `deny.toml` sets no `targets`, so `cargo deny` checks the
-    dependencies of each OS.
+    (https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229520072): they
+    read the source and the metadata, which are the same on each OS. On the condition of
+    that acceptance, the dependency check covers the macOS and Windows targets:
+    `deny.toml` sets no `targets`, so `cargo deny` checks the dependencies of each OS.
+  - The feature check on each OS: `laptop.monitor`, 2026-10-17T05:02:02Z, which
+    withdrew its acceptance of that check on Linux only
+    (https://github.com/synnaxlabs/foundation/issues/2995#issuecomment-6229925039): "A
+    feature set that does not build on Windows, and that Linux CI passes, breaks that
+    rule." Each OS is its own job, beside the test jobs, so it adds no wall time while
+    it is not the slowest job of the run.
