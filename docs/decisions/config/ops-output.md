@@ -173,9 +173,8 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6058791545). The
   bound holds for the reply of an error too. A reply of `browse` over the bound, its
   output or its error, is `ops.large-browse` in its place (below). `serve` stops writing
-  a reply at the bound.
-  The places of the problems of one file share its path (`laptop.architect`,
-  2026-10-12T20:11:00Z,
+  a reply at the bound. The places of the problems of one file share its path
+  (`laptop.architect`, 2026-10-12T20:11:00Z,
   https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6131805444;
   `laptop.architect-2`, 2026-10-12T20:14:30Z,
   https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6131856346). `serve`
@@ -407,45 +406,43 @@
   `apply`, then `admin`, on the name (`ops.denied`, SERVE ACCESS; `laptop.architect-2`,
   2026-10-17T23:06:39Z,
   https://github.com/synnaxlabs/foundation/pull/3079#issuecomment-6242836290), the
-  access with which
-  a remote `plan` reads the sources (SECRET SOURCES); the `node` of the block is this
-  node; the start is a path; the match is a pattern; and `match` and `cursor` are not
-  both given (`ops.argument`, ``a browse takes `match` or `cursor`, not both``; the
-  command line refuses it first, with status 2). Then it runs `Supervisor::browse`. Five
-  codes are new. `ops.browse-node`, status 2: ``the connector `<c>` runs on the node
-  `<n>`, not on this node `<this>` ``, fix ``Run it with `--data` of node `<n>` ``.
-  `ops.bad-start` and `ops.bad-pattern`, status 2: ``the start `<text>` is not a path:
-  <cause>`` and ``the match `<text>` is not a pattern: <cause>``, with the cause of
-  `connector::browse::Malformed`, and the fixes of `codes.golden`. `ops.large-browse`,
-  status 1, takes the place of `ops.large-reply` for a reply of a browse, its output or
-  its error: ``the reply of the browse has more than <n> bytes, the most that a reply
-  holds``, fix
-  ``Narrow the start or the match, or browse without `values` ``, since a smaller plan
-  does not make it fit. Each problem of an error of `Supervisor::browse` has status 1
-  and starts with ``the browse of the connector `<c>` of kind `<k>` failed: ``. A
-  diagnostic of `Config` keeps its code, fix, place, and notes. `Device` and `Retry`
-  give `ops.browse`, fix `Fix the cause in the message, then browse again`. The output
-  is `{"entries":[...],"end":<end>}`. An entry has `path`, `tag`, and `shape`: `folder`,
-  `point`, or `unreadable` with `reason`. A point also has `type` (as a `type` attribute
-  takes it, such as `f64`), `unit`, `unit_code`, and `access` (`read`, `write`, or
-  `read-write`), each `null` when the device cannot know it. Only with `values` a point
-  has `value`, `null` when the device gave none or gave a value that is not one scalar,
-  such as that of a `string` or an array point: a bool and each integer of 32 bits or
-  fewer are a JSON bool and number, an `i64` or `u64` its decimal text such as
-  `"9007199254740993"`, a finite float a number, a float that is not finite `"NaN"`,
-  `"Infinity"`, or `"-Infinity"`, a stamp RFC 3339 text in UTC with nine fraction
-  digits, a span its text such as `"250us"`, and a UUID its hyphenated text. The text
-  form uses the same texts. `end` is `"done"`, `{"next":"<cursor>"}`, `"limit"`, or
-  `"budget"`. The text gives one line for each entry: `<path>/` for a folder, `<path>
-  <type> <unit> <access>` and then the value with `values` for a point, and `<path>
-  unreadable: <reason>`. A fact that the device cannot know is `?`, so each line keeps
-  its columns, and the unit is its text, else its code. Then one end line: `more:
-  --cursor <cursor>`, `More than 500 points match, the most for one browse; narrow the
-  pattern or the start`, or `The browse stopped at its budget, so more may match; narrow
-  the pattern or the start`. `done` adds no line, and a browse with no entries gives
-  `The browse found no entries.` The text of `budget` names no count, since `DEPTH` and
-  a later budget of compared bytes also end a walk with it. The plan is by
-  `laptop.integrator-2` (2026-10-17T05:11:19Z,
+  access with which a remote `plan` reads the sources (SECRET SOURCES); the `node` of
+  the block is this node; the start is a path; the match is a pattern; and `match` and
+  `cursor` are not both given (`ops.argument`, ``a browse takes `match` or `cursor`, not
+  both``; the command line refuses it first, with status 2). Then it runs
+  `Supervisor::browse`. Five codes are new. `ops.browse-node`, status 2: ``the connector
+  `<c>` runs on the node `<n>`, not on this node `<this>` ``, fix ``Run it with `--data`
+  of node `<n>` ``. `ops.bad-start` and `ops.bad-pattern`, status 2: ``the start
+  `<text>` is not a path: <cause>`` and ``the match `<text>` is not a pattern:
+  <cause>``, with the cause of `connector::browse::Malformed`, and the fixes of
+  `codes.golden`. `ops.large-browse`, status 1, takes the place of `ops.large-reply` for
+  a reply of a browse, its output or its error: ``the reply of the browse has more than
+  <n> bytes, the most that a reply holds``, fix ``Narrow the start or the match, or
+  browse without `values` ``, since a smaller plan does not make it fit. Each problem of
+  an error of `Supervisor::browse` has status 1 and starts with ``the browse of the
+  connector `<c>` of kind `<k>` failed: ``. A diagnostic of `Config` keeps its code,
+  fix, place, and notes. `Device` and `Retry` give `ops.browse`, fix `Fix the cause in
+  the message, then browse again`. The output is `{"entries":[...],"end":<end>}`. An
+  entry has `path`, `tag`, and `shape`: `folder`, `point`, or `unreadable` with
+  `reason`. A point also has `type` (as a `type` attribute takes it, such as `f64`),
+  `unit`, `unit_code`, and `access` (`read`, `write`, or `read-write`), each `null` when
+  the device cannot know it. Only with `values` a point has `value`, `null` when the
+  device gave none or gave a value that is not one scalar, such as that of a `string` or
+  an array point: a bool and each integer of 32 bits or fewer are a JSON bool and
+  number, an `i64` or `u64` its decimal text such as `"9007199254740993"`, a finite
+  float a number, a float that is not finite `"NaN"`, `"Infinity"`, or `"-Infinity"`, a
+  stamp RFC 3339 text in UTC with nine fraction digits, a span its text such as
+  `"250us"`, and a UUID its hyphenated text. The text form uses the same texts. `end` is
+  `"done"`, `{"next":"<cursor>"}`, `"limit"`, or `"budget"`. The text gives one line for
+  each entry: `<path>/` for a folder, `<path> <type> <unit> <access>` and then the value
+  with `values` for a point, and `<path> unreadable: <reason>`. A fact that the device
+  cannot know is `?`, so each line keeps its columns, and the unit is its text, else its
+  code. Then one end line: `more: --cursor <cursor>`, `More than 500 points match, the
+  most for one browse; narrow the pattern or the start`, or `The browse stopped at its
+  budget, so more may match; narrow the pattern or the start`. `done` adds no line, and
+  a browse with no entries gives `The browse found no entries.` The text of `budget`
+  names no count, since `DEPTH` and a later budget of compared bytes also end a walk
+  with it. The plan is by `laptop.integrator-2` (2026-10-17T05:11:19Z,
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6230008460),
   approved by `laptop.architect-2` (2026-10-17T05:14:44Z,
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6230042870), whose
@@ -455,15 +452,13 @@
   as it is (kind (f), sent to `laptop.monitor` with `ops.large-browse` at
   2026-10-17T22:57:51Z,
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6242684265; it goes
-  ahead
-  unless the person objects). Lost: one `unit` field, which drops the code when the
-  device
-  gives a text, so an agent cannot tell which it got. `laptop.monitor` accepted kinds
-  (e) and (f) with two conditions on (e), which follow the proto3 JSON mapping: an `i64`
-  or `u64` is text, since a JSON number past 2^53 loses digits in JavaScript and in many
-  JSON tools with no error, and a float that is not finite is `"NaN"`, `"Infinity"`, or
-  `"-Infinity"`, not `"inf"` or `"-inf"`, since JavaScript `Number("inf")` gives NaN (as
-  `laptop.architect-2` records, 2026-10-17T22:24:28Z,
+  ahead unless the person objects). Lost: one `unit` field, which drops the code when
+  the device gives a text, so an agent cannot tell which it got. `laptop.monitor`
+  accepted kinds (e) and (f) with two conditions on (e), which follow the proto3 JSON
+  mapping: an `i64` or `u64` is text, since a JSON number past 2^53 loses digits in
+  JavaScript and in many JSON tools with no error, and a float that is not finite is
+  `"NaN"`, `"Infinity"`, or `"-Infinity"`, not `"inf"` or `"-inf"`, since JavaScript
+  `Number("inf")` gives NaN (as `laptop.architect-2` records, 2026-10-17T22:24:28Z,
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6242201049). One
   function of `ops` maps a value to JSON, so each later output with values takes this
   rule.

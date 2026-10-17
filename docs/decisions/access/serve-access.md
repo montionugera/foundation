@@ -55,15 +55,13 @@
   alone covers. `admin` also governs a join ticket and the creation of a region (K5).
   `plan` needs no `admin` (C8 has `plan` list access changes apart). `browse` needs
   `apply`, then `admin`, on the name of its connector: the right to open a session to
-  the device of the
-  block with its secrets, which a remote `plan` also needs to read the sources of the
-  block. A subject with less learns nothing of the sources of the node (OPS OUTPUT;
-  `laptop.architect-2`, 2026-10-17T23:06:39Z,
+  the device of the block with its secrets, which a remote `plan` also needs to read the
+  sources of the block. A subject with less learns nothing of the sources of the node
+  (OPS OUTPUT; `laptop.architect-2`, 2026-10-17T23:06:39Z,
   https://github.com/synnaxlabs/foundation/pull/3079#issuecomment-6242836290). Limits:
-  `admin` on
-  the key of a policy or a subject gives each name of its region. A policy whose
-  `subjects` select names under a subtree also reaches a connector that a holder of
-  `admin` adds there. Lost: no `admin` check, with which a grant of `apply` on any
+  `admin` on the key of a policy or a subject gives each name of its region. A policy
+  whose `subjects` select names under a subtree also reaches a connector that a holder
+  of `admin` adds there. Lost: no `admin` check, with which a grant of `apply` on any
   subtree is a grant on the region; and a check of each name that the old and the new
   `select` reach, because `**` reaches names that the spec does not hold yet; and a
   check that the `select` of a policy stays under the subtree of its key, with which a
