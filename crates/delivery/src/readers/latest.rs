@@ -157,6 +157,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use proptest::prelude::*;
+    use types::log::Mark;
     use types::time::Span;
 
     use super::*;
@@ -417,7 +418,7 @@ mod tests {
             let below = readers
                 .open(Reader::Unnamed, Start::At(live(2)), 1, Charge::Whole)
                 .key;
-            assert_eq!(read(&mut readers, below), (vec![], 2));
+            assert_eq!(read(&mut readers, below), (vec![], Mark::at(2)));
             let named = Reader::Named {
                 reader: reader("s", "b"),
                 hold: Span::from_nanos(10),
