@@ -3,6 +3,7 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
+use connector::cancel::Token;
 use connector::http::{Client, Config};
 use env::net::tcp;
 use env::thread::Handle;
@@ -66,8 +67,9 @@ impl Network {
         let handle = server
             .shards()
             .start(shard("server"), move |tasks| async move {
-                let error = serve(listener, tasks, held, "edge".into(), token).await;
-                panic!("the listener failed: {error}");
+                let until = Token::new();
+                let end = serve(listener, tasks, until, held, "edge".into(), token);
+                panic!("the listener failed: {:?}", end.await);
             })
             .expect("the shard starts");
         Self {

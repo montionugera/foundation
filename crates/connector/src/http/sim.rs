@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use env::net::{self, Listener};
-use env::tasks::Tasks;
+use env::tasks::{Group, Tasks};
 use http::header::CONNECTION;
 use http::{HeaderValue, Request, Response, StatusCode};
 use http_body::Body as _;
@@ -24,6 +24,7 @@ use super::Roots;
 use super::body::Whole;
 use super::stream::Stream;
 use super::tls::At;
+use crate::cancel::Token;
 
 /// A certificate that [`serve_tls`] gives. The test CA of [`ca`] signs each one
 /// other than [`Certificate::OtherCa`]. Each is valid from 2026-01-01 to 2027-01-01
@@ -70,25 +71,37 @@ pub fn ca() -> Roots {
 /// too long and 431 when its head is too long, and its stream ends. An HTTP/2 preface
 /// ends the stream with no answer.
 ///
-/// It runs until the listener fails, and returns that error. Dropping the future stops
-/// only the accepts: each stream it accepted runs on.
+/// It runs until `until` is cancelled. It then drops `listener`, drops each stream it
+/// accepted with no close, and returns once the task of each stream ended. Dropping
+/// the future stops only the accepts: each stream it accepted runs on until `until`.
+///
+/// # Errors
+///
+/// The error of the listener, at once when it fails before the cancel. Each stream it
+/// accepted runs on until `until`.
 pub async fn serve(
     listener: Listener,
     tasks: Tasks,
+    until: Token,
     answer: impl Fn(Request<Bytes>) -> Response<Bytes> + 'static,
-) -> net::Error {
-    run(listener, tasks, None, answer).await
+) -> Result<(), net::Error> {
+    run(listener, tasks, until, None, answer).await
 }
 
 /// As [`serve`], under TLS 1.2 or 1.3 with `certificate`. A stream whose handshake
 /// fails ends with no answer. It sends no session ticket.
+///
+/// # Errors
+///
+/// As [`serve`].
 pub async fn serve_tls(
     listener: Listener,
     tasks: Tasks,
+    until: Token,
     certificate: Certificate,
     answer: impl Fn(Request<Bytes>) -> Response<Bytes> + 'static,
-) -> net::Error {
-    run(listener, tasks, Some(server(certificate)), answer).await
+) -> Result<(), net::Error> {
+    run(listener, tasks, until, Some(server(certificate)), answer).await
 }
 
 pub(super) fn server(certificate: Certificate) -> Arc<ServerConfig> {
@@ -151,36 +164,56 @@ pub(super) fn config(
 
 /// As [`serve`], under TLS with `tls` when it is `Some`.
 pub(super) async fn run(
-    mut listener: Listener,
+    listener: Listener,
     tasks: Tasks,
+    until: Token,
     tls: Option<Arc<ServerConfig>>,
     answer: impl Fn(Request<Bytes>) -> Response<Bytes> + 'static,
-) -> net::Error {
+) -> Result<(), net::Error> {
+    let group = Group::new(tasks);
+    let accepted = until.race(accept(listener, &group, &until, tls, answer));
+    if let Some(Err(error)) = accepted.await {
+        return Err(error);
+    }
+    group.ended().await;
+    Ok(())
+}
+
+/// Serves each stream that `listener` accepts on its own task of `group`, until
+/// `until`. Returns the error of the listener.
+async fn accept(
+    mut listener: Listener,
+    group: &Group,
+    until: &Token,
+    tls: Option<Arc<ServerConfig>>,
+    answer: impl Fn(Request<Bytes>) -> Response<Bytes> + 'static,
+) -> Result<Infallible, net::Error> {
     let answer = Rc::new(answer);
     loop {
-        let tcp = match poll_fn(|cx| listener.poll_accept(cx)).await {
-            Ok(tcp) => tcp,
-            Err(error) => return error,
-        };
+        let tcp = poll_fn(|cx| listener.poll_accept(cx)).await?;
         let answer = Rc::clone(&answer);
         let service = service_fn(move |request| respond(request, Rc::clone(&answer)));
-        let tls = tls.clone();
+        let (tls, until) = (tls.clone(), until.clone());
         // A stream that fails has no one to tell.
-        tasks.spawn(async move {
-            let stream = match tls {
-                Some(config) => match Stream::server(tcp, config).await {
-                    Ok(stream) => stream,
-                    Err(_) => return,
-                },
-                None => Stream::plain(tcp, Rc::default()),
-            };
-            // The person approved this server on the condition that it gets no timer.
-            let served = http1::Builder::new()
-                .auto_date_header(false)
-                .header_read_timeout(None)
-                .half_close(true)
-                .serve_connection(stream, service);
-            drop(served.await);
+        group.tasks().spawn(async move {
+            let served = until.race(async move {
+                let stream = match tls {
+                    Some(config) => match Stream::server(tcp, config).await {
+                        Ok(stream) => stream,
+                        Err(_) => return,
+                    },
+                    None => Stream::plain(tcp, Rc::default()),
+                };
+                // The person approved this server on the condition that it gets no
+                // timer.
+                let served = http1::Builder::new()
+                    .auto_date_header(false)
+                    .header_read_timeout(None)
+                    .half_close(true)
+                    .serve_connection(stream, service);
+                drop(served.await);
+            });
+            served.await;
         });
     }
 }

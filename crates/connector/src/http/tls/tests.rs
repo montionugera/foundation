@@ -26,6 +26,7 @@ use types::time::{Span, Stamp};
 use super::super::stream::Stream;
 use super::super::tests::stream_error;
 use super::{Pem, Roots};
+use crate::cancel::Token;
 use crate::http::sim::{self, Certificate};
 use crate::http::{Client, Config, Error, Tls};
 
@@ -104,9 +105,17 @@ impl Network {
                         path => Bytes::from(path.to_owned()),
                     })
                 };
-                let serve = sim::serve_tls(v6, tasks.clone(), certificate, answer);
+                let serve = sim::serve_tls(
+                    v6,
+                    tasks.clone(),
+                    Token::new(),
+                    certificate,
+                    answer,
+                );
                 tasks.spawn(async move { drop(serve.await) });
-                drop(sim::serve_tls(v4, tasks, certificate, answer).await);
+                drop(
+                    sim::serve_tls(v4, tasks, Token::new(), certificate, answer).await,
+                );
                 // The streams it accepted end when this shard ends.
                 std::future::pending::<()>().await;
             })
@@ -273,7 +282,7 @@ const SELF_CA: [&str; 2] = [
 fn serve(network: &mut Network, config: Arc<ServerConfig>) {
     network.listen(8087, move |listener, tasks| async move {
         let answer = |_: Request<Bytes>| Response::new(Bytes::from_static(b"ok"));
-        drop(sim::run(listener, tasks, Some(config), answer).await);
+        drop(sim::run(listener, tasks, Token::new(), Some(config), answer).await);
     });
 }
 
@@ -471,7 +480,7 @@ fn fails_the_handshake_with_a_server_that_does_not_speak_tls() {
     let mut network = Network::new(10, Certificate::Valid, JUNE_2026);
     network.listen(8087, |listener, tasks| async move {
         let answer = |_: Request<Bytes>| Response::new(Bytes::new());
-        drop(sim::serve(listener, tasks, answer).await);
+        drop(sim::serve(listener, tasks, Token::new(), answer).await);
     });
     assert_eq!(
         failed(network.send(sim::ca(), "https://server:8087/ping")),

@@ -171,11 +171,12 @@ impl Influx {
             let serve = connector_influx::sim::serve(
                 listener,
                 tasks,
+                token,
                 store,
                 "plant".into(),
                 taken,
             );
-            if let Some(error) = token.race(serve).await {
+            if let Err(error) = serve.await {
                 panic!("the simulated InfluxDB stopped: {error}");
             }
         });

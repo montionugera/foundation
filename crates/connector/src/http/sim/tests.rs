@@ -11,6 +11,7 @@ use http::{Method, Request, Response, StatusCode};
 use types::time::Span;
 
 use super::serve;
+use crate::cancel::Token;
 use crate::http::{Client, Config};
 
 const PORT: u16 = 8086;
@@ -32,6 +33,9 @@ enum End {
     Failed(String),
 }
 
+/// What `serve` gave, and the count of the streams that the server node then held.
+type Ended = (Result<(), net::Error>, usize);
+
 /// A server node that runs `serve` with an answer that echoes each request, and a
 /// client node.
 struct Network {
@@ -39,8 +43,10 @@ struct Network {
     client: node::Node,
     server: node::Node,
     remote: SocketAddr,
-    /// The error that `serve` gave, once it ends.
-    failed: Arc<Mutex<Option<net::Error>>>,
+    /// Stops `serve`.
+    until: Token,
+    /// Set once `serve` ends.
+    ended: Arc<Mutex<Option<Ended>>>,
     /// Each request that reached the answer, as the answer echoes it.
     seen: Arc<Mutex<Vec<String>>>,
     handles: Vec<Handle>,
@@ -87,13 +93,14 @@ impl Network {
             slot.lock().expect("no panic under the lock").push(text);
             response
         };
-        let failed = Arc::new(Mutex::new(None));
-        let ended = Arc::clone(&failed);
+        let (until, ended) = (Token::new(), Arc::new(Mutex::new(None)));
+        let (stop, out, node) = (until.clone(), Arc::clone(&ended), server.clone());
         let handle = server
             .shards()
             .start(shard("server"), move |tasks| async move {
-                let error = serve(listener, tasks, answer).await;
-                *ended.lock().expect("no panic under the lock") = Some(error);
+                let end = serve(listener, tasks, stop, answer).await;
+                let held = node.streams();
+                *out.lock().expect("no panic under the lock") = Some((end, held));
                 // The streams it accepted end when this shard ends.
                 std::future::pending::<()>().await;
             })
@@ -103,7 +110,8 @@ impl Network {
             client,
             server,
             remote,
-            failed,
+            until,
+            ended,
             seen,
             handles: vec![handle],
         }
@@ -456,12 +464,12 @@ fn gives_the_error_of_a_failed_accept_and_serves_the_streams_it_accepted() {
         .expect("the run goes on");
     network.server.fail_listener(remote);
     network.sim.run_for(Span::MINUTE).expect("the run ends");
-    let failed = network
-        .failed
+    let ended = network
+        .ended
         .lock()
         .expect("no panic under the lock")
         .take();
-    assert_eq!(failed, Some(net::Error::Io { code: 5 }));
+    assert_eq!(ended, Some((Err(net::Error::Io { code: 5 }), 1)));
     assert_eq!(
         *out.lock().expect("no panic under the lock"),
         [StatusCode::OK; 2]
@@ -469,5 +477,47 @@ fn gives_the_error_of_a_failed_accept_and_serves_the_streams_it_accepted() {
     assert_eq!(
         network.seen(),
         ["POST /before HTTP/1.1 ", "POST /after HTTP/1.1 "]
+    );
+}
+
+#[test]
+fn a_cancel_ends_each_stream_and_returns_once_their_tasks_ended() {
+    let mut network = Network::new();
+    let (net, remote) = (network.client.net(), network.remote);
+    let out = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&out);
+    let handle = network
+        .client
+        .shards()
+        .start(shard("client"), move |_| async move {
+            let config = tcp::Config {
+                remote,
+                options: super::super::OPTIONS,
+            };
+            let mut idle = net.connect(&config).await.expect("the server listens");
+            let mut bytes = [0; 16];
+            let ended = poll_fn(|cx| idle.poll_read(cx, &mut bytes)).await;
+            let refused = net.connect(&config).await.map(drop);
+            *slot.lock().expect("no panic under the lock") = Some((ended, refused));
+        })
+        .expect("the shard starts");
+    network.handles.push(handle);
+    let half = Span::from_nanos(500_000_000);
+    network.sim.run_for(half).expect("the run goes on");
+    assert_eq!(network.server.streams(), 1);
+    network.until.cancel();
+    network.sim.run_for(Span::MINUTE).expect("the run ends");
+    let ended = network
+        .ended
+        .lock()
+        .expect("no panic under the lock")
+        .take();
+    assert_eq!(ended, Some((Ok(()), 0)));
+    assert_eq!(
+        out.lock().expect("no panic under the lock").take(),
+        Some((
+            Err(net::Error::Reset { remote }),
+            Err(net::Error::Refused { remote })
+        ))
     );
 }

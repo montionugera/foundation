@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
+use connector::cancel::Token;
 use connector::http::sim::Certificate;
 use env::net::{self, Listener};
 use env::tasks::Tasks;
@@ -29,30 +30,40 @@ use super::Store;
 /// the path, then the method, then the token, then the `content-encoding`, then the
 /// query, and gives the answer of the first check that fails.
 ///
-/// It runs until the listener fails, and returns that error.
+/// It runs until `until` is cancelled, as [`connector::http::sim::serve`] runs.
+///
+/// # Errors
+///
+/// As [`connector::http::sim::serve`].
 pub async fn serve(
     listener: Listener,
     tasks: Tasks,
+    until: Token,
     store: Arc<Mutex<Store>>,
     database: String,
     token: Option<String>,
-) -> net::Error {
+) -> Result<(), net::Error> {
     let answer = answer(store, database, token);
-    connector::http::sim::serve(listener, tasks, answer).await
+    connector::http::sim::serve(listener, tasks, until, answer).await
 }
 
 /// As [`serve`], under TLS with `certificate`, as [`connector::http::sim::serve_tls`]
 /// serves.
+///
+/// # Errors
+///
+/// As [`serve`].
 pub async fn serve_tls(
     listener: Listener,
     tasks: Tasks,
+    until: Token,
     store: Arc<Mutex<Store>>,
     database: String,
     token: Option<String>,
     certificate: Certificate,
-) -> net::Error {
+) -> Result<(), net::Error> {
     let answer = answer(store, database, token);
-    connector::http::sim::serve_tls(listener, tasks, certificate, answer).await
+    connector::http::sim::serve_tls(listener, tasks, until, certificate, answer).await
 }
 
 fn answer(

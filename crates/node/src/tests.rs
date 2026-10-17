@@ -7592,12 +7592,13 @@ pub(crate) mod port {
                     let served = connector_influx::sim::serve_tls(
                         listener,
                         tasks,
+                        connector::cancel::Token::new(),
                         into,
                         "plant".into(),
                         None,
                         certificate,
                     );
-                    panic!("the listener failed: {}", served.await);
+                    panic!("the listener failed: {:?}", served.await);
                 })
                 .expect("the shard starts");
             (store, server)
