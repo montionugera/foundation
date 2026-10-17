@@ -6010,6 +6010,50 @@ mod tests {
             }
 
             #[test]
+            fn reads_past_a_handoff_with_little_credit_once_it_acked_each_frame() {
+                run(146, |test| async move {
+                    let set = two_indexes();
+                    let mut shard = test.shard(AREA).await;
+                    let a = shard.open_writer(writer("w", 1, &set)).expect("synced");
+                    held(&test, &mut shard, a).await;
+                    for stamp in [20, 21, 22, 23] {
+                        write(&test, &mut shard, a, &[stamp]);
+                    }
+                    lose(&test, &mut shard, a, 30);
+                    shard.close_writer(a);
+                    let b = shard.open_writer(writer("b", 1, &set)).expect("synced");
+                    lose(&test, &mut shard, b, 40);
+                    committed(&test, &mut shard, b, &[50]).await;
+                    let second = shard
+                        .open_named_complete(
+                            Slot::new(0),
+                            key("a", "r"),
+                            HOLD,
+                            1,
+                            Charge::Whole,
+                        )
+                        .expect("synced");
+                    shard.committed().await.expect("the commit ends");
+                    let (frames, end, _) = read(&mut shard, second.key).await;
+                    assert_eq!(ranges(&frames, 0), [seq(1, 1)]);
+                    assert!(matches!(end, reader::Next::Empty), "{end:?}");
+                    let charge = frames[0].charge();
+                    shard.ack(second.key, live(2)).expect("forward");
+                    shard.grant(second.key, 5 * charge);
+                    let (frames, end, _) = read(&mut shard, second.key).await;
+                    assert_eq!(ranges(&frames, 0), [seq(2, 1), seq(3, 1), seq(4, 1)]);
+                    assert!(matches!(end, reader::Next::Empty), "{end:?}");
+                    shard.ack(second.key, live(5)).expect("forward");
+                    let (frames, end, reads) = read(&mut shard, second.key).await;
+                    assert_eq!(
+                        ranges(&frames, 0),
+                        [seq(7, 1)],
+                        "{end:?} {reads} reads"
+                    );
+                });
+            }
+
+            #[test]
             fn reads_up_to_frames_lost_at_the_tail() {
                 run(134, |test| async move {
                     let set = two_indexes();
