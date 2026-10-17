@@ -26,6 +26,7 @@ fn main() {
     reads_only_the_files_of_the_directory_of_ssl_cert_dir();
     gives_only_the_failure_of_a_path_that_is_not_there_or_no_directory();
     gives_the_failures_of_both_paths_when_both_are_set();
+    gives_the_path_of_each_pem_file_that_does_not_parse();
 }
 
 fn reads_the_certificates_of_the_pem_file_of_ssl_cert_file() {
@@ -157,6 +158,26 @@ fn gives_the_failures_of_both_paths_when_both_are_set() {
             dir_failure(Path::new("/nonexistent"))
         ),
         "the roots with both set"
+    );
+}
+
+fn gives_the_path_of_each_pem_file_that_does_not_parse() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/roots/bad");
+    let text = child(&[("SSL_CERT_DIR", dir.as_os_str())]);
+    // `read_dir` gives the files in no fixed order.
+    let mut failures: Vec<&str> = text.lines().skip(1).collect();
+    failures.sort_unstable();
+    let failure = |name: &str| {
+        format!(
+            "failure failed to read PEM from file: base64 decode error: \
+             InvalidCharacter(33) at '{}'",
+            dir.join(name).display()
+        )
+    };
+    assert_eq!(
+        failures,
+        [failure("a.pem"), failure("b.pem")],
+        "the failures of the bad files: {text}"
     );
 }
 

@@ -227,12 +227,19 @@ fn status_gives_each_failure_of_the_roots_of_the_node() {
         roots.source,
         format!("SSL_CERT_FILE={file} SSL_CERT_DIR={dir}")
     );
-    let failure =
-        "failed to read PEM from file: base64 decode error: InvalidCharacter(33)";
-    assert_eq!(
-        (roots.failures, roots.unlisted),
-        (vec![failure.to_owned(); 17], 0)
-    );
+    let mut failures: Vec<String> = (0..17)
+        .map(|n| {
+            format!(
+                "failed to read PEM from file: base64 decode error: \
+                 InvalidCharacter(33) at '{dir}/{n}.pem'"
+            )
+        })
+        .collect();
+    failures.sort_unstable();
+    let mut roots_failures = roots.failures;
+    // `read_dir` gives the files in no fixed order.
+    roots_failures.sort_unstable();
+    assert_eq!((roots_failures, roots.unlisted), (failures, 0));
 }
 
 /// `status --data` reaches the node of that data directory, and `status` with no flag
