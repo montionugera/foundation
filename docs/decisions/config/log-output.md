@@ -115,9 +115,11 @@
   come from inside an event. While a thread `log` runs on another thread, the hook
   waits up to 1 s for the log to write each line. It calls the hook before it unless
   that bound passes while that thread still runs, since the writer may block that write
-  too. So when no thread `log` runs, as after each shard has ended and the thread wrote
-  each line, it calls the hook before it at once, and the line waits for the next
-  `Flush::wait` (laptop.architect-2,
+  too (laptop.architect-2, 2026-10-17T08:31:40Z,
+  https://github.com/synnaxlabs/foundation/pull/3024#issuecomment-6231774507). So when
+  no thread `log` runs, as after each shard has ended and the thread wrote each line, it
+  calls the hook before it at once, and the line waits for the next `Flush::wait`
+  (laptop.architect-2,
   https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209084526). A panic
   of the writer, on the thread `log`, also calls it at once, since only that thread
   writes the line.
