@@ -612,6 +612,36 @@ fn names_no_reserved_connector_in_the_fix_of_a_missing_name() {
 }
 
 #[test]
+fn names_no_repeated_connector_in_the_fix_of_a_missing_name() {
+    let text = "connector \"other\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n\
+                connector \"Other\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n";
+    assert_eq!(
+        refused(text, "plant"),
+        [(
+            "config.no-connector",
+            None,
+            "no `connector` block of the files has the name \"plant\"".to_owned(),
+            "Use one of [\"other\"]".to_owned(),
+        )]
+    );
+}
+
+#[test]
+fn names_no_connector_that_repeats_a_channel_in_the_fix_of_a_missing_name() {
+    let text = "channel \"Other\" {\n  kind = \"index\"\n}\n\
+                connector \"other\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n";
+    assert_eq!(
+        refused(text, "plant"),
+        [(
+            "config.no-connector",
+            None,
+            "no `connector` block of the files has the name \"plant\"".to_owned(),
+            "Add a `connector` block with the name \"plant\"".to_owned(),
+        )]
+    );
+}
+
+#[test]
 fn finds_a_connector_beside_a_reserved_connector_of_another_name() {
     let text = "connector \"@other\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n\
                 connector \"plant\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n";

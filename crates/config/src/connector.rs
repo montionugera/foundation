@@ -147,6 +147,7 @@ fn labels<'a>(blocks: &[&'a Block], lower: &str) -> Labels<'a> {
     let connector = definition::Kind::Connector;
     let at_name = |key: &Name| key.as_str().to_ascii_lowercase() == lower;
     let mut at = Vec::new();
+    let mut seen = BTreeSet::new();
     let mut labels = Labels {
         problems: Vec::new(),
         names: BTreeSet::new(),
@@ -163,7 +164,8 @@ fn labels<'a>(blocks: &[&'a Block], lower: &str) -> Labels<'a> {
         };
         match crate::key(label, kind) {
             Ok(key) => {
-                if kind == connector {
+                let first = seen.insert(key.as_str().to_ascii_lowercase());
+                if kind == connector && first {
                     labels.names.insert(key.clone());
                 }
                 if at_name(&key) {
