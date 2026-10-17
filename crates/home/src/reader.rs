@@ -77,8 +77,8 @@ pub enum Unopened {
     },
     /// The open adds a record, opens a held one, or takes over an open session with a
     /// new hold, and the buffer had no block or no room for the entry of the part that
-    /// holds its record, so a restart would not resume the reader. Open it again
-    /// later.
+    /// holds its record or of a part before it, so a restart would not resume the
+    /// reader. Open it again later.
     Unrecorded,
 }
 
@@ -194,7 +194,7 @@ struct Entry {
     listed: bool,
     /// Whether `Set::ticked` holds the index.
     ticked: bool,
-    /// Whether the newest named entry of the index in the buffer holds a record.
+    /// Whether a part of the named records of the index in the buffer holds a record.
     stored: bool,
 }
 

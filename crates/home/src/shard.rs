@@ -11,7 +11,7 @@ use std::task::{Context, Poll};
 use buffer::{Buffer, Entry};
 use control::Gate;
 use control::lease::Lease;
-use delivery::{Reader, Record};
+use delivery::Reader;
 use types::channel::{self, Slot};
 use types::frame::key_set::KeySet;
 use types::frame::{self, Draft, Frame, Label, Path};
@@ -23,7 +23,7 @@ use crate::index::{Accepted, Index};
 use crate::reader;
 use crate::split::Split;
 use crate::writer::{self, Writer};
-use crate::{handoff, named, order, split, stored};
+use crate::{handoff, named, order, split, state, stored};
 
 /// How long a holder that the open restored keeps control with no connected writer.
 const GRACE: Span = Span::from_nanos(10_000_000_000);
@@ -417,8 +417,11 @@ impl Shard {
         );
         self.readers.shed(place);
         if let Some(mesh) = self.now() {
-            let appended = self.append_named(place, &[], mesh);
-            appended.expect("invariant: no record needs room");
+            let head = self.head(place, mesh);
+            self.named
+                .entry(slot)
+                .or_default()
+                .append(&self.buffer, &[], head);
         }
         let last = self.indexes.len() - 1;
         self.places.remove(&slot);
@@ -751,7 +754,7 @@ impl Shard {
     /// it: at least 448 records of the longest subjects and names.
     /// [`reader::Unopened::Unrecorded`] when the open adds a record, opens a held one,
     /// or takes over an open session with a new hold, and the buffer has no block or no
-    /// room for the entry of the part that holds its record.
+    /// room for the entry of the part that holds its record or of a part before it.
     ///
     /// # Panics
     ///
@@ -774,15 +777,13 @@ impl Shard {
         let records = self.readers.opening(place, &reader, hold, live);
         let mut recorded_at = None;
         if let Some(records) = &records {
-            let appended =
-                self.append_named(place, records, now)
-                    .map_err(|named::Full| reader::Unopened::Full {
-                        limit: named::LIMIT,
-                    })?;
-            if !self.named[&slot].recorded(&reader, appended) {
-                return Err(reader::Unopened::Unrecorded);
-            }
-            recorded_at = Some(self.buffer.durable_at());
+            let head = self.head(place, now);
+            let parts = self.named.entry(slot).or_default();
+            let recorded = parts.open(&self.buffer, records, &reader, head);
+            let recorded = recorded.map_err(|named::Full| reader::Unopened::Full {
+                limit: named::LIMIT,
+            })?;
+            recorded_at = Some(recorded.ok_or(reader::Unopened::Unrecorded)?);
         }
         let named = Reader::Named { reader, hold };
         let opened = self.readers.open_named_complete(
@@ -1004,27 +1005,24 @@ impl Shard {
             && self.readers.changed(place)
         {
             let records = self.readers.records(place);
-            let appended = self.append_named(place, &records, mesh);
-            let appended = appended.expect("invariant: each record has a part");
-            if appended.all() {
+            let head = self.head(place, mesh);
+            let parts = self.named.entry(head.slot).or_default();
+            if parts.append(&self.buffer, &records, head) {
                 self.readers.recorded(place, !records.is_empty());
             }
         }
         self.arm(place, monotonic, mesh);
     }
 
-    /// Appends the parts of the named records of the index at `place` that `records`
-    /// change, at mesh time `mesh`, as [`named::Parts::append`] does.
-    fn append_named(
-        &mut self,
-        place: usize,
-        records: &[Record],
-        mesh: Stamp,
-    ) -> Result<named::Appended, named::Full> {
+    /// The head of a state entry of the index at `place` at mesh time `mesh`.
+    fn head(&self, place: usize, mesh: Stamp) -> state::Head {
         let index = &self.indexes[place];
-        let (key, slot, first) = (index.key, index.slot, index.live_tail());
-        let parts = self.named.entry(slot).or_default();
-        parts.append(&self.buffer, records, key, slot, first, mesh)
+        state::Head {
+            index: index.key,
+            slot: index.slot,
+            first: index.live_tail(),
+            stored_at: mesh,
+        }
     }
 
     /// Makes the tick no later than the next one that the named readers of the index
@@ -1125,8 +1123,13 @@ fn append_handoffs(
         let Some((handoff, first)) = index.handoff() else {
             continue;
         };
-        let (key, slot) = (index.key, index.slot);
-        if handoff::append(buffer, handoff, key, slot, first, mesh) {
+        let head = state::Head {
+            index: index.key,
+            slot: index.slot,
+            first,
+            stored_at: mesh,
+        };
+        if handoff::append(buffer, handoff, head) {
             index.gate.recorded();
         } else {
             all = false;
@@ -6180,6 +6183,17 @@ mod tests {
                     shard.ack(a, live(1)).expect("forward");
                 }
 
+                /// Fills the pool, then frees the smallest block that holds the body of
+                /// a part, so that one part can append. Returns the blocks it keeps.
+                fn fill_but_one(test: &Test) -> Vec<block::Unique> {
+                    let mut blocks = test.fill();
+                    let part = blocks.iter().enumerate();
+                    let part = part.filter(|(_, block)| block.len() >= 4032);
+                    let part = part.min_by_key(|(_, block)| block.len());
+                    drop(blocks.swap_remove(part.expect("a block").0));
+                    blocks
+                }
+
                 /// Sleeps one interval and advances the shard.
                 async fn tick(test: &Test, shard: &mut Shard) {
                     test.clock.sleep(INTERVAL).await;
@@ -6708,14 +6722,50 @@ mod tests {
                             shard.committed().await.expect("the commit ends");
                         }
                         let full = open_longest(&mut shard, longest(448));
-                        let limit = crate::named::LIMIT;
-                        assert_eq!(full, Err(Unopened::Full { limit }));
+                        assert_eq!(full, Err(Unopened::Full { limit: 257_728 }));
                         let again = open_longest(&mut shard, longest(0));
                         let again = again.expect("its own record is replaced");
                         assert_eq!(again.replaced, Some(opened[0].into()));
                         close(&mut shard, opened[1].into());
                         let reopened = open_longest(&mut shard, longest(1));
                         reopened.expect("its record keeps its part");
+                    });
+                }
+
+                #[test]
+                fn frees_the_room_of_a_key_whose_reopen_found_no_block() {
+                    run(298, |test| async move {
+                        let mut shard = test.shard(1 << 22).await;
+                        let k = shard
+                            .open_named_complete(
+                                Slot::new(0),
+                                longest(0),
+                                Span::ZERO,
+                                CREDIT,
+                                Charge::Whole,
+                            )
+                            .expect("opens")
+                            .key;
+                        shard.committed().await.expect("the commit ends");
+                        for n in 1..448 {
+                            let reader = open_longest(&mut shard, longest(n));
+                            reader.expect("a part has room");
+                            shard.committed().await.expect("the commit ends");
+                        }
+                        close(&mut shard, k.into());
+                        tick(&test, &mut shard).await;
+                        shard.committed().await.expect("the commit ends");
+                        let blocks = test.fill();
+                        let refused = open_longest(&mut shard, longest(0));
+                        assert_eq!(refused, Err(Unopened::Unrecorded));
+                        drop(blocks);
+                        for _ in 0..4 {
+                            tick(&test, &mut shard).await;
+                            shard.committed().await.expect("the commit ends");
+                        }
+                        // 447 records: the room of longest(0) in part 0 is free.
+                        let new = open_longest(&mut shard, longest(448));
+                        new.expect("part 0 has the room of longest(0)");
                     });
                 }
 
@@ -6776,8 +6826,8 @@ mod tests {
                             open_longest(shard, longest(n)).expect("opens");
                         }
                         committed(test, shard, w, &[10, 20]).await;
-                        close(shard, k.into());
                         let blocks = test.fill();
+                        close(shard, k.into());
                         tick(test, shard).await;
                         drop(blocks);
                         open_longest(shard, longest(7)).expect("part 1 has room");
@@ -6804,40 +6854,41 @@ mod tests {
                     });
                 }
 
+                /// Opens 8 readers of the longest names, acks seq 0 to the reader in
+                /// part 1, and then opens `a`, for which only part 0 finds a block.
+                async fn append_part_0_only(
+                    test: &Test,
+                    shard: &mut Shard,
+                    w: writer::Key,
+                ) {
+                    let opened: Vec<_> = (0..8)
+                        .map(|n| open_longest(shard, longest(n)).expect("opens").key)
+                        .collect();
+                    committed(test, shard, w, &[10, 20]).await;
+                    assert_eq!(taken(shard, opened[7].into(), 0).len(), 2);
+                    shard.ack(opened[7], live(1)).expect("forward");
+                    let blocks = test.fill();
+                    tick(test, shard).await;
+                    drop(blocks);
+                    // The frame gives the open group its blocks, so an entry takes
+                    // only the block of its body.
+                    write(test, shard, w, &[30]);
+                    let blocks = fill_but_one(test);
+                    let a = shard.open_named_complete(
+                        Slot::new(0),
+                        key("a", "r"),
+                        LONG,
+                        CREDIT,
+                        Charge::Whole,
+                    );
+                    a.expect("part 0 appends its record");
+                    drop(blocks);
+                }
+
                 #[test]
                 fn opens_a_reader_whose_part_appends_before_a_part_that_finds_no_block()
                 {
-                    let before = async |test: &Test, shard: &mut Shard, w| {
-                        let opened: Vec<_> = (0..8)
-                            .map(|n| {
-                                open_longest(shard, longest(n)).expect("opens").key
-                            })
-                            .collect();
-                        committed(test, shard, w, &[10, 20]).await;
-                        assert_eq!(taken(shard, opened[7].into(), 0).len(), 2);
-                        shard.ack(opened[7], live(1)).expect("forward");
-                        let blocks = test.fill();
-                        tick(test, shard).await;
-                        drop(blocks);
-                        // The frame gives the open group its blocks, so an entry
-                        // takes only the block of its body.
-                        write(test, shard, w, &[30]);
-                        let mut blocks = test.fill();
-                        let part_0 = blocks.iter().enumerate();
-                        let part_0 = part_0.filter(|(_, block)| block.len() >= 4032);
-                        let part_0 = part_0.min_by_key(|(_, block)| block.len());
-                        drop(blocks.swap_remove(part_0.expect("a block").0));
-                        let a = shard.open_named_complete(
-                            Slot::new(0),
-                            key("a", "r"),
-                            LONG,
-                            CREDIT,
-                            Charge::Whole,
-                        );
-                        a.expect("part 0 appends its record");
-                        drop(blocks);
-                    };
-                    restart(208, before, async |_, shard: &mut Shard| {
+                    restart(208, append_part_0_only, async |_, shard: &mut Shard| {
                         let reader =
                             open_longest(shard, longest(7)).expect("opens").key;
                         shard.committed().await.expect("the commit ends");
@@ -6847,6 +6898,98 @@ mod tests {
                             [seq(0, 1), seq(1, 1), seq(2, 1)],
                             "the ack found no block"
                         );
+                    });
+                }
+
+                #[test]
+                fn appends_at_the_next_tick_a_part_that_found_no_block() {
+                    let before = async |test: &Test, shard: &mut Shard, w| {
+                        append_part_0_only(test, shard, w).await;
+                        tick(test, shard).await;
+                    };
+                    restart(211, before, async |_, shard: &mut Shard| {
+                        let reader =
+                            open_longest(shard, longest(7)).expect("opens").key;
+                        shard.committed().await.expect("the commit ends");
+                        let read = caught_up(shard, reader, 0).await;
+                        assert_eq!(
+                            read,
+                            [seq(1, 1), seq(2, 1)],
+                            "the tick appends the ack"
+                        );
+                    });
+                }
+
+                #[test]
+                fn changes_no_key_of_a_part_that_found_no_block() {
+                    let before = async |test: &Test, shard: &mut Shard, w| {
+                        let hold_0 = |shard: &mut Shard, reader| {
+                            let opened = shard.open_named_complete(
+                                Slot::new(0),
+                                reader,
+                                Span::ZERO,
+                                CREDIT,
+                                Charge::Whole,
+                            );
+                            opened.expect("opens").key
+                        };
+                        for n in 0..6 {
+                            open_longest(shard, longest(n)).expect("opens in part 0");
+                        }
+                        let z = hold_0(shard, key(&"z".repeat(150), &"y".repeat(150)));
+                        let x = hold_0(shard, longest(7));
+                        open_longest(shard, longest(8)).expect("opens in part 1");
+                        committed(test, shard, w, &[10, 20]).await;
+                        let blocks = test.fill();
+                        close(shard, x.into());
+                        close(shard, z.into());
+                        tick(test, shard).await;
+                        drop(blocks);
+                        write(test, shard, w, &[30]);
+                        let blocks = fill_but_one(test);
+                        let a = shard.open_named_complete(
+                            Slot::new(0),
+                            key("a", "r"),
+                            LONG,
+                            CREDIT,
+                            Charge::Whole,
+                        );
+                        a.expect("part 0 appends its record");
+                        shard.committed().await.expect("the commit ends");
+                        drop(blocks);
+                        write(test, shard, w, &[40]);
+                        test.clock.sleep(INTERVAL).await;
+                        let blocks = test.fill();
+                        shard.advance();
+                        shard.committed().await.expect("the commit ends");
+                        drop(blocks);
+                        write(test, shard, w, &[50]);
+                        let blocks = fill_but_one(test);
+                        hold_0(shard, longest(7));
+                        shard.committed().await.expect("the commit ends");
+                        drop(blocks);
+                    };
+                    restart(212, before, async |_, shard: &mut Shard| {
+                        let reader = open_longest(shard, longest(7));
+                        reader.expect("its record is in one part");
+                    });
+                }
+
+                #[test]
+                fn frees_the_room_of_a_new_key_whose_part_found_no_block() {
+                    run(213, |test| async move {
+                        let mut shard = test.shard(1 << 22).await;
+                        for n in 0..447 {
+                            let reader = open_longest(&mut shard, longest(n));
+                            reader.expect("a part has room");
+                            shard.committed().await.expect("the commit ends");
+                        }
+                        let blocks = test.fill();
+                        let refused = open_longest(&mut shard, longest(447));
+                        assert_eq!(refused, Err(Unopened::Unrecorded));
+                        drop(blocks);
+                        let new = open_longest(&mut shard, longest(448));
+                        new.expect("part 63 has the room of longest(447)");
                     });
                 }
 
