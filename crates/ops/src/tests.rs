@@ -1593,3 +1593,50 @@ fn the_data_directory_of_one_name_is_in_the_working_directory() {
         "the directory . above the data directory `foundation-data` is not there"
     );
 }
+
+mod scope {
+    use std::path::{Path, PathBuf};
+
+    use crate::error::Error;
+    use crate::scope::Scope;
+
+    /// A host with the folder `/work`, which is the working directory, and the scope
+    /// of `foundation mcp` there, with the data directory `/work/foundation-data`.
+    fn work() -> (sim::node::Node, Scope) {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = sim.node(sim::node::Config::default());
+        host.make_dir(Path::new("/work"));
+        host.set_working_dir(Path::new("/work"));
+        let data = Path::new("/work/foundation-data");
+        let scope = Scope::mcp(&host.paths(), &[], data).expect("a scope");
+        (host, scope)
+    }
+
+    #[test]
+    fn a_plan_file_by_a_data_directory_moved_away_has_no_data() {
+        let (host, scope) = work();
+        let data = Path::new("/work/foundation-data");
+        host.move_path(data, Path::new("/data"));
+        assert_eq!(
+            scope.write(Path::new("out.plan"), b"x"),
+            Err(Error::NoData {
+                path: PathBuf::from("out.plan"),
+                data: data.to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_plan_file_in_a_folder_made_again_is_in_a_changed_folder() {
+        let (host, scope) = work();
+        host.move_path(Path::new("/work"), Path::new("/old"));
+        host.make_dir(Path::new("/work"));
+        assert_eq!(
+            scope.write(Path::new("out.plan"), b"x"),
+            Err(Error::FolderChanged {
+                path: PathBuf::from("out.plan"),
+                folders: vec![PathBuf::from("/work")],
+            })
+        );
+    }
+}

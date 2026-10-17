@@ -354,6 +354,27 @@ impl Node {
         lock(&self.0.shared).paths().place_dir(self.0.node, path);
     }
 
+    /// Moves the file, link, or directory at `from` on the node's host to `to`, as a
+    /// rename from outside the node does: it keeps its key, and a directory keeps
+    /// what it holds. A link on the way to `from` or `to` is followed, and a link at
+    /// `from` moves itself.
+    ///
+    /// # Panics
+    ///
+    /// When `from` or `to` is relative or `/`, or has a `..` segment, when nothing is
+    /// at `from`, when a file, a link, or a directory is at `to`, when the directory
+    /// of `to` is not there, or when `to` is under `from`.
+    pub fn move_path(&self, from: &Path, to: &Path) {
+        for path in [from, to] {
+            assert!(path.is_absolute(), "{} is relative", path.display());
+            let parent = path.components().any(|part| part == Component::ParentDir);
+            assert!(!parent, "{} has a `..` segment", path.display());
+        }
+        lock(&self.0.shared)
+            .paths()
+            .move_entry(self.0.node, from, to);
+    }
+
     /// Sets the working directory of the node's host, from which each relative path
     /// starts. Nothing need be there.
     ///

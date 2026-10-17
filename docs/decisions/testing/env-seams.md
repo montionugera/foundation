@@ -980,9 +980,11 @@
   `Outside` for such a path. So a folder that is a file gives `Replaced` after a write
   to it, and so does a folder that a program makes again in other case or replaces
   with a link. The common cases pin both on both drivers.
+  `sim::Node::move_path` renames a file, a link, or a directory of a host from outside
+  the node, with its key, so the common cases move a folder away on both drivers.
   Decided by `laptop.architect-2` (2026-10-17T05:16:48Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230063256; the
-  order, a read, and `Replaced` by the path now, 2026-10-17T06:33:57Z,
+  order, a read, `Replaced` by the path now, and `move_path`, 2026-10-17T06:33:57Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230731316). Lost: a
   second look in `ops` after a refusal, which puts a `Paths` with no limits in the scope
   that limits `foundation mcp`, states the rule of `within` again, and gives a false

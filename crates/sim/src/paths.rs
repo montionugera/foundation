@@ -242,6 +242,34 @@ impl Paths {
         entry.or_insert((inode, Entry::Directory));
     }
 
+    /// Moves the entry at `from` to `to`, both absolute with no `..`, with each entry
+    /// under it and their inodes. A link at the last name of either is not followed.
+    pub(crate) fn move_entry(&mut self, node: usize, from: &Path, to: &Path) {
+        let from = self.entry(node, from);
+        let to = self.entry(node, to);
+        assert!(
+            self.entries.contains_key(&(node, from.clone())),
+            "nothing is at {}",
+            from.display()
+        );
+        let there = self.entries.contains_key(&(node, to.clone()));
+        assert!(!there, "{} is there", to.display());
+        assert!(
+            !to.starts_with(&from),
+            "{} is under {}",
+            to.display(),
+            from.display()
+        );
+        let mut moved: Vec<_> = self.under(node, &from).cloned().collect();
+        moved.push(from.clone());
+        for path in moved {
+            let entry = self.entries.remove(&(node, path.clone()));
+            let entry = entry.expect("invariant: each moved path has an entry");
+            let path = to.join(path.strip_prefix(&from).expect("under `from`"));
+            self.entries.insert((node, path), entry);
+        }
+    }
+
     pub(crate) fn set_working(&mut self, node: usize, dir: &Path) {
         self.working.insert(node, dir.to_path_buf());
     }
@@ -281,6 +309,25 @@ impl Paths {
         self.entries
             .entry((node, at.clone()))
             .or_insert((inode, Entry::Directory));
+        at.join(name)
+    }
+
+    /// `path` with its directory resolved, which is there.
+    ///
+    /// # Panics
+    ///
+    /// When `path` is `/`, or its directory does not resolve or is not a directory.
+    fn entry(&self, node: usize, path: &Path) -> PathBuf {
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+            panic!("{} has no directory", path.display());
+        };
+        let at = self.resolve(node, dir);
+        let at = at.unwrap_or_else(|e| panic!("{} gave {e:?}", dir.display()));
+        assert!(
+            self.directory(node, &at),
+            "{} is not a directory",
+            dir.display()
+        );
         at.join(name)
     }
 

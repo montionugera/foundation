@@ -25,6 +25,7 @@ fn run(case: fn(&Host<'_>)) {
         dir: &scratch.0,
         make_dir: &make_dir,
         make_link: &|path, target| symlink(target, path).unwrap(),
+        move_path: &|from, to| fs::rename(from, to).unwrap(),
     });
 }
 
@@ -1150,23 +1151,6 @@ fn within_makes_no_file_at_a_hidden_name_in_other_case() {
             (wrote, made, there),
             (Err(Error::Vacant), Err(Error::Vacant), (false, false))
         );
-    });
-}
-
-/// A program replaces the folder with a link to a directory outside it. A path through
-/// the link, and the same file by the name of that directory, resolve under the folder
-/// by the path that it resolves to now, so the folder is replaced.
-#[test]
-fn a_folder_that_a_link_replaces_is_replaced() {
-    run(|host| {
-        let (_, base) = cases::within_work(host);
-        let work = base.join("work");
-        let within = host.paths.within(slice::from_ref(&work), &[]).unwrap();
-        fs::rename(&work, base.join("old")).unwrap();
-        symlink(base.join("workshop"), &work).unwrap();
-        let read = within.read(&work.join("a.hcl"), 1);
-        let direct = within.read(&base.join("workshop/a.hcl"), 1);
-        assert_eq!((read, direct), (Err(Error::Replaced), Err(Error::Replaced)));
     });
 }
 

@@ -16,6 +16,9 @@ pub(crate) struct Host<'a> {
     pub(crate) make_dir: &'a dyn Fn(&Path),
     /// Makes a symbolic link at the first path that names the second.
     pub(crate) make_link: &'a dyn Fn(&Path, &Path),
+    /// Renames the file, link, or directory at the first path to the second, as a
+    /// program does: it keeps its key.
+    pub(crate) move_path: &'a dyn Fn(&Path, &Path),
 }
 
 /// `EEXIST`, `ENOTDIR`, and `EISDIR` on Linux and macOS.
@@ -58,6 +61,8 @@ macro_rules! tests {
             within_refuses_a_new_name_outside_by_a_hidden_folder_that_is_not_there,
             within_hides_a_hidden_file_that_a_write_replaces,
             within_holds_nothing_in_a_file_that_a_write_replaces,
+            within_holds_nothing_in_a_folder_made_again,
+            within_holds_nothing_in_a_folder_that_a_link_replaces,
             within_hides_a_hidden_folder_that_the_limits_refuse,
             a_directory_made_takes_files,
             a_directory_made_again_or_through_a_link_is_ok,
@@ -548,6 +553,36 @@ pub(crate) fn within_holds_nothing_in_a_file_that_a_write_replaces(host: &Host<'
     assert_eq!(within.read(&file, 1), Ok(Found::File(b"x".to_vec())));
     host.paths.write(&file, b"y").unwrap();
     assert_eq!(within.read(&file, 1), Err(Error::Replaced));
+}
+
+/// A program moves the folder away and makes it again. A new name in it is refused as
+/// replaced, and a file of the moved folder, which keeps its key, as outside.
+pub(crate) fn within_holds_nothing_in_a_folder_made_again(host: &Host<'_>) {
+    let (_, base) = within_work(host);
+    let work = base.join("work");
+    let within = host.paths.within(slice::from_ref(&work), &[]).unwrap();
+    (host.move_path)(&work, &base.join("old"));
+    (host.make_dir)(&work);
+    let written = within.write(&work.join("b.hcl"), b"x");
+    let moved = within.read(&base.join("old/a.hcl"), 1);
+    assert_eq!(
+        (written, moved),
+        (Err(Error::Replaced), Err(Error::Outside))
+    );
+}
+
+/// A program replaces the folder with a link to a directory outside it. A path through
+/// the link, and the same file by the name of that directory, resolve under the folder
+/// by the path that it resolves to now, so the folder is replaced.
+pub(crate) fn within_holds_nothing_in_a_folder_that_a_link_replaces(host: &Host<'_>) {
+    let (_, base) = within_work(host);
+    let work = base.join("work");
+    let within = host.paths.within(slice::from_ref(&work), &[]).unwrap();
+    (host.move_path)(&work, &base.join("old"));
+    (host.make_link)(&work, &base.join("workshop"));
+    let read = within.read(&work.join("a.hcl"), 1);
+    let direct = within.read(&base.join("workshop/a.hcl"), 1);
+    assert_eq!((read, direct), (Err(Error::Replaced), Err(Error::Replaced)));
 }
 
 /// A hidden folder that the limits of the handle refuse, but that is there, still
