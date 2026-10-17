@@ -5,6 +5,7 @@
 
 mod carry;
 mod memory;
+mod tagged;
 
 use std::collections::BTreeSet;
 use std::future::poll_fn;
@@ -3897,30 +3898,51 @@ fn an_open_refuses_a_carry_record_of_the_wrong_shape() {
     }
 }
 
-#[test]
-fn an_open_refuses_a_carry_record_with_a_valid_entry() {
-    let one = carry_body(&[carried(2, 4, 0, None)]);
-    let header = [
-        &2_u128.to_le_bytes()[..],
-        &[0],
-        &4_u64.to_le_bytes(),
-        &1_u32.to_le_bytes(),
-        &7_i64.to_le_bytes(),
-        &[1],
-        &30_i64.to_le_bytes(),
-        &[0],
-        &3_u32.to_le_bytes(),
+/// The body of a carry record with the tail of index 2 at seq 4 and `entries`, each a
+/// sample of index 2 at seq 3 with `tag` and the bytes `[9; 3]`.
+fn carry_entries(tags: &[u8]) -> Vec<u8> {
+    let mut body = carry_body(&[carried(2, 4, 0, Some(30))]);
+    body[2] = u8::try_from(tags.len()).expect("few entries");
+    let headers = tags.iter().map(|&tag| {
+        [
+            &2_u128.to_le_bytes()[..],
+            &[0],
+            &3_u64.to_le_bytes(),
+            &1_u32.to_le_bytes(),
+            &7_i64.to_le_bytes(),
+            &[1],
+            &30_i64.to_le_bytes(),
+            &[tag],
+            &3_u32.to_le_bytes(),
+        ]
+        .concat()
+    });
+    let bytes = tags.iter().map(|_| vec![9; 3]);
+    [
+        body,
+        headers.collect::<Vec<_>>().concat(),
+        bytes.collect::<Vec<_>>().concat(),
     ]
-    .concat();
-    let mut with = [one.clone(), header, vec![9; 3]].concat();
-    with[2] = 1;
+    .concat()
+}
+
+/// An open takes a carried entry of tag 1 as the newest of its key, and refuses a
+/// carried entry of tag 0 and a key that one body gives twice.
+#[test]
+fn an_open_takes_a_carried_tagged_entry_and_refuses_a_wrong_one() {
     run(160, move |shard| async move {
         shard.create_two_records().await;
-        shard.put_carry(3 * BLOCK, &one).await;
-        let opened = shard.open(layout(AREA, BODY_MAX), &mut Slots::new()).await;
-        assert_eq!(opened.map(drop), Ok(()), "the body with no entry opens");
-        shard.put_carry(3 * BLOCK, &with).await;
-        shard.open_invalid(layout(AREA, BODY_MAX), 3 * BLOCK).await;
+        shard.put_carry(3 * BLOCK, &carry_entries(&[1])).await;
+        let mut slots = Slots::new();
+        let opened = shard.open(layout(AREA, BODY_MAX), &mut slots).await;
+        let buffer = opened.expect("the body with a tagged entry opens");
+        let b = slots.index(key(2));
+        assert_eq!(newest(&buffer, Path::Live, 1), vec![(b, kept(&[9; 3]))]);
+        drop(buffer);
+        for tags in [&[0][..], &[1, 1]] {
+            shard.put_carry(3 * BLOCK, &carry_entries(tags)).await;
+            shard.open_invalid(layout(AREA, BODY_MAX), 3 * BLOCK).await;
+        }
     });
 }
 
