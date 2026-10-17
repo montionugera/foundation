@@ -129,6 +129,8 @@ fn shim_compiler() -> cc::Tool {
     let flags = std::fs::read_to_string(copy.join("flags.txt")).unwrap();
     let target = env!("CONNECTOR_OPCUA_TARGET");
     let mut shim = crate::compiler::builds(&copy, &flags, "").shim;
+    // As the sim build gives `server.c`.
+    shim.include(copy.join("src"));
     shim.target(target)
         .host(target)
         .opt_level(3)
