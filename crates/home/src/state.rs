@@ -20,10 +20,10 @@ pub(crate) struct Head {
 }
 
 /// Appends the state entry of tag `tag` with `body` in a block of the pool of
-/// `buffer`, or no part for `None`, with `head`, alone. Returns whether the entry needs no
-/// later append: the buffer took it, or a failed commit ended the buffer, so a restart
-/// reads no later entry. `false` when the pool had no block for the body, or the ring
-/// or the pool had no room.
+/// `buffer`, or no part for `None`, with `head`, alone. Returns whether the entry needs
+/// no later append: the buffer took it, or a failed commit ended the buffer, so a
+/// restart reads no later entry. `false` when the pool had no block for the body, or
+/// the ring or the pool had no room.
 ///
 /// # Panics
 ///

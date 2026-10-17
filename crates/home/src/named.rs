@@ -3,7 +3,6 @@
 //! [`PARTS`] parts. Part `p` is the entry of tag `2 + p`, and the newest entry of a
 //! part replaces the ones before it.
 
-use std::collections::BTreeMap;
 use std::num::NonZeroU8;
 use std::str;
 
@@ -58,7 +57,7 @@ fn tag(part: u8) -> NonZeroU8 {
 pub(crate) struct Full;
 
 /// How far a [`write`](Parts::write) went: it appended each part before `until`
-/// whose body changed, and none from `until` on.
+/// whose records changed, and none from `until` on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Appended {
     until: u8,
@@ -171,12 +170,13 @@ impl Parts {
         Ok(recorded.then(|| buffer.durable_at()))
     }
 
-    /// Appends each part whose body differs from the body it last appended, so that
-    /// the parts hold `records` and no other record, with `head`. Each part goes
-    /// alone, in part order, and the append stops at the first part that finds no
+    /// Appends each part whose records differ from the ones that its last entry holds,
+    /// so that the parts hold `records` and no other record, with `head`. Each part
+    /// goes alone, in part order, and the append stops at the first part that finds no
     /// block or no room. A record keeps its part. A removed record keeps its room until
-    /// the commit of the entry that drops it, and goes back in its part when it returns
-    /// before that. Returns whether it appended each part whose body changed.
+    /// the entry of its part that drops it appends, and goes back in its part when it
+    /// returns before that. Returns whether it appended each part whose records
+    /// changed.
     ///
     /// # Panics
     ///
@@ -206,10 +206,7 @@ impl Parts {
         head: state::Head,
     ) -> Result<Appended, Full> {
         self.place(records)?;
-        let listed: BTreeMap<_, _> = records
-            .iter()
-            .map(|record| (&record.reader, record))
-            .collect();
+        let listed = Listed::new(records);
         for (part, body) in self.changed(records, &listed) {
             if !state::append(buffer, tag(part), Some(&body), head) {
                 self.keys.retain(|(_, placed)| placed.state != Kept::Added);
@@ -271,18 +268,13 @@ impl Parts {
     /// The body of each part, in part order, whose records differ from the ones that
     /// its last entry holds, when the parts hold `records`, which
     /// [`place`](Self::place) placed. `listed` holds `records` by key.
-    fn changed(
-        &self,
-        records: &[Record],
-        listed: &BTreeMap<&delivery::named::Key, &Record>,
-    ) -> Vec<(u8, Vec<u8>)> {
+    fn changed(&self, records: &[Record], listed: &Listed<'_>) -> Vec<(u8, Vec<u8>)> {
         let mut changed = [false; PARTS as usize];
         for (key, placed) in &self.keys {
             let now = listed
                 .get(key)
-                .map(|record| Kept::Held(Fields::from(*record)));
-            let dropped = matches!(placed.state, Kept::Held(_)) && now.is_none();
-            if dropped || now.is_some_and(|now| now != placed.state) {
+                .map(|record| Kept::Held(Fields::from(record)));
+            if now.is_none_or(|now| now != placed.state) {
                 changed[usize::from(placed.part)] = true;
             }
         }
@@ -309,18 +301,14 @@ impl Parts {
     /// `part`. A key of `part` that `listed` lacks goes, and its room is free: a
     /// restart reads a prefix of the appends, so it never reads an add of that key in
     /// another part without this entry.
-    fn appended(
-        &mut self,
-        part: u8,
-        listed: &BTreeMap<&delivery::named::Key, &Record>,
-    ) {
+    fn appended(&mut self, part: u8, listed: &Listed<'_>) {
         self.keys.retain_mut(|(key, placed)| {
             if placed.part != part {
                 return true;
             }
             let record = listed.get(key);
             if let Some(record) = record {
-                placed.state = Kept::Held(Fields::from(*record));
+                placed.state = Kept::Held(Fields::from(record));
             }
             record.is_some()
         });
@@ -355,6 +343,23 @@ impl Parts {
     fn part(&self, key: &delivery::named::Key) -> u8 {
         let placed = self.placed(key);
         placed.expect("invariant: each record has a part").part
+    }
+}
+
+/// Records sorted by key, for a lookup by binary search.
+struct Listed<'a>(Vec<&'a Record>);
+
+impl<'a> Listed<'a> {
+    fn new(records: &'a [Record]) -> Self {
+        let mut listed: Vec<_> = records.iter().collect();
+        listed.sort_unstable_by(|a, b| a.reader.cmp(&b.reader));
+        Self(listed)
+    }
+
+    /// The record of `key`, if any.
+    fn get(&self, key: &delivery::named::Key) -> Option<&'a Record> {
+        let at = self.0.binary_search_by(|record| record.reader.cmp(key));
+        at.ok().map(|at| self.0[at])
     }
 }
 
@@ -563,11 +568,8 @@ mod tests {
     }
 
     /// The records of `records` by key.
-    fn listed(records: &[Record]) -> BTreeMap<&delivery::named::Key, &Record> {
-        records
-            .iter()
-            .map(|record| (&record.reader, record))
-            .collect()
+    fn listed(records: &[Record]) -> Listed<'_> {
+        Listed::new(records)
     }
 
     /// The bodies of the parts that `records` change.

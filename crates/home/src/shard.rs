@@ -168,8 +168,8 @@ pub struct Shard {
     /// the open restored, or the one that a shed kept.
     kept: hash::Map<Slot, Gate>,
     /// The named records of each index in the buffer, by slot, carried or not: a shed
-    /// index whose entries found no block keeps them, so that a later carry places
-    /// each record in the part that holds it.
+    /// index whose entries found no block or no room keeps them, so that a later carry
+    /// places each record in the part that holds it.
     named: hash::Map<Slot, named::Parts>,
     /// When [`advance`](Shard::advance) next restores records, ends holds, and appends
     /// changed records ([`Shard::arm`]).
@@ -392,8 +392,10 @@ impl Shard {
     }
 
     /// Stops carrying the index at `slot`. Each named reader of the index stops holding
-    /// its position, and the shard appends an entry that holds no named reader. With no
-    /// mesh time, or no room for that entry, a restart restores the holds. A later
+    /// its position, and the shard appends, in part order, an entry that holds no named
+    /// reader for each part of the named records of the index that holds one. With no
+    /// mesh time, a restart restores the holds. When a part finds no block or no room,
+    /// a restart restores the holds of that part and the parts after it. A later
     /// [`carry`](Self::carry) in the same run does not. Its frames stay in the buffer,
     /// so a later carry of `slot` continues each path from its tail in the buffer: the
     /// last entry appended, on disk or not. The shard also keeps the control gate for
@@ -6763,6 +6765,23 @@ mod tests {
                         // 447 records: the room of longest(0) in part 0 is free.
                         let new = open_longest(&mut shard, longest(448));
                         new.expect("part 0 has the room of longest(0)");
+                    });
+                }
+
+                #[test]
+                fn frees_the_room_of_a_closed_key_before_its_removal_commits() {
+                    run(299, |test| async move {
+                        let mut shard = test.shard(1 << 22).await;
+                        let k = open_k(&mut shard);
+                        shard.committed().await.expect("the commit ends");
+                        for n in 1..448 {
+                            let reader = open_longest(&mut shard, longest(n));
+                            reader.expect("a part has room");
+                            shard.committed().await.expect("the commit ends");
+                        }
+                        close(&mut shard, k.into());
+                        let new = open_longest(&mut shard, longest(448));
+                        new.expect("the close appended the removal of longest(0)");
                     });
                 }
 
