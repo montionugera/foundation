@@ -52,8 +52,8 @@ const KEYS: [&str; 7] = [
     "ca",
 ];
 /// The count of the samples of the frames that the run acks, which InfluxDB confirmed
-/// with a 204, across the runs of one supervisor call. The samples of a frame that
-/// landed in part when a run ended are not counted.
+/// with a 204, across the runs of one supervisor call. A run that ends before it acks
+/// a frame counts none of its samples, also those that landed.
 const CONFIRMED: &str = "confirmed";
 /// The count of the seqs that the gap lines of the frames that the run acks count,
 /// which InfluxDB took with a 204, across the runs of one supervisor call.
@@ -198,20 +198,20 @@ impl kind::Kind for Kind {
     /// frame after seqs that the reader did not get, it writes their `live` gap line
     /// ([`gap::MEASUREMENT`]) at the frame's first sample, also when it leaves that
     /// sample's line out. It keeps one request in flight, of at most 5,000 lines, and
-    /// of at most 4 MiB of them or one line, so the lines of a frame can span
-    /// requests. It acks a frame only after InfluxDB answers 204 to the request of its
-    /// last line, or with no request when no line waits for one. At the ack it adds
-    /// the frame's fields to the count `confirmed`, the seqs of its gap lines to
-    /// `lost`, and the samples it left out as over 65,536 bytes to `oversized`. A part
-    /// of a frame that lands before the run ends, with the frame not acked, adds to no
-    /// count, and the next run sends the whole frame again. It
-    /// shows each other answer as its error, with the fix for a 400, a 404, a 413, or
-    /// a 422, and sends the request again after a backoff. It reads the token at its
-    /// start, and again after a 401 or a 403 before the next attempt. It reads the `ca`
-    /// at its start, and again after a TLS failure before the next attempt. A read
-    /// after the start that fails shows its error, keeps the request and the old token
-    /// or `ca`, and reads again after the next backoff, with no request until the read
-    /// gives a value.
+    /// of at most 4 MiB of them or one line, so the lines of a frame can span requests.
+    /// It acks a frame only after InfluxDB answers 204 to the request of its last line,
+    /// or with no request when no line waits for one. At the ack it adds the frame's
+    /// fields to the count `confirmed`, the seqs of its gap lines to `lost`, and the
+    /// samples it left out as over 65,536 bytes to `oversized`. A part of a frame that
+    /// lands before the run ends, with the frame not acked, adds to no count, and a
+    /// restart within the `hold` of the reader sends the whole frame again. It shows
+    /// each other answer as its error, with the fix for a 400, a 404, a 413, or a 422,
+    /// and sends the request again after a backoff. It reads the token at its start,
+    /// and again after a 401 or a 403 before the next attempt. It reads the `ca` at its
+    /// start, and again after a TLS failure before the next attempt. A read after the
+    /// start that fails shows its error, keeps the request and the old token or `ca`,
+    /// and reads again after the next backoff, with no request until the read gives a
+    /// value.
     ///
     /// # Errors
     ///

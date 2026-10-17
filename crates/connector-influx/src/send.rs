@@ -46,7 +46,8 @@ enum Event<'a> {
 
 /// Writes the frames of the run's reader to InfluxDB until the cancel, with one
 /// request in flight. While one is in flight it reads the next batch, until a request
-/// body holds 5,000 lines or 4 MiB of them, so the lines of a frame can span requests.
+/// body closes, or holds 5,000 lines or 4 MiB of them, so the lines of a frame can span
+/// requests.
 /// It acks a frame and counts its samples, lost seqs, and oversized samples only after
 /// InfluxDB answers 204 to the request of its last line, or with no request when no
 /// line waits for one.
@@ -102,9 +103,9 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
                 flight.set(None);
                 if let Some(ack) = ack {
                     reader.ack(ack.position);
-                    confirmed.add(ack.samples);
-                    lost.add(ack.lost);
-                    oversized.add(ack.oversized);
+                    confirmed.add(ack.counts.samples);
+                    lost.add(ack.counts.lost);
+                    oversized.add(ack.counts.oversized);
                 }
             }
             Event::Frame(Ok(received)) => batch.add(&received)?,
@@ -279,8 +280,8 @@ fn fix(status: StatusCode) -> &'static str {
         }
         StatusCode::PAYLOAD_TOO_LARGE => {
             ". Raise the request size limit of InfluxDB (`--max-http-request-size` of \
-             InfluxDB 3, `max-body-size` of InfluxDB 1), or write fewer or shorter \
-             samples in each frame"
+             InfluxDB 3, `max-body-size` of InfluxDB 1), or write fewer channels or \
+             shorter samples at each sample time"
         }
         _ => "",
     }

@@ -667,7 +667,8 @@ const UNKNOWN: &str =
 /// The fix in the text of a 413.
 const LARGE: &str = "Raise the request size limit of InfluxDB \
                      (`--max-http-request-size` of InfluxDB 3, `max-body-size` of \
-                     InfluxDB 1), or write fewer or shorter samples in each frame";
+                     InfluxDB 1), or write fewer channels or shorter samples at each \
+                     sample time";
 
 /// An answer of InfluxDB 1 to a batch of bad lines, of 65537 bytes or more.
 fn large() -> String {
@@ -1414,11 +1415,21 @@ fn lines_of_each_request_of(times: &[(usize, f64)]) -> Vec<usize> {
 /// As [`lines_of_each_request_of`], with a frame lost for no room before the frames
 /// of `times` when `lost`.
 fn lines_of_each_request_after(lost: bool, times: &[(usize, f64)]) -> Vec<usize> {
-    let times = times.to_vec();
+    let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
+    requests(&[failed], lost, times).0
+}
+
+/// As [`lines_of_each_request_after`], with InfluxDB giving `answers` in turn, then
+/// 204, and with the values of `confirmed` after the lines.
+fn requests(
+    answers: &[(StatusCode, &'static str)],
+    lost: bool,
+    times: &[(usize, f64)],
+) -> (Vec<usize>, Vec<u64>) {
+    let (answers, times) = (answers.to_vec(), times.to_vec());
     run(move |node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
-        let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
-        plant.answers.borrow_mut().push_back(failed);
+        plant.answers.borrow_mut().extend(answers);
         let run = plant.start(plant.config());
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
@@ -1441,7 +1452,8 @@ fn lines_of_each_request_after(lost: bool, times: &[(usize, f64)]) -> Vec<usize>
         plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
         plant.stop(run).await.expect("ok after a cancel");
         let got = plant.got();
-        (got.iter()).map(|(_, body)| body.lines().count()).collect()
+        let lines = (got.iter()).map(|(_, body)| body.lines().count()).collect();
+        (lines, plant.confirmed.borrow().clone())
     })
 }
 
@@ -1463,6 +1475,22 @@ fn reads_no_frame_into_a_batch_of_5000_lines_or_more() {
 #[test]
 fn splits_a_frame_at_5000_lines() {
     assert_eq!(lines_of_each_request(&[2_500, 2_499, 2]), [1, 1, 5_000, 1]);
+}
+
+/// A body that closes at 5,000 lines in the middle of a frame acks the frames that end
+/// in it, so its 204 counts their samples while the rest of the frame waits.
+#[test]
+fn acks_the_frames_of_a_body_that_closes_at_5000_lines() {
+    let (taken, failed) = (
+        (StatusCode::NO_CONTENT, ""),
+        (StatusCode::INTERNAL_SERVER_ERROR, ""),
+    );
+    let mut answers = vec![failed, taken, taken];
+    answers.extend([failed; 100]);
+    let times = [(2_500, 1.0), (2_499, 1.0), (2, 1.0)];
+    let (lines, confirmed) = requests(&answers, false, &times);
+    assert_eq!(lines[..4], [1, 1, 5_000, 1]);
+    assert_eq!(confirmed, [0, 10_000]);
 }
 
 /// A gap line counts toward the 5,000 lines of a full batch.
@@ -1625,7 +1653,8 @@ fn sends_a_frame_over_the_body_limit_in_more_requests() {
 }
 
 /// A batch is full, so the run reads no frame, while a body of a frame's lines waits
-/// for its request. A line that takes a body past 4 MiB moves to the next body.
+/// for its request, or the open body holds 5,000 lines. A line that takes a body past
+/// 4 MiB moves to the next body.
 #[test]
 fn is_full_until_each_closed_body_is_taken() {
     let (full, lines) = run(|node, tasks| async move {
@@ -1645,6 +1674,12 @@ fn is_full_until_each_closed_body_is_taken() {
         let first = writer.now().nanos();
         write_wide(&mut writer, first, 700);
         write_wide(&mut writer, first + 10_000, 266);
+        let narrow = [1; 5_000];
+        let outcomes =
+            write_raw(&mut writer, first + 20_000, 5_000, &[(WIDE, &narrow)]);
+        let applied = (outcomes.iter())
+            .all(|outcome| matches!(outcome, hub::home::Outcome::Applied { .. }));
+        assert!(applied, "the frame applies: {outcomes:?}");
         plant.clock.sleep(Span::SECOND).await;
         let measurement = Measurement::new("telemetry", &[]).expect("a measurement");
         let target = Target::Bucket {
@@ -1653,7 +1688,7 @@ fn is_full_until_each_closed_body_is_taken() {
         };
         let mut batch = Batch::new(measurement, &target, &name("influx"));
         let (mut full, mut lines) = (Vec::new(), Vec::new());
-        for _ in 0..2 {
+        for _ in 0..3 {
             batch
                 .add(&reader.next().await.expect("a frame"))
                 .expect("adds");
@@ -1667,7 +1702,10 @@ fn is_full_until_each_closed_body_is_taken() {
         }
         (full, lines)
     });
-    assert_eq!(full, [true, true, false, false, true, false, false]);
+    assert_eq!(
+        full,
+        [true, true, false, false, true, false, false, true, false]
+    );
     assert_eq!(
         lines,
         [
@@ -1675,7 +1713,8 @@ fn is_full_until_each_closed_body_is_taken() {
             (265, false),
             (170, true),
             (265, false),
-            (1, true)
+            (1, true),
+            (5_000, true)
         ]
     );
 }

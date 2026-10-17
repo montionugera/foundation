@@ -69,12 +69,16 @@ struct Bodies {
     pending: Counts,
 }
 
-/// The counts of some lines.
+/// The counts of the lines of some frames.
 #[derive(Clone, Copy, Debug, Default)]
-struct Counts {
-    samples: u64,
-    lost: u64,
-    oversized: u64,
+pub struct Counts {
+    /// The samples written as fields: a NaN or infinite sample is not.
+    pub samples: u64,
+    /// The seqs that the gap lines count.
+    pub lost: u64,
+    /// The `string` and `bytes` samples left out as a field of over 65,536 bytes as
+    /// written.
+    pub oversized: u64,
 }
 
 /// The lines that [`Batch::take`] gives.
@@ -92,14 +96,8 @@ pub struct Taken {
 pub struct Ack {
     /// The reader's position after the last frame that ends in the lines.
     pub position: Position,
-    /// The samples written as fields, of each frame that ends in the lines: a NaN or
-    /// infinite sample is not.
-    pub samples: u64,
-    /// The seqs that the gap lines of each frame that ends in the lines count.
-    pub lost: u64,
-    /// The `string` and `bytes` samples of each frame that ends in the lines, left
-    /// out as a field of over 65,536 bytes as written.
-    pub oversized: u64,
+    /// The counts of each frame that ends in the lines.
+    pub counts: Counts,
 }
 
 /// The data channels seen in the frames of one key set.
@@ -195,8 +193,8 @@ impl Batch {
             return Some(taken);
         }
         bodies.ack?;
-        let most = bodies.most.max(bodies.bytes.len());
-        Some(bodies.close(Vec::with_capacity(most)))
+        let next = bodies.room();
+        Some(bodies.close(next))
     }
 }
 
@@ -204,6 +202,11 @@ impl Bodies {
     /// Whether the open body takes no more lines.
     const fn at_bound(&self) -> bool {
         self.lines >= LINES_MAX || self.bytes.len() >= BYTES_MAX
+    }
+
+    /// An empty body with room for the most bytes of a body.
+    fn room(&self) -> Vec<u8> {
+        Vec::with_capacity(self.most.max(self.bytes.len()))
     }
 
     /// Closes the open body, with its ack, gives it, and opens `next`.
@@ -219,20 +222,32 @@ impl Bodies {
     /// Writes one line into the open body with `write`, which gives the line's counts.
     /// The open body closes before the line at the bound, and after the line when it
     /// passes 4 MiB with other lines: the line then moves to the next body. A line
-    /// that `write` leaves out counts as no line.
+    /// that `write` leaves out adds its counts, but no line, to the body.
     fn line(&mut self, write: impl FnOnce(&mut Vec<u8>) -> Counts) {
         if self.at_bound() {
-            let taken = self.close(Vec::with_capacity(self.bytes.len()));
+            let next = self.room();
+            let taken = self.close(next);
             self.closed.push_back(taken);
         }
-        let start = self.bytes.len();
+        let (start, room) = (self.bytes.len(), self.bytes.capacity());
         self.pending.add(write(&mut self.bytes));
         if self.bytes.len() == start {
             return;
         }
-        if self.bytes.len() > BYTES_MAX && start > 0 {
-            let mut next = Vec::with_capacity(self.bytes.len());
+        if self.bytes.len() > BYTES_MAX && start != 0 {
+            let line = self.bytes.len().saturating_sub(start);
+            // Room for the most that the next body holds before its own move, when
+            // its lines are no longer than this one.
+            let mut next = Vec::with_capacity(if line > BYTES_MAX {
+                line
+            } else {
+                BYTES_MAX.saturating_add(line)
+            });
             next.extend(self.bytes.drain(start..));
+            // Else the room that the line grew stays with this body until its 204.
+            if self.bytes.capacity() > room {
+                self.bytes.shrink_to_fit();
+            }
             let taken = self.close(next);
             self.closed.push_back(taken);
         }
@@ -244,14 +259,10 @@ impl Bodies {
         let pending = mem::take(&mut self.pending);
         let ack = self.ack.get_or_insert(Ack {
             position,
-            samples: 0,
-            lost: 0,
-            oversized: 0,
+            counts: Counts::default(),
         });
         ack.position = position;
-        ack.samples = ack.samples.saturating_add(pending.samples);
-        ack.lost = ack.lost.saturating_add(pending.lost);
-        ack.oversized = ack.oversized.saturating_add(pending.oversized);
+        ack.counts.add(pending);
     }
 }
 
