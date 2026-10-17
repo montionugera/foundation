@@ -101,8 +101,8 @@
   browse. It gives `config.private-key` for each private key in `documents` and then no
   other problem, as `config::check` does. It runs no check of the kind and checks no
   other block. A node makes one `Supervisor`, on shard 0, and gives it to `ops` and to
-  the connector runs: `ops` checks `plan` and `apply` with its kinds and browses with
-  it.
+  the connector runs: `ops` checks `plan` and `apply` with its kinds, reads the secrets
+  of `plan` through its resolver, and browses with it.
   The person's words, through `laptop.monitor`: decision 1, 2026-10-15 17:17 UTC, "Ok,
   this is fine. I approve"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6197989240);
@@ -183,3 +183,6 @@
   `config::connector`, its private-key alarm first, and one `Supervisor` of shard 0:
   `laptop.architect-2`, 2026-10-17 05:14 UTC
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6230042870).
+  `plan` reads secrets through `Supervisor::secrets`: `laptop.architect-2`,
+  2026-10-17 05:40 UTC
+  (https://github.com/synnaxlabs/foundation/pull/2999#issuecomment-6230284696).
