@@ -8,8 +8,9 @@ use crate::error::escape_controls;
 #[cfg(test)]
 mod tests;
 
-/// The most bytes that the source and the failures of [`Failures`] hold, so that they
-/// fit in the reply of `status` also with each byte escaped.
+/// The most bytes that the source and the kept failures of [`Failures`] hold, so that
+/// they fit in the reply of `status` also with each byte escaped. A source over it is
+/// kept in full, with no failure.
 const KEPT: usize = 1 << 20;
 
 /// The failures of the read of the OS roots of a node.

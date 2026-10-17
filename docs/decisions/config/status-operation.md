@@ -88,7 +88,9 @@
   lines (`laptop.architect-2`, 2026-10-17T04:59:46Z, #2945:
   https://github.com/synnaxlabs/foundation/issues/2945#issuecomment-6229906709;
   the memory of each failure: `laptop.architect-2`, 2026-10-17T05:23:16Z, #2996:
-  https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230135838). When
+  https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230135838; the
+  `source` in the bound: `laptop.architect-2`, 2026-10-17T06:22:40Z, #2996:
+  https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230639091). When
   #1028 makes the home check each reader open, the check of the status channels moves
   there. `serve` then leaves out each connector whose reader open the home refuses
   through the hub. The checks of the label of a connector and of the node stay in

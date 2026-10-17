@@ -151,7 +151,9 @@
   the memory of each failure: `laptop.architect-2`, 2026-10-17T05:23:16Z, #2996:
   https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230135838; the
   name: `laptop.architect-2`, 2026-10-17T05:23:46Z, #2996:
-  https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230140617). A
+  https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230140617; the
+  `source` in the bound: `laptop.architect-2`, 2026-10-17T06:22:40Z, #2996:
+  https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230639091). A
   `source` of more than 1 MiB keeps no failure. The list comes from the running node,
   since a shell can read other roots, and a file on disk of the failures is refused
   (`laptop.architect-2`, 2026-10-16T22:27:09Z, #2945:
