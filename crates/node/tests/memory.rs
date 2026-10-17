@@ -33,6 +33,26 @@ fn main() {
     reach();
     roots();
     failures();
+    source();
+}
+
+/// A node with a region on a source of 600 KiB keeps it once, under the 1 MiB that
+/// the roots may hold.
+fn source() {
+    let none = held(&node::Region::Stored, os::roots::Roots::default);
+    let long = held(&node::Region::Stored, || os::roots::Roots {
+        failures: vec!["failure".to_owned()],
+        source: os::roots::Source {
+            file: None,
+            dirs: vec![std::path::PathBuf::from("a".repeat(600 << 10))],
+        },
+        ..os::roots::Roots::default()
+    });
+    assert!(
+        long < none + (1 << 20),
+        "the node holds {} bytes more for a source of 600 KiB",
+        long.saturating_sub(none)
+    );
 }
 
 /// The peak of the bytes held while `run` runs, over those held before it.

@@ -1217,7 +1217,10 @@ impl Serve {
                     failures,
                     source,
                 } = roots;
+                // Each local of this block lives until the node stops.
                 drop(certificates);
+                let text = source.to_string();
+                drop(source);
                 tracing::info!(%name, address = %address.bound, shards, "started");
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,
@@ -1247,7 +1250,7 @@ impl Serve {
                         clock: clock.clone(),
                         name: name.clone(),
                         secrets: secrets.clone(),
-                        roots: ops::roots::Failures::new(source.to_string(), failures),
+                        roots: ops::roots::Failures::new(text, failures),
                     }));
                     let config = connector::supervisor::Config {
                         kinds,
@@ -1262,7 +1265,7 @@ impl Serve {
                     let runs = connectors::Runs::new(config, name);
                     (Some(ops), Some(follow(mesh, hub.clone(), runs).await))
                 } else {
-                    drop((source, failures));
+                    drop((text, failures));
                     (None, None)
                 };
                 let handles = task::Handles { hub, ops };
