@@ -23,6 +23,7 @@ use types::sample::{Scalar, Sides, Type};
 use types::time::{Span, Stamp};
 
 use super::*;
+use crate::batch::Batch;
 
 const PORT: u16 = 8086;
 const OPTIONS: tcp::Options = tcp::Options {
@@ -1614,6 +1615,56 @@ fn sends_a_frame_over_the_body_limit_in_more_requests() {
     assert_eq!(wide.errors, [""]);
     assert_eq!(wide.confirmed, [0, 700 * 64, 0]);
     assert_eq!(wide.points, 700);
+}
+
+/// A batch is full, so the run reads no frame, while a body of a frame's lines waits
+/// for its request, and while the open body is at the bound.
+#[test]
+fn is_full_until_each_closed_body_is_taken() {
+    let (full, lines) = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let names = wide_names();
+        let names =
+            std::iter::once("edge.time").chain(names.iter().map(String::as_str));
+        let mut writer = plant.writer(&names.collect::<Vec<_>>()).await;
+        let open = hub::reader::Config {
+            select: Selector::new(["edge.**"]).expect("a selector"),
+            mode: Mode::Complete,
+            subject: name("test"),
+            name: None,
+            hold: Span::ZERO,
+        };
+        let mut reader = plant.hub.reader(open).await.expect("the reader opens");
+        let first = writer.now().nanos();
+        write_wide(&mut writer, first, 700);
+        write_wide(&mut writer, first + 10_000, 266);
+        plant.clock.sleep(Span::SECOND).await;
+        let measurement = Measurement::new("telemetry", &[]).expect("a measurement");
+        let target = Target::Bucket {
+            name: "plant".into(),
+            org: "o".into(),
+        };
+        let mut batch = Batch::new(measurement, &target, &name("influx"));
+        let (mut full, mut lines) = (Vec::new(), Vec::new());
+        for _ in 0..2 {
+            batch
+                .add(&reader.next().await.expect("a frame"))
+                .expect("adds");
+            full.push(batch.full());
+            while let Some(taken) = batch.take() {
+                let acks = taken.ack.is_some();
+                let body = String::from_utf8(taken.body).expect("UTF-8");
+                lines.push((body.lines().count(), acks));
+                full.push(batch.full());
+            }
+        }
+        (full, lines)
+    });
+    assert_eq!(full, [true, true, false, false, true, false]);
+    assert_eq!(
+        lines,
+        [(266, false), (266, false), (168, true), (266, true)]
+    );
 }
 
 /// A frame in more requests is acked and counted only after the last of them lands, so
