@@ -154,7 +154,9 @@ take the next issue meanwhile.
 - Send the architect only a change to the public surface or to the meaning of a ruling.
   A fix of wording or links in a ruling needs no new approval.
 - Each issue that you file for your issue (its later steps, a deferral of a finding of
-  your PR, or an issue that your PR waits on) gets the milestone of your issue and
-  your `owner:` label when you file it. Your next state comment on your issue links
-  each one.
+  your PR, or an issue that your PR waits on) states its goal, crates, tests that must
+  pass, and decisions section, with a `crate:` label for each of its crates. Send its
+  link to `laptop.coordinator` when you file it, which admits it (`/coordinate`,
+  "Admit"). Claim it (step 3) only when you build it next. Your next state comment on
+  your issue links each one.
 - Before you stop, comment your state on the issue: done, next step, open questions.
