@@ -4755,7 +4755,7 @@ pub(crate) mod port {
                     roots: connector::http::Roots::default(),
                     tasks: tasks.clone(),
                     hub: hub.clone(),
-                    secrets: secrets.clone(),
+                    secrets,
                 });
             Rc::new(ops::Node::new(ops::Config {
                 mesh: mesh.clone(),
@@ -4765,7 +4765,6 @@ pub(crate) mod port {
                 hub: hub.clone(),
                 clock: host.clock(),
                 name,
-                secrets,
             }))
         }
 

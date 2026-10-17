@@ -25,7 +25,6 @@ pub struct Node {
     pub(crate) hub: hub::Hub,
     pub(crate) clock: Clock,
     pub(crate) name: Name,
-    pub(crate) secrets: secret::Resolver,
 }
 
 /// The dependencies of a [`Node`].
@@ -37,7 +36,10 @@ pub struct Config {
     pub keys: Box<dyn Fn() -> channel::Key>,
     /// The syntax of each file extension.
     pub front_ends: FrontEnds,
-    /// The connector supervisor of the node, with whose kinds `plan` and `apply` check.
+    /// The connector supervisor of the node. `plan` and `apply` check with its kinds,
+    /// and `plan` reads each secret of each connector of the node through its secrets,
+    /// as a run does. A remote `plan` reads only those of each connector that its
+    /// subject may apply.
     pub supervisor: connector::supervisor::Supervisor,
     /// The hub of the node, through which `status` reads the status channels.
     pub hub: hub::Hub,
@@ -45,10 +47,6 @@ pub struct Config {
     pub clock: Clock,
     /// The name of the node.
     pub name: Name,
-    /// The resolver through which `plan` reads each secret of each connector of the
-    /// node, as a run does. A remote `plan` reads only those of each connector that its
-    /// subject may apply.
-    pub secrets: secret::Resolver,
 }
 
 impl Node {
@@ -63,7 +61,6 @@ impl Node {
             hub,
             clock,
             name,
-            secrets,
         } = config;
         Self {
             mesh,
@@ -73,7 +70,6 @@ impl Node {
             hub,
             clock,
             name,
-            secrets,
         }
     }
 

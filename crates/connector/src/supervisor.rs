@@ -66,6 +66,13 @@ impl Supervisor {
         &self.0.kinds
     }
 
+    /// The sources that [`kind::Context::secret`] reads for the connectors of the
+    /// supervisor.
+    #[must_use]
+    pub fn secrets(&self) -> &secret::Resolver {
+        &self.0.secrets
+    }
+
     /// Browses the device of the connector block `config` of `kind` as `query`
     /// asks, with the network, clock, randomness, and secrets of the supervisor. It
     /// connects apart from any run of the connector and keeps no state after it

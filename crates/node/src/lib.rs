@@ -1240,7 +1240,7 @@ impl Serve {
                                 roots: trusted,
                                 tasks: tasks.clone(),
                                 hub: hub.clone(),
-                                secrets: secrets.clone(),
+                                secrets,
                             },
                         );
                         let ops = Rc::new(ops::Node::new(ops::Config {
@@ -1251,7 +1251,6 @@ impl Serve {
                             hub: hub.clone(),
                             clock: clock.clone(),
                             name: name.clone(),
-                            secrets,
                         }));
                         let runs =
                             connectors::Runs::new(supervisor, tasks.clone(), name);

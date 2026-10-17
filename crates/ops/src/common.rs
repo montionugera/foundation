@@ -166,11 +166,10 @@ pub(crate) fn create_config(
         mesh,
         keys: Box::new(key),
         front_ends,
-        supervisor: create_supervisor(fixture, create_kinds(), secrets.clone()),
+        supervisor: create_supervisor(fixture, create_kinds(), secrets),
         hub: fixture.hub.clone(),
         clock: fixture.sim.clock(),
         name: fixture.name.clone(),
-        secrets,
     }
 }
 

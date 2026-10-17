@@ -93,7 +93,7 @@ impl Documents {
         }
         let mut unresolved = Vec::new();
         for (source, span) in calls {
-            if let Err(error) = node.secrets.get(&source).await {
+            if let Err(error) = node.supervisor.secrets().get(&source).await {
                 unresolved.push(self::unresolved(
                     span,
                     format!("the secret {source}: {error}"),

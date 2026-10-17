@@ -81,7 +81,7 @@ fn serve_large(text: &str) {
             roots: connector::http::Roots::default(),
             tasks,
             hub: hub.clone(),
-            secrets: secrets.clone(),
+            secrets,
         });
         let front_ends = FrontEnds::new(
             "hcl",
@@ -97,7 +97,6 @@ fn serve_large(text: &str) {
             hub,
             clock: sim_node.clock(),
             name: "edge".parse().expect("a name"),
-            secrets,
         });
         let subject = "@admin".parse().expect("a name");
         let before = ALLOCATOR.held();
