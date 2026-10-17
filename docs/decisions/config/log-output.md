@@ -221,5 +221,6 @@
   2026-10-17T18:45:36Z,
   https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238847435; item 1 of
   2026-10-17T21:18:47Z, which replaces the reason of item 1 of 18:34:35Z: a flush asleep
-  at the close still writes once, so the writer checks the close before the lines,
+  at the close still calls the write once more, so the writer checks the close before
+  the lines,
   https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6241254217).
