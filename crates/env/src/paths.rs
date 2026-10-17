@@ -266,11 +266,11 @@ impl Paths {
     }
 
     /// `Ok` with the result of the resolve of `path` when each step of it passes each
-    /// limit for `call`: each prefix of the resolved working directory first for a relative path,
-    /// then each prefix of its components that resolves, in order, where a step short
-    /// of `path` meets the folders as its [`Way`] gives, then the name of the first
-    /// prefix that does not resolve, at its place with no key. Else the error of the
-    /// first step that fails.
+    /// limit for `call`: each prefix of the resolved working directory first for a
+    /// relative path, then each prefix of its components that resolves, in order, where
+    /// a step short of `path` meets the folders as its [`Way`] gives, then the name of
+    /// the first prefix that does not resolve, at its place with no key. Else the error
+    /// of the first step that fails.
     fn check(&self, path: &Path, call: Call) -> Result<Result<(), Error>, Error> {
         if self.limits.is_empty() {
             return Ok(Ok(()));
