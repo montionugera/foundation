@@ -39,8 +39,21 @@ pub(crate) struct Device {
     pub serve: fn(Serve) -> Pin<Box<dyn Future<Output = ()>>>,
     /// The count that grows while data moves.
     pub progress: &'static str,
+    /// Where the kind waits between two tries of a device that fails.
+    pub backoff: Backoff,
     /// Configs that the kind's check refuses, each with its exact diagnostics.
     pub refused: fn() -> Vec<(Document, Vec<Diagnostic>)>,
+}
+
+/// Where a kind waits between two tries of a device that fails.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Backoff {
+    /// The run ends with the error, and the supervisor starts it again: Restarting,
+    /// with restarts that grow.
+    Restart,
+    /// The run goes on and tries again after its own backoff: Running, with class
+    /// Retry, no restart, and no progress.
+    Run,
 }
 
 /// The plant that [`Device::setup`] defines on.
@@ -132,6 +145,8 @@ const STEP: Span = Span::from_nanos(100_000_000);
 const START: Span = Span::from_nanos(10_000_000_000);
 /// How soon a connector of an absent device restarts twice.
 const ABSENT: Span = Span::MINUTE;
+/// How long a connector of [`Backoff::Run`] holds its backoff status.
+const HOLD: Span = Span::from_nanos(10_000_000_000);
 /// How soon a connector shows an error once its device is lost.
 const LOST: Span = Span::from_nanos(30_000_000_000);
 /// How soon a connector heals: the backoff cap of 1 min, plus 10 s.
@@ -238,6 +253,49 @@ impl Scene {
         run.until(within, done).await
     }
 
+    /// Waits until the connector is in the backoff of [`Device::backoff`] with no
+    /// device, and gives the status. For [`Backoff::Run`], each status within
+    /// [`HOLD`] after it holds that backoff too.
+    async fn backed_off(&self, run: &mut Run) -> Reading {
+        match self.device.backoff {
+            Backoff::Restart => {
+                let done = |reading: &Reading| {
+                    let config = matches!(reading.error, Some((Class::Config, _)));
+                    config
+                        || (reading.state == State::Restarting && reading.restarts >= 2)
+                };
+                let reading = run.until(ABSENT, done).await;
+                let class = reading.error.as_ref().map(|(class, _)| *class);
+                assert!(
+                    matches!(class, Some(Class::Device | Class::Retry)),
+                    "{reading:?}"
+                );
+                reading
+            }
+            Backoff::Run => {
+                let reading =
+                    run.until(ABSENT, |reading| reading.error.is_some()).await;
+                let held = |reading: &Reading| {
+                    let class = reading.error.as_ref().map(|(class, _)| *class);
+                    let given = (reading.state, reading.restarts, class);
+                    assert_eq!(
+                        given,
+                        (State::Running, 0, Some(Class::Retry)),
+                        "{reading:?}"
+                    );
+                    assert_eq!(self.progress(reading), 0, "{reading:?}");
+                };
+                held(&reading);
+                let clock: Clock = self.node.clock();
+                let mut late = pin!(clock.sleep(HOLD));
+                while let Some(next) = before(late.as_mut(), run.next()).await {
+                    held(&next);
+                }
+                reading
+            }
+        }
+    }
+
     /// Gives what `future` gives, and panics when it takes longer than `within`.
     async fn within<T>(
         &self,
@@ -246,15 +304,22 @@ impl Scene {
         future: impl Future<Output = T>,
     ) -> T {
         let clock: Clock = self.node.clock();
-        let (mut late, mut future) = (pin!(clock.sleep(within)), pin!(future));
-        let given = poll_fn(|cx| match future.as_mut().poll(cx) {
-            Poll::Ready(given) => Poll::Ready(Some(given)),
-            Poll::Pending => late.as_mut().poll(cx).map(|()| None),
-        });
-        given
-            .await
-            .unwrap_or_else(|| panic!("{what} takes more than {within}"))
+        let given = before(pin!(clock.sleep(within)), future).await;
+        given.unwrap_or_else(|| panic!("{what} takes more than {within}"))
     }
+}
+
+/// Gives what `future` gives, or `None` once `late` ends first.
+async fn before<T>(
+    mut late: Pin<&mut impl Future<Output = ()>>,
+    future: impl Future<Output = T>,
+) -> Option<T> {
+    let mut future = pin!(future);
+    poll_fn(|cx| match future.as_mut().poll(cx) {
+        Poll::Ready(given) => Poll::Ready(Some(given)),
+        Poll::Pending => late.as_mut().poll(cx).map(|()| None),
+    })
+    .await
 }
 
 fn shard(name: &str) -> env::shards::Config {
@@ -343,22 +408,15 @@ pub(crate) fn starts(device: &'static Device) {
     });
 }
 
-/// With no simulator, within 1 min: Restarting, class Device or Retry, never Config,
-/// and restarts that grow. Then the simulator starts, and the connector heals.
+/// With no simulator, within 1 min: the backoff of [`Device::backoff`], and never
+/// class Config. For [`Backoff::Restart`]: Restarting, class Device or Retry, and
+/// restarts that grow. For [`Backoff::Run`]: Running, class Retry, no restart, and no
+/// progress, for [`HOLD`]. Then the simulator starts, and the connector heals.
 pub(crate) fn heals_once_an_absent_device_serves(device: &'static Device) {
     run(device, direct, move |scene| async move {
         let config = scene.setup().await;
         let mut run = scene.supervise(config).await;
-        let done = |reading: &Reading| {
-            let config = matches!(reading.error, Some((Class::Config, _)));
-            config || (reading.state == State::Restarting && reading.restarts >= 2)
-        };
-        let reading = run.until(ABSENT, done).await;
-        let class = reading.error.as_ref().map(|(class, _)| *class);
-        assert!(
-            matches!(class, Some(Class::Device | Class::Retry)),
-            "{reading:?}"
-        );
+        let reading = scene.backed_off(&mut run).await;
         let from = scene.progress(&reading);
         let served = scene.serve();
         scene.running(&mut run, HEAL, from).await;
@@ -455,13 +513,12 @@ pub(crate) fn stops_while_it_runs(device: &'static Device) {
     });
 }
 
-/// Stops the connector in the backoff after a failed connect.
+/// Stops the connector in the backoff of [`Device::backoff`] after failed connects.
 pub(crate) fn stops_in_a_backoff(device: &'static Device) {
     run(device, direct, move |scene| async move {
         let config = scene.setup().await;
         let mut run = scene.supervise(config).await;
-        let backoff = |reading: &Reading| reading.state == State::Restarting;
-        run.until(ABSENT, backoff).await;
+        scene.backed_off(&mut run).await;
         stopped(&scene, run).await;
     });
 }

@@ -12,7 +12,6 @@ use connector_influx::sim::{Store, serve};
 use document::diagnostic::{Code, Diagnostic};
 use document::value::{self, Value};
 use document::{Attribute, Block, Document, Map};
-use env::clock::Clock;
 use env::net::tcp;
 use hub::writer::Writer;
 use spec::channel::{Channel, Data};
@@ -24,10 +23,11 @@ use types::name::Name;
 use types::sample::{Scalar, Type};
 use types::time::Span;
 
+#[expect(dead_code, reason = "the suite of influx backs off in its run")]
 #[path = "../scenarios.rs"]
 mod scenarios;
 
-use scenarios::{Device, Plant, Serve};
+use scenarios::{Backoff, Device, Plant, Serve};
 
 const DEVICE: Device = Device {
     kind: "influx",
@@ -35,6 +35,7 @@ const DEVICE: Device = Device {
     setup: |plant| Box::pin(setup(plant)),
     serve: |inputs| Box::pin(simulate(inputs)),
     progress: "confirmed",
+    backoff: Backoff::Run,
     refused,
 };
 
@@ -104,7 +105,10 @@ fn write(writer: &mut Writer) {
     series.sort_unstable();
     let mut draft = writer.draft(Form::Raw, &series).expect("a frame");
     let stamp = writer.now().nanos().to_le_bytes();
-    draft.series_mut(time).expect("the index").copy_from_slice(&stamp);
+    draft
+        .series_mut(time)
+        .expect("the index")
+        .copy_from_slice(&stamp);
     let one = 1.0_f64.to_le_bytes();
     draft.series_mut(a).expect("a series").copy_from_slice(&one);
     draft.set_count(group, 1);
@@ -135,8 +139,23 @@ async fn simulate(inputs: Serve) {
 /// Configs with an address with no scheme, and with no database.
 fn refused() -> Vec<(Document, Vec<Diagnostic>)> {
     vec![
-        (config("influx:8086", Some("plant")), Vec::new()),
-        (config("http://influx:8086", None), Vec::new()),
+        (
+            config("influx:8086", Some("plant")),
+            vec![diagnostic(
+                "connector.bad-uri",
+                "the scheme of the URI is not http or https",
+                "Write an `http` or `https` URI such as \"http://10.0.0.2:8086\"",
+            )],
+        ),
+        (
+            config("http://influx:8086", None),
+            vec![diagnostic(
+                "document.missing-attribute",
+                "the connector has no `database` or `bucket`",
+                "Add a `bucket` attribute and an `org` attribute, such as \"plant\", or \
+                 a `database` attribute for InfluxDB 1",
+            )],
+        ),
     ]
 }
 

@@ -22,12 +22,12 @@ use types::sample::{Scalar, Type};
 
 #[expect(
     dead_code,
-    reason = "the suite of opcua starts no writer and no task of the device"
+    reason = "the suite of opcua starts no writer or task, and restarts in a backoff"
 )]
 #[path = "../scenarios.rs"]
 mod scenarios;
 
-use scenarios::{Device, Plant, Serve};
+use scenarios::{Backoff, Device, Plant, Serve};
 
 /// The variables of the server, each read into the channel of the same place in
 /// [`CHANNELS`].
@@ -41,6 +41,7 @@ const DEVICE: Device = Device {
     setup: |plant| Box::pin(std::future::ready(setup(&plant))),
     serve: |inputs| Box::pin(simulate(inputs)),
     progress: "in",
+    backoff: Backoff::Restart,
     refused,
 };
 
