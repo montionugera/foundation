@@ -37,8 +37,7 @@ pub struct Config {
     pub keys: Box<dyn Fn() -> channel::Key>,
     /// The syntax of each file extension.
     pub front_ends: FrontEnds,
-    /// The connector supervisor of the shard of the node. `plan` and `apply` check
-    /// with its kinds, and `browse` browses with it.
+    /// The connector supervisor of the node, with whose kinds `plan` and `apply` check.
     pub supervisor: connector::supervisor::Supervisor,
     /// The hub of the node, through which `status` reads the status channels.
     pub hub: hub::Hub,
