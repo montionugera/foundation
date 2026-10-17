@@ -2,7 +2,7 @@
 //! C file that our options compile, each header that it includes, and each file of
 //! [`EXTRA`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -512,7 +512,7 @@ pub(crate) struct Crypto {
     include: Vec<PathBuf>,
     /// The prefix of each of its symbols, with the `_` that ends it.
     prefix: String,
-    /// Its `openssl/pem.h`, by path, so that no header of the copy takes its place.
+    /// Its `openssl/pem.h`, whose declarations give the readers of [`passwords`].
     pem: PathBuf,
 }
 
@@ -581,6 +581,20 @@ impl Crypto {
         self.include
             .iter()
             .flat_map(|dir| ["-isystem".into(), dir.into()])
+    }
+
+    /// The [`readers`] of its `openssl/pem.h`, which `cc` preprocesses alone, with no
+    /// flag of the copy, so that no file or header of the copy changes them.
+    ///
+    /// # Errors
+    ///
+    /// A `cc` that fails.
+    fn readers(&self, cc: &Path) -> Result<BTreeMap<String, usize>, String> {
+        let mut pem = Command::new(cc);
+        pem.args(self.flags()).arg("-E").arg(&self.pem);
+        spawn(&mut pem)
+            .and_then(wait)
+            .map(|(text, _)| readers(&tokens(&text)))
     }
 
     /// Whether `symbol` is a function of [`AWS_LC`].
@@ -939,9 +953,6 @@ fn inspect(
     if !other.is_empty() {
         return Err(other);
     }
-    remove(out)
-        .and_then(|()| std::fs::create_dir_all(out).map_err(|e| format!("{e}")))
-        .map_err(|e| vec![e])?;
     let mut probe = Command::new(cc);
     probe
         .args(crypto.flags())
@@ -950,6 +961,7 @@ fn inspect(
     gcc(&macros).map_err(|e| vec![e])?;
     let architecture = Architecture::read(&macros).map_err(|e| vec![e])?;
     let dirs = system_dirs(&verbose);
+    let readers = crypto.readers(cc).map_err(|e| vec![e])?;
     let objects =
         build(copy, &sources, &flags, out, cc, crypto).map_err(|e| vec![e])?;
     let exported = symbols(
@@ -990,7 +1002,7 @@ fn inspect(
             ));
         }
         let found = includes(&preprocessed, copy, &flags, &dirs, &crypto.include);
-        for problem in found.into_iter().chain(passwords(&preprocessed)) {
+        for problem in found.into_iter().chain(passwords(&preprocessed, &readers)) {
             problems.push(format!("{source}: {problem}"));
         }
     }
@@ -1244,8 +1256,8 @@ fn token_length(text: &str) -> usize {
 
 /// Each function that a declaration outside the copy in `tokens` gives a parameter of
 /// the type `pem_password_cb`, with the index of that parameter.
-fn readers<'a>(tokens: &[Token<'a>]) -> std::collections::BTreeMap<&'a str, usize> {
-    let mut readers = std::collections::BTreeMap::new();
+fn readers(tokens: &[Token<'_>]) -> BTreeMap<String, usize> {
+    let mut readers = BTreeMap::new();
     // The index of each open parenthesis, with the count of commas after it.
     let mut open: Vec<(usize, usize)> = Vec::new();
     for (at, token) in tokens.iter().enumerate() {
@@ -1264,7 +1276,7 @@ fn readers<'a>(tokens: &[Token<'a>]) -> std::collections::BTreeMap<&'a str, usiz
                     && let Some(name) = paren.checked_sub(1).map(|at| tokens[at].text)
                     && name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
                 {
-                    readers.insert(name, commas);
+                    readers.insert(name.to_owned(), commas);
                 }
             }
             _ => {}
@@ -1302,12 +1314,11 @@ fn call_arguments(tokens: &[Token<'_>]) -> Option<Vec<String>> {
 }
 
 /// An error for each name, in a file of the copy in `preprocessed` (the output of
-/// `cc -E -dI`), of a function of [`readers`], other than in a call that gives a
-/// callback of [`PASSWORDS`] as its `pem_password_cb`. With no callback, aws-lc
+/// `cc -E -dI`), of a function of `readers` (from [`readers`]), other than in a call
+/// that gives a callback of [`PASSWORDS`] at its place. With no callback, aws-lc
 /// reads a password from the console.
-fn passwords(preprocessed: &str) -> Vec<String> {
+fn passwords(preprocessed: &str, readers: &BTreeMap<String, usize>) -> Vec<String> {
     let tokens = tokens(preprocessed);
-    let readers = readers(&tokens);
     let mut problems = Vec::new();
     for (at, token) in tokens.iter().enumerate() {
         let Some(&place) = readers.get(token.text) else {
@@ -1363,9 +1374,9 @@ fn system_dirs(verbose: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Compiles and preprocesses each source of `sources` in `copy` into `out` at once
-/// with `cc` against `crypto`, and gives each (source, object, the output of
-/// `cc -E -dI`).
+/// Compiles and preprocesses each source of `sources` in `copy` into `out`, which it
+/// empties first, at once with `cc` against `crypto`, and gives each (source,
+/// object, the output of `cc -E -dI`).
 fn build<'a>(
     copy: &Path,
     sources: &'a str,
@@ -1374,6 +1385,8 @@ fn build<'a>(
     cc: &Path,
     crypto: &Crypto,
 ) -> Result<Vec<(&'a str, PathBuf, String)>, String> {
+    remove(out)?;
+    std::fs::create_dir_all(out).map_err(|e| format!("{e}"))?;
     let mut children = Vec::new();
     for (index, source) in sources.lines().enumerate() {
         let object = out.join(format!("{index}.o"));
@@ -1395,10 +1408,7 @@ fn build<'a>(
             spawn(cc.arg(Path::new(".").join(source)))
         };
         let compile = compiler(&["-c", "-o", &object.to_string_lossy()])?;
-        // With `pem.h` in each file, `readers` finds each reader, also one that the
-        // copy declares itself.
-        let pem = crypto.pem.to_string_lossy();
-        let preprocess = compiler(&["-E", "-dI", "-include", &pem])?;
+        let preprocess = compiler(&["-E", "-dI"])?;
         children.push((source, object, compile, preprocess));
     }
     children
@@ -1413,7 +1423,7 @@ fn build<'a>(
 /// The name of each function that the output of `objdump --dwarf=info` shows inlined.
 /// An `always_inline` function is inlined also at `-O0`.
 fn inlined(info: &str) -> Vec<String> {
-    let mut names = std::collections::BTreeMap::new();
+    let mut names = BTreeMap::new();
     let mut origins = Vec::new();
     let (mut entry, mut inline) = ("", false);
     for line in info.lines() {
@@ -2396,7 +2406,9 @@ n = read_x(b, 0, 0, 0);
     fn readers_gives_each_function_of_aws_lc_with_the_place_of_its_callback() {
         assert_eq!(
             readers(&tokens(PREPROCESSED)),
-            [("read_q", 2), ("read_r", 1), ("read_x", 2)].into()
+            [("read_q", 2), ("read_r", 1), ("read_x", 2)]
+                .map(|(name, place)| (name.to_owned(), place))
+                .into()
         );
     }
 
@@ -2409,7 +2421,7 @@ n = read_x(b, 0, 0, 0);
             )
         };
         assert_eq!(
-            passwords(PREPROCESSED),
+            passwords(PREPROCESSED, &readers(&tokens(PREPROCESSED))),
             [
                 gives(4, "read_x", "((void*)0)"),
                 gives(5, "read_r", "other"),
@@ -2560,30 +2572,68 @@ n = read_x(b, 0, 0, 0);
         not(target_os = "linux"),
         ignore = "needs GCC, GNU objdump, and GNU nm"
     )]
-    fn check_finds_a_read_past_each_pem_h_of_the_copy() {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let crypto = Crypto::locked(workspace).unwrap();
-        let pem = std::fs::read_to_string(&crypto.pem).unwrap();
-        let line = util_end() + 1;
-        for (path, header) in [
-            ("openssl/pem.h", "#define OPENSSL_HEADER_PEM_H\n"),
-            ("include/openssl/pem.h", pem.as_str()),
-        ] {
-            let (result, prefix) = check_with_util(
-                "pem",
-                &[(path, header)],
-                "#include <openssl/pem.h>\n\
-                 void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
-            );
-            assert_eq!(
-                result,
-                Err(vec![format!(
+    fn check_finds_a_read_under_a_macro_of_pem_h() {
+        let line = util_end() + 3;
+        let (result, prefix) = check_with_util(
+            "under-pem",
+            &[],
+            "#include <openssl/base.h>\n\
+             #ifndef OPENSSL_HEADER_PEM_H\n\
+             void *PEM_read_bio_X509(void *, void *, void *, void *);\n\
+             void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n\
+             #endif\n",
+        );
+        assert_eq!(
+            result,
+            Err(vec![
+                format!(
+                    "{UTIL}: {UTIL}:{}: gives `{prefix}PEM_read_bio_X509` the \
+                     callback `void*`, which PASSWORDS does not list",
+                    line - 1
+                ),
+                format!(
                     "{UTIL}: {UTIL}:{line}: gives `{prefix}PEM_read_bio_X509` the \
                      callback `0`, which PASSWORDS does not list"
-                )]),
-                "{path}"
-            );
-        }
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
+    fn check_finds_a_read_past_a_pem_h_of_the_copy() {
+        const CERTIFICATES: &str = "plugins/crypto/openssl/certificategroup.c";
+        const POLICIES: &str = "plugins/crypto/openssl/securitypolicy_common.c";
+        let line = util_end() + 1;
+        let (result, prefix) = check_with_util(
+            "pem",
+            &[(
+                "include/openssl/pem.h",
+                "#include <openssl/base.h>\n\
+                 void *PEM_read_bio_X509(void *, void *, void *, void *);\n",
+            )],
+            "#include <openssl/pem.h>\n\
+             void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
+        );
+        let gives = |source: &str, place: &str, callback: &str| {
+            format!(
+                "{source}: {place}: gives `{prefix}PEM_read_bio_X509` the callback \
+                 `{callback}`, which PASSWORDS does not list"
+            )
+        };
+        assert_eq!(
+            result,
+            Err(vec![
+                gives(CERTIFICATES, "include/openssl/pem.h:2", "void*"),
+                gives(POLICIES, "include/openssl/pem.h:2", "void*"),
+                gives(UTIL, "include/openssl/pem.h:2", "void*"),
+                gives(UTIL, &format!("{UTIL}:{line}"), "0"),
+            ])
+        );
     }
 
     #[test]
@@ -3435,7 +3485,7 @@ End of search list.
 
     /// C text of `file` that references each symbol at its place in [`keys`].
     fn uses(file: &str) -> String {
-        let mut functions = std::collections::BTreeMap::<_, Vec<_>>::new();
+        let mut functions = BTreeMap::<_, Vec<_>>::new();
         for (f, function, symbol, _) in keys() {
             if f == file {
                 functions
