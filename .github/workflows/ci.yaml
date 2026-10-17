@@ -132,6 +132,7 @@ jobs:
               - --skip daqmx::tests::names_a_function_the_library_lacks # #3033
               - --skip link::the_c_names_only_the_listed_symbols_outside_it # #3025
               - --skip link::the_shim_draws_nothing_from_the_generator_of_the_copy # #3025
+              - --skip link::the_shim_names_no_libcrypto # #3025
               - --skip link::the_tests_reach_neither_interrupt_server_nor_random_seed # #3025
               - --skip link::the_c_and_cfg_asan_follow_the_address_sanitizer_of_the_rust # #3025
               - --skip link::the_c_on_64_bit_arm_names_only_the_listed_symbols_outside_it # #3025
@@ -180,6 +181,8 @@ jobs:
               - --skip open62541::tests::check_finds_a_clock_call_that_a_listed_function_inlines # #3041
               - --skip open62541::tests::check_passes_on_the_committed_copy # #3041
               - --skip open62541::tests::each_thread_of_the_committed_copy_draws_from_its_own_random_state_or_aborts # #3041
+              - --skip open62541::tests::run_refuses_a_file_of_omitted_that_the_library_does_not_compile # #3041
+              - --skip open62541::tests::check_builds_against_the_headers_of_the_crypto # #3041
           - name: windows
             runner: windows-2025
             crates:
