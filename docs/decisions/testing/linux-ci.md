@@ -21,9 +21,14 @@
   - A test skips an OS by an attribute only in a case of `docs/claude/testing.md`, "No
     `#[ignore]`": the OS does not have the behavior, no test can fix its value there,
     or its test needs an item of one OS to cause the case. Its reason starts with
-    `only <OS>`. Each other skip of an OS, a `needs <tool>` skip too, is an item of the
-    list of that OS with its issue. `cargo xtask skips` checks each `ignore` keyed on
-    an OS, in the job `check` on Linux.
+    `only <OS>`, where `<OS>` (Linux, macOS, Windows, or Unix) names each OS that runs
+    the test. A skip that keys on several OSes, of which only some have the behavior,
+    is one `cfg_attr` for each OS, each with its own reason. Each other skip of an OS,
+    a `needs <tool>` skip too, is an item of the list of that OS with its issue. The
+    review checks that the reason is true of the behavior, not only of the tool.
+    `cargo xtask skips` checks each `ignore` keyed on an OS in each `.rs` file under
+    the directory of a target of the workspace, other than in the body of a macro
+    call, in the job `check` on Linux.
   - For `/review`, CI does not run an OS for a crate or a test on the list of that OS
     (`laptop.director`,
     https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229528745).
@@ -75,7 +80,7 @@
     it is not the slowest job of the run. The times of the three jobs go on #2954, and
     a feature job that becomes the slowest job of the run goes back to `laptop.monitor`
     with its time.
-  - The skips by an attribute: `laptop.director`, option 2
+  - The skips by an attribute: `laptop.director`, 2026-10-17T07:39:56Z, option 2
     (https://github.com/synnaxlabs/foundation/issues/3015#issuecomment-6231310442), on
-    the gap that `laptop.monitor` found
+    the gap that `laptop.monitor` found at 2026-10-17T07:32:46Z
     (https://github.com/synnaxlabs/foundation/issues/2954#issuecomment-6231250077).
