@@ -285,14 +285,15 @@ impl Paths {
         }
         for (index, step) in parts.iter().enumerate() {
             part.push(step);
-            let short = index + 1 < parts.len();
+            let rest = &parts[index + 1..];
+            let short = !rest.is_empty();
             let Ok(resolved) = self.driver.resolve(&part) else {
                 if let Component::Normal(name) = step {
                     self.allowed(None, &above.join(name), Way::of(short, true))?;
                 }
                 break;
             };
-            let back = parts[index + 1..].contains(&Component::ParentDir);
+            let back = rest.contains(&Component::ParentDir);
             self.allowed(self.key(&part)?, &resolved, Way::of(short, back))?;
             above = resolved;
         }
@@ -801,6 +802,14 @@ mod tests {
             assert_eq!(reached(&paths, path), Err(Error::Hidden), "{path}");
         }
         assert_eq!(reached(&paths, "/WORKSHOP"), Err(Error::Outside));
+    }
+
+    #[test]
+    fn a_step_before_a_dot_dot_passes_on_the_way_to_a_folder() {
+        let paths = Paths::new(One::default())
+            .within(&["/work".into()], &[])
+            .unwrap();
+        assert_eq!(reached(&paths, "/work/../work/a"), Ok(()));
     }
 
     #[test]
