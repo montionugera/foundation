@@ -92,11 +92,20 @@ impl Deadline {
         }
     }
 
-    /// One deadline after the append of one data entry of 100 bytes of each index
-    /// but the last, which appends one each `period` deadlines: the take of the
-    /// group, the checkpoint of the trim and the carry record, the seal of the
-    /// records, and their sync, with no file write. Gives the tails of the carry
-    /// record.
+    /// Makes the one part of each entry of the later deadlines `len` bytes.
+    ///
+    /// # Panics
+    ///
+    /// When the pool has no room for `len` bytes.
+    pub fn resize(&mut self, len: usize) {
+        self.part = self.pool.alloc(len).expect("the pool has room").freeze();
+    }
+
+    /// One deadline after the append of one data entry of 100 bytes, or of the bytes
+    /// of the last [`resize`](Self::resize), of each index but the last, which
+    /// appends one each `period` deadlines: the take of the group, the checkpoint of
+    /// the trim and the carry record, the seal of the records, and their sync, with
+    /// no file write. Gives the tails of the carry record.
     ///
     /// # Panics
     ///

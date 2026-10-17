@@ -306,7 +306,7 @@ fn counts_carried() {
             4096,
             &[Trims(40, 1, 16), Trims(470, 1, 0), Carry, Trims(89, 1, 0)],
         ),
-        [(512, -2_076_672), (513, -479_232)],
+        [(512, -2_235_168), (513, -320_736)],
         "a hide counts each carried tail as a trim"
     );
 }
@@ -340,7 +340,32 @@ fn restarts() {
     );
 }
 
+/// A tagged copy that grows from 3000 to 4032 bytes holds 1032 bytes more than one
+/// that stays at 3000: it keeps no more than its largest copy.
+fn grows_exactly() {
+    let held = |last: usize| {
+        let before = ALLOCATOR.held();
+        let mut deadline = buffer::bench::Deadline::tagged(1, 1024);
+        deadline.resize(3000);
+        for _ in 0..64 {
+            deadline.commit(1);
+        }
+        deadline.resize(last);
+        deadline.commit(1);
+        let held = ALLOCATOR.held() - before;
+        drop(deadline);
+        held
+    };
+    let (stays, grows) = (held(3000), held(4032));
+    assert_eq!(
+        grows - stays,
+        1032,
+        "a copy grows to the bytes of its largest copy"
+    );
+}
+
 fn main() {
+    grows_exactly();
     waits_behind();
     drains();
     counts_first();

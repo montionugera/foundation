@@ -271,10 +271,10 @@ impl Logs {
         self.offset += BLOCK;
     }
 
-    /// One commit as `commit(1)`, with an append of each entry, then a carry record
-    /// in the next record, as a commit that carries: it takes the idle tails before
-    /// the record and makes the record their holder, so the hide of the next commit
-    /// drops the run of each index.
+    /// One commit as `commit(1)`, with an append of each entry, then carry records
+    /// in the next records, as commits that carry: each takes the idle tails before
+    /// it, at most [`carry::TAILS_MAX`], and is their holder, so the hide of the next
+    /// commit drops the run of each index.
     pub fn carry(&mut self) {
         self.keep_up();
         for (slot, header) in &mut self.headers {
@@ -285,9 +285,15 @@ impl Logs {
             header.first += 1;
         }
         self.offset += BLOCK;
-        self.inner.carry(self.offset, self.room, &mut self.carried);
-        self.inner.hold(&self.carried, self.offset);
-        self.offset += BLOCK;
+        let reach = self.offset;
+        loop {
+            self.inner.carry(reach, self.room, &mut self.carried);
+            self.inner.hold(&self.carried, self.offset);
+            self.offset += BLOCK;
+            if self.carried.tails().len() < carry::TAILS_MAX {
+                break;
+            }
+        }
     }
 
     /// Moves the appended tail of each index past one data entry, with no sync.
