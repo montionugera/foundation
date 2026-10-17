@@ -757,8 +757,9 @@ impl Buffer {
     }
 
     /// The bytes of the newest durable entry with `tag` on `path` of each index that
-    /// has one, with the index's slot, in slot order. No trim frees it. It reads no
-    /// file: the buffer keeps a copy of each in memory, and gives a copy of that.
+    /// has one, with the index's slot, in slot order. An index whose newest such
+    /// entry is in a record that a trim passed is absent. It reads no file: the
+    /// buffer keeps a copy of each in memory, and gives a copy of that.
     pub fn newest(&self, path: Path, tag: NonZeroU8) -> Vec<(Slot, Box<[u8]>)> {
         let state = self.shared.state.borrow();
         let mut newest: Vec<_> = state
@@ -1990,6 +1991,57 @@ mod tests {
         let found = found.lock().expect("no panic held the lock");
         let tagged = vec![(Slot::new(0), 100)];
         assert_eq!(*found, [tagged.clone(), tagged, vec![]]);
+    }
+
+    /// A copy that grows keeps the capacity of its largest copy, not the doubled
+    /// capacity of a growing `Vec`.
+    #[test]
+    fn a_grown_copy_keeps_no_more_than_its_largest_copy() {
+        let mut kepts = Vec::new();
+        for (old, new) in [
+            (17, 18),
+            (73, 146),
+            (146, 219),
+            (2_000, 2_100),
+            (3_000, 4_032),
+        ] {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            with_buffer(
+                &mut sim,
+                &node,
+                "write",
+                move |buffer, mut slots, pool| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    for len in [old, new] {
+                        let part = pool.alloc(len).expect("a block").freeze();
+                        let tagged = Entry {
+                            samples: None,
+                            tag: 1,
+                            ..entry(1, one, Path::Live, 0, &part)
+                        };
+                        buffer.append([tagged]).expect("the ring has room");
+                        buffer.committed().await.expect("commits");
+                    }
+                    let state = buffer.shared.state.borrow();
+                    let (_, newest) = state
+                        .logs
+                        .newest(Path::Live, NonZeroU8::MIN)
+                        .next()
+                        .expect("a copy");
+                    let kept = (newest.bytes.len(), newest.bytes.capacity());
+                    drop(state);
+                    *given.lock().expect("no panic held the lock") = Some(kept);
+                    buffer
+                },
+            );
+            let kept = found.lock().expect("no panic held the lock").take();
+            kepts.push((old, kept.expect("a copy")));
+        }
+        let largest = kepts.iter().map(|&(old, (new, _))| (old, (new, new)));
+        assert_eq!(kepts, largest.collect::<Vec<_>>(), "(old, (len, capacity))");
     }
 
     /// A read holds the record it waits on until the read ends or drops, and

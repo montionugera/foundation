@@ -700,6 +700,9 @@ impl Logs {
             });
         newest.offset = offset;
         newest.bytes.clear();
+        newest
+            .bytes
+            .reserve_exact(parts.iter().map(|part| part.len()).sum());
         for part in parts {
             newest.bytes.extend_from_slice(part);
         }
