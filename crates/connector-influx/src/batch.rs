@@ -61,8 +61,10 @@ struct Bodies {
     most: usize,
     /// The lines of `bytes`.
     lines: usize,
-    /// What the open body acks: the end of the last frame whose last line it holds.
-    ack: Option<Ack>,
+    /// The end of the last frame whose last line the open body holds.
+    position: Option<Position>,
+    /// The counts of the lines up to that end.
+    acked: Counts,
     /// The bodies full before the open one, oldest first.
     closed: VecDeque<Taken>,
     /// The counts of the lines since the last close, also of a frame that goes on.
@@ -192,7 +194,7 @@ impl Batch {
         if let Some(taken) = bodies.closed.pop_front() {
             return Some(taken);
         }
-        bodies.ack?;
+        bodies.position?;
         let next = bodies.room();
         Some(bodies.close(next))
     }
@@ -214,10 +216,12 @@ impl Bodies {
     fn close(&mut self, next: Vec<u8>) -> Taken {
         self.lines = 0;
         self.most = self.most.max(self.bytes.len());
-        let ack = self.ack.take();
-        if let Some(ack) = ack {
-            self.counts.sub(ack.counts);
-        }
+        let ack = self.position.take().map(|position| Ack {
+            position,
+            counts: self.acked,
+        });
+        self.counts.sub(self.acked);
+        self.acked = Counts::default();
         Taken {
             body: mem::replace(&mut self.bytes, next),
             ack,
@@ -238,17 +242,21 @@ impl Bodies {
         if end == start {
             return;
         }
-        if end > BYTES_MAX && start != 0 {
+        if end > BYTES_MAX {
             self.split(start, room);
         }
         self.lines = self.lines.saturating_add(1);
     }
 
     /// Closes the open body with its bytes before `at`, and moves the rest, one line,
-    /// to the next body. `room` is the capacity of the open body before that line.
+    /// to the next body. `room` is the capacity of the open body before that line. A
+    /// line alone in the body stays.
     #[cold]
     #[inline(never)]
     fn split(&mut self, at: usize, room: usize) {
+        if at == 0 {
+            return;
+        }
         let line = self.bytes.len().saturating_sub(at);
         let mut next = if line == 0 {
             self.room()
@@ -271,10 +279,8 @@ impl Bodies {
     /// Ends a frame at `position`: the open body acks it, with the counts of the lines
     /// of each frame that ends in it.
     fn end(&mut self, position: Position) {
-        self.ack = Some(Ack {
-            position,
-            counts: self.counts,
-        });
+        self.position = Some(position);
+        self.acked = self.counts;
     }
 }
 
