@@ -3297,7 +3297,18 @@ mod tests {
         kind: impl Kind + 'static,
         cancel: Option<Span>,
     ) -> (Vec<Written>, Vec<String>) {
-        let mut sim = sim::Sim::new(sim::Config::default());
+        tally_logged_on(sim::Config::default(), kind, cancel, None)
+    }
+
+    /// As [`tally_logged`], on a sim of `config`, where the hub removes the status
+    /// channels at `removed`.
+    fn tally_logged_on(
+        config: sim::Config,
+        kind: impl Kind + 'static,
+        cancel: Option<Span>,
+        removed: Option<Span>,
+    ) -> (Vec<Written>, Vec<String>) {
+        let mut sim = sim::Sim::new(config);
         let node = sim.node(sim::node::Config::default());
         let lines = Arc::new(Mutex::new(Vec::new()));
         let log = tracing::Dispatch::new(Capture(Arc::clone(&lines)));
@@ -3312,7 +3323,7 @@ mod tests {
             .logged(log)
             .start(config, move |tasks| async move {
                 let (statuses, _) =
-                    tally_on(own, tasks, kind, &["samples"], cancel).await;
+                    tally_on(own, tasks, kind, &["samples"], cancel, removed).await;
                 *slot.lock().expect("no panic holds the lock") = Some(statuses);
             });
         drop(start.expect("a shard with no core starts"));
@@ -3405,6 +3416,45 @@ mod tests {
                 "message=stopped",
             ]
         );
+    }
+
+    /// The hub refuses the frame of the end of run 0 as `Removed` while the flush
+    /// waits for its next write, and run 1 shows `y` before that wait ends: no line
+    /// gives `y`.
+    #[test]
+    fn logs_no_error_after_the_hub_refuses_a_frame_as_removed() {
+        for seed in 0..32 {
+            let runs = Arc::new(AtomicUsize::new(0));
+            let kind = counted(move |ctx: Context<()>| {
+                let run = runs.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    let clock = ctx.clock().clone();
+                    if run == 0 {
+                        ctx.error(&"a");
+                        clock.sleep(ms(1_050)).await;
+                        ctx.error(&"b");
+                        clock.sleep(ms(50)).await;
+                        return Err(Error::Retry("down".into()));
+                    }
+                    ctx.error(&"y");
+                    clock.sleep(ms(2_000)).await;
+                    Ok(())
+                }
+            });
+            let config = sim::Config {
+                seed,
+                ..sim::Config::default()
+            };
+            let (_, lines) = tally_logged_on(config, kind, None, Some(ms(1_020)));
+            let shown = lines
+                .iter()
+                .filter(|line| line.starts_with("message=error"));
+            assert_eq!(
+                shown.collect::<Vec<_>>(),
+                [r#"message=error error="a""#],
+                "seed {seed}: {lines:#?}"
+            );
+        }
     }
 
     #[test]
@@ -3717,16 +3767,18 @@ mod tests {
         counts: &'static [&'static str],
         cancel: Option<Span>,
     ) -> (Vec<Written>, Span) {
-        run_on(move |node, tasks| tally_on(node, tasks, kind, counts, cancel))
+        run_on(move |node, tasks| tally_on(node, tasks, kind, counts, cancel, None))
     }
 
-    /// The body of [`tally_until`], on a shard of `node`.
+    /// The body of [`tally_until`], on a shard of `node`, where the hub removes the
+    /// status channels at `removed`.
     async fn tally_on(
         node: sim::node::Node,
         tasks: Tasks,
         kind: impl Kind + 'static,
         counts: &'static [&'static str],
         cancel: Option<Span>,
+        removed: Option<Span>,
     ) -> (Vec<Written>, Span) {
         let kinds = Table::new().with("tally", kind);
         let inputs = create_config(&node, tasks.clone(), kinds, "plant.tally").await;
@@ -3738,6 +3790,13 @@ mod tests {
             .set_definitions(status.iter().map(|(name, def)| (name, def)));
         let statuses = read_status(&inputs.hub, "plant.tally", &counts, &tasks).await;
         let (token, clock) = (Token::new(), node.clock());
+        if let Some(removed) = removed {
+            let (hub, sleeper) = (inputs.hub.clone(), clock.clone());
+            tasks.spawn(async move {
+                sleeper.sleep(removed).await;
+                hub.set_definitions(std::iter::empty());
+            });
+        }
         if let Some(cancel) = cancel {
             let (canceller, sleeper) = (token.clone(), clock.clone());
             tasks.spawn(async move {

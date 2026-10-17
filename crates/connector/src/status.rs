@@ -741,7 +741,7 @@ impl Session {
     /// as `Backwards` is stamped after the stamp the refusal gives and written again,
     /// one time. A frame that the home does not apply, or for which the shard's pool
     /// has no block now, leaves the status staged, so the flush writes it again.
-    /// After the session closed, it writes nothing.
+    /// After the session closed, it writes no frame and no line.
     ///
     /// # Panics
     ///
@@ -750,6 +750,10 @@ impl Session {
     /// than the largest block of the pool.
     fn write(&mut self, values: &Values, span: &tracing::Span, now: Monotonic) {
         values.staged.set(false);
+        if self.closed {
+            self.unapplied = None;
+            return;
+        }
         if let Some(run) = &*values.run.borrow() {
             match &run.error {
                 Shown::Nothing => {}
@@ -776,10 +780,6 @@ impl Session {
                 tracing::info!(parent: span, note = run.note.as_str(), "note");
                 self.note.set(&mut self.series, run.note.clone());
             }
-        }
-        if self.closed {
-            self.unapplied = None;
-            return;
         }
         self.wrote = now;
         let mesh = self.hub.now();
