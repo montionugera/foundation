@@ -34,7 +34,7 @@ mod tests;
 /// `ops.bad-request` for a body that is no request of `plan`, `apply`, `status`, or
 /// `browse`, `ops.denied` for an action that no access policy gives `subject` and for
 /// a request that names no definition, and `ops.large-reply` in place of a reply over
-/// the bound, or `ops.large-browse` in place of the output of a `browse` over it.
+/// the bound, or `ops.large-browse` in place of a reply of `browse` over it.
 /// `apply` also needs `apply` on the channel at each edge of each channel that the plan
 /// adds or changes, and `admin` on the key of each definition other than a channel that
 /// the plan adds, changes, or removes. It gives a home only to an index on which
@@ -52,7 +52,9 @@ mod tests;
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
     let reply = run(node, subject, body).await;
-    reply.unwrap_or_else(|error| failed(&error)).0
+    reply
+        .unwrap_or_else(|error| failed(&error, &Error::LargeReply))
+        .0
 }
 
 /// A body that would pass the bound.
@@ -246,8 +248,8 @@ enum Answer<'a, T> {
     },
 }
 
-/// The reply that holds `error`, or `ops.large-reply` when that reply passes the bound.
-fn failed(error: &Error) -> Body {
+/// The reply that holds `error`, or `large` when that reply passes the bound.
+fn failed(error: &Error, large: &Error) -> Body {
     let line = |error: &Error| {
         Body::line(&Answer::<()>::Failed {
             errors: error.problems(),
@@ -255,8 +257,8 @@ fn failed(error: &Error) -> Body {
         })
     };
     line(error).unwrap_or_else(|Large| {
-        line(&Error::LargeReply).unwrap_or_else(|Large| {
-            panic!("invariant: the reply of `ops.large-reply` fits")
+        line(large).unwrap_or_else(|Large| {
+            panic!("invariant: the reply of an error of the bound fits")
         })
     })
 }
@@ -406,7 +408,9 @@ async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Body, Error> {
         Request::Browse(_) if !rest.is_empty() => {
             Err(bad_request("bytes follow the first line of `browse`"))
         }
-        Request::Browse(request) => browse(node, subject, request).await,
+        Request::Browse(request) => Ok(browse(node, subject, request)
+            .await
+            .unwrap_or_else(|error| failed(&error, &Error::LargeBrowse))),
         Request::Other(name) => Err(bad_request(format!(
             "the operation `{name}` does not run on a node"
         ))),

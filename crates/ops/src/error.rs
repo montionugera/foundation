@@ -103,7 +103,7 @@ pub(crate) enum Error {
     },
     /// The reply of a node has more bytes than one reply holds.
     LargeReply,
-    /// The output of a browse has more bytes than one reply holds.
+    /// The reply of a browse has more bytes than one reply holds.
     LargeBrowse,
     /// A reader of the status channels of `connector` did not open or ended, with the
     /// text of the hub.
@@ -737,7 +737,7 @@ impl fmt::Display for Error {
             ),
             Self::LargeBrowse => write!(
                 f,
-                "the output of the browse has more than {BODY_BYTES_MAX} bytes, the \
+                "the reply of the browse has more than {BODY_BYTES_MAX} bytes, the \
                  most that a reply holds"
             ),
             Self::ChannelRead { connector, message } => write!(

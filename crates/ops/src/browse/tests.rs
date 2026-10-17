@@ -5,6 +5,7 @@ use env::paths::Paths;
 use serde_json::{Value, json};
 use types::name::Name;
 use types::sample;
+use wire::hub::client::BODY_BYTES_MAX;
 
 use super::Output;
 use crate::common::{self, EVE, create_browsing_node, name, solo};
@@ -70,6 +71,16 @@ fn refusal(code: &str, status: u8, message: &str, fix: &str) -> Value {
         "errors": [{ "code": code, "message": message, "fix": fix, "notes": [] }],
         "status": status,
     })
+}
+
+/// The reply of `ops.large-browse`.
+fn large_browse() -> Value {
+    let message = format!(
+        "the reply of the browse has more than {BODY_BYTES_MAX} bytes, the most that a \
+         reply holds"
+    );
+    let fix = "Narrow the start or the match, or browse without `values`";
+    refusal("ops.large-browse", 1, &message, fix)
 }
 
 /// The message of a failed browse of `plant` of `kind`.
@@ -266,6 +277,22 @@ fn a_start_or_a_match_that_is_too_deep_or_has_too_many_stars_gives_its_cause() {
 }
 
 /// The broken kind gives a page over the most, which the walk refuses.
+/// A start whose error passes the bound of a reply, in a request inside the bound,
+/// gives the fix of a browse, not the fix of a plan.
+#[test]
+fn a_start_whose_error_passes_the_bound_of_a_reply_gives_a_fix_of_a_browse() {
+    solo(|fixture, mesh| async move {
+        let node = create_browsing_node(&fixture, mesh);
+        let site = site("tree", "edge", "");
+        let empty = body("plant", "site.hcl", &site, &json!({ "start": "" }));
+        let max = usize::try_from(BODY_BYTES_MAX).expect("a usize");
+        let start = format!("{}//", "a".repeat(max - empty.len() - 2));
+        let request = body("plant", "site.hcl", &site, &json!({ "start": start }));
+        assert_eq!(request.len(), max);
+        assert_eq!(served(&node, "@admin", &request).await, large_browse());
+    });
+}
+
 #[test]
 fn the_command_line_writes_the_defect_of_a_kind_that_breaks_a_rule_of_a_browse() {
     solo(|fixture, mesh| async move {
@@ -619,21 +646,31 @@ mod own_kinds {
     use connector::kind::{self, Channels, Context, Table};
     use document::Document;
     use document::diagnostic::Diagnostic;
-    use serde_json::{Value, json};
+    use mesh::Mesh;
+    use serde_json::json;
     use types::sample;
     use wire::hub::client::BODY_BYTES_MAX;
 
     use crate::Node;
     use crate::common::{
-        BOB, create_config, create_supervisor, front_ends, name, solo,
+        BOB, Fixture, create_config, create_supervisor, front_ends, solo,
     };
-    use crate::serve::serve;
 
-    /// A kind whose browse reads the secret of its `token`, as a kind reads the
-    /// password of its device.
-    struct Probe;
+    /// The kind `own` of one test, by what its browse does.
+    enum Own {
+        /// Reads the secret of its `token`, as a kind reads the password of its
+        /// device.
+        Probe,
+        /// Gives a root of one `f64` point with this value.
+        One(f64),
+        /// Gives a root of one page of 500 points, each with a name of 40 000 bytes: a
+        /// page that `walk` takes, whose JSON passes the bound of a reply.
+        Wide,
+        /// Fails with a device error of `BODY_BYTES_MAX` bytes.
+        Loud,
+    }
 
-    impl kind::Kind for Probe {
+    impl kind::Kind for Own {
         type Config = ();
 
         fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
@@ -651,42 +688,28 @@ mod own_kinds {
         async fn browse(
             &self,
             ctx: &browse::Context<'_>,
-            _: &Query,
+            query: &Query,
         ) -> Result<Found, kind::Error> {
-            let value = &ctx.config().attributes.get("token").expect("a token").value;
-            let source = secret::Source::read(value).expect("a source");
-            ctx.secret(&source).await?;
-            Ok(Found {
-                entries: Vec::new(),
-                values: Vec::new(),
-                end: End::Done,
-            })
-        }
-    }
-
-    /// A finite `f32` is the shortest text that reads back as it, at the node and
-    /// again after the command line parses the reply.
-    #[test]
-    fn an_f32_is_its_shortest_text_at_each_exponent() {
-        use super::super::Value as Json;
-        let mut wrong = Vec::new();
-        for x in [f32::MAX, -f32::MAX, 1.0e30, 3.004_713_8e38, 1.177_379_4e-38] {
-            // The text of the shortest decimal that reads back as `x`.
-            let shortest = serde_json::to_string(&x).expect("JSON");
-            let denoted = |text: &str| text.parse::<f64>().expect("a number").to_bits();
-            let at_node =
-                serde_json::to_string(&Json::of(sample::Value::F32(x))).expect("JSON");
-            let parsed: Json = serde_json::from_str(&at_node).expect("a value");
-            let at_cli = serde_json::to_string(&parsed).expect("JSON");
-            if denoted(&at_node) != denoted(&shortest) || at_cli != at_node {
-                wrong.push((shortest, at_node, at_cli));
+            match self {
+                Self::Probe => {
+                    let token = &ctx.config().attributes.get("token").expect("a token");
+                    let source = secret::Source::read(&token.value).expect("a source");
+                    ctx.secret(&source).await?;
+                    Ok(Found {
+                        entries: Vec::new(),
+                        values: Vec::new(),
+                        end: End::Done,
+                    })
+                }
+                Self::One(x) => browse::walk(&mut OneSession(*x), query).await,
+                Self::Wide => browse::walk(&mut WideSession, query).await,
+                Self::Loud => {
+                    let len = usize::try_from(BODY_BYTES_MAX).expect("a usize");
+                    Err(kind::Error::Device("x".repeat(len).into()))
+                }
             }
         }
-        assert_eq!(wrong, Vec::<(String, String, String)>::new());
     }
-
-    /// A kind whose root holds one `f64` point with the value of its field.
-    struct One(f64);
 
     struct OneSession(f64);
 
@@ -720,81 +743,6 @@ mod own_kinds {
         }
     }
 
-    impl kind::Kind for One {
-        type Config = ();
-
-        fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
-            Ok(())
-        }
-
-        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
-            Ok(Channels::default())
-        }
-
-        fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), kind::Error>> {
-            std::future::ready(Ok(()))
-        }
-
-        async fn browse(
-            &self,
-            _: &browse::Context<'_>,
-            query: &Query,
-        ) -> Result<Found, kind::Error> {
-            browse::walk(&mut OneSession(self.0), query).await
-        }
-    }
-
-    /// `foundation browse --values --json` gives the `f64` that the device gave.
-    #[test]
-    fn the_command_line_gives_the_f64_value_of_the_device() {
-        solo(|fixture, mesh| async move {
-            let x = 1.031_111_111_117_692_3_f64;
-            let secrets = connector::testing::create_secrets(fixture.sim.files());
-            let node = Node::new(crate::node::Config {
-                supervisor: create_supervisor(
-                    &fixture,
-                    Table::new().with("one", One(x)),
-                    secrets.clone(),
-                ),
-                ..create_config(&fixture, mesh, front_ends(), secrets)
-            });
-            let paths = super::host(&fixture, "one");
-            let args = ["browse", "plant", "site.hcl", "--values", "--json"];
-            let (run, json, errors) = super::cli(&node, &paths, &args).await;
-            assert_eq!((run, errors.as_str()), (crate::Run::Exit(0), ""));
-            // The text, not a parse of it: a parse of serde_json can round wrong too.
-            let value = format!("\"value\":{x}}}");
-            assert_eq!(x.to_string(), "1.0311111111176923");
-            assert!(json.contains(&value), "{json} does not hold {value}");
-        });
-    }
-
-    /// The command line gives each `f64` that the node gave, bit for bit.
-    #[test]
-    fn the_command_line_gives_the_f64_of_the_node() {
-        use super::super::Value as Json;
-        let mut wrong = Vec::new();
-        let mut bits: u64 = 0x0010_0000_0000_0000;
-        while bits < 0x7ff0_0000_0000_0000 {
-            let x = f64::from_bits(bits);
-            let at_node =
-                serde_json::to_string(&Json::of(sample::Value::F64(x))).expect("JSON");
-            let parsed: Json = serde_json::from_str(&at_node).expect("a value");
-            let at_cli = serde_json::to_string(&parsed).expect("JSON");
-            if at_cli != at_node && (1.0..1e6).contains(&x) {
-                wrong.push((at_node, at_cli));
-            }
-            bits += 0x0000_1234_5678_9abd;
-        }
-        let count = wrong.len();
-        wrong.truncate(3);
-        assert_eq!((count, wrong), (0, Vec::new()));
-    }
-
-    /// A kind whose root is one page of 500 points, each with a name of 40 000
-    /// bytes: a page that `walk` takes, whose JSON passes the bound of a reply.
-    struct Wide;
-
     struct WideSession;
 
     impl browse::Device for WideSession {
@@ -817,87 +765,123 @@ mod own_kinds {
         }
     }
 
-    impl kind::Kind for Wide {
-        type Config = ();
+    /// A node whose kind `own` is `own`.
+    fn create_own_node(fixture: &Fixture, mesh: Mesh, own: Own) -> Node {
+        let secrets = connector::testing::create_secrets(fixture.sim.files());
+        Node::new(crate::node::Config {
+            supervisor: create_supervisor(
+                fixture,
+                Table::new().with("own", own),
+                secrets.clone(),
+            ),
+            ..create_config(fixture, mesh, front_ends(), secrets)
+        })
+    }
 
-        fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
-            Ok(())
+    /// A finite `f32` is the shortest text that reads back as it, at the node and
+    /// again after the command line parses the reply.
+    #[test]
+    fn an_f32_is_its_shortest_text_at_each_exponent() {
+        use super::super::Value as Json;
+        let mut wrong = Vec::new();
+        for exponent in 0..255_u32 {
+            for mantissa in [0, 1, 0x12_3456, 0x40_0000, 0x7f_ffff] {
+                for sign in [0, 1 << 31] {
+                    let x = f32::from_bits(sign | exponent << 23 | mantissa);
+                    // The text of the shortest decimal that reads back as `x`.
+                    let shortest = serde_json::to_string(&x).expect("JSON");
+                    let denoted =
+                        |text: &str| text.parse::<f64>().expect("a number").to_bits();
+                    let at_node =
+                        serde_json::to_string(&Json::of(sample::Value::F32(x)))
+                            .expect("JSON");
+                    let parsed: Json = serde_json::from_str(&at_node).expect("a value");
+                    let at_cli = serde_json::to_string(&parsed).expect("JSON");
+                    if denoted(&at_node) != denoted(&shortest) || at_cli != at_node {
+                        wrong.push((shortest, at_node, at_cli));
+                    }
+                }
+            }
         }
+        assert_eq!(wrong, Vec::<(String, String, String)>::new());
+    }
 
-        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
-            Ok(Channels::default())
-        }
+    /// `foundation browse --values --json` gives the `f64` that the device gave.
+    #[test]
+    fn the_command_line_gives_the_f64_value_of_the_device() {
+        solo(|fixture, mesh| async move {
+            let x = 1.031_111_111_117_692_3_f64;
+            let node = create_own_node(&fixture, mesh, Own::One(x));
+            let paths = super::host(&fixture, "own");
+            let args = ["browse", "plant", "site.hcl", "--values", "--json"];
+            let (run, json, errors) = super::cli(&node, &paths, &args).await;
+            assert_eq!((run, errors.as_str()), (crate::Run::Exit(0), ""));
+            // The text, not a parse of it: a parse of serde_json can round wrong too.
+            let value = format!("\"value\":{x}}}");
+            assert_eq!(x.to_string(), "1.0311111111176923");
+            assert!(json.contains(&value), "{json} does not hold {value}");
+        });
+    }
 
-        fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), kind::Error>> {
-            std::future::ready(Ok(()))
+    /// The command line gives each `f64` that the node gave, bit for bit.
+    #[test]
+    fn the_command_line_gives_the_f64_of_the_node() {
+        use super::super::Value as Json;
+        let mut wrong = Vec::new();
+        let mut bits: u64 = 0x0010_0000_0000_0000;
+        while bits < 0x7ff0_0000_0000_0000 {
+            let x = f64::from_bits(bits);
+            let at_node =
+                serde_json::to_string(&Json::of(sample::Value::F64(x))).expect("JSON");
+            let parsed: Json = serde_json::from_str(&at_node).expect("a value");
+            let at_cli = serde_json::to_string(&parsed).expect("JSON");
+            if at_cli != at_node {
+                wrong.push((at_node, at_cli));
+            }
+            bits += 0x0000_1234_5678_9abd;
         }
+        let count = wrong.len();
+        wrong.truncate(3);
+        assert_eq!((count, wrong), (0, Vec::new()));
+    }
 
-        async fn browse(
-            &self,
-            _: &browse::Context<'_>,
-            query: &Query,
-        ) -> Result<Found, kind::Error> {
-            browse::walk(&mut WideSession, query).await
-        }
+    /// The body of a `browse` of `site.c` in `c.hcl` of `text`.
+    fn browse_body(text: &str) -> Vec<u8> {
+        super::body("site.c", "c.hcl", text, &json!({}))
+    }
+
+    /// The text of `c.hcl` with `site.c` of the kind `own` on `edge`, and `more` lines
+    /// in its block.
+    fn own_site(more: &str) -> String {
+        format!(
+            "connector \"site.c\" {{\n  kind = \"own\"\n  node = \"edge\"\n{more}}}\n"
+        )
+    }
+
+    /// Asserts that a browse of `own` gives `ops.large-browse`.
+    fn gives_large_browse(own: Own) {
+        solo(|fixture, mesh| async move {
+            let node = create_own_node(&fixture, mesh, own);
+            let body = browse_body(&own_site(""));
+            assert_eq!(
+                super::served(&node, "@admin", &body).await,
+                super::large_browse()
+            );
+        });
     }
 
     /// A level whose page passes the bound of a reply gives the fix of a browse, not
     /// the fix of a plan.
     #[test]
     fn a_level_past_the_bound_of_a_reply_gives_a_fix_of_a_browse() {
-        solo(|fixture, mesh| async move {
-            let secrets = connector::testing::create_secrets(fixture.sim.files());
-            let node = Node::new(crate::node::Config {
-                supervisor: create_supervisor(
-                    &fixture,
-                    Table::new().with("wide", Wide),
-                    secrets.clone(),
-                ),
-                ..create_config(&fixture, mesh, front_ends(), secrets)
-            });
-            let site =
-                "connector \"site.c\" {\n  kind = \"wide\"\n  node = \"edge\"\n}\n";
-            let body = browse_body(&[("c.hcl", site)]);
-            let message = format!(
-                "the output of the browse has more than {BODY_BYTES_MAX} bytes, the \
-                 most that a reply holds"
-            );
-            let fix = "Narrow the start or the match, or browse without `values`";
-            assert_eq!(
-                super::served(&node, "@admin", &body).await,
-                super::refusal("ops.large-browse", 1, &message, fix)
-            );
-        });
+        gives_large_browse(Own::Wide);
     }
 
-    /// The JSON of the first line of `reply`.
-    fn first_line(reply: &[u8]) -> Value {
-        let end = reply.iter().position(|b| *b == b'\n').expect("a line");
-        serde_json::from_slice(&reply[..end]).expect("JSON")
-    }
-
-    /// The reply of `serve` to `body` as `@admin`.
-    async fn as_admin(node: &Node, body: Vec<u8>) -> Vec<u8> {
-        serve(node, &name("@admin"), &body).await
-    }
-
-    /// The body of a `plan` of `files`, each a path and its text.
-    fn plan_body(files: &[(&str, &str)]) -> Vec<u8> {
-        let files: Vec<Value> = files
-            .iter()
-            .map(|(path, text)| json!({ "path": path, "text": text }))
-            .collect();
-        format!("{}\n", json!({ "plan": { "files": files } })).into_bytes()
-    }
-
-    /// The body of a `browse` of `site.c` in `files`, each a path and its text.
-    fn browse_body(files: &[(&str, &str)]) -> Vec<u8> {
-        let files: Vec<Value> = files
-            .iter()
-            .map(|(path, text)| json!({ "path": path, "text": text }))
-            .collect();
-        let browse = json!({ "connector": "site.c", "files": files });
-        format!("{}\n", json!({ "browse": browse })).into_bytes()
+    /// A device error that passes the bound of a reply gives the fix of a browse, not
+    /// the fix of a plan.
+    #[test]
+    fn a_device_error_past_the_bound_of_a_reply_gives_a_fix_of_a_browse() {
+        gives_large_browse(Own::Loud);
     }
 
     /// `bob` has `apply` and no `admin` on `site.c`, so a browse reads no source for
@@ -905,15 +889,7 @@ mod own_kinds {
     #[test]
     fn a_subject_with_apply_and_no_admin_learns_nothing_of_the_files_of_the_node() {
         solo(|fixture, mesh| async move {
-            let secrets = connector::testing::create_secrets(fixture.sim.files());
-            let node = Node::new(crate::node::Config {
-                supervisor: create_supervisor(
-                    &fixture,
-                    Table::new().with("probe", Probe),
-                    secrets.clone(),
-                ),
-                ..create_config(&fixture, mesh, front_ends(), secrets)
-            });
+            let node = create_own_node(&fixture, mesh, Own::Probe);
             let people = format!(
                 "subject \"bob\" {{ keys = [\"{BOB}\"] }}\n\
                  access \"planner\" {{\n  subjects = \"bob\"\n  select = \"**\"\n  \
@@ -921,37 +897,22 @@ mod own_kinds {
                  access \"site-apply\" {{\n  subjects = \"bob\"\n  select = \
                  \"site.**\"\n  allow = [apply]\n}}\n"
             );
-            let reply = as_admin(&node, plan_body(&[("people.hcl", &people)])).await;
-            let end = reply.iter().position(|b| *b == b'\n').expect("a line");
-            assert!(first_line(&reply).get("output").is_some());
-            let apply = [&b"{\"apply\":{}}\n"[..], &reply[end + 1..]].concat();
-            let applied = as_admin(&node, apply).await;
-            assert!(first_line(&applied).get("output").is_some());
+            super::applied(&node, &people).await;
 
             let paths = fixture.sim.paths();
             fixture.sim.make_dir(Path::new("/run"));
             paths
                 .write(Path::new("/run/there"), b"x")
                 .expect("writes it");
-            let probe = |path: &str| {
-                format!(
-                    "connector \"site.c\" {{\n  kind  = \"probe\"\n  node  = \
-                     \"edge\"\n  token = file(\"{path}\")\n}}\n"
-                )
-            };
-            let there = probe("/run/there");
-            let absent = probe("/run/absent");
+            let probe = |path: &str| own_site(&format!("  token = file(\"{path}\")\n"));
             let seen =
-                serve(&node, &name("bob"), &browse_body(&[("c.hcl", &there)])).await;
+                super::served(&node, "bob", &browse_body(&probe("/run/there"))).await;
             let unseen =
-                serve(&node, &name("bob"), &browse_body(&[("c.hcl", &absent)])).await;
+                super::served(&node, "bob", &browse_body(&probe("/run/absent"))).await;
             let message = "no access policy gives `bob` the action `admin` on `site.c`";
             let fix = "Ask an admin of the region for an access policy that allows it";
             let denied = super::refusal("ops.denied", 1, message, fix);
-            assert_eq!(
-                (first_line(&seen), first_line(&unseen)),
-                (denied.clone(), denied)
-            );
+            assert_eq!((seen, unseen), (denied.clone(), denied));
         });
     }
 }
