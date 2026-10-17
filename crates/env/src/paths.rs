@@ -44,8 +44,9 @@ impl Paths {
     }
 
     /// The same files, where each call on a path that does not resolve under one of
-    /// `folders` fails with [`Error::Outside`], and one on a path under the folders of
-    /// each limit that resolves under one of `hidden` fails with [`Error::Hidden`].
+    /// `folders` fails with [`Error::Outside`], and one on a path with a step that
+    /// passes the folders of each limit and resolves under one of `hidden` fails with
+    /// [`Error::Hidden`]. When both hold, the first step that fails gives its error.
     /// Such a call reaches no file. Each folder is resolved as [`Paths::resolve`] gives
     /// it, and a path is under a folder when the folder is the file at the path or a
     /// directory that holds it, by the file and not by its name: a name in other case
