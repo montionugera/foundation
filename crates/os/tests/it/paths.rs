@@ -439,7 +439,17 @@ fn within_hides_a_link_that_does_not_resolve_in_a_moved_hidden_folder() {
         for name in ["work/moved/loop", "work/moved/sub/loop"] {
             symlink(base.join(name), base.join(name)).unwrap();
         }
-        for name in ["work/moved/new", "work/moved/loop", "work/moved/sub/loop"] {
+        symlink(
+            base.join("work/moved/none"),
+            base.join("work/moved/to-none"),
+        )
+        .unwrap();
+        for name in [
+            "work/moved/new",
+            "work/moved/loop",
+            "work/moved/to-none",
+            "work/moved/sub/loop",
+        ] {
             let made = within.make_dir(&base.join(name));
             assert_eq!(made, Err(Error::Hidden), "{name}");
         }
