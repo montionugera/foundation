@@ -620,7 +620,7 @@ mod tests {
             if let Ok(rest) = at.strip_prefix("/volume")
                 && rest != Path::new("")
             {
-                at = Path::new("/").join(rest);
+                at = Path::new("/").join(rest).components().collect();
             }
             // FNV-1a.
             if name == b"io" {
