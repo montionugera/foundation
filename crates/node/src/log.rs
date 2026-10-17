@@ -11,6 +11,7 @@ use clock::log::{Mesh, Time};
 use serde::ser::{Serialize, SerializeMap, Serializer};
 use tracing::field::{Field, Visit};
 use tracing::{Dispatch, Event, Subscriber};
+use tracing_subscriber::field::RecordFields;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
 use tracing_subscriber::fmt::{FmtContext, layer};
@@ -68,10 +69,20 @@ pub(crate) fn open(
     Flush::new(writer, line, level, threads)
 }
 
+/// The fields of a span for `fmt`, which formats none: [`span::Keep`] keeps them.
+struct Unformatted;
+
+impl<'w> FormatFields<'w> for Unformatted {
+    fn format_fields<R: RecordFields>(&self, _: Writer<'w>, _: R) -> fmt::Result {
+        Ok(())
+    }
+}
+
 /// The dispatch that puts each event of `level` or above in `queue`, as one `line`.
 fn dispatch(line: Line, level: tracing::Level, queue: Pipe) -> Dispatch {
     // The doc of `fmt` gives true as the default, though 0.3.23 sets false.
     let lines = layer()
+        .fmt_fields(Unformatted)
         .event_format(line)
         .with_writer(queue)
         .log_internal_errors(false);

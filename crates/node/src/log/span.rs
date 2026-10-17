@@ -38,13 +38,18 @@ where
     }
 
     fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
+        // Before the lock, as a value can log an event that reads the span.
+        let mut recorded = Vec::new();
+        values.record(&mut Visitor(|field: &Field, value| {
+            recorded.push((field.name(), value));
+        }));
         let span = ctx.span(id).expect("the registry has each recorded span");
         let mut extensions = span.extensions_mut();
         let fields = extensions
             .get_mut::<Fields>()
             .expect("on_new_span keeps the fields of each span");
-        values.record(&mut Visitor(|field: &Field, value| {
-            fields.set(field.name(), value);
-        }));
+        for (name, value) in recorded {
+            fields.set(name, value);
+        }
     }
 }
