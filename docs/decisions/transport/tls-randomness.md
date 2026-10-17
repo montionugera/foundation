@@ -9,8 +9,11 @@
   #2934 extends it to the OPC UA secure channel of `connector-opcua`: the OpenSSL
   plugins of open62541 draw nonces, keys, padding, and salts from aws-lc
   (`RAND_bytes`), not from `env`, with the same bounds: bytes only, and nothing
-  branches on them. `AWS_LC` of `cargo xtask open62541` lists each function of aws-lc
-  that draws. OK from `laptop.architect-2`
+  branches on them. Simulated runs still replay: replay traces leave out the bytes of
+  a secured channel, and a `sim` test of #2934 PR 1b reads one value twice in
+  `SignAndEncrypt` and compares the traces. `AWS_LC_KEYS` of `cargo xtask open62541`
+  keys each call of aws-lc that draws by its file and function, and `AWS_LC`, the
+  functions that any file may call, holds none that draws. OK from `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6230838999,
   2026-10-17 06:46 UTC). The person: pending
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6231143169).
