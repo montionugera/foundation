@@ -1,5 +1,5 @@
 //! The scenarios that each connector kind passes, and [`suite!`], which runs each of
-//! them on the [`Device`] of one kind.
+//! them on the [`Suite`] of one kind.
 //!
 //! Each scenario runs two sim nodes: the plant, with a rig and the connector, and the
 //! device, with the kind's simulator.
@@ -24,7 +24,7 @@ use env::tasks::Tasks;
 use types::name::Name;
 use types::time::Span;
 
-pub(crate) use inputs::{Backoff, Device, Plant, Serve};
+pub(crate) use inputs::{Backoff, Plant, Serve, Suite};
 
 /// The inputs that the suite of one kind gives the scenarios.
 #[expect(
@@ -44,7 +44,7 @@ mod inputs {
     use env::tasks::Tasks;
 
     /// What the suite of one kind gives the scenarios.
-    pub(crate) struct Device {
+    pub(crate) struct Suite {
         /// The table that holds the kind, and no other kind.
         pub kinds: fn() -> Table,
         /// Defines on the rig what a connector of the kind needs, starts each writer
@@ -63,8 +63,8 @@ mod inputs {
         pub refused: fn() -> Vec<(Document, Vec<Diagnostic>)>,
     }
 
-    impl Device {
-        /// The name of the one kind of [`Device::kinds`].
+    impl Suite {
+        /// The name of the one kind of [`Suite::kinds`].
         ///
         /// # Panics
         ///
@@ -90,7 +90,7 @@ mod inputs {
         Run,
     }
 
-    /// The plant that [`Device::setup`] defines on.
+    /// The plant that [`Suite::setup`] defines on.
     pub(crate) struct Plant<'a> {
         /// The rig of the connector.
         pub rig: &'a Rig,
@@ -104,7 +104,7 @@ mod inputs {
         pub until: &'a Token,
     }
 
-    /// The inputs of [`Device::serve`].
+    /// The inputs of [`Suite::serve`].
     pub(crate) struct Serve {
         /// The device node.
         pub node: Node,
@@ -117,53 +117,53 @@ mod inputs {
     }
 }
 
-/// Expands to one test for each scenario, on `$device`, a [`Device`].
+/// Expands to one test for each scenario, on `$suite`, a [`Suite`].
 macro_rules! suite {
-    ($device:expr) => {
+    ($suite:expr) => {
         #[test]
         fn starts() {
-            $crate::scenarios::starts(&$device);
+            $crate::scenarios::starts(&$suite);
         }
 
         #[test]
         fn heals_once_an_absent_device_serves() {
-            $crate::scenarios::heals_once_an_absent_device_serves(&$device);
+            $crate::scenarios::heals_once_an_absent_device_serves(&$suite);
         }
 
         #[test]
         fn heals_after_the_device_stops() {
-            $crate::scenarios::heals_after_the_device_stops(&$device);
+            $crate::scenarios::heals_after_the_device_stops(&$suite);
         }
 
         #[test]
         fn heals_after_the_device_crashes() {
-            $crate::scenarios::heals_after_the_device_crashes(&$device);
+            $crate::scenarios::heals_after_the_device_crashes(&$suite);
         }
 
         #[test]
         fn stops_while_it_runs() {
-            $crate::scenarios::stops_while_it_runs(&$device);
+            $crate::scenarios::stops_while_it_runs(&$suite);
         }
 
         #[test]
         fn stops_in_a_backoff() {
-            $crate::scenarios::stops_in_a_backoff(&$device);
+            $crate::scenarios::stops_in_a_backoff(&$suite);
         }
 
         #[test]
         fn stops_in_a_connect() {
-            $crate::scenarios::stops_in_a_connect(&$device);
+            $crate::scenarios::stops_in_a_connect(&$suite);
         }
 
         #[test]
         fn refuses_each_config_with_its_diagnostics() {
-            $crate::scenarios::refuses_each_config_with_its_diagnostics(&$device);
+            $crate::scenarios::refuses_each_config_with_its_diagnostics(&$suite);
         }
 
         #[test]
         fn stops_at_a_write_channel_that_the_hub_does_not_define() {
             $crate::scenarios::stops_at_a_write_channel_that_the_hub_does_not_define(
-                &$device,
+                &$suite,
             );
         }
     };
@@ -196,12 +196,12 @@ const CONNECTOR: &str = "plant.device";
 
 /// The plant side of a scenario.
 struct Scene {
-    device: &'static Device,
+    suite: &'static Suite,
     rig: Rig,
     node: Node,
     tasks: Tasks,
     /// The device node.
-    host: Node,
+    device: Node,
     address: SocketAddr,
     /// Cancelled once the script returns, for [`Plant::until`].
     until: Token,
@@ -228,16 +228,16 @@ impl Scene {
             device: self.address,
             until: &self.until,
         };
-        (self.device.setup)(plant).await
+        (self.suite.setup)(plant).await
     }
 
     /// Starts the kind's simulator on a new shard of the device node.
     fn serve(&self) -> Served {
         let (until, ended) = (Token::new(), Token::new());
-        let (node, address) = (self.host.clone(), self.address);
-        let (stop, end, serve) = (until.clone(), ended.clone(), self.device.serve);
+        let (node, address) = (self.device.clone(), self.address);
+        let (stop, end, serve) = (until.clone(), ended.clone(), self.suite.serve);
         let started =
-            self.host
+            self.device
                 .shards()
                 .start(shard("device"), move |tasks| async move {
                     let until = stop;
@@ -269,12 +269,12 @@ impl Scene {
 
     async fn supervise(&self, config: Document) -> Run {
         let name = CONNECTOR.parse().expect("a valid name");
-        self.rig.supervise(self.device.kind(), name, config).await
+        self.rig.supervise(self.suite.kind(), name, config).await
     }
 
     /// The progress count of `reading`.
     fn progress(&self, reading: &Reading) -> u64 {
-        let progress: Name = self.device.progress.parse().expect("a valid name");
+        let progress: Name = self.suite.progress.parse().expect("a valid name");
         let Some(&count) = reading.counts.get(&progress) else {
             panic!("the status has no count {progress}: {reading:?}")
         };
@@ -291,12 +291,12 @@ impl Scene {
         run.until(within, done).await
     }
 
-    /// Waits until the connector is in the backoff of [`Device::backoff`] with no
+    /// Waits until the connector is in the backoff of [`Suite::backoff`] with no
     /// device, and gives the status. For [`Backoff::Run`], no status within [`HOLD`]
     /// after it leaves that backoff. A status writes only on a change, so this checks
     /// each change, and none when nothing changes.
     async fn backed_off(&self, run: &mut Run) -> Reading {
-        match self.device.backoff {
+        match self.suite.backoff {
             Backoff::Restart => {
                 let done = |reading: &Reading| {
                     let config = matches!(reading.error, Some((Class::Config, _)));
@@ -376,7 +376,7 @@ fn shard(name: &str) -> env::shards::Config {
 /// the sim. Crashes the device node at each ask of the script, between two runs. Once
 /// the script returns, the run of the sim must end: a task or a stream that the
 /// script left keeps it from its end.
-fn run<S, F>(device: &'static Device, prepare: fn(&mut Sim, &Node, &Node), script: S)
+fn run<S, F>(suite: &'static Suite, prepare: fn(&mut Sim, &Node, &Node), script: S)
 where
     S: FnOnce(Rc<Scene>) -> F + Send + 'static,
     F: Future<Output = ()> + 'static,
@@ -406,15 +406,15 @@ where
                 entropy: node.entropy(),
                 tasks: tasks.clone(),
             };
-            let rig = Rig::open(env, node.net(), (device.kinds)()).await;
+            let rig = Rig::open(env, node.net(), (suite.kinds)()).await;
             let (host, crash, crashed) = inputs;
             let address = SocketAddr::new(host.addresses()[0], PORT);
             let scene = Rc::new(Scene {
-                device,
+                suite,
                 rig,
                 node,
                 tasks,
-                host,
+                device: host,
                 address,
                 until: Token::new(),
                 crash,
@@ -443,8 +443,8 @@ where
 fn direct(_: &mut Sim, _: &Node, _: &Node) {}
 
 /// Within 10 s: Running, no error, no restart, and progress above 0.
-pub(crate) fn starts(device: &'static Device) {
-    run(device, direct, move |scene| async move {
+pub(crate) fn starts(suite: &'static Suite) {
+    run(suite, direct, move |scene| async move {
         let config = scene.setup().await;
         let served = scene.serve();
         let mut run = scene.supervise(config).await;
@@ -455,13 +455,13 @@ pub(crate) fn starts(device: &'static Device) {
     });
 }
 
-/// With no simulator, within 1 min: the backoff of [`Device::backoff`], and never
-/// class Config. For [`Backoff::Restart`]: Restarting, class Device or Retry, and
+/// With no simulator, within 1 min: the backoff of [`Suite::backoff`], and never
+/// class Config. For [`Backoff::Restart`]: Restarting, class Suite or Retry, and
 /// restarts that grow. For [`Backoff::Run`]: Running, class Retry, an error text
 /// that names the device address, no restart, and no progress, and no status in the
 /// next [`HOLD`] that leaves it. Then the simulator starts, and the connector heals.
-pub(crate) fn heals_once_an_absent_device_serves(device: &'static Device) {
-    run(device, direct, move |scene| async move {
+pub(crate) fn heals_once_an_absent_device_serves(suite: &'static Suite) {
+    run(suite, direct, move |scene| async move {
         let config = scene.setup().await;
         let mut run = scene.supervise(config).await;
         let reading = scene.backed_off(&mut run).await;
@@ -475,8 +475,8 @@ pub(crate) fn heals_once_an_absent_device_serves(device: &'static Device) {
 
 /// The simulator stops, each connection closed. The connector heals once it serves
 /// again.
-pub(crate) fn heals_after_the_device_stops(device: &'static Device) {
-    run(device, direct, move |scene| async move {
+pub(crate) fn heals_after_the_device_stops(suite: &'static Suite) {
+    run(suite, direct, move |scene| async move {
         lost(&scene, |scene, served| {
             Box::pin(async move { scene.stop(served).await })
         })
@@ -486,8 +486,8 @@ pub(crate) fn heals_after_the_device_stops(device: &'static Device) {
 
 /// The device node crashes, so no close reaches the plant. The connector heals once
 /// the device serves again.
-pub(crate) fn heals_after_the_device_crashes(device: &'static Device) {
-    run(device, direct, move |scene| async move {
+pub(crate) fn heals_after_the_device_crashes(suite: &'static Suite) {
+    run(suite, direct, move |scene| async move {
         lost(&scene, |scene, served| {
             drop(served);
             Box::pin(scene.crash())
@@ -497,8 +497,8 @@ pub(crate) fn heals_after_the_device_crashes(device: &'static Device) {
 }
 
 /// The device is lost to `lose` while the connector runs. Within 30 s: an error of
-/// class Device or Retry. Then the simulator starts again: the connector heals, and
-/// no count goes down. Each status holds the form of [`Device::backoff`]: for
+/// class Suite or Retry. Then the simulator starts again: the connector heals, and
+/// no count goes down. Each status holds the form of [`Suite::backoff`]: for
 /// [`Backoff::Run`], Running with no restart and no class but Retry; for
 /// [`Backoff::Restart`], restarts that grow by the heal.
 async fn lost<'a>(
@@ -518,7 +518,7 @@ async fn lost<'a>(
         let went = last.counts.iter().find(|&count| down(count));
         assert!(went.is_none(), "{went:?} went down: {reading:?}");
         assert!(reading.restarts >= last.restarts, "{reading:?}");
-        if let Backoff::Run = scene.device.backoff {
+        if let Backoff::Run = scene.suite.backoff {
             let class = reading.error.as_ref().map(|(class, _)| *class);
             let given = (reading.state, reading.restarts);
             assert_eq!(given, (State::Running, 0), "the run goes on: {reading:?}");
@@ -547,7 +547,7 @@ async fn lost<'a>(
             && scene.progress(reading) > from
     };
     let reading = run.until(HEAL, healed).await;
-    if let Backoff::Restart = scene.device.backoff {
+    if let Backoff::Restart = scene.suite.backoff {
         assert!(reading.restarts > restarts, "the run restarts: {reading:?}");
     }
     run.stop().await.expect("the run ends with no error");
@@ -562,8 +562,8 @@ async fn stopped(scene: &Scene, run: Run) {
 }
 
 /// Stops the connector while it runs.
-pub(crate) fn stops_while_it_runs(device: &'static Device) {
-    run(device, direct, move |scene| async move {
+pub(crate) fn stops_while_it_runs(suite: &'static Suite) {
+    run(suite, direct, move |scene| async move {
         let config = scene.setup().await;
         let served = scene.serve();
         let mut run = scene.supervise(config).await;
@@ -573,9 +573,9 @@ pub(crate) fn stops_while_it_runs(device: &'static Device) {
     });
 }
 
-/// Stops the connector in the backoff of [`Device::backoff`] after failed connects.
-pub(crate) fn stops_in_a_backoff(device: &'static Device) {
-    run(device, direct, move |scene| async move {
+/// Stops the connector in the backoff of [`Suite::backoff`] after failed connects.
+pub(crate) fn stops_in_a_backoff(suite: &'static Suite) {
+    run(suite, direct, move |scene| async move {
         let config = scene.setup().await;
         let mut run = scene.supervise(config).await;
         scene.backed_off(&mut run).await;
@@ -585,7 +585,7 @@ pub(crate) fn stops_in_a_backoff(device: &'static Device) {
 
 /// Stops the connector while it connects to a device whose link delays each packet
 /// by 1 h. Waits on #3040 for the form of a link that loses each packet.
-pub(crate) fn stops_in_a_connect(device: &'static Device) {
+pub(crate) fn stops_in_a_connect(suite: &'static Suite) {
     let slow = |sim: &mut Sim, plant: &Node, host: &Node| {
         let delay = link::Config {
             delay: Span::HOUR,
@@ -593,7 +593,7 @@ pub(crate) fn stops_in_a_connect(device: &'static Device) {
         };
         sim.link(plant, host, delay);
     };
-    run(device, slow, |scene| async move {
+    run(suite, slow, |scene| async move {
         let config = scene.setup().await;
         let served = scene.serve();
         let run = scene.supervise(config).await;
@@ -604,15 +604,15 @@ pub(crate) fn stops_in_a_connect(device: &'static Device) {
     });
 }
 
-/// Each config of [`Device::refused`] gives exactly its diagnostics from the check,
+/// Each config of [`Suite::refused`] gives exactly its diagnostics from the check,
 /// and the same [`Error::Config`] from a supervised run.
-pub(crate) fn refuses_each_config_with_its_diagnostics(device: &'static Device) {
-    run(device, direct, move |scene| async move {
-        let kinds = (device.kinds)();
-        let refused = (device.refused)();
+pub(crate) fn refuses_each_config_with_its_diagnostics(suite: &'static Suite) {
+    run(suite, direct, move |scene| async move {
+        let kinds = (suite.kinds)();
+        let refused = (suite.refused)();
         assert!(!refused.is_empty(), "the kind refuses a config");
         for (config, diagnostics) in refused {
-            let checked = kinds.check(device.kind(), None, &config);
+            let checked = kinds.check(suite.kind(), None, &config);
             assert_eq!(checked.map(drop), Err(diagnostics.clone()), "{config:?}");
             let run = scene.supervise(config).await;
             match run.stop().await {
@@ -627,11 +627,11 @@ pub(crate) fn refuses_each_config_with_its_diagnostics(device: &'static Device) 
 /// gives Stopped, class Config, no restart, and the text of
 /// `connector.unknown-channel`.
 pub(crate) fn stops_at_a_write_channel_that_the_hub_does_not_define(
-    device: &'static Device,
+    suite: &'static Suite,
 ) {
-    run(device, direct, move |scene| async move {
+    run(suite, direct, move |scene| async move {
         let config = scene.setup().await;
-        let checked = (device.kinds)().check(device.kind(), None, &config);
+        let checked = (suite.kinds)().check(suite.kind(), None, &config);
         let writes = checked.expect("the config of the setup checks").writes;
         let Some(missing) = writes.first() else {
             return;

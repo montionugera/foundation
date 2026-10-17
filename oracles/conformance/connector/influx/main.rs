@@ -26,9 +26,9 @@ use types::time::Span;
 #[path = "../scenarios.rs"]
 mod scenarios;
 
-use scenarios::{Backoff, Device, Plant, Serve};
+use scenarios::{Backoff, Plant, Serve, Suite};
 
-const DEVICE: Device = Device {
+const SUITE: Suite = Suite {
     kinds,
     setup: |plant| Box::pin(setup(plant)),
     serve: |inputs| Box::pin(simulate(inputs)),
@@ -37,7 +37,7 @@ const DEVICE: Device = Device {
     refused,
 };
 
-scenarios::suite!(DEVICE);
+scenarios::suite!(SUITE);
 
 /// The time from one frame of the writer to the next.
 const PERIOD: Span = Span::from_nanos(100_000_000);

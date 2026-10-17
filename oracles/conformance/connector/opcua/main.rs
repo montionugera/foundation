@@ -23,7 +23,7 @@ use types::sample::{Scalar, Type};
 #[path = "../scenarios.rs"]
 mod scenarios;
 
-use scenarios::{Backoff, Device, Plant, Serve};
+use scenarios::{Backoff, Plant, Serve, Suite};
 
 /// The variables of the server, each read into the channel of the same place in
 /// [`CHANNELS`].
@@ -31,7 +31,7 @@ const NODES: [&str; 3] = ["ns=3;s=SpikeData", "ns=3;i=7", "ns=2;s=Dip"];
 /// The data channels, on `plant.time`.
 const CHANNELS: [&str; 3] = ["plant.a", "plant.b", "plant.c"];
 
-const DEVICE: Device = Device {
+const SUITE: Suite = Suite {
     kinds,
     setup: |plant| Box::pin(std::future::ready(setup(&plant))),
     serve: |inputs| Box::pin(simulate(inputs)),
@@ -40,7 +40,7 @@ const DEVICE: Device = Device {
     refused,
 };
 
-scenarios::suite!(DEVICE);
+scenarios::suite!(SUITE);
 
 fn kinds() -> Table {
     Table::new().with("opcua", Kind::default())

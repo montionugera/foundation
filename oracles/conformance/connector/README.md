@@ -7,9 +7,9 @@ simulator. The scenarios use only public items: the rig of `connector::testing`,
 `connector`. The record CONNECTOR CONFORMANCE
 (`docs/decisions/connectors/connector-conformance.md`) gives each scenario.
 
-`scenarios.rs` holds the scenarios, the input type `Device`, and `suite!`, which
+`scenarios.rs` holds the scenarios, the input type `Suite`, and `suite!`, which
 expands to one `#[test]` for each scenario. `<kind>/main.rs` is the root of the test
-binary of one kind: its `Device` and one `suite!` line. Each kind crate runs its suite
+binary of one kind: its `Suite` and one `suite!` line. Each kind crate runs its suite
 as its `conformance` test. The `[[test]]` entry in the `Cargo.toml` of each kind is
 part of this oracle: to remove it is to weaken the oracle.
 

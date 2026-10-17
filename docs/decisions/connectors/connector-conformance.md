@@ -1,12 +1,12 @@
 - **CONNECTOR CONFORMANCE (#2247, #2641)** `oracles/conformance/connector/` holds the
   scenarios that each connector kind passes, the oracle of D4's conformance kit. Each
-  kind crate runs them as its `conformance` test, from `<kind>/main.rs`: a `Device`
+  kind crate runs them as its `conformance` test, from `<kind>/main.rs`: a `Suite`
   and one `suite!` line, which expands to one `#[test]` for each scenario. The
   `[[test]]` entry of each kind is part of the oracle. The scenarios use only public
   items: the rig of `connector::testing`, `hub::testing::Env`, the sim, `env`, and the
   `kind`, `status`, and `cancel` modules of `connector`. Each runs two sim nodes: the
   plant (the rig and the connector) and the device (the kind's simulator). A
-  `Device` gives plain inputs: its table, a setup that defines what the connector
+  `Suite` gives plain inputs: its table, a setup that defines what the connector
   needs and starts each writer that feeds it, its simulator, the name of its progress
   count, its backoff form, and the configs that its check refuses with their exact
   diagnostics. People own the scenarios. A kind that fails one has a defect, or the
