@@ -196,7 +196,7 @@ pub struct Config {
 /// The shard's state for an open writer.
 #[derive(Debug)]
 struct Session {
-    set: Arc<KeySet>,
+    writer: split::Writer,
     /// The claim on the index of each group, by group number.
     claims: Vec<Claim>,
 }
@@ -552,7 +552,10 @@ impl Shard {
             let key = self.indexes[place].gate.open(control.clone(), lease, now);
             claims.push(Claim { place, key });
         }
-        let session = Session { set, claims };
+        let session = Session {
+            writer: split::Writer::new(set),
+            claims,
+        };
         let places = session.claims.iter().map(|claim| claim.place);
         append_handoffs(&self.buffer, &mut self.indexes, places, mesh);
         let key = writer::Key {
@@ -609,17 +612,17 @@ impl Shard {
         frame: Draft,
     ) -> Result<&[Outcome], Error> {
         let number = key.on(self.number);
-        let Some(session) = self.writers.get(&number) else {
+        let (now, mesh) = self.time();
+        let Some(session) = self.writers.get_mut(&number) else {
             panic!("writer {number} is not open");
         };
         let Label::Path(path) = label else {
             return Err(Error::Resend);
         };
-        let (now, mesh) = self.time();
         let scratch = &mut self.scratch;
-        let mut split = scratch.split.split(&session.set, frame);
+        let mut split = scratch.split.split(&mut session.writer, frame);
         while let Some((group, stamps)) = split.next() {
-            let claim = session.claim(group);
+            let claim = claim(&session.claims, group);
             let index = &mut self.indexes[claim.place];
             let checked = index.check(claim.key, path, stamps, now, mesh);
             scratch.checks.push((group, checked, None));
@@ -627,14 +630,13 @@ impl Shard {
         let places = scratch
             .checks
             .iter()
-            .map(|&(group, ..)| session.claim(group).place);
+            .map(|&(group, ..)| claim(&session.claims, group).place);
         let recorded = append_handoffs(&self.buffer, &mut self.indexes, places, mesh);
         let entries = &mut scratch.entries;
         let made = freeze(
             entries,
             self.buffer.pool(),
             &mut split,
-            &session.set,
             &mut scratch.checks,
             mesh,
         );
@@ -1067,12 +1069,10 @@ impl Shard {
     }
 }
 
-impl Session {
-    /// The writer's claim on the index of `group`.
-    fn claim(&self, group: u32) -> Claim {
-        let group = usize::try_from(group).expect("invariant: a usize holds a u32");
-        self.claims[group]
-    }
+/// The claim of `claims`, a writer's claims, on the index of `group`.
+fn claim(claims: &[Claim], group: u32) -> Claim {
+    let group = usize::try_from(group).expect("invariant: a usize holds a u32");
+    claims[group]
 }
 
 /// The midpoint of `mesh`, the best guess of the true time.
@@ -1091,10 +1091,10 @@ fn freeze(
     entries: &mut Vec<Entry>,
     pool: &block::Pool,
     split: &mut Split<'_>,
-    set: &KeySet,
     checks: &mut [(u32, Result<Accepted, Refusal>, Option<Frame>)],
     stored_at: Stamp,
 ) -> Result<(), block::Error> {
+    let set = split.set();
     for (group, checked, frozen) in checks {
         if let Ok(accepted) = checked
             && let Some(last) = accepted.last()
@@ -1150,7 +1150,7 @@ fn spend<'a>(
 ) -> &'a [Outcome] {
     out.clear();
     for (group, checked, frozen) in checks.drain(..) {
-        let claim = session.claim(group);
+        let claim = claim(&session.claims, group);
         let index = &mut indexes[claim.place];
         let slot = index.slot;
         out.push(match checked {
@@ -1165,7 +1165,7 @@ fn spend<'a>(
                 let range = range(&seq);
                 index.spend(accepted);
                 let frame = frozen.expect("invariant: a stored frame was frozen");
-                readers.applied(claim.place, frame, &session.set, seq);
+                readers.applied(claim.place, frame, session.writer.set(), seq);
                 Outcome::Applied { slot, range }
             }
             Ok(accepted) => {
@@ -8141,6 +8141,56 @@ mod tests {
     #[test]
     fn writes_and_reads_a_series_of_each_type() {
         check_write_and_read(87, 3, every_type().to_vec());
+    }
+
+    /// One channel gets quarters, then sixteenths, and the other the reverse. A new
+    /// encoder for the second frame, or one encoder for both channels, would pick
+    /// another ALP pair.
+    #[test]
+    fn encodes_the_frames_of_a_writer_with_one_encoder_for_each_series() {
+        run(88, |test| async move {
+            let float = Type::Scalar(Scalar::F64);
+            let set = intern(&[Group {
+                index: key(Slot::new(2)),
+                data: &[(key(Slot::new(3)), float), (key(Slot::new(4)), float)],
+            }]);
+            let mut shard = test.shard(AREA).await;
+            let reader = complete(&mut shard, Slot::new(2));
+            let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+            let [quarters, sixteenths] = [4.0, 16.0].map(|denominator| {
+                (0..16)
+                    .map(|k| (f64::from(k) / denominator).to_bits().cast_signed())
+                    .collect::<Vec<i64>>()
+            });
+            let series = [[&quarters, &sixteenths], [&sixteenths, &quarters]];
+            for (seq, [first, second]) in [0, 16].into_iter().zip(series) {
+                let stamps: Vec<i64> = (1..=16).map(|n| n + seq).collect();
+                let write =
+                    frame(&test.pool, &set, &[(0, &stamps), (1, first), (2, second)]);
+                let applied = applied(2, seq.cast_unsigned(), 16);
+                assert_eq!(shard.write(a, LIVE, write), Ok(&[applied][..]));
+            }
+            shard.committed().await.expect("the commit ends");
+            assert_eq!(woken(&mut shard), [reader]);
+            let (frames, end) = drain(&mut shard, reader);
+            assert_eq!(frames.len(), 2, "{end:?}");
+            for channel in 0..2 {
+                let mut encoder = codec::Encoder::new(float);
+                for (frame, values) in frames.iter().zip(&series) {
+                    let raw: Vec<u8> = values[channel]
+                        .iter()
+                        .flat_map(|v| v.to_le_bytes())
+                        .collect();
+                    let mut out = vec![0; codec::max_len(float, raw.len())];
+                    let len = encoder.encode(16, &raw, &mut out).expect("floats");
+                    assert_eq!(
+                        frame.series(channel + 1),
+                        Some(&out[..len]),
+                        "{channel}"
+                    );
+                }
+            }
+        });
     }
 
     proptest::proptest! {
