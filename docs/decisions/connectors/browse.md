@@ -97,6 +97,11 @@
   budget; trigger: the agent test (PR 9) shows a task with two over-limit refusals one
   after the other. `import --match` uses the same walk, so the points that `browse
   --match` shows are the points that `import --match` takes.
+  `config::connector(documents, name)` gives the `connector` block of `name` for a
+  browse. It gives `config.private-key` for each private key in `documents` and then no
+  other problem, as `config::check` does. It runs no check of the kind and checks no
+  other block. A node has one `Supervisor` for each shard: `ops` checks `plan` and
+  `apply` with its kinds and browses with it.
   The person's words, through `laptop.monitor`: decision 1, 2026-10-15 17:17 UTC, "Ok,
   this is fine. I approve"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6197989240);
@@ -174,3 +179,6 @@
   (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6210289921). The
   deferral of the signature of `discover`: `laptop.architect-2`, 2026-10-16 08:30 UTC
   (https://github.com/synnaxlabs/foundation/pull/2850#issuecomment-6211422272).
+  `config::connector`, its private-key alarm first, and one `Supervisor` for each shard:
+  `laptop.architect-2`, 2026-10-17 05:14 UTC
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6230042870).
