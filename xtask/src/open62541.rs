@@ -1396,12 +1396,16 @@ fn build<'a>(
             // GCC gives cc1 the base name as `-dumpbase`, which cc1 reads as a
             // response file when it starts with `@`. With no stack protector, a
             // reference to its random canary is one that the C makes. A call with no
-            // declaration fails, as on GCC 14.
+            // declaration fails, as on GCC 14, also when its name is a macro of the
+            // prefix header, which GCC does not report with macro tracking.
             cc.current_dir(copy)
                 .args(flags.lines())
                 .args(crypto.flags())
                 .args(["-g", "-O0", "-fno-stack-protector"])
-                .arg("-Werror=implicit-function-declaration")
+                .args([
+                    "-Werror=implicit-function-declaration",
+                    "-ftrack-macro-expansion=0",
+                ])
                 .arg("-dumpbase")
                 .arg(index.to_string())
                 .args(mode);
@@ -2541,6 +2545,32 @@ n = read_x(b, 0, 0, 0);
         not(target_os = "linux"),
         ignore = "needs GCC, GNU objdump, and GNU nm"
     )]
+    fn check_fails_a_read_of_aws_lc_with_no_declaration() {
+        let (result, prefix) = check_with_util(
+            "undeclared-prefixed",
+            &[],
+            "#include <openssl/base.h>\n\
+             void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
+        );
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].starts_with("cc failed: "), "{errors:?}");
+        assert!(
+            errors[0].contains(&format!(
+                "./{UTIL}:{}:25: error: implicit declaration of function \
+                 '{prefix}PEM_read_bio_X509'",
+                util_end() + 1
+            )),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
     fn check_finds_a_read_of_the_copy_with_its_own_declaration() {
         let line = util_end() + 2;
         let (result, prefix) = check_with_util(
@@ -2606,32 +2636,28 @@ n = read_x(b, 0, 0, 0);
         ignore = "needs GCC, GNU objdump, and GNU nm"
     )]
     fn check_finds_a_read_past_a_pem_h_of_the_copy() {
-        const CERTIFICATES: &str = "plugins/crypto/openssl/certificategroup.c";
-        const POLICIES: &str = "plugins/crypto/openssl/securitypolicy_common.c";
         let line = util_end() + 1;
         let (result, prefix) = check_with_util(
             "pem",
             &[(
-                "include/openssl/pem.h",
+                "src/util/openssl/pem.h",
                 "#include <openssl/base.h>\n\
                  void *PEM_read_bio_X509(void *, void *, void *, void *);\n",
             )],
-            "#include <openssl/pem.h>\n\
+            "#include \"openssl/pem.h\"\n\
              void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
         );
-        let gives = |source: &str, place: &str, callback: &str| {
+        let gives = |place: &str, callback: &str| {
             format!(
-                "{source}: {place}: gives `{prefix}PEM_read_bio_X509` the callback \
+                "{UTIL}: {place}: gives `{prefix}PEM_read_bio_X509` the callback \
                  `{callback}`, which PASSWORDS does not list"
             )
         };
         assert_eq!(
             result,
             Err(vec![
-                gives(CERTIFICATES, "include/openssl/pem.h:2", "void*"),
-                gives(POLICIES, "include/openssl/pem.h:2", "void*"),
-                gives(UTIL, "include/openssl/pem.h:2", "void*"),
-                gives(UTIL, &format!("{UTIL}:{line}"), "0"),
+                gives("src/util/openssl/pem.h:2", "void*"),
+                gives(&format!("{UTIL}:{line}"), "0"),
             ])
         );
     }
