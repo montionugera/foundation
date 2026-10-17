@@ -72,6 +72,7 @@ impl Plan {
             .strict_add(self.body_len(count, width))
     }
 
+    #[inline]
     fn header_len(self, width: usize) -> usize {
         let fields = match self {
             Self::Raw => 0,
@@ -350,24 +351,39 @@ pub(crate) fn read(
         bits, exceptions, ..
     } = plan
     {
-        let packed = bits::len(count, bits).next_multiple_of(width);
-        let positions = body
-            .split_at(packed.strict_add(exceptions.strict_mul(width)))
-            .1;
-        let mut least = 0;
-        for position in positions.as_chunks::<2>().0.iter().take(exceptions) {
-            let position = usize::from(u16::from_le_bytes(*position));
-            if position < least || position >= count {
-                return Err(Error::Position {
-                    vector: index,
-                    position,
-                    count,
-                });
-            }
-            least = position.strict_add(1);
-        }
+        positions(body, width, count, bits, exceptions, index)?;
     }
     Ok((Vector { plan, body }, rest))
+}
+
+/// Checks that the exception positions of ALP `body` strictly increase and are under
+/// `count`. Out of line, to keep [`read`] short for the other tags.
+#[inline(never)]
+fn positions(
+    body: &[u8],
+    width: usize,
+    count: usize,
+    bits: u8,
+    exceptions: usize,
+    index: usize,
+) -> Result<(), Error> {
+    let packed = bits::len(count, bits).next_multiple_of(width);
+    let positions = body
+        .split_at(packed.strict_add(exceptions.strict_mul(width)))
+        .1;
+    let mut least = 0;
+    for position in positions.as_chunks::<2>().0.iter().take(exceptions) {
+        let position = usize::from(u16::from_le_bytes(*position));
+        if position < least || position >= count {
+            return Err(Error::Position {
+                vector: index,
+                position,
+                count,
+            });
+        }
+        least = position.strict_add(1);
+    }
+    Ok(())
 }
 
 /// Reads and checks the header at the front of `bytes`. The bytes may end inside the
@@ -429,7 +445,8 @@ fn header(bytes: &[u8], layout: Layout, index: usize) -> Result<Plan, Error> {
 }
 
 /// Reads and checks the fields of an ALP header at the front of `bytes`, for samples
-/// of `width` bytes, with bit width `bits`.
+/// of `width` bytes, with bit width `bits`. Out of line, as [`positions`].
+#[inline(never)]
 fn alp_header(
     bytes: &[u8],
     width: usize,
