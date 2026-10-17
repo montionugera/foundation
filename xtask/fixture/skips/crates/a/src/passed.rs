@@ -5,8 +5,6 @@ fn a() {}
 fn b() {}
 #[cfg_attr(feature = "unix", ignore = "a feature")]
 fn c() {}
-#[cfg_attr(any(unix, windows), ignore = "slow")]
-fn d() {}
 #[cfg_attr(not(unix), ignore = r#"only Unix: a "case""#)]
 fn e() {}
 #[cfg_attr(windows, ignore = "only Unix: by a (case), with commas")]

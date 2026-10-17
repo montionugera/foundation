@@ -48,11 +48,14 @@ impl Runners {
     const NONE: Self = Self(0);
 
     /// The runners on which `predicate`, the predicate of a `cfg`, holds in `cargo test
-    /// --all-features`: `test`, `debug_assertions`, and each `feature` hold, and each
-    /// other name that is not one of a target does not.
-    fn holding(predicate: &Meta) -> Result<Self, String> {
+    /// --all-features`, and whether it names a target: `test`, `debug_assertions`, and
+    /// each `feature` hold, and each other name that is not one of a target does not.
+    fn holding(predicate: &Meta) -> Result<(Self, bool), String> {
         let expression =
             Expression::parse(&text(predicate)?).map_err(|e| e.to_string())?;
+        let keyed = expression
+            .predicates()
+            .any(|predicate| matches!(predicate, Predicate::Target(_)));
         let mut runners = Self::NONE;
         for (i, runner) in RUNNERS.iter().enumerate() {
             let target = get_builtin_target_by_triple(runner.triple)
@@ -78,7 +81,7 @@ impl Runners {
                 }
             }
         }
-        Ok(runners)
+        Ok((runners, keyed))
     }
 
     fn and(self, other: Self) -> Self {
@@ -191,6 +194,8 @@ struct Effect {
 
 struct Ignore {
     on: Runners,
+    /// A `cfg_attr` around it names a target.
+    keyed: bool,
     reason: Option<String>,
 }
 
@@ -245,7 +250,10 @@ impl Items<'_> {
     /// its `ignore` attributes skip on each OS on which it builds has no OS for a
     /// reason to name, unless a plain `#[ignore]` skips it on every OS.
     fn test(&mut self, ignores: &[Ignore]) {
-        if ignores.iter().any(|ignore| ignore.on == Runners::ALL) {
+        if ignores
+            .iter()
+            .any(|ignore| !ignore.keyed && ignore.on == Runners::ALL)
+        {
             return;
         }
         let skipped = ignores
@@ -360,15 +368,18 @@ fn effect(attributes: &[Attribute]) -> Result<Effect, String> {
     apply(
         attributes.iter().map(|a| &a.meta),
         Runners::ALL,
+        false,
         &mut effect,
     )?;
     Ok(effect)
 }
 
-/// Adds to `effect` what each of `attributes` does on the runners of `on`.
+/// Adds to `effect` what each of `attributes` does on the runners of `on`, inside a
+/// `cfg_attr` that names a target when `keyed`.
 fn apply<'a>(
     attributes: impl IntoIterator<Item = &'a Meta>,
     on: Runners,
+    keyed: bool,
     effect: &mut Effect,
 ) -> Result<(), String> {
     for meta in attributes {
@@ -381,13 +392,14 @@ fn apply<'a>(
             if inner.iter().any(|meta| meta.path().is_ident("path")) {
                 return Err("a `path` in a `cfg_attr`".to_string());
             }
-            apply(&inner, on.and(Runners::holding(&predicate)?), effect)?;
+            let (holds, named) = Runners::holding(&predicate)?;
+            apply(&inner, on.and(holds), keyed || named, effect)?;
         } else if path.is_ident("cfg") {
             let predicate = meta
                 .require_list()
                 .and_then(syn::MetaList::parse_args::<Meta>)
                 .map_err(|e| e.to_string())?;
-            let fails = on.without(Runners::holding(&predicate)?);
+            let fails = on.without(Runners::holding(&predicate)?.0);
             effect.builds = effect.builds.without(fails);
         } else if path.is_ident("ignore") {
             let reason = match meta {
@@ -397,7 +409,7 @@ fn apply<'a>(
                     return Err("`ignore` takes no list".to_string());
                 }
             };
-            effect.ignores.push(Ignore { on, reason });
+            effect.ignores.push(Ignore { on, keyed, reason });
         }
     }
     Ok(())
@@ -496,6 +508,8 @@ mod tests {
                  takes 1 predicate, found 2"
             ),
             refused(&format!("{skips}/everywhere.rs"), "a"),
+            refused(&format!("{skips}/everywhere.rs"), "b"),
+            refused(&format!("{skips}/everywhere.rs"), "c"),
             refused(&format!("{skips}/inline_dir/inner.rs"), "a"),
             refused("crates/a/src/lib.rs", "a"),
             "`crates/a/src/lib.rs`: `chosen`: a `path` in a `cfg_attr`".into(),
