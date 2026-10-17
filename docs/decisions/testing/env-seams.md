@@ -991,39 +991,38 @@
   folder made again in other case, which an `os` test pins on macOS.
   `sim::Node::move_path` renames a file, a link, or a directory of a host from outside
   the node, with its key, so the common cases move a folder away on both drivers. When
-  the node's working directory resolves, it stays on the directory that it resolves
-  to, as on a host: it moves with it when that directory is `from` or under it, and a
-  move of a link on its way leaves it there. It keeps its path while that path
-  resolves to that directory, and else takes the path of the directory. A call is of
-  the path of a fault of
-  `sim::Node::fail_path` when both give one path from the working directory at that
-  call, with `.` and `..` taken as text and no link followed, so a relative path
+  the node's working directory resolves, it stays on the directory that it resolves to,
+  as on a host: it moves with it when that directory is `from` or under it, and a move
+  of a link on its way leaves it there. It keeps its path while that path resolves to
+  that directory, and else takes the path of the directory. A call is of the path of a
+  fault of `sim::Node::fail_path` when both give one path from the working directory at
+  that call, with `.` and `..` taken as text and no link followed, so a relative path
   follows a later `set_working_dir`. Faults that a call is of fire in the order set.
   Decided by `laptop.architect-2` (2026-10-17T05:16:48Z,
-  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230063256; the
-  order, a read, `Replaced` by the path now, and `move_path`, 2026-10-17T06:33:57Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230063256; the order,
+  a read, `Replaced` by the path now, and `move_path`, 2026-10-17T06:33:57Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230731316; a path
   into the moved folder and the moved working directory, 2026-10-17T07:17:06Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231111995; the
   working directory that a move keeps on the directory that it resolves to,
   2026-10-17T07:41:22Z,
-  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231322001; the
-  common cases, 2026-10-17T08:26:44Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231322001; the common
+  cases, 2026-10-17T08:26:44Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231727914; the
   faults, 2026-10-17T08:58:04Z,
-  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6232020329; a key
-  that the OS refuses, 2026-10-17T16:01:08Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6232020329; a key that
+  the OS refuses, 2026-10-17T16:01:08Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236248693, which
   withdraws item 1 of 6231727914 and item 1 of 6232020329; the path of a fault,
   2026-10-17T16:12:13Z,
-  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236404985; the
-  path of the working directory on a move, 2026-10-17T16:16:39Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236404985; the path
+  of the working directory on a move, 2026-10-17T16:16:39Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236468300). Lost: a
   second look in `ops` after a refusal, which puts a `Paths` with no limits in the scope
   that limits `foundation mcp`, states the rule of `within` again, and gives a false
-  text when a file changes between the two looks. Lost too: the error of the key of a folder
-  that the OS refuses, which needs the codes of each host in `env`; the next `within`
-  gives it.
+  text when a file changes between the two looks. Lost too: the error of the key of a
+  folder that the OS refuses, which needs the codes of each host in `env`; the next
+  `within` gives it.
   Amended (2026-10-17T06:14:25Z, #2895): `make_dir` of a path that does not resolve
   checks its name in its resolved directory, with the key of the file at that name,
   before the driver makes it. So a loop or a link to nothing beside a hidden folder that
