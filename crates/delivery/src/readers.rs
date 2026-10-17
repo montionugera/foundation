@@ -4566,7 +4566,7 @@ pub(super) mod tests {
             window: u64,
             frames: Vec<u64>,
             /// The end seq of the last of `frames`, or the position at the open.
-            given: u64,
+            end: u64,
             /// The frames that wait for credit, by number and seq, oldest first.
             owed: Vec<(u64, Range<u64>)>,
             taken: usize,
@@ -4589,7 +4589,7 @@ pub(super) mod tests {
                     self.spent += CHARGE;
                     let (n, seq) = self.owed.remove(0);
                     self.frames.push(n);
-                    self.given = seq.end;
+                    self.end = seq.end;
                 }
             }
         }
@@ -4699,7 +4699,7 @@ pub(super) mod tests {
                         if got.owed.is_empty() && got.spent < got.limit {
                             got.spent += CHARGE;
                             got.frames.push(n);
-                            got.given = queued.seq.end;
+                            got.end = queued.seq.end;
                         } else {
                             got.owed.push((n, queued.seq.clone()));
                         }
@@ -4719,7 +4719,7 @@ pub(super) mod tests {
             fn take(&mut self, key: complete::Key) -> Told {
                 let acked = self.position(key);
                 let got = self.got(key);
-                let acked = acked >= got.given;
+                let acked = acked >= got.end;
                 if got.taken == got.frames.len() {
                     got.pay();
                 }
@@ -4778,7 +4778,7 @@ pub(super) mod tests {
                 },
                 limit,
                 window: limit,
-                given: start,
+                end: start,
                 ..Got::default()
             };
             model.open.insert(opened.key, got);
