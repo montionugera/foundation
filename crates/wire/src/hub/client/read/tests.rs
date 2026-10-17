@@ -1106,6 +1106,8 @@ mod reader {
         assert_eq!(reply(&mut home, &head(2)), Ok(Home::Head(2)));
     }
 
+    /// Reads the private `latest`: the mode shows through public calls only in the
+    /// gaps of a frame (`Frames::lost`), which `program`'s `lost` tests check.
     #[test]
     fn opens_a_latest_session_for_a_latest_read() {
         let places = Places { count: 1, index: 0 };
