@@ -73,6 +73,7 @@ impl Plan {
 }
 
 /// The bytes of a header with `fields` bytes of fields, for samples of `width` bytes.
+#[inline]
 pub(crate) fn header_len(fields: usize, width: usize) -> usize {
     fields.strict_add(2).next_multiple_of(width)
 }
@@ -303,6 +304,7 @@ fn header(bytes: &[u8], layout: Layout, index: usize) -> Result<Plan, Error> {
 
 /// Reads header field `index`: `width` little-endian bytes after the tag and the bit
 /// width. Bytes past the end read as zeros.
+#[inline]
 fn field(header: &[u8], index: usize, width: usize) -> u64 {
     let mut word = [0; 8];
     let bytes = header.iter().skip(index.strict_mul(width).strict_add(2));
