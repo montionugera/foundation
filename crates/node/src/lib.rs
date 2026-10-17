@@ -863,18 +863,14 @@ impl Open {
             commit: COMMIT,
             trimmed: false,
         };
-        let opened = async {
-            let buffer = buffer::Buffer::open(config, interner.slots()).await?;
-            let config = home::Config {
-                shard: self.shard,
-                buffer,
-                clock: self.clock,
-                limits: LIMITS,
-            };
-            home::Shard::open(config)
-        };
-        match opened.await {
-            Ok(shard) => {
+        match buffer::Buffer::open(config, interner.slots()).await {
+            Ok(buffer) => {
+                let shard = home::Shard::open(home::Config {
+                    shard: self.shard,
+                    buffer,
+                    clock: self.clock,
+                    limits: LIMITS,
+                });
                 self.give.give(interner);
                 Some(shard)
             }

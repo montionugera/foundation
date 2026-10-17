@@ -32,7 +32,7 @@ use crate::entry::{self, ENTRIES_MAX, Entry};
 use crate::group::{self, Closed, Group, Sealed};
 use crate::header::{self, Header};
 use crate::log::{self, Carried, Found, Logs, Mark, Tail};
-use crate::read::{self, Read, Reading, Stored};
+use crate::read::{self, Read, Reading};
 use crate::record::{self, ALIGN, AREA_START, Body, HEADER_LEN};
 use crate::wal::{
     self, Cursor, Ends, Layout, Limit, Plan, Position, Step, Unfit, Window, Writer,
@@ -756,26 +756,18 @@ impl Buffer {
         }
     }
 
-    /// The newest durable entry with `tag` on `path` of each index that has one,
-    /// with the index's slot, in the order of the slots. No trim frees it. It reads
-    /// no file: the buffer keeps a copy of each in memory.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Pool`] when the pool has no block for the bytes of an entry.
-    pub fn newest(
-        &self,
-        path: Path,
-        tag: NonZeroU8,
-    ) -> Result<Vec<(Slot, Stored)>, Error> {
+    /// The bytes of the newest durable entry with `tag` on `path` of each index that
+    /// has one, with the index's slot, in slot order. No trim frees it. It reads no
+    /// file: the buffer keeps a copy of each in memory, and gives a copy of that.
+    pub fn newest(&self, path: Path, tag: NonZeroU8) -> Vec<(Slot, Box<[u8]>)> {
         let state = self.shared.state.borrow();
-        let mut newest: Vec<_> = state.logs.newest(path, tag).collect();
+        let mut newest: Vec<_> = state
+            .logs
+            .newest(path, tag)
+            .map(|(slot, newest)| (slot, Box::from(newest.bytes.as_slice())))
+            .collect();
         newest.sort_unstable_by_key(|&(slot, _)| slot);
-        let newest = newest.into_iter().map(|(slot, newest)| {
-            let bytes = self.shared.pool.copy(&newest.bytes)?;
-            Ok((slot, read::stored(newest.header, bytes)))
-        });
-        newest.collect()
+        newest
     }
 
     /// How many group commits ended since the open. It moves before the [`Commit`]
@@ -1559,6 +1551,7 @@ mod tests {
     use super::*;
     use crate::entry::Samples;
     use crate::log::Run;
+    use crate::read::Stored;
 
     const COMMIT: Span = Span::from_nanos(1_000_000);
 
@@ -1979,14 +1972,13 @@ mod tests {
                     buffer.committed().await.expect("commits");
                 }
                 let firsts = || {
-                    let newest =
-                        buffer.newest(Path::Live, NonZeroU8::MIN).expect("copies");
+                    let newest = buffer.newest(Path::Live, NonZeroU8::MIN);
                     newest
                         .iter()
-                        .map(|(slot, stored)| (*slot, stored.first))
+                        .map(|(slot, bytes)| (*slot, bytes.len()))
                         .collect()
                 };
-                let mut found: Vec<Vec<(Slot, u64)>> = vec![firsts()];
+                let mut found: Vec<Vec<(Slot, usize)>> = vec![firsts()];
                 for offset in [4096, 8192] {
                     buffer.shared.state.borrow_mut().logs.hide(offset);
                     found.push(firsts());
@@ -1996,7 +1988,7 @@ mod tests {
             },
         );
         let found = found.lock().expect("no panic held the lock");
-        let tagged = vec![(Slot::new(0), 0)];
+        let tagged = vec![(Slot::new(0), 100)];
         assert_eq!(*found, [tagged.clone(), tagged, vec![]]);
     }
 
@@ -2047,7 +2039,7 @@ mod tests {
                     kept.push(kept_now());
                 }
                 kept.push(kept_now());
-                let newest = buffer.newest(Path::Live, NonZeroU8::MIN).expect("copies");
+                let newest = buffer.newest(Path::Live, NonZeroU8::MIN);
                 assert_eq!(newest.len(), 1);
                 kept.push(kept_now());
                 *given.lock().expect("no panic held the lock") = kept;

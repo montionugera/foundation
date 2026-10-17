@@ -96,7 +96,7 @@ const INTERVAL: Span = Span::from_nanos(1_000_000_000);
 ///         earliest: Stamp::from_nanos(1),
 ///         ahead: Span::from_nanos(1_000_000_000),
 ///     },
-/// })?;
+/// });
 /// assert!(shard.carry(index, stamps));
 /// let charge = home::reader::complete::Charge::Whole;
 /// let reader = shard.open_complete(index, 1 << 20, charge).key;
@@ -308,24 +308,19 @@ impl Shard {
     /// the newest records of the named readers of each index, which its carry
     /// restores. It needs no mesh time.
     ///
-    /// # Errors
-    ///
-    /// The error of [`Buffer::newest`](buffer::Buffer::newest).
-    ///
     /// # Panics
     ///
     /// When a handoff record or a named entry does not decode: another version or a
     /// defect wrote it.
-    #[expect(clippy::unwrap_in_result, reason = "the grace is a positive constant")]
-    pub fn open(config: Config) -> Result<Self, buffer::Error> {
+    pub fn open(config: Config) -> Self {
         let Config {
             shard,
             buffer,
             clock,
             limits,
         } = config;
-        let holders = handoff::newest(&buffer)?;
-        let (records, named) = named::Parts::newest(&buffer)?
+        let holders = handoff::newest(&buffer);
+        let (records, named) = named::Parts::newest(&buffer)
             .into_iter()
             .map(|(slot, (parts, held))| ((slot, held), (slot, parts)))
             .unzip();
@@ -335,7 +330,7 @@ impl Shard {
             .into_iter()
             .map(|(slot, last)| (slot, Gate::recover(last, now, grace)))
             .collect();
-        Ok(Self {
+        Self {
             number: shard,
             buffer,
             clock,
@@ -350,7 +345,7 @@ impl Shard {
             kept,
             named,
             tick: None,
-        })
+        }
     }
 
     /// Carries the index `key` at `slot`, with no connected writer. `key` must be the
@@ -1322,7 +1317,7 @@ mod tests {
                 clock: reader,
                 limits: LIMITS,
             };
-            Shard::open(config).expect("opens")
+            Shard::open(config)
         }
 
         /// Mesh time now: the midpoint of the clock's interval.
@@ -6913,7 +6908,6 @@ mod tests {
                 /// of the index at slot 0 in the buffer of `shard`.
                 fn records_of(shard: &Shard, reader: &named::Key) -> usize {
                     let newest = crate::named::Parts::newest(&shard.buffer);
-                    let newest = newest.expect("the newest entries");
                     let records = newest.get(&Slot::new(0)).map(|(_, records)| records);
                     let records = records.into_iter().flatten();
                     records.filter(|record| record.reader == *reader).count()
@@ -7200,7 +7194,6 @@ mod tests {
                         }
                         shard.committed().await.expect("the commit ends");
                         let newest = crate::named::Parts::newest(&shard.buffer);
-                        let newest = newest.expect("the newest entries");
                         assert_eq!(newest[&Slot::new(2)].1, [], "the hold ended");
                     });
                 }
@@ -8127,8 +8120,7 @@ mod tests {
                 buffer,
                 clock: mesh.clone(),
                 limits: LIMITS,
-            })
-            .expect("opens");
+            });
             assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
             assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
             let set = two_indexes();

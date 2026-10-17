@@ -146,8 +146,7 @@ impl Test {
             buffer,
             clock: mesh.clone(),
             limits: LIMITS,
-        })
-        .expect("opens");
+        });
         let commit = home.committed();
         let ended = Rc::new(Cell::new(0));
         let pause = Rc::new(Pause::default());
