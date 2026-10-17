@@ -36,11 +36,14 @@ Never share `CARGO_TARGET_DIR` between worktrees. Cargo gives a path crate the s
 in each, so a stale build of another worktree's code can pass or fail a gate.
 
 Delete a scratch copy of the repo, with its `target`, when its job ends: a review copy,
-a breaker worktree, or a cargo-mutants copy. Each takes 1 to 9 GiB. Delete only a copy
-that your own session made, by the exact path that its task notification or its command
-gave. Never loop over `.claude/worktrees` or `git worktree list`: the worktrees of other
-sessions are there too. On 2026-10-05 stale copies filled the disk, and Bash failed in
-every local session.
+a breaker worktree, or a cargo-mutants copy. Each takes 1 to 9 GiB. Delete a copy that
+your own session made by the exact path that its task notification or its command gave.
+Never loop over `.claude/worktrees` or `git worktree list`: the worktrees of other
+sessions are there too. Delete a copy of another session only after a crash or a
+restart: `laptop.monitor` asks each session of the machine which copies it still uses,
+and the session of that machine that it names deletes each other copy, one exact path at
+a time. On 2026-10-05 stale copies filled the disk, and Bash failed in every local
+session.
 
 ## Heavy runs on the laptop
 
