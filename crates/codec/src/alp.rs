@@ -164,12 +164,19 @@ struct Stats {
 
 impl Stats {
     /// The stats of `samples`, floats of `W` bytes, under `pair`.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "the f32 factors were f32"
+    )]
     fn of<const W: usize>(samples: &[u8], pair: Pair) -> Self {
         let coder = Coder::<W>::new(pair);
         let mut stats = if W == 4 {
-            Self::of_f32(samples, coder)
+            let narrow = |(a, b): (f64, f64)| (a as f32, b as f32);
+            Self::of_f32(samples, narrow(coder.encode), narrow(coder.decode))
         } else {
-            Self::of_f64(samples, coder).unwrap_or_else(|| Self::of_any(samples, coder))
+            Self::of_f64(samples, coder.encode, coder.decode)
+                .unwrap_or_else(|| Self::of_any(samples, coder))
         };
         if stats.min > stats.max {
             (stats.min, stats.max) = (0, 0);
@@ -177,16 +184,15 @@ impl Stats {
         stats
     }
 
-    /// [`Stats::of`] for floats of 4 bytes, with no branch, so that it vectorizes.
+    /// [`Stats::of`] for floats of 4 bytes, with the factors of [`Coder`], with no
+    /// branch, so that it vectorizes.
     #[expect(
         clippy::as_conversions,
         clippy::cast_possible_truncation,
         clippy::cast_precision_loss,
         reason = "the steps of `Coder::integer` and `Coder::float` for 4 bytes"
     )]
-    fn of_f32<const W: usize>(samples: &[u8], coder: Coder<W>) -> Self {
-        let encode = (coder.encode.0 as f32, coder.encode.1 as f32);
-        let decode = (coder.decode.0 as f32, coder.decode.1 as f32);
+    fn of_f32(samples: &[u8], encode: (f32, f32), decode: (f32, f32)) -> Self {
         let (mut min, mut max, mut exceptions) = (i32::MAX, i32::MIN, 0_u32);
         for sample in samples.as_chunks::<4>().0 {
             let bits = u32::from_le_bytes(*sample);
@@ -207,10 +213,11 @@ impl Stats {
         }
     }
 
-    /// [`Stats::of`] for floats of 8 bytes, with no branch and no conversion between
-    /// floats and integers, so that it vectorizes. `None` when an integer is outside
-    /// `-2^51..2^51`, which only [`Stats::of_any`] gives.
-    fn of_f64<const W: usize>(samples: &[u8], coder: Coder<W>) -> Option<Self> {
+    /// [`Stats::of`] for floats of 8 bytes, with the factors of [`Coder`], with no
+    /// branch and no conversion between floats and integers, so that it vectorizes.
+    /// `None` when an integer is outside `-2^51..2^51`, which only [`Stats::of_any`]
+    /// gives.
+    fn of_f64(samples: &[u8], encode: (f64, f64), decode: (f64, f64)) -> Option<Self> {
         const SATURATED: f64 = 9_223_372_036_854_775_808.0;
         const LIMIT: i64 = 1 << 51;
         let magic = MAGIC_64.to_bits().cast_signed();
@@ -218,7 +225,7 @@ impl Stats {
         let (mut min, mut max, mut exceptions) = (LIMIT - 1, -LIMIT, 0_usize);
         for sample in samples.as_chunks::<8>().0 {
             let bits = u64::from_le_bytes(*sample);
-            let scaled = f64::from_bits(bits) * coder.encode.0 * coder.encode.1;
+            let scaled = f64::from_bits(bits) * encode.0 * encode.1;
             let rounded = scaled + MAGIC_64;
             // The integer when it is in `-2^51..2^51`, else a value outside.
             let n = rounded.to_bits().cast_signed().wrapping_sub(magic);
@@ -231,7 +238,7 @@ impl Stats {
             } else {
                 -SATURATED
             };
-            let exact = (float * coder.decode.0 * coder.decode.1).to_bits() == bits;
+            let exact = (float * decode.0 * decode.1).to_bits() == bits;
             min = if exact { min.min(n) } else { min };
             max = if exact { max.max(n) } else { max };
             // At most `VECTOR_LEN` samples: it never wraps.
@@ -683,9 +690,7 @@ mod tests {
             ([-large, 1.0], (-1 << 52, 1, 0)),
         ] {
             let samples = bytes(&values);
-            assert!(
-                Stats::of_f64(&samples, Coder::<8>::new(Pair::default())).is_none()
-            );
+            assert!(Stats::of_f64(&samples, (1.0, 1.0), (1.0, 1.0)).is_none());
             assert_eq!(fields(&Stats::of::<8>(&samples, Pair::default())), stats);
         }
     }
@@ -693,7 +698,7 @@ mod tests {
     #[test]
     fn the_fast_loop_gives_the_stats_of_exceptions_only() {
         let samples = bytes(&[0.5, f64::NAN]);
-        let stats = Stats::of_f64(&samples, Coder::<8>::new(Pair::default()));
+        let stats = Stats::of_f64(&samples, (1.0, 1.0), (1.0, 1.0));
         assert_eq!(stats.map(|stats| stats.exceptions), Some(2));
     }
 
