@@ -4672,7 +4672,7 @@ fn a_cut_open_after_a_failed_sync_of_an_open_that_trims_keeps_each_tail() {
         let last = first_end(10_000, |fault| !fail_then_cut(seed, fault, 0).2);
         for fault in ((last - 300_000).max(0)..last).step_by(10_000) {
             let second = first_end(2_000, |cut| fail_then_cut(seed, fault, cut).3);
-            for cut in ((second - 400_000).max(0)..second).step_by(10_000) {
+            for cut in ((second - 400_000).max(0)..second).step_by(2_000) {
                 let (mut sim, node, ..) = fail_then_cut(seed, fault, cut);
                 let opened = sim.run_on(&node, |node, tasks| async move {
                     let mut slots = Slots::new();
