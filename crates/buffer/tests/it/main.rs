@@ -7445,9 +7445,9 @@ fn newest_after_a_failed_sync_gives_the_durable_entry() {
     });
 }
 
-/// While a commit's sync fails, and after it failed, `newest` gives the entries of
-/// the 20 indexes that were durable before it, not the newer one of the same tag in
-/// the failed commit.
+/// Before the commit with a failing sync runs, and after it failed, `newest` gives
+/// the entries of the 20 indexes that were durable before it, not the newer one of
+/// the same tag in the failed commit.
 #[test]
 fn newest_across_a_failed_sync_gives_the_durable_entries() {
     let (mut sim, node) = create_node(185);

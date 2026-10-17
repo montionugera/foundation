@@ -262,7 +262,9 @@ impl Layout {
     /// [`Rejected::Large`](crate::Rejected::Large) with
     /// [`Limit::Body`](crate::Limit::Body). Each entry of a larger batch adds to the
     /// record's table, so its entries hold less in all. A shard's pool can bound an
-    /// entry lower, with [`Limit::Block`](crate::Limit::Block).
+    /// entry lower, with [`Limit::Block`](crate::Limit::Block). An entry with a
+    /// nonzero tag holds at most [`ENTRY_MAX_MIN`](Self::ENTRY_MAX_MIN), with
+    /// [`Limit::Tagged`](crate::Limit::Tagged).
     #[must_use]
     pub fn entry_max(self) -> usize {
         self.body_max - entry::table_len(1)
