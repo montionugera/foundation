@@ -179,7 +179,10 @@
   parent of each of its events, so that each status line has them at each level. No poll
   enters the span: an enter and an exit cost 7.4 ns, 740 ms/s at once per sample (P1
   judgment rejected,
-  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238199449). The
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238199449). A live
+  span `connector` holds 632 B the first time and 297 B after, under the P1 limit, as
+  a default node runs no connector (`laptop.architect-2`, 2026-10-17T18:17:23Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238435066). The
   status writer writes these events (target `connector::status`): INFO `running` with
   `restarts`; `ended` with `Ok` at INFO, with `Device` or `Retry` at WARN, and with
   `Config` at ERROR, each error with `class` (`config`, `device`, or `retry`) and
