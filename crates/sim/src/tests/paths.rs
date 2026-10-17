@@ -175,6 +175,59 @@ fn within_checks_a_relative_path_that_does_not_resolve_from_the_working_director
 }
 
 #[test]
+fn within_checks_the_working_directory_as_the_first_step_of_a_relative_path() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    for dir in ["/work/data", "/out"] {
+        node.make_dir(Path::new(dir));
+    }
+    let within = node
+        .paths()
+        .within(&[PathBuf::from("/work")], &[PathBuf::from("/work/data")])
+        .unwrap();
+    for (dir, path, error) in [
+        ("/out", "../work/a", Error::Outside),
+        ("/out", "./../work/a", Error::Outside),
+        ("/out", "/out/../work/a", Error::Outside),
+        ("/work/data", "../a", Error::Hidden),
+        ("/work/data", "./../a", Error::Hidden),
+        ("/work/data", "/work/data/../a", Error::Hidden),
+    ] {
+        node.set_working_dir(Path::new(dir));
+        let path = Path::new(path);
+        assert_eq!(within.write(path, b"x"), Err(error), "{dir} {path:?}");
+        assert_eq!(within.read(path, 1), Err(error), "{dir} {path:?}");
+    }
+    node.set_working_dir(Path::new("/work"));
+    assert_eq!(within.write(Path::new("../work/a"), b"x"), Ok(()));
+}
+
+#[test]
+fn within_checks_a_relative_first_name_that_does_not_resolve_at_its_place() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    for dir in ["/work/data", "/out"] {
+        node.make_dir(Path::new(dir));
+        let at = Path::new(dir).join("loop");
+        node.link_path(&at, &at);
+    }
+    let within = node
+        .paths()
+        .within(&[PathBuf::from("/work")], &[PathBuf::from("/work/data")])
+        .unwrap();
+    let got = ["/out", "/work/data"].map(|dir| {
+        node.set_working_dir(Path::new(dir));
+        let path = Path::new("loop");
+        (node.paths().read(path, 1), within.read(path, 1))
+    });
+    assert_eq!(
+        got,
+        [
+            (Err(Error::Io { code: 40 }), Err(Error::Outside)),
+            (Err(Error::Io { code: 40 }), Err(Error::Hidden)),
+        ]
+    );
+}
+
+#[test]
 fn the_home_is_none_until_a_node_sets_it_and_then_resolves() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let paths = node.paths();

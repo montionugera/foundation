@@ -42,7 +42,8 @@ impl Paths {
             limits: Rc::new([]),
         }
     }
-    ///  The same files, where each call on a path that does not resolve under one of
+
+    /// The same files, where each call on a path that does not resolve under one of
     /// `folders` fails with [`Error::Outside`], and one on a path that resolves under
     /// one of `hidden` fails with [`Error::Hidden`]. Such a call reaches no file. Each
     /// folder is resolved as [`Paths::resolve`] gives it, and a path is under a folder
@@ -68,10 +69,11 @@ impl Paths {
     /// whole path also passes when it is a directory on the way to a folder. The name
     /// of the first prefix that does not resolve must pass them too, at its place with
     /// no key, as a new name there does. A relative path starts at the working
-    /// directory. A path whose steps pass and that does not resolve gives the error of
-    /// its resolve. The limits of `self` hold too, so a handle never reaches more than
-    /// the one it came from. The check and the call are two steps: a symbolic link that
-    /// another program makes between them can lead the call out.
+    /// directory, and the steps of that directory come first. A path whose steps pass
+    /// and that does not resolve gives the error of its resolve. The limits of `self`
+    /// hold too, so a handle never reaches more than the one it came from. The check
+    /// and the call are two steps: a symbolic link that another program makes between
+    /// them can lead the call out.
     ///
     /// # Errors
     ///
@@ -186,7 +188,7 @@ impl Paths {
     /// }
     /// ```
     pub fn read(&self, path: &Path, most: usize) -> Result<Found, Error> {
-        self.check(path)?;
+        self.check(path)??;
         self.driver.read(path, most)
     }
 
@@ -213,16 +215,16 @@ impl Paths {
     /// }
     /// ```
     pub fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
-        self.check(path)?;
+        self.check(path)??;
         self.driver.write(path, bytes)
     }
 
     /// Makes the directory at `path`. Gives `Ok` when a directory is there already. It
     /// makes no directory above it, and none through a symbolic link at `path`. A
     /// directory that it makes gives the group and other users no access. On a handle
-    /// of [`Paths::within`], a path that does not resolve passes the limits by its own
-    /// place, and gives the error of its resolve when it still does not resolve after
-    /// the call.
+    /// of [`Paths::within`], a path that does not resolve passes the limits by each
+    /// step of the walk of [`Paths::within`], and gives the error of its resolve when
+    /// it still does not resolve after the call.
     ///
     /// # Errors
     ///
@@ -240,51 +242,48 @@ impl Paths {
     /// }
     /// ```
     pub fn make_dir(&self, path: &Path) -> Result<(), Error> {
-        match (self.check(path), path.file_name()) {
-            // A link to nothing, a loop, or a file with `/` at the end does not
-            // resolve, and its steps passed: the driver gives its own error. A link
-            // that does not resolve can still lead to a directory that its place does
-            // not hold. A directory made at the place resolves.
-            (Err(Error::NotFound | Error::Io { .. }), Some(_)) => {
+        match self.check(path)? {
+            // A link that does not resolve can lead to a directory that its place
+            // does not hold. A directory made there resolves.
+            Err(_) => {
                 self.driver.make_dir(path)?;
-                self.check(path)
+                self.check(path)?
             }
-            (checked, _) => {
-                checked?;
-                self.driver.make_dir(path)
-            }
+            Ok(()) => self.driver.make_dir(path),
         }
     }
 
-    /// `Ok` when each step of `path` passes each limit: each prefix of its components
-    /// that resolves, in order, where a prefix short of `path` also passes on the way
-    /// to a folder, then the name of the first prefix that does not resolve, at its
-    /// place with no key. The first that fails gives its error. When each passes and
-    /// `path` does not resolve, it fails with the error of its resolve.
-    fn check(&self, path: &Path) -> Result<(), Error> {
+    /// `Ok` with the result of the resolve of `path` when each step of it passes each
+    /// limit: each prefix of its components from `/`, a relative path joined to the
+    /// working directory, that resolves, in order, where a prefix short of `path` also
+    /// passes on the way to a folder, then the name of the first prefix that does not
+    /// resolve, at its place with no key. Else the error of the first step that fails.
+    fn check(&self, path: &Path) -> Result<Result<(), Error>, Error> {
         if self.limits.is_empty() {
-            return Ok(());
+            return Ok(Ok(()));
         }
-        let parts: Vec<_> = path.components().collect();
+        let joined;
+        let mut steps = path;
+        if path.is_relative() && path.components().next().is_some() {
+            joined = self.driver.resolve(Path::new("."))?.join(path);
+            steps = &joined;
+        }
+        let parts: Vec<_> = steps.components().collect();
         let mut part = PathBuf::new();
-        let mut above = None;
+        let mut above = PathBuf::new();
         for (index, step) in parts.iter().enumerate() {
             part.push(step);
             let short = index + 1 < parts.len();
             let Ok(resolved) = self.driver.resolve(&part) else {
                 if let Component::Normal(name) = step {
-                    let dir = match above {
-                        Some(dir) => dir,
-                        None => self.driver.resolve(Path::new("."))?,
-                    };
-                    self.allowed(None, &dir.join(name), short)?;
+                    self.allowed(None, &above.join(name), short)?;
                 }
                 break;
             };
             self.allowed(self.key(&part)?, &resolved, short)?;
-            above = Some(resolved);
+            above = resolved;
         }
-        self.driver.resolve(path).map(|_| ())
+        Ok(self.driver.resolve(path).map(|_| ()))
     }
 
     /// `Ok` when the file at `resolved` passes each limit. `own` is the key that the
@@ -488,7 +487,7 @@ pub fn names_directory(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     use super::*;
 
@@ -500,9 +499,9 @@ mod tests {
     /// key of a last name that starts with `swap` in any case takes the bytes of the
     /// file after the path, so a write gives it a new key: after a write of `x`,
     /// `/work/swap` has the key that `/work/swapx` had before it. A last name `io`
-    /// gives `Io` 5 for its key.
+    /// gives `Io` 5 for its key. It counts its calls of `resolve` and `key`.
     #[derive(Debug, Default)]
-    struct One(RefCell<Vec<u8>>);
+    struct One(RefCell<Vec<u8>>, Rc<Cell<usize>>);
 
     impl Driver for One {
         fn read(&self, path: &Path, most: usize) -> Result<Found, Error> {
@@ -529,6 +528,7 @@ mod tests {
         }
 
         fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
+            self.1.set(self.1.get() + 1);
             match path.strip_prefix("link") {
                 _ if path.as_os_str().is_empty() => Err(Error::NotFound),
                 _ if path.starts_with("/none/deep")
@@ -547,6 +547,7 @@ mod tests {
         }
 
         fn key(&self, path: &Path) -> Result<Key, Error> {
+            self.1.set(self.1.get() + 1);
             let name = path.file_name().unwrap_or_default().as_encoded_bytes();
             if name.starts_with(b"new") || path.ends_with("/none/deep") {
                 return Err(Error::NotFound);
@@ -761,6 +762,41 @@ mod tests {
             .unwrap();
         assert_eq!(reached(&paths, "/none/deep/a"), Err(Error::NotFound));
         assert_eq!(reached(&paths, "/work/new/a"), Err(Error::NotFound));
+    }
+
+    #[test]
+    fn a_step_whose_key_fails_gives_its_error() {
+        let paths = Paths::new(One::default())
+            .within(&["/".into()], &[])
+            .unwrap();
+        assert_eq!(reached(&paths, "/work/io"), Err(Error::Io { code: 5 }));
+    }
+
+    #[test]
+    fn a_path_stops_at_its_first_step_that_does_not_resolve() {
+        let one = One::default();
+        let calls = Rc::clone(&one.1);
+        let paths = Paths::new(one).within(&["/".into()], &[]).unwrap();
+        let mut path = String::from("/none/deep");
+        for _ in 0..1000 {
+            path.push_str("/a");
+        }
+        calls.set(0);
+        assert_eq!(paths.read(Path::new(&path), 1), Err(Error::NotFound));
+        assert_eq!(calls.get(), 20);
+    }
+
+    #[test]
+    fn a_directory_is_not_made_past_a_step_with_an_error() {
+        let free = Paths::new(One::default());
+        free.write(Path::new("/a"), b"old").unwrap();
+        let paths = free.within(&["/".into()], &[]).unwrap();
+        let made = paths.make_dir(Path::new("/work/io/x"));
+        assert_eq!(made, Err(Error::Io { code: 5 }));
+        assert_eq!(
+            free.read(Path::new("/a"), 3),
+            Ok(Found::File(b"old".to_vec()))
+        );
     }
 
     #[test]

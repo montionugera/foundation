@@ -464,6 +464,20 @@ fn within_hides_a_link_that_does_not_resolve_in_a_moved_hidden_folder() {
     });
 }
 
+/// A long path of names that each resolve stops at the longest path that the host
+/// takes.
+#[cfg(target_os = "linux")]
+#[test]
+fn within_stops_a_long_path_of_steps_that_resolve() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        fs::create_dir(base.join("work/s")).unwrap();
+        let path = base.join("work").join("s/../".repeat(50_000)).join("a.hcl");
+        let name_too_long = Error::Io { code: 36 };
+        assert_eq!(within.read(&path, 1), Err(name_too_long));
+    });
+}
+
 #[test]
 fn a_write_of_a_name_of_the_longest_length_succeeds() {
     let scratch = Scratch::new();
