@@ -184,7 +184,9 @@ impl Session {
         self.0.closed().await
     }
 
-    /// The error that ended the session, or `None` while it is open. It does not wait.
+    /// The error that [`closed`](Self::closed) gives, or `None` while `closed` would
+    /// wait. It does not wait. After a [`close`](Self::close), it is `None` until the
+    /// transport's task sends the close.
     ///
     /// ```
     /// fn open(session: &transport::Session) -> bool {

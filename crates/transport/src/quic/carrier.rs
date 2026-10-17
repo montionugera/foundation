@@ -434,7 +434,7 @@ impl Session {
         })
     }
 
-    /// Why the session ended, or `None` while it is open. Registers no waker.
+    /// What `closed` gives, or `None` while it would wait. Registers no waker.
     pub(crate) fn ended(&self) -> Option<Error> {
         self.state.borrow_mut().slot(self.key).end.clone()
     }
