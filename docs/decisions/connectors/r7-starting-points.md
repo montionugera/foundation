@@ -133,7 +133,7 @@
   bytes, cut at char boundaries and joined by `…`, as a line of a PEM file can be of any
   length (`laptop.architect-2`, 2026-10-16T22:26:26Z, #2920:
   https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225870705).
-  `os::roots` gives the `source` as `os::roots::Source`: `the OS store`, or the paths of
+  `os::roots()` gives the `source` as `os::roots::Source`: `the OS store`, or the paths of
   `SSL_CERT_FILE` and `SSL_CERT_DIR` that it read in place of the store. `os` owns this
   pick, so `node` never derives it from its `vars`, and `node` cuts the `source` as it
   cuts an `error` (`laptop.architect-2`, 2026-10-16T22:27:09Z, #2920:

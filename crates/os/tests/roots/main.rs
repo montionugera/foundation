@@ -140,7 +140,6 @@ fn gives_only_the_failure_of_a_path_that_is_not_there_or_no_directory() {
     }
 }
 
-/// The lines that the child writes for `roots`.
 fn gives_the_failures_of_both_paths_when_both_are_set() {
     assert_eq!(
         child(&[
@@ -155,6 +154,7 @@ fn gives_the_failures_of_both_paths_when_both_are_set() {
     );
 }
 
+/// The lines that the child writes for `roots`.
 fn lines(roots: &os::Roots) -> String {
     let mut text = format!("source {}\n", roots.source);
     for der in &roots.certificates {
