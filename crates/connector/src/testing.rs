@@ -74,8 +74,9 @@ impl Rig {
     }
 
     /// The hub, for a reader or a write that the rig does not give. The rig does not
-    /// see a call of [`Hub::set_definitions`] on it, so a later [`Self::define`] sets
-    /// only the definitions that the rig holds, and the hub removes each other channel.
+    /// see a call of [`Hub::set_definitions`] on it, so a later [`Self::define`] or
+    /// [`Self::remove`] sets only the definitions that the rig holds, and the hub
+    /// removes each other channel.
     #[must_use]
     pub fn hub(&self) -> &Hub {
         &self.hub

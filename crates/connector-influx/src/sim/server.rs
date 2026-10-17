@@ -30,7 +30,7 @@ use super::Store;
 /// the path, then the method, then the token, then the `content-encoding`, then the
 /// query, and gives the answer of the first check that fails.
 ///
-/// It runs until `until` is cancelled, as [`connector::http::sim::serve`] runs.
+/// It runs and returns as [`connector::http::sim::serve`] does.
 ///
 /// # Errors
 ///
