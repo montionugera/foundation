@@ -20,9 +20,9 @@
   When the caller drops the future, the server accepts no more streams, and each stream
   that it accepted runs on until `until` (`laptop.architect-2`, 2026-10-17T16:49:55Z:
   https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6236993925). Each
-  simulator of an HTTP kind follows the same rule, and takes `until` as a
-  `cancel::Token`. The opcua simulator moves to it in PR 3 of #2641, with modbus
-  (6237139250, item 2). Supersedes the rule of a dropped future of
+  protocol simulator that a conformance scenario stops follows the same rule, and
+  takes `until` as a `cancel::Token`. The opcua and modbus simulators move to it in PR
+  3 of #2641 (6237139250, item 2). Supersedes the rule of a dropped future of
   https://github.com/synnaxlabs/foundation/pull/1473#issuecomment-6042958763.
   `hyper`'s server reads OS wall time on each poll (hyper 1.12.0, `common/date.rs`)
   only for the `date` header, which is off. A timer reads its own `Instant` to arm
