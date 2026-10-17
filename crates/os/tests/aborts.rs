@@ -8,8 +8,9 @@
 mod panics;
 
 /// Runs `child` in a new process of this test binary that runs only the calling test,
-/// and asserts that the process aborts at a panic that unwinds into the unwind of
-/// another panic.
+/// and asserts that the process aborts: on Unix at a panic that unwinds into the unwind
+/// of another panic, by its text; on Windows only by the code of a fast fail and an
+/// empty stderr.
 fn assert_aborts(child: impl FnOnce()) {
     const CHILD: &str = "OS_ABORTS_CHILD";
     #[expect(

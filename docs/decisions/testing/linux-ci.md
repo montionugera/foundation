@@ -19,8 +19,10 @@
     (`laptop.director`,
     https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229528745).
   - OS-specific code goes only in `os`. Each `cfg` that leaves an OS out of a module or
-    a public item of `os` names the issue that removes it. A test of a feature that
-    only one OS has follows `docs/claude/testing.md`.
+    a public item of `os` names the issue that removes it, unless it picks the code of
+    each OS (as `allocate` and `net::unsent` do) or the item serves what only one OS
+    has (as `memory::available_under` reads the cgroups of Linux). A test of a feature
+    that only one OS has follows `docs/claude/testing.md`.
 
   History and sources:
   - The person, 2026-10-05 (#574), so CI ran only on Linux: "As long as our systems
@@ -33,11 +35,13 @@
   - `laptop.monitor`, the body of #2954 at 2026-10-17T00:25:02Z: the pinned images,
     the lists with their issues, "The list only shrinks", the ONE NODE condition, and
     loom, shuttle, Miri, the sanitizers, and mutants on Linux only.
-  - `laptop.director`, the form of the lists and what an item may be
+  - `laptop.director`, 2026-10-17T03:54:33Z, the form of the lists and what an item
+    may be
     (https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229309642).
   - `laptop.architect-2`
     (https://github.com/synnaxlabs/foundation/issues/2954#issuecomment-6226439164):
-    `os` has no exception, and each of its `cfg`s names its issue.
+    `os` has no exception, and each `cfg` that leaves an OS out of a module of `os`
+    names its issue.
   - Fuzzing and the root tests on Linux only, lists of tests, the review rule above,
     and the ONE NODE condition on tests: `box1.builder-1` in #2960, sent to
     `laptop.monitor` as key choices, and accepted by `laptop.monitor` at
@@ -50,4 +54,6 @@
     read the source and the metadata, which are the same on each OS. The feature check
     builds each feature of each crate, and Clippy and the tests on each OS build all
     features at once. Lost: a set of features that fails only on macOS or Windows
-    passes.
+    passes. On the condition of that acceptance, the dependency check covers the macOS
+    and Windows targets: `deny.toml` sets no `targets`, so `cargo deny` checks the
+    dependencies of each OS.
