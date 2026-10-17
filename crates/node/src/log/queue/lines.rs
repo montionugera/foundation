@@ -481,6 +481,18 @@ mod tests {
         assert!(lines.ended().is_some(), "the second run ended");
         assert!(lines.ended().is_none());
     }
+
+    #[test]
+    fn a_run_that_runs_keeps_its_handle() {
+        let lines = Arc::new(Lines::new(4, 4, sink()));
+        lines.open();
+        let run = lines.start().expect("the lines are open");
+        let handle = env::thread::Handle::new(|| Ok(()));
+        assert!(lines.started(run.key(), handle).is_none());
+        assert!(lines.ended().is_none(), "the run runs");
+        drop(run);
+        assert!(lines.ended().is_some(), "the run ended");
+    }
 }
 
 #[cfg(test)]
