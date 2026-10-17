@@ -19,6 +19,14 @@
   0 restarts, and no progress, as INFLUX KIND locks for `influx`). Scenarios 2, 3,
   and 4 check the form that the kind names, and refuse the other one.
 
+  A scenario that runs past 90 s of plant time fails. The 4 MiB ring of
+  `home::testing::shard` fills after about 100 s, and then loses each frame and
+  status, so a check of an absence can pass. The trigger is the merge of #3050, which
+  trims the ring and adds the two tests that fail now
+  (https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6241900155). OK of
+  `laptop.architect`, 2026-10-17T21:54:10Z:
+  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241806249.
+
   1. **Starts.** Within 10 s: Running, no error, 0 restarts, and progress above 0.
   2. **Device absent at start.** No simulator. Within 1 min, the backoff form, never
      class Config. `Restart`: Restarting, class Device or Retry, and restarts that
