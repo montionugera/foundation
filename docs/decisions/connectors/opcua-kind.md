@@ -109,9 +109,9 @@
   it (key choice e, the plan, 2026-10-16T21:13:48Z:
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6224806107; key
   choice f, sent to `laptop.monitor` at 2026-10-17T03:37Z for round 2 finding 7:
-  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229156018, and
-  accepted by `laptop.monitor` at 2026-10-17T03:51Z). The escape is the percent rule
-  of URIs. The format of each tag is stable, because a config keeps it. In the
+  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229156018). It
+  uses the `%XX` of URI percent-encoding only for `%` and for bytes that are not
+  UTF-8. The format of each tag is stable, because a config keeps it. In the
   pages of one folder, a second reference to a node gives no entry, a name that an
   earlier entry has gets ` (<tag>)` after it, and an empty name is the tag. So the plain
   name goes to the first reference in the order of the server. The text of a cursor is
@@ -120,7 +120,9 @@
   that it gives. A page of the server with no references gives a page with no entries
   and a cursor, so the budget of `browse::walk` counts it. A browse again for a cursor
   reads past at most `VISITS` pages of the server with no references, so that the
-  cursor of a page with no entries goes on in a new browse. A cursor with no point, or
+  cursor of a page with no entries goes on in a new browse. Past them, it gives
+  `Error::Device`. A reference to a node of another class counts in the text of a
+  cursor and gives no entry. A cursor with no point, or
   whose point the server freed (`BadContinuationPointInvalid`), browses the folder again
   from its start and skips that count when the count is at most 100 000. Past that
   count, a freed point gives `Error::Device` with `BadContinuationPointInvalid`, and a
@@ -129,7 +131,10 @@
   can drop or repeat a reference, and a name with ` (<tag>)` after it can move to
   another node. A browse keeps the tag and the name of each node before the page of each
   cursor, at most 16 MiB of them across its cursors, past which the browse gives
-  `Error::Device`. The bound of browses at once is #2981. The browse holds at most as
+  `Error::Device` (round 2 findings 1 and 2, 2026-10-17T03:40:23Z, for this bound and
+  for `VISITS`:
+  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229156018). The
+  bound of browses at once is #2981. The browse holds at most as
   many points at a count of at most 100 000 as the server holds for a session
   (`MaxBrowseContinuationPoints`, or `DEPTH` when the server gives 0, no value, or a
   value that is not a `UInt16`). Before a Browse at that count, it releases the point

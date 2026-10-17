@@ -93,7 +93,8 @@ impl<'a> Server<'a> {
     /// # Errors
     ///
     /// `BadContinuationPointInvalid` when the server freed a point past [`SKIP`], the
-    /// status of a Browse or `BrowseNext` that fails, and as [`Server::fits`].
+    /// status of a Browse or `BrowseNext` that fails, [`Failure::Empty`] when a browse
+    /// again reads past more pages with none, and as [`Server::fits`].
     async fn references(
         &mut self,
         folder: &Node,
@@ -127,7 +128,9 @@ impl<'a> Server<'a> {
             let skipped = left.min(page.references.len());
             let rest = page.references.split_off(skipped);
             for reference in &page.references {
-                seen.name(&reference.name, &tag(reference));
+                if reference.class != Class::Other {
+                    seen.name(&reference.name, &tag(reference));
+                }
             }
             self.fits(&seen)?;
             left -= skipped;
@@ -136,6 +139,10 @@ impl<'a> Server<'a> {
                 Some(point) if rest.is_empty() && past => {
                     empty += usize::from(skipped == 0);
                     page = self.client.browse_next(point).await.map_err(failed)?;
+                }
+                // Its page would have the cursor that the browse got.
+                Some(_) if rest.is_empty() && again => {
+                    return Err(device(Failure::Empty));
                 }
                 next => return Ok(Some((rest, seen, next.map(|point| (point, left))))),
             }
@@ -291,6 +298,9 @@ impl browse::Device for Server<'_> {
         let after = before.unwrap_or(0) + references.len();
         let mut kept = Vec::new();
         for reference in references {
+            if reference.class == Class::Other {
+                continue;
+            }
             let tag = tag(&reference);
             if let Some(name) = seen.name(&reference.name, &tag) {
                 kept.push((name, tag, reference));
