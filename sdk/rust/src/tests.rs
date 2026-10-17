@@ -46,9 +46,9 @@ fn each_error_names_its_cause() {
 }
 
 // These tests build the client through the private `Client::start`, with a `main`
-// that they control. `connect` is `start` with `run` as its `main`, and no public
-// input makes a correct client's thread panic, end at a given time, or log a given
-// event.
+// that they control. `connect` is `start` with `run` as its `main`. A client that
+// connects needs a node, and these tests run none. No input of `connect` makes a
+// correct client's thread panic, show when it ends, or log a given event.
 
 /// A client whose thread sends `Ok`, waits for its end, and then runs `after`.
 fn client(after: impl FnOnce() -> Result<(), Error> + Send + 'static) -> Client {
