@@ -1276,8 +1276,8 @@ pub(super) mod tests {
     }
 
     /// The lowest position that any reader holds, path by path, or `None` when no
-    /// reader holds. It reads the sessions of `readers`, because no call of `Readers`
-    /// gives the floor.
+    /// reader holds. It reads the sessions of `readers`: no call of `Readers` gives
+    /// that position whole, though `deadline` and `records` show when a hold ends.
     pub(super) fn floor(readers: &Readers) -> Option<Position> {
         let open = readers.complete.iter().map(|session| session.position);
         let closed = readers.closed.iter().map(|closed| closed.position);
@@ -1376,8 +1376,8 @@ pub(super) mod tests {
             assert_eq!(opened.position, live(4));
         }
 
-        /// With a session open, the frame `0..3` is queued and not released, so the live
-        /// tail is past the released end.
+        /// With a session open, the frame `0..3` is queued and not released, so the
+        /// live tail is past the released end.
         #[test]
         fn resume_keeps_a_presented_position_below_a_queued_frame_not_released() {
             let frames = Frames::new(2);
@@ -1992,6 +1992,8 @@ pub(super) mod tests {
                 .key;
             readers.close(key.into(), Some(at(5)));
             assert_eq!(floor(&readers), None);
+            assert_eq!(readers.deadline(), None);
+            assert_eq!(readers.records().count(), 0);
         }
 
         #[test]
