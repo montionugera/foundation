@@ -620,6 +620,32 @@ fn finds_a_connector_beside_a_reserved_connector_of_another_name() {
     assert_eq!(found.node(), &name("edge"));
 }
 
+#[test]
+fn refuses_a_reserved_connector_that_check_hides_behind_a_fill_in_another_block() {
+    let text = "connector \"@plant\" {\n}\n\
+                connector \"plant\" {\n  kind = \"influx\"\n  node = fill(\"n\")\n}\n";
+    assert_eq!(
+        problems(text),
+        [problem(
+            text,
+            "config.unfilled",
+            "fill(",
+            "the import found no value for n",
+            "Write the value in place of `fill`",
+        )]
+    );
+    assert_eq!(
+        refused(text, "@plant"),
+        [problem(
+            text,
+            "config.reserved-name",
+            "\"@plant\"",
+            "\"@plant\" has a segment that starts with `@`, which is reserved",
+            "Remove the `@` from each segment",
+        )]
+    );
+}
+
 /// A kind that takes each config and gives no channels.
 struct Any;
 
@@ -641,52 +667,50 @@ impl Kind for Any {
 
 const LABELS: [&str; 6] = ["plant", "Plant", "PLANT", "@plant", "plant.@x", "other"];
 
-/// A `channel` or `connector` block: whether it is a connector, its label, and its
-/// text.
-fn block() -> impl Strategy<Value = (bool, &'static str, String)> {
+/// A `channel` or `connector` block: whether it is a connector, its label, its text,
+/// and its text with each `fill` as a plain value of the same length, so that each
+/// span stays.
+fn block() -> impl Strategy<Value = (bool, &'static str, String, String)> {
     let label = proptest::sample::select(LABELS.to_vec());
     let kind = proptest::sample::select(vec![
-        "  kind = \"any\"\n",
-        "  kind = fill(\"k\")\n",
-        "",
+        ("  kind = \"any\"\n", "  kind = \"any\"\n"),
+        ("  kind = fill(\"k\")\n", "  kind = \"another\"\n"),
+        ("", ""),
     ]);
     let node = proptest::sample::select(vec![
-        "  node = \"edge\"\n",
-        "  node = fill(\"n\")\n",
-        "",
+        ("  node = \"edge\"\n", "  node = \"edge\"\n"),
+        ("  node = fill(\"n\")\n", "  node = \"edgetwo\"\n"),
+        ("", ""),
     ]);
     prop_oneof![
         label.clone().prop_map(|label| {
-            (
-                false,
-                label,
-                format!("channel \"{label}\" {{\n  kind = \"index\"\n}}\n"),
-            )
+            let text = format!("channel \"{label}\" {{\n  kind = \"index\"\n}}\n");
+            (false, label, text.clone(), text)
         }),
         (label, kind, node).prop_map(|(label, kind, node)| {
-            (
-                true,
-                label,
-                format!("connector \"{label}\" {{\n{kind}{node}}}\n"),
-            )
+            let text =
+                |kind, node| format!("connector \"{label}\" {{\n{kind}{node}}}\n");
+            (true, label, text(kind.0, node.0), text(kind.1, node.1))
         }),
     ]
 }
 
 proptest! {
-    /// At each label: a connector that `check` gives, `find` gives; a problem of
-    /// `find` other than `config.no-connector`, `check` gives; and a problem of `check`
-    /// in a `connector` block of the label in any ASCII case makes `find` fail.
+    /// At each label, with `check` on the files where each `fill` outside the blocks
+    /// of the label in any ASCII case is a plain value: a connector that `check`
+    /// gives, `find` gives; a problem of `find` other than `config.no-connector`,
+    /// `check` gives; and a problem of `check` in a `connector` block of the label
+    /// makes `find` fail.
     #[test]
     fn finds_what_check_finds_at_each_name(
         blocks in proptest::collection::vec(block(), 1..=4),
     ) {
-        let text: String = blocks.iter().map(|(.., text)| text.as_str()).collect();
+        let text: String = blocks.iter().map(|(_, _, text, _)| text.as_str()).collect();
         let documents = [read(&text)];
-        let checked = config::check(&documents, &Table::new().with("any", Any));
+        let kinds = Table::new().with("any", Any).with("another", Any);
         let mut start = 0;
         let mut spans = Vec::new();
-        for (connector, label, text) in &blocks {
+        for (connector, label, text, _) in &blocks {
             spans.push((*connector, *label, start..start + text.len()));
             start += text.len();
         }
@@ -695,19 +719,21 @@ proptest! {
                 continue;
             };
             let found = config::connector(&documents, &at);
+            let plain: String = blocks
+                .iter()
+                .map(|(_, block, text, plain)| {
+                    if block.eq_ignore_ascii_case(label) { text } else { plain }
+                })
+                .map(String::as_str)
+                .collect();
+            let checked = config::check(&[read(&plain)], &kinds);
             if let Ok(entries) = &checked
                 && let Some(entry) = entries.get(&at)
                 && let Definition::Spec(Stored::Connector(entry)) = &entry.definition
             {
                 prop_assert_eq!(found.as_ref(), Ok(entry), "{}", text);
             }
-            // `check` gives no other problem after a `fill` in any block.
-            let other_fill = blocks.iter().any(|(_, block, text)| {
-                !block.eq_ignore_ascii_case(label) && text.contains("fill(")
-            });
-            if let Err(problems) = &found
-                && !other_fill
-            {
+            if let Err(problems) = &found {
                 let missing = problems
                     .iter()
                     .filter(|problem| problem.code.as_str() != "config.no-connector");
