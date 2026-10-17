@@ -374,8 +374,8 @@ impl Paths {
             }
         }
         // A step that a hidden folder holds meets the folders as one before a `..`
-        // does, so it gets `Hidden` only where they hold it, and no later step speaks
-        // for a path through it.
+        // does, so it gets `Hidden` only where it passes them, and no later step
+        // speaks for a path through it.
         let short = way == Way::Short || way == Way::Down && veiled;
         let passes = |folder| held(folder) || short && above(folder);
         let down = way == Way::Down && own.is_some() && !veiled;
@@ -455,7 +455,7 @@ enum Way {
     Short,
     /// No `..` takes the path above the step, so the step changes where the path ends
     /// only as a link or a mount, and the end meets the folders for it, when it is
-    /// there.
+    /// there. One that a hidden folder holds meets them as `Short` does.
     Down,
 }
 
