@@ -3,7 +3,6 @@
 #![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
 use std::iter;
-use std::ops::Range;
 use std::slice;
 
 use block::{Block, Pool, Unique};
@@ -99,9 +98,6 @@ pub(crate) struct Group {
     /// The bytes of every entry, in order. At close the record header and the
     /// table go in front.
     writes: Vec<Block>,
-    /// The header and the parts in `writes` of each entry with a nonzero tag, in
-    /// order.
-    tagged: Vec<(usize, Range<usize>)>,
     /// The bytes of every entry together.
     bytes: usize,
     meta: Option<Unique>,
@@ -216,14 +212,9 @@ impl Group {
     /// Takes `entry` with its header of `kind`, after a [`fit`](Self::fit) of its
     /// batch.
     pub(crate) fn take(&mut self, entry: Entry, kind: Kind) {
-        let (at, start) = (self.headers.len(), self.writes.len());
-        let tagged = entry.tag != 0;
         self.headers.push(entry.header(kind));
         self.slots.push(entry.slot);
         self.writes.extend(entry.parts);
-        if tagged {
-            self.tagged.push((at, start..self.writes.len()));
-        }
     }
 
     /// Places the record with `writer` and writes the entry table at the end of the
@@ -336,6 +327,24 @@ pub(crate) fn end_block(mut block: Unique, header: &[u8; record::HEADER_LEN]) ->
     block.freeze().skip(start)
 }
 
+/// Takes from the front of `writes` the blocks of an entry of `bytes` bytes. Each
+/// entry has whole blocks, so the bytes split at a block end.
+fn parts<'a>(writes: &mut &'a [Block], bytes: u32) -> &'a [Block] {
+    let bytes = usize::try_from(bytes).expect("invariant: an entry fits in usize");
+    let mut sum = 0_usize;
+    let count = writes
+        .iter()
+        .take_while(|part| {
+            let before = sum;
+            sum = sum.saturating_add(part.len());
+            before < bytes
+        })
+        .count();
+    let (parts, rest) = writes.split_at(count);
+    *writes = rest;
+    parts
+}
+
 /// A group whose record is complete: each of its [`writes`](Self::writes) goes at
 /// its place in the area.
 #[derive(Debug)]
@@ -383,15 +392,15 @@ impl Sealed {
     pub(crate) fn tagged(&self) -> impl Iterator<Item = (Slot, &Header, &[Block])> {
         let group = &self.group;
         // `seal` put the record header and the table at `writes[0]`.
-        let writes = group.writes.get(1..).unwrap_or_default();
-        group.tagged.iter().map(move |(at, parts)| {
-            let entry = group.slots.get(*at).zip(group.headers.get(*at));
-            let parts = writes.get(parts.clone());
-            let ((&slot, header), parts) = entry
-                .zip(parts)
-                .expect("invariant: a tagged entry is in the group");
-            (slot, header, parts)
-        })
+        let mut writes = group.writes.get(1..).unwrap_or_default();
+        group
+            .slots
+            .iter()
+            .zip(&group.headers)
+            .filter_map(move |(&slot, header)| {
+                let parts = parts(&mut writes, header.bytes);
+                (header.tag != 0).then_some((slot, header, parts))
+            })
     }
 
     /// Drops the entries and the blocks and gives the group back with its capacity.
@@ -400,7 +409,6 @@ impl Sealed {
         group.headers.clear();
         group.slots.clear();
         group.writes.clear();
-        group.tagged.clear();
         group.bytes = 0;
         group
     }
@@ -410,6 +418,7 @@ impl Sealed {
 #[expect(clippy::arithmetic_side_effects, reason = "a test may panic")]
 mod tests {
     use std::num::{NonZeroU32, NonZeroU64};
+    use std::ops::Range;
 
     use super::*;
     use block::{Config, Heap};
