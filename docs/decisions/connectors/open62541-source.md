@@ -48,9 +48,10 @@
   build leaves out loses its keys. A new outside symbol also goes in `OUTSIDE` in
   `connector-opcua`, or in `PLUGINS` when only one file of the copy may name it, which
   list the outside symbols of the production build. A test fails on a name of `PLUGINS`
-  in an object of another file, and when the object of its file does not name it. The
-  words "or in `PLUGINS` when only one file of the copy may name it": approved by
-  `laptop.architect-2`
+  in an object of another file, and when the object of its file does not name it. A name
+  that the compiler makes from another call, so that an object names it only at some
+  levels (`fwrite` from `fputs`), goes in `OUTSIDE`. The words "or in `PLUGINS` when
+  only one file of the copy may name it": approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231994142,
   2026-10-17 08:55 UTC). The sentence on the objects of `PLUGINS`: approved by
   `laptop.architect-2`
@@ -347,7 +348,10 @@
   the copy, `shim.c`, and `server.c` call no libc function that gives or takes a heap
   pointer. Our change makes `UA_CertificateUtils_getThumbprint` of
   `plugins/crypto/openssl/certificategroup.c` give and take its block with `UA_malloc`
-  and `UA_free`, in place of `malloc` and `free`. A crypto library that a later PR links
+  and `UA_free`, in place of `malloc` and `free`. Our change: decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3037#issuecomment-6236391062,
+  2026-10-17 16:11 UTC). A crypto library that a later PR links
   keeps its own allocator. So the counting allocator of a test or benchmark binary
   counts C too. The copy check compiles without `alloc.h`. A test reads the archive that
   `build.rs` makes with it, and fails on each symbol outside the copy, `shim.c`, and
