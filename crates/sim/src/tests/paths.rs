@@ -438,7 +438,11 @@ fn a_move_elsewhere_keeps_a_fault_on_the_working_directory_as_spelled() {
         }
         paths.write(Path::new("out"), b"x")
     });
-    assert_eq!(written, [Err(Error::Io { code: 5 }); 2], "no move, move of /x");
+    assert_eq!(
+        written,
+        [Err(Error::Io { code: 5 }); 2],
+        "no move, move of /x"
+    );
 }
 
 #[test]
