@@ -836,10 +836,10 @@
   `sources.txt`. A test fails when the production code names a policy or a certificate
   group other than at its stub in `shim.c`, and a test fails when the objects of
   `shim.c` or `server.c` name aws-lc, or the allocator or console of libc.
-  `UA_Openssl_Init` of `securitypolicy_common.c` writes a `static` flag with no lock, so
-  two threads that build a policy at once race. No node builds a policy yet, and #2934
-  PR 2 gives its first call one owner. Lost: the about 35 file and clock calls of the
-  left-out files, each keyed in `FUNCTION_SYMBOLS`; and a copy of each deprecated and
-  ECC policy file. Decided by `laptop.architect-2`
+  `UA_Openssl_Init` of `securitypolicy_common.c` writes a `static` flag with no lock.
+  The build defines no `OPENSSL_API_COMPAT`, so the flag guards no call, and #2934 PR 1b
+  removes it from the copy. Lost: the about 35 file and clock calls of the left-out
+  files, each keyed in `FUNCTION_SYMBOLS`; and a copy of each deprecated and ECC policy
+  file. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6230888200,
   2026-10-17 06:51 UTC).
