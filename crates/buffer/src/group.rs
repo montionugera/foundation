@@ -1374,8 +1374,8 @@ mod tests {
 
     /// With a `carry_max`, a batch of more than one entry whose carry body passes it
     /// names [`Limit::Carry`], a group whose record would pass it refuses the batch
-    /// as [`Rejected::Record`], and a batch of one entry or with no tag fits. A
-    /// cleared group counts no copy.
+    /// as [`Rejected::Record`], and a batch of one entry, or a group with no tag,
+    /// fits. A cleared group counts no copy.
     #[test]
     fn keeps_the_carry_body_of_a_record_at_most_carry_max() {
         let mut area = Area::new();
@@ -1418,7 +1418,9 @@ mod tests {
             entry(header(2, Path::Live, 0), part()),
             entry(header(4, Path::Live, 0), part()),
         ];
-        assert_eq!(fit(&mut Group::default(), &plain, Some(0)), Ok(()));
+        let mut untagged = Group::default();
+        assert_eq!(fit(&mut untagged, &plain, Some(0)), Ok(()));
+        assert_eq!(fit(&mut untagged, &plain, Some(0)), Ok(()));
         assert_eq!(fit(&mut Group::default(), &pair, None), Ok(()));
         let closed = group.close(&mut area.writer);
         let group = area.commit(closed).clear();
