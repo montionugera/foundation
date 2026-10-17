@@ -999,7 +999,10 @@
   order, a read, `Replaced` by the path now, and `move_path`, 2026-10-17T06:33:57Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230731316; a path
   into the moved folder and the moved working directory, 2026-10-17T07:17:06Z,
-  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231111995). Lost: a
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231111995; the
+  working directory that a move keeps on the directory that it resolves to,
+  2026-10-17T07:41:22Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231322001). Lost: a
   second look in `ops` after a refusal, which puts a `Paths` with no limits in the scope
   that limits `foundation mcp`, states the rule of `within` again, and gives a false
   text when a file changes between the two looks.
@@ -1017,6 +1020,11 @@
   https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230686685).
   Amended (2026-10-17T06:14:25Z, #3006): with `Vacant` of #2919, that loop or link to
   nothing beside a hidden folder that is not there gives `Vacant`, not `Hidden`. One in
-  a hidden folder that a program moved away still gives `Hidden`. Decided by
-  `laptop.architect-2` (2026-10-17T06:14:25Z,
-  https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417).
+  a hidden folder that a program moved away still gives `Hidden`. Supersedes "a loop or
+  a link to nothing beside a hidden folder that is not there ... gives `Hidden`" of the
+  amendment of 2026-10-17T06:14:25Z
+  (https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417). Decided
+  by `laptop.architect-2` (2026-10-17T06:14:25Z,
+  https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417; the four
+  cases, 2026-10-17T07:41:22Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231322001).
