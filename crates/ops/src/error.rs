@@ -29,6 +29,7 @@ const STOPPED: Code = Code::new("ops.stopped");
 const BAD_REQUEST: Code = Code::new("ops.bad-request");
 const DENIED: Code = Code::new("ops.denied");
 const LARGE_REPLY: Code = Code::new("ops.large-reply");
+const LARGE_BROWSE: Code = Code::new("ops.large-browse");
 const CHANNEL_READ: Code = Code::new("ops.channel-read");
 const READ: Code = Code::new("ops.read");
 const WRITE: Code = Code::new("ops.write");
@@ -102,6 +103,8 @@ pub(crate) enum Error {
     },
     /// The reply of a node has more bytes than one reply holds.
     LargeReply,
+    /// The output of a browse has more bytes than one reply holds.
+    LargeBrowse,
     /// A reader of the status channels of `connector` did not open or ended, with the
     /// text of the hub.
     ChannelRead { connector: Name, message: String },
@@ -315,6 +318,7 @@ impl Error {
             | Self::Request { .. }
             | Self::Denied { .. }
             | Self::LargeReply
+            | Self::LargeBrowse
             | Self::ChannelRead { .. }
             | Self::Write { .. }
             | Self::Data { .. }
@@ -402,6 +406,10 @@ impl Error {
             Self::LargeReply => (
                 LARGE_REPLY,
                 "Plan and apply the change in smaller steps".to_owned(),
+            ),
+            Self::LargeBrowse => (
+                LARGE_BROWSE,
+                "Narrow the start or the match, or browse without `values`".to_owned(),
             ),
             Self::ChannelRead { .. } => (
                 CHANNEL_READ,
@@ -508,11 +516,12 @@ impl Error {
         json!({ "errors": self.problems() })
     }
 
-    /// Each problem for a terminal, with one empty line between two. In `Config` and
-    /// `Remote`, each control character is written as its Rust escape, because a
-    /// config producer or the node quotes the text of a file itself. In each other
-    /// error, so are a backslash and each character that does not print, because that
-    /// text holds the caller's text as given.
+    /// Each problem for a terminal, with one empty line between two. In `Config`,
+    /// `Remote`, and `Browse`, each control character is written as its Rust escape,
+    /// because a config producer, the node, or a connector kind quotes the text of a
+    /// file or a device itself. In each other error, so are a backslash and each
+    /// character that does not print, because that text holds the caller's text as
+    /// given.
     pub(crate) fn text(&self) -> String {
         let escape: fn(&str) -> String = match self {
             Self::Config(_) | Self::Remote { .. } | Self::Browse { .. } => {
@@ -725,6 +734,11 @@ impl fmt::Display for Error {
                 f,
                 "the reply has more than {BODY_BYTES_MAX} bytes, the most that a reply \
                  holds"
+            ),
+            Self::LargeBrowse => write!(
+                f,
+                "the output of the browse has more than {BODY_BYTES_MAX} bytes, the \
+                 most that a reply holds"
             ),
             Self::ChannelRead { connector, message } => write!(
                 f,

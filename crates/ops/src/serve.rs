@@ -34,7 +34,7 @@ mod tests;
 /// `ops.bad-request` for a body that is no request of `plan`, `apply`, `status`, or
 /// `browse`, `ops.denied` for an action that no access policy gives `subject` and for
 /// a request that names no definition, and `ops.large-reply` in place of a reply over
-/// the bound.
+/// the bound, or `ops.large-browse` in place of the output of a `browse` over it.
 /// `apply` also needs `apply` on the channel at each edge of each channel that the plan
 /// adds or changes, and `admin` on the key of each definition other than a channel that
 /// the plan adds, changes, or removes. It gives a home only to an index on which
@@ -45,8 +45,9 @@ mod tests;
 /// OS roots of the node only to a subject with `read` on the name of the node. It
 /// waits at most 1 s from the request. A connector is `unknown` when no status as the
 /// spec defines it comes in that time, and `status` gives `ops.channel-read` when the
-/// reader of a connector fails for another cause. `browse` needs `apply` on the name
-/// of the connector, and browses only a connector that the files place on this node.
+/// reader of a connector fails for another cause. `browse` needs `apply` and `admin`
+/// on the name of the connector, and browses only a connector that the files place on
+/// this node.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
@@ -447,6 +448,13 @@ impl<'a> Check<'a> {
         }
     }
 
+    /// `Denied` unless `subject` may run the connector `name`: `apply`, then `admin`
+    /// on it, as `apply` of a connector needs.
+    fn runs(&self, name: &Name) -> Result<(), Error> {
+        self.names(Action::Apply, [name])?;
+        self.names(Action::Admin, [name])
+    }
+
     /// `Denied` of `action` on `on`.
     fn denied(&self, action: Action, on: On) -> Error {
         Error::Denied {
@@ -478,11 +486,8 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Body, Error
         return Err(check.denied(Action::Plan, On::Spec));
     }
     let (base, applied) = spec.newest()?;
-    // A subject that may not apply a connector learns nothing of its sources, and
-    // `apply` of a connector needs `admin` too.
-    let readable = |name: &Name| {
-        check.allows(Action::Apply, name) && check.allows(Action::Admin, name)
-    };
+    // A subject that may not run a connector learns nothing of its sources.
+    let readable = |name: &Name| check.runs(name).is_ok();
     let (output, plan) = files.plan(node, base, &applied, readable).await?;
     let mut reply = Body::line(&Answer::Done { output: &output })?;
     reply.add(&plan.encode())?;
@@ -566,9 +571,9 @@ async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
 }
 
 /// The reply of `browse`: its output. It checks, in this order, that the files read,
-/// that they hold the connector, that `subject` has `apply` on its name, that the
-/// connector runs on this node, that the start and the match parse, and that the
-/// request gives no match with a cursor.
+/// that they hold the connector, that `subject` may run it, that it runs on this node,
+/// that the start and the match parse, and that the request gives no match with a
+/// cursor.
 async fn browse(node: &Node, subject: &Name, request: Browse) -> Result<Body, Error> {
     let files = Documents::read(&request.files, &node.front_ends)?;
     let name: Name = request.connector.parse().map_err(|error| Error::Argument {
@@ -579,7 +584,7 @@ async fn browse(node: &Node, subject: &Name, request: Browse) -> Result<Body, Er
     })?;
     let connector = files.connector(&name)?;
     let spec = used::spec(&node.mesh).await?;
-    Check::new(&spec, subject).names(Action::Apply, [&name])?;
+    Check::new(&spec, subject).runs(&name)?;
     if connector.node() != &node.name {
         return Err(Error::BrowseNode {
             connector: name,
@@ -626,5 +631,5 @@ async fn browse(node: &Node, subject: &Name, request: Browse) -> Result<Body, Er
         .await
         .map_err(|cause| Error::browse(&name, kind, cause, files.sources()))?;
     let output = crate::browse::Output::of(found);
-    Ok(Body::line(&Answer::Done { output: &output })?)
+    Body::line(&Answer::Done { output: &output }).map_err(|Large| Error::LargeBrowse)
 }

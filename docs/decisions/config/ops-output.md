@@ -402,15 +402,20 @@
   `{"browse":{...}}` with these fields, and `files` as `plan` sends them. The node
   checks, in this order, and stops at the first failure: the files read; the connector
   is a name (`ops.argument`); `config::connector` finds its block; the subject has
-  `apply` on the name (`ops.denied`, SERVE ACCESS); the `node` of the block is this
+  `apply`, then `admin`, on the name (`ops.denied`, SERVE ACCESS), the access with which
+  a remote `plan` reads the sources (SECRET SOURCES); the `node` of the block is this
   node; the start is a path; the match is a pattern; and `match` and `cursor` are not
   both given (`ops.argument`, ``a browse takes `match` or `cursor`, not both``; the
-  command line refuses it first, with status 2). Then it runs `Supervisor::browse`. Four
+  command line refuses it first, with status 2). Then it runs `Supervisor::browse`. Five
   codes are new. `ops.browse-node`, status 2: ``the connector `<c>` runs on the node
   `<n>`, not on this node `<this>` ``, fix ``Run it with `--data` of node `<n>` ``.
   `ops.bad-start` and `ops.bad-pattern`, status 2: ``the start `<text>` is not a path:
   <cause>`` and ``the match `<text>` is not a pattern: <cause>``, with the cause of
-  `connector::browse::Malformed`, and the fixes of `codes.golden`. Each problem of an
+  `connector::browse::Malformed`, and the fixes of `codes.golden`. `ops.large-browse`,
+  status 1, takes the place of `ops.large-reply` for the output of a browse: ``the
+  output of the browse has more than <n> bytes, the most that a reply holds``, fix
+  ``Narrow the start or the match, or browse without `values` ``, since a smaller plan
+  does not make it fit. Each problem of an
   error of `Supervisor::browse` has status 1 and starts with ``the browse of the
   connector `<c>` of kind `<k>` failed: ``. A diagnostic of `Config` keeps its code,
   fix, place, and notes. `Device` and `Retry` give `ops.browse`, fix `Fix the cause in

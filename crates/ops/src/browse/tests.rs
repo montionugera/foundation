@@ -7,7 +7,7 @@ use types::name::Name;
 use types::sample;
 
 use super::Output;
-use crate::common::{self, create_browsing_node, name, solo};
+use crate::common::{self, EVE, create_browsing_node, name, solo};
 use crate::error::{Error, Sources};
 use crate::serve::serve;
 use crate::{Failure, Node, Run};
@@ -49,6 +49,19 @@ async fn browsed(node: &Node, kind: &str, query: &Value) -> Value {
     let output = reply["output"].clone();
     assert!(!output.is_null(), "{reply}");
     output
+}
+
+/// Applies the file `people.hcl` of `text` on `node` as `@admin`.
+async fn applied(node: &Node, text: &str) {
+    let plan = json!({ "plan": { "files": [{ "path": "people.hcl", "text": text }] } });
+    let reply = serve(node, &name("@admin"), format!("{plan}\n").as_bytes()).await;
+    let end = reply
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .expect("a first line");
+    let apply = [&b"{\"apply\":{}}\n"[..], &reply[end + 1..]].concat();
+    let reply = served(node, "@admin", &apply).await;
+    assert!(reply.get("output").is_some(), "{reply}");
 }
 
 /// The reply of one error with no place.
@@ -179,6 +192,29 @@ fn checks_the_files_the_name_access_the_node_the_start_and_the_match_in_order() 
         let query = json!({ "start": "Line3", "cursor": "4" });
         let reply = served(&node, "@admin", &at(&edge, &query)).await;
         assert_eq!(reply["output"]["end"], "done", "{reply}");
+    });
+}
+
+/// A browse needs `admin` too, as a remote `plan` needs it to read the sources.
+#[test]
+fn needs_apply_and_admin_on_the_name_of_the_connector() {
+    solo(|fixture, mesh| async move {
+        let node = create_browsing_node(&fixture, mesh);
+        let people = format!(
+            "subject \"eve\" {{ keys = [\"{EVE}\"] }}\naccess \"browser\" {{\n  \
+             subjects = \"eve\"\n  select = \"plant\"\n  allow = [apply]\n}}\n"
+        );
+        applied(&node, &people).await;
+        let edge = site("tree", "edge", "");
+        let request = body("plant", "site.hcl", &edge, &json!({}));
+        let reply = served(&node, "eve", &request).await;
+        let message = "no access policy gives `eve` the action `admin` on `plant`";
+        let fix = "Ask an admin of the region for an access policy that allows it";
+        assert_eq!(reply, refusal("ops.denied", 1, message, fix));
+
+        applied(&node, &people.replace("[apply]", "[apply, admin]")).await;
+        let reply = served(&node, "eve", &request).await;
+        assert_eq!(reply["output"], browsed(&node, "tree", &json!({})).await);
     });
 }
 
@@ -575,6 +611,351 @@ fn the_command_line_writes_a_page_as_text_or_json() {
     });
 }
 
+/// Tests with kinds of their own.
+mod own_kinds {
+    use std::path::Path;
+
+    use connector::browse::{self, End, Found, Query};
+    use connector::kind::{self, Channels, Context, Table};
+    use document::Document;
+    use document::diagnostic::Diagnostic;
+    use serde_json::{Value, json};
+    use types::sample;
+    use wire::hub::client::BODY_BYTES_MAX;
+
+    use crate::Node;
+    use crate::common::{
+        BOB, create_config, create_supervisor, front_ends, name, solo,
+    };
+    use crate::serve::serve;
+
+    /// A kind whose browse reads the secret of its `token`, as a kind reads the
+    /// password of its device.
+    struct Probe;
+
+    impl kind::Kind for Probe {
+        type Config = ();
+
+        fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+            Ok(())
+        }
+
+        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+            Ok(Channels::default())
+        }
+
+        fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), kind::Error>> {
+            std::future::ready(Ok(()))
+        }
+
+        async fn browse(
+            &self,
+            ctx: &browse::Context<'_>,
+            _: &Query,
+        ) -> Result<Found, kind::Error> {
+            let value = &ctx.config().attributes.get("token").expect("a token").value;
+            let source = secret::Source::read(value).expect("a source");
+            ctx.secret(&source).await?;
+            Ok(Found {
+                entries: Vec::new(),
+                values: Vec::new(),
+                end: End::Done,
+            })
+        }
+    }
+
+    /// A finite `f32` is the shortest text that reads back as it, at the node and
+    /// again after the command line parses the reply.
+    #[test]
+    fn an_f32_is_its_shortest_text_at_each_exponent() {
+        use super::super::Value as Json;
+        let mut wrong = Vec::new();
+        for x in [f32::MAX, -f32::MAX, 1.0e30, 3.004_713_8e38, 1.177_379_4e-38] {
+            // The text of the shortest decimal that reads back as `x`.
+            let shortest = serde_json::to_string(&x).expect("JSON");
+            let denoted = |text: &str| text.parse::<f64>().expect("a number").to_bits();
+            let at_node =
+                serde_json::to_string(&Json::of(sample::Value::F32(x))).expect("JSON");
+            let parsed: Json = serde_json::from_str(&at_node).expect("a value");
+            let at_cli = serde_json::to_string(&parsed).expect("JSON");
+            if denoted(&at_node) != denoted(&shortest) || at_cli != at_node {
+                wrong.push((shortest, at_node, at_cli));
+            }
+        }
+        assert_eq!(wrong, Vec::<(String, String, String)>::new());
+    }
+
+    /// A kind whose root holds one `f64` point with the value of its field.
+    struct One(f64);
+
+    struct OneSession(f64);
+
+    impl browse::Device for OneSession {
+        fn level(
+            &mut self,
+            folder: Option<&browse::Entry>,
+            _: Option<&browse::Cursor>,
+        ) -> impl Future<Output = Result<Option<browse::Page>, kind::Error>> {
+            let page = folder.is_none().then(|| browse::Page {
+                entries: vec![browse::Child {
+                    name: "x".to_owned(),
+                    tag: "x".to_owned(),
+                    shape: browse::Shape::Point(browse::Facts::default()),
+                }],
+                next: None,
+            });
+            std::future::ready(Ok(page))
+        }
+
+        fn values(
+            &mut self,
+            tags: &[&str],
+        ) -> impl Future<Output = Result<Vec<Option<sample::Value>>, kind::Error>>
+        {
+            let values = tags
+                .iter()
+                .map(|_| Some(sample::Value::F64(self.0)))
+                .collect();
+            std::future::ready(Ok(values))
+        }
+    }
+
+    impl kind::Kind for One {
+        type Config = ();
+
+        fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+            Ok(())
+        }
+
+        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+            Ok(Channels::default())
+        }
+
+        fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), kind::Error>> {
+            std::future::ready(Ok(()))
+        }
+
+        async fn browse(
+            &self,
+            _: &browse::Context<'_>,
+            query: &Query,
+        ) -> Result<Found, kind::Error> {
+            browse::walk(&mut OneSession(self.0), query).await
+        }
+    }
+
+    /// `foundation browse --values --json` gives the `f64` that the device gave.
+    #[test]
+    fn the_command_line_gives_the_f64_value_of_the_device() {
+        solo(|fixture, mesh| async move {
+            let x = 1.031_111_111_117_692_3_f64;
+            let secrets = connector::testing::create_secrets(fixture.sim.files());
+            let node = Node::new(crate::node::Config {
+                supervisor: create_supervisor(
+                    &fixture,
+                    Table::new().with("one", One(x)),
+                    secrets.clone(),
+                ),
+                ..create_config(&fixture, mesh, front_ends(), secrets)
+            });
+            let paths = super::host(&fixture, "one");
+            let args = ["browse", "plant", "site.hcl", "--values", "--json"];
+            let (run, json, errors) = super::cli(&node, &paths, &args).await;
+            assert_eq!((run, errors.as_str()), (crate::Run::Exit(0), ""));
+            // The text, not a parse of it: a parse of serde_json can round wrong too.
+            let value = format!("\"value\":{x}}}");
+            assert_eq!(x.to_string(), "1.0311111111176923");
+            assert!(json.contains(&value), "{json} does not hold {value}");
+        });
+    }
+
+    /// The command line gives each `f64` that the node gave, bit for bit.
+    #[test]
+    fn the_command_line_gives_the_f64_of_the_node() {
+        use super::super::Value as Json;
+        let mut wrong = Vec::new();
+        let mut bits: u64 = 0x0010_0000_0000_0000;
+        while bits < 0x7ff0_0000_0000_0000 {
+            let x = f64::from_bits(bits);
+            let at_node =
+                serde_json::to_string(&Json::of(sample::Value::F64(x))).expect("JSON");
+            let parsed: Json = serde_json::from_str(&at_node).expect("a value");
+            let at_cli = serde_json::to_string(&parsed).expect("JSON");
+            if at_cli != at_node && (1.0..1e6).contains(&x) {
+                wrong.push((at_node, at_cli));
+            }
+            bits += 0x0000_1234_5678_9abd;
+        }
+        let count = wrong.len();
+        wrong.truncate(3);
+        assert_eq!((count, wrong), (0, Vec::new()));
+    }
+
+    /// A kind whose root is one page of 500 points, each with a name of 40 000
+    /// bytes: a page that `walk` takes, whose JSON passes the bound of a reply.
+    struct Wide;
+
+    struct WideSession;
+
+    impl browse::Device for WideSession {
+        fn level(
+            &mut self,
+            folder: Option<&browse::Entry>,
+            _: Option<&browse::Cursor>,
+        ) -> impl Future<Output = Result<Option<browse::Page>, kind::Error>> {
+            let page = folder.is_none().then(|| browse::Page {
+                entries: (0..500)
+                    .map(|n| browse::Child {
+                        name: format!("p{n}{}", "a".repeat(40_000)),
+                        tag: format!("t{n}"),
+                        shape: browse::Shape::Point(browse::Facts::default()),
+                    })
+                    .collect(),
+                next: None,
+            });
+            std::future::ready(Ok(page))
+        }
+    }
+
+    impl kind::Kind for Wide {
+        type Config = ();
+
+        fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+            Ok(())
+        }
+
+        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+            Ok(Channels::default())
+        }
+
+        fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), kind::Error>> {
+            std::future::ready(Ok(()))
+        }
+
+        async fn browse(
+            &self,
+            _: &browse::Context<'_>,
+            query: &Query,
+        ) -> Result<Found, kind::Error> {
+            browse::walk(&mut WideSession, query).await
+        }
+    }
+
+    /// A level whose page passes the bound of a reply gives the fix of a browse, not
+    /// the fix of a plan.
+    #[test]
+    fn a_level_past_the_bound_of_a_reply_gives_a_fix_of_a_browse() {
+        solo(|fixture, mesh| async move {
+            let secrets = connector::testing::create_secrets(fixture.sim.files());
+            let node = Node::new(crate::node::Config {
+                supervisor: create_supervisor(
+                    &fixture,
+                    Table::new().with("wide", Wide),
+                    secrets.clone(),
+                ),
+                ..create_config(&fixture, mesh, front_ends(), secrets)
+            });
+            let site =
+                "connector \"site.c\" {\n  kind = \"wide\"\n  node = \"edge\"\n}\n";
+            let body = browse_body(&[("c.hcl", site)]);
+            let message = format!(
+                "the output of the browse has more than {BODY_BYTES_MAX} bytes, the \
+                 most that a reply holds"
+            );
+            let fix = "Narrow the start or the match, or browse without `values`";
+            assert_eq!(
+                super::served(&node, "@admin", &body).await,
+                super::refusal("ops.large-browse", 1, &message, fix)
+            );
+        });
+    }
+
+    /// The JSON of the first line of `reply`.
+    fn first_line(reply: &[u8]) -> Value {
+        let end = reply.iter().position(|b| *b == b'\n').expect("a line");
+        serde_json::from_slice(&reply[..end]).expect("JSON")
+    }
+
+    /// The reply of `serve` to `body` as `@admin`.
+    async fn as_admin(node: &Node, body: Vec<u8>) -> Vec<u8> {
+        serve(node, &name("@admin"), &body).await
+    }
+
+    /// The body of a `plan` of `files`, each a path and its text.
+    fn plan_body(files: &[(&str, &str)]) -> Vec<u8> {
+        let files: Vec<Value> = files
+            .iter()
+            .map(|(path, text)| json!({ "path": path, "text": text }))
+            .collect();
+        format!("{}\n", json!({ "plan": { "files": files } })).into_bytes()
+    }
+
+    /// The body of a `browse` of `site.c` in `files`, each a path and its text.
+    fn browse_body(files: &[(&str, &str)]) -> Vec<u8> {
+        let files: Vec<Value> = files
+            .iter()
+            .map(|(path, text)| json!({ "path": path, "text": text }))
+            .collect();
+        let browse = json!({ "connector": "site.c", "files": files });
+        format!("{}\n", json!({ "browse": browse })).into_bytes()
+    }
+
+    /// `bob` has `apply` and no `admin` on `site.c`, so a browse reads no source for
+    /// him, as a remote `plan` does not.
+    #[test]
+    fn a_subject_with_apply_and_no_admin_learns_nothing_of_the_files_of_the_node() {
+        solo(|fixture, mesh| async move {
+            let secrets = connector::testing::create_secrets(fixture.sim.files());
+            let node = Node::new(crate::node::Config {
+                supervisor: create_supervisor(
+                    &fixture,
+                    Table::new().with("probe", Probe),
+                    secrets.clone(),
+                ),
+                ..create_config(&fixture, mesh, front_ends(), secrets)
+            });
+            let people = format!(
+                "subject \"bob\" {{ keys = [\"{BOB}\"] }}\n\
+                 access \"planner\" {{\n  subjects = \"bob\"\n  select = \"**\"\n  \
+                 allow = [plan]\n}}\n\
+                 access \"site-apply\" {{\n  subjects = \"bob\"\n  select = \
+                 \"site.**\"\n  allow = [apply]\n}}\n"
+            );
+            let reply = as_admin(&node, plan_body(&[("people.hcl", &people)])).await;
+            let end = reply.iter().position(|b| *b == b'\n').expect("a line");
+            assert!(first_line(&reply).get("output").is_some());
+            let apply = [&b"{\"apply\":{}}\n"[..], &reply[end + 1..]].concat();
+            let applied = as_admin(&node, apply).await;
+            assert!(first_line(&applied).get("output").is_some());
+
+            let paths = fixture.sim.paths();
+            fixture.sim.make_dir(Path::new("/run"));
+            paths
+                .write(Path::new("/run/there"), b"x")
+                .expect("writes it");
+            let probe = |path: &str| {
+                format!(
+                    "connector \"site.c\" {{\n  kind  = \"probe\"\n  node  = \
+                     \"edge\"\n  token = file(\"{path}\")\n}}\n"
+                )
+            };
+            let there = probe("/run/there");
+            let absent = probe("/run/absent");
+            let seen =
+                serve(&node, &name("bob"), &browse_body(&[("c.hcl", &there)])).await;
+            let unseen =
+                serve(&node, &name("bob"), &browse_body(&[("c.hcl", &absent)])).await;
+            let message = "no access policy gives `bob` the action `admin` on `site.c`";
+            let fix = "Ask an admin of the region for an access policy that allows it";
+            let denied = super::refusal("ops.denied", 1, message, fix);
+            assert_eq!(
+                (first_line(&seen), first_line(&unseen)),
+                (denied.clone(), denied)
+            );
+        });
+    }
+}
+
 #[test]
 fn the_text_of_no_entries_says_so() {
     let output = Output {
@@ -582,4 +963,59 @@ fn the_text_of_no_entries_says_so() {
         end: super::End::Done,
     };
     assert_eq!(output.text(), "The browse found no entries.\n");
+}
+
+#[test]
+fn the_text_of_a_failed_browse_escapes_only_control_characters() {
+    let cause = connector::kind::Error::Device("a\\b\u{1b}[2J".into());
+    let error =
+        Error::browse(&name("plant"), &name("tree"), cause, &Sources::default());
+    let message = failed("tree", r"the device is in a bad state: a\b\u{1b}[2J");
+    assert_eq!(
+        error.text(),
+        format!(
+            "error[ops.browse]: {message}\n\
+             fix: Fix the cause in the message, then browse again\n"
+        )
+    );
+}
+
+#[test]
+fn the_text_of_a_page_escapes_control_characters() {
+    let point = super::Point {
+        data_type: Some("f64".to_owned()),
+        unit: Some("\u{1b}[2J".to_owned()),
+        unit_code: None,
+        access: Some(super::Access::Read),
+        value: None,
+    };
+    let output = Output {
+        entries: vec![
+            super::Entry {
+                path: "a\u{1b}b".to_owned(),
+                tag: "t".to_owned(),
+                shape: super::Shape::Folder,
+            },
+            super::Entry {
+                path: "a\\c".to_owned(),
+                tag: "u".to_owned(),
+                shape: super::Shape::Point(point),
+            },
+            super::Entry {
+                path: "d".to_owned(),
+                tag: "v".to_owned(),
+                shape: super::Shape::Unreadable {
+                    reason: "an\narray".to_owned(),
+                },
+            },
+        ],
+        end: super::End::Next("4\u{7}".to_owned()),
+    };
+    assert_eq!(
+        output.text(),
+        "a\\u{1b}b/\n\
+         a\\c f64 \\u{1b}[2J read\n\
+         d unreadable: an\\narray\n\
+         more: --cursor 4\\u{7}\n"
+    );
 }

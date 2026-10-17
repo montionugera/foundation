@@ -8,12 +8,12 @@ use document::diagnostic::Code;
 use env::paths::{self, Found, Paths};
 use serde_json::{Value, json};
 
-use super::{Link, apply, most, plan, status};
+use super::{Link, apply, browse, most, plan, status};
 use crate::apply::Applied;
 use crate::common::{self, create_browsing_node, create_node, name, placed_site, solo};
 use crate::error::{Error, Problem, Unread, Unusable, Unwritten};
 use crate::front_end::File;
-use crate::operation::{DATA, Response};
+use crate::operation::{self, DATA, Response};
 use crate::plan::Output;
 use crate::scope::{Limits, Scope};
 use crate::{Failure, Node, Run, serve};
@@ -53,8 +53,8 @@ enum Mode {
     Unsent,
 }
 
-/// Runs `plan`, `apply`, and the command line with a `reach` to `node`, and counts
-/// what each call of `reach` saw.
+/// Runs `plan`, `apply`, `browse`, and the command line with a `reach` to `node`, and
+/// counts what each call of `reach` saw.
 struct Remote {
     node: Node,
     mode: Mode,
@@ -115,6 +115,27 @@ impl Remote {
             Ok(async |body: &[u8]| self.send(body).await)
         };
         apply(file, &Scope::free(paths), &mut Link::new(reach)).await
+    }
+
+    /// The browse of the root of `plant` in `files`.
+    async fn browse(
+        &self,
+        paths: &Paths,
+        files: Vec<PathBuf>,
+    ) -> Result<crate::browse::Output, Error> {
+        let reach = async || {
+            self.reached()?;
+            Ok(async |body: &[u8]| self.send(body).await)
+        };
+        let input = operation::Browse {
+            connector: "plant".to_owned(),
+            files,
+            start: None,
+            pattern: None,
+            cursor: None,
+            values: false,
+        };
+        browse(input, &Scope::free(paths), &mut Link::new(reach)).await
     }
 
     async fn status(&self) -> Result<crate::status::Output, Error> {
@@ -668,7 +689,7 @@ fn an_error_of_the_node_keeps_its_problems_and_status() {
 }
 
 #[test]
-fn plan_and_apply_of_a_path_that_is_not_utf8_reach_no_node() {
+fn plan_apply_and_browse_of_a_path_that_is_not_utf8_reach_no_node() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
 
@@ -686,6 +707,12 @@ fn plan_and_apply_of_a_path_that_is_not_utf8_reach_no_node() {
             panic!("a path that is not UTF-8");
         };
         assert_eq!(error.problems()[0].code, "ops.path-not-utf8");
+        let browsed = remote.browse(&paths, vec![path]).await;
+        let Err(error) = browsed else {
+            panic!("a path that is not UTF-8");
+        };
+        assert_eq!(error.problems()[0].code, "ops.path-not-utf8");
+        assert_eq!(error.status(), 2);
         assert_eq!(remote.calls(), (0, 0));
     });
 }

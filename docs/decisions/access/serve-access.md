@@ -53,7 +53,10 @@
   the quality, the error bound, or the control handoffs of the changed channel. A kind
   that a later PR adds needs `admin` until a ruling adds it to the kinds that `apply`
   alone covers. `admin` also governs a join ticket and the creation of a region (K5).
-  `plan` needs no `admin` (C8 has `plan` list access changes apart). Limits: `admin` on
+  `plan` needs no `admin` (C8 has `plan` list access changes apart). `browse` needs
+  `apply`, then `admin`, on the name of its connector, since it connects to the device
+  of the block with its secrets, as an apply of that block does, and a subject with
+  less learns nothing of the sources of the node (OPS OUTPUT). Limits: `admin` on
   the key of a policy or a subject gives each name of its region. A policy whose
   `subjects` select names under a subtree also reaches a connector that a holder of
   `admin` adds there. Lost: no `admin` check, with which a grant of `apply` on any
