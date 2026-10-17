@@ -46,11 +46,12 @@
   a `static` function of one file does not hide a call of the OS function of its name
   from another. A key of `FUNCTION_SYMBOLS` with no reference fails, so a file that the
   build leaves out loses its keys. A new outside symbol also goes in `OUTSIDE` in
-  `connector-opcua`, which lists the outside symbols of the production build. A header
-  list is not a check: a listed header can include another (`pthread.h` includes
-  `time.h`). So the check refuses no system header, and each header that the copy
-  includes must be in the copy or in a system directory as `cc` finds it. Lost: a header
-  list, and a deny list of OS symbols, which passes a call that it does not name.
+  `connector-opcua`, or in `PLUGINS` when only the OpenSSL plugins may name it, which
+  list the outside symbols of the production build. A header list is not a check: a
+  listed header can include another (`pthread.h` includes `time.h`). So the check
+  refuses no system header, and each header that the copy includes must be in the copy
+  or in a system directory as `cc` finds it. Lost: a header list, and a deny list of OS
+  symbols, which passes a call that it does not name.
   Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/1884#issuecomment-6060989375,
   2026-10-08 13:31 UTC). Supersedes the closed list of system headers of
@@ -825,21 +826,23 @@
   randomness, or process state, by its name after the prefix. `AWS_LC_KEYS` keys each
   other call of aws-lc by its file and function, with its reason: each call that draws
   (TLS RANDOMNESS), each call that reads the clock, and each PEM reader, which with no
-  password callback reads a password from the console (#3017). `OMITTED` in `cargo xtask
-  open62541` is the closed list of the release files that the library compiles and the
-  copy leaves out, each with its reason: the file stores, `create_certificate.c`, and
-  each policy file other than `Basic256Sha256`, `Aes128_Sha256_RsaOaep`,
+  password callback reads a password from the console (#3017). `AWS_LC_INPUTS` lists the
+  functions of aws-lc that read the clock or the console, and a test fails when no test
+  of `connector-opcua` names the function of each of their keys. `OMITTED` in `cargo
+  xtask open62541` is the closed list of the release files that the library compiles and
+  the copy leaves out, each with its reason: the file stores, `create_certificate.c`,
+  and each policy file other than `Basic256Sha256`, `Aes128_Sha256_RsaOaep`,
   `Aes256_Sha256_RsaPss`, and their common code. So the copy compiles only the three
   current policies and `None`, and the production code adds no other. `shim.c` defines
   each symbol that the rest of the copy names from a left-out file to print its name and
   abort, and a test calls each one. A test fails on another policy file in
   `sources.txt`. A test fails when the production code names a policy or a certificate
-  group other than at its stub in `shim.c`, and a test fails when the objects of
-  `shim.c` or `server.c` name aws-lc, or the allocator or console of libc.
-  `UA_Openssl_Init` of `securitypolicy_common.c` writes a `static` flag with no lock.
-  The build defines no `OPENSSL_API_COMPAT`, so the flag guards no call, and #2934 PR 1b
-  removes it from the copy. Lost: the about 35 file and clock calls of the left-out
-  files, each keyed in `FUNCTION_SYMBOLS`; and a copy of each deprecated and ECC policy
-  file. Decided by `laptop.architect-2`
+  group, or a function `UA_CertificateUtils_*`, other than at its stub in `shim.c`, and
+  a test fails when the objects of `shim.c` or `server.c` name aws-lc or a symbol of
+  `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` writes a `static` flag with
+  no lock. The build defines no `OPENSSL_API_COMPAT`, so the flag guards no call, and
+  #2934 PR 1b removes it from the copy. Lost: the about 35 file and clock calls of the
+  left-out files, each keyed in `FUNCTION_SYMBOLS`; and a copy of each deprecated and
+  ECC policy file. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6230888200,
   2026-10-17 06:51 UTC).

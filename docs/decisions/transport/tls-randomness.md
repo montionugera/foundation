@@ -7,8 +7,8 @@
   runs one value twice and compares the traces. The person accepted it ("Accept TLS
   RANDOMNESS"), from `network`'s proposal on #54.
   #2934 extends it to the OPC UA secure channel of `connector-opcua`: the OpenSSL
-  plugins of open62541 draw nonces, keys, padding, and salts from aws-lc
-  (`RAND_bytes`), not from `env`, with the same bounds: bytes only, and nothing
+  plugins of open62541 draw nonces, keys, padding, salts, and the blinding of RSA from
+  aws-lc (`RAND_bytes`), not from `env`, with the same bounds: bytes only, and nothing
   branches on them. Simulated runs still replay: replay traces leave out the bytes of
   a secured channel, and a `sim` test of #2934 PR 1b reads one value twice in
   `SignAndEncrypt` and compares the traces. `AWS_LC_KEYS` of `cargo xtask open62541`
