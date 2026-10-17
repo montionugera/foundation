@@ -168,8 +168,8 @@ pub struct Shard {
     /// the open restored, or the one that a shed kept.
     kept: hash::Map<Slot, Gate>,
     /// The named records of each index in the buffer, by slot, carried or not: a shed
-    /// index whose entries found no block or no room keeps them, so that a later carry
-    /// places each record in the part that holds it.
+    /// index whose entries found no block or no room, or that shed with no mesh time,
+    /// keeps them, so that a later carry places each record in the part that holds it.
     named: hash::Map<Slot, named::Parts>,
     /// When [`advance`](Shard::advance) next restores records, ends holds, and appends
     /// changed records ([`Shard::arm`]).
