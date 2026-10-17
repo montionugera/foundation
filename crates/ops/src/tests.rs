@@ -1632,10 +1632,30 @@ mod scope {
         host.move_path(Path::new("/work"), Path::new("/old"));
         host.make_dir(Path::new("/work"));
         assert_eq!(
-            scope.write(Path::new("out.plan"), b"x"),
+            scope.write(Path::new("/work/out.plan"), b"x"),
             Err(Error::FolderChanged {
-                path: PathBuf::from("out.plan"),
+                path: PathBuf::from("/work/out.plan"),
                 folders: vec![PathBuf::from("/work")],
+            })
+        );
+    }
+
+    /// The process stays on its working directory when it moves, so a relative path
+    /// resolves in the moved folder, which no folder of the scope holds.
+    #[test]
+    fn a_relative_plan_file_in_a_moved_working_directory_is_outside() {
+        let (host, scope) = work();
+        host.move_path(Path::new("/work"), Path::new("/old"));
+        host.make_dir(Path::new("/work"));
+        assert_eq!(
+            scope.write(Path::new("out.plan"), b"x"),
+            Err(Error::Outside {
+                path: PathBuf::from("out.plan"),
+                limits: crate::scope::Limits {
+                    folders: vec![PathBuf::from("/work")],
+                    data: PathBuf::from("/work/foundation-data"),
+                    working: PathBuf::from("/work"),
+                },
             })
         );
     }

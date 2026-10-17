@@ -244,6 +244,8 @@ impl Paths {
 
     /// Moves the entry at `from` to `to`, both absolute with no `..`, with each entry
     /// under it and their inodes. A link at the last name of either is not followed.
+    /// A working directory at or under `from` moves with it, as a host keeps a process
+    /// on its directory.
     pub(crate) fn move_entry(&mut self, node: usize, from: &Path, to: &Path) {
         let from = self.entry(node, from);
         let to = self.entry(node, to);
@@ -260,6 +262,11 @@ impl Paths {
             to.display(),
             from.display()
         );
+        let working = self
+            .working
+            .get(&node)
+            .and_then(|dir| self.resolve(node, dir).ok());
+        let working = working.filter(|dir| dir.starts_with(&from));
         let mut moved: Vec<_> = self.under(node, &from).cloned().collect();
         moved.push(from.clone());
         for path in moved {
@@ -267,6 +274,10 @@ impl Paths {
             let entry = entry.expect("invariant: each moved path has an entry");
             let path = to.join(path.strip_prefix(&from).expect("under `from`"));
             self.entries.insert((node, path), entry);
+        }
+        if let Some(dir) = working {
+            let dir = to.join(dir.strip_prefix(&from).expect("under `from`"));
+            self.working.insert(node, dir);
         }
     }
 

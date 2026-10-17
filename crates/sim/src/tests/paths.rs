@@ -315,6 +315,25 @@ fn a_moved_directory_keeps_its_key_and_what_it_holds() {
     assert_eq!(paths.read(Path::new("/w/data"), 0), Err(Error::NotFound));
 }
 
+/// A host keeps a process on its working directory when a program outside moves it,
+/// so a relative path resolves in the moved directory, outside the folder.
+#[test]
+fn a_moved_working_directory_stays_the_working_directory() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w/work"));
+    node.set_working_dir(Path::new("/w/work"));
+    let within = paths.within(&["/w/work".into()], &[]).unwrap();
+    node.move_path(Path::new("/w"), Path::new("/old"));
+    node.make_dir(Path::new("/w/work"));
+    let resolved = paths.resolve(Path::new("."));
+    let written = within.write(Path::new("out.plan"), b"x");
+    assert_eq!(
+        (resolved, written),
+        (Ok(PathBuf::from("/old/work")), Err(Error::Outside))
+    );
+}
+
 #[test]
 fn a_moved_link_names_its_target_and_a_link_on_the_way_is_followed() {
     let node = Sim::new(Config::default()).node(node::Config::default());
