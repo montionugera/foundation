@@ -42,17 +42,9 @@
   PR that `laptop.director` wrote, relayed by `laptop.monitor`
   (https://github.com/synnaxlabs/foundation/pull/2600#issuecomment-6155838835): "Isn't
   it my job to check the directors rule change?" (2026-10-13T21:43:43Z), then "I think
-  it should be your job to do it" (2026-10-13T21:43:50Z). The person approves the merge
-  of a rule PR, other than one whose each change is a rule about tests, which
-  `laptop.monitor` approves, and a change in `.claude/` still needs the person's
-  code-owner review (`docs/factory.md`, "Merge path"). The person, relayed by
-  `laptop.monitor` in factory message `655423c7`
-  (https://github.com/synnaxlabs/foundation/pull/2976#issuecomment-6229342714,
-  2026-10-17T03:55:34Z): "Yea that's fine if its test only do whatever you want".
-  `laptop.monitor`, in the same message
-  (https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6229364740):
-  "From now on, a rule change that touches only tests comes to me for approval, not to
-  the person; send any other rule change as before." The director decided these parts:
+  it should be your job to do it" (2026-10-13T21:43:50Z). The person still approves the
+  merge of a rule PR (`docs/factory.md`, "Merge path"). The director decided these
+  parts:
   - the rest
     (https://github.com/synnaxlabs/foundation/pull/2586#issuecomment-6150355931,
     2026-10-13T16:35:25Z);
