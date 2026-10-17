@@ -60,8 +60,8 @@ pub enum Start {
     /// else the named reader's position at this home, else `otherwise`. The reader
     /// records when `otherwise` has a backfill position.
     Resume {
-        /// The position the reader's hub presents. On the live path, it is at most the
-        /// live tail ([`Readers::open`]).
+        /// The position the reader's hub presents. On the live path,
+        /// [`Readers::open`] takes the live tail in place of a position past it.
         presented: Option<Position>,
         /// The position when neither the hub nor this home has one.
         otherwise: Position,

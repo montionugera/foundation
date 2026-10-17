@@ -38,6 +38,7 @@
   item 9 of
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6159035426).
   Supersedes https://github.com/synnaxlabs/foundation/pull/89 in its clause that a
+  presented live position past the head is accepted as is. A presented backfill
   position past the head is accepted as is. A resume starts a `buffer` read at
   `Mark::at(position)`, so the entries with no samples at the position
   come again. Between reads, the caller keeps the mark the last read gave, in memory
