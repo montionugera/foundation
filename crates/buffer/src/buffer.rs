@@ -516,18 +516,24 @@ impl State {
     /// deadline then tries again.
     fn checkpoint(&mut self, pool: &Pool) -> Option<Checkpoint> {
         let tail = self.trimmed()?;
-        let mut block = pool.alloc(ALIGN).ok()?;
+        let block = pool.alloc(ALIGN).ok()?;
+        Some(self.trim(block, tail))
+    }
+
+    /// The checkpoint with the tail `tail`, in `block` of [`ALIGN`] bytes, with the
+    /// records before it hidden from reads.
+    fn trim(&mut self, mut block: Unique, tail: Position) -> Checkpoint {
         self.logs.hide(tail.offset());
         self.header = self.header.next(tail);
         let bytes = (&mut *block)
             .try_into()
             .expect("invariant: the block is of `ALIGN` bytes");
         self.header.write(bytes);
-        Some(Checkpoint {
+        Checkpoint {
             tail,
             place: self.header.place(),
             block: block.freeze(),
-        })
+        }
     }
 
     /// Plans the carry record of the paths whose holder is before the reach of the
@@ -686,12 +692,9 @@ impl Buffer {
             min,
         })?;
         let (file, header) = open_ring(&files, &dir, &pool, &entropy, layout).await?;
-        let (cursor, mut logs) = walk(&file, &pool, &header, slots).await?;
-        let chain = random(&entropy);
-        let mut writer = cursor.writer();
-        let trim = trimmed.then(|| writer.trimmed(logs.kept())).flatten();
-        let header =
-            restart(&file, &pool, &mut writer, &mut logs, header, chain, trim).await?;
+        let (cursor, logs) = walk(&file, &pool, &header, slots).await?;
+        let mut state = State::new(cursor.writer(), logs, header, random(&entropy));
+        restart(&file, &pool, &mut state, trimmed).await?;
         let tails = trimmed.then(|| tails_max(&pool));
         let shared = Rc::new(Shared {
             file,
@@ -699,7 +702,7 @@ impl Buffer {
             block_max,
             layout: header.layout,
             tails,
-            state: RefCell::new(State::new(writer, logs, header, chain)),
+            state: RefCell::new(state),
         });
         tasks.spawn(run(Rc::clone(&shared), clock, commit));
         Ok(Self {
@@ -1157,10 +1160,10 @@ fn recover_carried(
     Ok(())
 }
 
-/// Writes and syncs the restart record of an open with `chain` as its body. With a
-/// `trim`, first syncs the walked records, then frees the records before `trim`,
-/// with the checkpoint after `header` in the sync of the restart record when a
-/// block is free for it. Gives the newest checkpoint.
+/// Syncs the header and the walked records of an open, as read, then writes its
+/// restart record, with the chain of `state` as its body, and syncs it. With
+/// `trimmed`, the trim of a commit with nothing queued goes in that sync, and the
+/// record goes in a freed block after it when no block was free.
 ///
 /// # Errors
 ///
@@ -1169,43 +1172,42 @@ fn recover_carried(
 async fn restart(
     file: &File,
     pool: &Pool,
-    writer: &mut Writer,
-    logs: &mut Logs,
-    header: Header,
-    chain: u32,
-    trim: Option<Position>,
-) -> Result<Header, Error> {
-    let placed = writer.restart(chain);
-    let Some(tail) = trim else {
-        write_restart(file, pool, placed?, chain).await?;
-        file.sync().await?;
-        return Ok(header);
+    state: &mut State,
+    trimmed: bool,
+) -> Result<(), Error> {
+    let trim = trimmed.then(|| state.trimmed()).flatten();
+    let chain = state.chain;
+    let placed = match state.writer.restart(chain) {
+        Err(full) if trim.is_none() => return Err(full.into()),
+        placed => placed,
     };
-    // A crash that kept the checkpoint and lost walked records that the last process
-    // did not sync would lose the tails they hold. A freed block takes the restart
-    // record only after the sync of the checkpoint: a crash that kept the record and
-    // the old checkpoint would lose the first walked record.
+    // A failed sync can leave a checkpoint in the cache only, and the walk read it.
+    // The restart record and the next checkpoint go over the records that it frees
+    // only once it is durable.
     file.sync().await?;
-    let header = header.next(tail);
-    let mut block = pool.alloc(ALIGN)?;
-    let bytes = (&mut *block)
-        .try_into()
-        .expect("invariant: the block is of `ALIGN` bytes");
-    header.write(bytes);
-    file.write_at(header.place(), slice::from_ref(&block.freeze()))
-        .await?;
-    let late = placed.is_err();
-    if let Ok(sealed) = placed {
-        write_restart(file, pool, sealed, chain).await?;
+    let late = match placed {
+        Ok(sealed) => {
+            write_restart(file, pool, sealed, chain).await?;
+            false
+        }
+        Err(_) => true,
+    };
+    if let Some(tail) = trim {
+        let checkpoint = state.trim(pool.alloc(ALIGN)?, tail);
+        file.write_at(checkpoint.place, slice::from_ref(&checkpoint.block))
+            .await?;
     }
     file.sync().await?;
-    writer.release(tail.offset());
-    logs.hide(tail.offset());
+    if let Some(tail) = trim {
+        state.synced(&mut Vec::new(), None, Some(tail));
+    }
+    // A freed block takes the record only after the checkpoint is durable: a crash
+    // that kept the record and the old checkpoint would lose the first walked record.
     if late {
-        write_restart(file, pool, writer.restart(chain)?, chain).await?;
+        write_restart(file, pool, state.writer.restart(chain)?, chain).await?;
         file.sync().await?;
     }
-    Ok(header)
+    Ok(())
 }
 
 /// Writes the restart record `sealed`, whose body is `chain`.
