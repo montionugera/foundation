@@ -16,6 +16,9 @@ import unittest
 import foundation
 
 PATIENCE = 90.0
+# The node sends its close before it exits. No call of the client shows that the client
+# took it, so a test gives the client 1 s on loopback.
+CLOSED = 1.0
 ADMIN = "@admin"
 # The encoding of the base point of Ed25519: a public key that is not of small order.
 BASE = bytes([0x58]) + bytes([0x66] * 31)
@@ -162,12 +165,24 @@ class ClientTest(unittest.TestCase):
     def test_the_close_gives_the_cause_when_the_node_closed_the_session(self) -> None:
         client = self.node.connect()
         self.node.stop()
-        time.sleep(1)
+        time.sleep(CLOSED)
         with self.assertRaises(ConnectionError) as raised:
             client.close()
         self.assertEqual(
             str(raised.exception), "the session failed: the peer closed the session (0)"
         )
+        self.assertIsNone(client.close())
+
+    def test_a_with_block_raises_the_close_error_after_its_own(self) -> None:
+        with self.assertRaises(ConnectionError) as raised:
+            with self.node.connect():
+                self.node.stop()
+                time.sleep(CLOSED)
+                raise KeyError("in the block")
+        self.assertEqual(
+            str(raised.exception), "the session failed: the peer closed the session (0)"
+        )
+        self.assertEqual(repr(raised.exception.__context__), "KeyError('in the block')")
 
 
 class ArgumentTest(unittest.TestCase):
@@ -200,7 +215,8 @@ class ArgumentTest(unittest.TestCase):
         with self.assertRaises(ValueError) as raised:
             self.connect(public_key=bytes(32))
         self.assertEqual(
-            str(raised.exception), "public_key: the public key is a point of small order"
+            str(raised.exception),
+            "public_key: the public key is a point of small order",
         )
 
     def test_a_key_that_is_not_32_bytes_is_refused(self) -> None:
