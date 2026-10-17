@@ -1927,7 +1927,7 @@ fn a_connector_logs_a_clear_of_a_retry_error_with_no_text() {
     let lines = status_lines(
         tracing::Level::INFO,
         || KindError::Retry("".into()),
-        |ctx| ctx.clear_error(),
+        connector::kind::Context::clear_error,
         false,
     );
     let mut logged = first_run().to_vec();
