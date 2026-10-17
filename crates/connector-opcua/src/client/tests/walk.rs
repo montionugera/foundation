@@ -1259,52 +1259,94 @@ fn a_cursor_past_the_skip_bound_whose_point_the_server_freed_fails() {
     );
 }
 
-/// 12 003 folders under `root` in a page each, each with a variable; the pages of
-/// places 1 to 6000 and 6002 to 12 001 have no references. At the bound of 1, each open
-/// folder releases the point of `root`, and its cursor goes on as a held one does, so
-/// the walk gives what the walk with no bound gives.
+/// What a walk of everything gives at the bound of `most` over 12 003 folders under
+/// `root` in a page each, each with a variable, where the relay empties the page of
+/// each place for which `empty` is true.
+fn with_variables(
+    most: u16,
+    empty: impl Fn(usize) -> bool + Send + 'static,
+) -> Result<Found, Error> {
+    let numbered = numbered(12_003);
+    let setup = move |server: &Server| {
+        numbered(server);
+        server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+        for (number, parent) in (40_000..52_003).zip(20_000..32_003) {
+            server.add_variable(&Variable {
+                node: Node {
+                    namespace: 1,
+                    key: Key::Number(number),
+                },
+                parent: Node {
+                    namespace: 1,
+                    key: Key::Number(parent),
+                },
+                reference: HAS_COMPONENT,
+                name: c"x",
+                data_type: DOUBLE,
+                rank: -1,
+                access: server::READ,
+                value: None,
+            });
+        }
+        server.report_points(most);
+    };
+    let rewrite = placed(move |message, _, place| {
+        if empty(place) {
+            emptied(message);
+        }
+    });
+    walked(setup, rewrite, everything())
+}
+
+/// The pages of places 1 to 6000 and 6002 to 12 001 have no references. At the bound of
+/// 1, each open folder releases the point of `root`, and its cursor goes on as a held
+/// one does, so the walk gives what the walk with no bound gives.
 #[test]
 fn a_walk_at_the_bound_past_pages_with_no_references_gives_what_an_unbound_walk_gives()
 {
-    let walk = |most: u16| {
-        let numbered = numbered(12_003);
-        let setup = move |server: &Server| {
-            numbered(server);
-            server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
-            for (number, parent) in (40_000..52_003).zip(20_000..32_003) {
-                server.add_variable(&Variable {
-                    node: Node {
-                        namespace: 1,
-                        key: Key::Number(number),
-                    },
-                    parent: Node {
-                        namespace: 1,
-                        key: Key::Number(parent),
-                    },
-                    reference: HAS_COMPONENT,
-                    name: c"x",
-                    data_type: DOUBLE,
-                    rank: -1,
-                    access: server::READ,
-                    value: None,
-                });
-            }
-            server.report_points(most);
-        };
-        let rewrite = placed(move |message, _, place| {
-            if (1..=6000).contains(&place) || (6002..=12_001).contains(&place) {
-                emptied(message);
-            }
-        });
-        relayed_browse(setup, rewrite, async |server| {
-            browse::walk(server, &everything()).await
-        })
-    };
-    let unbound = walk(0).expect("found");
+    let empty = |place| (1..=6000).contains(&place) || (6002..=12_001).contains(&place);
+    let unbound = with_variables(0, empty).expect("found");
     assert_eq!(unbound.entries.len(), 2, "{unbound:?}");
     assert_eq!(unbound.end, End::Budget);
-    let bound = walk(1).expect("found");
+    let bound = with_variables(1, empty).expect("found");
     assert_eq!((bound.entries, bound.end), (unbound.entries, unbound.end));
+}
+
+/// The pages of places 1 to 4000, 4002 to 8001, and 8003 to 12 001 have no references.
+/// A released cursor past pages with no references does not give those pages again,
+/// so the walk at the bound of 1 gives what the walk with no bound gives.
+#[test]
+fn a_released_cursor_does_not_give_its_pages_with_no_references_again() {
+    let empty = |place| {
+        (1..=4000).contains(&place)
+            || (4002..=8001).contains(&place)
+            || (8003..=12_001).contains(&place)
+    };
+    let unbound = with_variables(0, empty).expect("found");
+    assert_eq!(unbound.entries.len(), 3, "{unbound:?}");
+    let bound = with_variables(1, empty).expect("found");
+    assert_eq!((bound.entries, bound.end), (unbound.entries, unbound.end));
+}
+
+/// 12 003 references of `root` in a page each, the pages of places 1 to 12 001 with no
+/// references. The relay frees the point of `root` at the page of place 6000, and the
+/// walk browses `root` again from its start and ends at its budget, as a walk with a
+/// held point does.
+#[test]
+fn a_walk_whose_point_the_server_freed_ends_at_its_budget() {
+    let mut freed = false;
+    let rewrite = placed(move |message, _, place| {
+        if place == 6000 && !freed {
+            assert_eq!(response(message), Some(BROWSE_NEXT_RESPONSE));
+            freed = true;
+            let invalid = Status::BAD_CONTINUATION_POINT_INVALID.0.to_le_bytes();
+            message[56..60].copy_from_slice(&invalid);
+        } else if (1..=12_001).contains(&place) {
+            emptied(message);
+        }
+    });
+    let found = walked(numbered(12_003), rewrite, everything());
+    assert_eq!(found.expect("found").end, End::Budget);
 }
 
 /// 10 003 references of `root` in a page each, the pages of places 1 to 10 001 with no

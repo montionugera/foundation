@@ -118,17 +118,19 @@
   the count of references of the folder before its page, and a cursor that is not a
   count gives `opcua.bad-cursor`. The browse keeps the continuation point of each cursor
   that it gives. A page of the server with no references gives a page with no entries
-  and a cursor, so the budget of `browse::walk` counts it. A browse again for a cursor
-  of an earlier browse, or whose point the server freed, reads past at most `VISITS`
-  pages of the server with no references, so that the cursor of a page with no entries
-  goes on in a new browse. Past them, it gives `Error::Device`. So a new browse of a
-  cursor fails there, where a walk with a held point passes, and #2985 removes this
-  bound (key choice 8,
+  and a cursor, so the budget of `browse::walk` counts it. A browse for a cursor of an
+  earlier browse reads past at most `VISITS` pages of the server with no references, so
+  that the cursor of a page with no entries goes on in a new browse. Past them, it gives
+  `Error::Device`. So a new browse of a cursor fails there, where a walk with a held
+  point passes, and #2985 removes this bound (key choice 8, `laptop.architect-2`,
+  2026-10-17T04:36:43Z,
   https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229704794, accepted
   by `laptop.monitor`). A reference to a node of another class counts in the text of a
   cursor and gives no entry. A cursor with no point, or whose point the server freed
   (`BadContinuationPointInvalid`), browses the folder again from its start and skips
-  that count when the count is at most 100 000. Past that count, a freed point gives
+  that count when the count is at most 100 000. While it skips, it reads past at most
+  `VISITS` pages with no references, and then gives a page with no entries and the
+  same cursor. Past 100 000, a freed point gives
   `Error::Device` with `BadContinuationPointInvalid`, and a cursor with no point gives
   `opcua.bad-cursor`. A skip assumes that the server keeps the order of the references
   of the folder: when the server changes that order, a skip can drop or repeat a
