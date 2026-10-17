@@ -14,7 +14,11 @@
   https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237211963). The
   client's thread is a shard of `os::shards()`, named `foundation-sdk`, with no core
   (`laptop.architect-2`, 2026-10-17T17:32:45Z,
-  https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237701374). This
+  https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237701374). The
+  shard logs to the dispatch of the caller of `connect`, so the client's logs go where
+  the program's logs go (`box1.builder-1`, key choice of kind 9, sent to
+  `laptop.monitor`, round 2 of
+  https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6238447555). This
   replaces the env of its own on `Instant`, `getrandom`, and `socket2`, so #2932 closes:
   `os::clock` counts time while the host sleeps. `sdk` is on the Windows lists of
   `ci.yaml` until #682 and #2955 give `os::clock` and `os::net` there.
@@ -30,15 +34,16 @@
   https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225303374). In a
   build where panics unwind, a panic of the client's thread gives `Error::Panicked` from
   `connect` or `close`, and the panic hook of the process gets its message
-  (`laptop.architect-2`,
-  https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237701374). The wheel
+  (`laptop.architect-2`, 2026-10-17T17:32:45Z,
+  https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237701374 and
+  https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237729706). The wheel
   builds with the profile `wheel`, `release` with `panic = "unwind"`, so a panic in the
   client gives the Python caller an exception, not an abort (`laptop.architect`,
   2026-10-17T17:33:46Z,
-  https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237722519;
-  `laptop.monitor`, key choice of kind 9, 2026-10-17). It lands with the wheel build in
-  PR 1b of #2923. A failure of the session after `connect` stays silent until the next
-  call, and that call gives the cause of the failure, never a generic closed error
+  https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237722519). It lands
+  with the wheel build in PR 1b of #2923. A failure of the session after `connect`
+  stays silent until the next call, and that call gives the cause of the failure, never
+  a generic closed error
   (`laptop.monitor`, key choice of kind 9, 2026-10-16T22:40:46Z,
   https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6226048578). The next
   call, `close` too, gives the cause: `close` gives `Error::Session` with it when the

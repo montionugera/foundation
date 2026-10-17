@@ -70,7 +70,7 @@
     it is not the slowest job of the run. The times of the three jobs go on #2954, and
     a feature job that becomes the slowest job of the run goes back to `laptop.monitor`
     with its time.
-  - A new crate on a list: the person, 2026-10-17 at about 17:33Z, relayed by
-    `laptop.monitor`
+  - A new crate on a list: the person, relayed by `laptop.monitor` at
+    2026-10-17T17:30:12Z
     (https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237654845):
     "Yeah fine". So `sdk` is on the Windows lists with #682 and #2955.
