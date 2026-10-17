@@ -136,13 +136,16 @@
   roots that do not parse are skipped" with the count `skipped`, and "the OS roots hold
   no certificate, so an https connect with no CA of its connector fails". It logs them
   also with `Region::Absent`. The first warning is the one count line: no warning
-  counts the failures after the first 16 (#2945). `foundation status` on the running
-  node gives the `source` and each failure, in full, to a subject with `read` on the
-  name of the node, as `roots` in its JSON and as `OS roots:` lines in its text, and
-  leaves `roots` out when the read had no failure. `ops::Roots` keeps the failures in
-  order while their text is at most 1 MiB, and counts the rest as `unlisted`, so the
-  reply stays in its 16 MiB bound. The list comes from the running node, since a shell
-  can read other roots, and a file on disk of the failures is refused
+  counts the failures after the first 16 (`laptop.architect-2`, 2026-10-17T04:59:46Z,
+  #2945:
+  https://github.com/synnaxlabs/foundation/issues/2945#issuecomment-6229906709, which
+  supersedes the `unlisted` warning approved at 726321db1). `foundation status` on the
+  running node gives the `source` and each failure, in full, to a subject with `read`
+  on the name of the node, as `roots` in its JSON and as `OS roots:` lines in its text,
+  and leaves `roots` out when the read had no failure. `ops::Roots` keeps the failures
+  in order while their text is at most 1 MiB, and counts the rest as `unlisted`, so
+  the reply stays in its 16 MiB bound. The list comes from the running node, since a
+  shell can read other roots, and a file on disk of the failures is refused
   (`laptop.architect-2`, 2026-10-16T22:27:09Z, #2945:
   https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225879413; the plan:
   https://github.com/synnaxlabs/foundation/issues/2945#issuecomment-6229892971). The
