@@ -75,19 +75,20 @@ struct Client(Mutex<Option<sdk::Client>>);
 
 #[pymethods]
 impl Client {
-    /// Closes the session, and blocks until the close goes out and the client's thread
-    /// ends. A second close does nothing.
+    /// Closes the session, and blocks until the close goes out, the transport drains
+    /// each close (up to 3 s), and the client's thread ends. A close during another
+    /// close waits for it to end, and gives `None`, as a close after it does.
     ///
     /// Raises `ConnectionError` with the cause when the session ended before the close,
-    /// and `PanicException` when the client's thread panicked.
+    /// and `PanicException` when the client's thread panicked. Only the close that ends
+    /// the session raises.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
-        // The guard drops before `detach`: a second caller waits for the lock with the
-        // GIL, which the closing thread needs to return.
-        let client = self.0.lock().unwrap_or_else(PoisonError::into_inner).take();
-        match client {
-            Some(client) => py.detach(|| client.close()).map_err(|e| error(&e)),
-            None => Ok(()),
-        }
+        // The lock is taken without the GIL, which the closing thread needs to return.
+        py.detach(|| {
+            let mut client = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            client.take().map_or(Ok(()), sdk::Client::close)
+        })
+        .map_err(|e| error(&e))
     }
 
     fn __enter__(this: Py<Self>) -> Py<Self> {
