@@ -199,6 +199,15 @@ fn within_checks_the_working_directory_as_the_first_step_of_a_relative_path() {
     }
     node.set_working_dir(Path::new("/work"));
     assert_eq!(within.write(Path::new("../work/a"), b"x"), Ok(()));
+    node.make_dir(Path::new("/out/data"));
+    let within = node
+        .paths()
+        .within(&[PathBuf::from("/work")], &[PathBuf::from("/out/data")])
+        .unwrap();
+    node.set_working_dir(Path::new("/out/data"));
+    for path in ["a", "./a", "/out/data/a"].map(Path::new) {
+        assert_eq!(within.read(path, 1), Err(Error::Outside), "{path:?}");
+    }
 }
 
 #[test]

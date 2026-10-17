@@ -69,11 +69,12 @@ impl Paths {
     /// whole path also passes when it is a directory on the way to a folder. The name
     /// of the first prefix that does not resolve must pass them too, at its place with
     /// no key, as a new name there does. A relative path starts at the working
-    /// directory, which is its first step, and each prefix after it is a prefix of the
-    /// path as given. A path whose steps pass and that does not resolve gives the error
-    /// of its resolve. The limits of `self` hold too, so a handle never reaches more
-    /// than the one it came from. The check and the call are two steps: a symbolic link
-    /// that another program makes between them can lead the call out.
+    /// directory: the steps of that directory come first, and each prefix after them
+    /// is a prefix of the path as given. A path whose steps pass and that does not
+    /// resolve gives the error of its resolve. The limits of `self` hold too, so a
+    /// handle never reaches more than the one it came from. The check and the call are
+    /// two steps: a symbolic link that another program makes between them can lead the
+    /// call out.
     ///
     /// # Errors
     ///
@@ -254,10 +255,11 @@ impl Paths {
     }
 
     /// `Ok` with the result of the resolve of `path` when each step of it passes each
-    /// limit: the working directory first for a relative path, then each prefix of its
-    /// components that resolves, in order, where a step short of `path` also passes on
-    /// the way to a folder, then the name of the first prefix that does not resolve, at
-    /// its place with no key. Else the error of the first step that fails.
+    /// limit: each prefix of the resolved working directory first for a relative path,
+    /// then each prefix of its components that resolves, in order, where a step short
+    /// of `path` also passes on the way to a folder, then the name of the first prefix
+    /// that does not resolve, at its place with no key. Else the error of the first
+    /// step that fails.
     fn check(&self, path: &Path) -> Result<Result<(), Error>, Error> {
         if self.limits.is_empty() {
             return Ok(Ok(()));
@@ -265,15 +267,19 @@ impl Paths {
         let mut parts: Vec<_> = path.components().collect();
         let mut part = PathBuf::new();
         let mut above = PathBuf::new();
-        // Each prefix is a prefix of `path` and never longer: a prefix joined to the
-        // working directory can be longer than the host takes where `path` is not.
+        // Each step is a prefix of the resolved working directory or of `path`, never
+        // of their join, which can be longer than the host takes.
         if path.is_relative() && !parts.is_empty() {
             if parts[0] == Component::CurDir {
                 parts.remove(0);
             }
-            let working = Path::new(".");
-            above = self.driver.resolve(working)?;
-            self.allowed(self.key(working)?, &above, !parts.is_empty())?;
+            let working = self.driver.resolve(Path::new("."))?;
+            let mut names = working.components().peekable();
+            while let Some(name) = names.next() {
+                above.push(name);
+                let short = names.peek().is_some() || !parts.is_empty();
+                self.allowed(self.key(&above)?, &above, short)?;
+            }
         }
         for (index, step) in parts.iter().enumerate() {
             part.push(step);
