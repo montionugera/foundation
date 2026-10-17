@@ -472,8 +472,12 @@ fn a_kept_pool_budget_that_the_system_cannot_reserve_fails() {
 
 /// A first start under an address space of 1 GiB, which its pool budget does not fit.
 #[cfg_attr(
-    not(target_os = "linux"),
+    target_os = "macos",
     ignore = "only Linux: macOS does not enforce a limit of address space"
+)]
+#[cfg_attr(
+    windows,
+    ignore = "only Linux: Windows has no limit on the address space of a process"
 )]
 #[test]
 fn a_first_pool_budget_that_the_system_cannot_reserve_fails() {
