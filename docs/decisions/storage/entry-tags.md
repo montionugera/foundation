@@ -62,7 +62,7 @@
   of a log and a tag, a pair takes the capacity of its largest copy since the open
   plus 53.7 B: 70.7 B for a handoff of 17 B, 126.7 B for a named part of 73 B,
   309.7 B for 256 B, and 4085.7 B for 4032 B, against 22.3 B before the copy. At
-  100,000 logs with a handoff and a named part, that is 19.8 MB against 4.5 MB, and
+  100,000 logs with a handoff and a named part, that is 19.7 MB against 4.5 MB, and
   an open holds one copy of the largest tag more until it returns (10.4 MB for 73 B).
   `laptop.architect` accepted this cost under P1 for what it buys: a carry fills from
   memory with no file read and no new failure, and `newest` and `Shard::open` are
