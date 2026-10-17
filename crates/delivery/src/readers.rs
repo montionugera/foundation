@@ -313,11 +313,12 @@ impl Readers {
 
     /// Starts a complete session with credit for `limit_bytes` since it opens, its
     /// first grant, that `charge` charges for each frame. The open session of the same
-    /// named reader, in either mode, is taken over. A presented live position past the
-    /// live tail, the end of the last frame given to [`Readers::queue`], takes the live
-    /// tail: a restart or a shed can lose those seqs, and new frames take them again. A
-    /// session that starts below a live frame that memory no longer holds reads from
-    /// disk: [`Readers::take`] gives [`Next::Disk`] at once, and no
+    /// named reader, in either mode, is taken over. A `presented` live position of
+    /// [`Start::Resume`] past the live tail, the end of the last frame given to
+    /// [`Readers::queue`] or the `live` of [`Readers::new`] before one, takes the live
+    /// tail: a restart or a shed can lose those seqs, and the reader then gets the new
+    /// frames at them. A session that starts below a live frame that memory no longer
+    /// holds reads from disk: [`Readers::take`] gives [`Next::Disk`] at once, and no
     /// [`Readers::release`] names it.
     ///
     /// # Panics
