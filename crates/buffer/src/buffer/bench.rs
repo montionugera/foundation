@@ -237,6 +237,26 @@ mod tests {
         }
     }
 
+    /// `tagged` copies the bytes of each index at each sync, and `new` copies none.
+    #[test]
+    fn a_tagged_deadline_copies_each_index() {
+        let tag = std::num::NonZeroU8::MIN;
+        let copies = |mut deadline: Deadline| {
+            deadline.commit(1);
+            let mut newest: Vec<_> = deadline
+                .state
+                .logs
+                .newest(Path::Live, tag)
+                .map(|(slot, newest)| (slot, newest.bytes.len()))
+                .collect();
+            newest.sort_unstable();
+            newest
+        };
+        let each = (0..3).map(|n| (Slot::new(n), PART)).collect::<Vec<_>>();
+        assert_eq!(copies(Deadline::tagged(3, 64 + PHASE)), each);
+        assert_eq!(copies(Deadline::new(3, 64 + PHASE)), []);
+    }
+
     #[test]
     fn a_deadline_of_no_indexes_takes_no_entry() {
         let mut deadline = Deadline::new(0, 64 + PHASE);
