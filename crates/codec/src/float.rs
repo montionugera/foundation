@@ -1,14 +1,19 @@
-//! The integers that the codecs see for float samples.
+//! Float vectors, which the integer codecs encode as the sortable integers of
+//! their bits.
 
 use crate::int::{self, Order};
 use crate::vector::Vector;
 use crate::word;
 
-// The float paths stay out of line, so that the integer arms of `Layout::encode` and
-// `Layout::decode` keep the code layout that they have without them.
+// The float paths stay out of line, so that their code is not inlined into
+// `Layout::encode` and `Layout::decode`.
 
 /// Writes one vector of floats of `W` bytes into the front of `out` and returns its
 /// length, as [`int::encode`] does for their sortable integers.
+///
+/// # Panics
+///
+/// Panics when `chunk` holds no sample.
 #[inline(never)]
 pub(crate) fn encode<const W: usize>(chunk: &[u8], out: &mut [u8]) -> usize {
     int::encode::<W>(chunk, Order::Unsigned, sortable::<W>, out)

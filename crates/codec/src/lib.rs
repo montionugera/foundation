@@ -738,7 +738,7 @@ enum Layout {
     Int64 {
         order: Order,
     },
-    /// Floats of 32 or 64 bits. Every codec applies to their sortable bits.
+    /// Floats of 32 or 64 bits. Every codec applies to their sortable integers.
     Float32,
     Float64,
     /// Other samples of `width` bytes, stored raw.
