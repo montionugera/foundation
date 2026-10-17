@@ -144,9 +144,9 @@ impl kind::Kind for Kind {
     /// 100 000 references. [`Error::Retry`] when the node has no mesh time, as
     /// [`browse::Context::time`] gives it. [`Error::Device`] when the connect, a
     /// Browse, a `BrowseNext`, or a Read fails, when the tags and names that the browse
-    /// keeps pass 16 MiB, and when a browse for a cursor reads past
-    /// [`browse::VISITS`] pages of the server with no references. The errors of
-    /// [`browse::walk`].
+    /// keeps pass 16 MiB, and when a browse for a cursor of an earlier browse, or
+    /// whose point the server freed, reads past [`browse::VISITS`] pages of the server
+    /// with no references. The errors of [`browse::walk`].
     fn browse(
         &self,
         ctx: &browse::Context<'_>,
@@ -514,8 +514,9 @@ pub(crate) enum Failure {
     Browse(Status),
     /// The tags and names before the pages of a browse pass [`crate::browse::BYTES`].
     Names,
-    /// A browse again for a cursor reads past [`connector::browse::VISITS`] pages of
-    /// the server with no references.
+    /// A browse again for a cursor of an earlier browse, or whose point the server
+    /// freed, reads past [`connector::browse::VISITS`] pages of the server with no
+    /// references.
     Empty,
 }
 

@@ -43,6 +43,8 @@ pub(crate) struct Server<'a> {
     uses: u64,
     /// The bytes of the `seen` of each of `points`.
     held: usize,
+    /// The key of each point that [`Server::release`] released and no page used since.
+    released: BTreeSet<(Node, usize)>,
 }
 
 /// Where the page of a cursor starts.
@@ -75,6 +77,7 @@ impl<'a> Server<'a> {
             points: BTreeMap::new(),
             uses: 0,
             held: 0,
+            released: BTreeSet::new(),
         }
     }
 
@@ -82,13 +85,13 @@ impl<'a> Server<'a> {
     /// before them gave, and the continuation point after them with the count of its
     /// references still to skip. A cursor whose point this browse holds goes on with
     /// `BrowseNext`. Else, or when the server freed its point, it browses `folder`
-    /// again from its start and skips `before` references. It reads pages of the
-    /// server while each gives only references to skip, so it gives no references and
-    /// a held point after a page with none. A browse again for a cursor also reads
-    /// past pages with none, at most [`browse::VISITS`] of them, so that a cursor of a
-    /// page with no entries goes on in a new browse. `before` is `None` for the first
-    /// page, and is a count past [`SKIP`] only for a cursor that this browse holds.
-    /// `None` when the server does not have `folder`.
+    /// again from its start and skips `before` references. It reads pages of the server
+    /// while each gives only references to skip, so it gives no references and a held
+    /// point after a page with none. A browse again for a cursor that this browse did
+    /// not release also reads past pages with none, at most [`browse::VISITS`] of them,
+    /// so that a cursor of a page with no entries goes on in a new browse. `before` is
+    /// `None` for the first page, and is a count past [`SKIP`] only for a cursor that
+    /// this browse holds. `None` when the server does not have `folder`.
     ///
     /// # Errors
     ///
@@ -100,9 +103,11 @@ impl<'a> Server<'a> {
         folder: &Node,
         before: Option<usize>,
     ) -> Result<Option<(Vec<Reference>, Seen, Option<(Point, usize)>)>, Error> {
-        let again = before.is_some();
-        let before = before.unwrap_or(0);
-        let held = self.points.remove(&(folder.clone(), before));
+        let key = (folder.clone(), before.unwrap_or(0));
+        // A released cursor gives its pages with no references, as a held one does.
+        let again = before.is_some() && !self.released.remove(&key);
+        let before = key.1;
+        let held = self.points.remove(&key);
         if let Some(held) = &held {
             self.held -= held.seen.bytes;
         }
@@ -202,6 +207,7 @@ impl<'a> Server<'a> {
                 let held =
                     held.expect("invariant: each key of `held` is a key of `points`");
                 self.held -= held.seen.bytes;
+                self.released.insert(key);
                 held.point
             })
             .collect();

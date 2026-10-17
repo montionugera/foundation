@@ -1258,3 +1258,71 @@ fn a_cursor_past_the_skip_bound_whose_point_the_server_freed_fails() {
         "the browse failed with BadContinuationPointInvalid"
     );
 }
+
+/// 12 003 folders under `root` in a page each, each with a variable; the pages of
+/// places 1 to 6000 and 6002 to 12 001 have no references. At the bound of 1, each open
+/// folder releases the point of `root`, and its cursor goes on as a held one does, so
+/// the walk gives what the walk with no bound gives.
+#[test]
+fn a_walk_at_the_bound_past_pages_with_no_references_gives_what_an_unbound_walk_gives()
+{
+    let walk = |most: u16| {
+        let numbered = numbered(12_003);
+        let setup = move |server: &Server| {
+            numbered(server);
+            server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+            for (number, parent) in (40_000..52_003).zip(20_000..32_003) {
+                server.add_variable(&Variable {
+                    node: Node {
+                        namespace: 1,
+                        key: Key::Number(number),
+                    },
+                    parent: Node {
+                        namespace: 1,
+                        key: Key::Number(parent),
+                    },
+                    reference: HAS_COMPONENT,
+                    name: c"x",
+                    data_type: DOUBLE,
+                    rank: -1,
+                    access: server::READ,
+                    value: None,
+                });
+            }
+            server.report_points(most);
+        };
+        let rewrite = placed(move |message, _, place| {
+            if (1..=6000).contains(&place) || (6002..=12_001).contains(&place) {
+                emptied(message);
+            }
+        });
+        relayed_browse(setup, rewrite, async |server| {
+            browse::walk(server, &everything()).await
+        })
+    };
+    let unbound = walk(0).expect("found");
+    assert_eq!(unbound.entries.len(), 2, "{unbound:?}");
+    assert_eq!(unbound.end, End::Budget);
+    let bound = walk(1).expect("found");
+    assert_eq!((bound.entries, bound.end), (unbound.entries, unbound.end));
+}
+
+/// 10 003 references of `root` in a page each, the pages of places 1 to 10 001 with no
+/// references. At the bound of 1, the Browse of `n00000` releases the point of `root`,
+/// and the walk still ends at its budget.
+#[test]
+fn a_walk_at_the_bound_ends_at_its_budget_past_pages_with_no_references() {
+    for most in [0, 1] {
+        let rewrite = placed(|message, _, place| {
+            if (1..=10_001).contains(&place) {
+                emptied(message);
+            }
+        });
+        let setup = move |server: &Server| {
+            numbered(10_003)(server);
+            server.report_points(most);
+        };
+        let found = walked(setup, rewrite, everything());
+        assert_eq!(found.expect("found").end, End::Budget, "bound {most}");
+    }
+}
