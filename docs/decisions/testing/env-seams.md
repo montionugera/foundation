@@ -994,7 +994,9 @@
   the node, with its key, so the common cases move a folder away on both drivers. When
   the node's working directory resolves, it stays on the directory that it resolves
   to, as on a host: it moves with it when that directory is `from` or under it, and a
-  move of a link on its way leaves it there.
+  move of a link on its way leaves it there. A fault of `sim::Node::fail_path` keeps
+  its path as given, so a relative one takes the working directory at each call, and
+  faults on two spellings of one path fire in the order set.
   Decided by `laptop.architect-2` (2026-10-17T05:16:48Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230063256; the
   order, a read, `Replaced` by the path now, and `move_path`, 2026-10-17T06:33:57Z,
@@ -1005,7 +1007,9 @@
   2026-10-17T07:41:22Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231322001; the
   common cases and the error of a folder key, 2026-10-17T08:26:44Z,
-  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231727914). Lost: a
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231727914; the
+  faults, 2026-10-17T08:58:04Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6232020329). Lost: a
   second look in `ops` after a refusal, which puts a `Paths` with no limits in the scope
   that limits `foundation mcp`, states the rule of `within` again, and gives a false
   text when a file changes between the two looks.
@@ -1025,7 +1029,7 @@
   nothing beside a hidden folder that is not there gives `Vacant`, not `Hidden`. One in
   a hidden folder that a program moved away still gives `Hidden`. Supersedes "a loop or
   a link to nothing beside a hidden folder that is not there ... gives `Hidden`" of the
-  amendment of 2026-10-17T06:14:25Z
+  amendment of 2026-10-17T06:14:25Z (#2895)
   (https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417). Decided
   by `laptop.architect-2` (2026-10-17T06:14:25Z,
   https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417; the four
