@@ -276,7 +276,6 @@ fn a_bad_start_or_a_match_with_too_many_names_or_stars_gives_its_cause() {
     });
 }
 
-/// The broken kind gives a page over the most, which the walk refuses.
 /// A browse and a plan of a file of 70001 blocks of one name, whose 70000 problems do
 /// not fit in one reply, give the problems that fit, then `ops.more-problems`.
 #[test]
@@ -297,6 +296,7 @@ fn a_file_of_more_problems_than_a_reply_holds_gives_those_that_fit() {
     });
 }
 
+/// The broken kind gives a page over the most, which the walk refuses.
 /// A start whose error passes the bound of a reply, in a request inside the bound,
 /// gives the fix of a browse, not the fix of a plan.
 #[test]

@@ -219,6 +219,23 @@ fn an_error_over_the_bound_keeps_the_problems_that_fit_to_the_byte() {
     assert_eq!(split(&reply), (large(), &b""[..]));
 }
 
+/// The count of the rest has one digit fewer after the second problem than after the
+/// first, so the second fits only when its own count is used.
+#[test]
+fn an_error_over_the_bound_counts_the_rest_after_each_problem() {
+    let max = usize::try_from(BODY_BYTES_MAX).expect("a usize");
+    let rest = std::iter::repeat_n(problem(200), 9);
+    let empty = reply_of(&[problem(0), problem(0), Problem::more(9)]).len();
+    let kept = [problem(max - empty), problem(0)];
+    let error = Error::Config(kept.iter().cloned().chain(rest).collect());
+    let reply = failed(&error, &Error::LargeReply).0;
+    assert_eq!(reply.len(), max);
+    assert_eq!(
+        reply,
+        reply_of(&[kept[0].clone(), kept[1].clone(), Problem::more(9)])
+    );
+}
+
 #[test]
 fn gives_the_reply_of_an_error_as_one_line() {
     solo(|fixture, mesh| async move {
