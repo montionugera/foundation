@@ -659,7 +659,7 @@ fn unlisted(
 }
 
 /// Each object of `objects` with its names, as [`objects`] gives them from `nm`.
-fn undefined(
+fn create_undefined(
     objects: &[(&str, &[&str])],
 ) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
     objects
@@ -675,7 +675,7 @@ fn undefined(
 fn unlisted_gives_each_name_that_no_list_admits_by_its_object() {
     let defined = ["UA_Client_new".to_owned()].into();
     let crypto = format!("{PREFIX}EVP_sha256");
-    let undefined = undefined(&[
+    let undefined = create_undefined(&[
         (
             "1-ua_config_default.o",
             &["fgets", "stdin", "UA_Client_new"],
@@ -701,7 +701,7 @@ fn unlisted_gives_each_name_that_no_list_admits_by_its_object() {
 fn unlisted_panics_when_no_object_names_the_allocator() {
     unlisted(
         &[].into(),
-        &undefined(&[("1-ua_config_default.o", &["fgets", "stdin"])]),
+        &create_undefined(&[("1-ua_config_default.o", &["fgets", "stdin"])]),
         |_| false,
     );
 }
@@ -711,7 +711,7 @@ fn unlisted_panics_when_no_object_names_the_allocator() {
 fn unlisted_panics_when_no_object_of_a_file_of_plugins_exists() {
     unlisted(
         &[].into(),
-        &undefined(&[("1-ua_client.o", &["connector_opcua_malloc", "fgets"])]),
+        &create_undefined(&[("1-ua_client.o", &["connector_opcua_malloc", "fgets"])]),
         |_| false,
     );
 }
@@ -721,7 +721,7 @@ fn unlisted_panics_when_no_object_of_a_file_of_plugins_exists() {
 fn unlisted_panics_when_the_object_of_a_file_of_plugins_lacks_a_name() {
     unlisted(
         &[].into(),
-        &undefined(&[(
+        &create_undefined(&[(
             "1-ua_config_default.o",
             &["connector_opcua_malloc", "fgets"],
         )]),
@@ -734,7 +734,7 @@ fn unlisted_panics_when_the_object_of_a_file_of_plugins_lacks_a_name() {
 fn unlisted_panics_when_two_objects_have_a_file_of_plugins() {
     unlisted(
         &[].into(),
-        &undefined(&[
+        &create_undefined(&[
             (
                 "1-ua_config_default.o",
                 &["connector_opcua_malloc", "fgets", "stdin"],
