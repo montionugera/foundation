@@ -204,9 +204,12 @@
   disk, after which the writer writes no frame and no such line. A connector writes at
   most two such lines each second: one `error` or `cleared`, and one `note`. A count
   writes no event. A status line costs 1038 ns (M3 Max), so a connector costs about
-  2.1 µs/s, and no decision bounds the count of connectors (P1 judgment accepted,
-  `laptop.architect-2`, 2026-10-17T21:01:17Z,
-  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6240978616).
+  2.1 µs/s, and no decision bounds the count of connectors, but the cost reaches the
+  limit of 10 ms/s only at about 4,800 connectors that each change their error text
+  each second (P1 judgment accepted, `laptop.architect-2`, 2026-10-17T21:01:17Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6240978616; text,
+  2026-10-17T21:15:36Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6241220566).
   By `laptop.architect-2` (item 2 of 2026-10-17T17:22:08Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6237505740; A of
   2026-10-17T18:08:57Z,
