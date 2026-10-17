@@ -1,5 +1,6 @@
 //! Benchmarks of a pool: a block that is used again, a copy of given bytes, and a
-//! block that takes the budget of another size under pressure.
+//! block that takes the budget of another size under pressure, and a block that takes
+//! the pages of a free block of another size.
 
 use block::{Config, Heap, Pool};
 use divan::Bencher;
@@ -19,6 +20,8 @@ fn create_pool(budget: usize) -> Pool {
 #[divan::bench]
 fn alloc_free(bencher: Bencher<'_, '_>) {
     let pool = create_pool(1 << 16);
+    // A carve before the loop, so divan sizes its samples by the reuse alone.
+    drop(pool.alloc(1000).expect("the budget has room"));
     bencher.bench_local(|| drop(pool.alloc(1000).expect("the budget has room")));
 }
 
@@ -70,4 +73,41 @@ fn alloc_under_pressure(bencher: Bencher<'_, '_>) {
         let len = if small { 100 } else { 1000 };
         drop(pool.alloc(len).expect("the budget has room"));
     });
+}
+
+/// Blocks of two sizes in turn, with a budget for two of the larger size while one of
+/// them stays in use: the small alloc gives back the payload pages of the free large
+/// block, and the large alloc releases the small size and takes that block back.
+#[divan::bench]
+fn alloc_cold(bencher: Bencher<'_, '_>) {
+    const LARGE: usize = 16_384;
+    let pool = create_pool(2 * block::footprint(LARGE));
+    let held = pool.alloc(LARGE).expect("the budget has room");
+    drop(pool.alloc(LARGE).expect("the budget has room"));
+    let mut small = false;
+    bencher.bench_local(|| {
+        small = !small;
+        let len = if small { 8000 } else { LARGE };
+        drop(pool.alloc(len).expect("the free block gives its pages"));
+    });
+    drop(held);
+}
+
+/// An alloc that the budget refuses while one size holds many free blocks, of which
+/// about one in four holds a whole page: their pages cannot cover it.
+#[divan::bench(args = [16, 256, 4096])]
+fn alloc_refused(bencher: Bencher<'_, '_>, blocks: usize) {
+    const SMALL: usize = 5000;
+    let pool = create_pool(blocks * block::footprint(SMALL));
+    let mut held: Vec<_> = (0..blocks)
+        .map(|_| pool.alloc(SMALL).expect("the budget has room"))
+        .collect();
+    let kept = held.pop().expect("a block");
+    drop(held);
+    let large = (blocks - 1) * 2048;
+    bencher.bench_local(|| {
+        pool.alloc(large)
+            .expect_err("the free pages cannot cover it")
+    });
+    drop(kept);
 }

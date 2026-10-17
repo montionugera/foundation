@@ -103,9 +103,10 @@
   records) and `State::synced`, with no file write. `new` refuses more than 54 indexes,
   whose group is over a body of two blocks. `trimming` makes the task on the ring of ID
   4096 and runs `commit(1)` past two laps and up to the deadline before a trim, which it
-  finds from the period between two trims. So a time holds the mean cost of a deadline
-  of a buffer that trims in steps, `deadline_trim` the cost of the deadline that trims a
-  step, and `deadline_carry` that of a carry record of 32 tails. `benches/logs.rs` also
+  finds from the period between two trims. `trimming` takes a nonzero count of indexes.
+  So a time holds the mean cost of a deadline of a buffer that trims in steps,
+  `deadline_trim` the cost of the deadline that trims a step, and `deadline_carry` that
+  of a carry record of 32 tails. `benches/logs.rs` also
   gets the case `lap_shrink` of 10000 paths, which times only the commit of `lap_end`
   that ends the lap of 2756 paths, each with a shrink, while the other paths wait. Lost:
   a sim `Buffer` over a sim file, timed from `append` to the end of the commit, whose
@@ -119,7 +120,9 @@
   (2026-10-16T21:03:09Z):
   https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6224646122,
   `trimming` and its text (#2943, 2026-10-16T23:14:08Z, items 1 and 5):
-  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6226442923, and
+  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6226442923, its
+  nonzero count of indexes (#2943, 2026-10-17T00:58:41Z, items 2 and 4):
+  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6227669597, and
   `lap_shrink` as item 6 of #2774, deferred with its OK (#2739, 2026-10-15T22:34:39Z):
   https://github.com/synnaxlabs/foundation/pull/2739#issuecomment-6203672199. The two
   lost designs have only the text approval (2026-10-16T20:11:06Z):

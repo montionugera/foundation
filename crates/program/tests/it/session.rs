@@ -427,7 +427,7 @@ async fn slow(node: sim::node::Node, tasks: env::tasks::Tasks) {
 }
 
 /// The output of `future`, or `None` when `span` passes first, which drops it.
-async fn within<T>(
+pub(super) async fn within<T>(
     clock: &env::clock::Clock,
     span: Span,
     future: impl Future<Output = T>,

@@ -790,7 +790,7 @@ fn keeps_the_highest_credit_sent_while_the_open_waits_for_a_home() {
             let mut reader = Reader::new(&Open { mode, channels: 2 });
             let opened = peer.recv().await.expect("receives").expect("a message");
             assert!(matches!(
-                reader.decode(&opened),
+                reader.decode(Some(&opened)),
                 Ok(FromHome::Opened { live: 0 })
             ));
             let got = got(peer.receiver(), &mut reader).await;
@@ -832,7 +832,7 @@ fn sends_the_open_position_in_opened_and_starts_the_first_head_at_it() {
         let opened = peer.recv().await.expect("receives").expect("a message");
         assert_eq!(opened, self::opened(3));
         assert!(matches!(
-            reader.decode(&opened),
+            reader.decode(Some(&opened)),
             Ok(FromHome::Opened { live: 3 })
         ));
         let got = got(peer.receiver(), &mut reader).await;
@@ -1057,7 +1057,7 @@ fn sends_the_newest_frame_in_the_opened_of_a_latest_session() {
         let opened = peer.recv().await.expect("receives").expect("a message");
         assert_eq!(opened, self::opened(2));
         assert!(matches!(
-            reader.decode(&opened),
+            reader.decode(Some(&opened)),
             Ok(FromHome::Opened { live: 2 })
         ));
         let got = got(peer.receiver(), &mut reader).await;
@@ -1085,7 +1085,7 @@ async fn open_complete(peer: &mut Peer, keys: &[u128], limit_bytes: u64) -> Read
     let mut reader = Reader::new(&Open { mode, channels });
     let opened = peer.recv().await.expect("receives").expect("a message");
     assert!(matches!(
-        reader.decode(&opened),
+        reader.decode(Some(&opened)),
         Ok(FromHome::Opened { live: 0 })
     ));
     reader
@@ -1100,14 +1100,15 @@ impl Peer {
 /// The next frame on `receiver`.
 pub(super) async fn got(receiver: &mut Receiver, reader: &mut Reader) -> Got {
     let message = next(receiver).await;
-    let head = match reader.decode(&message).expect("a valid message") {
+    let head = match reader.decode(Some(&message)).expect("a valid message") {
         FromHome::Head(head) => head,
         other => panic!("{other:?} came, not a head"),
     };
     let (mut ends, mut body) = (Vec::new(), Vec::new());
     loop {
         let message = next(receiver).await;
-        let Ok(FromHome::Ends { ends: run, last }) = reader.decode(&message) else {
+        let Ok(FromHome::Ends { ends: run, last }) = reader.decode(Some(&message))
+        else {
             panic!("a message of the ends run");
         };
         ends.extend(run);
@@ -1117,7 +1118,7 @@ pub(super) async fn got(receiver: &mut Receiver, reader: &mut Reader) -> Got {
     }
     while reader.body().is_some() {
         let message = next(receiver).await;
-        let Ok(FromHome::Body { bytes, .. }) = reader.decode(&message) else {
+        let Ok(FromHome::Body { bytes, .. }) = reader.decode(Some(&message)) else {
             panic!("a message of the body");
         };
         body.extend_from_slice(bytes);
