@@ -3,7 +3,7 @@
 use std::fmt;
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::sync::{Mutex, PoisonError, mpsc};
+use std::sync::{Mutex, mpsc};
 
 use env::tasks::{Group, Tasks};
 use env::thread::Handle;
@@ -71,11 +71,26 @@ impl Client {
     /// when the dial, the handshake, or the hello fails, and [`Error::Panicked`]. A
     /// `node` with no address is unreachable with no attempt.
     pub fn connect(node: &Node, subject: Subject) -> Result<Self, Error> {
+        let node = node.clone();
+        Self::start(move |tasks, outcome, ended| {
+            run(node, subject, tasks, outcome, ended)
+        })
+    }
+
+    /// Starts the client's thread on a shard of `os` that logs to the caller's
+    /// dispatch, runs `main` on it, and blocks until `main` sends its outcome.
+    fn start<M, F>(main: M) -> Result<Self, Error>
+    where
+        M: FnOnce(Tasks, mpsc::Sender<Result<(), Error>>, oneshot::Receiver<()>) -> F
+            + Send
+            + 'static,
+        F: Future<Output = ()> + 'static,
+    {
         let thread = |e: &dyn fmt::Display| Error::Thread {
             reason: e.to_string(),
         };
-        let shards = os::shards().map_err(|e| thread(&e))?;
-        let node = node.clone();
+        let log = tracing::dispatcher::get_default(Clone::clone);
+        let shards = os::shards().map_err(|e| thread(&e))?.logged(log);
         let (sender, outcome) = mpsc::channel();
         let (end, ended) = oneshot::channel();
         let config = env::shards::Config {
@@ -83,9 +98,7 @@ impl Client {
             core: None,
         };
         let handle = shards
-            .start(config, move |tasks| {
-                run(node, subject, tasks, sender, ended)
-            })
+            .start(config, move |tasks| main(tasks, sender, ended))
             .map_err(|e| thread(&e))?;
         #[expect(
             clippy::disallowed_methods,
@@ -100,9 +113,10 @@ impl Client {
         match connected {
             Ok(Ok(())) => Ok(Self(Mutex::new(thread))),
             Ok(Err(error)) => thread.end().and(Err(error)),
-            Err(_) => thread
-                .end()
-                .and_then(|()| unreachable!("the thread ended with no outcome")),
+            Err(_) => {
+                thread.end()?;
+                unreachable!("a thread that sent no outcome panicked")
+            }
         }
     }
 }
@@ -116,10 +130,15 @@ impl Client {
     ///
     /// [`Error::Session`] with the cause when the session ended before the close, and
     /// [`Error::Panicked`].
+    #[expect(
+        clippy::missing_panics_doc,
+        clippy::unwrap_in_result,
+        reason = "no call locks the thread, so it is never poisoned"
+    )]
     pub fn close(self) -> Result<(), Error> {
         self.0
             .into_inner()
-            .unwrap_or_else(PoisonError::into_inner)
+            .expect("invariant: no call locks the thread of a client")
             .end()
     }
 }
@@ -183,9 +202,8 @@ async fn run(
     let group = Group::new(tasks);
     match connect(node, subject, group.tasks().clone()).await {
         Ok(session) => {
-            if outcome.send(Ok(())).is_ok() {
-                drop(ended.await);
-            }
+            drop(outcome.send(Ok(())));
+            drop(ended.await);
             if let Some(error) = session.ended() {
                 drop(outcome.send(Err(Error::Session(error))));
             }

@@ -1,9 +1,11 @@
 use std::net::Ipv6Addr;
-use std::thread;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use env::thread::Panicked;
 use tokio::runtime::Builder;
+use tracing::span::{Attributes, Id, Record};
+use tracing::{Dispatch, Event, Metadata, Subscriber};
 
 use super::*;
 
@@ -43,36 +45,22 @@ fn each_error_names_its_cause() {
     );
 }
 
-/// A client whose thread runs `body` with the receiver of its end, and sends the error
-/// that `body` gives.
-fn client(
-    body: impl FnOnce(oneshot::Receiver<()>) -> Result<(), Error> + Send + 'static,
-) -> Client {
-    let (end, ended) = oneshot::channel();
-    let (sender, outcome) = mpsc::channel();
-    #[expect(clippy::disallowed_methods, reason = "a thread of a client")]
-    let thread = thread::spawn(move || {
-        if let Err(error) = body(ended) {
-            sender.send(Err(error)).unwrap();
+/// A client whose thread sends `Ok`, waits for its end, and then runs `after`.
+fn client(after: impl FnOnce() -> Result<(), Error> + Send + 'static) -> Client {
+    let started = Client::start(|_, outcome, ended| async move {
+        outcome.send(Ok(())).unwrap();
+        drop(ended.await);
+        if let Err(error) = after() {
+            outcome.send(Err(error)).unwrap();
         }
     });
-    let handle = Handle::new(move || {
-        thread.join().map_err(|_payload| Panicked {
-            name: "foundation-sdk".into(),
-        })
-    });
-    Client(Mutex::new(Thread {
-        end,
-        outcome,
-        handle,
-    }))
+    started.expect("a client")
 }
 
 #[test]
 fn a_close_ends_the_thread_and_waits_for_it() {
     let (ended, end) = mpsc::channel();
-    let client = client(move |receiver| {
-        drop(receiver.blocking_recv());
+    let client = client(move || {
         ended.send(()).unwrap();
         Ok(())
     });
@@ -84,16 +72,24 @@ fn a_close_ends_the_thread_and_waits_for_it() {
 fn a_close_gives_the_error_that_ended_the_session() {
     let failed = Error::Session(program::Error::Unanswered);
     let error = failed.clone();
-    let client = client(move |receiver| {
-        drop(receiver.blocking_recv());
-        Err(error)
-    });
+    let client = client(move || Err(error));
     assert_eq!(client.close(), Err(failed));
 }
 
 #[test]
 fn a_close_gives_panicked_when_the_thread_panicked() {
-    let client = client(|_| panic!("the session failed"));
+    let client = client(|| panic!("the session failed"));
+    assert_eq!(client.close(), Err(Error::Panicked));
+}
+
+#[test]
+fn a_close_gives_panicked_when_a_task_panicked() {
+    let started = Client::start(|tasks, outcome, _| async move {
+        outcome.send(Ok(())).unwrap();
+        tasks.spawn(async { panic!("a task failed") });
+        std::future::pending::<()>().await;
+    });
+    let client = started.expect("a client");
     assert_eq!(client.close(), Err(Error::Panicked));
 }
 
@@ -101,8 +97,7 @@ fn a_close_gives_panicked_when_the_thread_panicked() {
 fn a_drop_ends_the_thread_and_does_not_wait() {
     let (go, wait) = mpsc::channel::<()>();
     let (ended, end) = mpsc::channel();
-    let client = client(move |receiver| {
-        drop(receiver.blocking_recv());
+    let client = client(move || {
         #[expect(clippy::disallowed_methods, reason = "the thread waits for the test")]
         wait.recv().unwrap();
         ended.send(()).unwrap();
@@ -113,6 +108,72 @@ fn a_drop_ends_the_thread_and_does_not_wait() {
     #[expect(clippy::disallowed_methods, reason = "the test waits for the thread")]
     let outcome = end.recv_timeout(Duration::from_secs(10));
     assert_eq!(outcome, Ok(()));
+}
+
+#[test]
+fn a_connect_gives_the_error_that_the_thread_sends() {
+    let failed = Error::Session(program::Error::Unanswered);
+    let error = failed.clone();
+    let started = Client::start(move |_, outcome, _| async move {
+        outcome.send(Err(error)).unwrap();
+    });
+    assert_eq!(started.err(), Some(failed));
+}
+
+#[test]
+fn a_connect_gives_panicked_when_the_thread_panics_after_its_error() {
+    let started = Client::start(|_, outcome, _| async move {
+        let error = Error::Session(program::Error::Unanswered);
+        outcome.send(Err(error)).unwrap();
+        panic!("the session failed");
+    });
+    assert_eq!(started.err(), Some(Error::Panicked));
+}
+
+#[test]
+fn a_connect_gives_panicked_when_the_thread_panics_before_its_outcome() {
+    let started = Client::start(|_, _, _| async { panic!("the session failed") });
+    assert_eq!(started.err(), Some(Error::Panicked));
+}
+
+/// Counts the events that reach it. Clones share the count.
+#[derive(Clone, Default)]
+struct Count(Arc<AtomicUsize>);
+
+impl Subscriber for Count {
+    fn enabled(&self, _: &Metadata<'_>) -> bool {
+        true
+    }
+
+    fn new_span(&self, _: &Attributes<'_>) -> Id {
+        Id::from_u64(1)
+    }
+
+    fn record(&self, _: &Id, _: &Record<'_>) {}
+
+    fn record_follows_from(&self, _: &Id, _: &Id) {}
+
+    fn event(&self, _: &Event<'_>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn enter(&self, _: &Id) {}
+
+    fn exit(&self, _: &Id) {}
+}
+
+#[test]
+fn the_thread_logs_to_the_dispatch_of_the_caller_of_connect() {
+    let count = Count::default();
+    let client =
+        tracing::dispatcher::with_default(&Dispatch::new(count.clone()), || {
+            Client::start(|_, outcome, _| async move {
+                tracing::info!("the client started");
+                outcome.send(Ok(())).unwrap();
+            })
+        });
+    assert_eq!(client.expect("a client").close(), Ok(()));
+    assert_eq!(count.0.load(Ordering::Relaxed), 1);
 }
 
 /// Connects to a node at `addresses`, and checks that the error names each one with

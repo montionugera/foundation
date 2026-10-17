@@ -11,6 +11,7 @@ env = { path = "../../crates/env" }
 os = { path = "../../crates/os", features = ["net"] }
 program = { path = "../../crates/program" }
 tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }
 transport = { path = "../../crates/transport" }
 types = { path = "../../crates/types" }
 
