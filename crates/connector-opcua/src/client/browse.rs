@@ -8,14 +8,12 @@ use std::num::{NonZeroU32, NonZeroUsize};
 use super::service::{self, Answer, Item, Request, Sizes};
 use super::{Client, id_bytes, limit};
 use crate::ffi::{self, Service, Status};
+use crate::node::ns0::{ENUMERATION, HAS_SUBTYPE};
 use crate::node::{Key, Node};
 use crate::value::Value;
 
 /// `HierarchicalReferences`.
 const HIERARCHICAL: u32 = 33;
-
-/// `HasSubtype`.
-const HAS_SUBTYPE: u32 = 45;
 
 /// The mask of the node classes Object (1), Variable (2), and View (128).
 const CLASSES: u32 = 0b1000_0011;
@@ -35,9 +33,6 @@ const CEFACT: &[u8] = b"http://www.opcfoundation.org/UA/units/un/cefact";
 
 /// The most steps of a walk up the `HasSubtype` references.
 const STEPS: usize = 16;
-
-/// The id of `Enumeration`.
-const ENUMERATION: u32 = 29;
 
 /// The id of `Int32`.
 const INT32: u32 = 6;
@@ -207,21 +202,12 @@ impl Client {
         Ok(descriptions)
     }
 
-    /// The supertype of each data type that the walks of [`Client::describe`] kept.
-    #[cfg(test)]
-    pub(crate) fn supertypes(&self) -> &BTreeMap<Node, Option<Node>> {
-        &self.supertypes
-    }
-
     /// Reads the [`Bounds`] of the server at the first call, as [`limit`] gives each.
     async fn bounds(&mut self) -> Result<Bounds, Status> {
         if let Some(bounds) = self.bounds {
             return Ok(bounds);
         }
-        let nodes = BOUNDS.map(|number| Node {
-            namespace: 0,
-            key: Key::Number(number),
-        });
+        let nodes = BOUNDS.map(Node::ns0);
         let nodes = self
             .nodes(&nodes)
             .expect("invariant: a read of two nodes by number fits one message");

@@ -52,55 +52,6 @@ const UA_String *shim_server_discovery_url(UA_Server *server, size_t index) {
     return &description->discoveryUrls[index];
 }
 
-/* Adds to `server` the scalar variable `node` with the browse and display name `name`,
- * the DataType `type`, and the AccessLevel and UserAccessLevel read, under `parent` by
- * the reference of the number `reference`. Its value is the OPC UA binary encoding
- * `encoded` of `size` bytes of a value of `UA_TYPES[kind]`. */
-UA_StatusCode shim_server_add_value(UA_Server *server, shim_node node, shim_node parent,
-                                    UA_UInt32 reference, const char *name,
-                                    shim_node type, UA_UInt16 kind,
-                                    const UA_Byte *encoded, size_t size) {
-    const UA_DataType *data_type = &UA_TYPES[kind];
-    void *value = UA_new(data_type);
-    if(value == NULL)
-        return UA_STATUSCODE_BADOUTOFMEMORY;
-    const UA_ByteString bytes = {size, (UA_Byte *)(uintptr_t)encoded};
-    UA_StatusCode status = UA_decodeBinary(&bytes, value, data_type, NULL);
-    if(status == UA_STATUSCODE_GOOD) {
-        UA_VariableAttributes attributes = UA_VariableAttributes_default;
-        attributes.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)name);
-        attributes.dataType = shim_node_id(type);
-        attributes.valueRank = UA_VALUERANK_SCALAR;
-        attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
-        attributes.userAccessLevel = UA_ACCESSLEVELMASK_READ;
-        UA_Variant_setScalar(&attributes.value, value, data_type);
-        status = UA_Server_addVariableNode(
-            server, shim_node_id(node), shim_node_id(parent),
-            UA_NODEID_NUMERIC(0, reference),
-            UA_QUALIFIEDNAME(node.namespace, (char *)(uintptr_t)name),
-            UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL,
-            NULL);
-    }
-    UA_delete(value, data_type);
-    return status;
-}
-
-/* Adds to `server` the variable `node`, which holds an array of two Doubles, under the
- * Objects folder. */
-UA_StatusCode shim_server_add_doubles(UA_Server *server, shim_node node) {
-    UA_Double doubles[2] = {1.5, 2.5};
-    UA_VariableAttributes attributes = UA_VariableAttributes_default;
-    UA_Variant_setArray(&attributes.value, doubles, 2, &UA_TYPES[UA_TYPES_DOUBLE]);
-    attributes.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
-    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
-    return UA_Server_addVariableNode(
-        server, shim_node_id(node),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
-        UA_QUALIFIEDNAME(node.namespace, "doubles"),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
-}
-
 /* Sets the buffer size, the MaxMessageSize, and the MaxChunkCount of each later channel
  * of `server`, each 0 for the default of open62541. */
 void shim_server_limits(UA_Server *server, UA_UInt32 buffer, UA_UInt32 message,
@@ -288,31 +239,40 @@ UA_StatusCode shim_server_add_guid(UA_Server *server, shim_node parent) {
         UA_NODEID_NUMERIC(0, UA_NS0ID_FOLDERTYPE), attributes, NULL, NULL);
 }
 
-/* Adds to `server` the variable `node` with no value, or two Doubles for the rank 1,
- * the browse and display name `name`, the DataType `type`, the ValueRank `rank`, and
+/* Adds to `server` the variable `node` with the browse and display name `name`, the
+ * DataType `type`, the ValueRank `rank`, with the ArrayDimensions 0 for the rank 1, and
  * the AccessLevel and UserAccessLevel `access`, under `parent` by the reference of the
- * number `reference`. */
+ * number `reference`. Its value is the OPC UA binary encoding `encoded` of `size` bytes
+ * of a Variant, or none for NULL. */
 UA_StatusCode shim_server_add_variable(UA_Server *server, shim_node node,
                                        shim_node parent, UA_UInt32 reference,
                                        const char *name, shim_node type, UA_Int32 rank,
-                                       UA_Byte access) {
+                                       UA_Byte access, const UA_Byte *encoded,
+                                       size_t size) {
     UA_VariableAttributes attributes = UA_VariableAttributes_default;
     attributes.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)name);
     attributes.dataType = shim_node_id(type);
     attributes.valueRank = rank;
-    UA_Double doubles[2] = {1.5, 2.5};
     UA_UInt32 dimensions[1] = {0};
     if(rank == 1) {
-        UA_Variant_setArray(&attributes.value, doubles, 2, &UA_TYPES[UA_TYPES_DOUBLE]);
         attributes.arrayDimensions = dimensions;
         attributes.arrayDimensionsSize = 1;
     }
     attributes.accessLevel = access;
     attributes.userAccessLevel = access;
-    return UA_Server_addVariableNode(
+    if(encoded != NULL) {
+        const UA_ByteString bytes = {size, (UA_Byte *)(uintptr_t)encoded};
+        UA_StatusCode status = UA_decodeBinary(&bytes, &attributes.value,
+                                               &UA_TYPES[UA_TYPES_VARIANT], NULL);
+        if(status != UA_STATUSCODE_GOOD)
+            return status;
+    }
+    UA_StatusCode status = UA_Server_addVariableNode(
         server, shim_node_id(node), shim_node_id(parent),
         UA_NODEID_NUMERIC(0, reference), name_of(node, name),
         UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
+    UA_Variant_clear(&attributes.value);
+    return status;
 }
 
 /* Adds to `server` the data type `node` with the browse name `name`, a subtype of

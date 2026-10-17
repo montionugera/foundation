@@ -2,8 +2,12 @@
 
 use std::ffi::CStr;
 
+use crate::node::ns0::{
+    BASE_DATA_TYPE, BYTE_STRING, DATE_TIME, DOUBLE, ENUMERATION, GUID, HAS_COMPONENT,
+    OBJECTS, ORGANIZES, STRING, STRUCTURE,
+};
 use crate::node::{Key, Name, Node};
-use crate::server::{self, EXTENSION_OBJECT, Server};
+use crate::server::{self, READ, Server, Variable};
 use crate::value::Value;
 
 /// The most references of each page of a Browse, so `Plant.Types` takes two pages.
@@ -34,16 +38,6 @@ pub(crate) const RECIPE_TYPE: &str = "Recipe";
 #[cfg(test)]
 pub(crate) const NS0_TYPES: [u32; 3] = [DOUBLE, ENUMERATION, STRUCTURE];
 
-const DOUBLE: u32 = 11;
-const OBJECTS: u32 = 85;
-const STRUCTURE: u32 = 22;
-const BASE_DATA_TYPE: u32 = 24;
-const ENUMERATION: u32 = 29;
-const ORGANIZES: u32 = 35;
-const HAS_COMPONENT: u32 = 47;
-/// The `AccessLevel` bit `CurrentRead`.
-const READ: u8 = 1;
-
 /// Gives the node of `name` in namespace 1.
 ///
 /// # Panics
@@ -63,7 +57,8 @@ pub(crate) fn node(name: &str) -> Node {
 ///
 /// If open62541 refuses a node of the tree, such as one that the server has.
 pub(crate) fn add(server: &Server) {
-    server.add_folder(&node(PLANT), &ns0(OBJECTS), ORGANIZES, c"Plant", c"Plant");
+    let objects = Node::ns0(OBJECTS);
+    server.add_folder(&node(PLANT), &objects, ORGANIZES, c"Plant", c"Plant");
     add_types(server);
     add_line(server);
     add_odd(server);
@@ -85,7 +80,7 @@ fn add_types(server: &Server) {
         (c"Float", Value::F32(0.5)),
         (c"Double", Value::F64(0.25)),
     ]
-    .map(|(name, value)| (name, server::encoded(value)));
+    .map(|(name, value)| (name, server::variant(value)));
     let text = [&4_i32.to_le_bytes()[..], b"text"].concat();
     // The DateTime of the Unix epoch, in 100 ns since 1601.
     let epoch = 116_444_736_000_000_000_i64.to_le_bytes().to_vec();
@@ -95,23 +90,29 @@ fn add_types(server: &Server) {
     ]
     .concat();
     let others = [
-        (c"String", (server::STRING, text)),
-        (c"DateTime", (server::DATE_TIME, epoch)),
-        (c"Guid", (server::GUID, guid)),
-        (c"ByteString", (server::BYTE_STRING, two_bytes())),
-    ];
-    for (name, (kind, encoded)) in numbers.into_iter().chain(others) {
-        let path = format!("{TYPES}.{}", name.to_str().expect("an ASCII name"));
-        let data_type = server::type_of(kind);
-        add_value(server, &path, TYPES, name, &data_type, (kind, encoded));
+        (c"String", STRING, text),
+        (c"DateTime", DATE_TIME, epoch),
+        (c"Guid", GUID, guid),
+        (c"ByteString", BYTE_STRING, two_bytes()),
+    ]
+    .map(|(name, id, encoded)| (name, (id, server::scalar(id, &encoded))));
+    for (name, (id, value)) in numbers.into_iter().chain(others) {
+        let name_text = name
+            .to_str()
+            .expect("invariant: each name of the tree is ASCII");
+        let path = format!("{TYPES}.{name_text}");
+        server.add_variable(&variable(&path, TYPES, name, Node::ns0(id), Some(value)));
     }
 }
 
 /// Adds the data types of the tree, `Plant.Line`, and its components.
 fn add_line(server: &Server) {
-    let base = ns0(BASE_DATA_TYPE);
-    let (double, enumeration, structure) =
-        (ns0(DOUBLE), ns0(ENUMERATION), ns0(STRUCTURE));
+    let base = Node::ns0(BASE_DATA_TYPE);
+    let (double, enumeration, structure) = (
+        Node::ns0(DOUBLE),
+        Node::ns0(ENUMERATION),
+        Node::ns0(STRUCTURE),
+    );
     server.add_data_type(&double, &base, c"Double");
     server.add_data_type(&enumeration, &base, c"Enumeration");
     server.add_data_type(&structure, &base, c"Structure");
@@ -121,37 +122,34 @@ fn add_line(server: &Server) {
     let line = node(LINE);
     server.add_folder(&line, &node(PLANT), HAS_COMPONENT, c"Line", c"Line");
     server.add_reference(&line, ORGANIZES, &node(PLANT));
-    let temperature = server::encoded(Value::F64(21.5));
-    add_value(
-        server,
+    let temperature = Some(double_of(21.5));
+    let name = c"Temperature";
+    server.add_variable(&variable(
         TEMPERATURE,
         LINE,
-        c"Temperature",
-        &double,
+        name,
+        double.clone(),
         temperature,
-    );
+    ));
     let cefact = c"http://www.opcfoundation.org/UA/units/un/cefact";
     server.add_unit(&node(UNIT), &node(TEMPERATURE), cefact, c"°C", 0x0043_454C);
-    let speed = server::encoded(Value::F64(1.25));
-    add_value(server, SPEED, LINE, c"Speed", &node(SPEED_TYPE), speed);
-    let component = |path, name, data_type: &Node, rank, access| {
-        server.add_variable(
-            &node(path),
-            &line,
-            HAS_COMPONENT,
-            name,
-            data_type,
-            rank,
-            access,
-        );
-    };
+    let speed = Some(double_of(1.25));
+    server.add_variable(&variable(SPEED, LINE, c"Speed", node(SPEED_TYPE), speed));
     // open62541 refuses an Int32 value of a subtype of Enumeration.
-    component(MODE, c"Mode", &node(MODE_TYPE), -1, READ);
-    component(PROFILE, c"Profile", &double, 1, READ);
-    component(LOCKED, c"Locked", &double, -1, 0);
+    server.add_variable(&variable(MODE, LINE, c"Mode", node(MODE_TYPE), None));
+    let profile = Some(server::doubles());
+    server.add_variable(&Variable {
+        rank: 1,
+        ..variable(PROFILE, LINE, c"Profile", double.clone(), profile)
+    });
+    server.add_variable(&Variable {
+        access: 0,
+        ..variable(LOCKED, LINE, c"Locked", double, None)
+    });
     // An ExtensionObject of the type `Recipe`: its NodeId, then a ByteString body.
     let name = RECIPE_TYPE.as_bytes();
-    let length = i32::try_from(name.len()).expect("a short name");
+    let length =
+        i32::try_from(name.len()).expect("invariant: a type name of the tree is short");
     let recipe = [
         &[3, 1, 0][..],
         &length.to_le_bytes(),
@@ -160,8 +158,14 @@ fn add_line(server: &Server) {
         &two_bytes(),
     ]
     .concat();
-    let recipe = (EXTENSION_OBJECT, recipe);
-    add_value(server, RECIPE, LINE, c"Recipe", &node(RECIPE_TYPE), recipe);
+    let recipe = server::scalar(STRUCTURE, &recipe);
+    server.add_variable(&variable(
+        RECIPE,
+        LINE,
+        c"Recipe",
+        node(RECIPE_TYPE),
+        Some(recipe),
+    ));
 }
 
 /// Adds `Plant.Odd` and its nodes.
@@ -169,56 +173,41 @@ fn add_odd(server: &Server) {
     let odd = node(ODD);
     server.add_folder(&odd, &node(PLANT), ORGANIZES, c"Odd", c"Odd");
     server.add_guid(&odd);
-    let double = ns0(DOUBLE);
-    add_value(
-        server,
-        LEVEL,
-        ODD,
-        c"Level",
-        &double,
-        server::encoded(Value::F64(2.5)),
-    );
+    let double = Node::ns0(DOUBLE);
+    let level = Some(double_of(2.5));
+    server.add_variable(&variable(LEVEL, ODD, c"Level", double.clone(), level));
     server.add_reference(&odd, ORGANIZES, &node(LEVEL));
-    add_value(
-        server,
-        TWIN,
-        ODD,
-        c"Level",
-        &double,
-        server::encoded(Value::F64(3.5)),
-    );
+    server.add_variable(&variable(TWIN, ODD, c"Level", double, Some(double_of(3.5))));
 }
 
-/// Adds the variable `path` of `parent` by `HasComponent`, with the browse name `name`,
-/// the `DataType` `data_type`, and a value of a kind and its encoding.
-fn add_value(
-    server: &Server,
+/// The scalar variable `path` of `parent` by `HasComponent`, with the browse name
+/// `name`, the `DataType` `data_type`, the access read, and the value `value`.
+fn variable(
     path: &str,
     parent: &str,
-    name: &CStr,
-    data_type: &Node,
-    (kind, encoded): (u16, Vec<u8>),
-) {
-    let (node, parent) = (node(path), node(parent));
-    server.add_value(
-        &node,
-        &parent,
-        HAS_COMPONENT,
+    name: &'static CStr,
+    data_type: Node,
+    value: Option<Vec<u8>>,
+) -> Variable {
+    Variable {
+        node: node(path),
+        parent: node(parent),
+        reference: HAS_COMPONENT,
         name,
         data_type,
-        kind,
-        &encoded,
-    );
+        rank: -1,
+        access: READ,
+        value,
+    }
+}
+
+/// The encoded `Variant` of the Double `double`.
+fn double_of(double: f64) -> Vec<u8> {
+    let (_, value) = server::variant(Value::F64(double));
+    value
 }
 
 /// The encoding of the `ByteString` 1, 2.
 fn two_bytes() -> Vec<u8> {
     [&2_i32.to_le_bytes()[..], &[1, 2]].concat()
-}
-
-const fn ns0(number: u32) -> Node {
-    Node {
-        namespace: 0,
-        key: Key::Number(number),
-    }
 }

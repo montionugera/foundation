@@ -26,7 +26,7 @@
 //!   - `Twin`, the Double 3.5 with the browse name `Level`.
 //!
 //! The tree also adds the data types `ns=1;s=Speed`, `ns=1;s=Mode`, and
-//! `ns=1;s=Recipe`, and the types Double (`ns=0;i=11`), Structure (`ns=0;i=22`), and
+//! `ns=1;s=Recipe`, and the types Double (`ns=0;i=11`), `Structure` (`ns=0;i=22`), and
 //! `Enumeration` (`ns=0;i=29`), which the namespace 0 of the build lacks. The
 //! variables of the tree hold their values with no change, and the server does not
 //! record their reads. A page of a Browse holds at most 8 references, so `Plant.Types`
