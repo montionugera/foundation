@@ -415,10 +415,17 @@ fn makes_no_connect_after_a_refusal_at_the_timeout() {
         Step::Send(get(&format!("http://influx:{PORT}/"))),
         Step::Send(get(&url)),
     ]);
+    let origin = format!("influx:{PORT}");
+    let Err(error) = &outcomes[0] else {
+        panic!("no error: {:?}", outcomes[0]);
+    };
     assert!(
-        matches!(outcomes[0], Err(Error::TimedOut { .. })),
-        "{:?}",
-        outcomes[0]
+        matches!(error, Error::TimedOut { origin: got } if *got == origin),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        format!("the exchange with {origin} timed out")
     );
     all_ok(&outcomes[1..]);
     // The refusal comes at the deadline, after a connect to each of the first five.
