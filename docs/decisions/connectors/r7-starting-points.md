@@ -151,9 +151,10 @@
   the memory of each failure: `laptop.architect-2`, 2026-10-17T05:23:16Z, #2996:
   https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230135838; the
   name: `laptop.architect-2`, 2026-10-17T05:23:46Z, #2996:
-  https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230140617). The
-  list comes from the running node, since a shell can read other roots, and a file on
-  disk of the failures is refused (`laptop.architect-2`, 2026-10-16T22:27:09Z, #2945:
+  https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230140617). A
+  `source` of more than 1 MiB keeps no failure. The list comes from the running node,
+  since a shell can read other roots, and a file on disk of the failures is refused
+  (`laptop.architect-2`, 2026-10-16T22:27:09Z, #2945:
   https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225879413). The cap
   of 16 failures keeps the warnings from filling the log queue and dropping `started`
   (`laptop.architect-2`, 2026-10-16T20:40:05Z, #2920:
