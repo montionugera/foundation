@@ -45,14 +45,23 @@
   https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136784257).
   `sim::serve` also serves one fixed tree to browse and import, which the module doc of
   `sim` gives: the folder `ns=1;s=Plant` in the Objects folder, with a folder `Types` of
-  one variable of each of 15 built-in types, and an Object `Line` with a unit, a
-  subtype of Double, of `Enumeration`, and of `Structure`, an array, a variable that a
-  client cannot read, and an `Organizes` loop to `Plant`, and a folder `Odd` with a
-  folder of a GUID node id, a variable by two references, and a second variable of
-  its browse name. Each other node id is `ns=1;s=` and the path with `.`. A page of a Browse holds at most 8 references
-  (`maxReferencesPerNode`), so `Plant.Types` takes two pages. A variable of `variables`
-  at the node id of a node of the tree panics. No new parameter: each caller gets the
-  same tree. Lost: a public builder `sim::Tree` given to `serve`, which repeats the
-  test server for callers that need one fixed shape (`laptop.architect-2`,
-  2026-10-16T20:14:20Z:
-  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6223855203).
+  one variable of each of 15 built-in types, and a folder `Line` by `HasComponent` with
+  a unit, a subtype of Double, of `Enumeration`, and of `Structure`, an array, a
+  variable that a client cannot read, and an `Organizes` loop to `Plant`. Each other
+  node id is `ns=1;s=` and the path with `.`. A page of a Browse holds at most 8
+  references (`maxReferencesPerNode`), so `Plant.Types` takes two pages. The tree also
+  adds the data types Double (`ns=0;i=11`), `Structure` (`ns=0;i=22`), and
+  `Enumeration` (`ns=0;i=29`), which the namespace 0 of the build lacks. A variable of
+  `variables` at the node id of a node of the tree, these three included, panics. No
+  new parameter: each caller gets the same tree. Lost: a public builder `sim::Tree`
+  given to `serve`, which repeats the test server for callers that need one fixed shape
+  (`laptop.architect-2`, 2026-10-16T20:14:20Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6223855203). The
+  folder `Odd` of `Plant` holds a folder of the GUID node id
+  `ns=1;g=00000001-0002-0003-0400-000000000000`, a variable by two references, and a
+  second variable of its browse name (`laptop.architect-2`, 2026-10-16T21:14:25Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6224815609;
+  approved by `laptop.architect-2`, 2026-10-17T00:27:56Z:
+  https://github.com/synnaxlabs/foundation/pull/2961#issuecomment-6227331094). The
+  tree is built in Rust (`sim::tree`) on the add functions of the test server, with no
+  second builder in C.

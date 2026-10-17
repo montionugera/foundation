@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::future;
 use std::net::SocketAddr;
@@ -7,7 +8,7 @@ use ::sim::{Sim, node};
 use env::net::{Listener, tcp};
 use types::quality::Quality;
 
-use super::{Served, Variables, serve};
+use super::{Served, Variables, serve, tree};
 use crate::client::Client;
 use crate::client::browse::{Class, Description, Page, Reference, Unit};
 use crate::event;
@@ -298,7 +299,6 @@ fn a_panic_in_the_wall_of_a_server_aborts() {
     );
 }
 
-/// Connects a client of `node` to `url`.
 /// Serves no variables, and gives the output of `body` with a client of the server.
 fn with_tree<T: Send + 'static>(
     body: impl AsyncFnOnce(&mut Client) -> T + Send + 'static,
@@ -457,7 +457,7 @@ fn a_client_browses_the_tree_from_objects() {
         [[
             Reference {
                 node: None,
-                ..reference("Guid", "Guid", Class::Object, ORGANIZES)
+                ..reference("guid", "guid", Class::Object, ORGANIZES)
             },
             level(ORGANIZES),
             level(HAS_COMPONENT),
@@ -481,6 +481,7 @@ fn a_client_describes_each_variable_of_the_tree() {
     ];
     let nodes: Vec<Node> = (TYPES.iter().map(|name| format!("Plant.Types.{name}")))
         .chain(line.iter().map(|name| format!("Plant.Line.{name}")))
+        .chain([tree::LEVEL, tree::TWIN].map(str::to_owned))
         .map(|name| named(1, &name))
         .collect();
     let described = with_tree(async move |client| client.describe(&nodes).await);
@@ -506,8 +507,29 @@ fn a_client_describes_each_variable_of_the_tree() {
         description(Some(11), 1, 1),
         description(Some(11), -1, 0),
         description(None, -1, 1),
+        description(Some(11), -1, 1),
+        description(Some(11), -1, 1),
     ]);
     assert_eq!(described, Ok(expected));
+}
+
+#[test]
+fn each_variable_of_a_type_of_the_tree_has_the_type() {
+    let nodes =
+        [tree::TEMPERATURE, tree::SPEED, tree::MODE, tree::RECIPE].map(tree::node);
+    let supertypes = with_tree(async move |client| {
+        client.describe(&nodes).await.expect("a describe");
+        client.supertypes().clone()
+    });
+    let subtype = |name, number| (tree::node(name), Some(ns0(number)));
+    assert_eq!(
+        supertypes,
+        BTreeMap::from([
+            subtype(tree::SPEED_TYPE, 11),
+            subtype(tree::MODE_TYPE, 29),
+            subtype(tree::RECIPE_TYPE, 22),
+        ])
+    );
 }
 
 #[test]
@@ -566,11 +588,20 @@ fn a_read_of_each_variable_of_the_tree_gives_its_value() {
 
 #[test]
 fn a_server_panics_on_a_variable_of_a_node_of_the_tree() {
+    let reserved = tree::NS0_TYPES.map(|number| format!("ns=0;i={number}"));
+    for text in reserved.iter().chain([&format!("ns=1;s={}", tree::SPEED)]) {
+        a_server_panics_on_a_variable_of(text);
+    }
+}
+
+/// Asserts that a serve panics on the variable `text`.
+fn a_server_panics_on_a_variable_of(text: &str) {
+    let text = text.to_owned();
     let mut sim = Sim::new(::sim::Config::default());
     let node = sim.node(node::Config::default());
     let run = sim.run_on(&node, move |node, _| async move {
         let mut rng = node.entropy().rng();
-        let variables = Variables::new(&["ns=1;s=Plant.Line.Speed"]);
+        let variables = Variables::new(&[&text]);
         serve(
             node.clock(),
             event::Time::monotonic(node.clock()).wall,
@@ -593,6 +624,7 @@ fn a_server_panics_on_a_variable_of_a_node_of_the_tree() {
     );
 }
 
+/// Connects a client of `node` to `url`.
 async fn connect(
     node: &node::Node,
     rng: &mut env::rng::Rng,

@@ -52,20 +52,37 @@ const UA_String *shim_server_discovery_url(UA_Server *server, size_t index) {
     return &description->discoveryUrls[index];
 }
 
-/* Adds to `server` the variable `node`, which holds `value` of the kind `kind`, under
- * the Objects folder. */
-UA_StatusCode shim_server_add_scalar(UA_Server *server, shim_node node,
-                                     const shim_scalar *value, UA_UInt16 kind) {
-    UA_VariableAttributes attributes = UA_VariableAttributes_default;
-    UA_Variant_setScalar(&attributes.value, (void *)(uintptr_t)value, &UA_TYPES[kind]);
-    attributes.dataType = UA_TYPES[kind].typeId;
-    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
-    return UA_Server_addVariableNode(
-        server, shim_node_id(node),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
-        UA_QUALIFIEDNAME(node.namespace, "value"),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
+/* Adds to `server` the scalar variable `node` with the browse and display name `name`,
+ * the DataType `type`, and the AccessLevel and UserAccessLevel read, under `parent` by
+ * the reference of the number `reference`. Its value is the OPC UA binary encoding
+ * `encoded` of `size` bytes of a value of `UA_TYPES[kind]`. */
+UA_StatusCode shim_server_add_value(UA_Server *server, shim_node node, shim_node parent,
+                                    UA_UInt32 reference, const char *name,
+                                    shim_node type, UA_UInt16 kind,
+                                    const UA_Byte *encoded, size_t size) {
+    const UA_DataType *data_type = &UA_TYPES[kind];
+    void *value = UA_new(data_type);
+    if(value == NULL)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    const UA_ByteString bytes = {size, (UA_Byte *)(uintptr_t)encoded};
+    UA_StatusCode status = UA_decodeBinary(&bytes, value, data_type, NULL);
+    if(status == UA_STATUSCODE_GOOD) {
+        UA_VariableAttributes attributes = UA_VariableAttributes_default;
+        attributes.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)name);
+        attributes.dataType = shim_node_id(type);
+        attributes.valueRank = UA_VALUERANK_SCALAR;
+        attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
+        attributes.userAccessLevel = UA_ACCESSLEVELMASK_READ;
+        UA_Variant_setScalar(&attributes.value, value, data_type);
+        status = UA_Server_addVariableNode(
+            server, shim_node_id(node), shim_node_id(parent),
+            UA_NODEID_NUMERIC(0, reference),
+            UA_QUALIFIEDNAME(node.namespace, (char *)(uintptr_t)name),
+            UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL,
+            NULL);
+    }
+    UA_delete(value, data_type);
+    return status;
 }
 
 /* Adds to `server` the variable `node`, which holds an array of two Doubles, under the
@@ -84,44 +101,6 @@ UA_StatusCode shim_server_add_doubles(UA_Server *server, shim_node node) {
         UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
 }
 
-/* Adds to `server` the variable `node`, which holds the String `text`, under the
- * Objects folder. */
-UA_StatusCode shim_server_add_string(UA_Server *server, shim_node node) {
-    UA_String text = UA_STRING("text");
-    UA_VariableAttributes attributes = UA_VariableAttributes_default;
-    UA_Variant_setScalar(&attributes.value, &text, &UA_TYPES[UA_TYPES_STRING]);
-    attributes.dataType = UA_TYPES[UA_TYPES_STRING].typeId;
-    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
-    return UA_Server_addVariableNode(
-        server, shim_node_id(node),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
-        UA_QUALIFIEDNAME(node.namespace, "string"),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
-}
-
-/* Adds to `server` the variable `node`, which holds a ByteString of `size` zero
- * bytes, under the Objects folder. */
-UA_StatusCode shim_server_add_bytes(UA_Server *server, shim_node node, size_t size) {
-    UA_ByteString bytes;
-    UA_StatusCode status = UA_ByteString_allocBuffer(&bytes, size);
-    if(status != UA_STATUSCODE_GOOD)
-        return status;
-    memset(bytes.data, 0, size);
-    UA_VariableAttributes attributes = UA_VariableAttributes_default;
-    UA_Variant_setScalar(&attributes.value, &bytes, &UA_TYPES[UA_TYPES_BYTESTRING]);
-    attributes.dataType = UA_TYPES[UA_TYPES_BYTESTRING].typeId;
-    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
-    status = UA_Server_addVariableNode(
-        server, shim_node_id(node),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
-        UA_QUALIFIEDNAME(node.namespace, "bytes"),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
-    UA_ByteString_clear(&bytes);
-    return status;
-}
-
 /* Sets the buffer size, the MaxMessageSize, and the MaxChunkCount of each later channel
  * of `server`, each 0 for the default of open62541. */
 void shim_server_limits(UA_Server *server, UA_UInt32 buffer, UA_UInt32 message,
@@ -135,6 +114,11 @@ void shim_server_limits(UA_Server *server, UA_UInt32 buffer, UA_UInt32 message,
 /* Sets the MaxNodesPerRead of `server`, 0 for none. */
 void shim_server_reads(UA_Server *server, UA_UInt32 most) {
     UA_Server_getConfig(server)->maxNodesPerRead = most;
+}
+
+/* Sets the most references of each page of a Browse of `server`. */
+void shim_server_references(UA_Server *server, UA_UInt32 most) {
+    UA_Server_getConfig(server)->maxReferencesPerNode = most;
 }
 
 /* Sets the MaxNodesPerBrowse and the MaxNodesPerTranslateBrowsePathsToNodeIds of
@@ -393,159 +377,4 @@ UA_StatusCode shim_server_add_view(UA_Server *server, shim_node node, shim_node 
     return UA_Server_addViewNode(server, shim_node_id(node), shim_node_id(parent),
                                  UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
                                  name_of(node, name), attributes, NULL, NULL);
-}
-
-/* Gives the node of the name `name` in namespace 1, which borrows `name`. */
-static shim_node named(const char *name) {
-    shim_node node = {1, 0, (const UA_Byte *)name, strlen(name)};
-    return node;
-}
-
-/* Adds to `server` the variable `name` of namespace 1 with the browse and display name
- * `display`, the DataType `type`, the scalar `value` of `kind`, and the AccessLevel and
- * UserAccessLevel read, under `parent` by HasComponent. */
-static UA_StatusCode add_value(UA_Server *server, const char *name, const char *parent,
-                               const char *display, UA_NodeId type, const void *value,
-                               const UA_DataType *kind) {
-    UA_VariableAttributes attributes = UA_VariableAttributes_default;
-    attributes.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)display);
-    attributes.dataType = type;
-    attributes.valueRank = UA_VALUERANK_SCALAR;
-    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
-    attributes.userAccessLevel = UA_ACCESSLEVELMASK_READ;
-    UA_Variant_setScalar(&attributes.value, (void *)(uintptr_t)value, kind);
-    return UA_Server_addVariableNode(
-        server, shim_node_id(named(name)), shim_node_id(named(parent)),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT), name_of(named(name), display),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
-}
-
-#define TRY(call)                                                                    \
-    do {                                                                             \
-        UA_StatusCode status = (call);                                               \
-        if(status != UA_STATUSCODE_GOOD)                                             \
-            return status;                                                           \
-    } while(0)
-
-/* Adds to `server` the tree of `sim::serve`, and caps each page of a Browse at 8
- * references. */
-UA_StatusCode shim_server_add_tree(UA_Server *server) {
-    UA_Server_getConfig(server)->maxReferencesPerNode = 8;
-    const shim_node objects = {0, UA_NS0ID_OBJECTSFOLDER, NULL, 0};
-    TRY(shim_server_add_folder(server, named("Plant"), objects, UA_NS0ID_ORGANIZES,
-                               "Plant", "Plant"));
-    TRY(shim_server_add_folder(server, named("Plant.Types"), named("Plant"),
-                               UA_NS0ID_ORGANIZES, "Types", "Types"));
-    UA_Boolean boolean = true;
-    UA_SByte sbyte = -8;
-    UA_Byte byte = 8;
-    UA_Int16 int16 = -16;
-    UA_UInt16 uint16 = 16;
-    UA_Int32 int32 = -32;
-    UA_UInt32 uint32 = 32;
-    UA_Int64 int64 = -64;
-    UA_UInt64 uint64 = 64;
-    UA_Float float_ = 0.5f;
-    UA_Double double_ = 0.25;
-    UA_String string = UA_STRING_STATIC("text");
-    UA_DateTime time = UA_DATETIME_UNIX_EPOCH;
-    UA_Guid guid = {1, 2, 3, {4, 0, 0, 0, 0, 0, 0, 0}};
-    UA_Byte two[2] = {1, 2};
-    UA_ByteString bytes = {2, two};
-    const struct {
-        const char *name;
-        size_t kind;
-        const void *value;
-    } types[] = {
-        {"Plant.Types.Boolean", UA_TYPES_BOOLEAN, &boolean},
-        {"Plant.Types.SByte", UA_TYPES_SBYTE, &sbyte},
-        {"Plant.Types.Byte", UA_TYPES_BYTE, &byte},
-        {"Plant.Types.Int16", UA_TYPES_INT16, &int16},
-        {"Plant.Types.UInt16", UA_TYPES_UINT16, &uint16},
-        {"Plant.Types.Int32", UA_TYPES_INT32, &int32},
-        {"Plant.Types.UInt32", UA_TYPES_UINT32, &uint32},
-        {"Plant.Types.Int64", UA_TYPES_INT64, &int64},
-        {"Plant.Types.UInt64", UA_TYPES_UINT64, &uint64},
-        {"Plant.Types.Float", UA_TYPES_FLOAT, &float_},
-        {"Plant.Types.Double", UA_TYPES_DOUBLE, &double_},
-        {"Plant.Types.String", UA_TYPES_STRING, &string},
-        {"Plant.Types.DateTime", UA_TYPES_DATETIME, &time},
-        {"Plant.Types.Guid", UA_TYPES_GUID, &guid},
-        {"Plant.Types.ByteString", UA_TYPES_BYTESTRING, &bytes},
-    };
-    for(size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
-        const char *name = types[i].name;
-        const UA_DataType *kind = &UA_TYPES[types[i].kind];
-        TRY(add_value(server, name, "Plant.Types", name + strlen("Plant.Types."),
-                      kind->typeId, types[i].value, kind));
-    }
-    UA_ObjectAttributes line = UA_ObjectAttributes_default;
-    line.displayName = UA_LOCALIZEDTEXT("", "Line");
-    TRY(UA_Server_addObjectNode(
-        server, shim_node_id(named("Plant.Line")), shim_node_id(named("Plant")),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT), UA_QUALIFIEDNAME(1, "Line"),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE), line, NULL, NULL));
-    TRY(shim_server_add_reference(server, named("Plant.Line"), UA_NS0ID_ORGANIZES,
-                                  named("Plant")));
-    const UA_NodeId double_id = UA_TYPES[UA_TYPES_DOUBLE].typeId;
-    UA_Double temperature = 21.5;
-    TRY(add_value(server, "Plant.Line.Temperature", "Plant.Line", "Temperature",
-                  double_id, &temperature, &UA_TYPES[UA_TYPES_DOUBLE]));
-    /* UN/CEFACT `CEL`. */
-    TRY(shim_server_add_unit(server, named("Plant.Line.Temperature.EngineeringUnits"),
-                             named("Plant.Line.Temperature"),
-                             "http://www.opcfoundation.org/UA/units/un/cefact",
-                             "\xC2\xB0"
-                             "C",
-                             0x0043454C));
-    /* The namespace 0 of the build has no node of these types. */
-    const shim_node base = {0, UA_NS0ID_BASEDATATYPE, NULL, 0};
-    const shim_node number = {0, UA_NS0ID_DOUBLE, NULL, 0};
-    const shim_node enumeration = {0, UA_NS0ID_ENUMERATION, NULL, 0};
-    const shim_node structure = {0, UA_NS0ID_STRUCTURE, NULL, 0};
-    TRY(shim_server_add_data_type(server, number, base, "Double"));
-    TRY(shim_server_add_data_type(server, enumeration, base, "Enumeration"));
-    TRY(shim_server_add_data_type(server, structure, base, "Structure"));
-    TRY(shim_server_add_data_type(server, named("Speed"), number, "Speed"));
-    TRY(shim_server_add_data_type(server, named("Mode"), enumeration, "Mode"));
-    TRY(shim_server_add_data_type(server, named("Recipe"), structure, "Recipe"));
-    UA_Double speed = 1.25;
-    TRY(add_value(server, "Plant.Line.Speed", "Plant.Line", "Speed",
-                  shim_node_id(named("Speed")), &speed, &UA_TYPES[UA_TYPES_DOUBLE]));
-    /* open62541 refuses an Int32 value of a subtype of Enumeration. */
-    TRY(shim_server_add_variable(server, named("Plant.Line.Mode"), named("Plant.Line"),
-                                 UA_NS0ID_HASCOMPONENT, "Mode", named("Mode"), -1,
-                                 UA_ACCESSLEVELMASK_READ));
-    TRY(shim_server_add_variable(server, named("Plant.Line.Profile"),
-                                 named("Plant.Line"), UA_NS0ID_HASCOMPONENT,
-                                 "Profile", number, 1, UA_ACCESSLEVELMASK_READ));
-    TRY(shim_server_add_variable(server, named("Plant.Line.Locked"),
-                                 named("Plant.Line"), UA_NS0ID_HASCOMPONENT, "Locked",
-                                 number, -1, 0));
-    UA_ExtensionObject recipe;
-    UA_ExtensionObject_init(&recipe);
-    recipe.encoding = UA_EXTENSIONOBJECT_ENCODED_BYTESTRING;
-    recipe.content.encoded.typeId = shim_node_id(named("Recipe"));
-    recipe.content.encoded.body = bytes;
-    TRY(add_value(server, "Plant.Line.Recipe", "Plant.Line", "Recipe",
-                  shim_node_id(named("Recipe")), &recipe,
-                  &UA_TYPES[UA_TYPES_EXTENSIONOBJECT]));
-    TRY(shim_server_add_folder(server, named("Plant.Odd"), named("Plant"),
-                               UA_NS0ID_ORGANIZES, "Odd", "Odd"));
-    UA_ObjectAttributes key = UA_ObjectAttributes_default;
-    key.displayName = UA_LOCALIZEDTEXT("", "Guid");
-    TRY(UA_Server_addObjectNode(
-        server, UA_NODEID_GUID(1, ((UA_Guid){5, 6, 7, {8, 0, 0, 0, 0, 0, 0, 0}})),
-        shim_node_id(named("Plant.Odd")), UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
-        UA_QUALIFIEDNAME(1, "Guid"), UA_NODEID_NUMERIC(0, UA_NS0ID_FOLDERTYPE), key,
-        NULL, NULL));
-    UA_Double level = 2.5;
-    TRY(add_value(server, "Plant.Odd.Level", "Plant.Odd", "Level", double_id, &level,
-                  &UA_TYPES[UA_TYPES_DOUBLE]));
-    TRY(shim_server_add_reference(server, named("Plant.Odd"), UA_NS0ID_ORGANIZES,
-                                  named("Plant.Odd.Level")));
-    UA_Double twin = 3.5;
-    TRY(add_value(server, "Plant.Odd.Twin", "Plant.Odd", "Level", double_id, &twin,
-                  &UA_TYPES[UA_TYPES_DOUBLE]));
-    return UA_STATUSCODE_GOOD;
 }

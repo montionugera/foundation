@@ -207,6 +207,12 @@ impl Client {
         Ok(descriptions)
     }
 
+    /// The supertype of each data type that the walks of [`Client::describe`] kept.
+    #[cfg(test)]
+    pub(crate) fn supertypes(&self) -> &BTreeMap<Node, Option<Node>> {
+        &self.supertypes
+    }
+
     /// Reads the [`Bounds`] of the server at the first call, as [`limit`] gives each.
     async fn bounds(&mut self) -> Result<Bounds, Status> {
         if let Some(bounds) = self.bounds {

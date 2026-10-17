@@ -485,7 +485,7 @@ fn describe_splits_by_the_message_size_of_the_session() {
         out,
         (
             Ok(vec![none(), none(), none()]),
-            Ok(vec![described(Some(11), -2, 1), none()])
+            Ok(vec![described(Some(11), -1, 1), none()])
         )
     );
 }
