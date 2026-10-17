@@ -1057,13 +1057,13 @@
   the hidden folders only when it passes the folders of each limit, so a step that the
   folders of a limit refuse gives `Outside`, also beside a hidden folder that is not
   there: with the folder `/work` and nothing at the hidden folder `/out/h`, `/out/x` and
-  `/out/y` give `Outside`, whether each is there or not. A short step that no `..` takes
-  the path above, and that the folders of a limit refuse, passes, and the end decides:
-  `/out/h/a` and `/out/h/s/x` give `Outside`, whether `/out/h` is there or a program
-  moves it away, and a link in `/out/h` that names a folder leads there, as a link
-  outside the folders does. A handle of `/plans` within the handle of `/work` gives
-  `Outside` for each name in `/work`. This supersedes "in the deepest directory on its
-  way that is there gives `Hidden`" of the amendment of 2026-10-16T17:13:18Z for a
+  `/out/y` give `Outside`, whether each is there or not. A short step that is there,
+  that no `..` takes the path above, and that the folders of a limit refuse, passes, and
+  the end decides: `/out/h/a` and `/out/h/s/x` give `Outside`, whether `/out/h` is there
+  or a program moves it away, and a link in `/out/h` that names a folder leads there, as
+  a link outside the folders does. A handle of `/plans` within the handle of `/work`
+  gives `Outside` for each name in `/work`. This supersedes "in the deepest directory on
+  its way that is there gives `Hidden`" of the amendment of 2026-10-16T17:13:18Z for a
   directory that is not under a folder. For the name of the first prefix that does not
   resolve, it supersedes "each other error is the error of the call" of the amendment of
   2026-10-16T17:13:18Z: that name takes no key, since an error of its key, such as `Io`
@@ -1102,4 +1102,6 @@
   of the `..` that takes the path above a step, 2026-10-17T16:38:50Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236820865; the
   folders of a limit before its hidden folders, 2026-10-17T16:59:11Z,
-  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237152656).
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237152656; the hidden
+  folders only on a step that the folders of each limit hold, 2026-10-17T17:16:50Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237413267).
