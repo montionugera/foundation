@@ -74,6 +74,7 @@ macro_rules! tests {
             a_directory_on_a_file_and_a_dot_fails,
             a_directory_of_a_dot_and_a_slash_is_not_made,
             within_hides_a_hidden_folder_that_is_a_file,
+            within_hides_a_hidden_file_on_each_end_from_make_dir,
             within_checks_no_hidden_folder_past_its_limits,
             a_directory_through_a_file_fails,
             a_directory_of_the_root_is_ok,
@@ -785,6 +786,18 @@ pub(crate) fn within_hides_a_hidden_folder_that_is_a_file(host: &Host<'_>) {
     assert_eq!(within.read(&file, 1), Err(Error::Hidden));
     let beside = base.join("work/b.hcl");
     assert_eq!(within.write(&beside, b"x"), Ok(()));
+}
+
+pub(crate) fn within_hides_a_hidden_file_on_each_end_from_make_dir(host: &Host<'_>) {
+    let (_, base) = within_work(host);
+    let file = base.join("work/a.hcl");
+    let within = host
+        .paths
+        .within(&[base.join("work")], slice::from_ref(&file))
+        .unwrap();
+    let names = ["work/a.hcl", "work/a.hcl/x", "work/a.hcl/", "work/a.hcl/."];
+    let made = names.map(|name| within.make_dir(&base.join(name)));
+    assert_eq!(made, [Err(Error::Hidden); 4], "{names:?}");
 }
 
 pub(crate) fn within_checks_no_hidden_folder_past_its_limits(host: &Host<'_>) {

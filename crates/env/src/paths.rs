@@ -236,16 +236,18 @@ impl Paths {
     /// ```
     pub fn make_dir(&self, path: &Path) -> Result<(), Error> {
         match (self.check(path), path.parent(), path.file_name()) {
-            // A link to nothing or a loop does not resolve. The call makes nothing
-            // through a link at `path`, so the limits check it as a new name in its
-            // directory: no folder is at a name that does not resolve.
+            // A link to nothing, a loop, or a file with `/` at the end does not
+            // resolve. The call makes nothing through a link at `path`, so the limits
+            // check its name in its directory, with the key of the file at that
+            // name. A link that does not resolve has no key.
             (Err(Error::NotFound | Error::Io { .. }), Some(dir), Some(name)) => {
                 let dir = if dir.as_os_str().is_empty() {
                     Path::new(".")
                 } else {
                     dir
                 };
-                self.allowed(None, &self.driver.resolve(dir)?.join(name))?;
+                let own = self.driver.key(&dir.join(name)).ok();
+                self.allowed(own, &self.driver.resolve(dir)?.join(name))?;
                 self.driver.make_dir(path)?;
                 // A link that does not resolve can still lead to a directory, which
                 // the place does not hold. A directory made at the place resolves.
