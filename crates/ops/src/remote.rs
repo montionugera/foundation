@@ -1,4 +1,4 @@
-//! Runs `plan`, `apply`, and `status` of a command line on its node.
+//! Runs `plan`, `apply`, `status`, and `browse` of a command line on its node.
 
 use std::path::{Path, PathBuf};
 
@@ -8,7 +8,7 @@ use crate::error::{self, Error, Unread};
 use crate::front_end::{self, File};
 use crate::plan::Output;
 use crate::scope::{Scope, most};
-use crate::{serve, status};
+use crate::{browse, operation, serve, status};
 
 #[cfg(test)]
 mod tests;
@@ -72,17 +72,41 @@ where
     R: AsyncFnMut() -> Result<C, Failure>,
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
 {
+    utf8(files)?;
+    if let Some(out) = out {
+        scope.out(out)?;
+    }
+    let read = read(files, scope)?;
+    let reply = request(&serve::plan_request(&read)?, link).await?;
+    let (output, plan) = serve::plan_reply(&reply)?;
+    if let Some(out) = out {
+        scope.write(out, plan)?;
+    }
+    Ok(output)
+}
+
+/// `Config` with `ops.path-not-utf8` for each of `files` whose path is not UTF-8.
+fn utf8(files: &[PathBuf]) -> Result<(), Error> {
     let not_utf8: Vec<_> = files
         .iter()
         .filter(|path| path.to_str().is_none())
         .map(|path| front_end::not_utf8(path))
         .collect();
-    if !not_utf8.is_empty() {
-        return Err(Error::config(not_utf8, &error::Sources::default()));
+    if not_utf8.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::config(not_utf8, &error::Sources::default()))
     }
-    if let Some(out) = out {
-        scope.out(out)?;
-    }
+}
+
+/// The path and text of each of `files`, read through `scope`.
+///
+/// # Errors
+///
+/// - [`Error::Read`] for the first file that does not read as UTF-8 text.
+/// - [`Error::LargeRequest`] once the files that it read pass the most of a request.
+/// - The errors of [`Scope::read`].
+fn read(files: &[PathBuf], scope: &Scope) -> Result<Vec<File>, Error> {
     let mut total = 0;
     let mut read = Vec::with_capacity(files.len());
     for path in files {
@@ -100,12 +124,7 @@ where
             text,
         });
     }
-    let reply = request(&serve::plan_request(&read)?, link).await?;
-    let (output, plan) = serve::plan_reply(&reply)?;
-    if let Some(out) = out {
-        scope.write(out, plan)?;
-    }
-    Ok(output)
+    Ok(read)
 }
 
 /// Applies on the node of `link` the plan file at `plan`, read through `scope`.
@@ -154,6 +173,40 @@ where
 {
     let reply = request(serve::STATUS_REQUEST, link).await?;
     serve::reply(&reply, "status")
+}
+
+/// Browses on the node of `link` the device of the connector of `input`, with the
+/// config files of `input` read through `scope`.
+///
+/// # Errors
+///
+/// - [`Error::Config`] with `ops.path-not-utf8` for each path that is not UTF-8.
+/// - [`Error::Read`] for the first file that does not read as UTF-8 text.
+/// - [`Error::LargeRequest`] when the files do not fit one request.
+/// - [`Error::Outside`], [`Error::Hidden`], [`Error::NoData`], or
+///   [`Error::FolderChanged`] for the first path past the limits of `scope`.
+/// - [`Error::Node`] with the failure of the reach or of the request.
+/// - Each error of [`serve::reply`].
+pub(crate) async fn browse<R, C>(
+    input: operation::Browse,
+    scope: &Scope,
+    link: &mut Link<R, C>,
+) -> Result<browse::Output, Error>
+where
+    R: AsyncFnMut() -> Result<C, Failure>,
+    C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+{
+    utf8(&input.files)?;
+    let asked = serve::Browse {
+        connector: input.connector,
+        files: read(&input.files, scope)?,
+        start: input.start,
+        pattern: input.pattern,
+        cursor: input.cursor,
+        values: input.values,
+    };
+    let reply = request(&serve::browse_request(&asked)?, link).await?;
+    serve::reply(&reply, "browse")
 }
 
 /// The reply of the node of `link` to `body`.

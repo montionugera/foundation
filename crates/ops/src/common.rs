@@ -1,4 +1,4 @@
-//! Fixtures that the tests of `plan`, `apply`, `status`, and `Node` share.
+//! Fixtures that the tests of `plan`, `apply`, `status`, `browse`, and `Node` share.
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,8 +29,11 @@ mod founding;
 #[path = "../tests/common/quickstart.rs"]
 mod quickstart;
 
+mod tree;
+
 pub(crate) use founding::{ADMIN, NODE, create_mesh};
 pub(crate) use quickstart::{plant, shown};
+pub(crate) use tree::{ADDRESS, Tree};
 
 pub(crate) const SITE: &str =
     include_str!("../../acceptance/tests/it/fixtures/site.hcl");
@@ -172,6 +175,20 @@ pub(crate) fn create_config(
         name: fixture.name.clone(),
         roots: crate::roots::Failures::new(String::new(), Vec::new()),
     }
+}
+
+/// The node of `mesh` on `fixture`, as [`create_node`] makes it, with the kinds `tree`,
+/// `broken`, and `failing` of [`Tree`] in place of the kinds of the fixtures.
+pub(crate) fn create_browsing_node(fixture: &Fixture, mesh: Mesh) -> Node {
+    let secrets = connector::testing::create_secrets(fixture.sim.files());
+    let kinds = Table::new()
+        .with("tree", Tree::create())
+        .with("broken", Tree::create_broken())
+        .with("failing", Tree::create_failing());
+    Node::new(Config {
+        supervisor: create_supervisor(fixture, kinds, secrets.clone()),
+        ..create_config(fixture, mesh, front_ends(), secrets)
+    })
 }
 
 /// A supervisor of `kinds` on `fixture`, which reads secrets through `secrets`.

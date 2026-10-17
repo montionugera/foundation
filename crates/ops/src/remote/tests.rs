@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use super::{Link, apply, most, plan, status};
 use crate::apply::Applied;
-use crate::common::{self, create_node, name, placed_site, solo};
+use crate::common::{self, create_browsing_node, create_node, name, placed_site, solo};
 use crate::error::{Error, Problem, Unread, Unusable, Unwritten};
 use crate::front_end::File;
 use crate::operation::{DATA, Response};
@@ -822,6 +822,84 @@ fn mcp_plans_applies_and_shows_status_on_one_reach_of_the_node_of_data() {
         assert_eq!(mesh.pointer().version, 1);
         assert_eq!(remote.calls(), (1, 3));
         assert_eq!(*remote.data.borrow(), [PathBuf::from("other")]);
+    });
+}
+
+/// `tools/list` holds `browse` with its input, and a tool call of `browse` gives the
+/// JSON of `foundation browse --json`, and takes `match`.
+#[test]
+fn mcp_browse_gives_the_json_of_the_command_line() {
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        let plant = "connector \"plant\" {\n  kind = \"tree\"\n  node = \"edge\"\n}\n";
+        paths
+            .write(Path::new("plant.hcl"), plant.as_bytes())
+            .expect("a write");
+        let remote = Remote::new(create_browsing_node(&fixture, mesh));
+        let level = json!({
+            "connector": "plant",
+            "files": ["plant.hcl"],
+            "start": "Line3",
+            "values": true,
+        });
+        let pattern = json!({
+            "connector": "plant",
+            "files": ["plant.hcl"],
+            "start": "Types",
+            "match": "b*",
+        });
+        let list = json!({ "jsonrpc": "2.0", "id": 0, "method": "tools/list" });
+        let messages = [list, call(1, "browse", &level), call(2, "browse", &pattern)];
+        let (run, mut replies) = remote.mcp(&paths, &[], &messages).await;
+        assert_eq!(run, Run::Exit(0));
+        let tools = replies.remove(0)["result"]["tools"].take();
+        let tool = tools
+            .as_array()
+            .expect("a list")
+            .iter()
+            .find(|tool| tool["name"] == "browse")
+            .expect("a browse tool");
+        let annotations = &tool["annotations"];
+        assert_eq!(annotations["readOnlyHint"], true);
+        assert_eq!(annotations["destructiveHint"], false);
+        let schema = &tool["inputSchema"];
+        let properties: Vec<_> = schema["properties"]
+            .as_object()
+            .expect("an object")
+            .keys()
+            .collect();
+        let names = ["connector", "cursor", "files", "match", "start", "values"];
+        assert_eq!(properties, names);
+        assert_eq!(schema["required"], json!(["connector", "files"]));
+        let args = [
+            "browse",
+            "plant",
+            "plant.hcl",
+            "--start",
+            "Line3",
+            "--values",
+            "--json",
+        ];
+        let (run, json, errors) = remote.cli(&paths, &args).await;
+        assert_eq!((run, errors.as_str()), (Run::Exit(0), ""));
+        let output: Value = serde_json::from_str(&json).expect("JSON");
+        assert_eq!(replies[0]["result"]["structuredContent"], output);
+        assert_eq!(output["end"], json!({ "next": "4" }));
+        assert_eq!(output["entries"][1]["value"], 21.5);
+        let found = &replies[1]["result"]["structuredContent"];
+        let expected = json!({
+            "entries": [{
+                "path": "Types/bool",
+                "tag": "types.bool",
+                "shape": "point",
+                "type": "bool",
+                "unit": null,
+                "unit_code": null,
+                "access": "read",
+            }],
+            "end": "done",
+        });
+        assert_eq!(*found, expected);
     });
 }
 

@@ -1,0 +1,294 @@
+//! Kinds whose device is a tree in memory, for the tests of `browse`.
+
+use std::collections::BTreeMap;
+
+use connector::browse::{
+    self, Access, Child, Cursor, Device, Entry, Facts, Found, Page, Query, Shape,
+};
+use connector::kind::{self, Channels, Context};
+use document::Document;
+use document::diagnostic::{Code, Diagnostic, Note};
+use document::value::Kind;
+use types::sample::{Scalar, Type, Value};
+use types::time::{Span, Stamp};
+
+/// The code of the diagnostic of an `address` of `"bad"`.
+pub(crate) const ADDRESS: Code = Code::new("tree.address");
+
+/// A kind whose device is a tree in memory. Its cursor is the offset of the next
+/// entry. It gives [`ADDRESS`] for a connector with the `address` `"bad"`.
+pub(crate) struct Tree {
+    /// The entries of each folder, by the tag of the folder. The tag of the root is
+    /// empty.
+    folders: BTreeMap<String, Vec<Child>>,
+    /// The value of each point that has one, by tag.
+    values: BTreeMap<String, Value>,
+    /// The most entries of a page.
+    size: usize,
+    /// When `Some`, each call of the device fails with it.
+    failure: Option<&'static str>,
+}
+
+/// The values of the points of `Types`, by name, in device order.
+fn typed() -> Vec<(&'static str, Value)> {
+    vec![
+        ("bool", Value::Bool(true)),
+        ("i8", Value::I8(-8)),
+        ("i16", Value::I16(-16)),
+        ("i32", Value::I32(-32)),
+        ("i64", Value::I64(i64::MIN)),
+        ("u8", Value::U8(8)),
+        ("u16", Value::U16(16)),
+        ("u32", Value::U32(32)),
+        ("u64", Value::U64(u64::MAX)),
+        ("f32", Value::F32(0.1)),
+        ("f64", Value::F64(-2.5)),
+        ("nan", Value::F64(f64::NAN)),
+        ("inf", Value::F32(f32::INFINITY)),
+        ("minus", Value::F64(f64::NEG_INFINITY)),
+        (
+            "stamp",
+            Value::Stamp(Stamp::from_nanos(1_700_000_000_000_000_001)),
+        ),
+        ("span", Value::Span(Span::from_nanos(250_000))),
+        (
+            "uuid",
+            Value::Uuid(
+                *b"\x01\x23\x45\x67\x89\xab\xcd\xef\x01\x23\x45\x67\x89\xab\xcd\xef",
+            ),
+        ),
+    ]
+}
+
+/// A point of `facts` with the name `name` and the tag `tag`.
+fn point(name: &str, tag: &str, facts: Facts) -> Child {
+    Child {
+        name: name.to_owned(),
+        tag: tag.to_owned(),
+        shape: Shape::Point(facts),
+    }
+}
+
+/// A folder with the name `name` and the tag `tag`.
+fn folder(name: &str, tag: &str) -> Child {
+    Child {
+        name: name.to_owned(),
+        tag: tag.to_owned(),
+        shape: Shape::Folder,
+    }
+}
+
+/// `count` points of `f64` under the folder `tag`, whose names are `p<n>`.
+fn points(tag: &str, count: usize) -> Vec<Child> {
+    let facts = Facts {
+        data_type: Some(Type::Scalar(Scalar::F64)),
+        ..Facts::default()
+    };
+    (0..count)
+        .map(|n| point(&format!("p{n}"), &format!("{tag}.p{n}"), facts.clone()))
+        .collect()
+}
+
+impl Tree {
+    /// The tree of the kind `tree`, with pages of 4 entries. The root holds the
+    /// folders `Line3`, `Types`, `Many`, and `Huge`. `Line3` holds 6 entries: a
+    /// folder, points with each fact, with no fact, and with a unit code and no unit,
+    /// and an unreadable point. `Types` holds a point of each value of [`typed`], then
+    /// a point with no value. `Many` holds 501 points and `Huge` 10,001.
+    pub(crate) fn create() -> Self {
+        let mut folders = BTreeMap::new();
+        folders.insert(
+            String::new(),
+            vec![
+                folder("Line3", "line3"),
+                folder("Types", "types"),
+                folder("Many", "many"),
+                folder("Huge", "huge"),
+            ],
+        );
+        folders.insert(
+            "line3".to_owned(),
+            vec![
+                folder("Cell", "line3.cell"),
+                point(
+                    "Temperature",
+                    "line3.temperature",
+                    Facts {
+                        data_type: Some(Type::Scalar(Scalar::F64)),
+                        unit: Some("°C".to_owned()),
+                        unit_code: Some("CEL".to_owned()),
+                        access: Some(Access::Read),
+                    },
+                ),
+                point("Bare", "line3.bare", Facts::default()),
+                point(
+                    "Heater",
+                    "line3.heater",
+                    Facts {
+                        data_type: Some(Type::Scalar(Scalar::U16)),
+                        unit: None,
+                        unit_code: Some("KWT".to_owned()),
+                        access: Some(Access::Write),
+                    },
+                ),
+                Child {
+                    name: "Recipe".to_owned(),
+                    tag: "line3.recipe".to_owned(),
+                    shape: Shape::Unreadable("an array".to_owned()),
+                },
+                point(
+                    "Setpoint",
+                    "line3.setpoint",
+                    Facts {
+                        data_type: Some(Type::Scalar(Scalar::F32)),
+                        unit: Some("%".to_owned()),
+                        unit_code: Some("P1".to_owned()),
+                        access: Some(Access::ReadWrite),
+                    },
+                ),
+            ],
+        );
+        folders.insert("line3.cell".to_owned(), Vec::new());
+        let mut values = BTreeMap::from([
+            ("line3.temperature".to_owned(), Value::F64(21.5)),
+            ("line3.heater".to_owned(), Value::U16(3)),
+            ("line3.setpoint".to_owned(), Value::F32(42.0)),
+        ]);
+        let mut types = Vec::new();
+        for (name, value) in typed() {
+            let tag = format!("types.{name}");
+            let facts = Facts {
+                data_type: Some(Type::Scalar(value.scalar())),
+                access: Some(Access::Read),
+                ..Facts::default()
+            };
+            types.push(point(name, &tag, facts));
+            values.insert(tag, value);
+        }
+        types.push(point("none", "types.none", Facts::default()));
+        folders.insert("types".to_owned(), types);
+        folders.insert("many".to_owned(), points("many", 501));
+        folders.insert("huge".to_owned(), points("huge", 10_001));
+        Self {
+            folders,
+            values,
+            size: 4,
+            failure: None,
+        }
+    }
+
+    /// The tree of the kind `broken`: one page of `Line3` holds 501 entries.
+    pub(crate) fn create_broken() -> Self {
+        Self {
+            folders: BTreeMap::from([
+                (String::new(), vec![folder("Line3", "line3")]),
+                ("line3".to_owned(), points("line3", 501)),
+            ]),
+            values: BTreeMap::new(),
+            size: 501,
+            failure: None,
+        }
+    }
+
+    /// The tree of the kind `failing`: each call of the device fails with
+    /// `the server closed the session`.
+    pub(crate) fn create_failing() -> Self {
+        Self {
+            failure: Some("the server closed the session"),
+            ..Self::create()
+        }
+    }
+
+    /// The failure of a call of the device, if the tree has one.
+    fn failed(&self) -> Result<(), kind::Error> {
+        match self.failure {
+            Some(failure) => Err(kind::Error::Device(failure.into())),
+            None => Ok(()),
+        }
+    }
+}
+
+/// The diagnostic of `config` when its `address` is `"bad"`.
+fn address(config: &Document) -> Option<Diagnostic> {
+    let attribute = config.attributes.get("address")?;
+    let Kind::String(text) = &attribute.value.kind else {
+        return None;
+    };
+    if &**text != "bad" {
+        return None;
+    }
+    let mut diagnostic = Diagnostic::new(
+        ADDRESS,
+        attribute.value.span,
+        "the address \"bad\" names no device".to_owned(),
+        "Give the address of a device".to_owned(),
+    );
+    diagnostic.notes.push(Note {
+        span: attribute.key_span.expect("a span of a read file"),
+        text: "the key of the address".to_owned(),
+    });
+    Some(diagnostic)
+}
+
+/// One browse of a [`Tree`].
+struct Session<'a>(&'a Tree);
+
+impl Device for Session<'_> {
+    async fn level(
+        &mut self,
+        folder: Option<&Entry>,
+        cursor: Option<&Cursor>,
+    ) -> Result<Option<Page>, kind::Error> {
+        self.0.failed()?;
+        let tag = folder.map_or("", |folder| folder.tag.as_str());
+        let Some(children) = self.0.folders.get(tag) else {
+            return Ok(None);
+        };
+        let from =
+            cursor.map_or(0, |cursor| cursor.as_str().parse().expect("an offset"));
+        let to = children.len().min(from + self.0.size);
+        let next = (to < children.len()).then(|| Cursor::new(to.to_string()));
+        Ok(Some(Page {
+            entries: children[from..to].to_vec(),
+            next,
+        }))
+    }
+
+    async fn values(
+        &mut self,
+        tags: &[&str],
+    ) -> Result<Vec<Option<Value>>, kind::Error> {
+        self.0.failed()?;
+        Ok(tags
+            .iter()
+            .map(|tag| self.0.values.get(*tag).copied())
+            .collect())
+    }
+}
+
+impl kind::Kind for Tree {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels::default())
+    }
+
+    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), kind::Error>> {
+        std::future::ready(Ok(()))
+    }
+
+    async fn browse(
+        &self,
+        ctx: &browse::Context<'_>,
+        query: &Query,
+    ) -> Result<Found, kind::Error> {
+        if let Some(diagnostic) = address(ctx.config()) {
+            return Err(kind::Error::Config(vec![diagnostic]));
+        }
+        browse::walk(&mut Session(self), query).await
+    }
+}

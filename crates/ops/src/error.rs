@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use std::path::PathBuf;
 
+use connector::browse::{DEPTH, STARS};
 use document::Span;
 use document::diagnostic::{Code, Diagnostic};
 use mesh::used::{Behind, Cause};
@@ -41,6 +42,10 @@ const PLAN_NAME: Code = Code::new("ops.plan-name");
 const WIDE_FOLDER: Code = Code::new("ops.wide-folder");
 const FOLDER: Code = Code::new("ops.folder");
 const DATA: Code = Code::new("ops.data");
+const BROWSE: Code = Code::new("ops.browse");
+const BROWSE_NODE: Code = Code::new("ops.browse-node");
+const BAD_START: Code = Code::new("ops.bad-start");
+const BAD_PATTERN: Code = Code::new("ops.bad-pattern");
 /// The fix of [`ARGUMENT`].
 const HELP: &str =
     "Match the arguments to `foundation --help` or `foundation <operation> --help`";
@@ -135,6 +140,30 @@ pub(crate) enum Error {
     Data {
         path: PathBuf,
         error: env::paths::Error,
+    },
+    /// The browse of `connector` of `kind` failed, with each problem of the failure.
+    /// Each message starts with the names of the connector and its kind.
+    Browse {
+        connector: Name,
+        kind: Name,
+        problems: Vec<Problem>,
+    },
+    /// The files place `connector` on `node`, which is not `this`, the node that got
+    /// the browse.
+    BrowseNode {
+        connector: Name,
+        node: Name,
+        this: Name,
+    },
+    /// The start `text` of a browse is no path.
+    BadStart {
+        text: String,
+        cause: connector::browse::Malformed,
+    },
+    /// The match `text` of a browse is no pattern.
+    BadPattern {
+        text: String,
+        cause: connector::browse::Malformed,
     },
 }
 
@@ -231,6 +260,44 @@ impl Error {
         )
     }
 
+    /// `Browse` of `connector` of `kind` with each problem of `cause`. A problem of
+    /// `Config` keeps its code, fix, place, and notes, and its spans are in the files
+    /// of `sources`. `Device` and `Retry` give one problem of `ops.browse`.
+    pub(crate) fn browse(
+        connector: &Name,
+        kind: &Name,
+        cause: connector::kind::Error,
+        sources: &Sources,
+    ) -> Self {
+        let diagnostics = match cause {
+            connector::kind::Error::Config(diagnostics) => diagnostics,
+            cause @ (connector::kind::Error::Device(_)
+            | connector::kind::Error::Retry(_)) => vec![Diagnostic::new(
+                BROWSE,
+                None,
+                cause.to_string(),
+                "Fix the cause in the message, then browse again".to_owned(),
+            )],
+        };
+        let problems = diagnostics
+            .into_iter()
+            .map(|diagnostic| {
+                let mut problem = Problem::of(diagnostic, sources);
+                let message = problem.message;
+                problem.message = format!(
+                    "the browse of the connector `{connector}` of kind `{kind}` \
+                     failed: {message}"
+                );
+                problem
+            })
+            .collect();
+        Self::Browse {
+            connector: connector.clone(),
+            kind: kind.clone(),
+            problems,
+        }
+    }
+
     pub(crate) fn status(&self) -> u8 {
         match self {
             Self::Remote { status, .. } => *status,
@@ -253,6 +320,7 @@ impl Error {
             | Self::Data { .. }
             | Self::NoData { .. }
             | Self::FolderChanged { .. }
+            | Self::Browse { .. }
             | Self::Reply { .. } => 1,
             Self::Argument { .. }
             | Self::Unknown { .. }
@@ -264,15 +332,21 @@ impl Error {
             | Self::Hidden { .. }
             | Self::PlanName { .. }
             | Self::WideFolder { .. }
+            | Self::BrowseNode { .. }
+            | Self::BadStart { .. }
+            | Self::BadPattern { .. }
             | Self::Folder { .. } => 2,
         }
     }
 
-    /// Each problem: for each error but `Config`, one with no place and no note.
+    /// Each problem: for each error but `Config`, `Remote`, and `Browse`, one with no
+    /// place and no note.
     #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     pub(crate) fn problems(&self) -> Cow<'_, [Problem]> {
         let (code, fix) = match self {
-            Self::Config(problems) | Self::Remote { problems, .. } => {
+            Self::Config(problems)
+            | Self::Remote { problems, .. }
+            | Self::Browse { problems, .. } => {
                 return Cow::Borrowed(problems);
             }
             Self::Node(failure) => (failure.code, failure.fix.clone()),
@@ -402,6 +476,23 @@ impl Error {
                 DATA,
                 "Give `--data` a directory that this user can make".to_owned(),
             ),
+            Self::BrowseNode { node, .. } => {
+                (BROWSE_NODE, format!("Run it with `--data` of node `{node}`"))
+            }
+            Self::BadStart { .. } => (
+                BAD_START,
+                "Give folder names joined by `/`, with a `\\` before each `/`, `*`, or \
+                 `\\` in a name"
+                    .to_owned(),
+            ),
+            Self::BadPattern { .. } => (
+                BAD_PATTERN,
+                format!(
+                    "Give names joined by `/`, at most {DEPTH} other than `**` and at \
+                     most {STARS} `*`, with a `\\` before each `/`, `*`, or `\\` in a \
+                     name"
+                ),
+            ),
         };
         Cow::Owned(vec![Problem {
             code: code.as_str().to_owned(),
@@ -424,7 +515,9 @@ impl Error {
     /// text holds the caller's text as given.
     pub(crate) fn text(&self) -> String {
         let escape: fn(&str) -> String = match self {
-            Self::Config(_) | Self::Remote { .. } => escape_controls,
+            Self::Config(_) | Self::Remote { .. } | Self::Browse { .. } => {
+                escape_controls
+            }
             _ => escape,
         };
         let problems: Vec<String> = self
@@ -735,6 +828,34 @@ impl fmt::Display for Error {
                 path.display(),
                 failed(*error)
             ),
+            Self::Browse {
+                connector,
+                kind,
+                problems,
+            } => match problems.as_slice() {
+                [one] => f.write_str(&one.message),
+                _ => write!(
+                    f,
+                    "the browse of the connector `{connector}` of kind `{kind}` failed \
+                     with {} problems",
+                    problems.len()
+                ),
+            },
+            Self::BrowseNode {
+                connector,
+                node,
+                this,
+            } => write!(
+                f,
+                "the connector `{connector}` runs on the node `{node}`, not on this \
+                 node `{this}`"
+            ),
+            Self::BadStart { text, cause } => {
+                write!(f, "the start `{text}` is not a path: {cause}")
+            }
+            Self::BadPattern { text, cause } => {
+                write!(f, "the match `{text}` is not a pattern: {cause}")
+            }
         }
     }
 }

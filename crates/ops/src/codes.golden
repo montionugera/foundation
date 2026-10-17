@@ -23,6 +23,10 @@ ops.plan-name	Give `out` a path that ends in `.plan` and is not a link to anothe
 ops.wide-folder	Add `--files <DIR>` for each folder that the tools may read and write
 ops.folder	Give `--files` a folder that is there
 ops.data	Make /work, or give `--data` a directory whose parent is there
+ops.browse	Fix the cause in the message, then browse again
+ops.browse-node	Run it with `--data` of node `edge`
+ops.bad-start	Give folder names joined by `/`, with a `\` before each `/`, `*`, or `\` in a name
+ops.bad-pattern	Give names joined by `/`, at most 64 other than `**` and at most 256 `*`, with a `\` before each `/`, `*`, or `\` in a name
 ops.unknown-extension	Use a file that ends in `.hcl`
 ops.path-not-utf8	Rename the file to a UTF-8 name
 secret.unresolved	Give the node the value at the source, or change the source, then plan again

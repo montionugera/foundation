@@ -7,6 +7,7 @@ use std::io::{self, Write};
 use std::marker::PhantomData;
 
 use access::Rules;
+use connector::browse;
 use serde::de::value::MapAccessDeserializer;
 use serde::de::{self, DeserializeOwned, Deserializer, IgnoredAny, MapAccess};
 use serde::{Deserialize, Serialize};
@@ -30,9 +31,10 @@ mod tests;
 ///
 /// The reply is at most `wire::hub::client::BODY_BYTES_MAX` bytes, and `serve` stops
 /// writing a reply at that bound. No `body` makes it panic. The reply holds
-/// `ops.bad-request` for a body that is no request of `plan`, `apply`, or `status`,
-/// `ops.denied` for an action that no access policy gives `subject` and for a request
-/// that names no definition, and `ops.large-reply` in place of a reply over the bound.
+/// `ops.bad-request` for a body that is no request of `plan`, `apply`, `status`, or
+/// `browse`, `ops.denied` for an action that no access policy gives `subject` and for
+/// a request that names no definition, and `ops.large-reply` in place of a reply over
+/// the bound.
 /// `apply` also needs `apply` on the channel at each edge of each channel that the plan
 /// adds or changes, and `admin` on the key of each definition other than a channel that
 /// the plan adds, changes, or removes. It gives a home only to an index on which
@@ -43,7 +45,8 @@ mod tests;
 /// OS roots of the node only to a subject with `read` on the name of the node. It
 /// waits at most 1 s from the request. A connector is `unknown` when no status as the
 /// spec defines it comes in that time, and `status` gives `ops.channel-read` when the
-/// reader of a connector fails for another cause.
+/// reader of a connector fails for another cause. `browse` needs `apply` on the name
+/// of the connector, and browses only a connector that the files place on this node.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
@@ -116,6 +119,7 @@ enum Request {
     Plan(Plan),
     Apply,
     Status,
+    Browse(Browse),
     /// An operation of another name.
     Other(String),
 }
@@ -126,6 +130,22 @@ enum Request {
 struct Plan {
     #[serde(deserialize_with = "objects")]
     files: Vec<File>,
+}
+
+/// The input of `browse`: the name of a connector, each config file with its path as
+/// the user gave it, and the query.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Browse {
+    pub(crate) connector: String,
+    #[serde(deserialize_with = "objects")]
+    pub(crate) files: Vec<File>,
+    pub(crate) start: Option<String>,
+    #[serde(rename = "match")]
+    pub(crate) pattern: Option<String>,
+    pub(crate) cursor: Option<String>,
+    #[serde(default)]
+    pub(crate) values: bool,
 }
 
 /// A `T` that takes only an object: a derived struct also takes a sequence.
@@ -190,6 +210,10 @@ impl<'de> Deserialize<'de> for Request {
                     "status" => {
                         let Object(Empty {}) = map.next_value()?;
                         Request::Status
+                    }
+                    "browse" => {
+                        let Object(browse) = map.next_value()?;
+                        Request::Browse(browse)
                     }
                     _ => {
                         let IgnoredAny = map.next_value()?;
@@ -261,6 +285,20 @@ pub(crate) fn apply_request(plan: &[u8]) -> Result<Vec<u8>, Error> {
     let mut body = Body::line(&json!({ "apply": {} })).map_err(large)?;
     body.add(plan).map_err(large)?;
     Ok(body.0)
+}
+
+/// The body of a request of `browse`, for [`serve`].
+///
+/// # Errors
+///
+/// [`Error::LargeRequest`] when the body passes the bound.
+///
+/// # Panics
+///
+/// When the path of a file is not UTF-8 and the body before that path fits the bound.
+pub(crate) fn browse_request(browse: &Browse) -> Result<Vec<u8>, Error> {
+    let body = Body::line(&BTreeMap::from([("browse", browse)]));
+    body.map(|body| body.0).map_err(|Large| Error::LargeRequest)
 }
 
 /// The body of a request of `status`, for [`serve`].
@@ -364,6 +402,10 @@ async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Body, Error> {
             Err(bad_request("bytes follow the first line of `status`"))
         }
         Request::Status => status(node, subject).await,
+        Request::Browse(_) if !rest.is_empty() => {
+            Err(bad_request("bytes follow the first line of `browse`"))
+        }
+        Request::Browse(request) => browse(node, subject, request).await,
         Request::Other(name) => Err(bad_request(format!(
             "the operation `{name}` does not run on a node"
         ))),
@@ -520,5 +562,69 @@ async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
         connectors,
         roots: readable.then(|| node.roots.clone()),
     };
+    Ok(Body::line(&Answer::Done { output: &output })?)
+}
+
+/// The reply of `browse`: its output. It checks, in this order, that the files read,
+/// that they hold the connector, that `subject` has `apply` on its name, that the
+/// connector runs on this node, that the start and the match parse, and that the
+/// request gives no match with a cursor.
+async fn browse(node: &Node, subject: &Name, request: Browse) -> Result<Body, Error> {
+    let files = Documents::read(&request.files, &node.front_ends)?;
+    let name: Name = request.connector.parse().map_err(|error| Error::Argument {
+        message: format!(
+            "the connector `{}` is not a name: {error}",
+            request.connector
+        ),
+    })?;
+    let connector = files.connector(&name)?;
+    let spec = used::spec(&node.mesh).await?;
+    Check::new(&spec, subject).names(Action::Apply, [&name])?;
+    if connector.node() != &node.name {
+        return Err(Error::BrowseNode {
+            connector: name,
+            node: connector.node().clone(),
+            this: node.name.clone(),
+        });
+    }
+    let start = match request.start {
+        None => browse::Path::root(),
+        Some(text) => text
+            .parse()
+            .map_err(|cause| Error::BadStart { text, cause })?,
+    };
+    let pattern = request
+        .pattern
+        .map(|text| {
+            text.parse()
+                .map_err(|cause| Error::BadPattern { text, cause })
+        })
+        .transpose()?;
+    let scope = match (pattern, request.cursor) {
+        (Some(_), Some(_)) => {
+            return Err(Error::Argument {
+                message: "a browse takes `match` or `cursor`, not both".to_owned(),
+            });
+        }
+        (Some(pattern), None) => browse::Scope::Match(pattern),
+        (None, cursor) => browse::Scope::Level(cursor.map(browse::Cursor::new)),
+    };
+    let values = if request.values {
+        browse::Values::Read
+    } else {
+        browse::Values::Skipped
+    };
+    let query = browse::Query {
+        start,
+        scope,
+        values,
+    };
+    let kind = connector.kind();
+    let found = node
+        .supervisor
+        .browse(kind.as_str(), connector.config().document(), &query)
+        .await
+        .map_err(|cause| Error::browse(&name, kind, cause, files.sources()))?;
+    let output = crate::browse::Output::of(found);
     Ok(Body::line(&Answer::Done { output: &output })?)
 }

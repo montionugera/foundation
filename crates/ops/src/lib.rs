@@ -11,6 +11,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 mod apply;
+mod browse;
 #[cfg(test)]
 mod common;
 mod error;
@@ -65,13 +66,14 @@ pub enum Run {
 /// answer of the line before. A closed `output` ends the run with no error, because
 /// its reader has left.
 ///
-/// `plan`, `apply`, and `status` run on the node of `--data`, else of
+/// `plan`, `apply`, `status`, and `browse` run on the node of `--data`, else of
 /// `foundation-data`. Each reads the files it names through `paths`, calls `reach` with
 /// that data directory once, and calls what it gives with the body of one request. A
 /// [`Failure`] of either is the error of the command, with status 1. `foundation mcp`
-/// runs each tool call of `plan`, `apply`, and `status` on the node of its own
-/// `--data`. It calls `reach` at its first such call, and again only at the call after
-/// a [`Failure`] of what `reach` gave. `start` and the other operations call neither.
+/// runs each tool call of `plan`, `apply`, `status`, and `browse` on the node of its
+/// own `--data`. It calls `reach` at its first such call, and again only at the call
+/// after a [`Failure`] of what `reach` gave. `start` and the other operations call
+/// neither.
 ///
 /// The tools of `foundation mcp` read and write only under each `--files` folder,
 /// else under the working directory, and never in the data directory. With no
