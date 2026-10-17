@@ -177,39 +177,13 @@ enum Lag {
 
 const _: () = assert!(size_of::<Flow>() == 96, "a `Flow` is not 96 bytes");
 
-/// A frame held in [`Readers::queue`] that a session waits for a grant on. Its
-/// indexes are `u32`, so that a [`Flow`] is 96 bytes.
+/// A frame held in [`Readers::queue`] that a session waits for a grant on.
 #[derive(Clone, Copy, Debug)]
 struct Owed {
     /// Its index in `queue`.
-    frame: u32,
+    frame: usize,
     /// The index in `sets` of its key set.
-    set: u32,
-}
-
-impl Owed {
-    /// The frame at index `frame` of `queue`, of the key set at index `set` of `sets`.
-    ///
-    /// # Panics
-    ///
-    /// If an index does not fit in a `u32`.
-    fn new(frame: usize, set: usize) -> Self {
-        let index = |i: usize| u32::try_from(i).expect("fewer than 2^32 frames held");
-        Self {
-            frame: index(frame),
-            set: index(set),
-        }
-    }
-
-    /// Its index in `queue`.
-    fn frame(self) -> usize {
-        self.frame as usize
-    }
-
-    /// The index in `sets` of its key set.
-    fn set(self) -> usize {
-        self.set as usize
-    }
+    set: usize,
 }
 
 #[derive(Debug)]
@@ -484,7 +458,7 @@ impl Readers {
         {
             let stale = |set: &mut Arc<KeySet>| set.key() != frame.key_set();
             while self.sets.pop_front_if(stale).is_some() {}
-            let at = Owed::new(0, 0);
+            let at = Owed { frame: 0, set: 0 };
             let (last, owing) = give(
                 &self.complete,
                 &mut self.flows,
@@ -525,7 +499,7 @@ impl Readers {
                 &mut self.flows,
                 &mut self.woken_complete,
                 (frame, &self.sets[set], seq),
-                Owed::new(i, set),
+                Owed { frame: i, set },
             );
             if let Some(waiting) = last {
                 waiting.push_back(frame.clone());
@@ -563,7 +537,7 @@ impl Readers {
                 continue;
             };
             flow.lag = Lag::Disk {
-                from: Mark::at(self.queue[owed.frame()].1.start),
+                from: Mark::at(self.queue[owed.frame].1.start),
             };
             // A session with frames to take sees the miss after it takes them.
             if flow.waiting.is_empty() {
@@ -764,18 +738,18 @@ impl Readers {
             }
             Lag::Owed(owed) => owed,
         };
-        let (frame, seq) = &self.queue[owed.frame()];
-        while self.sets[owed.set()].key() != frame.key_set() {
+        let (frame, seq) = &self.queue[owed.frame];
+        while self.sets[owed.set].key() != frame.key_set() {
             owed.set += 1;
         }
-        let set = &self.sets[owed.set()];
+        let set = &self.sets[owed.set];
         if !flow.pay(frame, set, frame.charge(), seq) {
             flow.lag = Lag::Owed(owed);
             return Next::Empty;
         }
         let frame = frame.clone();
         owed.frame += 1;
-        if owed.frame() == self.held {
+        if owed.frame == self.held {
             flow.lag = Lag::None;
             self.paid();
         } else {
