@@ -555,6 +555,10 @@ const AWS_LC: [&str; 144] = [
     "i2d_X509_REQ",
 ];
 
+/// The header of the symbol prefix, which the build script of `connector-opcua` also
+/// reads.
+const PREFIX_HEADER: &str = "openssl/boringssl_prefix_symbols.h";
+
 /// The libcrypto that the copy builds against: the aws-lc of the one `aws-lc-sys` in
 /// `Cargo.lock`, which `connector-opcua` links.
 pub(crate) struct Crypto {
@@ -571,7 +575,7 @@ impl Crypto {
     /// # Errors
     ///
     /// A `cargo metadata` that fails, a lock with no `aws-lc-sys` or more than one, and
-    /// headers with no `BORINGSSL_PREFIX`.
+    /// the errors of [`Crypto::read_prefix`].
     pub(crate) fn locked(root: &Path) -> Result<Self, String> {
         let graph = crate::graph(root)?;
         let packages: Vec<&Value> = graph["packages"]
@@ -592,12 +596,20 @@ impl Crypto {
             .ok_or("aws-lc-sys has no manifest path")?;
         let include = vec![dir.join("generated-include"), dir.join("aws-lc/include")];
         // The line that the build script of `connector-opcua` reads.
-        let header = include[0].join("openssl/boringssl_prefix_symbols.h");
-        let text = std::fs::read_to_string(&header)
-            .map_err(|e| format!("{}: {e}", header.display()))?;
-        let prefix = Self::prefix(&text)
-            .ok_or_else(|| format!("{} has no BORINGSSL_PREFIX", header.display()))?;
+        let prefix = Self::read_prefix(&include[0].join(PREFIX_HEADER))?;
         Ok(Self { include, prefix })
+    }
+
+    /// The prefix that the `boringssl_prefix_symbols.h` at `header` defines.
+    ///
+    /// # Errors
+    ///
+    /// A header that cannot be read, and one with no `BORINGSSL_PREFIX` with a prefix.
+    fn read_prefix(header: &Path) -> Result<String, String> {
+        let text = std::fs::read_to_string(header)
+            .map_err(|e| format!("{}: {e}", header.display()))?;
+        Self::prefix(&text)
+            .ok_or_else(|| format!("{} has no BORINGSSL_PREFIX", header.display()))
     }
 
     /// The prefix of the line `#define BORINGSSL_PREFIX <prefix>` of `header`, with the
@@ -678,15 +690,15 @@ pub(crate) fn run(
 /// A line of `flags.txt` other than a `-D`, `-I`, or `-std` flag with its value, one of
 /// [`CODE_FLAGS`], or [`NO_DOLLARS`], a `flags.txt` with no line [`NO_DOLLARS`], a
 /// build that fails, an `#include` or `#import` of a header outside both the copy and
-/// the system directories, a reference to a symbol outside the copy that neither
-/// [`SYMBOLS`] nor [`FUNCTION_SYMBOLS`] admits, a listed key with no reference, a
-/// reference outside a function that [`SYMBOLS`] does not admit, any reference to a
-/// clock function other than a call, such as its address in code or data, through which
-/// any code can call it, each inlined function, an `#include_next`, a `#line` directive
-/// or line marker in a `.c` or `.h` file of the copy, a `cc` that is not GCC or that
-/// builds for neither x86-64 nor aarch64, a symbol whose name holds a character other
-/// than an ASCII letter, a digit, `_`, `.`, or `$`, and each instruction whose key the
-/// list of its architecture does not admit.
+/// the system directories, a reference to a symbol outside the copy that none of
+/// [`SYMBOLS`], [`FUNCTION_SYMBOLS`], [`AWS_LC`], and [`AWS_LC_KEYS`] admits, a listed
+/// key with no reference, a reference outside a function that [`SYMBOLS`] does not
+/// admit, any reference to a clock function other than a call, such as its address in
+/// code or data, through which any code can call it, each inlined function, an
+/// `#include_next`, a `#line` directive or line marker in a `.c` or `.h` file of the
+/// copy, a `cc` that is not GCC or that builds for neither x86-64 nor aarch64, a symbol
+/// whose name holds a character other than an ASCII letter, a digit, `_`, `.`, or `$`,
+/// and each instruction whose key the list of its architecture does not admit.
 pub(crate) fn check(root: &Path, crypto: &Crypto) -> Result<(), Vec<String>> {
     let out = root.join("target/open62541/check");
     inspect(&root.join(DEST), &out, Path::new("cc"), crypto)
@@ -2871,6 +2883,23 @@ End of search list.
     }
 
     #[test]
+    fn crypto_read_prefix_names_the_header() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let crypto = Crypto::locked(workspace).unwrap();
+        let empty = crypto.include[1].join(PREFIX_HEADER);
+        assert_eq!(
+            Crypto::read_prefix(&empty),
+            Err(format!("{} has no BORINGSSL_PREFIX", empty.display()))
+        );
+        let missing = crypto.include[1].join("missing.h");
+        let e = std::fs::read_to_string(&missing).unwrap_err();
+        assert_eq!(
+            Crypto::read_prefix(&missing),
+            Err(format!("{}: {e}", missing.display()))
+        );
+    }
+
+    #[test]
     fn crypto_locked_finds_the_aws_lc_sys_of_the_lock() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let crypto = Crypto::locked(workspace).unwrap();
@@ -2884,7 +2913,7 @@ End of search list.
             panic!("{:?}", crypto.include);
         };
         assert!(generated.ends_with("generated-include"));
-        let prefixes = generated.join("openssl/boringssl_prefix_symbols.h");
+        let prefixes = generated.join(PREFIX_HEADER);
         let text = std::fs::read_to_string(prefixes).unwrap();
         let prefix = crypto.prefix.strip_suffix('_').unwrap();
         assert!(text.contains(&format!("#define BORINGSSL_PREFIX {prefix}\n")));
