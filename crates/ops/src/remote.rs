@@ -58,7 +58,8 @@ where
 /// - [`Error::Node`] with the failure of the reach or of the request.
 /// - Each error of [`serve::plan_reply`].
 /// - [`Error::Write`] when the write of `out` fails.
-/// - [`Error::Outside`] for the first path past the limits of `scope`.
+/// - [`Error::Outside`], [`Error::Hidden`], [`Error::NoData`], or
+///   [`Error::FolderChanged`] for the first path past the limits of `scope`.
 /// - [`Error::PlanName`] when `scope` has limits and `out` does not resolve to a name
 ///   that ends in `.plan`, before it reads a file.
 pub(crate) async fn plan<R, C>(
@@ -113,7 +114,8 @@ where
 ///
 /// - [`Error::Config`] with `ops.path-not-utf8` when `plan` is not UTF-8.
 /// - [`Error::Read`] when the plan file does not read.
-/// - [`Error::Outside`] when `plan` is past the limits of `scope`.
+/// - [`Error::Outside`], [`Error::Hidden`], [`Error::NoData`], or
+///   [`Error::FolderChanged`] when `plan` is past the limits of `scope`.
 /// - [`Error::LargeRequest`] when the plan file does not fit one request.
 /// - [`Error::Node`] with the failure of the reach or of the request.
 /// - Each error of [`serve::reply`].

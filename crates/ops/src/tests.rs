@@ -630,6 +630,14 @@ fn every() -> Vec<Error> {
             path: PathBuf::new(),
             data: PathBuf::from("/work/foundation-data"),
         },
+        Error::NoData {
+            path: PathBuf::new(),
+            data: PathBuf::from("/work/foundation-data"),
+        },
+        Error::FolderChanged {
+            path: PathBuf::new(),
+            folders: vec![PathBuf::from("/work")],
+        },
         Error::PlanName {
             path: PathBuf::new(),
             resolved: PathBuf::new(),
@@ -675,6 +683,8 @@ fn error_codes_and_fixes_match_the_golden_file() {
             | Error::Reply { .. }
             | Error::Outside { .. }
             | Error::Hidden { .. }
+            | Error::NoData { .. }
+            | Error::FolderChanged { .. }
             | Error::PlanName { .. }
             | Error::WideFolder { .. }
             | Error::Folder { .. }

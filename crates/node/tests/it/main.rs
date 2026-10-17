@@ -426,7 +426,7 @@ fn mcp_answers_a_line_that_is_not_utf8_and_goes_on() {
     );
 }
 
-/// The line of the reply of `foundation mcp` to a `status` call with `id`, which
+/// The line of the reply of `foundation mcp` to a tool call with `id`, which
 /// gives `output`, else fails with `error`.
 fn status_reply(
     id: u64,
@@ -652,6 +652,84 @@ fn mcp_reaches_a_node_on_a_data_directory_made_again() {
     mcp.ask(&status(3), &replies);
     let output = mcp.close();
     assert_eq!(output.status.code(), Some(0));
+}
+
+/// While the data directory is gone, `plan` through MCP still writes a plan file that
+/// is there, and refuses a new name in the working directory, on the way to it.
+#[test]
+fn mcp_refuses_a_new_plan_file_while_the_data_directory_is_gone() {
+    let mut rig = Rig::new();
+    rig.config(concat!(
+        "channel \"plant.time\" { kind = \"index\" }\n",
+        "placement \"plant.home\" {\n  select = \"plant.*\"\n  home = \"edge\"\n}\n",
+    ));
+    rig.start_with(&["--name", "edge", "--data", "plant"]);
+    let mut mcp = rig.talk(&["mcp", "--data", "plant"]);
+    let plan = |id, out: &str| {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\
+             \"params\":{{\"name\":\"plan\",\"arguments\":{{\"files\":[\"plant.hcl\"],\
+             \"out\":\"{out}\"}}}}}}\n"
+        )
+    };
+    let first = mcp.answer(&plan(1, "first.plan"));
+    assert!(!first.contains("isError"), "{first}");
+    let data = std::fs::canonicalize(rig.dir.join("plant")).expect("a resolve");
+    std::fs::remove_dir_all(&data).expect("a remove");
+    let again = mcp.answer(&plan(2, "first.plan"));
+    assert!(!again.contains("isError"), "{again}");
+    let new = mcp.answer(&plan(3, "second.plan"));
+    let data = data.display();
+    let refused = serde_json::json!({
+        "code": "ops.no-data",
+        "message": format!(
+            "`second.plan` is a new name in a directory on the way to the data \
+             directory {data} of this MCP server, and nothing is at {data} now"
+        ),
+        "fix": format!(
+            "Start the node on {data} again, or give a path in another directory"
+        ),
+        "notes": [],
+    });
+    assert_eq!(format!("{new}\n"), status_reply(3, Err(refused)));
+    assert!(!rig.dir.join("second.plan").exists());
+}
+
+/// The user makes the folder of `--files` again while `foundation mcp` runs. A file
+/// in it is refused with a cause that names the folder and a fix that works.
+#[test]
+fn mcp_refuses_a_file_in_a_folder_made_again() {
+    let rig = Rig::new();
+    let folder = rig.dir.join("cfg");
+    std::fs::create_dir(&folder).expect("a make");
+    std::fs::write(folder.join("plant.hcl"), "").expect("a write");
+    let resolved = std::fs::canonicalize(&folder).expect("a resolve");
+    let mut mcp = rig.talk(&["mcp", "--data", "plant", "--files", "cfg"]);
+    let plan = |id| {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\
+             \"params\":{{\"name\":\"plan\",\"arguments\":{{\"files\":\
+             [\"cfg/plant.hcl\"]}}}}}}\n"
+        )
+    };
+    let mut replies = status_reply(1, Err(unreached()));
+    mcp.ask(&plan(1), &replies);
+    std::fs::remove_dir_all(&folder).expect("a remove");
+    std::fs::create_dir(&folder).expect("a make");
+    std::fs::write(folder.join("plant.hcl"), "").expect("a write");
+    let changed = serde_json::json!({
+        "code": "ops.folder-changed",
+        "message": format!(
+            "`cfg/plant.hcl` is under a folder of this MCP server ({}) that a program \
+             replaced after it started",
+            resolved.display()
+        ),
+        "fix": "Start `foundation mcp` again",
+        "notes": [],
+    });
+    replies.push_str(&status_reply(2, Err(changed)));
+    mcp.ask(&plan(2), &replies);
+    assert_eq!(mcp.close().status.code(), Some(0));
 }
 
 /// A client starts `foundation mcp` at `/`, as the decision says one may, as a user who

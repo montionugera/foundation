@@ -35,6 +35,8 @@ const LARGE_REQUEST: Code = Code::new("ops.large-request");
 const BAD_REPLY: Code = Code::new("ops.bad-reply");
 const OUTSIDE: Code = Code::new("ops.outside");
 const HIDDEN: Code = Code::new("ops.hidden");
+const NO_DATA: Code = Code::new("ops.no-data");
+const FOLDER_CHANGED: Code = Code::new("ops.folder-changed");
 const PLAN_NAME: Code = Code::new("ops.plan-name");
 const WIDE_FOLDER: Code = Code::new("ops.wide-folder");
 const FOLDER: Code = Code::new("ops.folder");
@@ -112,6 +114,15 @@ pub(crate) enum Error {
     Outside { path: PathBuf, limits: Limits },
     /// A path that resolves under the data directory `data` of `foundation mcp`.
     Hidden { path: PathBuf, data: PathBuf },
+    /// A new name in a directory on the way to the data directory `data` of
+    /// `foundation mcp`, while nothing is at `data`.
+    NoData { path: PathBuf, data: PathBuf },
+    /// A path under a folder of `foundation mcp` that a program replaced after the
+    /// start, with the folders.
+    FolderChanged {
+        path: PathBuf,
+        folders: Vec<PathBuf>,
+    },
     /// An `out` of a tool of `foundation mcp` that resolves to `resolved`, which does
     /// not end in `.plan`.
     PlanName { path: PathBuf, resolved: PathBuf },
@@ -240,6 +251,8 @@ impl Error {
             | Self::ChannelRead { .. }
             | Self::Write { .. }
             | Self::Data { .. }
+            | Self::NoData { .. }
+            | Self::FolderChanged { .. }
             | Self::Reply { .. } => 1,
             Self::Argument { .. }
             | Self::Unknown { .. }
@@ -360,6 +373,16 @@ impl Error {
             ),
             Self::Hidden { data, .. } => {
                 (HIDDEN, format!("Give a path outside {}", data.display()))
+            }
+            Self::NoData { data, .. } => (
+                NO_DATA,
+                format!(
+                    "Start the node on {} again, or give a path in another directory",
+                    data.display()
+                ),
+            ),
+            Self::FolderChanged { .. } => {
+                (FOLDER_CHANGED, "Start `foundation mcp` again".to_owned())
             }
             Self::Folder { .. } => {
                 (FOLDER, "Give `--files` a folder that is there".to_owned())
@@ -649,19 +672,19 @@ impl fmt::Display for Error {
                 [one] => f.write_str(&one.message),
                 _ => write!(f, "the node gave {} problems", problems.len()),
             },
-            Self::Outside { path, limits } => {
-                let folders: Vec<String> = limits
-                    .folders
-                    .iter()
-                    .map(|folder| folder.display().to_string())
-                    .collect();
-                write!(
-                    f,
-                    "`{}` is not under a folder of this MCP server ({})",
-                    path.display(),
-                    folders.join(", ")
-                )
-            }
+            Self::Outside { path, limits } => write!(
+                f,
+                "`{}` is not under a folder of this MCP server ({})",
+                path.display(),
+                listed(&limits.folders)
+            ),
+            Self::FolderChanged { path, folders } => write!(
+                f,
+                "`{}` is under a folder of this MCP server ({}) that a program \
+                 replaced after it started",
+                path.display(),
+                listed(folders)
+            ),
             Self::PlanName { path, resolved } => write!(
                 f,
                 "the plan file `{}` resolves to {}, which does not end in `.plan`",
@@ -679,6 +702,14 @@ impl fmt::Display for Error {
                 "`{}` is in the data directory {} of this MCP server, which no tool \
                  reads or writes",
                 path.display(),
+                data.display()
+            ),
+            Self::NoData { path, data } => write!(
+                f,
+                "`{}` is a new name in a directory on the way to the data directory {} \
+                 of this MCP server, and nothing is at {} now",
+                path.display(),
+                data.display(),
                 data.display()
             ),
             Self::Folder { path, cause } => {
@@ -714,7 +745,22 @@ fn failed(error: env::paths::Error) -> String {
         env::paths::Error::Io { code } => format!("failed with OS error {code}"),
         env::paths::Error::Outside => "is outside the folders it may use".to_owned(),
         env::paths::Error::Hidden => "is in a folder that is hidden".to_owned(),
+        env::paths::Error::Vacant => {
+            "is a new name on the way to a hidden folder that is not there".to_owned()
+        }
+        env::paths::Error::Replaced => {
+            "is under a folder that a program replaced".to_owned()
+        }
     }
+}
+
+/// The paths of `folders`, joined with `, `.
+fn listed(folders: &[PathBuf]) -> String {
+    let folders: Vec<_> = folders
+        .iter()
+        .map(|folder| folder.display().to_string())
+        .collect();
+    folders.join(", ")
 }
 
 /// The directory above `path`, as given, or `.` for a path of one name.

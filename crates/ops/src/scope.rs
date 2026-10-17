@@ -100,8 +100,8 @@ impl Scope {
         })
     }
 
-    /// The error of a call at `path` that its limits refused with `error`, `Outside`
-    /// or `Hidden`.
+    /// The error of a call at `path` that its limits refused with `error`, `Outside`,
+    /// `Hidden`, `Vacant`, or `Replaced`.
     fn refused(&self, path: &Path, error: paths::Error) -> Error {
         let path = path.to_owned();
         let limits = self
@@ -113,6 +113,14 @@ impl Scope {
                 path,
                 data: limits.data,
             },
+            paths::Error::Vacant => Error::NoData {
+                path,
+                data: limits.data,
+            },
+            paths::Error::Replaced => Error::FolderChanged {
+                path,
+                folders: limits.folders,
+            },
             _ => Error::Outside { path, limits },
         }
     }
@@ -120,7 +128,10 @@ impl Scope {
     /// The error of a resolve or a write of the plan file `out` that failed.
     fn unwritten(&self, out: &Path, error: paths::Error) -> Error {
         let cause = match error {
-            paths::Error::Outside | paths::Error::Hidden => {
+            paths::Error::Outside
+            | paths::Error::Hidden
+            | paths::Error::Vacant
+            | paths::Error::Replaced => {
                 return self.refused(out, error);
             }
             paths::Error::NotFound => Unwritten::NotFound,
@@ -138,8 +149,8 @@ impl Scope {
     /// # Errors
     ///
     /// - [`Error::PlanName`] when it does not.
-    /// - [`Error::Outside`], [`Error::Hidden`], or [`Error::Write`] when `out` does not
-    ///   resolve.
+    /// - [`Error::Outside`], [`Error::Hidden`], [`Error::NoData`],
+    ///   [`Error::FolderChanged`], or [`Error::Write`] when `out` does not resolve.
     pub(crate) fn out(&self, out: &Path) -> Result<(), Error> {
         if self.limits.is_none() {
             return Ok(());
@@ -163,7 +174,8 @@ impl Scope {
     ///
     /// - [`Error::LargeRequest`] when it has more.
     /// - [`Error::Read`] when it is a directory, is not there, or does not read.
-    /// - [`Error::Outside`] or [`Error::Hidden`] when the limits refuse it.
+    /// - [`Error::Outside`], [`Error::Hidden`], [`Error::NoData`], or
+    ///   [`Error::FolderChanged`] when the limits refuse it.
     pub(crate) fn read(&self, path: &Path) -> Result<Vec<u8>, Error> {
         let unread = |cause| Error::Read {
             path: path.to_owned(),
@@ -175,9 +187,12 @@ impl Scope {
             Ok(Found::Directory(_)) => Err(unread(Unread::Directory)),
             Err(paths::Error::NotFound) => Err(unread(Unread::NotFound)),
             Err(paths::Error::Io { code }) => Err(unread(Unread::Io { code })),
-            Err(error @ (paths::Error::Outside | paths::Error::Hidden)) => {
-                Err(self.refused(path, error))
-            }
+            Err(
+                error @ (paths::Error::Outside
+                | paths::Error::Hidden
+                | paths::Error::Vacant
+                | paths::Error::Replaced),
+            ) => Err(self.refused(path, error)),
         }
     }
 
@@ -185,7 +200,8 @@ impl Scope {
     ///
     /// # Errors
     ///
-    /// [`Error::Write`], [`Error::Outside`], or [`Error::Hidden`] when the write fails.
+    /// [`Error::Write`], [`Error::Outside`], [`Error::Hidden`], [`Error::NoData`], or
+    /// [`Error::FolderChanged`] when the write fails.
     pub(crate) fn write(&self, out: &Path, bytes: &[u8]) -> Result<(), Error> {
         self.paths
             .write(out, bytes)

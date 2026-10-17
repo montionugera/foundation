@@ -485,6 +485,29 @@ impl Talk {
         (self.running).until(&self.clock, PATIENCE, "the command answers", answered);
     }
 
+    /// Writes `line` to the standard input of the command, waits until its standard
+    /// output has one more line, and gives that line. When 90 s pass first, panics
+    /// with the output so far.
+    pub(crate) fn answer(&mut self, line: &str) -> String {
+        let before = self
+            .running
+            .watch
+            .seen()
+            .stdout
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count();
+        self.stdin
+            .write_all(line.as_bytes())
+            .expect("write the input");
+        let answered =
+            |seen: &Seen| seen.stdout.iter().filter(|&&b| b == b'\n').count() > before;
+        (self.running).until(&self.clock, PATIENCE, "the command answers", answered);
+        let seen = self.running.watch.seen();
+        let text = String::from_utf8_lossy(&seen.stdout).into_owned();
+        text.lines().nth(before).expect("a line").to_owned()
+    }
+
     /// Gives the command no input for `span`.
     pub(crate) fn idle(&self, span: Span) {
         let waited = self.running.watch.until(&self.clock, span, |_| false);
