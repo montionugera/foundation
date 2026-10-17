@@ -993,3 +993,75 @@ fn a_peer_that_reads_nothing_does_not_hold_a_cancel() {
     let request = b"GET /large HTTP/1.1\r\nhost: server\r\n\r\n";
     assert_eq!(cancelled(request, false), (None, true, 0));
 }
+
+#[test]
+fn a_cancel_closes_a_tls_stream_with_bytes_that_arrive_in_the_same_poll() {
+    let mut network = Network::new(23, Certificate::Valid, JUNE_2026);
+    let until = Token::new();
+    let stop = until.clone();
+    network.listen(8087, move |listener, tasks| async move {
+        let answer = |_: Request<Bytes>| Response::new(Bytes::from_static(b"ok"));
+        let served = sim::serve_tls(listener, tasks, stop, Certificate::Valid, answer);
+        served.await.expect("the listener works");
+    });
+    let remote = SocketAddr::new(network.server.addresses()[0], 8087);
+    let client = network.client.clone();
+    let out = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&out);
+    let handle = network
+        .client
+        .shards()
+        .start(shard("client"), move |_| async move {
+            let config = tcp::Config {
+                remote,
+                options: super::super::OPTIONS,
+            };
+            let tcp = client.net().connect(&config).await.expect("a stream");
+            let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+            let config = super::client(&provider, &sim::ca(), JUNE_2026);
+            let name = "server".try_into().expect("a DNS name");
+            let mut session = TlsConnector::from(config)
+                .connect(name, Peer(tcp))
+                .await
+                .expect("the handshake ends");
+            // In the pause of the server, and more bytes than one read of the close
+            // takes.
+            client.clock().sleep(Span::from_nanos(1_200_000_000)).await;
+            let pad = "a".repeat(4000);
+            let sent =
+                format!("GET /a HTTP/1.1\r\nhost: server\r\nx-pad: {pad}\r\n\r\n");
+            let mut rest = sent.as_bytes();
+            while !rest.is_empty() {
+                let n = poll_fn(|cx| Pin::new(&mut session).poll_write(cx, rest))
+                    .await
+                    .expect("the write works");
+                rest = rest.get(n..).expect("a write fits its buffer");
+            }
+            poll_fn(|cx| Pin::new(&mut session).poll_flush(cx))
+                .await
+                .expect("the write works");
+            let mut bytes = [0; 16];
+            let mut buf = ReadBuf::new(&mut bytes);
+            let read =
+                poll_fn(|cx| Pin::new(&mut session).poll_read(cx, &mut buf)).await;
+            let tls = read.map(|()| buf.filled().len());
+            let Peer(mut tcp) = session.into_inner().0;
+            let raw = poll_fn(|cx| tcp.poll_read(cx, &mut bytes)).await;
+            *slot.lock().expect("no panic") = Some((
+                tls.map_err(|error| error.to_string()),
+                raw.map_err(|error| error.to_string()),
+            ));
+        })
+        .expect("the shard starts");
+    network.handles.push(handle);
+    network.sim.run_for(Span::SECOND).expect("the run goes on");
+    network.server.pause(Span::SECOND);
+    let cancel = Span::from_nanos(700_000_000);
+    network.sim.run_for(cancel).expect("the run goes on");
+    until.cancel();
+    network.sim.run_for(Span::MINUTE).expect("the run ends");
+    // A reset would give an error on the TCP stream in place of its FIN.
+    let ended = out.lock().expect("no panic").take();
+    assert_eq!(ended, Some((Ok(0), Ok(0))));
+    assert_eq!(network.server.streams(), 0);
+}
