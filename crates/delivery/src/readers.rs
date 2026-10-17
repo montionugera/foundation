@@ -1128,17 +1128,18 @@ pub(super) mod tests {
     ///
     /// If the session takes more frames than `readers` holds.
     fn drain(readers: &mut Readers, key: impl Into<Key>) -> (Vec<Frame>, Next) {
-        let key = key.into();
         // Without a bound, a session that takes a frame again fills the memory of
         // the host.
-        let held = readers.queue.len()
-            + readers.flows.iter().map(|f| f.waiting.len()).sum::<usize>()
-            + usize::from(readers.newest.is_some());
+        const MOST: usize = 1 << 16;
+        let key = key.into();
         let mut frames = Vec::new();
         loop {
             match readers.take(key) {
                 Next::Frame(frame) => {
-                    assert!(frames.len() < held, "session {key:?} takes a frame again");
+                    assert!(
+                        frames.len() < MOST,
+                        "session {key:?} took {MOST} frames, more than any test queues"
+                    );
                     frames.push(frame);
                 }
                 end @ (Next::Empty | Next::Disk { .. }) => {
@@ -2823,7 +2824,10 @@ pub(super) mod tests {
                 let mut taken_bytes = 0;
                 let mut got = 0;
                 while let Next::Frame(frame) = readers.take(prompt.into()) {
-                    assert!(got < count, "the session takes a frame again");
+                    assert!(
+                        got < count,
+                        "session {prompt:?} took frame {got} of the {count} queued"
+                    );
                     got += 1;
                     taken_bytes += frame.charge();
                     readers.grant(prompt, taken_bytes + WINDOW);
@@ -3613,6 +3617,20 @@ pub(super) mod tests {
             let next = Mark { seq: 2, given: 3 };
             readers.reached(key, next, 4);
             assert_eq!(read(&mut readers, key), (vec![], next));
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "complete session 0 got a frame to seq 2, at or below seq 2"
+        )]
+        fn fill_at_or_below_the_frames_it_gave_with_no_credit_left_panics() {
+            let frames = Frames::new(2);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            let key = opened(&mut readers, 0, 1);
+            assert_eq!(read(&mut readers, key), (vec![], Mark::at(0)));
+            assert!(!fill(&mut readers, &frames, key, 1, 0..2));
+            fill(&mut readers, &frames, key, 1, 0..2);
         }
 
         #[test]
