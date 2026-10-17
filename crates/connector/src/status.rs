@@ -754,16 +754,20 @@ impl Session {
             match &run.error {
                 Shown::Nothing => {}
                 Shown::Cleared => {
+                    if self.class.is_some() || !self.error.value.is_empty() {
+                        tracing::info!(parent: span, "cleared");
+                    }
                     self.class = None;
                     if !self.error.value.is_empty() {
-                        tracing::info!(parent: span, "cleared");
                         self.error.set(&mut self.series, String::new());
                     }
                 }
                 Shown::Error(text) => {
+                    if self.class != Some(Class::Retry) || self.error.value != *text {
+                        tracing::warn!(parent: span, error = text.as_str(), "error");
+                    }
                     self.class = Some(Class::Retry);
                     if self.error.value != *text {
-                        tracing::warn!(parent: span, error = text.as_str(), "error");
                         self.error.set(&mut self.series, text.clone());
                     }
                 }

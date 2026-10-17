@@ -196,12 +196,13 @@
   `error`, the cut text of the `error` channel; INFO `restarting` with `backoff`; INFO
   `stopped`. A show, a clear, or a note of the running kind writes WARN `error` with
   `error`, INFO `cleared`, or INFO `note` with `note`, only when the status writer
-  takes a new value for the next frame of its channel. The channel gets that value,
-  other than when the pool has no block for the frame or the home does not apply it and
-  a later value replaces it before the next write, or when the hub refuses the frame as
-  `Removed` or it fails on disk, after which the writer writes no frame and no such
-  line. A connector writes at most two such lines each second: one `error` or
-  `cleared`, and one `note`. A count writes no event.
+  takes a new value for the next frame: of `error` or `class` for a show or a clear,
+  and of `note` for a note. The channels get that value, other than when the pool has
+  no block for the frame or the home does not apply it and a later value replaces it
+  before the next write, or when the hub refuses the frame as `Removed` or it fails on
+  disk, after which the writer writes no frame and no such line. A connector writes at
+  most two such lines each second: one `error` or `cleared`, and one `note`. A count
+  writes no event.
   By `laptop.architect-2` (item 2 of 2026-10-17T17:22:08Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6237505740; A of
   2026-10-17T18:08:57Z,
@@ -209,4 +210,6 @@
   to 3 of 2026-10-17T18:34:35Z,
   https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238662426;
   2026-10-17T18:39:43Z,
-  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238748209).
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238748209; item 1
+  of 2026-10-17T18:45:36Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238847435).

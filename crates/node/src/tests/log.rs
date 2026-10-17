@@ -1712,9 +1712,11 @@ fn a_text_line_leaves_out_a_span_field_named_mesh_time_near_and_apart_from_mesh_
 }
 
 /// A kind whose first run changes what it shows, 2 s apart so that the status writer
-/// writes each step, and ends with `first`. Each later run returns `Ok`.
+/// writes each step, and ends with `first`. Each later run calls `again`, then returns
+/// `Ok` 2 s later.
 struct Flaky {
     first: fn() -> KindError,
+    again: fn(&connector::kind::Context<()>),
     failed: AtomicBool,
 }
 
@@ -1734,8 +1736,11 @@ impl connector::kind::Kind for Flaky {
         ctx: connector::kind::Context<()>,
     ) -> impl Future<Output = Result<(), KindError>> {
         let first = (!self.failed.swap(true, Relaxed)).then_some(self.first);
+        let again = self.again;
         async move {
             let Some(first) = first else {
+                again(&ctx);
+                ctx.clock().sleep(Span::from_nanos(2_000_000_000)).await;
                 return Ok(());
             };
             let steps: [&dyn Fn(); 9] = [
@@ -1771,12 +1776,13 @@ impl connector::kind::Kind for Flaky {
 }
 
 /// The lines of `connector::status` of the connector `plant.a` of [`Flaky`] that
-/// ends its first run with `first`, over 60 s, at `level` and above, each with no
+/// ends its first run with `first` and calls `again` in each later run, over 60 s, at `level` and above, each with no
 /// stamp and no mesh time. When `removed`, the hub removes the status channels at
 /// 11 s, between the shows of `d` and `e`.
 fn status_lines(
     level: tracing::Level,
     first: fn() -> KindError,
+    again: fn(&connector::kind::Context<()>),
     removed: bool,
 ) -> Vec<String> {
     let (mut sim, host) = host(1);
@@ -1798,6 +1804,7 @@ fn status_lines(
         };
         let flaky = Flaky {
             first,
+            again,
             failed: AtomicBool::new(false),
         };
         let kinds = connector::kind::Table::new().with("flaky", flaky);
@@ -1862,6 +1869,7 @@ fn a_connector_logs_each_change_of_its_status_with_its_name_and_kind() {
     let lines = status_lines(
         tracing::Level::INFO,
         || KindError::Retry("down".into()),
+        |_| {},
         false,
     );
     let mut logged = first_run().to_vec();
@@ -1875,6 +1883,7 @@ fn a_status_writer_logs_the_values_of_the_frame_that_the_hub_refuses_as_removed(
     let lines = status_lines(
         tracing::Level::INFO,
         || KindError::Retry("down".into()),
+        |_| {},
         true,
     );
     let mut logged = first_run()[..8].to_vec();
@@ -1888,6 +1897,7 @@ fn a_connector_logs_a_device_error_as_a_warning() {
     let lines = status_lines(
         tracing::Level::INFO,
         || KindError::Device("jammed".into()),
+        |_| {},
         false,
     );
     let mut logged = first_run().to_vec();
@@ -1897,8 +1907,45 @@ fn a_connector_logs_a_device_error_as_a_warning() {
 }
 
 #[test]
+fn a_connector_logs_a_show_of_the_text_of_a_device_error_as_a_new_class() {
+    let lines = status_lines(
+        tracing::Level::INFO,
+        || KindError::Device("jammed".into()),
+        |ctx| ctx.error(&"jammed"),
+        false,
+    );
+    let mut logged = first_run().to_vec();
+    logged.push(format!("WARN ended {AT} class=device error=jammed"));
+    let [restarting, running, ended, stopped] = restart();
+    logged.extend([restarting, running, format!("WARN error {AT} error=jammed")]);
+    logged.extend([ended, stopped]);
+    assert_eq!(lines, logged);
+}
+
+#[test]
+fn a_connector_logs_a_clear_of_a_retry_error_with_no_text() {
+    let lines = status_lines(
+        tracing::Level::INFO,
+        || KindError::Retry("".into()),
+        |ctx| ctx.clear_error(),
+        false,
+    );
+    let mut logged = first_run().to_vec();
+    logged.push(format!(r#"WARN ended {AT} class=retry error="""#));
+    let [restarting, running, ended, stopped] = restart();
+    logged.extend([
+        restarting,
+        running,
+        format!("INFO cleared {AT}"),
+        ended,
+        stopped,
+    ]);
+    assert_eq!(lines, logged);
+}
+
+#[test]
 fn a_connector_logs_a_config_error_as_an_error_and_stops() {
-    let lines = status_lines(tracing::Level::INFO, refused, false);
+    let lines = status_lines(tracing::Level::INFO, refused, |_| {}, false);
     let mut logged = first_run().to_vec();
     logged.push(format!(
         r#"ERROR ended {AT} class=config error="no n. set n""#
@@ -1909,7 +1956,7 @@ fn a_connector_logs_a_config_error_as_an_error_and_stops() {
 
 #[test]
 fn a_connector_gives_its_name_and_kind_to_an_error_line() {
-    let lines = status_lines(tracing::Level::ERROR, refused, false);
+    let lines = status_lines(tracing::Level::ERROR, refused, |_| {}, false);
     assert_eq!(
         lines,
         [format!(
@@ -1930,6 +1977,7 @@ fn a_connector_gives_its_name_and_kind_to_each_status_line_at_each_level() {
     let lines = status_lines(
         tracing::Level::WARN,
         || KindError::Retry("down".into()),
+        |_| {},
         false,
     );
     let logged = [

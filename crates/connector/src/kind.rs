@@ -316,7 +316,8 @@ impl<C> Context<C> {
     /// Shows `error` in the status of the running connector, as an attempt that
     /// failed with the class `retry`. The status gives it within one second. The end
     /// of the run replaces it, and a call after the run returned shows nothing. Each
-    /// new text that the status gives is also the log line `error` (WARN).
+    /// show of a new text, or of a text whose class was not `retry`, is also the log
+    /// line `error` (WARN).
     pub fn error(&self, error: &dyn fmt::Display) {
         self.status.show(error);
     }
@@ -325,8 +326,8 @@ impl<C> Context<C> {
     /// connector, within one second: the one that [`Context::error`] showed, or the
     /// end of the last run. Until the first call of `error` or `clear_error` in a
     /// run, the status keeps the end of the last run. A call after the run returned
-    /// shows nothing. Each clear of a text in the status is also the log line
-    /// `cleared` (INFO).
+    /// shows nothing. Each clear of a class or a text in the status is also the log
+    /// line `cleared` (INFO).
     pub fn clear_error(&self) {
         self.status.clear();
     }
@@ -336,8 +337,8 @@ impl<C> Context<C> {
     /// a mode that the device forces. The status gives it within one second. A note of
     /// more than 1024 bytes keeps its first and last 510 bytes or less at char
     /// boundaries, joined by `…`. An empty `note` shows none. The end of the run
-    /// clears it, and a call after the run returned shows nothing. Each new note that
-    /// the status gives is also the log line `note` (INFO).
+    /// clears it, and a call after the run returned shows nothing. Each new note is
+    /// also the log line `note` (INFO).
     pub fn note(&self, note: &dyn fmt::Display) {
         self.status.note(note);
     }
