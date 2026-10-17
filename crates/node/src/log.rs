@@ -9,12 +9,13 @@ use std::panic::PanicHookInfo;
 use clock::log::{Mesh, Time};
 use serde::ser::{Serialize, SerializeMap, Serializer};
 use tracing::field::{Field, Visit};
+use tracing::span::{Attributes, Id, Record};
 use tracing::{Dispatch, Event, Subscriber};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
 use tracing_subscriber::fmt::{FmtContext, layer};
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+use tracing_subscriber::registry::{LookupSpan, Scope};
 use types::time::Stamp;
 
 pub use self::queue::Flush;
@@ -22,7 +23,8 @@ pub(crate) use self::queue::Hold;
 use self::queue::Pipe;
 
 /// Where and how the node writes its log: one line for each event at `level` or
-/// above, with the stamp, the level, the target, the message, and the fields.
+/// above, with the stamp, the level, the target, the message, the fields of each
+/// span of the event at `level` or above, outer first, and the fields of the event.
 pub struct Log {
     /// Where each line goes, with one write for each line. `main` gives stderr. The
     /// thread `log` writes each line, so no event waits on a write. A write that fails
@@ -74,7 +76,49 @@ fn dispatch(line: Line, level: tracing::Level, queue: Pipe) -> Dispatch {
         .with_writer(queue)
         .log_internal_errors(false);
     let registry = tracing_subscriber::registry();
-    Dispatch::new(registry.with(LevelFilter::from_level(level)).with(lines))
+    let filtered = registry.with(LevelFilter::from_level(level));
+    Dispatch::new(filtered.with(Spans).with(lines))
+}
+
+/// Keeps the fields of each span in its extensions, for the line of each event in it.
+struct Spans;
+
+/// The fields of one span, in the order that it got them.
+struct Spanned(Vec<(&'static str, Value)>);
+
+impl Spanned {
+    /// Sets `name` to `value`, in place when the span has the field.
+    fn set(&mut self, name: &'static str, value: Value) {
+        match self.0.iter_mut().find(|(field, _)| *field == name) {
+            Some((_, old)) => *old = value,
+            None => self.0.push((name, value)),
+        }
+    }
+}
+
+impl<S> Layer<S> for Spans
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        let Some(span) = ctx.span(id) else { return };
+        let mut fields = Spanned(Vec::new());
+        attrs.record(&mut Values(|field: &Field, value| {
+            fields.set(field.name(), value);
+        }));
+        span.extensions_mut().insert(fields);
+    }
+
+    fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
+        let Some(span) = ctx.span(id) else { return };
+        let mut extensions = span.extensions_mut();
+        let Some(fields) = extensions.get_mut::<Spanned>() else {
+            return;
+        };
+        values.record(&mut Values(|field: &Field, value| {
+            fields.set(field.name(), value);
+        }));
+    }
 }
 
 /// Writes each event as one line, in text or in JSON.
@@ -91,14 +135,22 @@ where
 {
     fn format_event(
         &self,
-        _: &FmtContext<'_, S, N>,
+        ctx: &FmtContext<'_, S, N>,
         mut writer: Writer<'_>,
         event: &Event<'_>,
     ) -> fmt::Result {
         #[expect(clippy::disallowed_methods, reason = "only the log stamps lines")]
         let time = self.time.now();
         let mut fields = Fields::default();
-        event.record(&mut fields);
+        let spans = ctx.event_scope().into_iter().flat_map(Scope::from_root);
+        for span in spans {
+            if let Some(spanned) = span.extensions().get::<Spanned>() {
+                for (name, value) in &spanned.0 {
+                    fields.put(name, value.clone());
+                }
+            }
+        }
+        event.record(&mut Values(|field: &Field, value| fields.add(field, value)));
         let metadata = event.metadata();
         let entry = Entry {
             time,
@@ -157,7 +209,8 @@ impl Line {
     }
 }
 
-/// The fields of one event, in its order, with its message apart.
+/// The fields of the spans of one event, outer first, then those of the event, each
+/// key once, with the message of the event apart.
 #[derive(Default)]
 struct Fields {
     message: Option<String>,
@@ -165,46 +218,60 @@ struct Fields {
 }
 
 impl Fields {
+    /// Adds a field of the event: a text `message` is the message.
     fn add(&mut self, field: &Field, value: Value) {
         match (field.name(), value) {
-            ("message", Value::Text(message)) => self.message = Some(message),
-            (name, value) => self.others.push((name, value)),
+            ("message", Value::Text(message)) => {
+                self.others.retain(|(other, _)| *other != "message");
+                self.message = Some(message);
+            }
+            (name, value) => self.put(name, value),
         }
+    }
+
+    /// Adds the field `name` last, in place of a field of that name before it.
+    fn put(&mut self, name: &'static str, value: Value) {
+        self.others.retain(|(other, _)| *other != name);
+        self.others.push((name, value));
     }
 }
 
-impl Visit for Fields {
+/// Gives each field that it visits, with its [`Value`], to its function.
+struct Values<F>(F);
+
+impl<F: FnMut(&Field, Value)> Visit for Values<F> {
     fn record_i64(&mut self, field: &Field, value: i64) {
-        self.add(field, Value::Signed(value.into()));
+        self.0(field, Value::Signed(value.into()));
     }
 
     fn record_u64(&mut self, field: &Field, value: u64) {
-        self.add(field, Value::Unsigned(value.into()));
+        self.0(field, Value::Unsigned(value.into()));
     }
 
     fn record_i128(&mut self, field: &Field, value: i128) {
-        self.add(field, Value::Signed(value));
+        self.0(field, Value::Signed(value));
     }
 
     fn record_u128(&mut self, field: &Field, value: u128) {
-        self.add(field, Value::Unsigned(value));
+        self.0(field, Value::Unsigned(value));
     }
 
     fn record_bool(&mut self, field: &Field, value: bool) {
-        self.add(field, Value::Bool(value));
+        self.0(field, Value::Bool(value));
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
-        self.add(field, Value::Text(value.to_owned()));
+        self.0(field, Value::Text(value.to_owned()));
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-        self.add(field, Value::Text(format!("{value:?}")));
+        self.0(field, Value::Text(format!("{value:?}")));
     }
 }
 
 /// The value of one field. Integers and booleans keep their type, so JSON writes them
 /// as numbers and booleans; each other value is text.
+#[derive(Clone)]
 enum Value {
     Signed(i128),
     Unsigned(u128),
