@@ -32,24 +32,23 @@ mod tests;
 /// The reply is at most `wire::hub::client::BODY_BYTES_MAX` bytes, and `serve` stops
 /// writing a reply at that bound. No `body` makes it panic. The reply holds
 /// `ops.bad-request` for a body that is no request of `plan`, `apply`, `status`, or
-/// `browse`, `ops.denied` for an action that no access policy gives `subject` and for
-/// a request that names no definition. An error reply over the bound keeps the
-/// problems that fit, then `ops.more-problems` for the rest. `ops.large-reply` takes
-/// the place of an output over the bound and of an error whose first problem does not
-/// fit, and `ops.large-browse` takes it for `browse`.
-/// `apply` also needs `apply` on the channel at each edge of each channel that the plan
-/// adds or changes, and `admin` on the key of each definition other than a channel that
-/// the plan adds, changes, or removes. It gives a home only to an index on which
-/// `subject` has `apply`, and drops each other home with no error. `status` shows only
-/// each connector on whose label and status channels `subject` has `read`. When it
-/// shows none, also when the node places none, it needs `read` on the name of the
-/// node, and gives `ops.denied` with no grant. It gives the failures of the read of the
-/// OS roots of the node only to a subject with `read` on the name of the node. It
-/// waits at most 1 s from the request. A connector is `unknown` when no status as the
-/// spec defines it comes in that time, and `status` gives `ops.channel-read` when the
-/// reader of a connector fails for another cause. `browse` needs `apply` and `admin`
-/// on the name of the connector, and browses only a connector that the files place on
-/// this node.
+/// `browse`, `ops.denied` for an action that no access policy gives `subject` and for a
+/// request that names no definition. An error reply over the bound keeps the problems
+/// that fit, then `ops.more-problems` for the rest. `ops.large-reply` takes the place
+/// of an output over the bound and of an error whose first problem does not fit, and
+/// `ops.large-browse` takes it for `browse`. `apply` also needs `apply` on the channel
+/// at each edge of each channel that the plan adds or changes, and `admin` on the key
+/// of each definition other than a channel that the plan adds, changes, or removes. It
+/// gives a home only to an index on which `subject` has `apply`, and drops each other
+/// home with no error. `status` shows only each connector on whose label and status
+/// channels `subject` has `read`. When it shows none, also when the node places none,
+/// it needs `read` on the name of the node, and gives `ops.denied` with no grant. It
+/// gives the failures of the read of the OS roots of the node only to a subject with
+/// `read` on the name of the node. It waits at most 1 s from the request. A connector
+/// is `unknown` when no status as the spec defines it comes in that time, and `status`
+/// gives `ops.channel-read` when the reader of a connector fails for another cause.
+/// `browse` needs `apply` and `admin` on the name of the connector, and browses only a
+/// connector that the files place on this node.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
