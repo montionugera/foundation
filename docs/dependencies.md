@@ -131,15 +131,15 @@ each patched release` step of the `deny` job in
 
 ## The Python SDK
 
-These ship in the wheels of `python`, never in the binary. The person approved `pyo3`
+These ship in the wheels of `sdk-python`, never in the binary. The person approved `pyo3`
 and `maturin` on 2026-10-15 (SDK DATA PATH,
 https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198508264).
 
 | Crate or tool | Used by | Why | License | Version | Approved |
 | --- | --- | --- | --- | --- | --- |
-| `pyo3` | `python` | The module `foundation._native`: the Python types, the GIL, and the exceptions (C6). Its tree: `pyo3-ffi`, `pyo3-macros`, `pyo3-macros-backend`, `pyo3-build-config`, `portable-atomic`, and, at build time only, `target-lexicon` (Apache-2.0 with LLVM exception, an exception in `deny.toml`) | MIT or Apache-2.0 | 0.30.1 | 2026-10-15 |
-| `maturin` (tool) | `sdk/python/pyproject.toml`, `.github/workflows/sdk.yaml` | The build backend of the wheels: builds `python` with the profile `wheel` and packs the module with `foundation/__init__.py` | MIT or Apache-2.0 | 1.15.0 | 2026-10-15 |
-| `PyO3/maturin-action` (GitHub Action) | `.github/workflows/sdk.yaml` | Runs `maturin` in the `manylinux_2_28` container, so the Linux wheels install on glibc 2.28 and later | MIT | 1.49.4 | Owed (#2923) |
+| `pyo3` | `sdk-python` | The module `foundation._native`: the Python types, the GIL, and the exceptions (C6). Its tree: `pyo3-ffi`, `pyo3-macros`, `pyo3-macros-backend`, `pyo3-build-config`, `portable-atomic`, and, at build time only, `target-lexicon` (Apache-2.0 with LLVM exception, an exception in `deny.toml`) | MIT or Apache-2.0 | 0.30.1 | 2026-10-15 |
+| `maturin` (tool) | `sdk/python/pyproject.toml`, `.github/workflows/sdk.yaml` | The build backend of the wheels: builds `sdk-python` with the profile `wheel` and packs the module with `foundation/__init__.py` | MIT or Apache-2.0 | 1.15.0 | 2026-10-15 |
+| `PyO3/maturin-action` (GitHub Action) | `.github/workflows/sdk.yaml` | Runs `maturin` in the `manylinux_2_28` container, so the Linux wheels install on glibc 2.28 and later | MIT | 1.51.0 (`3e2bdf6ba6453a61e649744019b8a2d906c7eb38`) | 2026-10-17 (#2923) |
 
 ## Tests, benchmarks, and tools
 

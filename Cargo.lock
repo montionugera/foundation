@@ -1607,15 +1607,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "python"
-version = "0.0.0"
-dependencies = [
- "pyo3",
- "sdk",
- "types",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1914,6 +1905,15 @@ dependencies = [
  "tokio",
  "tracing",
  "transport",
+ "types",
+]
+
+[[package]]
+name = "sdk-python"
+version = "0.0.0"
+dependencies = [
+ "pyo3",
+ "sdk",
  "types",
 ]
 
