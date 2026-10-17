@@ -24,7 +24,6 @@ pub struct Deadline {
     state: State,
     pool: Pool,
     block_max: usize,
-    tails_max: usize,
     part: Block,
     /// The next seq of each index.
     firsts: Vec<u64>,
@@ -53,7 +52,6 @@ impl Deadline {
         let config = block::Config::new(1 << 21).expect("the budget fits");
         let pool = Pool::new(config.clone(), Heap::new(config.reservation()));
         let block_max = group::block_max(&pool).expect("the budget holds an entry");
-        let tails_max = tails_max(&pool);
         let part = pool.alloc(PART).expect("the pool has room").freeze();
         let chain = 9;
         let state = State::new(
@@ -61,12 +59,12 @@ impl Deadline {
             Logs::new(area),
             Header::new(layout, chain),
             chain,
+            tails_max(&pool),
         );
         Self {
             state,
             pool,
             block_max,
-            tails_max,
             part,
             firsts: vec![0; count],
             batch: Vec::new(),
@@ -113,8 +111,7 @@ impl Deadline {
             .fit(&self.pool, self.block_max, &state.writer, &self.batch)
             .expect("the ring and the pool have room for the group");
         take(&mut state.open, &mut state.logs, &mut self.batch);
-        let (checkpoint, carrying) =
-            state.deadline(&self.pool, self.tails_max, &mut self.sealed);
+        let (checkpoint, carrying) = state.deadline(&self.pool, &mut self.sealed);
         let tails = carrying
             .as_ref()
             .map_or(0, |carrying| carrying.carried.tails().len());

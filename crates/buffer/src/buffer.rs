@@ -285,8 +285,6 @@ struct Shared {
     pool: Rc<Pool>,
     block_max: usize,
     layout: Layout,
-    /// The most tails of a carry record whose body fits the largest block of `pool`.
-    tails: usize,
     state: RefCell<State>,
 }
 
@@ -318,6 +316,9 @@ struct State {
     /// The tails of the carry record of the last deadline, or none when it wrote
     /// none. The next carry reuses its room.
     carried: Carried,
+    /// The most tails of a carry record whose body fits the largest block of the
+    /// pool.
+    tails: usize,
     /// Whether an append got [`Rejected::Full`] since the last deadline. The task
     /// then commits also with no entry, so that its trim and carry can free room.
     starved: bool,
@@ -356,8 +357,15 @@ impl fmt::Debug for Parked {
 
 impl State {
     /// The state of a ring that `writer`, `logs`, the last checkpoint `header`, and
-    /// the chain value `chain` of the last record give, with nothing queued.
-    fn new(writer: Writer, logs: Logs, header: Header, chain: u32) -> Self {
+    /// the chain value `chain` of the last record give, with nothing queued. Its
+    /// carry records hold at most `tails` tails.
+    fn new(
+        writer: Writer,
+        logs: Logs,
+        header: Header,
+        chain: u32,
+        tails: usize,
+    ) -> Self {
         Self {
             writer,
             open: Group::default(),
@@ -367,6 +375,7 @@ impl State {
             header,
             chain,
             carried: Carried::default(),
+            tails,
             starved: false,
             held: Vec::with_capacity(HOLDS),
             taken: 0,
@@ -472,11 +481,10 @@ impl State {
     }
 
     /// Seals the groups of a commit into `sealed`, and gives its checkpoint and its
-    /// sealed carry record of at most `tails` tails, in blocks of `pool`.
+    /// sealed carry record, in blocks of `pool`.
     fn deadline(
         &mut self,
         pool: &Pool,
-        tails: usize,
         sealed: &mut Vec<Sealed>,
     ) -> (Option<Checkpoint>, Option<Carrying>) {
         self.starved = false;
@@ -486,7 +494,7 @@ impl State {
         if !self.queue.is_empty() {
             self.taken += 1;
         }
-        let (checkpoint, carry) = (self.checkpoint(pool), self.carry(pool, tails));
+        let (checkpoint, carry) = (self.checkpoint(pool), self.carry(pool));
         for closed in self.queue.drain(..) {
             let record = closed.seal(self.chain);
             self.chain = record.ends().record.chain();
@@ -526,12 +534,12 @@ impl State {
 
     /// Plans the carry record of the paths whose holder is before the reach of the
     /// next trim, filled with the oldest holders that [`Logs::carry`] finds after
-    /// it, at most as many as one record holds and at most `most`. `None` when no
+    /// it, at most as many as one record holds and at most `tails`. `None` when no
     /// path needs one, or `pool` has no blocks for it: the next deadline then scans
     /// the same paths.
-    fn carry(&mut self, pool: &Pool, most: usize) -> Option<Carry> {
+    fn carry(&mut self, pool: &Pool) -> Option<Carry> {
         let mut carried = mem::take(&mut self.carried);
-        let limit = self.writer.tails().min(most);
+        let limit = self.writer.tails().min(self.tails);
         let reach = self.writer.reach();
         self.logs.carry(reach, limit, &mut carried);
         let count = carried.tails().len();
@@ -680,15 +688,15 @@ impl Buffer {
         })?;
         let (file, header) = open_ring(&files, &dir, &pool, &entropy, layout).await?;
         let (cursor, logs) = walk(&file, &pool, &header, slots).await?;
-        let mut state = State::new(cursor.writer(), logs, header, random(&entropy));
-        restart(&file, &pool, &mut state).await?;
         let tails = tails_max(&pool);
+        let chain = random(&entropy);
+        let mut state = State::new(cursor.writer(), logs, header, chain, tails);
+        restart(&file, &pool, &mut state).await?;
         let shared = Rc::new(Shared {
             file,
             pool,
             block_max,
             layout: header.layout,
-            tails,
             state: RefCell::new(state),
         });
         tasks.spawn(run(Rc::clone(&shared), clock, commit));
@@ -1266,11 +1274,10 @@ async fn run(shared: Rc<Shared>, clock: Clock, commit: Span) {
         }
         (&mut sleep).await;
         sleep.reset(clock.now() + commit);
-        let (checkpoint, carrying) =
-            shared
-                .state
-                .borrow_mut()
-                .deadline(&shared.pool, shared.tails, &mut sealed);
+        let (checkpoint, carrying) = shared
+            .state
+            .borrow_mut()
+            .deadline(&shared.pool, &mut sealed);
         if sealed.is_empty() && checkpoint.is_none() && carrying.is_none() {
             continue;
         }
