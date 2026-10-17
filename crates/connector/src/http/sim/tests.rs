@@ -174,29 +174,13 @@ impl Network {
                     options: super::super::OPTIONS,
                 };
                 let mut tcp = net.connect(&config).await.expect("the server listens");
-                let mut rest = request;
-                while !rest.is_empty() {
-                    let n = poll_fn(|cx| tcp.poll_write(cx, &[IoSlice::new(rest)]))
-                        .await
-                        .expect("the write works");
-                    rest = rest.get(n..).expect("a write fits its buffer");
-                }
+                write(&mut tcp, request).await;
                 if half_closed {
                     poll_fn(|cx| tcp.poll_close(cx))
                         .await
                         .expect("the close works");
                 }
-                let mut read = Vec::new();
-                let mut bytes = [0; 1024];
-                let ended = loop {
-                    match poll_fn(|cx| tcp.poll_read(cx, &mut bytes)).await {
-                        Ok(0) => {
-                            break End::Closed(String::from_utf8(read).expect("UTF-8"));
-                        }
-                        Ok(n) => read.extend_from_slice(bytes.get(..n).expect("fits")),
-                        Err(error) => break End::Failed(error.to_string()),
-                    }
-                };
+                let ended = read(&mut tcp).await;
                 *slot.lock().expect("no panic under the lock") = Some(ended);
             })
             .expect("the shard starts");
@@ -219,6 +203,30 @@ impl Network {
             .header("x-key", path)
             .body(Bytes::from(body.to_owned()))
             .expect("a valid request")
+    }
+}
+
+/// Writes all of `bytes` on `tcp`.
+async fn write(tcp: &mut net::Tcp, bytes: &[u8]) {
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let n = poll_fn(|cx| tcp.poll_write(cx, &[IoSlice::new(rest)]))
+            .await
+            .expect("the write works");
+        rest = rest.get(n..).expect("a write fits its buffer");
+    }
+}
+
+/// Reads `tcp` until the server ends it.
+async fn read(tcp: &mut net::Tcp) -> End {
+    let mut read = Vec::new();
+    let mut bytes = [0; 1024];
+    loop {
+        match poll_fn(|cx| tcp.poll_read(cx, &mut bytes)).await {
+            Ok(0) => return End::Closed(String::from_utf8(read).expect("UTF-8")),
+            Ok(n) => read.extend_from_slice(bytes.get(..n).expect("fits")),
+            Err(error) => return End::Failed(error.to_string()),
+        }
     }
 }
 
@@ -420,10 +428,13 @@ fn ends_the_stream_of_an_http2_preface_with_no_answer() {
     assert_eq!(network.seen(), [""; 0]);
 }
 
-/// Opens an idle stream to the server, then runs `stop` 500 ms into the run. Gives
-/// what `serve` gave, how a read of the idle stream ended, how a later connect ended,
-/// and the address of the server.
-fn stopped(stop: fn(&Network)) -> (Option<Ended>, Option<Peer>, SocketAddr) {
+/// Opens a stream to the server and writes `sent` on it, then runs `stop` 500 ms into
+/// the run. Gives what `serve` gave, how the stream ended for the client, how a later
+/// connect ended, and the address of the server.
+fn stopped(
+    stop: fn(&Network),
+    sent: &'static [u8],
+) -> (Option<Ended>, Option<Peer>, SocketAddr) {
     let mut network = Network::new();
     let (net, remote) = (network.client.net(), network.remote);
     let out = Arc::new(Mutex::new(None));
@@ -436,11 +447,11 @@ fn stopped(stop: fn(&Network)) -> (Option<Ended>, Option<Peer>, SocketAddr) {
                 remote,
                 options: super::super::OPTIONS,
             };
-            let mut idle = net.connect(&config).await.expect("the server listens");
-            let mut bytes = [0; 16];
-            let read = poll_fn(|cx| idle.poll_read(cx, &mut bytes)).await;
+            let mut tcp = net.connect(&config).await.expect("the server listens");
+            write(&mut tcp, sent).await;
+            let ended = read(&mut tcp).await;
             let connect = net.connect(&config).await.map(drop);
-            *slot.lock().expect("no panic under the lock") = Some((read, connect));
+            *slot.lock().expect("no panic under the lock") = Some((ended, connect));
         })
         .expect("the shard starts");
     network.handles.push(handle);
@@ -458,34 +469,33 @@ fn stopped(stop: fn(&Network)) -> (Option<Ended>, Option<Peer>, SocketAddr) {
     (ended, client, remote)
 }
 
-/// How a read of an idle stream and a later connect ended.
-type Peer = (Result<usize, net::Error>, Result<(), net::Error>);
+/// How the stream of the client ended, and how a later connect ended.
+type Peer = (End, Result<(), net::Error>);
 
 #[test]
-fn a_cancel_ends_each_stream_and_returns_once_they_ended() {
-    let (ended, client, remote) = stopped(|network| network.until.cancel());
+fn a_cancel_closes_each_stream_and_returns_once_they_ended() {
+    let (ended, client, remote) = stopped(|network| network.until.cancel(), b"");
     assert_eq!(ended, Some((Ok(()), 0)));
-    assert_eq!(
-        client,
-        Some((
-            Err(net::Error::Reset { remote }),
-            Err(net::Error::Refused { remote })
-        ))
-    );
+    let refused = Err(net::Error::Refused { remote });
+    assert_eq!(client, Some((End::Closed(String::new()), refused)));
 }
 
 #[test]
-fn a_failed_accept_ends_each_stream_and_gives_its_error_once_they_ended() {
-    let (ended, client, remote) =
-        stopped(|network| network.server.fail_listener(network.remote));
+fn a_failed_accept_closes_each_stream_and_gives_its_error_once_they_ended() {
+    let fail = |network: &Network| network.server.fail_listener(network.remote);
+    let (ended, client, remote) = stopped(fail, b"");
     assert_eq!(ended, Some((Err(net::Error::Io { code: 5 }), 0)));
-    assert_eq!(
-        client,
-        Some((
-            Err(net::Error::Reset { remote }),
-            Err(net::Error::Refused { remote })
-        ))
-    );
+    let refused = Err(net::Error::Refused { remote });
+    assert_eq!(client, Some((End::Closed(String::new()), refused)));
+}
+
+#[test]
+fn a_cancel_closes_a_stream_in_the_middle_of_a_head() {
+    let sent = b"GET /a HTTP/1.1\r\nhost: ser";
+    let (ended, client, remote) = stopped(|network| network.until.cancel(), sent);
+    assert_eq!(ended, Some((Ok(()), 0)));
+    let refused = Err(net::Error::Refused { remote });
+    assert_eq!(client, Some((End::Closed(String::new()), refused)));
 }
 
 #[test]

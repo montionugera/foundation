@@ -11,8 +11,8 @@ use proptest::prelude::*;
 use rustls::ServerConfig;
 use rustls::pki_types::ServerName;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
+use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use ::sim::{Sim, name, node};
 use bytes::Bytes;
@@ -912,4 +912,84 @@ fn checks_the_longest_name_with_a_final_dot_as_the_name_with_none() {
              DnsName(\"server\")"
         )
     );
+}
+
+/// Runs `serve_tls` on port 8087, which answers [`LARGE`] bytes, with a client that
+/// writes `sent` and then reads once when `reads`, and cancels `serve_tls` at 1 s.
+/// Gives what the read gave, whether `serve_tls` returned, and the count of the
+/// streams of the server node at the end.
+fn cancelled(
+    sent: &'static [u8],
+    reads: bool,
+) -> (Option<Result<usize, String>>, bool, usize) {
+    let mut network = Network::new(22, Certificate::Valid, JUNE_2026);
+    let (until, returned) = (Token::new(), Arc::new(Mutex::new(false)));
+    let (stop, flag) = (until.clone(), Arc::clone(&returned));
+    network.listen(8087, move |listener, tasks| async move {
+        let answer = |_: Request<Bytes>| Response::new(Bytes::from(vec![b'x'; LARGE]));
+        let served = sim::serve_tls(listener, tasks, stop, Certificate::Valid, answer);
+        served.await.expect("the listener works");
+        *flag.lock().expect("no panic") = true;
+    });
+    let remote = SocketAddr::new(network.server.addresses()[0], 8087);
+    let client = network.client.clone();
+    let out = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&out);
+    let handle = network
+        .client
+        .shards()
+        .start(shard("client"), move |_| async move {
+            let config = tcp::Config {
+                remote,
+                options: super::super::OPTIONS,
+            };
+            let tcp = client.net().connect(&config).await.expect("a stream");
+            let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+            let config = super::client(&provider, &sim::ca(), JUNE_2026);
+            let name = "server".try_into().expect("a DNS name");
+            let mut session = TlsConnector::from(config)
+                .connect(name, Peer(tcp))
+                .await
+                .expect("the handshake ends");
+            let mut rest = sent;
+            while !rest.is_empty() {
+                let n = poll_fn(|cx| Pin::new(&mut session).poll_write(cx, rest))
+                    .await
+                    .expect("the write works");
+                rest = rest.get(n..).expect("a write fits its buffer");
+            }
+            poll_fn(|cx| Pin::new(&mut session).poll_flush(cx))
+                .await
+                .expect("the write works");
+            if !reads {
+                std::future::pending::<()>().await;
+            }
+            let mut bytes = [0; 16];
+            let mut buf = ReadBuf::new(&mut bytes);
+            let read =
+                poll_fn(|cx| Pin::new(&mut session).poll_read(cx, &mut buf)).await;
+            let read = read.map(|()| buf.filled().len());
+            *slot.lock().expect("no panic") =
+                Some(read.map_err(|error| error.to_string()));
+        })
+        .expect("the shard starts");
+    network.handles.push(handle);
+    network.sim.run_for(Span::SECOND).expect("the run goes on");
+    assert_eq!(network.server.streams(), 1);
+    until.cancel();
+    network.sim.run_for(Span::MINUTE).expect("the run ends");
+    let read = out.lock().expect("no panic").take();
+    let returned = *returned.lock().expect("no panic");
+    (read, returned, network.server.streams())
+}
+
+#[test]
+fn a_cancel_closes_each_stream_with_a_close_notify() {
+    assert_eq!(cancelled(b"", true), (Some(Ok(0)), true, 0));
+}
+
+#[test]
+fn a_peer_that_reads_nothing_does_not_hold_a_cancel() {
+    let request = b"GET /large HTTP/1.1\r\nhost: server\r\n\r\n";
+    assert_eq!(cancelled(request, false), (None, true, 0));
 }
