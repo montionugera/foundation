@@ -137,11 +137,11 @@ impl Deadline {
         assert!(indexes > 0, "a deadline of no indexes never trims");
         let blocks = 4096 + crate::bench::PHASE;
         let mut deadline = Self::new(indexes, blocks);
-        let laps = (0..=2 * blocks).find(|_| {
+        let mut commits = 0..=2 * blocks;
+        while deadline.state.writer.head() <= 2 * blocks * BLOCK {
+            commits.next().expect("each deadline writes a block");
             deadline.commit(1);
-            deadline.state.writer.head() > 2 * blocks * BLOCK
-        });
-        laps.expect("each deadline writes a block");
+        }
         let mut trimmed = || {
             let tail = deadline.state.writer.tail();
             deadline.commit(1);
