@@ -1066,7 +1066,9 @@
   under the folders of another limit, and `Outside` is only for a path not under the
   folders" of the amendment of 2026-10-16T08:08:47Z, and the shape decision "`Hidden`
   wins over the `Outside` of another limit" of
-  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6217809418. This
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6217809418, and
+  "`Hidden` over `Outside`" of the amendment of 2026-10-17T06:28:34Z
+  (https://github.com/synnaxlabs/foundation/issues/3005#issuecomment-6230686853). This
   supersedes "in the deepest directory on its way that is there gives `Hidden`" of the
   amendment of 2026-10-16T17:13:18Z for a directory that is not under a folder. For the
   name of the first prefix that does not resolve, it supersedes "each other error is the
@@ -1114,4 +1116,6 @@
   folders only on a step that the folders of each limit hold, 2026-10-17T17:16:50Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237413267; the
   `Outside` of another limit over `Hidden`, 2026-10-17T17:27:38Z,
-  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237608685).
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237608685; the
+  supersede of "`Hidden` over `Outside`" of 2026-10-17T06:28:34Z, 2026-10-17T17:38:58Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237821711).
