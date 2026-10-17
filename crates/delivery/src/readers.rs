@@ -131,13 +131,33 @@ const WAITING: usize = 4;
 #[derive(Debug)]
 struct Flow {
     credit: Credit,
-    /// The end seq of the last frame the session took, or its position at the open.
+    /// The end seq of the last frame given to the session, or its position at the
+    /// open. It is the end of the last frame taken when `waiting` is empty.
     given: u64,
     cost: complete::Cost,
     /// The frames released to the session and not taken, oldest first.
     waiting: VecDeque<Frame>,
     /// What keeps the session from a later frame.
     lag: Lag,
+}
+
+impl Flow {
+    /// Spends the charge of `frame`, of key set `set` and with the charge `whole`,
+    /// for the samples `seq`. Returns `false` and spends nothing when no credit is
+    /// left.
+    fn pay(
+        &mut self,
+        frame: &Frame,
+        set: &KeySet,
+        whole: u64,
+        seq: &Range<u64>,
+    ) -> bool {
+        if !self.credit.spend(self.cost.charge(frame, set, whole)) {
+            return false;
+        }
+        self.given = seq.end;
+        true
+    }
 }
 
 /// What keeps a complete session from the next released frame.
@@ -592,13 +612,9 @@ impl Readers {
             flow.lag = Lag::None;
             return false;
         }
-        if !flow
-            .credit
-            .spend(flow.cost.charge(&frame, set, frame.charge()))
-        {
+        if !flow.pay(&frame, set, frame.charge(), &seq) {
             return false;
         }
-        flow.given = seq.end;
         flow.waiting.push_back(frame);
         flow.lag = Lag::Disk {
             from: from.max(seq.end),
@@ -676,7 +692,7 @@ impl Readers {
     #[inline(never)]
     fn take_owed(&mut self, i: usize) -> Next {
         let flow = &mut self.flows[i];
-        let owed = match &mut flow.lag {
+        let mut owed = match flow.lag {
             Lag::None | Lag::Commit { .. } => return Next::Empty,
             Lag::Disk { from } => {
                 // A read takes the same time for one frame as for many, so a session
@@ -686,7 +702,7 @@ impl Readers {
                 return if flow.credit.left() == 0 || !enough {
                     Next::Empty
                 } else {
-                    Next::Disk { from: *from }
+                    Next::Disk { from }
                 };
             }
             Lag::Owed(owed) => owed,
@@ -696,18 +712,17 @@ impl Readers {
             owed.set += 1;
         }
         let set = &self.sets[owed.set];
-        if !flow
-            .credit
-            .spend(flow.cost.charge(frame, set, frame.charge()))
-        {
+        if !flow.pay(frame, set, frame.charge(), seq) {
+            flow.lag = Lag::Owed(owed);
             return Next::Empty;
         }
-        flow.given = seq.end;
         let frame = frame.clone();
         owed.frame += 1;
         if owed.frame == self.held {
             flow.lag = Lag::None;
             self.paid();
+        } else {
+            flow.lag = Lag::Owed(owed);
         }
         Next::Frame(frame)
     }
@@ -910,12 +925,11 @@ fn give<'a>(
         if !matches!(flow.lag, Lag::None) || seq.end <= session.position.live {
             continue;
         }
-        if !flow.credit.spend(flow.cost.charge(frame, set, whole)) {
+        if !flow.pay(frame, set, whole, seq) {
             flow.lag = Lag::Owed(at);
             owing += 1;
             continue;
         }
-        flow.given = seq.end;
         if flow.waiting.is_empty() {
             woken.push(session.key);
         }
@@ -4801,6 +4815,28 @@ pub(super) mod tests {
             }
         }
 
+        /// Grants `key` all the credit it can use, takes its frames until it takes no
+        /// more, then checks that it got each frame of `log`.
+        fn read_at_once(
+            readers: &mut Readers,
+            frames: &Frames,
+            log: &Log,
+            key: complete::Key,
+            reads: &mut Reads,
+        ) {
+            readers.grant(key, u64::MAX);
+            if let Some(read) = reads.read.take() {
+                apply_read(readers, frames, key, &read, log.durable());
+            }
+            // Each read passes at least one entry.
+            let mut left = log.entries.len() + 1;
+            while let Some(read) = take_reads(readers, log, key, reads, usize::MAX) {
+                left = left.checked_sub(1).expect("a read from disk repeats");
+                apply_read(readers, frames, key, &read, log.durable());
+            }
+            assert_eq!(reads.got, log.expected(reads.start), "{key:?}");
+        }
+
         /// Acks each frame that `key` took and grants it one frame more, until it
         /// takes no more frames, then checks that it got each frame of `log`.
         fn read_to_the_end(
@@ -4833,8 +4869,9 @@ pub(super) mod tests {
         /// Checks reads from disk: a complete session gets each frame that ends past
         /// its position at the open, in seq order, once, past seqs lost for no room. A
         /// read from disk can stop at its budget, and commits can come between a read
-        /// and its fill. At the end, each session acks each frame it took and gets
-        /// credit for one frame at a time, and still gets each frame.
+        /// and its fill. At the end, every other session acks each frame it took and
+        /// gets credit for one frame at a time, and each of the rest gets all the
+        /// credit it can use. Each still gets each frame.
         fn check_reads(steps: Vec<Reading>) {
             let frames = Frames::new(steps.len() * 16 + 64);
             let mut readers = Readers::new(0);
@@ -4890,8 +4927,12 @@ pub(super) mod tests {
                 }
             }
             log.commit(&mut readers, usize::MAX);
-            for (&key, reads) in &mut open {
-                read_to_the_end(&mut readers, &frames, &log, key, reads);
+            for (n, (&key, reads)) in open.iter_mut().enumerate() {
+                if n % 2 == 0 {
+                    read_to_the_end(&mut readers, &frames, &log, key, reads);
+                } else {
+                    read_at_once(&mut readers, &frames, &log, key, reads);
+                }
             }
             assert!(!readers.pending());
         }
