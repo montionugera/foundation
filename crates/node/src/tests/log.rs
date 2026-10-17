@@ -73,17 +73,25 @@ impl io::Write for Panics {
     }
 }
 
-/// A writer to stderr that waits 300 ms at the line `n=2`, then panics.
-struct Ends;
+/// A writer to stderr that, at the line `n=2`, sends on `entered`, waits for the hook
+/// on `hooked`, and panics 100 ms later, so the hook waits when it panics.
+struct Ends {
+    entered: mpsc::Sender<()>,
+    hooked: mpsc::Receiver<()>,
+}
 
 impl io::Write for Ends {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if bytes.windows(3).any(|word| word == b"n=2") {
+            self.entered.send(()).unwrap_or_default();
             #[expect(
                 clippy::disallowed_methods,
-                reason = "a hook waits on the writer"
+                reason = "the writer panics in the wait of the hook"
             )]
-            std::thread::sleep(Duration::from_millis(300));
+            {
+                self.hooked.recv().unwrap_or_default();
+                std::thread::sleep(Duration::from_millis(100));
+            }
             panic!("the writer panics");
         }
         io::stderr().write(bytes)
@@ -1126,7 +1134,10 @@ fn writer(
             free,
         }),
         Case::Writes => Box::new(Panics(Lines::default())),
-        Case::Ends => Box::new(Ends),
+        Case::Ends => Box::new(Ends {
+            entered,
+            hooked: free,
+        }),
         Case::Full => Box::new(Gated {
             entered,
             free: Some(free),
@@ -1134,6 +1145,34 @@ fn writer(
         Case::Free | Case::Late | Case::Abort | Case::Json | Case::Hang => {
             Box::new(io::stderr())
         }
+    }
+}
+
+/// The panic hook of the child of `case`: the hook of `log` over the hook before it.
+/// For [`Case::Ends`], it first frees the writer on `free`.
+fn hook(
+    case: Case,
+    log: &Flush,
+    free: &mpsc::Sender<()>,
+) -> Box<dyn Fn(&panic::PanicHookInfo<'_>) + Send + Sync> {
+    let previous = match case {
+        Case::Abort => Box::new(|info: &panic::PanicHookInfo<'_>| {
+            let line = format!("the hook before runs: {info}\n");
+            drop(io::Write::write_all(&mut io::stderr(), line.as_bytes()));
+            std::process::abort();
+        }),
+        _ => panic::take_hook(),
+    };
+    let hook = log.hook(previous, Duration::from_secs(1));
+    match case {
+        Case::Ends => {
+            let hooked = free.clone();
+            Box::new(move |info| {
+                hooked.send(()).unwrap_or_default();
+                hook(info);
+            })
+        }
+        _ => hook,
     }
 }
 
@@ -1154,15 +1193,7 @@ fn panics(case: Case) -> ! {
     let log = log::open(Log { writer, format }, &threads, wall, mesh);
     tracing::dispatcher::with_default(&log.dispatch, numbered(0, 3));
     let hold = log.hold().expect("the thread log starts");
-    let previous = match case {
-        Case::Abort => Box::new(|info: &panic::PanicHookInfo<'_>| {
-            let line = format!("the hook before runs: {info}\n");
-            drop(io::Write::write_all(&mut io::stderr(), line.as_bytes()));
-            std::process::abort();
-        }),
-        _ => panic::take_hook(),
-    };
-    panic::set_hook(log.hook(previous, Duration::from_secs(1)));
+    panic::set_hook(hook(case, &log, &free));
     match case {
         Case::Late => {
             drop(hold);
@@ -1188,13 +1219,20 @@ fn panics(case: Case) -> ! {
             assert!(!log.wait(Duration::from_millis(500)), "the pipe is full");
             drop(hold);
         }
+        Case::Ends => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the bound starts after n=2"
+            )]
+            blocked.recv().expect("the writer reaches n=2");
+        }
         Case::Full => {
             #[expect(clippy::disallowed_methods, reason = "the writer blocks first")]
             blocked.recv().expect("the writer blocks");
             tracing::dispatcher::with_default(&log.dispatch, numbered(3, 1100));
             free.send(()).expect("the writer waits");
         }
-        Case::Free | Case::Stuck | Case::Abort | Case::Json | Case::Ends => {}
+        Case::Free | Case::Stuck | Case::Abort | Case::Json => {}
     }
     panic!("the test panics");
 }
