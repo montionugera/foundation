@@ -158,8 +158,11 @@ impl Frames {
                 self.drafting = last;
                 Ok(Step::More)
             }
-            other @ (FromHome::Opened { .. } | FromHome::Body { .. }) => {
-                unreachable!("invariant: an open decoder outside a body gave {other:?}")
+            FromHome::Opened { .. } => {
+                unreachable!("invariant: an open decoder outside a body gave an opened")
+            }
+            FromHome::Body { .. } => {
+                unreachable!("invariant: an open decoder outside a body gave a body")
             }
         }
     }
