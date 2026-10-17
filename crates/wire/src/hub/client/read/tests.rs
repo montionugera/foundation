@@ -1106,13 +1106,43 @@ mod reader {
         assert_eq!(reply(&mut home, &head(2)), Ok(Home::Head(2)));
     }
 
-    /// Reads the private `latest`: the mode shows through public calls only in the
-    /// gaps of a frame (`Frames::lost`), which `program`'s `lost` tests check.
+    /// The seqs that a session of `mode`, opened at 5, lost before a first frame at 9.
+    fn lost_before_a_frame(mode: Mode) -> std::ops::Range<u64> {
+        let mut reader = in_run(mode, Places { count: 1, index: 0 });
+        let Ok(Some(start)) = reader.decode(Some(&encode_run(&[stamp(1)]))) else {
+            panic!("the run gives a start");
+        };
+        let (mut frames, _) =
+            hub::Frames::open(start.home, start.set, Some(&opened_at(5)))
+                .expect("the session opens");
+        let head = Head {
+            path: Path::Live,
+            range: Range { seq: 9, count: 2 },
+            series: 1,
+        };
+        frames
+            .decode(&encode_reply(Reply::Head(head)))
+            .expect("a head");
+        frames
+            .decode(&crate::hub::tests::encode_ends(&[(0, 0)]))
+            .expect("ends");
+        let Ok(hub::Due::Draft(layout)) = frames.due() else {
+            panic!("a draft is due");
+        };
+        let config = block::Config::new(1 << 16).expect("the budget fits");
+        let memory = block::Heap::new(config.reservation());
+        let pool = block::Pool::new(config, memory);
+        let draft = layout
+            .draft(&pool, types::frame::Form::Encoded)
+            .expect("a block");
+        assert!(matches!(frames.draft(draft), hub::Step::Frame(_)));
+        frames.lost()
+    }
+
     #[test]
     fn opens_a_latest_session_for_a_latest_read() {
-        let places = Places { count: 1, index: 0 };
-        assert!(after_run(Mode::Latest, places, &[stamp(1)]).latest());
-        assert!(!after_run(Mode::Complete, places, &[stamp(1)]).latest());
+        assert_eq!(lost_before_a_frame(Mode::Latest), 0..0);
+        assert_eq!(lost_before_a_frame(Mode::Complete), 5..9);
     }
 }
 
