@@ -161,7 +161,10 @@ impl Session {
     /// it. A call after the end gives this error.
     #[must_use]
     pub fn ended(&self) -> Option<Error> {
-        self.0.0.ended()
+        let shared = &self.0.0;
+        // The renewal can run after a call that saw the end of the transport.
+        let ended = shared.ended.borrow().clone();
+        ended.or_else(|| shared.session.ended().map(Error::from))
     }
 
     /// Sends `body` as a request signed with the subject's key, and gives the body of
@@ -218,13 +221,6 @@ impl Session {
 }
 
 impl Shared {
-    /// The error that ended the renewal, else why the transport ended the session.
-    /// The renewal can run after a call that saw the end of the transport.
-    fn ended(&self) -> Option<Error> {
-        let ended = self.ended.borrow().clone();
-        ended.or_else(|| self.session.ended().map(Error::from))
-    }
-
     /// Takes the turn, sends the request of `body`, whose length is `length`, and
     /// gives the body of the response. Gives each error of [`Session::request`] but
     /// [`Error::Body`], with the error of the close in place of the error that ended

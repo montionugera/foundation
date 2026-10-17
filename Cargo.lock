@@ -1839,6 +1839,7 @@ dependencies = [
  "os",
  "program",
  "tokio",
+ "tracing",
  "transport",
  "types",
 ]
