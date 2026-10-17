@@ -52,7 +52,10 @@
   words "or in `PLUGINS` when only one file of the copy may name it": approved by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231994142,
-  2026-10-17 08:55 UTC). A header list is not a check: a listed header can include
+  2026-10-17 08:55 UTC). The sentence on the objects of `PLUGINS`: approved by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3037#issuecomment-6236322678,
+  2026-10-17 16:06 UTC). A header list is not a check: a listed header can include
   another (`pthread.h` includes `time.h`). So the check
   refuses no system header, and each header that the copy includes must be in the copy
   or in a system directory as `cc` finds it. Lost: a header list, and a deny list of OS
