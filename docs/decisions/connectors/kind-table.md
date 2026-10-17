@@ -35,11 +35,12 @@
   https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6212322447). A
   hold that ends frees room, and a `Full` that stays costs one open for each backoff,
   with the cause in the status at each try. Only an open that adds a record gives
-  `Full`, when no part of the named records of its index has room for it: at least 448
-  records of the longest names. A held reader opens and records its position, as its
-  record keeps its part (`laptop.architect`, 2026-10-16T15:47:15Z:
-  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6219185219; the parts:
-  2026-10-17T00:37:51Z:
+  `Full` (`laptop.architect`, 2026-10-16T15:47:15Z:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6219185219), when no
+  part of the named records of its index has room for it: at least 448 records of the
+  longest names. A held reader opens and records its position, as its record keeps its
+  part. The parts supersede the held reader that opens over the limit and records
+  nothing (`laptop.architect`, 2026-10-17T00:37:51Z:
   https://github.com/synnaxlabs/foundation/issues/2833#issuecomment-6227434486). Lost:
   `Config` (`connector.many-readers`), which stops the connector and its data for good
   on a cause that clears itself (`laptop.architect-2`, 2026-10-16T07:08:14Z:

@@ -42,8 +42,12 @@
   in one part while it exists, and a new one goes in the lowest part with room for it
   (first fit). A removed record keeps its key and its room in its part until the commit
   of the entry that drops it, and an add of that key before then goes back in that
-  part, so a key is in one part only. An append writes only the parts whose bodies
+  part, so a key is in one part only. An append writes only the parts whose records
   changed, in part order, and stops at the first part that finds no block or no room.
+  A part that finds no block keeps the state of its last entry, and a record that the
+  append added at or past it loses its room. In memory, each carried index keeps the
+  part and the last state of each key: at most about 257,728 bytes of names, plus about
+  90 bytes for each key.
   It appends after a named open, a close, and a takeover, and at a tick when a record
   changed: an ack that moved a named position, or a hold that ended at the mesh
   midpoint. The tick comes each second while a named complete reader is open, or
@@ -57,20 +61,21 @@
   complete open that adds a record, opens a held one, or takes over an open session
   with a new hold appends its parts before it opens, and its reader takes no frame
   until the commit that holds them. A takeover with the same hold of a session that
-  waits for that commit waits for it too. When the part of its record finds no block
-  or no room, it opens nothing and gives `Unopened::Unrecorded`, and `hub` gives
-  `reader::Error::Unrecorded`, so a restart never loses the frames of a first open, a
-  reopen, or a takeover. After a failed commit, the open opens, and its reader ends
-  with the error of the commit. Another entry that finds no room or no block stays due
-  for the next tick, so a restart before it resumes at an older position: a repeat, not
-  a loss. Trimming must keep the newest entry of each part of each index (#406). Until
-  it does, a trim (STORE TRIM) can free such an entry, and a restart resumes the readers
-  of its part at the live tail, and those of each later part when no index keeps an
-  entry of its tag, as HANDOFF RECORD states for a handoff. A named complete open that
-  adds a record that no part has room for gives `Unopened::Full`, with a `limit` of
-  257,728 bytes (64 parts of 4027 bytes of records), and `hub` gives
-  `reader::Error::Full`. A reopen or a takeover never gives it, as a held record keeps
-  its part. A latest reader adds no record. Parts: decided by `laptop.architect`
+  waits for that commit waits for it too. When the part of its record, or a part
+  before it, finds no block or no room, it opens nothing and gives
+  `Unopened::Unrecorded`, and `hub` gives `reader::Error::Unrecorded`, so a restart
+  never loses the frames of a first open, a reopen, or a takeover. After a failed
+  commit, the open opens, and its reader ends with the error of the commit. Another
+  entry that finds no room or no block stays due for the next tick, so a restart before
+  it resumes at an older position: a repeat, not a loss. Trimming must keep the newest
+  entry of each part of each index (#406). Until it does, a trim (STORE TRIM) can free
+  such an entry, and a restart resumes the readers of its part at the live tail, and
+  those of each later part when no index keeps an entry of its tag, as HANDOFF RECORD
+  states for a handoff. A named complete open that adds a record that no part has room
+  for gives `Unopened::Full`, with a `limit` of 257,728 bytes (64 parts of 4027 bytes of
+  records), and `hub` gives `reader::Error::Full`. A reopen or a takeover never gives
+  it, as a held record keeps its part. A latest reader adds no record. Parts: decided by
+  `laptop.architect`
   (2026-10-17T00:37:51Z:
   https://github.com/synnaxlabs/foundation/issues/2833#issuecomment-6227434486), which
   supersedes one entry for each index, the open of a held reader over the limit, and
