@@ -67,6 +67,7 @@ macro_rules! tests {
             within_hides_a_hidden_folder_that_the_limits_refuse,
             within_keeps_a_narrow_handle_out_of_a_hidden_folder_of_its_source,
             within_gives_replaced_under_a_moved_folder_in_a_hidden_folder,
+            within_gives_replaced_before_a_dot_dot_on_the_way_to_a_moved_folder,
             a_directory_made_takes_files,
             a_directory_made_again_or_through_a_link_is_ok,
             a_directory_under_one_that_is_not_there_is_not_found,
@@ -701,6 +702,25 @@ pub(crate) fn within_gives_replaced_under_a_moved_folder_in_a_hidden_folder(
     (host.make_dir)(&base.join("work/data/pub"));
     let again = within.read(&base.join("work/data/pub/a"), 1);
     assert_eq!(again, Err(Error::Replaced));
+}
+
+/// A step before a `..` passes as a directory on the way to the folder `pub` only while
+/// `pub` is there, so after a program moves it, a path through that step gives
+/// `Replaced`, also when the path ends in another folder.
+pub(crate) fn within_gives_replaced_before_a_dot_dot_on_the_way_to_a_moved_folder(
+    host: &Host<'_>,
+) {
+    let base = host.paths.resolve(host.dir).unwrap();
+    for name in ["work", "work/data", "work/data/pub", "work/b"] {
+        (host.make_dir)(&base.join(name));
+    }
+    host.paths.write(&base.join("work/b/f"), b"x").unwrap();
+    let folders = [base.join("work/data/pub"), base.join("work/b")];
+    let within = host.paths.within(&folders, &[]).unwrap();
+    let path = base.join("work/data/../b/f");
+    assert_eq!(within.read(&path, 1).map(|_| ()), Ok(()));
+    (host.move_path)(&base.join("work/data/pub"), &base.join("work/old"));
+    assert_eq!(within.read(&path, 1).map(|_| ()), Err(Error::Replaced));
 }
 
 /// A program replaces the folder with a link to a directory outside it. A path through
