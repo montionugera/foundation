@@ -111,7 +111,7 @@ pub struct Entry {
     pub stored_at: Stamp,
     /// A tag the caller gives and reads back. Tag 0 marks samples. Each other tag
     /// marks a state entry: the buffer keeps the newest entry of each nonzero tag on
-    /// each path of an index past every trim, and
+    /// each path of an index until a trim passes its record, and
     /// [`Buffer::newest`](crate::Buffer::newest) gives it. Such an entry holds at
     /// most [`Layout::ENTRY_MAX_MIN`](crate::Layout::ENTRY_MAX_MIN) bytes.
     pub tag: u8,
