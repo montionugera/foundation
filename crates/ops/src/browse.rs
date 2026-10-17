@@ -65,6 +65,10 @@ pub(crate) struct Point {
     pub(crate) access: Option<Access>,
     /// The value, only with `values`: `null` when the device gave none, or a value
     /// that is not one fixed-width scalar.
+    #[expect(
+        clippy::option_option,
+        reason = "the outer `None` is no `value` field, the inner one `null`"
+    )]
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -109,6 +113,7 @@ pub(crate) enum End {
 }
 
 /// A value that is there, also when it is `null`.
+#[expect(clippy::option_option, reason = "the type of `Point::value`")]
 fn given<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Option<Value>>, D::Error> {

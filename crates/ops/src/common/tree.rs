@@ -89,12 +89,55 @@ fn points(tag: &str, count: usize) -> Vec<Child> {
         .collect()
 }
 
+/// The entries of `Line3`: a folder, points with each fact, with no fact, and with a
+/// unit code and no unit, and an unreadable point.
+fn line3() -> Vec<Child> {
+    vec![
+        folder("Cell", "line3.cell"),
+        point(
+            "Temperature",
+            "line3.temperature",
+            Facts {
+                data_type: Some(Type::Scalar(Scalar::F64)),
+                unit: Some("°C".to_owned()),
+                unit_code: Some("CEL".to_owned()),
+                access: Some(Access::Read),
+            },
+        ),
+        point("Bare", "line3.bare", Facts::default()),
+        point(
+            "Heater",
+            "line3.heater",
+            Facts {
+                data_type: Some(Type::Scalar(Scalar::U16)),
+                unit: None,
+                unit_code: Some("KWT".to_owned()),
+                access: Some(Access::Write),
+            },
+        ),
+        Child {
+            name: "Recipe".to_owned(),
+            tag: "line3.recipe".to_owned(),
+            shape: Shape::Unreadable("an array".to_owned()),
+        },
+        point(
+            "Setpoint",
+            "line3.setpoint",
+            Facts {
+                data_type: Some(Type::Scalar(Scalar::F32)),
+                unit: Some("%".to_owned()),
+                unit_code: Some("P1".to_owned()),
+                access: Some(Access::ReadWrite),
+            },
+        ),
+    ]
+}
+
 impl Tree {
     /// The tree of the kind `tree`, with pages of 4 entries. The root holds the
-    /// folders `Line3`, `Types`, `Many`, and `Huge`. `Line3` holds 6 entries: a
-    /// folder, points with each fact, with no fact, and with a unit code and no unit,
-    /// and an unreadable point. `Types` holds a point of each value of [`typed`], then
-    /// a point with no value. `Many` holds 501 points and `Huge` 10,001.
+    /// folders `Line3` (of [`line3`]), `Types`, `Many`, and `Huge`. `Types` holds a
+    /// point of each value of [`typed`], then a point with no value. `Many` holds 501
+    /// points and `Huge` 10,001.
     pub(crate) fn create() -> Self {
         let mut folders = BTreeMap::new();
         folders.insert(
@@ -106,48 +149,7 @@ impl Tree {
                 folder("Huge", "huge"),
             ],
         );
-        folders.insert(
-            "line3".to_owned(),
-            vec![
-                folder("Cell", "line3.cell"),
-                point(
-                    "Temperature",
-                    "line3.temperature",
-                    Facts {
-                        data_type: Some(Type::Scalar(Scalar::F64)),
-                        unit: Some("°C".to_owned()),
-                        unit_code: Some("CEL".to_owned()),
-                        access: Some(Access::Read),
-                    },
-                ),
-                point("Bare", "line3.bare", Facts::default()),
-                point(
-                    "Heater",
-                    "line3.heater",
-                    Facts {
-                        data_type: Some(Type::Scalar(Scalar::U16)),
-                        unit: None,
-                        unit_code: Some("KWT".to_owned()),
-                        access: Some(Access::Write),
-                    },
-                ),
-                Child {
-                    name: "Recipe".to_owned(),
-                    tag: "line3.recipe".to_owned(),
-                    shape: Shape::Unreadable("an array".to_owned()),
-                },
-                point(
-                    "Setpoint",
-                    "line3.setpoint",
-                    Facts {
-                        data_type: Some(Type::Scalar(Scalar::F32)),
-                        unit: Some("%".to_owned()),
-                        unit_code: Some("P1".to_owned()),
-                        access: Some(Access::ReadWrite),
-                    },
-                ),
-            ],
-        );
+        folders.insert("line3".to_owned(), line3());
         folders.insert("line3.cell".to_owned(), Vec::new());
         let mut values = BTreeMap::from([
             ("line3.temperature".to_owned(), Value::F64(21.5)),
@@ -206,6 +208,36 @@ impl Tree {
             None => Ok(()),
         }
     }
+
+    /// The page of `folder` from `cursor`.
+    fn page(
+        &self,
+        folder: Option<&Entry>,
+        cursor: Option<&Cursor>,
+    ) -> Result<Option<Page>, kind::Error> {
+        self.failed()?;
+        let tag = folder.map_or("", |folder| folder.tag.as_str());
+        let Some(children) = self.folders.get(tag) else {
+            return Ok(None);
+        };
+        let from =
+            cursor.map_or(0, |cursor| cursor.as_str().parse().expect("an offset"));
+        let to = children.len().min(from + self.size);
+        let next = (to < children.len()).then(|| Cursor::new(to.to_string()));
+        Ok(Some(Page {
+            entries: children[from..to].to_vec(),
+            next,
+        }))
+    }
+
+    /// The value of each of `tags`.
+    fn read(&self, tags: &[&str]) -> Result<Vec<Option<Value>>, kind::Error> {
+        self.failed()?;
+        Ok(tags
+            .iter()
+            .map(|tag| self.values.get(*tag).copied())
+            .collect())
+    }
 }
 
 /// The diagnostic of `config` when its `address` is `"bad"`.
@@ -224,7 +256,7 @@ fn address(config: &Document) -> Option<Diagnostic> {
         "Give the address of a device".to_owned(),
     );
     diagnostic.notes.push(Note {
-        span: attribute.key_span.expect("a span of a read file"),
+        span: attribute.key_span?,
         text: "the key of the address".to_owned(),
     });
     Some(diagnostic)
@@ -234,35 +266,19 @@ fn address(config: &Document) -> Option<Diagnostic> {
 struct Session<'a>(&'a Tree);
 
 impl Device for Session<'_> {
-    async fn level(
+    fn level(
         &mut self,
         folder: Option<&Entry>,
         cursor: Option<&Cursor>,
-    ) -> Result<Option<Page>, kind::Error> {
-        self.0.failed()?;
-        let tag = folder.map_or("", |folder| folder.tag.as_str());
-        let Some(children) = self.0.folders.get(tag) else {
-            return Ok(None);
-        };
-        let from =
-            cursor.map_or(0, |cursor| cursor.as_str().parse().expect("an offset"));
-        let to = children.len().min(from + self.0.size);
-        let next = (to < children.len()).then(|| Cursor::new(to.to_string()));
-        Ok(Some(Page {
-            entries: children[from..to].to_vec(),
-            next,
-        }))
+    ) -> impl Future<Output = Result<Option<Page>, kind::Error>> {
+        std::future::ready(self.0.page(folder, cursor))
     }
 
-    async fn values(
+    fn values(
         &mut self,
         tags: &[&str],
-    ) -> Result<Vec<Option<Value>>, kind::Error> {
-        self.0.failed()?;
-        Ok(tags
-            .iter()
-            .map(|tag| self.0.values.get(*tag).copied())
-            .collect())
+    ) -> impl Future<Output = Result<Vec<Option<Value>>, kind::Error>> {
+        std::future::ready(self.0.read(tags))
     }
 }
 

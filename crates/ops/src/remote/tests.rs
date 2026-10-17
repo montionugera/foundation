@@ -825,6 +825,28 @@ fn mcp_plans_applies_and_shows_status_on_one_reach_of_the_node_of_data() {
     });
 }
 
+/// Asserts that `tools` holds `browse`, read-only, with its input.
+fn assert_browse_tool(tools: &Value) {
+    let tool = tools
+        .as_array()
+        .expect("a list")
+        .iter()
+        .find(|tool| tool["name"] == "browse")
+        .expect("a browse tool");
+    let annotations = &tool["annotations"];
+    assert_eq!(annotations["readOnlyHint"], true);
+    assert_eq!(annotations["destructiveHint"], false);
+    let schema = &tool["inputSchema"];
+    let properties: Vec<_> = schema["properties"]
+        .as_object()
+        .expect("an object")
+        .keys()
+        .collect();
+    let names = ["connector", "cursor", "files", "match", "start", "values"];
+    assert_eq!(properties, names);
+    assert_eq!(schema["required"], json!(["connector", "files"]));
+}
+
 /// `tools/list` holds `browse` with its input, and a tool call of `browse` gives the
 /// JSON of `foundation browse --json`, and takes `match`.
 #[test]
@@ -852,25 +874,7 @@ fn mcp_browse_gives_the_json_of_the_command_line() {
         let messages = [list, call(1, "browse", &level), call(2, "browse", &pattern)];
         let (run, mut replies) = remote.mcp(&paths, &[], &messages).await;
         assert_eq!(run, Run::Exit(0));
-        let tools = replies.remove(0)["result"]["tools"].take();
-        let tool = tools
-            .as_array()
-            .expect("a list")
-            .iter()
-            .find(|tool| tool["name"] == "browse")
-            .expect("a browse tool");
-        let annotations = &tool["annotations"];
-        assert_eq!(annotations["readOnlyHint"], true);
-        assert_eq!(annotations["destructiveHint"], false);
-        let schema = &tool["inputSchema"];
-        let properties: Vec<_> = schema["properties"]
-            .as_object()
-            .expect("an object")
-            .keys()
-            .collect();
-        let names = ["connector", "cursor", "files", "match", "start", "values"];
-        assert_eq!(properties, names);
-        assert_eq!(schema["required"], json!(["connector", "files"]));
+        assert_browse_tool(&replies.remove(0)["result"]["tools"]);
         let args = [
             "browse",
             "plant",
