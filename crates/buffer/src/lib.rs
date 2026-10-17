@@ -17,6 +17,6 @@ mod wal;
 
 pub use buffer::{Buffer, Commit, Config, End, Error, Reader, Rejected};
 pub use entry::{Entry, PARTS_MAX, Parts, Samples};
-pub use log::{Mark, Tail};
+pub use log::Tail;
 pub use read::{Read, Stored};
 pub use wal::{Layout, Limit, Small, Unfit};

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "xtask", "bench/*"]
+members = ["crates/*", "xtask", "bench/*", "sdk/rust"]
 exclude = ["docs", "patches", ".claude"]
 
 [workspace.package]
@@ -11,6 +11,7 @@ publish = false
 
 [workspace.dependencies]
 aws-lc-rs = { version = "1.18.1", default-features = false, features = ["aws-lc-sys"] }
+aws-lc-sys = { version = "0.45.0", default-features = false }
 base64ct = "1.8.3"
 blake3 = "1.8.7"
 bytes = { version = "1.12.1", default-features = false, features = ["std"] }
@@ -42,6 +43,7 @@ schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 ssh-key = { version = "=0.6.7", default-features = false, features = ["alloc"] }
+syn = { version = "3.0.6", default-features = false, features = ["full", "parsing", "visit"] }
 tokio = { version = "1.53.2", default-features = false }
 tokio-rustls = { version = "0.26.6", default-features = false }
 rustls-native-certs = { version = "0.8.5", default-features = false }

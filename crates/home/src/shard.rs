@@ -1218,6 +1218,7 @@ mod tests {
     use types::frame::Form;
     use types::frame::Range;
     use types::frame::key_set::Group;
+    use types::log::Mark;
     use types::name::Name;
     use types::sample::{Scalar, Type};
     use types::time::Span;
@@ -1260,6 +1261,9 @@ mod tests {
         reader: clock::Reader,
         tasks: Tasks,
         entropy: Entropy,
+        /// Whether each ring that [`Test::create_buffer`] makes trims its tail when an
+        /// append does not fit.
+        trimmed: bool,
     }
 
     impl Test {
@@ -1276,6 +1280,7 @@ mod tests {
                 node,
                 pool: Rc::new(pool),
                 tasks,
+                trimmed: false,
             }
         }
 
@@ -1343,7 +1348,7 @@ mod tests {
                 entropy: self.entropy.clone(),
                 layout: Layout::new(area, body_max).expect("a ring"),
                 commit: COMMIT,
-                trimmed: false,
+                trimmed: self.trimmed,
             };
             let mut assigned = Slots::new();
             for n in 0..slots {
@@ -4620,6 +4625,45 @@ mod tests {
             });
         }
 
+        /// The session takes seq 0, spends its credit, and misses the later frames
+        /// while the ring trims them. Its read from disk gives the frames from the
+        /// first seq the ring holds, with no frame for the trimmed seqs between.
+        #[test]
+        fn gives_a_trimmed_range_as_a_jump_in_seq() {
+            run(7041, |test| async move {
+                let test = Test {
+                    trimmed: true,
+                    ..test
+                };
+                let mut shard = test.shard(AREA).await;
+                let session = shard.open_complete(Slot::new(0), 1, Charge::Whole).key;
+                let reader = reader::Key::from(session);
+                let set = two_indexes();
+                let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+                write(&test, &mut shard, a, &[10]);
+                shard.committed().await.expect("the commit ends");
+                assert_eq!(woken(&mut shard), [reader]);
+                assert_eq!(taken(&mut shard, reader, 0), [seq(0, 1)]);
+                let mut wakes = Vec::new();
+                for stamp in 2..=300 {
+                    write(&test, &mut shard, a, &[stamp * 10]);
+                    shard.committed().await.expect("the commit ends");
+                    wakes.extend(woken(&mut shard));
+                }
+                assert_eq!(wakes, [reader]);
+                // The buffer of the shard gives the first seq that the ring holds: no
+                // call of `Shard` gives it.
+                let ring = shard.buffer.reader();
+                let read = ring.read(Slot::new(0), Path::Live, Mark::at(1), 1).await;
+                let gap = read.expect("the read ends").gap.expect("a trim");
+                assert_eq!(gap.start, 1);
+                shard.grant(session, CREDIT);
+                let frames = caught_up(&mut shard, session, 0).await;
+                let held: Vec<_> = (gap.end..300).map(|s| seq(s, 1)).collect();
+                assert_eq!(frames, held);
+            });
+        }
+
         #[test]
         fn gives_a_frame_that_waits_for_credit_on_a_quiet_index_after_a_grant() {
             run(39, |test| async move {
@@ -6736,6 +6780,30 @@ mod tests {
                         let a = open_held(&mut shard);
                         assert_eq!(caught_up(&mut shard, a, 0).await, []);
                         shard.close_reader(a.into());
+                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(woken(&mut shard), []);
+                    });
+                }
+
+                #[test]
+                fn wakes_no_session_that_a_takeover_replaced_while_its_entry_waits() {
+                    run(705, |test| async move {
+                        let set = two_indexes();
+                        let mut shard = test.shard(AREA).await;
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        let a = open_held(&mut shard);
+                        committed(&test, &mut shard, w, &[10, 20]).await;
+                        assert_eq!(
+                            taken(&mut shard, a.into(), 0),
+                            [seq(0, 1), seq(1, 1)]
+                        );
+                        shard.ack(a, live(1)).expect("forward");
+                        shard.close_reader(a.into());
+                        shard.committed().await.expect("the commit ends");
+                        let replaced = open_held(&mut shard);
+                        assert_eq!(taken(&mut shard, replaced.into(), 0), []);
+                        let _a = open_held(&mut shard);
                         shard.committed().await.expect("the commit ends");
                         assert_eq!(woken(&mut shard), []);
                     });
