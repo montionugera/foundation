@@ -143,7 +143,6 @@ pub(crate) fn aborted_in_c(name: &str, envs: &[(&str, &str)], line: &str) {
 /// than a pipe holds make the write fail.
 #[test]
 #[cfg(unix)]
-#[cfg_attr(not(target_os = "linux"), ignore = "needs setsid")]
 fn a_detached_child_that_reads_no_stdin_gives_its_output() {
     let output = detached("child::no_such_test", &[], &vec![0; 1 << 20]);
     assert!(output.status.success(), "{output:?}");

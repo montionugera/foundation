@@ -120,7 +120,6 @@ const READS: &[&str] = &[
 /// certificate group.
 #[test]
 #[cfg(unix)]
-#[cfg_attr(not(target_os = "linux"), ignore = "needs setsid")]
 fn each_read_refuses_an_encrypted_pem_with_no_prompt() {
     for name in READS {
         for stdin in [TYPED, b""] {

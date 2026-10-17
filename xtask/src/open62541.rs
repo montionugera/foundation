@@ -2443,10 +2443,6 @@ n = read_x(b, 0, 0, 0);
 
     #[test]
     #[cfg(unix)]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_read_of_the_committed_copy_that_gives_aws_lc_no_callback() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let root = temp("passwords");
@@ -2516,10 +2512,6 @@ n = read_x(b, 0, 0, 0);
 
     #[test]
     #[cfg(unix)]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_fails_a_read_of_the_copy_with_no_declaration() {
         let (result, _) = check_with_util(
             "undeclared",
@@ -2541,10 +2533,6 @@ n = read_x(b, 0, 0, 0);
 
     #[test]
     #[cfg(unix)]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_fails_a_read_of_aws_lc_with_no_declaration() {
         let (result, prefix) = check_with_util(
             "undeclared-prefixed",
@@ -2567,10 +2555,6 @@ n = read_x(b, 0, 0, 0);
 
     #[test]
     #[cfg(unix)]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_read_of_the_copy_with_its_own_declaration() {
         let line = util_end() + 2;
         let (result, prefix) = check_with_util(
@@ -2598,10 +2582,6 @@ n = read_x(b, 0, 0, 0);
 
     #[test]
     #[cfg(unix)]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_read_under_a_macro_of_pem_h() {
         let line = util_end() + 3;
         let (result, prefix) = check_with_util(
@@ -2631,10 +2611,6 @@ n = read_x(b, 0, 0, 0);
 
     #[test]
     #[cfg(unix)]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_read_past_a_pem_h_of_the_copy() {
         let line = util_end() + 1;
         let (result, prefix) = check_with_util(
