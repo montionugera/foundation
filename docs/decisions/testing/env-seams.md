@@ -981,15 +981,14 @@
   `Hidden`, which wins over `Vacant`. `Outside` and `Replaced` win over `Vacant`.
   A read gives `NotFound` where a write gives `Vacant`.
   `Replaced`: no folder of `within` holds the path, and a program moved or replaced a
-  folder of that call after it: the folder's path names another file, or nothing, or
-  the OS refuses its key. The
-  path resolves under that folder, by the path that the folder resolved to at that
-  call or by the one that it resolves to now, or into the directory that the folder
-  was at that call. It replaces `Outside`, which such a path gave. So a folder that is
-  a file gives `Replaced` after a write to it, and so does a folder that a program
-  makes again in other case or replaces with a link, and a path into a folder that a
-  program moved away. The common cases pin each on both drivers, other than a folder
-  made again in other case, which an `os` test pins on macOS.
+  folder of that call after it: the folder's path names another file, or nothing, or the
+  OS refuses its key. The path resolves under that folder, by the path that the folder
+  resolved to at that call or by the one that it resolves to now, or into the directory
+  that the folder was at that call. It replaces `Outside`, which such a path gave. So a
+  folder that is a file gives `Replaced` after a write to it, and so does a folder that
+  a program makes again in other case or replaces with a link, and a path into a folder
+  that a program moved away. The common cases pin each on both drivers, other than a
+  folder made again in other case, which an `os` test pins on macOS.
   `sim::Node::move_path` renames a file, a link, or a directory of a host from outside
   the node, with its key, so the common cases move a folder away on both drivers. When
   the node's working directory resolves, it stays on the directory that it resolves

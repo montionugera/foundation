@@ -442,12 +442,11 @@ pub enum Error {
     /// [`Paths::make_dir`] makes a new name in the deepest directory on the way to it
     /// that is there.
     Vacant,
-    /// No folder of [`Paths::within`] holds the path, and a program moved or
-    /// replaced a folder of that call after it: the folder's path names another
-    /// file, or nothing, or the OS refuses its key. The path resolves under that
-    /// folder, by the path that
-    /// the folder resolved to at that call or by the one that it resolves to now,
-    /// or into the directory that the folder was at that call.
+    /// No folder of [`Paths::within`] holds the path, and a program moved or replaced a
+    /// folder of that call after it: the folder's path names another file, or nothing,
+    /// or the OS refuses its key. The path resolves under that folder, by the path that
+    /// the folder resolved to at that call or by the one that it resolves to now, or
+    /// into the directory that the folder was at that call.
     Replaced,
 }
 
