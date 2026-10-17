@@ -490,7 +490,9 @@ pub(crate) fn heals_after_the_device_crashes(device: &'static Device) {
 
 /// The device is lost to `lose` while the connector runs. Within 30 s: an error of
 /// class Device or Retry. Then the simulator starts again: the connector heals, and
-/// no count goes down.
+/// no count goes down. Each status holds the form of [`Device::backoff`]: for
+/// [`Backoff::Run`], Running with no restart and no class but Retry; for
+/// [`Backoff::Restart`], restarts that grow by the heal.
 async fn lost<'a>(
     scene: &'a Scene,
     lose: impl FnOnce(&'a Scene, Served) -> Pin<Box<dyn Future<Output = ()> + 'a>>,
@@ -508,8 +510,15 @@ async fn lost<'a>(
         let went = last.counts.iter().find(|&count| down(count));
         assert!(went.is_none(), "{went:?} went down: {reading:?}");
         assert!(reading.restarts >= last.restarts, "{reading:?}");
+        if let Backoff::Run = scene.device.backoff {
+            let class = reading.error.as_ref().map(|(class, _)| *class);
+            let given = (reading.state, reading.restarts);
+            assert_eq!(given, (State::Running, 0), "the run goes on: {reading:?}");
+            assert!(matches!(class, None | Some(Class::Retry)), "{reading:?}");
+        }
         *last = reading.clone();
     };
+    let restarts = last.borrow().restarts;
     lose(scene, served).await;
     let error = |reading: &Reading| {
         seen(reading);
@@ -529,7 +538,10 @@ async fn lost<'a>(
             && reading.error.is_none()
             && scene.progress(reading) > from
     };
-    run.until(HEAL, healed).await;
+    let reading = run.until(HEAL, healed).await;
+    if let Backoff::Restart = scene.device.backoff {
+        assert!(reading.restarts > restarts, "the run restarts: {reading:?}");
+    }
     run.stop().await.expect("the run ends with no error");
     scene.stop(served).await;
 }
