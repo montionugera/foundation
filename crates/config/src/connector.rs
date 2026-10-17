@@ -10,7 +10,9 @@ use spec::definition;
 use std::collections::{BTreeMap, BTreeSet};
 use types::name::{self, Name};
 
-use crate::{Definition, Entry, Found, LONG_NAME, duplicate, private_key, span, unfilled};
+use crate::{
+    Definition, Entry, Found, LONG_NAME, duplicate, private_key, span, unfilled,
+};
 
 const IMPLIED_CHANNEL: Code = Code::new("config.implied-channel");
 const NO_CONNECTOR: Code = Code::new("config.no-connector");

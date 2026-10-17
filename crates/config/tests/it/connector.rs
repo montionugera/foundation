@@ -301,16 +301,17 @@ fn refuses_a_config_that_nests_too_deep() {
         value: deep,
     });
     body.attributes = Map::new(attributes).expect("unique keys");
-    let diagnostics = config::check(&[document], &kinds()).expect_err("problems");
-    assert_eq!(
-        diagnostics,
-        [Diagnostic::new(
-            Code::new("document.too-deep"),
-            None,
-            "the document nests deeper than 64 levels".into(),
-            "Make it flatter".into(),
-        )]
-    );
+    let documents = [document];
+    let deep = [Diagnostic::new(
+        Code::new("document.too-deep"),
+        None,
+        "the document nests deeper than 64 levels".into(),
+        "Make it flatter".into(),
+    )];
+    let diagnostics = config::check(&documents, &kinds()).expect_err("problems");
+    assert_eq!(diagnostics, deep);
+    let found = config::connector(&documents, &name("influx")).expect_err("problems");
+    assert_eq!(found, deep);
 }
 
 /// Each problem of `config::connector` of `name` in `text`, as [`problems`] gives it.
@@ -512,4 +513,30 @@ fn refuses_a_reserved_label_as_check_does() {
     assert_eq!(problems(text)[..1], reserved[..]);
     assert_eq!(refused(text, "@plant"), reserved);
     assert_eq!(refused(text, "@PLANT"), reserved);
+}
+
+#[test]
+fn keeps_the_first_connector_block_in_span_order_at_a_repeated_name() {
+    let block = |label: &str| {
+        format!("connector \"{label}\" {{\n  kind = \"opcua\"\n  node = \"edge\"\n}}\n")
+    };
+    let later = config_hcl::read(Source(1), &block("Plant")).expect("the text is HCL");
+    let documents = [later, read(&block("plant"))];
+    let diagnostics =
+        config::connector(&documents, &name("plant")).expect_err("problems");
+    let messages: Vec<_> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        ["the name \"Plant\" repeats the earlier `connector` name \"plant\""]
+    );
+}
+
+#[test]
+fn finds_a_connector_beside_two_other_connector_blocks_of_one_name_in_any_case() {
+    let text = "connector \"plant\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n\
+                connector \"b\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n\
+                connector \"B\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n";
+    let found = config::connector(&[read(text)], &name("plant")).expect("found");
+    assert_eq!(found.kind(), &name("opcua"));
+    assert_eq!(found.node(), &name("edge"));
 }
