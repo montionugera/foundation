@@ -54,7 +54,9 @@
   (`MaxBrowseContinuationPoints`), and test it against the sim server with the bound at
   1 and at 2. It merges before the CLI or MCP gives browse to a user (the split of PR 5,
   2026-10-16T22:54:58Z:
-  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6226218426). The
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6226218426, OK by
+  `laptop.architect-2`, 2026-10-17T03:22:56Z:
+  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6228993285). The
   one table of the built-in types that this record asked for became the decode by match
   of OPCUA KIND (`laptop.architect-2`,
   2026-10-16T22:17:22Z:
