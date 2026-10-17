@@ -3,15 +3,17 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
+use connector::cancel::Token;
+use connector::http::sim::Certificate;
 use connector::http::{Client, Config};
-use env::net::tcp;
+use env::net::{self, tcp};
 use env::thread::Handle;
 use http::header::{AUTHORIZATION, CONTENT_ENCODING};
 use http::{HeaderValue, Method, Request, StatusCode};
 use sim::{Sim, node};
 use types::time::Span;
 
-use super::serve;
+use super::{serve, serve_tls};
 use crate::sim::Store;
 
 const PORT: u16 = 8086;
@@ -66,8 +68,9 @@ impl Network {
         let handle = server
             .shards()
             .start(shard("server"), move |tasks| async move {
-                let error = serve(listener, tasks, held, "edge".into(), token).await;
-                panic!("the listener failed: {error}");
+                let until = Token::new();
+                let end = serve(listener, tasks, until, held, "edge".into(), token);
+                panic!("the listener failed: {:?}", end.await);
             })
             .expect("the shard starts");
         Self {
@@ -443,4 +446,80 @@ fn checks_the_token_after_the_method_and_before_the_content_encoding() {
         ]
     );
     assert_eq!(network.times("m"), [0_i64; 0]);
+}
+
+/// Runs `serve`, or `serve_tls` when `tls`, with one idle stream of a client, and
+/// runs `stop` at 1 s. Gives what it returned, and the count of the streams of the
+/// server node then.
+fn stopped(
+    tls: bool,
+    stop: fn(&node::Node, &Token, SocketAddr),
+) -> Option<(Result<(), net::Error>, usize)> {
+    let mut sim = Sim::new(sim::Config::default());
+    let (client, server) = (
+        sim.node(node::Config::default()),
+        sim.node(node::Config::default()),
+    );
+    let local = SocketAddr::new(server.addresses()[0], PORT);
+    let listen = tcp::Listen {
+        local,
+        backlog: 4,
+        options: OPTIONS,
+    };
+    let listener = server.net().listen(&listen).expect("the port is free");
+    let (until, ended) = (Token::new(), Arc::new(Mutex::new(None)));
+    let (cancel, slot, node) = (until.clone(), Arc::clone(&ended), server.clone());
+    let _server = server
+        .shards()
+        .start(shard("server"), move |tasks| async move {
+            let (store, database) = (Arc::default(), "edge");
+            let end = if tls {
+                let certificate = Certificate::Valid;
+                let database = database.into();
+                serve_tls(listener, tasks, cancel, store, database, None, certificate)
+                    .await
+            } else {
+                serve(listener, tasks, cancel, store, database.into(), None).await
+            };
+            *slot.lock().expect("no panic under the lock") =
+                Some((end, node.streams()));
+        })
+        .expect("the shard starts");
+    let net = client.net();
+    let _client = client
+        .shards()
+        .start(shard("client"), move |_| async move {
+            let config = tcp::Config {
+                remote: local,
+                options: OPTIONS,
+            };
+            let _idle = net.connect(&config).await.expect("the server listens");
+            std::future::pending::<()>().await;
+        })
+        .expect("the shard starts");
+    sim.run_for(Span::SECOND).expect("the run ends");
+    assert_eq!(server.streams(), 1);
+    stop(&server, &until, local);
+    sim.run_for(Span::SECOND).expect("the run ends");
+    ended.lock().expect("no panic under the lock").take()
+}
+
+#[test]
+fn serve_and_serve_tls_return_at_a_cancel_once_each_stream_ended() {
+    for tls in [false, true] {
+        let ended = stopped(tls, |_, until, _| until.cancel());
+        assert_eq!(ended, Some((Ok(()), 0)), "tls: {tls}");
+    }
+}
+
+#[test]
+fn serve_and_serve_tls_give_the_error_of_a_failed_listener() {
+    for tls in [false, true] {
+        let ended = stopped(tls, |server, _, local| server.fail_listener(local));
+        assert_eq!(
+            ended,
+            Some((Err(net::Error::Io { code: 5 }), 0)),
+            "tls: {tls}"
+        );
+    }
 }

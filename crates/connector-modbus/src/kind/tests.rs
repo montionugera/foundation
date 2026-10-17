@@ -599,7 +599,7 @@ where
             tasks: tasks.clone(),
         };
         let kinds = kind::Table::new().with("modbus", Kind);
-        let mut rig = Rig::open(env, node.net(), kinds).await;
+        let rig = Rig::open(env, node.net(), kinds).await;
         let definitions = definitions(items);
         let names: Vec<_> = definitions.iter().map(|(name, _)| name.clone()).collect();
         rig.define(definitions);

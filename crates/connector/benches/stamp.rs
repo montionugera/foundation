@@ -40,7 +40,7 @@ fn main() {
             entropy: node.entropy(),
             tasks,
         };
-        let mut rig = Rig::open(env, node.net(), Table::new()).await;
+        let rig = Rig::open(env, node.net(), Table::new()).await;
         let connector: Name = "plant.stamp".parse().expect("a valid name");
         let first = channel::Key::from_u128(100);
         rig.define(testing::create_status(&connector, &[], first));
