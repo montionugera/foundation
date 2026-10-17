@@ -898,12 +898,8 @@ impl Layout {
             Self::Int16 { order } => int::encode::<2>(chunk, order, identity, out),
             Self::Int32 { order } => int::encode::<4>(chunk, order, identity, out),
             Self::Int64 { order } => int::encode::<8>(chunk, order, identity, out),
-            Self::Float32 => {
-                int::encode::<4>(chunk, Order::Unsigned, float::sortable::<4>, out)
-            }
-            Self::Float64 => {
-                int::encode::<8>(chunk, Order::Unsigned, float::sortable::<8>, out)
-            }
+            Self::Float32 => float::encode::<4>(chunk, out),
+            Self::Float64 => float::encode::<8>(chunk, out),
             Self::Raw { width } => vector::write_raw(chunk, width, out),
         }
     }
@@ -915,8 +911,8 @@ impl Layout {
             Self::Int16 { .. } => vector.decode::<2>(out, identity),
             Self::Int32 { .. } => vector.decode::<4>(out, identity),
             Self::Int64 { .. } => vector.decode::<8>(out, identity),
-            Self::Float32 => vector.decode::<4>(out, float::bits::<4>),
-            Self::Float64 => vector.decode::<8>(out, float::bits::<8>),
+            Self::Float32 => float::decode::<4>(vector, out),
+            Self::Float64 => float::decode::<8>(vector, out),
             Self::Raw { .. } => vector.copy(out),
         }
     }

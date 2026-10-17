@@ -6,8 +6,8 @@ use crate::word;
 /// The order in which the codecs compare the integers of a vector.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Order {
-    Signed,
     Unsigned,
+    Signed,
 }
 
 /// Writes one vector of `W`-byte samples into the front of `out` with the smallest

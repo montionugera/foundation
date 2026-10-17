@@ -1,6 +1,24 @@
 //! The integers that the codecs see for float samples.
 
+use crate::int::{self, Order};
+use crate::vector::Vector;
 use crate::word;
+
+// The float paths stay out of line, so that the integer arms of `Layout::encode` and
+// `Layout::decode` keep the code layout that they have without them.
+
+/// Writes one vector of floats of `W` bytes into the front of `out` and returns its
+/// length, as [`int::encode`] does for their sortable integers.
+#[inline(never)]
+pub(crate) fn encode<const W: usize>(chunk: &[u8], out: &mut [u8]) -> usize {
+    int::encode::<W>(chunk, Order::Unsigned, sortable::<W>, out)
+}
+
+/// Writes the floats of `W` bytes of `vector` into `out`, which holds exactly them.
+#[inline(never)]
+pub(crate) fn decode<const W: usize>(vector: &Vector<'_>, out: &mut [u8]) {
+    vector.decode::<W>(out, bits::<W>);
+}
 
 /// The integer that the codecs see for the bits of a float of `W` bytes. A float with
 /// its sign bit set has each bit flipped, and any other only its sign bit, so the
