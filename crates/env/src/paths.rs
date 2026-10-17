@@ -899,6 +899,7 @@ mod tests {
         let free = Paths::new(One::default());
         let paths = free.within(&["/a/b".into()], &["/a".into()]).unwrap();
         assert_eq!(reached(&paths, "/a"), Err(Error::Outside));
+        assert_eq!(reached(&paths, "/a/f"), Err(Error::Hidden));
         assert_eq!(reached(&paths, "/a/b/c/d"), Err(Error::Hidden));
     }
 
