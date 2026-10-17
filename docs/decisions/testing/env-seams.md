@@ -1236,4 +1236,6 @@
   key" of the amendment of 2026-10-17T07:45:44Z and "or it is a directory on the way to
   a folder" of the amendment of 2026-10-17T21:25:15Z for a folder that is not there.
   Decided by `laptop.architect-2` (2026-10-17T21:54:23Z,
-  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6241808609).
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6241808609; the
+  supersede, 2026-10-17T22:18:40Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6242108210).
