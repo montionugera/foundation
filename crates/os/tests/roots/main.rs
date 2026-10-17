@@ -1,9 +1,9 @@
-//! `os::roots` reads the CA certificates of the OS store, or of the PEM file that
-//! `SSL_CERT_FILE` names and the directories that `SSL_CERT_DIR` names. This binary
-//! has no test harness: each case runs it again as a child with its own environment,
-//! since a set of the environment races the threads of a harness. With the argument
-//! `child`, it writes what `os::roots` gives: a line for its source, then one for each
-//! certificate and for each failure.
+//! `os::roots::read` reads the CA certificates of the OS store, or of the PEM file
+//! that `SSL_CERT_FILE` names and the directories that `SSL_CERT_DIR` names. This
+//! binary has no test harness: each case runs it again as a child with its own
+//! environment, since a set of the environment races the threads of a harness. With
+//! the argument `child`, it writes what `os::roots::read` gives: a line for its
+//! source, then one for each certificate and for each failure.
 
 use std::ffi::OsStr;
 use std::fmt::Write as _;
@@ -16,7 +16,7 @@ fn main() {
     let role = std::env::args_os().nth(1);
     if role.is_some_and(|arg| arg == "child") {
         let mut output = std::io::stdout();
-        write!(output, "{}", lines(&os::roots())).expect("a write to the test");
+        write!(output, "{}", lines(&os::roots::read())).expect("a write to the test");
         return;
     }
     reads_the_certificates_of_the_pem_file_of_ssl_cert_file();
@@ -25,6 +25,7 @@ fn main() {
     reads_the_os_store_when_ssl_cert_dir_holds_no_path();
     reads_only_the_files_of_the_directory_of_ssl_cert_dir();
     gives_only_the_failure_of_a_path_that_is_not_there_or_no_directory();
+    gives_the_failures_of_both_paths_when_both_are_set();
 }
 
 fn reads_the_certificates_of_the_pem_file_of_ssl_cert_file() {
@@ -32,10 +33,10 @@ fn reads_the_certificates_of_the_pem_file_of_ssl_cert_file() {
     let der = include_bytes!("ca.der").to_vec();
     assert_eq!(
         child(&[("SSL_CERT_FILE", file.as_os_str())]),
-        lines(&os::Roots {
+        lines(&os::roots::Roots {
             certificates: vec![der],
             failures: vec![],
-            source: os::Source::Paths {
+            source: os::roots::Source {
                 file: Some(file.clone()),
                 dirs: vec![],
             },
@@ -48,8 +49,10 @@ fn gives_the_failure_of_a_pem_file_that_is_not_there() {
     let file = Path::new("/nonexistent/roots.pem");
     assert_eq!(
         child(&[("SSL_CERT_FILE", file.as_os_str())]),
-        "source SSL_CERT_FILE=/nonexistent/roots.pem\nfailure failed to read PEM from \
-         file: No such file or directory (os error 2) at '/nonexistent/roots.pem'\n",
+        format!(
+            "source SSL_CERT_FILE=/nonexistent/roots.pem\nfailure {}\n",
+            file_failure(file)
+        ),
         "the failure of a missing file"
     );
 }
@@ -77,7 +80,7 @@ fn reads_the_os_store_when_ssl_cert_dir_holds_no_path() {
         lines
     };
     let store = sorted(child(&[]));
-    for dirs in ["", ":"] {
+    for dirs in ["", if cfg!(windows) { ";" } else { ":" }] {
         assert_eq!(
             sorted(child(&[("SSL_CERT_DIR", OsStr::new(dirs))])),
             store,
@@ -90,10 +93,10 @@ fn reads_only_the_files_of_the_directory_of_ssl_cert_dir() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/roots");
     assert_eq!(
         child(&[("SSL_CERT_DIR", dir.as_os_str())]),
-        lines(&os::Roots {
+        lines(&os::roots::Roots {
             certificates: vec![include_bytes!("ca.der").to_vec()],
             failures: vec![],
-            source: os::Source::Paths {
+            source: os::roots::Source {
                 file: None,
                 dirs: vec![dir.clone()],
             },
@@ -108,24 +111,26 @@ fn gives_only_the_failure_of_a_path_that_is_not_there_or_no_directory() {
         (
             "SSL_CERT_FILE",
             OsStr::new(""),
-            "source SSL_CERT_FILE=\nfailure failed to read PEM from file: No such file or \
-             directory (os error 2) at ''\n"
-                .to_owned(),
+            format!(
+                "source SSL_CERT_FILE=\nfailure {}\n",
+                file_failure(Path::new(""))
+            ),
         ),
         (
             "SSL_CERT_DIR",
             OsStr::new("/nonexistent"),
-            "source SSL_CERT_DIR=/nonexistent\nfailure opening directory: No such file or \
-             directory (os error 2) at '/nonexistent'\n"
-                .to_owned(),
+            format!(
+                "source SSL_CERT_DIR=/nonexistent\nfailure {}\n",
+                dir_failure(Path::new("/nonexistent"))
+            ),
         ),
         (
             "SSL_CERT_DIR",
             file.as_os_str(),
             format!(
-                "source SSL_CERT_DIR={0}\nfailure opening directory: Not a directory (os \
-                 error 20) at '{0}'\n",
-                file.display()
+                "source SSL_CERT_DIR={}\nfailure {}\n",
+                file.display(),
+                dir_failure(&file)
             ),
         ),
     ];
@@ -139,8 +144,42 @@ fn gives_only_the_failure_of_a_path_that_is_not_there_or_no_directory() {
     }
 }
 
+fn gives_the_failures_of_both_paths_when_both_are_set() {
+    assert_eq!(
+        child(&[
+            ("SSL_CERT_FILE", OsStr::new("/nonexistent/roots.pem")),
+            ("SSL_CERT_DIR", OsStr::new("/nonexistent")),
+        ]),
+        format!(
+            "source SSL_CERT_FILE=/nonexistent/roots.pem SSL_CERT_DIR=/nonexistent\n\
+             failure {}\nfailure {}\n",
+            file_failure(Path::new("/nonexistent/roots.pem")),
+            dir_failure(Path::new("/nonexistent"))
+        ),
+        "the roots with both set"
+    );
+}
+
+/// The failure of the read of the PEM file at `path`, which is not there, with the
+/// text that the OS gives.
+fn file_failure(path: &Path) -> String {
+    #[expect(clippy::disallowed_methods, reason = "the text of the OS for the path")]
+    let error = std::fs::File::open(path).expect_err("no file at the path");
+    format!(
+        "failed to read PEM from file: {error} at '{}'",
+        path.display()
+    )
+}
+
+/// The failure of the read of the directory at `path`, which is not there or is no
+/// directory, with the text that the OS gives.
+fn dir_failure(path: &Path) -> String {
+    let error = std::fs::read_dir(path).expect_err("no directory at the path");
+    format!("opening directory: {error} at '{}'", path.display())
+}
+
 /// The lines that the child writes for `roots`.
-fn lines(roots: &os::Roots) -> String {
+fn lines(roots: &os::roots::Roots) -> String {
     let mut text = format!("source {}\n", roots.source);
     for der in &roots.certificates {
         text.push_str("certificate ");

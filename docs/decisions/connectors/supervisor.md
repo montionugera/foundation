@@ -9,10 +9,10 @@
   each run, also a run after a backoff, the supervisor opens the reader from the
   `Channels::reader` that `check` gave, and the run takes it through `Context::reader`.
   A failed open ends that run with the class of its error (KIND TABLE), and the kind's
-  `run` is not called. A run whose reader ends with
-  `hub::reader::Ended::Behind` (no case gives it after #2553, and #2790 removes it)
-  returns `Retry`. With no hold, the frames between the two opens do not come again
-  (`laptop.architect-2`, 2026-10-11T05:11:21Z:
+  `run` is not called. A run whose reader ends with an end of class `Retry` (KIND
+  TABLE) returns it, and the next run opens a new reader (#2790 removed
+  `hub::reader::Ended::Behind`, the end that this rule named). With no hold, the frames
+  between the two opens do not come again (`laptop.architect-2`, 2026-10-11T05:11:21Z:
   https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105720439, items 1
   and 3; 2026-10-11T05:23:35Z:
   https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, items 2,

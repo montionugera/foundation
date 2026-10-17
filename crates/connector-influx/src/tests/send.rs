@@ -23,6 +23,7 @@ use types::sample::{Scalar, Sides, Type};
 use types::time::{Span, Stamp};
 
 use super::*;
+use crate::batch::Batch;
 
 const PORT: u16 = 8086;
 const OPTIONS: tcp::Options = tcp::Options {
@@ -90,6 +91,10 @@ const OTHER_CA: &[u8] = connector::http::sim::OTHER_CA.as_bytes();
 /// 2026-06-01T00:00:00Z, inside the validity of each certificate of `serve_tls` but
 /// `Expired`.
 const JUNE_2026: Stamp = Stamp::from_nanos(1_780_272_000_000_000_000);
+/// The key of the first of the 64 `u8` channels of [`wide_names`].
+const WIDE: u128 = 300;
+/// The body limit of the InfluxDB of a plant, as InfluxDB 3 Core gives by default.
+const BODY_LIMIT: usize = 10 << 20;
 
 /// One request that the InfluxDB of a plant got: its path and query, and its body.
 type Got = (String, String);
@@ -102,7 +107,9 @@ type End = Rc<RefCell<Option<Result<(), Error>>>>;
 /// (5), a channel of each type of [`TYPED`], and the status channels of `influx`, and
 /// an InfluxDB that answers each request with the next answer of its list. After the
 /// last, it writes the body to its store, and answers 204, or 400 when the store
-/// refuses a line. Its store holds the secret `plant.influx_token` (`s3cret`).
+/// refuses a line. It answers 413 to a body over [`BODY_LIMIT`], with no answer of its
+/// list. Its store holds the secret `plant.influx_token` (`s3cret`). The hub also
+/// defines the channels of [`wide_names`].
 struct Plant {
     hub: hub::Hub,
     supervisor: Supervisor,
@@ -237,7 +244,12 @@ impl Plant {
                 let path = std::path::Path::new(TOKEN_FILE);
                 paths.write(path, token).expect("writes the token");
             }
-            let next = next.borrow_mut().pop_front();
+            let large = request.body().len() > BODY_LIMIT;
+            let next = if large {
+                Some((StatusCode::PAYLOAD_TOO_LARGE, "request too large"))
+            } else {
+                next.borrow_mut().pop_front()
+            };
             let next = next.map(|(status, text)| (status, text.to_owned()));
             let (status, text) = next.unwrap_or_else(|| {
                 match store.borrow_mut().write(request.body()) {
@@ -360,6 +372,10 @@ fn define(inputs: &supervisor::Config) {
     let typed =
         TYPED.map(|(text, key, data_type)| (name(text), on(time, key, data_type)));
     definitions.extend(typed);
+    let wide = (WIDE..).zip(wide_names());
+    definitions.extend(
+        wide.map(|(key, text)| (name(&text), on(time, key, Type::Scalar(Scalar::U8)))),
+    );
     inputs
         .hub
         .set_definitions(definitions.iter().map(|(name, def)| (name, def)));
@@ -651,7 +667,8 @@ const UNKNOWN: &str =
 /// The fix in the text of a 413.
 const LARGE: &str = "Raise the request size limit of InfluxDB \
                      (`--max-http-request-size` of InfluxDB 3, `max-body-size` of \
-                     InfluxDB 1), or write fewer or shorter samples in each frame";
+                     InfluxDB 1), or write fewer channels or shorter samples at each \
+                     sample time";
 
 /// An answer of InfluxDB 1 to a batch of bad lines, of 65537 bytes or more.
 fn large() -> String {
@@ -956,27 +973,69 @@ fn keeps_the_answer_of_influx_after_a_401_with_a_long_source_and_body() {
     );
 }
 
-#[test]
-fn ends_the_run_when_the_token_is_gone_after_a_401() {
-    let got = run(|node, tasks| async move {
+/// Runs a plant with no `hold` whose InfluxDB answers the first request 401, at which
+/// the token file holds `bad`, and `new` from `fixed` after that request. Writes a
+/// sample, and a second one 3 s later. Asserts that the run stores both with no
+/// restart, and gives the `Authorization` header of each request, the errors, and the
+/// classes.
+fn after_a_bad_token(
+    bad: &'static [u8],
+    fixed: Span,
+) -> (Vec<Option<String>>, Vec<String>, Vec<u8>) {
+    run(move |node, tasks| async move {
         let plant = Plant::new(node.clone(), tasks).await;
-        node.paths()
+        let paths = node.paths();
+        paths
             .write(std::path::Path::new(TOKEN_FILE), b"old")
             .expect("writes");
         plant
             .answers
             .borrow_mut()
             .push_back((StatusCode::UNAUTHORIZED, "no"));
-        plant.tokens.borrow_mut().push_back(b"");
-        let config = with_token(&plant, "file", TOKEN_FILE);
-        let (auth, errors, _) = send_one(&plant, config).await;
+        plant.tokens.borrow_mut().push_back(bad);
+        let (clock, auth) = (plant.clock.clone(), Rc::clone(&plant.auth));
+        plant.tasks.spawn(async move {
+            while auth.borrow().is_empty() {
+                clock.sleep(Span::from_nanos(1_000)).await;
+            }
+            clock.sleep(fixed).await;
+            paths
+                .write(std::path::Path::new(TOKEN_FILE), b"new")
+                .expect("writes");
+        });
+        let mut config = with_token(&plant, "file", TOKEN_FILE);
+        config.blocks.clear();
+        let run = plant.start(config);
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        for _ in 0..2 {
+            plant.clock.sleep(Span::SECOND).await;
+            let first = writer.now().nanos();
+            write(&mut writer, first, &[(1.0, 2.0)]);
+            plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        }
+        plant.clock.sleep(Span::MINUTE).await;
+        let end = plant.stop(run).await;
+        assert!(end.is_ok(), "ok after a cancel");
+        let points = plant.store.borrow().points("telemetry", &[]).count();
+        let restarts = plant.restarts.borrow().clone();
+        assert_eq!((points, restarts), (2, vec![0]), "the run keeps the batch");
         let classes = plant.classes.borrow().clone();
+        let auth = plant.auth.borrow().clone();
+        let errors = plant.errors.borrow().clone();
         (auth, errors, classes)
-    });
+    })
+}
+
+#[test]
+fn keeps_the_batch_when_the_token_is_gone_after_a_401() {
     assert_eq!(
-        got,
+        after_a_bad_token(b"", Span::from_nanos(4_000_000_000)),
         (
-            vec![Some("Token old".to_owned())],
+            vec![
+                Some("Token old".to_owned()),
+                Some("Token new".to_owned()),
+                Some("Token new".to_owned()),
+            ],
             vec![
                 String::new(),
                 format!(
@@ -984,11 +1043,49 @@ fn ends_the_run_when_the_token_is_gone_after_a_401() {
                      file(\"{TOKEN_FILE}\"): no"
                 ),
                 format!(
-                    "the secret file(\"{TOKEN_FILE}\"): the file {TOKEN_FILE} is \
-                     empty. Write the value to it"
+                    "an attempt failed: the secret file(\"{TOKEN_FILE}\"): \
+                     the file {TOKEN_FILE} is empty. Write the value to it"
                 ),
+                String::new(),
             ],
-            vec![0, RETRY],
+            vec![0, RETRY, 0],
+        )
+    );
+}
+
+#[test]
+fn reads_the_token_again_only_after_the_backoff() {
+    let (_, errors, _) = after_a_bad_token(b"", Span::from_nanos(1_000_000));
+    assert_eq!(
+        errors,
+        [
+            String::new(),
+            format!(
+                "InfluxDB answered 401 Unauthorized. Check the token \
+                 file(\"{TOKEN_FILE}\"): no"
+            ),
+            String::new(),
+        ],
+        "the token is fixed in the backoff"
+    );
+}
+
+#[test]
+fn keeps_the_batch_at_a_token_that_a_header_cannot_hold_after_a_401() {
+    let (auth, errors, _) =
+        after_a_bad_token(b"t0\nken\n", Span::from_nanos(4_000_000_000));
+    assert_eq!(
+        (auth, errors.get(2)),
+        (
+            vec![
+                Some("Token old".to_owned()),
+                Some("Token new".to_owned()),
+                Some("Token new".to_owned()),
+            ],
+            Some(&format!(
+                "an attempt failed: the token file(\"{TOKEN_FILE}\") holds a byte that \
+                 an HTTP header cannot hold. Write the token with no control byte"
+            )),
         )
     );
 }
@@ -1318,11 +1415,21 @@ fn lines_of_each_request_of(times: &[(usize, f64)]) -> Vec<usize> {
 /// As [`lines_of_each_request_of`], with a frame lost for no room before the frames
 /// of `times` when `lost`.
 fn lines_of_each_request_after(lost: bool, times: &[(usize, f64)]) -> Vec<usize> {
-    let times = times.to_vec();
+    let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
+    requests(&[failed], lost, times).0
+}
+
+/// As [`lines_of_each_request_after`], with InfluxDB giving `answers` in turn, then
+/// 204, and with the values of `confirmed` after the lines.
+fn requests(
+    answers: &[(StatusCode, &'static str)],
+    lost: bool,
+    times: &[(usize, f64)],
+) -> (Vec<usize>, Vec<u64>) {
+    let (answers, times) = (answers.to_vec(), times.to_vec());
     run(move |node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
-        let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
-        plant.answers.borrow_mut().push_back(failed);
+        plant.answers.borrow_mut().extend(answers);
         let run = plant.start(plant.config());
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
@@ -1345,7 +1452,8 @@ fn lines_of_each_request_after(lost: bool, times: &[(usize, f64)]) -> Vec<usize>
         plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
         plant.stop(run).await.expect("ok after a cancel");
         let got = plant.got();
-        (got.iter()).map(|(_, body)| body.lines().count()).collect()
+        let lines = (got.iter()).map(|(_, body)| body.lines().count()).collect();
+        (lines, plant.confirmed.borrow().clone())
     })
 }
 
@@ -1360,6 +1468,29 @@ fn reads_no_frame_into_a_batch_of_5000_lines_or_more() {
         lines_of_each_request(&[2_500, 2_499, 1, 3_000, 2_000]),
         [1, 1, 5_000, 5_000]
     );
+}
+
+/// A body of 5,000 lines closes in the middle of a frame, and the rest of the frame
+/// goes on in the next body.
+#[test]
+fn splits_a_frame_at_5000_lines() {
+    assert_eq!(lines_of_each_request(&[2_500, 2_499, 2]), [1, 1, 5_000, 1]);
+}
+
+/// A body that closes at 5,000 lines in the middle of a frame acks the frames that end
+/// in it, so its 204 counts their samples while the rest of the frame waits.
+#[test]
+fn acks_the_frames_of_a_body_that_closes_at_5000_lines() {
+    let (taken, failed) = (
+        (StatusCode::NO_CONTENT, ""),
+        (StatusCode::INTERNAL_SERVER_ERROR, ""),
+    );
+    let mut answers = vec![failed, taken, taken];
+    answers.extend([failed; 100]);
+    let times = [(2_500, 1.0), (2_499, 1.0), (2, 1.0)];
+    let (lines, confirmed) = requests(&answers, false, &times);
+    assert_eq!(lines[..4], [1, 1, 5_000, 1]);
+    assert_eq!(confirmed, [0, 10_000]);
 }
 
 /// A gap line counts toward the 5,000 lines of a full batch.
@@ -1419,6 +1550,286 @@ fn reads_no_frame_into_a_batch_of_4_mib_or_more() {
         (got.iter()).map(|(_, body)| body.len()).collect::<Vec<_>>()
     });
     assert_eq!(bytes, [1 << 16, 1 << 16, 64 << 16, 36 << 16]);
+}
+
+/// The names of 64 `u8` channels on `edge.time`, of 240 bytes each, so the line of one
+/// sample time at which each holds 255 is 15,774 bytes, and a ring record of the test
+/// hub holds a frame of over 10 MiB of lines.
+fn wide_names() -> Vec<String> {
+    (0..64)
+        .map(|at| format!("edge.w{at:02}{}", "x".repeat(232)))
+        .collect()
+}
+
+/// Writes one frame through `writer` of `count` sample times at `first` and each
+/// nanosecond after, at which each channel of [`wide_names`] holds 255.
+fn write_wide(writer: &mut hub::writer::Writer, first: i64, count: usize) {
+    let samples = vec![255; count];
+    let columns: Vec<_> = (WIDE..WIDE + 64)
+        .map(|key| (key, samples.as_slice()))
+        .collect();
+    let outcomes = write_raw(writer, first, count, &columns);
+    let applied = (outcomes.iter())
+        .all(|outcome| matches!(outcome, hub::home::Outcome::Applied { .. }));
+    assert!(applied, "the frame applies: {outcomes:?}");
+}
+
+/// What two runs gave with frames of the channels of [`wide_names`].
+struct Wide {
+    /// The count of lines of each request of each run.
+    lines: [Vec<usize>; 2],
+    /// The errors of both runs.
+    errors: Vec<String>,
+    /// The values of `confirmed`, which each run starts at 0.
+    confirmed: Vec<u64>,
+    /// The points that the store holds at the end.
+    points: usize,
+}
+
+/// Runs the connector twice. InfluxDB answers the first requests of the first run with
+/// `answers`, and each later one from its store. The first run writes a frame of the
+/// channels of [`wide_names`] for each count of sample times of `frames`: the first,
+/// then the rest while its request is in flight. The second run writes none.
+fn wide(answers: &[(StatusCode, &'static str)], frames: &'static [usize]) -> Wide {
+    let answers = answers.to_vec();
+    run(move |node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        plant.answers.borrow_mut().extend(answers);
+        let names = wide_names();
+        let names =
+            std::iter::once("edge.time").chain(names.iter().map(String::as_str));
+        let mut writer = plant.writer(&names.collect::<Vec<_>>()).await;
+        let mut lines = Vec::new();
+        for frames in [frames, &[]] {
+            let run = plant.start(plant.config());
+            plant.clock.sleep(Span::SECOND).await;
+            let mut first = writer.now().nanos();
+            for (n, &count) in frames.iter().enumerate() {
+                write_wide(&mut writer, first, count);
+                first += 10_000;
+                if n == 0 {
+                    plant.clock.sleep(Span::from_nanos(100_000_000)).await;
+                }
+            }
+            plant.clock.sleep(Span::from_nanos(10_000_000_000)).await;
+            plant.stop(run).await.expect("ok after a cancel");
+            plant.answers.borrow_mut().clear();
+            let got = std::mem::take(&mut *plant.got.borrow_mut());
+            lines.push(got.iter().map(|(_, body)| body.lines().count()).collect());
+        }
+        Wide {
+            lines: lines.try_into().expect("two runs"),
+            errors: plant.errors.borrow().clone(),
+            confirmed: plant.confirmed.borrow().clone(),
+            points: plant.store.borrow().points("telemetry", &[]).count(),
+        }
+    })
+}
+
+/// A frame of over 6 MiB of lines after a batch of just under 4 MiB goes on in the
+/// next requests, so no request passes the 10 MiB of InfluxDB 3 Core. The run acks
+/// each frame and counts its samples once, with the request of its last line.
+#[test]
+fn sends_a_frame_of_over_6_mib_after_a_batch_of_4_mib_in_more_requests() {
+    let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
+    let wide = wide(&[failed], &[1, 260, 450]);
+    assert_eq!(wide.lines, [vec![1, 1, 265, 265, 180], vec![]]);
+    assert_eq!(
+        wide.errors,
+        ["", "InfluxDB answered 500 Internal Server Error: ", ""]
+    );
+    assert_eq!(wide.confirmed, [0, 64, 711 * 64, 0]);
+    assert_eq!(wide.points, 711);
+}
+
+/// A frame whose lines pass the body limit alone lands in more than one request.
+#[test]
+fn sends_a_frame_over_the_body_limit_in_more_requests() {
+    let wide = wide(&[], &[700]);
+    assert_eq!(wide.lines, [vec![265, 265, 170], vec![]]);
+    assert_eq!(wide.errors, [""]);
+    assert_eq!(wide.confirmed, [0, 700 * 64, 0]);
+    assert_eq!(wide.points, 700);
+}
+
+/// A batch is full, so the run reads no frame, while a body of a frame's lines waits
+/// for its request, or the open body holds 5,000 lines. A line that takes a body past
+/// 4 MiB moves to the next body.
+#[test]
+fn is_full_until_each_closed_body_is_taken() {
+    let (full, lines) = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let names = wide_names();
+        let names =
+            std::iter::once("edge.time").chain(names.iter().map(String::as_str));
+        let mut writer = plant.writer(&names.collect::<Vec<_>>()).await;
+        let open = hub::reader::Config {
+            select: Selector::new(["edge.**"]).expect("a selector"),
+            mode: Mode::Complete,
+            subject: name("test"),
+            name: None,
+            hold: Span::ZERO,
+        };
+        let mut reader = plant.hub.reader(open).await.expect("the reader opens");
+        let first = writer.now().nanos();
+        write_wide(&mut writer, first, 700);
+        write_wide(&mut writer, first + 10_000, 266);
+        let narrow = [1; 5_000];
+        let outcomes =
+            write_raw(&mut writer, first + 20_000, 5_000, &[(WIDE, &narrow)]);
+        let applied = (outcomes.iter())
+            .all(|outcome| matches!(outcome, hub::home::Outcome::Applied { .. }));
+        assert!(applied, "the frame applies: {outcomes:?}");
+        plant.clock.sleep(Span::SECOND).await;
+        let measurement = Measurement::new("telemetry", &[]).expect("a measurement");
+        let target = Target::Bucket {
+            name: "plant".into(),
+            org: "o".into(),
+        };
+        let mut batch = Batch::new(measurement, &target, &name("influx"));
+        let (mut full, mut lines) = (Vec::new(), Vec::new());
+        for _ in 0..3 {
+            batch
+                .add(&reader.next().await.expect("a frame"))
+                .expect("adds");
+            full.push(batch.full());
+            while let Some(taken) = batch.take() {
+                let acks = taken.ack.is_some();
+                let body = String::from_utf8(taken.body).expect("UTF-8");
+                lines.push((body.lines().count(), acks));
+                full.push(batch.full());
+            }
+        }
+        (full, lines)
+    });
+    assert_eq!(
+        full,
+        [true, true, false, false, true, false, false, true, false]
+    );
+    assert_eq!(
+        lines,
+        [
+            (265, false),
+            (265, false),
+            (170, true),
+            (265, false),
+            (1, true),
+            (5_000, true)
+        ]
+    );
+}
+
+/// A frame in more requests is acked and counted only after the last of them lands, so
+/// a restart sends each of its lines again.
+#[test]
+fn acks_and_counts_a_frame_in_more_requests_only_after_its_last_request() {
+    let (taken, failed) = (
+        (StatusCode::NO_CONTENT, ""),
+        (StatusCode::INTERNAL_SERVER_ERROR, ""),
+    );
+    let mut answers = vec![taken, taken];
+    answers.extend([failed; 100]);
+    let wide = wide(&answers, &[700]);
+    let [first, second] = wide.lines;
+    assert_eq!(first[..3], [265, 265, 170]);
+    assert!(first[3..].iter().all(|&lines| lines == 170), "{first:?}");
+    assert_eq!(second, [265, 265, 170]);
+    assert_eq!(
+        wide.errors,
+        ["", "InfluxDB answered 500 Internal Server Error: ", ""]
+    );
+    assert_eq!(wide.confirmed, [0, 700 * 64]);
+    assert_eq!(wide.points, 700);
+}
+
+/// A request that holds the ends of more frames acks the last of them.
+#[test]
+fn acks_the_last_frame_that_ends_in_a_request() {
+    let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
+    let wide = wide(&[failed], &[1, 1, 1]);
+    assert_eq!(wide.lines, [vec![1, 1, 2], vec![]]);
+}
+
+/// A frame that ends in a body that the next frame closes is acked and counted with
+/// the request of that body.
+#[test]
+fn acks_a_frame_with_the_body_that_the_next_frame_closes() {
+    let (taken, failed) = (
+        (StatusCode::NO_CONTENT, ""),
+        (StatusCode::INTERNAL_SERVER_ERROR, ""),
+    );
+    let mut answers = vec![failed, taken, taken, taken];
+    answers.extend([failed; 100]);
+    let wide = wide(&answers, &[1, 260, 450]);
+    let [first, second] = wide.lines;
+    assert_eq!(first[..5], [1, 1, 265, 265, 180]);
+    assert_eq!(second, [265, 185]);
+    assert_eq!(wide.confirmed, [0, 64, 261 * 64, 0, 450 * 64]);
+}
+
+/// The lost seqs and the oversized samples of a frame in more requests count once,
+/// after the request of its last line: a run whose last request fails counts none,
+/// and the next run counts each once.
+#[test]
+fn counts_the_lost_and_oversized_of_a_frame_in_more_requests_after_its_last() {
+    let (lines, counts) = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let names = wide_names();
+        let channels = ["edge.time", "edge.a", "edge.b", "edge.text"];
+        let channels = channels.into_iter().chain(names.iter().map(String::as_str));
+        let mut writer = plant.writer(&channels.collect::<Vec<_>>()).await;
+        let run = plant.start(plant.config());
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        let sent = plant.got().len();
+        let (taken, failed) = (
+            (StatusCode::NO_CONTENT, ""),
+            (StatusCode::INTERNAL_SERVER_ERROR, ""),
+        );
+        plant.answers.borrow_mut().push_back(taken);
+        plant.answers.borrow_mut().extend([failed; 100]);
+        write_lost(&mut writer, first + 1);
+        let long = "\\".repeat(32_769);
+        let mut text = vec![long.as_bytes()];
+        text.extend([b"a".as_slice(); 265]);
+        let text = variable(Type::String, &text);
+        let wide = [255; 266];
+        let mut columns: Vec<_> =
+            (WIDE..WIDE + 64).map(|key| (key, &wide[..])).collect();
+        columns.push((23, &text));
+        write_raw(&mut writer, first + 4, 266, &columns);
+        plant.clock.sleep(Span::from_nanos(10_000_000_000)).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        plant.answers.borrow_mut().clear();
+        let lines = |got: &[Got]| -> Vec<usize> {
+            got.iter().map(|(_, body)| body.lines().count()).collect()
+        };
+        let mut runs = vec![lines(&plant.got()[sent..])];
+        plant.got.borrow_mut().clear();
+        let run = plant.start(plant.config());
+        plant.clock.sleep(Span::from_nanos(10_000_000_000)).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        runs.push(lines(&plant.got()));
+        let counts = (
+            plant.lost.borrow().clone(),
+            plant.oversized.borrow().clone(),
+            plant.confirmed.borrow().clone(),
+        );
+        (runs, counts)
+    });
+    assert_eq!(lines[0][..2], [266, 1]);
+    assert!(
+        lines[0][2..].iter().all(|&lines| lines == 1),
+        "{:?}",
+        lines[0]
+    );
+    assert_eq!(lines[1], [266, 1]);
+    assert_eq!(
+        counts,
+        (vec![0, 3], vec![0, 1], vec![0, 2, 0, 266 * 64 + 265])
+    );
 }
 
 /// What one frame gave: the end of the run once it returned, each request, the stamp
@@ -2130,11 +2541,14 @@ fn retries_a_tls_failure_with_a_ca_in_the_run() {
     );
 }
 
-/// Runs a plant whose InfluxDB serves [`Certificate::OtherCa`], with `ca` read from
-/// `file(CA_FILE)`, which holds [`CA`] at the start and `fixed` from 5 s after the
-/// first sample. Gives the points stored, the errors, and each value of `class` and
-/// of `restarts`.
-fn after_a_new_ca(fixed: &'static [u8]) -> (usize, Vec<String>, Vec<u8>, Vec<u64>) {
+/// Runs a plant with no `hold` whose InfluxDB serves [`Certificate::OtherCa`], with
+/// `ca` read from `file(CA_FILE)`, which holds [`CA`] at the start and each text of
+/// `texts` from its second after the first sample. Writes a second sample 8 s after
+/// the first. Gives the points stored, the errors, and each value of `class` and of
+/// `restarts`.
+fn after_a_new_ca(
+    texts: &'static [(i64, &'static [u8])],
+) -> (usize, Vec<String>, Vec<u8>, Vec<u64>) {
     run_tls(move |node, tasks| async move {
         let paths = node.paths();
         paths
@@ -2142,16 +2556,29 @@ fn after_a_new_ca(fixed: &'static [u8]) -> (usize, Vec<String>, Vec<u8>, Vec<u64
             .expect("writes");
         let plant =
             Plant::tls(node, tasks, Certificate::OtherCa, Roots::default()).await;
-        let run = plant.start(with_ca(&plant, "file", CA_FILE));
+        let mut config = with_ca(&plant, "file", CA_FILE);
+        config.blocks.clear();
+        let run = plant.start(config);
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
         write(&mut writer, first, &[(1.0, 2.0)]);
-        plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
-        paths
-            .write(std::path::Path::new(CA_FILE), fixed)
-            .expect("writes");
-        plant.clock.sleep(Span::MINUTE).await;
+        let clock = plant.clock.clone();
+        plant.tasks.spawn(async move {
+            let mut slept = 0;
+            for &(second, text) in texts {
+                let wait = (second - slept) * 1_000_000_000;
+                clock.sleep(Span::from_nanos(wait)).await;
+                slept = second;
+                paths
+                    .write(std::path::Path::new(CA_FILE), text)
+                    .expect("writes");
+            }
+        });
+        plant.clock.sleep(Span::from_nanos(8_000_000_000)).await;
+        let second = writer.now().nanos();
+        write(&mut writer, second, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::from_nanos(80_000_000_000)).await;
         let end = plant.stop(run).await;
         assert!(end.is_ok(), "ok after a cancel");
         let points = plant.store.borrow().points("telemetry", &[]).count();
@@ -2164,24 +2591,34 @@ fn after_a_new_ca(fixed: &'static [u8]) -> (usize, Vec<String>, Vec<u8>, Vec<u64
 
 #[test]
 fn reads_again_a_ca_fixed_while_the_node_runs() {
-    let (points, _, _, restarts) = after_a_new_ca(OTHER_CA);
+    let (points, _, _, restarts) = after_a_new_ca(&[(5, OTHER_CA)]);
     assert_eq!(
         (points, restarts),
-        (1, vec![0]),
+        (2, vec![0]),
         "the run reads the fixed ca"
     );
 }
 
 #[test]
-fn ends_the_run_at_a_ca_that_gives_no_root_when_read_again() {
-    let (points, errors, classes, restarts) = after_a_new_ca(b"not a certificate\n");
-    let error = format!(
-        "the ca file(\"{CA_FILE}\") holds no PEM certificate. Write the CA \
-         certificate of the server in PEM"
+fn keeps_the_batch_at_a_ca_that_gives_no_root_when_read_again() {
+    let (points, errors, classes, restarts) =
+        after_a_new_ca(&[(5, b"not a certificate\n"), (20, OTHER_CA)]);
+    let failed = format!(
+        "the write to InfluxDB failed: TLS with server:8086 failed: invalid peer \
+         certificate: UnknownIssuer. Check the ca file(\"{CA_FILE}\")"
+    );
+    let empty = format!(
+        "an attempt failed: the ca file(\"{CA_FILE}\") holds no PEM \
+         certificate. Write the CA certificate of the server in PEM"
     );
     assert_eq!(
-        (points, errors.last(), classes.last(), restarts.len() > 1),
-        (0, Some(&error), Some(&RETRY), true)
+        (points, errors, classes, restarts),
+        (
+            2,
+            vec![String::new(), failed, empty, String::new()],
+            vec![0, RETRY, 0],
+            vec![0]
+        )
     );
 }
 
@@ -2305,7 +2742,8 @@ fn ends_the_run_at_a_ca_that_gives_no_root() {
 #[test]
 fn retries_a_refused_connect_in_the_run_with_a_ca() {
     let got = run_tls(|node, tasks| async move {
-        node.paths()
+        let paths = node.paths();
+        paths
             .write(std::path::Path::new(CA_FILE), CA)
             .expect("writes");
         let plant =
@@ -2315,7 +2753,11 @@ fn retries_a_refused_connect_in_the_run_with_a_ca() {
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
         write(&mut writer, first, &[(1.0, 2.0)]);
-        plant.clock.sleep(Span::from_nanos(6_000_000_000)).await;
+        plant.clock.sleep(Span::from_nanos(500_000_000)).await;
+        paths
+            .write(std::path::Path::new(CA_FILE), b"not a certificate\n")
+            .expect("writes");
+        plant.clock.sleep(Span::from_nanos(5_500_000_000)).await;
         plant.serve();
         plant.clock.sleep(Span::MINUTE).await;
         let end = plant.stop(run).await;
@@ -2328,5 +2770,9 @@ fn retries_a_refused_connect_in_the_run_with_a_ca() {
     let refused = "the write to InfluxDB failed: the connect failed: 10.0.0.1:8086 \
                    refused the connection";
     let errors = vec![String::new(), refused.to_owned(), String::new()];
-    assert_eq!(got, (1, errors, vec![0]), "a refused connect keeps the run");
+    assert_eq!(
+        got,
+        (1, errors, vec![0]),
+        "a refused connect keeps the run and does not read the ca again"
+    );
 }

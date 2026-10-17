@@ -51,14 +51,15 @@ const KEYS: [&str; 7] = [
     "token",
     "ca",
 ];
-/// The count of the samples that InfluxDB confirmed with a 204, across the runs of
-/// one supervisor call.
+/// The count of the samples of the frames that the run acks, which InfluxDB confirmed
+/// with a 204, across the runs of one supervisor call. A run that ends before it acks
+/// a frame counts none of its samples, also those that landed.
 const CONFIRMED: &str = "confirmed";
-/// The count of the seqs that the gap lines count, which InfluxDB took with a 204,
-/// across the runs of one supervisor call.
+/// The count of the seqs that the gap lines of the frames that the run acks count,
+/// which InfluxDB took with a 204, across the runs of one supervisor call.
 const LOST: &str = "lost";
 /// The count of the `string` and `bytes` samples left out as a field of over 65,536
-/// bytes as written, in the batches that the run acks, across the runs of one
+/// bytes as written, in the frames that the run acks, across the runs of one
 /// supervisor call.
 const OVERSIZED: &str = "oversized";
 
@@ -182,7 +183,7 @@ impl kind::Kind for Kind {
     /// counts: `confirmed`, the samples that InfluxDB took with a 204; `lost`, the
     /// seqs that the gap lines of this connector count, which InfluxDB took with a
     /// 204; and `oversized`, the `string` and `bytes` samples left out as a field of
-    /// over 65,536 bytes as written, when their batch is acked.
+    /// over 65,536 bytes as written, when their frame is acked.
     fn check(&self, config: &Config) -> Result<Channels, Vec<Diagnostic>> {
         let count = |text: &str| text.parse().expect("invariant: a count is a name");
         Ok(Channels {
@@ -196,26 +197,32 @@ impl kind::Kind for Kind {
     /// a field for each channel, keyed by the channel's name. Before the lines of a
     /// frame after seqs that the reader did not get, it writes their `live` gap line
     /// ([`gap::MEASUREMENT`]) at the frame's first sample, also when it leaves that
-    /// sample's line out. It keeps one request in flight, and acks a batch only after
-    /// InfluxDB answers 204, or with no request when the batch holds no line. At the
-    /// ack it adds the batch's fields to the count `confirmed`, the seqs of its gap
-    /// lines to `lost`, and the samples it left out as over 65,536 bytes to
-    /// `oversized`. It shows each other answer as its error, with the fix for a 400, a
-    /// 404, a 413, or a 422, and sends the batch again after a backoff. It reads the
-    /// token at its start, and again after a 401 or a 403 before the next attempt. It
-    /// reads the `ca` at its start, and again after a TLS failure before the next
-    /// attempt.
+    /// sample's line out. It keeps one request in flight, of at most 5,000 lines, and
+    /// of at most 4 MiB of them or one line, so the lines of a frame can span requests.
+    /// It acks a frame only after InfluxDB answers 204 to the request of its last line,
+    /// or with no request when no line waits for one. At the ack it adds the frame's
+    /// fields to the count `confirmed`, the seqs of its gap lines to `lost`, and the
+    /// samples it left out as over 65,536 bytes to `oversized`. A part of a frame that
+    /// lands before the run ends, with the frame not acked, adds to no count, and a
+    /// restart within the `hold` of the reader sends the whole frame again. It shows
+    /// each other answer as its error, with the fix for a 400, a 404, a 413, or a 422,
+    /// and sends the request again after a backoff. It reads the token at its start,
+    /// and again after a 401 or a 403 before the next attempt. It reads the `ca` at its
+    /// start, and again after a TLS failure before the next attempt. A read after the
+    /// start that fails shows its error, keeps the request and the old token or `ca`,
+    /// and reads again after the next backoff, with no request until the read gives a
+    /// value.
     ///
     /// # Errors
     ///
     /// [`Error::Config`] with `influx.sample-type` for a channel of an `array`, `list`,
     /// or `matrix` type, with `influx.unsigned` for a `u64` channel to a
     /// [`Target::Database`], and with `influx.bad-channel` for a channel name that is
-    /// not a valid field key. The error of [`hub::reader::Ended`] when the
-    /// reader ends. [`Error::Retry`] or [`Error::Config`] from [`Context::secret`] when
-    /// a read fails, and [`Error::Retry`] when the token holds a byte that an HTTP
-    /// header cannot hold, and when the `ca` holds no PEM certificate or one that does
-    /// not parse.
+    /// not a valid field key. The error of [`hub::reader::Ended`] when the reader
+    /// ends. From the reads at the start only: [`Error::Retry`] or [`Error::Config`]
+    /// from [`Context::secret`] when a read fails, and [`Error::Retry`] when the token
+    /// holds a byte that an HTTP header cannot hold, and when the `ca` holds no PEM
+    /// certificate or one that does not parse.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         send::run(ctx)
     }

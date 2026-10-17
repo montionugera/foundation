@@ -4,11 +4,11 @@ use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use env::entropy::Driver as _;
-use env::paths::{Error, Found, names_directory};
+use env::paths::{Error, Found, Key, names_directory};
 use rustix::io::Errno;
 
 use crate::{dir, entropy, host};
@@ -35,6 +35,11 @@ impl env::paths::Driver for Driver {
 
     fn home(&self) -> Option<PathBuf> {
         resolve(&std::env::home_dir()?).ok()
+    }
+
+    fn key(&self, path: &Path) -> Result<Key, Error> {
+        let file = fs::metadata(path).map_err(|e| error(&e))?;
+        Ok(Key::new(file.dev(), file.ino()))
     }
 }
 

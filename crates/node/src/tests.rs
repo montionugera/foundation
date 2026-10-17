@@ -96,9 +96,9 @@ fn config<M>(
         name: "edge".parse().expect("a name"),
         settings: crate::Settings::default(),
         vars: std::collections::BTreeMap::new(),
-        roots: os::Roots {
+        roots: os::roots::Roots {
             certificates: vec![CA.to_vec()],
-            ..os::Roots::default()
+            ..os::roots::Roots::default()
         },
         log: crate::Log {
             writer: Box::new(std::io::sink()),
@@ -7573,9 +7573,9 @@ pub(crate) mod port {
             );
             let node = Node::start(Config {
                 region: Region::Given(region(&[member(OWN, &KEY, &host)])),
-                roots: os::Roots {
+                roots: os::roots::Roots {
                     certificates: vec![b"not DER".to_vec(), CA.to_vec()],
-                    ..os::Roots::default()
+                    ..os::roots::Roots::default()
                 },
                 ..config(&host, Size::MEBIBYTE, Box::new(heap))
             });

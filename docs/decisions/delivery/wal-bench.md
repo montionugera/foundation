@@ -6,14 +6,32 @@
   `commit` appends its records, takes `trimmed`, syncs each record, and releases to the
   trimmed tail, so a time holds the writer's cost for each commit. The bench runs
   commits of 1 and 8 records, with the bench IDs 64 and 4096: 1 record gives the cost
-  for each commit (`trimmed`, `release`), 8 the cost for each record (`append`,
-  `synced`). Each ring has 4 blocks more than its bench ID (68 and 4100 blocks): with
-  the three blocks that each record keeps free (#160), each commit of 1 record trims
-  at those sizes, as at 64 and 4096 before. One `#[doc(hidden)] pub const PHASE` of
+  for each commit (`trimmed`, `release`), with the cost of a trim divided over the
+  commits between trims, 8 the cost for each record (`append`, `synced`). Each ring has
+  4 blocks more than its bench ID (68 and 4100 blocks), so that the rings keep their
+  areas, on which the tests of `bench` pin the most commits between trims: 19 on the
+  ring of 64 and 64 on the ring of 4096 (#2943). One `#[doc(hidden)] pub const PHASE` of
   `bench` holds the 4 blocks, and the bench and a test of `bench` read it. The test
   checks 10 laps of each ring after the warm-up. Both benches use the same rings.
-  The IDs stay, so the baseline compares the same work.
-  Decided by `laptop.architect` (#2683, 2026-10-14T19:58:01Z):
+  A commit trims only once for each step (STORE TRIM), so each sample of the `wal`
+  benches other than `deadline_carry` and `deadline_trim` holds `bench::SAMPLE_SIZE`
+  (1000) commits, so at least 10 trims, and the `bench` tests check the most commits
+  between trims. `deadline_trim` times only the deadline of 1 or 32 indexes that trims a
+  step on the ring of ID 4096, after `Deadline::trimming`, which a test of
+  `bench::Deadline` checks. Lost: the default sample, which
+  holds 0 to 2 trims, so that its median moves with the phase of the trims.
+  `deadline_trim` is approved by `laptop.architect` (#2943, 2026-10-16T22:49:36Z):
+  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6226155380.
+  The samples other than `deadline_carry` and `deadline_trim`, `Deadline::trimming`, and
+  the item 4 that this record supersedes are approved by `laptop.architect` (#2943,
+  2026-10-16T23:14:08Z, items 1 and 5):
+  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6226442923.
+  `SAMPLE_SIZE` is approved by `laptop.architect` (#2943, 2026-10-16T22:20:35Z):
+  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6225798040.
+  This supersedes item 4 of
+  https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793: a commit
+  of 1 record no longer trims at each commit. Decided by `laptop.architect` (#2683,
+  2026-10-14T19:58:01Z):
   https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793.
   `PHASE` is decided by `laptop.architect` (#2683, 2026-10-15T13:17:53Z):
   https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6193008995.
@@ -74,28 +92,34 @@
   https://github.com/synnaxlabs/foundation/issues/2796#issuecomment-6210474938, with
   the text approved (2026-10-16T07:45:51Z):
   https://github.com/synnaxlabs/foundation/issues/2796#issuecomment-6210673885.
-  `bench` also has `Deadline { new, commit }` over the private `State` of a buffer, from
-  the child module `buffer::bench`, for the cases `deadline` of 1 and 32 indexes and
-  `deadline_carry` of `benches/wal.rs`, on the ring of ID 64. `commit` appends one entry
+  `bench` also has `Deadline { new, commit, trimming }` over the private `State` of a
+  buffer, from the child module `buffer::bench`, for the cases `deadline` of 1 and 32
+  indexes and `deadline_carry` of `benches/wal.rs` on the ring of ID 64, and
+  `deadline_trim` of 1 and 32 indexes on the ring of ID 4096. `commit` appends one entry
   of 100 bytes of each index but the last, which appends one each `period` deadlines.
   Then it does the work of the append, the fit and take of the group, and then the work
   of the commit task at a deadline with `trimmed`, in the order of `run`:
   `State::deadline` (the take, the checkpoint, the carry record, and the seal of the
   records) and `State::synced`, with no file write. `new` refuses more than 54 indexes,
-  whose group is over a body of two blocks. So a time holds the cost of the commit path
-  of a buffer that trims for each deadline, and `deadline_carry` that of a carry record
-  of 32 tails. `benches/logs.rs` also gets the case `lap_shrink` of 10000 paths, which
-  times only the commit of `lap_end` that ends the lap of 2756 paths, each with a
-  shrink, while the other paths wait. Lost: a sim `Buffer` over a sim file, timed from
-  `append` to the end of the commit, whose file, executor, and clock step cost more than
-  the code under test, while the `wal` benches already time the file write. Lost: a
-  `pub(crate)` `State`, which widens `State` and each method that the bench calls, for
-  one bench. Decided by `laptop.architect`: the surface of `Deadline` (#2909,
+  whose group is over a body of two blocks. `trimming` makes the task on the ring of ID
+  4096 and runs `commit(1)` past two laps and up to the deadline before a trim, which it
+  finds from the period between two trims. So a time holds the mean cost of a deadline
+  of a buffer that trims in steps, `deadline_trim` the cost of the deadline that trims a
+  step, and `deadline_carry` that of a carry record of 32 tails. `benches/logs.rs` also
+  gets the case `lap_shrink` of 10000 paths, which times only the commit of `lap_end`
+  that ends the lap of 2756 paths, each with a shrink, while the other paths wait. Lost:
+  a sim `Buffer` over a sim file, timed from `append` to the end of the commit, whose
+  file, executor, and clock step cost more than the code under test, while the `wal`
+  benches already time the file write. Lost: a `pub(crate)` `State`, which widens
+  `State` and each method that the bench calls, for one bench. Decided by
+  `laptop.architect`: the surface of `Deadline` (#2909,
   2026-10-16T19:32:27Z):
   https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6223169251, with the
   refusal of more than 54 indexes and the seal of the records in `State::deadline`
   (2026-10-16T21:03:09Z):
-  https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6224646122, and
+  https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6224646122,
+  `trimming` and its text (#2943, 2026-10-16T23:14:08Z, items 1 and 5):
+  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6226442923, and
   `lap_shrink` as item 6 of #2774, deferred with its OK (#2739, 2026-10-15T22:34:39Z):
   https://github.com/synnaxlabs/foundation/pull/2739#issuecomment-6203672199. The two
   lost designs have only the text approval (2026-10-16T20:11:06Z):

@@ -35,10 +35,13 @@
   https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6212322447). A
   hold that ends frees room, and a `Full` that stays costs one open for each backoff,
   with the cause in the status at each try. Only an open that adds a record gives
-  `Full`: a held reader opens over the limit and records nothing, the home writes a
-  warning event, and a restart of its home after its old hold ends resumes it at the
-  live tail, until #2833 (`laptop.architect`, 2026-10-16T15:47:15Z:
-  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6219185219). Lost:
+  `Full` (`laptop.architect`, 2026-10-16T15:47:15Z:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6219185219), when no
+  part of the named records of its index has room for it: at least 448 records of the
+  longest names. A held reader opens and records its position, as its record keeps its
+  part. The parts supersede the held reader that opens over the limit and records
+  nothing (`laptop.architect`, 2026-10-17T00:37:51Z:
+  https://github.com/synnaxlabs/foundation/issues/2833#issuecomment-6227434486). Lost:
   `Config` (`connector.many-readers`), which stops the connector and its data for good
   on a cause that clears itself (`laptop.architect-2`, 2026-10-16T07:08:14Z:
   https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6210095932; the text:
@@ -69,8 +72,9 @@
   https://github.com/synnaxlabs/foundation/issues/2442#issuecomment-6131873162).
   A kind returns each end of its reader and each failed write with `?`:
   `From<hub::reader::Ended>` and `From<hub::writer::Failure>` for `kind::Error` give
-  the class, each in one match with no `_` arm. `Retry`: reader `Behind`, `Removed`,
-  `Replaced`, `Buffer`, and `Pool`, and writer `Removed` and `Home` `Full` and `Disk`.
+  the class, each in one match with no `_` arm. `Retry`: reader `Removed`, `Replaced`,
+  `Buffer`, and `Pool` (#2790 removed `Behind`), and writer `Removed` and `Home` `Full`
+  and `Disk`.
   A reader at its home ends `Pool` when a read from disk finds no block, and blocks
   come back as the sessions of the shard drain (#274 B1; `laptop.architect-2`,
   2026-10-15T18:05:36Z:

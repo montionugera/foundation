@@ -17,11 +17,16 @@ use crate::wal::{Ends, Layout, Position, Writer};
 
 pub use crate::buffer::bench::Deadline;
 
-/// The blocks that each ring of the `wal` bench adds to its ID. With the three
-/// blocks that each record keeps free, each commit of 1 record then trims at 68 and
-/// 4100 blocks.
+/// The blocks that each ring of the `wal` bench adds to its ID, so that the rings
+/// keep their areas of 68 and 4100 blocks, on which the tests of `bench` pin the most
+/// commits between trims.
 #[doc(hidden)]
 pub const PHASE: u64 = 4;
+
+/// The commits in each sample of the `wal` bench, so that each sample holds at
+/// least 10 trims of a steady ring.
+#[doc(hidden)]
+pub const SAMPLE_SIZE: u32 = 1000;
 
 /// The area of the ring of [`Logs`]: 256 records of a block.
 const AREA: u64 = 256 * BLOCK;
@@ -427,6 +432,27 @@ impl Table {
     }
 }
 
+/// Runs `count` commits, each of which gives the tail after it, and gives the most
+/// commits from one trim to the next. Checks that a sample of the `wal` bench holds
+/// at least 10 trims.
+#[cfg(test)]
+pub(crate) fn most_between_trims(count: u64, mut commit: impl FnMut() -> u64) -> u64 {
+    let (mut tail, mut since, mut most) = (commit(), 0, 0);
+    for _ in 0..count {
+        let next = commit();
+        since += 1;
+        if next != tail {
+            (tail, most, since) = (next, most.max(since), 0);
+        }
+    }
+    let most = most.max(since);
+    assert!(
+        10 * most <= u64::from(SAMPLE_SIZE),
+        "{most} commits between trims"
+    );
+    most
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,45 +471,41 @@ mod tests {
         Ring::new(15).commit(8);
     }
 
-    /// After the warm-up of the `wal` bench, each commit of 1 record trims on the
-    /// rings of the bench, over more than 10 laps of each, so each time holds a trim.
-    /// It reads the private writer: `commit` gives nothing back.
+    /// After the warm-up of the `wal` bench, the commits of 1 and of 8 records trim
+    /// on the rings of the bench over more than 10 laps of each, at most 64 commits
+    /// apart. It reads the private writer: `commit` gives nothing back.
     #[test]
-    fn each_commit_of_1_record_trims_on_the_rings_of_the_bench() {
-        for id in [64, 4096] {
+    fn each_sample_of_commits_trims_on_the_rings_of_the_bench() {
+        for (records, id, most) in
+            [(1, 64, 19), (1, 4096, 64), (8, 64, 2), (8, 4096, 9)]
+        {
             let mut ring = Ring::new(id + PHASE);
             for _ in 0..2 * id {
-                ring.commit(1);
+                ring.commit(records);
             }
-            for commit in 0..11 * id {
-                let tail = ring.writer.tail();
-                ring.commit(1);
-                assert!(
-                    ring.writer.tail() > tail,
-                    "commit {commit} on the ring of ID {id} trims"
-                );
-            }
+            let commit = || {
+                ring.commit(records);
+                ring.writer.tail()
+            };
+            assert_eq!(most_between_trims(11 * id, commit), most, "{records} {id}");
         }
     }
 
-    /// After the warm-up of the `wal` bench, each group commit of 1 and of 32 entries
-    /// trims on the ring of the bench, over more than 10 laps, so each time holds a
-    /// trim. It reads the private writer: `commit` gives nothing back.
+    /// After the warm-up of the `wal` bench, the group commits of 1 and of 32
+    /// entries trim on the ring of the bench over more than 10 laps. It reads the
+    /// private writer: `commit` gives nothing back.
     #[test]
-    fn each_group_commit_trims_on_the_ring_of_the_bench() {
-        for entries in [1, 32] {
+    fn each_sample_of_group_commits_trims_on_the_ring_of_the_bench() {
+        for (entries, most) in [(1, 29), (32, 15)] {
             let mut ring = Group::new(64 + PHASE);
             for _ in 0..2 * 64 {
                 ring.commit(entries);
             }
-            for commit in 0..11 * 64 {
-                let tail = ring.writer.tail();
+            let commit = || {
                 ring.commit(entries);
-                assert!(
-                    ring.writer.tail() > tail,
-                    "commit {commit} of {entries} entries trims"
-                );
-            }
+                ring.writer.tail()
+            };
+            assert_eq!(most_between_trims(11 * 64, commit), most, "{entries}");
         }
     }
 
@@ -492,20 +514,17 @@ mod tests {
     /// logs: `queue` gives nothing back.
     #[test]
     fn each_queue_trims_and_appends_each_entry() {
-        for entries in [1, 32] {
+        for (entries, most) in [(1, 29), (32, 15)] {
             let mut ring = Group::new(64 + PHASE);
             for _ in 0..2 * 64 {
                 ring.queue(entries);
             }
-            for queue in 0..11 * 64 {
-                let tail = ring.writer.tail();
+            let queue = || {
                 ring.queue(entries);
-                assert!(
-                    ring.writer.tail() > tail,
-                    "queue {queue} of {entries} entries trims"
-                );
-            }
-            let queued = u64::try_from(13 * 64 * entries).expect("fits");
+                ring.writer.tail()
+            };
+            assert_eq!(most_between_trims(11 * 64, queue), most, "{entries}");
+            let queued = u64::try_from((13 * 64 + 1) * entries).expect("fits");
             let appended = ring.logs.appended(Slot::new(0), Path::Live);
             assert_eq!(appended.seq, queued);
         }
