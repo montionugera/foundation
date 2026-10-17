@@ -1,19 +1,24 @@
-- **HTTP SIM SERVER (#1151)** `connector::http::sim::serve(listener, tasks, answer)`,
-  behind the `connector` cargo feature `sim`, off by default, is the one HTTP/1.1
-  server of the protocol simulators of HTTP connectors. It runs `hyper`'s server on
-  each stream, on its own task, with keep-alive, and gives `answer` each request with
-  its whole body. A client that closes its write side after a whole request still gets
-  the answer. A request that breaks HTTP gets 400, or 414 when its URI is too long and
-  431 when its head is too long, and ends its stream; an HTTP/2 preface ends it
-  with no answer. Each simulator answers a `content-encoding` in its own route. It
-  returns the listener's error, so a test server that cannot accept fails loud. When the
-  caller drops the future, the server accepts no more streams, and each stream that it
-  accepted continues to run. `hyper`'s server reads OS wall time on each poll (hyper
-  1.12.0, `common/date.rs`) only for the `date` header, which is off. A timer reads its
-  own `Instant` to arm the header read timeout, which is off too
-  (`header_read_timeout(None)`). The person approved the server on the condition that it
-  gets no timer. Lost: our own server on `httparse`, which the person refused; and a
-  copy of the server in each kind crate.
+- **HTTP SIM SERVER (#1151)** `connector::http::sim::serve(listener, tasks, until,
+  answer)`, behind the `connector` cargo feature `sim`, off by default, is the one
+  HTTP/1.1 server of the protocol simulators of HTTP connectors. It runs `hyper`'s
+  server on each stream, on its own task, with keep-alive, and gives `answer` each
+  request with its whole body. A client that closes its write side after a whole request
+  still gets the answer. A request that breaks HTTP gets 400, or 414 when its URI is too
+  long and 431 when its head is too long, and ends its stream; an HTTP/2 preface ends it
+  with no answer. Each simulator answers a `content-encoding` in its own route. It runs
+  until the token `until` is cancelled or the listener fails, then drops the listener
+  and each stream that it accepted, with no close. On each return, each stream that it
+  accepted has ended, so a conformance scenario can stop a device in order. It returns
+  the listener's error, so a test server that cannot accept fails loud. When the caller
+  drops the future, the server accepts no more streams, and each stream that it accepted
+  runs on until `until` (`laptop.architect-2`, 2026-10-17T16:05:31Z:
+  https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6236306639, item 1).
+  Each simulator of an HTTP kind follows the same rule. `hyper`'s server reads OS wall
+  time on each poll (hyper 1.12.0, `common/date.rs`) only for the `date` header, which
+  is off. A timer reads its own `Instant` to arm the header read timeout, which is off
+  too (`header_read_timeout(None)`). The person approved the server on the condition
+  that it gets no timer. Lost: our own server on `httparse`, which the person refused;
+  and a copy of the server in each kind crate.
   Decided by architect-2 (2026-10-07T16:33:22Z
   https://github.com/synnaxlabs/foundation/pull/1473#issuecomment-6042291321,
   2026-10-07T16:41:29Z
@@ -33,7 +38,8 @@
   6042958763),
   https://github.com/synnaxlabs/foundation/pull/1473#issuecomment-6042291321 (the doc
   of finding 1, by 6042446508 item 1 and 6042839816).
-  `connector::http::sim::serve_tls(listener, tasks, certificate, answer)` is the same
+  `connector::http::sim::serve_tls(listener, tasks, until, certificate, answer)` is
+  the same
   server under TLS 1.2 or 1.3, with one of the fixed test certificates of
   `crates/connector/src/http/sim/tls/`, whose README gives the commands and each
   validity window. Each certificate is for the host `server` or its IP address, so no

@@ -92,8 +92,8 @@
   supersedes the paired run against `77e13735` of
   https://github.com/synnaxlabs/foundation/pull/1448#issuecomment-6045453368, and
   turns on `sim` for the bench.
-  `connector_influx::sim::serve(listener, tasks, store, database, token)` is its HTTP
-  front, on `connector::http::sim::serve` (HTTP SIM SERVER). `POST /write?db=`
+  `connector_influx::sim::serve(listener, tasks, until, store, database, token)` is its
+  HTTP front, on `connector::http::sim::serve` (HTTP SIM SERVER). `POST /write?db=`
   (InfluxDB 1) and
   `POST /api/v2/write?bucket=` (InfluxDB 2 and 3) give 204 when the store takes each
   line, and 400 with the text of the store's error when it refuses one. A missing or
