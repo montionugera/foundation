@@ -608,11 +608,11 @@ mod tests {
 
     /// One file, at any path but one under `/none`. A path is under `/`, and `link`
     /// names `/out`. A directory that it makes is the file `dir`. A name in `/none`
-    /// resolves only after a directory is made, and `/none/deep`, a link to a directory
-    /// that does not resolve, and each path in it, never. The key of a path ignores
-    /// case, and a last name that starts with `new` resolves but has no key yet. The
-    /// last name `Gone`, in that case, gives `Io` 13 for its key after a write of
-    /// `gone`. The key of a last name that starts with `swap` in any case takes the
+    /// resolves only while the last write made a directory, and `/none/deep`, a link to
+    /// a directory that does not resolve, and each path in it, never. The key of a path
+    /// ignores case, and a last name that starts with `new` resolves but has no key
+    /// yet. The last name `Gone`, in that case, gives `Io` 13 for its key after a write
+    /// of `gone`. The key of a last name that starts with `swap` in any case takes the
     /// bytes of the file after the path, so a write gives it a new key: after a write
     /// of `x`, `/work/swap` has the key that `/work/swapx` had before it. A last name
     /// `io` gives `Io` 5 for its key. After a write of `hop`, `/hop` is a link to
@@ -888,6 +888,17 @@ mod tests {
         free.write(Path::new("/x"), b"hop").unwrap();
         let read = paths.read(Path::new("/hop/a"), 3).map(|_| ());
         assert_eq!(read, Err(Error::Replaced));
+    }
+
+    #[test]
+    fn a_folder_that_is_gone_is_replaced_at_its_path() {
+        let free = Paths::new(One::default());
+        free.make_dir(Path::new("/none/gone")).unwrap();
+        let paths = free.within(&["/none/gone".into()], &[]).unwrap();
+        free.write(Path::new("/a"), b"x").unwrap();
+        for path in ["/none/gone", "/none/gone/a"] {
+            assert_eq!(reached(&paths, path), Err(Error::Replaced), "{path}");
+        }
     }
 
     #[test]
