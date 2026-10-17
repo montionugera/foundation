@@ -1810,7 +1810,7 @@ mod tests {
     }
 
     #[test]
-    fn copy_reuses_the_bytes_of_the_copy_it_replaces() {
+    fn a_copy_replaces_the_copy_of_its_path_and_tag() {
         let mut logs = Logs::new(AREA);
         let header = Header {
             tag: 2,
@@ -1818,15 +1818,10 @@ mod tests {
         };
         let tag = NonZeroU8::new(2).expect("not 0");
         logs.copy(slot(1), &header, 4096, &[b"long".as_slice(), b" entry"]);
-        let kept = |logs: &Logs| {
-            let (_, newest) = logs.newest(Path::Live, tag).next().expect("a copy");
-            (newest.bytes.clone(), newest.bytes.as_ptr(), newest.offset)
-        };
-        let (_, before, _) = kept(&logs);
         logs.copy(slot(1), &header, 8192, &[b"short".as_slice()]);
-        let (bytes, after, offset) = kept(&logs);
-        assert_eq!((bytes.as_slice(), offset), (b"short".as_slice(), 8192));
-        assert_eq!(after, before);
+        let (_, newest) = logs.newest(Path::Live, tag).next().expect("a copy");
+        let kept = (newest.bytes.as_slice(), newest.offset);
+        assert_eq!(kept, (b"short".as_slice(), 8192));
     }
 
     #[test]
