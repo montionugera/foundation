@@ -41,7 +41,11 @@
   of its own, which reads `clock::log::Reader::now` once for each line and writes the
   whole line, with `log_internal_errors(false)`, so a failed write drops the line and
   `fmt` writes nothing of its own to stderr. A `LevelFilter` of `--log-level` is under
-  it. `fmt` keeps the buffer of each thread and the one write of each line. A private
+  it. `fmt` keeps the buffer of each thread and the one write of each line. Its
+  `FormatFields` writes nothing, so no layer formats a value while it holds the lock
+  of a span, and an event that a `Debug` or a `Display` writes cannot wait on that
+  lock (`laptop.architect-2`, B of 2026-10-17T18:08:57Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238313830). A private
   `Layer` keeps the typed fields of each span for item (3), since `fmt` keeps them only
   as one `String` for each span (2026-10-17T17:22:08Z, link of item (3)). Features
   `fmt`, `registry`, and `std` only: no `ansi`, `json`, or `tracing-serde`. By
@@ -181,7 +185,10 @@
   `Config` at ERROR, each error with `class` (`config`, `device`, or `retry`) and
   `error`, the cut text of the `error` channel; INFO `restarting` with `backoff`; INFO
   `stopped`. A show, a clear, or a note of the running kind writes WARN `error` with
-  `error`, INFO `cleared`, or INFO `note` with `note`, only when it stages a write, so a
-  kind that shows one error at each poll writes one line. A count writes no event. By
-  `laptop.architect-2` (item 2 of 2026-10-17T17:22:08Z,
-  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6237505740).
+  `error`, INFO `cleared`, or INFO `note` with `note`, only when the status writer
+  writes a new value of its channel, so each line gives a value that the channel got,
+  and a connector writes at most one such line each second. A count writes no event.
+  By `laptop.architect-2` (item 2 of 2026-10-17T17:22:08Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6237505740; A of
+  2026-10-17T18:08:57Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238313830).
