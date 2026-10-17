@@ -22,6 +22,10 @@
   holds 0 to 2 trims, so that its median moves with the phase of the trims.
   `deadline_trim` is approved by `laptop.architect` (#2943, 2026-10-16T22:49:36Z):
   https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6226155380.
+  The samples other than `deadline_carry` and `deadline_trim`, `Deadline::trimming`, and
+  the item 4 that this record supersedes are approved by `laptop.architect` (#2943,
+  2026-10-16T23:14:08Z, items 1 and 5):
+  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6226442923.
   `SAMPLE_SIZE` is approved by `laptop.architect` (#2943, 2026-10-16T22:20:35Z):
   https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6225798040.
   This supersedes item 4 of
@@ -113,7 +117,9 @@
   https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6223169251, with the
   refusal of more than 54 indexes and the seal of the records in `State::deadline`
   (2026-10-16T21:03:09Z):
-  https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6224646122, and
+  https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6224646122,
+  `trimming` and its text (#2943, 2026-10-16T23:14:08Z, items 1 and 5):
+  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6226442923, and
   `lap_shrink` as item 6 of #2774, deferred with its OK (#2739, 2026-10-15T22:34:39Z):
   https://github.com/synnaxlabs/foundation/pull/2739#issuecomment-6203672199. The two
   lost designs have only the text approval (2026-10-16T20:11:06Z):

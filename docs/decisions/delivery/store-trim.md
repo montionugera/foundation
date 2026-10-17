@@ -134,4 +134,7 @@
   approves addendum
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6207213605, and
   the carry rate (#2943, 2026-10-16T22:39:49Z):
-  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6226036963.
+  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6226036963. The
+  refusal figures after 396 and 398 commits and the rise against a reach at the low mark
+  are approved by `laptop.architect` (#2943, 2026-10-16T23:14:08Z, item 4):
+  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6226442923.

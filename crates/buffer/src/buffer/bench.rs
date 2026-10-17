@@ -1,6 +1,5 @@
 //! The deadlines of a commit task with no file, for [`crate::bench`].
 
-use std::iter;
 use std::num::NonZeroU32;
 
 use block::{Block, Heap, Pool};
@@ -131,22 +130,27 @@ impl Deadline {
     ///
     /// # Panics
     ///
-    /// As [`new`](Self::new) does.
+    /// When `indexes` is 0, since the ring then never trims, or as [`new`](Self::new)
+    /// does.
     #[must_use]
     pub fn trimming(indexes: u32) -> Self {
+        assert!(indexes > 0, "a deadline of no indexes never trims");
         let blocks = 4096 + crate::bench::PHASE;
         let mut deadline = Self::new(indexes, blocks);
-        while deadline.state.writer.head() <= 2 * blocks * BLOCK {
+        let laps = (0..=2 * blocks).find(|_| {
             deadline.commit(1);
-        }
+            deadline.state.writer.head() > 2 * blocks * BLOCK
+        });
+        laps.expect("each deadline writes a block");
         let mut trimmed = || {
             let tail = deadline.state.writer.tail();
             deadline.commit(1);
             deadline.state.writer.tail() != tail
         };
-        while !trimmed() {}
-        let period = iter::repeat_with(trimmed).position(|trimmed| trimmed);
-        for _ in 0..period.expect("a full ring trims") {
+        let lap = "a full ring trims within one lap";
+        (0..blocks).find(|_| trimmed()).expect(lap);
+        let period = (0..blocks).position(|_| trimmed()).expect(lap);
+        for _ in 0..period {
             deadline.commit(1);
         }
         deadline
@@ -204,6 +208,12 @@ mod tests {
     fn a_deadline_of_no_indexes_takes_no_entry() {
         let mut deadline = Deadline::new(0, 64 + PHASE);
         assert_eq!((deadline.commit(2), deadline.commit(2)), (0, 0));
+    }
+
+    #[test]
+    #[should_panic(expected = "a deadline of no indexes never trims")]
+    fn trimming_of_no_indexes_panics() {
+        let _deadline = Deadline::trimming(0);
     }
 
     #[test]

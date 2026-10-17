@@ -10,8 +10,9 @@
 //! the ring of ID 64: the fit, which checks that the record fits, the take, the close,
 //! the seal with the CRC of the body, and the same trim and sync. `queue_group` adds
 //! the append of each entry to the logs, as the buffer queues a batch. `deadline` times
-//! a deadline of the commit task that trims, with an entry of each of 1 or 32 indexes:
-//! the work of `queue_group` with the checkpoint of the trim and the sync of the logs.
+//! the mean deadline of the commit task, which trims in steps, with an entry of each of
+//! 1 or 32 indexes: the work of `queue_group` with the checkpoints of its trims and the
+//! sync of the logs.
 //! `deadline_carry` times one that also writes a carry record of 32 tails.
 //! `deadline_trim` times only the deadline that trims a step of 100 blocks on the ring
 //! of ID 4096.
