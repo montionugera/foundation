@@ -766,7 +766,8 @@ fn ends_the_run_when_a_check_finds_no_session() {
         scene.supervise(ms(11_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
-    let check = "the connectivity check of opc.tcp://10.0.0.1:4840 failed with BadSessionIdInvalid";
+    let check = "the connectivity check of opc.tcp://10.0.0.1:4840 failed with \
+                 BadSessionIdInvalid";
     assert_eq!(errors(&outcome.statuses), [(DEVICE, check.to_owned())]);
     assert_eq!(outcome.frames.len(), 2);
 }
@@ -1446,8 +1447,8 @@ fn refuses_a_node_whose_read_alone_is_past_one_message_of_the_server() {
             LARGE_READ,
             None,
             format!(
-                "a Read of the node `{node}` of the channel `plant.b` needs 600087 bytes, \
-                 past the 524047 bytes of one message of the server"
+                "a Read of the node `{node}` of the channel `plant.b` needs 600087 \
+                 bytes, past the 524047 bytes of one message of the server"
             ),
             "Raise the message size of the server".into(),
         )]

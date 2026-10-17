@@ -610,8 +610,8 @@ fn fails_an_upload_when_the_server_crashes() {
     assert_eq!(
         texts,
         [
-            "the exchange with server:8086 failed: connection error <- connection error <- \
-             10.0.0.2:8086 reset the stream; the `env` error: \
+            "the exchange with server:8086 failed: connection error <- connection \
+             error <- 10.0.0.2:8086 reset the stream; the `env` error: \
              Some(\"10.0.0.2:8086 reset the stream\")"
         ]
     );

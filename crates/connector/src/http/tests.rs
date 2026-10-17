@@ -446,13 +446,14 @@ fn closes_the_stream_after_a_timeout() {
     let end = Arc::new(Mutex::new(None));
     network.serve(reply_then_read(b"", &end));
     let error = network.send(get(&network.url("/"))).expect_err("no answer");
+    let remote = network.remote().to_string();
     assert!(
-        matches!(&error, Error::TimedOut { origin } if *origin == network.remote().to_string()),
+        matches!(&error, Error::TimedOut { origin } if *origin == remote),
         "{error:?}"
     );
     assert_eq!(
         error.to_string(),
-        format!("the exchange with {} timed out", network.remote())
+        format!("the exchange with {remote} timed out")
     );
     let end = end.lock().expect("no panic under the lock").take();
     assert_eq!(end.as_deref(), Some("Ok(0)"));
@@ -468,13 +469,14 @@ fn times_out_when_the_server_never_answers() {
         })
     });
     let error = network.send(get(&network.url("/"))).expect_err("no answer");
+    let remote = network.remote().to_string();
     assert!(
-        matches!(&error, Error::TimedOut { origin } if *origin == network.remote().to_string()),
+        matches!(&error, Error::TimedOut { origin } if *origin == remote),
         "{error:?}"
     );
     assert_eq!(
         error.to_string(),
-        format!("the exchange with {} timed out", network.remote())
+        format!("the exchange with {remote} timed out")
     );
     assert_eq!(network.elapsed, Some(TIMEOUT));
 }
