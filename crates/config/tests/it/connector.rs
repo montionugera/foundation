@@ -654,6 +654,53 @@ fn gives_the_problems_of_kind_and_node_in_the_order_of_the_text() {
 }
 
 #[test]
+fn finds_a_connector_at_a_status_name_of_another_connector() {
+    let text = "connector \"plant\" {\n  kind = \"any\"\n  node = \"edge\"\n}\n\
+                connector \"plant.status.time\" {\n  kind = \"any\"\n\
+                node = \"edge\"\n}\n";
+    let kinds = Table::new().with("any", Any);
+    let checked = config::check(&[read(text)], &kinds).expect_err("problems");
+    let codes: Vec<_> = checked
+        .iter()
+        .map(|problem| problem.code.as_str())
+        .collect();
+    assert_eq!(codes, ["config.implied-channel"]);
+    let found = config::connector(&[read(text)], &name("plant.status.time"));
+    assert_eq!(found.expect("found").kind(), &name("any"));
+}
+
+#[test]
+fn refuses_a_connector_whose_status_name_is_long() {
+    let label = "a".repeat(Name::MAX_BYTES);
+    let text =
+        format!("connector \"{label}\" {{\n  kind = \"any\"\n  node = \"edge\"\n}}\n");
+    let message = format!(
+        "the name of a status channel of the connector `{label}` is {} bytes, and the \
+         most is {}",
+        Name::MAX_BYTES + ".status.time".len(),
+        Name::MAX_BYTES
+    );
+    let long = (
+        "config.long-name",
+        Some(10),
+        message,
+        "Shorten the name of the connector".to_owned(),
+    );
+    let kinds = Table::new().with("any", Any);
+    let checked = config::check(&[read(&text)], &kinds).expect_err("problems");
+    let checked: Vec<_> = checked
+        .iter()
+        .map(|problem| {
+            let at = problem.span.map(|span| span.start().offset);
+            let (message, fix) = (problem.message.clone(), problem.fix.clone());
+            (problem.code.as_str(), at, message, fix)
+        })
+        .collect();
+    assert_eq!(checked, std::slice::from_ref(&long));
+    assert_eq!(refused(&text, &label), [long]);
+}
+
+#[test]
 fn finds_a_connector_beside_a_reserved_connector_of_another_name() {
     let text = "connector \"@other\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n\
                 connector \"plant\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n";
@@ -707,7 +754,15 @@ impl Kind for Any {
     }
 }
 
-const LABELS: [&str; 6] = ["plant", "Plant", "PLANT", "@plant", "plant.@x", "other"];
+const LABELS: [&str; 7] = [
+    "plant",
+    "Plant",
+    "PLANT",
+    "@plant",
+    "plant.@x",
+    "plant.status.time",
+    "other",
+];
 
 /// A `channel` or `connector` block: whether it is a connector, its label, its text,
 /// and its text with each `fill` as a plain value of the same length, so that each
@@ -749,10 +804,10 @@ fn block() -> impl Strategy<Value = (bool, &'static str, String, String)> {
 
 proptest! {
     /// At each label, with `check` on the files where each `fill` outside the
-    /// `connector` blocks of the label in any ASCII case is a plain value: a connector that `check`
-    /// gives, `find` gives; a problem of `find` other than `config.no-connector`,
-    /// `check` gives; and a problem of `check` in a `connector` block of the label
-    /// makes `find` fail.
+    /// `connector` blocks of the label in any ASCII case is a plain value: a connector
+    /// that `check` gives, `find` gives; a problem of `find` other than
+    /// `config.no-connector`, `check` gives; and a problem of `check` other than
+    /// `config.implied-channel` in a `connector` block of the label makes `find` fail.
     #[test]
     fn finds_what_check_finds_at_each_name(
         blocks in proptest::collection::vec(block(), 1..=4),
@@ -802,7 +857,10 @@ proptest! {
                 }
             }
             if let Err(problems) = &checked {
-                let at_block = problems.iter().find(|problem| {
+                let implied = |problem: &&Diagnostic| {
+                    problem.code.as_str() != "config.implied-channel"
+                };
+                let at_block = problems.iter().filter(implied).find(|problem| {
                     problem.span.is_some_and(|span| {
                         let offset = usize::try_from(span.start().offset)
                             .expect("a short text");

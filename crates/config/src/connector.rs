@@ -67,21 +67,24 @@ pub(crate) fn check(
 }
 
 /// The `connector` block with the label `name` in `documents`: its kind, its node, and
-/// its body without `kind` and `node`. It runs no check of the kind and checks no
-/// other block.
+/// its body without `kind` and `node`. It runs no check of a kind. Of the other
+/// blocks, it reads only private keys, labels, and the bodies of the `connector`
+/// blocks whose label is `name` in any ASCII case.
 ///
 /// # Errors
 ///
 /// `config.private-key` at each private key in `documents`, and then no other problem.
 /// Else the problems that [`check`](crate::check) gives at each `connector` block whose
-/// label is `name` in any ASCII case, other than those of its kind, as it gives them
-/// when no other block holds a `fill`: `config.unfilled` and `config.bad-fill` in its
-/// body, and then no other problem; else `config.reserved-name` and
-/// `config.duplicate-name` at its label; else `config.no-connector` when no
-/// `connector` block has the label `name`, with the names of the connector blocks that
-/// `check` takes in the fix; else the problems of `kind` and `node` in the block, and
-/// `document.too-deep` when its body nests deeper than `document::encoding::Checked`
-/// takes.
+/// label is `name` in any ASCII case, other than those of its kind and
+/// `config.implied-channel`, which the other connectors decide, as it gives them when
+/// no other block holds a `fill`: `config.unfilled` and `config.bad-fill` in its body,
+/// and then no other problem; else `config.reserved-name` and `config.duplicate-name`
+/// at its label; else `config.no-connector` when no `connector` block has the label
+/// `name`, with the names of the connector blocks that `check` takes in the fix; else
+/// the problems of `kind` and `node` in the block, and `document.too-deep` when its
+/// body nests deeper than `document::encoding::Checked` takes, in span order; else
+/// `config.long-name` at its label when a status name that it has with no kind is
+/// longer than [`Name::MAX_BYTES`].
 pub fn find(documents: &[Document], name: &Name) -> Result<Connector, Vec<Diagnostic>> {
     let alarms = private_key::alarms(documents);
     if !alarms.is_empty() {
@@ -124,7 +127,11 @@ pub fn find(documents: &[Document], name: &Name) -> Result<Connector, Vec<Diagno
     let node = crate::required(block, "node", read::name, NODE_FIX.into());
     let config = Checked::new(config(block)).map_err(|error| Diagnostic::from(&error));
     match (kind, node, config) {
-        (Ok(kind), Ok(node), Ok(config)) => Ok(Connector::new(kind, node, config)),
+        (Ok(kind), Ok(node), Ok(config)) => {
+            let at = block.labels.first().and_then(|label| label.span);
+            writes(name, Channels::default(), at).map_err(|problem| vec![problem])?;
+            Ok(Connector::new(kind, node, config))
+        }
         (kind, node, config) => {
             let mut problems: Vec<_> = [kind.err(), node.err(), config.err()]
                 .into_iter()
