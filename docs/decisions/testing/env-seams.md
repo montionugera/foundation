@@ -997,8 +997,8 @@
   that directory, and else takes the path of the directory. A call is of the path of a
   fault of `sim::Node::fail_path` when both give one path from the working directory at
   that call, with `.` and `..` taken as text and no link followed, so a relative path
-  follows a later `set_working_dir`. Faults that a call is of fire in the order set, one per call.
-  Decided by `laptop.architect-2` (2026-10-17T05:16:48Z,
+  follows a later `set_working_dir`. Faults that a call is of fire in the order set, one
+  per call. Decided by `laptop.architect-2` (2026-10-17T05:16:48Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230063256; the order,
   a read, `Replaced` by the path now, and `move_path`, 2026-10-17T06:33:57Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230731316; a path
@@ -1013,7 +1013,8 @@
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6232020329; a key that
   the OS refuses, 2026-10-17T16:01:08Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236248693, which
-  withdraws item 1 of 6231727914 and item 1 of 6232020329; the path of a fault, 2026-10-17T16:12:13Z,
+  withdraws item 1 of 6231727914 and item 1 of 6232020329; the path of a fault,
+  2026-10-17T16:12:13Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236404985, which
   supersedes the text of item 2 of 6232020329 that "Faults on one path fire in turn"
   also holds for two spellings of one path; the path of the working directory on a move,
@@ -1021,13 +1022,13 @@
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236468300, which
   supersedes "`working` becomes its resolved path when it resolves" of 6231322001 and
   "`move_entry` goes back to the rule of 6231322001, and 7c9caa232 goes" of item 2 of
-  6232020329). Lost: a
-  second look in `ops` after a refusal, which puts a `Paths` with no limits in the scope
-  that limits `foundation mcp`, states the rule of `within` again, and gives a false
-  text when a file changes between the two looks. Lost too: the error of the key of a
-  folder that the OS refuses, which needs the codes of each host in `env`; the next `within` gives it. Lost too: a working directory resolved at
-  `set_working_dir`, which cannot hold where nothing is there yet, so it needs a
-  second rule.
+  6232020329). Lost: a second look in `ops` after a refusal, which puts a `Paths` with
+  no limits in the scope that limits `foundation mcp`, states the rule of `within`
+  again, and gives a false text when a file changes between the two looks. Lost too: the
+  error of the key of a folder that the OS refuses, which needs the codes of each host
+  in `env`; the next `within` gives it. Lost too: a working directory resolved at
+  `set_working_dir`, which cannot hold where nothing is there yet, so it needs a second
+  rule.
   Amended (2026-10-17T06:14:25Z, #2895): `make_dir` of a path that does not resolve
   checks its name in its resolved directory, with the key of the file at that name,
   before the driver makes it. So a loop or a link to nothing beside a hidden folder that
