@@ -21,8 +21,9 @@
   1. **Starts.** Within 10 s: Running, no error, 0 restarts, and progress above 0.
   2. **Device absent at start.** No simulator. Within 1 min, the backoff form, never
      class Config. `Restart`: Restarting, class Device or Retry, and restarts that
-     grow to 2. `Run`: Running, class Retry, 0 restarts, and progress 0, held for
-     10 s. Then the simulator starts: heals.
+     grow to 2. `Run`: Running, class Retry, an error text that names the address
+     of the device, 0 restarts, and progress 0, held for 10 s. Then the simulator
+     starts: heals.
   3. **Device lost while running**, in two forms: the simulator stops (each
      connection closed), and the device node crashes (`Sim::crash`, no close reaches
      the plant). Within 30 s: an error of class Device or Retry. Then the device

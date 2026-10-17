@@ -52,7 +52,8 @@ pub(crate) enum Backoff {
     /// with restarts that grow.
     Restart,
     /// The run goes on and tries again after its own backoff: Running, with class
-    /// Retry, no restart, and no progress.
+    /// Retry, an error text that names the address of the device, no restart, and
+    /// no progress.
     Run,
 }
 
@@ -275,6 +276,7 @@ impl Scene {
             Backoff::Run => {
                 let reading =
                     run.until(ABSENT, |reading| reading.error.is_some()).await;
+                let address = self.address.to_string();
                 let held = |reading: &Reading| {
                     let class = reading.error.as_ref().map(|(class, _)| *class);
                     let given = (reading.state, reading.restarts, class);
@@ -284,6 +286,9 @@ impl Scene {
                         "{reading:?}"
                     );
                     assert_eq!(self.progress(reading), 0, "{reading:?}");
+                    let text = reading.error.as_ref().map(|(_, text)| text.as_str());
+                    let named = text.is_some_and(|text| text.contains(&address));
+                    assert!(named, "the error names the device: {reading:?}");
                 };
                 held(&reading);
                 let clock: Clock = self.node.clock();
@@ -410,8 +415,9 @@ pub(crate) fn starts(device: &'static Device) {
 
 /// With no simulator, within 1 min: the backoff of [`Device::backoff`], and never
 /// class Config. For [`Backoff::Restart`]: Restarting, class Device or Retry, and
-/// restarts that grow. For [`Backoff::Run`]: Running, class Retry, no restart, and no
-/// progress, for [`HOLD`]. Then the simulator starts, and the connector heals.
+/// restarts that grow. For [`Backoff::Run`]: Running, class Retry, an error text
+/// that names the device address, no restart, and no progress, for [`HOLD`]. Then
+/// the simulator starts, and the connector heals.
 pub(crate) fn heals_once_an_absent_device_serves(device: &'static Device) {
     run(device, direct, move |scene| async move {
         let config = scene.setup().await;
