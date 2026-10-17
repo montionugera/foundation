@@ -1008,7 +1008,7 @@
   working directory that a move keeps on the directory that it resolves to,
   2026-10-17T07:41:22Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231322001; the
-  common cases and the error of a folder key, 2026-10-17T08:26:44Z,
+  common cases, 2026-10-17T08:26:44Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231727914; the
   faults, 2026-10-17T08:58:04Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6232020329; a key
@@ -1021,7 +1021,7 @@
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236468300). Lost: a
   second look in `ops` after a refusal, which puts a `Paths` with no limits in the scope
   that limits `foundation mcp`, states the rule of `within` again, and gives a false
-  text when a file changes between the two looks. Lost: the error of the key of a folder
+  text when a file changes between the two looks. Lost too: the error of the key of a folder
   that the OS refuses, which needs the codes of each host in `env`; the next `within`
   gives it.
   Amended (2026-10-17T06:14:25Z, #2895): `make_dir` of a path that does not resolve
