@@ -1808,7 +1808,7 @@ fn status_lines(
             failed: AtomicBool::new(false),
         };
         let kinds = connector::kind::Table::new().with("flaky", flaky);
-        let mut rig = connector::testing::Rig::open(env, node.net(), kinds).await;
+        let rig = connector::testing::Rig::open(env, node.net(), kinds).await;
         let name = "plant.a".parse().expect("a name");
         let run = rig.supervise("flaky", name, Document::default()).await;
         node.clock().sleep(Span::from_nanos(11_000_000_000)).await;
