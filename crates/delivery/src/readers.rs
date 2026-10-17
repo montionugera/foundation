@@ -801,8 +801,8 @@ impl Readers {
     }
 
     /// The record of each named complete reader, open or held, in no order. The home
-    /// appends them to the index log as one entry, which replaces the entries before
-    /// it. Takes time linear in the named readers.
+    /// appends them to the index log in up to 64 parts, and the newest entry of a part
+    /// replaces the ones before it. Takes time linear in the named readers.
     pub fn records(&self) -> impl Iterator<Item = Record> + '_ {
         let open = self.complete.iter().filter_map(Session::record);
         open.chain(self.closed.iter().map(Closed::record))
