@@ -797,11 +797,7 @@ impl Logs {
         let end = Mark::end(header.first, header.kind)
             .expect("invariant: the log checked the entry");
         if let Some(bytes) = self.note(slot, header, tag, end, offset) {
-            bytes.clear();
-            bytes.reserve_exact(parts.iter().map(|part| part.len()).sum());
-            for part in parts {
-                bytes.extend_from_slice(part);
-            }
+            fill(bytes, parts);
         }
     }
 
@@ -1032,8 +1028,7 @@ impl Logs {
             return Err(Invalid::Twice { index, path, tag });
         }
         if let Some(copy) = self.note(slot, header, tag, end, offset) {
-            copy.clear();
-            copy.extend_from_slice(bytes);
+            fill(copy, &[bytes]);
         }
         Ok(())
     }
@@ -1433,6 +1428,16 @@ impl Carried {
         self.copies.push((at, copy.end()));
         self.bytes = bytes;
         true
+    }
+}
+
+/// Makes `bytes` the joined `parts`. It grows the capacity to exactly their length
+/// when it is short, so a copy keeps no more than its largest copy.
+fn fill<P: Deref<Target = [u8]>>(bytes: &mut Vec<u8>, parts: &[P]) {
+    bytes.clear();
+    bytes.reserve_exact(parts.iter().map(|part| part.len()).sum());
+    for part in parts {
+        bytes.extend_from_slice(part);
     }
 }
 
@@ -2321,6 +2326,24 @@ mod tests {
         let kept = (newest.bytes.as_slice(), newest.offset);
         assert_eq!(kept, (b"new".as_slice(), 12288));
         assert_eq!(logs.holder(slot(1), Path::Live, tag), Some(12288));
+    }
+
+    /// A carried copy that grows from 3000 to 4032 bytes keeps the capacity of the
+    /// larger one.
+    #[test]
+    fn a_grown_carried_copy_keeps_no_more_than_its_largest_copy() {
+        let tagged = |first| Header {
+            tag: 2,
+            ..header(1, Path::Live, first, 2, None)
+        };
+        let tag = NonZeroU8::new(2).expect("not 0");
+        let mut logs = Logs::new(AREA);
+        logs.carried(slot(1), &tagged(0), &[1; 3000], 4096)
+            .expect("a valid entry");
+        logs.carried(slot(1), &tagged(4), &[2; 4032], 8192)
+            .expect("a valid entry");
+        let (_, newest) = logs.newest(Path::Live, tag).next().expect("a copy");
+        assert_eq!(newest.bytes.capacity(), 4032);
     }
 
     #[test]
