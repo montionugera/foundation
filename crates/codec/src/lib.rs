@@ -1949,7 +1949,8 @@ mod tests {
         }
 
         /// Integers at each third sample and NaNs of other payloads between them take
-        /// ALP in under 7/8 of the raw vector, so the vector stays raw.
+        /// 7736 bytes as ALP, under raw but over 7/8 of the raw vector, so the vector
+        /// stays raw.
         #[test]
         fn keeps_raw_when_alp_saves_under_an_eighth() {
             let values: Vec<f64> = (0_u32..1_024)
