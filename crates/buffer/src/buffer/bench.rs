@@ -27,6 +27,7 @@ pub struct Deadline {
     block_max: usize,
     tails_max: usize,
     part: Block,
+    tag: u8,
     /// The next seq of each index.
     firsts: Vec<u64>,
     batch: Vec<Entry>,
@@ -69,10 +70,25 @@ impl Deadline {
             block_max,
             tails_max,
             part,
+            tag: 0,
             firsts: vec![0; count],
             batch: Vec::new(),
             sealed: Vec::new(),
             deadlines: 0,
+        }
+    }
+
+    /// As [`new`](Self::new), with each entry a state entry of tag 1, whose bytes
+    /// each sync copies.
+    ///
+    /// # Panics
+    ///
+    /// As [`new`](Self::new) does.
+    #[must_use]
+    pub fn tagged(indexes: u32, blocks: u64) -> Self {
+        Self {
+            tag: 1,
+            ..Self::new(indexes, blocks)
         }
     }
 
@@ -89,7 +105,7 @@ impl Deadline {
         let slow = self.deadlines.is_multiple_of(period);
         self.deadlines = self.deadlines.wrapping_add(1);
         let appended = self.firsts.len().saturating_sub(usize::from(!slow));
-        let part = &self.part;
+        let (part, tag) = (&self.part, self.tag);
         let entries = self.firsts.iter_mut().take(appended).zip(0..);
         self.batch.extend(entries.map(|(first, n)| {
             let entry = Entry {
@@ -102,7 +118,7 @@ impl Deadline {
                     last: Some(Stamp::from_nanos(9)),
                 }),
                 stored_at: Stamp::from_nanos(7),
-                tag: 0,
+                tag,
                 parts: part.clone().into(),
             };
             *first += 1;
@@ -219,6 +235,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `tagged` copies the bytes of each index at each sync, and `new` copies none.
+    /// It reads the private `state`: `commit` gives only the tails of the carry record.
+    #[test]
+    fn a_tagged_deadline_copies_each_index() {
+        let tag = std::num::NonZeroU8::MIN;
+        let copies = |mut deadline: Deadline| {
+            deadline.commit(1);
+            let mut newest: Vec<_> = deadline
+                .state
+                .logs
+                .newest(Path::Live, tag)
+                .map(|(slot, newest)| (slot, newest.bytes.len()))
+                .collect();
+            newest.sort_unstable();
+            newest
+        };
+        let each = (0..3).map(|n| (Slot::new(n), PART)).collect::<Vec<_>>();
+        assert_eq!(copies(Deadline::tagged(3, 64 + PHASE)), each);
+        assert_eq!(copies(Deadline::new(3, 64 + PHASE)), []);
     }
 
     #[test]
