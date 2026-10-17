@@ -156,8 +156,8 @@ take the next issue meanwhile.
   finding of your PR, or an issue that your PR waits on) states its goal, crates, tests
   that must pass, and decisions section, with a `crate:` label for each of its crates.
   Send its link to `laptop.coordinator` when you file it, which admits it
-  (`/coordinate`, "Admit"). Never claim it outside step 2. Your next state comment on
-  your issue links each one that you file for it.
+  (`/coordinate`, "Admit"). Claim it (step 3) only when step 2 takes it. Your next
+  state comment on your issue links each one that you file for it.
 - While `laptop.monitor` says that `laptop.coordinator` is paused, send to
   `laptop.monitor` each link that this skill sends to `laptop.coordinator`.
 - Before you stop, comment your state on the issue: done, next step, open questions.

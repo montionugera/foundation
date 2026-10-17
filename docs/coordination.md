@@ -226,6 +226,11 @@ budget, its limits, and step 3. Step 4 checks each by its instance, because they
   posts the person's decision on an issue or PR from the factory account, it is the
   person's own OK, approval, or waiver (also as box engineer). A builder acts on it at
   once. The person never has to comment on GitHub.
+- **While `laptop.coordinator` is paused.** While `laptop.monitor` says that
+  `laptop.coordinator` is paused, send `laptop.monitor` each link and message that a
+  skill or this doc sends to `laptop.coordinator`, because `laptop.monitor` admits in
+  its place (`laptop.monitor`, factory message `c9b2b7da`,
+  https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6231345513).
 - **The person reviews only what only the person can decide.** The architect decides the
   rest inside the decisions the person made, in a comment on the issue. The builder adds
   the ruling to `docs/decisions/` in the code PR, so the record and the code merge
