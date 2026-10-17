@@ -289,8 +289,9 @@ impl Scene {
     }
 
     /// Waits until the connector is in the backoff of [`Device::backoff`] with no
-    /// device, and gives the status. For [`Backoff::Run`], each status within
-    /// [`HOLD`] after it holds that backoff too.
+    /// device, and gives the status. For [`Backoff::Run`], no status within [`HOLD`]
+    /// after it leaves that backoff. A status writes only on a change, so this checks
+    /// each change, and none when nothing changes.
     async fn backed_off(&self, run: &mut Run) -> Reading {
         match self.device.backoff {
             Backoff::Restart => {
@@ -450,8 +451,8 @@ pub(crate) fn starts(device: &'static Device) {
 /// With no simulator, within 1 min: the backoff of [`Device::backoff`], and never
 /// class Config. For [`Backoff::Restart`]: Restarting, class Device or Retry, and
 /// restarts that grow. For [`Backoff::Run`]: Running, class Retry, an error text
-/// that names the device address, no restart, and no progress, for [`HOLD`]. Then
-/// the simulator starts, and the connector heals.
+/// that names the device address, no restart, and no progress, and no status in the
+/// next [`HOLD`] that leaves it. Then the simulator starts, and the connector heals.
 pub(crate) fn heals_once_an_absent_device_serves(device: &'static Device) {
     run(device, direct, move |scene| async move {
         let config = scene.setup().await;

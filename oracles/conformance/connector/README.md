@@ -2,8 +2,10 @@
 
 The scenarios that each connector kind passes, on two sim nodes: the plant, with the
 rig of `connector::testing` and the connector, and the device, with the kind's
-simulator. They use only the public rig and the public sim. The record CONNECTOR
-CONFORMANCE (`docs/decisions/connectors/connector-conformance.md`) gives each scenario.
+simulator. The scenarios use only public items: the rig of `connector::testing`,
+`hub::testing::Env`, the sim, `env`, and the `kind`, `status`, and `cancel` modules of
+`connector`. The record CONNECTOR CONFORMANCE
+(`docs/decisions/connectors/connector-conformance.md`) gives each scenario.
 
 `scenarios.rs` holds the scenarios, the input type `Device`, and `suite!`, which
 expands to one `#[test]` for each scenario. `<kind>/main.rs` is the root of the test
