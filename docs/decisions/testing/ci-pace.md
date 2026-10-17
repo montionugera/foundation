@@ -15,7 +15,7 @@
   each with `cargo mutants --shard <k>/4 --sharding round-robin` on its own runner, and
   the required check `mutants` passes when each shard passed. In the queue no shard
   runs, and `mutants` carries the result at the head of the PR to the group, as before.
-  Each shard runs on its own hosted VM (`ubuntu-latest`, #2727). `cargo mutants` runs in
+  Each shard runs on its own hosted VM (`ubuntu-24.04`, #2727). `cargo mutants` runs in
   a systemd scope with a memory cap, no swap, and `OOMPolicy=continue`, so a mutant that
   allocates in a loop kills only its test, and the shard reports the mutant. Cost: each
   shard that gets a mutant builds and tests the code without mutants, so a PR with eight
