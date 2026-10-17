@@ -999,8 +999,9 @@ fn mcp_writes_a_plan_file_only_under_its_folders_and_with_its_end() {
 }
 
 /// The run of `foundation mcp <args>` that ends at its start, on a host whose working
-/// directory is `working`, with the home `home`, and a file `/work/f`: its status and
-/// standard error. With one ping on its input, a start that serves gives its pong.
+/// directory is `working`, with the home `home`, a file `/work/f`, and an empty file
+/// `/work/e`: its status and standard error. With one ping on its input, a start that
+/// serves gives its pong.
 fn start(working: &str, home: &str, args: &[&str]) -> (Run, String, String) {
     let (run, output, errors, _) = start_with(working, home, args, None);
     (run, output, errors)
@@ -1063,11 +1064,18 @@ fn mcp_starts_only_on_a_folder_that_is_not_too_wide() {
             2
         )
     );
+    let empty = Error::Folder {
+        path: PathBuf::from("/work/e"),
+        cause: Unusable::File,
+    };
+    let refused = start("/home", "/home", &["--files", "/work/e"]);
+    assert_eq!(refused, (Run::Exit(2), String::new(), empty.text()));
 }
 
 /// The run, output, and errors of `foundation mcp <args>` that reads one ping, at
 /// `working` with home folder `home`, and the data directory that it leaves there.
-/// `/work` holds the file `f`, and `fault` fails a path with an OS error code.
+/// `/work` holds the file `f` and the empty file `e`, and `fault` fails a path with an
+/// OS error code.
 fn start_with(
     working: &str,
     home: &str,
@@ -1086,6 +1094,7 @@ fn start_with(
     host.set_home(Path::new(home));
     let paths = host.paths();
     paths.write(Path::new("/work/f"), b"f").expect("a write");
+    paths.write(Path::new("/work/e"), b"").expect("a write");
     if let Some((path, code)) = fault {
         host.fail_path(Path::new(path), code);
     }
@@ -1137,11 +1146,11 @@ fn mcp_refused_at_home_makes_no_data_directory() {
     assert_eq!((run, left), (Run::Exit(2), None));
 }
 
-/// A folder of `--files` that is not there, or that is a file, makes no data
-/// directory.
+/// A folder of `--files` that is not there, or that is a file, also an empty one,
+/// makes no data directory.
 #[test]
 fn mcp_refused_for_a_folder_makes_no_data_directory() {
-    for folder in ["/work/missing", "/work/f"] {
+    for folder in ["/work/missing", "/work/f", "/work/e"] {
         let (run, _, _, left) =
             start_with("/work", "/home", &["--files", folder], None);
         assert_eq!((run, left), (Run::Exit(2), None), "{folder}");
