@@ -4,9 +4,10 @@
 use std::fmt;
 
 use connector::kind::{self, Channels, Context, Error};
-use connector::{pace, poll, status};
-use document::Document;
+use connector::{browse, pace, poll, status};
 use document::diagnostic::{Code, Diagnostic};
+use document::{Block, Document};
+use types::name::Name;
 use types::sample::{self, Scalar, Type};
 #[cfg(feature = "sim")]
 use types::time::Span;
@@ -90,6 +91,23 @@ impl kind::Kind for Kind {
     /// at once, when the client loses its channel or its session between two ticks.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         run(ctx)
+    }
+
+    /// Gives `read "<channel>" { node_id = "<tag>" }`, which `parse` reads. It reads
+    /// no fact: the browse of the kind gives no `Write`, so each point gets a read
+    /// block.
+    ///
+    /// # Errors
+    ///
+    /// `opcua.bad-node-id`, with the tag, when `tag` is not a node ID that `parse`
+    /// reads.
+    fn block(
+        &self,
+        tag: &str,
+        _: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Vec<Block>, Vec<Diagnostic>> {
+        config::block(tag, channel)
     }
 }
 
@@ -386,8 +404,8 @@ fn sample_type(read: &Read, data_type: Type) -> Diagnostic {
 
 /// The error of a read of `reads` whose node alone needs a Read past one message of the
 /// server.
-fn large_read(reads: &[Read], Large { node, bytes, most }: Large) -> Error {
-    let read = &reads[node];
+fn large_read(reads: &[Read], Large { index, bytes, most }: Large) -> Error {
+    let read = &reads[index];
     Error::Config(vec![Diagnostic::new(
         LARGE_READ,
         None,

@@ -130,10 +130,11 @@ foundation plan plant.hcl --out plant.plan
 + channel influx.status.error
 + channel influx.status.lost
 + channel influx.status.note
++ channel influx.status.oversized
 + channel influx.status.restarts
 + channel influx.status.state
 + channel influx.status.time
-28 to add, 0 to change, 0 to remove.
+29 to add, 0 to change, 0 to remove.
 note: 2 definitions that Foundation made are not in the files: @admin.@access, @admin.@subject
 ```
 
@@ -152,7 +153,7 @@ foundation apply plant.plan
 ```
 
 ```text
-Applied plant.plan: 28 added, 3 homes listed.
+Applied plant.plan: 29 added, 3 homes listed.
 ```
 
 `apply` refuses a plan when the node's config changed after the plan. Plan again.
@@ -165,7 +166,7 @@ foundation status
 
 ```text
 CONNECTOR  KIND    STATE    ADDRESS                    COUNTS
-influx     influx  running  http://localhost:8086      confirmed=1517 lost=0
+influx     influx  running  http://localhost:8086      confirmed=1517 lost=0 oversized=0
 plc        opcua   running  opc.tcp://localhost:50000  bad=0 in=1520 lost=0 missed=0 mistyped=0 uncertain=0
 ```
 
@@ -173,6 +174,8 @@ plc        opcua   running  opc.tcp://localhost:50000  bad=0 in=1520 lost=0 miss
 `confirmed` counts the samples that InfluxDB confirmed, and `lost` the sample times that
 the node lost before InfluxDB got them, not the lines of only NaN or infinite values
 that the run leaves out. A gap that the node reports again after a restart counts again.
+`oversized` counts the `string` and `bytes` samples that the run leaves out as a field
+of over 65,536 bytes.
 Run `status` again, and `in` and `confirmed` grow. `bad`, `uncertain`, and `mistyped`
 count the values that the connector left out: a value that is not Good, or one of
 another type than its channel.

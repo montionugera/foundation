@@ -18,8 +18,8 @@ use types::quality::Quality;
 use types::time::Span;
 
 use super::{
-    Client, GRACE, Large, Nodes, READS, Reads, Request, SPLIT, STATE, Slots, UNREAD,
-    answer, id_bytes, most,
+    Calls, Client, Flight, GRACE, Large, Nodes, READS, Request, SPLIT, STATE, Slots,
+    UNREAD, answer, id_bytes, most,
 };
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
@@ -820,7 +820,7 @@ fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
     let (value, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let client = peer.connected().await;
-            let outside = Reads::default();
+            let outside = Calls::default();
             let nodes = Nodes::unchecked(&[VALUE]);
             let mut request = 0;
             // SAFETY: the client and `nodes` live, and `outside` outlives the client.
@@ -835,13 +835,13 @@ fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
             });
             assert_eq!(status, Status::GOOD);
             outside.pending.set(1);
-            outside.requests.borrow_mut().push(Request {
+            outside.reads.requests.borrow_mut().push(Flight {
                 key: request,
                 slots: Slots { first: 0, count: 1 },
             });
-            outside.values.set(vec![UNREAD]);
+            outside.reads.values.set(vec![UNREAD]);
             drop(client);
-            outside.failed.get()
+            outside.reads.failed.get()
         })
         .await
     });
@@ -1408,7 +1408,7 @@ fn a_request_takes_the_chunks_of_one_message() {
     );
     let most = 8 * (65_536 - 24) - 7 * 7;
     let large = Large {
-        node: 1,
+        index: 1,
         bytes: most + 1,
         most,
     };
@@ -1450,7 +1450,7 @@ fn a_read_takes_the_max_message_size_of_the_server() {
     let (read, past, values, counts, split, sent, value) = reads;
     assert_eq!(read, Ok(vec![Ok(Value::F64(2.5))]));
     let large = Large {
-        node: 0,
+        index: 0,
         bytes: 8193,
         most: 8192,
     };
@@ -1503,7 +1503,7 @@ fn a_request_and_an_answer_each_take_the_buffer_of_their_side() {
     let (request, counts, values, value) = reads;
     let most = 8 * (65_536 - 24) - 7 * 7;
     let large = Large {
-        node: 0,
+        index: 0,
         bytes: most + 1,
         most,
     };
@@ -1685,8 +1685,7 @@ fn the_size_of_the_read_of_a_node_is_its_size_in_open62541() {
         namespace: 0,
         key: Key::Number(0),
     };
-    // SAFETY: `zero` has no name.
-    let rest = unsafe { ffi::shim_read_item((&zero).into()) } - id_bytes(&zero);
+    let one = |node: &Node| Request::values(&[node.into()]).bytes(0);
     let number = |namespace, key| Node {
         namespace,
         key: Key::Number(key),
@@ -1708,9 +1707,8 @@ fn the_size_of_the_read_of_a_node_is_its_size_in_open62541() {
         name(3, &"n".repeat(300)),
     ];
     for node in &nodes {
-        // SAFETY: the name of `node` lives through the call.
-        let open62541 = unsafe { ffi::shim_read_item(node.into()) };
-        assert_eq!(rest + id_bytes(node), open62541, "{node:?}");
+        let open62541 = one(node) - one(&zero);
+        assert_eq!(id_bytes(node) - id_bytes(&zero), open62541, "{node:?}");
     }
 }
 
@@ -2290,8 +2288,8 @@ fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, Value, Values) {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 let nodes = client.nodes(&[VALUE]).expect("one node fits");
                 let first = client.read(&nodes).await.map(<[_]>::to_vec);
-                let copied = client.reads.values.take();
-                client.reads.values.set(copied.clone());
+                let copied = client.calls.reads.values.take();
+                client.calls.reads.values.set(copied.clone());
                 let second = client.read(&nodes).await.map(<[_]>::to_vec);
                 client.close().await;
                 ([first, second], copied)
@@ -2518,3 +2516,5 @@ fn a_connect_whose_read_of_the_max_nodes_per_read_fails_closes_its_session() {
     });
     assert_eq!(connect, (Some(Status::BAD_UNEXPECTED_ERROR), 1));
 }
+
+mod browse;

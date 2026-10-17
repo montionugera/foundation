@@ -235,23 +235,28 @@ fn logged(roots: os::Roots, level: tracing::Level) -> Vec<String> {
     lines.read()
 }
 
-const SKIPPED: &str = "2026-01-01T00:00:00.004198Z WARN node: OS roots that do not parse are skipped \
-     skipped=1";
-const NONE: &str = "2026-01-01T00:00:00.004198Z WARN node: the OS roots hold no \
+/// The start of each warning of the roots.
+const WARN: &str = "2026-01-01T00:00:00.004198Z WARN node::trust:";
+const SKIPPED: &str = "2026-01-01T00:00:00.004198Z WARN node::trust: OS roots that do \
+                       not parse are skipped skipped=1";
+const NONE: &str = "2026-01-01T00:00:00.004198Z WARN node::trust: the OS roots hold no \
                     certificate, so an https connect with no CA of its connector fails";
 
 #[test]
-fn a_node_warns_of_each_failure_of_its_roots_and_of_each_skipped_one() {
+fn a_node_warns_of_a_failure_of_its_roots_and_of_a_skipped_one() {
     let roots = os::Roots {
         certificates: vec![super::CA.to_vec(), b"not DER".to_vec()],
         failures: vec!["failed to read PEM from file at '/roots.pem'".into()],
+        ..os::Roots::default()
     };
     assert_eq!(
         warned(roots),
         [
-            "2026-01-01T00:00:00.004198Z WARN node: a part of the OS roots was not read \
-             error=\"failed to read PEM from file at '/roots.pem'\"",
-            SKIPPED,
+            format!(
+                "{WARN} a part of the OS roots was not read error=\"failed to read PEM \
+                 from file at '/roots.pem'\""
+            ),
+            SKIPPED.into(),
         ]
     );
 }
@@ -269,12 +274,173 @@ fn a_node_warns_of_its_roots_before_it_starts() {
     );
 }
 
+/// The roots with only the CA and `failures`.
+fn failing(failures: Vec<String>) -> os::Roots {
+    os::Roots {
+        certificates: vec![super::CA.to_vec()],
+        failures,
+        source: os::Source::Store,
+    }
+}
+
+/// The roots with only the CA and `count` failures.
+fn failed(count: usize) -> os::Roots {
+    failing((0..count).map(|n| format!("failure {n}")).collect())
+}
+
+/// The warnings of the first `count` failures of `failed`.
+fn listed(count: usize) -> Vec<String> {
+    (0..count)
+        .map(|n| {
+            format!("{WARN} a part of the OS roots was not read error=\"failure {n}\"")
+        })
+        .collect()
+}
+
+#[test]
+fn a_node_warns_of_the_first_16_failures_of_its_roots_and_counts_the_rest() {
+    let mut expected = listed(16);
+    expected.push(format!(
+        "{WARN} more parts of the OS roots were not read unlisted=1 source=\"the OS \
+         store\""
+    ));
+    assert_eq!(warned(failed(17)), expected);
+}
+
+#[test]
+fn the_count_of_the_failures_of_the_roots_gives_the_paths_that_were_read() {
+    let roots = os::Roots {
+        source: os::Source::Paths {
+            file: Some("/roots.pem".into()),
+            dirs: vec!["/a".into(), "/b".into()],
+        },
+        ..failed(17)
+    };
+    let lines = warned(roots);
+    assert_eq!(
+        lines.last().map(String::as_str),
+        Some(
+            format!(
+                "{WARN} more parts of the OS roots were not read unlisted=1 \
+                 source=\"SSL_CERT_FILE=/roots.pem SSL_CERT_DIR=/a:/b\""
+            )
+            .as_str()
+        )
+    );
+}
+
+#[test]
+fn a_long_source_of_the_roots_is_cut_on_the_count_line() {
+    let dir = format!("/{}", long(3000));
+    let roots = os::Roots {
+        source: os::Source::Paths {
+            file: None,
+            dirs: vec![dir.clone().into()],
+        },
+        ..failed(17)
+    };
+    let source = format!("SSL_CERT_DIR={dir}");
+    let (head, tail) = (&source[..510], &source[source.len() - 510..]);
+    assert_eq!(
+        warned(roots).last(),
+        Some(&format!(
+            "{WARN} more parts of the OS roots were not read unlisted=1 \
+             source=\"{head}…{tail}\""
+        ))
+    );
+}
+
+#[test]
+fn a_node_with_16_failures_of_its_roots_warns_of_each_with_no_count() {
+    assert_eq!(warned(failed(16)), listed(16));
+}
+
+/// Whether `lines` hold `started`.
+fn started(lines: &[String]) -> bool {
+    lines.iter().any(|line| line.contains(" node: started "))
+}
+
+#[test]
+fn many_roots_failures_keep_started() {
+    let lines = logged(failed(1100), tracing::Level::INFO);
+    assert!(started(&lines), "`started` in the log: {lines:?}");
+}
+
+/// A failure of `bytes`, as a PEM line of that length gives.
+fn long(bytes: usize) -> String {
+    "x".repeat(bytes)
+}
+
+#[test]
+fn a_long_failure_of_the_roots_warns_with_its_head_and_its_tail() {
+    let failure = format!("head {} tail", long(3000));
+    let lines = warned(failing(vec![failure.clone()]));
+    let (head, tail) = (&failure[..510], &failure[failure.len() - 510..]);
+    assert_eq!(
+        lines,
+        [format!(
+            "{WARN} a part of the OS roots was not read error=\"{head}…{tail}\""
+        )]
+    );
+}
+
+#[test]
+fn a_failure_of_the_roots_of_1024_bytes_warns_whole_and_one_of_1025_is_cut() {
+    let whole = long(1024);
+    assert_eq!(
+        warned(failing(vec![whole.clone()])),
+        [format!(
+            "{WARN} a part of the OS roots was not read error={whole}"
+        )]
+    );
+    let failure = long(1025);
+    let (head, tail) = (&failure[..510], &failure[failure.len() - 510..]);
+    assert_eq!(
+        warned(failing(vec![failure.clone()])),
+        [format!(
+            "{WARN} a part of the OS roots was not read error={head}…{tail}"
+        )]
+    );
+}
+
+#[test]
+fn a_long_failure_of_the_roots_is_cut_at_char_boundaries() {
+    let failure = format!("a{}b", "é".repeat(1000));
+    let (head, tail) = (&failure[..509], &failure[failure.len() - 509..]);
+    assert_eq!(
+        warned(failing(vec![failure.clone()])),
+        [format!(
+            "{WARN} a part of the OS roots was not read error={head}…{tail}"
+        )]
+    );
+}
+
+#[test]
+fn a_failure_of_the_roots_larger_than_the_log_queue_keeps_started() {
+    let lines = logged(failing(vec![long(1200 * 1024)]), tracing::Level::INFO);
+    assert!(started(&lines), "`started` in the log: {lines:?}");
+}
+
+#[test]
+fn sixteen_failures_of_the_roots_larger_than_the_log_queue_keep_started() {
+    let lines = logged(failing(vec![long(72 * 1024); 16]), tracing::Level::INFO);
+    assert!(started(&lines), "`started` in the log: {lines:?}");
+}
+
+#[test]
+fn failures_of_the_roots_whose_escapes_grow_them_keep_started() {
+    let path = "\u{1}".repeat(131_000);
+    let failure = format!("failed to open file: File name too long at '/{path}'");
+    let lines = logged(failing(vec![failure; 16]), tracing::Level::INFO);
+    assert!(started(&lines), "`started` in the log: {lines:?}");
+}
+
 #[test]
 fn a_node_with_no_root_warns_that_an_https_connect_with_no_ca_fails() {
     assert_eq!(warned(os::Roots::default()), [NONE]);
     let roots = os::Roots {
         certificates: vec![b"not DER".to_vec()],
-        failures: Vec::new(),
+        ..os::Roots::default()
     };
     assert_eq!(warned(roots), [SKIPPED, NONE]);
 }
@@ -648,6 +814,104 @@ fn a_line_after_the_shards_end_comes_before_stopped() {
             "2026-01-01T00:00:01.000004Z INFO node: stopped",
         ]
     );
+}
+
+#[test]
+fn a_node_whose_thread_log_cannot_start_fails_its_start() {
+    let (mut sim, host) = host(1);
+    host.fail_thread("log");
+    let lines = Lines::default();
+    let node = Node::start(Config {
+        log: to(&lines, false, tracing::Level::INFO),
+        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+    });
+    let e = node.join().unwrap_err();
+    assert_eq!(
+        e,
+        Error::Start(env::thread::Error::Start {
+            name: "log".into(),
+            reason: "injected".into()
+        })
+    );
+    assert_eq!(e.to_string(), "cannot start thread log: injected");
+    assert_eq!(sim.run(), Ok(()));
+    assert!(host.shard_starts().is_empty(), "no shard starts");
+    assert_eq!(
+        lines.read(),
+        [
+            "2026-01-01T00:00:00.000000Z ERROR node: stopped error=\"cannot start \
+             thread log: injected\" mesh_time=none"
+        ]
+    );
+}
+
+#[test]
+fn a_wait_after_the_log_has_ended_with_no_line_starts_no_thread_log() {
+    let (mut sim, host) = host(1);
+    let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+    let log = node.flush();
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    node.stop();
+    assert_eq!(sim.run(), Ok(()));
+    assert_eq!(node.join(), Ok(()));
+    assert_eq!(sim.run(), Ok(()));
+    host.fail_thread("log");
+    assert!(log.wait(Duration::ZERO), "the wait starts no thread log");
+}
+
+#[test]
+fn a_thread_log_that_cannot_start_at_the_join_keeps_its_lines_for_the_wait() {
+    let (mut sim, host) = host(1);
+    let lines = Lines::default();
+    let node = Node::start(Config {
+        log: to(&lines, false, tracing::Level::INFO),
+        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+    });
+    let log = node.flush();
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    node.stop();
+    assert_eq!(sim.run(), Ok(()));
+    host.fail_thread("log");
+    assert_eq!(node.join(), Ok(()));
+    assert_eq!(sim.run(), Ok(()));
+    assert_eq!(lines.read().len(), 1, "`stopped` waits for the wait");
+    assert!(!log.wait(Duration::ZERO), "the thread log runs");
+    assert_eq!(sim.run(), Ok(()));
+    assert!(log.wait(Duration::ZERO), "the thread log wrote `stopped`");
+    assert_eq!(
+        lines.read(),
+        [
+            "2026-01-01T00:00:00.004198Z INFO node: started name=edge \
+             address=10.0.0.1:7000 shards=4",
+            "2026-01-01T00:00:01.000004Z INFO node: stopped",
+        ]
+    );
+}
+
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test bounds a real-time wait"
+)]
+fn a_wait_whose_thread_log_cannot_start_ends_at_once() {
+    let (mut sim, host) = host(1);
+    let lines = Lines::default();
+    let log = opened(&host, false, Box::new(lines.clone()));
+    tracing::dispatcher::with_default(&log.dispatch, numbered(0, 1));
+    host.fail_thread("log");
+    let start = std::time::Instant::now();
+    assert!(
+        !log.wait(Duration::from_secs(30)),
+        "the thread cannot start"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
+    assert!(!log.wait(Duration::ZERO), "the next wait starts the thread");
+    assert_eq!(sim.run(), Ok(()));
+    assert_eq!(lines.read(), [number(0)]);
 }
 
 /// The lines of `lines` with no stamp.

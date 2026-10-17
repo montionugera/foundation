@@ -34,6 +34,7 @@ mod task;
 #[cfg(test)]
 #[cfg(not(loom))]
 mod tests;
+mod trust;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -109,9 +110,11 @@ pub struct Config<M> {
     /// gives `std::env::vars_os()`.
     pub vars: BTreeMap<OsString, OsString>,
     /// The CA certificates that each `https` connect of a connector trusts. Main gives
-    /// [`os::roots`]. Shard 0 logs a warning for each failure, for the count of
-    /// certificates that do not parse, and when no certificate is left. It logs each
-    /// of them also with [`Region::Absent`], which runs no connector.
+    /// [`os::roots`]. Shard 0 logs a warning for each of the first 16 failures, its
+    /// text cut to 1024 bytes, one for the count of the rest with the
+    /// [`os::Source`] of the read, cut the same way, one for the count of certificates
+    /// that do not parse, and one when no certificate is left. It logs each of them
+    /// also with [`Region::Absent`], which runs no connector.
     pub roots: os::Roots,
     /// Where and how the node writes its log. Each shard writes the events of its
     /// thread there, and [`Node::join`] the event `stopped`.
@@ -434,8 +437,9 @@ impl Node {
 
     /// Blocks until every shard has ended, then writes the event `stopped` to the log:
     /// INFO, or ERROR with the field `error`. Does not wait for the log to write it:
-    /// call [`Flush::wait`], or under `sim`, run the sim again. Call it on a thread
-    /// that `env` did not start. Under `sim`, run the sim to its end first.
+    /// call [`Flush::wait`], or under `sim`, run the sim again. When the thread `log`
+    /// cannot start here, the line waits for [`Flush::wait`]. Call it on a thread that
+    /// `env` did not start. Under `sim`, run the sim to its end first.
     ///
     /// # Errors
     ///
@@ -900,26 +904,6 @@ struct Serve {
     shards: usize,
 }
 
-/// The roots of `roots`. Logs a warning for each failure of the read, for the count of
-/// certificates that do not parse, and when no certificate is left.
-fn trust(roots: &os::Roots) -> connector::http::Roots {
-    for error in &roots.failures {
-        tracing::warn!(%error, "a part of the OS roots was not read");
-    }
-    let (trusted, skipped) =
-        connector::http::Roots::from_der(roots.certificates.iter().map(Vec::as_slice));
-    if skipped > 0 {
-        tracing::warn!(skipped, "OS roots that do not parse are skipped");
-    }
-    if trusted.empty() {
-        tracing::warn!(
-            "the OS roots hold no certificate, so an https connect with no CA of its \
-             connector fails"
-        );
-    }
-    trusted
-}
-
 /// What shard 0 binds the node's port with, once it claimed the data directory.
 struct Bind {
     listen: SocketAddr,
@@ -1224,7 +1208,7 @@ impl Serve {
                 secret::Resolver::new(vars, files.clone(), &directory::secrets());
             let serve = pin!(async move {
                 // `hold` polls `serve` only once the file `address` holds the address.
-                let trusted = trust(&roots);
+                let trusted = trust::roots(&roots);
                 drop(roots);
                 tracing::info!(%name, address = %address.bound, shards, "started");
                 let region = mesh.clone().map(|mesh| hub::Region {

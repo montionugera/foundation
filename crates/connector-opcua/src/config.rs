@@ -7,7 +7,7 @@ use std::ffi::CString;
 use connector::kind;
 use document::diagnostic::{Code, Diagnostic, Note};
 use document::value::Value;
-use document::{Block, Document, read};
+use document::{Attribute, Block, Document, Label, Map, read};
 use types::name::Name;
 use types::time::Rate;
 
@@ -168,6 +168,43 @@ fn reads(config: &Document, diagnostics: &mut Vec<Diagnostic>) -> Vec<Read> {
         }
     }
     reads
+}
+
+/// The `read` block of the node `tag` as the channel `channel`, as
+/// [`Kind::block`](connector::kind::Kind::block) asks: `read "<channel>" { node_id =
+/// "<tag>" }`.
+pub(crate) fn block(tag: &str, channel: &Name) -> Result<Vec<Block>, Vec<Diagnostic>> {
+    let value = Value {
+        kind: document::value::Kind::String(tag.into()),
+        span: None,
+    };
+    node(&value).map_err(|mut error| {
+        error.message = format!("the tag {tag:?}: {}", error.message);
+        vec![error]
+    })?;
+    Ok(vec![read_block(channel, value)])
+}
+
+/// `read "<channel>" { node_id = <node_id> }`.
+fn read_block(channel: &Name, node_id: Value) -> Block {
+    let node_id = Attribute {
+        key: "node_id".into(),
+        key_span: None,
+        value: node_id,
+    };
+    Block {
+        keyword: "read".into(),
+        keyword_span: None,
+        labels: vec![Label {
+            text: channel.as_str().into(),
+            span: None,
+        }],
+        body: Document {
+            attributes: Map::new(vec![node_id]).expect("invariant: one key"),
+            blocks: Vec::new(),
+        },
+        span: None,
+    }
 }
 
 /// Reads a node ID, such as `"ns=3;s=SpikeData"`.

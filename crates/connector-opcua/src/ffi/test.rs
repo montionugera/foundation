@@ -177,19 +177,6 @@ unsafe extern "C" {
         chunks: u32,
     ) -> *mut Server;
     pub(crate) fn UA_Server_run_startup(server: *mut Server) -> u32;
-    pub(crate) fn shim_server_add_scalar(
-        server: *mut Server,
-        node: Node<'_>,
-        value: *const super::Scalar,
-        kind: u16,
-    ) -> u32;
-    pub(crate) fn shim_server_add_doubles(server: *mut Server, node: Node<'_>) -> u32;
-    pub(crate) fn shim_server_add_string(server: *mut Server, node: Node<'_>) -> u32;
-    pub(crate) fn shim_server_add_bytes(
-        server: *mut Server,
-        node: Node<'_>,
-        size: usize,
-    ) -> u32;
     pub(crate) fn shim_server_limits(
         server: *mut Server,
         buffer: u32,
@@ -198,6 +185,9 @@ unsafe extern "C" {
     );
     pub(crate) fn shim_client_receive(client: *mut super::Client, size: u32);
     pub(crate) fn shim_server_reads(server: *mut Server, most: u32);
+    pub(crate) fn shim_server_references(server: *mut Server, most: u32);
+    pub(crate) fn shim_server_browses(server: *mut Server, browse: u32, translate: u32);
+    pub(crate) fn shim_server_count_browses(server: *mut Server) -> *const usize;
     pub(crate) fn UA_Client_getConnectionAttribute(
         client: *mut super::Client,
         key: QualifiedName,
@@ -218,6 +208,59 @@ unsafe extern "C" {
         server: *mut Server,
         node: Node<'_>,
         id: *mut u32,
+    ) -> u32;
+    pub(crate) fn shim_server_add_folder(
+        server: *mut Server,
+        node: Node<'_>,
+        parent: Node<'_>,
+        reference: u32,
+        name: *const std::ffi::c_char,
+        display: *const std::ffi::c_char,
+    ) -> u32;
+    pub(crate) fn shim_server_add_guid(server: *mut Server, parent: Node<'_>) -> u32;
+    pub(crate) fn shim_server_add_variable(
+        server: *mut Server,
+        node: Node<'_>,
+        parent: Node<'_>,
+        reference: u32,
+        name: *const std::ffi::c_char,
+        data_type: Node<'_>,
+        rank: i32,
+        access: u8,
+        encoded: *const u8,
+        size: usize,
+    ) -> u32;
+    pub(crate) fn shim_server_add_data_type(
+        server: *mut Server,
+        node: Node<'_>,
+        parent: Node<'_>,
+        name: *const std::ffi::c_char,
+    ) -> u32;
+    pub(crate) fn shim_server_add_unit(
+        server: *mut Server,
+        node: Node<'_>,
+        variable: Node<'_>,
+        uri: *const std::ffi::c_char,
+        text: *const std::ffi::c_char,
+        code: i32,
+    ) -> u32;
+    pub(crate) fn shim_server_add_reference(
+        server: *mut Server,
+        source: Node<'_>,
+        reference: u32,
+        target: Node<'_>,
+    ) -> u32;
+    pub(crate) fn shim_server_delete_reference(
+        server: *mut Server,
+        source: Node<'_>,
+        reference: u32,
+        target: Node<'_>,
+    ) -> u32;
+    pub(crate) fn shim_server_add_view(
+        server: *mut Server,
+        node: Node<'_>,
+        parent: Node<'_>,
+        name: *const std::ffi::c_char,
     ) -> u32;
     pub(crate) fn UA_Server_run_shutdown(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_delete(server: *mut Server) -> u32;

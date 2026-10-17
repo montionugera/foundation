@@ -11,6 +11,9 @@ exclude_re = [
   # A larger size only allocates more for a decoded value, and no count sees it.
   # `fuzz::tests` checks the sizes.
   'crates/connector-opcua/src/ffi\.rs:.*replace & with (\||\^) in DataType::size',
+  # The bits of the type id and of the array flag of a mask are disjoint, so `^` gives
+  # the mask that `|` gives.
+  'crates/connector-opcua/src/server\.rs:.*replace \| with \^ in doubles$',
   # Benchmarks ship in no binary; the run itself checks them.
   '^bench/',
   # `main` reads the arguments and calls a task. Each task has its own tests.

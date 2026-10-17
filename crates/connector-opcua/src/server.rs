@@ -12,7 +12,7 @@ use std::task::Poll;
 
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
-use crate::node::{Key, Node};
+use crate::node::{Key, Node, ns0};
 use crate::value::Value;
 #[cfg(test)]
 use types::time::Span;
@@ -119,37 +119,57 @@ impl Server {
         unsafe { ffi::test::UA_Server_addNamespace(self.raw(), uri.as_ptr()) }
     }
 
-    /// Adds the variable `node` with `value`.
+    /// Adds the variable `node` with `value`, of its type, under the Objects folder.
     ///
     /// # Panics
     ///
     /// If open62541 refuses the node, or the key of `node` is the number 0.
     pub(crate) fn add_scalar(&self, node: &Node, value: Value) {
-        let (scalar, kind) = value.raw();
-        // SAFETY: the server lives, and it copies the name of `node` and `scalar`.
+        let (id, value) = variant(value);
+        self.add_variable(&objects(node, c"value", id, value));
+    }
+
+    /// Adds `variable`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node or the decode of its value, or the key of its node
+    /// is the number 0.
+    pub(crate) fn add_variable(&self, variable: &Variable) {
+        let (value, size) = variable
+            .value
+            .as_ref()
+            .map_or((std::ptr::null(), 0), |value| (value.as_ptr(), value.len()));
+        // SAFETY: the server lives, and it copies each name and the decoded value.
         let status = Status(unsafe {
-            ffi::test::shim_server_add_scalar(
+            ffi::test::shim_server_add_variable(
                 self.raw(),
-                added(node),
-                &raw const scalar,
-                kind,
+                added(&variable.node),
+                (&variable.parent).into(),
+                variable.reference,
+                variable.name.as_ptr(),
+                (&variable.data_type).into(),
+                variable.rank,
+                variable.access,
+                value,
+                size,
             )
         });
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
 
-    /// Adds the variable `node` with an array of two Doubles.
+    /// Adds the variable `node` with an array of two Doubles, under the Objects
+    /// folder.
     ///
     /// # Panics
     ///
     /// If open62541 refuses the node, or the key of `node` is the number 0.
     #[cfg(test)]
     pub(crate) fn add_doubles(&self, node: &Node) {
-        // SAFETY: the server lives, and it copies the name of `node`.
-        let status = Status(unsafe {
-            ffi::test::shim_server_add_doubles(self.raw(), added(node))
+        self.add_variable(&Variable {
+            rank: 1,
+            ..objects(node, c"doubles", ns0::DOUBLE, doubles())
         });
-        assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
 
     /// Adds the scalar variable `node` of the `DataType` `BaseDataType`, and answers
@@ -178,6 +198,13 @@ impl Server {
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
         // SAFETY: it lives, and the server reads it only while the loop runs.
         unsafe { (*source.as_ptr()).added = true };
+    }
+
+    /// Caps each page of a Browse of the server at `most` references.
+    #[cfg(feature = "sim")]
+    pub(crate) fn cap_references(&self, most: u32) {
+        // SAFETY: the server lives.
+        unsafe { ffi::test::shim_server_references(self.raw(), most) };
     }
 
     /// Makes `answer` answer each later read of the variable `node`, which open62541
@@ -250,32 +277,33 @@ impl Server {
         id
     }
 
-    /// Adds the variable `node` with the String `text`.
+    /// Adds the variable `node` with the String `text`, under the Objects folder.
     ///
     /// # Panics
     ///
     /// If open62541 refuses the node, or the key of `node` is the number 0.
     #[cfg(test)]
     pub(crate) fn add_string(&self, node: &Node) {
-        // SAFETY: the server lives, and it copies the name of `node`.
-        let status = Status(unsafe {
-            ffi::test::shim_server_add_string(self.raw(), added(node))
-        });
-        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+        let text = [&4_i32.to_le_bytes()[..], b"text"].concat();
+        let value = scalar(ns0::STRING, &text);
+        self.add_variable(&objects(node, c"string", ns0::STRING, value));
     }
 
-    /// Adds the variable `node` with a `ByteString` of `length` zero bytes.
+    /// Adds the variable `node` with a `ByteString` of `size` zero bytes, under the
+    /// Objects folder.
     ///
     /// # Panics
     ///
-    /// If open62541 refuses the node, or the key of `node` is the number 0.
+    /// If open62541 refuses the node, `size` is past `i32::MAX`, or the key of `node`
+    /// is the number 0.
     #[cfg(test)]
     pub(crate) fn add_bytes(&self, node: &Node, size: usize) {
-        // SAFETY: the server lives, and it copies the name of `node`.
-        let status = Status(unsafe {
-            ffi::test::shim_server_add_bytes(self.raw(), added(node), size)
-        });
-        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+        let length =
+            i32::try_from(size).expect("a ByteString of at most i32::MAX bytes");
+        let mut bytes = length.to_le_bytes().to_vec();
+        bytes.resize(4 + size, 0);
+        let value = scalar(ns0::BYTE_STRING, &bytes);
+        self.add_variable(&objects(node, c"bytes", ns0::BYTE_STRING, value));
     }
 
     /// Refuses each Read of more than `most` nodes, 0 for none, with
@@ -308,11 +336,193 @@ impl Server {
     /// On a second call, as open62541 refuses the second add of the variable.
     pub(crate) fn set_per_read(&self, most: u32) {
         self.refuse_reads_past(most);
-        let node = Node {
-            namespace: 0,
-            key: Key::Number(ffi::MAX_NODES_PER_READ),
-        };
-        self.add_scalar(&node, Value::U32(most));
+        self.add_scalar(&Node::ns0(ffi::MAX_NODES_PER_READ), Value::U32(most));
+    }
+
+    /// Sets the `MaxNodesPerBrowse` of the server to `browse` and its
+    /// `MaxNodesPerTranslateBrowsePathsToNodeIds` to `translate`, each 0 for none, and
+    /// adds the variables `ns=0;i=11710` and `ns=0;i=11712` that give them.
+    ///
+    /// # Panics
+    ///
+    /// On a second call, as open62541 refuses the second add of each variable.
+    #[cfg(test)]
+    pub(crate) fn set_per_browse(&self, browse: u32, translate: u32) {
+        // SAFETY: the server lives.
+        unsafe { ffi::test::shim_server_browses(self.raw(), browse, translate) };
+        for (number, most) in [(11710, browse), (11712, translate)] {
+            self.add_scalar(&Node::ns0(number), Value::U32(most));
+        }
+    }
+
+    /// Counts each Browse request that the server processes from now.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 cannot allocate the count.
+    #[cfg(test)]
+    pub(crate) fn count_browses(&self) -> Browses<'_> {
+        // SAFETY: the server lives.
+        let count = unsafe { ffi::test::shim_server_count_browses(self.raw()) };
+        Browses {
+            count: NonNull::new(count.cast_mut())
+                .expect("open62541 allocates the count"),
+            server: std::marker::PhantomData,
+        }
+    }
+
+    /// Adds the folder `node` with the browse name `name` and the display name
+    /// `display`, under `parent` by the reference type of the number `reference` in
+    /// namespace 0.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
+    pub(crate) fn add_folder(
+        &self,
+        node: &Node,
+        parent: &Node,
+        reference: u32,
+        name: &CStr,
+        display: &CStr,
+    ) {
+        // SAFETY: the server lives, and it copies each name.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_folder(
+                self.raw(),
+                added(node),
+                parent.into(),
+                reference,
+                name.as_ptr(),
+                display.as_ptr(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Adds the folder of a GUID in namespace 1 with the browse and display name
+    /// `guid`, under `parent` by `Organizes`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node.
+    pub(crate) fn add_guid(&self, parent: &Node) {
+        // SAFETY: the server lives, and it copies the name of `parent`.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_guid(self.raw(), parent.into())
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Adds the data type `node` with the browse name `name`, a subtype of `parent`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
+    pub(crate) fn add_data_type(&self, node: &Node, parent: &Node, name: &CStr) {
+        // SAFETY: the server lives, and it copies each name.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_data_type(
+                self.raw(),
+                added(node),
+                parent.into(),
+                name.as_ptr(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Adds the property `0:EngineeringUnits` `node` of `variable`, an
+    /// `EUInformation` of the `namespaceUri` `uri`, the display name `text`, and the
+    /// `unitId` `code`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
+    pub(crate) fn add_unit(
+        &self,
+        node: &Node,
+        variable: &Node,
+        uri: &CStr,
+        text: &CStr,
+        code: i32,
+    ) {
+        // SAFETY: the server lives, and it copies each name and text.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_unit(
+                self.raw(),
+                added(node),
+                variable.into(),
+                uri.as_ptr(),
+                text.as_ptr(),
+                code,
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Adds a reference of the type of the number `reference` in namespace 0 from
+    /// `source` to `target`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the reference.
+    pub(crate) fn add_reference(&self, source: &Node, reference: u32, target: &Node) {
+        // SAFETY: the server lives, and it copies each name.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_reference(
+                self.raw(),
+                source.into(),
+                reference,
+                target.into(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the reference");
+    }
+
+    /// Adds the view `node` with the browse and display name `name`, under `parent` by
+    /// `Organizes`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
+    #[cfg(test)]
+    pub(crate) fn add_view(&self, node: &Node, parent: &Node, name: &CStr) {
+        // SAFETY: the server lives, and it copies each name.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_view(
+                self.raw(),
+                added(node),
+                parent.into(),
+                name.as_ptr(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Deletes the reference of the type of the number `reference` in namespace 0
+    /// from `source` to `target`, in both directions.
+    ///
+    /// # Panics
+    ///
+    /// If the server has no such reference.
+    #[cfg(test)]
+    pub(crate) fn delete_reference(
+        &self,
+        source: &Node,
+        reference: u32,
+        target: &Node,
+    ) {
+        // SAFETY: the server lives, and it copies each name.
+        let status = Status(unsafe {
+            ffi::test::shim_server_delete_reference(
+                self.raw(),
+                source.into(),
+                reference,
+                target.into(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the delete");
     }
 
     /// Gives the server, for a call that reads or changes it.
@@ -426,6 +636,112 @@ pub(crate) struct Limits {
     pub(crate) message: u32,
     /// The `MaxChunkCount`.
     pub(crate) chunks: u32,
+}
+
+/// The count of the Browse requests of a [`Server`], from [`Server::count_browses`].
+#[cfg(test)]
+pub(crate) struct Browses<'s> {
+    /// Lives until the delete of the server.
+    count: NonNull<usize>,
+    server: std::marker::PhantomData<&'s Server>,
+}
+
+#[cfg(test)]
+impl Browses<'_> {
+    /// Gives the count.
+    pub(crate) fn get(&self) -> usize {
+        // SAFETY: the server lives, and runs on this thread.
+        unsafe { self.count.read() }
+    }
+}
+
+/// A variable of [`Server::add_variable`].
+pub(crate) struct Variable {
+    /// Its node, whose key is not the number 0.
+    pub(crate) node: Node,
+    /// The node that it is under, by `reference`.
+    pub(crate) parent: Node,
+    /// Its reference type from `parent`, by its number in namespace 0.
+    pub(crate) reference: u32,
+    /// Its browse and display name.
+    pub(crate) name: &'static CStr,
+    /// Its `DataType`.
+    pub(crate) data_type: Node,
+    /// Its `ValueRank`. The rank 1 also gives it the `ArrayDimensions` 0.
+    pub(crate) rank: i32,
+    /// Its `AccessLevel` and `UserAccessLevel`.
+    pub(crate) access: u8,
+    /// The OPC UA binary encoding of its value, a `Variant`, or `None` for no value.
+    pub(crate) value: Option<Vec<u8>>,
+}
+
+/// The `AccessLevel` bit `CurrentRead`.
+pub(crate) const READ: u8 = 1;
+
+/// The scalar variable `node` under the Objects folder by `Organizes`, of the browse
+/// name `name`, the `DataType` of the number `data_type` in namespace 0, the access
+/// [`READ`], and the encoded `Variant` `value`.
+fn objects(
+    node: &Node,
+    name: &'static CStr,
+    data_type: u32,
+    value: Vec<u8>,
+) -> Variable {
+    Variable {
+        node: node.clone(),
+        parent: Node::ns0(ns0::OBJECTS),
+        reference: ns0::ORGANIZES,
+        name,
+        data_type: Node::ns0(data_type),
+        rank: -1,
+        access: READ,
+        value: Some(value),
+    }
+}
+
+/// The OPC UA binary encoding of a scalar `Variant` of the built-in type of the number
+/// `id` in namespace 0, whose value has the encoding `encoded`.
+///
+/// # Panics
+///
+/// If `id` is past 63, which the mask of a `Variant` cannot hold.
+pub(crate) fn scalar(id: u32, encoded: &[u8]) -> Vec<u8> {
+    let mask = u8::try_from(id)
+        .ok()
+        .filter(|mask| *mask < 64)
+        .expect("a built-in type of at most 63");
+    [&[mask][..], encoded].concat()
+}
+
+/// The OPC UA binary encoding of a `Variant` of the Doubles 1.5 and 2.5.
+pub(crate) fn doubles() -> Vec<u8> {
+    let mask = u8::try_from(ns0::DOUBLE).expect("invariant: Double is 11") | 0x80;
+    [
+        &[mask][..],
+        &2_i32.to_le_bytes(),
+        &1.5_f64.to_le_bytes(),
+        &2.5_f64.to_le_bytes(),
+    ]
+    .concat()
+}
+
+/// The number in namespace 0 of the built-in type of `value`, and the OPC UA binary
+/// encoding of a scalar `Variant` that holds `value`.
+pub(crate) fn variant(value: Value) -> (u32, Vec<u8>) {
+    let (id, encoded) = match value {
+        Value::Bool(boolean) => (1, vec![u8::from(boolean)]),
+        Value::I8(sbyte) => (2, sbyte.to_le_bytes().to_vec()),
+        Value::U8(byte) => (3, vec![byte]),
+        Value::I16(int16) => (4, int16.to_le_bytes().to_vec()),
+        Value::U16(uint16) => (5, uint16.to_le_bytes().to_vec()),
+        Value::I32(int32) => (6, int32.to_le_bytes().to_vec()),
+        Value::U32(uint32) => (7, uint32.to_le_bytes().to_vec()),
+        Value::I64(int64) => (8, int64.to_le_bytes().to_vec()),
+        Value::U64(uint64) => (9, uint64.to_le_bytes().to_vec()),
+        Value::F32(float) => (10, float.to_le_bytes().to_vec()),
+        Value::F64(double) => (11, double.to_le_bytes().to_vec()),
+    };
+    (id, scalar(id, &encoded))
 }
 
 /// `node` for an add.

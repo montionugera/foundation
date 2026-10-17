@@ -81,7 +81,8 @@ impl Flush {
     /// each line that had dropped, or until `bound` passes or the writer panics. Once
     /// each shard has ended, also blocks until the thread `log` has ended, and joins
     /// it. Returns `false` when `bound` passed first, the thread could not start, or
-    /// the writer panicked. Blocks on real time: for `main` only, never in sim.
+    /// the writer panicked. Blocks on real time: for `main`. Under `sim`, use only a
+    /// `bound` of zero, which starts the thread `log` for the next run of the sim.
     ///
     /// # Panics
     ///

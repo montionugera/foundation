@@ -18,7 +18,7 @@ use hub::reader::{Ended, Received};
 use types::time::Span;
 
 use crate::batch::{Ack, Batch, Taken};
-use crate::{CONFIRMED, Config, LOST, Target};
+use crate::{CONFIRMED, Config, LOST, OVERSIZED, Target};
 
 /// The longest name of a database, bucket, or org, in bytes.
 pub(crate) const NAME_MAX: usize = 4_096;
@@ -39,16 +39,16 @@ const RETRY: retry::Config = retry::Config {
 
 enum Event<'a> {
     Cancelled,
-    /// What the batch that InfluxDB took acks and counts, or the error of a read of
-    /// the token.
-    Sent(Result<Ack, Error>),
+    /// What the batch that InfluxDB took acks and counts.
+    Sent(Ack),
     Frame(Result<Received<'a>, Ended>),
 }
 
 /// Writes the frames of the run's reader to InfluxDB until the cancel, with one
 /// request in flight. While one is in flight it reads the next batch, up to 5,000
-/// lines, and acks a batch and counts its samples and lost seqs only after InfluxDB
-/// answers 204.
+/// lines or 4 MiB of them, and acks a batch and counts its samples, lost seqs, and
+/// oversized samples only after InfluxDB answers 204, or with no request when the
+/// batch holds no line.
 pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let mut reader = ctx.reader().expect("invariant: check gives a reader");
     let ctx = &ctx;
@@ -57,22 +57,21 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let uri = write_uri(&config.address, &config.target);
     let token = RefCell::new(Token::read(ctx).await?);
     let (confirmed, lost) = (ctx.count(CONFIRMED), ctx.count(LOST));
-    let mut batch = Batch::new(&config.measurement, &config.target, ctx.name());
+    let oversized = ctx.count(OVERSIZED);
+    let mut batch = Batch::new(config.measurement.clone(), &config.target, ctx.name());
     let mut cancelled = pin!(ctx.cancel().wait());
     let mut flight = pin!(None);
     loop {
         if flight.is_none()
             && let Some(Taken { body, ack }) = batch.take()
         {
-            if body.is_empty() {
-                reader.ack(ack.position);
-            } else {
-                let (client, uri, token) = (&client, &uri, &token);
-                flight.set(Some(async move {
-                    send(client, ctx, uri, token, body.into()).await?;
-                    Ok(ack)
-                }));
-            }
+            let (client, uri, token) = (&client, &uri, &token);
+            flight.set(Some(async move {
+                if !body.is_empty() {
+                    send(client, ctx, uri, token, body.into()).await;
+                }
+                ack
+            }));
         }
         let full = batch.full();
         let event = {
@@ -98,12 +97,12 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
         };
         match event {
             Event::Cancelled => return Ok(()),
-            Event::Sent(Err(error)) => return Err(error),
-            Event::Sent(Ok(ack)) => {
+            Event::Sent(ack) => {
                 flight.set(None);
                 reader.ack(ack.position);
                 confirmed.add(ack.samples);
                 lost.add(ack.lost);
+                oversized.add(ack.oversized);
             }
             Event::Frame(Ok(received)) => batch.add(&received)?,
             Event::Frame(Err(ended)) => return Err(ended.into()),
@@ -154,39 +153,35 @@ async fn client(ctx: &Context<Config>) -> Result<Client, Error> {
 
 /// What an attempt that failed makes the next attempt read again.
 enum Read {
-    Nothing,
     Token,
     Ca,
 }
 
 /// Sends `body` until InfluxDB answers 204. Shows each other answer as the run's
-/// error, with the fix for a 400, a 404, or a 422, and waits a backoff before the
-/// next attempt. After a 401 or a 403, it reads the token again before that attempt,
-/// and after a TLS failure of a run with a `ca`, the `ca` and a new `client`. Never
-/// ends after the cancel of the run, which the caller sees first.
-///
-/// # Errors
-///
-/// The error of [`Token::read`] when a read of the token fails, and that of
-/// [`client`] when a read of the `ca` fails.
+/// error, with the fix for a 400, a 404, a 413, or a 422, and waits a backoff before
+/// the next attempt. After a 401 or a 403, it reads the token again before that
+/// attempt, and after a TLS failure of a run with a `ca`, the `ca` and a new `client`.
+/// A read that fails shows its error and keeps the old value, and `send` makes it again
+/// after each backoff, with no attempt, until it gives a value. Never ends after the
+/// cancel of the run, which the caller sees first.
 async fn send(
     client: &RefCell<Rc<Client>>,
     ctx: &Context<Config>,
     uri: &Uri,
     token: &RefCell<Option<Token>>,
     body: Bytes,
-) -> Result<(), Error> {
+) {
     let mut backoff = None;
     loop {
         let request = request(uri, &body, token.borrow().as_ref());
         // A block, so that `answer` does not grow the future across the backoff.
         let read = {
             let sending = Rc::clone(&client.borrow());
-            let mut read = Read::Nothing;
+            let mut read = None;
             let answer = match sending.send(request).await {
                 Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
                     ctx.clear_error();
-                    return Ok(());
+                    return;
                 }
                 Ok(answer) => Some((answer.status(), answer.into_body())),
                 Err(connector::http::Error::TooLarge { status, body, .. }) => {
@@ -199,7 +194,7 @@ async fn send(
                         ctx.error(&format_args!(
                             "the write to InfluxDB failed: {error}. Check the ca {ca}"
                         ));
-                        read = Read::Ca;
+                        read = Some(Read::Ca);
                     } else {
                         ctx.error(&format_args!(
                             "the write to InfluxDB failed: {error}"
@@ -215,7 +210,7 @@ async fn send(
                     matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
                 let source = ctx.config().token.as_ref().filter(|_| token);
                 if source.is_some() {
-                    read = Read::Token;
+                    read = Some(Read::Token);
                 }
                 match source {
                     Some(source) => ctx.error(&format_args!(
@@ -231,19 +226,40 @@ async fn send(
         };
         let backoff =
             backoff.get_or_insert_with(|| Backoff::new(ctx.clock(), ctx.rng(), RETRY));
-        if !backoff.wait(ctx.cancel()).await {
-            future::pending::<()>().await;
-        }
-        // Boxed, so each rare read does not grow the future of `send`.
-        match read {
-            Read::Nothing => {}
-            Read::Token => *token.borrow_mut() = Box::pin(Token::read(ctx)).await?,
-            Read::Ca => {
-                let fresh = Box::pin(self::client(ctx)).await?;
-                *client.borrow_mut() = Rc::new(fresh);
+        loop {
+            if !backoff.wait(ctx.cancel()).await {
+                future::pending::<()>().await;
             }
+            let Some(read) = &read else {
+                break;
+            };
+            // Boxed, so each rare read does not grow the future of `send`.
+            let Err(error) = Box::pin(read_again(read, ctx, client, token)).await
+            else {
+                break;
+            };
+            ctx.error(&error);
         }
     }
+}
+
+/// Makes the read that `read` names, and on success puts its value in `client` or
+/// `token`.
+///
+/// # Errors
+///
+/// The error of [`Token::read`] or of [`client`].
+async fn read_again(
+    read: &Read,
+    ctx: &Context<Config>,
+    client: &RefCell<Rc<Client>>,
+    token: &RefCell<Option<Token>>,
+) -> Result<(), Error> {
+    match read {
+        Read::Token => *token.borrow_mut() = Token::read(ctx).await?,
+        Read::Ca => *client.borrow_mut() = Rc::new(self::client(ctx).await?),
+    }
+    Ok(())
 }
 
 /// The fix that the error text of an answer of `status` ends with, after its body.
@@ -257,6 +273,11 @@ fn fix(status: StatusCode) -> &'static str {
         StatusCode::NOT_FOUND => {
             ". Create the database, the bucket, or the org in InfluxDB, or name one \
              that exists"
+        }
+        StatusCode::PAYLOAD_TOO_LARGE => {
+            ". Raise the request size limit of InfluxDB (`--max-http-request-size` of \
+             InfluxDB 3, `max-body-size` of InfluxDB 1), or write fewer or shorter \
+             samples in each frame"
         }
         _ => "",
     }
