@@ -107,12 +107,12 @@
   does and which #1248 needs again in another layer; and trust of an end certificate
   that is equal to a root, which is a later step on #2894 when a user's server cannot
   get a new certificate. The influx kind reads its CA from `ca` (INFLUX KIND).
-  The roots are `node::Config::roots`, an `os::roots::Roots`, and main gives `os::roots::read()`:
-  the certificate files on Linux and the keychain on macOS. When `SSL_CERT_FILE` is
-  set, or `SSL_CERT_DIR` holds a path that is not empty, it reads only that file and
-  those paths, on each OS. A path that is not there, or a `SSL_CERT_DIR` path that is
-  not a directory, gives a failure and no root of the OS store. The person approved
-  this override (2026-10-16T14:53:55Z:
+  The roots are `node::Config::roots`, an `os::roots::Roots`, and main gives
+  `os::roots::read()`: the certificate files on Linux and the keychain on macOS. When
+  `SSL_CERT_FILE` is set, or `SSL_CERT_DIR` holds a path that is not empty, it reads
+  only that file and those paths, on each OS. A path that is not there, or a
+  `SSL_CERT_DIR` path that is not a directory, gives a failure and no root of the OS
+  store. The person approved this override (2026-10-16T14:53:55Z:
   https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6218177938). An
   empty `SSL_CERT_DIR` names no directory, so the node reads the OS store. On Linux, a
   `SSL_CERT_DIR` of only `:` characters also reads the directory of that whole name in
@@ -133,10 +133,15 @@
   bytes, cut at char boundaries and joined by `…`, as a line of a PEM file can be of any
   length (`laptop.architect-2`, 2026-10-16T22:26:26Z, #2920:
   https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225870705).
-  `os::roots::read()` gives the `source` as `os::roots::Source` (the name: `laptop.architect-2`, 2026-10-16T22:48:23Z, #2949: https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6226140961; the module: `laptop.architect-2`, #2949: https://github.com/synnaxlabs/foundation/pull/2963#issuecomment-6227609581): `the OS store`, or the paths
-  of `SSL_CERT_FILE` and `SSL_CERT_DIR` that it read in place of the store. `os` owns
-  this pick, so `node` never derives it from its `vars`, and `node` cuts the `source` as
-  it cuts an `error` (`laptop.architect-2`, 2026-10-16T22:27:09Z, #2920:
+  `os::roots::read()` gives the `source` as `os::roots::Source` (the name:
+  `laptop.architect-2`, 2026-10-16T22:48:23Z, #2949:
+  https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6226140961; the
+  module: `laptop.architect-2`, #2949:
+  https://github.com/synnaxlabs/foundation/pull/2963#issuecomment-6227609581):
+  `the OS store`, or the paths of `SSL_CERT_FILE` and `SSL_CERT_DIR` that it read in
+  place of the store. `os` owns this pick, so `node` never derives it from its `vars`,
+  and `node` cuts the `source` as it cuts an `error` (`laptop.architect-2`,
+  2026-10-16T22:27:09Z, #2920:
   https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225879413). This
   supersedes the warning for each failure that
   https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6213377062 approved,
