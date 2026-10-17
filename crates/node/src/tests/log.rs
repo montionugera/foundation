@@ -10,7 +10,7 @@ use types::byte::Size;
 use types::time::Span;
 
 use super::{config, heap};
-use crate::{Config, Error, Flush, Log, Node, log};
+use crate::{Config, Error, Flush, Log, Node, Region, log};
 
 /// The stamp of a line at the start of the sim.
 const START: &str = "2026-01-01T00:00:00.000000Z";
@@ -184,9 +184,9 @@ fn a_node_logs_its_start_and_its_stop_in_text() {
     assert_eq!(
         lines.read(),
         [
-            "2026-01-01T00:00:00.004198Z INFO node: started name=edge \
+            "2026-01-01T00:00:00.004235Z INFO node: started name=edge \
              address=10.0.0.1:7000 shards=4",
-            "2026-01-01T00:00:01.000004Z INFO node: stopped",
+            "2026-01-01T00:00:01.000048Z INFO node: stopped",
         ]
     );
 }
@@ -201,29 +201,41 @@ fn a_node_logs_its_start_and_its_stop_in_json() {
         lines.read(),
         [
             concat!(
-                r#"{"timestamp":"2026-01-01T00:00:00.004198Z","level":"INFO","#,
+                r#"{"timestamp":"2026-01-01T00:00:00.004235Z","level":"INFO","#,
                 r#""target":"node","fields":{"message":"started","name":"edge","#,
                 r#""address":"10.0.0.1:7000","shards":4}}"#,
             ),
             concat!(
-                r#"{"timestamp":"2026-01-01T00:00:01.000004Z","level":"INFO","#,
+                r#"{"timestamp":"2026-01-01T00:00:01.000048Z","level":"INFO","#,
                 r#""target":"node","fields":{"message":"stopped"}}"#,
             ),
         ]
     );
 }
 
-/// The warnings that a node on `roots` logs in a run of a second.
+/// The warnings that a node with no region on `roots` logs in a run of a second.
 fn warned(roots: os::roots::Roots) -> Vec<String> {
     logged(roots, tracing::Level::WARN)
 }
 
-/// The lines at `level` or above that a node on `roots` logs in a run of a second.
+/// The lines at `level` or above that a node with no region on `roots` logs in a run
+/// of a second.
 fn logged(roots: os::roots::Roots, level: tracing::Level) -> Vec<String> {
+    logged_in(Region::Absent, roots, level)
+}
+
+/// The lines at `level` or above that a node with `region` on `roots` logs in a run of
+/// a second.
+fn logged_in(
+    region: Region,
+    roots: os::roots::Roots,
+    level: tracing::Level,
+) -> Vec<String> {
     let (mut sim, host) = host(1);
     let lines = Lines::default();
     let log = to(&lines, false, level);
     let node = Node::start(Config {
+        region,
         roots,
         log,
         ..config(&host, Size::MEBIBYTE, Box::new(heap))
@@ -236,10 +248,10 @@ fn logged(roots: os::roots::Roots, level: tracing::Level) -> Vec<String> {
 }
 
 /// The start of each warning of the roots.
-const WARN: &str = "2026-01-01T00:00:00.004198Z WARN node::trust:";
-const SKIPPED: &str = "2026-01-01T00:00:00.004198Z WARN node::trust: OS roots that do \
+const WARN: &str = "2026-01-01T00:00:00.004235Z WARN node::trust:";
+const SKIPPED: &str = "2026-01-01T00:00:00.004235Z WARN node::trust: OS roots that do \
                        not parse are skipped skipped=1";
-const NONE: &str = "2026-01-01T00:00:00.004198Z WARN node::trust: the OS roots hold no \
+const NONE: &str = "2026-01-01T00:00:00.004235Z WARN node::trust: the OS roots hold no \
                     certificate, so an https connect with no CA of its connector fails";
 
 #[test]
@@ -275,11 +287,27 @@ fn a_node_warns_of_its_roots_before_it_starts() {
     );
 }
 
-/// The first warning of a read of the roots with `failed` failures from `source`.
+/// The first warning of a read of the roots with `failed` failures from `source`, on a
+/// node with no region.
 fn summary(failed: usize, source: &str) -> String {
     format!(
         "{WARN} parts of the OS roots were not read failed={failed} source=\"{source}\""
     )
+}
+
+#[test]
+fn a_node_with_a_region_names_the_command_that_gives_each_failure_of_its_roots() {
+    let warn = "2026-01-01T00:00:00.006100Z WARN node::trust:";
+    assert_eq!(
+        logged_in(Region::Stored, failed(1), tracing::Level::WARN),
+        [
+            format!(
+                "{warn} parts of the OS roots were not read, and `foundation status` \
+                 gives each failed=1 source=\"the OS store\""
+            ),
+            format!("{warn} a part of the OS roots was not read error=\"failure 0\""),
+        ]
+    );
 }
 
 /// The roots with only the CA and `failures`.
@@ -306,12 +334,9 @@ fn listed(count: usize) -> Vec<String> {
 }
 
 #[test]
-fn a_node_warns_of_the_first_16_failures_of_its_roots_and_counts_the_rest() {
+fn a_node_warns_of_the_count_and_the_first_16_failures_of_its_roots() {
     let mut expected = vec![summary(17, "the OS store")];
     expected.extend(listed(16));
-    expected.push(format!(
-        "{WARN} more parts of the OS roots were not read unlisted=1"
-    ));
     assert_eq!(warned(failed(17)), expected);
 }
 
@@ -348,7 +373,7 @@ fn a_long_source_of_the_roots_is_cut() {
 }
 
 #[test]
-fn a_node_with_16_failures_of_its_roots_warns_of_each_with_no_count() {
+fn a_node_with_16_failures_of_its_roots_warns_of_each() {
     let mut expected = vec![summary(16, "the OS store")];
     expected.extend(listed(16));
     assert_eq!(warned(failed(16)), expected);
@@ -483,21 +508,21 @@ fn a_node_that_fails_at_its_start_logs_the_error_with_no_mesh_time() {
 #[test]
 fn a_wall_step_shows_mesh_time_beside_the_stamp() {
     let text = [
-        "2026-01-01T00:00:00.004198Z INFO node: started name=edge \
+        "2026-01-01T00:00:00.004235Z INFO node: started name=edge \
          address=10.0.0.1:7000 shards=4",
-        "2026-01-01T00:00:03.000004Z INFO node: stopped \
-         mesh_time=2026-01-01T00:00:01.000004Z",
+        "2026-01-01T00:00:03.000048Z INFO node: stopped \
+         mesh_time=2026-01-01T00:00:01.000048Z",
     ];
     let json = [
         concat!(
-            r#"{"timestamp":"2026-01-01T00:00:00.004198Z","level":"INFO","#,
+            r#"{"timestamp":"2026-01-01T00:00:00.004235Z","level":"INFO","#,
             r#""target":"node","fields":{"message":"started","name":"edge","#,
             r#""address":"10.0.0.1:7000","shards":4}}"#,
         ),
         concat!(
-            r#"{"timestamp":"2026-01-01T00:00:03.000004Z","level":"INFO","#,
+            r#"{"timestamp":"2026-01-01T00:00:03.000048Z","level":"INFO","#,
             r#""target":"node","fields":{"message":"stopped"},"#,
-            r#""mesh_time":"2026-01-01T00:00:01.000004Z"}"#,
+            r#""mesh_time":"2026-01-01T00:00:01.000048Z"}"#,
         ),
     ];
     for (json, written) in [(false, text), (true, json)] {
@@ -813,10 +838,10 @@ fn a_line_after_the_shards_end_comes_before_stopped() {
     assert_eq!(
         lines.read(),
         [
-            "2026-01-01T00:00:00.004198Z INFO node: started name=edge \
+            "2026-01-01T00:00:00.004235Z INFO node: started name=edge \
              address=10.0.0.1:7000 shards=4",
-            "2026-01-01T00:00:01.000004Z INFO test: late",
-            "2026-01-01T00:00:01.000004Z INFO node: stopped",
+            "2026-01-01T00:00:01.000048Z INFO test: late",
+            "2026-01-01T00:00:01.000048Z INFO node: stopped",
         ]
     );
 }
@@ -886,9 +911,9 @@ fn a_thread_log_that_cannot_start_at_the_join_keeps_its_lines_for_the_wait() {
     assert_eq!(
         lines.read(),
         [
-            "2026-01-01T00:00:00.004198Z INFO node: started name=edge \
+            "2026-01-01T00:00:00.004235Z INFO node: started name=edge \
              address=10.0.0.1:7000 shards=4",
-            "2026-01-01T00:00:01.000004Z INFO node: stopped",
+            "2026-01-01T00:00:01.000048Z INFO node: stopped",
         ]
     );
 }
