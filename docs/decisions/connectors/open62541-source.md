@@ -860,8 +860,8 @@
   fails the check. `AWS_LC` holds the PEM readers, since this check is the one guard of
   their password. Supersedes "The PEM readers belong in `AWS_LC_KEYS`" of
   https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231723849, whose
-  reason was the read of the console. The callbacks that return -1, and the check that reads the
-  functions from the declarations: decided by `laptop.architect-2`
+  reason was the read of the console. The callbacks that return -1, and the check that
+  reads the functions from the declarations: decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6237471608,
   2026-10-17 17:20 UTC). The `-Werror` and `AWS_LC` sentences: decided by
   `laptop.architect-2`
