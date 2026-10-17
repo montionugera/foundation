@@ -1375,6 +1375,22 @@ pub(super) mod tests {
             assert_eq!(opened.position, live(4));
         }
 
+        /// With a session open, the frame `0..3` is queued and not released, so the live
+        /// tail is past the released end.
+        #[test]
+        fn resume_keeps_a_presented_position_below_a_queued_frame_not_released() {
+            let frames = Frames::new(2);
+            let mut readers = Readers::new(0);
+            readers.open(Reader::Unnamed, Start::At(live(0)), 10, Charge::Whole);
+            readers.queue(&frames.frame(1), &frames.set, 0..3);
+            let start = Start::Resume {
+                presented: Some(live(2)),
+                otherwise: live(0),
+            };
+            let opened = readers.open(named("a", 10), start, 10, Charge::Whole);
+            assert_eq!(opened.position, live(2));
+        }
+
         #[test]
         fn resume_falls_back_to_the_position_at_this_home() {
             let mut readers = Readers::new(0);
