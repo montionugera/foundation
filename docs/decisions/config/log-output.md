@@ -170,15 +170,18 @@
   count of drops: the byte cap, the panic line past the bound, the drop until the take,
   and the end of a run in the take each need one step over the queue and the counts,
   which a second lock beside the channel would give, at the cost of two locks to order.
-  (10) Each call of `connector::supervisor::Opened::run` runs in the span `connector`
-  at ERROR, with the fields `connector` and `kind`, so that each line of the call has
-  them at each level. The status writer writes these events (target
-  `connector::status`): INFO `running` with `restarts`; `ended` with `Ok` at INFO,
-  with `Device` or `Retry` at WARN, and with `Config` at ERROR, each error with `class`
-  (`config`, `device`, or `retry`) and `error`, the cut text of the `error` channel;
-  INFO `restarting` with `backoff`; INFO `stopped`. A show, a clear, or a note of the
-  running kind writes WARN `error` with `error`, INFO `cleared`, or INFO `note` with
-  `note`, only when it stages a write, so a kind that shows one error at each poll
-  writes one line. A count writes no event. By `laptop.architect-2` (item 2 of
-  2026-10-17T17:22:08Z,
+  (10) Each call of `connector::supervisor::Opened::run` makes the span `connector` at
+  ERROR, with the fields `connector` and `kind`, and the status writer gives it as the
+  parent of each of its events, so that each status line has them at each level. No poll
+  enters the span: an enter and an exit cost 7.4 ns, 740 ms/s at once per sample (P1
+  judgment rejected,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238199449). The
+  status writer writes these events (target `connector::status`): INFO `running` with
+  `restarts`; `ended` with `Ok` at INFO, with `Device` or `Retry` at WARN, and with
+  `Config` at ERROR, each error with `class` (`config`, `device`, or `retry`) and
+  `error`, the cut text of the `error` channel; INFO `restarting` with `backoff`; INFO
+  `stopped`. A show, a clear, or a note of the running kind writes WARN `error` with
+  `error`, INFO `cleared`, or INFO `note` with `note`, only when it stages a write, so a
+  kind that shows one error at each poll writes one line. A count writes no event. By
+  `laptop.architect-2` (item 2 of 2026-10-17T17:22:08Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6237505740).
