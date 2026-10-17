@@ -500,6 +500,7 @@ mod tests {
             format!("`{skips}/list.rs`: `b::a`: `ignore` takes no list"),
             format!("`{skips}/literal.rs`: `a`: a value that is no string literal"),
             format!("`{skips}/parse.rs`: cannot parse string into token stream"),
+            refused(&format!("{skips}/pathed_file.rs"), "a"),
         ];
         let items = [
             "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n::o",

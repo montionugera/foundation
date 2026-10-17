@@ -6,6 +6,7 @@ mod missing;
 mod outside;
 mod parse;
 mod passed;
+mod pathed;
 mod refused;
 mod target;
 #[cfg(unix)]
