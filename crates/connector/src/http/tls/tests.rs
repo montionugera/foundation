@@ -64,6 +64,9 @@ struct Network {
     sim: Sim,
     client: node::Node,
     server: node::Node,
+    /// Drops the serve of the IPv4 listener, which stops its accepts and leaves its
+    /// streams.
+    accepts: Token,
     handles: Vec<Handle>,
 }
 
@@ -95,6 +98,8 @@ impl Network {
             };
             server.net().listen(&listen).expect("the port is free")
         });
+        let accepts = Token::new();
+        let stop = accepts.clone();
         let handle = server
             .shards()
             .start(shard("server"), move |tasks| async move {
@@ -113,9 +118,9 @@ impl Network {
                     answer,
                 );
                 tasks.spawn(async move { drop(serve.await) });
-                drop(
-                    sim::serve_tls(v4, tasks, Token::new(), certificate, answer).await,
-                );
+                let serve =
+                    sim::serve_tls(v4, tasks, Token::new(), certificate, answer);
+                drop(stop.race(serve).await);
                 // The streams it accepted end when this shard ends.
                 std::future::pending::<()>().await;
             })
@@ -124,6 +129,7 @@ impl Network {
             sim,
             client,
             server,
+            accepts,
             handles: vec![handle],
         }
     }
@@ -665,7 +671,7 @@ fn reuses_an_https_connection_and_opens_a_new_one_for_http() {
         .run_for(Span::from_nanos(5_000_000_000))
         .expect("the run ends");
     let remote = SocketAddr::new(network.server.addresses()[0], PORT);
-    network.server.fail_listener(remote);
+    network.accepts.cancel();
     network.sim.run_for(Span::MINUTE).expect("the run ends");
     let outcomes = std::mem::take(&mut *out.lock().expect("no panic"));
     let texts: Vec<_> = outcomes
