@@ -199,7 +199,7 @@ mod tests {
         match readers.take(key.into()) {
             Next::Frame(frame) => Some(number(&frame)),
             Next::Empty => None,
-            Next::Disk { .. } | Next::Behind => panic!("a latest session is behind"),
+            Next::Disk { .. } => panic!("a latest session is behind"),
         }
     }
 
