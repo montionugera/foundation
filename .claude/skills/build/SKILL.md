@@ -153,7 +153,8 @@ take the next issue meanwhile.
   comment link.
 - Send the architect only a change to the public surface or to the meaning of a ruling.
   A fix of wording or links in a ruling needs no new approval.
-- Each issue that you file for the later steps of your issue gets the milestone of
-  your issue and your `owner:` label when you file it. The final state comment of
-  your issue links each one.
+- Each issue that you file for your issue (its later steps, a deferral of a finding of
+  your PR, or an issue that your PR waits on) gets the milestone of your issue and
+  your `owner:` label when you file it. Your next state comment on your issue links
+  each one.
 - Before you stop, comment your state on the issue: done, next step, open questions.
