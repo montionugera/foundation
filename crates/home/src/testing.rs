@@ -394,6 +394,7 @@ mod tests {
                 let (writer, set) =
                     open_writer(&mut shard, &mut interner, Scalar::I64, 1);
                 let held = hold(&shard, set.entries()[0].slot);
+                assert_eq!(format!("{held:?}"), "Hold { .. }");
                 let mut commits = 0;
                 while commit(&mut shard, writer, &set, stamp..stamp + 1).await {
                     commits += 1;
@@ -407,6 +408,18 @@ mod tests {
         // The read holds the 10 commits before the open, so they and the restart
         // record of the open keep their blocks.
         assert_eq!(commits, 1021 - 11);
+    }
+
+    #[test]
+    #[should_panic(expected = "the read waits on a file read")]
+    fn a_hold_of_a_path_with_no_record_panics() {
+        run(
+            sim::node::Config::default(),
+            |_, mut shard, mut interner, _| async move {
+                let (_, set) = open_writer(&mut shard, &mut interner, Scalar::I64, 1);
+                let _held = hold(&shard, set.entries()[0].slot);
+            },
+        );
     }
 
     #[test]
