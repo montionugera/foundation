@@ -163,14 +163,96 @@ struct Stats {
 }
 
 impl Stats {
-    fn of<const W: usize>(samples: impl Iterator<Item = u64>, pair: Pair) -> Self {
+    /// The stats of `samples`, floats of `W` bytes, under `pair`.
+    fn of<const W: usize>(samples: &[u8], pair: Pair) -> Self {
         let coder = Coder::<W>::new(pair);
+        let mut stats = if W == 4 {
+            Self::of_f32(samples, coder)
+        } else {
+            Self::of_f64(samples, coder).unwrap_or_else(|| Self::of_any(samples, coder))
+        };
+        if stats.min > stats.max {
+            (stats.min, stats.max) = (0, 0);
+        }
+        stats
+    }
+
+    /// [`Stats::of`] for floats of 4 bytes, with no branch, so that it vectorizes.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "the steps of `Coder::integer` and `Coder::float` for 4 bytes"
+    )]
+    fn of_f32<const W: usize>(samples: &[u8], coder: Coder<W>) -> Self {
+        let encode = (coder.encode.0 as f32, coder.encode.1 as f32);
+        let decode = (coder.decode.0 as f32, coder.decode.1 as f32);
+        let (mut min, mut max, mut exceptions) = (i32::MAX, i32::MIN, 0_u32);
+        for sample in samples.as_chunks::<4>().0 {
+            let bits = u32::from_le_bytes(*sample);
+            let scaled = f32::from_bits(bits) * encode.0 * encode.1;
+            let n = (scaled + MAGIC_32 - MAGIC_32) as i32;
+            let exact = (n as f32 * decode.0 * decode.1).to_bits() == bits;
+            min = if exact { min.min(n) } else { min };
+            max = if exact { max.max(n) } else { max };
+            // At most `VECTOR_LEN` samples: it never wraps.
+            exceptions = exceptions.wrapping_add(u32::from(!exact));
+        }
+        Self {
+            min: min.into(),
+            max: max.into(),
+            exceptions: exceptions
+                .try_into()
+                .expect("invariant: a u32 fits a usize"),
+        }
+    }
+
+    /// [`Stats::of`] for floats of 8 bytes, with no branch and no conversion between
+    /// floats and integers, so that it vectorizes. `None` when an integer is outside
+    /// `-2^51..2^51`, which only [`Stats::of_any`] gives.
+    fn of_f64<const W: usize>(samples: &[u8], coder: Coder<W>) -> Option<Self> {
+        const SATURATED: f64 = 9_223_372_036_854_775_808.0;
+        const LIMIT: i64 = 1 << 51;
+        let magic = MAGIC_64.to_bits().cast_signed();
+        // Ends with `min > max` when each sample is an exception.
+        let (mut min, mut max, mut exceptions) = (LIMIT - 1, -LIMIT, 0_usize);
+        for sample in samples.as_chunks::<8>().0 {
+            let bits = u64::from_le_bytes(*sample);
+            let scaled = f64::from_bits(bits) * coder.encode.0 * coder.encode.1;
+            let rounded = scaled + MAGIC_64;
+            // The integer when it is in `-2^51..2^51`, else a value outside.
+            let n = rounded.to_bits().cast_signed().wrapping_sub(magic);
+            // The integer as a float, truncated and saturated as `Coder::integer`
+            // casts it. NaN bits give a finite float and are never exact.
+            let float = (rounded - MAGIC_64).trunc();
+            let float = if float < SATURATED { float } else { SATURATED };
+            let float = if float > -SATURATED {
+                float
+            } else {
+                -SATURATED
+            };
+            let exact = (float * coder.decode.0 * coder.decode.1).to_bits() == bits;
+            min = if exact { min.min(n) } else { min };
+            max = if exact { max.max(n) } else { max };
+            // At most `VECTOR_LEN` samples: it never wraps.
+            exceptions = exceptions.wrapping_add(usize::from(!exact));
+        }
+        let range = -LIMIT..LIMIT;
+        (range.contains(&min) && range.contains(&max)).then_some(Self {
+            min,
+            max,
+            exceptions,
+        })
+    }
+
+    /// [`Stats::of`] for floats of any width, one sample at a time.
+    fn of_any<const W: usize>(samples: &[u8], coder: Coder<W>) -> Self {
         let mut stats = Self {
             min: i64::MAX,
             max: i64::MIN,
             exceptions: 0,
         };
-        for bits in samples {
+        for bits in word::samples::<W>(samples) {
             match coder.exact(bits) {
                 Some(n) => {
                     stats.min = stats.min.min(n);
@@ -178,9 +260,6 @@ impl Stats {
                 }
                 None => stats.exceptions = stats.exceptions.strict_add(1),
             }
-        }
-        if stats.min > stats.max {
-            (stats.min, stats.max) = (0, 0);
         }
         stats
     }
@@ -231,15 +310,17 @@ impl Pairs {
         }
         self.values = self.values.strict_add(count);
         let limit = best.len(count, W);
-        let mut picked = [0; RUN];
-        let picked = pick::<W>(chunk, &mut picked);
+        let mut picked = [0; RUN * 8];
+        let picked = pick::<W>(chunk, picked.split_at_mut(RUN.strict_mul(W)).0);
         let (pair, size) = self.best::<W>(picked);
-        let estimate = vector::header_len(W.strict_add(4), W)
-            .strict_add(size.strict_mul(count).div_ceil(picked.len().strict_mul(8)));
+        let estimate = vector::header_len(W.strict_add(4), W).strict_add(
+            size.strict_mul(count)
+                .div_ceil(picked.len().div_euclid(W).strict_mul(8)),
+        );
         if estimate >= limit {
             return best;
         }
-        let stats = Stats::of::<W>(word::samples::<W>(chunk), pair);
+        let stats = Stats::of::<W>(chunk, pair);
         let alp = Plan::Alp {
             reference: stats.reference::<W>(),
             bits: stats.bits(),
@@ -256,7 +337,7 @@ impl Pairs {
 
     /// The pair of the top pairs with the smallest size on `picked`, and that size. It
     /// stops after two pairs in a row that are not smaller.
-    fn best<const W: usize>(&self, picked: &[u64]) -> (Pair, usize) {
+    fn best<const W: usize>(&self, picked: &[u8]) -> (Pair, usize) {
         let (first, rest) = self
             .top
             .split_at(self.len)
@@ -264,7 +345,7 @@ impl Pairs {
             .split_first()
             .expect("invariant: a search keeps a pair");
         let size =
-            |pair| Stats::of::<W>(picked.iter().copied(), pair).size::<W>(picked.len());
+            |pair| Stats::of::<W>(picked, pair).size::<W>(picked.len().div_euclid(W));
         let mut best = (*first, size(*first));
         let mut worse = 0_u8;
         for pair in rest {
@@ -285,14 +366,15 @@ impl Pairs {
     /// Keeps the pairs that win most runs of `chunk`, each run the smallest of all
     /// pairs on [`RUN`] samples. Ties go in search order.
     fn search<const W: usize>(&mut self, chunk: &[u8]) {
-        let mut picked = [0; RUNS * RUN];
-        let picked = pick::<W>(chunk, &mut picked);
+        let mut picked = [0; RUNS * RUN * 8];
+        let picked =
+            pick::<W>(chunk, picked.split_at_mut((RUNS * RUN).strict_mul(W)).0);
         let mut wins = [(Pair::default(), 0_usize); RUNS];
         let mut len = 0;
-        for run in picked.chunks(RUN) {
+        for run in picked.chunks(RUN.strict_mul(W)) {
             let winner = Pair::all::<W>()
                 .min_by_key(|pair| {
-                    Stats::of::<W>(run.iter().copied(), *pair).size::<W>(run.len())
+                    Stats::of::<W>(run, *pair).size::<W>(run.len().div_euclid(W))
                 })
                 .expect("invariant: there is a pair");
             let known = wins.split_at_mut(len).0.iter_mut();
@@ -314,15 +396,16 @@ impl Pairs {
     }
 }
 
-/// Fills the front of `out` with the bits of samples of `chunk` at equal steps, as many
-/// as fit, and returns them.
-fn pick<'a, const W: usize>(chunk: &[u8], out: &'a mut [u64]) -> &'a [u64] {
+/// Fills the front of `out` with samples of `W` bytes of `chunk` at equal steps, as
+/// many as fit, and returns them.
+fn pick<'a, const W: usize>(chunk: &[u8], out: &'a mut [u8]) -> &'a [u8] {
     let samples = chunk.as_chunks::<W>().0;
-    let len = samples.len().min(out.len());
+    let len = samples.len().min(out.len().div_euclid(W));
     let step = samples.len().div_euclid(len);
-    let out = out.split_at_mut(len).0;
-    for (slot, sample) in out.iter_mut().zip(samples.iter().step_by(step)) {
-        *slot = word::load(sample);
+    let out = out.split_at_mut(len.strict_mul(W)).0;
+    let slots = out.as_chunks_mut::<W>().0;
+    for (slot, sample) in slots.iter_mut().zip(samples.iter().step_by(step)) {
+        *slot = *sample;
     }
     out
 }
@@ -361,7 +444,119 @@ pub(crate) fn decode<const W: usize>(
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+
+    /// The bytes of `values` as floats of 8 bytes.
+    fn bytes(values: &[f64]) -> Vec<u8> {
+        values.iter().copied().flat_map(f64::to_le_bytes).collect()
+    }
+
+    fn fields(stats: &Stats) -> (i64, i64, usize) {
+        (stats.min, stats.max, stats.exceptions)
+    }
+
+    fn pair(width: usize) -> impl Strategy<Value = Pair> {
+        (0..=max_exponent(width))
+            .prop_flat_map(|exponent| (Just(exponent), 0..=exponent))
+            .prop_map(|(exponent, factor)| Pair { exponent, factor })
+    }
+
+    /// A pair, and floats of `W` bytes: any bits, and the floats of integers near the
+    /// bounds of the fast loops under the pair.
+    fn samples<const W: usize>() -> impl Strategy<Value = (Pair, Vec<u8>)> {
+        pair(W).prop_flat_map(|pair| {
+            let bound = prop::sample::select(vec![
+                0,
+                1 << 23,
+                1 << 31,
+                1 << 51,
+                1 << 52,
+                1 << 63,
+            ]);
+            let float = (bound, -8_i64..=8, any::<bool>()).prop_map(
+                move |(bound, offset, negative): (i64, i64, bool)| {
+                    let n = bound.wrapping_add(offset);
+                    let n = if negative { n.wrapping_neg() } else { n };
+                    Coder::<W>::new(pair).float(n)
+                },
+            );
+            let sample = prop_oneof![any::<u64>(), float];
+            let samples = prop::collection::vec(sample, 0..64).prop_map(|samples| {
+                samples
+                    .iter()
+                    .flat_map(|sample| sample.to_le_bytes().into_iter().take(W))
+                    .collect()
+            });
+            (Just(pair), samples)
+        })
+    }
+
+    /// [`Stats::of`] with one sample at a time.
+    fn of_any<const W: usize>(samples: &[u8], pair: Pair) -> (i64, i64, usize) {
+        let stats = Stats::of_any(samples, Coder::<W>::new(pair));
+        if stats.min > stats.max {
+            (0, 0, stats.exceptions)
+        } else {
+            fields(&stats)
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn gives_the_stats_of_one_sample_at_a_time((pair, samples) in samples::<8>()) {
+            let stats = Stats::of::<8>(&samples, pair);
+            prop_assert_eq!(fields(&stats), of_any::<8>(&samples, pair));
+        }
+
+        #[test]
+        fn gives_the_stats_of_one_sample_at_a_time_for_4_bytes(
+            (pair, samples) in samples::<4>(),
+        ) {
+            let stats = Stats::of::<4>(&samples, pair);
+            prop_assert_eq!(fields(&stats), of_any::<4>(&samples, pair));
+        }
+    }
+
+    /// The integer of a sample under a pair, where the fast loop needs a truncated and
+    /// a saturated float, as `Coder::integer` casts.
+    #[test]
+    fn gives_the_integer_that_the_cast_gives() {
+        for (exponent, factor, n) in [
+            (1, 0, -4_503_599_627_370_494),
+            (8, 3, i64::MAX),
+            (8, 3, i64::MIN),
+        ] {
+            let pair = Pair { exponent, factor };
+            let sample = Coder::<8>::new(pair).float(n);
+            let stats = Stats::of::<8>(&sample.to_le_bytes(), pair);
+            assert_eq!(fields(&stats), (n, n, 0));
+        }
+    }
+
+    /// The fast loop gives no integer of 2^51 or more, so the one-sample loop does.
+    #[test]
+    fn gives_an_integer_of_2_51_or_more() {
+        let large = 4_503_599_627_370_496.0;
+        for (values, stats) in [
+            ([large, 1.0], (1, 1 << 52, 0)),
+            ([-large, 1.0], (-1 << 52, 1, 0)),
+        ] {
+            let samples = bytes(&values);
+            assert!(
+                Stats::of_f64(&samples, Coder::<8>::new(Pair::default())).is_none()
+            );
+            assert_eq!(fields(&Stats::of::<8>(&samples, Pair::default())), stats);
+        }
+    }
+
+    #[test]
+    fn the_fast_loop_gives_the_stats_of_exceptions_only() {
+        let samples = bytes(&[0.5, f64::NAN]);
+        let stats = Stats::of_f64(&samples, Coder::<8>::new(Pair::default()));
+        assert_eq!(stats.map(|stats| stats.exceptions), Some(2));
+    }
 
     /// Four runs of quarters win `e` = 2, `f` = 0 first, then four runs of integers win
     /// `e` = 0, `f` = 0. The tie goes to the pair that comes first in search order.
@@ -397,14 +592,13 @@ mod tests {
 
     #[test]
     fn gives_a_reference_and_bits_of_0_when_each_sample_is_an_exception() {
-        let stats =
-            Stats::of::<8>([f64::NAN.to_bits(); 4].into_iter(), Pair::default());
+        let stats = Stats::of::<8>(&bytes(&[f64::NAN; 4]), Pair::default());
         assert_eq!((stats.reference::<8>(), stats.bits()), (0, 0));
     }
 
     #[test]
     fn gives_the_integer_as_reference_when_each_sample_has_it() {
-        let stats = Stats::of::<8>([7.0_f64.to_bits(); 4].into_iter(), Pair::default());
+        let stats = Stats::of::<8>(&bytes(&[7.0; 4]), Pair::default());
         assert_eq!((stats.reference::<8>(), stats.bits()), (7, 0));
     }
 
@@ -412,12 +606,13 @@ mod tests {
     /// quarters: `(0, 0)`, `(1, 0)`, and `(1, 1)` take no sample, `(2, 0)` and `(3, 1)`
     /// take each.
     fn best(top: &[(u8, u8)]) -> Pair {
-        let picked: Vec<u64> = (0..RUN)
+        let picked: Vec<f64> = (0..RUN)
             .map(|k| {
                 let k = f64::from(u32::try_from(k).expect("a small k"));
-                ((2.0 * k + 1.0) / 4.0).to_bits()
+                (2.0 * k + 1.0) / 4.0
             })
             .collect();
+        let picked = bytes(&picked);
         let mut pairs = Pairs::default();
         for (slot, (exponent, factor)) in pairs.top.iter_mut().zip(top) {
             *slot = Pair {
