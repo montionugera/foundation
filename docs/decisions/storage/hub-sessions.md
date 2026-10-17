@@ -562,7 +562,11 @@
   `Next::Disk { from }` gives it, and `reached(key, next, durable)` takes the `next` of
   the read whole, so a read goes on past the entries with no samples at a seq that the
   read before it gave. A frame that `fill` gives moves the cursor to `Mark::at` its
-  end. The panics of `reached` compare marks in their order. `home` keeps no mark: it
-  asks `delivery::Readers::on_disk` before it decodes a read, and drops the read of a
+  end. The commit wait keeps the whole mark, so a read that stops at the durable end
+  inside the entries with no samples at a seq goes on past them after the commit. The
+  panics of `reached` compare marks in their order. `home` keeps no mark: it asks
+  `delivery::Readers::on_disk` before it decodes a read, and drops the read of a
   session that is not on disk (`laptop.architect`, 2026-10-17T06:49:04Z:
-  https://github.com/synnaxlabs/foundation/issues/2989#issuecomment-6230866460).
+  https://github.com/synnaxlabs/foundation/issues/2989#issuecomment-6230866460, and
+  2026-10-17T07:50:29Z:
+  https://github.com/synnaxlabs/foundation/pull/3019#issuecomment-6231397750).
