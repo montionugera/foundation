@@ -97,6 +97,8 @@ pub(crate) enum Class {
     Object,
     Variable,
     View,
+    /// A class that the request did not ask for.
+    Other,
 }
 
 /// What a server says of a variable.
@@ -162,7 +164,8 @@ pub(super) struct Bounds {
 impl Client {
     /// Browses the forward hierarchical references of `node` and their subtypes, to
     /// the node classes Object, Variable, and View, and gives the first page of at
-    /// most `most` references, in server order. It asks for fewer when an answer of
+    /// most `most` references, in server order, with [`Class::Other`] for a reference
+    /// of another class from a server that does not filter by class. It asks for fewer when an answer of
     /// `most` references, each with its texts at 256 bytes, would be past one message
     /// that the client takes, but for at least 1. `None` when the server does not have
     /// `node`.
@@ -437,7 +440,7 @@ impl Client {
 }
 
 /// Gives the page of the one result of `answer`, a Browse or `BrowseNext` answer, with
-/// each reference of the classes of [`CLASSES`].
+/// each reference, and [`Class::Other`] for a class out of [`CLASSES`].
 ///
 /// # Errors
 ///
@@ -451,8 +454,7 @@ fn page(answer: &Answer) -> Result<Page, Status> {
             1 => Class::Object,
             2 => Class::Variable,
             128 => Class::View,
-            // A server that does not filter by the class of the request.
-            _ => return,
+            _ => Class::Other,
         };
         references.push(Reference {
             node: found.node,

@@ -421,15 +421,11 @@ fn a_new_browse_of_each_cursor_goes_past_a_server_page_with_no_references() {
     assert_eq!(last, Some(None), "pages: {pages:?}");
 }
 
-/// 10 004 references under `root`, in a page each, of which the client drops the
-/// second to the 10 002nd in the order of the server, `VISITS` + 1 of them. The cursor
-/// `2` stops its skip after `VISITS` pages with no references, with one reference
-/// still to skip. The next page goes on from its point, skips one, and gives the last.
-#[test]
-fn a_skip_past_the_visits_of_a_browse_goes_on_in_the_next_page() {
-    let setup = |server: &Server| {
+/// `count` folders `n00000` and on under `root`, in a page each.
+fn numbered(count: u32) -> impl FnOnce(&Server) + Send + 'static {
+    move |server: &Server| {
         server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
-        for index in 0..10_004 {
+        for index in 0..count {
             let node = Node {
                 namespace: 1,
                 key: Key::Number(20_000 + index),
@@ -438,47 +434,205 @@ fn a_skip_past_the_visits_of_a_browse_goes_on_in_the_next_page() {
             server.add_folder(&node, &ROOT, ORGANIZES, &name, &name);
         }
         server.cap_references(1);
-    };
-    // Each name is the length 6, `n`, and 5 digits, as the browse name and then the
-    // display name of its reference, which the class follows.
-    let mut seen = 0;
-    let rewrite = move |message: &mut Vec<u8>| {
+    }
+}
+
+/// Gives each Browse and `BrowseNext` response to `change` with the end of the display
+/// name of each of its references of [`numbered`], and the place of that reference in
+/// the order of the server.
+fn placed(
+    mut change: impl FnMut(&mut Vec<u8>, usize, usize) + Send + 'static,
+) -> impl FnMut(&mut Vec<u8>) + Send + 'static {
+    let mut order = std::collections::BTreeMap::new();
+    move |message: &mut Vec<u8>| {
         if response(message).is_none() {
             return;
         }
-        let ends: Vec<usize> = message
+        // Each name is the length 6, `n`, and 5 digits, as the browse name and then the
+        // display name of its reference, which the class follows.
+        let ends: Vec<(usize, usize)> = message
             .windows(10)
             .enumerate()
             .filter(|(_, window)| {
                 window[..5] == [6, 0, 0, 0, b'n']
                     && window[5..].iter().all(u8::is_ascii_digit)
             })
-            .map(|(at, _)| at + 10)
+            .map(|(at, window)| {
+                let digits = std::str::from_utf8(&window[5..]).expect("digits");
+                (at + 10, digits.parse().expect("a number"))
+            })
             .collect();
-        for pair in ends.chunks(2) {
-            if let [_, display] = pair {
-                seen += 1;
-                if (2..=10_002).contains(&seen) {
-                    let class = &mut message[*display..*display + 4];
-                    assert_eq!(class, &1_u32.to_le_bytes(), "the class of an Object");
-                    class.copy_from_slice(&8_u32.to_le_bytes());
-                }
+        for pair in ends.chunks(2).rev() {
+            if let [_, (display, index)] = pair {
+                let next = order.len();
+                let place = *order.entry(*index).or_insert(next);
+                change(message, *display, place);
             }
         }
-    };
-    let pages = relayed_browse(setup, rewrite, async |server| {
-        let root = entry("root", &ROOT.to_string(), Shape::Folder);
-        let mut cursor = Some(Cursor::new("2".to_owned()));
-        let mut pages = Vec::new();
-        for _ in 0..2 {
-            let page = server.level(Some(&root), cursor.as_ref()).await;
-            let page = page.expect("a page").expect("a folder");
-            cursor = page.next.clone();
-            pages.push((page.entries.len(), page.next));
-        }
-        pages
+    }
+}
+
+/// What a new browse of `root` gives for each cursor from `cursor`, at most `pages`
+/// times, through a relay that gives each server message to `rewrite`.
+fn new_browses(
+    setup: impl FnOnce(&Server) + Send + 'static,
+    rewrite: impl FnMut(&mut Vec<u8>) + Send + 'static,
+    cursor: Option<Cursor>,
+    pages: usize,
+) -> Result<Vec<(usize, Option<Cursor>)>, Error> {
+    let (out, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            setup(peer.server);
+            let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
+            relayed(&node, &Relay::default(), rewrite, async {
+                let mut client = peer.connect(&url).await.expect("a connect");
+                let root = entry("root", &ROOT.to_string(), Shape::Folder);
+                let (mut out, mut cursor) = (Vec::new(), cursor);
+                for _ in 0..pages {
+                    let mut browse = Browse::new(&mut client);
+                    let page = browse.level(Some(&root), cursor.as_ref()).await;
+                    let page = match page {
+                        Ok(page) => page.expect("a folder"),
+                        Err(error) => {
+                            client.close().await;
+                            return Err(error);
+                        }
+                    };
+                    cursor = page.next.clone();
+                    out.push((page.entries.len(), page.next));
+                    if cursor.is_none() {
+                        break;
+                    }
+                }
+                client.close().await;
+                Ok(out)
+            })
+            .await
+        })
+        .await
     });
-    assert_eq!(pages, [(0, Some(Cursor::new("2".to_owned()))), (1, None)]);
+    out
+}
+
+/// 10 003 references under `root`, of which the server gives the second to the
+/// 10 002nd, `VISITS` + 1 of them, as `ObjectType`, which the browse gives no entry
+/// for. A new browse of each cursor counts them, so it goes past them.
+#[test]
+fn a_new_browse_of_each_cursor_goes_past_more_than_visits_references_of_other_classes()
+{
+    let rewrite = placed(|message, display, place| {
+        if (1..=10_001).contains(&place) {
+            let class = &mut message[display..display + 4];
+            assert_eq!(class, &1_u32.to_le_bytes(), "the class of an Object");
+            class.copy_from_slice(&8_u32.to_le_bytes());
+        }
+    });
+    let pages = new_browses(numbered(10_003), rewrite, None, 4);
+    let pages = pages.expect("the pages");
+    assert_eq!(
+        pages,
+        [
+            (1, Some(Cursor::new("1".to_owned()))),
+            (0, Some(Cursor::new("2".to_owned()))),
+            (0, Some(Cursor::new("3".to_owned()))),
+            (0, Some(Cursor::new("4".to_owned()))),
+        ]
+    );
+}
+
+/// Two references named `same` under `root`, in a page each, of which the server gives
+/// the first as `ObjectType`. A new browse of the cursor `1` gives the second its plain
+/// name, as the browse that gave the cursor does.
+#[test]
+fn a_reference_of_another_class_before_a_cursor_takes_no_name() {
+    let setup = |server: &Server| {
+        server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+        add_folders(
+            server,
+            &ROOT,
+            vec![(20_000, "same".to_owned()), (20_001, "same".to_owned())],
+        );
+        server.cap_references(1);
+    };
+    let mut first = true;
+    let rewrite = move |message: &mut Vec<u8>| {
+        let pattern = [&4_i32.to_le_bytes()[..], b"same"].concat();
+        let at = message
+            .windows(8)
+            .position(|window| window == pattern.as_slice());
+        if response(message).is_none() || !first {
+            return;
+        }
+        // The display name `d` of `add_folders`, with an empty locale, then the class.
+        let class = at.expect("a reference") + 8 + 10;
+        assert_eq!(message[class..class + 4], 1_u32.to_le_bytes(), "an Object");
+        message[class..class + 4].copy_from_slice(&8_u32.to_le_bytes());
+        first = false;
+    };
+    let names = relayed_browse(setup, rewrite, async |server| {
+        let root = entry("root", &ROOT.to_string(), Shape::Folder);
+        let cursor = Cursor::new("1".to_owned());
+        let page = server.level(Some(&root), Some(&cursor)).await;
+        let page = page.expect("a page").expect("a folder");
+        page.entries
+            .into_iter()
+            .map(|child| child.name)
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(names, ["same"]);
+}
+
+/// Makes the page of `message`, of one reference, a page with no references.
+fn emptied(message: &mut Vec<u8>) {
+    // The results start at 52: their count, then the status, the point, and the count
+    // of the references of the first. The count of their diagnostics ends the message.
+    assert_eq!(message[52..56], 1_i32.to_le_bytes(), "one result");
+    let point = i32::from_le_bytes(message[60..64].try_into().expect("4 bytes"));
+    let at = 64 + usize::try_from(point.max(0)).expect("a size");
+    assert_eq!(message[at..at + 4], 1_i32.to_le_bytes(), "one reference");
+    message[at..at + 4].copy_from_slice(&0_i32.to_le_bytes());
+    let end = message.len() - 4;
+    message.drain(at + 4..end);
+    let size = u32::try_from(message.len()).expect("a size");
+    message[4..8].copy_from_slice(&size.to_le_bytes());
+}
+
+/// What a new browse of the cursor `cursor` gives over 10 003 references in a page
+/// each, of which the relay empties the pages of the second to the one at `last` in the
+/// order of the server.
+fn past_empty_pages(
+    cursor: &str,
+    last: usize,
+) -> Result<Vec<(usize, Option<Cursor>)>, Error> {
+    let rewrite = placed(move |message, _, place| {
+        if (1..=last).contains(&place) {
+            emptied(message);
+        }
+    });
+    let cursor = Some(Cursor::new(cursor.to_owned()));
+    new_browses(numbered(10_003), rewrite, cursor, 1)
+}
+
+/// The cursor `2` skips one reference, reads past `VISITS` (10 000) pages with no
+/// references, skips one more, and gives the last.
+#[test]
+fn a_new_browse_of_a_cursor_reads_past_visits_pages_with_no_references() {
+    let pages = past_empty_pages("2", 10_000).expect("the pages");
+    assert_eq!(pages, [(1, None)]);
+}
+
+/// The cursor `1` skips one reference, and the next `VISITS` + 1 pages have no
+/// references, so its page would have the cursor `1` again.
+#[test]
+fn a_new_browse_of_a_cursor_past_more_than_visits_pages_with_no_references_fails() {
+    let pages = past_empty_pages("1", 10_001);
+    let Err(Error::Device(source)) = pages else {
+        panic!("not a device error: {pages:?}");
+    };
+    assert_eq!(
+        source.to_string(),
+        "the browse reads past 10000 pages with no references"
+    );
 }
 
 /// Adds a folder under `parent` for each number and browse name of `children`, with
@@ -568,10 +722,18 @@ fn a_browse_that_keeps_more_than_its_budget_fails() {
 }
 
 /// The second page of `a` from its start gives the cursor of the first, so the browse
-/// keeps the 64 KiB of `a` once.
+/// keeps the 64 KiB of `a` once, and one more byte passes the budget.
 #[test]
 fn a_folder_open_twice_keeps_its_budget_once() {
     assert_eq!(budget(0, 2).expect("the pages of `b`"), 4080);
+    let found = budget(1, 2);
+    let Err(Error::Device(source)) = found else {
+        panic!("not a device error: {found:?}");
+    };
+    assert_eq!(
+        source.to_string(),
+        "the tags and names of the browse pass 16 MiB"
+    );
 }
 
 /// The relay frees the point of the first cursor past `SKIP` (100 000) when the browse

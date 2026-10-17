@@ -136,13 +136,13 @@ impl kind::Kind for Kind {
     /// # Errors
     ///
     /// [`Error::Config`] with the diagnostic of `parse` for `address`, and with
-    /// `opcua.bad-cursor` for a cursor that the kind did not give, or that skips more
-    /// than 100 000 references and that this browse does not hold. [`Error::Retry`]
-    /// when the node has no mesh time, as [`browse::Context::time`] gives it.
-    /// [`Error::Device`] when the connect, a Browse, a `BrowseNext`, or a Read fails,
-    /// also with `BadContinuationPointInvalid` when the server freed the point of a
-    /// cursor that skips more than 100 000 references, and when the tags and names
-    /// that the browse keeps pass 16 MiB. The errors of [`browse::walk`].
+    /// `opcua.bad-cursor` for a cursor that is not a count, or that skips more than
+    /// 100 000 references. [`Error::Retry`] when the node has no mesh time, as
+    /// [`browse::Context::time`] gives it. [`Error::Device`] when the connect, a
+    /// Browse, a `BrowseNext`, or a Read fails, when the tags and names that the browse
+    /// keeps pass 16 MiB, and when a browse for a cursor reads past
+    /// [`browse::VISITS`] pages of the server with no references. The errors of
+    /// [`browse::walk`].
     fn browse(
         &self,
         ctx: &browse::Context<'_>,
@@ -510,6 +510,9 @@ pub(crate) enum Failure {
     Browse(Status),
     /// The tags and names before the pages of a browse pass [`crate::browse::BYTES`].
     Names,
+    /// A browse again for a cursor reads past [`connector::browse::VISITS`] pages of
+    /// the server with no references.
+    Empty,
 }
 
 impl fmt::Display for Failure {
@@ -529,6 +532,11 @@ impl fmt::Display for Failure {
                 f,
                 "the tags and names of the browse pass {} MiB",
                 crate::browse::BYTES >> 20
+            ),
+            Self::Empty => write!(
+                f,
+                "the browse reads past {} pages with no references",
+                connector::browse::VISITS
             ),
         }
     }

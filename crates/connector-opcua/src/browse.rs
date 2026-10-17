@@ -80,14 +80,15 @@ impl<'a> Server<'a> {
     /// from its start and skips `before` references. It reads pages of the server
     /// while each gives only references to skip, so it gives no references and a
     /// held point after a page with none. A browse again for a cursor also reads past
-    /// pages with none, at most [`browse::VISITS`] of them, so that a cursor of a page
-    /// with no entries goes on in a new browse. `before` is `None` for the first page,
+    /// pages with none, so that a cursor of a page with no entries goes on in a new
+    /// browse, at most [`browse::VISITS`] of them. `before` is `None` for the first page,
     /// and is a count past [`SKIP`] only for a cursor that this browse holds. `None`
     /// when the server does not have `folder`.
     ///
     /// # Errors
     ///
-    /// The status of a Browse or `BrowseNext` that fails, and as [`Server::fits`].
+    /// The status of a Browse or `BrowseNext` that fails, [`Failure::Empty`] when a
+    /// browse again reads past more pages with none, and as [`Server::fits`].
     async fn references(
         &mut self,
         folder: &Node,
@@ -121,7 +122,9 @@ impl<'a> Server<'a> {
             let skipped = left.min(page.references.len());
             let rest = page.references.split_off(skipped);
             for reference in &page.references {
-                seen.name(&reference.name, &tag(reference));
+                if reference.class != Class::Other {
+                    seen.name(&reference.name, &tag(reference));
+                }
             }
             self.fits(&seen)?;
             left -= skipped;
@@ -130,6 +133,10 @@ impl<'a> Server<'a> {
                 Some(point) if rest.is_empty() && past => {
                     empty += usize::from(skipped == 0);
                     page = self.client.browse_next(point).await.map_err(failed)?;
+                }
+                // Its page would have the cursor that the browse got.
+                Some(_) if rest.is_empty() && again => {
+                    return Err(device(Failure::Empty));
                 }
                 next => return Ok(Some((rest, seen, next.map(|point| (point, left))))),
             }
@@ -245,6 +252,9 @@ impl browse::Device for Server<'_> {
         let after = before.unwrap_or(0) + references.len();
         let mut kept = Vec::new();
         for reference in references {
+            if reference.class == Class::Other {
+                continue;
+            }
             let tag = tag(&reference);
             if let Some(name) = seen.name(&reference.name, &tag) {
                 kept.push((name, tag, reference));
