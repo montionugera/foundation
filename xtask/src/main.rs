@@ -842,6 +842,55 @@ mod tests {
         }
     }
 
+    /// The lines of the job `check` of `ci.yaml`, whose matrix holds one entry for
+    /// each OS.
+    fn check_job() -> Vec<String> {
+        let ci = workflow(&fixture().join("../.."));
+        let ci: Vec<&str> = ci.lines().collect();
+        let check = under(&under(&ci, "jobs:"), "  check:");
+        check.into_iter().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn the_check_of_each_os_runs_on_each_event_so_that_it_reports_its_name() {
+        let check = check_job();
+        // A matrix job that its `if` skips reports one check, named by the unexpanded
+        // expression, and no `check`, `macos`, or `windows`.
+        let ifs: Vec<&str> = (check.iter().map(String::as_str))
+            .filter(|line| line.starts_with("    if: "))
+            .collect();
+        assert_eq!(ifs, ["    if: \"!cancelled()\""]);
+        let names: Vec<&str> = (check.iter())
+            .filter_map(|line| line.strip_prefix("          - name: "))
+            .collect();
+        assert_eq!(names, ["check", "macos", "windows"]);
+    }
+
+    #[test]
+    fn each_exception_of_an_os_names_the_issue_that_removes_it() {
+        let check = check_job();
+        let items: Vec<&str> = (check.iter())
+            .filter_map(|line| line.strip_prefix("              - "))
+            .collect();
+        assert!(
+            !items.is_empty(),
+            "the matrix of `check` lists no exception"
+        );
+        for item in items {
+            let issues = item.split_once(" # ").map(|(_, comment)| comment);
+            assert!(
+                issues.is_some_and(|issues| {
+                    issues.split(", ").all(|issue| {
+                        (issue.strip_prefix('#')).is_some_and(|n| {
+                            !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
+                        })
+                    })
+                }),
+                "the exception `{item}` of ci.yaml names no issue as `# #<n>`"
+            );
+        }
+    }
+
     #[test]
     fn models_filter_names_each_workspace_crate_that_miri_runs() {
         let root = fixture().join("../..");

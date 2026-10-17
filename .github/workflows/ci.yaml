@@ -102,99 +102,100 @@ jobs:
               - '.claude/skills/build/wait_test.sh'
               - '.github/workflows/**'
 
+  # The required checks `check`, `macos`, and `windows`, one for each OS of LINUX CI.
+  # A matrix job that skips reports one check named by the unexpanded expression, so
+  # this job always runs, and each step skips when the filter found no change.
   check:
     needs: changes
-    if: "!cancelled() && needs.changes.outputs.rust != 'false'"
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      - name: Format
-        run: |
-          cargo fmt --check
-          cargo fmt --check --manifest-path fuzz/Cargo.toml
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Layers
-        run: cargo xtask layers
-      - name: Globals
-        run: cargo xtask globals
-      - name: Oracles
-        run: cargo xtask oracles
-      - name: Test
-        run: cargo test --workspace --all-features
-      # Root tests mount a filesystem. Only this runner, which is discarded after the
-      # job, runs them.
-      - name: Root tests
-        run: |
-          cargo clippy -p os --all-features --test root -- -D warnings
-          cargo test -p os --all-features --test root
-
-  # The other OSes of LINUX CI. Each skips only what its list names.
-  os:
-    needs: changes
-    if: "!cancelled() && needs.changes.outputs.rust != 'false'"
+    if: "!cancelled()"
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
+        # Each OS lists the flags that leave out what fails on it, each with the open
+        # issue that removes it: `crates` do not build with all their targets, the tests
+        # of `untested` fail, and so do `tests`. The lists only shrink (LINUX CI).
         include:
+          - name: check
+            runner: ubuntu-24.04
+            crates: []
+            untested: []
+            tests: []
           - name: macos
             runner: macos-15
+            crates: []
+            untested: []
+            tests:
+              - --skip wall::gives_a_bound_under_sixteen_seconds_when_a_daemon_runs # #2965
           - name: windows
             runner: windows-2025
+            crates:
+              - --exclude connector-opcua # #2968
+              - --exclude node # #2968, #682, #2955, #2956, #477, #2957
+              - --exclude acceptance # #2968, #682, #2955, #2956, #477, #2957
+              - --exclude xtask # #2238
+              - --exclude ops # #2971
+            untested:
+              - --exclude sim # #2973
+              - --exclude secret # #2973
+              - --exclude connector-influx # #2973
+            tests:
+              - --skip kind::tests::reads_a_secret_at_each_call_and_retries_one_the_store_has_not # #2973
+              - --skip supervisor::tests::heals_a_run_when_a_secret_file_too_large_is_cut # #2973
+              - --skip supervisor::tests::heals_a_run_when_the_missing_secret_is_written # #2973
+              - --skip browse::gives_a_secret_that_is_not_there_as_a_retry # #2973
+              - --skip home::set_home_gives_the_cause_when_the_write_of_its_entry_stops_the_group # #2973
+              - --skip in_use::an_open_refuses_a_file_that_does_not_name_a_pointer # #2973
+              - --skip serve::serve_gives_no_code_of_the_mesh_when_the_group_stops # #2973
+              - --skip log::tests::a_second_open_gives_busy_on_the_lock_while_the_first_log_lives # #2973
+              - --skip log::tests::refuses_a_bad_record_with_a_good_one_after_it # #2973
+              - --skip log::tests::refuses_a_file_that_is_not_the_next_log_file # #2973
+              - --skip log::tests::refuses_a_lock_that_has_bytes # #2973
+              - --skip log::tests::refuses_a_record_of_another_format_version # #2973
+              - --skip log::tests::refuses_a_write_after_a_failed_or_dropped_one # #2973
     runs-on: ${{ matrix.runner }}
+    env:
+      RUST: ${{ needs.changes.outputs.rust }}
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      # Each crate and test that fails on this OS, with the open issue that removes it:
-      # `crates` do not build, `untested` build but their tests fail. The lists only
-      # shrink (LINUX CI).
-      - name: Exceptions
+      - if: env.RUST != 'false'
+        uses: actions/checkout@v4
+      - if: env.RUST != 'false'
+        uses: Swatinem/rust-cache@v2
+      - name: Format
+        if: env.RUST != 'false' && runner.os == 'Linux'
         run: |
-          crates=() untested=() tests=()
-          case "$RUNNER_OS" in
-            macOS)
-              tests=(
-                one_node::a_token_file_shows_its_fix_until_it_holds_the_token # #2714
-                files::open_absolute_of_a_link_that_swaps_a_file_for_a_directory # #2964
-                paths::a_read_of_a_path_that_swaps_a_directory_for_a_file # #2964
-                wall::gives_a_bound_under_sixteen_seconds_when_a_daemon_runs # #2965
-              )
-              ;;
-            Windows)
-              crates=(
-                connector-opcua # #2968
-                node # #2968, #682, #2955, #2956, #477, #2957
-                acceptance # tests `node`
-                xtask # #2238
-                ops # #2971
-                os # #682
-              )
-              untested=(
-                sim # #2973
-                secret # #2973
-                mesh # #2973
-                connector # #2973
-                connector-influx # #2973
-              )
-              ;;
-          esac
-          echo "CRATES=${crates[*]/#/--exclude }" >> "$GITHUB_ENV"
-          echo "UNTESTED=${untested[*]/#/--exclude }" >> "$GITHUB_ENV"
-          echo "TESTS=${tests[*]/#/--skip }" >> "$GITHUB_ENV"
+          cargo fmt --check
+          cargo fmt --check --manifest-path fuzz/Cargo.toml
       - name: Clippy
+        if: "!cancelled() && env.RUST != 'false'"
         run: >-
-          cargo clippy --workspace $CRATES --all-targets --all-features --keep-going
-          -- -D warnings
+          cargo clippy --workspace ${{ join(matrix.crates, ' ') }} --all-targets
+          --all-features --keep-going -- -D warnings
+      - name: Layers
+        if: "!cancelled() && env.RUST != 'false' && runner.os == 'Linux'"
+        run: cargo xtask layers
+      - name: Globals
+        if: "!cancelled() && env.RUST != 'false' && runner.os == 'Linux'"
+        run: cargo xtask globals
+      - name: Oracles
+        if: "!cancelled() && env.RUST != 'false' && runner.os == 'Linux'"
+        run: cargo xtask oracles
       - name: Test
-        if: ${{ !cancelled() }}
+        if: "!cancelled() && env.RUST != 'false'"
         run: >-
-          cargo test --workspace $CRATES $UNTESTED --all-features --no-fail-fast
-          -- $TESTS
+          cargo test --workspace ${{ join(matrix.crates, ' ') }}
+          ${{ join(matrix.untested, ' ') }} --all-features --no-fail-fast
+          -- ${{ join(matrix.tests, ' ') }}
+      # Root tests mount a filesystem. Only this runner, which is discarded after the
+      # job, runs them.
+      - name: Root tests
+        if: "!cancelled() && env.RUST != 'false' && runner.os == 'Linux'"
+        run: |
+          cargo clippy -p os --all-features --test root -- -D warnings
+          cargo test -p os --all-features --test root
 
   features:
     needs: changes
