@@ -1948,6 +1948,23 @@ mod tests {
             }
         }
 
+        /// Integers at each third sample and NaNs of other payloads between them take
+        /// ALP in under 7/8 of the raw vector, so the vector stays raw.
+        #[test]
+        fn keeps_raw_when_alp_saves_under_an_eighth() {
+            let values: Vec<f64> = (0_u32..1_024)
+                .map(|k| {
+                    if k % 3 == 0 {
+                        f64::from(k % 100)
+                    } else {
+                        f64::from_bits(0x7ff8_0000_0000_0000 | u64::from(k))
+                    }
+                })
+                .collect();
+            let encoded = check(Scalar::F64, &floats(Scalar::F64, &values));
+            assert_eq!((encoded[0], encoded.len()), (vector::RAW, 8_200));
+        }
+
         /// The ALP pass runs only when its estimate on the picked samples, at each
         /// 32nd sample, is under the best exact size. Decimals with a NaN at each
         /// picked sample stay raw, and with a NaN one sample later they take ALP.
@@ -2077,7 +2094,8 @@ mod tests {
         fn runs(runs: [usize; 8]) -> Vec<f64> {
             runs.iter()
                 .flat_map(|&e| {
-                    (0..128).map(move |k| f64::from(k) + [0.0, 0.5, 0.25, 0.125][e])
+                    (0..128)
+                        .map(move |k| f64::from(k) + [0.0, 0.5, 0.25, 0.125, 0.0625][e])
                 })
                 .collect()
         }
@@ -2127,6 +2145,30 @@ mod tests {
             for scalar in FLOATS {
                 assert_eq!(pair_after(scalar, &first, &second), [0, 0], "{scalar:?}");
             }
+        }
+
+        /// The search keeps `(0, 0)` to `(4, 0)`. On the picked samples of the second
+        /// vector, `(1, 0)` is not smaller than `(0, 0)`, `(2, 0)` is, `(3, 0)` is
+        /// not, and `(4, 0)` is, so the count of pairs that are not smaller starts
+        /// again at each smaller pair.
+        #[test]
+        fn counts_worse_pairs_in_a_row() {
+            let first = runs([0, 0, 0, 0, 1, 2, 3, 4]);
+            let second: Vec<f64> = (0..1_024)
+                .map(|k| {
+                    if k % 32 != 0 {
+                        return f64::from(k % 64);
+                    }
+                    let j = k / 32;
+                    f64::from(j)
+                        + match j % 8 {
+                            1 => 0.25,
+                            3 => 0.0625,
+                            _ => 0.0,
+                        }
+                })
+                .collect();
+            assert_eq!(pair_after(Scalar::F64, &first, &second), [4, 0]);
         }
 
         /// The picked samples of the second vector are integers, and a quarter of the
