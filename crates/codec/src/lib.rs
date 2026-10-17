@@ -725,13 +725,14 @@ impl Ends {
 /// How the codecs see a sample type.
 #[derive(Clone, Copy, Debug)]
 enum Layout {
-    /// Samples of 8, 16, 32, or 64 bits. Every codec applies, to the integers of the
-    /// samples or to the sortable integers of floats.
+    /// Integer samples of 8 or 16 bits, or integers or floats of 32 or 64 bits. Every
+    /// codec applies, to the integers of the samples or to the sortable integers of
+    /// floats.
     Bits8 {
-        number: Number,
+        order: Order,
     },
     Bits16 {
-        number: Number,
+        order: Order,
     },
     Bits32 {
         number: Number,
@@ -745,13 +746,12 @@ enum Layout {
     },
 }
 
-/// The number that the bits of a sample hold. Floats are a field and not variants of
-/// [`Layout`]: two more variants made each decode call about 15 to 50 instructions
-/// longer.
+/// The number that the bits of a 32 or 64 bit sample hold. Floats are a field, not
+/// variants of [`Layout`]: two more variants add about 15 to 50 instructions to each
+/// decode call (box2).
 #[derive(Clone, Copy, Debug)]
 enum Number {
-    Unsigned,
-    Signed,
+    Int(Order),
     Float,
 }
 
@@ -779,22 +779,28 @@ impl Front {
 impl Layout {
     /// The layout of the ends of a variable series.
     const END: Self = Self::Bits32 {
-        number: Number::Unsigned,
+        number: Number::Int(Order::Unsigned),
     };
 
     fn of(scalar: Scalar) -> Self {
-        let (signed, unsigned) = (Number::Signed, Number::Unsigned);
+        let (signed, unsigned) = (Order::Signed, Order::Unsigned);
         match scalar {
-            Scalar::I8 => Self::Bits8 { number: signed },
-            Scalar::U8 => Self::Bits8 { number: unsigned },
-            Scalar::I16 => Self::Bits16 { number: signed },
-            Scalar::U16 => Self::Bits16 { number: unsigned },
-            Scalar::I32 => Self::Bits32 { number: signed },
-            Scalar::U32 => Self::Bits32 { number: unsigned },
-            Scalar::I64 | Scalar::Stamp | Scalar::Span => {
-                Self::Bits64 { number: signed }
-            }
-            Scalar::U64 => Self::Bits64 { number: unsigned },
+            Scalar::I8 => Self::Bits8 { order: signed },
+            Scalar::U8 => Self::Bits8 { order: unsigned },
+            Scalar::I16 => Self::Bits16 { order: signed },
+            Scalar::U16 => Self::Bits16 { order: unsigned },
+            Scalar::I32 => Self::Bits32 {
+                number: Number::Int(signed),
+            },
+            Scalar::U32 => Self::Bits32 {
+                number: Number::Int(unsigned),
+            },
+            Scalar::I64 | Scalar::Stamp | Scalar::Span => Self::Bits64 {
+                number: Number::Int(signed),
+            },
+            Scalar::U64 => Self::Bits64 {
+                number: Number::Int(unsigned),
+            },
             Scalar::F32 => Self::Bits32 {
                 number: Number::Float,
             },
@@ -899,18 +905,14 @@ impl Layout {
             Self::Bits64 {
                 number: Number::Float,
             } => float::encode::<8>(chunk, out),
-            Self::Bits8 { number } => {
-                int::encode::<1>(chunk, number.order(), identity, out)
-            }
-            Self::Bits16 { number } => {
-                int::encode::<2>(chunk, number.order(), identity, out)
-            }
-            Self::Bits32 { number } => {
-                int::encode::<4>(chunk, number.order(), identity, out)
-            }
-            Self::Bits64 { number } => {
-                int::encode::<8>(chunk, number.order(), identity, out)
-            }
+            Self::Bits8 { order } => int::encode::<1>(chunk, order, identity, out),
+            Self::Bits16 { order } => int::encode::<2>(chunk, order, identity, out),
+            Self::Bits32 {
+                number: Number::Int(order),
+            } => int::encode::<4>(chunk, order, identity, out),
+            Self::Bits64 {
+                number: Number::Int(order),
+            } => int::encode::<8>(chunk, order, identity, out),
             Self::Raw { width } => vector::write_raw(chunk, width, out),
         }
     }
@@ -929,17 +931,6 @@ impl Layout {
             Self::Bits32 { .. } => vector.decode::<4>(out, identity),
             Self::Bits64 { .. } => vector.decode::<8>(out, identity),
             Self::Raw { .. } => vector.copy(out),
-        }
-    }
-}
-
-impl Number {
-    /// The order in which the codecs compare the integers of the samples. The sortable
-    /// integers of floats compare unsigned.
-    const fn order(self) -> Order {
-        match self {
-            Self::Signed => Order::Signed,
-            Self::Unsigned | Self::Float => Order::Unsigned,
         }
     }
 }
@@ -2920,7 +2911,7 @@ mod tests {
 
         const STRING: Variable = Variable {
             element: Layout::Bits8 {
-                number: Number::Unsigned,
+                order: Order::Unsigned,
             },
         };
 

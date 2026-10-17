@@ -4,6 +4,8 @@ use crate::vector::{self, Plan};
 use crate::word;
 
 /// The order in which the codecs compare the integers of a vector.
+// `Signed` first moves each call by 1 to 5 instructions: decode less, encode more
+// (box2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Order {
     Unsigned,

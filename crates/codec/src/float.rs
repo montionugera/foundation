@@ -5,8 +5,8 @@ use crate::int::{self, Order};
 use crate::vector::Vector;
 use crate::word;
 
-// The float paths stay out of line, so that their code is not inlined into
-// `Layout::encode` and `Layout::decode`.
+// The float paths stay out of line. Inlined, they cost the integer paths about 60
+// instructions a short decode call and 4% on long encode and decode calls (box2).
 
 /// Writes one vector of floats of `W` bytes into the front of `out` and returns its
 /// length, as [`int::encode`] does for their sortable integers.
