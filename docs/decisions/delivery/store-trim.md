@@ -139,21 +139,21 @@
   are approved by `laptop.architect` (#2943, 2026-10-16T23:14:08Z, item 4):
   https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6226442923.
   As built (#160 step 3d): with `Config::trimmed`, the open trims as a commit does, with
-  nothing queued. Each open first syncs the header and the records that it walked, as
-  read, before it writes a new byte (S4): a failed sync of an earlier open can leave
-  that open's checkpoint in the cache only, where the walk reads it, and a checkpoint
-  never passes a record that is not durable. With a trim, the open then writes the
-  checkpoint of the trim and its restart record, in a block that was free before the
-  trim, and one sync makes both durable. Only then does it release the trimmed records.
-  A crash that keeps the checkpoint and not the restart record opens from the new tail
-  over records that nothing wrote over, and a crash that keeps the restart record and
-  not the checkpoint is an open with no trim. When no block is free, the open writes the
-  checkpoint alone, syncs, releases, then writes its restart record in a freed block and
-  syncs. So an open syncs twice with a trim or with none, and three times when no block
-  is free: against the one sync of an open before #2970, an open that trims adds one
-  sync, and two when no block is free, as P1 of order (a) states. When no block is free
-  and no trim frees one, the open gives `Error::Full` and syncs nothing. Decided by
-  `laptop.architect` (#160, 2026-10-14T01:40:03Z, order (a)):
+  nothing queued. After its walk, each open first syncs the header and the records that
+  it walked, as read, before it writes a new byte (S4): a failed sync of an earlier open
+  or commit in the same boot can leave its checkpoint in the cache only, where the walk
+  reads it, and a checkpoint never passes a record that is not durable. With a trim, the
+  open then writes the checkpoint of the trim and its restart record, in a block that
+  was free before the trim, and one sync makes both durable. Only then does it release
+  the trimmed records. A crash that keeps the checkpoint and not the restart record
+  opens from the new tail over records that nothing wrote over, and a crash that keeps
+  the restart record and not the checkpoint is an open with no trim. When no block is
+  free, the open writes the checkpoint alone, syncs, releases, then writes its restart
+  record in a freed block and syncs. So an open syncs twice with a trim or with none,
+  and three times when no block is free: against the one sync of an open before #2970,
+  an open that trims adds one sync, and two when no block is free, as P1 of order (a)
+  states. When no block is free and no trim frees one, the open gives `Error::Full` and
+  syncs nothing. Decided by `laptop.architect` (#160, 2026-10-14T01:40:03Z, order (a)):
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6158968102, which
   supersedes the order of
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6035839192
