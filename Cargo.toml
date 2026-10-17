@@ -163,6 +163,12 @@ codegen-units = 1
 lto = "fat"
 debug = "line-tables-only"
 
+# The Python wheels of `sdk` (SDK CLIENT). A panic unwinds, so the shard of the client
+# catches it, and PyO3 gives a `PanicException` in place of an abort of Python.
+[profile.wheel]
+inherits = "release"
+panic = "unwind"
+
 # Local patches: docs/dependencies.md.
 [patch.crates-io]
 noq-proto = { path = "patches/noq-proto" }

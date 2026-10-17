@@ -14,8 +14,7 @@ Rules:
    threads, through the `env` seams it implements. Only `clock` reads wall time
    through `env`; everyone else asks `clock`. Only `node` builds real seams in the
    binary, and `sdk` builds its own from `os` (SDK CLIENT). Only `sim` builds simulated
-   ones. Below `hub`, only `home` writes channels, and only its
-   companion samples.
+   ones. Below `hub`, only `home` writes channels, and only its companion samples.
 8. Tests follow the same rules, with these extra dev-dependencies only: any crate may
    take `sim`, `counting`, and `waker` (`laptop.architect`, 2026-10-10 06:25 UTC,
    #2254, https://github.com/synnaxlabs/foundation/issues/2254#issuecomment-6094631943),
@@ -131,13 +130,13 @@ https://github.com/synnaxlabs/foundation/pull/2099#issuecomment-6074164278).
 
 Outside the binary: the Rust SDK `sdk` (`sdk/rust`, layer 4, last) builds on `program`,
 `transport`, `env`, `types`, and `block`, takes its clock, entropy, and network from
-`os`, and runs its tasks on Tokio (#2923). The Python SDK wraps `sdk` with PyO3 (C6,
-SDK DATA PATH; the crate, `laptop.architect`,
+`os`, and runs the thread of each client as a shard of `os` (#2923). The Python SDK
+wraps `sdk` with PyO3 (C6, SDK DATA PATH; the crate, `laptop.architect`,
 2026-10-15T17:56:55Z,
 https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198730147; its name,
 `laptop.architect`, 2026-10-15T18:23:47Z,
 https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6199257488; its
 dependency on `access`, `laptop.architect`, 2026-10-15T18:05:02Z,
 https://github.com/synnaxlabs/foundation/issues/2722#issuecomment-6198883707). Other
-SDKs hand-write their data path against golden vectors (D12). Supersedes "the Rust
-SDK reuses `block`, `types`, `codec`, and `wire`".
+SDKs hand-write their data path against golden vectors (D12). Supersedes "the Rust SDK
+reuses `block`, `types`, `codec`, and `wire`".

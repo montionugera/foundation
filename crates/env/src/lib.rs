@@ -4,9 +4,9 @@
 //!
 //! Each seam is a concrete handle over a small driver trait. Only `os` and `sim`
 //! implement the drivers: `os` on the real operating system, `sim` in a deterministic
-//! simulation. `node` builds the real handles and passes them down; nothing else
-//! reaches the operating system. Outside the binary, `sdk` implements the driver of
-//! `tasks` for the thread of a client.
+//! simulation. `node` builds the real handles and passes them down, and so does `sdk`
+//! outside the binary, for the thread of a client; nothing else reaches the operating
+//! system.
 
 pub mod clock;
 pub mod entropy;
