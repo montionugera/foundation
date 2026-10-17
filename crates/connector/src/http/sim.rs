@@ -170,11 +170,11 @@ pub(super) async fn run(
     tls: Option<Arc<ServerConfig>>,
     answer: impl Fn(Request<Bytes>) -> Response<Bytes> + 'static,
 ) -> Result<(), net::Error> {
-    let (group, streams) = (Group::new(tasks), until.child());
+    let (group, stop) = (Group::new(tasks), until.child());
     let accepted = until
-        .race(accept(listener, &group, &streams, tls, answer))
+        .race(accept(listener, &group, &stop, tls, answer))
         .await;
-    streams.cancel();
+    stop.cancel();
     group.ended().await;
     match accepted {
         Some(Err(error)) => Err(error),

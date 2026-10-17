@@ -954,7 +954,7 @@ mod tests {
     }
 
     #[test]
-    fn gives_the_name_of_each_kind_in_the_order_of_the_names() {
+    fn gives_the_name_of_each_kind_in_byte_order() {
         let table = Table::new().with("other", Counter).with("counter", Counter);
         assert_eq!(table.names().collect::<Vec<_>>(), ["counter", "other"]);
         assert_eq!(Table::new().names().count(), 0);

@@ -172,7 +172,7 @@ impl Node {
     /// crash drops each stream of the node.
     #[must_use]
     pub fn streams(&self) -> usize {
-        lock(&self.0.shared).net().streams(self.0.node)
+        lock(&self.0.shared).net().tcp().streams(self.0.node)
     }
 
     /// The node's serial ports: one at each end of a line that

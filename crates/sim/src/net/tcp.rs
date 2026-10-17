@@ -304,17 +304,6 @@ impl Sockets {
         self.lanes.yet.take()
     }
 
-    /// The count of the ends of `node` that a driver holds.
-    pub(super) fn held(&self, node: usize) -> usize {
-        let own = addresses(node);
-        (self.ends.values())
-            .filter(|end| own.contains(&end.pair.local.ip()))
-            .filter(|end| {
-                matches!(end.phase, Phase::Connecting | Phase::Refused | Phase::Open)
-            })
-            .count()
-    }
-
     /// A key that no end, listener, or stream has had.
     fn key(&mut self) -> u64 {
         self.last += 1;
@@ -411,6 +400,17 @@ impl<'a> Tcp<'a> {
             self.abort(now, key);
         }
         listening.waker
+    }
+
+    /// The count of the ends of `node` that a driver holds.
+    pub(crate) fn streams(&self, node: usize) -> usize {
+        let own = addresses(node);
+        (self.sockets.ends.values())
+            .filter(|end| own.contains(&end.pair.local.ip()))
+            .filter(|end| {
+                matches!(end.phase, Phase::Connecting | Phase::Refused | Phase::Open)
+            })
+            .count()
     }
 
     /// Makes the listener of `node` at `local` fail, and resets the streams in its
