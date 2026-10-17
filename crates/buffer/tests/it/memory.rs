@@ -48,6 +48,11 @@ impl Memory {
         self.syncs_fail.store(true, Relaxed);
     }
 
+    /// Every later sync passes again.
+    pub(crate) fn pass_syncs(&self) {
+        self.syncs_fail.store(false, Relaxed);
+    }
+
     /// The next write that starts at `offset` fails with an I/O error. Later
     /// writes pass.
     pub(crate) fn fail_write_at(&self, offset: u64) {
