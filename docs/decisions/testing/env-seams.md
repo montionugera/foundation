@@ -979,8 +979,9 @@
   A read gives `NotFound` where a write gives `Vacant`.
   `Replaced`: the path resolves under a folder of `within`, by the path that the
   folder resolved to at that call or by the one that it resolves to now, and a program
-  replaced the folder after that call: its path names another file, or nothing. It is
-  `Outside` for such a path. So a folder that is a file gives `Replaced` after a write
+  replaced the folder after that call: its path names another file, or nothing. It
+  replaces `Outside`, which such a path gave. So a folder that is a file gives
+  `Replaced` after a write
   to it, and so does a folder that a program makes again in other case or replaces
   with a link. The common cases pin both on both drivers.
   `sim::Node::move_path` renames a file, a link, or a directory of a host from outside
