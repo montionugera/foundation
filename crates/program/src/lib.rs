@@ -186,7 +186,7 @@ impl Session {
         shared
             .exchange(body, length)
             .await
-            .map_err(|error| shared.ended().unwrap_or(error))
+            .map_err(|error| shared.ended.borrow().clone().unwrap_or(error))
     }
 
     /// Opens a reader of `mode` on the channels that `select` matches, as the
@@ -213,7 +213,7 @@ impl Session {
         }
         Reader::open(Rc::clone(&self.0), &open)
             .await
-            .map_err(|error| shared.ended().unwrap_or(error))
+            .map_err(|error| shared.ended.borrow().clone().unwrap_or(error))
     }
 }
 
