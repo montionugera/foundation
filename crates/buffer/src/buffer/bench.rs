@@ -7,7 +7,7 @@ use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
 
-use super::{State, tails_max, take};
+use super::{State, take};
 use crate::entry::{Entry, Samples};
 use crate::group::{self, Sealed};
 use crate::header::Header;
@@ -59,7 +59,6 @@ impl Deadline {
             Logs::new(area),
             Header::new(layout, chain),
             chain,
-            tails_max(&pool),
         );
         Self {
             state,

@@ -316,9 +316,6 @@ struct State {
     /// The tails of the carry record of the last deadline, or none when it wrote
     /// none. The next carry reuses its room.
     carried: Carried,
-    /// The most tails of a carry record whose body fits the largest block of the
-    /// pool.
-    tails: usize,
     /// Whether an append got [`Rejected::Full`] since the last deadline. The task
     /// then commits also with no entry, so that its trim and carry can free room.
     starved: bool,
@@ -357,15 +354,8 @@ impl fmt::Debug for Parked {
 
 impl State {
     /// The state of a ring that `writer`, `logs`, the last checkpoint `header`, and
-    /// the chain value `chain` of the last record give, with nothing queued. Its
-    /// carry records hold at most `tails` tails.
-    fn new(
-        writer: Writer,
-        logs: Logs,
-        header: Header,
-        chain: u32,
-        tails: usize,
-    ) -> Self {
+    /// the chain value `chain` of the last record give, with nothing queued.
+    fn new(writer: Writer, logs: Logs, header: Header, chain: u32) -> Self {
         Self {
             writer,
             open: Group::default(),
@@ -375,7 +365,6 @@ impl State {
             header,
             chain,
             carried: Carried::default(),
-            tails,
             starved: false,
             held: Vec::with_capacity(HOLDS),
             taken: 0,
@@ -534,14 +523,12 @@ impl State {
 
     /// Plans the carry record of the paths whose holder is before the reach of the
     /// next trim, filled with the oldest holders that [`Logs::carry`] finds after
-    /// it, at most as many as one record holds and at most `tails`. `None` when no
-    /// path needs one, or `pool` has no blocks for it: the next deadline then scans
-    /// the same paths.
+    /// it, at most as many as one record holds. `None` when no path needs one, or
+    /// `pool` has no blocks for it: the next deadline then scans the same paths.
     fn carry(&mut self, pool: &Pool) -> Option<Carry> {
         let mut carried = mem::take(&mut self.carried);
-        let limit = self.writer.tails().min(self.tails);
         let reach = self.writer.reach();
-        self.logs.carry(reach, limit, &mut carried);
+        self.logs.carry(reach, self.writer.tails(), &mut carried);
         let count = carried.tails().len();
         let len = HEADER_LEN + carry::body_len(count);
         let blocks = (count > 0).then(|| (pool.alloc(len), pool.alloc(ALIGN)));
@@ -688,9 +675,7 @@ impl Buffer {
         })?;
         let (file, header) = open_ring(&files, &dir, &pool, &entropy, layout).await?;
         let (cursor, logs) = walk(&file, &pool, &header, slots).await?;
-        let tails = tails_max(&pool);
-        let chain = random(&entropy);
-        let mut state = State::new(cursor.writer(), logs, header, chain, tails);
+        let mut state = State::new(cursor.writer(), logs, header, random(&entropy));
         restart(&file, &pool, &mut state).await?;
         let shared = Rc::new(Shared {
             file,
@@ -922,10 +907,12 @@ impl Buffer {
     }
 }
 
-/// The most tails of a carry record whose body fits the largest block of `pool`.
-fn tails_max(pool: &Pool) -> usize {
-    carry::count(pool.largest().saturating_sub(HEADER_LEN))
-}
+// Each pool that `group::block_max` accepts holds a block of `META_LEN` bytes, so
+// it holds the largest carry record.
+const _: () = assert!(
+    HEADER_LEN + carry::body_len(carry::TAILS_MAX) <= group::META_LEN,
+    "a block of the group table holds a full carry record"
+);
 
 /// Appends each entry of `batch` to `logs`, in order, and takes it into `open` with
 /// the kind that the append gives. `open` has fit the batch. Leaves `batch` empty.
