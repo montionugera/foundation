@@ -391,12 +391,17 @@ impl Sealed {
     /// Each entry with a nonzero tag, in order: its slot, its header, and its parts.
     pub(crate) fn tagged(&self) -> impl Iterator<Item = (Slot, &Header, &[Block])> {
         let group = &self.group;
+        let headers = if group.headers.iter().any(|header| header.tag != 0) {
+            group.headers.as_slice()
+        } else {
+            &[]
+        };
         // `seal` put the record header and the table at `writes[0]`.
         let mut writes = group.writes.get(1..).unwrap_or_default();
         group
             .slots
             .iter()
-            .zip(&group.headers)
+            .zip(headers)
             .filter_map(move |(&slot, header)| {
                 let parts = parts(&mut writes, header.bytes);
                 (header.tag != 0).then_some((slot, header, parts))
