@@ -4,7 +4,7 @@ use std::fmt;
 use std::str::FromStr;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// A node of an OPC UA server: a namespace by its index in the server's
 /// `NamespaceArray`, and a key in that namespace. Its text form is

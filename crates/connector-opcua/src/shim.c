@@ -127,6 +127,13 @@ _Static_assert(UA_TYPES_BOOLEAN == 0 && UA_TYPES_SBYTE == 1 &&
                    UA_TYPES_UINT64 == 8 && UA_TYPES_FLOAT == 9 &&
                    UA_TYPES_DOUBLE == 10,
                "the scalar types of UA_TYPES moved");
+_Static_assert(UA_NS0ID_BOOLEAN == 1 && UA_NS0ID_SBYTE == 2 &&
+                   UA_NS0ID_BYTE == 3 && UA_NS0ID_INT16 == 4 &&
+                   UA_NS0ID_UINT16 == 5 && UA_NS0ID_INT32 == 6 &&
+                   UA_NS0ID_UINT32 == 7 && UA_NS0ID_INT64 == 8 &&
+                   UA_NS0ID_UINT64 == 9 && UA_NS0ID_FLOAT == 10 &&
+                   UA_NS0ID_DOUBLE == 11,
+               "the id of a scalar type is not its index in UA_TYPES plus 1");
 _Static_assert(SHIM_ARRAY == 0x8000, "SHIM_ARRAY is `ffi::ARRAY`");
 _Static_assert(UA_DATATYPEKIND_BOOLEAN == 0 && UA_DATATYPEKIND_SBYTE == 1 &&
                    UA_DATATYPEKIND_BYTE == 2 && UA_DATATYPEKIND_INT16 == 3 &&
