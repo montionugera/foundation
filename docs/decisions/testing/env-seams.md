@@ -971,6 +971,9 @@
   a write or `make_dir` makes a new name in the deepest directory on the way to it
   that is there.
   It is the refusal of a new name beside a missing hidden folder, which gave `Hidden`.
+  Supersedes "gives `Hidden`, also for a name that does not make that folder" of the
+  amendment of 2026-10-16T20:27:04Z
+  (https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224070884).
   A hidden folder that is there, and one that a program moved away, still give
   `Hidden`, which wins over `Vacant`. `Outside` and `Replaced` win over `Vacant`.
   A read gives `NotFound` where a write gives `Vacant`.
