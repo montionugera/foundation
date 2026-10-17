@@ -8,10 +8,8 @@ publish.workspace = true
 [dependencies]
 block = { path = "../../crates/block" }
 env = { path = "../../crates/env" }
-getrandom.workspace = true
-noq-udp.workspace = true
+os = { path = "../../crates/os", features = ["net"] }
 program = { path = "../../crates/program" }
-socket2.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "sync", "time"] }
 transport = { path = "../../crates/transport" }
 types = { path = "../../crates/types" }

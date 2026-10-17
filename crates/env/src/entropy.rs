@@ -63,8 +63,7 @@ impl fmt::Debug for Entropy {
     }
 }
 
-/// What `os`, `sim`, and `sdk` implement to run an [`Entropy`]. Only they implement
-/// it.
+/// What `os` and `sim` implement to run an [`Entropy`]. Only they implement it.
 ///
 /// ```
 /// fn wrap(driver: impl env::entropy::Driver + 'static) -> env::entropy::Entropy {

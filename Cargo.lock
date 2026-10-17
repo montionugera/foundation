@@ -1836,10 +1836,8 @@ version = "0.0.0"
 dependencies = [
  "block",
  "env",
- "getrandom 0.4.3",
- "noq-udp",
+ "os",
  "program",
- "socket2",
  "tokio",
  "transport",
  "types",

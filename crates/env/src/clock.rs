@@ -115,7 +115,7 @@ impl fmt::Debug for Clock {
     }
 }
 
-/// What `os`, `sim`, and `sdk` implement to run a [`Clock`]. Only they implement it.
+/// What `os` and `sim` implement to run a [`Clock`]. Only they implement it.
 ///
 /// ```
 /// fn wrap(driver: impl env::clock::Driver + 'static) -> env::clock::Clock {
@@ -123,10 +123,9 @@ impl fmt::Debug for Clock {
 /// }
 /// ```
 pub trait Driver: Send + Sync {
-    /// Reads the clock. Reads on any thread never go backwards. Under `os` and `sim`,
-    /// the clock counts time while the machine sleeps, and a read is ordered against
-    /// the loads and stores before and after it on its thread. `sdk` keeps neither
-    /// rule (#2932).
+    /// Reads the clock. Reads on any thread never go backwards, and the clock
+    /// counts time while the machine sleeps. A read is ordered against the loads and
+    /// stores before and after it on its thread.
     fn now(&self) -> Monotonic;
 
     /// The std [`Instant`] at `Monotonic(0)`. It never changes.
@@ -142,8 +141,8 @@ pub trait Driver: Send + Sync {
     fn timer(&self) -> Pin<Box<dyn Timer>>;
 }
 
-/// One reusable timer on one thread, polled through a [`Sleep`]. Only `os`, `sim`, and
-/// `sdk` implement it.
+/// One reusable timer on one thread, polled through a [`Sleep`]. Only `os` and `sim`
+/// implement it.
 ///
 /// ```
 /// use std::pin::Pin;

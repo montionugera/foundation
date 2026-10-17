@@ -1,6 +1,6 @@
 //! The Rust SDK: a program's session with one Foundation node.
 
-mod host;
+mod tasks;
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -190,7 +190,7 @@ fn run(
             return Ok(());
         }
     };
-    runtime.block_on(host::scope(|tasks| async move {
+    runtime.block_on(tasks::scope(|tasks| async move {
         match connect(node, subject, tasks).await {
             Ok(session) => {
                 if ready.send(Ok(())).is_ok() {
@@ -214,11 +214,11 @@ async fn connect(
     subject: Subject,
     tasks: Tasks,
 ) -> Result<program::Session, Error> {
-    let clock = env::clock::Clock::new(host::Clock::new());
-    let entropy = env::entropy::Entropy::new(host::Entropy);
+    let clock = os::clock();
+    let entropy = os::entropy();
     let pool = Rc::new(block::Pool::heap(POOL));
     let transport = transport::Client::new(transport::client::Config {
-        net: env::net::Net::new(host::Net),
+        net: os::net(),
         clock: clock.clone(),
         entropy: entropy.clone(),
         tasks: tasks.clone(),
