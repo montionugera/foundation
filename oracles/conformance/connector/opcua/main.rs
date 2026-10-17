@@ -20,10 +20,6 @@ use types::channel;
 use types::name::Name;
 use types::sample::{Scalar, Type};
 
-#[expect(
-    dead_code,
-    reason = "the suite of opcua starts no writer or task, and restarts in a backoff"
-)]
 #[path = "../scenarios.rs"]
 mod scenarios;
 
@@ -36,7 +32,6 @@ const NODES: [&str; 3] = ["ns=3;s=SpikeData", "ns=3;i=7", "ns=2;s=Dip"];
 const CHANNELS: [&str; 3] = ["plant.a", "plant.b", "plant.c"];
 
 const DEVICE: Device = Device {
-    kind: "opcua",
     kinds,
     setup: |plant| Box::pin(std::future::ready(setup(&plant))),
     serve: |inputs| Box::pin(simulate(inputs)),

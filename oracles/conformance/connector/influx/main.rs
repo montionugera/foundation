@@ -23,14 +23,12 @@ use types::name::Name;
 use types::sample::{Scalar, Type};
 use types::time::Span;
 
-#[expect(dead_code, reason = "the suite of influx backs off in its run")]
 #[path = "../scenarios.rs"]
 mod scenarios;
 
 use scenarios::{Backoff, Device, Plant, Serve};
 
 const DEVICE: Device = Device {
-    kind: "influx",
     kinds,
     setup: |plant| Box::pin(setup(plant)),
     serve: |inputs| Box::pin(simulate(inputs)),

@@ -14,7 +14,7 @@ use std::task::Poll;
 use ::sim::node::Node;
 use ::sim::{Crash, Sim, link};
 use connector::cancel::Token;
-use connector::kind::{Error, Table};
+use connector::kind::Error;
 use connector::status::{Class, Reading, State};
 use connector::testing::{Rig, Run};
 use document::Document;
@@ -24,63 +24,97 @@ use env::tasks::Tasks;
 use types::name::Name;
 use types::time::Span;
 
-/// What the suite of one kind gives the scenarios.
-pub(crate) struct Device {
-    /// The name of the kind in `kinds`.
-    pub kind: &'static str,
-    /// The table that holds the kind.
-    pub kinds: fn() -> Table,
-    /// Defines on the rig what a connector of the kind needs, starts each writer that
-    /// feeds it until `until`, and gives the config of one connector that reaches the
-    /// device at `device`.
-    pub setup: for<'a> fn(Plant<'a>) -> Pin<Box<dyn Future<Output = Document> + 'a>>,
-    /// Runs the kind's simulator on `address` of the device node until `until`, then
-    /// closes each connection and returns.
-    pub serve: fn(Serve) -> Pin<Box<dyn Future<Output = ()>>>,
-    /// The count that grows while data moves.
-    pub progress: &'static str,
-    /// Where the kind waits between two tries of a device that fails.
-    pub backoff: Backoff,
-    /// Configs that the kind's check refuses, each with its exact diagnostics.
-    pub refused: fn() -> Vec<(Document, Vec<Diagnostic>)>,
-}
+pub(crate) use inputs::{Backoff, Device, Plant, Serve};
 
-/// Where a kind waits between two tries of a device that fails.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum Backoff {
-    /// The run ends with the error, and the supervisor starts it again: Restarting,
-    /// with restarts that grow.
-    Restart,
-    /// The run goes on and tries again after its own backoff: Running, with class
-    /// Retry, an error text that names the address of the device, no restart, and
-    /// no progress.
-    Run,
-}
+/// The inputs that the suite of one kind gives the scenarios.
+#[expect(
+    dead_code,
+    reason = "a kind names one backoff form, and reads only the inputs it needs"
+)]
+mod inputs {
+    use std::net::SocketAddr;
+    use std::pin::Pin;
 
-/// The plant that [`Device::setup`] defines on.
-pub(crate) struct Plant<'a> {
-    /// The rig of the connector.
-    pub rig: &'a Rig,
-    /// The plant node, which runs the rig.
-    pub node: &'a Node,
-    /// The tasks of the shard of the rig.
-    pub tasks: &'a Tasks,
-    /// The address of the device.
-    pub device: SocketAddr,
-    /// Cancelled once the scenario ends.
-    pub until: &'a Token,
-}
+    use ::sim::node::Node;
+    use connector::cancel::Token;
+    use connector::kind::Table;
+    use connector::testing::Rig;
+    use document::Document;
+    use document::diagnostic::Diagnostic;
+    use env::tasks::Tasks;
 
-/// The inputs of [`Device::serve`].
-pub(crate) struct Serve {
-    /// The device node.
-    pub node: Node,
-    /// The tasks of the shard of the simulator.
-    pub tasks: Tasks,
-    /// The address to bind.
-    pub address: SocketAddr,
-    /// Cancelled when the device stops.
-    pub until: Token,
+    /// What the suite of one kind gives the scenarios.
+    pub(crate) struct Device {
+        /// The table that holds the kind, and no other kind.
+        pub kinds: fn() -> Table,
+        /// Defines on the rig what a connector of the kind needs, starts each writer
+        /// that feeds it until `until`, and gives the config of one connector that
+        /// reaches the device at `device`.
+        pub setup:
+            for<'a> fn(Plant<'a>) -> Pin<Box<dyn Future<Output = Document> + 'a>>,
+        /// Runs the kind's simulator on `address` of the device node until `until`,
+        /// then closes each connection and returns.
+        pub serve: fn(Serve) -> Pin<Box<dyn Future<Output = ()>>>,
+        /// The count that grows while data moves.
+        pub progress: &'static str,
+        /// Where the kind waits between two tries of a device that fails.
+        pub backoff: Backoff,
+        /// Configs that the kind's check refuses, each with its exact diagnostics.
+        pub refused: fn() -> Vec<(Document, Vec<Diagnostic>)>,
+    }
+
+    impl Device {
+        /// The name of the one kind of [`Device::kinds`].
+        ///
+        /// # Panics
+        ///
+        /// When the table holds no kind or more than one.
+        pub(crate) fn kind(&self) -> &'static str {
+            let names: Vec<_> = (self.kinds)().names().collect();
+            let [kind] = names[..] else {
+                panic!("the table holds one kind, not {names:?}");
+            };
+            kind
+        }
+    }
+
+    /// Where a kind waits between two tries of a device that fails.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) enum Backoff {
+        /// The run ends with the error, and the supervisor starts it again:
+        /// Restarting, with restarts that grow.
+        Restart,
+        /// The run goes on and tries again after its own backoff: Running, with class
+        /// Retry, an error text that names the address of the device, no restart, and
+        /// no progress.
+        Run,
+    }
+
+    /// The plant that [`Device::setup`] defines on.
+    pub(crate) struct Plant<'a> {
+        /// The rig of the connector.
+        pub rig: &'a Rig,
+        /// The plant node, which runs the rig.
+        pub node: &'a Node,
+        /// The tasks of the shard of the rig.
+        pub tasks: &'a Tasks,
+        /// The address of the device.
+        pub device: SocketAddr,
+        /// Cancelled once the scenario ends.
+        pub until: &'a Token,
+    }
+
+    /// The inputs of [`Device::serve`].
+    pub(crate) struct Serve {
+        /// The device node.
+        pub node: Node,
+        /// The tasks of the shard of the simulator.
+        pub tasks: Tasks,
+        /// The address to bind.
+        pub address: SocketAddr,
+        /// Cancelled when the device stops.
+        pub until: Token,
+    }
 }
 
 /// Expands to one test for each scenario, on `$device`, a [`Device`].
@@ -232,7 +266,7 @@ impl Scene {
 
     async fn supervise(&self, config: Document) -> Run {
         let name = CONNECTOR.parse().expect("a valid name");
-        self.rig.supervise(self.device.kind, name, config).await
+        self.rig.supervise(self.device.kind(), name, config).await
     }
 
     /// The progress count of `reading`.
@@ -558,7 +592,7 @@ pub(crate) fn refuses_each_config_with_its_diagnostics(device: &'static Device) 
         let refused = (device.refused)();
         assert!(!refused.is_empty(), "the kind refuses a config");
         for (config, diagnostics) in refused {
-            let checked = kinds.check(device.kind, None, &config);
+            let checked = kinds.check(device.kind(), None, &config);
             assert_eq!(checked.map(drop), Err(diagnostics.clone()), "{config:?}");
             let run = scene.supervise(config).await;
             match run.stop().await {
@@ -577,7 +611,7 @@ pub(crate) fn stops_at_a_write_channel_that_the_hub_does_not_define(
 ) {
     run(device, direct, move |scene| async move {
         let config = scene.setup().await;
-        let checked = (device.kinds)().check(device.kind, None, &config);
+        let checked = (device.kinds)().check(device.kind(), None, &config);
         let writes = checked.expect("the config of the setup checks").writes;
         let Some(missing) = writes.first() else {
             return;
