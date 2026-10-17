@@ -1627,6 +1627,9 @@ async fn check(shard: &Shard, input: &Input, built: &Built, mut room: Room) {
                 kept.ends_with(given),
                 "a reopen changed what path {path} gives"
             );
+            if let Some(commit) = commits.get(path) {
+                assert_eq!(given.last(), Some(commit), "a reopen lost the commit");
+            }
             continue;
         };
         let from = passed.get(path).copied().unwrap_or(0);
