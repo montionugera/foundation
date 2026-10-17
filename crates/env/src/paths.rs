@@ -524,6 +524,7 @@ mod tests {
     /// name that starts with `swap` in any case takes the bytes of the file after the
     /// path, so a write gives it a new key: after a write of `x`, `/work/swap` has the
     /// key that `/work/swapx` had before it. A last name `io` gives `Io` 5 for its key.
+    /// After a write of `hop`, `/hop` is a link to `/out`.
     #[derive(Debug, Default)]
     struct One(RefCell<Vec<u8>>);
 
@@ -552,6 +553,11 @@ mod tests {
         }
 
         fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
+            if *self.0.borrow() == b"hop"
+                && let Ok(rest) = path.strip_prefix("/hop")
+            {
+                return Ok(Path::new("/out").join(rest));
+            }
             match path.strip_prefix("link") {
                 _ if path.as_os_str().is_empty() => Err(Error::NotFound),
                 _ if path.parent() == Some(Path::new("/none"))
@@ -768,6 +774,15 @@ mod tests {
         free.write(Path::new("/work/a"), b"x").unwrap();
         assert_eq!(reached(&paths, "/work/swap/a"), Err(Error::Replaced));
         assert_eq!(reached(&paths, "/work/swapx/a"), Err(Error::Replaced));
+    }
+
+    #[test]
+    fn a_folder_that_a_link_replaces_holds_nothing() {
+        let free = Paths::new(One::default());
+        let paths = free.within(&["/hop".into()], &[]).unwrap();
+        free.write(Path::new("/x"), b"hop").unwrap();
+        let read = paths.read(Path::new("/hop/a"), 3).map(|_| ());
+        assert_eq!(read, Err(Error::Replaced));
     }
 
     #[test]
