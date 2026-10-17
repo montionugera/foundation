@@ -54,7 +54,7 @@ fn relayed_browse<T: Send + 'static>(
             let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
             relayed(&node, &Relay::default(), rewrite, async {
                 let mut client = peer.connect(&url).await.expect("a connect");
-                let out = body(&mut Browse::new(&mut client)).await;
+                let out = body(&mut Browse::new(&mut client, &endpoint(&url))).await;
                 client.close().await;
                 out
             })
@@ -427,8 +427,9 @@ fn counted(
         serve(&node, 4, async |mut peer| {
             setup(peer.server);
             let count = peer.server.count();
+            let url = endpoint(&peer.url);
             let mut client = peer.connected().await;
-            let found = browse::walk(&mut Browse::new(&mut client), &query).await;
+            let found = browse::walk(&mut Browse::new(&mut client, &url), &query).await;
             client.close().await;
             (found, count.points(), count.browses())
         })
@@ -817,8 +818,9 @@ fn a_new_browse_of_each_cursor_goes_past_a_server_page_with_no_references() {
                 let root = entry("root", &ROOT.to_string(), Shape::Folder);
                 let mut pages: Vec<(Vec<String>, Option<Cursor>)> = Vec::new();
                 let mut cursor: Option<Cursor> = None;
+                let url = endpoint(&url);
                 for _ in 0..6 {
-                    let mut browse = Browse::new(&mut client);
+                    let mut browse = Browse::new(&mut client, &url);
                     let page = browse.level(Some(&root), cursor.as_ref()).await;
                     let page = page.expect("a page").expect("a folder");
                     let names = page.entries.into_iter().map(|child| child.name);
@@ -908,8 +910,9 @@ fn new_browses(
                 let mut client = peer.connect(&url).await.expect("a connect");
                 let root = entry("root", &ROOT.to_string(), Shape::Folder);
                 let (mut out, mut cursor) = (Vec::new(), cursor);
+                let url = endpoint(&url);
                 for _ in 0..pages {
-                    let mut browse = Browse::new(&mut client);
+                    let mut browse = Browse::new(&mut client, &url);
                     let page = browse.level(Some(&root), cursor.as_ref()).await;
                     let page = match page {
                         Ok(page) => page.expect("a folder"),
@@ -1387,4 +1390,9 @@ fn a_walk_at_the_bound_ends_at_its_budget_past_pages_with_no_references() {
         let found = walked(setup, rewrite, everything());
         assert_eq!(found.expect("found").end, End::Budget, "bound {most}");
     }
+}
+
+/// The endpoint `url`, which a failed Read names.
+fn endpoint(url: &str) -> CString {
+    CString::new(url).expect("no NUL")
 }

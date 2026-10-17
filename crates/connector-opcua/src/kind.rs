@@ -170,7 +170,7 @@ async fn walk(
         &mut ctx.rng(),
         &address,
         future::pending(),
-        async |client| browse::walk(&mut Server::new(client), query).await,
+        async |client| browse::walk(&mut Server::new(client, &address), query).await,
     )
     .await?;
     found.expect("invariant: a session with no end gives a result")
@@ -237,7 +237,13 @@ async fn read(
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
     loop {
         let idle = client.idle(timer.tick(ctx.cancel())).await;
-        let Some(tick) = idle.map_err(|status| device(Failure::Check(status)))? else {
+        let Some(tick) = idle.map_err(|status| {
+            device(Failure::Check {
+                address: ctx.config().address.to_string_lossy().into_owned(),
+                status,
+            })
+        })?
+        else {
             break;
         };
         missed.add(tick.missed);
@@ -248,7 +254,12 @@ async fn read(
         else {
             break;
         };
-        let values = read.map_err(|status| device(Failure::Read(status)))?;
+        let values = read.map_err(|status| {
+            device(Failure::Read {
+                address: ctx.config().address.to_string_lossy().into_owned(),
+                status,
+            })
+        })?;
         frames.write(values, stamp)?;
     }
     Ok(())
@@ -511,8 +522,14 @@ pub(crate) enum Failure {
         address: String,
         status: Status,
     },
-    Read(Status),
-    Check(Status),
+    Read {
+        address: String,
+        status: Status,
+    },
+    Check {
+        address: String,
+        status: Status,
+    },
     Browse(Status),
     /// The tags and names before the pages of a browse pass [`crate::browse::BYTES`].
     Names,
@@ -527,10 +544,14 @@ impl fmt::Display for Failure {
             Self::Connect { address, status } => {
                 write!(f, "the connect to {address} failed with {}", status.name())
             }
-            Self::Read(status) => write!(f, "the read failed with {}", status.name()),
-            Self::Check(status) => {
-                write!(f, "the connectivity check failed with {}", status.name())
+            Self::Read { address, status } => {
+                write!(f, "the read from {address} failed with {}", status.name())
             }
+            Self::Check { address, status } => write!(
+                f,
+                "the connectivity check of {address} failed with {}",
+                status.name()
+            ),
             Self::Browse(status) => {
                 write!(f, "the browse failed with {}", status.name())
             }

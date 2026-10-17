@@ -697,7 +697,8 @@ fn counts_the_ticks_that_a_pause_of_the_node_skipped() {
 }
 
 /// The error of a run whose server closes while the run waits for its next tick.
-const CLOSED: &str = "the connectivity check failed with BadConnectionClosed";
+const CLOSED: &str =
+    "the connectivity check of opc.tcp://10.0.0.1:4840 failed with BadConnectionClosed";
 
 #[test]
 fn ends_the_run_with_a_device_error_when_the_server_stops_and_reads_again_after() {
@@ -748,7 +749,8 @@ fn ends_the_run_when_a_check_gets_no_answer() {
         scene.supervise(ms(16_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
-    let check = "the connectivity check failed with BadTimeout";
+    let check =
+        "the connectivity check of opc.tcp://10.0.0.1:4840 failed with BadTimeout";
     assert_eq!(errors(&outcome.statuses), [(DEVICE, check.to_owned())]);
     assert_eq!(outcome.frames.len(), 1);
 }
@@ -764,7 +766,7 @@ fn ends_the_run_when_a_check_finds_no_session() {
         scene.supervise(ms(11_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
-    let check = "the connectivity check failed with BadSessionIdInvalid";
+    let check = "the connectivity check of opc.tcp://10.0.0.1:4840 failed with BadSessionIdInvalid";
     assert_eq!(errors(&outcome.statuses), [(DEVICE, check.to_owned())]);
     assert_eq!(outcome.frames.len(), 2);
 }
@@ -1506,7 +1508,8 @@ fn closes_the_session_at_each_end_with_an_error() {
         scene.supervise(ms(30_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
-    let failed = "the read failed with BadTooManyOperations";
+    let failed =
+        "the read from opc.tcp://10.0.0.1:4840 failed with BadTooManyOperations";
     assert_eq!(errors(&outcome.statuses), [(DEVICE, failed.to_owned())]);
     assert_eq!(last(&outcome.statuses, RESTARTS), 5);
 }

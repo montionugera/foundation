@@ -2,6 +2,7 @@
 //! [`browse::walk`] walks it.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::CStr;
 use std::fmt::Write as _;
 use std::num::{NonZeroU32, NonZeroUsize};
 
@@ -36,6 +37,8 @@ const CURRENT_READ: u8 = 1;
 /// A server open for one browse, on the session of a client.
 pub(crate) struct Server<'a> {
     client: &'a mut Client,
+    /// The endpoint of `client`, which a failed Read names.
+    address: &'a CStr,
     /// What each cursor of this browse goes on from, by its folder and the count of
     /// references of the folder before its page.
     points: BTreeMap<(Node, usize), Held>,
@@ -71,10 +74,11 @@ struct Seen {
 }
 
 impl<'a> Server<'a> {
-    /// Opens a browse on the session of `client`.
-    pub(crate) fn new(client: &'a mut Client) -> Self {
+    /// Opens a browse on the session of `client`, connected to `address`.
+    pub(crate) fn new(client: &'a mut Client, address: &'a CStr) -> Self {
         Self {
             client,
+            address,
             points: BTreeMap::new(),
             uses: 0,
             held: 0,
@@ -394,7 +398,15 @@ impl browse::Device for Server<'_> {
             .collect();
         let fit = self.client.nodes(&nodes);
         let read = self.client.read(&fit).await;
-        let mut read = read.map_err(|status| device(Failure::Read(status)))?.iter();
+        let address = self.address;
+        let mut read = read
+            .map_err(|status| {
+                device(Failure::Read {
+                    address: address.to_string_lossy().into_owned(),
+                    status,
+                })
+            })?
+            .iter();
         let mut large = fit.large().iter().map(|large| large.index).peekable();
         let values = (0..nodes.len()).map(|index| {
             if large.next_if_eq(&index).is_some() {

@@ -519,7 +519,7 @@ fn on_server<T: Send + 'static>(
             let connect =
                 Client::connect(time, node.net(), &mut rng, &url, future::pending());
             let mut client = connect.await.expect("a connect").expect("a client");
-            out = Some(body(&mut Server::new(&mut client)).await);
+            out = Some(body(&mut Server::new(&mut client, &url)).await);
             client.close().await;
         };
         serving(&node, until).await;
