@@ -1191,11 +1191,14 @@
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237608685; the
   supersede of "`Hidden` over `Outside`" of 2026-10-17T06:28:34Z, 2026-10-17T17:38:58Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237821711).
-  Amended (2026-10-17T19:18:01Z, #3005, with #2919): with `Vacant` and `Replaced` of
+  Amended (2026-10-17T20:57:47Z, #3005, with #2919): with `Vacant` and `Replaced` of
   #2919, a step that the folders of a limit refuse gives `Replaced` in place of
-  `Outside` when that limit holds a folder that a program moved or replaced and the step
-  resolves under it, as the whole path does. Only the whole path can give `Vacant`,
-  since a call makes no other name, and only after it passes each other limit; a step
-  short of it, and a read, pass where a write gives `Vacant`, so a path below a loop or
-  a link to nothing beside a hidden folder that is not there gives the error of its
-  resolve.
+  `Outside` when it resolves under a folder of that limit that a program moved or
+  replaced, as the whole path does: with the folder `work` made again, `work/../b.hcl`
+  gives `Replaced`, where `b.hcl` gives `Outside`. Only the whole path can give
+  `Vacant`, since a call makes no other name, and only after it passes each other limit.
+  A step short of it, and a read, pass where a write gives `Vacant`, so beside a hidden
+  folder that is not there, `work/none/x` and a path below a loop or a link to nothing
+  give the error of their resolve. Decided by `laptop.architect-2`
+  (2026-10-17T20:57:47Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6240944707).
