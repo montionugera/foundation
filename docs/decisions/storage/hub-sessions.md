@@ -540,7 +540,13 @@
   https://github.com/synnaxlabs/foundation/issues/2725#issuecomment-6205434126).
   Amended (#2790): the `Behind` variants are removed (HUB WIRE).
   Amended (#2897): below `durable`, `reached` moves the session's read from disk to
-  `next` when `next` is past it, also when the read gave no frame. A read that passed
-  lost seqs and then only entries with no frame, such as a handoff, read the same
-  entries again with no end (`laptop.architect`, 2026-10-16T16:49:39Z:
+  `next`, also when the read gave no frame. A read that passed lost seqs and then only
+  entries with no frame, such as a handoff, read the same entries again with no end
+  (`laptop.architect`, 2026-10-16T16:49:39Z:
   https://github.com/synnaxlabs/foundation/issues/2897#issuecomment-6220365677).
+  Supersedes "which changes nothing when `next < durable`" above
+  (https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6199323861, item 6).
+  A `next` below the `from` of the last `Next::Disk`, or below the end of a frame that
+  `fill` gave, is a defect of the caller, and `reached` panics (`laptop.architect`,
+  2026-10-17T04:33:05Z:
+  https://github.com/synnaxlabs/foundation/pull/2986#issuecomment-6229674613).
