@@ -15,9 +15,13 @@
   `Client.__exit__` lets the error of the block win: when the block raised, an error of
   the close is a note on it, else the error of the close raises (`laptop.architect-2`,
   2026-10-17T18:46:12Z,
-  https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6238857409). The
-  surface and the errors are key choices of kind 9 that `laptop.monitor` accepted at
-  2026-10-17T18:44:46Z
+  https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6238857409). A
+  close during another close waits for it to end and gives `None`, and only the close
+  that ends the session raises. The binding keeps the closed state, and `sdk` does not
+  change (`laptop.architect-2`, 2026-10-17T20:59:42Z,
+  https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6240961945). The
+  surface and the errors are key choices of kinds 2 and 9 that `laptop.monitor`
+  accepted at 2026-10-17T18:44:46Z
   (https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6240907801). This
   surface is a step: the demo needs `foundation.connect("address")` alone, so the
   defaults of #2177 land before it
