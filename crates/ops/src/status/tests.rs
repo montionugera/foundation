@@ -19,11 +19,9 @@ use types::name::Name;
 use types::sample::Type;
 use types::time::Span;
 
-use proptest::collection::vec;
-use proptest::prelude::*;
-
-use super::{Class, Failure, Output, Roots, State, Status};
+use super::{Class, Failure, Output, State, Status};
 use crate::common::{self, Fixture, SAM, founded, front_ends, name, solo};
+use crate::roots::Failures;
 use crate::serve::serve;
 use crate::{Config, Failure as Lost, Node, Run};
 
@@ -276,12 +274,12 @@ fn escapes_a_newline_in_the_text_of_an_error() {
 
 /// The node of `mesh` on `fixture`, with the kinds of [`kinds`].
 fn create_node(fixture: &Fixture, mesh: mesh::Mesh) -> Node {
-    create_node_on(fixture, mesh, Roots::new(String::new(), Vec::new()))
+    create_node_on(fixture, mesh, Failures::new(String::new(), Vec::new()))
 }
 
 /// The node of `mesh` on `fixture`, with the kinds of [`kinds`] and the failures of
 /// `roots`.
-fn create_node_on(fixture: &Fixture, mesh: mesh::Mesh, roots: Roots) -> Node {
+fn create_node_on(fixture: &Fixture, mesh: mesh::Mesh, roots: Failures) -> Node {
     let made = Cell::new(0);
     let key = move || {
         made.set(made.get() + 1);
@@ -1292,7 +1290,7 @@ fn gives_each_failure_of_the_roots_in_full_to_a_subject_that_may_read_the_node()
     solo(|fixture, mesh| async move {
         let mut failed = failures(17);
         failed.push(format!("head {} tail", "x".repeat(3000)));
-        let roots = Roots::new("the OS store".into(), failed.clone());
+        let roots = Failures::new("the OS store".into(), failed.clone());
         let node = create_node_on(&fixture, mesh, roots);
         applied(&fixture, &node, &reader("edge")).await;
         let (head, _) = status(&node, "sam").await;
@@ -1307,7 +1305,7 @@ fn gives_each_failure_of_the_roots_in_full_to_a_subject_that_may_read_the_node()
 #[test]
 fn gives_no_roots_to_a_subject_that_may_read_a_connector_but_not_the_node() {
     solo(|fixture, mesh| async move {
-        let roots = Roots::new("the OS store".into(), failures(1));
+        let roots = Failures::new("the OS store".into(), failures(1));
         let node = create_node_on(&fixture, mesh, roots);
         let text = [reader("site.a.**"), connector("site.a", "steady", "edge")];
         applied(&fixture, &node, &text.concat()).await;
@@ -1326,7 +1324,7 @@ fn the_command_line_writes_the_failures_of_the_roots_after_the_connectors() {
         let mut failed = failures(2);
         failed.push("bad\nline".into());
         failed.push("x".repeat(1 << 20));
-        let roots = Roots::new("SSL_CERT_DIR=/a".into(), failed);
+        let roots = Failures::new("SSL_CERT_DIR=/a".into(), failed);
         let node = create_node_on(&fixture, mesh, roots);
         applied(&fixture, &node, &connector("site.a", "steady", "edge")).await;
         supervise(&fixture, &node, &["site.a"]).await;
@@ -1350,7 +1348,7 @@ OS roots: left out: 1
 fn writes_the_failures_of_the_roots_after_the_line_of_no_connector() {
     let output = Output {
         connectors: Vec::new(),
-        roots: Some(Roots::new("the OS store".into(), failures(1))),
+        roots: Some(Failures::new("the OS store".into(), failures(1))),
     };
     let text = "You can read no connector on this node.\n\nOS roots: 1 failures, \
                 from the OS store\nOS roots: error: failure 0\n";
@@ -1360,7 +1358,7 @@ fn writes_the_failures_of_the_roots_after_the_line_of_no_connector() {
 #[test]
 fn gives_the_count_of_a_first_failure_over_the_bound() {
     solo(|fixture, mesh| async move {
-        let roots = Roots::new("s".into(), vec!["x".repeat((1 << 20) + 1)]);
+        let roots = Failures::new("s".into(), vec!["x".repeat((1 << 20) + 1)]);
         let node = create_node_on(&fixture, mesh, roots);
         applied(&fixture, &node, &reader("edge")).await;
         let (head, _) = status(&node, "sam").await;
@@ -1370,55 +1368,4 @@ fn gives_the_count_of_a_first_failure_over_the_bound() {
         }});
         assert_eq!(head, expected);
     });
-}
-
-/// A failure that holds `held` bytes with its `String`.
-fn holding(held: usize) -> String {
-    "x".repeat(held - size_of::<String>())
-}
-
-/// `roots` as `status` writes them.
-fn written(roots: &Roots) -> Value {
-    serde_json::to_value(roots).expect("roots convert to JSON")
-}
-
-#[test]
-fn roots_keep_the_failures_that_hold_at_most_a_mebibyte() {
-    let fits = vec![holding(1 << 19), holding(1 << 19)];
-    let roots = Roots::new("s".into(), fits.clone());
-    let expected = json!({ "source": "s", "failures": fits, "unlisted": 0 });
-    assert_eq!(written(&roots), expected);
-    let over = vec![holding(1 << 19), holding((1 << 19) + 1), String::new()];
-    let roots = Roots::new("s".into(), over.clone());
-    let expected = json!({ "source": "s", "failures": [over[0]], "unlisted": 2 });
-    assert_eq!(written(&roots), expected);
-}
-
-#[test]
-fn roots_from_json_keep_the_bound_and_add_the_count() {
-    let given =
-        json!({ "source": "s", "failures": ["x".repeat(1 << 21)], "unlisted": 3 });
-    let roots: Roots = serde_json::from_value(given).expect("roots from JSON");
-    let expected = json!({ "source": "s", "failures": [], "unlisted": 4 });
-    assert_eq!(written(&roots), expected);
-}
-
-proptest! {
-    #[test]
-    fn roots_keep_a_prefix_of_at_most_a_mebibyte_and_count_the_rest(
-        sizes in vec(0usize..(1 << 18), 0..24),
-    ) {
-        let failed: Vec<String> = sizes.iter().map(|&size| "x".repeat(size)).collect();
-        let roots = Roots::new(String::new(), failed.clone());
-        let kept = roots.failures.len();
-        let held = |count: usize| {
-            let failures = failed[..count].iter();
-            failures.map(|failure| size_of::<String>() + failure.len()).sum::<usize>()
-        };
-        prop_assert_eq!(&roots.failures[..], &failed[..kept]);
-        prop_assert!(held(kept) <= 1 << 20);
-        let counted = super::count(kept) + roots.unlisted;
-        prop_assert_eq!(counted, super::count(failed.len()));
-        prop_assert!(kept == failed.len() || held(kept + 1) > 1 << 20);
-    }
 }

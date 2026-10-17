@@ -20,6 +20,7 @@ mod node;
 mod operation;
 mod plan;
 mod remote;
+pub mod roots;
 mod serve;
 mod start;
 mod status;
@@ -34,7 +35,6 @@ pub use node::{Config, Node};
 use operation::Parsed;
 pub use serve::serve;
 pub use start::{Log, Start};
-pub use status::Roots;
 
 /// What the process does once [`cli`] returns.
 #[derive(Debug, PartialEq, Eq)]

@@ -1,6 +1,6 @@
-//! The tests that bound the heap of `serve` and of `ops::Roots` with one count of the
-//! bytes they hold. The count covers each thread, so this binary has no test harness.
-//! The sim runs on one thread, so the count is exact.
+//! The tests that bound the heap of `serve` and of `ops::roots::Failures` with one
+//! count of the bytes they hold. The count covers each thread, so this binary has no
+//! test harness. The sim runs on one thread, so the count is exact.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -37,7 +37,7 @@ fn main() {
 
 fn roots_of_many_failures_hold_at_most_a_mebibyte() {
     let before = ALLOCATOR.held();
-    let roots = ops::Roots::new(String::new(), vec!["x".to_owned(); 100_000]);
+    let roots = ops::roots::Failures::new(String::new(), vec!["x".to_owned(); 100_000]);
     let held = ALLOCATOR.held() - before;
     assert!(
         held <= 1 << 20,
@@ -98,7 +98,7 @@ fn serve_large(text: &str) {
             clock: sim_node.clock(),
             name: "edge".parse().expect("a name"),
             secrets: connector::testing::create_secrets(sim_node.files()),
-            roots: ops::Roots::new(String::new(), Vec::new()),
+            roots: ops::roots::Failures::new(String::new(), Vec::new()),
         });
         let subject = "@admin".parse().expect("a name");
         let before = ALLOCATOR.held();

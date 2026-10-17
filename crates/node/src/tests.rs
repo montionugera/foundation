@@ -4754,7 +4754,7 @@ pub(crate) mod port {
                 clock,
                 name,
                 secrets: connector::testing::create_secrets(files),
-                roots: ops::Roots::new(String::new(), Vec::new()),
+                roots: ops::roots::Failures::new(String::new(), Vec::new()),
             }))
         }
 

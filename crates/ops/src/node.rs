@@ -11,7 +11,7 @@ use types::name::Name;
 
 use crate::front_end::{File, FrontEnds};
 use crate::plan::Documents;
-use crate::status::Roots;
+use crate::roots::Failures;
 use crate::{apply, used};
 
 #[cfg(test)]
@@ -28,7 +28,7 @@ pub struct Node {
     pub(crate) clock: Clock,
     pub(crate) name: Name,
     pub(crate) secrets: secret::Resolver,
-    pub(crate) roots: Roots,
+    pub(crate) roots: Failures,
 }
 
 /// The dependencies of a [`Node`].
@@ -54,7 +54,7 @@ pub struct Config {
     pub secrets: secret::Resolver,
     /// The failures of the read of the OS roots of the node. `status` gives them to a
     /// subject with `read` on the name of the node.
-    pub roots: Roots,
+    pub roots: Failures,
 }
 
 impl Node {

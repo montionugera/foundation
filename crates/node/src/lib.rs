@@ -1218,7 +1218,7 @@ impl Serve {
                     source,
                 } = roots;
                 drop(certificates);
-                let shown = ops::Roots::new(source.to_string(), failures);
+                let shown = ops::roots::Failures::new(source.to_string(), failures);
                 tracing::info!(%name, address = %address.bound, shards, "started");
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,

@@ -18,16 +18,13 @@ use types::time::{Monotonic, Span};
 
 use crate::Node;
 use crate::error::{Error, escape_controls};
+use crate::roots::Failures;
 
 #[cfg(test)]
 mod tests;
 
 /// The longest that `status` waits for the frames, from the request.
 const WAIT: Span = Span::SECOND;
-
-/// The most bytes that the failures of [`Roots`] hold, so that they fit in the reply
-/// of `status` also with each byte escaped.
-const KEPT: usize = 1 << 20;
 
 /// The status of each connector on the node, and the failures of its OS roots, as
 /// `status` gives them.
@@ -38,86 +35,7 @@ pub(crate) struct Output {
     pub(crate) connectors: Vec<Status>,
     /// The failures of the read of the OS roots of the node, or `None` when the subject
     /// may not read the name of the node.
-    pub(crate) roots: Option<Roots>,
-}
-
-/// The failures of the read of the OS roots of a node, which `status` gives.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(from = "Wire")]
-pub struct Roots {
-    /// Where the read looked.
-    source: String,
-    /// The text of each failure, in the order of the read.
-    failures: Vec<String>,
-    /// The count of the failures after `failures`, which the node does not keep.
-    unlisted: u64,
-}
-
-/// The fields of [`Roots`] as a reply gives them, before [`Roots::new`] bounds them.
-#[derive(Deserialize, JsonSchema)]
-struct Wire {
-    source: String,
-    failures: Vec<String>,
-    unlisted: u64,
-}
-
-impl From<Wire> for Roots {
-    fn from(wire: Wire) -> Self {
-        let mut roots = Self::new(wire.source, wire.failures);
-        roots.unlisted = roots.unlisted.saturating_add(wire.unlisted);
-        roots
-    }
-}
-
-impl Roots {
-    /// The `failures` of a read of the OS roots from `source`, in the order of the
-    /// read. Keeps each failure in full, in order, while the memory of the kept
-    /// failures is at most 1 MiB, and from the first that does not fit only counts
-    /// them, so that the reply of `status` stays in its bound.
-    #[must_use]
-    pub fn new(source: String, mut failures: Vec<String>) -> Self {
-        let mut held = 0;
-        let kept = failures
-            .iter()
-            .take_while(|failure| {
-                held += size_of::<String>() + failure.capacity();
-                held <= KEPT
-            })
-            .count();
-        let unlisted = count(failures.len() - kept);
-        failures.truncate(kept);
-        failures.shrink_to_fit();
-        Self {
-            source,
-            failures,
-            unlisted,
-        }
-    }
-
-    /// Whether the read had no failure.
-    fn clean(&self) -> bool {
-        self.failures.is_empty() && self.unlisted == 0
-    }
-
-    /// The lines of these failures in [`Output::text`].
-    fn lines(&self) -> String {
-        let failed = count(self.failures.len()) + self.unlisted;
-        let source = escape_controls(&self.source);
-        let head = format!("OS roots: {failed} failures, from {source}\n");
-        let errors = (self.failures.iter())
-            .map(|failure| format!("OS roots: error: {}\n", escape_controls(failure)));
-        let unlisted = (self.unlisted > 0)
-            .then(|| format!("OS roots: left out: {}\n", self.unlisted));
-        std::iter::once(head)
-            .chain(errors)
-            .chain(unlisted)
-            .collect()
-    }
-}
-
-/// `len` as a count of the wire.
-fn count(len: usize) -> u64 {
-    u64::try_from(len).expect("invariant: a length fits in 64 bits")
+    pub(crate) roots: Option<Failures>,
 }
 
 /// The status of one connector.
