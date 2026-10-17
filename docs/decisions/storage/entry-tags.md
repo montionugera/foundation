@@ -55,11 +55,13 @@
   https://github.com/synnaxlabs/foundation/issues/2833#issuecomment-6227434486).
   The buffer gives each nonzero tag a meaning: it marks a state entry of at most
   `Layout::ENTRY_MAX_MIN` bytes (`Limit::Tagged`). Beside the logs, the buffer keeps
-  a heap copy of the header and the bytes of the newest durable entry of each nonzero
-  tag on each path of an index, so `Buffer::newest` reads no file. The sync makes the
-  copy from the parts of the record and reuses the bytes of the copy that it
-  replaces; the open makes it with one read for each copy after the walk. A copy
-  costs at most 51 B, plus `Layout::ENTRY_MAX_MIN`, plus one map entry. This
+  a heap copy of the bytes of the newest durable entry of each nonzero tag on each
+  path of an index, so `Buffer::newest` reads no file. The sync makes the copy from
+  the parts of the record and reuses the bytes of the copy that it replaces; the
+  open makes it with one read for each copy after the walk. On box2, at 100k pairs
+  of a log and a tag, a pair takes its bytes plus 53.7 B: 70.7 B for a handoff of
+  17 B, 126.7 B for a named part of 73 B, 309.7 B for 256 B, and 4085.7 B for 4032 B,
+  against 22.3 B before the copy. This
   supersedes "The buffer gives only tag 0 a meaning" and the offsets beside the logs
   above. Decided by `laptop.architect` (#406, 2026-10-14T01:56:45Z,
   https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6159164617).
