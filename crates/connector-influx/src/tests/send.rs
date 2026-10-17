@@ -726,31 +726,31 @@ fn sends_a_batch_again_after_each_other_answer_and_shows_the_error_until_a_204()
         errors,
         [
             String::new(),
-            "InfluxDB answered 500 Internal Server Error: the disk is full".into(),
-            "InfluxDB answered 503 Service Unavailable: starting".into(),
-            "InfluxDB answered 401 Unauthorized: unauthorized access".into(),
+            "InfluxDB at 10.0.0.1:8086 answered 500 Internal Server Error: the disk is full".into(),
+            "InfluxDB at 10.0.0.1:8086 answered 503 Service Unavailable: starting".into(),
+            "InfluxDB at 10.0.0.1:8086 answered 401 Unauthorized: unauthorized access".into(),
             format!(
-                "InfluxDB answered 413 Payload Too Large: request too large. {LARGE}"
+                "InfluxDB at 10.0.0.1:8086 answered 413 Payload Too Large: request too large. {LARGE}"
             ),
-            "InfluxDB answered 429 Too Many Requests: slow down".into(),
+            "InfluxDB at 10.0.0.1:8086 answered 429 Too Many Requests: slow down".into(),
             format!(
-                "InfluxDB answered 400 Bad Request: field type conflict. {REFUSED}"
+                "InfluxDB at 10.0.0.1:8086 answered 400 Bad Request: field type conflict. {REFUSED}"
             ),
             format!(
-                "InfluxDB answered 422 Unprocessable Entity: beyond retention policy. \
+                "InfluxDB at 10.0.0.1:8086 answered 422 Unprocessable Entity: beyond retention policy. \
                  {REFUSED}"
             ),
             format!(
-                "InfluxDB answered 404 Not Found: database not found: \"plant\". \
+                "InfluxDB at 10.0.0.1:8086 answered 404 Not Found: database not found: \"plant\". \
                  {UNKNOWN}"
             ),
             shown(&format!(
-                "InfluxDB answered 400 Bad Request: {head}. {REFUSED}"
+                "InfluxDB at 10.0.0.1:8086 answered 400 Bad Request: {head}. {REFUSED}"
             )),
             shown(&format!(
-                "InfluxDB answered 404 Not Found: {head}. {UNKNOWN}"
+                "InfluxDB at 10.0.0.1:8086 answered 404 Not Found: {head}. {UNKNOWN}"
             )),
-            "InfluxDB answered 200 OK: ok".into(),
+            "InfluxDB at 10.0.0.1:8086 answered 200 OK: ok".into(),
             String::new(),
         ]
     );
@@ -846,7 +846,7 @@ fn reads_the_token_again_after_a_401_or_a_403_and_writes_each_sample_once() {
                 vec![
                     String::new(),
                     format!(
-                        "InfluxDB answered {text}. Check the token \
+                        "InfluxDB at 10.0.0.1:8086 answered {text}. Check the token \
                          file(\"{TOKEN_FILE}\"): {{\"code\":\"unauthorized\",\
                          \"message\":\"unauthorized access\"}}"
                     ),
@@ -856,6 +856,28 @@ fn reads_the_token_again_after_a_401_or_a_403_and_writes_each_sample_once() {
                 1,
             ),
             "{status}"
+        );
+    }
+}
+
+#[test]
+fn the_error_of_an_answer_other_than_204_names_the_address() {
+    let (address, errors, restarts) = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        (plant.answers.borrow_mut())
+            .push_back((StatusCode::SERVICE_UNAVAILABLE, "starting"));
+        let (_, errors, end) = send_one(&plant, plant.config()).await;
+        assert!(end.is_none(), "the run goes on");
+        let restarts = plant.restarts.borrow().clone();
+        (plant.address.to_string(), errors, restarts)
+    });
+    assert_eq!(restarts, vec![0], "the Run form: no restart");
+    let shown: Vec<&String> = errors.iter().filter(|e| !e.is_empty()).collect();
+    assert!(!shown.is_empty(), "{errors:?}");
+    for error in shown {
+        assert!(
+            error.contains(&address),
+            "the error names {address}: {error:?}"
         );
     }
 }
@@ -881,7 +903,7 @@ fn keeps_the_token_after_an_answer_other_than_401_or_403() {
             vec![Some("Token old".to_owned()); 2],
             vec![
                 String::new(),
-                "InfluxDB answered 500 Internal Server Error: the disk is full"
+                "InfluxDB at 10.0.0.1:8086 answered 500 Internal Server Error: the disk is full"
                     .to_owned(),
                 String::new(),
             ],
@@ -907,7 +929,7 @@ fn reads_the_token_again_after_a_401_whose_body_is_over_the_cap() {
     });
     let head = large().chars().take(1 << 16).collect::<String>();
     let full = format!(
-        "InfluxDB answered 401 Unauthorized. Check the token file({TOKEN_FILE:?}): {}",
+        "InfluxDB at 10.0.0.1:8086 answered 401 Unauthorized. Check the token file({TOKEN_FILE:?}): {}",
         head.trim()
     );
     assert_eq!(
@@ -938,7 +960,7 @@ fn keeps_the_source_of_the_token_after_a_long_401_body() {
         errors
     });
     let head = format!(
-        "InfluxDB answered 401 Unauthorized. Check the token file(\"{TOKEN_FILE}\"): "
+        "InfluxDB at 10.0.0.1:8086 answered 401 Unauthorized. Check the token file(\"{TOKEN_FILE}\"): "
     );
     let shown = format!("{head}{}…{}", "x".repeat(510 - head.len()), "x".repeat(510));
     assert_eq!(got, [String::new(), shown, String::new()]);
@@ -959,13 +981,13 @@ fn keeps_the_answer_of_influx_after_a_401_with_a_long_source_and_body() {
         (auth, errors)
     });
     let full = format!(
-        "InfluxDB answered 401 Unauthorized. Check the token file({path:?}): {body}"
+        "InfluxDB at 10.0.0.1:8086 answered 401 Unauthorized. Check the token file({path:?}): {body}"
     );
     let head: String = full.chars().take(510).collect();
     let tail: String = full.chars().skip(full.len() - 510).collect();
     let want = format!("{head}…{tail}");
     assert!(want.starts_with(
-        "InfluxDB answered 401 Unauthorized. Check the token file(\"/run/secrets/"
+        "InfluxDB at 10.0.0.1:8086 answered 401 Unauthorized. Check the token file(\"/run/secrets/"
     ));
     assert!(want.ends_with(&"y".repeat(510)));
     assert_eq!(
@@ -1043,7 +1065,7 @@ fn keeps_the_batch_when_the_token_is_gone_after_a_401() {
             vec![
                 String::new(),
                 format!(
-                    "InfluxDB answered 401 Unauthorized. Check the token \
+                    "InfluxDB at 10.0.0.1:8086 answered 401 Unauthorized. Check the token \
                      file(\"{TOKEN_FILE}\"): no"
                 ),
                 format!(
@@ -1065,7 +1087,7 @@ fn reads_the_token_again_only_after_the_backoff() {
         [
             String::new(),
             format!(
-                "InfluxDB answered 401 Unauthorized. Check the token \
+                "InfluxDB at 10.0.0.1:8086 answered 401 Unauthorized. Check the token \
                  file(\"{TOKEN_FILE}\"): no"
             ),
             String::new(),
@@ -1640,7 +1662,11 @@ fn sends_a_frame_of_over_6_mib_after_a_batch_of_4_mib_in_more_requests() {
     assert_eq!(wide.lines, [vec![1, 1, 265, 265, 180], vec![]]);
     assert_eq!(
         wide.errors,
-        ["", "InfluxDB answered 500 Internal Server Error: ", ""]
+        [
+            "",
+            "InfluxDB at 10.0.0.1:8086 answered 500 Internal Server Error: ",
+            ""
+        ]
     );
     assert_eq!(wide.confirmed, [0, 64, 711 * 64, 0]);
     assert_eq!(wide.points, 711);
@@ -1740,7 +1766,11 @@ fn acks_and_counts_a_frame_in_more_requests_only_after_its_last_request() {
     assert_eq!(second, [265, 265, 170]);
     assert_eq!(
         wide.errors,
-        ["", "InfluxDB answered 500 Internal Server Error: ", ""]
+        [
+            "",
+            "InfluxDB at 10.0.0.1:8086 answered 500 Internal Server Error: ",
+            ""
+        ]
     );
     assert_eq!(wide.confirmed, [0, 700 * 64]);
     assert_eq!(wide.points, 700);
@@ -2332,7 +2362,7 @@ fn stores_each_sample_once_after_writes_that_fail(blockless: bool) {
     assert_eq!(accepted, expected.len(), "the lines of each 204");
     let refused = "the write to InfluxDB failed: the connect failed: 10.0.0.1:8086 \
                    refused the connection";
-    let full = "InfluxDB answered 500 Internal Server Error: the disk is full";
+    let full = "InfluxDB at 10.0.0.1:8086 answered 500 Internal Server Error: the disk is full";
     assert_eq!(errors, ["", refused, full, ""]);
 }
 

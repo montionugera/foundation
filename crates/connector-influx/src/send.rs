@@ -208,6 +208,7 @@ async fn send(
                 }
             };
             if let Some((status, body)) = answer {
+                let at = uri.authority().expect("invariant: a write URI has a host");
                 let text = String::from_utf8_lossy(&body);
                 let text = text.trim();
                 let token =
@@ -218,10 +219,10 @@ async fn send(
                 }
                 match source {
                     Some(source) => ctx.error(&format_args!(
-                        "InfluxDB answered {status}. Check the token {source}: {text}"
+                        "InfluxDB at {at} answered {status}. Check the token {source}: {text}"
                     )),
                     None => ctx.error(&format_args!(
-                        "InfluxDB answered {status}: {text}{}",
+                        "InfluxDB at {at} answered {status}: {text}{}",
                         fix(status)
                     )),
                 }
