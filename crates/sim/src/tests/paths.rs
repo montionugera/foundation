@@ -348,6 +348,28 @@ fn a_working_directory_through_a_moved_link_stays() {
         paths.resolve(Path::new(".")),
         Ok(PathBuf::from("/target/sub"))
     );
+    node.link_path(Path::new("/a/link"), Path::new("/target"));
+    node.set_working_dir(Path::new("/a/link/sub"));
+    node.move_path(Path::new("/a/link"), Path::new("/a/moved"));
+    assert_eq!(
+        paths.resolve(Path::new(".")),
+        Ok(PathBuf::from("/target/sub"))
+    );
+}
+
+/// The working directory moves with the target of a link on its way.
+#[test]
+fn a_working_directory_moves_with_the_target_of_a_link() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/target/sub"));
+    node.link_path(Path::new("/w/link"), Path::new("/target"));
+    node.set_working_dir(Path::new("/w/link/sub"));
+    node.move_path(Path::new("/target"), Path::new("/moved"));
+    assert_eq!(
+        paths.resolve(Path::new(".")),
+        Ok(PathBuf::from("/moved/sub"))
+    );
 }
 
 #[test]

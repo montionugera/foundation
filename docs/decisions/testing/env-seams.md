@@ -989,8 +989,10 @@
   makes again in other case or replaces with a link, and a path into a folder that a
   program moved away. The common cases pin each on both drivers.
   `sim::Node::move_path` renames a file, a link, or a directory of a host from outside
-  the node, with its key, so the common cases move a folder away on both drivers. The
-  node's working directory moves with it when it resolves to `from` or under it.
+  the node, with its key, so the common cases move a folder away on both drivers. When
+  the node's working directory resolves, it stays on the directory that it resolves
+  to, as on a host: it moves with it when that directory is `from` or under it, and a
+  move of a link on its way leaves it there.
   Decided by `laptop.architect-2` (2026-10-17T05:16:48Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230063256; the
   order, a read, `Replaced` by the path now, and `move_path`, 2026-10-17T06:33:57Z,
