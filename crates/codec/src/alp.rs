@@ -37,7 +37,8 @@ const RUNS: usize = 8;
 /// Values after which an encoder searches all pairs again.
 const SEARCH: usize = 102_400;
 
-/// The largest exponent for floats of `width` bytes: `10^e` fits their integer.
+/// The largest exponent for floats of `width` bytes: `10^e` fits an `i64` for 8 bytes,
+/// and is exact in an `f32` for 4.
 pub(crate) fn max_exponent(width: usize) -> u8 {
     if width == 4 { 10 } else { 18 }
 }

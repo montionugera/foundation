@@ -736,8 +736,8 @@ impl Ends {
 #[derive(Clone, Copy, Debug)]
 enum Layout {
     /// Integer samples of 8 or 16 bits, or integers or floats of 32 or 64 bits. Every
-    /// codec applies, to the integers of the samples or to the sortable integers of
-    /// floats.
+    /// integer codec applies, to the integers of the samples or to the sortable
+    /// integers of floats. ALP applies to floats only.
     Bits8 {
         order: Order,
     },
