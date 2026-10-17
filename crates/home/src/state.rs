@@ -31,17 +31,20 @@ pub(crate) fn entry(
     }
 }
 
-/// Appends `entry`, a state entry whose body a block of the pool of `buffer` holds,
-/// alone. Returns whether the entry needs no later append: the buffer took it, or a
-/// failed commit ended the buffer, so a restart reads no later entry. `false` when
-/// the pool had no block for the body, or the ring or the pool had no room.
+/// Appends the state entry that `entry` makes with a block of the pool of `buffer` for
+/// its body, alone. Returns whether the entry needs no later append: the buffer took
+/// it, or a failed commit ended the buffer, so a restart reads no later entry. `false`
+/// when the pool had no block for the body, or the ring or the pool had no room.
 ///
 /// # Panics
 ///
 /// If the body passes the most bytes of a block or of one entry of the ring. Each
 /// kind keeps its bodies within them.
-pub(crate) fn append(buffer: &Buffer, entry: Result<Entry, block::Error>) -> bool {
-    let entry = match entry {
+pub(crate) fn append(
+    buffer: &Buffer,
+    entry: impl FnOnce(&block::Pool) -> Result<Entry, block::Error>,
+) -> bool {
+    let entry = match entry(buffer.pool()) {
         Ok(entry) => entry,
         Err(block::Error::Exhausted { .. } | block::Error::Refused { .. }) => {
             return false;

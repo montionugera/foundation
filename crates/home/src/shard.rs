@@ -1109,7 +1109,7 @@ fn freeze(
 }
 
 /// Appends the unrecorded handoff of the index at each of `places`, each alone, on the
-/// live path at mesh time `mesh`, and marks it recorded when [`state::append`] says
+/// live path at mesh time `mesh`, and marks it recorded when [`handoff::append`] says
 /// that it needs no later append. Returns whether every handoff was recorded.
 fn append_handoffs(
     buffer: &Buffer,
@@ -1124,8 +1124,7 @@ fn append_handoffs(
             continue;
         };
         let (key, slot) = (index.key, index.slot);
-        let entry = handoff::entry(buffer.pool(), handoff, key, slot, first, mesh);
-        if state::append(buffer, entry) {
+        if handoff::append(buffer, handoff, key, slot, first, mesh) {
             index.gate.recorded();
         } else {
             all = false;
@@ -1148,8 +1147,9 @@ fn append_named(
         return false;
     }
     let (key, slot, first) = (index.key, index.slot, index.live_tail());
-    let entry = named::entry(buffer.pool(), records, key, slot, first, mesh);
-    state::append(buffer, entry)
+    state::append(buffer, |pool| {
+        named::entry(pool, records, key, slot, first, mesh)
+    })
 }
 
 /// Spends the seq of each accepted group of `checks`, and makes the outcome of each

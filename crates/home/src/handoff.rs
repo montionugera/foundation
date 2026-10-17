@@ -44,6 +44,21 @@ pub(crate) fn entry(
     Ok(state::entry(TAG, body, index, slot, first, stored_at))
 }
 
+/// Appends the entry that records `handoff`, as [`entry`] makes it, alone, and returns
+/// what [`state::append`] does.
+pub(crate) fn append(
+    buffer: &Buffer,
+    handoff: Handoff<'_>,
+    index: channel::Key,
+    slot: Slot,
+    first: u64,
+    stored_at: Stamp,
+) -> bool {
+    state::append(buffer, |pool| {
+        entry(pool, handoff, index, slot, first, stored_at)
+    })
+}
+
 /// The body of the entry that records `handoff`: a block from `pool`, or `None` when
 /// no writer holds control.
 ///
