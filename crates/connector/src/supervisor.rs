@@ -447,8 +447,8 @@ mod tests {
     use types::sample::{Scalar, Type};
 
     const BAD: Code = Code::new("test.bad");
-    /// The sim seeds of a test whose outcome depends on the order of tasks ready at
-    /// one instant.
+    /// The sim seeds of a test whose outcome the seed decides, through the order of
+    /// tasks ready at one instant or the draws of `entropy`.
     const SEEDS: u64 = 64;
 
     /// What one run of [`Script`] does.
@@ -1509,14 +1509,15 @@ mod tests {
     }
 
     /// The hub reads the wall up to 1 s late, so the step can show after the write of
-    /// the backoff, at some seeds. A backoff of zero shows no slew. The test needs 16
-    /// seeds of 64 that show both.
+    /// the backoff, at a few seeds. A backoff of zero shows no slew. The test needs
+    /// 128 seeds of 512 that show both, and one with a backoff whose write does not
+    /// show the step.
     #[test]
     fn writes_the_backoff_that_is_left_after_a_wall_step_in_the_wait() {
         let steps = vec![Step::Device(Span::ZERO), Step::Hold(ms(2_000))];
         let wall = ms(10_000);
-        let mut slewed = 0;
-        for seed in 0..SEEDS {
+        let (seeds, mut slewed, mut late) = (8 * SEEDS, 0, 0);
+        for seed in 0..seeds {
             let (statuses, _) = refuse_the_last_wait(seed, steps.clone(), wall);
             let (before, ..) = &statuses[4];
             let (at, samples, ..) = &statuses[5];
@@ -1533,6 +1534,7 @@ mod tests {
                 continue;
             }
             if between(*before, *at) < wall {
+                late += 1;
                 continue;
             }
             // `backoff` is the wait by the node's clock. After the step, the hub's
@@ -1548,8 +1550,9 @@ mod tests {
             slewed += 1;
         }
         assert!(
-            slewed >= 16,
-            "{slewed} of {SEEDS} seeds show the step and a slew"
+            slewed >= 128 && late >= 1,
+            "of {seeds} seeds, {slewed} show the step and a slew, and {late} show the \
+             step after the write"
         );
     }
 
