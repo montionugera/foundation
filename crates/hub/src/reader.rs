@@ -281,7 +281,7 @@ pub enum Error {
     /// named records of the index has room for it: the records of the index hold
     /// close to `limit` bytes. Close a named reader of the index whose hold is zero,
     /// wait for a hold to end, or open this one unnamed. A reopen or a takeover never
-    /// gives it.
+    /// gives it. The room of a closed reader's record is free when its removal commits.
     Full {
         /// The most bytes of the records of the named readers of one index.
         limit: usize,
