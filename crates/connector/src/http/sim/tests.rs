@@ -1,6 +1,6 @@
 use std::future::poll_fn;
 use std::io::IoSlice;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use ::sim::{Sim, node};
@@ -421,9 +421,9 @@ fn ends_the_stream_of_an_http2_preface_with_no_answer() {
 }
 
 /// Opens an idle stream to the server, then runs `stop` 500 ms into the run. Gives
-/// what `serve` gave, how a read of the idle stream ended, and how a later connect
-/// ended.
-fn stopped(stop: fn(&Network)) -> (Option<Ended>, Option<Peer>) {
+/// what `serve` gave, how a read of the idle stream ended, how a later connect ended,
+/// and the address of the server.
+fn stopped(stop: fn(&Network)) -> (Option<Ended>, Option<Peer>, SocketAddr) {
     let mut network = Network::new();
     let (net, remote) = (network.client.net(), network.remote);
     let out = Arc::new(Mutex::new(None));
@@ -455,7 +455,7 @@ fn stopped(stop: fn(&Network)) -> (Option<Ended>, Option<Peer>) {
         .expect("no panic under the lock")
         .take();
     let client = out.lock().expect("no panic under the lock").take();
-    (ended, client)
+    (ended, client, remote)
 }
 
 /// How a read of an idle stream and a later connect ended.
@@ -463,8 +463,7 @@ type Peer = (Result<usize, net::Error>, Result<(), net::Error>);
 
 #[test]
 fn a_cancel_ends_each_stream_and_returns_once_they_ended() {
-    let (ended, client) = stopped(|network| network.until.cancel());
-    let remote = SocketAddr::new(Ipv4Addr::new(10, 0, 0, 2).into(), PORT);
+    let (ended, client, remote) = stopped(|network| network.until.cancel());
     assert_eq!(ended, Some((Ok(()), 0)));
     assert_eq!(
         client,
@@ -477,9 +476,8 @@ fn a_cancel_ends_each_stream_and_returns_once_they_ended() {
 
 #[test]
 fn a_failed_accept_ends_each_stream_and_gives_its_error_once_they_ended() {
-    let (ended, client) =
+    let (ended, client, remote) =
         stopped(|network| network.server.fail_listener(network.remote));
-    let remote = SocketAddr::new(Ipv4Addr::new(10, 0, 0, 2).into(), PORT);
     assert_eq!(ended, Some((Err(net::Error::Io { code: 5 }), 0)));
     assert_eq!(
         client,
@@ -488,4 +486,19 @@ fn a_failed_accept_ends_each_stream_and_gives_its_error_once_they_ended() {
             Err(net::Error::Refused { remote })
         ))
     );
+}
+
+#[test]
+fn a_listener_that_fails_and_a_cancel_in_one_step_give_the_error() {
+    let mut network = Network::new();
+    network.sim.run_for(Span::SECOND).expect("the run goes on");
+    network.server.fail_listener(network.remote);
+    network.until.cancel();
+    network.sim.run_for(Span::MINUTE).expect("the run ends");
+    let ended = network
+        .ended
+        .lock()
+        .expect("no panic under the lock")
+        .take();
+    assert_eq!(ended, Some((Err(net::Error::Io { code: 5 }), 0)));
 }
