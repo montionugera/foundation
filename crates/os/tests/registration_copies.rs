@@ -31,7 +31,7 @@ fn runtime() -> tokio::runtime::Runtime {
 #[test]
 #[cfg_attr(
     not(target_os = "linux"),
-    ignore = "needs pidfd_getfd and the shutdown of a listener"
+    ignore = "only Linux: pidfd_getfd makes the copy"
 )]
 fn a_listener_with_a_failed_registration_refuses_while_a_copy_is_open() {
     let net = os::net();

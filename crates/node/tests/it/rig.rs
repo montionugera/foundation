@@ -961,7 +961,6 @@ fn a_rig_removes_its_directory_with_its_files() {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "needs /proc")]
 fn a_test_that_panics_kills_its_command() {
     let mut command = Command::new("sh");
     command.args(["-c", "exec sleep 60"]);
@@ -1055,7 +1054,6 @@ fn drop_a_command_that_the_kernel_reaped(reaped: &str) -> String {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "needs perl and /proc")]
 fn a_failed_kill_panics() {
     let report = drop_a_command_that_the_kernel_reaped("drop");
     assert!(
@@ -1068,7 +1066,6 @@ fn a_failed_kill_panics() {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "needs perl and /proc")]
 fn a_failed_kill_while_the_test_panics_with_a_closed_stderr_does_not_abort() {
     let (reader, writer) = std::io::pipe().expect("a pipe");
     drop(reader);
@@ -1082,7 +1079,6 @@ fn a_failed_kill_while_the_test_panics_with_a_closed_stderr_does_not_abort() {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "needs perl and /proc")]
 fn a_failed_kill_while_the_test_panics_reports_its_error() {
     let report = drop_a_command_that_the_kernel_reaped("panic");
     assert!(report.contains("the test fails\n"), "{report}");
@@ -1094,7 +1090,6 @@ fn a_failed_kill_while_the_test_panics_reports_its_error() {
 
 /// A developer can set `RUST_TEST_NOCAPTURE` for the whole run.
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "needs perl and /proc")]
 fn a_failed_kill_panics_in_a_run_that_does_not_capture() {
     let output = Command::new(std::env::current_exe().expect("the test binary"))
         .args(["--exact", "rig::a_failed_kill_panics"])

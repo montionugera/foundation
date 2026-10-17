@@ -18,6 +18,12 @@
     that names only that issue, and removes the issue from an item that names others.
     The lists only shrink. The ONE NODE milestone does not close while a list holds a
     crate or a test.
+  - A test skips an OS by an attribute only in a case of `docs/claude/testing.md`, "No
+    `#[ignore]`": the OS does not have the behavior, no test can fix its value there,
+    or its test needs an item of one OS to cause the case. Its reason starts with
+    `only <OS>`. Each other skip of an OS, a `needs <tool>` skip too, is an item of the
+    list of that OS with its issue. `cargo xtask skips` checks each `ignore` keyed on
+    an OS, in the job `check` on Linux.
   - For `/review`, CI does not run an OS for a crate or a test on the list of that OS
     (`laptop.director`,
     https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229528745).
@@ -69,3 +75,7 @@
     it is not the slowest job of the run. The times of the three jobs go on #2954, and
     a feature job that becomes the slowest job of the run goes back to `laptop.monitor`
     with its time.
+  - The skips by an attribute: `laptop.director`, option 2
+    (https://github.com/synnaxlabs/foundation/issues/3015#issuecomment-6231310442), on
+    the gap that `laptop.monitor` found
+    (https://github.com/synnaxlabs/foundation/issues/2954#issuecomment-6231250077).

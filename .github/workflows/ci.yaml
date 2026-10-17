@@ -128,6 +128,25 @@ jobs:
             untested: []
             tests:
               - --skip wall::gives_a_bound_under_sixteen_seconds_when_a_daemon_runs # #2965
+              - --skip daqmx::tests::names_a_library_that_does_not_load # #3033
+              - --skip daqmx::tests::names_a_function_the_library_lacks # #3033
+              - --skip link::the_c_names_only_the_listed_symbols_outside_it # #3025
+              - --skip link::the_shim_draws_nothing_from_the_generator_of_the_copy # #3025
+              - --skip link::the_tests_reach_neither_interrupt_server_nor_random_seed # #3025
+              - --skip link::the_c_and_cfg_asan_follow_the_address_sanitizer_of_the_rust # #3025
+              - --skip link::the_c_on_64_bit_arm_names_only_the_listed_symbols_outside_it # #3025
+              - --skip link::the_copy_copies_floats_as_they_lie_in_memory_on_little_endian_targets # #3025
+              - --skip rig::a_test_that_panics_kills_its_command # #3034
+              - --skip rig::a_failed_kill_panics # #3034
+              - --skip rig::a_failed_kill_while_the_test_panics_with_a_closed_stderr_does_not_abort # #3034
+              - --skip rig::a_failed_kill_while_the_test_panics_reports_its_error # #3034
+              - --skip rig::a_failed_kill_panics_in_a_run_that_does_not_capture # #3034
+              - --skip one_node::sim::a_stopped_influx_refuses_and_serves_again_on_its_port_with_what_it_stored # #3035
+              - --skip one_node::sim::a_dropped_opcua_stops_each_server_that_it_served # #3035
+              - --skip one_node::sim::a_dropped_influx_stops_its_server_when_the_test_panics # #3035
+              - --skip one_node::a_wrong_endpoint_shows_in_status_and_heals # #3035
+              - --skip no_child_holds_a_socket_that_another_thread_opens # #3036
+              - --skip no_child_holds_a_socket_of_a_lookup # #3036
           - name: windows
             runner: windows-2025
             crates:
@@ -154,6 +173,8 @@ jobs:
               - --skip log::tests::refuses_a_lock_that_has_bytes # #2973
               - --skip log::tests::refuses_a_record_of_another_format_version # #2973
               - --skip log::tests::refuses_a_write_after_a_failed_or_dropped_one # #2973
+              - --skip daqmx::tests::names_a_library_that_does_not_load # #3033
+              - --skip daqmx::tests::names_a_function_the_library_lacks # #3033
     runs-on: ${{ matrix.runner }}
     env:
       RUST: ${{ needs.changes.outputs.rust }}
@@ -181,6 +202,9 @@ jobs:
       - name: Globals
         if: "!cancelled() && env.RUST != 'false' && runner.os == 'Linux'"
         run: cargo xtask globals
+      - name: Skips
+        if: "!cancelled() && env.RUST != 'false' && runner.os == 'Linux'"
+        run: cargo xtask skips
       - name: Oracles
         if: "!cancelled() && env.RUST != 'false' && runner.os == 'Linux'"
         run: cargo xtask oracles
