@@ -29,8 +29,9 @@ pub(crate) struct Time {
 
 impl Time {
     /// Gives the monotonic time of `clock` also as the wall time, from the Unix epoch,
-    /// for a loop with no wall time of a node: a browse, a test, or a benchmark. Past
-    /// the last stamp, the wall time stays at the last stamp.
+    /// for a loop of a test or a benchmark, which has no wall time of a node. Past the
+    /// last stamp, the wall time stays at the last stamp.
+    #[cfg(any(test, feature = "sim"))]
     pub(crate) fn monotonic(clock: Clock) -> Self {
         let read = Clock::clone(&clock);
         let wall = Box::new(move || {

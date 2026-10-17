@@ -80,12 +80,10 @@
   `Supervisor::browse(kind, config, query)` runs `Kind::browse` apart from any run of
   the connector, with the network, clock, randomness, and secrets of the supervisor; a
   kind reads only what it needs to reach the device, so a block with only `kind`,
-  `node`, and `address` browses. It gives no mesh time: `hub` gives it only through a
-  writer, and a browse opens none. Deferred to #2837: `Hub::time` waits with no bound.
-  When a kind first reads mesh time from `browse::Context`, it races `Hub::time` against
-  a bound that `Supervisor::browse` sets, and gives an error at the bound, so a kind
-  that reads no mesh time never waits. PR 5 waits on it, and gives that read with its
-  doc, the bound, and the exact error. `browse::Context` and `kind::Context` stay two
+  `node`, and `address` browses. A kind reads mesh time with `browse::Context::time`,
+  which races `Hub::time` against `WAIT` (5 s) and gives `Error::Retry` with "the node
+  has no mesh time after 5 s" at the bound, so a kind that reads no mesh time never
+  waits (approval owed). `browse::Context` and `kind::Context` stay two
   types: each input that both give is a read of a field or one call, and `secret` is one
   function. Trigger to make them one: a third context, or a second shared input with a
   body of its own, as `secret` has in `read_secret`. A kind implements `browse::Device`

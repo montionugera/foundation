@@ -129,14 +129,15 @@ impl kind::Kind for Kind {
     /// an earlier entry has gets ` (<tag>)` after it. A cursor of an earlier browse
     /// skips the references before its page again, so it assumes that the server
     /// keeps their order. Then it closes the session, as `run` does. The header of
-    /// each request holds the time of the clock from the Unix epoch, not the wall
-    /// time.
+    /// each request holds the mesh time of the node, which it reads before the
+    /// connect.
     ///
     /// # Errors
     ///
     /// [`Error::Config`] with the diagnostic of `parse` for `address`, and with
     /// `opcua.bad-cursor` for a cursor that the kind did not give, or that skips more
-    /// than 100 000 references. [`Error::Device`]
+    /// than 100 000 references. [`Error::Retry`] when the node has no mesh time, as
+    /// [`browse::Context::time`] gives it. [`Error::Device`]
     /// when the connect, a Browse, a `BrowseNext`, or a Read fails. The errors of
     /// [`browse::walk`].
     fn browse(
@@ -154,7 +155,11 @@ async fn walk(
 ) -> Result<browse::Found, Error> {
     let address =
         config::endpoint(ctx.config()).map_err(|error| Error::Config(vec![error]))?;
-    let time = event::Time::monotonic(ctx.clock().clone());
+    let mesh = ctx.time().await?;
+    let time = event::Time {
+        clock: ctx.clock().clone(),
+        wall: Box::new(move || mesh.now()),
+    };
     let found = session(
         time,
         ctx.net().clone(),

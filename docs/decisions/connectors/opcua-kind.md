@@ -97,8 +97,8 @@
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6224815609): the
   kind browses from the Objects folder (`i=85`) on one session, which it closes at the
   end, and gives `Error::Device` when the connect, a Browse, a `BrowseNext`, or a Read
-  fails. The header of each request holds the time of the clock, not the wall time,
-  since a browse has no mesh time. An entry is one forward `HierarchicalReferences`
+  fails. The header of each request holds the mesh time of the node, which the kind
+  reads with `browse::Context::time` before the connect. An entry is one forward `HierarchicalReferences`
   reference: an Object or a View is a folder, and a Variable is a point with its type,
   unit, and `access`, or is unreadable with a reason: the server does not let the user
   read it, its value rank is that of an array, or its type is another built-in type. A
