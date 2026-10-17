@@ -639,15 +639,15 @@ impl Readers {
         let Lag::Disk { from } = flow.lag else {
             return false;
         };
-        if seq.start >= self.released {
-            flow.lag = Lag::None;
-            return false;
-        }
         assert!(
             seq.end > from,
             "complete session {key} got a frame to seq {}, at or below seq {from}",
             seq.end
         );
+        if seq.start >= self.released {
+            flow.lag = Lag::None;
+            return false;
+        }
         if !flow.pay(&frame, set, frame.charge(), &seq) {
             return false;
         }
@@ -3590,6 +3590,21 @@ pub(super) mod tests {
             assert_eq!(read(&mut readers, key), (vec![], 0));
             readers.reached(key, 3, 4);
             fill(&mut readers, &frames, key, 1, 0..2);
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "complete session 0 got a frame to seq 4, at or below seq 5"
+        )]
+        fn fill_past_the_release_at_or_below_an_earlier_reached_panics() {
+            let frames = Frames::new(3);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            assert_eq!(released(&mut readers, 2), []);
+            let key = opened(&mut readers, 0, 10);
+            assert_eq!(read(&mut readers, key), (vec![], 0));
+            readers.reached(key, 5, 6);
+            fill(&mut readers, &frames, key, 2, 2..4);
         }
 
         #[test]
