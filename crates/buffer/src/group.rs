@@ -163,18 +163,20 @@ impl Group {
         let layout = writer.layout();
         layout.check(count, parts, len).map_err(Rejected::Large)?;
         let max = Layout::ENTRY_MAX_MIN;
-        let over = batch.iter().find_map(|entry| {
+        let mut tagged = None;
+        for entry in batch {
             let len = entry.parts.bytes();
             if len > block_max {
-                Some(Limit::Block {
+                return Err(Rejected::Large(Limit::Block {
                     len,
                     max: block_max,
-                })
-            } else {
-                (entry.tag != 0 && len > max).then_some(Limit::Tagged { len, max })
+                }));
             }
-        });
-        if let Some(limit) = over {
+            if tagged.is_none() && entry.tag != 0 && len > max {
+                tagged = Some(Limit::Tagged { len, max });
+            }
+        }
+        if let Some(limit) = tagged {
             return Err(Rejected::Large(limit));
         }
         layout
@@ -1257,6 +1259,36 @@ mod tests {
             &mut batch,
         );
         assert_eq!(pushed, Ok(0..1), "an entry at block_max fits");
+    }
+
+    #[test]
+    fn block_and_body_come_before_a_tagged_entry() {
+        let mut area = Area::with_body_max(60_000);
+        let tagged = parts(&area.pool, &[&[7; 2_500], &[7; 2_500]]);
+        let block = parts(&area.pool, &[&[7; 3_500], &[7; 3_500]]);
+        let big = vec![7; 31_000];
+        let body = parts(&area.pool, &[&big, &big]);
+        area.pool = pool(1 << 16);
+        assert_eq!(area.block_max(), 6_657);
+        let tag = Header {
+            tag: 3,
+            ..header(1, Path::Live, 0)
+        };
+        let batch = [
+            entry(tag, tagged.clone()),
+            entry(header(2, Path::Live, 0), block),
+        ];
+        let limit = Limit::Block {
+            len: 7_000,
+            max: 6_657,
+        };
+        assert_large(&mut area, &batch, limit);
+        let batch = [entry(tag, tagged), entry(header(2, Path::Live, 0), body)];
+        let limit = Limit::Body {
+            len: table_len(2) + 67_000,
+            max: 60_000,
+        };
+        assert_large(&mut area, &batch, limit);
     }
 
     #[test]
