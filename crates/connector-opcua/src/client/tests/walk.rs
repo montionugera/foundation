@@ -421,6 +421,66 @@ fn a_new_browse_of_each_cursor_goes_past_a_server_page_with_no_references() {
     assert_eq!(last, Some(None), "pages: {pages:?}");
 }
 
+/// 10 004 references under `root`, in a page each, of which the client drops the
+/// second to the 10 002nd in the order of the server, `VISITS` + 1 of them. The cursor
+/// `2` stops its skip after `VISITS` pages with no references, with one reference
+/// still to skip. The next page goes on from its point, skips one, and gives the last.
+#[test]
+fn a_skip_past_the_visits_of_a_browse_goes_on_in_the_next_page() {
+    let setup = |server: &Server| {
+        server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+        for index in 0..10_004 {
+            let node = Node {
+                namespace: 1,
+                key: Key::Number(20_000 + index),
+            };
+            let name = CString::new(format!("n{index:05}")).expect("no NUL");
+            server.add_folder(&node, &ROOT, ORGANIZES, &name, &name);
+        }
+        server.cap_references(1);
+    };
+    // Each name is the length 6, `n`, and 5 digits, as the browse name and then the
+    // display name of its reference, which the class follows.
+    let mut seen = 0;
+    let rewrite = move |message: &mut Vec<u8>| {
+        if response(message).is_none() {
+            return;
+        }
+        let ends: Vec<usize> = message
+            .windows(10)
+            .enumerate()
+            .filter(|(_, window)| {
+                window[..5] == [6, 0, 0, 0, b'n']
+                    && window[5..].iter().all(u8::is_ascii_digit)
+            })
+            .map(|(at, _)| at + 10)
+            .collect();
+        for pair in ends.chunks(2) {
+            if let [_, display] = pair {
+                seen += 1;
+                if (2..=10_002).contains(&seen) {
+                    let class = &mut message[*display..*display + 4];
+                    assert_eq!(class, &1_u32.to_le_bytes(), "the class of an Object");
+                    class.copy_from_slice(&8_u32.to_le_bytes());
+                }
+            }
+        }
+    };
+    let pages = relayed_browse(setup, rewrite, async |server| {
+        let root = entry("root", &ROOT.to_string(), Shape::Folder);
+        let mut cursor = Some(Cursor::new("2".to_owned()));
+        let mut pages = Vec::new();
+        for _ in 0..2 {
+            let page = server.level(Some(&root), cursor.as_ref()).await;
+            let page = page.expect("a page").expect("a folder");
+            cursor = page.next.clone();
+            pages.push((page.entries.len(), page.next));
+        }
+        pages
+    });
+    assert_eq!(pages, [(0, Some(Cursor::new("2".to_owned()))), (1, None)]);
+}
+
 /// Adds a folder under `parent` for each number and browse name of `children`, with
 /// the display name `d`.
 fn add_folders(server: &Server, parent: &Node, children: Vec<(u32, String)>) {
