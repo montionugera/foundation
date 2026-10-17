@@ -887,7 +887,19 @@ mod tests {
         config: Document,
         cancel: Cancel,
     ) -> Outcome {
-        run_on(move |node, tasks| async move {
+        supervise_in(0, kind, steps, config, cancel)
+    }
+
+    /// [`supervise`] in a sim of `seed`.
+    fn supervise_in(
+        seed: u64,
+        kind: &'static str,
+        steps: Vec<Step>,
+        config: Document,
+        cancel: Cancel,
+    ) -> Outcome {
+        let node = sim::node::Config::default();
+        run_with(seed, node, move |node, tasks| async move {
             let script = Script {
                 steps: Mutex::new(steps.into()),
                 ..Script::default()
@@ -1796,13 +1808,16 @@ mod tests {
     }
 
     /// The status frames of one connector of [`Script`] that plays `steps`, whose
-    /// frames another writer refuses until `held`, and when the call returned.
+    /// frames another writer refuses until `held`, in a sim of `seed`, and when the
+    /// call returned.
     fn refused_until(
+        seed: u64,
         steps: Vec<Step>,
         held: Span,
         cancel: Option<Span>,
     ) -> (Vec<Written>, Span) {
-        run_on(move |node, tasks| async move {
+        let node = sim::node::Config::default();
+        run_with(seed, node, move |node, tasks| async move {
             let script = Script {
                 steps: Mutex::new(steps.into()),
                 ..Script::default()
@@ -1845,7 +1860,7 @@ mod tests {
 
     #[test]
     fn writes_a_refused_last_frame_again_before_the_call_returns() {
-        let (statuses, returned) = refused_until(vec![Step::Done], ms(500), None);
+        let (statuses, returned) = refused_until(0, vec![Step::Done], ms(500), None);
         assert_eq!(
             states(&statuses),
             [(0, 0, 0), (3, 0, 0), (2, 0, 0)],
@@ -1860,7 +1875,7 @@ mod tests {
 
     #[test]
     fn writes_a_last_frame_refused_twice_until_the_home_applies_it() {
-        let (statuses, returned) = refused_until(vec![Step::Done], ms(1_500), None);
+        let (statuses, returned) = refused_until(0, vec![Step::Done], ms(1_500), None);
         assert_eq!(
             states(&statuses),
             [(0, 0, 0), (3, 0, 0), (2, 0, 0)],
@@ -1923,7 +1938,7 @@ mod tests {
 
     #[test]
     fn returns_after_a_bound_on_each_outage_while_the_home_refuses_each_frame() {
-        let (statuses, returned) = refused_until(vec![Step::Done], ms(60_000), None);
+        let (statuses, returned) = refused_until(0, vec![Step::Done], ms(60_000), None);
         assert_eq!(
             states(&statuses),
             [],
@@ -1940,7 +1955,7 @@ mod tests {
     #[test]
     fn restarts_after_a_bound_on_each_outage_while_the_home_refuses_each_frame() {
         let steps = vec![Step::Retry, Step::Done];
-        let (statuses, returned) = refused_until(steps, ms(15_000), None);
+        let (statuses, returned) = refused_until(0, steps, ms(15_000), None);
         assert_eq!(
             states(&statuses),
             [(2, 0, 1)],
@@ -1954,7 +1969,7 @@ mod tests {
 
     #[test]
     fn writes_a_last_frame_refused_for_5_s_until_the_home_applies_it() {
-        let (statuses, returned) = refused_until(vec![Step::Done], ms(5_000), None);
+        let (statuses, returned) = refused_until(0, vec![Step::Done], ms(5_000), None);
         assert_eq!(
             states(&statuses),
             [(0, 0, 0), (3, 0, 0), (2, 0, 0)],
@@ -1965,7 +1980,7 @@ mod tests {
 
     #[test]
     fn writes_a_frame_refused_for_9_5_s_before_the_next_state() {
-        let (statuses, returned) = refused_until(vec![Step::Done], ms(9_500), None);
+        let (statuses, returned) = refused_until(0, vec![Step::Done], ms(9_500), None);
         assert_eq!(
             states(&statuses),
             [(0, 0, 0), (3, 0, 0), (2, 0, 0)],
@@ -1977,7 +1992,7 @@ mod tests {
     #[test]
     fn returns_at_a_cancel_while_the_last_frame_waits() {
         let (statuses, returned) =
-            refused_until(vec![Step::Done], ms(2_500), Some(ms(500)));
+            refused_until(0, vec![Step::Done], ms(2_500), Some(ms(500)));
         assert_eq!(states(&statuses), [], "no frame after the cancel");
         assert_eq!(returned, ms(500));
     }
@@ -4102,6 +4117,7 @@ mod tests {
     /// Runs `kind` once as `plant.write`, reading with `settings` when it is some,
     /// while a task runs `beside` with the hub and the clock.
     fn read_through<F, R, T, B, S>(
+        seed: u64,
         settings: Option<reader::Settings>,
         kind: F,
         beside: B,
@@ -4113,7 +4129,8 @@ mod tests {
         B: FnOnce(hub::Hub, Clock) -> S + Send + 'static,
         S: Future<Output = ()> + 'static,
     {
-        run_on(move |node, tasks| async move {
+        let node = sim::node::Config::default();
+        run_with(seed, node, move |node, tasks| async move {
             let got = Arc::new(Mutex::new(Vec::new()));
             let into = Arc::clone(&got);
             let kind = Closure {
@@ -4199,6 +4216,7 @@ mod tests {
     fn gives_a_kind_a_reader_that_gets_the_frames_of_a_hub_writer_in_order() {
         let writes = vec![(ms(100), 30), (ms(200), 10), (ms(300), 20)];
         let read = read_through(
+            0,
             Some(settings(Span::ZERO)),
             |mut ctx, got| async move {
                 let mut reader = ctx.reader().expect("a reader");
@@ -4222,8 +4240,8 @@ mod tests {
             got.lock().expect("no panic").push((first, second));
             Ok(())
         };
-        let reads = read_through(Some(settings(Span::ZERO)), take, |_, _| async {});
-        let none = read_through(None, take, |_, _| async {});
+        let reads = read_through(0, Some(settings(Span::ZERO)), take, |_, _| async {});
+        let none = read_through(0, None, take, |_, _| async {});
         assert_eq!(
             (reads.got, none.got),
             (vec![(true, false)], vec![(false, false)])
@@ -4234,6 +4252,7 @@ mod tests {
     fn opens_a_new_reader_before_each_restart() {
         let writes = vec![(ms(100), 1), (ms(5_000), 2)];
         let read = read_through(
+            0,
             Some(settings(Span::ZERO)),
             |mut ctx, got| async move {
                 let mut reader = ctx.reader().expect("a reader");
@@ -4254,6 +4273,7 @@ mod tests {
     #[test]
     fn gives_a_kind_a_reader_that_an_open_of_the_connector_name_takes_over() {
         let read = read_through(
+            0,
             Some(settings(Span::ZERO)),
             |mut ctx, got| async move {
                 let mut reader = ctx.reader().expect("a reader");
@@ -4286,6 +4306,7 @@ mod tests {
             ..settings(Span::ZERO)
         };
         let read = read_through(
+            0,
             Some(latest),
             |mut ctx, got| async move {
                 let mut reader = ctx.reader().expect("a reader");
@@ -4361,6 +4382,7 @@ mod tests {
     fn opens_the_reader_of_a_restart_with_the_hold_of_its_settings() {
         let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
         let read = read_through(
+            0,
             Some(settings(hour)),
             |mut ctx, got| async move {
                 let mut reader = ctx.reader().expect("a reader");
@@ -4392,6 +4414,7 @@ mod tests {
     fn retries_a_read_from_disk_while_the_pool_is_full() {
         let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
         let read = read_through(
+            0,
             Some(settings(hour)),
             |mut ctx, got| async move {
                 let runs = got.lock().expect("no panic").len();
@@ -4442,6 +4465,7 @@ mod tests {
     fn opens_a_held_reader_at_a_lost_frame_at_the_frame_after_it() {
         let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
         let read = read_through(
+            0,
             Some(settings(hour)),
             |mut ctx, got| async move {
                 let runs = got.lock().expect("no panic").len();
@@ -4502,6 +4526,7 @@ mod tests {
     fn reads_the_frame_after_one_lost_for_no_room_with_its_gap_in_the_same_run() {
         let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
         let read = read_through(
+            0,
             Some(settings(hour)),
             |mut ctx, got| async move {
                 let mut reader = ctx.reader().expect("a reader");
@@ -4552,6 +4577,7 @@ mod tests {
             ..settings(Span::ZERO)
         };
         let read = read_through(
+            0,
             Some(settings),
             |mut ctx, got| async move {
                 let mut reader = ctx.reader().expect("a reader");
@@ -4590,6 +4616,7 @@ mod tests {
     #[test]
     fn the_reader_of_a_restart_opens_after_the_backoff() {
         let read = read_through(
+            0,
             Some(settings(Span::ZERO)),
             |mut ctx, got| async move {
                 let start = ctx.clock().now();
@@ -4649,6 +4676,7 @@ mod tests {
     #[test]
     fn ends_with_a_config_error_when_the_reader_of_a_restart_matches_nothing() {
         let read = read_through(
+            0,
             Some(settings(Span::ZERO)),
             |mut ctx, got| async move {
                 let mut reader = ctx.reader().expect("a reader");
@@ -4690,6 +4718,7 @@ mod tests {
     #[test]
     fn reads_a_channel_that_a_spec_change_defined_again_with_a_new_key() {
         let read = read_through(
+            0,
             Some(settings(Span::ZERO)),
             |mut ctx, got| async move {
                 let mut reader = ctx.reader().expect("a reader");
@@ -4753,6 +4782,7 @@ mod tests {
     #[test]
     fn writes_a_channel_that_a_spec_change_defined_again_with_a_new_key() {
         let read = read_through(
+            0,
             None,
             |ctx, got| async move {
                 let channels = vec![name("plant.value")];
@@ -4836,6 +4866,7 @@ mod tests {
                 ..settings(Span::ZERO)
             };
             let read = read_through(
+                0,
                 Some(settings),
                 |_, got: Arc<Mutex<Vec<()>>>| async move {
                     got.lock().expect("no panic").push(());
@@ -4950,6 +4981,7 @@ mod tests {
             let channels: Vec<Name> = channels.into_iter().map(name).collect();
             let open = channels.clone();
             let read = read_through(
+                0,
                 None,
                 move |ctx, got| {
                     let open = open.clone();
