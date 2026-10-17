@@ -2,7 +2,6 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use env::clock::Clock;
 use serde_json::Value;
@@ -22,7 +21,7 @@ pub struct Node {
     pub(crate) mesh: mesh::Mesh,
     pub(crate) keys: Box<dyn Fn() -> channel::Key>,
     pub(crate) front_ends: FrontEnds,
-    pub(crate) kinds: Arc<connector::kind::Table>,
+    pub(crate) supervisor: connector::supervisor::Supervisor,
     pub(crate) hub: hub::Hub,
     pub(crate) clock: Clock,
     pub(crate) name: Name,
@@ -38,8 +37,9 @@ pub struct Config {
     pub keys: Box<dyn Fn() -> channel::Key>,
     /// The syntax of each file extension.
     pub front_ends: FrontEnds,
-    /// Each connector kind of the node.
-    pub kinds: Arc<connector::kind::Table>,
+    /// The connector supervisor of the shard of the node. `plan` and `apply` check
+    /// with its kinds, and `browse` browses with it.
+    pub supervisor: connector::supervisor::Supervisor,
     /// The hub of the node, through which `status` reads the status channels.
     pub hub: hub::Hub,
     /// The clock of the node, on which `status` waits for the status channels.
@@ -60,7 +60,7 @@ impl Node {
             mesh,
             keys,
             front_ends,
-            kinds,
+            supervisor,
             hub,
             clock,
             name,
@@ -70,7 +70,7 @@ impl Node {
             mesh,
             keys,
             front_ends,
-            kinds,
+            supervisor,
             hub,
             clock,
             name,
@@ -116,7 +116,7 @@ impl Node {
     ///
     /// The JSON error that `apply --json` writes.
     pub async fn apply(&self, path: &Path, bytes: &[u8]) -> Result<Value, Value> {
-        apply::file(path, bytes, &self.mesh, &self.kinds, &self.keys)
+        apply::file(path, bytes, &self.mesh, self.supervisor.kinds(), &self.keys)
             .await
             .map(|applied| crate::value(&applied))
             .map_err(|e| e.json())

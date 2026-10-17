@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use connector::supervisor::{self, Supervisor};
 use ops::{Config, FrontEnd, FrontEnds, Node, serve};
 use serde_json::{Value, json};
 use sim::Sim;
@@ -68,9 +69,20 @@ fn serve_large(text: &str) {
             clock: sim_node.clock(),
             wall: sim_node.wall(),
             entropy: sim_node.entropy(),
-            tasks,
+            tasks: tasks.clone(),
         };
         let (hub, _) = hub::testing::open(env).await;
+        let secrets = connector::testing::create_secrets(sim_node.files());
+        let supervisor = Supervisor::new(supervisor::Config {
+            kinds: Arc::new(connector::kind::Table::new()),
+            clock: sim_node.clock(),
+            entropy: sim_node.entropy(),
+            net: sim_node.net(),
+            roots: connector::http::Roots::default(),
+            tasks,
+            hub: hub.clone(),
+            secrets: secrets.clone(),
+        });
         let front_ends = FrontEnds::new(
             "hcl",
             FrontEnd {
@@ -81,11 +93,11 @@ fn serve_large(text: &str) {
             mesh,
             keys: Box::new(|| Key::from_u128(1)),
             front_ends,
-            kinds: Arc::new(connector::kind::Table::new()),
+            supervisor,
             hub,
             clock: sim_node.clock(),
             name: "edge".parse().expect("a name"),
-            secrets: connector::testing::create_secrets(sim_node.files()),
+            secrets,
         });
         let subject = "@admin".parse().expect("a name");
         let before = ALLOCATOR.held();

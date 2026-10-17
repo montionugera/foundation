@@ -60,6 +60,12 @@ impl Supervisor {
         Self(Rc::new(config))
     }
 
+    /// The kinds of the connectors that the supervisor runs.
+    #[must_use]
+    pub fn kinds(&self) -> &kind::Table {
+        &self.0.kinds
+    }
+
     /// Browses the device of the connector block `config` of `kind` as `query`
     /// asks, with the network, clock, randomness, and secrets of the supervisor. It
     /// connects apart from any run of the connector and keeps no state after it
