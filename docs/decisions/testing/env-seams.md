@@ -1058,4 +1058,6 @@
   from the resolve, 2026-10-17T08:13:25Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231604694; the cost
   and its deferral to #3018, 2026-10-17T08:19:29Z,
-  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231662179).
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231662179; the walk
+  of a relative path by its own prefixes, 2026-10-17T08:53:56Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231983300).
