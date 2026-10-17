@@ -160,6 +160,31 @@ impl Network {
         self.handles.push(handle);
     }
 
+    /// Runs `run` with the client node on a shard of that node, and gives what it
+    /// returns once it ends.
+    fn client<T, F>(
+        &mut self,
+        run: impl FnOnce(node::Node) -> F + Send + 'static,
+    ) -> Arc<Mutex<Option<T>>>
+    where
+        F: Future<Output = T> + 'static,
+        T: Send + 'static,
+    {
+        let client = self.client.clone();
+        let out = Arc::new(Mutex::new(None));
+        let slot = Arc::clone(&out);
+        let handle = self
+            .client
+            .shards()
+            .start(shard("client"), move |_| async move {
+                let got = run(client).await;
+                *slot.lock().expect("no panic") = Some(got);
+            })
+            .expect("the shard starts");
+        self.handles.push(handle);
+        out
+    }
+
     /// Starts one client that trusts `roots` on the client node, which runs `steps`
     /// once the node has mesh time. Gives the outcome of each send, as the sends end.
     fn start(&mut self, roots: Roots, steps: Vec<Step>) -> Arc<Mutex<Vec<Outcome>>> {
@@ -543,31 +568,22 @@ fn fails_a_handshake_whose_first_write_finds_the_stream_reset() {
         }
     });
     let remote = SocketAddr::new(network.server.addresses()[0], 8087);
-    let client = network.client.clone();
-    let out = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&out);
-    let handle = network
-        .client
-        .shards()
-        .start(shard("client"), move |_| async move {
-            let config = tcp::Config {
-                remote,
-                options: super::super::OPTIONS,
-            };
-            let tcp = client.net().connect(&config).await.expect("a stream");
-            // The reset comes before the hello goes, so the first write fails.
-            client.clock().sleep(Span::SECOND).await;
-            let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-            let config = super::client(&provider, &sim::ca(), JUNE_2026);
-            let name = "server".try_into().expect("a DNS name");
-            let Err(error) = Stream::client(tcp, config, name, Rc::default()).await
-            else {
-                panic!("the stream is reset")
-            };
-            *slot.lock().expect("no panic") = Some(error.to_string());
-        })
-        .expect("the shard starts");
-    network.handles.push(handle);
+    let out = network.client(move |client| async move {
+        let config = tcp::Config {
+            remote,
+            options: super::super::OPTIONS,
+        };
+        let tcp = client.net().connect(&config).await.expect("a stream");
+        // The reset comes before the hello goes, so the first write fails.
+        client.clock().sleep(Span::SECOND).await;
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let config = super::client(&provider, &sim::ca(), JUNE_2026);
+        let name = "server".try_into().expect("a DNS name");
+        let Err(error) = Stream::client(tcp, config, name, Rc::default()).await else {
+            panic!("the stream is reset")
+        };
+        error.to_string()
+    });
     network.sim.run_for(Span::MINUTE).expect("the run ends");
     let got = out.lock().expect("no panic").take();
     assert_eq!(got, Some(format!("{remote} reset the stream")));
@@ -932,48 +948,38 @@ fn cancelled(
         *flag.lock().expect("no panic") = true;
     });
     let remote = SocketAddr::new(network.server.addresses()[0], 8087);
-    let client = network.client.clone();
-    let out = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&out);
-    let handle = network
-        .client
-        .shards()
-        .start(shard("client"), move |_| async move {
-            let config = tcp::Config {
-                remote,
-                options: super::super::OPTIONS,
-            };
-            let tcp = client.net().connect(&config).await.expect("a stream");
-            let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-            let config = super::client(&provider, &sim::ca(), JUNE_2026);
-            let name = "server".try_into().expect("a DNS name");
-            let mut session = TlsConnector::from(config)
-                .connect(name, Peer(tcp))
-                .await
-                .expect("the handshake ends");
-            let mut rest = sent;
-            while !rest.is_empty() {
-                let n = poll_fn(|cx| Pin::new(&mut session).poll_write(cx, rest))
-                    .await
-                    .expect("the write works");
-                rest = rest.get(n..).expect("a write fits its buffer");
-            }
-            poll_fn(|cx| Pin::new(&mut session).poll_flush(cx))
+    let out = network.client(move |client| async move {
+        let config = tcp::Config {
+            remote,
+            options: super::super::OPTIONS,
+        };
+        let tcp = client.net().connect(&config).await.expect("a stream");
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let config = super::client(&provider, &sim::ca(), JUNE_2026);
+        let name = "server".try_into().expect("a DNS name");
+        let mut session = TlsConnector::from(config)
+            .connect(name, Peer(tcp))
+            .await
+            .expect("the handshake ends");
+        let mut rest = sent;
+        while !rest.is_empty() {
+            let n = poll_fn(|cx| Pin::new(&mut session).poll_write(cx, rest))
                 .await
                 .expect("the write works");
-            if !reads {
-                std::future::pending::<()>().await;
-            }
-            let mut bytes = [0; 16];
-            let mut buf = ReadBuf::new(&mut bytes);
-            let read =
-                poll_fn(|cx| Pin::new(&mut session).poll_read(cx, &mut buf)).await;
-            let read = read.map(|()| buf.filled().len());
-            *slot.lock().expect("no panic") =
-                Some(read.map_err(|error| error.to_string()));
-        })
-        .expect("the shard starts");
-    network.handles.push(handle);
+            rest = rest.get(n..).expect("a write fits its buffer");
+        }
+        poll_fn(|cx| Pin::new(&mut session).poll_flush(cx))
+            .await
+            .expect("the write works");
+        if !reads {
+            std::future::pending::<()>().await;
+        }
+        let mut bytes = [0; 16];
+        let mut buf = ReadBuf::new(&mut bytes);
+        let read = poll_fn(|cx| Pin::new(&mut session).poll_read(cx, &mut buf)).await;
+        let read = read.map(|()| buf.filled().len());
+        read.map_err(|error| error.to_string())
+    });
     network.sim.run_for(Span::SECOND).expect("the run goes on");
     assert_eq!(network.server.streams(), 1);
     until.cancel();
@@ -1005,55 +1011,45 @@ fn a_cancel_closes_a_tls_stream_with_bytes_that_arrive_in_the_same_poll() {
         served.await.expect("the listener works");
     });
     let remote = SocketAddr::new(network.server.addresses()[0], 8087);
-    let client = network.client.clone();
-    let out = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&out);
-    let handle = network
-        .client
-        .shards()
-        .start(shard("client"), move |_| async move {
-            let config = tcp::Config {
-                remote,
-                options: super::super::OPTIONS,
-            };
-            let tcp = client.net().connect(&config).await.expect("a stream");
-            let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-            let config = super::client(&provider, &sim::ca(), JUNE_2026);
-            let name = "server".try_into().expect("a DNS name");
-            let mut session = TlsConnector::from(config)
-                .connect(name, Peer(tcp))
-                .await
-                .expect("the handshake ends");
-            // In the pause of the server, and more bytes than one read of the close
-            // takes.
-            client.clock().sleep(Span::from_nanos(1_200_000_000)).await;
-            let pad = "a".repeat(20000);
-            let sent =
-                format!("GET /a HTTP/1.1\r\nhost: server\r\nx-pad: {pad}\r\n\r\n");
-            let mut rest = sent.as_bytes();
-            while !rest.is_empty() {
-                let n = poll_fn(|cx| Pin::new(&mut session).poll_write(cx, rest))
-                    .await
-                    .expect("the write works");
-                rest = rest.get(n..).expect("a write fits its buffer");
-            }
-            poll_fn(|cx| Pin::new(&mut session).poll_flush(cx))
+    let out = network.client(move |client| async move {
+        let config = tcp::Config {
+            remote,
+            options: super::super::OPTIONS,
+        };
+        let tcp = client.net().connect(&config).await.expect("a stream");
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let config = super::client(&provider, &sim::ca(), JUNE_2026);
+        let name = "server".try_into().expect("a DNS name");
+        let mut session = TlsConnector::from(config)
+            .connect(name, Peer(tcp))
+            .await
+            .expect("the handshake ends");
+        // In the pause of the server, and more bytes than one read of the close
+        // takes.
+        client.clock().sleep(Span::from_nanos(1_200_000_000)).await;
+        let pad = "a".repeat(20000);
+        let sent = format!("GET /a HTTP/1.1\r\nhost: server\r\nx-pad: {pad}\r\n\r\n");
+        let mut rest = sent.as_bytes();
+        while !rest.is_empty() {
+            let n = poll_fn(|cx| Pin::new(&mut session).poll_write(cx, rest))
                 .await
                 .expect("the write works");
-            let mut bytes = [0; 16];
-            let mut buf = ReadBuf::new(&mut bytes);
-            let read =
-                poll_fn(|cx| Pin::new(&mut session).poll_read(cx, &mut buf)).await;
-            let tls = read.map(|()| buf.filled().len());
-            let Peer(mut tcp) = session.into_inner().0;
-            let raw = poll_fn(|cx| tcp.poll_read(cx, &mut bytes)).await;
-            *slot.lock().expect("no panic") = Some((
-                tls.map_err(|error| error.to_string()),
-                raw.map_err(|error| error.to_string()),
-            ));
-        })
-        .expect("the shard starts");
-    network.handles.push(handle);
+            rest = rest.get(n..).expect("a write fits its buffer");
+        }
+        poll_fn(|cx| Pin::new(&mut session).poll_flush(cx))
+            .await
+            .expect("the write works");
+        let mut bytes = [0; 16];
+        let mut buf = ReadBuf::new(&mut bytes);
+        let read = poll_fn(|cx| Pin::new(&mut session).poll_read(cx, &mut buf)).await;
+        let tls = read.map(|()| buf.filled().len());
+        let Peer(mut tcp) = session.into_inner().0;
+        let raw = poll_fn(|cx| tcp.poll_read(cx, &mut bytes)).await;
+        (
+            tls.map_err(|error| error.to_string()),
+            raw.map_err(|error| error.to_string()),
+        )
+    });
     network.sim.run_for(Span::SECOND).expect("the run goes on");
     network.server.pause(Span::SECOND);
     let cancel = Span::from_nanos(700_000_000);
