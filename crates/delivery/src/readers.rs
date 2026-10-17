@@ -604,9 +604,9 @@ impl Readers {
 
     /// Records that a read from disk for the complete session `key` gave each durable
     /// frame below `next`, where the durable frames of the index end at `durable`.
-    /// Below `durable`, nothing changes: the session reads again. Else, at or past the
-    /// last released live frame, the session takes live frames again. Else its next
-    /// frames are not on disk yet: it waits, and the
+    /// Below `durable`, the session reads again from `next`, also when the read gave no
+    /// frame. Else, at or past the last released live frame, the session takes live
+    /// frames again. Else its next frames are not on disk yet: it waits, and the
     /// [`Readers::release`] after their commit names it. A closed session, or one not
     /// on disk, changes nothing.
     ///
@@ -614,17 +614,18 @@ impl Readers {
     ///
     /// If this `Readers` never gave `key`.
     pub fn reached(&mut self, key: complete::Key, next: u64, durable: u64) {
-        if next < durable {
-            return;
-        }
         let Some(i) = self.find(key) else {
             return;
         };
         let flow = &mut self.flows[i];
-        if !matches!(flow.lag, Lag::Disk { .. }) {
+        let Lag::Disk { from } = flow.lag else {
             return;
-        }
-        flow.lag = if next >= self.released {
+        };
+        flow.lag = if next < durable {
+            Lag::Disk {
+                from: from.max(next),
+            }
+        } else if next >= self.released {
             Lag::None
         } else {
             self.committing += 1;
@@ -3379,6 +3380,30 @@ pub(super) mod tests {
         }
 
         #[test]
+        fn reached_below_the_durable_end_with_no_frame_reads_from_next() {
+            let frames = Frames::new(2);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 4..6);
+            let key = opened(&mut readers, 0, 10);
+            assert_eq!(read(&mut readers, key), (vec![], 0));
+            readers.reached(key, 3, 6);
+            assert_eq!(read(&mut readers, key), (vec![], 3));
+        }
+
+        #[test]
+        fn reached_below_the_frames_it_gave_keeps_their_end() {
+            let frames = Frames::new(3);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            readers.queue(&frames.frame(2), &frames.set, 2..4);
+            let key = opened(&mut readers, 0, 10);
+            assert_eq!(read(&mut readers, key), (vec![], 0));
+            assert!(fill(&mut readers, &frames, key, 1, 0..2));
+            readers.reached(key, 1, 4);
+            assert_eq!(read(&mut readers, key), (vec![1], 2));
+        }
+
+        #[test]
         fn fill_at_released_gives_nothing_and_goes_live() {
             let frames = Frames::new(6);
             let mut readers = Readers::new(0);
@@ -4513,6 +4538,8 @@ pub(super) mod tests {
             Grant(usize, u64),
             Queue(u64),
             Lose(u64),
+            /// Appends an entry with no samples, as a writer handoff does.
+            Handoff,
             /// Commits the count of the next frames not on disk.
             Commit(usize),
             /// Applies the read of the session, or takes and starts a read of at most
@@ -4535,8 +4562,9 @@ pub(super) mod tests {
             read: Option<Pending>,
         }
 
-        /// The live entries in seq order, by number, or `None` for lost samples, and
-        /// the count of them on disk.
+        /// The live entries in seq order, by number, or `None` for lost samples or,
+        /// with an empty range, an entry with no samples, and the count of them on
+        /// disk.
         struct Log {
             entries: Vec<(Option<u64>, Range<u64>)>,
             committed: usize,
@@ -4569,6 +4597,11 @@ pub(super) mod tests {
                 self.entries.push((None, seq));
             }
 
+            /// Appends an entry with no samples.
+            fn handoff(&mut self) {
+                self.entries.push((None, self.end()..self.end()));
+            }
+
             /// Commits the next `count` frames not on disk, and releases them.
             fn commit(&mut self, readers: &mut Readers, count: usize) {
                 let mut left = count;
@@ -4585,18 +4618,24 @@ pub(super) mod tests {
                 past.filter_map(|(n, _)| *n).collect()
             }
 
-            /// A read from disk from `from` of at most `cut` frames.
+            /// A read from disk from `from` of at most `cut` frames. As a buffer read,
+            /// it goes past lost samples only before its first entry, and it goes on
+            /// after the last entry it gave.
             fn read(&self, from: u64, cut: usize) -> Pending {
                 let on_disk = self.entries[..self.committed].iter();
                 let mut frames = Vec::new();
+                let mut next = None;
                 for (n, seq) in on_disk.filter(|(_, seq)| seq.end > from) {
-                    let Some(n) = n else { continue };
-                    if frames.len() == cut {
-                        break;
+                    match n {
+                        None if !seq.is_empty() && next.is_some() => break,
+                        None if !seq.is_empty() => continue,
+                        Some(_) if frames.len() == cut => break,
+                        Some(n) => frames.push((*n, seq.clone())),
+                        None => {}
                     }
-                    frames.push((*n, seq.clone()));
+                    next = Some(seq.end);
                 }
-                let next = frames.last().map_or(from, |(_, seq)| seq.end);
+                let next = next.unwrap_or(from);
                 Pending { frames, next }
             }
         }
@@ -4608,6 +4647,7 @@ pub(super) mod tests {
                 (any::<usize>(), 0..6 * CHARGE).prop_map(|(i, b)| Reading::Grant(i, b)),
                 (1..4_u64).prop_map(Reading::Queue),
                 (1..4_u64).prop_map(Reading::Lose),
+                Just(Reading::Handoff),
                 (0..3_usize).prop_map(Reading::Commit),
                 (any::<usize>(), 1..4_usize).prop_map(|(i, cut)| Reading::Take(i, cut)),
             ]
@@ -4692,6 +4732,7 @@ pub(super) mod tests {
                     }
                     Reading::Queue(len) => log.queue(&mut readers, &frames, len),
                     Reading::Lose(len) => log.lose(len),
+                    Reading::Handoff => log.handoff(),
                     Reading::Commit(count) => log.commit(&mut readers, count),
                     Reading::Take(i, cut) => {
                         let Some(key) = pick(&open, i) else { continue };
@@ -4712,14 +4753,29 @@ pub(super) mod tests {
                 if let Some(read) = reads.read.take() {
                     apply_read(&mut readers, &frames, key, &read, log.durable());
                 }
+                let mut left = log.entries.len() + 1;
                 while let Some(read) =
                     take_reads(&mut readers, &log, key, reads, usize::MAX)
                 {
+                    left = left.checked_sub(1).expect("a read from disk repeats");
                     apply_read(&mut readers, &frames, key, &read, log.durable());
                 }
                 assert_eq!(reads.got, log.expected(reads.start), "{key:?}");
             }
             assert!(!readers.pending());
+        }
+
+        #[test]
+        fn reads_past_a_handoff_between_two_lost_runs() {
+            check_reads(vec![
+                Reading::Queue(1),
+                Reading::Lose(2),
+                Reading::Handoff,
+                Reading::Lose(2),
+                Reading::Queue(1),
+                Reading::Commit(2),
+                Reading::Open(6, 4 * CHARGE),
+            ]);
         }
 
         /// A [`Next`] as the model states it, with a frame by its number.

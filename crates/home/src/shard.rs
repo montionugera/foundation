@@ -5968,6 +5968,48 @@ mod tests {
             }
 
             #[test]
+            fn reads_past_lost_seqs_on_each_side_of_a_handoff() {
+                run(144, |test| async move {
+                    let set = two_indexes();
+                    let mut shard = test.shard(AREA).await;
+                    let a = shard.open_writer(writer("w", 1, &set)).expect("synced");
+                    held(&test, &mut shard, a).await;
+                    lose(&test, &mut shard, a, 30);
+                    shard.close_writer(a);
+                    let b = shard.open_writer(writer("b", 1, &set)).expect("synced");
+                    lose(&test, &mut shard, b, 40);
+                    committed(&test, &mut shard, b, &[50]).await;
+                    let second = named(&mut shard, "a", "r");
+                    shard.committed().await.expect("the commit ends");
+                    let (frames, end, reads) = read(&mut shard, second.key).await;
+                    assert_eq!((ranges(&frames, 0), reads), (vec![seq(3, 1)], 3));
+                    assert_eq!(frames[0].series(0), Some(&encoded(&[50])[..]));
+                    assert!(matches!(end, reader::Next::Empty), "{end:?}");
+                });
+            }
+
+            #[test]
+            fn reads_past_a_named_entry_between_two_lost_frames() {
+                run(145, |test| async move {
+                    let set = two_indexes();
+                    let mut shard = test.shard(AREA).await;
+                    let a = shard.open_writer(writer("w", 1, &set)).expect("synced");
+                    held(&test, &mut shard, a).await;
+                    write(&test, &mut shard, a, &[20]);
+                    lose(&test, &mut shard, a, 30);
+                    let other = named(&mut shard, "a", "s");
+                    lose(&test, &mut shard, a, 50);
+                    committed(&test, &mut shard, a, &[60]).await;
+                    assert_eq!(stored(&shard, Slot::new(0), Path::Live), 5);
+                    let second = named(&mut shard, "a", "r");
+                    shard.committed().await.expect("the commit ends");
+                    let frames = caught_up(&mut shard, second.key, 0).await;
+                    assert_eq!(frames, [seq(1, 1), seq(4, 1)]);
+                    close(&mut shard, other.key.into());
+                });
+            }
+
+            #[test]
             fn reads_up_to_frames_lost_at_the_tail() {
                 run(134, |test| async move {
                     let set = two_indexes();
