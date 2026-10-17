@@ -71,10 +71,12 @@ pub(crate) fn check(
 /// # Errors
 ///
 /// `config.private-key` at each private key in `documents`, and then no other problem,
-/// as [`check`](crate::check) gives them; `config.no-connector` when no `connector` block has the label `name`,
-/// with the names of the connector blocks in the fix; `config.duplicate-name` at each
-/// later `connector` block whose label is `name` in any ASCII case; the problems of
-/// `kind` and `node` that `check` gives.
+/// as [`check`](crate::check) gives them; `config.no-connector` when no `connector`
+/// block has the label `name`, with the names of the connector blocks in the fix;
+/// `config.duplicate-name` at each later `connector` block whose label is `name` in any
+/// ASCII case; the problems of `kind` and `node` that `check` gives;
+/// `document.too-deep` when the body nests deeper than `document::encoding::Checked`
+/// takes.
 pub fn find(documents: &[Document], name: &Name) -> Result<Connector, Vec<Diagnostic>> {
     let alarms = private_key::alarms(documents);
     if !alarms.is_empty() {
