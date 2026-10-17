@@ -104,6 +104,8 @@ pub(crate) struct Client {
     /// The bounds of the server on a Browse and a Translate, once
     /// [`Client::describe`] reads them.
     bounds: Option<browse::Bounds>,
+    /// The endpoint of the last [`Client::open`], which each failure names.
+    address: String,
     /// Drops after `raw` is deleted, as it holds the loop of the client.
     connections: Manager,
 }
@@ -245,14 +247,21 @@ impl Client {
             key: Rc::default(),
             supertypes: BTreeMap::new(),
             bounds: None,
+            address: String::new(),
             connections,
         }
+    }
+
+    /// The endpoint that the client connected to.
+    pub(crate) fn address(&self) -> &str {
+        &self.address
     }
 
     /// Connects the new client to `url`, as [`Client::connect`] does. The client holds
     /// the state of the connect, so the future can drop at any point, and
     /// [`Client::close`] then closes the session that it made.
     async fn open(&mut self, url: &CStr) -> Result<(), Status> {
+        self.address = url.to_string_lossy().into_owned();
         let deadline = self.clock.now() + self.timeout;
         // SAFETY: the client lives, and copies the URL. The drive reads the status that
         // it gives from the state of the client.

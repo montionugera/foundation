@@ -170,7 +170,7 @@ async fn walk(
         &mut ctx.rng(),
         &address,
         future::pending(),
-        async |client| browse::walk(&mut Server::new(client, &address), query).await,
+        async |client| browse::walk(&mut Server::new(client), query).await,
     )
     .await?;
     found.expect("invariant: a session with no end gives a result")
@@ -239,7 +239,7 @@ async fn read(
         let idle = client.idle(timer.tick(ctx.cancel())).await;
         let Some(tick) = idle.map_err(|status| {
             device(Failure::Check {
-                address: ctx.config().address.to_string_lossy().into_owned(),
+                address: client.address().to_owned(),
                 status,
             })
         })?
@@ -254,12 +254,15 @@ async fn read(
         else {
             break;
         };
-        let values = read.map_err(|status| {
-            device(Failure::Read {
-                address: ctx.config().address.to_string_lossy().into_owned(),
-                status,
-            })
-        })?;
+        let values = match read {
+            Ok(values) => values,
+            Err(status) => {
+                return Err(device(Failure::Read {
+                    address: client.address().to_owned(),
+                    status,
+                }));
+            }
+        };
         frames.write(values, stamp)?;
     }
     Ok(())
@@ -530,7 +533,10 @@ pub(crate) enum Failure {
         address: String,
         status: Status,
     },
-    Browse(Status),
+    Browse {
+        address: String,
+        status: Status,
+    },
     /// The tags and names before the pages of a browse pass [`crate::browse::BYTES`].
     Names,
     /// A browse for a cursor of an earlier browse reads past
@@ -552,8 +558,8 @@ impl fmt::Display for Failure {
                 "the connectivity check of {address} failed with {}",
                 status.name()
             ),
-            Self::Browse(status) => {
-                write!(f, "the browse failed with {}", status.name())
+            Self::Browse { address, status } => {
+                write!(f, "the browse of {address} failed with {}", status.name())
             }
             Self::Names => write!(
                 f,
