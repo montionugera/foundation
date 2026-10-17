@@ -60,8 +60,7 @@ impl Frames {
     ///
     /// # Panics
     ///
-    /// When `set` has more than one group, or `reader` is past `Opened` and decodes
-    /// `message`.
+    /// When `set` has more than one group, or `reader` is past `Opened`.
     pub fn open(
         mut reader: Reader,
         set: Arc<KeySet>,
