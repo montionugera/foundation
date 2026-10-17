@@ -25,9 +25,8 @@
   exception, held raw. `e` is at most 18 for `f64` and 10 for `f32`, `f` is at most `e`,
   and the exception positions strictly increase (`laptop.architect`,
   https://github.com/synnaxlabs/foundation/issues/2997#issuecomment-6231723563,
-  2026-10-17T08:26:13Z). How an encoder picks `e` and `f` is not part of the format. An
-  `Encoder` keeps the pairs that its float series pick, so `home` keeps one encoder for
-  each entry of a writer (#2997). Timestamp stride (BQ4) comes later as a new tag. The
+  2026-10-17T08:26:13Z). How an encoder picks `e` and `f` is not part of the format
+  (BQ4). Timestamp stride (BQ4) comes later as a new tag. The
   validator checks tags, bit widths, lengths, run sums, and the ALP exponents, factors,
   and positions, not padding. `max_len` of the raw length (raw plus one raw header per
   vector) sizes the output, and the encoder makes one pass. `codec/src/vector.rs` is the
