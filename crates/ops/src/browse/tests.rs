@@ -4,6 +4,7 @@ use document::diagnostic::Diagnostic;
 use env::paths::Paths;
 use serde_json::{Value, json};
 use types::name::Name;
+use types::sample;
 
 use super::Output;
 use crate::common::{self, create_browsing_node, name, solo};
@@ -458,16 +459,16 @@ fn a_match_with_values_gives_each_value_type() {
             (json!("i8"), json!(-8)),
             (json!("i16"), json!(-16)),
             (json!("i32"), json!(-32)),
-            (json!("i64"), json!(i64::MIN)),
+            (json!("i64"), json!(i64::MIN.to_string())),
             (json!("u8"), json!(8)),
             (json!("u16"), json!(16)),
             (json!("u32"), json!(32)),
-            (json!("u64"), json!(u64::MAX)),
+            (json!("u64"), json!(u64::MAX.to_string())),
             (json!("f32"), json!(0.1)),
             (json!("f64"), json!(-2.5)),
             (json!("f64"), json!("NaN")),
-            (json!("f32"), json!("inf")),
-            (json!("f64"), json!("-inf")),
+            (json!("f32"), json!("Infinity")),
+            (json!("f64"), json!("-Infinity")),
             (json!("timestamp"), json!("2023-11-14T22:13:20.000000001Z")),
             (json!("duration"), json!("250us")),
             (json!("uuid"), json!("01234567-89ab-cdef-0123-456789abcdef")),
@@ -487,6 +488,35 @@ fn a_match_with_values_gives_each_value_type() {
         assert_eq!(lines[17], "Types/none ? ? ? ?");
         assert_eq!(lines.len(), 18);
     });
+}
+
+/// An integer of 64 bits is its decimal text, also past 2^53, where a JSON number loses
+/// digits in JavaScript, and a float that is not finite is the text of proto3 JSON.
+#[test]
+fn a_value_is_json_as_proto3_gives_it() {
+    let cases = [
+        (
+            sample::Value::U64(9_007_199_254_740_993),
+            json!("9007199254740993"),
+        ),
+        (
+            sample::Value::I64(-9_007_199_254_740_993),
+            json!("-9007199254740993"),
+        ),
+        (sample::Value::U32(u32::MAX), json!(4_294_967_295_u32)),
+        (sample::Value::I32(i32::MIN), json!(-2_147_483_648_i32)),
+        (sample::Value::F32(f32::NAN), json!("NaN")),
+        (sample::Value::F32(f32::INFINITY), json!("Infinity")),
+        (sample::Value::F32(f32::NEG_INFINITY), json!("-Infinity")),
+        (sample::Value::F64(f64::NAN), json!("NaN")),
+        (sample::Value::F64(f64::INFINITY), json!("Infinity")),
+        (sample::Value::F64(f64::NEG_INFINITY), json!("-Infinity")),
+    ];
+    for (value, expected) in cases {
+        let shown = format!("{value:?}");
+        let json = serde_json::to_value(super::Value::of(value)).expect("JSON");
+        assert_eq!(json, expected, "{shown}");
+    }
 }
 
 /// A match of more points than the most gives `limit`, and a match that looks at more

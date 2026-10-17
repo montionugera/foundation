@@ -86,8 +86,9 @@ pub(crate) enum Access {
     ReadWrite,
 }
 
-/// One value of a point. A bool and each integer are a JSON bool and number, a finite
-/// float a number, and a float that is not finite the text `NaN`, `inf`, or `-inf`.
+/// One value of a point. A bool and each integer of 32 bits or fewer are a JSON bool
+/// and number, an `i64` or `u64` its decimal text, a finite float a number, and a float
+/// that is not finite the text `NaN`, `Infinity`, or `-Infinity`.
 /// A stamp is RFC 3339 text in UTC with nine fraction digits, a span its text such as
 /// `250us`, and a UUID its hyphenated text.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -236,11 +237,11 @@ impl Value {
             sample::Value::I8(value) => Self::Number(value.into()),
             sample::Value::I16(value) => Self::Number(value.into()),
             sample::Value::I32(value) => Self::Number(value.into()),
-            sample::Value::I64(value) => Self::Number(value.into()),
+            sample::Value::I64(value) => Self::Text(value.to_string()),
             sample::Value::U8(value) => Self::Number(value.into()),
             sample::Value::U16(value) => Self::Number(value.into()),
             sample::Value::U32(value) => Self::Number(value.into()),
-            sample::Value::U64(value) => Self::Number(value.into()),
+            sample::Value::U64(value) => Self::Text(value.to_string()),
             sample::Value::F32(value) if value.is_finite() => {
                 // The shortest text that reads back as this `f32`, not as its `f64`.
                 let text = serde_json::to_string(&value)
@@ -269,14 +270,14 @@ impl Value {
         }
     }
 
-    /// `NaN`, `inf`, or `-inf`.
+    /// `NaN`, `Infinity`, or `-Infinity`.
     fn not_finite(value: f64) -> Self {
         let text = if value.is_nan() {
             "NaN"
         } else if value.is_sign_negative() {
-            "-inf"
+            "-Infinity"
         } else {
-            "inf"
+            "Infinity"
         };
         Self::Text(text.to_owned())
     }
