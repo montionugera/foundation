@@ -211,19 +211,29 @@ impl Client {
         page(&answer)
     }
 
-    /// Releases `point`, a point of this client's session.
+    /// Releases each of `points`, points of this client's session, with `BrowseNext`
+    /// requests of at most the `MaxNodesPerBrowse` of the server. A point whose
+    /// request alone does not fit one message stays until the session ends.
     ///
     /// # Errors
     ///
-    /// As [`Client::browse`].
-    pub(crate) async fn release(&mut self, point: Point) -> Result<(), Status> {
-        let request = Request::browse_next(&[&point.0], true);
-        self.serve(&request).await.map(drop)
+    /// As [`Client::browse`], for each request that it sends.
+    pub(crate) async fn release(&mut self, points: &[Point]) -> Result<(), Status> {
+        let most = self.bounds().await?.browse;
+        let sizes = Sizes::points(self.token);
+        let split =
+            self.split(points.len(), most, &sizes, |index| points[index].0.len());
+        for range in split.ranges {
+            let points: Vec<&[u8]> =
+                points[range].iter().map(|point| &point.0[..]).collect();
+            self.serve(&Request::browse_next(&points, true)).await?;
+        }
+        Ok(())
     }
 
     /// Gives the most continuation points that the server holds for a session, its
-    /// `MaxBrowseContinuationPoints`, or `None` when it gives 0 or no `UInt16`. It reads
-    /// the bounds of the server once per client, as [`Client::describe`] does.
+    /// `MaxBrowseContinuationPoints`, or `None` when it gives 0 or no `UInt16`. It
+    /// reads the bounds of the server once per client, as [`Client::describe`] does.
     ///
     /// # Errors
     ///
@@ -388,9 +398,9 @@ impl Client {
     /// client has not browsed, until [`base`] knows each of `types`, with Browse
     /// requests of at most `most` nodes, and gives the base of each. It adds to
     /// `supertypes` the first supertype of each Good result, and releases the
-    /// continuation point of a type with more. A result that is not Good, or a type whose request or answer
-    /// does not fit one message, gives no base in this call, and the next call browses
-    /// that type again.
+    /// continuation point of a type with more. A result that is not Good, or a type
+    /// whose request or answer does not fit one message, gives no base in this call,
+    /// and the next call browses that type again.
     async fn walk(
         &mut self,
         types: &[Option<Node>],
@@ -438,31 +448,14 @@ impl Client {
                     });
                     if let Ok(point) = browsed {
                         supertypes.insert(missing[index].clone(), first);
-                        points.extend(point);
+                        points.extend(point.map(Point));
                     } else {
                         failed.insert(missing[index].clone());
                     }
                 }
             }
-            self.release_each(&points, most).await?;
+            self.release(&points).await?;
         }
-    }
-
-    /// Releases each continuation point of `points`, with `BrowseNext` requests of at
-    /// most `most` points. A point whose request alone does not fit one message stays
-    /// until the session ends.
-    async fn release_each(
-        &mut self,
-        points: &[Vec<u8>],
-        most: Option<NonZeroUsize>,
-    ) -> Result<(), Status> {
-        let sizes = Sizes::points(self.token);
-        let split = self.split(points.len(), most, &sizes, |index| points[index].len());
-        for range in split.ranges {
-            let points: Vec<&[u8]> = points[range].iter().map(Vec::as_slice).collect();
-            self.serve(&Request::browse_next(&points, true)).await?;
-        }
-        Ok(())
     }
 }
 

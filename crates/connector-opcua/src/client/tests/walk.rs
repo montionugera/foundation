@@ -332,7 +332,8 @@ fn pages_with_no_entries_end_at_the_budget_of_a_walk() {
 }
 
 /// A setup with a tree that a walk of [`everything`] holds 4 points of at once, with
-/// the point of the Objects folder: the folders `root/a/c`, `root/a/d`, `root/a/e`,
+/// the point of the Objects folder when it also holds the variable of
+/// `Server::report_points`: the folders `root/a/c`, `root/a/d`, `root/a/e`,
 /// and `root/b`, two variables in each of `b`, `c`, `d`, and `e`, and one reference in
 /// each page of the server. A child folder has a lower number than its parent, so the
 /// order of the keys of the points is not the order of their use.
@@ -379,18 +380,21 @@ fn everything() -> Query {
     }
 }
 
-/// What a walk of [`everything`] in [`nested`] gives when the server gives `most` as
-/// its `MaxBrowseContinuationPoints`, the most points that the session held, and the
-/// count of Browse requests.
-fn held(most: u16) -> (Result<Found, Error>, usize, usize) {
+/// What a walk of `query` gives after `setup` when the server gives `most` as its
+/// `MaxBrowseContinuationPoints`, the most points that the session held, and the count
+/// of Browse requests.
+fn held(
+    setup: fn(&Server),
+    query: Query,
+    most: u16,
+) -> (Result<Found, Error>, usize, usize) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
-            nested(peer.server);
+            setup(peer.server);
             peer.server.report_points(most);
             let browses = peer.server.count_browses();
             let mut client = peer.connected().await;
-            let found =
-                browse::walk(&mut Browse::new(&mut client), &everything()).await;
+            let found = browse::walk(&mut Browse::new(&mut client), &query).await;
             client.close().await;
             (found, browses.points(), browses.get())
         })
@@ -405,12 +409,12 @@ fn held(most: u16) -> (Result<Found, Error>, usize, usize) {
 /// `root`, used least lately, so it browses `root` once more and `root/a` no more.
 #[test]
 fn a_walk_holds_no_more_points_than_the_server_holds_for_a_session() {
-    let (unbound, points, browses) = held(0);
+    let (unbound, points, browses) = held(nested, everything(), 0);
     let unbound = unbound.expect("found");
     assert_eq!(unbound.entries.len(), 8, "{:?}", unbound.entries);
     assert_eq!((points, browses), (4, 7));
     for (most, count) in [(1, 10), (2, 8)] {
-        let (found, points, browses) = held(most);
+        let (found, points, browses) = held(nested, everything(), most);
         assert_eq!(found.expect("found").entries, unbound.entries);
         assert_eq!(
             (points, browses),
@@ -440,11 +444,11 @@ fn refusing(nth: usize) -> impl FnMut(&mut Vec<u8>) + Send + 'static {
 }
 
 /// The server refuses a point for the Browse of `root/a`, while the walk holds the
-/// points of the Objects folder and `root`: the walk releases the point of the Objects
-/// folder, browses `a` again, and gives each entry.
+/// point of `root`: the walk releases that point, browses `a` again, and gives each
+/// entry.
 #[test]
 fn a_browse_that_the_server_gives_no_point_releases_one_and_browses_again() {
-    let (unbound, ..) = held(0);
+    let (unbound, ..) = held(nested, everything(), 0);
     let found = relayed_browse(nested, refusing(3), async |server| {
         browse::walk(server, &everything()).await
     });
@@ -468,4 +472,52 @@ fn a_browse_that_the_server_gives_no_point_with_none_held_fails() {
         source.to_string(),
         "the browse failed with BadNoContinuationPoints"
     );
+}
+
+/// A setup with the loop `root/f/g/f`, a variable in `f` and in `g`, and one reference
+/// in each page of the server.
+fn looped(server: &Server) {
+    let folder = |number| Node {
+        namespace: 1,
+        key: Key::Number(number),
+    };
+    server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+    server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+    server.add_folder(&folder(6001), &ROOT, ORGANIZES, c"f", c"f");
+    server.add_folder(&folder(6002), &folder(6001), ORGANIZES, c"g", c"g");
+    for (number, parent, name) in [(7001, 6001, c"x"), (7002, 6002, c"w")] {
+        server.add_variable(&Variable {
+            node: folder(number),
+            parent: folder(parent),
+            reference: HAS_COMPONENT,
+            name,
+            data_type: DOUBLE,
+            rank: -1,
+            access: server::READ,
+            value: None,
+        });
+    }
+    server.add_reference(&folder(6002), ORGANIZES, &folder(6001));
+    server.cap_references(1);
+}
+
+/// A walk of a pattern of fixed depth through a loop opens `f` and `g` more than once,
+/// so a page gives a cursor that the walk holds. It releases the earlier point, so it
+/// holds no more points than the bound.
+#[test]
+fn a_folder_open_twice_in_a_walk_holds_no_more_points_than_the_bound() {
+    for pattern in ["*/*/*/*/*", "*/*/*/*/*/*/*"] {
+        let query = |pattern: &str| Query {
+            start: "root".parse().expect("a path"),
+            scope: Scope::Match(pattern.parse().expect("a pattern")),
+            values: Values::Skipped,
+        };
+        let (unbound, ..) = held(looped, query(pattern), 0);
+        let unbound = unbound.expect("found").entries;
+        for most in 2..=4 {
+            let (found, points, _) = held(looped, query(pattern), most);
+            assert_eq!(found.expect("found").entries, unbound, "{pattern} {most}");
+            assert!(points <= usize::from(most), "{pattern} {most}: {points}");
+        }
+    }
 }

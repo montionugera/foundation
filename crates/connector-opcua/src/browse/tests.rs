@@ -503,20 +503,7 @@ fn browses_a_folder_again_when_the_server_freed_the_point_of_a_cursor() {
 /// read the folder again from its start.
 #[test]
 fn a_cursor_past_the_skip_bound_whose_point_the_server_freed_fails() {
-    let page = on_server(async |server| {
-        let folder = entry("Plant/Types", "Plant.Types", Shape::Folder);
-        let first = server.level(Some(&folder), None).await.expect("a page");
-        assert!(first.expect("a folder").next.is_some());
-        let node: Node = tag("Plant.Types").parse().expect("a node");
-        let held = server.points.remove(&(node.clone(), 8)).expect("a point");
-        server.points.insert((node.clone(), 100_008), held);
-        for _ in 0..32 {
-            let page = server.client.browse(&node, NonZeroU32::MIN).await;
-            assert!(page.expect("a browse").expect("a node").next.is_some());
-        }
-        let cursor = Cursor::new("100008".to_owned());
-        server.level(Some(&folder), Some(&cursor)).await
-    });
+    let page = moved_cursor(100_008, false);
     let Err(Error::Device(source)) = page else {
         panic!("not a device error: {page:?}");
     };
@@ -526,23 +513,56 @@ fn a_cursor_past_the_skip_bound_whose_point_the_server_freed_fails() {
     );
 }
 
-/// A cursor at `SKIP` whose point this browse released browses the folder again from
-/// its start.
-#[test]
-fn a_cursor_at_the_skip_bound_whose_point_the_browse_released_browses_again() {
-    let page = on_server(async |server| {
+/// The page of a cursor of `Plant/Types` at the count `before`, after the server
+/// frees its point, or after this browse releases it when `released`.
+fn moved_cursor(before: usize, released: bool) -> Result<Option<Page>, Error> {
+    on_server(async move |server| {
         let folder = entry("Plant/Types", "Plant.Types", Shape::Folder);
         let first = server.level(Some(&folder), None).await.expect("a page");
         assert!(first.expect("a folder").next.is_some());
         let node: Node = tag("Plant.Types").parse().expect("a node");
         let held = server.points.remove(&(node.clone(), 8)).expect("a point");
-        server.points.insert((node, 100_000), held);
-        assert!(server.release().await.expect("a release"));
-        let cursor = Cursor::new("100000".to_owned());
+        server.points.insert((node.clone(), before), held);
+        if released {
+            assert!(server.release().await.expect("a release"));
+        } else {
+            for _ in 0..32 {
+                let page = server.client.browse(&node, NonZeroU32::MIN).await;
+                assert!(page.expect("a browse").expect("a node").next.is_some());
+            }
+        }
+        let cursor = Cursor::new(before.to_string());
         server.level(Some(&folder), Some(&cursor)).await
+    })
+}
+
+/// A cursor at `SKIP` whose point the server freed, or this browse released, browses
+/// the folder again from its start.
+#[test]
+fn a_cursor_at_the_skip_bound_with_no_point_browses_again() {
+    for released in [false, true] {
+        let page = moved_cursor(100_000, released).expect("a page");
+        let page = page.expect("a folder");
+        assert_eq!((page.entries, page.next), (Vec::new(), None), "{released}");
+    }
+}
+
+/// The browse does not release a point past `SKIP`, as its cursor cannot browse the
+/// folder again.
+#[test]
+fn releases_no_point_past_the_skip_bound() {
+    let (released, held) = on_server(async |server| {
+        let folder = entry("Plant/Types", "Plant.Types", Shape::Folder);
+        let first = server.level(Some(&folder), None).await.expect("a page");
+        assert!(first.expect("a folder").next.is_some());
+        let node: Node = tag("Plant.Types").parse().expect("a node");
+        let held = server.points.remove(&(node.clone(), 8)).expect("a point");
+        server.points.insert((node.clone(), 100_001), held);
+        let released = server.release().await.expect("a release");
+        (released, server.points.keys().cloned().collect::<Vec<_>>())
     });
-    let page = page.expect("a page").expect("a folder");
-    assert_eq!((page.entries, page.next), (Vec::new(), None));
+    let node: Node = tag("Plant.Types").parse().expect("a node");
+    assert_eq!((released, held), (false, vec![(node, 100_001)]));
 }
 
 #[test]

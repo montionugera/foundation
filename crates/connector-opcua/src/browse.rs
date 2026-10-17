@@ -41,9 +41,8 @@ pub(crate) struct Server<'a> {
 
 /// Where the page of a cursor starts.
 struct Held {
-    /// The continuation point of the next page of the server, `None` after this
-    /// browse released it for another.
-    point: Option<Point>,
+    /// The continuation point of the next page of the server.
+    point: Point,
     /// The value of `Server::uses` when this browse held the point.
     used: u64,
     /// What the references of the folder before the point gave.
@@ -72,19 +71,18 @@ impl<'a> Server<'a> {
 
     /// Gives the references of `folder` from the count `before`, what the references
     /// before them gave, and the continuation point after them with the count of its
-    /// references still to skip. A cursor of this browse goes on with `BrowseNext`.
-    /// Else, or when the server or this browse released its point, it browses
-    /// `folder` again from its start and skips `before` references. It reads pages of the server
-    /// while each gives only references to skip, so it gives no references and a
-    /// held point after a page with none. `None` when the server does not have
+    /// references still to skip. A cursor whose point this browse holds goes on with
+    /// `BrowseNext`. Else, or when the server freed its point, it browses `folder`
+    /// again from its start and skips `before` references. It reads pages of the
+    /// server while each gives only references to skip, so it gives no references and
+    /// a held point after a page with none. `None` when the server does not have
     /// `folder`.
     ///
     /// # Errors
     ///
-    /// `opcua.bad-cursor` when `before` is past [`SKIP`] and `cursor` is not a cursor
-    /// of this browse, `BadContinuationPointInvalid` when it is one whose point the
-    /// server or this browse released, and the status of a Browse or `BrowseNext`
-    /// that fails.
+    /// `opcua.bad-cursor` when `before` is past [`SKIP`] and this browse holds no
+    /// point for `cursor`, `BadContinuationPointInvalid` when it holds one that the
+    /// server freed, and the status of a Browse or `BrowseNext` that fails.
     async fn references(
         &mut self,
         folder: &Node,
@@ -93,11 +91,9 @@ impl<'a> Server<'a> {
     ) -> Result<Option<(Vec<Reference>, Seen, Option<(Point, usize)>)>, Error> {
         let held = self.points.remove(&(folder.clone(), before));
         let ours = held.is_some();
-        let resumed = match held
-            .and_then(|held| Some((held.point?, held.seen, held.left)))
-        {
-            Some((point, seen, left)) => match self.client.browse_next(point).await {
-                Ok(page) => Some((page, seen, left)),
+        let resumed = match held {
+            Some(held) => match self.client.browse_next(held.point).await {
+                Ok(page) => Some((page, held.seen, held.left)),
                 Err(Status::BAD_CONTINUATION_POINT_INVALID) => None,
                 Err(status) => return Err(failed(status)),
             },
@@ -136,16 +132,15 @@ impl<'a> Server<'a> {
 
     /// Gives the first page of `folder`, or `None` when the server does not have it.
     /// When this browse holds as many points as the server holds for a session, or
-    /// [`browse::DEPTH`] when the server gives no bound, it first releases the point
-    /// that it used least lately. On `BadNoContinuationPoints`, it releases one and
+    /// [`browse::DEPTH`] when the server gives no bound, it first releases a point, as
+    /// [`Server::release`] picks it. On `BadNoContinuationPoints`, it releases one and
     /// browses once more.
     async fn first(&mut self, folder: &Node) -> Result<Option<client::Page>, Error> {
         let most = u32::try_from(browse::LIMIT).ok().and_then(NonZeroU32::new);
         let most = most.expect("invariant: `LIMIT` is a u32 that is not 0");
         let bound = self.client.points().await.map_err(failed)?;
         let bound = bound.map_or(browse::DEPTH, NonZeroUsize::get);
-        let held = self.points.values().filter(|held| held.point.is_some());
-        if held.count() >= bound {
+        if self.points.len() >= bound {
             self.release().await?;
         }
         match self.client.browse(folder, most).await {
@@ -157,15 +152,20 @@ impl<'a> Server<'a> {
         .map_err(failed)
     }
 
-    /// Releases the point that this browse used least lately, and gives whether it
-    /// held one.
+    /// Releases the point that this browse used least lately of those whose cursor
+    /// can browse its folder again, at a count of at most [`SKIP`], and gives whether
+    /// it held one.
     async fn release(&mut self) -> Result<bool, Error> {
-        let held = self.points.values_mut().filter(|held| held.point.is_some());
-        let Some(held) = held.min_by_key(|held| held.used) else {
+        let held = self
+            .points
+            .iter()
+            .filter(|((_, before), _)| *before <= SKIP);
+        let Some((key, _)) = held.min_by_key(|(_, held)| held.used) else {
             return Ok(false);
         };
-        let point = held.point.take().expect("a held point");
-        self.client.release(point).await.map_err(failed)?;
+        let key = key.clone();
+        let held = self.points.remove(&key).expect("a held point");
+        self.client.release(&[held.point]).await.map_err(failed)?;
         Ok(true)
     }
 
@@ -259,20 +259,27 @@ impl browse::Device for Server<'_> {
         let shapes = self.shapes(&references).await.map_err(failed)?;
         let entries = kept.into_iter().zip(shapes);
         let entries = entries.map(|((name, tag, _), shape)| Child { name, tag, shape });
-        let next = next.map(|(point, left)| {
+        let mut cursor = None;
+        if let Some((point, left)) = next {
             self.uses += 1;
             let held = Held {
-                point: Some(point),
+                point,
                 used: self.uses,
                 seen,
                 left,
             };
-            self.points.insert((folder, after), held);
-            Cursor::new(after.to_string())
-        });
+            // A folder that a walk opens twice can give a cursor that it holds.
+            if let Some(earlier) = self.points.insert((folder, after), held) {
+                self.client
+                    .release(&[earlier.point])
+                    .await
+                    .map_err(failed)?;
+            }
+            cursor = Some(Cursor::new(after.to_string()));
+        }
         Ok(Some(Page {
             entries: entries.collect(),
-            next,
+            next: cursor,
         }))
     }
 
