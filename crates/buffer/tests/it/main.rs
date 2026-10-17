@@ -7242,11 +7242,9 @@ fn stored_tagged(first: u64, tag: u8, bytes: Block) -> Stored {
     }
 }
 
-/// What `newest` gives, by slot.
+/// What `newest` gives for `tag`, which is over 0.
 fn newest(buffer: &Buffer, path: Path, tag: u8) -> Result<Vec<(Slot, Stored)>, Error> {
-    let mut newest = buffer.newest(path, NonZeroU8::new(tag).expect("a tag over 0"))?;
-    newest.sort_by_key(|(slot, _)| *slot);
-    Ok(newest)
+    buffer.newest(path, NonZeroU8::new(tag).expect("a tag over 0"))
 }
 
 /// `newest` gives the last durable entry with the tag on the path of each index,
@@ -7735,6 +7733,30 @@ fn newest_gives_an_entry_with_no_bytes() {
         buffer.committed().await.expect("commits");
         let found = newest(&buffer, Path::Live, 1);
         assert_eq!(found, Ok(vec![(a, stored_tagged(0, 1, shard.block(0)))]));
+    });
+}
+
+/// `newest` gives the entries in the order of their slots, not the order of the
+/// table or of a hash map.
+#[test]
+fn newest_gives_the_entries_in_slot_order() {
+    run(181, |shard| async move {
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let keyed: Vec<Slot> = (1..=8).map(|n| slots.index(key(n))).collect();
+        let batch: Vec<Entry> = (1..=8)
+            .rev()
+            .zip(keyed.iter().rev())
+            .map(|(n, &slot)| tagged(n, slot, Path::Live, 0, 1, shard.block(0)))
+            .collect();
+        buffer.append(batch).expect("queues");
+        buffer.committed().await.expect("commits");
+        let found = newest(&buffer, Path::Live, 1).expect("copies");
+        let given: Vec<Slot> = found.iter().map(|&(slot, _)| slot).collect();
+        assert_eq!(given, keyed);
     });
 }
 

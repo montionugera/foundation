@@ -763,8 +763,8 @@ impl Buffer {
     }
 
     /// The newest durable entry with `tag` on `path` of each index that has one,
-    /// with the index's slot, in no order. No trim frees it. It reads no file: the
-    /// buffer keeps a copy of each in memory.
+    /// with the index's slot, in the order of the slots. No trim frees it. It reads
+    /// no file: the buffer keeps a copy of each in memory.
     ///
     /// # Errors
     ///
@@ -775,7 +775,9 @@ impl Buffer {
         tag: NonZeroU8,
     ) -> Result<Vec<(Slot, Stored)>, Error> {
         let state = self.shared.state.borrow();
-        let newest = state.logs.newest(path, tag).map(|(slot, newest)| {
+        let mut newest: Vec<_> = state.logs.newest(path, tag).collect();
+        newest.sort_unstable_by_key(|&(slot, _)| slot);
+        let newest = newest.into_iter().map(|(slot, newest)| {
             let bytes = self.shared.pool.copy(&newest.bytes)?;
             Ok((slot, read::stored(newest.header, bytes)))
         });
