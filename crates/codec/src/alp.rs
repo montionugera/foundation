@@ -345,7 +345,7 @@ impl Pairs {
             reference: stats.reference::<W>(),
             bits: stats.bits(),
             pair,
-            exceptions: stats.exceptions,
+            exceptions: vector::count16(stats.exceptions),
         });
         if alp.len(count, W) < limit && alp.saves(count, W) {
             alp
@@ -437,10 +437,10 @@ fn exception_len(width: usize) -> usize {
 /// The header of an ALP vector, which owns the layout of its body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Header {
-    pub(crate) reference: u64,
-    pub(crate) bits: u8,
-    pub(crate) pair: Pair,
-    pub(crate) exceptions: usize,
+    reference: u64,
+    bits: u8,
+    pair: Pair,
+    exceptions: u16,
 }
 
 impl Header {
@@ -454,8 +454,12 @@ impl Header {
     pub(crate) fn body_len(self, count: usize, width: usize) -> usize {
         bits::len(count, self.bits)
             .next_multiple_of(width)
-            .strict_add(self.exceptions.strict_mul(width))
-            .strict_add(self.exceptions.strict_mul(2).next_multiple_of(width))
+            .strict_add(usize::from(self.exceptions).strict_mul(width))
+            .strict_add(
+                usize::from(self.exceptions)
+                    .strict_mul(2)
+                    .next_multiple_of(width),
+            )
     }
 
     /// Reads and checks the fields of the header at the front of `bytes` of vector
@@ -491,7 +495,7 @@ impl Header {
             reference: vector::field(bytes, 0, width),
             bits,
             pair: Pair { exponent, factor },
-            exceptions: u16::from_le_bytes([low, high]).into(),
+            exceptions: u16::from_le_bytes([low, high]),
         })
     }
 
@@ -530,7 +534,7 @@ impl Header {
         out.put(&[vector::ALP, self.bits]);
         out.put(&word::store::<W>(self.reference));
         out.put(&[self.pair.exponent, self.pair.factor]);
-        out.put(&vector::count16(self.exceptions).to_le_bytes());
+        out.put(&self.exceptions.to_le_bytes());
         out.pad(W);
         let coder = Coder::<W>::new(self.pair);
         let mask = word::mask(W);
@@ -595,8 +599,9 @@ impl Header {
     ) -> (&[u8], &[u8], &[[u8; 2]]) {
         let packed = bits::len(count, self.bits).next_multiple_of(width);
         let (packed, rest) = body.split_at(packed);
-        let (values, positions) = rest.split_at(self.exceptions.strict_mul(width));
-        let positions = positions.as_chunks::<2>().0.split_at(self.exceptions).0;
+        let exceptions = usize::from(self.exceptions);
+        let (values, positions) = rest.split_at(exceptions.strict_mul(width));
+        let positions = positions.as_chunks::<2>().0.split_at(exceptions).0;
         (packed, values, positions)
     }
 }
