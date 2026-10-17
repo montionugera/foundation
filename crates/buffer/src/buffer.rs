@@ -1108,7 +1108,8 @@ type Tagged = hash::Map<(Slot, Path, NonZeroU8), (u64, usize, u32)>;
 
 /// Feeds the logs the entries of a record body at `offset`, as appended and
 /// synced, and notes each entry with a nonzero tag in `newest`. Fails when an
-/// entry is over `largest`, the pool's largest block.
+/// entry is over `largest`, the pool's largest block, or a tagged entry is over
+/// [`Layout::ENTRY_MAX_MIN`], which no carry record holds.
 fn recover(
     body: Body<'_>,
     offset: u64,
@@ -1122,6 +1123,9 @@ fn recover(
     for header in entry::parse(body.start, body.len).map_err(unread)? {
         let (header, at) = header.map_err(unread)?;
         let requested = usize::try_from(header.bytes).unwrap_or(usize::MAX);
+        if header.tag != 0 && requested > Layout::ENTRY_MAX_MIN {
+            return Err(Error::Invalid { offset });
+        }
         if requested > largest {
             return Err(Error::Pool(block::Error::TooLarge { requested, largest }));
         }

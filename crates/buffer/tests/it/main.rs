@@ -6095,6 +6095,17 @@ proptest! {
     }
 }
 
+/// An open refuses a data record with a tagged entry of 4244 bytes, over
+/// `Layout::ENTRY_MAX_MIN`: no carry record can hold its copy.
+#[test]
+fn an_open_refuses_a_tagged_entry_over_the_tag_limit() {
+    run(161, |shard| async move {
+        let ring = shard.create_long_record().await;
+        shard.tamper_record(BLOCK, 4 + 46, &[1]).await;
+        shard.open_invalid(ring, BLOCK).await;
+    });
+}
+
 /// An open fails with `Pool(TooLarge)` when a recovered entry is over the largest
 /// block of its pool, as after a restart with a smaller budget, and leaves the ring
 /// as it is: an open with the larger pool recovers the entry.
