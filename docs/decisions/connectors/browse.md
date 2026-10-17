@@ -187,3 +187,9 @@
   `plan` reads secrets through `Supervisor::secrets`: `laptop.architect-2`,
   2026-10-17 05:40 UTC
   (https://github.com/synnaxlabs/foundation/pull/2999#issuecomment-6230284696).
+  The operation `browse` of `ops` runs `Supervisor::browse` on the node of the
+  connector, for the command line with `--json` and for the MCP tool `browse`. Its
+  checks, its four codes, its JSON, and its text are in OPS OUTPUT. The JSON gives
+  `unit` and `unit_code` as two fields, each `null` when the device cannot know it, as
+  `Facts` holds them (`laptop.architect-2`, 2026-10-17T05:14:44Z, item 2 of
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6230042870).
