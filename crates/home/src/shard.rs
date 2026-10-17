@@ -1214,7 +1214,7 @@ mod tests {
     use std::time::Instant;
 
     use block::{Pool, Unique};
-    use buffer::{Layout, Mark};
+    use buffer::Layout;
     use env::clock::Clock;
     use env::entropy::Entropy;
     use env::files::{Mode, Operation};
@@ -1224,6 +1224,7 @@ mod tests {
     use types::frame::Form;
     use types::frame::Range;
     use types::frame::key_set::Group;
+    use types::log::Mark;
     use types::name::Name;
     use types::sample::{Scalar, Type};
     use types::time::Span;
