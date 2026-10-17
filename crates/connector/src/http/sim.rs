@@ -5,7 +5,7 @@ use std::future::poll_fn;
 use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::task::Poll;
+use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use env::net::{self, Listener};
@@ -14,7 +14,7 @@ use http::header::CONNECTION;
 use http::{HeaderValue, Request, Response, StatusCode};
 use http_body::Body as _;
 use hyper::body::Incoming;
-use hyper::rt::Write as _;
+use hyper::rt::{Read as _, ReadBuf, Write as _};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use rustls::ServerConfig;
@@ -82,7 +82,7 @@ pub fn ca() -> Roots {
 ///
 /// # Errors
 ///
-/// The error of the listener, when it fails before the cancel.
+/// The error of the listener, when it fails before `serve` sees the cancel.
 pub async fn serve(
     listener: Listener,
     tasks: Tasks,
@@ -198,10 +198,8 @@ async fn accept(
             let cancelled = cancelled.as_mut().poll(cx).is_ready();
             match listener.poll_accept(cx) {
                 Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
-                Poll::Ready(Ok(_)) | Poll::Pending if cancelled => {
-                    Poll::Ready(Ok(None))
-                }
                 Poll::Ready(Ok(tcp)) => Poll::Ready(Ok(Some(tcp))),
+                Poll::Pending if cancelled => Poll::Ready(Ok(None)),
                 Poll::Pending => Poll::Pending,
             }
         });
@@ -227,16 +225,30 @@ async fn accept(
                 .half_close(true)
                 .serve_connection(stream, service);
             if stop.race(&mut served).await.is_none() {
-                // The close waits on no peer: a shutdown that cannot finish at once
-                // drops the stream, which resets it.
                 let mut stream = served.into_parts().io;
-                drop(
-                    poll_fn(|cx| Poll::Ready(Pin::new(&mut stream).poll_shutdown(cx)))
-                        .await,
-                );
+                poll_fn(|cx| {
+                    close(&mut stream, cx);
+                    Poll::Ready(())
+                })
+                .await;
             }
         });
     }
+}
+
+/// Reads `stream` until it has no bytes, then starts its shutdown, with no wait on
+/// the peer. A drop of a stream with bytes unread, or before its shutdown is done,
+/// resets it.
+fn close(stream: &mut Stream, cx: &mut Context<'_>) {
+    let mut bytes = [0; 1024];
+    loop {
+        let mut read = ReadBuf::new(&mut bytes);
+        match Pin::new(&mut *stream).poll_read(cx, read.unfilled()) {
+            Poll::Ready(Ok(())) if !read.filled().is_empty() => {}
+            Poll::Ready(_) | Poll::Pending => break,
+        }
+    }
+    drop(Pin::new(stream).poll_shutdown(cx));
 }
 
 async fn respond(
