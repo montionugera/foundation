@@ -68,6 +68,7 @@ macro_rules! tests {
             within_keeps_a_narrow_handle_out_of_a_hidden_folder_of_its_source,
             within_gives_replaced_under_a_moved_folder_in_a_hidden_folder,
             within_gives_replaced_before_a_dot_dot_on_the_way_to_a_moved_folder,
+            within_hides_a_moved_folder_beside_one_that_stays_in_a_hidden_folder,
             a_directory_made_takes_files,
             a_directory_made_again_or_through_a_link_is_ok,
             a_directory_under_one_that_is_not_there_is_not_found,
@@ -721,6 +722,32 @@ pub(crate) fn within_gives_replaced_before_a_dot_dot_on_the_way_to_a_moved_folde
     assert_eq!(within.read(&path, 1).map(|_| ()), Ok(()));
     (host.move_path)(&base.join("work/data/pub"), &base.join("work/old"));
     assert_eq!(within.read(&path, 1).map(|_| ()), Err(Error::Replaced));
+}
+
+/// The hidden `data` holds the folders `pub` and `other`. The step `data` passes on the
+/// way to `other` and meets the hidden folder, so a path under `pub` gives `Hidden`
+/// before and after a program moves `pub`, and its new place gives `Replaced`.
+pub(crate) fn within_hides_a_moved_folder_beside_one_that_stays_in_a_hidden_folder(
+    host: &Host<'_>,
+) {
+    let base = host.paths.resolve(host.dir).unwrap();
+    for name in ["work", "work/data", "work/data/pub", "work/data/other"] {
+        (host.make_dir)(&base.join(name));
+    }
+    host.paths
+        .write(&base.join("work/data/pub/a"), b"x")
+        .unwrap();
+    let folders = [base.join("work/data/pub"), base.join("work/data/other")];
+    let within = host
+        .paths
+        .within(&folders, &[base.join("work/data")])
+        .unwrap();
+    let read = |name| within.read(&base.join(name), 1).map(|_| ());
+    let before = read("work/data/pub/a");
+    (host.move_path)(&base.join("work/data/pub"), &base.join("work/old"));
+    let after = [read("work/data/pub/a"), read("work/old/a")];
+    assert_eq!(before, Err(Error::Hidden));
+    assert_eq!(after, [Err(Error::Hidden), Err(Error::Replaced)]);
 }
 
 /// A program replaces the folder with a link to a directory outside it. A path through
