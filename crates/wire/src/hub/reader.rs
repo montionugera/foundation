@@ -113,13 +113,20 @@ impl Reader {
     ///
     /// The session is then not valid ([`MALFORMED`](crate::header::MALFORMED)), and
     /// the caller stops it.
+    #[inline]
     pub fn decode<'m>(
         &mut self,
         message: Option<&'m [u8]>,
     ) -> Result<FromHome<'m>, Error> {
-        let Some(message) = message else {
-            return Err(self.finished());
-        };
+        match message {
+            Some(message) => self.message(message),
+            None => Err(self.finished()),
+        }
+    }
+
+    /// [`Reader::decode`] of a message, apart so that each caller inlines only the
+    /// check of the end of the stream.
+    fn message<'m>(&mut self, message: &'m [u8]) -> Result<FromHome<'m>, Error> {
         let (event, next) = match self.next {
             Next::Opened | Next::Head => self.reply(message)?,
             Next::Ends { remain } => {
