@@ -1,5 +1,8 @@
 //! The conformance suite of the `opcua` kind.
 
+// Lets Clippy treat the helpers as test code.
+#![cfg(test)]
+
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 
@@ -17,6 +20,10 @@ use types::channel;
 use types::name::Name;
 use types::sample::{Scalar, Type};
 
+#[expect(
+    dead_code,
+    reason = "the suite of opcua starts no writer and no task of the device"
+)]
 #[path = "../scenarios.rs"]
 mod scenarios;
 
@@ -31,7 +38,7 @@ const CHANNELS: [&str; 3] = ["plant.a", "plant.b", "plant.c"];
 const DEVICE: Device = Device {
     kind: "opcua",
     kinds,
-    setup: |plant| Box::pin(setup(plant)),
+    setup: |plant| Box::pin(std::future::ready(setup(&plant))),
     serve: |inputs| Box::pin(simulate(inputs)),
     progress: "in",
     refused,
@@ -49,7 +56,7 @@ fn name(text: &str) -> Name {
 
 /// Defines `plant.time` and the `f64` channels of [`CHANNELS`] on it, and gives the
 /// config of a connector that reads each of them at 10 Hz.
-async fn setup(plant: Plant<'_>) -> Document {
+fn setup(plant: &Plant<'_>) -> Document {
     let time = channel::Key::from_u128(1);
     let index = spec::channel::Kind::Index {
         error: None,
@@ -71,7 +78,10 @@ async fn setup(plant: Plant<'_>) -> Document {
     }
     plant.rig.define(definitions);
     let address = format!("opc.tcp://{}", plant.device);
-    let reads = CHANNELS.iter().zip(NODES).map(|(&channel, node)| (channel, node));
+    let reads = CHANNELS
+        .iter()
+        .zip(NODES)
+        .map(|(&channel, node)| (channel, node));
     config(&address, "10Hz", reads.collect())
 }
 
