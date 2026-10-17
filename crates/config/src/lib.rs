@@ -250,7 +250,7 @@ fn key(label: &Label, kind: Kind) -> Result<Name, Diagnostic> {
             format!("Shorten the name to at most {most} bytes"),
         )),
         Err(key::Error::Name(_)) => Err(read::label(label)
-            .expect_err("`read::label` refuses each label that `Kind::key` does")),
+            .expect_err("invariant: `read::label` refuses each label that `Kind::key` refuses as a name")),
         Err(error @ key::Error::Reserved) => Err(Diagnostic::new(
             RESERVED_NAME,
             label.span,

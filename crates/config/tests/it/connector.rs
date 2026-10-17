@@ -608,3 +608,12 @@ fn names_no_reserved_connector_in_the_fix_of_a_missing_name() {
         )]
     );
 }
+
+#[test]
+fn finds_a_connector_beside_a_reserved_connector_of_another_name() {
+    let text = "connector \"@other\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n\
+                connector \"plant\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n";
+    let found = config::connector(&[read(text)], &name("plant")).expect("found");
+    assert_eq!(found.kind(), &name("opcua"));
+    assert_eq!(found.node(), &name("edge"));
+}
