@@ -3,7 +3,10 @@
   (`laptop.architect`, 2026-10-17T18:41:45Z,
   https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6238783320;
   `laptop.architect-2`, 2026-10-17T19:07:21Z,
-  https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6239220977).
+  https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6239220977). The
+  crate and the two names are key choices of kinds 1 and 2 that `laptop.monitor`
+  accepted at 2026-10-17T21:32:06Z
+  (https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241427370).
   `connect(address, *, node, public_key, subject, private_key)` takes the node key as a
   `uuid.UUID`, and a value of another type raises `TypeError`. `sdk::Error::Thread`
   raises `RuntimeError`, `Bind` raises `OSError`, `Session` raises `ConnectionError`,
