@@ -1,7 +1,8 @@
 //! The time to check and split a writer's frame: encode each raw series or validate
 //! each encoded one, walk the stamps of the index, and make and drop the index frame.
 //! Frames of one group of 16 and 1000 series of `SAMPLES` samples, raw and encoded:
-//! each an `f32`, or a mix of scalars, an array, a matrix, a list, a string, and bytes.
+//! each an `f32`, each an `f64` of two decimals, or a mix of scalars, an array, a
+//! matrix, a list, a string, and bytes.
 //! Before it times a case, the bench asserts that the split walks each stamp, that the
 //! index frame holds the bytes of each series encoded, and that a split with a warm
 //! scratch makes no heap allocation. It first makes the same checks on an index of more
@@ -28,8 +29,8 @@ static ALLOCATOR: counting::Allocator = counting::Allocator::new();
 fn main() {
     let samples = u32::try_from(codec::VECTOR_LEN + 1).expect("a small count");
     for form in [Form::Raw, Form::Encoded] {
-        let case =
-            Case::new("long f32", 2, samples, form, &[Type::Scalar(Scalar::F32)]);
+        let f32 = &[Type::Scalar(Scalar::F32)];
+        let case = Case::new("long f32", 2, samples, form, f32, values);
         check(
             &case,
             &block::Pool::heap(POOL),
@@ -82,6 +83,7 @@ impl Case {
         samples: u32,
         form: Form,
         types: &[Type],
+        values: fn(Type, u32) -> Vec<u8>,
     ) -> Self {
         let set = common::set(series, types);
         let (bytes, encoded): (Vec<_>, Vec<_>) = set
@@ -149,6 +151,13 @@ fn values(data_type: Type, samples: u32) -> Vec<u8> {
     out
 }
 
+/// The raw values of `samples` samples of `f64` with two decimals.
+fn decimals(_: Type, samples: u32) -> Vec<u8> {
+    (0..samples)
+        .flat_map(|n| (f64::from(2_000 + n % 1_000) / 100.0).to_le_bytes())
+        .collect()
+}
+
 /// `raw`, `samples` samples of `data_type`, encoded.
 fn encode(data_type: Type, samples: u32, raw: &[u8]) -> Vec<u8> {
     let mut out = vec![0; codec::max_len(data_type, raw.len())];
@@ -171,15 +180,12 @@ fn cases() -> Vec<Case> {
             [Form::Raw, Form::Encoded]
                 .into_iter()
                 .flat_map(move |form| {
+                    let f32 = &[Type::Scalar(Scalar::F32)];
+                    let f64 = &[Type::Scalar(Scalar::F64)];
                     [
-                        Case::new(
-                            "f32",
-                            series,
-                            SAMPLES,
-                            form,
-                            &[Type::Scalar(Scalar::F32)],
-                        ),
-                        Case::new("mixed", series, SAMPLES, form, &MIXED),
+                        Case::new("f32", series, SAMPLES, form, f32, values),
+                        Case::new("f64.dec2", series, SAMPLES, form, f64, decimals),
+                        Case::new("mixed", series, SAMPLES, form, &MIXED, values),
                     ]
                 })
         })
