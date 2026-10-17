@@ -362,3 +362,25 @@ pub(crate) fn decode<const W: usize>(
             .expect("invariant: read checks each position") = *value;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Four runs of quarters win `e` = 2, `f` = 0 first, then four runs of integers win
+    /// `e` = 0, `f` = 0. The tie goes to the pair that comes first in search order.
+    #[test]
+    fn search_breaks_ties_in_search_order() {
+        let chunk: Vec<u8> = (0..RUNS * RUN)
+            .map(|k| {
+                let k = f64::from(u32::try_from(k).expect("a small index"));
+                if k < 128.0 { k / 4.0 + 0.25 } else { k }
+            })
+            .flat_map(f64::to_le_bytes)
+            .collect();
+        let mut pairs = Pairs::default();
+        pairs.search::<8>(&chunk);
+        let pair = |exponent, factor| Pair { exponent, factor };
+        assert_eq!(pairs.top[..pairs.len], [pair(0, 0), pair(2, 0)]);
+    }
+}
