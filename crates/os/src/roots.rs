@@ -17,8 +17,9 @@ pub struct Roots {
 }
 
 /// Where a read of the roots looks, which `SSL_CERT_FILE` and `SSL_CERT_DIR` pick.
-/// Its text is `the OS store`, or `SSL_CERT_FILE=<path>` and `SSL_CERT_DIR=<paths>`
-/// with a space between them.
+/// Its text is `the OS store`, or `SSL_CERT_FILE=<path>` when the file is set and
+/// `SSL_CERT_DIR=<paths>`, the paths joined by `:`, when a directory is, with a space
+/// between the two.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Source {
     /// The store of the OS: the certificate files on Linux, the keychain on macOS.
