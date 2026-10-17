@@ -1077,4 +1077,6 @@
   of the working directory first, 2026-10-17T16:01:56Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236262586; the check
   of a short step against the folders only before a `..`, 2026-10-17T16:24:25Z,
-  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236577385).
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236577385; the check
+  of a short step where nothing is there,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236681131).
