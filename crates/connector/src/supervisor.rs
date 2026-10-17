@@ -4112,7 +4112,7 @@ mod tests {
                 .iter()
                 .find(|(_, samples, ..)| samples[0] == 1)
                 .expect("a frame of state 1");
-            // `statuses` gives each stamp from the first frame: the one 500 ms
+            // `statuses` gives each stamp from the first frame: the one `lead`
             // ahead.
             let run = Span::from_nanos(again.nanos() - lead.nanos());
             if samples[3] == 0 {
