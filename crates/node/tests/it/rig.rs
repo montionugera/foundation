@@ -77,6 +77,9 @@ impl Rig {
         };
         #[cfg(unix)]
         sweep(&dir, remove);
+        // The node shows canonical paths, and on macOS the temporary directory is under
+        // a link.
+        let dir = std::fs::canonicalize(&dir).expect("the new directory is there");
         let rig = Self {
             dir,
             disk: u64::try_from(cores).expect("invariant: a core count fits u64")

@@ -1,7 +1,3 @@
-//! The cost of UDP over the loopback through `os::net`: one datagram against a plain
-//! Tokio socket, and a batch sent in one call against the same datagrams sent one by
-//! one, also on a socket that cannot use GSO and with a segment over the path MTU.
-//! Each sample sends and then receives all the bytes that arrive, except in `register`.
 use std::future::poll_fn;
 use std::io::IoSliceMut;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -16,7 +12,7 @@ use tokio::net::UdpSocket;
 use tokio::runtime::{Builder, Runtime};
 
 #[cfg(target_os = "linux")]
-#[path = "../tests/common/gso.rs"]
+#[path = "../../tests/common/gso.rs"]
 mod gso;
 
 /// The size of each datagram of a batch: a QUIC packet on a 1,280-byte path.
@@ -24,10 +20,6 @@ const SEGMENT: usize = 1_200;
 /// The datagrams of a batch: the most of `SEGMENT` bytes that one transmit takes.
 const DATAGRAMS: usize = 54;
 const SAMPLES: u32 = 2_000;
-
-fn main() {
-    divan::main();
-}
 
 fn runtime() -> Runtime {
     Builder::new_current_thread()
