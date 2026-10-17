@@ -15,8 +15,9 @@
     that names only that issue, and removes the issue from an item that names others.
     The lists only shrink. The ONE NODE milestone does not close while a list holds a
     crate or a test.
-  - A crate or a test on the list of an OS counts as an OS that CI does not run, for
-    `/review`.
+  - For `/review`, CI does not run an OS for a crate or a test on the list of that OS
+    (`laptop.director`,
+    https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229528745).
   - OS-specific code goes only in `os`. Each `cfg` that leaves an OS out of a module or
     a public item of `os` names the issue that removes it. A test of a feature that
     only one OS has follows `docs/claude/testing.md`.
