@@ -78,12 +78,14 @@
   of the node is a name of the check (SERVE ACCESS). The text of the output with no
   connector is the line `You can read no connector on this node.`, which is true in each
   of these cases (`laptop.architect-2`, 2026-10-13T22:11:03Z,
-  https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156268301). When
-  the read of the OS roots at the start had a failure and the subject has `read` on the
-  name of the node, the output also gives `roots`: the `source` of the read, each
-  failure in full while their text is at most 1 MiB, and the count `unlisted` of the
-  rest. The text gives them after the connectors as `OS roots:` lines. With no failure
-  or no grant, the JSON has no `roots` (R7 STARTING POINTS, #2945). When
+  https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156268301). When the
+  subject has `read` on the name of the node, the output also gives `roots`: the
+  `source` of the read of the OS roots at the start, each failure in full while the
+  failures hold at most 1 MiB of memory, and the count `unlisted` of the rest. With no
+  failure, `roots` holds none. With no grant, `roots` is `null`, so a caller tells the
+  two apart. When the read had a failure, the text gives them after the connectors as
+  `OS roots:` lines (`laptop.architect-2`, 2026-10-17T04:59:46Z, #2945:
+  https://github.com/synnaxlabs/foundation/issues/2945#issuecomment-6229906709). When
   #1028 makes the home check each reader open, the check of the status channels moves
   there. `serve` then leaves out each connector whose reader open the home refuses
   through the hub. The checks of the label of a connector and of the node stay in
