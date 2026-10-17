@@ -81,7 +81,7 @@ impl kind::Kind for Kind {
     /// reads the state of the server to check the connection. After a cancel or an
     /// error, the run closes its session: it sends `CloseSession`, waits at most 1 s
     /// for the answer, then closes the connection. So a run ends within 1 s of a
-    /// cancel.
+    /// cancel. A connect clears the error that the status shows.
     ///
     /// # Errors
     ///
@@ -225,6 +225,7 @@ async fn read(
     client: &mut Client,
     frames: &mut Frames<'_>,
 ) -> Result<(), Error> {
+    ctx.clear_error();
     let reads = &ctx.config().reads;
     let nodes: Vec<Node> = reads.iter().map(|read| read.node.clone()).collect();
     let nodes = client.nodes(&nodes);
