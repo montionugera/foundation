@@ -66,6 +66,7 @@ macro_rules! tests {
             within_holds_nothing_in_a_folder_that_a_link_replaces,
             within_hides_a_hidden_folder_that_the_limits_refuse,
             within_keeps_a_narrow_handle_out_of_a_hidden_folder_of_its_source,
+            within_gives_replaced_under_a_moved_folder_in_a_hidden_folder,
             a_directory_made_takes_files,
             a_directory_made_again_or_through_a_link_is_ok,
             a_directory_under_one_that_is_not_there_is_not_found,
@@ -670,6 +671,36 @@ pub(crate) fn within_keeps_a_narrow_handle_out_of_a_hidden_folder_of_its_source(
             "{path}"
         );
     }
+}
+
+/// The folder `pub` is in the hidden `data`. After a program moves `pub` away, or
+/// makes it again, a path under its resolved path at the call gives `Replaced`, which
+/// comes before `Hidden`.
+pub(crate) fn within_gives_replaced_under_a_moved_folder_in_a_hidden_folder(
+    host: &Host<'_>,
+) {
+    let base = host.paths.resolve(host.dir).unwrap();
+    for name in ["work", "work/data", "work/data/pub"] {
+        (host.make_dir)(&base.join(name));
+    }
+    host.paths
+        .write(&base.join("work/data/pub/a"), b"x")
+        .unwrap();
+    let within = host
+        .paths
+        .within(&[base.join("work/data/pub")], &[base.join("work/data")])
+        .unwrap();
+    assert_eq!(
+        within.read(&base.join("work/data/pub/a"), 1),
+        Err(Error::Hidden)
+    );
+    (host.move_path)(&base.join("work/data/pub"), &base.join("work/old"));
+    let got = ["work/data/pub/a", "work/data/pub/a/x", "work/old/a"]
+        .map(|name| within.read(&base.join(name), 1).map(|_| ()));
+    assert_eq!(got, [Err(Error::Replaced); 3]);
+    (host.make_dir)(&base.join("work/data/pub"));
+    let again = within.read(&base.join("work/data/pub/a"), 1);
+    assert_eq!(again, Err(Error::Replaced));
 }
 
 /// A program replaces the folder with a link to a directory outside it. A path through

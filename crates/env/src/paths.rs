@@ -343,11 +343,13 @@ impl Paths {
         let held = |(dir, was): &(PathBuf, Key)| {
             keys.contains(was) && self.driver.key(dir).ok() == Some(*was)
         };
-        let above = |(dir, _): &(PathBuf, Key)| {
+        let above = |(dir, was): &(PathBuf, Key)| {
             own.is_some_and(|own| {
-                dir.ancestors()
-                    .skip(1)
-                    .any(|up| self.driver.key(up).ok() == Some(own))
+                self.driver.key(dir).ok() == Some(*was)
+                    && dir
+                        .ancestors()
+                        .skip(1)
+                        .any(|up| self.driver.key(up).ok() == Some(own))
             })
         };
         let (mut vacant, mut veiled) = (false, false);
@@ -386,6 +388,7 @@ impl Paths {
             let replaced = limit.folders.iter().any(|(dir, was)| {
                 keys.contains(was)
                     || resolved.starts_with(dir)
+                    || short && dir.starts_with(resolved)
                     || self
                         .driver
                         .resolve(dir)
