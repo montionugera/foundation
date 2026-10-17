@@ -1052,21 +1052,28 @@
   `make_dir` of the amendment of 2026-10-17T06:14:25Z is now a step of the walk for each
   call, with no key, which supersedes its "with the key of the file at that name". It
   also supersedes "a path that does not resolve, such as a link to nothing or a loop,
-  passes the limits by its own place" of the amendment of 2026-10-16T08:08:47Z. For the
-  name of the first prefix that does not resolve, it supersedes "each other error is the
-  error of the call" of the amendment of 2026-10-16T17:13:18Z: that name takes no key,
-  since an error of its key, such as `Io` 40 for a loop, tells what a hidden folder
-  holds. Lost: the check only after a failed resolve, since
-  `/etc/foo/../../<base>/work/a.hcl` resolves only when `/etc/foo` is there, so it reads
-  `a.hcl` or gives `Outside`, which tells whether `/etc/foo` is there; `Hidden` over
-  `Outside` across prefixes, since `x/../work/data/y` then gives `Hidden` when the
-  outside `x` is there and `Outside` when it is not; a step at or above the end of the
-  walk, which needs a second pass and refuses a link outside the folders that names a
-  folder where a mount passes
+  passes the limits by its own place" of the amendment of 2026-10-16T08:08:47Z. Each
+  limit checks its folders before its hidden folders, so a step that the folders of a
+  limit refuse gives `Outside`, also beside a hidden folder that is not there: with the
+  folder `/work` and nothing at the hidden folder `/out/h`, `/out/x` and `/out/y` give
+  `Outside`, whether each is there or not. This supersedes "in the deepest directory on
+  its way that is there gives `Hidden`" of the amendment of 2026-10-16T17:13:18Z for a
+  directory that is not under a folder. For the name of the first prefix that does not
+  resolve, it supersedes "each other error is the error of the call" of the amendment of
+  2026-10-16T17:13:18Z: that name takes no key, since an error of its key, such as `Io`
+  40 for a loop, tells what a hidden folder holds. Lost: the check only after a failed
+  resolve, since `/etc/foo/../../<base>/work/a.hcl` resolves only when `/etc/foo` is
+  there, so it reads `a.hcl` or gives `Outside`, which tells whether `/etc/foo` is
+  there; `Hidden` over `Outside` across prefixes, since `x/../work/data/y` then gives
+  `Hidden` when the outside `x` is there and `Outside` when it is not; a step at or
+  above the end of the walk, which needs a second pass and refuses a link outside the
+  folders that names a folder where a mount passes
   (https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236577385); the
   check of each step that any `..` follows, since `/out/in/x/../a` through a link
-  `/out/in` to a folder then gives `Outside` where `/out/in/a` reads. Decided by
-  `laptop.architect-2` (2026-10-17T07:45:44Z,
+  `/out/in` to a folder then gives `Outside` where `/out/in/a` reads; `Hidden` for each
+  name in a directory that is not under a folder, beside a hidden folder that is not
+  there, which also refuses a name that is there. Decided by `laptop.architect-2`
+  (2026-10-17T07:45:44Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231358043; the check
   of the name at its place and the arm of `make_dir`, 2026-10-17T07:54:32Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231433128; the

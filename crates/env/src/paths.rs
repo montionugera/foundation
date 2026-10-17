@@ -61,21 +61,21 @@ impl Paths {
     /// that a program renames away stays hidden, but not its own listing, and a
     /// directory that the host gives the key of a hidden folder that it removed hides
     /// what it holds. While nothing is at a hidden path, a call that makes a new name
-    /// in the deepest directory on its way that is there fails with [`Error::Hidden`],
-    /// also for a name that does not make that path. A folder whose file a call cannot
-    /// take holds nothing at that call. The limits hold on each step of a path: each
-    /// prefix of its components that resolves, in order and without an end `/` or `/.`,
-    /// must pass them, and the first that fails gives its error. A prefix short of the
-    /// whole path is checked against the folders only when a `..` after it takes the
-    /// path above it, or nothing is there, and then also passes when it is a directory
-    /// on the way to a folder. The name of the first prefix that does not resolve must
-    /// pass them too, at its place with no key, as a new name there does. A relative
-    /// path starts at the working directory: the steps of that directory come first,
-    /// and each prefix after them is a prefix of the path as given. A path whose steps
-    /// pass and that does not resolve gives the error of its resolve. The limits of
-    /// `self` hold too, so a handle never reaches more than the one it came from. The
-    /// check and the call are two steps: a symbolic link that another program makes
-    /// between them can lead the call out.
+    /// in the deepest directory on its way that is there, when that directory is under
+    /// a folder, fails with [`Error::Hidden`], also for a name that does not make that
+    /// path. A folder whose file a call cannot take holds nothing at that call. The
+    /// limits hold on each step of a path: each prefix of its components that resolves,
+    /// in order and without an end `/` or `/.`, must pass them, and the first that
+    /// fails gives its error. A prefix short of the whole path is checked against the
+    /// folders only when a `..` after it takes the path above it, or nothing is there,
+    /// and then also passes when it is a directory on the way to a folder. The name of
+    /// the first prefix that does not resolve must pass them too, at its place with no
+    /// key, as a new name there does. A relative path starts at the working directory:
+    /// the steps of that directory come first, and each prefix after them is a prefix
+    /// of the path as given. A path whose steps pass and that does not resolve gives
+    /// the error of its resolve. The limits of `self` hold too, so a handle never
+    /// reaches more than the one it came from. The check and the call are two steps: a
+    /// symbolic link that another program makes between them can lead the call out.
     ///
     /// # Errors
     ///
@@ -329,7 +329,24 @@ impl Paths {
             dirs.push(self.driver.key(dir)?);
         }
         let keys: Vec<_> = own.into_iter().chain(dirs.iter().copied()).collect();
+        let held = |(dir, was): &(PathBuf, Key)| {
+            keys.contains(was) && self.driver.key(dir).ok() == Some(*was)
+        };
+        let above = |(dir, _): &(PathBuf, Key)| {
+            own.is_some_and(|own| {
+                dir.ancestors()
+                    .skip(1)
+                    .any(|up| self.driver.key(up).ok() == Some(own))
+            })
+        };
+        let passes = |folder| held(folder) || way == Way::Short && above(folder);
         for limit in self.limits.iter() {
+            // The folders come first: a hidden folder that is not there would tell
+            // whether a name outside them is there.
+            if (way != Way::Down || own.is_none()) && !limit.folders.iter().any(passes)
+            {
+                return Err(Error::Outside);
+            }
             for Hidden {
                 given,
                 resolved,
@@ -347,25 +364,6 @@ impl Paths {
                 if moved || hidden {
                     return Err(Error::Hidden);
                 }
-            }
-        }
-        if way == Way::Down && own.is_some() {
-            return Ok(());
-        }
-        for limit in self.limits.iter() {
-            let held = |(dir, was): &(PathBuf, Key)| {
-                keys.contains(was) && self.driver.key(dir).ok() == Some(*was)
-            };
-            let above = |(dir, _): &(PathBuf, Key)| {
-                own.is_some_and(|own| {
-                    dir.ancestors()
-                        .skip(1)
-                        .any(|up| self.driver.key(up).ok() == Some(own))
-                })
-            };
-            let passes = |folder| held(folder) || way == Way::Short && above(folder);
-            if !limit.folders.iter().any(passes) {
-                return Err(Error::Outside);
             }
         }
         Ok(())

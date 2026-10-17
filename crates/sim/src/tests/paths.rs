@@ -236,6 +236,28 @@ fn within_follows_a_link_outside_that_names_a_folder() {
 }
 
 #[test]
+fn within_tells_no_name_outside_beside_a_hidden_folder_that_is_not_there() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    for dir in ["/work", "/out/x"] {
+        node.make_dir(Path::new(dir));
+    }
+    node.paths().write(Path::new("/out/b.hcl"), b"x").unwrap();
+    let within = node
+        .paths()
+        .within(&[PathBuf::from("/work")], &[PathBuf::from("/out/h")])
+        .unwrap();
+    let got = [
+        "/out/x",
+        "/out/y",
+        "/out/x/a",
+        "/out/none/a",
+        "/out/b.hcl/a",
+    ]
+    .map(|path| within.read(Path::new(path), 1).map(|_| ()));
+    assert_eq!(got, [Err(Error::Outside); 5]);
+}
+
+#[test]
 fn within_checks_a_relative_first_name_that_does_not_resolve_at_its_place() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     for dir in ["/work/data", "/out"] {
