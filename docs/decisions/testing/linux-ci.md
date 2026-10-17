@@ -9,7 +9,7 @@
   - Each OS lists what fails on it, each item with the open issue that removes it: the
     crates that do not build with all their targets, the crates whose tests fail, and
     the tests that fail. The lists only shrink. The ONE NODE milestone does not close
-    while a list holds a crate.
+    while a list holds a crate or a test.
   - A crate or a test on the list of an OS counts as not run on that OS for the review
     rules: a PR that changes its code for that OS links a run of its tests there.
   - OS-specific code goes only in `os`. Each `cfg` of `os` that leaves out an OS names

@@ -628,7 +628,7 @@ fn a_token_file_shows_its_fix_until_it_holds_the_token() {
         });
         let (source, path) = given.expect("the plant names its source");
         // The node shows the canonical path of a named secret, and on macOS the rig's
-        // directory is under a link, `/var` (#2714).
+        // directory is under a link, `/var` (#2903).
         #[cfg(target_os = "macos")]
         let path = match path.strip_prefix(&plant.rig.dir) {
             Ok(rest) if named => (std::fs::canonicalize(&plant.rig.dir))
