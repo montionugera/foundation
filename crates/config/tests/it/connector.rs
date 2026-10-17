@@ -725,9 +725,19 @@ fn block() -> impl Strategy<Value = (bool, &'static str, String, String)> {
         ("", ""),
     ]);
     prop_oneof![
-        label.clone().prop_map(|label| {
-            let text = format!("channel \"{label}\" {{\n  kind = \"index\"\n}}\n");
-            (false, label, text.clone(), text)
+        (label.clone(), proptest::bool::ANY).prop_map(|(label, fill)| {
+            let text = |kind| format!("channel \"{label}\" {{\n  kind = {kind}\n}}\n");
+            let plain = text("\"index\"  ");
+            (
+                false,
+                label,
+                if fill {
+                    text("fill(\"i\")")
+                } else {
+                    plain.clone()
+                },
+                plain,
+            )
         }),
         (label, kind, node).prop_map(|(label, kind, node)| {
             let text =
@@ -738,8 +748,8 @@ fn block() -> impl Strategy<Value = (bool, &'static str, String, String)> {
 }
 
 proptest! {
-    /// At each label, with `check` on the files where each `fill` outside the blocks
-    /// of the label in any ASCII case is a plain value: a connector that `check`
+    /// At each label, with `check` on the files where each `fill` outside the
+    /// `connector` blocks of the label in any ASCII case is a plain value: a connector that `check`
     /// gives, `find` gives; a problem of `find` other than `config.no-connector`,
     /// `check` gives; and a problem of `check` in a `connector` block of the label
     /// makes `find` fail.
@@ -763,8 +773,12 @@ proptest! {
             let found = config::connector(&documents, &at);
             let plain: String = blocks
                 .iter()
-                .map(|(_, block, text, plain)| {
-                    if block.eq_ignore_ascii_case(label) { text } else { plain }
+                .map(|(connector, block, text, plain)| {
+                    if *connector && block.eq_ignore_ascii_case(label) {
+                        text
+                    } else {
+                        plain
+                    }
                 })
                 .map(String::as_str)
                 .collect();
