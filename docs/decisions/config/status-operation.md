@@ -56,11 +56,18 @@
   definitions, is the status until the supervisor writes its first frame
   (https://github.com/synnaxlabs/foundation/issues/2531). When the reader of a connector
   does not open or ends for another cause, `status` fails with `ops.channel-read`, which
-  names the connector and gives the text of the hub. `status` needs `read` on the label of a connector and on each of its status channels through the `Check` of `plan` and `apply`, and leaves out each connector without it (`laptop.architect-2`, 2026-10-15T17:09:58Z, https://github.com/synnaxlabs/foundation/issues/2608#issuecomment-6197837592, which supersedes item (b) of https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135757072). When the subject reads no connector of the node, also
-  when the node places none or uses no spec, `status` needs `read` on the name of the
-  node. With it, the reply is the output with no connector, and with no grant, it is
-  `ops.denied` with `On::Nothing`, so the reply does not tell whether the node places a
-  connector that the subject does not read (`laptop.architect`, 2026-10-13T02:42:31Z,
+  names the connector and gives the text of the hub. `status` needs `read` on the label
+  of a connector and on each of its status channels through the `Check` of `plan` and
+  `apply`, and leaves out each connector without it (`laptop.architect-2`,
+  2026-10-15T17:09:58Z,
+  https://github.com/synnaxlabs/foundation/issues/2608#issuecomment-6197837592, which
+  supersedes item (b) of
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135757072). When
+  the subject reads no connector of the node, also when the node places none or uses no
+  spec, `status` needs `read` on the name of the node. With it, the reply is the output
+  with no connector, and with no grant, it is `ops.denied` with `On::Nothing`, so the
+  reply does not tell whether the node places a connector that the subject does not read
+  (`laptop.architect`, 2026-10-13T02:42:31Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724, which
   supersedes "A spec with no connector on the node gives an empty list" of item 5 of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119;

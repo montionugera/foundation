@@ -4,13 +4,18 @@
   the tree key of a definition, such as `plant.@access` for an access policy and the
   label for a channel or a connector. The name of a member, as `mesh` gives it, is a
   name of the check too. `status` checks `read` on it when the subject reads no
-  connector of the node. `status` shows a connector only to a subject with `read` on the connector's label and on each of its status channels (`laptop.architect-2`, 2026-10-15T17:09:58Z, https://github.com/synnaxlabs/foundation/issues/2608#issuecomment-6197837592, which supersedes item (b) of https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135757072). A definition at the same name shares its grant: a grant on a
-  channel or a connector at the name of a member also gives the empty output of `status`
-  on that member. The output then shows no connector, so the shared grant shows nothing
-  that the request did not hold. Lost: a check of `<node>.@node_settings`, whose grant
-  means "may read the policy"; and a problem for a definition at the name of a member,
-  which needs a check across crates for a case that shows nothing (`laptop.architect`,
-  2026-10-13T22:16:29Z,
+  connector of the node. `status` shows a connector only to a subject with `read` on the
+  connector's label and on each of its status channels (`laptop.architect-2`,
+  2026-10-15T17:09:58Z,
+  https://github.com/synnaxlabs/foundation/issues/2608#issuecomment-6197837592, which
+  supersedes item (b) of
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135757072). A
+  definition at the same name shares its grant: a grant on a channel or a connector at
+  the name of a member also gives the empty output of `status` on that member. The
+  output then shows no connector, so the shared grant shows nothing that the request did
+  not hold. Lost: a check of `<node>.@node_settings`, whose grant means "may read the
+  policy"; and a problem for a definition at the name of a member, which needs a check
+  across crates for a case that shows nothing (`laptop.architect`, 2026-10-13T22:16:29Z,
   https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156368387).
   `plan` needs the action `plan` on each name of the files, and on each name of the spec
   in use that `plan` compares (`config::plan::planned`). A founding definition, which
