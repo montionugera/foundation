@@ -7429,35 +7429,41 @@ fn newest_after_a_failed_sync_gives_the_durable_entry() {
 }
 
 /// While a commit's sync fails, and after it failed, `newest` gives the entries of
-/// the 20 indexes that were durable before it.
+/// the 20 indexes that were durable before it, not the newer one of the same tag in
+/// the failed commit.
 #[test]
 fn newest_across_a_failed_sync_gives_the_durable_entries() {
     let (mut sim, node) = create_node(185);
     let found = sim.run_on(&node, |node, tasks| async move {
         let config = node_config(&node, tasks, DIR);
         let pool = Rc::clone(&config.pool);
+        let block = |index: u8| pool.copy(&[index; 8]).expect("a block");
         let mut slots = Slots::new();
         let buffer = Buffer::open(config, &mut slots).await.expect("opens");
-        let batch: Vec<Entry> = (1..=20)
+        let (batch, durable): (Vec<Entry>, Vec<(Slot, Stored)>) = (1..=20)
             .map(|index| {
                 let slot = slots.index(key(index));
-                let bytes = pool.alloc(8).expect("a block").freeze();
-                tagged(index, slot, Path::Live, 0, 1, bytes)
+                let byte = u8::try_from(index).expect("20 fits a u8");
+                let entry = tagged(index, slot, Path::Live, 0, 1, block(byte));
+                (entry, (slot, stored_tagged(0, 1, block(byte))))
             })
-            .collect();
+            .unzip();
         buffer.append(batch).expect("queues");
         buffer.committed().await.expect("commits");
         node.fail_file(FilePath::new(RING), Operation::Sync);
         let a = slots.index(key(1));
         buffer
-            .append([entry(1, a, Path::Live, 0, 1, None, Parts::default())])
+            .append([tagged(1, a, Path::Live, 0, 1, block(0xff))])
             .expect("queues");
-        let count = || buffer.newest(Path::Live, NonZeroU8::MIN).map(|f| f.len());
-        let during = count();
+        let during = newest(&buffer, Path::Live, 1);
         let failed = buffer.committed().await.map_err(drop);
-        (during, failed, count())
+        (durable, during, failed, newest(&buffer, Path::Live, 1))
     });
-    assert_eq!(found.expect("the run ends"), (Ok(20), Err(()), Ok(20)));
+    let (durable, during, failed, after) = found.expect("the run ends");
+    assert_eq!(
+        (during, failed, after),
+        (Ok(durable.clone()), Err(()), Ok(durable))
+    );
 }
 
 /// With no block for the entry, `newest` gives the pool error of the entry's bytes,
