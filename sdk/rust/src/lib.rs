@@ -1,16 +1,12 @@
 //! The Rust SDK: a program's session with one Foundation node.
 
-mod tasks;
-
 use std::fmt;
 use std::net::SocketAddr;
-use std::panic;
 use std::rc::Rc;
-use std::sync::mpsc;
-use std::thread::{self, JoinHandle};
+use std::sync::{Mutex, PoisonError, mpsc};
 
-use env::tasks::Tasks;
-use tokio::runtime::{Builder, LocalOptions};
+use env::tasks::{Group, Tasks};
+use env::thread::Handle;
 use tokio::sync::oneshot;
 use types::ed25519::{PrivateKey, PublicKey};
 use types::name::Name;
@@ -53,14 +49,15 @@ pub struct Subject {
 /// that thread then sends the close and ends. [`Client::close`] waits for both. A
 /// panic of the thread after a drop goes to the panic hook of the process.
 #[derive(Debug)]
-pub struct Client(Thread);
+pub struct Client(Mutex<Thread>);
 
-/// The thread that holds the session, and the sender whose drop ends it. A drop
-/// detaches the thread.
+/// The thread that holds the session, the sender whose drop ends it, and the outcomes
+/// that it sends. A drop detaches the thread.
 #[derive(Debug)]
 struct Thread {
     end: oneshot::Sender<()>,
-    handle: JoinHandle<Result<(), Error>>,
+    outcome: mpsc::Receiver<Result<(), Error>>,
+    handle: Handle,
 }
 
 impl Client {
@@ -69,44 +66,43 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// [`Error::Thread`] when the OS cannot start the client's thread,
-    /// [`Error::Bind`] when the local UDP socket cannot bind, and [`Error::Session`]
-    /// when the dial, the handshake, or the hello fails. A `node` with no address is
-    /// unreachable with no attempt.
-    ///
-    /// # Panics
-    ///
-    /// Resumes a panic of the client's thread.
+    /// [`Error::Thread`] when the client's thread or its runtime cannot start,
+    /// [`Error::Bind`] when the local UDP socket cannot bind, [`Error::Session`]
+    /// when the dial, the handshake, or the hello fails, and [`Error::Panicked`]. A
+    /// `node` with no address is unreachable with no attempt.
     pub fn connect(node: &Node, subject: Subject) -> Result<Self, Error> {
+        let thread = |e: &dyn fmt::Display| Error::Thread {
+            reason: e.to_string(),
+        };
+        let shards = os::shards().map_err(|e| thread(&e))?;
         let node = node.clone();
-        let (ready, connected) = mpsc::channel();
+        let (sender, outcome) = mpsc::channel();
         let (end, ended) = oneshot::channel();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the sdk is the env of its thread"
-        )]
-        let handle = thread::Builder::new()
-            .name("foundation-sdk".into())
-            .spawn(move || run(node, subject, ready, ended))
-            .map_err(|e| Error::Thread {
-                reason: e.to_string(),
-            })?;
-        let thread = Thread { end, handle };
+        let config = env::shards::Config {
+            name: "foundation-sdk".into(),
+            core: None,
+        };
+        let handle = shards
+            .start(config, move |tasks| {
+                run(node, subject, tasks, sender, ended)
+            })
+            .map_err(|e| thread(&e))?;
         #[expect(
             clippy::disallowed_methods,
             reason = "connect blocks its caller, which may run a Tokio runtime"
         )]
-        let outcome = connected.recv();
-        match outcome {
-            Ok(Ok(())) => Ok(Self(thread)),
-            Ok(Err(error)) => {
-                drop(thread.end());
-                Err(error)
-            }
-            Err(_) => {
-                drop(thread.end());
-                unreachable!("the thread ended with no answer and no panic")
-            }
+        let connected = outcome.recv();
+        let thread = Thread {
+            end,
+            outcome,
+            handle,
+        };
+        match connected {
+            Ok(Ok(())) => Ok(Self(Mutex::new(thread))),
+            Ok(Err(error)) => thread.end().and(Err(error)),
+            Err(_) => thread
+                .end()
+                .and_then(|()| unreachable!("the thread ended with no outcome")),
         }
     }
 }
@@ -118,23 +114,23 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// [`Error::Session`] with the cause when the session ended before the close.
-    ///
-    /// # Panics
-    ///
-    /// Resumes a panic of the client's thread.
+    /// [`Error::Session`] with the cause when the session ended before the close, and
+    /// [`Error::Panicked`].
     pub fn close(self) -> Result<(), Error> {
-        self.0.end()
+        self.0
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner)
+            .end()
     }
 }
 
 impl Thread {
-    /// Ends the thread and waits for it, and gives its outcome. Resumes its panic.
+    /// Ends the thread and waits for it. Gives the error that it sent after the
+    /// outcome that `connect` read, if any.
     fn end(self) -> Result<(), Error> {
         drop(self.end);
-        self.handle
-            .join()
-            .unwrap_or_else(|payload| panic::resume_unwind(payload))
+        self.handle.join().map_err(|_panicked| Error::Panicked)?;
+        self.outcome.try_recv().unwrap_or(Ok(()))
     }
 }
 
@@ -142,9 +138,9 @@ impl Thread {
 /// [`Client::close`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// The OS cannot start the client's thread, or the Tokio runtime of that thread.
+    /// The client's thread or its runtime cannot start.
     Thread {
-        /// The error of the OS or of Tokio.
+        /// The text of the error of `env` or `os`.
         reason: String,
     },
     /// The local UDP socket cannot bind.
@@ -152,6 +148,8 @@ pub enum Error {
     /// The session failed before the node admitted the hello, or ended before the
     /// close.
     Session(program::Error),
+    /// The client's thread panicked. The panic hook of the process got its message.
+    Panicked,
 }
 
 impl fmt::Display for Error {
@@ -162,53 +160,40 @@ impl fmt::Display for Error {
             }
             Self::Bind(error) => write!(f, "cannot bind the local UDP socket: {error}"),
             Self::Session(error) => write!(f, "{error}"),
+            Self::Panicked => write!(f, "the client thread panicked"),
         }
     }
 }
 
 impl std::error::Error for Error {}
 
-/// The body of the client's thread: connects, sends the outcome on `ready`, and holds
-/// the session until `ended` completes. It then waits for each task, so that the
-/// close of the session goes out. Gives the error that ended the session before
-/// `ended`.
-fn run(
+/// The main function of the client's thread: connects, sends the outcome, and holds
+/// the session until `ended` completes. It then sends the error that ended the
+/// session before `ended`, if any, and waits for each task, so that the close of the
+/// session goes out.
+async fn run(
     node: Node,
     subject: Subject,
-    ready: mpsc::Sender<Result<(), Error>>,
+    tasks: Tasks,
+    outcome: mpsc::Sender<Result<(), Error>>,
     ended: oneshot::Receiver<()>,
-) -> Result<(), Error> {
-    let runtime = Builder::new_current_thread()
-        .enable_io()
-        .enable_time()
-        .build_local(LocalOptions::default());
-    let runtime = match runtime {
-        Ok(runtime) => runtime,
-        Err(e) => {
-            let reason = e.to_string();
-            drop(ready.send(Err(Error::Thread { reason })));
-            return Ok(());
-        }
-    };
-    runtime.block_on(tasks::scope(|tasks| async move {
-        match connect(node, subject, tasks).await {
-            Ok(session) => {
-                if ready.send(Ok(())).is_ok() {
-                    drop(ended.await);
-                }
-                session
-                    .ended()
-                    .map_or(Ok(()), |error| Err(Error::Session(error)))
+) {
+    let group = Group::new(tasks);
+    match connect(node, subject, group.tasks().clone()).await {
+        Ok(session) => {
+            if outcome.send(Ok(())).is_ok() {
+                drop(ended.await);
             }
-            Err(error) => {
-                drop(ready.send(Err(error)));
-                Ok(())
+            if let Some(error) = session.ended() {
+                drop(outcome.send(Err(Error::Session(error))));
             }
         }
-    }))
+        Err(error) => drop(outcome.send(Err(error))),
+    }
+    group.ended().await;
 }
 
-/// A session with `node` as `subject`, on the env of the calling thread.
+/// A session with `node` as `subject`, on the drivers of `os` and `tasks`.
 async fn connect(
     node: Node,
     subject: Subject,

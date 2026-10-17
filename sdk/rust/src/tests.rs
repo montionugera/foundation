@@ -1,5 +1,9 @@
 use std::net::Ipv6Addr;
+use std::thread;
 use std::time::Duration;
+
+use env::thread::Panicked;
+use tokio::runtime::Builder;
 
 use super::*;
 
@@ -29,33 +33,49 @@ fn each_error_names_its_cause() {
     let bind = Error::Bind(transport::Error::TimedOut);
     let session = Error::Session(program::Error::Unanswered);
     assert_eq!(
-        [thread, bind, session].map(|e| e.to_string()),
+        [thread, bind, session, Error::Panicked].map(|e| e.to_string()),
         [
             "cannot start the client thread: out of memory",
             "cannot bind the local UDP socket: the peer stopped answering",
             "the node finished a stream with no answer",
+            "the client thread panicked",
         ]
     );
 }
 
-/// A thread of a client that runs `body` with the receiver of its end.
-fn thread(
+/// A client whose thread runs `body` with the receiver of its end, and sends the error
+/// that `body` gives.
+fn client(
     body: impl FnOnce(oneshot::Receiver<()>) -> Result<(), Error> + Send + 'static,
-) -> Thread {
+) -> Client {
     let (end, ended) = oneshot::channel();
+    let (sender, outcome) = mpsc::channel();
     #[expect(clippy::disallowed_methods, reason = "a thread of a client")]
-    let handle = thread::spawn(move || body(ended));
-    Thread { end, handle }
+    let thread = thread::spawn(move || {
+        if let Err(error) = body(ended) {
+            sender.send(Err(error)).unwrap();
+        }
+    });
+    let handle = Handle::new(move || {
+        thread.join().map_err(|_payload| Panicked {
+            name: "foundation-sdk".into(),
+        })
+    });
+    Client(Mutex::new(Thread {
+        end,
+        outcome,
+        handle,
+    }))
 }
 
 #[test]
 fn a_close_ends_the_thread_and_waits_for_it() {
     let (ended, end) = mpsc::channel();
-    let client = Client(thread(move |receiver| {
+    let client = client(move |receiver| {
         drop(receiver.blocking_recv());
         ended.send(()).unwrap();
         Ok(())
-    }));
+    });
     assert_eq!(client.close(), Ok(()));
     assert_eq!(end.try_recv(), Ok(()));
 }
@@ -64,30 +84,30 @@ fn a_close_ends_the_thread_and_waits_for_it() {
 fn a_close_gives_the_error_that_ended_the_session() {
     let failed = Error::Session(program::Error::Unanswered);
     let error = failed.clone();
-    let client = Client(thread(move |receiver| {
+    let client = client(move |receiver| {
         drop(receiver.blocking_recv());
         Err(error)
-    }));
+    });
     assert_eq!(client.close(), Err(failed));
 }
 
 #[test]
-#[should_panic(expected = "the session failed")]
-fn a_close_resumes_a_panic_of_the_thread() {
-    drop(Client(thread(|_| panic!("the session failed"))).close());
+fn a_close_gives_panicked_when_the_thread_panicked() {
+    let client = client(|_| panic!("the session failed"));
+    assert_eq!(client.close(), Err(Error::Panicked));
 }
 
 #[test]
 fn a_drop_ends_the_thread_and_does_not_wait() {
     let (go, wait) = mpsc::channel::<()>();
     let (ended, end) = mpsc::channel();
-    let client = Client(thread(move |receiver| {
+    let client = client(move |receiver| {
         drop(receiver.blocking_recv());
         #[expect(clippy::disallowed_methods, reason = "the thread waits for the test")]
         wait.recv().unwrap();
         ended.send(()).unwrap();
         Ok(())
-    }));
+    });
     drop(client);
     go.send(()).unwrap();
     #[expect(clippy::disallowed_methods, reason = "the test waits for the thread")]

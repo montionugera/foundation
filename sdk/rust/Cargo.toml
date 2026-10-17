@@ -10,9 +10,12 @@ block = { path = "../../crates/block" }
 env = { path = "../../crates/env" }
 os = { path = "../../crates/os", features = ["net"] }
 program = { path = "../../crates/program" }
-tokio = { workspace = true, features = ["net", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["sync"] }
 transport = { path = "../../crates/transport" }
 types = { path = "../../crates/types" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true
