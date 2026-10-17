@@ -423,7 +423,8 @@
   `point`, or `unreadable` with `reason`. A point also has `type` (as a `type` attribute
   takes it, such as `f64`), `unit`, `unit_code`, and `access` (`read`, `write`, or
   `read-write`), each `null` when the device cannot know it. Only with `values` a point
-  has `value`, `null` when the device gave none: a bool and each integer of 32 bits or
+  has `value`, `null` when the device gave none or gave a value that is not one scalar,
+  such as that of a `string` or an array point: a bool and each integer of 32 bits or
   fewer are a JSON bool and number, an `i64` or `u64` its decimal text such as
   `"9007199254740993"`, a finite float a number, a float that is not finite `"NaN"`,
   `"Infinity"`, or `"-Infinity"`, a stamp RFC 3339 text in UTC with nine fraction
