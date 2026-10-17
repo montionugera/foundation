@@ -18,8 +18,8 @@ pub struct Roots {
 
 /// Where a read of the roots looks, which `SSL_CERT_FILE` and `SSL_CERT_DIR` pick.
 /// Its text is `the OS store`, or `SSL_CERT_FILE=<path>` when the file is set and
-/// `SSL_CERT_DIR=<paths>`, the paths joined by `:`, when a directory is, with a space
-/// between the two.
+/// `SSL_CERT_DIR=<paths>`, the paths joined by the separator of the OS (`:`, or `;` on
+/// Windows), when a directory is, with a space between the two.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Source {
     /// The store of the OS: the certificate files on Linux, the keychain on macOS.
@@ -57,6 +57,9 @@ impl Source {
     }
 }
 
+/// The separator by which `std::env::split_paths` splits a list of paths.
+const SEPARATOR: char = if cfg!(windows) { ';' } else { ':' };
+
 impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (file, dirs) = match self {
@@ -72,7 +75,7 @@ impl fmt::Display for Source {
         if let Some((first, rest)) = dirs.split_first() {
             write!(f, "SSL_CERT_DIR={}", first.display())?;
             for dir in rest {
-                write!(f, ":{}", dir.display())?;
+                write!(f, "{SEPARATOR}{}", dir.display())?;
             }
         }
         Ok(())
@@ -122,6 +125,19 @@ mod tests {
             }
         );
         assert_eq!(source.to_string(), "SSL_CERT_DIR=/b:/a");
+    }
+
+    #[test]
+    fn the_directories_are_joined_by_the_separator_of_the_os() {
+        let source = Source::Paths {
+            file: None,
+            dirs: vec![PathBuf::from("a"), PathBuf::from("b")],
+        };
+        #[cfg(windows)]
+        let text = "SSL_CERT_DIR=a;b";
+        #[cfg(not(windows))]
+        let text = "SSL_CERT_DIR=a:b";
+        assert_eq!(source.to_string(), text);
     }
 
     #[test]
