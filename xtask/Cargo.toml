@@ -8,6 +8,7 @@ publish = false
 comrak.workspace = true
 semver = "1"
 serde_json = "1"
+syn.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
