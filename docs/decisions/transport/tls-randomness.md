@@ -15,5 +15,7 @@
   keys each call of aws-lc that draws by its file and function, and `AWS_LC`, the
   functions that any file may call, holds none that draws. OK from `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6230838999,
-  2026-10-17 06:46 UTC). The person: pending
-  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6231143169).
+  2026-10-17 06:46 UTC). The person, 2026-10-17 at about 16:08 UTC, through
+  `laptop.monitor`: "Yes", to this extension with the draws above and to the exception
+  of architecture rule 2 of `CLAUDE.md` for the OPC UA secure channel
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6236293785).
