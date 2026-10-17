@@ -549,4 +549,7 @@
   A `next` below the `from` of the last `Next::Disk`, or below the end of a frame that
   `fill` gave, is a defect of the caller, and `reached` panics (`laptop.architect`,
   2026-10-17T04:33:05Z:
-  https://github.com/synnaxlabs/foundation/pull/2986#issuecomment-6229674613).
+  https://github.com/synnaxlabs/foundation/pull/2986#issuecomment-6229674613). A frame
+  given to `fill` that ends at or below that seq is a defect of the caller too, and
+  `fill` panics (`laptop.architect`, 2026-10-17T04:51:06Z:
+  https://github.com/synnaxlabs/foundation/pull/2986#issuecomment-6229838366).

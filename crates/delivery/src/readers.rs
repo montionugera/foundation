@@ -587,7 +587,9 @@ impl Readers {
     ///
     /// # Panics
     ///
-    /// If this `Readers` never gave `key`, or `set` is not the frame's key set.
+    /// If this `Readers` never gave `key`, `set` is not the frame's key set, or the
+    /// session is on disk and `seq` ends at or below the `from` of its last
+    /// [`Next::Disk`] or the end of a frame that [`Readers::fill`] gave it.
     pub fn fill(
         &mut self,
         key: complete::Key,
@@ -612,13 +614,16 @@ impl Readers {
             flow.lag = Lag::None;
             return false;
         }
+        assert!(
+            seq.end > from,
+            "complete session {key} got a frame to seq {}, at or below seq {from}",
+            seq.end
+        );
         if !flow.pay(&frame, set, frame.charge(), &seq) {
             return false;
         }
         flow.waiting.push_back(frame);
-        flow.lag = Lag::Disk {
-            from: from.max(seq.end),
-        };
+        flow.lag = Lag::Disk { from: seq.end };
         flow.credit.left() != 0
     }
 
@@ -2600,6 +2605,46 @@ pub(super) mod tests {
         }
 
         #[test]
+        fn waits_with_little_credit_after_a_miss_until_it_acks_a_paid_frame() {
+            let frames = Frames::new(6);
+            let mut readers = Readers::new(0);
+            let key = opened(&mut readers, 0, 3);
+            for n in 0..5 {
+                readers.queue(&frames.frame(n + 1), &frames.set, n..n + 1);
+            }
+            assert_eq!(released(&mut readers, 5), [key]);
+            assert_eq!(taken(&mut readers, key), [1, 2, 3]);
+            readers.grant(key, 4 * CHARGE);
+            assert_eq!(taken(&mut readers, key), [4]);
+            readers.queue(&frames.frame(6), &frames.set, 5..6);
+            assert_eq!(released(&mut readers, 6), [key]);
+            readers.ack(key, live(3)).expect("forward");
+            readers.grant(key, 5 * CHARGE);
+            assert_eq!(taken(&mut readers, key), Vec::<u64>::new());
+            readers.ack(key, live(4)).expect("forward");
+            assert_eq!(read(&mut readers, key), (vec![], 4));
+        }
+
+        #[test]
+        fn waits_with_little_credit_after_a_miss_until_it_acks_a_released_frame() {
+            let frames = Frames::new(5);
+            let mut readers = Readers::new(0);
+            let key = opened(&mut readers, 0, 3);
+            for n in 0..4 {
+                readers.queue(&frames.frame(n + 1), &frames.set, n..n + 1);
+            }
+            assert_eq!(released(&mut readers, 4), [key]);
+            readers.queue(&frames.frame(5), &frames.set, 4..5);
+            assert_eq!(released(&mut readers, 5), []);
+            assert_eq!(taken(&mut readers, key), [1, 2, 3]);
+            readers.ack(key, live(2)).expect("forward");
+            readers.grant(key, 4 * CHARGE);
+            assert_eq!(taken(&mut readers, key), Vec::<u64>::new());
+            readers.ack(key, live(3)).expect("forward");
+            assert_eq!(read(&mut readers, key), (vec![], 3));
+        }
+
+        #[test]
         fn reads_with_little_credit_past_a_gap_after_a_miss_once_it_acked() {
             let frames = Frames::new(5);
             let mut readers = Readers::new(0);
@@ -3475,6 +3520,21 @@ pub(super) mod tests {
             assert_eq!(read(&mut readers, key), (vec![], 0));
             assert!(fill(&mut readers, &frames, key, 1, 0..2));
             readers.reached(key, 1, 4);
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "complete session 0 got a frame to seq 2, at or below seq 2"
+        )]
+        fn fill_at_or_below_the_frames_it_gave_panics() {
+            let frames = Frames::new(3);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            readers.queue(&frames.frame(2), &frames.set, 2..4);
+            let key = opened(&mut readers, 0, 10);
+            assert_eq!(read(&mut readers, key), (vec![], 0));
+            assert!(fill(&mut readers, &frames, key, 1, 0..2));
+            fill(&mut readers, &frames, key, 1, 0..2);
         }
 
         #[test]
