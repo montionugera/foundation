@@ -313,9 +313,12 @@ impl Readers {
 
     /// Starts a complete session with credit for `limit_bytes` since it opens, its
     /// first grant, that `charge` charges for each frame. The open session of the same
-    /// named reader, in either mode, is taken over. A session that starts below a live
-    /// frame that memory no longer holds reads from disk: [`Readers::take`] gives
-    /// [`Next::Disk`] at once, and no [`Readers::release`] names it.
+    /// named reader, in either mode, is taken over. A presented live position past the
+    /// live tail, the end of the last frame given to [`Readers::queue`], takes the live
+    /// tail: a restart or a shed can lose those seqs, and new frames take them again. A
+    /// session that starts below a live frame that memory no longer holds reads from
+    /// disk: [`Readers::take`] gives [`Next::Disk`] at once, and no
+    /// [`Readers::release`] names it.
     ///
     /// # Panics
     ///
@@ -343,7 +346,13 @@ impl Readers {
             Start::Resume {
                 presented,
                 otherwise,
-            } => resume(presented, stored, otherwise),
+            } => {
+                let presented = presented.map(|p| Position {
+                    live: p.live.min(self.queued),
+                    ..p
+                });
+                resume(presented, stored, otherwise)
+            }
         };
         let key = complete::Key(self.next_complete);
         self.next_complete += 1;
@@ -1328,7 +1337,7 @@ pub(super) mod tests {
 
         #[test]
         fn resume_takes_the_presented_position() {
-            let mut readers = Readers::new(0);
+            let mut readers = Readers::new(10);
             left(&mut readers, "a", live(7), 1);
             let start = Start::Resume {
                 presented: Some(live(9)),
@@ -1340,6 +1349,29 @@ pub(super) mod tests {
                     .position,
                 live(9)
             );
+        }
+
+        #[test]
+        fn resume_takes_the_live_tail_for_a_presented_position_past_it() {
+            let mut readers = Readers::new(4);
+            left(&mut readers, "a", live(2), 1);
+            let start = Start::Resume {
+                presented: Some(both(9, 5)),
+                otherwise: both(0, 0),
+            };
+            let opened = readers.open(named("a", 10), start, 0, Charge::Whole);
+            assert_eq!(opened.position, both(4, 5));
+        }
+
+        #[test]
+        fn resume_keeps_a_presented_position_at_the_live_tail() {
+            let mut readers = Readers::new(4);
+            let start = Start::Resume {
+                presented: Some(live(4)),
+                otherwise: live(0),
+            };
+            let opened = readers.open(named("a", 10), start, 0, Charge::Whole);
+            assert_eq!(opened.position, live(4));
         }
 
         #[test]
@@ -1371,7 +1403,7 @@ pub(super) mod tests {
 
         #[test]
         fn resume_prefers_presented_backfill_to_the_position_at_this_home() {
-            let mut readers = Readers::new(0);
+            let mut readers = Readers::new(10);
             left(&mut readers, "a", both(7, 3), 1);
             let start = Start::Resume {
                 presented: Some(both(9, 5)),
@@ -1387,7 +1419,7 @@ pub(super) mod tests {
 
         #[test]
         fn resume_takes_backfill_from_this_home_when_the_presented_has_none() {
-            let mut readers = Readers::new(0);
+            let mut readers = Readers::new(10);
             left(&mut readers, "a", both(7, 3), 1);
             let start = Start::Resume {
                 presented: Some(live(9)),
@@ -1438,7 +1470,7 @@ pub(super) mod tests {
 
         #[test]
         fn takes_the_presented_position() {
-            let mut readers = Readers::new(0);
+            let mut readers = Readers::new(10);
             let old = readers
                 .open(named("a", 10), resume(live(0)), 0, Charge::Whole)
                 .key;
@@ -2458,6 +2490,22 @@ pub(super) mod tests {
             readers.queue(&frames.frame(3), &frames.set, 4..6);
             assert_eq!(released(&mut readers, 6), [key]);
             assert_eq!(taken(&mut readers, key), [2, 3]);
+        }
+
+        #[test]
+        fn gives_a_reader_presented_past_the_live_tail_the_frames_at_the_seqs_after_it()
+        {
+            let frames = Frames::new(2);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..3);
+            let start = Start::Resume {
+                presented: Some(live(9)),
+                otherwise: live(0),
+            };
+            let key = readers.open(named("a", 10), start, 10, Charge::Whole).key;
+            readers.queue(&frames.frame(2), &frames.set, 3..5);
+            assert_eq!(released(&mut readers, 5), [key]);
+            assert_eq!(taken(&mut readers, key), [2]);
         }
 
         #[test]
@@ -4122,6 +4170,8 @@ pub(super) mod tests {
         /// still hold after their close.
         #[derive(Default)]
         struct Model {
+            /// The live tail of the readers.
+            tail: u64,
             open: BTreeMap<complete::Key, (Option<usize>, Position, i64)>,
             closed: BTreeMap<usize, (Position, i64, i64)>,
             /// Each key ever opened.
@@ -4160,6 +4210,10 @@ pub(super) mod tests {
                         presented,
                         otherwise,
                     } => {
+                        let presented = presented.map(|p| Position {
+                            live: p.live.min(self.tail),
+                            ..p
+                        });
                         let known = [presented, stored];
                         let first = known.iter().flatten().next();
                         Position {
@@ -4373,9 +4427,12 @@ pub(super) mod tests {
             assert!(readers.deadline().is_none_or(|end| at(now) < end));
         }
 
-        fn check(steps: Vec<(i64, Input)>, flushed: bool) {
-            let mut readers = Readers::new(0);
-            let mut model = Model::default();
+        fn check(steps: Vec<(i64, Input)>, flushed: bool, tail: u64) {
+            let mut readers = Readers::new(tail);
+            let mut model = Model {
+                tail,
+                ..Model::default()
+            };
             let mut last = Vec::new();
             let mut record = |readers: &mut Readers| {
                 if readers.changed() {
@@ -5162,8 +5219,9 @@ pub(super) mod tests {
             fn follow_the_delivery_rules(
                 steps in proptest::collection::vec((0..10_i64, input()), 0..60),
                 flushed in any::<bool>(),
+                tail in 0..40_u64,
             ) {
-                check(steps, flushed);
+                check(steps, flushed, tail);
             }
         }
     }
