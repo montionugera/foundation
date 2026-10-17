@@ -11,7 +11,8 @@
 //! | 3 | RLE | run count (`u16`) | the run values, then the run lengths (`u16`) |
 //! | 4 | ALP | reference, `e`, `f`, exception count (`u16`) | below |
 //!
-//! Fields are samples unless marked. Sample arithmetic is modulo 2^b, where b is the
+//! Fields are samples unless marked. Each field, sample, and `u16` is little-endian. A
+//! vector holds at most 1024 samples. Sample arithmetic is modulo 2^b, where b is the
 //! bit count of a sample. Delta packs one residual for each sample after the first.
 //! Packed values are least significant bit first. A float vector of tag 1 to 3 holds
 //! the sortable integers of its samples, in unsigned order: a float with its sign bit
@@ -20,13 +21,14 @@
 //! ALP is for `f32` and `f64` only. The exponent `e` and the factor `f` are `u8`. The
 //! body is `n - reference` for each sample, packed and padded to the sample width, then
 //! one value (a sample) for each exception, then one position (`u16`) for each. The
-//! reference and each `n` are signed integers of the sample width. Sample `i` is `n` as
-//! the sample's float type, times `P[f]`, times `N[e]`, each step rounded to nearest,
-//! with no fused multiply-add, where `n` is `reference + residual i`. `P[i]` is
-//! `10^i`, and `N[i]` is the float nearest to `10^-i`. Then each exception value
-//! replaces the sample at its position. `e` is at most 18 for `f64` and 10 for `f32`,
-//! `f` is at most `e`, the exception count is at most the sample count, and each
-//! position is under it.
+//! reference and each `n` are signed integers of the sample width. Sample `i` is `n` in
+//! the sample's float type `F`, times `P[f]`, times `N[e]`, where `n` is
+//! `reference + residual i`. The conversion and each product round to nearest, ties to
+//! even, with no fused multiply-add. `P[i]` and `N[i]` are the values of `F` nearest to
+//! `10^i` and `10^-i`, each rounded once from the exact value: for `f32`, not the `f64`
+//! value rounded again. Then each exception value replaces the sample at its position.
+//! `e` is at most 18 for `f64` and 10 for `f32`, `f` is at most `e`, and the positions
+//! strictly increase and are under the sample count.
 
 use std::{iter, mem};
 
@@ -318,15 +320,6 @@ pub(crate) fn read(
     );
     let width = layout.width();
     let plan = header(bytes, layout, index)?;
-    if let Plan::Alp { exceptions, .. } = plan
-        && exceptions > count
-    {
-        return Err(Error::Exceptions {
-            vector: index,
-            exceptions,
-            count,
-        });
-    }
     let len = plan.len(count, width);
     let (vector, rest) = bytes.split_at_checked(len).ok_or(Error::Truncated {
         vector: index,
@@ -361,15 +354,17 @@ pub(crate) fn read(
         let positions = body
             .split_at(packed.strict_add(exceptions.strict_mul(width)))
             .1;
+        let mut least = 0;
         for position in positions.as_chunks::<2>().0.iter().take(exceptions) {
             let position = usize::from(u16::from_le_bytes(*position));
-            if position >= count {
+            if position < least || position >= count {
                 return Err(Error::Position {
                     vector: index,
                     position,
                     count,
                 });
             }
+            least = position.strict_add(1);
         }
     }
     Ok((Vector { plan, body }, rest))

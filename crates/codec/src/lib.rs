@@ -48,10 +48,11 @@ pub fn max_len(data_type: Type, len: usize) -> usize {
     Shape::of(data_type).max_len(len)
 }
 
-/// Encodes the series of one channel. It keeps the ALP exponent pairs that its float
-/// series pick, so keep one encoder for each channel across its series. Each encoder
-/// writes bytes that decode to the same samples. A new one searches the pairs again,
-/// which costs encode time.
+/// Encodes the series of one channel. It keeps the ALP exponent pairs that its
+/// float series pick, so keep one encoder for each channel across its series: a
+/// new one searches the pairs again, which costs encode time. The bytes of a
+/// series can change with the series that the encoder saw before, but they always
+/// decode to the same samples.
 #[derive(Debug)]
 pub struct Encoder {
     shape: Shape,
@@ -996,16 +997,8 @@ pub enum Error {
         /// The largest exponent the sample type allows.
         max: u8,
     },
-    /// An ALP vector holds more exceptions than samples.
-    Exceptions {
-        /// The index of the vector in the series.
-        vector: usize,
-        /// The exception count.
-        exceptions: usize,
-        /// The sample count of the vector.
-        count: usize,
-    },
-    /// An exception position of an ALP vector is not under its sample count.
+    /// An exception position of an ALP vector is not under its sample count, or not
+    /// over the position before it.
     Position {
         /// The index of the vector in the series.
         vector: usize,
@@ -1057,7 +1050,6 @@ pub enum Error {
 }
 
 impl fmt::Display for Error {
-    #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Truncated {
@@ -1094,15 +1086,6 @@ impl fmt::Display for Error {
                 "vector {vector} has exponent {exponent} and factor {factor}, but the \
                  exponent is at most {max} and the factor at most the exponent"
             ),
-            Self::Exceptions {
-                vector,
-                exceptions,
-                count,
-            } => write!(
-                f,
-                "vector {vector} has {exceptions} exceptions, more than its {count} \
-                 samples"
-            ),
             Self::Position {
                 vector,
                 position,
@@ -1110,7 +1093,7 @@ impl fmt::Display for Error {
             } => write!(
                 f,
                 "vector {vector} has an exception at {position}, not under its {count} \
-                 samples"
+                 samples or not over the position before it"
             ),
             Self::Trailing { extra } => {
                 write!(f, "bytes after the last vector: {extra}")
@@ -1971,8 +1954,8 @@ mod tests {
             }
         }
 
-        /// Keeps the pair of 99 vectors of quarters, so a vector of sixteenths that comes
-        /// before the next search of all pairs does not use ALP.
+        /// Keeps the pair of 99 vectors of quarters, so a vector of sixteenths that
+        /// comes before the next search of all pairs does not use ALP.
         #[test]
         fn searches_the_pairs_again_after_102_400_values() {
             for scalar in FLOATS {
@@ -2002,9 +1985,9 @@ mod tests {
         }
 
         proptest! {
-            /// An `f64` decimal decodes exactly under some pair. An `f32` one often does
-            /// not, as `10^-e` in 4 bytes is too far from its decimal, so it may keep the
-            /// integer codecs.
+            /// An `f64` decimal decodes exactly under some pair. An `f32` one often
+            /// does not, as `10^-e` in 4 bytes is too far from its decimal, so it may
+            /// keep the integer codecs.
             #[test]
             fn decimals_as_alp_smaller_than_the_integer_codecs(
                 scalar in select(&FLOATS),
@@ -2226,8 +2209,8 @@ mod tests {
             let samples = [1.5, f64::NAN, 1.5].map(f64::to_le_bytes).concat();
             accepts(Scalar::F64, 3, &bytes, &samples);
             let mut bytes = alp(4, 0, [10, 3, 2, 0]);
-            bytes.extend([1, 2, 3, 4, 5, 6, 7, 8, 1, 0, 0, 0]);
-            accepts(Scalar::F32, 2, &bytes, &[5, 6, 7, 8, 1, 2, 3, 4]);
+            bytes.extend([1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0]);
+            accepts(Scalar::F32, 2, &bytes, &[1, 2, 3, 4, 5, 6, 7, 8]);
         }
 
         #[test]
@@ -2267,23 +2250,23 @@ mod tests {
         }
 
         #[test]
-        fn rejects_alp_exceptions_past_the_count() {
-            let mut bytes = alp(8, 0, [0, 0, 3, 0]);
-            bytes.extend([0; 32]);
-            let exceptions = Error::Exceptions {
+        fn rejects_alp_positions_out_of_order_or_past_the_count() {
+            let position = |position, count| Error::Position {
                 vector: 0,
-                exceptions: 3,
-                count: 2,
+                position,
+                count,
             };
-            check(Scalar::F64, 2, &bytes, &exceptions);
+            let mut bytes = alp(8, 0, [0, 0, 3, 0]);
+            bytes.extend([0; 24]);
+            bytes.extend([0, 0, 1, 0, 1, 0, 0, 0]);
+            check(Scalar::F64, 2, &bytes, &position(1, 2));
+            let mut bytes = alp(8, 0, [0, 0, 2, 0]);
+            bytes.extend([0; 16]);
+            bytes.extend([1, 0, 0, 0, 0, 0, 0, 0]);
+            check(Scalar::F64, 3, &bytes, &position(0, 3));
             let mut bytes = alp(4, 0, [0, 0, 2, 0]);
             bytes.extend([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0]);
-            let position = Error::Position {
-                vector: 0,
-                position: 2,
-                count: 2,
-            };
-            check(Scalar::F32, 2, &bytes, &position);
+            check(Scalar::F32, 2, &bytes, &position(2, 2));
         }
 
         #[test]
@@ -2423,20 +2406,13 @@ mod tests {
                      18 and the factor at most the exponent",
                 ),
                 (
-                    Error::Exceptions {
-                        vector: 1,
-                        exceptions: 3,
-                        count: 2,
-                    },
-                    "vector 1 has 3 exceptions, more than its 2 samples",
-                ),
-                (
                     Error::Position {
                         vector: 0,
                         position: 2,
                         count: 2,
                     },
-                    "vector 0 has an exception at 2, not under its 2 samples",
+                    "vector 0 has an exception at 2, not under its 2 samples or not \
+                     over the position before it",
                 ),
             ] {
                 assert_eq!(error.to_string(), text);
