@@ -26,6 +26,7 @@ pub enum Source {
     #[default]
     Store,
     /// The file and the directories that the environment names, in place of the store.
+    /// It holds a file or at least one directory.
     Paths {
         /// The path of `SSL_CERT_FILE`, when it is set.
         file: Option<PathBuf>,
