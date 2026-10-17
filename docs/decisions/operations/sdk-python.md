@@ -39,6 +39,13 @@
   thread gives `PanicException`, not an abort (`laptop.architect-2`,
   2026-10-17T18:39:00Z,
   https://github.com/synnaxlabs/foundation/issues/3059#issuecomment-6238735903). One
+  Rust test runs the suite `sdk/python/tests` in an embedded interpreter on the build
+  of the crate, so `cargo test` and `cargo mutants` test the module. It starts the
+  binary at `FOUNDATION_NODE`, and the crate has no edge to `node`. The crate does not
+  turn on the pyo3 feature `extension-module`, since maturin sets
+  `PYO3_BUILD_EXTENSION_MODULE` (`laptop.architect-2`, 2026-10-17T21:38:45Z,
+  https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241548882 and
+  https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241559479). One
   `abi3` wheel for each platform takes Python 3.11 and later, and does not install on
   free-threaded Python. The Linux wheels are `manylinux_2_28`, with no `musllinux`
   wheel. The gate runs against a release node built in the same run. `laptop.monitor`

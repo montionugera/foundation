@@ -15,6 +15,8 @@ use types::name::Name;
 
 #[cfg(feature = "sim")]
 mod sim;
+#[cfg(test)]
+mod tests;
 
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
