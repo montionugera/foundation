@@ -80,12 +80,11 @@
   of these cases (`laptop.architect-2`, 2026-10-13T22:11:03Z,
   https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156268301). When
   #1028 checks each open of the hub, the check of the status channels moves there,
-  `serve` leaves out each connector whose open the hub refuses, and the check on the
-  node stays in `serve`, as it opens no reader (`laptop.architect-2`,
+  `serve` leaves out each connector whose open the hub refuses, and the checks of the label of a connector and of the node stay in `serve`, as they open no reader (`laptop.architect-2`,
   2026-10-13T22:33:54Z,
   https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156645922, which
   supersedes "and leaves `serve`" of item 5 of
-  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119).
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119; the check of the label, `laptop.architect-2`, 2026-10-17T03:32:26Z, https://github.com/synnaxlabs/foundation/pull/2979#issuecomment-6229081007).
   Deferred to https://github.com/synnaxlabs/foundation/issues/2530: the time of the next
   restart and MCP. Lost: `serve` replies with the text, so that `--json` and MCP each
   need a second reply; `status` asks the supervisors, a second source of status with its
