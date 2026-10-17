@@ -126,8 +126,12 @@ pub fn find(documents: &[Document], name: &Name) -> Result<Connector, Vec<Diagno
     match (kind, node, config) {
         (Ok(kind), Ok(node), Ok(config)) => Ok(Connector::new(kind, node, config)),
         (kind, node, config) => {
-            let problems = [kind.err(), node.err(), config.err()];
-            Err(problems.into_iter().flatten().collect())
+            let mut problems: Vec<_> = [kind.err(), node.err(), config.err()]
+                .into_iter()
+                .flatten()
+                .collect();
+            crate::sort(&mut problems);
+            Err(problems)
         }
     }
 }

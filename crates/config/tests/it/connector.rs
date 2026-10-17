@@ -642,6 +642,18 @@ fn names_no_connector_that_repeats_a_channel_in_the_fix_of_a_missing_name() {
 }
 
 #[test]
+fn gives_the_problems_of_kind_and_node_in_the_order_of_the_text() {
+    let text = "connector \"plant\" {\n  node = 2\n  kind = 1\n}\n";
+    let refused = refused(text, "plant");
+    let checked = problems(text);
+    assert_eq!(refused, checked);
+    assert_eq!(
+        refused.iter().map(|problem| problem.1).collect::<Vec<_>>(),
+        [Some(29), Some(40)]
+    );
+}
+
+#[test]
 fn finds_a_connector_beside_a_reserved_connector_of_another_name() {
     let text = "connector \"@other\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n\
                 connector \"plant\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n";
