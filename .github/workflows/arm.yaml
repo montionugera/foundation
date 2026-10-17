@@ -76,10 +76,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Node
-        run: |
+      - run: |
           echo "PYO3_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
-          cargo build -p node --bin foundation
           echo "FOUNDATION_NODE=$PWD/target/debug/foundation" >> "$GITHUB_ENV"
       - name: Test
         run: cargo test --workspace

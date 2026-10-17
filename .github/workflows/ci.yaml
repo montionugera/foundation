@@ -224,14 +224,16 @@ jobs:
       - if: env.RUST != 'false'
         uses: Swatinem/rust-cache@v2
       # The tests of `sdk-python` embed CPython 3.11 or later, which needs its shared
-      # library, and start the node at `FOUNDATION_NODE`. Windows leaves out the SDK
-      # crates (#682, #2955).
+      # library, and start the node at `FOUNDATION_NODE`, which `Test` builds for the
+      # tests of `node`. Windows builds no node (#2968, #682, #2955, #2956, #477, #2957).
       - if: env.RUST != 'false' && runner.os != 'Windows'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - if: env.RUST != 'false' && runner.os != 'Windows'
-        run: echo "PYO3_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
+        run: |
+          echo "PYO3_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
+          echo "FOUNDATION_NODE=$PWD/target/debug/foundation" >> "$GITHUB_ENV"
       - name: Format
         if: env.RUST != 'false' && runner.os == 'Linux'
         run: |
@@ -254,11 +256,6 @@ jobs:
       - name: Oracles
         if: "!cancelled() && env.RUST != 'false' && runner.os == 'Linux'"
         run: cargo xtask oracles
-      - name: Node
-        if: "!cancelled() && env.RUST != 'false' && runner.os != 'Windows'"
-        run: |
-          cargo build -p node --bin foundation --all-features
-          echo "FOUNDATION_NODE=$PWD/target/debug/foundation" >> "$GITHUB_ENV"
       - name: Test
         if: "!cancelled() && env.RUST != 'false'"
         run: >-
@@ -484,22 +481,27 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0
       # As in `check`. cargo-mutants runs only the tests of the mutated crate, so only a
-      # diff in `sdk/python` builds the node.
+      # shard with a mutant in `sdk/python` builds the node.
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Node
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
+          git diff origin/main...HEAD > "$RUNNER_TEMP/diff.patch"
           echo "PYO3_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
           echo "FOUNDATION_NODE=$PWD/target/debug/foundation" >> "$GITHUB_ENV"
-          git diff --quiet origin/main...HEAD -- sdk/python ||
+          mutants=$(cargo mutants --in-diff "$RUNNER_TEMP/diff.patch" --list \
+            --shard "$SHARD/8" --sharding round-robin)
+          if printf '%s\n' "$mutants" | grep -q '^sdk/python/'; then
             cargo build -p node --bin foundation
+          fi
       - name: Mutants in the diff
         env:
           TMPDIR: ${{ runner.temp }}
           SHARD: ${{ matrix.shard }}
         run: |
-          git diff origin/main...HEAD > "$RUNNER_TEMP/diff.patch"
           # A mutant can allocate in a loop. The cap leaves 3 GiB of the VM to the
           # runner agent, so the kernel kills the test, and the job reports the mutant.
           # The default OOMPolicy=stop would also stop cargo-mutants at that kill. A
