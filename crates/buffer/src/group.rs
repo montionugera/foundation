@@ -162,24 +162,20 @@ impl Group {
         let len = batch.iter().map(|entry| entry.parts.bytes()).sum::<usize>();
         let layout = writer.layout();
         layout.check(count, parts, len).map_err(Rejected::Large)?;
-        let over = batch
-            .iter()
-            .map(|entry| entry.parts.bytes())
-            .find(|&bytes| bytes > block_max);
-        if let Some(len) = over {
-            return Err(Rejected::Large(Limit::Block {
-                len,
-                max: block_max,
-            }));
-        }
         let max = Layout::ENTRY_MAX_MIN;
-        let over = batch
-            .iter()
-            .filter(|entry| entry.tag != 0)
-            .map(|entry| entry.parts.bytes())
-            .find(|&bytes| bytes > max);
-        if let Some(len) = over {
-            return Err(Rejected::Large(Limit::Tagged { len, max }));
+        let over = batch.iter().find_map(|entry| {
+            let len = entry.parts.bytes();
+            if len > block_max {
+                Some(Limit::Block {
+                    len,
+                    max: block_max,
+                })
+            } else {
+                (entry.tag != 0 && len > max).then_some(Limit::Tagged { len, max })
+            }
+        });
+        if let Some(limit) = over {
+            return Err(Rejected::Large(limit));
         }
         layout
             .check(
