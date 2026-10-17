@@ -134,7 +134,7 @@ struct Flow {
     credit: Credit,
     /// The end seq of the last frame given to the session, or its position at the
     /// open. It is the end of the last frame taken when `waiting` is empty.
-    given: u64,
+    end: u64,
     cost: complete::Cost,
     /// The frames released to the session and not taken, oldest first.
     waiting: VecDeque<Frame>,
@@ -143,14 +143,14 @@ struct Flow {
 }
 
 impl Flow {
-    /// Spends the charge of `frame`, of key set `set` and with the charge `whole`, for
-    /// samples that end at seq `end`, and records `end` as `given`. Returns `false`,
-    /// and spends and records nothing, when no credit is left.
+    /// Spends the charge of `frame`, of key set `set` and with the charge `whole`, and
+    /// records `end`, the end seq of its samples, as the end of the last frame given.
+    /// Returns `false`, and spends and records nothing, when no credit is left.
     fn pay(&mut self, frame: &Frame, set: &KeySet, whole: u64, end: u64) -> bool {
         if !self.credit.spend(self.cost.charge(frame, set, whole)) {
             return false;
         }
-        self.given = end;
+        self.end = end;
         true
     }
 }
@@ -327,7 +327,7 @@ impl Readers {
         self.complete.push(session);
         self.flows.push(Flow {
             credit: Credit::new(limit_bytes),
-            given: position.live,
+            end: position.live,
             cost: complete::Cost::new(charge),
             waiting: VecDeque::with_capacity(WAITING),
             lag: if position.live < self.released {
@@ -618,14 +618,16 @@ impl Readers {
             return false;
         };
         let flow = &mut self.flows[i];
-        let Lag::Disk { from } = flow.lag else {
+        let Lag::Disk {
+            from: Mark { seq: from, .. },
+        } = flow.lag
+        else {
             return false;
         };
         assert!(
-            seq.end > from.seq,
-            "complete session {key} got a frame to seq {}, at or below seq {}",
+            seq.end > from,
+            "complete session {key} got a frame to seq {}, at or below seq {from}",
             seq.end,
-            from.seq
         );
         if seq.start >= self.released {
             flow.lag = Lag::None;
@@ -722,7 +724,7 @@ impl Readers {
             Lag::Disk { from } => {
                 // A read takes the same time for one frame as for many, so a session
                 // that gets its credit back one frame at a time waits for half of it.
-                let acked = self.complete[i].position.live >= flow.given;
+                let acked = self.complete[i].position.live >= flow.end;
                 let enough = flow.credit.half_left() || acked;
                 return if flow.credit.left() == 0 || !enough {
                     Next::Empty
@@ -1750,6 +1752,15 @@ pub(super) mod tests {
             let _: complete::Opened =
                 readers.open(Reader::Unnamed, Start::At(live(0)), 0, Charge::Whole);
             readers.reached(complete::Key(1), Mark::at(0), 1);
+        }
+
+        #[test]
+        #[should_panic(expected = "complete session 1 was never open")]
+        fn on_disk_panics_on_a_session_never_open() {
+            let mut readers = Readers::new(0);
+            let _: complete::Opened =
+                readers.open(Reader::Unnamed, Start::At(live(0)), 0, Charge::Whole);
+            assert!(readers.on_disk(complete::Key(1)), "panics before");
         }
 
         #[test]
