@@ -446,8 +446,9 @@
   `laptop.monitor` accepted kinds (e) and (f) with two conditions on (e), which follow
   the proto3 JSON mapping: an `i64` or `u64` is text, since a JSON number past 2^53
   loses digits in JavaScript and in many JSON tools with no error, and a float that is
-  not finite is `"Infinity"` or `"-Infinity"`, since JavaScript `Number("inf")` gives
-  NaN (as `laptop.architect-2` records, 2026-10-17T22:24:28Z,
+  not finite is `"NaN"`, `"Infinity"`, or `"-Infinity"`, not `"inf"` or `"-inf"`, since
+  JavaScript `Number("inf")` gives NaN (as `laptop.architect-2` records,
+  2026-10-17T22:24:28Z,
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6242201049). One
   function of `ops` maps a value to JSON, so each later output with values takes this
   rule.
