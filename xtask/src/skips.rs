@@ -103,6 +103,16 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_files_under_crates_and_bench() {
+        assert_eq!(
+            check(&crate::fixture()),
+            Err(["crates/a/src/skips.rs:3", "bench/b/src/skips.rs:1"]
+                .map(refused)
+                .into())
+        );
+    }
+
+    #[test]
     fn refuses_each_ignore_on_an_os_whose_reason_does_not_start_with_only() {
         let text = "\
 #[cfg_attr(not(target_os = \"linux\"), ignore = \"needs GNU nm\")]
