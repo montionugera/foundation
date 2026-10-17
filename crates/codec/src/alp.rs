@@ -4,7 +4,7 @@
 use std::cmp::Reverse;
 
 use crate::vector::{self, Plan};
-use crate::{bits, int, word};
+use crate::{Error, VECTOR_LEN, bits, int, word};
 
 /// `10^i` for floats of 8 bytes. Each is exact.
 const POWERS_64: [f64; 19] = [
@@ -280,7 +280,7 @@ impl Stats {
 
     /// The bits of the samples in an ALP body, without padding.
     fn size<const W: usize>(&self, count: usize) -> usize {
-        let exception = usize::from(word::bits(W)).strict_add(16);
+        let exception = exception_len(W).strict_mul(8);
         count
             .strict_mul(usize::from(self.bits()))
             .strict_add(self.exceptions.strict_mul(exception))
@@ -313,7 +313,7 @@ impl Pairs {
         let mut picked = [0; RUN * 8];
         let picked = pick::<W>(chunk, picked.split_at_mut(RUN.strict_mul(W)).0);
         let (pair, size) = self.best::<W>(picked);
-        let estimate = vector::header_len(W.strict_add(4), W).strict_add(
+        let estimate = vector::header_len(Header::fields(W), W).strict_add(
             size.strict_mul(count)
                 .div_ceil(picked.len().div_euclid(W).strict_mul(8)),
         );
@@ -321,12 +321,12 @@ impl Pairs {
             return best;
         }
         let stats = Stats::of::<W>(chunk, pair);
-        let alp = Plan::Alp {
+        let alp = Plan::Alp(Header {
             reference: stats.reference::<W>(),
             bits: stats.bits(),
             pair,
             exceptions: stats.exceptions,
-        };
+        });
         if alp.len(count, W) < limit && alp.saves(count, W) {
             alp
         } else {
@@ -409,35 +409,175 @@ fn pick<'a, const W: usize>(chunk: &[u8], out: &'a mut [u8]) -> &'a [u8] {
     out
 }
 
-/// Writes the floats of `W` bytes of an ALP vector into `out`, which holds exactly
-/// them. `body` is the vector's body, which [`vector::read`] checked.
-pub(crate) fn decode<const W: usize>(
-    reference: u64,
-    bits: u8,
-    pair: Pair,
-    exceptions: usize,
-    body: &[u8],
-    out: &mut [u8],
-) {
-    let coder = Coder::<W>::new(pair);
-    let samples = out.as_chunks_mut::<W>().0;
-    let packed = bits::len(samples.len(), bits).next_multiple_of(W);
-    let (packed, rest) = body.split_at(packed);
-    if bits == 0 {
-        samples.fill(word::store(coder.float(signed::<W>(reference))));
-    } else {
-        for (sample, residual) in samples.iter_mut().zip(bits::unpack(packed, bits)) {
-            let n = signed::<W>(reference.wrapping_add(residual));
-            *sample = word::store(coder.float(n));
+/// The bytes of one exception in an ALP body: its value and its position.
+fn exception_len(width: usize) -> usize {
+    width.strict_add(2)
+}
+
+/// The header of an ALP vector, which owns the layout of its body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Header {
+    pub(crate) reference: u64,
+    pub(crate) bits: u8,
+    pub(crate) pair: Pair,
+    pub(crate) exceptions: usize,
+}
+
+impl Header {
+    /// The bytes of the header fields for samples of `width` bytes: the reference,
+    /// `e`, `f`, and the exception count.
+    pub(crate) fn fields(width: usize) -> usize {
+        width.strict_add(4)
+    }
+
+    /// The bytes of the body of `count` samples of `width` bytes.
+    pub(crate) fn body_len(self, count: usize, width: usize) -> usize {
+        bits::len(count, self.bits)
+            .next_multiple_of(width)
+            .strict_add(self.exceptions.strict_mul(width))
+            .strict_add(self.exceptions.strict_mul(2).next_multiple_of(width))
+    }
+
+    /// Reads and checks the fields of the header at the front of `bytes` of vector
+    /// `index`, for samples of `width` bytes, with bit width `bits`. Out of line, to
+    /// keep [`vector::read`] short for the other tags.
+    #[inline(never)]
+    pub(crate) fn read(
+        bytes: &[u8],
+        width: usize,
+        bits: u8,
+        index: usize,
+    ) -> Result<Self, Error> {
+        let len = vector::header_len(Self::fields(width), width);
+        let fields = bytes.get(width.strict_add(2)..len);
+        let Some(&[exponent, factor, low, high]) = fields.and_then(<[u8]>::first_chunk)
+        else {
+            return Err(Error::Truncated {
+                vector: index,
+                needed: len,
+                available: bytes.len(),
+            });
+        };
+        let max = max_exponent(width);
+        if exponent > max || factor > exponent {
+            return Err(Error::Exponent {
+                vector: index,
+                exponent,
+                factor,
+                max,
+            });
+        }
+        Ok(Self {
+            reference: vector::field(bytes, 0, width),
+            bits,
+            pair: Pair { exponent, factor },
+            exceptions: u16::from_le_bytes([low, high]).into(),
+        })
+    }
+
+    /// Checks that the exception positions of `body`, the body of vector `index` of
+    /// `count` samples of `width` bytes, strictly increase and are under `count`. Out
+    /// of line, as [`Header::read`].
+    #[inline(never)]
+    pub(crate) fn check(
+        self,
+        body: &[u8],
+        width: usize,
+        count: usize,
+        index: usize,
+    ) -> Result<(), Error> {
+        let mut least = 0;
+        for position in self.split(body, count, width).2 {
+            let position = usize::from(u16::from_le_bytes(*position));
+            if position < least || position >= count {
+                return Err(Error::Position {
+                    vector: index,
+                    position,
+                    count,
+                });
+            }
+            least = position.strict_add(1);
+        }
+        Ok(())
+    }
+
+    /// Writes the vector of the floats of `W` bytes of `chunk`.
+    pub(crate) fn write<const W: usize>(
+        self,
+        chunk: &[u8],
+        out: &mut vector::Writer<'_>,
+    ) {
+        out.put(&[vector::ALP, self.bits]);
+        out.put(&word::store::<W>(self.reference));
+        out.put(&[self.pair.exponent, self.pair.factor]);
+        out.put(&vector::count16(self.exceptions).to_le_bytes());
+        out.pad(W);
+        let coder = Coder::<W>::new(self.pair);
+        let mask = word::mask(W);
+        let mut positions = [0_u16; VECTOR_LEN];
+        let mut len = 0;
+        let residuals = word::samples::<W>(chunk).zip(0..).map(|(sample, index)| {
+            if let Some(n) = coder.exact(sample) {
+                return n.cast_unsigned().wrapping_sub(self.reference) & mask;
+            }
+            *positions
+                .get_mut(len)
+                .expect("invariant: a vector holds at most 1024 samples") = index;
+            len = len.strict_add(1);
+            0
+        });
+        out.packed::<W>(residuals, chunk.len().div_euclid(W), self.bits);
+        let positions = positions.split_at(len).0;
+        let samples = chunk.as_chunks::<W>().0;
+        for position in positions {
+            out.put(
+                samples
+                    .get(usize::from(*position))
+                    .expect("invariant: a position is under the count"),
+            );
+        }
+        for position in positions {
+            out.put(&position.to_le_bytes());
+        }
+        out.pad(W);
+    }
+
+    /// Writes the floats of `W` bytes of the vector with `body`, which
+    /// [`Header::check`] passed, into `out`, which holds exactly them.
+    pub(crate) fn decode<const W: usize>(self, body: &[u8], out: &mut [u8]) {
+        let coder = Coder::<W>::new(self.pair);
+        let samples = out.as_chunks_mut::<W>().0;
+        let (packed, values, positions) = self.split(body, samples.len(), W);
+        if self.bits == 0 {
+            samples.fill(word::store(coder.float(signed::<W>(self.reference))));
+        } else {
+            let residuals = bits::unpack(packed, self.bits);
+            for (sample, residual) in samples.iter_mut().zip(residuals) {
+                let n = signed::<W>(self.reference.wrapping_add(residual));
+                *sample = word::store(coder.float(n));
+            }
+        }
+        for (value, position) in values.as_chunks::<W>().0.iter().zip(positions) {
+            let position = usize::from(u16::from_le_bytes(*position));
+            *samples
+                .get_mut(position)
+                .expect("invariant: check passed each position") = *value;
         }
     }
-    let (values, positions) = rest.split_at(exceptions.strict_mul(W));
-    let positions = positions.as_chunks::<2>().0;
-    for (value, position) in values.as_chunks::<W>().0.iter().zip(positions) {
-        let position = usize::from(u16::from_le_bytes(*position));
-        *samples
-            .get_mut(position)
-            .expect("invariant: read checks each position") = *value;
+
+    /// The packed residuals, the exception values, and the exception positions of
+    /// `body`, the body of `count` samples of `width` bytes.
+    fn split(
+        self,
+        body: &[u8],
+        count: usize,
+        width: usize,
+    ) -> (&[u8], &[u8], &[[u8; 2]]) {
+        let packed = bits::len(count, self.bits).next_multiple_of(width);
+        let (packed, rest) = body.split_at(packed);
+        let (values, positions) = rest.split_at(self.exceptions.strict_mul(width));
+        let positions = positions.as_chunks::<2>().0.split_at(self.exceptions).0;
+        (packed, values, positions)
     }
 }
 
