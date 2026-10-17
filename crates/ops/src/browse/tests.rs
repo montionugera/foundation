@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use document::diagnostic::Diagnostic;
 use env::paths::Paths;
 use serde_json::{Value, json};
 use types::name::Name;
@@ -286,6 +287,36 @@ fn a_retry_gives_browse_with_its_cause() {
         .expect("an object")
         .remove("status");
     assert_eq!((error.json(), error.status()), (expected, 1));
+    assert_eq!(error.to_string(), message);
+}
+
+/// The text of an error of many problems counts them, with the connector and the kind.
+#[test]
+fn an_error_of_many_problems_counts_them() {
+    let problem = |message: &str| {
+        Diagnostic::new(common::ADDRESS, None, message.to_owned(), "Fix".to_owned())
+    };
+    let cause = connector::kind::Error::Config(vec![problem("a"), problem("b")]);
+    let error =
+        Error::browse(&name("plant"), &name("tree"), cause, &Sources::default());
+    assert_eq!(
+        error.to_string(),
+        "the browse of the connector `plant` of kind `tree` failed with 2 problems"
+    );
+}
+
+#[test]
+fn refuses_bytes_after_the_first_line() {
+    solo(|fixture, mesh| async move {
+        let node = create_browsing_node(&fixture, mesh);
+        let site = site("tree", "edge", "");
+        let mut request = body("plant", "site.hcl", &site, &json!({}));
+        request.extend_from_slice(b"more");
+        let reply = served(&node, "@admin", &request).await;
+        let message = "the body is no request: bytes follow the first line of `browse`";
+        assert_eq!(reply["errors"][0]["code"], "ops.bad-request", "{reply}");
+        assert_eq!(reply["errors"][0]["message"], message, "{reply}");
+    });
 }
 
 /// A problem of the config of the kind keeps its code, fix, place, and notes.

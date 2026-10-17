@@ -273,10 +273,10 @@ impl Value {
     fn not_finite(value: f64) -> Self {
         let text = if value.is_nan() {
             "NaN"
-        } else if value > 0.0 {
-            "inf"
-        } else {
+        } else if value.is_sign_negative() {
             "-inf"
+        } else {
+            "inf"
         };
         Self::Text(text.to_owned())
     }
