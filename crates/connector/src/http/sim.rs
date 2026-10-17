@@ -197,7 +197,7 @@ async fn accept(
     let (answer, mut cancelled) = (Rc::new(answer), pin!(until.wait()));
     loop {
         let accepted = poll_fn(|cx| {
-            let cancelled = cancelled.as_mut().poll(cx).is_ready();
+            let cancelled = until.cancelled() || cancelled.as_mut().poll(cx).is_ready();
             match listener.poll_accept(cx) {
                 Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
                 Poll::Ready(Ok(tcp)) => Poll::Ready(Ok(Some(tcp))),
