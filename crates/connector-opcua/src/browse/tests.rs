@@ -500,6 +500,33 @@ fn browses_a_folder_again_when_the_server_freed_the_point_of_a_cursor() {
     assert_eq!(second.next, None);
 }
 
+/// A cursor past `SKIP` (100 000) whose point the server freed fails, and does not
+/// read the folder again from its start.
+#[test]
+fn a_cursor_past_the_skip_bound_whose_point_the_server_freed_fails() {
+    let page = on_server(async |server| {
+        let folder = entry("Plant/Types", "Plant.Types", Shape::Folder);
+        let first = server.level(Some(&folder), None).await.expect("a page");
+        assert!(first.expect("a folder").next.is_some());
+        let node: Node = tag("Plant.Types").parse().expect("a node");
+        let held = server.points.remove(&(node.clone(), 8)).expect("a point");
+        server.points.insert((node.clone(), 100_008), held);
+        for _ in 0..32 {
+            let page = server.client.browse(&node, NonZeroU32::MIN).await;
+            assert!(page.expect("a browse").expect("a node").next.is_some());
+        }
+        let cursor = Cursor::new("100008".to_owned());
+        server.level(Some(&folder), Some(&cursor)).await
+    });
+    let Err(Error::Device(source)) = page else {
+        panic!("not a device error: {page:?}");
+    };
+    assert_eq!(
+        source.to_string(),
+        "the browse failed with BadContinuationPointInvalid"
+    );
+}
+
 #[test]
 fn gives_none_for_a_folder_that_the_server_does_not_have() {
     let page = on_server(async |server| {
