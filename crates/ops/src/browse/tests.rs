@@ -235,7 +235,7 @@ fn fix_of(reply: &Value) -> &str {
 }
 
 #[test]
-fn a_start_or_a_match_that_is_too_deep_or_has_too_many_stars_gives_its_cause() {
+fn a_bad_start_or_a_match_with_too_many_names_or_stars_gives_its_cause() {
     solo(|fixture, mesh| async move {
         let node = create_browsing_node(&fixture, mesh);
         let edge = site("tree", "edge", "");
