@@ -120,8 +120,7 @@ pub enum Error {
     /// The reader of a read ended. Code: `UNKNOWN` for [`reader::Ended::Removed`],
     /// `BUSY` for `Pool`, the code of the home's refusal but `FAILED` for its
     /// `MALFORMED`, and `FAILED` for `Buffer`, `Stream`, `Message`, `Frame`, and
-    /// `Credit`. A read gives no `Behind`, which it sends as a reply before it finishes
-    /// the stream, and no `Replaced`.
+    /// `Credit`. A read gives no `Replaced`.
     Ended(Box<reader::Ended>),
 }
 
@@ -334,11 +333,6 @@ async fn serve(
         match taken {
             Ok((frame, lens)) => {
                 layout.send(state, sender, &frame, &lens.set).await?;
-            }
-            Err(Stop::Behind) => {
-                sender.send(reply(state, wire::hub::Reply::Behind)?).await?;
-                sender.finish()?;
-                return Ok(());
             }
             Err(Stop::Buffer(error)) => return Err(Error::Buffer(error)),
             Err(Stop::Pool(error)) => return Err(Error::Pool(error)),
@@ -728,11 +722,11 @@ mod tests {
         channel::Key::from_u128(key)
     }
 
-    /// Each end of the reader of a read, but `Behind` and `Replaced`, stops it with
-    /// its code. A refusal of the home keeps its code. Only a remote reader gives a
-    /// refusal, `Error::Pool`, `Transport`, and `Message`, and `Ended::Pool`,
-    /// `Stream`, `Message`, `Frame`, and `Credit`. A read opens no remote reader until
-    /// #2419, so this test pins those arms.
+    /// Each end of the reader of a read, but `Replaced`, stops it with its code. A
+    /// refusal of the home keeps its code. Only a remote reader gives a refusal,
+    /// `Error::Pool`, `Transport`, and `Message`, and `Ended::Pool`, `Stream`,
+    /// `Message`, `Frame`, and `Credit`. A read opens no remote reader until #2419, so
+    /// this test pins those arms.
     #[test]
     #[expect(clippy::too_many_lines, reason = "one case for each error")]
     fn each_error_of_the_reader_of_a_read_has_its_code() {

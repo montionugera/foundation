@@ -90,4 +90,5 @@
   that a trim freed joins the gap once a reader reads from disk (#2723)
   (`laptop.architect`, 2026-10-15T18:12:25Z:
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922).
+  Amended (#2790): the `Behind` variants are removed (HUB WIRE).
   Supersedes the three rulings of #2649 above on a frame that finds no room.

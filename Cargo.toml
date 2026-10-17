@@ -150,6 +150,12 @@ opt-level = 2
 [profile.dev.package.sim]
 opt-level = 2
 
+# Each copy of the tree that cargo-mutants builds (`.cargo/mutants.toml`). No debug
+# info, so each copy takes less disk.
+[profile.mutants]
+inherits = "test"
+debug = "none"
+
 [profile.release]
 overflow-checks = true
 panic = "abort"

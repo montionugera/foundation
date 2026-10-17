@@ -120,9 +120,7 @@ fn sends_the_places_and_each_frame_of_a_complete_read() {
         assert_eq!(places, Places { count: 2, index: 1 });
         assert_eq!(run, [place(2, I64, "value"), place(1, STAMP, "time")]);
         for value in [10, 20] {
-            let got = got(&mut stream.receiver, &mut reader)
-                .await
-                .expect("a frame");
+            let got = got(&mut stream.receiver, &mut reader).await;
             assert_eq!(placed(&got), [0, 1]);
             assert_eq!(decoded(&got, &[I64, STAMP])[0], [value]);
         }
@@ -154,9 +152,7 @@ fn sends_the_open_position_of_a_complete_read_in_opened() {
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
         let (_, _, mut reader) = stream.opened().await;
         assert_eq!(stream.live, Some(2));
-        let got = got(&mut stream.receiver, &mut reader)
-            .await
-            .expect("a frame");
+        let got = got(&mut stream.receiver, &mut reader).await;
         assert_eq!(got.head.range.seq, 2);
         assert_eq!(decoded(&got, &[I64, STAMP])[0], [30]);
         stream.sender.finish().expect("finishes");
@@ -175,9 +171,7 @@ fn sends_a_latest_read_the_index_once_when_its_selector_matches_it() {
         let (places, run, mut reader) = stream.opened().await;
         assert_eq!(places, Places { count: 2, index: 0 });
         assert_eq!(run, [place(1, STAMP, "time"), place(2, I64, "value")]);
-        let got = got(&mut stream.receiver, &mut reader)
-            .await
-            .expect("a frame");
+        let got = got(&mut stream.receiver, &mut reader).await;
         assert_eq!(placed(&got), [0, 1]);
         assert_eq!(decoded(&got, &[STAMP, I64])[1], [10]);
         stream.sender.finish().expect("finishes");
@@ -413,9 +407,7 @@ fn opens_a_read_whose_places_pass_the_share() {
             .sum();
         let share = usize::try_from(BODY_BYTES_MAX).expect("fits");
         assert!(bytes > share, "the places hold {bytes} bytes");
-        let got = got(&mut stream.receiver, &mut reader)
-            .await
-            .expect("a frame");
+        let got = got(&mut stream.receiver, &mut reader).await;
         assert_eq!(placed(&got), [0, time]);
         assert_eq!(decoded(&got, &[I64, STAMP])[0], [10]);
         stream.sender.finish().expect("finishes");
@@ -708,9 +700,7 @@ fn sends_a_complete_read_that_misses_a_frame_each_frame_from_disk() {
         agent.sleep(Span::SECOND).await;
         let mut firsts = Vec::new();
         for _ in 0..FRAMES {
-            let got = got(&mut stream.receiver, &mut reader)
-                .await
-                .expect("a frame");
+            let got = got(&mut stream.receiver, &mut reader).await;
             firsts.push(decoded(&got, &[I64, STAMP])[1][0]);
         }
         let expected: Vec<_> = (0..FRAMES).map(|n| firsts[0] + n * 1000).collect();

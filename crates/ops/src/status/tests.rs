@@ -124,7 +124,10 @@ fn kinds() -> Table {
         .with("opcua", Scripted::new(opcua, Script::Steady))
         .with(
             "influx",
-            Scripted::new(&[("confirmed", 1517), ("lost", 0)], Script::Steady),
+            Scripted::new(
+                &[("confirmed", 1517), ("lost", 0), ("oversized", 0)],
+                Script::Steady,
+            ),
         )
 }
 
@@ -664,7 +667,7 @@ fn leaves_out_each_connector_on_another_node() {
     });
 }
 
-/// The head of the refusal of `subject`, which reads no status channel.
+/// The head of the refusal of `subject`, which reads no connector of the node.
 fn refused(subject: &str) -> Value {
     let message = format!(
         "no access policy gives `{subject}` the action `read` on a request that names \
@@ -827,11 +830,28 @@ fn refuses_a_subject_that_may_read_no_connector_on_the_node() {
 }
 
 #[test]
+fn refuses_a_subject_that_may_read_the_status_but_not_the_connector() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = [
+            reader("site.a.status.**"),
+            connector("site.a", "steady", "edge"),
+        ];
+        applied(&fixture, &node, &text.concat()).await;
+        let (head, rest) = status(&node, "sam").await;
+        assert_eq!((head, rest), (refused("sam"), Vec::new()));
+    });
+}
+
+#[test]
 fn refuses_a_subject_that_may_read_only_some_status_channels() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         let text = [
             reader("site.a.status.state"),
+            "access \"label\" {\n  subjects = \"sam\"\n  select = \"site.a\"\n  allow = \
+             [read]\n}\n"
+                .to_owned(),
             connector("site.a", "steady", "edge"),
         ];
         applied(&fixture, &node, &text.concat()).await;

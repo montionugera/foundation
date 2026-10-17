@@ -480,7 +480,6 @@ impl Inbound {
                 }
                 Step::More => {}
                 Step::Frame(frame) => return Ok(self.arrived(frame)),
-                Step::Behind => return Err(Ended::Behind),
             }
         }
     }
@@ -727,7 +726,6 @@ fn refusal(ended: &Ended) -> Option<Refusal> {
         }
         Ended::Pool(_) => Some(Refusal::Busy),
         Ended::Buffer(_)
-        | Ended::Behind
         | Ended::Removed(_)
         | Ended::Replaced
         | Ended::Stream(_)

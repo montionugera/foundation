@@ -327,7 +327,7 @@ fn woken_of_a_reader_that_falls_behind_again() {
             let taken = std::iter::from_fn(|| match woken.shard.take(reader) {
                 Next::Frame(frame) => Some(frame),
                 Next::Empty => None,
-                Next::Disk(_) | Next::Behind => panic!("lag {lag}: the reader missed"),
+                Next::Disk(_) => panic!("lag {lag}: the reader missed"),
             })
             .count();
             assert_eq!(taken, DEPTH, "lag {lag}");

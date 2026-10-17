@@ -52,6 +52,7 @@ fn checks_the_connector_and_the_subject_alone() {
         "plc.status.error",
         "plc.status.lost",
         "plc.status.note",
+        "plc.status.oversized",
         "plc.status.restarts",
         "plc.status.state",
         "plc.status.time",

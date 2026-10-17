@@ -16,6 +16,31 @@
   character as it is). It is not a `types::name` selector, where `*` matches one whole
   segment of a dot-separated name: a device's names hold any character, a glob looks
   inside one name, and the walk asks at each folder whether a longer path can match.
+  A run of `**` names reads as one, so `**/**/x` is `**/x`. A pattern of more than
+  `DEPTH` (64) names other than `**` gives `Malformed::Deep` ("it has more than 64
+  names, and a browse finds no path that long") before any call to the device: a match
+  of n names holds n folders open. A path has no such limit. So a step of a walk costs
+  at most 129 segments, and its close is linear (`laptop.architect-2`,
+  2026-10-16T17:52:04Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6221453512). A
+  glob matches a name in time linear in both: it splits at each `*` that no `\` takes,
+  and a name matches when it holds at least the bytes of all pieces, starts with the
+  first, ends with the last, and holds each other piece in order at its leftmost place.
+  No cap on the length of a name (`laptop.architect-2`, 2026-10-16T17:55:41Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6221521864). A
+  pattern of more than `STARS` (256) `*` in its names other than `**`, a run of `*` as
+  one, gives `Malformed::Stars` ("it has more than 256 `*`, and each costs a search of
+  each name") before any call to the device (`laptop.architect-2`,
+  2026-10-16T22:19:36Z:
+  https://github.com/synnaxlabs/foundation/pull/2927#issuecomment-6225785631). This
+  supersedes the "no new error" and "no cap on a segment" of the ruling of 17:55:41Z.
+  The message says that each `*` costs a search, but a `*` at an end of a name makes
+  none; #2948 fixes it.
+  The cap does not bound the cost of a walk: each entry tests each glob of its state,
+  in time linear in its name. On box1 in release, 63 globs `**/*<1 998 a>*` over
+  folders and points named 2 000 `a` take 3.9 s to the `Budget`, at load 5.8. A budget of compared
+  bytes is open in #2948 (`laptop.architect-2`, 2026-10-16T22:37:40Z:
+  https://github.com/synnaxlabs/foundation/pull/2927#issuecomment-6226011243).
   Values are read only when the `Query` asks, in one call for the points that it gives.
   A new filter is a new field of `Query`. The walk lives once in `connector`
   (`browse::walk`). It finds the start from the root, one name at a time; a name that is
@@ -55,17 +80,17 @@
   `Supervisor::browse(kind, config, query)` runs `Kind::browse` apart from any run of
   the connector, with the network, clock, randomness, and secrets of the supervisor; a
   kind reads only what it needs to reach the device, so a block with only `kind`,
-  `node`, and `address` browses. It gives no mesh time: `hub` gives it only through a
-  writer, and a browse opens none. Deferred to #2837: `Hub::time` waits with no bound.
-  When a kind first reads mesh time from `browse::Context`, it races `Hub::time` against
-  a bound that `Supervisor::browse` sets, and gives an error at the bound, so a kind
-  that reads no mesh time never waits. PR 5 waits on it, and gives that read with its
-  doc, the bound, and the exact error. `browse::Context` and `kind::Context` stay two
-  types: each input that both give is a read of a field or one call, and `secret` is one
-  function. Trigger to make them one: a third context, or a second shared input with a
-  body of its own, as `secret` has in `read_secret`. A kind implements `browse::Device`
-  on its open session, so one walk is one session and can use a continuation point; a
-  `Cursor` that a front end gets holds no session state. `level` takes a folder as the
+  `node`, and `address` browses. A kind reads mesh time with `browse::Context::time`,
+  which races `Hub::time` against `WAIT` (5 s) and gives `Error::Retry` with "the node
+  has no mesh time after 5s" at the bound, so a kind that reads no mesh time never
+  waits (`laptop.architect-2`, 2026-10-17T03:22:56Z:
+  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6228993285).
+  `browse::Context` and `kind::Context` stay two types: each input that both give is a
+  read of a field or one call, and `secret` is one function. Trigger to make them one:
+  a third context, or a second shared input with a body of its own, as `secret` has in
+  `read_secret`. A kind implements `browse::Device` on its open session, so one walk is
+  one session and can use a continuation point; a `Cursor` that a front end gets holds
+  no session state. `level` takes a folder as the
   `Entry` that the device gave, never a path, and gives at most `LIMIT` entries a page;
   `values` gives `types::sample::Value`, so there is one value model. Trigger for a text
   value: a kind that reads a `string` channel. Lost: a count of matches up to the

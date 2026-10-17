@@ -161,10 +161,6 @@ impl Reader {
                     self.warn();
                     return Ok(frame);
                 }
-                // #2790 removes this arm.
-                Step::Behind => {
-                    return Err(Error::Reply(wire::hub::Error::Kind { kind: 3 }));
-                }
             }
         }
     }

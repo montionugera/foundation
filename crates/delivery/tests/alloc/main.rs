@@ -242,7 +242,7 @@ fn missed(frame: &impl Fn() -> Frame, set: &Arc<KeySet>) {
             match readers.take(key.into()) {
                 Next::Frame(_) => {}
                 Next::Disk { .. } => break true,
-                Next::Empty | Next::Behind => break false,
+                Next::Empty => break false,
             }
         }
     };
@@ -274,7 +274,7 @@ fn flow(
 ///
 /// # Panics
 ///
-/// If the session gets [`Next::Behind`].
+/// If the session reads from disk.
 fn taken(readers: &mut Readers, key: complete::Key) -> usize {
     let mut count = 0;
     loop {
@@ -282,7 +282,6 @@ fn taken(readers: &mut Readers, key: complete::Key) -> usize {
             Next::Frame(_) => count += 1,
             Next::Empty => return count,
             Next::Disk { .. } => panic!("the session reads from disk"),
-            Next::Behind => panic!("the session is behind"),
         }
     }
 }

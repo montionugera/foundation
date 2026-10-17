@@ -354,6 +354,48 @@ impl Variable {
     /// Panics when `raw` is shorter than the ends and padding of `count` samples. The
     /// iterator panics at the first end that is not valid for `raw`.
     pub fn samples(self, count: usize, raw: &[u8]) -> impl Iterator<Item = &[u8]> {
+        let (ends, elements) = self.split(count, raw);
+        let width = self.element.width();
+        let mut start = 0_usize;
+        ends.iter().enumerate().map(move |(index, end)| {
+            let end = usize::try_from(u32::from_le_bytes(*end))
+                .expect("invariant: a usize holds a u32");
+            let sample = elements_in(elements, width, index, start, end);
+            start = end;
+            sample
+        })
+    }
+
+    /// The sample at `index` of `raw`, a raw series of `count` samples, as the bytes
+    /// of its elements. [`decode`] gives such a series. O(1). Copies nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `raw` is shorter than the ends and padding of `count` samples, when
+    /// `index` is not below `count`, or when the ends of sample `index` are not valid
+    /// for `raw`.
+    #[must_use]
+    pub fn sample(self, count: usize, raw: &[u8], index: usize) -> &[u8] {
+        assert!(
+            index < count,
+            "sample {index} is not below the count {count}"
+        );
+        let (ends, elements) = self.split(count, raw);
+        let end = |at: usize| {
+            let end = ends.get(at).expect("invariant: `split` gives `count` ends");
+            usize::try_from(u32::from_le_bytes(*end))
+                .expect("invariant: a usize holds a u32")
+        };
+        let start = index.checked_sub(1).map_or(0, end);
+        elements_in(elements, self.element.width(), index, start, end(index))
+    }
+
+    /// The `count` ends of `raw` and its elements.
+    ///
+    /// # Panics
+    ///
+    /// When `raw` is shorter than the ends and padding of `count` samples.
+    fn split(self, count: usize, raw: &[u8]) -> (&[[u8; 4]], &[u8]) {
         let front = self
             .element
             .front(count)
@@ -366,25 +408,7 @@ impl Variable {
             );
         };
         let (head, elements) = raw.split_at(front.start);
-        let ends = head.split_at(front.ends).0.as_chunks::<4>().0;
-        let width = self.element.width();
-        let mut start = 0_usize;
-        ends.iter().enumerate().map(move |(index, end)| {
-            let end = usize::try_from(u32::from_le_bytes(*end))
-                .expect("invariant: a usize holds a u32");
-            let sample = end
-                .checked_mul(width)
-                .and_then(|stop| elements.get(start.checked_mul(width)?..stop));
-            let Some(sample) = sample else {
-                panic!(
-                    "sample {index} ends at {end}, not in {start}..={} of {width}-byte \
-                     elements",
-                    elements.len().strict_div(width)
-                );
-            };
-            start = end;
-            sample
-        })
+        (head.split_at(front.ends).0.as_chunks::<4>().0, elements)
     }
 
     /// The elements of `sample`.
@@ -540,6 +564,31 @@ enum Shape {
         max: u32,
         utf8: bool,
     },
+}
+
+/// The bytes of the elements `start..end` of `elements`, sample `index`, each element
+/// `width` bytes.
+///
+/// # Panics
+///
+/// When `elements` does not hold them.
+fn elements_in(
+    elements: &[u8],
+    width: usize,
+    index: usize,
+    start: usize,
+    end: usize,
+) -> &[u8] {
+    let sample = end
+        .checked_mul(width)
+        .and_then(|stop| elements.get(start.checked_mul(width)?..stop));
+    let Some(sample) = sample else {
+        panic!(
+            "sample {index} ends at {end}, not in {start}..={} of {width}-byte elements",
+            elements.len().strict_div(width)
+        );
+    };
+    sample
 }
 
 impl Shape {
@@ -2811,8 +2860,42 @@ mod tests {
                 prop_assert_eq!(&decoded, &values);
                 let read: Vec<&[u8]> = form.samples(samples.len(), &decoded).collect();
                 let samples: Vec<&[u8]> = samples.iter().map(Vec::as_slice).collect();
-                prop_assert_eq!(read, samples);
+                prop_assert_eq!(&read, &samples);
+                for (index, sample) in samples.iter().enumerate() {
+                    prop_assert_eq!(form.sample(samples.len(), &decoded, index), *sample);
+                }
             }
+        }
+
+        #[test]
+        #[should_panic(expected = "sample 3 is not below the count 3")]
+        fn sample_panics_at_an_index_not_below_the_count() {
+            let (count, raw) = variable::<&[u8]>(1, &[b"a", b"", b"bc"]);
+            let _sample = STRING.sample(count, &raw, count);
+        }
+
+        #[test]
+        #[should_panic(expected = "7 bytes do not hold the ends of 2 samples")]
+        fn sample_panics_when_raw_is_shorter_than_the_ends() {
+            let _sample = STRING.sample(2, &[0; 7], 0);
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "sample 1 ends at 1, not in 2..=3 of 1-byte elements"
+        )]
+        fn sample_panics_at_an_end_that_decreases() {
+            let raw = raw(&[2, 1], 1, b"abc");
+            let _sample = STRING.sample(2, &raw, 1);
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "sample 0 ends at 2, not in 0..=1 of 2-byte elements"
+        )]
+        fn sample_panics_at_an_end_past_the_elements() {
+            let raw = raw(&[2], 2, &[1, 0]);
+            let _sample = list(Scalar::U16).sample(1, &raw, 0);
         }
     }
 }

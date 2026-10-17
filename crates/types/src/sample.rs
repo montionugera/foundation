@@ -277,7 +277,8 @@ pub enum Value {
     Stamp(Stamp),
     /// A `duration` sample.
     Span(Span),
-    /// A `uuid` sample, as the 16 bytes that the sample holds.
+    /// A `uuid` sample: its 16 bytes in RFC 9562 order, so byte 0 gives the first two
+    /// hex digits of its text form.
     Uuid([u8; 16]),
 }
 

@@ -94,7 +94,7 @@ fn within_hides_a_folder_that_this_user_cannot_list() {
 }
 
 #[test]
-fn within_refuses_a_hidden_folder_that_this_user_cannot_search() {
+fn within_hides_a_folder_that_this_user_cannot_search() {
     for bits in [0o600, 0o000] {
         let scratch = Scratch::new();
         let base = fs::canonicalize(&scratch.0).unwrap();
@@ -102,14 +102,14 @@ fn within_refuses_a_hidden_folder_that_this_user_cannot_search() {
         fs::create_dir(&data).unwrap();
         fs::set_permissions(&data, Permissions::from_mode(bits)).unwrap();
         let within = os::paths().within(slice::from_ref(&base), slice::from_ref(&data));
-        let error = within.as_ref().err().copied();
+        let read = within.map(|within| within.read(&data, 1));
         fs::set_permissions(&data, Permissions::from_mode(0o700)).unwrap();
-        assert_eq!(error, Some(Error::Io { code: 13 }), "{bits:o}");
+        assert_eq!(read, Ok(Err(Error::Hidden)), "{bits:o}");
     }
 }
 
 #[test]
-fn within_refuses_a_hidden_pipe_and_ends() {
+fn within_hides_a_pipe_and_ends() {
     let scratch = Scratch::new();
     let base = fs::canonicalize(&scratch.0).unwrap();
     let pipe = base.join("pipe");
@@ -118,8 +118,9 @@ fn within_refuses_a_hidden_pipe_and_ends() {
     let hidden = pipe.clone();
     #[expect(clippy::disallowed_methods, reason = "the test bounds the call")]
     let call = thread::spawn(move || {
-        let within = os::paths().within(&[base], &[hidden]);
-        sent.send(within.err()).unwrap();
+        let within = os::paths().within(&[base], slice::from_ref(&hidden));
+        sent.send(within.map(|within| within.read(&hidden, 1)))
+            .unwrap();
     });
     #[expect(clippy::disallowed_methods, reason = "the test bounds the call")]
     let ended = got.recv_timeout(std::time::Duration::from_secs(5));
@@ -128,10 +129,7 @@ fn within_refuses_a_hidden_pipe_and_ends() {
         let _writer = fs::OpenOptions::new().write(true).open(&pipe).unwrap();
     }
     call.join().unwrap();
-    let error = Error::Io {
-        code: cases::NOT_DIRECTORY,
-    };
-    assert_eq!(ended, Ok(Some(error)));
+    assert_eq!(ended, Ok(Ok(Err(Error::Hidden))));
 }
 
 /// APFS ignores the case and the form of a name.
@@ -160,6 +158,223 @@ fn a_hidden_folder_holds_each_case_and_form_of_its_names() {
         assert_eq!(within.make_dir(&upper.join("new")), Err(Error::Hidden));
         assert_eq!(within.write(&upper.join("x"), b"y"), Err(Error::Hidden));
         assert_eq!(within.read(&upper.join("admin.key"), 1), Err(Error::Hidden));
+    });
+}
+
+/// The resolve keeps the prefix of the data volume, so the text of the path is under
+/// no folder.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_folder_holds_its_files_through_the_data_volume() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let volume =
+            Path::new("/System/Volumes/Data").join(base.strip_prefix("/").unwrap());
+        let within = host
+            .paths
+            .within(&[base.join("work")], &[base.join("work/data")])
+            .unwrap();
+        let key = volume.join("work/data/admin.key");
+        assert_eq!(within.read(&key, 1), Err(Error::Hidden));
+        assert_eq!(within.write(&key, b"y"), Err(Error::Hidden));
+        let plan = volume.join("work/a.hcl");
+        assert_eq!(within.read(&plan, 1), Ok(Found::File(b"x".to_vec())));
+        let file = base.join("work/a.hcl");
+        let within = host
+            .paths
+            .within(&[base.join("work")], slice::from_ref(&file))
+            .unwrap();
+        host.paths.write(&file, b"new").unwrap();
+        assert_eq!(within.read(&plan, 3), Err(Error::Hidden));
+    });
+}
+
+/// `/proc` and `/sys` are each inode 1, on two devices.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_folder_is_its_device_and_its_inode() {
+    use std::os::unix::fs::MetadataExt;
+    let ino = |path| fs::metadata(path).unwrap().ino();
+    assert_eq!((ino("/proc"), ino("/sys")), (1, 1));
+    let within = os::paths().within(&["/proc".into()], &[]).unwrap();
+    let read = within.read(Path::new("/sys/kernel"), 1 << 16);
+    assert_eq!(read, Err(Error::Outside));
+}
+
+#[test]
+fn a_hard_link_to_a_hidden_file_is_hidden() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let key = base.join("work/data/admin.key");
+        let twin = base.join("work/twin");
+        fs::hard_link(&key, &twin).unwrap();
+        let within = host
+            .paths
+            .within(&[base.join("work")], slice::from_ref(&key))
+            .unwrap();
+        assert_eq!(within.read(&twin, 1), Err(Error::Hidden));
+        assert_eq!(within.write(&twin, b"y"), Err(Error::Hidden));
+    });
+}
+
+/// Another program moves the hidden folder away and makes a new one at its name.
+#[test]
+fn a_hidden_folder_that_a_program_moves_and_makes_again_stays_hidden() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        let data = base.join("work/data");
+        fs::rename(&data, base.join("work/old")).unwrap();
+        fs::create_dir(&data).unwrap();
+        fs::write(data.join("admin.key"), b"k").unwrap();
+        assert_eq!(within.read(&data.join("admin.key"), 1), Err(Error::Hidden));
+        let old = base.join("work/old/admin.key");
+        assert_eq!(within.read(&old, 1), Err(Error::Hidden));
+        let listed = within.read(&base.join("work/old"), usize::MAX);
+        assert!(matches!(listed, Ok(Found::Directory(_))), "{listed:?}");
+    });
+}
+
+/// A relative link in `work` to a deep directory, so the given path is short and the
+/// resolved path of a new name in it is one byte past the longest path of the OS.
+#[test]
+fn within_writes_a_new_name_whose_resolved_path_is_too_long_as_free() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        let most: usize = if cfg!(target_os = "macos") {
+            1023
+        } else {
+            4095
+        };
+        let mut found = Vec::new();
+        for top in ["work", "work/data"] {
+            let top = base.join(top);
+            let (mut deep, mut relative) = (top.clone(), PathBuf::new());
+            while deep.as_os_str().len() + 201 < most - 50 {
+                deep.push("d".repeat(200));
+                relative.push("d".repeat(200));
+                fs::create_dir(&deep).unwrap();
+            }
+            symlink(&relative, top.join("s")).unwrap();
+            let name = "f".repeat(most - deep.as_os_str().len());
+            assert_eq!(deep.join(&name).as_os_str().len(), most + 1);
+            let free = host.paths.write(&top.join("s").join(&name), b"x");
+            let named = top.join("s").join(name.replace('f', "g"));
+            let dir = top.join("s").join(name.replace('f', "h"));
+            let made = within.make_dir(&dir);
+            found.push((
+                free,
+                within.write(&named, b"x"),
+                made,
+                fs::symlink_metadata(&dir).is_ok(),
+            ));
+        }
+        assert_eq!(
+            found,
+            [
+                (Ok(()), Ok(()), Ok(()), true),
+                (Ok(()), Err(Error::Hidden), Err(Error::Hidden), false),
+            ]
+        );
+    });
+}
+
+/// A work folder that a program moves away and makes again holds nothing at either
+/// name until a new `within`.
+#[test]
+fn a_folder_that_a_program_moves_and_makes_again_holds_nothing() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        fs::rename(base.join("work"), base.join("moved")).unwrap();
+        fs::create_dir(base.join("work")).unwrap();
+        let moved = within.read(&base.join("moved/a.hcl"), 1);
+        host.paths.write(&base.join("work/a.hcl"), b"y").unwrap();
+        let made = within.read(&base.join("work/a.hcl"), 1);
+        assert_eq!((moved, made), (Err(Error::Outside), Err(Error::Outside)));
+    });
+}
+
+/// A hidden file that is not there, at a short path through a relative link, whose
+/// resolved path is one byte past the longest path of the OS.
+#[test]
+fn within_hides_a_hidden_name_whose_resolved_path_is_too_long() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let most: usize = if cfg!(target_os = "macos") {
+            1023
+        } else {
+            4095
+        };
+        let top = base.join("work");
+        let (mut deep, mut relative) = (top.clone(), PathBuf::new());
+        while deep.as_os_str().len() + 201 < most - 50 {
+            deep.push("d".repeat(200));
+            relative.push("d".repeat(200));
+            fs::create_dir(&deep).unwrap();
+        }
+        symlink(&relative, top.join("s")).unwrap();
+        let name = "f".repeat(most - deep.as_os_str().len());
+        let key = top.join("s").join(&name);
+        let within = host
+            .paths
+            .within(slice::from_ref(&top), slice::from_ref(&key))
+            .unwrap();
+        assert_eq!(within.write(&key, b"x"), Err(Error::Hidden));
+        assert!(!deep.join(&name).exists());
+        assert_eq!(within.write(&top.join("b.hcl"), b"x"), Ok(()));
+    });
+}
+
+/// A hidden file whose resolved path is longer than the OS takes, made after
+/// `within`, does not read at its path, and is hidden through a hard link.
+#[test]
+fn within_hides_a_hard_link_to_a_long_hidden_file_made_after_within() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let most: usize = if cfg!(target_os = "macos") {
+            1023
+        } else {
+            4095
+        };
+        let top = base.join("work");
+        let (mut deep, mut relative) = (top.clone(), PathBuf::new());
+        while deep.as_os_str().len() + 201 < most - 50 {
+            deep.push("d".repeat(200));
+            relative.push("d".repeat(200));
+            fs::create_dir(&deep).unwrap();
+        }
+        symlink(&relative, top.join("s")).unwrap();
+        let name = "f".repeat(most - deep.as_os_str().len());
+        let key = top.join("s").join(&name);
+        let within = host
+            .paths
+            .within(slice::from_ref(&top), slice::from_ref(&key))
+            .unwrap();
+        fs::write(&key, b"secret").unwrap();
+        let link = top.join("link.key");
+        fs::hard_link(&key, &link).unwrap();
+        let too_long = if cfg!(target_os = "macos") { 63 } else { 36 };
+        assert_eq!(
+            (within.read(&key, 64), within.read(&link, 64)),
+            (Err(Error::Io { code: too_long }), Err(Error::Hidden))
+        );
+    });
+}
+
+/// A hidden folder that a link loop replaces after `within` holds nothing, so a new
+/// name beside it passes.
+#[test]
+fn within_passes_a_new_name_beside_a_hidden_folder_that_a_loop_replaces() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let vault = base.join("work/vault");
+        fs::create_dir(&vault).unwrap();
+        let within = host
+            .paths
+            .within(&[base.join("work")], slice::from_ref(&vault))
+            .unwrap();
+        fs::remove_dir(&vault).unwrap();
+        symlink(&vault, &vault).unwrap();
+        assert_eq!(within.write(&base.join("work/b.hcl"), b"x"), Ok(()));
     });
 }
 
@@ -876,4 +1091,65 @@ fn a_home_through_a_link_that_is_not_there_is_as_a_resolve_gives_it() {
     assert!(output.status.success(), "{stderr}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("1 passed"), "{stdout}");
+}
+
+/// A hidden file that is not there yet, written by a name in other case.
+#[cfg(target_os = "macos")]
+#[test]
+fn within_makes_no_file_at_a_hidden_name_in_other_case() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let key = base.join("work/secret.key");
+        let dir = base.join("work/vault");
+        let within = host
+            .paths
+            .within(&[base.join("work")], &[key.clone(), dir.clone()])
+            .unwrap();
+        let wrote = within.write(&base.join("work/SECRET.KEY"), b"planted");
+        let made = within.make_dir(&base.join("work/VAULT"));
+        let there = (fs::metadata(&key).is_ok(), fs::metadata(&dir).is_ok());
+        assert_eq!(
+            (wrote, made, there),
+            (Err(Error::Hidden), Err(Error::Hidden), (false, false))
+        );
+    });
+}
+
+/// A program replaces the folder with a link to a directory outside it.
+#[test]
+fn a_folder_that_a_link_replaces_holds_nothing_outside() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let work = base.join("work");
+        let within = host.paths.within(slice::from_ref(&work), &[]).unwrap();
+        fs::rename(&work, base.join("old")).unwrap();
+        symlink(base.join("workshop"), &work).unwrap();
+        let read = within.read(&work.join("a.hcl"), 1);
+        let direct = within.read(&base.join("workshop/a.hcl"), 1);
+        assert_eq!((read, direct), (Err(Error::Outside), Err(Error::Outside)));
+    });
+}
+
+/// A program replaces the directory above a hidden file with a file, or
+/// takes search from it. A path in the folder that is not hidden still reads.
+#[test]
+fn a_hidden_path_that_fails_its_key_fails_no_other_call() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let data = base.join("work/data");
+        let key = data.join("admin.key");
+        let within = host
+            .paths
+            .within(&[base.join("work")], slice::from_ref(&key))
+            .unwrap();
+        let plan = base.join("work/a.hcl");
+        fs::set_permissions(&data, Permissions::from_mode(0o000)).unwrap();
+        let unsearchable = within.read(&plan, 1);
+        fs::set_permissions(&data, Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(&data).unwrap();
+        fs::write(&data, b"file").unwrap();
+        let through_file = within.read(&plan, 1);
+        let ok = Ok(Found::File(b"x".to_vec()));
+        assert_eq!((unsearchable, through_file), (ok.clone(), ok));
+    });
 }

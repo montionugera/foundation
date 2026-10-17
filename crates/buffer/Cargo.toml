@@ -6,7 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-# Exposes `wal::Writer`, `log::Logs`, and a header table to the benches. Off by default.
+# Exposes `wal::Writer`, `log::Logs`, the commit task, and a header table to the
+# benches. Off by default.
 sim = []
 
 [dependencies]

@@ -388,7 +388,10 @@ mod tests {
     use types::frame::{Draft, Path};
 
     use super::*;
-    use crate::common::{create_interner, create_pool, data_type, intern, key};
+    use crate::common::{
+        SCALARS, create_interner, create_pool, data_type, intern, key,
+    };
+    use crate::split;
 
     /// A live frame of `set` in `form` with each present entry and its bytes, in
     /// entry order.
@@ -520,6 +523,70 @@ mod tests {
                 Stamp::from_nanos(0),
                 Stamp::from_nanos(0),
             ));
+        }
+
+        /// The body bytes of the entry of a writer's raw frame of one sample on an
+        /// index and on each of 256 data channels of `scalar`, as a shard splits and
+        /// stores it.
+        fn polled(scalar: Scalar) -> usize {
+            let mut interner = Interner::new();
+            let index = channel::Key::from_u128(1);
+            interner.slots().index(index);
+            let data: Vec<_> = (2..258)
+                .map(|n| (channel::Key::from_u128(n), Type::Scalar(scalar)))
+                .collect();
+            for &(key, data_type) in &data {
+                interner.slots().data(key, data_type);
+            }
+            let set = interner.intern(&[Group { index, data: &data }]);
+            let pool = create_pool(1 << 20);
+            let lens: Vec<_> = (0..set.entries().len())
+                .map(|entry| {
+                    let index = set.index(entry) == entry;
+                    (entry, if index { 8 } else { scalar.width() })
+                })
+                .collect();
+            let mut draft =
+                Draft::new(&pool, &set, Form::Raw, &lens).expect("a valid frame");
+            for (_, bytes) in draft.iter_mut() {
+                bytes.fill(1);
+            }
+            let group = set.entries()[0].group;
+            draft.set_count(group, 1);
+            let mut scratch = split::Scratch::default();
+            let mut split = scratch.split(&set, draft);
+            let frame = split.frame(&pool, group).expect("room");
+            let frame = frame.freeze(Path::Live);
+            let stamp = Stamp::from_nanos(1);
+            let entry = entry(&pool, &frame, &set, stamp, stamp).expect("room");
+            entry.parts.into_iter().map(|part| part.len()).sum()
+        }
+
+        #[test]
+        fn stores_a_poll_of_256_channels_in_26_bytes_a_series_and_its_vector() {
+            // The count, and a descriptor of 26 bytes for each of the 257 series: 6686
+            // bytes. Then 16 bytes of the index vector, and the vector of each data
+            // series, each but the last padded to 8 bytes.
+            let poll =
+                |vector: usize| 6686 + 16 + 255 * vector.next_multiple_of(8) + vector;
+            let expected = [
+                (Scalar::Bool, poll(3)),
+                (Scalar::I8, poll(3)),
+                (Scalar::I16, poll(4)),
+                (Scalar::I32, poll(8)),
+                (Scalar::I64, poll(16)),
+                (Scalar::U8, poll(3)),
+                (Scalar::U16, poll(4)),
+                (Scalar::U32, poll(8)),
+                (Scalar::U64, poll(16)),
+                (Scalar::F32, poll(8)),
+                (Scalar::F64, poll(16)),
+                (Scalar::Stamp, poll(16)),
+                (Scalar::Span, poll(16)),
+                (Scalar::Uuid, poll(32)),
+            ];
+            let stored = SCALARS.map(|scalar| (scalar, polled(scalar)));
+            assert_eq!(stored, expected);
         }
     }
 

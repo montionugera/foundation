@@ -7,7 +7,7 @@ use std::ffi::CString;
 use connector::kind;
 use document::diagnostic::{Code, Diagnostic, Note};
 use document::value::Value;
-use document::{Block, Document, read};
+use document::{Attribute, Block, Document, Label, Map, read};
 use types::name::Name;
 use types::time::Rate;
 
@@ -48,16 +48,7 @@ pub(crate) struct Read {
 /// Reads `address`, `rate`, and one or more `read` blocks, and no other key or block.
 pub(crate) fn parse(config: &Document) -> Result<Config, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
-    let address = read::required(
-        config,
-        kind::NOUN,
-        None,
-        "address",
-        address,
-        "Add an `address` attribute with the endpoint of the server, such as \
-         \"opc.tcp://plc:4840\""
-            .into(),
-    );
+    let address = endpoint(config);
     let rate = read::required(
         config,
         kind::NOUN,
@@ -83,6 +74,20 @@ pub(crate) fn parse(config: &Document) -> Result<Config, Vec<Diagnostic>> {
         }),
         _ => Err(diagnostics),
     }
+}
+
+/// Reads `address` of `config`, the endpoint of the server, as [`parse`] does.
+pub(crate) fn endpoint(config: &Document) -> Result<CString, Diagnostic> {
+    read::required(
+        config,
+        kind::NOUN,
+        None,
+        "address",
+        address,
+        "Add an `address` attribute with the endpoint of the server, such as \
+         \"opc.tcp://plc:4840\""
+            .into(),
+    )
 }
 
 /// Reads an endpoint URL: `opc.tcp://`, a host, and an optional port and path, as
@@ -168,6 +173,43 @@ fn reads(config: &Document, diagnostics: &mut Vec<Diagnostic>) -> Vec<Read> {
         }
     }
     reads
+}
+
+/// The `read` block of the node `tag` as the channel `channel`, as
+/// [`Kind::block`](connector::kind::Kind::block) asks: `read "<channel>" { node_id =
+/// "<tag>" }`.
+pub(crate) fn block(tag: &str, channel: &Name) -> Result<Vec<Block>, Vec<Diagnostic>> {
+    let value = Value {
+        kind: document::value::Kind::String(tag.into()),
+        span: None,
+    };
+    node(&value).map_err(|mut error| {
+        error.message = format!("the tag {tag:?}: {}", error.message);
+        vec![error]
+    })?;
+    Ok(vec![read_block(channel, value)])
+}
+
+/// `read "<channel>" { node_id = <node_id> }`.
+fn read_block(channel: &Name, node_id: Value) -> Block {
+    let node_id = Attribute {
+        key: "node_id".into(),
+        key_span: None,
+        value: node_id,
+    };
+    Block {
+        keyword: "read".into(),
+        keyword_span: None,
+        labels: vec![Label {
+            text: channel.as_str().into(),
+            span: None,
+        }],
+        body: Document {
+            attributes: Map::new(vec![node_id]).expect("invariant: one key"),
+            blocks: Vec::new(),
+        },
+        span: None,
+    }
 }
 
 /// Reads a node ID, such as `"ns=3;s=SpikeData"`.

@@ -4,6 +4,10 @@
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
+use std::ops::RangeInclusive;
+
+use Step::{Carry, Climb, Trims};
+
 #[global_allocator]
 static ALLOCATOR: counting::Bytes = counting::Bytes::new();
 
@@ -152,7 +156,196 @@ fn wait() -> Vec<isize> {
     taken
 }
 
+/// A step of [`frees`].
+enum Step {
+    /// `count` commits of `trim(period, held)`.
+    Trims(u32, u32, u64),
+    /// One commit of `trim(1, held)` for each `held` in the range.
+    Climb(RangeInclusive<u64>),
+    /// One commit of `carry`.
+    Carry,
+}
+
+/// Runs `steps` on the logs of `paths` paths, numbering the commits from 1. Gives
+/// each commit that gives back bytes, with the bytes that it takes.
+fn frees(paths: u32, steps: &[Step]) -> Vec<(u32, isize)> {
+    let mut logs = buffer::bench::Logs::new(paths);
+    let mut commit = 0;
+    let mut frees = Vec::new();
+    let mut one = |logs: &mut buffer::bench::Logs,
+                   run: &dyn Fn(&mut buffer::bench::Logs)| {
+        let before = ALLOCATOR.held().cast_signed();
+        run(logs);
+        commit += 1;
+        let taken = ALLOCATOR.held().cast_signed() - before;
+        if taken < 0 {
+            frees.push((commit, taken));
+        }
+    };
+    for step in steps {
+        match step {
+            Step::Trims(count, period, held) => {
+                for _ in 0..*count {
+                    one(&mut logs, &|logs| logs.trim(*period, *held));
+                }
+            }
+            Step::Climb(range) => {
+                for held in range.clone() {
+                    one(&mut logs, &|logs| logs.trim(1, held));
+                }
+            }
+            Step::Carry => one(&mut logs, &|logs| logs.carry()),
+        }
+    }
+    drop(logs);
+    frees
+}
+
+/// Each lap end that needs a shrink waits behind a path that waits.
+fn waits_behind() {
+    assert_eq!(
+        frees(
+            4096,
+            &[
+                Trims(40, 1, 16),
+                Trims(471, 1, 0),
+                Trims(1, 1, 1),
+                Trims(1, 1, 0),
+                Trims(87, 1, 0),
+                Climb(1..=16),
+                Trims(30, 1, 16),
+                Trims(379, 1, 0),
+                Trims(1, 1, 1),
+                Trims(1, 1, 0),
+                Trims(72, 1, 0),
+                Climb(1..=16),
+                Trims(30, 1, 16),
+                Trims(854, 1, 0),
+            ],
+        ),
+        [
+            (513, -1_437_696),
+            (514, -798_720),
+            (515, -319_488),
+            (1025, -614_400),
+            (1026, -122_880),
+            (1027, -884_736),
+            (1028, -221_184),
+            (1537, -860_160),
+            (1538, -172_032),
+            (1540, -614_400),
+            (1541, -614_400),
+        ],
+        "a lap end that needs a shrink waits behind a path that waits"
+    );
+}
+
+/// The paths that wait meet 9 runs, so the drain takes no shrink for them.
+fn drains() {
+    assert_eq!(
+        frees(
+            16384,
+            &[
+                Trims(40, 1, 16),
+                Trims(472, 1, 0),
+                Trims(1, 1, 0),
+                Climb(1..=8),
+                Trims(30, 1, 8),
+                Trims(900, 1, 0),
+            ],
+        ),
+        [
+            (513, -2_924_544),
+            (514, -172_032),
+            (515, -159_744),
+            (516, -147_456),
+            (518, -122_880),
+            (519, -73_728),
+            (1025, -1_253_376),
+            (1026, -2_236_416),
+            (1027, -2_924_544),
+            (1028, -2_236_416),
+        ],
+        "a drain takes no shrink for a path that needs none"
+    );
+}
+
+/// A hide counts its trims before the lap ends that they make.
+fn counts_first() {
+    assert_eq!(
+        frees(
+            4096,
+            &[
+                Trims(40, 1, 16),
+                Trims(514, 1, 0),
+                Climb(1..=2),
+                Trims(1, 1, 0),
+                Climb(1..=16),
+                Trims(30, 1, 16),
+                Trims(900, 1, 0),
+            ],
+        ),
+        [
+            (513, -860_160),
+            (514, -860_160),
+            (515, -860_160),
+            (516, -172_032),
+            (1025, -860_160),
+            (1027, -860_160),
+            (1028, -860_160),
+            (1029, -172_032),
+        ],
+        "a hide counts its trims before the lap ends that they make"
+    );
+}
+
+/// A hide counts each carried tail as a trim.
+fn counts_carried() {
+    assert_eq!(
+        frees(
+            4096,
+            &[Trims(40, 1, 16), Trims(470, 1, 0), Carry, Trims(89, 1, 0)],
+        ),
+        [(512, -2_076_672), (513, -479_232)],
+        "a hide counts each carried tail as a trim"
+    );
+}
+
+/// A drain starts the next lap of each path that waited at the tail of its hide. So
+/// each path that shrinks to room for 10 runs at commits 513 to 516 shrinks to room
+/// for 4 a lap later, not at the next trim.
+fn restarts() {
+    assert_eq!(
+        frees(
+            16384,
+            &[
+                Trims(40, 1, 16),
+                Trims(400, 1, 0),
+                Climb(1..=3),
+                Trims(62, 1, 3),
+                Trims(707, 1, 0),
+            ],
+        ),
+        [
+            (513, -2_297_856),
+            (514, -2_297_856),
+            (515, -2_297_856),
+            (516, -1_757_184),
+            (769, -626_688),
+            (771, -626_688),
+            (772, -626_688),
+            (773, -479_232),
+        ],
+        "a drain starts the next lap at the tail of its hide"
+    );
+}
+
 fn main() {
+    waits_behind();
+    drains();
+    counts_first();
+    counts_carried();
+    restarts();
     assert_eq!(freed(6), 0, "a lap of at most 8 runs keeps room for 32");
     assert_eq!(
         freed(4),

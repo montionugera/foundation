@@ -1550,7 +1550,6 @@ mod tests {
             (error.to_string(), Step::Draft(error))
         };
         let retries = [
-            ended(Ended::Behind),
             ended(Ended::Removed(key)),
             ended(Ended::Replaced),
             ended(Ended::Buffer(full())),
@@ -5056,5 +5055,89 @@ mod tests {
                 "a lease of {nanos} ns, the second write at its end"
             );
         }
+    }
+
+    /// A kind whose browse reads the mesh time and gives no entries.
+    struct Mesh;
+
+    impl Kind for Mesh {
+        type Config = ();
+
+        fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+            Ok(())
+        }
+
+        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+            Ok(Channels::default())
+        }
+
+        fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+            std::future::ready(Ok(()))
+        }
+
+        async fn browse(
+            &self,
+            ctx: &browse::Context<'_>,
+            _: &browse::Query,
+        ) -> Result<browse::Found, Error> {
+            ctx.time().await?;
+            Ok(browse::Found {
+                entries: Vec::new(),
+                values: Vec::new(),
+                end: browse::End::Done,
+            })
+        }
+    }
+
+    /// What a browse of [`Mesh`] gives on a node whose mesh time starts `delay` after
+    /// the call, and when it returned.
+    fn browse_unsynced(delay: Span) -> (Result<browse::Found, Error>, Span) {
+        run_on(move |node, tasks| async move {
+            let clock = node.clock();
+            let inputs = Config {
+                kinds: Arc::new(Table::new().with("mesh", Mesh)),
+                clock: clock.clone(),
+                entropy: node.entropy(),
+                net: node.net(),
+                roots: http::Roots::default(),
+                tasks: tasks.clone(),
+                hub: hub::testing::open_unsynced(env(&node, tasks), delay).await,
+                secrets: testing::create_secrets(node.files()),
+            };
+            let start = clock.now();
+            let query = browse::Query {
+                start: browse::Path::root(),
+                scope: browse::Scope::Level(None),
+                values: browse::Values::Skipped,
+            };
+            let found = Supervisor::new(inputs)
+                .browse("mesh", &config(), &query)
+                .await;
+            (found, clock.now() - start)
+        })
+    }
+
+    #[test]
+    fn a_browse_reads_the_mesh_time_once_the_node_has_it() {
+        let (found, returned) = browse_unsynced(Span::from_nanos(4_000_000_000));
+        assert_eq!(found.expect("found").end, browse::End::Done);
+        assert_eq!(returned, Span::from_nanos(4_000_000_000));
+    }
+
+    #[test]
+    fn a_browse_gives_a_retry_when_the_node_has_no_mesh_time_at_the_bound() {
+        let (found, returned) = browse_unsynced(Span::from_nanos(6_000_000_000));
+        let Err(Error::Retry(error)) = found else {
+            panic!("not a retry: {found:?}");
+        };
+        assert_eq!(error.to_string(), "the node has no mesh time after 5s");
+        assert_eq!(returned, browse::WAIT);
+    }
+
+    #[test]
+    fn a_browse_reads_the_mesh_time_that_starts_at_the_bound() {
+        let (found, returned) = browse_unsynced(browse::WAIT);
+        assert_eq!(found.expect("found").end, browse::End::Done);
+        assert_eq!(returned, browse::WAIT);
     }
 }

@@ -61,7 +61,7 @@ fn applies_with_each_connector_kind_of_the_node() {
             effect: Effect {
                 pointer: Pointer::from(mesh.pointer()),
                 counts: Counts {
-                    added: 28,
+                    added: 29,
                     changed: 0,
                     removed: 0,
                 },
@@ -395,7 +395,7 @@ fn plans_when_each_secret_of_the_node_has_a_value() {
         let secrets = secret::Resolver::new(Arc::new(vars), files, Path::new(SECRETS));
         let node = create_node_with(&fixture, mesh, front_ends(), secrets);
         let (_, output) = node.plan(with_sources("edge")).await.expect("a plan");
-        assert_eq!(output["added"], 10, "{output}");
+        assert_eq!(output["added"], 11, "{output}");
     });
 }
 
@@ -407,7 +407,7 @@ fn plans_a_connector_of_another_node_with_no_read_of_its_secrets() {
         |fixture, mesh| async move {
             let node = create_node(&fixture, mesh);
             let (_, output) = node.plan(with_sources("other")).await.expect("a plan");
-            assert_eq!(output["added"], 10, "{output}");
+            assert_eq!(output["added"], 11, "{output}");
         },
     );
 }

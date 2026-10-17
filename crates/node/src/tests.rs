@@ -96,9 +96,9 @@ fn config<M>(
         name: "edge".parse().expect("a name"),
         settings: crate::Settings::default(),
         vars: std::collections::BTreeMap::new(),
-        roots: os::Roots {
+        roots: os::roots::Roots {
             certificates: vec![CA.to_vec()],
-            failures: Vec::new(),
+            ..os::roots::Roots::default()
         },
         log: crate::Log {
             writer: Box::new(std::io::sink()),
@@ -7294,7 +7294,8 @@ pub(crate) mod port {
             let connectors = concat!(
                 r#"{"output":{"connectors":[{"name":"plant.influx","kind":"influx","#,
                 r#""state":"stopped","address":"http://influx:8086","restarts":0,"#,
-                r#""counts":{"confirmed":0,"lost":0},"error":{"class":"config","text":"#,
+                r#""counts":{"confirmed":0,"lost":0,"oversized":0},"#,
+                r#""error":{"class":"config","text":"#,
                 r#""the selector matches no channel. Select a channel that the spec "#,
                 r#"defines"},"note":null}]}}"#,
                 "\n",
@@ -7572,9 +7573,9 @@ pub(crate) mod port {
             );
             let node = Node::start(Config {
                 region: Region::Given(region(&[member(OWN, &KEY, &host)])),
-                roots: os::Roots {
+                roots: os::roots::Roots {
                     certificates: vec![b"not DER".to_vec(), CA.to_vec()],
-                    failures: Vec::new(),
+                    ..os::roots::Roots::default()
                 },
                 ..config(&host, Size::MEBIBYTE, Box::new(heap))
             });

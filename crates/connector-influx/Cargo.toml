@@ -13,6 +13,7 @@ sim = [
 ]
 
 [dependencies]
+base64ct.workspace = true
 bytes.workspace = true
 codec = { path = "../codec" }
 connector = { path = "../connector" }
