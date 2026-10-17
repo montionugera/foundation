@@ -158,4 +158,6 @@ take the next issue meanwhile.
   Send its link to `laptop.coordinator` when you file it, which admits it
   (`/coordinate`, "Admit"). Never claim it outside step 2. Your next state comment on
   your issue links each one that you file for it.
+- While `laptop.monitor` says that `laptop.coordinator` is paused, send to
+  `laptop.monitor` each link that this skill sends to `laptop.coordinator`.
 - Before you stop, comment your state on the issue: done, next step, open questions.
