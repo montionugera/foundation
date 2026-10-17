@@ -121,8 +121,11 @@
   and a cursor, so the budget of `browse::walk` counts it. A browse again for a cursor
   reads past at most `VISITS` pages of the server with no references, so that the cursor
   of a page with no entries goes on in a new browse. Past them, it gives
-  `Error::Device`. A reference to a node of another class counts in the text of a cursor
-  and gives no entry. A cursor with no point, or whose point the server freed
+  `Error::Device`. So a new browse of a cursor fails there, where a walk with a held
+  point passes, and #2985 removes this bound (key choice 8,
+  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229704794, accepted
+  by `laptop.monitor`). A reference to a node of another class counts in the text of a
+  cursor and gives no entry. A cursor with no point, or whose point the server freed
   (`BadContinuationPointInvalid`), browses the folder again from its start and skips
   that count when the count is at most 100 000. Past that count, a freed point gives
   `Error::Device` with `BadContinuationPointInvalid`, and a cursor with no point gives
