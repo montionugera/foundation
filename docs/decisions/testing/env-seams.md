@@ -1122,12 +1122,12 @@
   a file in a hidden folder, so a tool can learn whether the target of such a link is
   there. Supersedes "the deepest prefix" rule and the rule of the key of the name in
   `make_dir` of the amendment of 2026-10-17T06:28:34Z; the check of a name in `make_dir`
-  of the amendment of 2026-10-17T06:14:25Z is now a step of the walk for each call, with
-  no key, which supersedes its "with the key of the file at that name". It also
-  supersedes "a path that does not resolve, such as a link to nothing or a loop, passes
-  the limits by its own place" of the amendment of 2026-10-16T08:08:47Z. A step meets
-  the hidden folders only when it passes the folders of each limit, so a step that the
-  folders of a limit refuse gives `Outside`, also beside a hidden folder that is not
+  of the amendment of 2026-10-17T06:14:25Z (#2895) is now a step of the walk for each
+  call, with no key, which supersedes its "with the key of the file at that name". It
+  also supersedes "a path that does not resolve, such as a link to nothing or a loop,
+  passes the limits by its own place" of the amendment of 2026-10-16T08:08:47Z. A step
+  meets the hidden folders only when it passes the folders of each limit, so a step that
+  the folders of a limit refuse gives `Outside`, also beside a hidden folder that is not
   there: with the folder `/work` and nothing at the hidden folder `/out/h`, `/out/x` and
   `/out/y` give `Outside`, whether each is there or not. A short step that is there,
   that no `..` takes the path above, and that the folders of a limit refuse, passes, and
