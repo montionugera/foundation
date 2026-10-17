@@ -348,7 +348,7 @@ fn a_long_source_of_the_roots_is_cut() {
 }
 
 #[test]
-fn a_node_with_16_failures_of_its_roots_warns_of_each_with_no_count() {
+fn a_node_with_16_failures_of_its_roots_warns_of_each() {
     let mut expected = vec![summary(16, "the OS store")];
     expected.extend(listed(16));
     assert_eq!(warned(failed(16)), expected);
