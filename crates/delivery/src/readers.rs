@@ -174,13 +174,41 @@ enum Lag {
     Commit { from: u64 },
 }
 
-/// A frame held in [`Readers::queue`] that a session waits for a grant on.
+const _: () = assert!(size_of::<Flow>() == 88, "a `Flow` is not 88 bytes");
+
+/// A frame held in [`Readers::queue`] that a session waits for a grant on. Its
+/// indexes are `u32`, so that a [`Flow`] is 88 bytes.
 #[derive(Clone, Copy, Debug)]
 struct Owed {
     /// Its index in `queue`.
-    frame: usize,
+    frame: u32,
     /// The index in `sets` of its key set.
-    set: usize,
+    set: u32,
+}
+
+impl Owed {
+    /// The frame at index `frame` of `queue`, of the key set at index `set` of `sets`.
+    ///
+    /// # Panics
+    ///
+    /// If an index does not fit in a `u32`.
+    fn new(frame: usize, set: usize) -> Self {
+        let index = |i: usize| u32::try_from(i).expect("fewer than 2^32 frames held");
+        Self {
+            frame: index(frame),
+            set: index(set),
+        }
+    }
+
+    /// Its index in `queue`.
+    fn frame(self) -> usize {
+        self.frame as usize
+    }
+
+    /// The index in `sets` of its key set.
+    fn set(self) -> usize {
+        self.set as usize
+    }
 }
 
 #[derive(Debug)]
@@ -455,7 +483,7 @@ impl Readers {
         {
             let stale = |set: &mut Arc<KeySet>| set.key() != frame.key_set();
             while self.sets.pop_front_if(stale).is_some() {}
-            let at = Owed { frame: 0, set: 0 };
+            let at = Owed::new(0, 0);
             let (last, owing) = give(
                 &self.complete,
                 &mut self.flows,
@@ -484,28 +512,28 @@ impl Readers {
     /// Gives the frames after the front of `queue` that end at or below `durable`, and
     /// keeps them all, from the front, for the sessions that wait for a grant.
     fn hold(&mut self, durable: u64) {
-        let mut at = Owed { frame: 1, set: 0 };
-        while let Some((frame, seq)) = self.queue.get(at.frame)
+        let (mut i, mut set) = (1, 0);
+        while let Some((frame, seq)) = self.queue.get(i)
             && seq.end <= durable
         {
-            while self.sets[at.set].key() != frame.key_set() {
-                at.set += 1;
+            while self.sets[set].key() != frame.key_set() {
+                set += 1;
             }
             let (last, owing) = give(
                 &self.complete,
                 &mut self.flows,
                 &mut self.woken_complete,
-                (frame, &self.sets[at.set], seq),
-                at,
+                (frame, &self.sets[set], seq),
+                Owed::new(i, set),
             );
             if let Some(waiting) = last {
                 waiting.push_back(frame.clone());
             }
             self.owing += owing;
             self.released = seq.end;
-            at.frame += 1;
+            i += 1;
         }
-        self.held = at.frame;
+        self.held = i;
     }
 
     /// Sends each complete session that waits for a commit below `durable` to disk,
@@ -534,7 +562,7 @@ impl Readers {
                 continue;
             };
             flow.lag = Lag::Disk {
-                from: self.queue[owed.frame].1.start,
+                from: self.queue[owed.frame()].1.start,
             };
             // A session with frames to take sees the miss after it takes them.
             if flow.waiting.is_empty() {
@@ -713,18 +741,18 @@ impl Readers {
             }
             Lag::Owed(owed) => owed,
         };
-        let (frame, seq) = &self.queue[owed.frame];
-        while self.sets[owed.set].key() != frame.key_set() {
+        let (frame, seq) = &self.queue[owed.frame()];
+        while self.sets[owed.set()].key() != frame.key_set() {
             owed.set += 1;
         }
-        let set = &self.sets[owed.set];
+        let set = &self.sets[owed.set()];
         if !flow.pay(frame, set, frame.charge(), seq) {
             flow.lag = Lag::Owed(owed);
             return Next::Empty;
         }
         let frame = frame.clone();
         owed.frame += 1;
-        if owed.frame == self.held {
+        if owed.frame() == self.held {
             flow.lag = Lag::None;
             self.paid();
         } else {
