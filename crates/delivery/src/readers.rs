@@ -130,8 +130,8 @@ const WAITING: usize = 4;
 
 /// What a complete session got of the live path, and its credit for more.
 ///
-/// `repr(C)` puts `waiting` at offset 0 and `credit` at 48, where `release` reads them
-/// for each flow.
+/// `repr(C)` keeps `waiting` and `credit` at the offsets that the assert below pins:
+/// `release` was slower with the order that rustc picks.
 #[derive(Debug)]
 #[repr(C)]
 struct Flow {

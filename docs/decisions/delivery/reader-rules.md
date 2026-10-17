@@ -43,10 +43,10 @@
   readers write a position record at once when they open, close, or are taken over, and
   on the home's interval when the position changed. A session open at a crash restores
   as closed at the restore. The home drops a grant, ack, or close for a key it gave that
-  is no longer open: a late message after a close or a takeover. A take of
-  such a key gives nothing. After a home sheds an index (HOME SURFACE), a call with a
-  key of a reader of the index panics until the home carries it again; after that carry,
-  the home drops the call as late (`laptop.architect`, 2026-10-08T22:24:43Z:
+  is no longer open: a late message after a close or a takeover. A take of such a key
+  gives nothing. After a home sheds an index (HOME SURFACE), a call with a key of a
+  reader of the index panics until the home carries it again; after that carry, the home
+  drops the call as late (`laptop.architect`, 2026-10-08T22:24:43Z:
   https://github.com/synnaxlabs/foundation/issues/2020#issuecomment-6070259814). A key
   is the home's own value, in memory only, and keys start again at a restore. No hub
   message carries a key: the home maps each one to a key it gave, so a key it never gave
