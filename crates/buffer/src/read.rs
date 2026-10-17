@@ -16,9 +16,10 @@ use types::time::Stamp;
 
 use crate::buffer::Error;
 use crate::entry::{self, Header, Samples};
-use crate::log::{Mark, Run};
+use crate::log::{self, Run};
 use crate::record::{self, ALIGN, AREA_START, HEADER_LEN};
 use crate::wal::Layout;
+use types::log::Mark;
 
 /// One entry that a read gives back.
 #[derive(Clone, Debug)]
@@ -207,7 +208,7 @@ impl<'a> Reading<'a> {
             if (header.index, header.path) != (index, self.path) {
                 continue;
             }
-            at = at.after(header.first, header.len());
+            at = log::after(at, header.first, header.len());
             if at > self.read.next {
                 wanted.push((header, offset, at));
             }

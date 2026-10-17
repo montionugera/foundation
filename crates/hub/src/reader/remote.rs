@@ -8,7 +8,6 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker, ready};
 
-use block::Block;
 use transport::stream::{Receiver, Sender};
 use transport::{Class, Code};
 use types::channel;
@@ -328,8 +327,8 @@ async fn session(
         return;
     };
     let (sender, receiver, frames) = match opened {
-        Ok((sender, receiver, frames, live)) => {
-            waiting.borrow_mut().open(Ok(live));
+        Ok((sender, receiver, frames)) => {
+            waiting.borrow_mut().open(Ok(frames.live()));
             (sender, receiver, frames)
         }
         Err(error) => {
@@ -449,15 +448,15 @@ impl Inbound {
         loop {
             let step = match self.frames.due().map_err(Ended::Frame)? {
                 Due::Message => {
-                    let message = recv(receiver, &self.frames).await?;
-                    self.frames.decode(&message)
+                    let message = receiver.recv().await.map_err(ended)?;
+                    self.frames.decode(message.as_deref())
                 }
                 Due::Body(body) => match receiver.recv_into(body).await {
                     Ok(Some(len)) => self.frames.received(len),
-                    Ok(None) => return Err(Ended::Message(self.frames.finished())),
+                    Ok(None) => self.frames.decode(None),
                     Err(transport::Error::TooLarge { .. }) => {
-                        let message = recv(receiver, &self.frames).await?;
-                        self.frames.decode(&message)
+                        let message = receiver.recv().await.map_err(ended)?;
+                        self.frames.decode(message.as_deref())
                     }
                     Err(error) => return Err(ended(error)),
                 },
@@ -603,7 +602,7 @@ async fn connect(
     class: Class,
     set: &Arc<KeySet>,
     open: &Open,
-) -> Result<(Sender, Receiver, Frames, u64), Error> {
+) -> Result<(Sender, Receiver, Frames), Error> {
     let mut tries = 1;
     loop {
         match attempt(state, home, class, set, open).await {
@@ -623,7 +622,7 @@ async fn attempt(
     class: Class,
     set: &Arc<KeySet>,
     open: &Open,
-) -> Result<(Sender, Receiver, Frames, u64), Error> {
+) -> Result<(Sender, Receiver, Frames), Error> {
     let (mut sender, mut receiver) = dial(state, home)
         .await?
         .open(class)
@@ -631,7 +630,7 @@ async fn attempt(
         .map_err(Error::Transport)?;
     let opened = handshake(state, (&mut sender, &mut receiver), set, open).await;
     match opened {
-        Ok((frames, live)) => Ok((sender, receiver, frames, live)),
+        Ok(frames) => Ok((sender, receiver, frames)),
         Err(error) => {
             let refusal = match error {
                 Error::Message(_) => Some(Refusal::Malformed),
@@ -648,13 +647,13 @@ async fn attempt(
 }
 
 /// Sends the header, `open`, and the keys of `set` on `sender`, and gives the frames
-/// that the home's `Opened` opens and its open position.
+/// that the home's `Opened` opens.
 async fn handshake(
     state: &RefCell<State>,
     (sender, receiver): (&mut Sender, &mut Receiver),
     set: &Arc<KeySet>,
     open: &Open,
-) -> Result<(Frames, u64), Error> {
+) -> Result<Frames, Error> {
     let header = wire::header::encode(Protocol::Hub);
     send(state, sender, header.len(), |out| {
         out.copy_from_slice(&header);
@@ -693,14 +692,6 @@ async fn send(
         .send(block.freeze())
         .await
         .map_err(|error| refused(error).map_or_else(Error::Transport, Error::Refused))
-}
-
-async fn recv(receiver: &mut Receiver, frames: &Frames) -> Result<Block, Ended> {
-    match receiver.recv().await {
-        Ok(Some(message)) => Ok(message),
-        Ok(None) => Err(Ended::Message(frames.finished())),
-        Err(error) => Err(ended(error)),
-    }
 }
 
 /// The refusal of HUB WIRE that `error` carries, or `error` when it carries none.

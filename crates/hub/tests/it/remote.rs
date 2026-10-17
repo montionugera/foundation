@@ -1670,9 +1670,8 @@ fn lost(messages: &[Vec<u8>]) -> Vec<ops::Range<u64>> {
         data: &data,
     }]);
     let mut messages = messages.iter().map(Vec::as_slice);
-    let (mut frames, _) =
-        Frames::open(wire::hub::Reader::new(&open), set, messages.next())
-            .expect("opens");
+    let mut frames = Frames::open(wire::hub::Reader::new(&open), set, messages.next())
+        .expect("opens");
     let mut lost = Vec::new();
     loop {
         let step = match frames.due().expect("a layout") {
@@ -1681,7 +1680,7 @@ fn lost(messages: &[Vec<u8>]) -> Vec<ops::Range<u64>> {
                 Ok(frames.draft(draft))
             }
             Due::Body(_) | Due::Message => match messages.next() {
-                Some(message) => frames.decode(message),
+                Some(message) => frames.decode(Some(message)),
                 None => return lost,
             },
         };

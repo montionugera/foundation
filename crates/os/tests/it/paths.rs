@@ -25,6 +25,7 @@ fn run(case: fn(&Host<'_>)) {
         dir: &scratch.0,
         make_dir: &make_dir,
         make_link: &|path, target| symlink(target, path).unwrap(),
+        move_path: &|from, to| fs::rename(from, to).unwrap(),
     });
 }
 
@@ -281,7 +282,7 @@ fn within_writes_a_new_name_whose_resolved_path_is_too_long_as_free() {
 }
 
 /// A work folder that a program moves away and makes again holds nothing at either
-/// name until a new `within`.
+/// name until a new `within`, and refuses a path at each name as replaced.
 #[test]
 fn a_folder_that_a_program_moves_and_makes_again_holds_nothing() {
     run(|host| {
@@ -291,7 +292,45 @@ fn a_folder_that_a_program_moves_and_makes_again_holds_nothing() {
         let moved = within.read(&base.join("moved/a.hcl"), 1);
         host.paths.write(&base.join("work/a.hcl"), b"y").unwrap();
         let made = within.read(&base.join("work/a.hcl"), 1);
-        assert_eq!((moved, made), (Err(Error::Outside), Err(Error::Outside)));
+        assert_eq!((moved, made), (Err(Error::Replaced), Err(Error::Replaced)));
+    });
+}
+
+/// APFS ignores the case of a name, so a folder made again in another case is the
+/// folder that a program replaced.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_folder_made_again_in_other_case_is_replaced() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        fs::rename(base.join("work"), base.join("old")).unwrap();
+        fs::create_dir(base.join("WORK")).unwrap();
+        host.paths.write(&base.join("WORK/a.hcl"), b"y").unwrap();
+        let lower = within.read(&base.join("work/a.hcl"), 1);
+        let upper = within.read(&base.join("WORK/a.hcl"), 1);
+        let resolved = host.paths.resolve(&base.join("work/a.hcl"));
+        assert_eq!(
+            (lower, upper),
+            (Err(Error::Replaced), Err(Error::Replaced)),
+            "{resolved:?}"
+        );
+    });
+}
+
+/// The old folder stays, so the host cannot give the new one its key.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_folder_made_again_read_in_other_case_is_replaced() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        let read = within.read(&base.join("WORK/a.hcl"), 1);
+        assert_eq!(read, Ok(Found::File(b"x".to_vec())));
+        fs::rename(base.join("work"), base.join("old")).unwrap();
+        fs::create_dir(base.join("work")).unwrap();
+        host.paths.write(&base.join("work/a.hcl"), b"y").unwrap();
+        let upper = within.read(&base.join("WORK/a.hcl"), 1);
+        let resolved = host.paths.resolve(&base.join("WORK/a.hcl"));
+        assert_eq!(upper, Err(Error::Replaced), "{resolved:?}");
     });
 }
 
@@ -320,7 +359,7 @@ fn within_hides_a_hidden_name_whose_resolved_path_is_too_long() {
             .paths
             .within(slice::from_ref(&top), slice::from_ref(&key))
             .unwrap();
-        assert_eq!(within.write(&key, b"x"), Err(Error::Hidden));
+        assert_eq!(within.write(&key, b"x"), Err(Error::Vacant));
         assert!(!deep.join(&name).exists());
         assert_eq!(within.write(&top.join("b.hcl"), b"x"), Ok(()));
     });
@@ -880,7 +919,7 @@ fn two_writers_of_one_path_each_write_whole() {
 }
 
 /// `link` names a directory or a file at each instant: another thread swaps it with one
-/// rename. A read gives one of the two, never an error.
+/// rename. A read gives one of the two, and on macOS also `Io` 22 (#2964).
 #[test]
 fn a_read_of_a_path_that_swaps_a_directory_for_a_file_gives_one_of_them() {
     let scratch = Scratch::new();
@@ -895,8 +934,9 @@ fn a_read_of_a_path_that_swaps_a_directory_for_a_file_gives_one_of_them() {
             fs::rename(&next, &link).unwrap();
         }
     };
-    let other = race(swap, 5_000, &link, |read| {
-        matches!(read, Ok(Found::File(_) | Found::Directory(_)))
+    let other = race(swap, 5_000, &link, |read| match read {
+        Ok(Found::File(_) | Found::Directory(_)) => true,
+        read => cfg!(target_os = "macos") && *read == Err(Error::Io { code: 22 }),
     });
     assert_eq!(other, None);
 }
@@ -1100,23 +1140,8 @@ fn within_makes_no_file_at_a_hidden_name_in_other_case() {
         let there = (fs::metadata(&key).is_ok(), fs::metadata(&dir).is_ok());
         assert_eq!(
             (wrote, made, there),
-            (Err(Error::Hidden), Err(Error::Hidden), (false, false))
+            (Err(Error::Vacant), Err(Error::Vacant), (false, false))
         );
-    });
-}
-
-/// A program replaces the folder with a link to a directory outside it.
-#[test]
-fn a_folder_that_a_link_replaces_holds_nothing_outside() {
-    run(|host| {
-        let (_, base) = cases::within_work(host);
-        let work = base.join("work");
-        let within = host.paths.within(slice::from_ref(&work), &[]).unwrap();
-        fs::rename(&work, base.join("old")).unwrap();
-        symlink(base.join("workshop"), &work).unwrap();
-        let read = within.read(&work.join("a.hcl"), 1);
-        let direct = within.read(&base.join("workshop/a.hcl"), 1);
-        assert_eq!((read, direct), (Err(Error::Outside), Err(Error::Outside)));
     });
 }
 

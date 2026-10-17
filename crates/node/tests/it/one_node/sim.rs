@@ -171,11 +171,12 @@ impl Influx {
             let serve = connector_influx::sim::serve(
                 listener,
                 tasks,
+                token,
                 store,
                 "plant".into(),
                 taken,
             );
-            if let Some(error) = token.race(serve).await {
+            if let Err(error) = serve.await {
                 panic!("the simulated InfluxDB stopped: {error}");
             }
         });
@@ -394,10 +395,6 @@ fn influx_panics_on_a_field_that_is_not_a_float() {
 }
 
 #[test]
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "needs SOCK_CLOEXEC and the shutdown of a listener"
-)]
 fn a_stopped_influx_refuses_and_serves_again_on_its_port_with_what_it_stored() {
     let mut influx = Influx::default();
     let address = influx.serve();
@@ -460,10 +457,6 @@ fn a_served_opcua_answers_on_its_address_with_no_http() {
 }
 
 #[test]
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "needs SOCK_CLOEXEC and the shutdown of a listener"
-)]
 fn a_dropped_opcua_stops_each_server_that_it_served() {
     let mut opcua = Opcua::default();
     let first = opcua.serve();
@@ -511,10 +504,6 @@ fn a_dropped_influx_does_not_join_its_server_when_the_test_panics() {
 }
 
 #[test]
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "needs SOCK_CLOEXEC and the shutdown of a listener"
-)]
 fn a_dropped_influx_stops_its_server_when_the_test_panics() {
     let mut influx = Influx::default();
     let address = influx.serve();

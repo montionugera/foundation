@@ -30,7 +30,19 @@ where
     T: Send + 'static,
     F: Future<Output = T> + 'static,
 {
-    run_with(0, sim::node::Config::default(), main)
+    run_in(0, main)
+}
+
+/// [`run_on`] in a sim of `seed`.
+pub(crate) fn run_in<T, F>(
+    seed: u64,
+    main: impl FnOnce(sim::node::Node, Tasks) -> F + Send + 'static,
+) -> T
+where
+    T: Send + 'static,
+    F: Future<Output = T> + 'static,
+{
+    run_with(seed, sim::node::Config::default(), main)
 }
 
 /// Runs `main` on a shard of one simulated node of `config`, in a sim of `seed`,

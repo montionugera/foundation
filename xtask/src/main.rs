@@ -20,6 +20,7 @@ mod review;
 mod sanitizers;
 mod select;
 mod sim;
+mod skips;
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -38,6 +39,7 @@ fn main() -> ExitCode {
         ["layers"] => layers(root),
         ["globals"] => globals::check(root),
         ["oracles"] => oracles::check(root),
+        ["skips"] => skips::check(root),
         [name @ ("loom" | "shuttle")] => cfg::test(root, name),
         ["miri"] => miri::run(root),
         ["sanitizers"] => sanitizers::run(root),
@@ -45,8 +47,12 @@ fn main() -> ExitCode {
         ["fuzz", seconds] => fuzz::seconds(seconds)
             .map_err(|e| vec![e])
             .and_then(|seconds| fuzz::run(root, seconds)),
-        ["open62541"] => open62541::check(root),
-        ["open62541", tag] => open62541::run(root, open62541::URL, tag),
+        ["open62541"] => open62541::Crypto::locked(root)
+            .map_err(|e| vec![e])
+            .and_then(|crypto| open62541::check(root, &crypto)),
+        ["open62541", tag] => open62541::Crypto::locked(root)
+            .map_err(|e| vec![e])
+            .and_then(|crypto| open62541::run(root, &crypto, open62541::URL, tag)),
         ["review", pr, head] => return review::run(root, pr, head, &gh::api),
         ["queue", "review", reference, group] => {
             return queue::review(root, reference, group, &gh::api);
@@ -54,8 +60,8 @@ fn main() -> ExitCode {
         ["queue", "mutants", group] => queue::mutants(group, &gh::api),
         _ => {
             eprintln!(
-                "usage: cargo xtask <layers|globals|oracles|loom>\n       \
-                 cargo xtask <shuttle|miri|sanitizers>\n       \
+                "usage: cargo xtask <layers|globals|oracles|skips>\n       \
+                 cargo xtask <loom|shuttle|miri|sanitizers>\n       \
                  cargo xtask fuzz [seconds]\n       \
                  cargo xtask open62541 [tag]\n       \
                  cargo xtask review <pr> <head sha>\n       \
@@ -436,7 +442,7 @@ mod tests {
             &[
                 "    needs: changes",
                 "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"",
-                "    runs-on: ubuntu-latest",
+                "    runs-on: ubuntu-24.04",
                 "    steps:",
                 "      - uses: actions/checkout@v4",
                 "      - uses: Swatinem/rust-cache@v2",
@@ -456,7 +462,7 @@ mod tests {
             &[
                 "    needs: changes",
                 "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"",
-                "    runs-on: ubuntu-latest",
+                "    runs-on: ubuntu-24.04",
                 "    steps:",
                 "      - uses: actions/checkout@v4",
                 "      - uses: Swatinem/rust-cache@v2",
@@ -469,7 +475,7 @@ mod tests {
             &[
                 "    needs: changes",
                 "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"",
-                "    runs-on: ubuntu-latest",
+                "    runs-on: ubuntu-24.04",
                 "    steps:",
                 "      - uses: actions/checkout@v4",
                 "      - name: Install the pinned nightly",
@@ -839,6 +845,138 @@ mod tests {
                      .github/workflows/ci.yaml lacks 'crates/{name}/**'"
                 );
             }
+        }
+    }
+
+    /// The lines of the job `name` of `ci.yaml`, whose matrix holds one entry for each
+    /// OS.
+    fn os_job(name: &str) -> Vec<String> {
+        let ci = workflow(&fixture().join("../.."));
+        let ci: Vec<&str> = ci.lines().collect();
+        let job = under(&under(&ci, "jobs:"), &format!("  {name}:"));
+        job.into_iter().map(str::to_owned).collect()
+    }
+
+    /// The lines of the job `check` of `ci.yaml`.
+    fn check_job() -> Vec<String> {
+        os_job("check")
+    }
+
+    /// The `if` of the job, the names of its matrix entries, and the `if` of each of
+    /// `steps`, in order.
+    fn ifs_and_names<'a>(
+        job: &'a [String],
+        steps: &[&str],
+    ) -> (Vec<&'a str>, Vec<&'a str>) {
+        let mut ifs: Vec<&str> = (job.iter().map(String::as_str))
+            .filter(|line| line.starts_with("    if: "))
+            .collect();
+        let names = (job.iter())
+            .filter_map(|line| line.strip_prefix("          - name: "))
+            .collect();
+        for step in steps {
+            let start = (job.iter())
+                .position(|line| *line == format!("      - name: {step}"))
+                .unwrap_or_else(|| panic!("the job has no step `{step}`"));
+            ifs.push(&job[start + 1]);
+        }
+        (ifs, names)
+    }
+
+    #[test]
+    fn the_check_of_each_os_runs_on_each_event_so_that_it_reports_its_name() {
+        // A matrix job that its `if` skips reports one check, named by the unexpanded
+        // expression, and none of the names of its entries. A step that its `if` skips
+        // on an OS passes there.
+        let check = check_job();
+        let step = "        if: \"!cancelled() && env.RUST != 'false'\"";
+        assert_eq!(
+            ifs_and_names(&check, &["Clippy", "Test"]),
+            (
+                vec!["    if: \"!cancelled()\"", step, step],
+                vec!["check", "macos", "windows"]
+            )
+        );
+        let features = os_job("features");
+        assert_eq!(
+            ifs_and_names(&features, &["Each feature alone"]),
+            (
+                vec![
+                    "    if: \"!cancelled()\"",
+                    "        if: env.RUST != 'false'"
+                ],
+                vec!["features", "features-macos", "features-windows"]
+            )
+        );
+    }
+
+    /// The `crates` list of each matrix entry of `job`, in order.
+    fn crates(job: &[String]) -> Vec<Vec<&str>> {
+        let (mut lists, mut open): (Vec<Vec<&str>>, bool) = (Vec::new(), false);
+        for line in job {
+            if let Some(item) = line.strip_prefix("              - ") {
+                if let (true, Some(list)) = (open, lists.last_mut()) {
+                    list.push(item);
+                }
+            } else if let Some(key) = line.strip_prefix("            ") {
+                open = key.starts_with("crates:");
+                if open {
+                    lists.push(Vec::new());
+                }
+            }
+        }
+        lists
+    }
+
+    #[test]
+    fn the_feature_check_of_each_os_leaves_out_the_crates_of_its_check() {
+        let check = check_job();
+        let check = crates(&check);
+        assert_eq!(check.len(), 3);
+        assert!(
+            check[2]
+                .contains(&"--exclude node # #2968, #682, #2955, #2956, #477, #2957")
+        );
+        assert_eq!(crates(&os_job("features")), check);
+    }
+
+    #[test]
+    fn each_exception_of_an_os_names_the_issue_that_removes_it() {
+        let check = check_job();
+        // The lists are empty at the goal of LINUX CI, so the parse is checked by the
+        // keys of each entry. Only a block list puts its items where the check below
+        // reads them.
+        for key in ["crates:", "untested:", "tests:"] {
+            let entries: Vec<&str> = (check.iter())
+                .filter_map(|line| line.strip_prefix("            "))
+                .filter(|line| line.starts_with(key))
+                .collect();
+            assert_eq!(
+                entries.len(),
+                3,
+                "the entries of the matrix that give `{key}`"
+            );
+            for entry in entries {
+                assert!(
+                    entry == key || entry == format!("{key} []"),
+                    "`{entry}` of ci.yaml is not a block list or `[]`"
+                );
+            }
+        }
+        let items =
+            (check.iter()).filter_map(|line| line.strip_prefix("              - "));
+        for item in items {
+            let issues = item.split_once(" # ").map(|(_, comment)| comment);
+            assert!(
+                issues.is_some_and(|issues| {
+                    issues.split(", ").all(|issue| {
+                        (issue.strip_prefix('#')).is_some_and(|n| {
+                            !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
+                        })
+                    })
+                }),
+                "the exception `{item}` of ci.yaml names no issue as `# #<n>`"
+            );
         }
     }
 

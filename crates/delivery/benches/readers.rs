@@ -1,7 +1,6 @@
 //! The cost of one acknowledgment, which runs per message, by an unnamed and by a named
-//! reader, of one live frame to the
-//! complete readers, and of one frame from disk to a complete reader, which run per
-//! frame, and of one floor, which the home reads when `buffer` trims.
+//! reader, of one live frame to the complete readers, and of one frame from disk to a
+//! complete reader, which run per frame.
 
 use std::sync::Arc;
 
@@ -12,6 +11,7 @@ use divan::counter::ItemsCount;
 use types::channel;
 use types::frame::key_set::{Group, Interner, KeySet};
 use types::frame::{Draft, Form, Frame, Path};
+use types::log::Mark;
 use types::sample::{Scalar, Type};
 use types::time::Span;
 
@@ -170,7 +170,7 @@ fn fill(bencher: Bencher<'_, '_>) {
                 let filled = readers.fill(*key, frame, &set, seq..seq + 1);
                 assert!(filled, "filled");
             }
-            readers.reached(*key, BURST, BURST);
+            readers.reached(*key, Mark::at(BURST), BURST);
             for _ in 0..BURST {
                 let Next::Frame(frame) = readers.take((*key).into()) else {
                     panic!("each frame from disk waits for the reader");
@@ -340,10 +340,4 @@ fn release_places_alternating(bencher: Bencher<'_, '_>, channels: usize) {
         divan::black_box(readers.take(key.into()));
         divan::black_box(readers.take(key.into()));
     });
-}
-
-#[divan::bench(args = [1, 16, 256])]
-fn floor(bencher: Bencher<'_, '_>, sessions: usize) {
-    let (readers, _) = opened(sessions, 0);
-    bencher.bench_local(|| divan::black_box(&readers).floor());
 }

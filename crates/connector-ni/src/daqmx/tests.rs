@@ -371,7 +371,6 @@ fn reads_through_the_loaded_driver() {
 
 #[test]
 #[cfg_attr(miri, ignore = "Miri cannot load a library")]
-#[cfg_attr(not(target_os = "linux"), ignore = "the message is glibc's")]
 fn names_a_library_that_does_not_load() {
     // SAFETY: no library loads.
     let error = unsafe { Library::open(Some(Path::new("/none/libnidaqmx.so"))) };
@@ -387,7 +386,6 @@ fn names_a_library_that_does_not_load() {
 
 #[test]
 #[cfg_attr(miri, ignore = "Miri cannot load a library")]
-#[cfg_attr(not(target_os = "linux"), ignore = "the library is glibc's")]
 fn names_a_function_the_library_lacks() {
     // SAFETY: the C library loads with no harm, and `find` fails before it uses a
     // symbol.

@@ -5,6 +5,7 @@
 
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
+#![cfg(any(target_os = "linux", target_os = "macos"))] // #2955
 
 #[path = "common/children.rs"]
 mod children;
@@ -15,7 +16,6 @@ mod sockets;
 use sockets::{BIND, LISTEN};
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "needs SOCK_CLOEXEC")]
 fn no_child_holds_a_socket_that_another_thread_opens() {
     let baseline = children::Baseline::list();
     let held = children::held_while(&baseline, 4, async |net| {

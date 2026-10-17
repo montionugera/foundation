@@ -166,6 +166,15 @@ impl Node {
         waker.wake();
     }
 
+    /// The count of open TCP streams of the node: each connect that has not given its
+    /// stream, and each stream that a connect or an accept gave and that has not
+    /// dropped. A stream that a listener holds before its accept does not count, and a
+    /// crash drops each stream of the node.
+    #[must_use]
+    pub fn streams(&self) -> usize {
+        lock(&self.0.shared).net().tcp().streams(self.0.node)
+    }
+
     /// The node's serial ports: one at each end of a line that
     /// [`Sim::line`](crate::Sim::line) joins to the node.
     ///
@@ -319,7 +328,10 @@ impl Node {
     }
 
     /// Makes the next read, write, or `make_dir` of `path` on the node's host fail
-    /// with `env::paths::Error::Io` and `code`. Faults on one path fire in turn, one
+    /// with `env::paths::Error::Io` and `code`. A call is of `path` when both give one
+    /// path from the working directory at that call, with `.` and `..` taken as text
+    /// and no link followed, so a relative `path` follows a later
+    /// [`Node::set_working_dir`]. Faults that a call is of fire in the order set, one
     /// per call, and a failed call changes no file.
     pub fn fail_path(&self, path: &Path, code: i32) {
         lock(&self.0.shared).paths().fail(self.0.node, path, code);
@@ -352,6 +364,31 @@ impl Node {
         let parent = path.components().any(|part| part == Component::ParentDir);
         assert!(!parent, "{} has a `..` segment", path.display());
         lock(&self.0.shared).paths().place_dir(self.0.node, path);
+    }
+
+    /// Moves the file, link, or directory at `from` on the node's host to `to`, as a
+    /// rename from outside the node does: it keeps its key, and a directory keeps
+    /// what it holds. A link on the way to `from` or `to` is followed, and a link at
+    /// `from` moves itself. When the node's working directory resolves, it stays on
+    /// the directory that it resolves to, as on a host: it moves with it when that
+    /// directory is `from` or under it, and a move of a link on its way leaves it
+    /// there. It keeps its path while that path resolves to that directory, and else
+    /// takes the path of the directory.
+    ///
+    /// # Panics
+    ///
+    /// When `from` or `to` is relative or `/`, or has a `..` segment, when nothing is
+    /// at `from`, when a file, a link, or a directory is at `to`, when the directory
+    /// of `to` is not there, or when `to` is under `from`.
+    pub fn move_path(&self, from: &Path, to: &Path) {
+        for path in [from, to] {
+            assert!(path.is_absolute(), "{} is relative", path.display());
+            let parent = path.components().any(|part| part == Component::ParentDir);
+            assert!(!parent, "{} has a `..` segment", path.display());
+        }
+        lock(&self.0.shared)
+            .paths()
+            .move_entry(self.0.node, from, to);
     }
 
     /// Sets the working directory of the node's host, from which each relative path

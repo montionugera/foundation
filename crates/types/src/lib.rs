@@ -1,7 +1,7 @@
 //! Byte-level values shared by every crate: time, byte sizes, sample types, keys, key
 //! sets, names, selectors, quality, control authority, and content digests. Frames and
-//! series join them here. It also holds the wakers of the futures that wait for one
-//! event (`wait::Set`).
+//! series join them here, and the mark of a read of a log. It also holds the wakers of
+//! the futures that wait for one event (`wait::Set`).
 //!
 //! These types describe layout only. What a value means (enum names, units) lives in
 //! `spec`.
@@ -15,6 +15,7 @@ pub mod ed25519;
 pub mod frame;
 pub mod hash;
 pub mod hello;
+pub mod log;
 pub mod name;
 pub mod node;
 pub mod quality;

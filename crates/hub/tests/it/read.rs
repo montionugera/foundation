@@ -579,7 +579,7 @@ fn stop_while_frames_come(
         let got = loop {
             match stream.recv().await {
                 Ok(Some(message)) => {
-                    if let Ok(FromHome::Head(_)) = reader.decode(&message) {
+                    if let Ok(FromHome::Head(_)) = reader.decode(Some(&message)) {
                         frames += 1;
                     }
                 }

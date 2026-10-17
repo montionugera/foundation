@@ -79,8 +79,8 @@ fn run(args: &[OsString], vars: BTreeMap<OsString, OsString>) -> Result<u8, Fail
 }
 
 /// Runs the command line `args` on a shard of its own. The shard and each I/O thread
-/// of a reach end before this returns, so a node that `foundation start` runs gets
-/// every shard, and its first thread takes the signals.
+/// of a reach or of standard input end before this returns, so a node that
+/// `foundation start` runs gets every shard, and its first thread takes the signals.
 ///
 /// # Panics
 ///
@@ -92,26 +92,44 @@ fn run(args: &[OsString], vars: BTreeMap<OsString, OsString>) -> Result<u8, Fail
 fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
     let (ran, run) = mpsc::channel();
     let (started, threads) = mpsc::channel();
+    let (opened, reaches) = mpsc::channel();
     let config = env::shards::Config {
         name: "cli".into(),
         core: None,
     };
     let shard = shards.start(config, move |tasks| async move {
+        // Only `foundation mcp` reads, so the thread starts at the first read.
+        let mut stdin = None;
+        let input = async || {
+            let input = match &stdin {
+                Some(input) => input,
+                None => stdin.insert(input(&started)?),
+            };
+            input.read(ops::line).await
+        };
         let run = ops::cli(
             args,
-            io::stdin().lock(),
+            input,
             io::stdout().lock(),
             io::stderr().lock(),
             &os::paths(),
-            async |dir: &Path| reach(dir, &tasks, &started).await.map(send),
+            async |dir: &Path| reach(dir, &tasks, &opened).await.map(send),
         )
         .await;
         ran.send(run).expect("invariant: `main` keeps the receiver");
     });
+    let shard = shard.map_err(failed)?;
+    // Each reach joins here as it comes, so a server that reaches many times holds no
+    // ended thread. The stdin thread goes to `threads`, since it ends only with the
+    // shard.
+    let joined = reaches
+        .iter()
+        .map(env::thread::Handle::join)
+        .fold(Ok(()), Result::and);
     shard
-        .map_err(failed)?
         .join()
         .expect("invariant: the shard of the command line does not panic");
+    joined.map_err(failed)?;
     threads
         .try_iter()
         .try_for_each(env::thread::Handle::join)
@@ -121,17 +139,33 @@ fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
         .expect("invariant: the shard sends its run before it ends"))
 }
 
+/// The standard input of the process, read on an I/O thread whose handle goes to
+/// `started`. `cli` reads only after each read before it ends, so the thread ends
+/// once the input drops.
+#[expect(
+    clippy::unwrap_in_result,
+    reason = "`main` keeps the receiver until the shard ends"
+)]
+fn input(started: &mpsc::Sender<env::thread::Handle>) -> io::Result<os::Input> {
+    let threads = os::threads().map_err(io::Error::other)?;
+    let (input, handle) = os::input(&threads, "stdin").map_err(io::Error::other)?;
+    started
+        .send(handle)
+        .expect("invariant: `main` keeps the receiver");
+    Ok(input)
+}
+
 /// The client of the node that runs on the data directory `dir`. It sends the handle
-/// of the I/O thread that reads `dir` to `started`, for the main thread to join.
+/// of the I/O thread that reads `dir` to `opened`, for the main thread to join.
 async fn reach(
     dir: &Path,
     tasks: &Tasks,
-    started: &mpsc::Sender<env::thread::Handle>,
+    opened: &mpsc::Sender<env::thread::Handle>,
 ) -> Result<program::Session, Failure> {
     let threads = os::threads().map_err(failed)?;
     let (disk, handle) =
         os::stored(dir, &threads, "files-reach").map_err(|error| stored(dir, error))?;
-    started
+    opened
         .send(handle)
         .expect("invariant: `main` keeps the receiver");
     let reached = node::client::reach(node::client::Config {
