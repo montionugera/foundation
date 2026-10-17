@@ -11,6 +11,7 @@ use divan::counter::ItemsCount;
 use types::channel;
 use types::frame::key_set::{Group, Interner, KeySet};
 use types::frame::{Draft, Form, Frame, Path};
+use types::log::Mark;
 use types::sample::{Scalar, Type};
 use types::time::Span;
 
@@ -169,7 +170,7 @@ fn fill(bencher: Bencher<'_, '_>) {
                 let filled = readers.fill(*key, frame, &set, seq..seq + 1);
                 assert!(filled, "filled");
             }
-            readers.reached(*key, BURST, BURST);
+            readers.reached(*key, Mark::at(BURST), BURST);
             for _ in 0..BURST {
                 let Next::Frame(frame) = readers.take((*key).into()) else {
                     panic!("each frame from disk waits for the reader");
