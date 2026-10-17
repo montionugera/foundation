@@ -402,6 +402,17 @@ impl<'a> Tcp<'a> {
         listening.waker
     }
 
+    /// The count of the ends of `node` that a driver holds.
+    pub(crate) fn streams(&self, node: usize) -> usize {
+        let own = addresses(node);
+        (self.sockets.ends.values())
+            .filter(|end| own.contains(&end.pair.local.ip()))
+            .filter(|end| {
+                matches!(end.phase, Phase::Connecting | Phase::Refused | Phase::Open)
+            })
+            .count()
+    }
+
     /// Makes the listener of `node` at `local` fail, and resets the streams in its
     /// handshake. Returns a waker for the caller to wake after it releases the lock:
     /// that of an accept that waits, or one that does nothing. Returns `None` when no

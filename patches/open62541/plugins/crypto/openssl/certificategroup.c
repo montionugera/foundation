@@ -867,7 +867,7 @@ UA_CertificateUtils_getThumbprint(UA_ByteString *certificate,
 
     UA_String thumb = UA_STRING_NULL;
     thumb.length = (SHA1_DIGEST_LENGTH * 2) + 1;
-    thumb.data = (UA_Byte*)malloc(sizeof(UA_Byte) * thumb.length);
+    thumb.data = (UA_Byte*)UA_malloc(sizeof(UA_Byte) * thumb.length);
 
     /* Create a string containing a hex representation */
     char *p = (char*)thumb.data;
@@ -876,7 +876,7 @@ UA_CertificateUtils_getThumbprint(UA_ByteString *certificate,
     }
 
     memcpy(thumbprint->data, thumb.data, thumbprint->length);
-    free(thumb.data);
+    UA_free(thumb.data);
 
     return UA_STATUSCODE_GOOD;
 }

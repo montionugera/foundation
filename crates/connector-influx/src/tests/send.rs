@@ -264,19 +264,23 @@ impl Plant {
         let tasks = self.tasks.clone();
         let certificate = self.certificate;
         self.tasks.spawn(async move {
-            let error = match certificate {
+            let until = cancel::Token::new();
+            let served = match certificate {
                 Some(certificate) => {
                     connector::http::sim::serve_tls(
                         listener,
                         tasks,
+                        until,
                         certificate,
                         answer,
                     )
                     .await
                 }
-                None => connector::http::sim::serve(listener, tasks, answer).await,
+                None => {
+                    connector::http::sim::serve(listener, tasks, until, answer).await
+                }
             };
-            panic!("the listener failed: {error}");
+            panic!("the listener failed: {served:?}");
         });
     }
 
