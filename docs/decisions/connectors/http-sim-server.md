@@ -10,8 +10,11 @@
   and closes each stream that it accepted: it takes the stream back from `hyper` and
   shuts it down, with a close_notify under TLS, then a FIN. An answer in flight can be
   cut. The close waits on no peer: a shutdown that cannot finish at its first poll, and
-  a stream in its TLS handshake, drop the stream, which resets it. A crash of the node
-  resets each stream (`laptop.architect-2`, 2026-10-17T16:58:24Z:
+  a stream in its TLS handshake, drop the stream, which resets it. Bytes of the peer
+  that reach a stream after its close reset it, as on a TCP stack, so a request in
+  flight at the stop can end with a reset (`laptop.architect-2`, 2026-10-17T17:46:18Z:
+  https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6237944753). A crash
+  of the node resets each stream (`laptop.architect-2`, 2026-10-17T16:58:24Z:
   https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6237139250, item 1).
   On each return, each stream that it accepted has ended, so a conformance scenario can
   stop a device in order. It returns the listener's error, so a test server that cannot

@@ -76,13 +76,15 @@ pub fn ca() -> Roots {
 /// It runs until `until` is cancelled or the listener fails. It then drops `listener`
 /// and closes each stream it accepted, with a `close_notify` under TLS, then a FIN. An
 /// answer in flight can be cut. The close waits on no peer: a shutdown that cannot
-/// finish at once, and a stream in its TLS handshake, drop the stream, which resets
-/// it. On each return, each stream that it accepted has ended. Dropping the future
-/// stops only the accepts: each stream it accepted runs on until `until`.
+/// finish at once, and a stream in its TLS handshake, drop the stream, which resets it.
+/// Bytes of the peer that reach a stream after its close reset it, as on a TCP stack,
+/// so a request in flight at the stop can end with a reset. On each return, each stream
+/// that it accepted has ended. Dropping the future stops only the accepts: each stream
+/// it accepted runs on until `until`.
 ///
 /// # Errors
 ///
-/// The error of the listener, when it fails before `serve` sees the cancel.
+/// The error of the listener, when it fails before `serve` stops its accepts.
 pub async fn serve(
     listener: Listener,
     tasks: Tasks,
@@ -182,8 +184,8 @@ pub(super) async fn run(
 }
 
 /// Serves each stream that `listener` accepts on its own task of `group`, until
-/// `stop`, and accepts until `until` or the error of the listener. A listener that
-/// has failed when `until` is seen gives its error.
+/// `stop`, and accepts until the listener has no stream ready once `until` is
+/// cancelled, or until its error, which wins.
 async fn accept(
     mut listener: Listener,
     group: &Group,
