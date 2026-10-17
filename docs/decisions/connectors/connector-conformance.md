@@ -42,8 +42,13 @@
   (https://github.com/synnaxlabs/foundation/issues/2247#issuecomment-6155477394), with
   the fixes of 2026-10-17T16:05:31Z
   (https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6236306639, item
-  5 for the delay of 1 h). The backoff form: proposed by `box1.builder-2`
-  (https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6241104680). Lost:
-  the scenarios in a module of `connector`, where an agent could change an oracle in a
-  normal PR; and scenarios that each kind writes with shared assertion helpers, where
-  nothing makes a kind run each scenario.
+  5 for the delay of 1 h). The backoff form changes the plan, which asked for
+  Restarting in scenarios 2 and 4: proposed by `box1.builder-2`
+  (https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6241104680), no
+  objection of `laptop.architect-2` at 2026-10-17T21:10:51Z
+  (https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6241157217). The
+  form sits in the suite file, so a kind that changes its form changes its oracle.
+  Lost: one check that takes either form, which hides that change; the scenarios in a
+  module of `connector`, where an agent could change an oracle in a normal PR; and
+  scenarios that each kind writes with shared assertion helpers, where nothing makes a
+  kind run each scenario.

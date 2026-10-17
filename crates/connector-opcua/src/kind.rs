@@ -81,7 +81,8 @@ impl kind::Kind for Kind {
     /// reads the state of the server to check the connection. After a cancel or an
     /// error, the run closes its session: it sends `CloseSession`, waits at most 1 s
     /// for the answer, then closes the connection. So a run ends within 1 s of a
-    /// cancel. A connect clears the error that the status shows.
+    /// cancel. Call [`Context::clear_error`] once the run reaches the device: until
+    /// then, the status shows the error of the last run.
     ///
     /// # Errors
     ///

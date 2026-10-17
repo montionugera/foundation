@@ -44,9 +44,11 @@
   the `BadTypeMismatch` of the server, the note of the latest tick, and the name of
   the type at 2026-10-15T22:16:48Z:
   https://github.com/synnaxlabs/foundation/pull/2766#issuecomment-6203414079).
-  A connect clears the error that the status shows, so a run that connects after a
-  restart shows no error of the last run (scenario 3 of CONNECTOR CONFORMANCE found it:
-  https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6241104680).
+  A connect calls `Context::clear_error`: until then, the status shows the error of
+  the last run (scenario 3 of CONNECTOR CONFORMANCE found it:
+  https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6241104680; text
+  of `laptop.architect-2`:
+  https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6241157217).
   Close: after a cancel or an error, the run closes its session. It sends
   CloseSession, waits at most 1 s for the answer, then closes the connection, so a run
   ends within 1 s of a cancel. The connect races the cancel, and the close does not.
