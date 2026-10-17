@@ -14,6 +14,7 @@
     clippy::string_slice
 )]
 
+mod alp;
 mod bits;
 mod float;
 mod int;
@@ -47,10 +48,15 @@ pub fn max_len(data_type: Type, len: usize) -> usize {
     Shape::of(data_type).max_len(len)
 }
 
-/// Encodes the series of one channel.
+/// Encodes the series of one channel. It keeps the ALP exponent pairs that its
+/// float series pick, so keep one encoder for each channel across its series: a
+/// new one searches the pairs again, which costs encode time. The bytes of a
+/// series can change with the series that the encoder saw before, but they always
+/// decode to the same samples.
 #[derive(Debug)]
 pub struct Encoder {
     shape: Shape,
+    pairs: alp::Pairs,
 }
 
 impl Encoder {
@@ -59,6 +65,7 @@ impl Encoder {
     pub fn new(data_type: Type) -> Self {
         Self {
             shape: Shape::of(data_type),
+            pairs: alp::Pairs::default(),
         }
     }
 
@@ -96,10 +103,13 @@ impl Encoder {
             out.len()
         );
         Ok(match self.shape {
-            Shape::Fixed { element, .. } => element.write(elements, out),
+            Shape::Fixed { element, .. } => {
+                element.write(elements, &mut self.pairs, out)
+            }
             Shape::Variable { element, .. } => {
-                let len = Layout::END.write(ends, out);
-                len.strict_add(element.write(elements, out.split_at_mut(len).1))
+                let len = Layout::END.write(ends, &mut self.pairs, out);
+                let out = out.split_at_mut(len).1;
+                len.strict_add(element.write(elements, &mut self.pairs, out))
             }
         })
     }
@@ -725,13 +735,14 @@ impl Ends {
 /// How the codecs see a sample type.
 #[derive(Clone, Copy, Debug)]
 enum Layout {
-    /// Samples of 8, 16, 32, or 64 bits. Every codec applies, to the integers of the
-    /// samples or to the sortable integers of floats.
+    /// Integer samples of 8 or 16 bits, or integers or floats of 32 or 64 bits. Every
+    /// integer codec applies, to the integers of the samples or to the sortable
+    /// integers of floats. ALP applies to floats only.
     Bits8 {
-        number: Number,
+        order: Order,
     },
     Bits16 {
-        number: Number,
+        order: Order,
     },
     Bits32 {
         number: Number,
@@ -745,13 +756,12 @@ enum Layout {
     },
 }
 
-/// The number that the bits of a sample hold. Floats are a field and not variants of
-/// [`Layout`]: two more variants made each decode call about 15 to 50 instructions
-/// longer.
+/// The number that the bits of a 32 or 64 bit sample hold. Floats are a field, not
+/// variants of [`Layout`]: two more variants add about 15 to 50 instructions to each
+/// decode call (box2).
 #[derive(Clone, Copy, Debug)]
 enum Number {
-    Unsigned,
-    Signed,
+    Int(Order),
     Float,
 }
 
@@ -779,22 +789,28 @@ impl Front {
 impl Layout {
     /// The layout of the ends of a variable series.
     const END: Self = Self::Bits32 {
-        number: Number::Unsigned,
+        number: Number::Int(Order::Unsigned),
     };
 
     fn of(scalar: Scalar) -> Self {
-        let (signed, unsigned) = (Number::Signed, Number::Unsigned);
+        let (signed, unsigned) = (Order::Signed, Order::Unsigned);
         match scalar {
-            Scalar::I8 => Self::Bits8 { number: signed },
-            Scalar::U8 => Self::Bits8 { number: unsigned },
-            Scalar::I16 => Self::Bits16 { number: signed },
-            Scalar::U16 => Self::Bits16 { number: unsigned },
-            Scalar::I32 => Self::Bits32 { number: signed },
-            Scalar::U32 => Self::Bits32 { number: unsigned },
-            Scalar::I64 | Scalar::Stamp | Scalar::Span => {
-                Self::Bits64 { number: signed }
-            }
-            Scalar::U64 => Self::Bits64 { number: unsigned },
+            Scalar::I8 => Self::Bits8 { order: signed },
+            Scalar::U8 => Self::Bits8 { order: unsigned },
+            Scalar::I16 => Self::Bits16 { order: signed },
+            Scalar::U16 => Self::Bits16 { order: unsigned },
+            Scalar::I32 => Self::Bits32 {
+                number: Number::Int(signed),
+            },
+            Scalar::U32 => Self::Bits32 {
+                number: Number::Int(unsigned),
+            },
+            Scalar::I64 | Scalar::Stamp | Scalar::Span => Self::Bits64 {
+                number: Number::Int(signed),
+            },
+            Scalar::U64 => Self::Bits64 {
+                number: Number::Int(unsigned),
+            },
             Scalar::F32 => Self::Bits32 {
                 number: Number::Float,
             },
@@ -842,12 +858,12 @@ impl Layout {
     }
 
     /// Encodes `values` as vectors into the front of `out` and returns the bytes
-    /// written.
-    fn write(self, values: &[u8], out: &mut [u8]) -> usize {
+    /// written. Float vectors pick ALP pairs from `pairs`.
+    fn write(self, values: &[u8], pairs: &mut alp::Pairs, out: &mut [u8]) -> usize {
         let mut rest = out;
         let mut written = 0_usize;
         for chunk in values.chunks(VECTOR_LEN.strict_mul(self.width())) {
-            let len = self.encode(chunk, rest);
+            let len = self.encode(chunk, pairs, rest);
             rest = mem::take(&mut rest).split_at_mut(len).1;
             written = written.strict_add(len);
         }
@@ -891,26 +907,22 @@ impl Layout {
     }
 
     /// Encodes one vector into the front of `out` and returns its length.
-    fn encode(self, chunk: &[u8], out: &mut [u8]) -> usize {
+    fn encode(self, chunk: &[u8], pairs: &mut alp::Pairs, out: &mut [u8]) -> usize {
         match self {
             Self::Bits32 {
                 number: Number::Float,
-            } => float::encode::<4>(chunk, out),
+            } => float::encode::<4>(chunk, pairs, out),
             Self::Bits64 {
                 number: Number::Float,
-            } => float::encode::<8>(chunk, out),
-            Self::Bits8 { number } => {
-                int::encode::<1>(chunk, number.order(), identity, out)
-            }
-            Self::Bits16 { number } => {
-                int::encode::<2>(chunk, number.order(), identity, out)
-            }
-            Self::Bits32 { number } => {
-                int::encode::<4>(chunk, number.order(), identity, out)
-            }
-            Self::Bits64 { number } => {
-                int::encode::<8>(chunk, number.order(), identity, out)
-            }
+            } => float::encode::<8>(chunk, pairs, out),
+            Self::Bits8 { order } => int::encode::<1>(chunk, order, identity, out),
+            Self::Bits16 { order } => int::encode::<2>(chunk, order, identity, out),
+            Self::Bits32 {
+                number: Number::Int(order),
+            } => int::encode::<4>(chunk, order, identity, out),
+            Self::Bits64 {
+                number: Number::Int(order),
+            } => int::encode::<8>(chunk, order, identity, out),
             Self::Raw { width } => vector::write_raw(chunk, width, out),
         }
     }
@@ -933,17 +945,6 @@ impl Layout {
     }
 }
 
-impl Number {
-    /// The order in which the codecs compare the integers of the samples. The sortable
-    /// integers of floats compare unsigned.
-    const fn order(self) -> Order {
-        match self {
-            Self::Signed => Order::Signed,
-            Self::Unsigned | Self::Float => Order::Unsigned,
-        }
-    }
-}
-
 /// A series that is not valid. In a `String`, `Bytes`, or `List` series, vectors count
 /// from the first vector of the ends to the last vector of the elements.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -953,7 +954,8 @@ pub enum Error {
         /// The index of the vector in the series.
         vector: usize,
         /// The bytes the vector needs. When the bytes end before the tag, the bit
-        /// width, or the RLE run count, this is a lower bound.
+        /// width, the RLE run count, or the end of the ALP header, this is a lower
+        /// bound.
         needed: usize,
         /// The bytes left from the start of the vector.
         available: usize,
@@ -980,6 +982,28 @@ pub enum Error {
         vector: usize,
         /// The sum of the run lengths.
         total: usize,
+        /// The sample count of the vector.
+        count: usize,
+    },
+    /// The exponent of an ALP vector is more than its sample type allows, or its
+    /// factor is more than its exponent.
+    Exponent {
+        /// The index of the vector in the series.
+        vector: usize,
+        /// The exponent.
+        exponent: u8,
+        /// The factor.
+        factor: u8,
+        /// The largest exponent the sample type allows.
+        max: u8,
+    },
+    /// An exception position of an ALP vector is not under its sample count, or not
+    /// over the position before it.
+    Position {
+        /// The index of the vector in the series.
+        vector: usize,
+        /// The position.
+        position: usize,
         /// The sample count of the vector.
         count: usize,
     },
@@ -1051,6 +1075,25 @@ impl fmt::Display for Error {
             } => write!(
                 f,
                 "vector {vector} has runs of {total} samples in total, not {count}"
+            ),
+            Self::Exponent {
+                vector,
+                exponent,
+                factor,
+                max,
+            } => write!(
+                f,
+                "vector {vector} has exponent {exponent} and factor {factor}, but the \
+                 exponent is at most {max} and the factor at most the exponent"
+            ),
+            Self::Position {
+                vector,
+                position,
+                count,
+            } => write!(
+                f,
+                "vector {vector} has an exception at {position}, not under its {count} \
+                 samples or not over the position before it"
             ),
             Self::Trailing { extra } => {
                 write!(f, "bytes after the last vector: {extra}")
@@ -1578,10 +1621,10 @@ mod tests {
                 .collect()
         }
 
-        /// The bits of the floats of `scalar` whose sortable integers are `keys`.
-        fn floats(scalar: Scalar, keys: &[u8]) -> Vec<u8> {
+        /// The bits of the floats of `scalar` whose sortable integers are `sortables`.
+        fn floats(scalar: Scalar, sortables: &[u8]) -> Vec<u8> {
             match scalar {
-                Scalar::F32 => keys
+                Scalar::F32 => sortables
                     .as_chunks::<4>()
                     .0
                     .iter()
@@ -1589,7 +1632,7 @@ mod tests {
                         word::store::<4>(float::bits::<4>(word::load(sortable)))
                     })
                     .collect(),
-                _ => keys
+                _ => sortables
                     .as_chunks::<8>()
                     .0
                     .iter()
@@ -1701,8 +1744,8 @@ mod tests {
                 len in select(&[0, 1, 1_023, 1_024, 1_025]),
                 words in proptest::collection::vec(any::<u64>(), 1_026),
             ) {
-                let keys = samples(scalar, tag, len, &words);
-                let values = floats(scalar, &keys);
+                let sortables = samples(scalar, tag, len, &words);
+                let values = floats(scalar, &sortables);
                 let encoded = check(scalar, &values);
                 if len >= 1_023 {
                     prop_assert_eq!(encoded[0], tag, "{:?} at {}", scalar, len);
@@ -1716,16 +1759,17 @@ mod tests {
                 len in 0..2_100_usize,
                 words in proptest::collection::vec(any::<u64>(), 2_101),
             ) {
-                let keys = samples(scalar, tag, len, &words);
+                let sortables = samples(scalar, tag, len, &words);
                 let unsigned = match scalar {
                     Scalar::F32 => Scalar::U32,
                     _ => Scalar::U64,
                 };
-                let values = floats(scalar, &keys);
+                let values = floats(scalar, &sortables);
                 let vector = VECTOR_LEN * scalar.width();
-                for (chunk, keys) in values.chunks(vector).zip(keys.chunks(vector)) {
+                let chunks = values.chunks(vector).zip(sortables.chunks(vector));
+                for (chunk, sortables) in chunks {
                     let encoded = check(scalar, chunk);
-                    let expected = encode(unsigned, keys);
+                    let expected = encode(unsigned, sortables);
                     prop_assert_eq!(encoded[0], expected[0]);
                     if encoded[0] == 0 {
                         prop_assert_eq!(encoded.len(), expected.len());
@@ -1785,6 +1829,480 @@ mod tests {
         }
     }
 
+    mod alp {
+        use proptest::sample::select;
+
+        use super::*;
+
+        /// The bytes of `values` as samples of `scalar`, `f32` or `f64`.
+        fn floats(scalar: Scalar, values: &[f64]) -> Vec<u8> {
+            #[expect(
+                clippy::as_conversions,
+                clippy::cast_possible_truncation,
+                reason = "the f32 nearest each value"
+            )]
+            let narrow = |value: &f64| (*value as f32).to_le_bytes().to_vec();
+            match scalar {
+                Scalar::F32 => values.iter().flat_map(narrow).collect(),
+                _ => values.iter().flat_map(|v| v.to_le_bytes()).collect(),
+            }
+        }
+
+        /// The sortable integers of the floats of `scalar` in `values`.
+        fn sortables(scalar: Scalar, values: &[u8]) -> Vec<u8> {
+            match scalar {
+                Scalar::F32 => values
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .flat_map(|v| word::store::<4>(float::sortable::<4>(word::load(v))))
+                    .collect(),
+                _ => values
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .flat_map(|v| word::store::<8>(float::sortable::<8>(word::load(v))))
+                    .collect(),
+            }
+        }
+
+        /// Encodes and decodes `values` as samples of `scalar`, and returns the bytes.
+        fn check(scalar: Scalar, values: &[u8]) -> Vec<u8> {
+            let count = values.len() / scalar.width();
+            let encoded = encode(scalar, values);
+            assert_eq!(
+                validate(Type::Scalar(scalar), count, &encoded),
+                Ok(values.len())
+            );
+            let mut out = vec![0; values.len()];
+            assert_eq!(
+                decode(Type::Scalar(scalar), count, &encoded, &mut out),
+                Ok(())
+            );
+            assert_eq!(out, values, "{scalar:?}");
+            encoded
+        }
+
+        /// Encodes `values` as samples of `scalar` with `encoder`, and returns the bytes.
+        fn write(encoder: &mut Encoder, scalar: Scalar, values: &[f64]) -> Vec<u8> {
+            let values = floats(scalar, values);
+            let mut out = vec![0; max_len(Type::Scalar(scalar), values.len())];
+            let len = encoder
+                .encode(values.len() / scalar.width(), &values, &mut out)
+                .expect("the values hold the samples");
+            out.truncate(len);
+            out
+        }
+
+        /// The exponent, factor, and exception count bytes in the header of an ALP
+        /// vector of samples of `width` bytes.
+        fn fields(width: usize, vector: &[u8]) -> [u8; 4] {
+            vector[width + 2..width + 6].try_into().unwrap()
+        }
+
+        #[test]
+        fn writes_an_f64_vector_byte_for_byte() {
+            let mut values: Vec<f64> =
+                (0..16).map(|k| f64::from(k) * 0.5 - 2.0).collect();
+            values[9] = f64::NAN;
+            let mut expected = vec![
+                4, 7, 0xec, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, //
+                1, 0, 1, 0, 0, 0, //
+                0x80, 0x82, 0xe2, 0x41, 0xc9, 0x78, 0x46, 0x28, //
+                0x80, 0xec, 0xc6, 0x0b, 0x1a, 0x97, 0, 0, //
+            ];
+            expected.extend(f64::NAN.to_le_bytes());
+            expected.extend([9, 0, 0, 0, 0, 0, 0, 0]);
+            assert_eq!(check(Scalar::F64, &floats(Scalar::F64, &values)), expected);
+        }
+
+        #[test]
+        fn writes_an_f32_vector_byte_for_byte() {
+            let mut values: Vec<f64> = (0..16).map(|k| f64::from(k) * 0.25).collect();
+            values[3] = f64::INFINITY;
+            let expected = [
+                4, 9, 0, 0, 0, 0, 2, 0, 1, 0, 0, 0, //
+                0, 0x32, 0xc8, 0, 0x40, 0xa6, 0x8f, 0xa5, 0x57, 0xc8, //
+                0xc2, 0xe9, 0x9b, 0xc8, 0xb2, 0xa8, 0xd7, 0xbb, 0, 0, //
+                0, 0, 0x80, 0x7f, 3, 0, 0, 0,
+            ];
+            assert_eq!(check(Scalar::F32, &floats(Scalar::F32, &values)), expected);
+        }
+
+        /// The 1/8 saving is of the raw vector, header included, as for the integer
+        /// codecs.
+        #[test]
+        fn picks_alp_that_saves_an_eighth_of_the_raw_vector() {
+            let cases: [(Scalar, &[f64], usize); 3] = [
+                (Scalar::F64, &[0.01, 12_345_678.91, 5.5, 777.77, 1.25], 40),
+                (Scalar::F64, &[0.25, 0.5, 0.75], 24),
+                (Scalar::F32, &[0.25, 0.5, 0.75, 1.25, 1.5], 20),
+            ];
+            for (scalar, values, len) in cases {
+                let encoded = check(scalar, &floats(scalar, values));
+                assert_eq!(
+                    (encoded[0], encoded.len()),
+                    (vector::ALP, len),
+                    "{values:?}"
+                );
+            }
+        }
+
+        /// Integers at each third sample and NaNs of other payloads between them take
+        /// 7736 bytes as ALP, under raw but over 7/8 of the raw vector, so the vector
+        /// stays raw.
+        #[test]
+        fn keeps_raw_when_alp_saves_under_an_eighth() {
+            let values: Vec<f64> = (0_u32..1_024)
+                .map(|k| {
+                    if k % 3 == 0 {
+                        f64::from(k % 100)
+                    } else {
+                        f64::from_bits(0x7ff8_0000_0000_0000 | u64::from(k))
+                    }
+                })
+                .collect();
+            let encoded = check(Scalar::F64, &floats(Scalar::F64, &values));
+            assert_eq!((encoded[0], encoded.len()), (vector::RAW, 8_200));
+        }
+
+        /// The ALP pass runs only when its estimate on the picked samples, at each
+        /// 32nd sample, is under the best exact size. Decimals with a NaN at each
+        /// picked sample stay raw, and with a NaN one sample later they take ALP.
+        #[test]
+        fn skips_alp_when_the_picked_samples_are_exceptions() {
+            let cases = [(0, vector::RAW, 8_200), (1, vector::ALP, 1_616)];
+            for (offset, tag, len) in cases {
+                let values: Vec<f64> = (0..1_024)
+                    .map(|k| {
+                        if k % 32 == offset {
+                            f64::NAN
+                        } else {
+                            f64::from(2_100 + k) / 100.0
+                        }
+                    })
+                    .collect();
+                let mut encoder = Encoder::new(Type::Scalar(Scalar::F64));
+                let out = write(&mut encoder, Scalar::F64, &values);
+                assert_eq!((out[0], out.len()), (tag, len), "{offset}");
+            }
+        }
+
+        /// A vector whose best exact size is not over the ALP header does not search
+        /// the pairs. After a constant vector, which every pair encodes in 0 bits,
+        /// decimals take ALP.
+        #[test]
+        fn skips_the_search_at_a_vector_not_over_the_alp_header() {
+            let decimals: Vec<f64> = (0..1_024)
+                .map(|k| f64::from(2_000 + (k * 7_919) % 1_000) / 100.0)
+                .collect();
+            for (len, alp) in [(1_024, 1_296), (16, 40)] {
+                let mut encoder = Encoder::new(Type::Scalar(Scalar::F64));
+                let constant = write(&mut encoder, Scalar::F64, &[1.0; 1_024]);
+                assert_eq!(constant[0], vector::FFOR, "{len}");
+                let out = write(&mut encoder, Scalar::F64, &decimals[..len]);
+                assert_eq!((out[0], out.len()), (vector::ALP, alp), "{len}");
+            }
+        }
+
+        /// Each float whose integer does not decode to its bits is an exception: NaN,
+        /// infinities, -0.0, subnormals, and floats past the integers of the sample
+        /// width. Quarters decode exactly under e = 2 and f = 0.
+        #[test]
+        fn keeps_the_bits_of_each_exception() {
+            let specials = [
+                f64::NAN,
+                -f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                -0.0,
+                f64::from_bits(1),
+                f64::from(f32::from_bits(1)),
+                f64::MAX,
+                f64::MIN,
+                1e19,
+                -1e19,
+            ];
+            for scalar in FLOATS {
+                let mut values: Vec<f64> =
+                    (0..1_000).map(|k| f64::from(k % 97) / 4.0).collect();
+                for (n, special) in specials.iter().enumerate() {
+                    values[n * 83 + 5] = *special;
+                }
+                let encoded = check(scalar, &floats(scalar, &values));
+                assert_eq!(encoded[0], vector::ALP, "{scalar:?}");
+                // As an f32, the f64 subnormal is 0.0, which is not an exception.
+                let exceptions = if scalar == Scalar::F32 { 10 } else { 11 };
+                assert_eq!(
+                    fields(scalar.width(), &encoded),
+                    [2, 0, exceptions, 0],
+                    "{scalar:?}"
+                );
+            }
+        }
+
+        /// Keeps the pair of 99 vectors of quarters, so a vector of sixteenths that
+        /// comes before the next search of all pairs does not use ALP.
+        #[test]
+        fn searches_the_pairs_again_after_102_400_values() {
+            for scalar in FLOATS {
+                let width = scalar.width();
+                let two: Vec<f64> =
+                    (0..99 * 1_024).map(|k| f64::from(k % 89) / 4.0).collect();
+                let four: Vec<f64> =
+                    (0..1_024).map(|k| f64::from(k % 89) / 16.0).collect();
+                let mut encoder = Encoder::new(Type::Scalar(scalar));
+                let mut write = |values: &[f64]| write(&mut encoder, scalar, values);
+                let first = write(&two);
+                assert_eq!(first[0], vector::ALP, "{scalar:?}");
+                assert_eq!(fields(width, &first)[..2], [2, 0], "{scalar:?}");
+                assert_ne!(write(&four)[0], vector::ALP, "{scalar:?}");
+                let after = write(&four);
+                assert_eq!(after[0], vector::ALP, "{scalar:?}");
+                assert_eq!(fields(width, &after)[..2], [4, 0], "{scalar:?}");
+            }
+        }
+
+        /// Four quarters take 24 bytes as ALP and as delta.
+        #[test]
+        fn keeps_the_integer_codecs_when_alp_is_not_smaller() {
+            let values = [1_000.0, 1_000.25, 1_000.5, 1_000.75];
+            let encoded = check(Scalar::F64, &floats(Scalar::F64, &values));
+            assert_eq!((encoded[0], encoded.len()), (vector::DELTA, 24));
+        }
+
+        /// A vector of one sample, not over the ALP header, does not search the pairs,
+        /// and a vector of three does. Its integers keep `e` = 0, so quarters after it
+        /// do not use ALP.
+        #[test]
+        fn searches_the_pairs_at_the_first_vector_over_the_alp_header() {
+            for scalar in FLOATS {
+                let quarters: Vec<f64> =
+                    (0..1_024).map(|k| f64::from(k % 89) / 4.0).collect();
+                let mut encoder = Encoder::new(Type::Scalar(scalar));
+                write(&mut encoder, scalar, &[0.5]);
+                let after = write(&mut encoder, scalar, &quarters);
+                assert_eq!(after[0], vector::ALP, "{scalar:?}");
+                let mut encoder = Encoder::new(Type::Scalar(scalar));
+                write(&mut encoder, scalar, &[1.0, 1_000_000.0, 3.0]);
+                let after = write(&mut encoder, scalar, &quarters);
+                assert_ne!(after[0], vector::ALP, "{scalar:?}");
+            }
+        }
+
+        /// A first vector whose 8 search runs, of 128 samples each, win `(e, 0)` for
+        /// each `e` of `runs`.
+        fn runs(runs: [usize; 8]) -> Vec<f64> {
+            runs.iter()
+                .flat_map(|&e| {
+                    (0..128)
+                        .map(move |k| f64::from(k) + [0.0, 0.5, 0.25, 0.125, 0.0625][e])
+                })
+                .collect()
+        }
+
+        /// The exponent and factor of the ALP vector that an encoder writes for
+        /// `second` after `first`.
+        fn pair_after(scalar: Scalar, first: &[f64], second: &[f64]) -> [u8; 2] {
+            let mut encoder = Encoder::new(Type::Scalar(scalar));
+            write(&mut encoder, scalar, first);
+            let out = write(&mut encoder, scalar, second);
+            assert_eq!(out[0], vector::ALP, "{scalar:?}");
+            fields(scalar.width(), &out)[..2].try_into().unwrap()
+        }
+
+        /// A vector whose picked samples take the same bits under `(0, 0)` and
+        /// `(1, 0)`: the two halves are exceptions under `(0, 0)`, and widen each
+        /// integer of `(1, 0)` by as many bits.
+        fn tie(scalar: Scalar) -> Vec<f64> {
+            let half = if scalar == Scalar::F64 { 5.5 } else { 1.5 };
+            (0..1_024)
+                .map(|k| {
+                    if k < 64 && k % 32 == 0 {
+                        half
+                    } else {
+                        f64::from((k / 32 + k) % 2)
+                    }
+                })
+                .collect()
+        }
+
+        /// The search keeps `(0, 0)`, `(1, 0)`, `(2, 0)`, and `(3, 0)`. On the 32
+        /// picked samples of the second vector, 0, 32, and 8 eighths, `(1, 0)` and
+        /// `(2, 0)` are not smaller than `(0, 0)`, so the encoder stops before the
+        /// smaller `(3, 0)`.
+        #[test]
+        fn stops_after_two_pairs_in_a_row_that_are_not_smaller() {
+            let first = runs([0, 0, 0, 0, 0, 1, 2, 3]);
+            let second: Vec<f64> = (0..1_024)
+                .map(|k| {
+                    if k % 128 == 0 {
+                        0.125
+                    } else {
+                        f64::from(k % 64)
+                    }
+                })
+                .collect();
+            for scalar in FLOATS {
+                assert_eq!(pair_after(scalar, &first, &second), [0, 0], "{scalar:?}");
+            }
+        }
+
+        /// The search keeps `(0, 0)` to `(4, 0)`. On the picked samples of the second
+        /// vector, `(1, 0)` is not smaller than `(0, 0)`, `(2, 0)` is, `(3, 0)` is
+        /// not, and `(4, 0)` is, so the count of pairs that are not smaller starts
+        /// again at each smaller pair.
+        #[test]
+        fn counts_worse_pairs_in_a_row() {
+            let first = runs([0, 0, 0, 0, 1, 2, 3, 4]);
+            let second: Vec<f64> = (0..1_024)
+                .map(|k| {
+                    if k % 32 != 0 {
+                        return f64::from(k % 64);
+                    }
+                    let j = k / 32;
+                    f64::from(j)
+                        + match j % 8 {
+                            1 => 0.25,
+                            3 => 0.0625,
+                            _ => 0.0,
+                        }
+                })
+                .collect();
+            assert_eq!(pair_after(Scalar::F64, &first, &second), [4, 0]);
+        }
+
+        /// The picked samples of the second vector are integers, and a quarter of the
+        /// others are eighths. The whole vector is smaller under `(3, 0)`, but the
+        /// encoder judges the pairs on the picked samples.
+        #[test]
+        fn judges_the_pairs_on_the_picked_samples() {
+            let first = runs([0, 0, 0, 0, 3, 3, 3, 3]);
+            let second: Vec<f64> = (0..1_024)
+                .map(|k| f64::from(k % 64) + if k % 4 == 1 { 0.125 } else { 0.0 })
+                .collect();
+            for scalar in FLOATS {
+                assert_eq!(pair_after(scalar, &first, &second), [0, 0], "{scalar:?}");
+            }
+        }
+
+        /// The encoder keeps the first of two pairs of one size, and when each pair
+        /// wins 4 runs, the search puts `(0, 0)` first in either order.
+        #[test]
+        fn keeps_the_first_of_two_pairs_of_one_size() {
+            for scalar in FLOATS {
+                for order in [[0, 0, 0, 0, 1, 1, 1, 1], [1, 1, 1, 1, 0, 0, 0, 0]] {
+                    let pair = pair_after(scalar, &runs(order), &tie(scalar));
+                    assert_eq!(pair, [0, 0], "{scalar:?} {order:?}");
+                }
+            }
+        }
+
+        /// A run of 29 NaNs and 3 halves takes fewer bits as 32 exceptions, with bits
+        /// and reference 0, than under `(1, 0)`. So `(0, 0)` wins it, and 4 runs, as
+        /// `(1, 0)` does. No pair keeps one half alone, which would win the run.
+        #[test]
+        fn a_run_of_exceptions_only_takes_no_bits_for_its_integers() {
+            for scalar in FLOATS {
+                let halves = if scalar == Scalar::F64 {
+                    [-10.5, 10.5, 12.5]
+                } else {
+                    [-0.5, 0.5, 1.5]
+                };
+                let mut first = runs([0, 0, 0, 0, 1, 1, 1, 1]);
+                first[..128].fill(f64::NAN);
+                for (k, half) in halves.into_iter().enumerate() {
+                    first[k * 4] = half;
+                }
+                let pair = pair_after(scalar, &first, &tie(scalar));
+                assert_eq!(pair, [0, 0], "{scalar:?}");
+            }
+        }
+
+        /// The bits of a float of `width` bytes of kind `kind`, 0 to 4: a NaN with
+        /// payload `payload`, an infinity, -0.0, a subnormal, or a float too large for
+        /// the integers of a pair with `e` = 2.
+        fn special(width: usize, kind: u8, negative: bool, payload: u64) -> u64 {
+            let (exponent, mantissa) = if width == 4 { (8, 23) } else { (11, 52) };
+            let ones = (1 << exponent) - 1;
+            let fraction = payload % ((1 << mantissa) - 1) + 1;
+            let (field, fraction) = match kind {
+                0 => (ones, fraction),
+                1 => (ones, 0),
+                2 => (0, 0),
+                3 => (0, fraction),
+                _ => ((ones >> 1) + u64::from(word::bits(width)) - 7, fraction),
+            };
+            let sign = u64::from(negative || kind == 2) << (exponent + mantissa);
+            sign | field << mantissa | fraction
+        }
+
+        proptest! {
+            /// Each special float is an exception and keeps its bits, among quarters
+            /// that keep `e` = 2 and `f` = 0.
+            #[test]
+            fn keeps_the_bits_of_special_floats(
+                scalar in select(&FLOATS),
+                specials in proptest::collection::btree_map(
+                    0..1_024_usize,
+                    (0..5_u8, any::<bool>(), any::<u64>()),
+                    1..32,
+                ),
+            ) {
+                let width = scalar.width();
+                let values: Vec<f64> =
+                    (0..1_024).map(|k| f64::from(k % 97) / 4.0).collect();
+                let mut values = floats(scalar, &values);
+                for (position, (kind, negative, payload)) in &specials {
+                    let bits = special(width, *kind, *negative, *payload);
+                    values[position * width..][..width]
+                        .copy_from_slice(&bits.to_le_bytes()[..width]);
+                }
+                let encoded = check(scalar, &values);
+                let exceptions = u8::try_from(specials.len()).expect("under 32");
+                prop_assert_eq!(encoded[0], vector::ALP);
+                prop_assert_eq!(fields(width, &encoded), [2, 0, exceptions, 0]);
+            }
+
+            /// An `f64` decimal decodes exactly under some pair. An `f32` one often
+            /// does not, as `10^-e` in 4 bytes is too far from its decimal, so it may
+            /// keep the integer codecs.
+            #[test]
+            fn decimals_as_alp_smaller_than_the_integer_codecs(
+                scalar in select(&FLOATS),
+                places in 0..5_usize,
+                len in 64..=1_024_usize,
+                base in -100_000..100_000_i64,
+                offsets in proptest::collection::vec(0..1_000_i64, 1_024),
+            ) {
+                let power = [1.0, 10.0, 100.0, 1e3, 1e4][places];
+                #[expect(
+                    clippy::as_conversions,
+                    clippy::cast_precision_loss,
+                    reason = "under 2^18"
+                )]
+                let values: Vec<f64> = offsets[..len]
+                    .iter()
+                    .map(|offset| (base + offset) as f64 / power)
+                    .collect();
+                let values = floats(scalar, &values);
+                let encoded = check(scalar, &values);
+                let unsigned = match scalar {
+                    Scalar::F32 => Scalar::U32,
+                    _ => Scalar::U64,
+                };
+                let sortables = sortables(scalar, &values);
+                let integer = encode(unsigned, &sortables).len();
+                if scalar == Scalar::F64 {
+                    prop_assert_eq!(encoded[0], vector::ALP);
+                    prop_assert!(encoded.len() < integer);
+                } else {
+                    prop_assert!(encoded.len() <= integer);
+                }
+            }
+        }
+    }
+
     mod validate {
         use proptest::sample::select;
 
@@ -1825,6 +2343,17 @@ mod tests {
                 needed,
                 available,
             }
+        }
+
+        /// The header of an ALP vector of samples of `width` bytes, with bit width
+        /// `bits`, reference 0, and the exponent, factor, and exception count bytes
+        /// `fields`.
+        fn alp(width: usize, bits: u8, fields: [u8; 4]) -> Vec<u8> {
+            let mut header = vec![vector::ALP, bits];
+            header.resize(width + 2, 0);
+            header.extend(fields);
+            header.resize((width + 6).next_multiple_of(width), 0);
+            header
         }
 
         fn width(bits: u8, max: u8) -> Error {
@@ -1883,6 +2412,21 @@ mod tests {
             check(Scalar::Uuid, 1, &[0; 31], &truncated(0, 32, 31));
             check(Scalar::F32, 3, &[3, 0, 1], &truncated(0, 4, 3));
             check(Scalar::F64, 3, &[3, 0, 1, 0, 0, 0, 0], &truncated(0, 24, 7));
+            check(
+                Scalar::F64,
+                2,
+                &alp(8, 0, [1, 0, 1, 0])[..15],
+                &truncated(0, 16, 15),
+            );
+            check(
+                Scalar::F32,
+                2,
+                &alp(4, 0, [1, 0, 1, 0])[..11],
+                &truncated(0, 12, 11),
+            );
+            let mut short = alp(8, 0, [1, 0, 1, 0]);
+            short.extend([0; 15]);
+            check(Scalar::F64, 2, &short, &truncated(0, 32, 31));
         }
 
         #[test]
@@ -1899,11 +2443,17 @@ mod tests {
                 check(Scalar::U8, 1, &[tag, 0, 0], &Error::Tag { vector: 0, tag });
             }
             for scalar in FLOATS {
-                let tag = 4;
+                for tag in 5..=u8::MAX {
+                    check(scalar, 1, &[tag; 32], &Error::Tag { vector: 0, tag });
+                }
+            }
+            for scalar in INTS {
+                let tag = vector::ALP;
                 check(scalar, 1, &[tag; 32], &Error::Tag { vector: 0, tag });
             }
-            for (scalar, tag) in
-                OTHERS.into_iter().flat_map(|s| (1..4).map(move |t| (s, t)))
+            for (scalar, tag) in OTHERS
+                .into_iter()
+                .flat_map(|s| (1..=4).map(move |t| (s, t)))
             {
                 let mut bytes = [0; 32];
                 bytes[0] = tag;
@@ -1927,6 +2477,92 @@ mod tests {
                 &[3, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0],
                 &width(1, 0),
             );
+        }
+
+        #[test]
+        fn accepts_alp_vectors_whose_samples_are_exceptions() {
+            let mut bytes = alp(8, 0, [1, 0, 1, 0]);
+            bytes[2] = 15;
+            bytes.extend(f64::NAN.to_le_bytes());
+            bytes.extend([1, 0, 0, 0, 0, 0, 0, 0]);
+            let samples = [1.5, f64::NAN, 1.5].map(f64::to_le_bytes).concat();
+            accepts(Scalar::F64, 3, &bytes, &samples);
+            let mut bytes = alp(4, 0, [10, 3, 2, 0]);
+            bytes.extend([1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0]);
+            accepts(Scalar::F32, 2, &bytes, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        }
+
+        #[test]
+        fn accepts_packed_alp_vectors() {
+            let mut bytes = alp(8, 3, [2, 1, 1, 0]);
+            bytes[2..10]
+                .copy_from_slice(&[0xfb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+            bytes.extend([0xc8, 0x27, 0, 0, 0, 0, 0, 0]);
+            bytes.extend([0, 0, 0, 0, 0, 0, 0, 0x80]);
+            bytes.extend([2, 0, 0, 0, 0, 0, 0, 0]);
+            let samples = [-0.5, -0.4, -0.0, -0.2, -0.3_f64].map(f64::to_le_bytes);
+            accepts(Scalar::F64, 5, &bytes, &samples.concat());
+            let mut bytes = alp(4, 2, [3, 2, 1, 0]);
+            bytes[2..6].copy_from_slice(&[0xfd, 0xff, 0xff, 0xff]);
+            bytes.extend([0x63, 0, 0, 0, 0, 0, 0, 0x80, 3, 0, 0, 0]);
+            let samples = [0.0, -0.3, -0.1, -0.0_f32].map(f32::to_le_bytes);
+            accepts(Scalar::F32, 4, &bytes, &samples.concat());
+        }
+
+        #[test]
+        fn rejects_alp_exponents_and_factors_out_of_range() {
+            let exponent = |exponent, factor, max| Error::Exponent {
+                vector: 0,
+                exponent,
+                factor,
+                max,
+            };
+            check(
+                Scalar::F64,
+                1,
+                &alp(8, 0, [19, 0, 0, 0]),
+                &exponent(19, 0, 18),
+            );
+            check(
+                Scalar::F32,
+                1,
+                &alp(4, 0, [11, 0, 0, 0]),
+                &exponent(11, 0, 10),
+            );
+            check(
+                Scalar::F64,
+                1,
+                &alp(8, 0, [2, 3, 0, 0]),
+                &exponent(2, 3, 18),
+            );
+            check(
+                Scalar::F32,
+                1,
+                &alp(4, 0, [10, 11, 0, 0]),
+                &exponent(10, 11, 10),
+            );
+            check(Scalar::F64, 1, &alp(8, 65, [18, 18, 0, 0]), &width(65, 64));
+            check(Scalar::F32, 1, &alp(4, 33, [10, 10, 0, 0]), &width(33, 32));
+        }
+
+        #[test]
+        fn rejects_alp_positions_out_of_order_or_past_the_count() {
+            let position = |position, count| Error::Position {
+                vector: 0,
+                position,
+                count,
+            };
+            let mut bytes = alp(8, 0, [0, 0, 3, 0]);
+            bytes.extend([0; 24]);
+            bytes.extend([0, 0, 1, 0, 1, 0, 0, 0]);
+            check(Scalar::F64, 2, &bytes, &position(1, 2));
+            let mut bytes = alp(8, 0, [0, 0, 2, 0]);
+            bytes.extend([0; 16]);
+            bytes.extend([1, 0, 0, 0, 0, 0, 0, 0]);
+            check(Scalar::F64, 3, &bytes, &position(0, 3));
+            let mut bytes = alp(4, 0, [0, 0, 2, 0]);
+            bytes.extend([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0]);
+            check(Scalar::F32, 2, &bytes, &position(2, 2));
         }
 
         #[test]
@@ -2046,6 +2682,33 @@ mod tests {
                 (
                     Error::Overflow,
                     "the samples take more than usize::MAX bytes or u32::MAX elements",
+                ),
+            ] {
+                assert_eq!(error.to_string(), text);
+            }
+        }
+
+        #[test]
+        fn describes_each_alp_error() {
+            for (error, text) in [
+                (
+                    Error::Exponent {
+                        vector: 0,
+                        exponent: 2,
+                        factor: 3,
+                        max: 18,
+                    },
+                    "vector 0 has exponent 2 and factor 3, but the exponent is at most \
+                     18 and the factor at most the exponent",
+                ),
+                (
+                    Error::Position {
+                        vector: 0,
+                        position: 2,
+                        count: 2,
+                    },
+                    "vector 0 has an exception at 2, not under its 2 samples or not \
+                     over the position before it",
                 ),
             ] {
                 assert_eq!(error.to_string(), text);
@@ -2919,7 +3582,7 @@ mod tests {
 
         const STRING: Variable = Variable {
             element: Layout::Bits8 {
-                number: Number::Unsigned,
+                order: Order::Unsigned,
             },
         };
 

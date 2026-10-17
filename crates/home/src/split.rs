@@ -3,6 +3,7 @@
 
 use std::fmt;
 use std::ops::Range;
+use std::sync::Arc;
 
 use types::channel;
 use types::frame::key_set::KeySet;
@@ -73,18 +74,21 @@ struct Part {
 }
 
 impl Scratch {
-    /// Checks each series of `draft`, a writer's frame of `set`, against the count of
-    /// its group with `codec`, and encodes it when it is raw. Time is linear in the
-    /// series bytes, plus O(n log n) for n present series.
+    /// Checks each series of `draft`, a frame of `writer`, against the count of its
+    /// group with `codec`, and encodes it with the writer's encoder of its entry when
+    /// it is raw. Time is linear in the series bytes, plus O(n log n) for n present
+    /// series.
     ///
     /// # Panics
     ///
-    /// If `draft` is not of `set`.
+    /// If `draft` is not of the writer's key set.
     pub(crate) fn split<'a>(
         &'a mut self,
-        set: &'a KeySet,
+        writer: &'a mut Writer,
         mut draft: Draft,
     ) -> Split<'a> {
+        let Writer { set, encoders } = writer;
+        let set: &KeySet = set;
         assert!(
             draft.key_set() == set.key(),
             "the frame is of key set {}, not of key set {}",
@@ -92,7 +96,7 @@ impl Scratch {
             set.key().get()
         );
         self.collect(set, &mut draft);
-        self.check(set, &mut draft);
+        self.check(set, encoders, &mut draft);
         self.gather();
         Split {
             scratch: self,
@@ -136,7 +140,12 @@ impl Scratch {
     /// the group, and records each series that fits. Encodes a raw series into
     /// `bytes`. An encoded index waits for its [`Stamps`], unless a series after it
     /// fails.
-    fn check(&mut self, set: &KeySet, draft: &mut Draft) {
+    fn check(
+        &mut self,
+        set: &KeySet,
+        encoders: &mut [codec::Encoder],
+        draft: &mut Draft,
+    ) {
         let form = draft.form();
         for (entry, bytes) in draft.iter_mut() {
             let group = set.entries()[entry].group;
@@ -148,7 +157,13 @@ impl Scratch {
             let start = self.bytes.len();
             let data_type = set.entries()[entry].data_type;
             let checked = match form {
-                Form::Raw => encode(&mut self.bytes, data_type, count, bytes),
+                Form::Raw => encode(
+                    &mut self.bytes,
+                    &mut encoders[entry],
+                    data_type,
+                    count,
+                    bytes,
+                ),
                 Form::Encoded if entry == part.index => {
                     part.pending = true;
                     Ok(bytes.len())
@@ -264,7 +279,12 @@ impl Stamps<'_> {
     }
 }
 
-impl Split<'_> {
+impl<'a> Split<'a> {
+    /// The writer's key set.
+    pub(crate) fn set(&self) -> &'a KeySet {
+        self.set
+    }
+
     /// The next present group, in group order, with the stamps of its index series,
     /// or the [`Error`] of its first series that does not fit the group's count. The
     /// stamps of an encoded index give its error as they decode. After the last
@@ -416,18 +436,43 @@ fn series(draft: &mut Draft, entry: usize) -> &[u8] {
         .expect("invariant: a checked series is in the frame")
 }
 
-/// Encodes `values`, `count` samples of `data_type`, onto the end of `bytes`, and
-/// returns the bytes written.
+/// A writer's key set, with the encoder of each entry, kept from one frame of the
+/// writer to the next.
+#[derive(Debug)]
+pub(crate) struct Writer {
+    set: Arc<KeySet>,
+    encoders: Box<[codec::Encoder]>,
+}
+
+impl Writer {
+    /// A new encoder for each entry of `set`.
+    pub(crate) fn new(set: Arc<KeySet>) -> Self {
+        let encoders = set
+            .entries()
+            .iter()
+            .map(|entry| codec::Encoder::new(entry.data_type))
+            .collect();
+        Self { set, encoders }
+    }
+
+    /// The writer's key set.
+    pub(crate) fn set(&self) -> &Arc<KeySet> {
+        &self.set
+    }
+}
+
+/// Encodes `values`, `count` samples of `data_type`, onto the end of `bytes` with
+/// `encoder`, and returns the bytes written.
 fn encode(
     bytes: &mut Vec<u8>,
+    encoder: &mut codec::Encoder,
     data_type: Type,
     count: usize,
     values: &[u8],
 ) -> Result<usize, codec::Error> {
     let start = bytes.len();
     bytes.resize(start + codec::max_len(data_type, values.len()), 0);
-    let written =
-        codec::Encoder::new(data_type).encode(count, values, &mut bytes[start..]);
+    let written = encoder.encode(count, values, &mut bytes[start..]);
     bytes.truncate(start + written.as_ref().copied().unwrap_or(0));
     written
 }
@@ -714,7 +759,9 @@ mod tests {
                 let pool = create_pool(1 << 16);
                 let mut scratch = Scratch::default();
 
-                let mut split = scratch.split(&set, draft(&pool, &set, form, &write));
+                let mut writer = Writer::new(Arc::clone(&set));
+                let mut split =
+                    scratch.split(&mut writer, draft(&pool, &set, form, &write));
 
                 let groups = groups(&mut split);
                 let expected = vec![
@@ -732,7 +779,9 @@ mod tests {
             let pool = create_pool(1 << 16);
             let mut scratch = Scratch::default();
 
-            let mut split = scratch.split(&set, draft(&pool, &set, Form::Raw, &write));
+            let mut writer = Writer::new(Arc::clone(&set));
+            let mut split =
+                scratch.split(&mut writer, draft(&pool, &set, Form::Raw, &write));
 
             let groups: Vec<u32> = groups(&mut split)
                 .into_iter()
@@ -774,8 +823,9 @@ mod tests {
                     let pool = create_pool(1 << 16);
                     let mut scratch = Scratch::default();
 
+                    let mut writer = Writer::new(Arc::clone(&set));
                     let mut split =
-                        scratch.split(&set, draft(&pool, &set, form, &write));
+                        scratch.split(&mut writer, draft(&pool, &set, form, &write));
 
                     let groups = groups(&mut split);
                     assert_eq!(expected.to_string(), message);
@@ -799,7 +849,8 @@ mod tests {
                 draft.set_count(1, 3);
                 let mut scratch = Scratch::default();
 
-                let mut split = scratch.split(&set, draft);
+                let mut writer = Writer::new(Arc::clone(&set));
+                let mut split = scratch.split(&mut writer, draft);
 
                 let groups = groups(&mut split);
                 let expected = codec::Error::Truncated {
@@ -830,7 +881,8 @@ mod tests {
                     let mut draft = draft(&pool, &set, form, &write);
                     draft.set_count(1, 3);
                     let mut scratch = Scratch::default();
-                    let mut split = scratch.split(&set, draft);
+                    let mut writer = Writer::new(Arc::clone(&set));
+                    let mut split = scratch.split(&mut writer, draft);
                     let groups = groups(&mut split);
                     let (_, Err(error)) = &groups[1] else {
                         panic!("group 1 fits in {form:?}: {groups:?}");
@@ -853,7 +905,8 @@ mod tests {
                 }
                 let mut scratch = Scratch::default();
 
-                let mut split = scratch.split(&set, draft);
+                let mut writer = Writer::new(Arc::clone(&set));
+                let mut split = scratch.split(&mut writer, draft);
 
                 let groups = groups(&mut split);
                 let expected = codec::Error::Tag { vector: 0, tag: 9 };
@@ -885,7 +938,8 @@ mod tests {
                 }
                 let mut scratch = Scratch::default();
 
-                let mut split = scratch.split(&set, draft);
+                let mut writer = Writer::new(Arc::clone(&set));
+                let mut split = scratch.split(&mut writer, draft);
 
                 let groups = groups(&mut split);
                 let expected = codec::Error::Length {
@@ -958,7 +1012,8 @@ mod tests {
                 for (draft, slot, error) in cases {
                     let mut scratch = Scratch::default();
 
-                    let mut split = scratch.split(&set, draft);
+                    let mut writer = Writer::new(Arc::clone(&set));
+                    let mut split = scratch.split(&mut writer, draft);
 
                     let channel = key(Slot::new(slot));
                     assert_eq!(
@@ -1029,7 +1084,8 @@ mod tests {
                     draft.set_count(0, 2);
                     let mut scratch = Scratch::default();
 
-                    let mut split = scratch.split(&set, draft);
+                    let mut writer = Writer::new(Arc::clone(&set));
+                    let mut split = scratch.split(&mut writer, draft);
 
                     let channel = key(Slot::new(slot));
                     assert_eq!(
@@ -1051,7 +1107,9 @@ mod tests {
             let mut index = encoded(&set, 0, 1, &5_u64.to_le_bytes());
             index[0] = 9;
             let mut scratch = Scratch::default();
-            let mut split = scratch.split(&set, encoded_index(&pool, &set, 1, &index));
+            let mut writer = Writer::new(Arc::clone(&set));
+            let mut split =
+                scratch.split(&mut writer, encoded_index(&pool, &set, 1, &index));
 
             let (_, stamps) = split.next().expect("group 0");
             let mut stamps = stamps.expect("an encoded index is checked as it decodes");
@@ -1076,7 +1134,9 @@ mod tests {
             for form in [Form::Raw, Form::Encoded] {
                 let pool = create_pool(1 << 16);
                 let mut scratch = Scratch::default();
-                let mut split = scratch.split(&set, draft(&pool, &set, form, &write));
+                let mut writer = Writer::new(Arc::clone(&set));
+                let mut split =
+                    scratch.split(&mut writer, draft(&pool, &set, form, &write));
 
                 let (group, stamps) = split.next().expect("group 0");
                 let vectors =
@@ -1095,7 +1155,9 @@ mod tests {
             let set = two_groups();
             let pool = create_pool(1 << 16);
             let mut scratch = Scratch::default();
-            let mut split = scratch.split(&set, draft(&pool, &set, Form::Raw, &both()));
+            let mut writer = Writer::new(Arc::clone(&set));
+            let mut split =
+                scratch.split(&mut writer, draft(&pool, &set, Form::Raw, &both()));
             let mut held = Vec::new();
             while let Ok(block) = pool.alloc(64) {
                 held.push(block);
@@ -1126,7 +1188,8 @@ mod tests {
                 &index,
             );
             let mut scratch = Scratch::default();
-            let mut split = scratch.split(&set, draft);
+            let mut writer = Writer::new(Arc::clone(&set));
+            let mut split = scratch.split(&mut writer, draft);
 
             let (_, stamps) = split.next().expect("group 0");
             let mut stamps = stamps.expect("a valid group");
@@ -1146,7 +1209,8 @@ mod tests {
             let pool = create_pool(1 << 16);
             let draft = encoded_index(&pool, &set, u32::MAX, &[]);
             let mut scratch = Scratch::default();
-            let mut split = scratch.split(&set, draft);
+            let mut writer = Writer::new(Arc::clone(&set));
+            let mut split = scratch.split(&mut writer, draft);
 
             let groups = groups(&mut split);
 
@@ -1173,7 +1237,9 @@ mod tests {
             let mut index = encoded(&set, 0, 1, &5_u64.to_le_bytes());
             index.push(0);
             let mut scratch = Scratch::default();
-            let mut split = scratch.split(&set, encoded_index(&pool, &set, 1, &index));
+            let mut writer = Writer::new(Arc::clone(&set));
+            let mut split =
+                scratch.split(&mut writer, encoded_index(&pool, &set, 1, &index));
 
             let groups = groups(&mut split);
 
@@ -1195,7 +1261,9 @@ mod tests {
             let pool = create_pool(1 << 16);
             let index = encoded(&set, 0, 1, &5_u64.to_le_bytes());
             let mut scratch = Scratch::default();
-            let mut split = scratch.split(&set, encoded_index(&pool, &set, 1, &index));
+            let mut writer = Writer::new(Arc::clone(&set));
+            let mut split =
+                scratch.split(&mut writer, encoded_index(&pool, &set, 1, &index));
             let _frame = split.frame(&pool, 0).expect("room");
 
             let _stamps = split.next();
@@ -1212,7 +1280,9 @@ mod tests {
             for form in [Form::Raw, Form::Encoded] {
                 let pool = create_pool(1 << 16);
                 let mut scratch = Scratch::default();
-                let mut split = scratch.split(&set, draft(&pool, &set, form, &write));
+                let mut writer = Writer::new(Arc::clone(&set));
+                let mut split =
+                    scratch.split(&mut writer, draft(&pool, &set, form, &write));
 
                 for group in [0, 1] {
                     let frame = split.frame(&pool, group).expect("room");
@@ -1228,7 +1298,9 @@ mod tests {
             for form in [Form::Raw, Form::Encoded] {
                 let pool = create_pool(1 << 16);
                 let mut scratch = Scratch::default();
-                let mut split = scratch.split(&set, draft(&pool, &set, form, &write));
+                let mut writer = Writer::new(Arc::clone(&set));
+                let mut split =
+                    scratch.split(&mut writer, draft(&pool, &set, form, &write));
 
                 for group in [0, 1] {
                     let frame = split.frame(&pool, group).expect("room");
@@ -1244,8 +1316,9 @@ mod tests {
             let write = BTreeMap::from([(0, both()[&0].clone())]);
             let pool = create_pool(1 << 16);
             let mut scratch = Scratch::default();
+            let mut writer = Writer::new(Arc::clone(&set));
             let mut split =
-                scratch.split(&set, draft(&pool, &set, Form::Encoded, &write));
+                scratch.split(&mut writer, draft(&pool, &set, Form::Encoded, &write));
             let committed = pool.committed();
 
             let frame = split.frame(&pool, 0).expect("room");
@@ -1260,7 +1333,9 @@ mod tests {
             let write = both();
             let pool = create_pool(1 << 16);
             let mut scratch = Scratch::default();
-            let mut split = scratch.split(&set, draft(&pool, &set, Form::Raw, &write));
+            let mut writer = Writer::new(Arc::clone(&set));
+            let mut split =
+                scratch.split(&mut writer, draft(&pool, &set, Form::Raw, &write));
             let mut held = Vec::new();
             while let Ok(block) = pool.alloc(64) {
                 held.push(block);
@@ -1270,13 +1345,13 @@ mod tests {
             let error = split.frame(&pool, 0).expect_err("a full pool");
 
             let exhausted = block::Error::Exhausted {
-                requested: 128,
+                requested: 120,
                 available,
             };
             assert_eq!(error, exhausted);
             assert_eq!(
                 error.to_string(),
-                format!("pool is full: asked for 128 bytes, {available} bytes free")
+                format!("pool is full: asked for 120 bytes, {available} bytes free")
             );
         }
 
@@ -1286,7 +1361,9 @@ mod tests {
             let write = both();
             let pool = create_pool(1 << 16);
             let mut scratch = Scratch::default();
-            let mut split = scratch.split(&set, draft(&pool, &set, Form::Raw, &write));
+            let mut writer = Writer::new(Arc::clone(&set));
+            let mut split =
+                scratch.split(&mut writer, draft(&pool, &set, Form::Raw, &write));
             let mut held = Vec::new();
             while let Ok(block) = pool.alloc(64) {
                 held.push(block);
@@ -1323,7 +1400,9 @@ mod tests {
                 )]);
                 let pool = create_pool(1 << 16);
 
-                Scratch::default().split(&set, draft(&pool, &other, Form::Raw, &write));
+                let mut writer = Writer::new(Arc::clone(&set));
+                Scratch::default()
+                    .split(&mut writer, draft(&pool, &other, Form::Raw, &write));
             }
 
             #[test]
@@ -1333,8 +1412,9 @@ mod tests {
                 let write = BTreeMap::from([(0, both()[&0].clone())]);
                 let pool = create_pool(1 << 16);
                 let mut scratch = Scratch::default();
+                let mut writer = Writer::new(Arc::clone(&set));
                 let mut split =
-                    scratch.split(&set, draft(&pool, &set, Form::Raw, &write));
+                    scratch.split(&mut writer, draft(&pool, &set, Form::Raw, &write));
 
                 drop(split.frame(&pool, 1));
             }
@@ -1353,8 +1433,9 @@ mod tests {
                     .insert(1, vec![0; 8]);
                 let pool = create_pool(1 << 16);
                 let mut scratch = Scratch::default();
+                let mut writer = Writer::new(Arc::clone(&set));
                 let mut split =
-                    scratch.split(&set, draft(&pool, &set, Form::Raw, &write));
+                    scratch.split(&mut writer, draft(&pool, &set, Form::Raw, &write));
 
                 drop(split.frame(&pool, 0));
             }
@@ -1367,8 +1448,9 @@ mod tests {
                 let mut index = encoded(&set, 0, 1, &5_u64.to_le_bytes());
                 index[0] = 9;
                 let mut scratch = Scratch::default();
+                let mut writer = Writer::new(Arc::clone(&set));
                 let mut split =
-                    scratch.split(&set, encoded_index(&pool, &set, 1, &index));
+                    scratch.split(&mut writer, encoded_index(&pool, &set, 1, &index));
 
                 drop(split.frame(&pool, 0));
             }
@@ -1383,8 +1465,9 @@ mod tests {
                 let mut index = encoded(&set, 0, 1, &5_u64.to_le_bytes());
                 index[0] = 9;
                 let mut scratch = Scratch::default();
+                let mut writer = Writer::new(Arc::clone(&set));
                 let mut split =
-                    scratch.split(&set, encoded_index(&pool, &set, 1, &index));
+                    scratch.split(&mut writer, encoded_index(&pool, &set, 1, &index));
                 let (_, stamps) = split.next().expect("group 0");
                 let mut stamps =
                     stamps.expect("an encoded index is checked as it decodes");
@@ -1418,7 +1501,8 @@ mod tests {
                     series[0] = if entry == 0 { 9 } else { 8 };
                 }
                 let mut scratch = Scratch::default();
-                let mut split = scratch.split(&set, draft);
+                let mut writer = Writer::new(Arc::clone(&set));
+                let mut split = scratch.split(&mut writer, draft);
 
                 drop(split.frame(&pool, 0));
             }
@@ -1429,8 +1513,9 @@ mod tests {
                 let set = two_groups();
                 let pool = create_pool(1 << 16);
                 let mut scratch = Scratch::default();
+                let mut writer = Writer::new(Arc::clone(&set));
                 let mut split =
-                    scratch.split(&set, draft(&pool, &set, Form::Raw, &both()));
+                    scratch.split(&mut writer, draft(&pool, &set, Form::Raw, &both()));
                 let _made = split.frame(&pool, 1).expect("room");
 
                 drop(split.frame(&pool, 1));
@@ -1460,16 +1545,18 @@ mod tests {
             for form in [Form::Raw, Form::Encoded] {
                 let pool = create_pool(1 << 16);
                 let mut scratch = Scratch::default();
+                let mut writer = Writer::new(Arc::clone(&large));
                 let mut split =
-                    scratch.split(&large, draft(&pool, &large, form, &many));
+                    scratch.split(&mut writer, draft(&pool, &large, form, &many));
                 drain(&mut split);
                 for group in [0, 1] {
                     drop(split.frame(&pool, group).expect("room"));
                 }
                 let kept = buffers(&scratch);
 
+                let mut writer = Writer::new(Arc::clone(&small));
                 let mut split =
-                    scratch.split(&small, draft(&pool, &small, form, &both()));
+                    scratch.split(&mut writer, draft(&pool, &small, form, &both()));
                 drain(&mut split);
                 for group in [0, 1] {
                     drop(split.frame(&pool, group).expect("room"));
@@ -1556,7 +1643,9 @@ mod tests {
             let form = if raw { Form::Raw } else { Form::Encoded };
             let pool = create_pool(1 << 20);
             let mut scratch = Scratch::default();
-            let mut split = scratch.split(&set, draft(&pool, &set, form, &write));
+            let draft = draft(&pool, &set, form, &write);
+            let mut writer = Writer::new(Arc::clone(&set));
+            let mut split = scratch.split(&mut writer, draft);
 
             let groups = groups(&mut split);
             let expected: Vec<Checked> = write
@@ -1582,7 +1671,9 @@ mod tests {
 
             for ((set, write), raw) in &writes {
                 let form = if *raw { Form::Raw } else { Form::Encoded };
-                let mut split = scratch.split(set, draft(&pool, set, form, write));
+                let draft = draft(&pool, set, form, write);
+                let mut writer = Writer::new(Arc::clone(set));
+                let mut split = scratch.split(&mut writer, draft);
 
                 for &group in write.keys() {
                     let frame = split.frame(&pool, group).expect("room");
