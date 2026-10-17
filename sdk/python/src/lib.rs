@@ -2,6 +2,7 @@
 //! Python.
 
 use std::net::SocketAddr;
+use std::process;
 use std::sync::{Mutex, PoisonError};
 
 use pyo3::exceptions::{
@@ -65,13 +66,23 @@ fn connect(
     let client = py
         .detach(|| sdk::Client::connect(&node, subject))
         .map_err(|e| error(&e))?;
-    Ok(Client(Mutex::new(Some(client))))
+    Ok(Client {
+        session: Mutex::new(Some(client)),
+        process: process::id(),
+    })
 }
 
 /// A program's session with one node. A `with` block closes it at its end. A client
-/// that the program drops without a close ends its session and does not wait.
+/// that the program drops without a close ends its session and does not wait. A
+/// process that forks from the program does not own the client: in it, a close gives
+/// `None`, and neither a close nor a drop ends the session.
 #[pyclass(frozen, module = "foundation")]
-struct Client(Mutex<Option<sdk::Client>>);
+struct Client {
+    session: Mutex<Option<sdk::Client>>,
+    /// The process that connected. A child that it forks has no thread of the client,
+    /// and can copy the lock as held.
+    process: u32,
+}
 
 #[pymethods]
 impl Client {
@@ -83,9 +94,13 @@ impl Client {
     /// and `PanicException` when the client's thread panicked. Only the close that ends
     /// the session raises.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
+        if process::id() != self.process {
+            return Ok(());
+        }
         // The lock is taken without the GIL, which the closing thread needs to return.
         py.detach(|| {
-            let mut client = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut client =
+                self.session.lock().unwrap_or_else(PoisonError::into_inner);
             client.take().map_or(Ok(()), sdk::Client::close)
         })
         .map_err(|e| error(&e))

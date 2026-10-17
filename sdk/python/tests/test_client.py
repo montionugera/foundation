@@ -13,6 +13,7 @@ import threading
 import time
 import unittest
 import uuid
+import warnings
 
 import foundation
 
@@ -40,6 +41,30 @@ def budget(pool: int, disk: int) -> bytes:
     body = b"foundation/budget/1" + pool.to_bytes(8, "little")
     body += disk.to_bytes(8, "little")
     return body + crc32c(body).to_bytes(4, "little")
+
+
+def fork(call) -> int:
+    """Calls `call` in a forked child, and gives the exit code of the child: 0 when
+    `call` gives `None`. Kills the child after `PATIENCE` s."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        pid = os.fork()
+    if pid == 0:
+        code = 1
+        try:
+            code = 0 if call() is None else 1
+        finally:
+            os._exit(code)
+    deadline = time.monotonic() + PATIENCE
+    while True:
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            return os.waitstatus_to_exitcode(status)
+        if time.monotonic() > deadline:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            raise AssertionError(f"the child {pid} did not exit")
+        time.sleep(0.01)
 
 
 class Node:
@@ -184,6 +209,29 @@ class ClientTest(unittest.TestCase):
             closed.set()
             thread.join()
         self.assertGreater(count, 20)
+
+    def test_a_child_forked_during_a_close_gives_none(self) -> None:
+        client = self.node.connect()
+        self.node.process.send_signal(signal.SIGSTOP)
+        self.addCleanup(self.node.process.send_signal, signal.SIGCONT)
+        closing = threading.Thread(target=client.close, daemon=True)
+        closing.start()
+        time.sleep(0.02)
+        self.assertTrue(closing.is_alive())
+        self.assertEqual(fork(client.close), 0)
+        closing.join(PATIENCE)
+        self.assertFalse(closing.is_alive())
+
+    def test_a_child_forked_with_an_open_client_does_not_end_the_session(self) -> None:
+        clients = [self.node.connect()]
+
+        def close_and_drop() -> None:
+            closed = clients[0].close()
+            clients.clear()
+            return closed
+
+        self.assertEqual(fork(close_and_drop), 0)
+        self.assertIsNone(clients[0].close())
 
     def test_a_subject_that_the_spec_does_not_list_is_refused(self) -> None:
         with self.assertRaises(ConnectionError) as raised:
