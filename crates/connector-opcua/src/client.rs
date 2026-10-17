@@ -29,7 +29,7 @@ use crate::value::{Fault, Value};
 pub(crate) mod browse;
 mod service;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use service::{Bytes, Item, Request, Sizes};
 
@@ -310,12 +310,12 @@ impl Client {
     /// last, or the `MaxMessageSize` of the server when that is smaller.
     ///
     /// A node whose request alone, or its answer, does not fit one message is in no
-    /// request, and gives its [`Large`], in order. The request comes first.
+    /// request, and is in [`Nodes::large`].
     ///
     /// # Aborts
     ///
     /// If open62541 cannot allocate a request, as [`alloc::exhausted`] says.
-    pub(crate) fn nodes(&self, nodes: &[Node]) -> (Nodes, Vec<Large>) {
+    pub(crate) fn nodes(&self, nodes: &[Node]) -> Nodes {
         let sizes = self.sizes(Request::values, Item::Value.bytes());
         let split = self.split(nodes.len(), self.per_read, &sizes, |index| {
             id_bytes(&nodes[index])
@@ -327,7 +327,9 @@ impl Client {
             .collect();
         let counts: Vec<usize> =
             split.ranges.iter().map(ExactSizeIterator::len).collect();
-        (Nodes::new(&fit, &counts, Rc::clone(&self.key)), split.large)
+        let mut built = Nodes::new(&fit, &counts, Rc::clone(&self.key));
+        built.large = split.large;
+        built
     }
 
     /// [`Client::nodes`] of nodes by number, whose read fits one message.
@@ -336,10 +338,11 @@ impl Client {
     ///
     /// If a node does not fit, with its [`Large`].
     fn numbered(&self, nodes: &[Node]) -> Nodes {
-        let (nodes, large) = self.nodes(nodes);
+        let nodes = self.nodes(nodes);
         assert!(
-            large.is_empty(),
-            "invariant: a read of nodes by number fits one message: {large:?}"
+            nodes.large.is_empty(),
+            "invariant: a read of nodes by number fits one message: {:?}",
+            nodes.large
         );
         nodes
     }
@@ -644,7 +647,7 @@ struct Split {
 
 /// An item of a list whose request alone, or its answer, is past one message of a
 /// session, such as a node of a Read.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Large {
     /// The index of the item in its list.
     pub(crate) index: usize,
@@ -717,6 +720,8 @@ pub(crate) struct Nodes {
     /// Each request, in node order.
     parts: Vec<Part>,
     count: usize,
+    /// Each node in no request, in order.
+    large: Vec<Large>,
     /// The [`Client::key`] of the client that checked it.
     client: Rc<()>,
 }
@@ -766,8 +771,15 @@ impl Nodes {
         Self {
             parts,
             count: nodes.len(),
+            large: Vec::new(),
             client,
         }
+    }
+
+    /// Gives each node of the list of [`Client::nodes`] that is in no request, as its
+    /// read does not fit one message, in order.
+    pub(crate) fn large(&self) -> &[Large] {
+        &self.large
     }
 
     /// Gives the count of nodes of each request, in order.

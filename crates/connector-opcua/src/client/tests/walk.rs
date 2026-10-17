@@ -1,4 +1,4 @@
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -10,10 +10,10 @@ use connector::kind::Error;
 use types::sample::{self, Scalar, Type};
 
 use super::{RELAY, Relay, relayed, run, serve};
-use crate::browse::Server as Browse;
+use crate::browse::{BYTES, Server as Browse};
 use crate::ffi::Status;
 use crate::node::ns0::{self, HAS_COMPONENT, ORGANIZES};
-use crate::node::{Key, Name, Node};
+use crate::node::{self, Key, Name, Node};
 use crate::server::{self, Server, Variable};
 use crate::value::Value;
 
@@ -169,6 +169,27 @@ fn a_name_that_is_not_utf8_gives_an_escaped_tag_and_hides_no_other_node() {
         ]
     );
     assert_eq!(found.values, [None, Some(sample::Value::F64(2.5))]);
+}
+
+/// The relay moves the node `ns=1;s=x%bc` to namespace 0 with a name that is not
+/// UTF-8, whose tag has no `ns=` and is no node.
+#[test]
+fn a_name_of_namespace_0_that_is_not_utf8_gives_a_tag_that_is_no_node() {
+    let setup = tree(vec![(named("x%bc"), c"a", Some(1.5))]);
+    let rewrite = |message: &mut Vec<u8>| {
+        if response(message).is_some() {
+            let from = [3, 1, 0, 4, 0, 0, 0, b'x', b'%', b'b', b'c'];
+            let to = [3, 0, 0, 4, 0, 0, 0, b'x', b'%', 0xF0, 0x9F];
+            replace(message, &from, &to);
+        }
+    };
+    let found = walked(setup, rewrite, level()).expect("found");
+    let reason = "its node ID is a name that is empty or not UTF-8, which the kind \
+                  cannot read";
+    let tag = "s%=x%25%F0%9F";
+    let unreadable = Shape::Unreadable(reason.into());
+    assert_eq!(found.entries, [entry("root/a", tag, unreadable)]);
+    assert_eq!(tag.parse::<Node>(), Err(node::Error::Syntax));
 }
 
 /// The server index 1 on the node `ns=1;s=xabc` makes it a node of another server.
@@ -749,4 +770,206 @@ fn a_walk_whose_release_after_a_refusal_fails_fails() {
         browse::walk(server, &everything()).await
     });
     internal_error(found);
+}
+
+/// The references of `root` in a page each, the second rewritten to the class
+/// `ObjectType`, which the client drops, so the second page of the server has no
+/// references. A new browse of each cursor, as a `Scope::Level` browse of the kind
+/// does, reaches the third reference.
+#[test]
+fn a_new_browse_of_each_cursor_goes_past_a_server_page_with_no_references() {
+    let setup = |server: &Server| {
+        server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+        for (index, name) in [c"keep0", c"drop1", c"keep2"].into_iter().enumerate() {
+            let node = Node {
+                namespace: 1,
+                key: Key::Number(20_000 + u32::try_from(index).expect("small")),
+            };
+            server.add_folder(&node, &ROOT, ORGANIZES, name, name);
+        }
+        server.cap_references(1);
+    };
+    let rewrite = |message: &mut Vec<u8>| {
+        if response(message).is_none() {
+            return;
+        }
+        let pattern = [&5_i32.to_le_bytes()[..], b"drop1"].concat();
+        let ends: Vec<usize> = message
+            .windows(pattern.len())
+            .enumerate()
+            .filter(|(_, window)| *window == pattern.as_slice())
+            .map(|(at, _)| at + pattern.len())
+            .collect();
+        for pair in ends.chunks(2) {
+            if let [_, display] = pair {
+                let class = &mut message[*display..*display + 4];
+                assert_eq!(class, &1_u32.to_le_bytes(), "the class of an Object");
+                class.copy_from_slice(&8_u32.to_le_bytes());
+            }
+        }
+    };
+    let (pages, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            setup(peer.server);
+            let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
+            relayed(&node, &Relay::default(), rewrite, async {
+                let mut client = peer.connect(&url).await.expect("a connect");
+                let root = entry("root", &ROOT.to_string(), Shape::Folder);
+                let mut pages: Vec<(Vec<String>, Option<Cursor>)> = Vec::new();
+                let mut cursor: Option<Cursor> = None;
+                for _ in 0..6 {
+                    let mut browse = Browse::new(&mut client);
+                    let page = browse.level(Some(&root), cursor.as_ref()).await;
+                    let page = page.expect("a page").expect("a folder");
+                    let names = page.entries.into_iter().map(|child| child.name);
+                    cursor = page.next.clone();
+                    pages.push((names.collect(), page.next));
+                    if cursor.is_none() {
+                        break;
+                    }
+                }
+                client.close().await;
+                pages
+            })
+            .await
+        })
+        .await
+    });
+    let names: Vec<String> = pages.iter().flat_map(|(n, _)| n.clone()).collect();
+    assert_eq!(names, ["keep0", "keep2"], "pages: {pages:?}");
+    let last = pages.last().map(|(_, next)| next.clone());
+    assert_eq!(last, Some(None), "pages: {pages:?}");
+}
+
+/// Adds a folder under `parent` for each number and browse name of `children`, with
+/// the display name `d`.
+fn add_folders(server: &Server, parent: &Node, children: Vec<(u32, String)>) {
+    for (number, name) in children {
+        let node = Node {
+            namespace: 1,
+            key: Key::Number(number),
+        };
+        let name = CString::new(name).expect("no NUL");
+        server.add_folder(&node, parent, ORGANIZES, &name, c"d");
+    }
+}
+
+/// The folders `a` and `b` under `root`, 16 references in each page of the server,
+/// and children of 4096 bytes of tag and name each: 32 in `a`, and 4080 in `b` with
+/// `extra` more bytes in the name of the first. The first page of `a` holds its
+/// point, so the browse keeps 64 KiB for it, and the pages of `b` keep
+/// `BYTES - 64 KiB + extra` at its last page.
+fn budget(extra: usize) -> Result<usize, Error> {
+    const A: Node = Node {
+        namespace: 1,
+        key: Key::Number(7001),
+    };
+    const B: Node = Node {
+        namespace: 1,
+        key: Key::Number(7002),
+    };
+    // The tag of each child, such as `ns=1;i=20000`, has 12 bytes.
+    let name =
+        |number: u32, extra: usize| format!("{number:0>width$}", width = 4084 + extra);
+    let setup = move |server: &Server| {
+        server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+        server.add_folder(&A, &ROOT, ORGANIZES, c"a", c"a");
+        server.add_folder(&B, &ROOT, ORGANIZES, c"b", c"b");
+        add_folders(
+            server,
+            &A,
+            (20_000..20_032).map(|n| (n, name(n, 0))).collect(),
+        );
+        let b =
+            (30_000..34_080).map(|n| (n, name(n, if n == 30_000 { extra } else { 0 })));
+        add_folders(server, &B, b.collect());
+        server.cap_references(16);
+    };
+    relayed_browse(
+        setup,
+        |_| {},
+        async |server| {
+            let a = entry("root/a", &A.to_string(), Shape::Folder);
+            let first = server.level(Some(&a), None).await?.expect("a folder");
+            assert_eq!(first.next, Some(Cursor::new("16".to_owned())));
+            let b = entry("root/b", &B.to_string(), Shape::Folder);
+            let (mut entries, mut cursor) = (0, None);
+            loop {
+                let page = server.level(Some(&b), cursor.as_ref()).await?;
+                let page = page.expect("a folder");
+                entries += page.entries.len();
+                cursor = page.next;
+                if cursor.is_none() {
+                    return Ok(entries);
+                }
+            }
+        },
+    )
+}
+
+#[test]
+fn a_browse_keeps_the_tags_and_names_of_its_budget() {
+    assert_eq!(BYTES, 16 * 4096 + 4080 * 4096);
+    assert_eq!(budget(0).expect("the pages of `b`"), 4080);
+}
+
+#[test]
+fn a_browse_that_keeps_more_than_its_budget_fails() {
+    let found = budget(1);
+    let Err(Error::Device(source)) = found else {
+        panic!("not a device error: {found:?}");
+    };
+    assert_eq!(
+        source.to_string(),
+        "the tags and names of the browse pass 16 MiB"
+    );
+}
+
+/// The relay frees the point of the first cursor past `SKIP` (100 000) when the browse
+/// goes on from it, and that browse fails, and does not read the folder again from its
+/// start.
+#[test]
+fn a_cursor_past_the_skip_bound_whose_point_the_server_freed_fails() {
+    let setup = |server: &Server| {
+        server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+        let children = (0..100_600).map(|index| (200_000 + index, format!("c{index}")));
+        add_folders(server, &ROOT, children.collect());
+    };
+    let freed = Arc::new(AtomicBool::new(false));
+    let free = Arc::clone(&freed);
+    let rewrite = move |message: &mut Vec<u8>| {
+        if response(message) == Some(BROWSE_NEXT_RESPONSE)
+            && free.swap(false, Ordering::Relaxed)
+        {
+            let invalid = Status::BAD_CONTINUATION_POINT_INVALID.0.to_le_bytes();
+            message[56..60].copy_from_slice(&invalid);
+        }
+    };
+    let page = relayed_browse(setup, rewrite, async move |server| {
+        let root = entry("root", &ROOT.to_string(), Shape::Folder);
+        let mut cursor: Option<Cursor> = None;
+        loop {
+            let page = server.level(Some(&root), cursor.as_ref()).await;
+            let page = page.expect("a page").expect("a folder");
+            cursor = page.next;
+            let count: usize = cursor
+                .as_ref()
+                .expect("a cursor")
+                .as_str()
+                .parse()
+                .expect("a count");
+            if count > 100_000 {
+                freed.store(true, Ordering::Relaxed);
+                let page = server.level(Some(&root), cursor.as_ref()).await;
+                return page;
+            }
+        }
+    });
+    let Err(Error::Device(source)) = page else {
+        panic!("not a device error: {page:?}");
+    };
+    assert_eq!(
+        source.to_string(),
+        "the browse failed with BadContinuationPointInvalid"
+    );
 }

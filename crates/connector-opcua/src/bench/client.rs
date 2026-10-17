@@ -147,8 +147,8 @@ impl Server {
         };
         let nodes = |node: Node| {
             let nodes: Vec<Node> = std::iter::repeat_n(node, count).collect();
-            let (nodes, large) = session.nodes(&nodes);
-            assert!(large.is_empty(), "one copy fits one message");
+            let nodes = session.nodes(&nodes);
+            assert!(nodes.large().is_empty(), "one copy fits one message");
             nodes
         };
         let (number, name) = (nodes(VALUE), nodes(named()));

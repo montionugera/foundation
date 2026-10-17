@@ -82,13 +82,15 @@
   kind reads only what it needs to reach the device, so a block with only `kind`,
   `node`, and `address` browses. A kind reads mesh time with `browse::Context::time`,
   which races `Hub::time` against `WAIT` (5 s) and gives `Error::Retry` with "the node
-  has no mesh time after 5 s" at the bound, so a kind that reads no mesh time never
-  waits (approval owed). `browse::Context` and `kind::Context` stay two
-  types: each input that both give is a read of a field or one call, and `secret` is one
-  function. Trigger to make them one: a third context, or a second shared input with a
-  body of its own, as `secret` has in `read_secret`. A kind implements `browse::Device`
-  on its open session, so one walk is one session and can use a continuation point; a
-  `Cursor` that a front end gets holds no session state. `level` takes a folder as the
+  has no mesh time after 5s" at the bound, so a kind that reads no mesh time never
+  waits (`laptop.architect-2`, 2026-10-17T03:22:56Z:
+  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6228993285).
+  `browse::Context` and `kind::Context` stay two types: each input that both give is a
+  read of a field or one call, and `secret` is one function. Trigger to make them one:
+  a third context, or a second shared input with a body of its own, as `secret` has in
+  `read_secret`. A kind implements `browse::Device` on its open session, so one walk is
+  one session and can use a continuation point; a `Cursor` that a front end gets holds
+  no session state. `level` takes a folder as the
   `Entry` that the device gave, never a path, and gives at most `LIMIT` entries a page;
   `values` gives `types::sample::Value`, so there is one value model. Trigger for a text
   value: a kind that reads a `string` channel. Lost: a count of matches up to the

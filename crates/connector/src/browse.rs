@@ -91,13 +91,15 @@ impl<'a> Context<'a> {
     ///
     /// # Errors
     ///
-    /// [`Error::Retry`] with "the node has no mesh time after 5 s" when the node has
+    /// [`Error::Retry`] with "the node has no mesh time after 5s" when the node has
     /// none at [`WAIT`]. Nothing retries a browse: the caller browses again once the
     /// node has mesh time.
     pub async fn time(&self) -> Result<hub::Time, Error> {
         let late = self.inputs.clock.sleep(WAIT);
         let time = deadline::before(self.inputs.hub.time(), late).await;
-        time.ok_or_else(|| Error::Retry("the node has no mesh time after 5 s".into()))
+        time.ok_or_else(|| {
+            Error::Retry(format!("the node has no mesh time after {WAIT}").into())
+        })
     }
 }
 

@@ -5131,7 +5131,14 @@ mod tests {
         let Err(Error::Retry(error)) = found else {
             panic!("not a retry: {found:?}");
         };
-        assert_eq!(error.to_string(), "the node has no mesh time after 5 s");
+        assert_eq!(error.to_string(), "the node has no mesh time after 5s");
+        assert_eq!(returned, browse::WAIT);
+    }
+
+    #[test]
+    fn a_browse_reads_the_mesh_time_that_starts_at_the_bound() {
+        let (found, returned) = browse_unsynced(browse::WAIT);
+        assert_eq!(found.expect("found").end, browse::End::Done);
         assert_eq!(returned, browse::WAIT);
     }
 }

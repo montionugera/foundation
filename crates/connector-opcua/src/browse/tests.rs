@@ -1,19 +1,22 @@
 use std::ffi::CString;
 use std::future;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use ::sim::{Sim, node};
 use connector::browse::{Device, End, Found, Query, Scope, Values};
 use connector::kind::Table;
-use connector::supervisor::Supervisor;
-use connector::testing;
+use connector::supervisor::{self, Supervisor};
+use connector::{http, testing};
 use document::value::{self, Value};
 use document::{Attribute, Document, Map};
 use env::net::tcp;
 use types::sample::Scalar;
+use types::time::{Span, Stamp};
 
 use super::*;
 use crate::client::browse::Foreign;
+use crate::client::tests::{RELAY, Relay, relayed};
 use crate::event::Time;
 use crate::kind::Kind;
 use crate::sim::{Variables, serve, tree};
@@ -74,6 +77,72 @@ fn browse_each(
         found
     });
     run.expect("the run ends")
+}
+
+/// What `Supervisor::browse` of the `opcua` kind gives for `query` through a relay to
+/// a sim server, on a node whose mesh time starts `delay` after the call. Also gives
+/// the mesh time once the browse ends and the time of the request header of each
+/// Browse request, both in 100 ns from 1601.
+fn browse_relayed(delay: Span, query: Query) -> (Result<Found, Error>, i64, Vec<i64>) {
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    let run = sim.run_on(&node, move |node, tasks| async move {
+        let env = hub::testing::Env {
+            files: node.files(),
+            clock: node.clock(),
+            wall: node.wall(),
+            entropy: node.entropy(),
+            tasks: tasks.clone(),
+        };
+        let hub = hub::testing::open_unsynced(env, delay).await;
+        let supervisor = Supervisor::new(supervisor::Config {
+            kinds: Arc::new(Table::new().with("opcua", Kind::default())),
+            clock: node.clock(),
+            entropy: node.entropy(),
+            net: node.net(),
+            roots: http::Roots::default(),
+            tasks,
+            hub: hub.clone(),
+            secrets: testing::create_secrets(node.files()),
+        });
+        let control = Relay::default();
+        let config = config(&format!("opc.tcp://{}:{RELAY}", node.addresses()[0]));
+        let browse = supervisor.browse("opcua", &config, &query);
+        let mut found = None;
+        let until =
+            async { found = Some(relayed(&node, &control, |_| {}, browse).await) };
+        serving(&node, until).await;
+        let end = ticks(hub.time().await.now());
+        (found.expect("the browse ends"), end, control.browses.take())
+    });
+    run.expect("the run ends")
+}
+
+/// `stamp` in 100 ns from 1601.
+fn ticks(stamp: Stamp) -> i64 {
+    stamp.nanos() / 100 + 116_444_736_000_000_000
+}
+
+#[test]
+fn a_browse_puts_the_mesh_time_in_the_header_of_each_browse_request() {
+    let (found, end, browses) = browse_relayed(Span::ZERO, level(PLANT, None));
+    assert_eq!(found.expect("found").end, End::Done);
+    assert!(!browses.is_empty(), "no Browse request");
+    for time in browses {
+        let second = end - 10_000_000..=end;
+        assert!(second.contains(&time), "{time} is not in {second:?}");
+    }
+}
+
+#[test]
+fn a_browse_on_a_node_with_no_mesh_time_gives_a_retry() {
+    let delay = Span::from_nanos(6_000_000_000);
+    let (found, _, browses) = browse_relayed(delay, level(PLANT, None));
+    let Err(Error::Retry(error)) = found else {
+        panic!("not a retry: {found:?}");
+    };
+    assert_eq!(error.to_string(), "the node has no mesh time after 5s");
+    assert_eq!(browses, []);
 }
 
 /// Serves the sim tree on port 4840 of `node` until `until` ends.
@@ -460,13 +529,14 @@ fn on_server<T: Send + 'static>(
 }
 
 #[test]
-fn gives_no_value_for_a_node_whose_read_alone_does_not_fit_a_message() {
+fn gives_no_value_for_each_node_whose_read_alone_does_not_fit_a_message() {
     let values = on_server(async |server| {
-        let long = format!("ns=1;s={}", "x".repeat(600_000));
-        server.values(&[&long, "ns=1;s=Plant.Odd.Level"]).await
+        let long = |name: &str| format!("ns=1;s={}", name.repeat(600_000));
+        let (x, y) = (long("x"), long("y"));
+        server.values(&[&x, "ns=1;s=Plant.Odd.Level", &y]).await
     });
     let values = values.expect("values");
-    assert_eq!(values, [None, Some(sample::Value::F64(2.5))]);
+    assert_eq!(values, [None, Some(sample::Value::F64(2.5)), None]);
 }
 
 /// The open62541 server frees the oldest of the 32 points that a session holds when a
@@ -497,20 +567,6 @@ fn browses_a_folder_again_when_the_server_freed_the_point_of_a_cursor() {
     assert_eq!(first.next, Some(Cursor::new("8".to_owned())));
     assert_eq!(names(&second), TYPES[8..]);
     assert_eq!(second.next, None);
-}
-
-/// A cursor past `SKIP` (100 000) whose point the server freed fails, and does not
-/// read the folder again from its start.
-#[test]
-fn a_cursor_past_the_skip_bound_whose_point_the_server_freed_fails() {
-    let page = moved_cursor(100_008, false);
-    let Err(Error::Device(source)) = page else {
-        panic!("not a device error: {page:?}");
-    };
-    assert_eq!(
-        source.to_string(),
-        "the browse failed with BadContinuationPointInvalid"
-    );
 }
 
 /// The page of a cursor of `Plant/Types` at the count `before`, after the server
@@ -610,7 +666,6 @@ fn the_tag_of_a_foreign_node_is_its_escaped_text_that_no_node_reads() {
             expected
         };
         assert_eq!(super::tag(&reference), expected);
-        assert_eq!(key(&reference), text);
         assert!(
             expected.parse::<Node>().is_err(),
             "{expected} reads as a node"

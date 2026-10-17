@@ -23,6 +23,10 @@ const BAD_CURSOR: Code = Code::new("opcua.bad-cursor");
 /// The most references that a cursor with no continuation point of the browse skips.
 const SKIP: usize = 100_000;
 
+/// The most bytes of the tags and names that a browse keeps for the references before
+/// its pages, across its folders.
+pub(crate) const BYTES: usize = 16 << 20;
+
 /// The Objects folder, the root of a browse.
 const OBJECTS: Node = Node::ns0(ns0::OBJECTS);
 
@@ -37,6 +41,8 @@ pub(crate) struct Server<'a> {
     points: BTreeMap<(Node, usize), Held>,
     /// The count of points that this browse held so far, which orders them by use.
     uses: u64,
+    /// The bytes of the `seen` of each of `points`.
+    held: usize,
 }
 
 /// Where the page of a cursor starts.
@@ -54,9 +60,11 @@ struct Held {
 /// The nodes and names that the references of one folder gave before a page.
 #[derive(Default)]
 struct Seen {
-    /// The key of each node, as [`key`] gives it.
-    nodes: BTreeSet<Vec<u8>>,
+    /// The tag of each node.
+    nodes: BTreeSet<String>,
     names: BTreeSet<String>,
+    /// The bytes of `nodes` and `names`.
+    bytes: usize,
 }
 
 impl<'a> Server<'a> {
@@ -66,6 +74,7 @@ impl<'a> Server<'a> {
             client,
             points: BTreeMap::new(),
             uses: 0,
+            held: 0,
         }
     }
 
@@ -75,54 +84,74 @@ impl<'a> Server<'a> {
     /// `BrowseNext`. Else, or when the server freed its point, it browses `folder`
     /// again from its start and skips `before` references. It reads pages of the
     /// server while each gives only references to skip, so it gives no references and
-    /// a held point after a page with none. `None` when the server does not have
-    /// `folder`.
+    /// a held point after a page with none. A browse again for a cursor also reads
+    /// past pages with none, at most [`browse::VISITS`] of them, so that a cursor of a
+    /// page with no entries goes on in a new browse. `before` is `None` for the first
+    /// page, and is a count past [`SKIP`] only for a cursor that this browse holds.
+    /// `None` when the server does not have `folder`.
     ///
     /// # Errors
     ///
-    /// `opcua.bad-cursor` when `before` is past [`SKIP`] and this browse holds no
-    /// point for `cursor`, `BadContinuationPointInvalid` when it holds one that the
-    /// server freed, and the status of a Browse or `BrowseNext` that fails.
+    /// `BadContinuationPointInvalid` when the server freed a point past [`SKIP`], the
+    /// status of a Browse or `BrowseNext` that fails, and as [`Server::fits`].
     async fn references(
         &mut self,
         folder: &Node,
-        cursor: Option<&Cursor>,
-        before: usize,
+        before: Option<usize>,
     ) -> Result<Option<(Vec<Reference>, Seen, Option<(Point, usize)>)>, Error> {
-        let resumed = match self.points.remove(&(folder.clone(), before)) {
-            Some(held) => match self.client.browse_next(held.point).await {
-                Ok(page) => Some((page, held.seen, held.left)),
-                Err(Status::BAD_CONTINUATION_POINT_INVALID) if before <= SKIP => None,
+        let again = before.is_some();
+        let before = before.unwrap_or(0);
+        let held = self.points.remove(&(folder.clone(), before));
+        if let Some(held) = &held {
+            self.held -= held.seen.bytes;
+        }
+        let (mut page, mut seen, mut left, again) = if let Some(held) = held {
+            match self.client.browse_next(held.point).await {
+                Ok(page) => (page, held.seen, held.left, false),
+                Err(Status::BAD_CONTINUATION_POINT_INVALID) if before <= SKIP => {
+                    let Some(page) = self.first(folder).await? else {
+                        return Ok(None);
+                    };
+                    (page, Seen::default(), before, true)
+                }
                 Err(status) => return Err(failed(status)),
-            },
-            None => None,
-        };
-        let (mut page, mut seen, mut left) = match resumed {
-            Some(resumed) => resumed,
-            None if before > SKIP => {
-                return Err(bad_cursor(cursor.expect("a count past 0 has a cursor")));
             }
-            None => {
-                let Some(page) = self.first(folder).await? else {
-                    return Ok(None);
-                };
-                (page, Seen::default(), before)
-            }
+        } else {
+            let Some(page) = self.first(folder).await? else {
+                return Ok(None);
+            };
+            (page, Seen::default(), before, again)
         };
+        let mut empty = 0;
         loop {
             let skipped = left.min(page.references.len());
             let rest = page.references.split_off(skipped);
             for reference in &page.references {
-                seen.name(&reference.name, key(reference), &tag(reference));
+                seen.name(&reference.name, &tag(reference));
             }
+            self.fits(&seen)?;
             left -= skipped;
+            let past = skipped > 0 || again && empty < browse::VISITS;
             match page.next {
-                Some(point) if rest.is_empty() && skipped > 0 => {
+                Some(point) if rest.is_empty() && past => {
+                    empty += usize::from(skipped == 0);
                     page = self.client.browse_next(point).await.map_err(failed)?;
                 }
                 next => return Ok(Some((rest, seen, next.map(|point| (point, left))))),
             }
         }
+    }
+
+    /// Checks that `seen` and the points of this browse keep at most [`BYTES`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Device`] when they keep more.
+    fn fits(&self, seen: &Seen) -> Result<(), Error> {
+        if self.held + seen.bytes > BYTES {
+            return Err(device(Failure::Names));
+        }
+        Ok(())
     }
 
     /// Gives the first page of `folder`, or `None` when the server does not have it.
@@ -162,10 +191,11 @@ impl<'a> Server<'a> {
             .into_iter()
             .take(most)
             .map(|(_, key)| {
-                self.points
-                    .remove(&key)
-                    .expect("invariant: each key of `held` is a key of `points`")
-                    .point
+                let held = self.points.remove(&key);
+                let held =
+                    held.expect("invariant: each key of `held` is a key of `points`");
+                self.held -= held.seen.bytes;
+                held.point
             })
             .collect();
         self.client.release(&points).await.map_err(failed)
@@ -196,18 +226,19 @@ impl<'a> Server<'a> {
 }
 
 impl Seen {
-    /// Gives the name of a reference of the browse name `name` to the node of the key
-    /// `key` and the tag `tag`: `name`, or `tag` when `name` is empty, with
-    /// ` (<tag>)` after it for each time that an earlier name has it. `None` when an
-    /// earlier reference gave the node.
-    fn name(&mut self, name: &str, key: Vec<u8>, tag: &str) -> Option<String> {
-        if !self.nodes.insert(key) {
+    /// Gives the name of a reference of the browse name `name` to the node of the tag
+    /// `tag`: `name`, or `tag` when `name` is empty, with ` (<tag>)` after it for each
+    /// time that an earlier name has it. `None` when an earlier reference gave the
+    /// node.
+    fn name(&mut self, name: &str, tag: &str) -> Option<String> {
+        if !self.nodes.insert(tag.to_owned()) {
             return None;
         }
         let mut name = if name.is_empty() { tag } else { name }.to_owned();
         while self.names.contains(&name) {
             name = format!("{name} ({tag})");
         }
+        self.bytes += tag.len() + name.len();
         self.names.insert(name.clone());
         Some(name)
     }
@@ -218,13 +249,15 @@ impl browse::Device for Server<'_> {
     /// a node that an earlier reference of the folder gave. The root is the Objects
     /// folder. The text of a cursor is the count of references of the folder before
     /// its page. A page of the server with no references gives a page with no
-    /// entries and a cursor, so [`browse::walk`] counts it.
+    /// entries and a cursor, so [`browse::walk`] counts it, and a new browse of that
+    /// cursor reads past it.
     ///
     /// # Errors
     ///
     /// [`Error::Config`] with `opcua.bad-cursor` when the text of `cursor` is not a
-    /// count, or is a count past 100 000 that this browse did not give.
-    /// [`Error::Device`] when a Browse, a `BrowseNext`, or a describe fails.
+    /// count, or is a count past 100 000 that this browse does not hold.
+    /// [`Error::Device`] when a Browse, a `BrowseNext`, or a describe fails, or when
+    /// the tags and names before the pages of the browse pass [`BYTES`].
     ///
     /// # Panics
     ///
@@ -242,21 +275,28 @@ impl browse::Device for Server<'_> {
                 )
             })
         });
-        let before = cursor.map_or(Ok(0), |cursor| {
-            cursor.as_str().parse().map_err(|_text| bad_cursor(cursor))
-        })?;
-        let browsed = self.references(&folder, cursor, before).await?;
+        let before = cursor
+            .map(|cursor| cursor.as_str().parse().map_err(|_text| bad_cursor(cursor)));
+        let before: Option<usize> = before.transpose()?;
+        if let (Some(cursor), Some(count)) = (cursor, before)
+            && count > SKIP
+            && !self.points.contains_key(&(folder.clone(), count))
+        {
+            return Err(bad_cursor(cursor));
+        }
+        let browsed = self.references(&folder, before).await?;
         let Some((references, mut seen, next)) = browsed else {
             return Ok(None);
         };
-        let after = before + references.len();
+        let after = before.unwrap_or(0) + references.len();
         let mut kept = Vec::new();
         for reference in references {
             let tag = tag(&reference);
-            if let Some(name) = seen.name(&reference.name, key(&reference), &tag) {
+            if let Some(name) = seen.name(&reference.name, &tag) {
                 kept.push((name, tag, reference));
             }
         }
+        self.fits(&seen)?;
         let references: Vec<&Reference> = kept.iter().map(|(_, _, it)| it).collect();
         let shapes = self.shapes(&references).await.map_err(failed)?;
         let entries = kept.into_iter().zip(shapes);
@@ -264,6 +304,7 @@ impl browse::Device for Server<'_> {
         let mut cursor = None;
         if let Some((point, left)) = next {
             self.uses += 1;
+            self.held += seen.bytes;
             let held = Held {
                 point,
                 used: self.uses,
@@ -272,6 +313,7 @@ impl browse::Device for Server<'_> {
             };
             // A folder that a walk opens twice can give a cursor that it holds.
             if let Some(earlier) = self.points.insert((folder, after), held) {
+                self.held -= earlier.seen.bytes;
                 self.client
                     .release(&[earlier.point])
                     .await
@@ -309,12 +351,12 @@ impl browse::Device for Server<'_> {
                 })
             })
             .collect();
-        let (fit, large) = self.client.nodes(&nodes);
+        let fit = self.client.nodes(&nodes);
         let read = self.client.read(&fit).await;
         let mut read = read.map_err(|status| device(Failure::Read(status)))?.iter();
-        let large: BTreeSet<usize> = large.iter().map(|large| large.index).collect();
+        let mut large = fit.large().iter().map(|large| large.index).peekable();
         let values = (0..nodes.len()).map(|index| {
-            if large.contains(&index) {
+            if large.next_if_eq(&index).is_some() {
                 return None;
             }
             let value = read
@@ -323,15 +365,6 @@ impl browse::Device for Server<'_> {
             value.ok().map(sample::Value::from)
         });
         Ok(values.collect())
-    }
-}
-
-/// The key of the node of `reference`, which no other node has: the bytes of its
-/// text, which for a [`Node`] are UTF-8 in a form that no [`Foreign`] node has.
-fn key(reference: &Reference) -> Vec<u8> {
-    match &reference.node {
-        Ok(node) => node.to_string().into_bytes(),
-        Err(foreign) => foreign.text.clone(),
     }
 }
 

@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, CString};
 use std::future::{self, poll_fn};
 use std::io::IoSlice;
@@ -1336,11 +1336,11 @@ fn long(length: usize) -> Node {
 
 /// Gives the counts of the requests of `nodes` on `client`, or the error.
 fn counts(client: &Client, nodes: &[Node]) -> Result<Vec<usize>, Large> {
-    let (nodes, large) = client.nodes(nodes);
-    large
-        .into_iter()
-        .next()
-        .map_or_else(|| Ok(nodes.counts()), Err)
+    let nodes = client.nodes(nodes);
+    nodes
+        .large()
+        .first()
+        .map_or_else(|| Ok(nodes.counts()), |large| Err(large.clone()))
 }
 
 /// Gives the nodes of `split`, a [`Client::nodes`] in which each node fits.
@@ -1348,8 +1348,8 @@ fn counts(client: &Client, nodes: &[Node]) -> Result<Vec<usize>, Large> {
 /// # Panics
 ///
 /// If a node does not fit.
-fn fits((nodes, large): (Nodes, Vec<Large>)) -> Nodes {
-    assert_eq!(large, [], "each node fits");
+fn fits(nodes: Nodes) -> Nodes {
+    assert_eq!(nodes.large(), [], "each node fits");
     nodes
 }
 
@@ -1400,7 +1400,7 @@ fn a_request_takes_the_chunks_of_one_message() {
             let fit = fits(client.nodes(&[VALUE, long(length)]));
             let split = fit.counts();
             let read = client.read(&fit).await.map(<[_]>::to_vec);
-            let past = client.nodes(&[VALUE, long(length + 1)]).1;
+            let past = client.nodes(&[VALUE, long(length + 1)]).large().to_vec();
             let after = client.read_one(&VALUE).await;
             let unchecked = client.unchecked(&[long(length + 49)]);
             let full = client.read(&unchecked).await.map(<[_]>::to_vec);
@@ -1446,7 +1446,7 @@ fn a_read_takes_the_max_message_size_of_the_server() {
             peer.server.add_scalar(&long(length), Value::F64(2.5));
             let fit = fits(client.nodes(&[long(length)]));
             let read = client.read(&fit).await.map(<[_]>::to_vec);
-            let past = client.nodes(&[long(length + 1)]).1;
+            let past = client.nodes(&[long(length + 1)]).large().to_vec();
             let most = fits(client.nodes(&[VALUE; 239]));
             let values = client.read(&most).await.map(<[_]>::to_vec);
             let split = fits(client.nodes(&[VALUE; 240]));
@@ -1504,7 +1504,7 @@ fn a_request_and_an_answer_each_take_the_buffer_of_their_side() {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.receiving(8192).await;
             let length = fitting(&client, &[], 1 << 20);
-            let request = client.nodes(&[long(length + 1)]).1;
+            let request = client.nodes(&[long(length + 1)]).large().to_vec();
             let nodes = fits(client.nodes(&vec![VALUE; 1920]));
             let values = client.read(&nodes).await.map(<[_]>::to_vec);
             client.close().await;
@@ -1817,7 +1817,7 @@ fn a_read_of_no_nodes_of_another_client_panics() {
 }
 
 /// The port of the relay of [`relayed`].
-const RELAY: u16 = 4841;
+pub(crate) const RELAY: u16 = 4841;
 
 /// The binary encoding of a Read response, a `NodeId` of 4 bytes.
 const READ_RESPONSE: [u8; 4] = [0x01, 0x00, 0x7A, 0x02];
@@ -1825,8 +1825,11 @@ const READ_RESPONSE: [u8; 4] = [0x01, 0x00, 0x7A, 0x02];
 /// The binary encoding of a `CloseSession` request, a `NodeId` of 4 bytes.
 const CLOSE_SESSION: [u8; 4] = [0x01, 0x00, 0xD9, 0x01];
 
+/// The binary encoding of a Browse request, a `NodeId` of 4 bytes.
+const BROWSE: [u8; 4] = [0x01, 0x00, 0x0F, 0x02];
+
 /// Runs `body` while [`relay`] runs on `node` with `control` and `rewrite`.
-async fn relayed<T>(
+pub(crate) async fn relayed<T>(
     node: &node::Node,
     control: &Relay,
     rewrite: impl FnMut(&mut Vec<u8>),
@@ -1843,7 +1846,7 @@ async fn relayed<T>(
 
 /// What a test reads and sets of a [`relay`].
 #[derive(Default)]
-struct Relay {
+pub(crate) struct Relay {
     /// The streams that it accepted.
     accepts: Cell<usize>,
     /// When set, it closes its listener at each accept and binds it again this long
@@ -1854,6 +1857,9 @@ struct Relay {
     cut: Cell<bool>,
     /// The `CloseSession` requests that it moved to the server.
     closes: Cell<usize>,
+    /// The time of the request header of each Browse request that it moved to the
+    /// server, in 100 ns from 1601.
+    pub(crate) browses: RefCell<Vec<i64>>,
 }
 
 /// Moves the bytes of each stream to [`RELAY`], one at a time, to the test server and
@@ -1903,6 +1909,11 @@ async fn relay(
                 control
                     .closes
                     .set(control.closes.get() + usize::from(close));
+                if message.starts_with(b"MSG") && message[24..28] == BROWSE {
+                    assert_eq!(message[28], 4, "a token that is a GUID");
+                    let time = message[47..55].try_into().expect("8 bytes");
+                    control.browses.borrow_mut().push(i64::from_le_bytes(time));
+                }
             });
             down.pump(cx, &mut server, &mut client, &mut rewrite);
             if ended {
