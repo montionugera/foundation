@@ -41,21 +41,46 @@ pub(crate) fn run(name: &str, envs: &[(&str, &str)]) {
 /// `PATH`, `envs`, and, as `CC` unless `envs` sets it, the compiler that `cc` picks
 /// here without its flags, so `cc` reads C flags there only from `envs`.
 pub(crate) fn output(name: &str, envs: &[(&str, &str)]) -> Output {
+    let mut child = Command::new(std::env::current_exe().unwrap());
+    child.args(["--exact", name]);
+    prepare(&mut child, envs).output().unwrap()
+}
+
+/// Runs the test `name` as `output` does, but under `setsid`, so the child has no
+/// controlling terminal, with `stdin` on a pipe that then closes.
+#[cfg(unix)]
+pub(crate) fn detached(name: &str, envs: &[(&str, &str)], stdin: &[u8]) -> Output {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new("setsid");
+    child
+        .arg("--wait")
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", name]);
+    let mut child = prepare(&mut child, envs)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+/// Gives `child` the environment that `output` states.
+fn prepare<'a>(child: &'a mut Command, envs: &[(&str, &str)]) -> &'a mut Command {
     let compiler = tool(&mut cc::Build::new(), env!("CONNECTOR_OPCUA_TARGET"));
     #[expect(
         clippy::disallowed_methods,
         reason = "`cc` finds the compiler on the PATH of the child process"
     )]
     let path = std::env::var_os("PATH").expect("PATH is set");
-    let mut child = Command::new(std::env::current_exe().unwrap());
     child
-        .args(["--exact", name])
         .env_clear()
         .env("PATH", path)
         .env("CC", compiler.path())
         .env(MARK, "1")
-        .envs(envs.iter().copied());
-    child.output().unwrap()
+        .envs(envs.iter().copied())
 }
 
 /// Runs the test `name` as `output` does, asserts that it aborts, and gives its
