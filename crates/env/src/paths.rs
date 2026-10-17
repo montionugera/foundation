@@ -239,13 +239,15 @@ impl Paths {
             // A link to nothing or a loop does not resolve. The call makes nothing
             // through a link at `path`, so its directory is what the limits check: no
             // folder is at a name that does not resolve.
-            (Err(Error::NotFound | Error::Io { .. }), Some(dir), Some(_)) => {
+            (Err(Error::NotFound | Error::Io { .. }), Some(dir), Some(name)) => {
                 let dir = if dir.as_os_str().is_empty() {
                     Path::new(".")
                 } else {
                     dir
                 };
-                self.allowed(dir, &self.driver.resolve(dir)?)?;
+                // `dir` is on the way of the name, so a hidden folder moved to it
+                // holds the name.
+                self.allowed(dir, &self.driver.resolve(dir)?.join(name))?;
                 self.driver.make_dir(path)?;
                 // A link that does not resolve can still lead to a directory, which
                 // the place does not hold. A directory made at the place resolves.
@@ -267,7 +269,8 @@ impl Paths {
         self.allowed(path, &self.driver.resolve(path)?)
     }
 
-    /// `Ok` when `path`, which resolves to `resolved`, passes each limit.
+    /// `Ok` when a call that reaches the file at `path` through each directory above
+    /// `resolved` passes each limit.
     fn allowed(&self, path: &Path, resolved: &Path) -> Result<(), Error> {
         // The key of the file itself comes from `path`, as the call reaches it: the
         // resolved path of a new name can be longer than the host takes.

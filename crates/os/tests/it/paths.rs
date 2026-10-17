@@ -428,6 +428,24 @@ fn within_makes_a_directory_of_a_name_longer_than_the_host_takes_as_free() {
     });
 }
 
+/// A link that does not resolve, in a hidden folder that a program moves away, is under
+/// that folder by its place, as a new name there is.
+#[test]
+fn within_hides_a_link_that_does_not_resolve_in_a_moved_hidden_folder() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        fs::rename(base.join("work/data"), base.join("work/moved")).unwrap();
+        fs::create_dir(base.join("work/moved/sub")).unwrap();
+        for name in ["work/moved/loop", "work/moved/sub/loop"] {
+            symlink(base.join(name), base.join(name)).unwrap();
+        }
+        for name in ["work/moved/new", "work/moved/loop", "work/moved/sub/loop"] {
+            let made = within.make_dir(&base.join(name));
+            assert_eq!(made, Err(Error::Hidden), "{name}");
+        }
+    });
+}
+
 #[test]
 fn a_write_of_a_name_of_the_longest_length_succeeds() {
     let scratch = Scratch::new();
