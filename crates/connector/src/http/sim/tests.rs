@@ -45,6 +45,8 @@ struct Network {
     remote: SocketAddr,
     /// Stops `serve`.
     until: Token,
+    /// Drops the future of `serve`, which stops its accepts and leaves its streams.
+    accepts: Token,
     /// Set once `serve` ends.
     ended: Arc<Mutex<Option<Ended>>>,
     /// Each request that reached the answer, as the answer echoes it.
@@ -95,12 +97,16 @@ impl Network {
         };
         let (until, ended) = (Token::new(), Arc::new(Mutex::new(None)));
         let (stop, out, node) = (until.clone(), Arc::clone(&ended), server.clone());
+        let accepts = Token::new();
+        let dropped = accepts.clone();
         let handle = server
             .shards()
             .start(shard("server"), move |tasks| async move {
-                let end = serve(listener, tasks, stop, answer).await;
-                let held = node.streams();
-                *out.lock().expect("no panic under the lock") = Some((end, held));
+                let serve = serve(listener, tasks, stop, answer);
+                if let Some(end) = dropped.race(serve).await {
+                    let held = node.streams();
+                    *out.lock().expect("no panic under the lock") = Some((end, held));
+                }
                 // The streams it accepted end when this shard ends.
                 std::future::pending::<()>().await;
             })
@@ -111,6 +117,7 @@ impl Network {
             server,
             remote,
             until,
+            accepts,
             ended,
             seen,
             handles: vec![handle],
@@ -511,4 +518,54 @@ fn a_listener_that_fails_and_a_cancel_in_one_step_give_the_error() {
         .expect("no panic under the lock")
         .take();
     assert_eq!(ended, Some((Err(net::Error::Io { code: 5 }), 0)));
+}
+
+#[test]
+fn a_dropped_serve_leaves_each_stream_until_the_cancel() {
+    let mut network = Network::new();
+    let (client, remote) = (network.client.clone(), network.remote);
+    let out = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&out);
+    let handle = network
+        .client
+        .shards()
+        .start(shard("client"), move |_| async move {
+            let config = tcp::Config {
+                remote,
+                options: super::super::OPTIONS,
+            };
+            let mut tcp = client
+                .net()
+                .connect(&config)
+                .await
+                .expect("the server listens");
+            client.clock().sleep(Span::SECOND).await;
+            write(&mut tcp, b"GET /a HTTP/1.1\r\nhost: server\r\n\r\n").await;
+            *slot.lock().expect("no panic under the lock") = Some(read(&mut tcp).await);
+        })
+        .expect("the shard starts");
+    network.handles.push(handle);
+    let half = Span::from_nanos(500_000_000);
+    network.sim.run_for(half).expect("the run goes on");
+    network.accepts.cancel();
+    network
+        .sim
+        .run_for(Span::from_nanos(1_500_000_000))
+        .expect("the run goes on");
+    assert_eq!(network.seen(), ["GET /a HTTP/1.1 "]);
+    assert_eq!(network.server.streams(), 1);
+    network.until.cancel();
+    network.sim.run_for(Span::MINUTE).expect("the run ends");
+    assert_eq!(network.server.streams(), 0);
+    let answer = "HTTP/1.1 200 OK\r\ncontent-length: 16\r\n\r\nGET /a HTTP/1.1 ";
+    let ended = out.lock().expect("no panic under the lock").take();
+    assert_eq!(ended, Some(End::Closed(answer.into())));
+    assert_eq!(
+        network
+            .ended
+            .lock()
+            .expect("no panic under the lock")
+            .take(),
+        None
+    );
 }
