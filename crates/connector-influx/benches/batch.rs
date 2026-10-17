@@ -14,6 +14,11 @@
 //! of a channel in the frame at p50; and the allocations. It checks that, after the
 //! warm-up rounds, `Batch::add` allocates only the next body at each close.
 //!
+//! The shape `HELD` (types `held`) adds each frame `REPEATS` times, and takes a body
+//! only while `Batch::full` is true after a `Batch::add`, as the send loop does while a
+//! request is in flight, so its bodies reach 4 MiB and each close moves the line that
+//! passes 4 MiB. It checks that each close then allocates only the next body.
+//!
 //! Then, for each count in `NEW`, it times `Batch::add` of one frame of that many
 //! channels, one sample time each, on a new batch, so each channel is new to it.
 
@@ -67,6 +72,11 @@ const SHAPES: [(usize, usize, usize, &[Type]); 17] = [
     (8, 1, 8, TEXT),
     (64, 10, 64, TEXT),
 ];
+/// A shape whose bodies span rounds.
+const HELD: (usize, usize, usize, &[Type]) = (64, 10, 64, F64);
+/// The adds of each frame of `HELD`, so its lines pass 4 MiB several times in the
+/// rounds that the ring of the sim hub holds.
+const REPEATS: usize = 8;
 const F64: &[Type] = &[Type::Scalar(Scalar::F64)];
 /// A type of each kind of field: boolean, `i`, `u`, and float.
 const MIXED: &[Type] = &[
@@ -104,11 +114,12 @@ fn main() {
         "allocs/frame",
         "body bytes"
     );
-    for (channels, samples, present, types) in SHAPES {
+    let shapes = SHAPES.into_iter().map(|shape| (shape, false));
+    for ((channels, samples, present, types), held) in shapes.chain([(HELD, true)]) {
         let mut sim = sim::Sim::new(sim::Config::default());
         let node = sim.node(sim::node::Config::default());
         let shape = (channels, samples, present);
-        let run = move |node, tasks| bench(node, tasks, shape, types);
+        let run = move |node, tasks| bench(node, tasks, shape, types, held);
         let (first, mut nanos, allocations, body) =
             sim.run_on(&node, run).expect("the run ends");
         nanos.sort_unstable();
@@ -118,6 +129,7 @@ fn main() {
             "{channels:>8} {samples:>7} {present:>7} {:>6} {first:>9} {:>9} {:>9} \
              {:>9} {:>11.2} {:>12.2} {body:>11}",
             match types {
+                _ if held => "held",
                 F64 => "f64",
                 MIXED => "mixed",
                 STRING => "string",
@@ -182,12 +194,14 @@ async fn first(
 }
 
 /// The ns per frame of the warm-up rounds, the ns per frame of each timed round, the
-/// allocations of all timed rounds, and the bytes of the last body.
+/// allocations of all timed rounds, and the bytes of the last body. When `held`, it
+/// takes a body only while the batch is full after an add.
 async fn bench(
     node: sim::node::Node,
     tasks: env::tasks::Tasks,
     (channels, samples, present): (usize, usize, usize),
     types: &[Type],
+    held: bool,
 ) -> (u64, Vec<u64>, u64, usize) {
     let (_hub, mut writer, mut reader) = open(&node, tasks, channels, types).await;
     let mut batch =
@@ -195,7 +209,7 @@ async fn bench(
     let (mut nanos, mut allocations, mut body) = (Vec::new(), 0, 0);
     let groups = channels / present;
     let warmup = groups.div_ceil(FRAMES) + 1;
-    let mut first = 0;
+    let (mut first, mut steady) = (0, false);
     let mut stamp = writer.now().nanos();
     for round in 0..warmup + ROUNDS {
         for frame in 0..FRAMES {
@@ -204,18 +218,40 @@ async fn bench(
             stamp += i64::try_from(samples).expect("few");
         }
         node.clock().sleep(Span::SECOND).await;
-        let mut figures = (0, 0);
+        let (mut figures, mut bodies) = ((0, 0), 0);
         for _ in 0..FRAMES {
             let received = reader.next().await.expect("a frame");
-            let ((added, _), (ns, allocs)) =
-                timed(|| (batch.add(&received), batch.full()));
-            added.expect("each channel holds a type that a bucket stores");
-            figures = (figures.0 + ns, figures.1 + allocs);
+            for _ in 0..if held { REPEATS } else { 1 } {
+                let ((added, _), (ns, allocs)) = timed(|| {
+                    let added = batch.add(&received);
+                    let full = batch.full();
+                    while held && batch.full() {
+                        let taken = batch.take().expect("a full batch gives a body");
+                        body = taken.body.len();
+                        bodies += 1;
+                    }
+                    (added, full)
+                });
+                added.expect("each channel holds a type that a bucket stores");
+                figures = (figures.0 + ns, figures.1 + allocs);
+            }
             let position = received.position();
             reader.ack(position);
         }
+        if held {
+            // The first body began empty, so it grew: time the rounds after it.
+            if round >= warmup && steady {
+                assert_eq!(
+                    figures.1, bodies,
+                    "held: add allocates only the next body at each close"
+                );
+                nanos.push(figures.0 / u64::try_from(FRAMES * REPEATS).expect("few"));
+                allocations += figures.1;
+            }
+            steady |= bodies > 0;
+            continue;
+        }
         let (bodies, (ns, allocs)) = timed(|| {
-            let mut bodies = 0;
             while let Some(taken) = batch.take() {
                 body = taken.body.len();
                 bodies += 1;
