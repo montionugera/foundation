@@ -216,7 +216,7 @@ const FUNCTION_SYMBOLS: [(&str, &str, &str, Access); 25] = [
 /// [`AWS_LC`] does not admit, by its name without the prefix of [`Crypto`]. A key
 /// admits only the name with the prefix. A test of `connector-opcua` names the function
 /// of each key of [`AWS_LC_INPUTS`] and fails when its reason becomes false.
-const AWS_LC_KEYS: [(&str, &str, &str, Access); 26] = [
+const AWS_LC_KEYS: [(&str, &str, &str, Access); 18] = [
     // Gives the time of a certificate, which is never NULL, so it reads no clock.
     (
         "plugins/crypto/openssl/certificategroup.c",
@@ -230,57 +230,6 @@ const AWS_LC_KEYS: [(&str, &str, &str, Access); 26] = [
         "plugins/crypto/openssl/certificategroup.c",
         "openSSL_verifyChain",
         "X509_cmp_current_time",
-        Access::Call,
-    ),
-    // Each call gives a callback of `PASSWORDS`, which `passwords` checks, so it
-    // reads no console.
-    (
-        "plugins/crypto/openssl/certificategroup.c",
-        "UA_CertificateUtils_comparePublicKeys",
-        "PEM_read_bio_X509",
-        Access::Call,
-    ),
-    (
-        "plugins/crypto/openssl/certificategroup.c",
-        "UA_CertificateUtils_comparePublicKeys",
-        "PEM_read_bio_X509_REQ",
-        Access::Call,
-    ),
-    (
-        "plugins/crypto/openssl/certificategroup.c",
-        "openSSLLoadLeafCertificate",
-        "PEM_read_bio_X509",
-        Access::Call,
-    ),
-    (
-        "plugins/crypto/openssl/certificategroup.c",
-        "reloadCertificates",
-        "PEM_read_bio_X509_CRL",
-        Access::Call,
-    ),
-    (
-        "plugins/crypto/openssl/securitypolicy_common.c",
-        "UA_OpenSSL_LoadPemCertificate",
-        "PEM_read_bio_X509",
-        Access::Call,
-    ),
-    (
-        "plugins/crypto/openssl/securitypolicy_common.c",
-        "UA_OpenSSL_LoadPemCrl",
-        "PEM_read_bio_X509_CRL",
-        Access::Call,
-    ),
-    (
-        "plugins/crypto/openssl/securitypolicy_common.c",
-        "UA_OpenSSL_LoadPrivateKey",
-        "PEM_read_bio_PrivateKey",
-        Access::Call,
-    ),
-    // The callback gives the password of the argument, so it reads no console.
-    (
-        "plugins/crypto/openssl/certificategroup.c",
-        "UA_CertificateUtils_decryptPrivateKey",
-        "PEM_read_bio_PrivateKey",
         Access::Call,
     ),
     // The randomness of aws-lc, which TLS RANDOMNESS admits: the nonces of a channel,
@@ -501,9 +450,10 @@ const SYMBOLS: [&str; 30] = [
 /// The functions of aws-lc that any file of the copy may call, by name without the
 /// prefix of [`Crypto`]. Each reads no clock, file, network, randomness, or process
 /// state, other than the features of the processor, by which aws-lc picks the code of
-/// an algorithm and not its result.
+/// an algorithm and not its result. A PEM reader reads no console only with a callback
+/// of [`PASSWORDS`], which [`passwords`] checks.
 #[rustfmt::skip]
-const AWS_LC: [&str; 144] = [
+const AWS_LC: [&str; 148] = [
     "ASN1_INTEGER_cmp", "BIO_free", "BIO_new_mem_buf", "BIO_reset", "BN_bin2bn",
     "BN_bn2binpad", "BN_free", "BN_new", "BN_set_word", "ECDSA_SIG_free",
     "ECDSA_SIG_get0", "ECDSA_SIG_new", "ECDSA_SIG_set0", "ECDSA_size",
@@ -532,7 +482,8 @@ const AWS_LC: [&str; 144] = [
     "EVP_sha256", "EVP_sha384", "GENERAL_NAME_free", "HMAC", "OBJ_txt2nid",
     "OPENSSL_cleanse", "OPENSSL_free", "OPENSSL_sk_free", "OPENSSL_sk_new_null",
     "OPENSSL_sk_num", "OPENSSL_sk_pop_free_ex", "OPENSSL_sk_push", "OPENSSL_sk_value",
-    "RSA_free", "RSA_new", "RSA_size", "X509V3_EXT_conf_nid",
+    "PEM_read_bio_PrivateKey", "PEM_read_bio_X509", "PEM_read_bio_X509_CRL",
+    "PEM_read_bio_X509_REQ", "RSA_free", "RSA_new", "RSA_size", "X509V3_EXT_conf_nid",
     "X509_CRL_digest", "X509_CRL_free", "X509_CRL_get_REVOKED", "X509_CRL_get_issuer",
     "X509_EXTENSION_free", "X509_NAME_add_entry_by_txt", "X509_NAME_cmp",
     "X509_NAME_dup", "X509_NAME_free", "X509_NAME_new", "X509_NAME_oneline",
@@ -1129,6 +1080,14 @@ fn inside(path: &Path) -> bool {
     })
 }
 
+/// The line and the file of `line` when it is a line marker of `cc -E` (`# 1 "a.c" 2`),
+/// which sets them for the line after it.
+fn marker(line: &str) -> Option<(usize, &str)> {
+    let (number, name) = line.strip_prefix("# ")?.split_once(" \"")?;
+    let name = name.rsplit_once('"').map_or(name, |(name, _)| name);
+    Some((number.parse().ok()?, name))
+}
+
 /// An error for each `#include_next`, and each `#include` or `#import` in a file of
 /// the copy, as `preprocessed` (the output of `cc -E -dI` in `copy`) shows it, that
 /// finds a header outside both the copy and the system directories `dirs`, or a
@@ -1150,10 +1109,8 @@ fn includes(
     let mut problems = Vec::new();
     let mut file = Path::new("");
     for line in preprocessed.lines() {
-        if let Some(marker) = line.strip_prefix("# ")
-            && let Some((_, name)) = marker.split_once(" \"")
-        {
-            file = Path::new(name.rsplit_once('"').map_or(name, |(name, _)| name));
+        if let Some((_, name)) = marker(line) {
+            file = Path::new(name);
             continue;
         }
         let Some((keyword, directive)) = line.split_once(' ') else {
@@ -1230,12 +1187,8 @@ fn tokens(preprocessed: &str) -> Vec<Token<'_>> {
     let mut tokens = Vec::new();
     let (mut file, mut line) = ("", 0);
     for text in preprocessed.lines() {
-        if let Some(marker) = text.strip_prefix("# ")
-            && let Some((number, name)) = marker.split_once(" \"")
-            && let Ok(number) = number.parse()
-        {
-            file = name.rsplit_once('"').map_or(name, |(name, _)| name);
-            line = number;
+        if let Some(marker) = marker(text) {
+            (line, file) = marker;
             continue;
         }
         let mut rest = text;
@@ -1422,11 +1375,14 @@ fn build<'a>(
             // `./` keeps a source such as `-x.c` or `@x.c` from being an option. Else
             // GCC gives cc1 the base name as `-dumpbase`, which cc1 reads as a
             // response file when it starts with `@`. With no stack protector, a
-            // reference to its random canary is one that the C makes.
+            // reference to its random canary is one that the C makes. A call with no
+            // declaration fails, so `passwords` reads the declaration of each reader.
             cc.current_dir(copy)
                 .args(flags.lines())
                 .args(crypto.flags())
-                .args(["-g", "-O0", "-fno-stack-protector", "-dumpbase"])
+                .args(["-g", "-O0", "-fno-stack-protector"])
+                .arg("-Werror=implicit-function-declaration")
+                .arg("-dumpbase")
                 .arg(index.to_string())
                 .args(mode);
             spawn(cc.arg(Path::new(".").join(source)))
@@ -2416,6 +2372,13 @@ u = read_q(b, 0, sizeof x, 0);
 int wrap(pem_password_cb *cb);
 # 14 "./a.c" 2
 t = wrap(0);
+m = read_x(b, ((void*)0),
+#pragma GCC diagnostic push
+           UA_OpenSSL_refusePassword, 0);
+k = read_x(b, (X *[]){0, 0}, UA_OpenSSL_refusePassword, 0);
+#include "guarded.h"
+#include "guarded.h"
+n = read_x(b, 0, 0, 0);
 "#;
 
     #[test]
@@ -2446,6 +2409,7 @@ t = wrap(0);
                 gives(9, "read_x", r#""a\", b""#),
                 gives(10, "read_x", "','"),
                 gives(12, "read_q", "sizeof x"),
+                gives(21, "read_x", "0"),
             ]
         );
     }
@@ -2484,6 +2448,43 @@ t = wrap(0);
             )])
         );
         remove(&root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
+    fn check_fails_a_read_of_the_copy_with_no_declaration() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let root = temp("undeclared");
+        std::fs::create_dir(root.join("patches")).unwrap();
+        let mut cp = Command::new("cp");
+        exec(
+            cp.arg("-R")
+                .arg(workspace.join(DEST))
+                .arg(root.join("patches")),
+        )
+        .unwrap();
+        let file = "src/util/ua_util.c";
+        let path = root.join(DEST).join(file);
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        let line = text.lines().count() + 1;
+        text.push_str("void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n");
+        std::fs::write(&path, text).unwrap();
+        let crypto = Crypto::locked(workspace).unwrap();
+        let errors = check(&root, &crypto).unwrap_err();
+        remove(&root).unwrap();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].starts_with("cc failed: "), "{errors:?}");
+        assert!(
+            errors[0].contains(&format!(
+                "./{file}:{line}:25: error: implicit declaration of function \
+                 'PEM_read_bio_X509'"
+            )),
+            "{errors:?}"
+        );
     }
 
     #[test]
