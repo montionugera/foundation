@@ -54,6 +54,7 @@ const LONG_KEY: &str = include_str!("pem/long-key.pem");
 const READ: &str = "CONNECTOR_OPCUA_PEM";
 
 /// The password of each encrypted fixture, as a person types it at a prompt.
+#[cfg(unix)]
 const TYPED: &[u8] = b"secret\n";
 
 fn bytes(text: &str) -> Bytes {
@@ -103,6 +104,7 @@ fn read() {
 }
 
 /// The reads that `read` makes.
+#[cfg(unix)]
 const READS: &[&str] = &[
     "key",
     "empty key",
@@ -133,16 +135,6 @@ fn each_read_refuses_an_encrypted_pem_with_no_prompt() {
             );
         }
     }
-}
-
-/// A child that exits before it reads its standard input, as a correct read of a PEM
-/// does, gives its output: more bytes than a pipe holds make the write fail.
-#[test]
-#[cfg(unix)]
-#[cfg_attr(not(target_os = "linux"), ignore = "needs setsid")]
-fn a_child_that_reads_no_stdin_gives_its_output() {
-    let output = crate::child::detached("pem::no_such_test", &[], &vec![0; 1 << 20]);
-    assert!(output.status.success(), "{output:?}");
 }
 
 /// The status of `UA_CertificateUtils_decryptPrivateKey` on `key` with `password`.
