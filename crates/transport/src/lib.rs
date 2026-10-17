@@ -611,6 +611,23 @@ mod tests {
     }
 
     #[test]
+    fn ended_gives_none_while_open_and_the_close_after_the_end() {
+        let (mut sim, _, _) = testing::sessions(
+            0,
+            |config| config,
+            |side| async move {
+                assert_eq!(side.session.ended(), None);
+            },
+            |side| async move {
+                let closed = Error::PeerClosed { code: Code(0) };
+                assert_eq!(side.session.closed().await, closed);
+                assert_eq!(side.session.ended(), Some(closed));
+            },
+        );
+        assert_eq!(sim.run(), Ok(()));
+    }
+
+    #[test]
     fn a_refused_config_frees_the_socket() {
         testing::run(0, |shard| {
             let at = SocketAddr::new(shard.ip(), testing::PORT);

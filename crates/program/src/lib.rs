@@ -9,7 +9,7 @@ use std::fmt;
 use std::future::poll_fn;
 use std::pin::pin;
 use std::rc::Rc;
-use std::task::{Context, Poll, Waker};
+use std::task::Poll;
 
 use transport::stream::{Receiver, Sender};
 use transport::{Address, Class, Code};
@@ -221,15 +221,8 @@ impl Shared {
     /// The error that ended the renewal, else why the transport ended the session.
     /// The renewal can run after a call that saw the end of the transport.
     fn ended(&self) -> Option<Error> {
-        if let Some(error) = &*self.ended.borrow() {
-            return Some(error.clone());
-        }
-        // A poll of `closed` after the end is ready, so one poll reads the end.
-        let closed = pin!(self.session.closed());
-        match closed.poll(&mut Context::from_waker(Waker::noop())) {
-            Poll::Ready(error) => Some(Error::from(error)),
-            Poll::Pending => None,
-        }
+        let ended = self.ended.borrow().clone();
+        ended.or_else(|| self.session.ended().map(Error::from))
     }
 
     /// Takes the turn, sends the request of `body`, whose length is `length`, and

@@ -596,6 +596,31 @@ fn closes_the_session_on_a_challenge_that_is_not_valid() {
     );
 }
 
+/// A call of `ended` on an open session takes constant time and memory, so a
+/// program can ask it as often as it likes.
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test bounds its own run time"
+)]
+fn ended_on_an_open_session_stays_cheap() {
+    let elapsed = Arc::new(Mutex::new(None));
+    let kept = Arc::clone(&elapsed);
+    with_session(127, move |session, _| async move {
+        let start = std::time::Instant::now();
+        for _ in 0..100_000 {
+            assert_eq!(session.ended(), None);
+        }
+        *kept.lock().unwrap() = Some(start.elapsed());
+        assert_eq!(session.request(b"ab").await, Ok(b"ba".to_vec()));
+    });
+    let elapsed = elapsed.lock().unwrap().expect("ran");
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "100000 calls of `ended` took {elapsed:?}"
+    );
+}
+
 /// Each request after the end of the renewal gives the error that ended it, not only
 /// the first.
 #[test]

@@ -183,6 +183,18 @@ impl Session {
     pub async fn closed(&self) -> Error {
         self.0.closed().await
     }
+
+    /// The error that ended the session, or `None` while it is open. It does not wait.
+    ///
+    /// ```
+    /// fn open(session: &transport::Session) -> bool {
+    ///     session.ended().is_none()
+    /// }
+    /// ```
+    #[must_use]
+    pub fn ended(&self) -> Option<Error> {
+        self.0.ended()
+    }
 }
 
 impl fmt::Debug for Session {
