@@ -334,7 +334,8 @@
   with the fix "Give a path under one of those folders. A relative path starts at the
   working directory of this MCP server, which was {working} at its start. To reach
   another folder, add `--files <DIR>` to the command of the MCP server".
-  The fix stays true after a program moves that directory. A path in the data directory is `ops.hidden` (2):
+  The fix stays true after a program moves that directory. A path in the data
+  directory is `ops.hidden` (2):
   "`{path}` is in the data directory {data} of this MCP server, which no tool reads or
   writes", with the fix "Give a path outside {data}".
   A new name that a write or `make_dir` makes in a directory on the way to the data
