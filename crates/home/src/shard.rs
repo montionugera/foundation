@@ -6805,6 +6805,105 @@ mod tests {
                 }
 
                 #[test]
+                fn opens_a_reader_whose_part_appends_before_a_part_that_finds_no_block()
+                {
+                    let before = async |test: &Test, shard: &mut Shard, w| {
+                        let opened: Vec<_> = (0..8)
+                            .map(|n| {
+                                open_longest(shard, longest(n)).expect("opens").key
+                            })
+                            .collect();
+                        committed(test, shard, w, &[10, 20]).await;
+                        assert_eq!(taken(shard, opened[7].into(), 0).len(), 2);
+                        shard.ack(opened[7], live(1)).expect("forward");
+                        let blocks = test.fill();
+                        tick(test, shard).await;
+                        drop(blocks);
+                        // The frame gives the open group its blocks, so an entry
+                        // takes only the block of its body.
+                        write(test, shard, w, &[30]);
+                        let mut blocks = test.fill();
+                        let part_0 = blocks.iter().enumerate();
+                        let part_0 = part_0.filter(|(_, block)| block.len() >= 4032);
+                        let part_0 = part_0.min_by_key(|(_, block)| block.len());
+                        drop(blocks.swap_remove(part_0.expect("a block").0));
+                        let a = shard.open_named_complete(
+                            Slot::new(0),
+                            key("a", "r"),
+                            LONG,
+                            CREDIT,
+                            Charge::Whole,
+                        );
+                        a.expect("part 0 appends its record");
+                        drop(blocks);
+                    };
+                    restart(208, before, async |_, shard: &mut Shard| {
+                        let reader =
+                            open_longest(shard, longest(7)).expect("opens").key;
+                        shard.committed().await.expect("the commit ends");
+                        let read = caught_up(shard, reader, 0).await;
+                        assert_eq!(
+                            read,
+                            [seq(0, 1), seq(1, 1), seq(2, 1)],
+                            "the ack found no block"
+                        );
+                    });
+                }
+
+                #[test]
+                fn keeps_the_parts_of_a_shed_index_until_its_removals_commit() {
+                    let before = async |test: &Test, shard: &mut Shard, w| {
+                        let ticking = shard.open_named_complete(
+                            Slot::new(2),
+                            key("t", "r"),
+                            LONG,
+                            CREDIT,
+                            Charge::Whole,
+                        );
+                        ticking.expect("opens");
+                        for n in 0..8 {
+                            let reader = open_longest(shard, longest(n));
+                            close(shard, reader.expect("opens").key.into());
+                        }
+                        tick(test, shard).await;
+                        shard.close_writer(w);
+                        let blocks = test.fill();
+                        shard.shed(Slot::new(0));
+                        drop(blocks);
+                        tick(test, shard).await;
+                        assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
+                        open_longest(shard, longest(7)).expect("opens in part 1");
+                    };
+                    restart(209, before, async |_, shard: &mut Shard| {
+                        let reader = open_longest(shard, longest(7));
+                        reader.expect("its record is in one part");
+                    });
+                }
+
+                #[test]
+                fn drops_a_record_whose_hold_ends_while_another_index_ticks() {
+                    run(210, |test| async move {
+                        let mut shard = test.shard(AREA).await;
+                        let _ticking = open(&mut shard, "t");
+                        let held = shard.open_named_complete(
+                            Slot::new(2),
+                            key("h", "r"),
+                            Span::from_nanos(2_000_000_000),
+                            CREDIT,
+                            Charge::Whole,
+                        );
+                        shard.close_reader(held.expect("opens").key.into());
+                        for _ in 0..4 {
+                            tick(&test, &mut shard).await;
+                        }
+                        shard.committed().await.expect("the commit ends");
+                        let newest = crate::named::Parts::newest(&shard.buffer).await;
+                        let newest = newest.expect("the newest entries");
+                        assert_eq!(newest[&Slot::new(2)].1, [], "the hold ended");
+                    });
+                }
+
+                #[test]
                 fn sheds_each_part() {
                     let before = async |test: &Test, shard: &mut Shard, w| {
                         let opened: Vec<_> = (0..8)
