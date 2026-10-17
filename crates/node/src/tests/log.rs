@@ -214,12 +214,12 @@ fn a_node_logs_its_start_and_its_stop_in_json() {
 }
 
 /// The warnings that a node on `roots` logs in a run of a second.
-fn warned(roots: os::Roots) -> Vec<String> {
+fn warned(roots: os::roots::Roots) -> Vec<String> {
     logged(roots, tracing::Level::WARN)
 }
 
 /// The lines at `level` or above that a node on `roots` logs in a run of a second.
-fn logged(roots: os::Roots, level: tracing::Level) -> Vec<String> {
+fn logged(roots: os::roots::Roots, level: tracing::Level) -> Vec<String> {
     let (mut sim, host) = host(1);
     let lines = Lines::default();
     let log = to(&lines, false, level);
@@ -244,10 +244,10 @@ const NONE: &str = "2026-01-01T00:00:00.004198Z WARN node::trust: the OS roots h
 
 #[test]
 fn a_node_warns_of_a_failure_of_its_roots_and_of_a_skipped_one() {
-    let roots = os::Roots {
+    let roots = os::roots::Roots {
         certificates: vec![super::CA.to_vec(), b"not DER".to_vec()],
         failures: vec!["failed to read PEM from file at '/roots.pem'".into()],
-        ..os::Roots::default()
+        ..os::roots::Roots::default()
     };
     assert_eq!(
         warned(roots),
@@ -263,7 +263,7 @@ fn a_node_warns_of_a_failure_of_its_roots_and_of_a_skipped_one() {
 
 #[test]
 fn a_node_warns_of_its_roots_before_it_starts() {
-    let lines = logged(os::Roots::default(), tracing::Level::INFO);
+    let lines = logged(os::roots::Roots::default(), tracing::Level::INFO);
     let warned = lines.iter().position(|line| line == NONE);
     let started = lines
         .iter()
@@ -275,8 +275,8 @@ fn a_node_warns_of_its_roots_before_it_starts() {
 }
 
 /// The roots with only the CA and `failures`.
-fn failing(failures: Vec<String>) -> os::Roots {
-    os::Roots {
+fn failing(failures: Vec<String>) -> os::roots::Roots {
+    os::roots::Roots {
         certificates: vec![super::CA.to_vec()],
         failures,
         source: os::roots::Source::Store,
@@ -284,7 +284,7 @@ fn failing(failures: Vec<String>) -> os::Roots {
 }
 
 /// The roots with only the CA and `count` failures.
-fn failed(count: usize) -> os::Roots {
+fn failed(count: usize) -> os::roots::Roots {
     failing((0..count).map(|n| format!("failure {n}")).collect())
 }
 
@@ -309,7 +309,7 @@ fn a_node_warns_of_the_first_16_failures_of_its_roots_and_counts_the_rest() {
 
 #[test]
 fn the_count_of_the_failures_of_the_roots_gives_the_paths_that_were_read() {
-    let roots = os::Roots {
+    let roots = os::roots::Roots {
         source: os::roots::Source::Paths {
             file: Some("/roots.pem".into()),
             dirs: vec!["/a".into(), "/b".into()],
@@ -332,7 +332,7 @@ fn the_count_of_the_failures_of_the_roots_gives_the_paths_that_were_read() {
 #[test]
 fn a_long_source_of_the_roots_is_cut_on_the_count_line() {
     let dir = format!("/{}", long(3000));
-    let roots = os::Roots {
+    let roots = os::roots::Roots {
         source: os::roots::Source::Paths {
             file: None,
             dirs: vec![dir.clone().into()],
@@ -437,10 +437,10 @@ fn failures_of_the_roots_whose_escapes_grow_them_keep_started() {
 
 #[test]
 fn a_node_with_no_root_warns_that_an_https_connect_with_no_ca_fails() {
-    assert_eq!(warned(os::Roots::default()), [NONE]);
-    let roots = os::Roots {
+    assert_eq!(warned(os::roots::Roots::default()), [NONE]);
+    let roots = os::roots::Roots {
         certificates: vec![b"not DER".to_vec()],
-        ..os::Roots::default()
+        ..os::roots::Roots::default()
     };
     assert_eq!(warned(roots), [SKIPPED, NONE]);
 }

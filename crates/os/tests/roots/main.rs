@@ -1,9 +1,9 @@
-//! `os::roots` reads the CA certificates of the OS store, or of the PEM file that
-//! `SSL_CERT_FILE` names and the directories that `SSL_CERT_DIR` names. This binary
-//! has no test harness: each case runs it again as a child with its own environment,
-//! since a set of the environment races the threads of a harness. With the argument
-//! `child`, it writes what `os::roots` gives: a line for its source, then one for each
-//! certificate and for each failure.
+//! `os::roots::read` reads the CA certificates of the OS store, or of the PEM file
+//! that `SSL_CERT_FILE` names and the directories that `SSL_CERT_DIR` names. This
+//! binary has no test harness: each case runs it again as a child with its own
+//! environment, since a set of the environment races the threads of a harness. With
+//! the argument `child`, it writes what `os::roots::read` gives: a line for its
+//! source, then one for each certificate and for each failure.
 
 use std::ffi::OsStr;
 use std::fmt::Write as _;
@@ -16,7 +16,7 @@ fn main() {
     let role = std::env::args_os().nth(1);
     if role.is_some_and(|arg| arg == "child") {
         let mut output = std::io::stdout();
-        write!(output, "{}", lines(&os::roots())).expect("a write to the test");
+        write!(output, "{}", lines(&os::roots::read())).expect("a write to the test");
         return;
     }
     reads_the_certificates_of_the_pem_file_of_ssl_cert_file();
@@ -33,7 +33,7 @@ fn reads_the_certificates_of_the_pem_file_of_ssl_cert_file() {
     let der = include_bytes!("ca.der").to_vec();
     assert_eq!(
         child(&[("SSL_CERT_FILE", file.as_os_str())]),
-        lines(&os::Roots {
+        lines(&os::roots::Roots {
             certificates: vec![der],
             failures: vec![],
             source: os::roots::Source::Paths {
@@ -91,7 +91,7 @@ fn reads_only_the_files_of_the_directory_of_ssl_cert_dir() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/roots");
     assert_eq!(
         child(&[("SSL_CERT_DIR", dir.as_os_str())]),
-        lines(&os::Roots {
+        lines(&os::roots::Roots {
             certificates: vec![include_bytes!("ca.der").to_vec()],
             failures: vec![],
             source: os::roots::Source::Paths {
@@ -155,7 +155,7 @@ fn gives_the_failures_of_both_paths_when_both_are_set() {
 }
 
 /// The lines that the child writes for `roots`.
-fn lines(roots: &os::Roots) -> String {
+fn lines(roots: &os::roots::Roots) -> String {
     let mut text = format!("source {}\n", roots.source);
     for der in &roots.certificates {
         text.push_str("certificate ");

@@ -20,7 +20,7 @@ const MARK: &str = "…";
 /// read, its text cut to `LONGEST` bytes, for the count of the rest with the source of
 /// the read, cut the same way, for the count of certificates that do not parse, and
 /// when no certificate is left.
-pub(crate) fn roots(roots: &os::Roots) -> connector::http::Roots {
+pub(crate) fn roots(roots: &os::roots::Roots) -> connector::http::Roots {
     for failure in roots.failures.iter().take(LISTED) {
         let error = cut(failure);
         tracing::warn!(%error, "a part of the OS roots was not read");

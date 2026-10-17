@@ -263,7 +263,7 @@ impl Lab {
                     .expect("lab failure: a node name is a name"),
                 settings: node::Settings::default(),
                 vars: BTreeMap::new(),
-                roots: os::Roots::default(),
+                roots: os::roots::Roots::default(),
                 log: node::Log {
                     writer: Box::new(std::io::sink()),
                     format: ops::Log::default(),
