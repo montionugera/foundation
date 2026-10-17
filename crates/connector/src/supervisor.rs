@@ -3357,6 +3357,56 @@ mod tests {
         );
     }
 
+    /// A clear of no error, a write of the same error, and a show of the text of an
+    /// end of another class: only the shows and the clear that change the text or the
+    /// class give a line.
+    #[test]
+    fn logs_a_clear_or_a_show_only_when_it_changes_the_text_or_the_class() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let kind = counted(move |ctx: Context<()>| {
+            let run = runs.fetch_add(1, Ordering::Relaxed);
+            async move {
+                let clock = ctx.clock().clone();
+                match run {
+                    0 => {
+                        ctx.clear_error();
+                        clock.sleep(ms(1_100)).await;
+                        ctx.error(&"x");
+                        clock.sleep(ms(1_100)).await;
+                        ctx.note(&"n");
+                        clock.sleep(ms(1_100)).await;
+                        Err(Error::Device("x".into()))
+                    }
+                    1 => {
+                        ctx.error(&"x");
+                        clock.sleep(ms(1_100)).await;
+                        Err(Error::Retry("".into()))
+                    }
+                    _ => {
+                        ctx.clear_error();
+                        clock.sleep(ms(1_100)).await;
+                        Ok(())
+                    }
+                }
+            }
+        });
+        let (_, lines) = tally_logged(kind, None);
+        let skipped = ["message=running", "message=restarting", "message=ended"];
+        let shown = lines
+            .iter()
+            .filter(|line| !skipped.iter().any(|skipped| line.starts_with(skipped)));
+        assert_eq!(
+            shown.collect::<Vec<_>>(),
+            [
+                r#"message=error error="x""#,
+                r#"message=note note="n""#,
+                r#"message=error error="x""#,
+                "message=cleared",
+                "message=stopped",
+            ]
+        );
+    }
+
     #[test]
     fn names_the_class_of_an_end_in_its_line() {
         let kind = counted(|_| async { Err(Error::Device("jammed".into())) });
