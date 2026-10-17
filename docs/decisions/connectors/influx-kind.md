@@ -30,14 +30,17 @@
   not show. It keeps the batch and the old token or client, and reads again after the
   next backoff, with no request until the read gives a value. A config that cannot work
   shows its error until the user fixes it. It loses no sample at the read, but as in an
-  outage of InfluxDB, `run` stops reading at a full batch. Decided by
+  outage of InfluxDB, `run` stops reading at a full batch (STORE TRIM and INFLUX SEQ AND
+  GAPS give what a sample that it did not read can lose). Decided by
   `laptop.architect-2` on 2026-10-16T17:09:47Z
   (https://github.com/synnaxlabs/foundation/issues/2899) and 2026-10-16T17:09:59Z
   (https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6220720459), with the
   text approved on 2026-10-16T23:14:40Z
-  (https://github.com/synnaxlabs/foundation/issues/2899#issuecomment-6226448986) and on
+  (https://github.com/synnaxlabs/foundation/issues/2899#issuecomment-6226448986),
   2026-10-17T00:54:51Z
-  (https://github.com/synnaxlabs/foundation/pull/2962#issuecomment-6227631111).
+  (https://github.com/synnaxlabs/foundation/pull/2962#issuecomment-6227631111), and
+  2026-10-17T01:27:07Z
+  (https://github.com/synnaxlabs/foundation/pull/2962#issuecomment-6227945170).
   Supersedes "a config that cannot work ends it" of 6220307355 for a read after the
   start. Lost: the next attempt with the old value, and the read again only after it
   fails, since the shown error then flips between the read and the answer.
