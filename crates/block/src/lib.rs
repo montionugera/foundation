@@ -2273,6 +2273,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore = "Miri takes hours over the 32 MiB that it commits")]
         fn counts_the_free_pages_of_large_blocks_with_a_large_page() {
             const PAGE: usize = 2 << 20;
             let large = footprint(4 << 20);
