@@ -1334,7 +1334,14 @@ mod tests {
             body_max: usize,
             slots: u32,
         ) -> Buffer {
-            let config = buffer::Config {
+            self.open_buffer(self.buffer_config(area, body_max), slots)
+                .await
+        }
+
+        /// The config of the ring of the node, made with `area` bytes and bodies of
+        /// `body_max` when it is new, with no trim.
+        fn buffer_config(&self, area: u64, body_max: usize) -> buffer::Config {
+            buffer::Config {
                 files: self.node.files(),
                 dir: PathBuf::from(DIR),
                 pool: Rc::clone(&self.pool),
@@ -1344,7 +1351,11 @@ mod tests {
                 layout: Layout::new(area, body_max).expect("a ring"),
                 commit: COMMIT,
                 trimmed: false,
-            };
+            }
+        }
+
+        /// The buffer of `config`, with slots 0 to `slots` assigned.
+        async fn open_buffer(&self, config: buffer::Config, slots: u32) -> Buffer {
             let mut assigned = Slots::new();
             for n in 0..slots {
                 assigned.index(key(Slot::new(n)));
@@ -3801,6 +3812,78 @@ mod tests {
             message,
             format!("the handoff subject is not UTF-8: {invalid}")
         );
+    }
+
+    /// Frames of a record each, which lap a ring of `AREA` bytes three times.
+    const LAPPED: u64 = 3 * AREA / 4096;
+
+    /// A shard as [`Test::shard`] makes, over a buffer that trims.
+    async fn trimming(test: &Test) -> Shard {
+        let config = buffer::Config {
+            trimmed: true,
+            ..test.buffer_config(AREA, BODY_MAX)
+        };
+        let buffer = test.open_buffer(config, 4).await;
+        let mut shard = test.over(buffer).await;
+        assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
+        assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
+        shard
+    }
+
+    /// Writer `a` takes control, and its frames lap a ring that trims, so a trim
+    /// passes the record of the handoff and only carried copies of it stay. After a
+    /// power cut, the gate has the holder for the grace.
+    #[test]
+    fn restores_the_holder_after_its_handoff_record_is_trimmed() {
+        let (mut sim, node) = create_node(182);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let set = two_indexes();
+            let mut shard = trimming(&test).await;
+            let marked = test.now();
+            let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+            for seq in 0..LAPPED {
+                test.clock.sleep(Span::from_nanos(1)).await;
+                let stamp = i64::try_from(seq).expect("fits") + 10;
+                let next =
+                    frame(&test.pool, &set, &[(0, &[stamp]), (1, &[1]), (2, &[stamp])]);
+                assert_eq!(
+                    shard.write(a, LIVE, next),
+                    Ok(&[applied(0, seq, 1), applied(2, seq, 1)][..])
+                );
+                shard.committed().await.expect("the commit ends");
+            }
+            let tags: Vec<_> = headers(&test.ring().await, marked)
+                .into_iter()
+                .map(|(.., tag)| tag)
+                .collect();
+            assert!(
+                !tags.is_empty() && !tags.contains(&0),
+                "only carried copies of the handoff are stamped {marked:?}: {tags:?}"
+            );
+        })
+        .expect("the first run ends");
+        sim.crash(&node, sim::Crash::Power);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test::new(node, tasks);
+            let set = two_indexes();
+            let mut shard = trimming(&test).await;
+            let b = shard.open_writer(writer("b", 1, &set)).expect("synced");
+            let next =
+                frame(&test.pool, &set, &[(0, &[1000]), (1, &[2]), (2, &[1000])]);
+            assert_eq!(
+                shard.write(b, LIVE, next),
+                Ok(&[refused(0, Refusal::Reserved), refused(2, Refusal::Reserved)][..])
+            );
+            test.clock.sleep(GRACE).await;
+            let next =
+                frame(&test.pool, &set, &[(0, &[1001]), (1, &[3]), (2, &[1001])]);
+            assert_eq!(
+                shard.write(b, LIVE, next),
+                Ok(&[applied(0, LAPPED, 1), applied(2, LAPPED, 1)][..])
+            );
+        })
+        .expect("the run after the cut ends");
     }
 
     #[test]
