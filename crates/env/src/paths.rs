@@ -326,19 +326,6 @@ impl Paths {
                 keys.contains(was) && now(dir) == Some(*was)
             };
             if !limit.folders.iter().any(held) {
-                // A folder on the path whose key the OS refuses is not known to be
-                // replaced: its error is the cause.
-                let unread = limit.folders.iter().find_map(|(dir, was)| {
-                    match self.driver.key(dir) {
-                        Err(error @ Error::Io { .. }) if keys.contains(was) => {
-                            Some(error)
-                        }
-                        _ => None,
-                    }
-                });
-                if let Some(error) = unread {
-                    return Err(error);
-                }
                 let replaced = limit.folders.iter().any(|(dir, was)| {
                     keys.contains(was)
                         || resolved.starts_with(dir)
@@ -457,10 +444,10 @@ pub enum Error {
     Vacant,
     /// No folder of [`Paths::within`] holds the path, and a program moved or
     /// replaced a folder of that call after it: the folder's path names another
-    /// file, or nothing. The path resolves under that folder, by the path that
+    /// file, or nothing, or the OS refuses its key. The path resolves under that
+    /// folder, by the path that
     /// the folder resolved to at that call or by the one that it resolves to now,
-    /// or into the directory that the folder was at that call. A folder whose key
-    /// cannot be read now gives the error of its key.
+    /// or into the directory that the folder was at that call.
     Replaced,
 }
 
@@ -690,12 +677,12 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_whose_key_the_os_refuses_gives_its_error() {
+    fn a_folder_whose_key_the_os_refuses_is_replaced() {
         let free = Paths::new(One::default());
         let within = free.within(&["/Gone".into()], &[]).unwrap();
         free.write(Path::new("/x"), b"gone").unwrap();
         let read = within.read(Path::new("/gone/a"), 1).map(|_| ());
-        assert_eq!(read, Err(Error::Io { code: 13 }));
+        assert_eq!(read, Err(Error::Replaced));
     }
 
     #[test]

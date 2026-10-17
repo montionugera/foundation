@@ -85,6 +85,8 @@ macro_rules! tests {
             a_directory_through_a_file_fails,
             a_directory_of_the_root_is_ok,
             within_refuses_make_dir_on_a_folder_that_a_bad_link_replaces,
+            within_gives_replaced_for_a_moved_folder_whatever_takes_its_place,
+            within_gives_replaced_for_a_file_or_a_loop_at_a_moved_folder,
         );
     };
     (@each $run:ident, $($case:ident),* $(,)?) => {
@@ -629,6 +631,53 @@ pub(crate) fn within_refuses_make_dir_on_a_folder_that_a_bad_link_replaces(
             made
         });
     assert_eq!(made, [Err(Error::Replaced); 2], "link to nothing, loop");
+}
+
+/// A program moves the folder's directory away, and puts nothing, a file, or a
+/// loop at the old place. A read into the moved folder is replaced in each case.
+pub(crate) fn within_gives_replaced_for_a_moved_folder_whatever_takes_its_place(
+    host: &Host<'_>,
+) {
+    let base = host.paths.resolve(host.dir).unwrap();
+    let got = ["nothing", "file", "loop"].map(|what| {
+        let p = base.join(format!("p-{what}"));
+        let q = base.join(format!("q-{what}"));
+        (host.make_dir)(&p);
+        (host.make_dir)(&p.join("work"));
+        host.paths.write(&p.join("work/a.hcl"), b"x").unwrap();
+        let within = host.paths.within(&[p.join("work")], &[]).unwrap();
+        (host.move_path)(&p, &q);
+        match what {
+            "file" => host.paths.write(&p, b"f").unwrap(),
+            "loop" => (host.make_link)(&p, &p),
+            _ => {}
+        }
+        within.read(&q.join("work/a.hcl"), 1).map(|_| ())
+    });
+    assert_eq!(got, [Err(Error::Replaced); 3], "nothing, file, loop");
+}
+
+/// The folder moves away and a file or a loop takes its path. A read into the moved
+/// folder, and `make_dir` at the folder's path, give the same error.
+pub(crate) fn within_gives_replaced_for_a_file_or_a_loop_at_a_moved_folder(
+    host: &Host<'_>,
+) {
+    let base = host.paths.resolve(host.dir).unwrap();
+    let got = ["file", "loop"].map(|what| {
+        let work = base.join(format!("work-{what}"));
+        (host.make_dir)(&work);
+        let within = host.paths.within(slice::from_ref(&work), &[]).unwrap();
+        let old = base.join(format!("old-{what}"));
+        (host.move_path)(&work, &old);
+        match what {
+            "file" => host.paths.write(&work, b"f").unwrap(),
+            _ => (host.make_link)(&work, &work),
+        }
+        let read = within.read(&old.join("a.hcl"), 1).map(|_| ());
+        (read, within.make_dir(&work))
+    });
+    let replaced = (Err(Error::Replaced), Err(Error::Replaced));
+    assert_eq!(got, [replaced.clone(), replaced], "file, loop");
 }
 
 /// A hidden folder that the limits of the handle refuse, but that is there, still
