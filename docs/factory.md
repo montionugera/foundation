@@ -118,6 +118,8 @@ that pass in CI.
 - After its local gate and review, the author runs `gh pr merge <n> --auto`. Two PRs are
   exceptions, and `laptop.monitor` marks each ready and queues it: a red-team PR after
   the director approves it, and the director's rule PR after the person approves it.
+  When each change of a rule PR is a rule about tests, `laptop.monitor` approves it
+  instead, and a change in `.claude/` still needs the code-owner review.
   The queue tests each PR on top of `main` and merges it.
 - Code owners (`.github/CODEOWNERS`): the person owns `oracles/` (except the fuzz
   inputs in `oracles/fuzz/`), `.github/`, `CLAUDE.md`, and `.claude/`. Everything else

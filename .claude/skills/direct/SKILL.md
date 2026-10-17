@@ -80,7 +80,8 @@ ready and queues it. A later push needs a new approval.
   time. Send its link to `laptop.monitor` when it holds a set of rules and its last
   `/review` round finds nothing, or is round 3 with each finding fixed or deferred
   (`/review`, "Round cap"), at most once every two hours (12 a day). The monitor gets
-  the person's approval, then marks it ready and queues it.
+  the person's approval, or gives its own when each change is a rule about tests, then
+  marks it ready and queues it.
 - Each day, post on the plan issue: code PRs merged, defects found after merge per
   merged PR, performance findings after merge, acceptance scenarios passing, review
   rounds per PR, and PRs of under 50 lines.
