@@ -78,3 +78,9 @@
   https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6199246153, item 3;
   the window and #2753, 2026-10-15T20:23:30Z:
   https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6201526357, item 1).
+  Amended (#2897): "acked each frame it was given" compares the acked position with the
+  end seq of the last frame the session took, or its position at the open, never with
+  the seq of its next read from disk. A read, a miss, or a commit can move that seq past
+  lost seqs and entries with no frame, which no ack reaches, and the session stalled
+  (`laptop.architect`, 2026-10-17T04:33:05Z:
+  https://github.com/synnaxlabs/foundation/pull/2986#issuecomment-6229674613).

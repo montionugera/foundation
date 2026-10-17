@@ -539,3 +539,21 @@
   variants stay until #2790 removes them (`laptop.architect`, 2026-10-16T00:46:53Z:
   https://github.com/synnaxlabs/foundation/issues/2725#issuecomment-6205434126).
   Amended (#2790): the `Behind` variants are removed (HUB WIRE).
+  Amended (#2897): below `durable`, `reached` moves the session's read from disk to
+  `next`, also when the read gave no frame. A read that passed lost seqs and then only
+  entries with no frame, such as a handoff, read the same entries again with no end
+  (`laptop.architect`, 2026-10-16T16:49:39Z:
+  https://github.com/synnaxlabs/foundation/issues/2897#issuecomment-6220365677).
+  Supersedes "which changes nothing when `next < durable`" above
+  (https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6199323861, item 6).
+  A `next` below the `from` of the last `Next::Disk`, the `next` of an earlier
+  `reached`, or the end of a frame that `fill` gave, is a defect of the caller, and
+  `reached` panics (`laptop.architect`, 2026-10-17T04:33:05Z:
+  https://github.com/synnaxlabs/foundation/pull/2986#issuecomment-6229674613, and
+  2026-10-17T04:55:38Z:
+  https://github.com/synnaxlabs/foundation/pull/2986#issuecomment-6229874537). A frame
+  given to `fill` that ends at or below any of those seqs is a defect of the caller
+  too, and `fill` panics (`laptop.architect`, 2026-10-17T04:51:06Z:
+  https://github.com/synnaxlabs/foundation/pull/2986#issuecomment-6229838366, and
+  2026-10-17T04:55:38Z:
+  https://github.com/synnaxlabs/foundation/pull/2986#issuecomment-6229874537).

@@ -139,8 +139,8 @@ fn release_waiting(bencher: Bencher<'_, '_>, sessions: usize) {
 }
 
 /// [`BURST`] frames from disk to one recording reader that opened below them, as one
-/// read gives them, and its take of each: the cost of each frame of a catch-up, past
-/// the read.
+/// read gives them and ends, and its take of each: the cost of each frame of a
+/// catch-up, past the read.
 #[divan::bench]
 fn fill(bencher: Bencher<'_, '_>) {
     let (frame, set) = frame();
@@ -170,6 +170,7 @@ fn fill(bencher: Bencher<'_, '_>) {
                 let filled = readers.fill(*key, frame, &set, seq..seq + 1);
                 assert!(filled, "filled");
             }
+            readers.reached(*key, BURST, BURST);
             for _ in 0..BURST {
                 let Next::Frame(frame) = readers.take((*key).into()) else {
                     panic!("each frame from disk waits for the reader");
