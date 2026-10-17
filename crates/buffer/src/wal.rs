@@ -72,7 +72,7 @@ const _: () = assert!(entry::table_len(1) <= BODY_MIN, "a body holds one entry")
 /// Bytes of the whole blocks that hold a record header and the largest entry table.
 const TABLE: usize = (HEADER_LEN + entry::TABLE_MAX).next_multiple_of(ALIGN);
 const _: () = assert!(
-    carry::body_len(carry::TAILS_MAX) <= TABLE - HEADER_LEN,
+    carry::body_len(carry::TAILS_MAX, 0, 0) <= TABLE - HEADER_LEN,
     "the walk holds a full carry body whole"
 );
 
@@ -586,7 +586,7 @@ impl Writer {
     ///
     /// When `tails` is more than [`Layout::tails_max`].
     pub(crate) fn carry(&mut self, tails: usize) -> Result<Plan, Full> {
-        self.plan(Kind::Carry, carry::body_len(tails))
+        self.plan(Kind::Carry, carry::body_len(tails, 0, 0))
     }
 
     /// The most tails that a carry record planned now may hold: the fewer of
@@ -2800,7 +2800,7 @@ mod tests {
                 .expect("the restart record goes over the last one");
             assert_eq!(ring.writer.head(), 17 * 4096);
             let plan = ring.writer.carry(1).expect("the owed block is free");
-            let body = vec![0; carry::body_len(1)];
+            let body = vec![0; carry::body_len(1, 0, 0)];
             let (sealed, ends) = plan.seal(ring.head.chain, [&body[..]]);
             ring.apply(&sealed, &body, false);
             ring.head = ends.record;

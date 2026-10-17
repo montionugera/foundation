@@ -547,7 +547,7 @@ impl State {
         let reach = self.writer.reach();
         self.logs.carry(reach, limit, &mut carried);
         let count = carried.tails().len();
-        let len = HEADER_LEN + carry::body_len(count);
+        let len = HEADER_LEN + carry::body_len(count, 0, 0);
         let blocks = (count > 0).then(|| (pool.alloc(len), pool.alloc(ALIGN)));
         let Some((Ok(mut block), Ok(wrap))) = blocks else {
             self.logs.dropped(&mut carried);
@@ -559,7 +559,7 @@ impl State {
             .carry(count)
             .expect("invariant: `carried` gave the room of the record");
         let (_, body) = block.split_at_mut(HEADER_LEN);
-        carry::write(carried.tails(), body);
+        carry::write(carried.tails(), &[], body);
         Some(Carry {
             plan,
             block,
@@ -1143,7 +1143,8 @@ fn recover(
     Ok(())
 }
 
-/// Feeds the logs the tails of a carry record body at `offset`.
+/// Feeds the logs the tails of a carry record body at `offset`. Fails on a body
+/// with an entry: no commit writes one yet.
 fn recover_carried(
     body: &[u8],
     offset: u64,
@@ -1152,12 +1153,16 @@ fn recover_carried(
 ) -> Result<(), Error> {
     let unread = |_: entry::Invalid| Error::Invalid { offset };
     let misplaced = |_: log::Invalid| Error::Invalid { offset };
-    for tail in carry::parse(body).map_err(unread)? {
+    let carry::Parsed { tails, mut entries } = carry::parse(body).map_err(unread)?;
+    for tail in tails {
         let tail = tail.map_err(unread)?;
         let slot = slots.index(tail.index);
         logs.recover(slot, &tail, offset).map_err(misplaced)?;
     }
-    Ok(())
+    match entries.next() {
+        None => Ok(()),
+        Some(_) => Err(Error::Invalid { offset }),
+    }
 }
 
 /// Syncs the header and the walked records of an open, as read, then writes its
