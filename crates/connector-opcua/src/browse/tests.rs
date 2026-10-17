@@ -526,6 +526,25 @@ fn a_cursor_past_the_skip_bound_whose_point_the_server_freed_fails() {
     );
 }
 
+/// A cursor at `SKIP` whose point this browse released browses the folder again from
+/// its start.
+#[test]
+fn a_cursor_at_the_skip_bound_whose_point_the_browse_released_browses_again() {
+    let page = on_server(async |server| {
+        let folder = entry("Plant/Types", "Plant.Types", Shape::Folder);
+        let first = server.level(Some(&folder), None).await.expect("a page");
+        assert!(first.expect("a folder").next.is_some());
+        let node: Node = tag("Plant.Types").parse().expect("a node");
+        let held = server.points.remove(&(node.clone(), 8)).expect("a point");
+        server.points.insert((node, 100_000), held);
+        assert!(server.release().await.expect("a release"));
+        let cursor = Cursor::new("100000".to_owned());
+        server.level(Some(&folder), Some(&cursor)).await
+    });
+    let page = page.expect("a page").expect("a folder");
+    assert_eq!((page.entries, page.next), (Vec::new(), None));
+}
+
 #[test]
 fn gives_none_for_a_folder_that_the_server_does_not_have() {
     let page = on_server(async |server| {

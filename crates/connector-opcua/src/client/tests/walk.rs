@@ -332,8 +332,10 @@ fn pages_with_no_entries_end_at_the_budget_of_a_walk() {
 }
 
 /// A setup with a tree that a walk of [`everything`] holds 4 points of at once, with
-/// the point of the Objects folder: the folders `root/a/c`, `root/a/d`, and `root/b`, two variables in each of `b`, `c`,
-/// and `d`, and one reference in each page of the server.
+/// the point of the Objects folder: the folders `root/a/c`, `root/a/d`, `root/a/e`,
+/// and `root/b`, two variables in each of `b`, `c`, `d`, and `e`, and one reference in
+/// each page of the server. A child folder has a lower number than its parent, so the
+/// order of the keys of the points is not the order of their use.
 fn nested(server: &Server) {
     let folder = |number| Node {
         namespace: 1,
@@ -342,15 +344,16 @@ fn nested(server: &Server) {
     server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
     server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
     let folders = [
-        (7001, ROOT, c"a"),
-        (7002, ROOT, c"b"),
-        (7003, folder(7001), c"c"),
-        (7004, folder(7001), c"d"),
+        (6001, ROOT, c"a"),
+        (6002, ROOT, c"b"),
+        (6003, folder(6001), c"c"),
+        (6004, folder(6001), c"d"),
+        (6005, folder(6001), c"e"),
     ];
     for (number, parent, name) in folders {
         server.add_folder(&folder(number), &parent, ORGANIZES, name, name);
     }
-    for (number, parent) in [(7010, 7002), (7020, 7003), (7030, 7004)] {
+    for (number, parent) in [(7010, 6002), (7020, 6003), (7030, 6004), (7040, 6005)] {
         for (offset, name) in [c"x", c"y"].into_iter().enumerate() {
             let offset = u32::try_from(offset).expect("a u32");
             server.add_variable(&Variable {
@@ -377,8 +380,9 @@ fn everything() -> Query {
 }
 
 /// What a walk of [`everything`] in [`nested`] gives when the server gives `most` as
-/// its `MaxBrowseContinuationPoints`, and the most points that the session held.
-fn held(most: u16) -> (Result<Found, Error>, usize) {
+/// its `MaxBrowseContinuationPoints`, the most points that the session held, and the
+/// count of Browse requests.
+fn held(most: u16) -> (Result<Found, Error>, usize, usize) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             nested(peer.server);
@@ -388,7 +392,7 @@ fn held(most: u16) -> (Result<Found, Error>, usize) {
             let found =
                 browse::walk(&mut Browse::new(&mut client), &everything()).await;
             client.close().await;
-            (found, browses.points())
+            (found, browses.points(), browses.get())
         })
         .await
     });
@@ -396,17 +400,23 @@ fn held(most: u16) -> (Result<Found, Error>, usize) {
 }
 
 /// With no bound from the server, a walk holds a point for each open folder: the
-/// Objects folder, `root`, `root/a`, and `root/a/c`. With a bound of 1 or 2, it holds no more, and gives the same entries.
+/// Objects folder, `root`, `root/a`, and `root/a/c`. With a bound of 1 or 2, it holds
+/// no more, and gives the same entries. At the bound of 2, it releases the point of
+/// `root`, used least lately, so it browses `root` once more and `root/a` no more.
 #[test]
 fn a_walk_holds_no_more_points_than_the_server_holds_for_a_session() {
-    let (unbound, points) = held(0);
+    let (unbound, points, browses) = held(0);
     let unbound = unbound.expect("found");
-    assert_eq!(unbound.entries.len(), 6, "{:?}", unbound.entries);
-    assert_eq!(points, 4);
-    for most in [1, 2] {
-        let (found, points) = held(most);
+    assert_eq!(unbound.entries.len(), 8, "{:?}", unbound.entries);
+    assert_eq!((points, browses), (4, 7));
+    for (most, browses) in [(1, 10), (2, 8)] {
+        let (found, points, browsed) = held(most);
         assert_eq!(found.expect("found").entries, unbound.entries);
-        assert_eq!(points, usize::from(most));
+        assert_eq!(
+            (points, browsed),
+            (usize::from(most), browses),
+            "bound {most}"
+        );
     }
 }
 
@@ -429,12 +439,12 @@ fn refusing(nth: usize) -> impl FnMut(&mut Vec<u8>) + Send + 'static {
     }
 }
 
-/// The server refuses a point for the Browse of `root/a`, after those of the Objects
-/// folder and `root`, while the walk holds the point of `root`: the walk releases that
-/// point, browses `a` again, and gives each entry.
+/// The server refuses a point for the Browse of `root/a`, while the walk holds the
+/// points of the Objects folder and `root`: the walk releases the point of the Objects
+/// folder, browses `a` again, and gives each entry.
 #[test]
 fn a_browse_that_the_server_gives_no_point_releases_one_and_browses_again() {
-    let (unbound, _) = held(0);
+    let (unbound, ..) = held(0);
     let found = relayed_browse(nested, refusing(3), async |server| {
         browse::walk(server, &everything()).await
     });
