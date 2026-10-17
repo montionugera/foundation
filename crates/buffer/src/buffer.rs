@@ -659,8 +659,9 @@ impl Buffer {
     /// durable. It reads the header and the records from the ring's tail and writes
     /// them again, so its time grows with the records. With [`Config::trimmed`], when
     /// the free room is under three times the largest record, it frees the oldest
-    /// records that no path needs for its tail. Open one directory at most one time
-    /// at once. Opens at once can fail with `Busy` or `Files(Length)`.
+    /// records that no path needs for its tail and that hold no newest entry of a
+    /// tag. Open one directory at most one time at once. Opens at once can fail with
+    /// `Busy` or `Files(Length)`.
     ///
     /// # Errors
     ///
@@ -670,9 +671,10 @@ impl Buffer {
     /// holds no entry of [`Layout::ENTRY_MAX_MIN`] bytes beside the blocks of a group.
     /// No file changes. [`Error::Full`] when the ring has no block for its restart
     /// record after the open frees what it can: with [`Config::trimmed`], the oldest
-    /// record holds the only durable tail of a path. [`Error::Pool`] with `TooLarge`
-    /// when a recovered entry is over the largest block of `pool`, which a read must
-    /// give it in: a larger pool must open the ring.
+    /// record holds the only durable tail of a path, or the newest entry of a tag.
+    /// [`Error::Pool`] with `TooLarge` when a recovered entry is over the largest
+    /// block of `pool`, which a read must give it in: a larger pool must open the
+    /// ring.
     ///
     /// # Panics
     ///
@@ -757,9 +759,8 @@ impl Buffer {
     }
 
     /// The bytes of the newest durable entry with `tag` on `path` of each index that
-    /// has one, with the index's slot, in slot order. An index whose newest such
-    /// entry is in a record that a trim passed is absent. It reads no file: the
-    /// buffer keeps a copy of each in memory, and gives a copy of that.
+    /// has one, with the index's slot, in slot order. No trim frees it. It reads no
+    /// file: the buffer keeps a copy of each in memory, and gives a copy of that.
     pub fn newest(&self, path: Path, tag: NonZeroU8) -> Vec<(Slot, Box<[u8]>)> {
         let state = self.shared.state.borrow();
         let mut newest: Vec<_> = state
