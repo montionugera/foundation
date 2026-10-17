@@ -2287,6 +2287,23 @@ mod tests {
         }
 
         #[test]
+        fn accepts_packed_alp_vectors() {
+            let mut bytes = alp(8, 3, [2, 1, 1, 0]);
+            bytes[2..10]
+                .copy_from_slice(&[0xfb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+            bytes.extend([0xc8, 0x27, 0, 0, 0, 0, 0, 0]);
+            bytes.extend([0, 0, 0, 0, 0, 0, 0, 0x80]);
+            bytes.extend([2, 0, 0, 0, 0, 0, 0, 0]);
+            let samples = [-0.5, -0.4, -0.0, -0.2, -0.3_f64].map(f64::to_le_bytes);
+            accepts(Scalar::F64, 5, &bytes, &samples.concat());
+            let mut bytes = alp(4, 2, [3, 2, 1, 0]);
+            bytes[2..6].copy_from_slice(&[0xfd, 0xff, 0xff, 0xff]);
+            bytes.extend([0x63, 0, 0, 0, 0, 0, 0, 0x80, 3, 0, 0, 0]);
+            let samples = [0.0, -0.3, -0.1, -0.0_f32].map(f32::to_le_bytes);
+            accepts(Scalar::F32, 4, &bytes, &samples.concat());
+        }
+
+        #[test]
         fn rejects_alp_exponents_and_factors_out_of_range() {
             let exponent = |exponent, factor, max| Error::Exponent {
                 vector: 0,
