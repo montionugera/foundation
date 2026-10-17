@@ -55,6 +55,7 @@ macro_rules! tests {
             a_link_to_a_file_with_a_slash_fails,
             a_resolve_of_a_link_to_nothing_with_a_slash_is_not_found,
             within_hides_a_hidden_folder_that_is_not_there,
+            within_hides_a_bad_link_beside_a_hidden_folder_that_is_not_there,
             within_hides_a_hidden_file_that_a_write_replaces,
             within_holds_nothing_in_a_file_that_a_write_replaces,
             within_hides_a_hidden_folder_that_the_limits_refuse,
@@ -500,6 +501,26 @@ pub(crate) fn within_hides_a_hidden_folder_that_is_not_there(host: &Host<'_>) {
     paths.write(&data.join("admin.key"), b"x").unwrap();
     let key = within.read(&data.join("admin.key"), 1);
     assert_eq!(key, Err(Error::Hidden));
+}
+
+pub(crate) fn within_hides_a_bad_link_beside_a_hidden_folder_that_is_not_there(
+    host: &Host<'_>,
+) {
+    let (paths, dir) = (host.paths, host.dir);
+    (host.make_dir)(&dir.join("work"));
+    let base = paths.resolve(dir).unwrap();
+    let data = base.join("work/data");
+    let within = paths
+        .within(&[base.join("work")], slice::from_ref(&data))
+        .unwrap();
+    (host.make_link)(&base.join("work/loop"), &base.join("work/loop"));
+    (host.make_link)(&base.join("work/to-none"), &base.join("work/none"));
+    (host.make_link)(&data, &base.join("work/none"));
+    (host.make_link)(&base.join("work/to-data"), &data);
+    assert_eq!(within.make_dir(&base.join("work/new")), Err(Error::Hidden));
+    let names = ["work/loop", "work/to-none", "work/data", "work/to-data"];
+    let made = names.map(|name| within.make_dir(&base.join(name)));
+    assert_eq!(made, [Err(Error::Hidden); 4], "{names:?}");
 }
 
 pub(crate) fn within_hides_a_hidden_file_that_a_write_replaces(host: &Host<'_>) {
