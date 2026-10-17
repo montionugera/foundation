@@ -156,6 +156,8 @@ fn a_hidden_folder_holds_each_case_and_form_of_its_names() {
             .within(&[base.join("work")], &[base.join("work/data")])
             .unwrap();
         assert_eq!(within.make_dir(&upper.join("new")), Err(Error::Hidden));
+        symlink(base.join("work/data/loop"), base.join("work/data/loop")).unwrap();
+        assert_eq!(within.make_dir(&upper.join("loop")), Err(Error::Hidden));
         assert_eq!(within.write(&upper.join("x"), b"y"), Err(Error::Hidden));
         assert_eq!(within.read(&upper.join("admin.key"), 1), Err(Error::Hidden));
     });
@@ -418,50 +420,10 @@ fn within_gives_no_directory_through_a_link_that_is_too_long_to_resolve() {
 }
 
 #[test]
-fn within_makes_a_directory_on_each_end_of_a_link_that_does_not_resolve_as_free() {
+fn within_makes_a_directory_of_a_name_longer_than_the_host_takes_as_free() {
     run(|host| {
         let (within, base) = cases::within_work(host);
-        let work = base.join("work");
-        symlink(work.join("loop"), work.join("loop")).unwrap();
-        symlink(work.join("a.hcl/x"), work.join("to-bad")).unwrap();
-        symlink(work.join("a.hcl/"), work.join("to-file-slash")).unwrap();
-        symlink(base.join("workshop/loop"), base.join("workshop/loop")).unwrap();
-        symlink(base.join("workshop"), work.join("out")).unwrap();
-        symlink(work.join("data/loop"), work.join("data/loop")).unwrap();
-        for name in [
-            "loop",
-            "loop/",
-            "loop/.",
-            "loop//",
-            "loop/x",
-            "to-bad",
-            "to-bad/",
-            "to-bad/.",
-            "to-file-slash",
-            "to-file-slash/",
-            "a.hcl/",
-            "a.hcl/.",
-            "a.hcl/x",
-        ] {
-            let path = PathBuf::from(format!("{}/{name}", work.display()));
-            let free = host.paths.make_dir(&path);
-            assert_eq!(within.make_dir(&path), free, "{name}");
-        }
-        for (name, error) in [
-            ("out/loop", Error::Outside),
-            ("out/loop/", Error::Outside),
-            ("data/loop", Error::Hidden),
-            ("data/loop/.", Error::Hidden),
-        ] {
-            let path = PathBuf::from(format!("{}/{name}", work.display()));
-            assert_eq!(within.make_dir(&path), Err(error), "{name}");
-        }
-        // Only APFS folds case: on Linux, `work/DATA` is not the hidden folder.
-        if cfg!(target_os = "macos") {
-            let path = work.join("DATA/loop");
-            assert_eq!(within.make_dir(&path), Err(Error::Hidden));
-        }
-        let long = work.join("a".repeat(256));
+        let long = base.join("work").join("a".repeat(256));
         assert_eq!(within.make_dir(&long), host.paths.make_dir(&long));
     });
 }

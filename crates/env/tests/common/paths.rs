@@ -64,6 +64,8 @@ macro_rules! tests {
             a_directory_on_a_file_or_a_link_to_nothing_fails,
             a_directory_outside_is_not_made,
             within_makes_no_directory_on_a_link_that_does_not_resolve,
+            within_keeps_its_limits_on_a_path_that_does_not_resolve,
+            within_agrees_with_free_on_each_end_of_a_link_that_does_not_resolve,
             a_directory_on_a_link_to_nothing_and_a_dot_is_not_found,
             a_directory_on_a_link_to_nothing_and_a_slash_fails,
             a_directory_on_a_file_and_a_slash_fails,
@@ -614,6 +616,60 @@ pub(crate) fn within_makes_no_directory_on_a_link_that_does_not_resolve(
         let free = host.paths.make_dir(&link);
         assert_eq!(free, Err(Error::Io { code: EXISTS }), "free {name}");
         assert_eq!(within.make_dir(&link), free, "within {name}");
+    }
+}
+
+pub(crate) fn within_keeps_its_limits_on_a_path_that_does_not_resolve(host: &Host<'_>) {
+    let (within, base) = within_work(host);
+    for name in ["work/data/loop", "loop", "workshop/loop"] {
+        (host.make_link)(&base.join(name), &base.join(name));
+    }
+    (host.make_link)(&base.join("work/out"), &base.join("workshop"));
+    for (name, limit) in [
+        ("work/data/loop", Error::Hidden),
+        ("work/data/loop/.", Error::Hidden),
+        ("work/data/admin.key/x", Error::Hidden),
+        ("loop", Error::Outside),
+        ("b.hcl/x", Error::Outside),
+        ("work/out/loop", Error::Outside),
+        ("work/out/loop/", Error::Outside),
+    ] {
+        let path = PathBuf::from(format!("{}/{name}", base.display()));
+        assert_eq!(within.make_dir(&path), Err(limit), "{name}");
+    }
+}
+
+pub(crate) fn within_agrees_with_free_on_each_end_of_a_link_that_does_not_resolve(
+    host: &Host<'_>,
+) {
+    let (within, base) = within_work(host);
+    let work = base.join("work");
+    for (name, target) in [
+        ("loop", "loop"),
+        ("to-bad", "a.hcl/x"),
+        ("to-file-slash", "a.hcl/"),
+    ] {
+        let target = PathBuf::from(format!("{}/{target}", work.display()));
+        (host.make_link)(&work.join(name), &target);
+    }
+    for name in [
+        "loop",
+        "loop/",
+        "loop/.",
+        "loop//",
+        "loop/x",
+        "to-bad",
+        "to-bad/",
+        "to-bad/.",
+        "to-file-slash",
+        "to-file-slash/",
+        "a.hcl/",
+        "a.hcl/.",
+        "a.hcl/x",
+    ] {
+        let path = PathBuf::from(format!("{}/{name}", work.display()));
+        let free = host.paths.make_dir(&path);
+        assert_eq!(within.make_dir(&path), free, "{name}");
     }
 }
 

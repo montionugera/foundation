@@ -610,15 +610,21 @@ mod tests {
 
     #[test]
     fn make_dir_checks_a_path_that_does_not_resolve_by_its_place() {
-        let free = Paths::new(One::default());
-        let paths = free.within(&["/none".into()], &[]).unwrap();
+        // A new `One` for each path: a made directory makes each name in `/none`
+        // resolve.
+        let within = |folder: &str| {
+            let free = Paths::new(One::default());
+            free.within(&[folder.into()], &[]).unwrap()
+        };
         assert_eq!(
-            paths.make_dir(Path::new("/none/deep")),
+            within("/none").make_dir(Path::new("/none/deep")),
             Err(Error::NotFound)
         );
-        assert_eq!(paths.make_dir(Path::new("/none/link")), Ok(()));
-        let paths = free.within(&["/work".into()], &[]).unwrap();
-        assert_eq!(paths.make_dir(Path::new("/none/a")), Err(Error::Outside));
+        assert_eq!(within("/none").make_dir(Path::new("/none/link")), Ok(()));
+        for path in ["/none/a", "/none/deep"] {
+            let made = within("/work").make_dir(Path::new(path));
+            assert_eq!(made, Err(Error::Outside), "{path}");
+        }
     }
 
     #[test]
