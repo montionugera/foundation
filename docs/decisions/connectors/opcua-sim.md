@@ -51,9 +51,9 @@
   id of a folder or a variable of the tree, other than that of the GUID folder of
   `Odd`, is `ns=1;s=` and the path with `.`. A page of a Browse holds at most 8
   references (`maxReferencesPerNode`), so `Plant.Types` takes two pages. The tree
-  also adds the data types `ns=1;s=Speed`, `ns=1;s=Mode`, and `ns=1;s=Recipe`, and Double (`ns=0;i=11`), `Structure`
-  (`ns=0;i=22`), and `Enumeration` (`ns=0;i=29`), which the namespace 0 of the build
-  lacks. A variable of `variables` at the node id of a node of the tree, these six data
+  also adds the data types `ns=1;s=Speed`, `ns=1;s=Mode`, and `ns=1;s=Recipe`, and
+  Double (`ns=0;i=11`), `Structure` (`ns=0;i=22`), and `Enumeration` (`ns=0;i=29`),
+  which the namespace 0 of the build lacks. A variable of `variables` at the node id of a node of the tree, these six data
   types included, panics. No new parameter: each caller gets the same tree. Lost: a
   public builder `sim::Tree` given to `serve`, which repeats the test server for callers
   that need one fixed shape (`laptop.architect-2`, 2026-10-16T20:14:20Z:
