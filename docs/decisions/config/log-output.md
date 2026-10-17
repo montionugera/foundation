@@ -179,50 +179,47 @@
   count of drops: the byte cap, the panic line past the bound, the drop until the take,
   and the end of a run in the take each need one step over the queue and the counts,
   which a second lock beside the channel would give, at the cost of two locks to order.
-  (10) Each `connector::supervisor::Supervisor::open` whose config checks makes the
-  span `connector` at ERROR, with the fields `connector` and `kind`, and the status
-  writer gives it as the parent of each of its events, so that each status line has
-  them at each level. No poll enters the span: an enter and an exit cost 7.4 ns, 740
-  ms/s at once per sample (P1 judgment rejected, `laptop.architect-2`,
-  2026-10-17T18:01:03Z,
+  (10) Each `connector::supervisor::Supervisor::open` whose config checks makes the span
+  `connector` at ERROR, with the fields `connector` and `kind`, and the status writer
+  gives it as the parent of each of its events, so that each status line has them at
+  each level. No poll enters the span: an enter and an exit cost 7.4 ns, 740 ms/s at
+  once per sample (P1 judgment rejected, `laptop.architect-2`, 2026-10-17T18:01:03Z,
   https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238199449). A live
-  span `connector` holds 632 B for the first span and 297 B for each later one (M3
-  Max, counting allocator). It is no idle memory,
-  as a node with default settings runs no connector (`laptop.architect-2`,
-  2026-10-17T18:17:23Z,
+  span `connector` holds 632 B for the first span and 297 B for each later one (M3 Max,
+  counting allocator). It is no idle memory, as a node with default settings runs no
+  connector (`laptop.architect-2`, 2026-10-17T18:17:23Z,
   https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238435066). The
   status writer writes these events (target `connector::status`): INFO `running` with
   `restarts`; `ended` with `Ok` at INFO, with `Device` or `Retry` at WARN, and with
   `Config` at ERROR, each error with `class` (`config`, `device`, or `retry`) and
   `error`, the cut text of the `error` channel; INFO `restarting` with `backoff`; INFO
   `stopped`. A show, a clear, or a note of the running kind writes WARN `error` with
-  `error`, INFO `cleared`, or INFO `note` with `note`, only when the status writer
-  takes a new value for the next frame: of `error` or `class` for a show or a clear,
-  and of `note` for a note. The channels get that value, other than when the pool has
-  no block for the frame or the home does not apply it and a later value replaces it
-  before the next write, or when the hub refuses the frame as `Removed` or it fails on
-  disk, after which the writer writes no frame and no such line. A connector writes at
-  most two such lines each second: one `error` or `cleared`, and one `note`. A count
-  writes no event. A status line costs 1038 ns (M3 Max), so a connector costs about
-  2.1 µs/s, and no decision bounds the count of connectors, but the cost reaches the
-  limit of 10 ms/s only at about 4,800 connectors that each change their error text
-  and their note each second (P1 judgment accepted, `laptop.architect-2`, 2026-10-17T21:01:17Z,
+  `error`, INFO `cleared`, or INFO `note` with `note`, only when the status writer takes
+  a new value for the next frame: of `error` or `class` for a show or a clear, and of
+  `note` for a note. The channels get that value, other than when the pool has no block
+  for the frame or the home does not apply it and a later value replaces it before the
+  next write, or when the hub refuses the frame as `Removed` or it fails on disk, after
+  which the writer writes no frame and no such line. A connector writes at most two such
+  lines each second: one `error` or `cleared`, and one `note`. A count writes no event.
+  A status line costs 1038 ns (M3 Max), so a connector costs about 2.1 µs/s, and no
+  decision bounds the count of connectors, but the cost reaches the limit of 10 ms/s
+  only at about 4,800 connectors that each change their error text and their note each
+  second (P1 judgment accepted, `laptop.architect-2`, 2026-10-17T21:01:17Z,
   https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6240978616; text,
   2026-10-17T21:15:36Z,
-  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6241220566 and
-  item 2 of 2026-10-17T21:18:47Z,
-  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6241254217).
-  By `laptop.architect-2` (item 2 of 2026-10-17T17:22:08Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6241220566 and item 2
+  of 2026-10-17T21:18:47Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6241254217). By
+  `laptop.architect-2` (item 2 of 2026-10-17T17:22:08Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6237505740; A of
   2026-10-17T18:08:57Z,
-  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238313830; items 1
-  to 3 of 2026-10-17T18:34:35Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238313830; items 1 to
+  3 of 2026-10-17T18:34:35Z,
   https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238662426;
   2026-10-17T18:39:43Z,
-  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238748209; item 1
-  of 2026-10-17T18:45:36Z,
-  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238847435; item 1
-  of 2026-10-17T21:18:47Z, which replaces the reason of item 1 of 18:34:35Z: a flush
-  asleep at the close still writes once, so the writer checks the close before the
-  lines,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238748209; item 1 of
+  2026-10-17T18:45:36Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238847435; item 1 of
+  2026-10-17T21:18:47Z, which replaces the reason of item 1 of 18:34:35Z: a flush asleep
+  at the close still writes once, so the writer checks the close before the lines,
   https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6241254217).
