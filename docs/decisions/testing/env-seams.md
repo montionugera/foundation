@@ -827,9 +827,8 @@
   folder is not there; and a read of the folder, which blocks on a pipe and fails on a
   folder with no read bit. Lost also, for the error of the resolve after the make: a
   fallback by errno, which puts OS codes in `env`, and a driver mode that does not
-  follow a link at the path after `EEXIST`, a new seam for the same result
-  (https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6220211886).
-  Decided by `laptop.architect-2` (item B of
+  follow a link at the path after `EEXIST`, a new seam for the same result. Decided by
+  `laptop.architect-2` (item B of
   https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6209932709; the plan
   of `laptop.integrator-2`, 2026-10-16T08:06:32Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6211011171, approved
