@@ -270,11 +270,11 @@ impl Layout {
         self.body_max - entry::table_len(1)
     }
 
-    /// The most tails that one carry record of this layout holds: the fewer of
-    /// [`carry::TAILS_MAX`] and the tails that fit `body_max`. A pool whose largest
-    /// block holds fewer lowers it for a buffer.
-    pub(crate) fn tails_max(self) -> usize {
-        carry::count(self.body_max)
+    /// The most body bytes of one carry record of this layout: the fewer of
+    /// `body_max` and the body of [`carry::TAILS_MAX`] tails. A pool whose largest
+    /// block holds less lowers it for a buffer.
+    pub(crate) fn carry_max(self) -> usize {
+        self.body_max.min(carry::body_len(carry::TAILS_MAX, 0, 0))
     }
 
     /// Checks a batch of `entries` entries, with `parts` parts and `bytes` bytes of
@@ -591,7 +591,7 @@ impl Writer {
         self.plan(Kind::Data, len)
     }
 
-    /// Plans a carry record of `tails` tails. It leaves one block free, for the
+    /// Plans a carry record of a body of `len` bytes. It leaves one block free, for the
     /// restart record of the next open, and may take the rest of the blocks that
     /// [`append`](Self::append) leaves free.
     ///
@@ -602,15 +602,20 @@ impl Writer {
     ///
     /// # Panics
     ///
-    /// When `tails` is more than [`Layout::tails_max`].
-    pub(crate) fn carry(&mut self, tails: usize) -> Result<Plan, Full> {
-        self.plan(Kind::Carry, carry::body_len(tails, 0, 0))
+    /// When `len` is more than [`Layout::carry_max`].
+    pub(crate) fn carry(&mut self, len: usize) -> Result<Plan, Full> {
+        assert!(
+            len <= self.layout.carry_max(),
+            "invariant: a carry body of {len} bytes is at most {}",
+            self.layout.carry_max()
+        );
+        self.plan(Kind::Carry, len)
     }
 
-    /// The most tails that a carry record planned now may hold: the fewer of
-    /// [`Layout::tails_max`] and the tails whose record fits as
+    /// The most body bytes that a carry record planned now may hold: the fewer of
+    /// [`Layout::carry_max`] and the body whose record fits as
     /// [`carry`](Self::carry) checks it. Zero when no block is free for it.
-    pub(crate) fn tails(&self) -> usize {
+    pub(crate) fn room(&self) -> usize {
         let free = self.free(spare(Kind::Carry));
         let rest = self.layout.area - self.layout.place(self.head);
         // A record over the rest skips it, so it may take what is free after it.
@@ -618,7 +623,7 @@ impl Writer {
         // Near the end of the offsets, `free` is not whole blocks.
         let size = (size / BLOCK * BLOCK).saturating_sub(to_u64(HEADER_LEN));
         let body = usize::try_from(size).expect("invariant: a record fits in memory");
-        carry::count(body).min(self.layout.tails_max())
+        body.min(self.layout.carry_max())
     }
 
     /// The high mark of the trim of the next commit, when that commit is as large
@@ -1660,11 +1665,12 @@ mod tests {
         }
 
         #[test]
-        fn tails_max_is_the_tails_that_fit_body_max() {
-            let tails =
-                |area, body_max| Layout::new(area, body_max).map(Layout::tails_max);
-            assert_eq!(tails(7 * 4096, 4087), Ok(97));
-            assert_eq!(tails(67 * 4096, 65527), Ok(carry::TAILS_MAX));
+        fn carry_max_is_body_max_up_to_the_body_of_the_most_tails() {
+            let most =
+                |area, body_max| Layout::new(area, body_max).map(Layout::carry_max);
+            assert_eq!(most(7 * 4096, 4087), Ok(4087));
+            let tails = carry::body_len(carry::TAILS_MAX, 0, 0);
+            assert_eq!((tails, most(67 * 4096, 65527)), (42970, Ok(tails)));
         }
 
         #[test]
@@ -2478,45 +2484,56 @@ mod tests {
             writer
                 .plan(Kind::Restart, RESTART_LEN)
                 .expect("the restart block is free");
-            let plan = writer.carry(1).expect("the owed block is free");
+            let plan = writer.carry(46).expect("the owed block is free");
             assert_eq!((plan.offset, plan.next), (17 * 4096, 18 * 4096));
             let full = Full {
                 needed: 4096,
                 free: 0,
             };
-            assert_eq!(writer.carry(1), Err(full));
+            assert_eq!(writer.carry(46), Err(full));
             assert!(
                 writer.plan(Kind::Restart, RESTART_LEN).is_ok(),
                 "the restart block is free"
             );
         }
 
-        /// One free block holds 97 tails, and an empty ring holds the most of the
-        /// layout.
+        /// One free block holds a body of 4087 bytes, and an empty ring holds the
+        /// most of the layout.
         #[test]
-        fn tails_is_zero_with_no_free_block() {
+        fn room_is_zero_with_no_free_block() {
             let empty = Writer::empty(layout(), 0);
-            assert_eq!(empty.tails(), layout().tails_max());
+            assert_eq!(empty.room(), layout().carry_max());
             let mut writer = fifteen();
             writer
                 .plan(Kind::Restart, RESTART_LEN)
                 .expect("the restart block is free");
-            assert_eq!(writer.tails(), 97);
-            writer.carry(1).expect("the owed block is free");
-            assert_eq!(writer.tails(), 0);
+            assert_eq!(writer.room(), 4087);
+            writer.carry(46).expect("the owed block is free");
+            assert_eq!(writer.room(), 0);
         }
 
         /// Near the end of the offsets, the free bytes are not whole blocks, and
-        /// `tails` counts only the whole blocks.
+        /// `room` counts only the whole blocks.
         #[test]
-        fn tails_counts_whole_blocks_at_the_end_of_the_offsets() {
+        fn room_counts_whole_blocks_at_the_end_of_the_offsets() {
             let start = u64::MAX / 4096 * 4096 - 3 * 4096;
             let mut writer = Writer::empty(layout(), start);
             assert_eq!(u64::MAX - writer.head(), 3 * 4096 - 1);
-            assert_eq!(writer.tails(), 97);
+            assert_eq!(writer.room(), 4087);
             writer
-                .carry(97)
+                .carry(4087)
                 .expect("one block is free for the carry record");
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "invariant: a carry body of 12289 bytes is at most 12288"
+        )]
+        fn a_carry_over_carry_max_is_a_broken_invariant() {
+            let mut writer = Writer::empty(layout(), 0);
+            writer
+                .carry(layout().carry_max() + 1)
+                .expect("the assert panics first");
         }
 
         /// A writer of a ring of `blocks` blocks after each op of `ops`: a synced
@@ -2540,20 +2557,20 @@ mod tests {
         }
 
         proptest! {
-            /// `tails` gives the most tails whose carry record fits.
+            /// `room` gives the largest carry body whose record fits.
             #[test]
-            fn tails_is_the_most_that_a_carry_record_holds(
+            fn room_is_the_most_that_a_carry_record_holds(
                 blocks in 19..40u64,
                 ops in prop::collection::vec((0..=BODY_MAX, any::<bool>()), 0..80),
             ) {
-                let tails = written(blocks, &ops).tails();
-                if tails > 0 {
-                    let fits = written(blocks, &ops).carry(tails);
-                    prop_assert!(fits.is_ok(), "{tails} tails do not fit");
+                let room = written(blocks, &ops).room();
+                if room > 0 {
+                    let fits = written(blocks, &ops).carry(room);
+                    prop_assert!(fits.is_ok(), "a body of {room} bytes does not fit");
                 }
-                if tails < layout().tails_max() {
-                    let over = written(blocks, &ops).carry(tails + 1);
-                    prop_assert!(over.is_err(), "{} tails fit", tails + 1);
+                if room < layout().carry_max() {
+                    let over = written(blocks, &ops).carry(room + 1);
+                    prop_assert!(over.is_err(), "a body of {} bytes fits", room + 1);
                 }
             }
         }
@@ -2803,8 +2820,8 @@ mod tests {
             assert_eq!(ring.writer.head(), 16 * 4096);
             ring.reopen(5).expect("the restart block is free");
             assert_eq!(ring.writer.head(), 17 * 4096);
-            assert_eq!(ring.writer.tails(), 97);
-            assert!(ring.writer.carry(1).is_ok(), "the owed block is free");
+            assert_eq!(ring.writer.room(), 4087);
+            assert!(ring.writer.carry(46).is_ok(), "the owed block is free");
         }
 
         /// A second open before a commit writes over the restart record of the
@@ -2817,8 +2834,11 @@ mod tests {
             ring.reopen(6)
                 .expect("the restart record goes over the last one");
             assert_eq!(ring.writer.head(), 17 * 4096);
-            let plan = ring.writer.carry(1).expect("the owed block is free");
             let body = vec![0; carry::body_len(1, 0, 0)];
+            let plan = ring
+                .writer
+                .carry(body.len())
+                .expect("the owed block is free");
             let (sealed, ends) = plan.seal(ring.head.chain, [&body[..]]);
             ring.apply(&sealed, &body, false);
             ring.head = ends.record;

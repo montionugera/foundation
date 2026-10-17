@@ -123,18 +123,21 @@ pub(crate) const fn body_len(tails: usize, entries: usize, bytes: usize) -> usiz
 ///
 /// When there are over [`TAILS_MAX`] tails or [`ENTRIES_MAX`] entries, an entry's
 /// header names another size than its bytes, or `into` is shorter than the body.
-pub(crate) fn write(
+pub(crate) fn write<'a>(
     tails: &[Tail],
-    entries: &[(Header, &[u8])],
+    entries: impl Iterator<Item = (Header, &'a [u8])> + Clone,
     into: &mut [u8],
 ) -> usize {
-    let bytes = entries.iter().map(|(_, bytes)| bytes.len()).sum::<usize>();
-    let len = body_len(tails.len(), entries.len(), bytes);
+    let count = entries.clone().count();
+    let bytes = entries
+        .clone()
+        .try_fold(0_usize, |sum, (_, bytes)| sum.checked_add(bytes.len()))
+        .expect("invariant: a carry body fits in memory");
+    let len = body_len(tails.len(), count, bytes);
     let Some((body, _)) = into.split_at_mut_checked(len) else {
         panic!(
-            "invariant: the body of {} tails and {} entries takes {len} bytes, given {}",
+            "invariant: the body of {} tails and {count} entries takes {len} bytes, given {}",
             tails.len(),
-            entries.len(),
             into.len()
         );
     };
@@ -144,13 +147,13 @@ pub(crate) fn write(
     let (slot, mut rest) = body.split_at_mut(COUNTS);
     let (first, second) = slot.split_at_mut(2);
     first.copy_from_slice(&counted(tails.len()).to_le_bytes());
-    second.copy_from_slice(&counted(entries.len()).to_le_bytes());
+    second.copy_from_slice(&counted(count).to_le_bytes());
     for tail in tails {
         let (slot, after) = rest.split_at_mut(LEN);
         slot.copy_from_slice(&tail.encode());
         rest = after;
     }
-    for (header, bytes) in entries {
+    for (header, bytes) in entries.clone() {
         assert!(
             usize::try_from(header.bytes).ok() == Some(bytes.len()),
             "invariant: the header of {} bytes has {} bytes",
@@ -312,7 +315,7 @@ mod tests {
         let bytes = entries.iter().map(|(_, bytes)| bytes.len()).sum();
         let mut body = vec![0; body_len(tails.len(), entries.len(), bytes)];
         assert_eq!(
-            write(tails, entries, &mut body),
+            write(tails, entries.iter().copied(), &mut body),
             body.len(),
             "the tails and the entries fill the body"
         );

@@ -9,6 +9,7 @@ use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
 
+use crate::carry;
 use crate::entry::{self, Entry, Header, Kind, Samples};
 use crate::group;
 use crate::log::Carried;
@@ -220,6 +221,8 @@ pub struct Logs {
     headers: Vec<(Slot, Header)>,
     offset: u64,
     commits: u32,
+    /// The body of a carry record of a tail of each index, or of the most tails.
+    room: usize,
     carried: Carried,
 }
 
@@ -240,12 +243,14 @@ impl Logs {
                 };
                 (Slot::new(n), header)
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let room = carry::body_len(headers.len().min(carry::TAILS_MAX), 0, 0);
         Self {
             inner: crate::log::Logs::new(AREA),
             headers,
             offset: BLOCK,
             commits: 0,
+            room,
             carried: Carried::with_capacity(usize::try_from(indexes).expect("fits")),
         }
     }
@@ -280,8 +285,7 @@ impl Logs {
             header.first += 1;
         }
         self.offset += BLOCK;
-        self.inner
-            .carry(self.offset, self.headers.len(), &mut self.carried);
+        self.inner.carry(self.offset, self.room, &mut self.carried);
         self.inner.hold(&self.carried, self.offset);
         self.offset += BLOCK;
     }
@@ -327,8 +331,7 @@ impl Logs {
             header.first += 1;
         }
         let reach = self.offset.saturating_sub(behind * BLOCK);
-        self.inner
-            .carry(reach, self.headers.len(), &mut self.carried);
+        self.inner.carry(reach, self.room, &mut self.carried);
         let kept = self.inner.kept().expect("a path has a synced entry");
         let read = self.offset.saturating_sub(held * BLOCK).max(BLOCK);
         self.inner.hide(kept.min(read));
@@ -351,8 +354,7 @@ impl Logs {
                 .expect("entries in order");
         }
         self.offset += BLOCK;
-        self.inner
-            .carry(self.offset, self.headers.len(), &mut self.carried);
+        self.inner.carry(self.offset, self.room, &mut self.carried);
         let tails = self.carried.tails();
         assert_eq!(tails.len(), self.headers.len(), "a tail of each index");
         for (tail, (_, header)) in tails.iter().zip(&self.headers) {

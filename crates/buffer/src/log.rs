@@ -52,6 +52,14 @@ pub(crate) enum Invalid {
     },
     /// A carry record lists the path twice.
     Repeated { index: channel::Key, path: Path },
+    /// A carry record holds an entry with tag 0.
+    Untagged { index: channel::Key, path: Path },
+    /// A carry record holds the entry of a tag on the path twice.
+    Twice {
+        index: channel::Key,
+        path: Path,
+        tag: NonZeroU8,
+    },
     /// An entry with no samples follows `u64::MAX` of them at its seq on its path.
     Crowded {
         index: channel::Key,
@@ -150,6 +158,16 @@ impl fmt::Display for Invalid {
                 f,
                 "a carry record lists index {index} on path {path:?} twice"
             ),
+            Self::Untagged { index, path } => write!(
+                f,
+                "a carry record holds an entry of index {index} on path {path:?} with \
+                 tag 0"
+            ),
+            Self::Twice { index, path, tag } => write!(
+                f,
+                "a carry record holds the entry of tag {tag} of index {index} on path \
+                 {path:?} twice"
+            ),
             Self::Crowded { index, path, seq } => write!(
                 f,
                 "an entry of index {index} on path {path:?} with no samples follows \
@@ -216,6 +234,20 @@ impl Mark {
     fn count(self, first: u64) -> Option<NonZeroU64> {
         let given = if first == self.seq { self.given } else { 0 };
         NonZeroU64::MIN.checked_add(given)
+    }
+
+    /// The mark after an entry of `kind` at `first` on its path, or `None` when it
+    /// ends past the last seq. The entries of a path end at rising marks.
+    fn end(first: u64, kind: Kind) -> Option<Self> {
+        match kind {
+            Kind::Samples(samples) => first
+                .checked_add(u64::from(samples.len.get()))
+                .map(Self::at),
+            Kind::Record(given) => Some(Self {
+                seq: first,
+                given: given.get(),
+            }),
+        }
     }
 }
 
@@ -533,13 +565,73 @@ impl Budget {
     }
 }
 
-/// The copy of the newest durable entry of one nonzero tag on one path of an index.
+/// The copy of the newest durable entry of one nonzero tag on one path of an index:
+/// its key, the fields of its header that its log does not give, and its bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Newest {
     /// The offset of the record that holds it.
     pub(crate) offset: u64,
-    /// The entry's parts, joined. A later copy of its log and tag reuses it.
+    slot: Slot,
+    path: Path,
+    tag: NonZeroU8,
+    first: u64,
+    stored_at: Stamp,
+    kind: Kind,
+    /// The entry's parts, joined. A later copy of its key reuses it.
     pub(crate) bytes: Vec<u8>,
+}
+
+impl Newest {
+    /// The mark after the entry on its path.
+    fn end(&self) -> Mark {
+        Mark::end(self.first, self.kind).expect("invariant: the log checked the entry")
+    }
+}
+
+/// What an item holds: the tail of the log at a place in [`Logs::paths`], or the copy
+/// at a place in [`Logs::copies`]. The top bit marks a copy, so an item for each run
+/// stays 4 bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Holder(u32);
+
+/// The bit of a [`Holder`] that marks a copy.
+const COPY: u32 = 1 << 31;
+
+/// What a [`Holder`] holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Held {
+    Tail(u32),
+    Copy(u32),
+}
+
+impl Holder {
+    /// The tail of the log at `at`.
+    ///
+    /// # Panics
+    ///
+    /// When `at` does not fit in 31 bits.
+    fn tail(at: u32) -> Self {
+        assert!(at < COPY, "invariant: place {at} fits in 31 bits");
+        Self(at)
+    }
+
+    /// The copy at `at`.
+    ///
+    /// # Panics
+    ///
+    /// When `at` does not fit in 31 bits.
+    fn copy(at: u32) -> Self {
+        assert!(at < COPY, "invariant: place {at} fits in 31 bits");
+        Self(at | COPY)
+    }
+
+    fn held(self) -> Held {
+        if self.0 & COPY == 0 {
+            Held::Tail(self.0)
+        } else {
+            Held::Copy(self.0 & !COPY)
+        }
+    }
 }
 
 /// Every path the buffer holds, by the node's slot of the index and the path.
@@ -558,14 +650,16 @@ pub(crate) struct Logs {
     /// place in `places`, `items`, and `laps` stays valid. A change that drops a log
     /// updates each.
     paths: Vec<Log>,
-    /// The newest durable entry with each nonzero tag, by the log and the tag. Tag
-    /// 0 marks samples, which no caller looks up. A change that drops a log drops
-    /// its tags in the same place.
-    tags: hash::Map<(Slot, Path, NonZeroU8), Newest>,
+    /// The place in `copies` of the copy of each key: a log and a nonzero tag. Tag 0
+    /// marks samples, which no caller looks up.
+    tags: hash::Map<(Slot, Path, NonZeroU8), u32>,
+    /// The newest durable entry of each key, in the order that each first came. No
+    /// copy leaves, so a place in `tags` and `items` stays valid.
+    copies: Vec<Newest>,
     /// No read finds a record before this offset.
     hidden: u64,
-    /// One item for each run and each carried tail. An item is stale once its path
-    /// has a later holder.
+    /// One item for each run, each carried tail, and each record of a copy. An item
+    /// is stale once its path or its copy has a later holder.
     items: Items,
     /// Each item before this number is stale.
     stale: u64,
@@ -584,6 +678,7 @@ impl PartialEq for Logs {
             places,
             paths,
             tags,
+            copies,
             hidden,
             items,
             stale: _,
@@ -594,6 +689,7 @@ impl PartialEq for Logs {
             && *places == other.places
             && *paths == other.paths
             && *tags == other.tags
+            && *copies == other.copies
             && *hidden == other.hidden
             && *items == other.items
     }
@@ -611,6 +707,7 @@ impl Logs {
             places: hash::Map::default(),
             paths: Vec::new(),
             tags: hash::Map::default(),
+            copies: Vec::new(),
             hidden: 0,
             items: Items::default(),
             stale: 0,
@@ -660,29 +757,35 @@ impl Logs {
         }
     }
 
-    /// The newest durable entry with `tag` on `path` of each index whose record is
-    /// not hidden, with its slot, in no order.
+    /// The newest durable entry with `tag` on `path` of each index that has one, with
+    /// its slot, in no order. No trim passes its record.
     pub(crate) fn newest(
         &self,
         path: Path,
         tag: NonZeroU8,
     ) -> impl Iterator<Item = (Slot, &Newest)> {
-        self.tags
+        self.copies
             .iter()
-            .filter_map(move |(&(slot, on, of), newest)| {
-                ((on, of) == (path, tag) && newest.offset >= self.hidden)
-                    .then_some((slot, newest))
-            })
+            .filter(move |copy| (copy.path, copy.tag) == (path, tag))
+            .map(|copy| (copy.slot, copy))
+    }
+
+    /// The offset of the record that holds the newest durable entry with `tag` on
+    /// `path` of the index at `slot`, or `None` when it has none.
+    pub(crate) fn holder(&self, slot: Slot, path: Path, tag: NonZeroU8) -> Option<u64> {
+        let &at = self.tags.get(&(slot, path, tag))?;
+        Some(nth(&self.copies, at).offset)
     }
 
     /// Makes the joined `parts` the newest durable entry of the tag of `header` on
-    /// its path of the index at `slot`, in the record at `offset`. It reuses the
-    /// bytes of the copy that it replaces, so a copy no larger than that one makes no
-    /// heap allocation.
+    /// its path of the index at `slot`, in the record at `offset`, which then holds
+    /// it, unless the copy has a later end mark. It reuses the bytes of the copy that
+    /// it replaces, so a copy no larger than that one makes no heap allocation.
     ///
     /// # Panics
     ///
-    /// When the tag of `header` is 0.
+    /// When the tag of `header` is 0, the entry ends past the last seq, or the
+    /// record is before the record of the copy.
     pub(crate) fn copy<P: Deref<Target = [u8]>>(
         &mut self,
         slot: Slot,
@@ -691,32 +794,25 @@ impl Logs {
         parts: &[P],
     ) {
         let tag = NonZeroU8::new(header.tag).expect("invariant: a copy has a tag");
-        let newest = self
-            .tags
-            .entry((slot, header.path, tag))
-            .or_insert_with(|| Newest {
-                offset,
-                bytes: Vec::new(),
-            });
-        newest.offset = offset;
-        newest.bytes.clear();
-        newest
-            .bytes
-            .reserve_exact(parts.iter().map(|part| part.len()).sum());
-        for part in parts {
-            newest.bytes.extend_from_slice(part);
+        let end = Mark::end(header.first, header.kind)
+            .expect("invariant: the log checked the entry");
+        if let Some(bytes) = self.note(slot, header, tag, end, offset) {
+            bytes.clear();
+            bytes.reserve_exact(parts.iter().map(|part| part.len()).sum());
+            for part in parts {
+                bytes.extend_from_slice(part);
+            }
         }
     }
 
     /// Hides the records before the offset `tail` from each later
-    /// [`find`](Self::find) and [`newest`](Self::newest), and drops their runs. It
-    /// visits each path once for each run and carried tail of the records that it
-    /// hides, and each path whose lap end waits, up to the first that needs a shrink
-    /// when none is left. It shrinks the room of the runs of at most [`SHRINKS`]
-    /// paths, plus one for each [`TRIMS`] of those runs and carried tails, at their
-    /// lap ends, first in, first out. The others wait for a later call: a path waits
-    /// less than [`TRIMS`] areas of trims, because a trim of each path falls in each
-    /// area.
+    /// [`find`](Self::find), and drops their runs. It visits each path once for each
+    /// run and carried tail of the records that it hides, and each path whose lap
+    /// end waits, up to the first that needs a shrink when none is left. It shrinks
+    /// the room of the runs of at most [`SHRINKS`] paths, plus one for each [`TRIMS`]
+    /// items of those records, at their lap ends, first in, first out. The others
+    /// wait for a later call: a path waits less than [`TRIMS`] areas of trims,
+    /// because a trim of each path falls in each area.
     ///
     /// # Panics
     ///
@@ -729,9 +825,12 @@ impl Logs {
         );
         let mut budget = self.laps.budget();
         self.hidden = tail;
-        while let Some((offset, places)) = self.items.pop(tail) {
-            budget.trimmed(places.len());
-            for at in places {
+        while let Some((offset, holders)) = self.items.pop(tail) {
+            budget.trimmed(holders.len());
+            for holder in holders {
+                let Held::Tail(at) = holder.held() else {
+                    continue;
+                };
                 let log = nth_mut(&mut self.paths, at);
                 if log.trim(offset, self.area) {
                     self.laps.end(&mut budget, log, at, offset);
@@ -741,78 +840,105 @@ impl Logs {
         self.laps.finish(&mut budget, &mut self.paths, tail);
     }
 
-    /// The oldest holder of a path, which no trim may pass. `None` when no path has
-    /// a synced entry.
+    /// The oldest holder of a path or of a copy, which no trim may pass. `None` when
+    /// no path has a synced entry.
     pub(crate) fn kept(&mut self) -> Option<u64> {
         let holding = self
             .items
             .since(self.stale)
-            .find(|&(_, offset, at)| nth(&self.paths, at).holder == Some(offset));
+            .find(|&(_, offset, holder)| self.holds(holder, offset));
         self.stale = holding.map_or_else(|| self.items.added(), |(number, ..)| number);
         holding.map(|(_, offset, _)| offset)
     }
 
-    /// Clears `carried`, then puts in it the appended tail of each path whose holder
-    /// is before `reach`, at most `limit`, oldest holder first. When it puts in one,
-    /// it fills `carried` up to `limit` with the oldest holders in the next [`FILL`]
-    /// `* limit` items after `reach`, so that small carry records merge. The next
-    /// call goes on at the first item that this call did not walk. Call it in the
-    /// borrow that takes the records of a commit: each appended entry is then in a
-    /// taken record, so the tail is the end after those records, and the carry record
-    /// goes right after them.
-    pub(crate) fn carry(&mut self, reach: u64, limit: usize, carried: &mut Carried) {
+    /// Clears `carried`, then puts in it each holder before `reach`, oldest first:
+    /// the appended tail of a path, or a copy. It stops at the first that does not
+    /// fit a body of `room` bytes, or of [`carry::TAILS_MAX`] tails or
+    /// [`carry::ENTRIES_MAX`] entries. When it puts in one, it fills `carried` with
+    /// the oldest holders in the next [`FILL`] items after `reach` for each tail that
+    /// `room` holds, so that small carry records merge. The next call goes on at the
+    /// first item that this call did not walk. Call it in the borrow that takes the
+    /// records of a commit: each appended entry is then in a taken record, so the
+    /// tail is the end after those records, and the carry record goes right after
+    /// them.
+    pub(crate) fn carry(&mut self, reach: u64, room: usize, carried: &mut Carried) {
         carried.clear();
-        let mut walk = limit.saturating_mul(FILL);
-        for (number, offset, at) in self.items.since(self.scanned) {
+        let mut walk = carry::count(room).saturating_mul(FILL);
+        for (number, offset, holder) in self.items.since(self.scanned) {
             if offset >= reach {
-                let filling = !carried.tails.is_empty();
+                let filling = !carried.is_empty();
                 let Some(left) = walk.checked_sub(1).filter(|_| filling) else {
                     self.scanned = number;
                     return;
                 };
                 walk = left;
             }
-            let log = nth(&self.paths, at);
-            if log.holder != Some(offset) {
+            if !self.holds(holder, offset) {
                 continue;
             }
-            if carried.tails.len() == limit {
+            let first = carried.is_empty();
+            let fits = match holder.held() {
+                Held::Tail(at) => carried.tail(nth(&self.paths, at), at, room),
+                Held::Copy(at) => carried.copy(nth(&self.copies, at), at, room),
+            };
+            if !fits {
                 self.scanned = number;
                 return;
             }
-            if carried.tails.is_empty() {
+            if first {
                 carried.first = number;
             }
-            carried.tails.push(carry::Tail {
-                index: log.index,
-                path: log.path,
-                seq: log.appended.tail.seq,
-                given: log.appended.given,
-                stamp: log.appended.tail.stamp,
-            });
-            carried.places.push(at);
         }
         self.scanned = self.items.added();
     }
 
     /// Takes back the [`carry`](Self::carry) call that filled `carried`, whose carry
-    /// record no commit writes, so that the next call gives its tails again.
+    /// record no commit writes, so that the next call gives its holders again.
     /// Clears `carried`.
     pub(crate) fn dropped(&mut self, carried: &mut Carried) {
-        if !carried.tails.is_empty() {
+        if !carried.is_empty() {
             self.scanned = carried.first;
         }
         carried.clear();
     }
 
-    /// Makes the carry record at `offset` the holder of each path of `carried`, once
-    /// the records before it are synced. A path with queued entries keeps its
-    /// appended tail.
+    /// Writes the body of the carry record of `carried` at the front of `into`, with
+    /// each copy as the call that filled it found it, and gives its size, as
+    /// [`Carried::len`] gives it.
+    ///
+    /// # Panics
+    ///
+    /// When `into` is shorter than the body.
+    pub(crate) fn write(&self, carried: &Carried, into: &mut [u8]) -> usize {
+        let entries = carried.copies.iter().map(|&(at, _)| {
+            let copy = nth(&self.copies, at);
+            let log = self
+                .log(copy.slot, copy.path)
+                .expect("invariant: each copy has its log");
+            let header = Header {
+                index: log.index,
+                path: copy.path,
+                first: copy.first,
+                stored_at: copy.stored_at,
+                kind: copy.kind,
+                tag: copy.tag.get(),
+                bytes: u32::try_from(copy.bytes.len())
+                    .expect("invariant: an entry's bytes fit in u32"),
+            };
+            (header, copy.bytes.as_slice())
+        });
+        carry::write(carried.tails(), entries, into)
+    }
+
+    /// Makes the carry record at `offset` the holder of each tail of `carried`, and
+    /// of each copy that no entry of a later mark replaced since the carry, once the
+    /// records before it are synced. A path with queued entries keeps its appended
+    /// tail.
     ///
     /// # Panics
     ///
     /// When a tail is not the durable end of its path, or `offset` is not after the
-    /// newest record of the path.
+    /// newest record of the path or of the copy.
     pub(crate) fn hold(&mut self, carried: &Carried, offset: u64) {
         for (tail, &at) in carried.tails.iter().zip(&carried.places) {
             let log = nth_mut(&mut self.paths, at);
@@ -834,7 +960,130 @@ impl Logs {
                 "invariant: carry record {offset} comes after record {newest:?}"
             );
             log.holder = Some(offset);
-            self.items.push(offset, at);
+            self.items.push(offset, Holder::tail(at));
+        }
+        for &(at, end) in &carried.copies {
+            let copy = nth_mut(&mut self.copies, at);
+            if copy.end() != end {
+                continue;
+            }
+            assert!(
+                copy.offset < offset,
+                "invariant: carry record {offset} comes after record {}",
+                copy.offset
+            );
+            copy.offset = offset;
+            self.items.push(offset, Holder::copy(at));
+        }
+    }
+
+    /// Makes the carried entry `header` with `bytes` of the carry record at `offset`
+    /// the newest durable entry of its tag on its path of the index at `slot`, which
+    /// the record then holds, unless the copy has a later end mark: a commit can
+    /// carry a copy after a newer entry. The recovery walk feeds it each entry of
+    /// each carry record, in ring order.
+    ///
+    /// # Errors
+    ///
+    /// [`Invalid::Untagged`] when the tag is 0, [`Invalid::Past`] when the entry
+    /// ends past the last seq, and [`Invalid::Twice`] when the record at `offset`
+    /// already gave the copy. Nothing changes.
+    ///
+    /// # Panics
+    ///
+    /// When the record is before the record of a copy of the same end mark.
+    pub(crate) fn carried(
+        &mut self,
+        slot: Slot,
+        header: &Header,
+        bytes: &[u8],
+        offset: u64,
+    ) -> Result<(), Invalid> {
+        let (index, path) = (header.index, header.path);
+        let tag =
+            NonZeroU8::new(header.tag).ok_or(Invalid::Untagged { index, path })?;
+        let past = Fault::Past {
+            first: header.first,
+            len: header.len(),
+        };
+        let end = Mark::end(header.first, header.kind).ok_or(past.on(index, path))?;
+        if self.holder(slot, path, tag) == Some(offset) {
+            return Err(Invalid::Twice { index, path, tag });
+        }
+        if let Some(copy) = self.note(slot, header, tag, end, offset) {
+            copy.clear();
+            copy.extend_from_slice(bytes);
+        }
+        Ok(())
+    }
+
+    /// The record of a copy whose path no record of the walk holds, or `None`. A
+    /// commit carries each copy of a path that has a holder, so a valid ring has
+    /// none.
+    pub(crate) fn unmet(&self) -> Option<u64> {
+        self.copies
+            .iter()
+            .find(|copy| self.log(copy.slot, copy.path).is_none())
+            .map(|copy| copy.offset)
+    }
+
+    /// Makes the entry `header` with `tag`, which ends at `end`, in the record at
+    /// `offset`, the copy of its key, unless the copy has a later end mark, and gives
+    /// the copy's bytes to fill. The record then holds the copy.
+    ///
+    /// # Panics
+    ///
+    /// When the record is before the record of the copy.
+    fn note(
+        &mut self,
+        slot: Slot,
+        header: &Header,
+        tag: NonZeroU8,
+        end: Mark,
+        offset: u64,
+    ) -> Option<&mut Vec<u8>> {
+        let key = (slot, header.path, tag);
+        let Some(&at) = self.tags.get(&key) else {
+            let at =
+                u32::try_from(self.copies.len()).expect("invariant: copies fit in u32");
+            self.copies.push(Newest {
+                offset,
+                slot,
+                path: header.path,
+                tag,
+                first: header.first,
+                stored_at: header.stored_at,
+                kind: header.kind,
+                bytes: Vec::new(),
+            });
+            self.tags.insert(key, at);
+            self.items.push(offset, Holder::copy(at));
+            return self.copies.last_mut().map(|copy| &mut copy.bytes);
+        };
+        let copy = nth_mut(&mut self.copies, at);
+        if end < copy.end() {
+            return None;
+        }
+        assert!(
+            copy.offset <= offset,
+            "invariant: record {offset} comes after record {}",
+            copy.offset
+        );
+        if copy.offset != offset {
+            self.items.push(offset, Holder::copy(at));
+        }
+        copy.offset = offset;
+        copy.first = header.first;
+        copy.stored_at = header.stored_at;
+        copy.kind = header.kind;
+        Some(&mut copy.bytes)
+    }
+
+    /// Whether `holder` holds the record at `offset`.
+    fn holds(&self, holder: Holder, offset: u64) -> bool {
+        match holder.held() {
+            Held::Tail(at) => nth(&self.paths, at).holder == Some(offset),
+            Held::Copy(at) => nth(&self.copies, at).offset == offset,
         }
     }
 
@@ -889,7 +1138,7 @@ impl Logs {
             log.appended = log.durable;
             log.holder = Some(offset);
             let at = self.add(key, log);
-            self.items.push(offset, at);
+            self.items.push(offset, Holder::tail(at));
             return Ok(());
         };
         let log = nth_mut(&mut self.paths, at);
@@ -925,7 +1174,7 @@ impl Logs {
             log.appended = log.durable;
         }
         log.holder = Some(offset);
-        self.items.push(offset, at);
+        self.items.push(offset, Holder::tail(at));
         Ok(())
     }
 
@@ -974,14 +1223,16 @@ impl Logs {
             log.sync(header, offset)
         })?;
         if added {
-            self.items.push(offset, at);
+            self.items.push(offset, Holder::tail(at));
         }
         Ok(())
     }
 
     /// Feeds the recovery walk's entry `header` of the record at `offset`, as
     /// appended and synced. On a path that the walk has not met, an entry with no
-    /// samples starts after the others that its count gives: a trim passed them.
+    /// samples starts after the others that its count gives: a trim passed them. An
+    /// entry with a nonzero tag becomes the copy of its key as [`copy`](Self::copy)
+    /// makes it, with no bytes: the walk reads them after it ends.
     ///
     /// # Errors
     ///
@@ -1028,7 +1279,15 @@ impl Logs {
             log.appended = appended;
             Ok(())
         })?;
-        self.sync(slot, header, offset)
+        self.sync(slot, header, offset)?;
+        if let Some(tag) = NonZeroU8::new(header.tag) {
+            let end = Mark::end(header.first, header.kind)
+                .expect("invariant: the log checked the entry");
+            if let Some(bytes) = self.note(slot, header, tag, end, offset) {
+                bytes.clear();
+            }
+        }
+        Ok(())
     }
 
     /// Applies `change` to the log of `slot` on `path`, which starts empty when the
@@ -1068,25 +1327,28 @@ impl Logs {
     }
 }
 
-/// The tails of one carry record, with the place of the log of each, oldest holder
-/// first.
+/// The holders of one carry record, oldest first: the tails, with the place of the
+/// log of each, and the place of each copy, with its end mark at the carry.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Carried {
     tails: Vec<carry::Tail>,
     places: Vec<u32>,
-    /// The number of the item of the first tail.
+    copies: Vec<(u32, Mark)>,
+    /// The bytes of the copies.
+    bytes: usize,
+    /// The number of the item of the first holder.
     first: u64,
 }
 
 impl Carried {
-    /// Room for `tails` tails, so that a carry of at most that many allocates
-    /// nothing.
+    /// Room for `tails` tails, so that a carry of at most that many tails and no
+    /// copy allocates nothing.
     #[cfg(feature = "sim")]
     pub(crate) fn with_capacity(tails: usize) -> Self {
         Self {
             tails: Vec::with_capacity(tails),
             places: Vec::with_capacity(tails),
-            first: 0,
+            ..Self::default()
         }
     }
 
@@ -1095,48 +1357,99 @@ impl Carried {
         &self.tails
     }
 
-    /// Drops the tails and keeps the capacity.
+    /// Whether it holds no holder.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.tails.is_empty() && self.copies.is_empty()
+    }
+
+    /// The size of the record body.
+    pub(crate) fn len(&self) -> usize {
+        carry::body_len(self.tails.len(), self.copies.len(), self.bytes)
+    }
+
+    /// Drops the holders and keeps the capacity.
     pub(crate) fn clear(&mut self) {
         self.tails.clear();
         self.places.clear();
+        self.copies.clear();
+        self.bytes = 0;
+    }
+
+    /// Adds the appended tail of `log`, at place `at`, when the body then fits in
+    /// `room` bytes and [`carry::TAILS_MAX`] tails. Returns whether it fits.
+    fn tail(&mut self, log: &Log, at: u32, room: usize) -> bool {
+        let tails = self.tails.len();
+        if tails == carry::TAILS_MAX
+            || carry::body_len(tails.saturating_add(1), self.copies.len(), self.bytes)
+                > room
+        {
+            return false;
+        }
+        self.tails.push(carry::Tail {
+            index: log.index,
+            path: log.path,
+            seq: log.appended.tail.seq,
+            given: log.appended.given,
+            stamp: log.appended.tail.stamp,
+        });
+        self.places.push(at);
+        true
+    }
+
+    /// Adds `copy`, at place `at`, when the body then fits in `room` bytes and
+    /// [`carry::ENTRIES_MAX`] entries. Returns whether it fits.
+    fn copy(&mut self, copy: &Newest, at: u32, room: usize) -> bool {
+        let entries = self.copies.len();
+        let Some(bytes) = self.bytes.checked_add(copy.bytes.len()) else {
+            return false;
+        };
+        if entries == carry::ENTRIES_MAX
+            || carry::body_len(self.tails.len(), entries.saturating_add(1), bytes)
+                > room
+        {
+            return false;
+        }
+        self.copies.push((at, copy.end()));
+        self.bytes = bytes;
+        true
     }
 }
 
-/// The log at `at` in `logs`.
-fn nth(logs: &[Log], at: u32) -> &Log {
+/// The item at `at` in `items`.
+fn nth<T>(items: &[T], at: u32) -> &T {
     let at = usize::try_from(at).expect("invariant: u32 fits usize");
-    logs.get(at).expect("invariant: a place has its log")
+    items.get(at).expect("invariant: a place has its item")
 }
 
-/// The log at `at` in `logs`.
-fn nth_mut(logs: &mut [Log], at: u32) -> &mut Log {
+/// The item at `at` in `items`.
+fn nth_mut<T>(items: &mut [T], at: u32) -> &mut T {
     let at = usize::try_from(at).expect("invariant: u32 fits usize");
-    logs.get_mut(at).expect("invariant: a place has its log")
+    items.get_mut(at).expect("invariant: a place has its item")
 }
 
-/// The place in a `Vec` of logs of each item, grouped by record in ring order. Items
-/// are numbered from 0 in the order that they came, and no number is used twice.
+/// The holder of each item, grouped by record in ring order. Items are numbered from
+/// 0 in the order that they came, and no number is used twice.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 struct Items {
     /// The offset of each record with an item, and the number after its last item.
     records: VecDeque<(u64, u64)>,
-    /// The place of each item.
-    places: VecDeque<u32>,
+    /// The holder of each item.
+    places: VecDeque<Holder>,
     /// The number of the front item.
     base: u64,
 }
 
 impl Items {
-    /// Adds an item for the log at `at` in the record at `offset`, which is at or
-    /// after the record of each item.
-    fn push(&mut self, offset: u64, at: u32) {
+    /// Adds an item for `holder` in the record at `offset`, which is at or after the
+    /// record of each item.
+    fn push(&mut self, offset: u64, holder: Holder) {
         let next = self.added().checked_add(1).expect("invariant: numbers fit");
         match self.records.back_mut() {
             Some((last, end)) if *last == offset => *end = next,
             _ => self.records.push_back((offset, next)),
         }
-        self.places.push_back(at);
+        self.places.push_back(holder);
     }
 
     /// The number of the next item that `push` adds.
@@ -1145,8 +1458,8 @@ impl Items {
     }
 
     /// Removes the front record when it is before `tail`, and gives its offset and
-    /// the places of its items.
-    fn pop(&mut self, tail: u64) -> Option<(u64, Drain<'_, u32>)> {
+    /// the holders of its items.
+    fn pop(&mut self, tail: u64) -> Option<(u64, Drain<'_, Holder>)> {
         let &(offset, end) =
             self.records.front().filter(|&&(offset, _)| offset < tail)?;
         self.records.pop_front();
@@ -1157,7 +1470,7 @@ impl Items {
 
     /// Each item from the number `from`, or from the front item when it is past, with
     /// its number and the offset of its record, oldest first.
-    fn since(&self, from: u64) -> impl Iterator<Item = (u64, u64, u32)> + '_ {
+    fn since(&self, from: u64) -> impl Iterator<Item = (u64, u64, Holder)> + '_ {
         let mut start = from.max(self.base);
         let first = self.records.partition_point(|&(_, end)| end <= start);
         let skip = self.index(start);
@@ -1168,7 +1481,7 @@ impl Items {
         });
         numbers
             .zip(self.places.range(skip..))
-            .map(|((number, offset), &at)| (number, offset, at))
+            .map(|((number, offset), &holder)| (number, offset, holder))
     }
 
     /// The index in `places` of the item numbered `number`, at or after the front.
@@ -1193,6 +1506,11 @@ mod tests {
 
     fn slot(value: u32) -> Slot {
         Slot::new(value)
+    }
+
+    /// The size of a carry body of `tails` tails.
+    fn tails_body(tails: usize) -> usize {
+        carry::body_len(tails, 0, 0)
     }
 
     fn header(
@@ -1480,7 +1798,7 @@ mod tests {
                 }
                 let reach = 8192 * *reach.min(&number);
                 let mut carried = Carried::default();
-                logs.carry(reach, *limit, &mut carried);
+                logs.carry(reach, tails_body(*limit), &mut carried);
                 let holders = model.holders();
                 for (index, header) in &queued {
                     prop_assert_eq!(logs.sync(slot(*index), header, synced_at), Ok(()));
@@ -1753,7 +2071,7 @@ mod tests {
     }
 
     #[test]
-    fn newest_gives_the_last_copy_of_each_index_until_a_hide() {
+    fn newest_gives_the_last_copy_of_each_index_past_a_hide() {
         let mut logs = Logs::new(AREA);
         let tagged = |index, path, tag| Header {
             tag,
@@ -1799,17 +2117,26 @@ mod tests {
             newest.sort_unstable_by_key(|&(slot, _)| slot);
             newest
         };
-        let new = Newest {
-            offset: 8192,
-            bytes: bytes(b"new"),
+        let copy = |at, offset, bytes| {
+            let header = tagged(1, Path::Live, 2);
+            Newest {
+                offset,
+                slot: slot(at),
+                path: Path::Live,
+                tag,
+                first: header.first,
+                stored_at: header.stored_at,
+                kind: header.kind,
+                bytes,
+            }
         };
-        let two = Newest {
-            offset: 4096,
-            bytes: bytes(b"two"),
-        };
-        assert_eq!(newest(&logs), [(slot(1), new.clone()), (slot(2), two)]);
+        let copies = [
+            (slot(1), copy(1, 8192, bytes(b"new"))),
+            (slot(2), copy(2, 4096, bytes(b"two"))),
+        ];
+        assert_eq!(newest(&logs), copies);
         logs.hide(8192);
-        assert_eq!(newest(&logs), [(slot(1), new)]);
+        assert_eq!(newest(&logs), copies, "a hide drops no copy");
     }
 
     #[test]
@@ -2143,11 +2470,15 @@ mod tests {
     #[test]
     fn a_pop_gives_each_item_of_its_record() {
         let mut items = Items::default();
-        items.push(4096, 1);
-        items.push(4096, 2);
-        items.push(8192, 3);
-        let (offset, places) = items.pop(8192).expect("a record before the tail");
-        assert_eq!((offset, places.collect::<Vec<_>>()), (4096, vec![1, 2]));
+        items.push(4096, Holder::tail(1));
+        items.push(4096, Holder::copy(2));
+        items.push(8192, Holder::tail(3));
+        let (offset, holders) = items.pop(8192).expect("a record before the tail");
+        let holders: Vec<_> = holders.map(Holder::held).collect();
+        assert_eq!(
+            (offset, holders),
+            (4096, vec![Held::Tail(1), Held::Copy(2)])
+        );
         assert!(items.pop(8192).is_none(), "only the record at 8192 is left");
     }
 
@@ -2287,7 +2618,7 @@ mod tests {
             assert_eq!(logs.durable(slot(1), Path::Live), tail);
             assert_eq!(logs.appended(slot(1), Path::Live), tail);
             let mut tails = Carried::default();
-            logs.clone().carry(16384, 2, &mut tails);
+            logs.clone().carry(16384, tails_body(2), &mut tails);
             assert_eq!(tails.tails(), [carried(3, 4, Some(20))]);
             assert_eq!(logs.kept(), Some(12288));
         }
@@ -2300,7 +2631,7 @@ mod tests {
             append(&mut logs, slot(1), &mut header(1, Path::Live, 3, 2, None))
                 .expect("appends");
             let mut tails = Carried::default();
-            logs.carry(8192, 2, &mut tails);
+            logs.carry(8192, tails_body(2), &mut tails);
             assert_eq!(tails.tails(), [carried(5, 0, Some(20))]);
         }
 
@@ -2310,7 +2641,7 @@ mod tests {
             let mut header = header(1, Path::Live, 3, 2, None);
             append(&mut logs, slot(1), &mut header).expect("appends");
             let mut tails = Carried::default();
-            logs.carry(8192, 2, &mut tails);
+            logs.carry(8192, tails_body(2), &mut tails);
             logs.sync(slot(1), &header, 8192).expect("syncs");
             assert_eq!(logs.kept(), Some(4096));
             logs.hold(&tails, 12288);
@@ -2322,7 +2653,7 @@ mod tests {
             assert_eq!(logs.durable(slot(1), Path::Live), tail);
             let runs: Vec<Run> = logs.runs(slot(1), Path::Live).collect();
             assert_eq!(runs, [run(0, 0, 4096), run(3, 1, 8192)]);
-            logs.carry(16384, 2, &mut tails);
+            logs.carry(16384, tails_body(2), &mut tails);
             assert_eq!(tails.tails(), [carried(5, 0, Some(20))]);
             assert_eq!(logs.kept(), Some(12288));
         }
@@ -2334,16 +2665,16 @@ mod tests {
         fn carry_after_a_dropped_carry_gives_its_tails_again() {
             let mut logs = walked(Some(20));
             let mut tails = Carried::default();
-            logs.carry(8192, 2, &mut tails);
+            logs.carry(8192, tails_body(2), &mut tails);
             assert_eq!(tails.tails(), [carried(3, 1, Some(20))]);
             logs.dropped(&mut tails);
             assert_eq!(tails.tails(), []);
-            logs.carry(8192, 2, &mut tails);
+            logs.carry(8192, tails_body(2), &mut tails);
             assert_eq!(tails.tails(), [carried(3, 1, Some(20))]);
-            logs.carry(8192, 2, &mut tails);
+            logs.carry(8192, tails_body(2), &mut tails);
             assert_eq!(tails.tails(), []);
             logs.dropped(&mut tails);
-            logs.carry(8192, 2, &mut tails);
+            logs.carry(8192, tails_body(2), &mut tails);
             assert_eq!(tails.tails(), []);
         }
 
@@ -2352,7 +2683,7 @@ mod tests {
         fn hold_keeps_the_appended_tail_of_a_queued_path() {
             let mut logs = walked(Some(20));
             let mut tails = Carried::default();
-            logs.carry(8192, 2, &mut tails);
+            logs.carry(8192, tails_body(2), &mut tails);
             append(
                 &mut logs,
                 slot(1),
@@ -2380,7 +2711,7 @@ mod tests {
             append(&mut logs, slot(1), &mut header(1, Path::Live, 3, 2, None))
                 .expect("appends");
             let mut tails = Carried::default();
-            logs.carry(8192, 2, &mut tails);
+            logs.carry(8192, tails_body(2), &mut tails);
             logs.hold(&tails, 12288);
         }
 
@@ -2389,7 +2720,7 @@ mod tests {
         fn a_carry_record_at_the_holder_is_a_broken_invariant() {
             let mut logs = walked(Some(20));
             let mut tails = Carried::default();
-            logs.carry(8192, 2, &mut tails);
+            logs.carry(8192, tails_body(2), &mut tails);
             logs.hold(&tails, 4096);
         }
 
@@ -2622,7 +2953,7 @@ mod tests {
         let mut logs = walk_from(records, 0);
         assert_eq!(logs.kept(), Some(holder));
         let mut tails = Carried::default();
-        logs.carry(holder, 1023, &mut tails);
+        logs.carry(holder, tails_body(1023), &mut tails);
         assert_eq!(tails.tails(), []);
         logs.hide(holder);
         let walked = walk_from(records, holder);
@@ -2786,7 +3117,7 @@ mod tests {
             .iter()
             .map(|log| log.runs.capacity() * size_of::<Run>())
             .sum();
-        let items = logs.items.places.capacity() * size_of::<u32>()
+        let items = logs.items.places.capacity() * size_of::<Holder>()
             + logs.items.records.capacity() * size_of::<(u64, u64)>();
         (runs, items)
     }
@@ -3258,9 +3589,9 @@ mod tests {
                 .collect()
         };
         let mut tails = Carried::default();
-        logs.carry(8192, 3, &mut tails);
+        logs.carry(8192, tails_body(3), &mut tails);
         assert_eq!(indexes(&tails), [1, 2]);
-        logs.carry(4096 * 15, 3, &mut tails);
+        logs.carry(4096 * 15, tails_body(3), &mut tails);
         assert_eq!(indexes(&tails), [3]);
     }
 
@@ -3272,12 +3603,12 @@ mod tests {
         let mut logs = Logs::new(AREA);
         synced(&mut logs, 1, 4096);
         let mut tails = Carried::default();
-        logs.carry(8192, 2, &mut tails);
+        logs.carry(8192, tails_body(2), &mut tails);
         synced(&mut logs, 2, 12288);
         assert_eq!(tails.tails().len(), 1);
-        logs.carry(8192, 2, &mut tails);
+        logs.carry(8192, tails_body(2), &mut tails);
         assert_eq!(tails.tails(), []);
-        logs.carry(16384, 2, &mut tails);
+        logs.carry(16384, tails_body(2), &mut tails);
         let indexes: Vec<_> = tails.tails().iter().map(|tail| tail.index).collect();
         assert_eq!(indexes, [channel::Key::from_u128(2)]);
     }
@@ -3494,7 +3825,7 @@ mod tests {
                     queued.push((next.index, header));
                 }
                 let mut carried = Carried::default();
-                logs.carry(8192 * *reach.min(&number), *limit, &mut carried);
+                logs.carry(8192 * *reach.min(&number), tails_body(*limit), &mut carried);
                 for (index, header) in &queued {
                     prop_assert_eq!(logs.sync(slot(*index), header, synced_at), Ok(()));
                 }
