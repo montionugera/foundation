@@ -45,7 +45,11 @@
   turn on the pyo3 feature `extension-module`, since maturin sets
   `PYO3_BUILD_EXTENSION_MODULE` (`laptop.architect-2`, 2026-10-17T21:38:45Z,
   https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241548882 and
-  https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241559479). One
+  https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241559479). In CI,
+  `FOUNDATION_NODE` is a debug `foundation` that the job builds: the suite needs a node
+  process, not a fast one, and a test that fails on a debug node has a time bound that
+  is too tight (`laptop.architect-2`, 2026-10-17T22:04:19Z,
+  https://github.com/synnaxlabs/foundation/pull/3069#issuecomment-6241909398). One
   `abi3` wheel for each platform takes Python 3.11 and later, and does not install on
   free-threaded Python. The Linux wheels are `manylinux_2_28`, with no `musllinux`
   wheel. The gate runs against a release node built in the same run. `laptop.monitor`
