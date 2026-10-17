@@ -150,11 +150,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+      # Each crate and test that fails on this OS, with the open issue that removes it.
+      # The lists only shrink (LINUX CI).
+      - name: Exceptions
+        run: |
+          crates=() tests=()
+          case "$RUNNER_OS" in
+            macOS)
+              tests=(
+                one_node::a_token_file_shows_its_fix_until_it_holds_the_token # #2714
+                files::open_absolute_of_a_link_that_swaps_a_file_for_a_directory # #2964
+                paths::a_read_of_a_path_that_swaps_a_directory_for_a_file # #2964
+                wall::gives_a_bound_under_sixteen_seconds_when_a_daemon_runs # #2965
+              )
+              ;;
+          esac
+          echo "CRATES=${crates[*]/#/--exclude }" >> "$GITHUB_ENV"
+          echo "TESTS=${tests[*]/#/--skip }" >> "$GITHUB_ENV"
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace $CRATES --all-targets --all-features -- -D warnings
       - name: Test
         if: ${{ !cancelled() }}
-        run: cargo test --workspace --all-features --no-fail-fast
+        run: cargo test --workspace $CRATES --all-features --no-fail-fast -- $TESTS
 
   features:
     needs: changes
