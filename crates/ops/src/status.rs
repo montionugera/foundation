@@ -27,8 +27,8 @@ const WAIT: Span = Span::SECOND;
 /// The status of each connector on the node, as `status` gives it.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub(crate) struct Output {
-    /// Each connector that the spec in use places on the node, and whose status the
-    /// subject may read, in name order.
+    /// Each connector that the spec in use places on the node, and whose label and
+    /// status channels the subject may read, in name order.
     pub(crate) connectors: Vec<Status>,
 }
 
@@ -100,6 +100,11 @@ pub(crate) struct Placed<'a> {
 }
 
 impl Placed<'_> {
+    /// The label of the connector.
+    pub(crate) fn name(&self) -> &Name {
+        self.name
+    }
+
     /// The names of the status channels, the index too.
     pub(crate) fn channels(&self) -> impl Iterator<Item = &Name> {
         self.channels.iter().map(|(name, _)| *name)
