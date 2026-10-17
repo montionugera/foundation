@@ -428,6 +428,25 @@ fn within_makes_a_directory_of_a_name_longer_than_the_host_takes_as_free() {
     });
 }
 
+/// A hidden folder outside the folders that a program moves away tells no name that it
+/// holds.
+#[test]
+fn within_tells_no_name_of_a_moved_hidden_folder_outside_the_folders() {
+    let scratch = Scratch::new();
+    let base = scratch.0.canonicalize().unwrap();
+    for name in ["work", "out", "out/h", "out/h/s"] {
+        fs::create_dir(base.join(name)).unwrap();
+    }
+    let within = os::paths()
+        .within(&[base.join("work")], &[base.join("out/h")])
+        .unwrap();
+    fs::rename(base.join("out/h"), base.join("out/z")).unwrap();
+    for name in ["out/z/s/x", "out/z/t/x"] {
+        let path = base.join(name);
+        assert_eq!(within.read(&path, 1), Err(Error::Outside), "{name}");
+    }
+}
+
 /// A link that does not resolve, in a hidden folder that a program moves away, is under
 /// that folder by its place for each call, as a new name there is.
 #[test]

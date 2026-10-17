@@ -83,6 +83,8 @@ macro_rules! tests {
             within_hides_each_name_of_a_hidden_folder_on_the_way,
             within_refuses_each_name_outside_on_the_way,
             within_checks_no_hidden_folder_past_its_limits,
+            within_refuses_each_path_under_a_hidden_folder_outside_the_folders,
+            within_beside_another_refuses_each_name_of_its_folders,
             a_directory_through_a_file_fails,
             a_directory_of_the_root_is_ok,
         );
@@ -962,5 +964,47 @@ pub(crate) fn within_checks_no_hidden_folder_past_its_limits(host: &Host<'_>) {
         let hidden = [base.join(name)];
         let narrowed = within.within(&[base.join("work")], &hidden).map(|_| ());
         assert_eq!(narrowed, Ok(()), "{name}");
+    }
+}
+
+/// A hidden folder outside the folders tells nothing of what it holds, or whether it
+/// is there.
+pub(crate) fn within_refuses_each_path_under_a_hidden_folder_outside_the_folders(
+    host: &Host<'_>,
+) {
+    let (paths, dir) = (host.paths, host.dir);
+    for name in ["work", "out", "out/h", "out/h/s"] {
+        (host.make_dir)(&dir.join(name));
+    }
+    let base = paths.resolve(dir).unwrap();
+    let hidden = [base.join("out/h"), base.join("out/none")];
+    let within = paths.within(&[base.join("work")], &hidden).unwrap();
+    for name in [
+        "out/h",
+        "out/h/a",
+        "out/h/s/x",
+        "out/none/a",
+        "out/none/s/x",
+    ] {
+        let path = base.join(name);
+        assert_eq!(within.read(&path, 1), Err(Error::Outside), "{name}");
+    }
+}
+
+/// A hidden folder of the first handle tells nothing of the folders of the first that
+/// a handle beside them refuses.
+pub(crate) fn within_beside_another_refuses_each_name_of_its_folders(host: &Host<'_>) {
+    let (paths, dir) = (host.paths, host.dir);
+    for name in ["work", "work/x", "plans"] {
+        (host.make_dir)(&dir.join(name));
+    }
+    let base = paths.resolve(dir).unwrap();
+    let wide = paths
+        .within(&[base.join("work")], &[base.join("work/data")])
+        .unwrap();
+    let beside = wide.within(&[base.join("plans")], &[]).unwrap();
+    for name in ["work/x", "work/y", "work/x/a", "work/y/a", "work/data"] {
+        let path = base.join(name);
+        assert_eq!(beside.read(&path, 1), Err(Error::Outside), "{name}");
     }
 }

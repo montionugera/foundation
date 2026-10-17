@@ -62,13 +62,14 @@ impl Paths {
     /// directory that the host gives the key of a hidden folder that it removed hides
     /// what it holds. While nothing is at a hidden path, a call that makes a new name
     /// in the deepest directory on its way that is there, when that directory is under
-    /// a folder, fails with [`Error::Hidden`], also for a name that does not make that
-    /// path. A folder whose file a call cannot take holds nothing at that call. The
-    /// limits hold on each step of a path: each prefix of its components that resolves,
-    /// in order and without an end `/` or `/.`, must pass them, and the first that
-    /// fails gives its error. A prefix short of the whole path is checked against the
-    /// folders only when a `..` after it takes the path above it, or nothing is there,
-    /// and then also passes when it is a directory on the way to a folder. The name of
+    /// a folder of each limit, fails with [`Error::Hidden`], also for a name that does
+    /// not make that path. A folder whose file a call cannot take holds nothing at that
+    /// call. The limits hold on each step of a path: each prefix of its components that
+    /// resolves, in order and without an end `/` or `/.`, must pass them, and the first
+    /// that fails gives its error. A prefix short of the whole path is checked against
+    /// the folders only when a `..` after it takes the path above it, or nothing is
+    /// there, and then also passes when it is a directory on the way to a folder. A
+    /// step meets `hidden` only when it passes the folders of each limit. The name of
     /// the first prefix that does not resolve must pass them too, at its place with no
     /// key, as a new name there does. A relative path starts at the working directory:
     /// the steps of that directory come first, and each prefix after them is a prefix
@@ -340,13 +341,16 @@ impl Paths {
             })
         };
         let passes = |folder| held(folder) || way == Way::Short && above(folder);
+        let inside = || {
+            self.limits
+                .iter()
+                .all(|limit| limit.folders.iter().any(passes))
+        };
+        let down = way == Way::Down && own.is_some();
+        if !down && !inside() {
+            return Err(Error::Outside);
+        }
         for limit in self.limits.iter() {
-            // The folders come first: a hidden folder that is not there would tell
-            // whether a name outside them is there.
-            if (way != Way::Down || own.is_none()) && !limit.folders.iter().any(passes)
-            {
-                return Err(Error::Outside);
-            }
             for Hidden {
                 given,
                 resolved,
@@ -361,7 +365,9 @@ impl Paths {
                     }
                     Err(_) => false,
                 };
-                if moved || hidden {
+                // Only a step that the folders of each limit hold meets the hidden
+                // folders: elsewhere they would tell what is outside the folders.
+                if (moved || hidden) && (!down || inside()) {
                     return Err(Error::Hidden);
                 }
             }
@@ -926,7 +932,7 @@ mod tests {
         assert_eq!(reached(&narrow, "/out"), Err(Error::Outside));
         assert_eq!(reached(&narrow, "/work/data"), Err(Error::Hidden));
         let beside = wide.within(&["/plans".into()], &[]).unwrap();
-        assert_eq!(reached(&beside, "/work/data"), Err(Error::Hidden));
+        assert_eq!(reached(&beside, "/work/data"), Err(Error::Outside));
         let widened = narrow.within(&["/".into()], &[]).unwrap();
         assert_eq!(reached(&widened, "/out"), Err(Error::Outside));
         assert_eq!(reached(&wide, "/out"), Ok(()));

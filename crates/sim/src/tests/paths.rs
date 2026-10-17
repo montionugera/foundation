@@ -206,7 +206,7 @@ fn within_checks_the_working_directory_as_the_first_step_of_a_relative_path() {
         .unwrap();
     node.set_working_dir(Path::new("/out/data"));
     for path in ["a", "./a", "/out/data/a"].map(Path::new) {
-        assert_eq!(within.read(path, 1), Err(Error::Hidden), "{path:?}");
+        assert_eq!(within.read(path, 1), Err(Error::Outside), "{path:?}");
     }
 }
 
