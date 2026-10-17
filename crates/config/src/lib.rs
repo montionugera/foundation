@@ -16,6 +16,8 @@ mod subject;
 mod unfilled;
 mod walk;
 
+pub use self::connector::find as connector;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use ::connector::kind::Table;

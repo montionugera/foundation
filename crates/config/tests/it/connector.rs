@@ -312,3 +312,162 @@ fn refuses_a_config_that_nests_too_deep() {
         )]
     );
 }
+
+/// Each problem of `config::connector` of `name` in `text`, as [`problems`] gives it.
+fn refused(text: &str, name: &str) -> Vec<(&'static str, Option<u32>, String, String)> {
+    let diagnostics =
+        config::connector(&[read(text)], &self::name(name)).expect_err("problems");
+    diagnostics
+        .into_iter()
+        .map(|diagnostic| {
+            (
+                diagnostic.code.as_str(),
+                diagnostic.span.map(|span| span.start().offset),
+                diagnostic.message,
+                diagnostic.fix,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn finds_a_connector_of_kind_node_and_address_beside_a_fill_and_a_bad_block() {
+    let text = "connector \"influx\" {\n  kind = \"influx\"\n  node = \"cloud\"\n  \
+                address = \"http://influx:8086\"\n}\n\
+                channel \"edge.temp\" {\n  kind = \"data\"\n  unit = fill(\"unit\")\n}\n\
+                connector \"plc\" {\n  kind = \"modbus\"\n}\n";
+    let connector = config::connector(&[read(text)], &name("influx")).expect("found");
+    assert_eq!(connector.kind(), &name("influx"));
+    assert_eq!(connector.node(), &name("cloud"));
+    let expected = read("address = \"http://influx:8086\"\n");
+    assert_eq!(connector.config().document(), &expected);
+}
+
+#[test]
+fn finds_a_connector_in_the_second_document() {
+    let first = read("channel \"edge.time\" {\n  kind = \"index\"\n}\n");
+    let second = config_hcl::read(
+        Source(1),
+        "connector \"plant\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n",
+    )
+    .expect("the text is HCL");
+    let connector = config::connector(&[first, second], &name("plant")).expect("found");
+    assert_eq!(connector.kind(), &name("opcua"));
+    assert_eq!(connector.node(), &name("edge"));
+    assert_eq!(connector.config().document(), &Document::default());
+}
+
+#[test]
+fn refuses_a_name_that_no_connector_block_has_and_lists_the_names() {
+    let text = "connector \"b\" {\n  kind = \"influx\"\n  node = \"cloud\"\n}\n\
+                connector \"Plant\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n\
+                channel \"plant\" {\n  kind = \"index\"\n}\n";
+    assert_eq!(
+        refused(text, "plant"),
+        [(
+            "config.no-connector",
+            None,
+            "no `connector` block of the files has the name \"plant\"".into(),
+            "Use one of [\"Plant\", \"b\"]".into(),
+        )]
+    );
+}
+
+#[test]
+fn refuses_a_name_in_files_with_no_connector_block() {
+    let text = "channel \"edge.time\" {\n  kind = \"index\"\n}\n";
+    assert_eq!(
+        refused(text, "plant"),
+        [(
+            "config.no-connector",
+            None,
+            "no `connector` block of the files has the name \"plant\"".into(),
+            "Add a `connector` block with the name \"plant\"".into(),
+        )]
+    );
+}
+
+#[test]
+fn refuses_two_connector_blocks_of_one_name_in_any_case() {
+    let text = "connector \"plant\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n\
+                connector \"Plant\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n";
+    let diagnostics =
+        config::connector(&[read(text)], &name("plant")).expect_err("problems");
+    let offset = |at: &str| text.find(at).and_then(|at| u32::try_from(at).ok());
+    let [diagnostic] = diagnostics.as_slice() else {
+        panic!("one problem: {diagnostics:?}");
+    };
+    assert_eq!(diagnostic.code.as_str(), "config.duplicate-name");
+    assert_eq!(
+        diagnostic.message,
+        "the name \"Plant\" repeats the earlier `connector` name \"plant\""
+    );
+    assert_eq!(
+        diagnostic.fix,
+        "Give each `connector` block a name that differs by more than case"
+    );
+    assert_eq!(
+        diagnostic.span.map(|span| span.start().offset),
+        offset("\"Plant\"")
+    );
+    let notes: Vec<_> = diagnostic
+        .notes
+        .iter()
+        .map(|note| (Some(note.span.start().offset), note.text.as_str()))
+        .collect();
+    assert_eq!(notes, [(offset("\"plant\""), "the earlier name")]);
+}
+
+#[test]
+fn refuses_a_connector_with_no_kind_and_no_node() {
+    let text = "connector \"plant\" {\n  address = \"opc.tcp://plc:4840\"\n}\n";
+    let at = |message: &str, fix: &str| {
+        problem(
+            text,
+            "document.missing-attribute",
+            "connector",
+            message,
+            fix,
+        )
+    };
+    assert_eq!(
+        refused(text, "plant"),
+        [
+            at(
+                "the `connector` block has no `kind`",
+                "Add a `kind` attribute with the connector's kind",
+            ),
+            at(
+                "the `connector` block has no `node`",
+                "Add a `node` attribute with the name of the node that runs it, such \
+                 as \"edge\"",
+            ),
+        ]
+    );
+}
+
+#[test]
+fn refuses_a_kind_that_is_not_a_name() {
+    let text = "connector \"plant\" {\n  kind = 3\n  node = \"edge\"\n}\n";
+    assert_eq!(
+        refused(text, "plant"),
+        [problem(
+            text,
+            "document.bad-name",
+            "3",
+            "a name is a string or a reference, not an integer",
+            "Write a name such as \"site_a.node_1\"",
+        )]
+    );
+}
+
+#[test]
+fn refuses_files_with_a_private_key_in_another_block() {
+    let text = "connector \"plant\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n\
+                connector \"other\" {\n  kind = \"opcua\"\n  node = \"edge\"\n  \
+                key = \"-----BEGIN PRIVATE KEY-----\\nMC4CAQAwBQYDK2VwBCIEIA==\\n\"\n}\n";
+    let alarms = config::check(&[read(text)], &kinds()).expect_err("an alarm");
+    assert_eq!(alarms[0].code.as_str(), "config.private-key");
+    let found = config::connector(&[read(text)], &name("plant"));
+    assert_eq!(found.expect_err("an alarm"), alarms);
+}

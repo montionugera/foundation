@@ -10,9 +10,14 @@ use spec::definition;
 use std::collections::{BTreeMap, BTreeSet};
 use types::name::{self, Name};
 
-use crate::{Definition, Entry, Found, LONG_NAME, span};
+use crate::{Definition, Entry, Found, LONG_NAME, duplicate, private_key, span};
 
 const IMPLIED_CHANNEL: Code = Code::new("config.implied-channel");
+const NO_CONNECTOR: Code = Code::new("config.no-connector");
+
+const KIND_FIX: &str = "Add a `kind` attribute with the connector's kind";
+const NODE_FIX: &str =
+    "Add a `node` attribute with the name of the node that runs it, such as \"edge\"";
 
 /// The keys that `check` reads. The kind reads each other key and block.
 const KEYS: [&str; 2] = ["kind", "node"];
@@ -25,11 +30,8 @@ pub(crate) fn check(
     block: &Block,
     key: Option<&Name>,
 ) -> Option<Definition> {
-    let fix = "Add a `kind` attribute with the connector's kind";
-    let kind = found.required(block, "kind", read::name, fix.into());
-    let fix = "Add a `node` attribute with the name of the node that runs it, such as \
-               \"edge\"";
-    let node = found.required(block, "node", read::name, fix.into());
+    let kind = found.required(block, "kind", read::name, KIND_FIX.into());
+    let node = found.required(block, "node", read::name, NODE_FIX.into());
     let config = match Checked::new(config(block)) {
         Ok(config) => config,
         Err(error) => {
@@ -60,6 +62,90 @@ pub(crate) fn check(
     Some(Definition::Spec(definition::Definition::Connector(
         connector,
     )))
+}
+
+/// The `connector` block with the label `name` in `documents`: its kind, its node, and
+/// its body without `kind` and `node`. It runs no check of the kind and checks no
+/// other block.
+///
+/// # Errors
+///
+/// `config.private-key` at each private key in `documents`, as [`check`](crate::check)
+/// gives them; `config.no-connector` when no `connector` block has the label `name`,
+/// with the names of the connector blocks in the fix; `config.duplicate-name` at each
+/// later `connector` block whose label is `name` in any ASCII case; the problems of
+/// `kind` and `node` that `check` gives.
+pub fn find(documents: &[Document], name: &Name) -> Result<Connector, Vec<Diagnostic>> {
+    let alarms = private_key::alarms(documents);
+    if !alarms.is_empty() {
+        return Err(alarms);
+    }
+    let mut blocks: Vec<_> = documents
+        .iter()
+        .flat_map(|document| &document.blocks)
+        .collect();
+    // `duplicate::in_labels` keeps the first label in span order, as `check` does.
+    blocks.sort_by_key(|block| block.labels.first().and_then(|label| label.span));
+    let connector = definition::Kind::Connector;
+    let lower = name.as_str().to_ascii_lowercase();
+    let mut labels = duplicate::Labels::new();
+    let mut names = BTreeSet::new();
+    let mut found = None;
+    for block in blocks {
+        let [label] = block.labels.as_slice() else {
+            continue;
+        };
+        if &*block.keyword != connector.as_str() {
+            continue;
+        }
+        let Ok(key) = read::label(label) else {
+            continue;
+        };
+        if key.as_str().to_ascii_lowercase() == lower {
+            duplicate::add(&mut labels, &key, label, connector);
+            found = found.or(Some((key.clone(), block)));
+        }
+        names.insert(key);
+    }
+    let repeats = duplicate::in_labels(&labels);
+    if !repeats.is_empty() {
+        return Err(repeats);
+    }
+    let Some(block) = found.and_then(|(key, block)| (&key == name).then_some(block))
+    else {
+        let fix = if names.is_empty() {
+            format!("Add a `connector` block with the name {:?}", name.as_str())
+        } else {
+            let names: Vec<_> = names.iter().map(Name::as_str).collect();
+            format!("Use one of {names:?}")
+        };
+        let message = format!(
+            "no `connector` block of the files has the name {:?}",
+            name.as_str()
+        );
+        return Err(vec![Diagnostic::new(NO_CONNECTOR, None, message, fix)]);
+    };
+    let required = |key, fix: &str| {
+        let of = crate::of(block);
+        read::required(
+            &block.body,
+            &of,
+            block.keyword_span,
+            key,
+            read::name,
+            fix.into(),
+        )
+    };
+    let kind = required("kind", KIND_FIX);
+    let node = required("node", NODE_FIX);
+    let config = Checked::new(config(block)).map_err(|error| Diagnostic::from(&error));
+    match (kind, node, config) {
+        (Ok(kind), Ok(node), Ok(config)) => Ok(Connector::new(kind, node, config)),
+        (kind, node, config) => {
+            let problems = [kind.err(), node.err(), config.err()];
+            Err(problems.into_iter().flatten().collect())
+        }
+    }
 }
 
 /// The body of `block` without the keys that `check` reads.
