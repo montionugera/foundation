@@ -2105,39 +2105,67 @@ mod tests {
         assert_eq!(returned, ms(3_000), "returns once the home applied state 2");
     }
 
-    /// It states one wake at the deadline, so its timers wake only when due.
+    /// The removal at 500 ms closes the writer while its flush sleeps until 1 s. The
+    /// flush ends at that wake, which also polls a restart that the seed draws
+    /// before 1 s. Its timers wake only when due.
     #[test]
-    fn wakes_nothing_after_a_change_of_state_closed_the_writer_while_the_flush_slept() {
-        let polls = Arc::new(AtomicUsize::new(0));
-        let runs = Arc::new(AtomicUsize::new(0));
-        let (counted, started) = (Arc::clone(&polls), Arc::clone(&runs));
-        let run = move |ctx: Context<()>| {
-            let polls = Arc::clone(&counted);
-            let first = started.fetch_add(1, Ordering::Relaxed) == 0;
-            async move {
-                if first {
-                    ctx.clock().sleep(ms(100)).await;
-                    ctx.count("samples").set(1);
-                    ctx.clock().sleep(ms(800)).await;
-                    return Err(Error::Retry("busy".into()));
+    fn wakes_a_restart_once_more_after_a_change_of_state_closed_the_sleeping_flush() {
+        each_seed("restart before the wake of the flush", |seed| {
+            let polls = Arc::new(Mutex::new(Vec::new()));
+            let runs = Arc::new(Mutex::new(Vec::new()));
+            let (counted, started) = (Arc::clone(&polls), Arc::clone(&runs));
+            let run = move |ctx: Context<()>| {
+                let polls = Arc::clone(&counted);
+                let mut runs = started.lock().expect("no panic under the lock");
+                runs.push(ctx.clock().now());
+                let first = runs.len() == 1;
+                async move {
+                    if first {
+                        ctx.clock().sleep(ms(100)).await;
+                        ctx.count("samples").set(1);
+                        ctx.clock().sleep(ms(800)).await;
+                        return Err(Error::Retry("busy".into()));
+                    }
+                    ctx.count("samples").set(2);
+                    let mut sleep = pin!(ctx.clock().sleep(ms(3_000)));
+                    poll_fn(|cx| {
+                        let now = ctx.clock().now();
+                        polls.lock().expect("no panic under the lock").push(now);
+                        sleep.as_mut().poll(cx)
+                    })
+                    .await;
+                    Ok(())
                 }
-                ctx.count("samples").set(2);
-                let mut sleep = pin!(ctx.clock().sleep(ms(3_000)));
-                poll_fn(|cx| {
-                    polls.fetch_add(1, Ordering::Relaxed);
-                    sleep.as_mut().poll(cx)
-                })
-                .await;
-                Ok(())
+            };
+            timed_due(seed, run, |scene| async move {
+                scene.node.clock().sleep(ms(500)).await;
+                scene.remove("samples");
+            });
+            let runs = runs.lock().expect("no panic under the lock").clone();
+            let [first, second] = runs[..] else {
+                panic!("seed {seed}: one restart: {runs:?}");
+            };
+            let polls: Vec<_> = (polls.lock().expect("no panic under the lock").iter())
+                .map(|at| *at - first)
+                .collect();
+            let (start, woke) = (second - first, ms(1_000));
+            let end = Span::from_nanos(start.nanos() + ms(3_000).nanos());
+            if start < woke {
+                assert_eq!(
+                    polls,
+                    [start, woke, end],
+                    "seed {seed}: a poll at the start, at the wake of the flush, and \
+                     at the end"
+                );
+                return true;
             }
-        };
-        timed_due(0, run, |scene| async move {
-            scene.node.clock().sleep(ms(500)).await;
-            scene.remove("samples");
+            assert_eq!(
+                polls,
+                [start, end],
+                "seed {seed}: a poll to start the sleep, and one at its end"
+            );
+            false
         });
-        assert_eq!(runs.load(Ordering::Relaxed), 2, "one restart");
-        let polls = polls.load(Ordering::Relaxed);
-        assert_eq!(polls, 2, "a poll to start the sleep, and one at its end");
     }
 
     /// It states one wake at the deadline, so its timers wake only when due.
