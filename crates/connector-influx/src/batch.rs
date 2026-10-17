@@ -65,8 +65,8 @@ struct Bodies {
     ack: Option<Ack>,
     /// The bodies full before the open one, oldest first.
     closed: VecDeque<Taken>,
-    /// The counts of the lines since the end of the last frame.
-    pending: Counts,
+    /// The counts of the lines since the last close, also of a frame that goes on.
+    counts: Counts,
 }
 
 /// The counts of the lines of some frames.
@@ -209,13 +209,18 @@ impl Bodies {
         Vec::with_capacity(self.most.max(self.bytes.len()))
     }
 
-    /// Closes the open body, with its ack, gives it, and opens `next`.
+    /// Closes the open body, with its ack, gives it, and opens `next`. The counts of a
+    /// frame that goes on stay for the next body.
     fn close(&mut self, next: Vec<u8>) -> Taken {
         self.lines = 0;
         self.most = self.most.max(self.bytes.len());
+        let ack = self.ack.take();
+        if let Some(ack) = ack {
+            self.counts.sub(ack.counts);
+        }
         Taken {
             body: mem::replace(&mut self.bytes, next),
-            ack: self.ack.take(),
+            ack,
         }
     }
 
@@ -225,44 +230,51 @@ impl Bodies {
     /// that `write` leaves out adds its counts, but no line, to the body.
     fn line(&mut self, write: impl FnOnce(&mut Vec<u8>) -> Counts) {
         if self.at_bound() {
-            let next = self.room();
-            let taken = self.close(next);
-            self.closed.push_back(taken);
+            self.split(self.bytes.len(), self.bytes.capacity());
         }
         let (start, room) = (self.bytes.len(), self.bytes.capacity());
-        self.pending.add(write(&mut self.bytes));
-        if self.bytes.len() == start {
+        self.counts.add(write(&mut self.bytes));
+        let end = self.bytes.len();
+        if end == start {
             return;
         }
-        if self.bytes.len() > BYTES_MAX && start != 0 {
-            let line = self.bytes.len().saturating_sub(start);
-            // Room for the most that the next body holds before its own move, when
-            // its lines are no longer than this one.
-            let mut next = Vec::with_capacity(if line > BYTES_MAX {
-                line
-            } else {
-                BYTES_MAX.saturating_add(line)
-            });
-            next.extend(self.bytes.drain(start..));
-            // Else the room that the line grew stays with this body until its 204.
-            if self.bytes.capacity() > room {
-                self.bytes.shrink_to_fit();
-            }
-            let taken = self.close(next);
-            self.closed.push_back(taken);
+        if end > BYTES_MAX && start != 0 {
+            self.split(start, room);
         }
         self.lines = self.lines.saturating_add(1);
     }
 
-    /// Ends a frame at `position`: the open body acks it, with the counts of its lines.
+    /// Closes the open body with its bytes before `at`, and moves the rest, one line,
+    /// to the next body. `room` is the capacity of the open body before that line.
+    #[cold]
+    #[inline(never)]
+    fn split(&mut self, at: usize, room: usize) {
+        let line = self.bytes.len().saturating_sub(at);
+        let mut next = if line == 0 {
+            self.room()
+        } else if line > BYTES_MAX {
+            Vec::with_capacity(line)
+        } else {
+            // Room for the most that the next body holds before its own move, when
+            // its lines are no longer than this one.
+            Vec::with_capacity(BYTES_MAX.saturating_add(line))
+        };
+        next.extend(self.bytes.drain(at..));
+        // Else the room that the line grew stays with this body until its 204.
+        if self.bytes.capacity() > room {
+            self.bytes.shrink_to_fit();
+        }
+        let taken = self.close(next);
+        self.closed.push_back(taken);
+    }
+
+    /// Ends a frame at `position`: the open body acks it, with the counts of the lines
+    /// of each frame that ends in it.
     fn end(&mut self, position: Position) {
-        let pending = mem::take(&mut self.pending);
-        let ack = self.ack.get_or_insert(Ack {
+        self.ack = Some(Ack {
             position,
-            counts: Counts::default(),
+            counts: self.counts,
         });
-        ack.position = position;
-        ack.counts.add(pending);
     }
 }
 
@@ -271,6 +283,12 @@ impl Counts {
         self.samples = self.samples.saturating_add(other.samples);
         self.lost = self.lost.saturating_add(other.lost);
         self.oversized = self.oversized.saturating_add(other.oversized);
+    }
+
+    fn sub(&mut self, other: Self) {
+        self.samples = self.samples.saturating_sub(other.samples);
+        self.lost = self.lost.saturating_sub(other.lost);
+        self.oversized = self.oversized.saturating_sub(other.oversized);
     }
 }
 

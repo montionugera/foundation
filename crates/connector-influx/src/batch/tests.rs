@@ -29,7 +29,7 @@ fn writes_a_line_over_4_mib_alone_and_moves_a_line_past_4_mib() {
         [(BYTES_MAX + 1, false), (BYTES_MAX, false), (1, false)]
     );
     assert_eq!((bodies.bytes.len(), bodies.lines), (BYTES_MAX, 1));
-    assert_eq!(bodies.pending.samples, 5);
+    assert_eq!(bodies.counts.samples, 5);
 }
 
 /// A body that grew to take the line that moves out of it keeps no room past its lines.
