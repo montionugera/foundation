@@ -5,7 +5,7 @@ use std::mem;
 use std::ops::Range;
 use std::sync::Arc;
 
-use buffer::{Buffer, Mark, Stored};
+use buffer::{Buffer, Stored};
 pub use delivery::{Error, Position, named};
 use delivery::{Reader, Readers, Record, Start};
 use types::channel::Slot;
@@ -164,10 +164,6 @@ pub(crate) struct Set {
     /// not carry now: above each key that the index had, so that a key never names two
     /// readers. An index with no number starts at 0.
     first: hash::Map<Slot, u64>,
-    /// Where the next read from disk of each open complete reader that read from disk
-    /// goes on. A read from `Mark::at(seq)` gives each entry with no samples at `seq`
-    /// again, so more of them than one read takes would stop the reader for ever.
-    marks: hash::Map<complete::Key, Mark>,
     /// Each complete reader whose named open appended its record, or took over a
     /// session that waits, until the commit that holds the entry. It takes no frame
     /// until then: a restart before the commit would lose the frames that it got and
@@ -480,21 +476,9 @@ impl Set {
     /// Forgets the session `replaced` of the index at `place`, which a takeover
     /// closed.
     fn replaced(&mut self, place: usize, replaced: Option<delivery::Key>) {
-        match replaced {
-            Some(delivery::Key::Latest(latest)) => self.forget(place, latest),
-            Some(delivery::Key::Complete(session)) => self.unmark(place, session),
-            None => {}
+        if let Some(session) = replaced {
+            self.forget(place, session);
         }
-    }
-
-    /// Drops the mark of the closed complete reader `session` of the index at `place`.
-    fn unmark(&mut self, place: usize, session: delivery::complete::Key) {
-        let key = complete::Key {
-            slot: self.entries[place].slot,
-            session,
-        };
-        self.marks.remove(&key);
-        self.recording.remove(&key);
     }
 
     /// Records that the complete reader `session` on the index at `place` has each
@@ -559,13 +543,9 @@ impl Set {
             slot: entry.slot,
             session,
         };
-        let mark = self.marks.entry(key).or_insert(Mark::at(from));
-        if mark.seq != from {
-            *mark = Mark::at(from);
-        }
         Next::Disk(disk::Read {
             key,
-            from: *mark,
+            from,
             budget: BUDGET,
             reader: buffer.reader(),
         })
@@ -589,11 +569,10 @@ impl Set {
         mut decode: impl FnMut(&Stored) -> Result<Option<Frame>, block::Error>,
     ) -> Result<(), block::Error> {
         let disk::Entries { key, read } = entries;
-        let Some(mark) = self.marks.get_mut(&key) else {
-            return Ok(());
-        };
-        *mark = read.next;
         let entry = &mut self.entries[place];
+        if !entry.readers.on_disk(key.session) {
+            return Ok(());
+        }
         let mut given = false;
         for stored in &read.entries {
             let frame = match decode(stored) {
@@ -608,7 +587,7 @@ impl Set {
                 return Ok(());
             }
         }
-        entry.readers.reached(key.session, read.next.seq, durable);
+        entry.readers.reached(key.session, read.next, durable);
         if entry.readers.pending() && !mem::replace(&mut entry.listed, true) {
             self.listed.push(place);
         }
@@ -630,21 +609,23 @@ impl Set {
         now: Option<Stamp>,
     ) {
         self.entries[place].readers.close(session, now);
-        match session {
-            delivery::Key::Latest(latest) => self.forget(place, latest),
-            delivery::Key::Complete(session) => self.unmark(place, session),
-        }
+        self.forget(place, session);
     }
 
-    /// Drops the closed latest reader `session` of the index at `place` from the
-    /// readers to wake. Only a latest reader waits there between calls of
-    /// [`woken`](Self::woken).
-    fn forget(&mut self, place: usize, session: delivery::latest::Key) {
-        let key = Key {
-            slot: self.entries[place].slot,
-            session: session.into(),
-        };
-        self.keys.retain(|&woken| woken != key);
+    /// Drops the closed reader `session` of the index at `place`: a latest reader from
+    /// the readers to wake, where only a latest reader waits between calls of
+    /// [`woken`](Self::woken), and a complete reader's recording.
+    fn forget(&mut self, place: usize, session: delivery::Key) {
+        let slot = self.entries[place].slot;
+        match session {
+            delivery::Key::Latest(_) => {
+                let key = Key { slot, session };
+                self.keys.retain(|&woken| woken != key);
+            }
+            delivery::Key::Complete(session) => {
+                self.recording.remove(&complete::Key { slot, session });
+            }
+        }
     }
 
     /// Gives `frame`, of key set `set`, stored in the buffer at `seq`, to the readers
@@ -748,6 +729,7 @@ mod tests {
     use delivery::complete;
     use types::frame::key_set::{Group, Interner};
     use types::frame::{self, Draft, Form};
+    use types::log::Mark;
 
     use super::*;
     use crate::common::{create_pool, key};
@@ -1004,12 +986,11 @@ mod tests {
                 slot: Slot::new(0),
                 session,
             };
-            let delivery::Next::Disk { from, .. } =
+            let delivery::Next::Disk { .. } =
                 set.entries[0].readers.take(session.into())
             else {
                 panic!("the reader reads from disk");
             };
-            set.marks.insert(key, Mark::at(from));
             let bytes = frames.pool.alloc(8).expect("room").freeze();
             let entries = (0..durable)
                 .map(|first| Stored {
@@ -1072,7 +1053,9 @@ mod tests {
             assert!(
                 matches!(
                     set.entries[0].readers.take(session.into()),
-                    delivery::Next::Disk { from: 0, .. }
+                    delivery::Next::Disk {
+                        from: Mark { seq: 0, given: 0 }
+                    }
                 ),
                 "the reader reads again"
             );
@@ -1088,20 +1071,21 @@ mod tests {
             assert!(matches!(first, delivery::Next::Frame(_)), "{first:?}");
             let next = readers.take(session.into());
             assert!(
-                matches!(next, delivery::Next::Disk { from: 1, .. }),
+                matches!(
+                    next,
+                    delivery::Next::Disk {
+                        from: Mark { seq: 1, given: 0 }
+                    }
+                ),
                 "{next:?}"
             );
         }
 
-        /// No caller sees a kept mark: it shows only as memory.
         #[test]
-        fn drops_the_mark_at_a_close_and_a_takeover() {
-            let (mut set, _, read) = reading(1);
+        fn drops_the_read_of_a_closed_reader_with_no_decode() {
+            let (mut set, frames, read) = reading(3);
             set.close(0, read.key.session.into(), None);
-            assert_eq!(set.marks.len(), 0, "the close drops the mark");
-            let (mut set, _, read) = reading(1);
-            set.replaced(0, Some(read.key.session.into()));
-            assert_eq!(set.marks.len(), 0, "the takeover drops the mark");
+            assert_eq!(fill(&mut set, &frames, read, 3, Some(0)), Ok(()));
         }
 
         #[test]

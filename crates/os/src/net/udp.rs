@@ -795,7 +795,10 @@ mod tests {
         /// While the senders live, a dropped receiver drops its readable
         /// registration.
         #[test]
-        #[cfg_attr(not(target_os = "linux"), ignore = "needs /proc")]
+        #[cfg_attr(
+            not(target_os = "linux"),
+            ignore = "only Linux: the case is one of epoll"
+        )]
         fn a_dropped_receiver_drops_its_registration() {
             use std::os::unix::fs::MetadataExt;
 
@@ -850,7 +853,10 @@ mod tests {
         /// While the socket stays open in `Bound`, epoll keeps a registration whose
         /// descriptor closed before it.
         #[test]
-        #[cfg_attr(not(target_os = "linux"), ignore = "needs /proc")]
+        #[cfg_attr(
+            not(target_os = "linux"),
+            ignore = "only Linux: the case is one of epoll"
+        )]
         fn drop_removes_the_registration_from_epoll() {
             use std::os::unix::fs::MetadataExt;
 

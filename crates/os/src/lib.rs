@@ -35,6 +35,8 @@ mod entropy;
 mod files;
 #[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
 mod host;
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
+mod input;
 #[cfg(any(target_os = "linux", target_os = "macos"))] // #477
 #[expect(unsafe_code, reason = "a pool's memory is an OS mapping")]
 pub mod memory;
@@ -56,6 +58,8 @@ mod wall;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
 pub use files::Disk;
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
+pub use input::Input;
 
 /// The monotonic clock of this node, which counts time while the machine sleeps. Each
 /// call starts a new clock at `Monotonic(0)`. Clones read the same clock. Never
@@ -239,6 +243,21 @@ pub fn stored(
     Disk::stored(dir, threads, name)
 }
 
+/// The standard input of the process and the handle of I/O thread `name`, which reads
+/// it. The thread ends after the last clone of the input drops and its reads end, so
+/// a join waits while a read waits for input.
+///
+/// # Errors
+///
+/// [`Error::Thread`] when the I/O thread cannot start.
+#[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
+pub fn input(
+    threads: &env::threads::Threads,
+    name: &str,
+) -> Result<(Input, env::thread::Handle), Error> {
+    Input::start(threads, name).map_err(Error::Thread)
+}
+
 /// Holds SIGINT and SIGTERM: the first that comes does not end the process, and the
 /// future completes at it, also when it came before the first poll. A second one ends
 /// the process as it does with no hold, so a stop that hangs can still be ended. It
@@ -267,8 +286,8 @@ pub enum Error {
     Dir(std::io::Error),
     /// The OS could not give the available memory.
     Memory(std::io::Error),
-    /// A thread of `os` could not start: the I/O thread of [`files`] or the thread
-    /// of [`interrupt`].
+    /// A thread of `os` could not start: the I/O thread of [`files`] or [`input`], or
+    /// the thread of [`interrupt`].
     Thread(env::thread::Error),
     /// The OS refused a read of its wall clock.
     Wall(std::io::Error),

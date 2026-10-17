@@ -17,6 +17,7 @@ fn run(case: fn(&Host<'_>)) {
         dir: Path::new("/"),
         make_dir: &|path| node.make_dir(path),
         make_link: &|path, target| node.link_path(path, target),
+        move_path: &|from, to| node.move_path(from, to),
     });
 }
 
@@ -296,6 +297,236 @@ fn a_relative_directory_is_made_under_the_working_directory() {
     assert_eq!(paths.make_dir(Path::new("new")), Ok(()));
     let empty = Ok(Found::Directory(vec![]));
     assert_eq!(paths.read(Path::new("/w/new"), 0), empty);
+}
+
+/// The hidden folder keeps its key, so it hides what it holds by its new name too.
+#[test]
+fn a_moved_directory_keeps_its_key_and_what_it_holds() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w/data"));
+    paths.write(Path::new("/w/data/admin.key"), b"x").unwrap();
+    let within = paths.within(&["/w".into()], &["/w/data".into()]).unwrap();
+    node.move_path(Path::new("/w/data"), Path::new("/w/old"));
+    let entries = Ok(Found::Directory(vec![PathBuf::from("/w/old/admin.key")]));
+    assert_eq!(paths.read(Path::new("/w/old"), 64), entries);
+    let read = within.read(Path::new("/w/old/admin.key"), 1);
+    assert_eq!(read, Err(Error::Hidden));
+    assert_eq!(paths.read(Path::new("/w/data"), 0), Err(Error::NotFound));
+}
+
+/// A host keeps a process on its working directory when a program outside moves it,
+/// so a relative path resolves in the moved directory, the folder that `within` took.
+#[test]
+fn a_moved_working_directory_stays_the_working_directory() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w/work"));
+    node.set_working_dir(Path::new("/w/work"));
+    let within = paths.within(&["/w/work".into()], &[]).unwrap();
+    node.move_path(Path::new("/w"), Path::new("/old"));
+    node.make_dir(Path::new("/w/work"));
+    let resolved = paths.resolve(Path::new("."));
+    let written = within.write(Path::new("out.plan"), b"x");
+    assert_eq!(
+        (resolved, written),
+        (Ok(PathBuf::from("/old/work")), Err(Error::Replaced))
+    );
+}
+
+/// A host keeps a process on the directory that a link led to, so a move of the link,
+/// or of the directory that holds it, does not move the working directory.
+#[test]
+fn a_working_directory_through_a_moved_link_stays() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/target/sub"));
+    node.link_path(Path::new("/w/link"), Path::new("/target"));
+    node.set_working_dir(Path::new("/w/link/sub"));
+    node.move_path(Path::new("/w"), Path::new("/old"));
+    assert_eq!(
+        paths.resolve(Path::new(".")),
+        Ok(PathBuf::from("/target/sub"))
+    );
+    node.link_path(Path::new("/a/link"), Path::new("/target"));
+    node.set_working_dir(Path::new("/a/link/sub"));
+    node.move_path(Path::new("/a/link"), Path::new("/a/moved"));
+    assert_eq!(
+        paths.resolve(Path::new(".")),
+        Ok(PathBuf::from("/target/sub"))
+    );
+}
+
+/// The working directory moves with the target of a link on its way.
+#[test]
+fn a_working_directory_moves_with_the_target_of_a_link() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/target/sub"));
+    node.link_path(Path::new("/w/link"), Path::new("/target"));
+    node.set_working_dir(Path::new("/w/link/sub"));
+    node.move_path(Path::new("/target"), Path::new("/moved"));
+    assert_eq!(
+        paths.resolve(Path::new(".")),
+        Ok(PathBuf::from("/moved/sub"))
+    );
+}
+
+#[test]
+fn a_working_directory_at_a_moved_link_stays() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/target"));
+    node.make_dir(Path::new("/w"));
+    node.link_path(Path::new("/w/link"), Path::new("/target"));
+    node.set_working_dir(Path::new("/w/link"));
+    let within = paths.within(&["/target".into()], &[]).unwrap();
+    node.move_path(Path::new("/w/link"), Path::new("/w/moved"));
+    let resolved = paths.resolve(Path::new("."));
+    let written = within.write(Path::new("out.plan"), b"x");
+    assert_eq!((resolved, written), (Ok(PathBuf::from("/target")), Ok(())));
+}
+
+#[test]
+fn a_fault_on_a_relative_path_holds_through_a_move_elsewhere() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/target"));
+    node.make_dir(Path::new("/w"));
+    node.make_dir(Path::new("/x"));
+    node.link_path(Path::new("/w/link"), Path::new("/target"));
+    node.set_working_dir(Path::new("/w/link"));
+    node.fail_path(Path::new("out"), 5);
+    node.move_path(Path::new("/x"), Path::new("/y"));
+    assert_eq!(
+        paths.write(Path::new("out"), b"x"),
+        Err(Error::Io { code: 5 })
+    );
+}
+
+#[test]
+fn a_fault_on_a_relative_path_moves_with_the_working_directory_in_turn() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/target"));
+    node.set_working_dir(Path::new("/target"));
+    node.fail_path(Path::new("out"), 5);
+    node.fail_path(Path::new("/t2/out"), 13);
+    node.move_path(Path::new("/target"), Path::new("/t2"));
+    let written = [Path::new("/t2/out"), Path::new("out"), Path::new("out")]
+        .map(|path| paths.write(path, b"x"));
+    let failed = [
+        Err(Error::Io { code: 5 }),
+        Err(Error::Io { code: 13 }),
+        Ok(()),
+    ];
+    assert_eq!(written, failed);
+}
+
+#[test]
+fn a_move_elsewhere_keeps_a_fault_on_the_working_directory_as_spelled() {
+    let written = [false, true].map(|moved| {
+        let node = Sim::new(Config::default()).node(node::Config::default());
+        let paths = node.paths();
+        node.make_dir(Path::new("/target"));
+        node.make_dir(Path::new("/x"));
+        node.link_path(Path::new("/w/link"), Path::new("/target"));
+        node.set_working_dir(Path::new("/w/link"));
+        node.fail_path(Path::new("/w/link/out"), 5);
+        if moved {
+            node.move_path(Path::new("/x"), Path::new("/y"));
+        }
+        paths.write(Path::new("out"), b"x")
+    });
+    assert_eq!(
+        written,
+        [Err(Error::Io { code: 5 }); 2],
+        "no move, move of /x"
+    );
+}
+
+#[test]
+fn a_fault_follows_no_link_to_match_a_call() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/target"));
+    node.link_path(Path::new("/w/link"), Path::new("/target"));
+    node.set_working_dir(Path::new("/w/link"));
+    node.fail_path(Path::new("out"), 5);
+    node.fail_path(Path::new("/target/out"), 13);
+    let written = [Path::new("/target/out"), Path::new("out")]
+        .map(|path| paths.write(path, b"x"));
+    assert_eq!(
+        written,
+        [Err(Error::Io { code: 13 }), Err(Error::Io { code: 5 })]
+    );
+}
+
+#[test]
+fn a_moved_link_names_its_target_and_a_link_on_the_way_is_followed() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/target"));
+    node.link_path(Path::new("/w"), Path::new("/target"));
+    node.link_path(Path::new("/w/link"), Path::new("/target"));
+    node.move_path(Path::new("/w/link"), Path::new("/w/moved"));
+    let moved = paths.resolve(Path::new("/target/moved"));
+    assert_eq!(moved, Ok(PathBuf::from("/target")));
+    assert_eq!(paths.resolve(Path::new("/w")), Ok(PathBuf::from("/target")));
+}
+
+#[test]
+#[should_panic(expected = "nothing is at /none")]
+fn a_move_of_nothing_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.move_path(Path::new("/none"), Path::new("/to"));
+}
+
+#[test]
+#[should_panic(expected = "/b is there")]
+fn a_move_onto_a_directory_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/a"));
+    node.make_dir(Path::new("/b"));
+    node.move_path(Path::new("/a"), Path::new("/b"));
+}
+
+#[test]
+#[should_panic(expected = "/none is not a directory")]
+fn a_move_into_a_directory_that_is_not_there_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/a"));
+    node.move_path(Path::new("/a"), Path::new("/none/a"));
+}
+
+#[test]
+#[should_panic(expected = "/a/b is under /a")]
+fn a_move_under_itself_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/a"));
+    node.move_path(Path::new("/a"), Path::new("/a/b"));
+}
+
+#[test]
+#[should_panic(expected = "/ has no directory")]
+fn a_move_of_the_root_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.move_path(Path::new("/"), Path::new("/a"));
+}
+
+#[test]
+#[should_panic(expected = "a is relative")]
+fn a_relative_move_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/b"));
+    node.move_path(Path::new("/b"), Path::new("a"));
+}
+
+#[test]
+#[should_panic(expected = "/b/../a has a `..` segment")]
+fn a_move_with_two_dots_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.move_path(Path::new("/b/../a"), Path::new("/a"));
 }
 
 #[test]

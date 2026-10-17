@@ -40,8 +40,7 @@ use std::rc::Rc;
 
 use block::{Block, Heap, Pool};
 use buffer::{
-    Buffer, Config, Entry, Error, Layout, Limit, Mark, Parts, Rejected, Samples,
-    Stored, Tail,
+    Buffer, Config, Entry, Error, Layout, Limit, Parts, Rejected, Samples, Stored, Tail,
 };
 use env::files::{File, Mode};
 use env::tasks::Tasks;
@@ -49,6 +48,7 @@ use libfuzzer_sys::arbitrary::{Arbitrary, Result, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use types::channel::{self, Slot, Slots};
 use types::frame;
+use types::log::Mark;
 use types::sample::{Scalar, Type};
 use types::time::{Span, Stamp};
 

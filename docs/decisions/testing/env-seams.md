@@ -925,7 +925,9 @@
   at `within`. A folder of `folders` keeps the key of what was there at `within`, and
   holds a path only while the file at its resolved path has that key, so a folder that a
   program removes, renames away, replaces with a link, or makes again holds nothing
-  until a new `within`. A write replaces a file, so a folder that is a file holds
+  until a new `within`. A folder that a program removes and makes again holds again
+  when the host gives it the old key, as ext4 can. A write replaces a file, so a
+  folder that is a file holds
   nothing after a write to it, also through this handle. A folder of `hidden` that is
   not there gives no error, also when the limits of the handle refuse it, and one that
   is there gives its key, also when the limits refuse it. That key comes from the path
@@ -974,6 +976,66 @@
   https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224298302; the hard
   link text and a folder that is a file, 2026-10-16T21:03:02Z,
   https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224644233).
+  Amended (2026-10-17T05:16:48Z, #2919): `paths::Error` has two more variants, so a
+  caller can give a true cause. `Vacant`: nothing is at a hidden path of `within`, and
+  a write or `make_dir` makes a new name in the deepest directory on the way to it
+  that is there.
+  It is the refusal of a new name beside a missing hidden folder, which gave `Hidden`.
+  Supersedes "gives `Hidden`, also for a name that does not make that folder" of the
+  amendment of 2026-10-16T20:27:04Z
+  (https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224070884).
+  A hidden folder that is there, and one that a program moved away, still give
+  `Hidden`, which wins over `Vacant`. `Outside` and `Replaced` win over `Vacant`.
+  A read gives `NotFound` where a write gives `Vacant`.
+  `Replaced`: no folder of `within` holds the path, and a program moved or replaced a
+  folder of that call after it: the folder's path names another file, or nothing, or the
+  OS refuses its key. The path resolves under that folder, by the path that the folder
+  resolved to at that call or by the one that it resolves to now, or into the directory
+  that the folder was at that call. It replaces `Outside`, which such a path gave. So a
+  folder that is a file gives `Replaced` after a write to it, and so does a folder that
+  a program makes again in other case or replaces with a link, and a path into a folder
+  that a program moved away. The common cases pin each on both drivers, other than a
+  folder made again in other case, which an `os` test pins on macOS.
+  `sim::Node::move_path` renames a file, a link, or a directory of a host from outside
+  the node, with its key, so the common cases move a folder away on both drivers. When
+  the node's working directory resolves, it stays on the directory that it resolves to,
+  as on a host: it moves with it when that directory is `from` or under it, and a move
+  of a link on its way leaves it there. It keeps its path while that path resolves to
+  that directory, and else takes the path of the directory. A call is of the path of a
+  fault of `sim::Node::fail_path` when both give one path from the working directory at
+  that call, with `.` and `..` taken as text and no link followed, so a relative path
+  follows a later `set_working_dir`. Faults that a call is of fire in the order set, one
+  per call. Decided by `laptop.architect-2` (2026-10-17T05:16:48Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230063256; the order,
+  a read, `Replaced` by the path now, and `move_path`, 2026-10-17T06:33:57Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230731316; a path
+  into the moved folder and the moved working directory, 2026-10-17T07:17:06Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231111995; the
+  working directory that a move keeps on the directory that it resolves to,
+  2026-10-17T07:41:22Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231322001; the common
+  cases, 2026-10-17T08:26:44Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231727914; the
+  faults, 2026-10-17T08:58:04Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6232020329; a key that
+  the OS refuses, 2026-10-17T16:01:08Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236248693, which
+  withdraws item 1 of 6231727914 and item 1 of 6232020329; the path of a fault,
+  2026-10-17T16:12:13Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236404985, which
+  states what one path is, as `absolute` gave it for item 2 of 6232020329: `.` and `..`
+  taken as text, and no link followed; the path of the working directory on a move,
+  2026-10-17T16:16:39Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236468300, which
+  supersedes "`working` becomes its resolved path when it resolves" of 6231322001 and
+  "`move_entry` goes back to the rule of 6231322001, and 7c9caa232 goes" of item 2 of
+  6232020329). Lost: a second look in `ops` after a refusal, which puts a `Paths` with
+  no limits in the scope that limits `foundation mcp`, states the rule of `within`
+  again, and gives a false text when a file changes between the two looks. Lost too: the
+  error of the key of a folder that the OS refuses, which needs the codes of each host
+  in `env`; the next `within` gives it. Lost too: a working directory resolved at
+  `set_working_dir`, which cannot hold where nothing is there yet, so it needs a second
+  rule.
   Amended (2026-10-17T06:14:25Z, #2895): `make_dir` of a path that does not resolve
   checks its name in its resolved directory, with the key of the file at that name,
   before the driver makes it. So a loop or a link to nothing beside a hidden folder that
@@ -986,3 +1048,13 @@
   https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417; the end in
   `/` or `/.`, 2026-10-17T06:28:33Z,
   https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230686685).
+  Amended (2026-10-17T06:14:25Z, #3006): with `Vacant` of #2919, that loop or link to
+  nothing beside a hidden folder that is not there gives `Vacant`, not `Hidden`. One in
+  a hidden folder that a program moved away still gives `Hidden`. Supersedes "a loop or
+  a link to nothing beside a hidden folder that is not there ... gives `Hidden`" of the
+  amendment of 2026-10-17T06:14:25Z (#2895)
+  (https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417). Decided
+  by `laptop.architect-2` (2026-10-17T06:14:25Z,
+  https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417; the four
+  cases, 2026-10-17T07:41:22Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231322001).

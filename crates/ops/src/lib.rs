@@ -2,7 +2,7 @@
 //! runs each operation on the node that must run it.
 
 use std::ffi::OsString;
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 use std::path::Path;
 
 use env::paths::Paths;
@@ -21,6 +21,7 @@ mod operation;
 mod plan;
 mod remote;
 pub mod roots;
+mod scope;
 mod serve;
 mod start;
 mod status;
@@ -31,8 +32,11 @@ mod used;
 use error::Error;
 pub use error::Failure;
 pub use front_end::{FrontEnd, FrontEnds};
+pub use mcp::{Line, line};
 pub use node::{Config, Node};
 use operation::Parsed;
+use remote::Link;
+use scope::Scope;
 pub use serve::serve;
 pub use start::{Log, Start};
 
@@ -52,31 +56,38 @@ pub enum Run {
 ///
 /// An operation or help writes its output to `output`, and an error goes to `errors`
 /// with its code and fix. With `--json`, each is one line of JSON, and help is
-/// `{"help": "<text>"}`. `foundation mcp` answers each line of `input` with
-/// at most one line on `output`, flushed, until `input` ends. A line longer than 1 MiB
-/// gets an Invalid Request error. A closed `output` ends the run with no error,
-/// because its reader has left.
+/// `{"help": "<text>"}`.
+///
+/// Only `foundation mcp` calls `input`, once for each line, and answers each line with
+/// at most one line on `output`, flushed. A [`Line::Long`] gets an Invalid Request
+/// error. It ends with status 0 when `input` gives [`Line::End`], and with status 1
+/// and `ops.input` when `input` gives an error. It calls `input` again only after the
+/// answer of the line before. A closed `output` ends the run with no error, because
+/// its reader has left.
 ///
 /// `plan`, `apply`, and `status` run on the node of `--data`, else of
 /// `foundation-data`. Each reads the files it names through `paths`, calls `reach` with
 /// that data directory once, and calls what it gives with the body of one request. A
-/// [`Failure`] of either is the error of the command, with status 1. `start` and the
-/// other operations call neither.
+/// [`Failure`] of either is the error of the command, with status 1. `foundation mcp`
+/// runs each tool call of `plan`, `apply`, and `status` on the node of its own
+/// `--data`. It calls `reach` at its first such call, and again only at the call after
+/// a [`Failure`] of what `reach` gave. `start` and the other operations call neither.
 ///
-/// Blocks its thread at each read or write of a path, each read of `input`, and each
-/// write of `output` or `errors`, and makes none while a request to the node waits.
+/// The tools of `foundation mcp` read and write only under each `--files` folder,
+/// else under the working directory, and never in the data directory. With no
+/// `--files` and a working directory of `/` or the home folder, it serves nothing,
+/// makes nothing, and gives status 2. After it checks its folders, `foundation mcp`
+/// makes its data directory when it is not there.
 ///
-/// # Panics
-///
-/// When `paths` has a limit from [`env::paths::Paths::within`] and a path is outside
-/// it.
+/// Blocks its thread at each read or write of a path, and each write of `output` or
+/// `errors`, and makes none while a request to the node or a line of `input` waits.
 pub async fn cli<C>(
     args: impl IntoIterator<Item = OsString>,
-    input: impl BufRead,
+    input: impl AsyncFnMut() -> io::Result<Line>,
     mut output: impl Write,
     errors: impl Write,
     paths: &Paths,
-    reach: impl AsyncFnOnce(&Path) -> Result<C, Failure>,
+    mut reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
 ) -> Run
 where
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
@@ -86,44 +97,27 @@ where
     let json = json(&args);
     let done = match operation::parse(&args, json) {
         Ok(Parsed::Start(start)) => return Run::Start(start),
-        Ok(Parsed::Run(request)) => {
-            let response = request.run();
-            write(
-                &mut output,
-                &render(json, &response.json(), || response.text()),
-            )
+        Ok(Parsed::Run { request, data }) => {
+            let mut link = Link::new(async || reach(&data).await);
+            match request.run(&Scope::free(paths), &mut link).await {
+                Ok(response) => write(
+                    &mut output,
+                    &render(json, &response.json(), || response.text()),
+                ),
+                Err(error) => Err(Stop::Failed(error)),
+            }
         }
         Ok(Parsed::Help(text)) => write(
             &mut output,
             &render(json, &json!({ "help": text }), || text.clone()),
         ),
-        Ok(Parsed::Plan { files, out, data }) => {
-            match remote::plan(&files, out.as_deref(), paths, async || {
-                reach(&data).await
-            })
-            .await
-            {
-                Ok(planned) => {
-                    write(&mut output, &render(json, &planned, || planned.text()))
-                }
-                Err(error) => Err(Stop::Failed(error)),
+        Ok(Parsed::Mcp { data, files }) => match Scope::mcp(paths, &files, &data) {
+            Ok(scope) => {
+                let mut link = Link::new(async || reach(&data).await);
+                mcp::serve(input, &mut output, &scope, &mut link).await
             }
-        }
-        Ok(Parsed::Apply { plan, data }) => {
-            match remote::apply(&plan, paths, async || reach(&data).await).await {
-                Ok(applied) => {
-                    write(&mut output, &render(json, &applied, || applied.text()))
-                }
-                Err(error) => Err(Stop::Failed(error)),
-            }
-        }
-        Ok(Parsed::Status { data }) => {
-            match remote::status(async || reach(&data).await).await {
-                Ok(shown) => write(&mut output, &render(json, &shown, || shown.text())),
-                Err(error) => Err(Stop::Failed(error)),
-            }
-        }
-        Ok(Parsed::Mcp) => mcp::serve(input, &mut output),
+            Err(error) => Err(Stop::Failed(error)),
+        },
         Err(error) => Err(Stop::Failed(error)),
     };
     match done {
