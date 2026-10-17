@@ -982,21 +982,23 @@
   Amended (2026-10-17T06:28:34Z, #3005): on a handle of `within`, a path that does not
   resolve is checked by the deepest prefix of its components that resolves, with the key
   of the file at that prefix. Components drop an end `/` and `/.`. A relative path
-  starts at the working directory, as `.`. An error of that check wins, `Hidden` over
-  `Outside`; else the call gives the error of its resolve. So a hidden file at a path
-  that ends in `/` or `/.`, or with a name after it, gives `Hidden`, not `Io` 20, on
-  `read`, `write`, and `make_dir`; `<hidden>/none/x` gives `Hidden`, not `NotFound`; and
-  a path outside the folders that does not resolve gives `Outside`, not `NotFound`. The
-  arm of `make_dir` still checks its name in its resolved directory, and there each
-  error of the key of the name is no key, not the error of the call, since an error
-  before the check, such as `Io` 40 for a loop, tells what a hidden folder holds. The
-  walk runs only after a failed resolve. Supersedes "A path that does not resolve fails
-  with the error of its resolve" of the amendment of 2026-10-16T04:52:58Z, and "The cost
-  of the resolve error of a path: a tool can learn whether a directory outside the
-  folders is there" of the amendment of 2026-10-16T05:41:58Z. Lost: a driver call that
-  gives the deepest resolved prefix, one walk but a new seam that `os` and `sim` must
-  both keep, for a path that only fails; a lexical drop of the end `/` only, which
-  leaves `<hidden>/none/x`. Decided by `laptop.architect-2` (2026-10-17T06:28:34Z,
+  starts at the working directory, as `.` (2026-10-17T07:40:31Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231315185). An error
+  of that check wins, `Hidden` over `Outside`; else the call gives the error of its
+  resolve. So a hidden file at a path that ends in `/` or `/.`, or with a name after it,
+  gives `Hidden`, not `Io` 20, on `read`, `write`, and `make_dir`; `<hidden>/none/x`
+  gives `Hidden`, not `NotFound`; and a path outside the folders that does not resolve
+  gives `Outside`, not `NotFound`. The arm of `make_dir` still checks its name in its
+  resolved directory, and there each error of the key of the name is no key, not the
+  error of the call, since an error before the check, such as `Io` 40 for a loop, tells
+  what a hidden folder holds. The walk runs only after a failed resolve. Supersedes "A
+  path that does not resolve fails with the error of its resolve" of the amendment of
+  2026-10-16T04:52:58Z, and "The cost of the resolve error of a path: a tool can learn
+  whether a directory outside the folders is there" of the amendment of
+  2026-10-16T05:41:58Z. Lost: a driver call that gives the deepest resolved prefix, one
+  walk but a new seam that `os` and `sim` must both keep, for a path that only fails; a
+  lexical drop of the end `/` only, which leaves `<hidden>/none/x`. Decided by
+  `laptop.architect-2` (2026-10-17T06:28:34Z,
   https://github.com/synnaxlabs/foundation/issues/3005#issuecomment-6230686853). The
   rule of the key of the name in `make_dir` is the text that the architecture review of
   #3000 asked for
@@ -1004,36 +1006,54 @@
   Amended (2026-10-17T07:45:44Z, #3005): on a handle of `within`, the limits hold on
   each step of every path, not only of a path that does not resolve. Take each prefix of
   the components of the path, in order, without an end `/` or `/.`, the whole path last.
-  A relative path starts at the working directory. A prefix resolves as `resolve` does,
-  and the walk stops at the first prefix that does not resolve. Each prefix that
-  resolves is checked as the whole path is, and a prefix short of the whole path also
-  passes when it is a directory on the way to a folder, by key. The name of the first
-  prefix that does not resolve is checked at its place, in the resolved prefix before
-  it, with no key, as a new name there is. The first step that fails gives its error.
-  When each passes and the path does not resolve, the call gives the error of its
+  A relative path starts at the working directory: the walk takes it joined to the
+  resolved working directory, so the steps of that directory come first, and `../work/a`
+  with the working directory `/out` gives `Outside`, as `/out/../work/a` does. So when
+  the working directory is outside the folders and not on the way to one, each relative
+  path gives `Outside`, also one that leads into a folder; the fix of `ops.outside`
+  names that directory, so the user gives an absolute path. A prefix resolves as
+  `resolve` does, and the walk stops at the first prefix that does not resolve. Each
+  prefix that resolves is checked as the whole path is, and a prefix short of the whole
+  path also passes when it is a directory on the way to a folder, by key. The name of
+  the first prefix that does not resolve is checked at its place, in the resolved prefix
+  before it, with no key, as a new name there is. The first step that fails gives its
+  error. When each passes and the path does not resolve, the call gives the error of its
   resolve. So `workshop/../work/a.hcl` gives `Outside`, `work/data/../a.hcl` gives
   `Hidden`, and a loop or a link to nothing in a hidden folder that a program moves away
-  gives `Hidden` on `read` and `write` too. `make_dir` makes the directory when each
-  step passes, or when the walk gives only the resolve error of a path with a last name,
-  and then checks the path again. The cost is one resolve and one check for each name on
-  each call of such a handle. Only `foundation mcp` makes one. A resolve on `os` fails
-  past the longest path that the host takes, so a path of about 1600 names that each
-  resolve, the worst case, takes 0.56 s on `os` (Linux, Xeon Platinum 8488C, release); a
-  path stops at its first step that does not resolve. The cost that stays until #3018: a
-  symbolic link in the folders that names nothing passes by its own place and gives
-  `NotFound`, while one that names a file outside gives `Outside`, so a tool can learn
-  whether the target of such a link is there. Supersedes "the deepest prefix" rule and
-  the rule of the key of the name in `make_dir` of the amendment of
+  gives `Hidden` on `read` and `write` too. `make_dir` makes the directory only when
+  each step passes. When the path did not resolve, the call checks it again after it
+  makes it, and a path with no last name, such as one that ends in `..`, gets the error
+  of the driver. The check gives an error of a step apart from the result of the
+  resolve, so an error of a step, such as `Io` of a key, makes nothing. The cost is one
+  resolve and one check for each name on each call of such a handle. Only `foundation
+  mcp` makes one. The walk resolves each prefix, and a resolve on `os` walks each name
+  of its prefix, so the cost grows with the cube of the depth: a read of a file 1905
+  names deep in a folder takes 72 s on `os` (Linux, Xeon Platinum 8488C, release), where
+  the free handle takes 214 µs, and the call blocks its thread for that time. Only
+  `foundation mcp` makes such a call, in a process of its own, so no node waits on it. A
+  resolve on `os` fails past the longest path that the host takes, which bounds the
+  walk, and a path stops at its first step that does not resolve. #3018 removes this
+  cost. The cost that stays until #3018: a symbolic link in the folders that names
+  nothing passes by its own place and gives `NotFound`, while one that names a file
+  outside gives `Outside`, or `Hidden` for a file in a hidden folder, so a tool can
+  learn whether the target of such a link is there. Supersedes "the deepest prefix" rule
+  and the rule of the key of the name in `make_dir` of the amendment of
   2026-10-17T06:28:34Z; the check of a name in `make_dir` of the amendment of
-  2026-10-17T06:14:25Z is now a step of the walk for each call. For the name of the
-  first prefix that does not resolve, it supersedes "each other error is the error of
-  the call" of the amendment of 2026-10-16T17:13:18Z: that name takes no key, since an
-  error of its key, such as `Io` 40 for a loop, tells what a hidden folder holds. Lost:
-  the check only after a failed resolve, since `/etc/foo/../../<base>/work/a.hcl`
-  resolves only when `/etc/foo` is there, so it reads `a.hcl` or gives `Outside`, which
-  tells whether `/etc/foo` is there; `Hidden` over `Outside` across prefixes, since
+  2026-10-17T06:14:25Z is now a step of the walk for each call, with no key, which
+  supersedes its "with the key of the file at that name". For the name of the first
+  prefix that does not resolve, it supersedes "each other error is the error of the
+  call" of the amendment of 2026-10-16T17:13:18Z: that name takes no key, since an error
+  of its key, such as `Io` 40 for a loop, tells what a hidden folder holds. Lost: the
+  check only after a failed resolve, since `/etc/foo/../../<base>/work/a.hcl` resolves
+  only when `/etc/foo` is there, so it reads `a.hcl` or gives `Outside`, which tells
+  whether `/etc/foo` is there; `Hidden` over `Outside` across prefixes, since
   `x/../work/data/y` then gives `Hidden` when the outside `x` is there and `Outside`
   when it is not. Decided by `laptop.architect-2` (2026-10-17T07:45:44Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231358043; the check
   of the name at its place and the arm of `make_dir`, 2026-10-17T07:54:32Z,
-  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231433128).
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231433128; the
+  working directory as the first steps of a relative path, and the error of a step apart
+  from the resolve, 2026-10-17T08:13:25Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231604694; the cost
+  and its deferral to #3018, 2026-10-17T08:19:29Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231662179).
