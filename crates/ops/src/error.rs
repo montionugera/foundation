@@ -47,6 +47,7 @@ const BROWSE: Code = Code::new("ops.browse");
 const BROWSE_NODE: Code = Code::new("ops.browse-node");
 const BAD_START: Code = Code::new("ops.bad-start");
 const BAD_PATTERN: Code = Code::new("ops.bad-pattern");
+const MORE_PROBLEMS: Code = Code::new("ops.more-problems");
 /// The fix of [`ARGUMENT`].
 const HELP: &str =
     "Match the arguments to `foundation --help` or `foundation <operation> --help`";
@@ -567,6 +568,17 @@ pub(crate) struct Problem {
 }
 
 impl Problem {
+    /// `ops.more-problems`: `count` more problems do not fit in one reply.
+    pub(crate) fn more(count: usize) -> Self {
+        Self {
+            code: MORE_PROBLEMS.as_str().to_owned(),
+            message: format!("{count} more problems do not fit in one reply"),
+            fix: "Fix the problems above, then run it again".to_owned(),
+            place: None,
+            notes: Vec::new(),
+        }
+    }
+
     /// The problem of `diagnostic`, whose spans are in the files of `sources`.
     pub(crate) fn of(diagnostic: Diagnostic, sources: &Sources) -> Self {
         Self {

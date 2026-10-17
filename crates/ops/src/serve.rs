@@ -33,8 +33,10 @@ mod tests;
 /// writing a reply at that bound. No `body` makes it panic. The reply holds
 /// `ops.bad-request` for a body that is no request of `plan`, `apply`, `status`, or
 /// `browse`, `ops.denied` for an action that no access policy gives `subject` and for
-/// a request that names no definition, and `ops.large-reply` in place of a reply over
-/// the bound, or `ops.large-browse` in place of a reply of `browse` over it.
+/// a request that names no definition. An error reply over the bound keeps the
+/// problems that fit, then `ops.more-problems` for the rest. `ops.large-reply` takes
+/// the place of an output over the bound and of an error whose first problem does not
+/// fit, and `ops.large-browse` takes it for `browse`.
 /// `apply` also needs `apply` on the channel at each edge of each channel that the plan
 /// adds or changes, and `admin` on the key of each definition other than a channel that
 /// the plan adds, changes, or removes. It gives a home only to an index on which
@@ -94,8 +96,7 @@ impl Body {
     ///
     /// `Large`, with no byte added, when the body would pass the bound.
     fn add(&mut self, bytes: &[u8]) -> Result<(), Large> {
-        let len = self.0.len().saturating_add(bytes.len());
-        if u64::try_from(len).is_ok_and(|len| len <= BODY_BYTES_MAX) {
+        if fits(self.0.len().saturating_add(bytes.len())) {
             self.0.extend_from_slice(bytes);
             Ok(())
         } else {
@@ -248,19 +249,76 @@ enum Answer<'a, T> {
     },
 }
 
-/// The reply that holds `error`, or `large` when that reply passes the bound.
+/// Whether `len` bytes are within the bound.
+fn fits(len: usize) -> bool {
+    u64::try_from(len).is_ok_and(|len| len <= BODY_BYTES_MAX)
+}
+
+/// The reply that holds `error`. When that reply passes the bound, it holds the first
+/// problems of `error` that fit, then `ops.more-problems` for the rest, with the status
+/// of `error`, or it is the reply of `large` when not even the first problem fits.
 fn failed(error: &Error, large: &Error) -> Body {
-    let line = |error: &Error| {
-        Body::line(&Answer::<()>::Failed {
-            errors: error.problems(),
-            status: error.status(),
-        })
+    let line = |errors: Cow<'_, [Problem]>, status: u8| {
+        Body::line(&Answer::<()>::Failed { errors, status })
     };
-    line(error).unwrap_or_else(|Large| {
-        line(large).unwrap_or_else(|Large| {
-            panic!("invariant: the reply of an error of the bound fits")
-        })
+    let problems = error.problems();
+    let status = error.status();
+    line(Cow::Borrowed(&problems), status).unwrap_or_else(|Large| {
+        let kept = fitting(&problems, status);
+        if kept == 0 {
+            return line(large.problems(), large.status()).unwrap_or_else(|Large| {
+                panic!("invariant: the reply of an error of the bound fits")
+            });
+        }
+        let mut errors = problems[..kept].to_vec();
+        errors.push(Problem::more(problems.len() - kept));
+        line(Cow::Owned(errors), status)
+            .unwrap_or_else(|Large| panic!("invariant: the problems that fit fit"))
     })
+}
+
+/// How many of the first `problems` fit in one reply of `status`, with
+/// `ops.more-problems` for the rest. It encodes each problem at most once.
+fn fitting(problems: &[Problem], status: u8) -> usize {
+    let empty = Answer::<()>::Failed {
+        errors: Cow::Borrowed(&[]),
+        status,
+    };
+    // Each problem that is kept adds one `,`, and the line ends in `\n`.
+    let mut len = encoded(&empty).saturating_add(1);
+    let mut kept = 0;
+    for (index, problem) in problems.iter().enumerate() {
+        len = len.saturating_add(encoded(problem)).saturating_add(1);
+        let more = Problem::more(problems.len() - index - 1);
+        if !fits(len.saturating_add(encoded(&more))) {
+            break;
+        }
+        kept = index + 1;
+    }
+    kept
+}
+
+/// The length of `value` as JSON.
+fn encoded(value: &impl Serialize) -> usize {
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, value).unwrap_or_else(|error| {
+        panic!("invariant: a body is plain JSON data: {error}")
+    });
+    count.0
+}
+
+/// A writer that counts the bytes written to it.
+struct Count(usize);
+
+impl Write for Count {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// The body of a request of `plan` of `files`, for [`serve`].

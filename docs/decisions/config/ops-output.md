@@ -171,9 +171,15 @@
   the change in smaller steps`, since `hub::serve::Reply::send` panics on such a body
   (`laptop.architect`, 2026-10-08T11:24:14Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6058791545). The
-  bound holds for the reply of an error too. A reply of `browse` over the bound, its
-  output or its error, is `ops.large-browse` in its place (below). `serve` stops writing
-  a reply at the bound. The places of the problems of one file share its path
+  bound holds for the reply of an error too. An error reply over the bound keeps the
+  first problems that fit, in order, then `ops.more-problems`, ``<n> more problems do
+  not fit in one reply``, fix `Fix the problems above, then run it again`, with no place
+  and no notes, and the status of the error. When not even the first problem fits with
+  it, the reply is `ops.large-reply`, or `ops.large-browse` for `browse` (below)
+  (`laptop.architect-2`, 2026-10-17T23:33:12Z,
+  https://github.com/synnaxlabs/foundation/pull/3079#issuecomment-6243126104).
+  `serve` stops writing a reply at the bound. The places of the problems of one file
+  share its path
   (`laptop.architect`, 2026-10-12T20:11:00Z,
   https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6131805444;
   `laptop.architect-2`, 2026-10-12T20:14:30Z,
@@ -416,7 +422,8 @@
   `<text>` is not a path: <cause>`` and ``the match `<text>` is not a pattern:
   <cause>``, with the cause of `connector::browse::Malformed`, and the fixes of
   `codes.golden`. `ops.large-browse`, status 1, takes the place of `ops.large-reply` for
-  a reply of a browse, its output or its error: ``the reply of the browse has more than
+  a reply of a browse, its output, or an error whose first problem does not fit:
+  ``the reply of the browse has more than
   <n> bytes, the most that a reply holds``, fix ``Narrow the start or the match, or
   browse without `values` ``, since a smaller plan does not make it fit. Each problem of
   an error of `Supervisor::browse` has status 1 and starts with ``the browse of the

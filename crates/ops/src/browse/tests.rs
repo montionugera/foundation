@@ -8,7 +8,7 @@ use types::sample;
 use wire::hub::client::BODY_BYTES_MAX;
 
 use super::Output;
-use crate::common::{self, EVE, create_browsing_node, name, solo};
+use crate::common::{self, EVE, create_browsing_node, more_problems, name, solo};
 use crate::error::{Error, Sources};
 use crate::serve::serve;
 use crate::{Failure, Node, Run};
@@ -277,6 +277,26 @@ fn a_bad_start_or_a_match_with_too_many_names_or_stars_gives_its_cause() {
 }
 
 /// The broken kind gives a page over the most, which the walk refuses.
+/// A browse and a plan of a file of 70001 blocks of one name, whose 70000 problems do
+/// not fit in one reply, give the problems that fit, then `ops.more-problems`.
+#[test]
+fn a_file_of_more_problems_than_a_reply_holds_gives_those_that_fit() {
+    solo(|fixture, mesh| async move {
+        let node = create_browsing_node(&fixture, mesh);
+        let text = site("tree", "edge", "").repeat(70_001);
+        let browse = body("plant", "site.hcl", &text, &json!({}));
+        let reply = serve(&node, &name("@admin"), &browse).await;
+        let browsed = more_problems(&reply, "config.duplicate-name", 70_000, 2);
+        let plan =
+            json!({ "plan": { "files": [{ "path": "site.hcl", "text": text }] } });
+        let reply = serve(&node, &name("@admin"), format!("{plan}\n").as_bytes()).await;
+        assert_eq!(
+            browsed,
+            more_problems(&reply, "config.duplicate-name", 70_000, 2)
+        );
+    });
+}
+
 /// A start whose error passes the bound of a reply, in a request inside the bound,
 /// gives the fix of a browse, not the fix of a plan.
 #[test]

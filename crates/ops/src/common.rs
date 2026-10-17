@@ -14,10 +14,12 @@ use env::paths::Paths;
 use env::tasks::Tasks;
 use hub::Hub;
 use mesh::Mesh;
+use serde_json::{Value, json};
 use sim::Sim;
 use spec::definition::Definition;
 use types::channel::Key;
 use types::name::Name;
+use wire::hub::client::BODY_BYTES_MAX;
 
 use crate::error::{Error, Sources};
 use crate::front_end::{File, FrontEnd, FrontEnds};
@@ -222,6 +224,42 @@ pub(crate) fn plan(
     plan::Documents::read(files, front_ends)?
         .changes(base, applied, members, kinds)
         .map_err(|diagnostics| Error::config(diagnostics, &Sources::of(files)))
+}
+
+/// Asserts that `reply` is the error reply of `status` to a request whose `count`
+/// problems do not fit in one reply: at most the bound, the first problems, each of
+/// `code`, then `ops.more-problems` with the count of the rest. Gives it as JSON.
+pub(crate) fn more_problems(
+    reply: &[u8],
+    code: &str,
+    count: usize,
+    status: u8,
+) -> Value {
+    assert!(
+        u64::try_from(reply.len()).is_ok_and(|len| len <= BODY_BYTES_MAX),
+        "{}",
+        reply.len()
+    );
+    let reply: Value = serde_json::from_slice(reply).expect("JSON");
+    let errors = reply["errors"].as_array().expect("errors");
+    let (more, kept) = errors.split_last().expect("a problem");
+    assert!(!kept.is_empty());
+    for problem in kept {
+        assert_eq!(problem["code"], code);
+    }
+    let message = format!(
+        "{} more problems do not fit in one reply",
+        count - kept.len()
+    );
+    let expected = json!({
+        "code": "ops.more-problems",
+        "message": message,
+        "fix": "Fix the problems above, then run it again",
+        "notes": [],
+    });
+    assert_eq!(*more, expected);
+    assert_eq!(reply["status"], status);
+    reply
 }
 
 pub(crate) fn name(text: &str) -> Name {
