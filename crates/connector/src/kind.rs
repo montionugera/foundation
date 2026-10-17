@@ -433,6 +433,11 @@ impl Table {
         self
     }
 
+    /// Gives the name of each kind, in the order of the names.
+    pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.kinds.keys().copied()
+    }
+
     /// Parses and checks one connector's config.
     ///
     /// # Errors
@@ -946,6 +951,13 @@ mod tests {
         let table = table().with("other", Counter);
         let expected = unknown("modbus", "[\"counter\", \"other\"]");
         assert_eq!(table.check("modbus", None, &config(1)), Err(vec![expected]));
+    }
+
+    #[test]
+    fn gives_the_name_of_each_kind_in_the_order_of_the_names() {
+        let table = Table::new().with("other", Counter).with("counter", Counter);
+        assert_eq!(table.names().collect::<Vec<_>>(), ["counter", "other"]);
+        assert_eq!(Table::new().names().count(), 0);
     }
 
     /// The span from `start` to `end` on line 0 of source 2.
