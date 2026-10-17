@@ -53,3 +53,13 @@
   entry of: the most parts in use of an index, plus one. Decided by
   `laptop.architect` (2026-10-17T00:37:51Z:
   https://github.com/synnaxlabs/foundation/issues/2833#issuecomment-6227434486).
+  The buffer gives each nonzero tag a meaning: it marks a state entry of at most
+  `Layout::ENTRY_MAX_MIN` bytes (`Limit::Tagged`). Beside the logs, the buffer keeps
+  a heap copy of the header and the bytes of the newest durable entry of each nonzero
+  tag on each path of an index, so `Buffer::newest` reads no file. The sync makes the
+  copy from the parts of the record and reuses the bytes of the copy that it
+  replaces; the open makes it with one read for each copy after the walk. A copy
+  costs at most 51 B, plus `Layout::ENTRY_MAX_MIN`, plus one map entry. This
+  supersedes "The buffer gives only tag 0 a meaning" and the offsets beside the logs
+  above. Decided by `laptop.architect` (#406, 2026-10-14T01:56:45Z,
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6159164617).
