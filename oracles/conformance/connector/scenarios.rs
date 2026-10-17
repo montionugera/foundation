@@ -178,6 +178,15 @@ macro_rules! suite {
         fn fails_past_the_ring() {
             $crate::scenarios::fails_past_the_ring(&$suite);
         }
+
+        #[test]
+        #[should_panic(
+            expected = "the scenario ran past 90s of plant time, where the ring of the \
+                        rig's home can lose a status (#160)"
+        )]
+        fn fails_50_ms_past_the_ring() {
+            $crate::scenarios::fails_50_ms_past_the_ring(&$suite);
+        }
     };
 }
 
@@ -446,7 +455,7 @@ where
     let mut ran = Span::ZERO;
     while !done.cancelled() {
         assert!(
-            ran <= RING,
+            ran < RING,
             "the scenario ran past {RING} of plant time, where the ring of the rig's \
              home can lose a status (#160)"
         );
@@ -699,6 +708,14 @@ pub(crate) fn stops_at_a_write_channel_that_no_spec_defines(suite: &'static Suit
 pub(crate) fn fails_past_the_ring(suite: &'static Suite) {
     run(suite, direct, |scene| async move {
         let past = Span::from_nanos(RING.nanos() + Span::SECOND.nanos());
+        scene.node.clock().sleep(past).await;
+    });
+}
+
+/// A scenario that runs 50 ms past [`RING`] fails.
+pub(crate) fn fails_50_ms_past_the_ring(suite: &'static Suite) {
+    run(suite, direct, |scene| async move {
+        let past = Span::from_nanos(RING.nanos() + 50_000_000);
         scene.node.clock().sleep(past).await;
     });
 }
