@@ -1734,7 +1734,7 @@ impl connector::kind::Kind for Flaky {
             let Some(first) = first else {
                 return Ok(());
             };
-            let steps: [&dyn Fn(); 6] = [
+            let steps: [&dyn Fn(); 9] = [
                 &|| ctx.clear_error(),
                 &|| {
                     ctx.error(&"a b");
@@ -1750,6 +1750,12 @@ impl connector::kind::Kind for Flaky {
                     ctx.note(&"n");
                 },
                 &|| ctx.error(&"d"),
+                &|| {
+                    ctx.error(&"e");
+                    ctx.note(&"m");
+                },
+                &|| ctx.error(&"f"),
+                &|| ctx.note(&"o"),
             ];
             for step in steps {
                 step();
@@ -1762,8 +1768,13 @@ impl connector::kind::Kind for Flaky {
 
 /// The lines of `connector::status` of the connector `plant.a` of [`Flaky`] that
 /// ends its first run with `first`, over 60 s, at `level` and above, each with no
-/// stamp and no mesh time.
-fn status_lines(level: tracing::Level, first: fn() -> KindError) -> Vec<String> {
+/// stamp and no mesh time. When `removed`, the hub removes the status channels at
+/// 11 s, between the shows of `d` and `e`.
+fn status_lines(
+    level: tracing::Level,
+    first: fn() -> KindError,
+    removed: bool,
+) -> Vec<String> {
     let (mut sim, host) = host(1);
     let lines = Lines::default();
     let log = opened_at(&host, false, level, Box::new(lines.clone()));
@@ -1789,7 +1800,11 @@ fn status_lines(level: tracing::Level, first: fn() -> KindError) -> Vec<String> 
         let mut rig = connector::testing::Rig::open(env, node.net(), kinds).await;
         let name = "plant.a".parse().expect("a name");
         let run = rig.supervise("flaky", name, Document::default()).await;
-        node.clock().sleep(Span::from_nanos(60_000_000_000)).await;
+        node.clock().sleep(Span::from_nanos(11_000_000_000)).await;
+        if removed {
+            rig.hub().set_definitions(std::iter::empty());
+        }
+        node.clock().sleep(Span::from_nanos(49_000_000_000)).await;
         drop(run.stop().await);
     });
     drop(start.expect("a shard with no core starts"));
@@ -1810,9 +1825,10 @@ fn status_lines(level: tracing::Level, first: fn() -> KindError) -> Vec<String> 
 const AT: &str = "connector=plant.a kind=flaky";
 
 /// The lines of [`status_lines`] from the first start to the end of the first run:
-/// one for each value that the status channel gets, so none for the clear of no
-/// error, for `b`, or for a value written again.
-fn first_run() -> [String; 6] {
+/// one for each value that the writer sends, so none for the clear of no error, for
+/// `b`, for a value written again, or for `f` at the write of `o`, and two for the one
+/// write of `e` and `m`.
+fn first_run() -> [String; 10] {
     [
         format!("INFO running {AT} restarts=0"),
         format!(r#"WARN error {AT} error="a b""#),
@@ -1820,6 +1836,10 @@ fn first_run() -> [String; 6] {
         format!("INFO cleared {AT}"),
         format!("INFO note {AT} note=n"),
         format!("WARN error {AT} error=d"),
+        format!("WARN error {AT} error=e"),
+        format!("INFO note {AT} note=m"),
+        format!("WARN error {AT} error=f"),
+        format!("INFO note {AT} note=o"),
     ]
 }
 
@@ -1835,7 +1855,11 @@ fn restart() -> [String; 4] {
 
 #[test]
 fn a_connector_logs_each_change_of_its_status_with_its_name_and_kind() {
-    let lines = status_lines(tracing::Level::INFO, || KindError::Retry("down".into()));
+    let lines = status_lines(
+        tracing::Level::INFO,
+        || KindError::Retry("down".into()),
+        false,
+    );
     let mut logged = first_run().to_vec();
     logged.push(format!("WARN ended {AT} class=retry error=down"));
     logged.extend(restart());
@@ -1843,9 +1867,25 @@ fn a_connector_logs_each_change_of_its_status_with_its_name_and_kind() {
 }
 
 #[test]
+fn a_status_writer_logs_the_values_of_the_frame_that_the_hub_refuses_as_removed() {
+    let lines = status_lines(
+        tracing::Level::INFO,
+        || KindError::Retry("down".into()),
+        true,
+    );
+    let mut logged = first_run()[..8].to_vec();
+    logged.push(format!("WARN ended {AT} class=retry error=down"));
+    logged.extend(restart());
+    assert_eq!(lines, logged);
+}
+
+#[test]
 fn a_connector_logs_a_device_error_as_a_warning() {
-    let lines =
-        status_lines(tracing::Level::INFO, || KindError::Device("jammed".into()));
+    let lines = status_lines(
+        tracing::Level::INFO,
+        || KindError::Device("jammed".into()),
+        false,
+    );
     let mut logged = first_run().to_vec();
     logged.push(format!("WARN ended {AT} class=device error=jammed"));
     logged.extend(restart());
@@ -1854,12 +1894,7 @@ fn a_connector_logs_a_device_error_as_a_warning() {
 
 #[test]
 fn a_connector_logs_a_config_error_as_an_error_and_stops() {
-    let lines = status_lines(tracing::Level::INFO, || {
-        let code = document::diagnostic::Code::new("test.refused");
-        let diagnostic =
-            Diagnostic::new(code, None, "no n".to_owned(), "set n".to_owned());
-        KindError::Config(vec![diagnostic])
-    });
+    let lines = status_lines(tracing::Level::INFO, refused, false);
     let mut logged = first_run().to_vec();
     logged.push(format!(
         r#"ERROR ended {AT} class=config error="no n. set n""#
@@ -1869,12 +1904,36 @@ fn a_connector_logs_a_config_error_as_an_error_and_stops() {
 }
 
 #[test]
+fn a_connector_gives_its_name_and_kind_to_an_error_line() {
+    let lines = status_lines(tracing::Level::ERROR, refused, false);
+    assert_eq!(
+        lines,
+        [format!(
+            r#"ERROR ended {AT} class=config error="no n. set n""#
+        )]
+    );
+}
+
+/// A config error of [`Flaky`].
+fn refused() -> KindError {
+    let code = document::diagnostic::Code::new("test.refused");
+    let diagnostic = Diagnostic::new(code, None, "no n".to_owned(), "set n".to_owned());
+    KindError::Config(vec![diagnostic])
+}
+
+#[test]
 fn a_connector_gives_its_name_and_kind_to_each_status_line_at_each_level() {
-    let lines = status_lines(tracing::Level::WARN, || KindError::Retry("down".into()));
+    let lines = status_lines(
+        tracing::Level::WARN,
+        || KindError::Retry("down".into()),
+        false,
+    );
     let logged = [
         format!(r#"WARN error {AT} error="a b""#),
         format!("WARN error {AT} error=c"),
         format!("WARN error {AT} error=d"),
+        format!("WARN error {AT} error=e"),
+        format!("WARN error {AT} error=f"),
         format!("WARN ended {AT} class=retry error=down"),
     ];
     assert_eq!(lines, logged);
