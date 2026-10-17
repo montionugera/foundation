@@ -74,13 +74,14 @@ pub(crate) fn check(
 ///
 /// `config.private-key` at each private key in `documents`, and then no other problem.
 /// Else the problems that [`check`](crate::check) gives at each `connector` block whose
-/// label is `name` in any ASCII case, other than those of its kind: `config.unfilled`
-/// and `config.bad-fill` in its body, and then no other problem; else
-/// `config.reserved-name` and `config.duplicate-name` at its label; else
-/// `config.no-connector` when no `connector` block has the label `name`, with the
-/// names of the connector blocks that `check` takes in the fix; else the problems of
-/// `kind` and `node` in the block, and `document.too-deep` when its body nests deeper
-/// than `document::encoding::Checked` takes.
+/// label is `name` in any ASCII case, other than those of its kind, as it gives them
+/// when no other block holds a `fill`: `config.unfilled` and `config.bad-fill` in its
+/// body, and then no other problem; else `config.reserved-name` and
+/// `config.duplicate-name` at its label; else `config.no-connector` when no
+/// `connector` block has the label `name`, with the names of the connector blocks that
+/// `check` takes in the fix; else the problems of `kind` and `node` in the block, and
+/// `document.too-deep` when its body nests deeper than `document::encoding::Checked`
+/// takes.
 pub fn find(documents: &[Document], name: &Name) -> Result<Connector, Vec<Diagnostic>> {
     let alarms = private_key::alarms(documents);
     if !alarms.is_empty() {
