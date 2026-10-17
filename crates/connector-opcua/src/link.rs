@@ -461,10 +461,10 @@ const OUTSIDE: [&str; 40] = [
     "write",
 ];
 
-/// The symbols outside the copy that only its OpenSSL plugins may name, as
-/// `cargo xtask open62541` admits them. Only `UA_CertificateUtils_getThumbprint` calls
-/// `malloc` and `free`, and it frees the block that it takes, so no block crosses
-/// between the allocator of libc and `src/alloc.rs`.
+/// The symbols from outside the copy that only one file of it may name: `fgets`,
+/// `fwrite`, and `stdin` of `readPrivateKeyPassword` in `plugins/ua_config_default.c`,
+/// and `malloc` and `free` of `UA_CertificateUtils_getThumbprint` in
+/// `plugins/crypto/openssl/certificategroup.c`.
 const PLUGINS: [&str; 5] = ["fgets", "free", "fwrite", "malloc", "stdin"];
 
 /// The prefix that the headers of the libcrypto of `aws-lc-sys` give each of its
@@ -613,8 +613,8 @@ fn the_shim_draws_nothing_from_the_generator_of_the_copy() {
     assert!(drawn.is_empty(), "the shim calls {drawn:?}");
 }
 
-/// The symbol checks admit the libcrypto ([`PREFIX`]) and [`PLUGINS`] for the OpenSSL
-/// plugins of the copy, which `cargo xtask open62541` admits. Neither the shim nor the
+/// The symbol checks admit the libcrypto ([`PREFIX`]) and [`PLUGINS`] for the files of
+/// the copy that `cargo xtask open62541` admits them in. Neither the shim nor the
 /// test server names one, so neither calls aws-lc unseen nor frees a block of
 /// `src/alloc.rs` with `free`.
 #[test]

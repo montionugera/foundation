@@ -46,9 +46,12 @@
   a `static` function of one file does not hide a call of the OS function of its name
   from another. A key of `FUNCTION_SYMBOLS` with no reference fails, so a file that the
   build leaves out loses its keys. A new outside symbol also goes in `OUTSIDE` in
-  `connector-opcua`, or in `PLUGINS` when only the OpenSSL plugins may name it, which
-  list the outside symbols of the production build. A header list is not a check: a
-  listed header can include another (`pthread.h` includes `time.h`). So the check
+  `connector-opcua`, or in `PLUGINS` when only one file of the copy may name it, which
+  list the outside symbols of the production build. The words "or in `PLUGINS` when
+  only one file of the copy may name it": added by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231723849,
+  2026-10-17 08:26 UTC). A header list is not a check: a listed header can include
+  another (`pthread.h` includes `time.h`). So the check
   refuses no system header, and each header that the copy includes must be in the copy
   or in a system directory as `cc` finds it. Lost: a header list, and a deny list of OS
   symbols, which passes a call that it does not name.
@@ -845,4 +848,10 @@
   left-out files, each keyed in `FUNCTION_SYMBOLS`; and a copy of each deprecated and
   ECC policy file. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6230888200,
-  2026-10-17 06:51 UTC).
+  2026-10-17 06:51 UTC). The `UA_Openssl_Init` sentences: decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231556855,
+  2026-10-17 08:08 UTC). The `AWS_LC_INPUTS` and `PLUGINS` sentences: approved by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231723849,
+  2026-10-17 08:26 UTC).

@@ -387,8 +387,9 @@ const AWS_LC_KEYS: [(&str, &str, &str, Access); 26] = [
     ),
 ];
 
-/// The functions of aws-lc that the copy calls and that read the clock or, with no
-/// password callback, the console.
+/// The functions of aws-lc that the copy calls and that read the clock on each call or,
+/// with no password callback, the console. `ASN1_TIME_to_tm` reads the clock only on a
+/// NULL time, which its key states the copy never gives.
 const AWS_LC_INPUTS: [&str; 5] = [
     "PEM_read_bio_PrivateKey",
     "PEM_read_bio_X509",
