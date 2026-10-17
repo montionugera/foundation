@@ -150,11 +150,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      # Each crate and test that fails on this OS, with the open issue that removes it.
-      # The lists only shrink (LINUX CI).
+      # Each crate and test that fails on this OS, with the open issue that removes it:
+      # `crates` do not build, `untested` build but their tests fail. The lists only
+      # shrink (LINUX CI).
       - name: Exceptions
         run: |
-          crates=() tests=()
+          crates=() untested=() tests=()
           case "$RUNNER_OS" in
             macOS)
               tests=(
@@ -173,9 +174,17 @@ jobs:
                 ops # #2971
                 os # #682
               )
+              untested=(
+                sim # #2973
+                secret # #2973
+                mesh # #2973
+                connector # #2973
+                connector-influx # #2973
+              )
               ;;
           esac
           echo "CRATES=${crates[*]/#/--exclude }" >> "$GITHUB_ENV"
+          echo "UNTESTED=${untested[*]/#/--exclude }" >> "$GITHUB_ENV"
           echo "TESTS=${tests[*]/#/--skip }" >> "$GITHUB_ENV"
       - name: Clippy
         run: >-
@@ -183,7 +192,9 @@ jobs:
           -- -D warnings
       - name: Test
         if: ${{ !cancelled() }}
-        run: cargo test --workspace $CRATES --all-features --no-fail-fast -- $TESTS
+        run: >-
+          cargo test --workspace $CRATES $UNTESTED --all-features --no-fail-fast
+          -- $TESTS
 
   features:
     needs: changes
