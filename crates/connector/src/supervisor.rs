@@ -959,6 +959,16 @@ mod tests {
     }
 
     #[test]
+    fn gives_the_kinds_of_its_config() {
+        let kinds = run_on(|node, tasks| async move {
+            let kinds = Table::new().with("script", Script::default());
+            let inputs = create_config(&node, tasks, kinds, "plant.script").await;
+            format!("{:?}", Supervisor::new(inputs).kinds())
+        });
+        assert_eq!(kinds, "{\"script\"}");
+    }
+
+    #[test]
     fn runs_once_and_returns_when_run_returns_ok() {
         let out = supervise("script", vec![Step::Done], config(), Cancel::Never);
         out.result.expect("ok");
