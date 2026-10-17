@@ -297,7 +297,7 @@ fn summary(failed: usize, source: &str) -> String {
 
 #[test]
 fn a_node_with_a_region_names_the_command_that_gives_each_failure_of_its_roots() {
-    let warn = "2026-01-01T00:00:00.005947Z WARN node::trust:";
+    let warn = "2026-01-01T00:00:00.006100Z WARN node::trust:";
     assert_eq!(
         logged_in(Region::Stored, failed(1), tracing::Level::WARN),
         [

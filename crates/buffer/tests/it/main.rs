@@ -4352,9 +4352,8 @@ fn drain(pool: &Pool) -> Vec<block::Unique> {
 
 /// Commits of index 2 whose carry finds no pool block fill the ring as far as its
 /// records let it, with the tail of index 1 in the first data record. The buffer
-/// then drops, which writes nothing, as a crash does. The open succeeds and gives
-/// each tail. The next two commits carry the tail of index 1 and trim past its
-/// record, so an append fits again.
+/// then drops, which writes nothing, as a crash does. The open succeeds, gives each
+/// tail, and trims past the record of index 1, so an append fits at once.
 #[test]
 fn a_crash_after_a_commit_with_no_carry_block_opens() {
     run_on_memory(169, |shard| async move {
@@ -4392,7 +4391,7 @@ fn a_crash_after_a_commit_with_no_carry_block_opens() {
             needed: 4096,
             free: 0,
         };
-        assert_eq!(buffer.append(next(11)), Err(full.clone()));
+        assert_eq!(buffer.append(next(11)), Err(full));
         shard.clock.sleep(commits(4)).await;
         drop(buffer);
         drop(held);
@@ -4401,11 +4400,9 @@ fn a_crash_after_a_commit_with_no_carry_block_opens() {
         let (a, b) = (slots.index(key(1)), slots.index(key(2)));
         assert_eq!(buffer.tail(a, Path::Live), tail(3, Some(30)));
         assert_eq!(buffer.tail(b, Path::Live), tail(11, Some(50)));
-        for commit in ["the carry", "the trim"] {
-            assert_eq!(buffer.append(next(11)), Err(full.clone()), "{commit}");
-            shard.clock.sleep(commits(4)).await;
-        }
-        buffer.append(next(11)).expect("the trim freed room");
+        buffer
+            .append(next(11))
+            .expect("the trim of the open freed room");
         buffer.committed().await.expect("commits");
         let read = buffer
             .reader()
