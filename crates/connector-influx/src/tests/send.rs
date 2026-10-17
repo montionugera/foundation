@@ -821,7 +821,7 @@ fn reads_the_token_again_after_a_401_or_a_403_and_writes_each_sample_once() {
         assert_eq!(
             got,
             (
-                vec![Some("Token old".to_owned()), Some("Token new".to_owned()),],
+                vec![Some("Token old".to_owned()), Some("Token new".to_owned())],
                 vec![
                     String::new(),
                     format!(
@@ -892,7 +892,7 @@ fn reads_the_token_again_after_a_401_whose_body_is_over_the_cap() {
     assert_eq!(
         got,
         (
-            vec![Some("Token old".to_owned()), Some("Token new".to_owned()),],
+            vec![Some("Token old".to_owned()), Some("Token new".to_owned())],
             vec![String::new(), shown(&full), String::new()],
             true,
         )
@@ -1026,8 +1026,8 @@ fn keeps_the_batch_when_the_token_is_gone_after_a_401() {
                      file(\"{TOKEN_FILE}\"): no"
                 ),
                 format!(
-                    "an attempt failed: the secret file(\"{TOKEN_FILE}\"): the file {TOKEN_FILE} is \
-                     empty. Write the value to it"
+                    "an attempt failed: the secret file(\"{TOKEN_FILE}\"): \
+                     the file {TOKEN_FILE} is empty. Write the value to it"
                 ),
                 String::new(),
             ],

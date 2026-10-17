@@ -30,8 +30,8 @@
   not show. It keeps the batch and the old token or client, and reads again after the
   next backoff, with no request until the read gives a value. A config that cannot work
   shows its error until the user fixes it. It loses no sample at the read, but as in an
-  outage of InfluxDB, the reader stops at a full batch, and the buffer can trim what the
-  reader did not get. Decided by `laptop.architect-2` on 2026-10-16T17:09:47Z
+  outage of InfluxDB, `run` stops reading at a full batch. Decided by
+  `laptop.architect-2` on 2026-10-16T17:09:47Z
   (https://github.com/synnaxlabs/foundation/issues/2899) and 2026-10-16T17:09:59Z
   (https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6220720459), with the
   text approved on 2026-10-16T23:14:40Z
