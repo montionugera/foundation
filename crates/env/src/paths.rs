@@ -66,16 +66,16 @@ impl Paths {
     /// take holds nothing at that call. The limits hold on each step of a path: each
     /// prefix of its components that resolves, in order and without an end `/` or `/.`,
     /// must pass them, and the first that fails gives its error. A prefix short of the
-    /// whole path is checked against the folders only when a `..` comes after it in the
-    /// path or nothing is there, and then also passes when it is a directory on the way
-    /// to a folder. The name of the first prefix that does not resolve must pass them
-    /// too, at its place with no key, as a new name there does. A relative path starts
-    /// at the working directory: the steps of that directory come first, and each
-    /// prefix after them is a prefix of the path as given. A path whose steps pass and
-    /// that does not resolve gives the error of its resolve. The limits of `self` hold
-    /// too, so a handle never reaches more than the one it came from. The check and the
-    /// call are two steps: a symbolic link that another program makes between them can
-    /// lead the call out.
+    /// whole path is checked against the folders only when a `..` after it takes the
+    /// path above it, or nothing is there, and then also passes when it is a directory
+    /// on the way to a folder. The name of the first prefix that does not resolve must
+    /// pass them too, at its place with no key, as a new name there does. A relative
+    /// path starts at the working directory: the steps of that directory come first,
+    /// and each prefix after them is a prefix of the path as given. A path whose steps
+    /// pass and that does not resolve gives the error of its resolve. The limits of
+    /// `self` hold too, so a handle never reaches more than the one it came from. The
+    /// check and the call are two steps: a symbolic link that another program makes
+    /// between them can lead the call out.
     ///
     /// # Errors
     ///
@@ -266,34 +266,47 @@ impl Paths {
             return Ok(Ok(()));
         }
         let mut parts: Vec<_> = path.components().collect();
+        if parts.first() == Some(&Component::CurDir) {
+            parts.remove(0);
+        }
         let mut part = PathBuf::new();
         let mut above = PathBuf::new();
+        // `up[index]` is how many directories above the place before `parts[index]`
+        // the rest of the path goes.
+        let mut up = vec![0_usize; parts.len() + 1];
+        let mut count = 0_usize;
+        for (index, step) in parts.iter().enumerate().rev() {
+            match step {
+                Component::ParentDir => count += 1,
+                Component::Normal(_) => count = count.saturating_sub(1),
+                _ => {}
+            }
+            up[index] = count;
+        }
         // Each step is a prefix of the resolved working directory or of `path`, never
         // of their join, which can be longer than the host takes.
-        if path.is_relative() && !parts.is_empty() {
-            if parts[0] == Component::CurDir {
-                parts.remove(0);
-            }
+        if path.is_relative() && !path.as_os_str().is_empty() {
             let working = self.driver.resolve(Path::new("."))?;
-            let back = parts.contains(&Component::ParentDir);
+            let mut below = working.components().count();
             let mut names = working.components().peekable();
             while let Some(name) = names.next() {
                 above.push(name);
+                below -= 1;
                 let short = names.peek().is_some() || !parts.is_empty();
+                let back = up[0] > below;
                 self.allowed(self.key(&above)?, &above, Way::of(short, back))?;
             }
         }
         for (index, step) in parts.iter().enumerate() {
             part.push(step);
-            let rest = &parts[index + 1..];
-            let short = !rest.is_empty();
+            let short = index + 1 < parts.len();
             let Ok(resolved) = self.driver.resolve(&part) else {
                 if let Component::Normal(name) = step {
                     self.allowed(None, &above.join(name), Way::of(short, true))?;
                 }
                 break;
             };
-            let back = rest.contains(&Component::ParentDir);
+            let back = up[index + 1] > 0;
             self.allowed(self.key(&part)?, &resolved, Way::of(short, back))?;
             above = resolved;
         }
@@ -391,10 +404,12 @@ struct Hidden {
 enum Way {
     /// The step ends the walk: a folder holds it.
     End,
-    /// A `..` follows the step: a folder holds it, or it is a directory above one.
+    /// A `..` after the step takes the path above it: a folder holds it, or it is a
+    /// directory above one.
     Short,
-    /// No `..` follows the step, so the walk stays under it and the end meets the
-    /// folders for it, when it is there.
+    /// No `..` takes the path above the step, so the step changes where the path ends
+    /// only as a link or a mount, and the end meets the folders for it, when it is
+    /// there.
     Down,
 }
 
@@ -827,6 +842,21 @@ mod tests {
         assert_eq!(reached(&paths, "data/key"), Err(Error::Hidden));
         *working.borrow_mut() = PathBuf::from("/volume/out");
         assert_eq!(reached(&paths, "a"), Err(Error::Outside));
+    }
+
+    #[test]
+    fn a_dot_dot_that_stays_in_another_mount_of_a_folder_passes() {
+        let one = One::default();
+        let working = Rc::clone(&one.2);
+        let paths = Paths::new(one).within(&["/work".into()], &[]).unwrap();
+        assert_eq!(reached(&paths, "/volume/work/x/../a"), Ok(()));
+        let left = reached(&paths, "/volume/work/s/../../../work/a");
+        assert_eq!(left, Err(Error::Outside));
+        *working.borrow_mut() = PathBuf::from("/volume/work/s");
+        assert_eq!(reached(&paths, "../a"), Ok(()));
+        assert_eq!(reached(&paths, "x/../../a"), Ok(()));
+        assert_eq!(reached(&paths, "../../work/a"), Ok(()));
+        assert_eq!(reached(&paths, "../../../a"), Err(Error::Outside));
     }
 
     #[test]

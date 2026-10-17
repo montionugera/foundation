@@ -223,7 +223,15 @@ fn within_follows_a_link_outside_that_names_a_folder() {
         assert_eq!(within.write(path, b"x"), Ok(()), "{path:?}");
         assert_eq!(within.read(path, 1).map(|_| ()), Ok(()), "{path:?}");
     }
+    node.make_dir(Path::new("/work/x"));
+    for path in ["/out/in/x/../a", "in/x/../a"].map(Path::new) {
+        assert_eq!(within.read(path, 1).map(|_| ()), Ok(()), "{path:?}");
+    }
     let path = Path::new("in/../in/a");
+    assert_eq!(within.read(path, 1), Err(Error::Outside));
+    node.make_dir(Path::new("/out/far"));
+    node.link_path(Path::new("/work/y"), Path::new("/out/far"));
+    let path = Path::new("/out/in/y/../a");
     assert_eq!(within.read(path, 1), Err(Error::Outside));
 }
 
