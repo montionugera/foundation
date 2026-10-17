@@ -1221,7 +1221,8 @@ struct Built {
 }
 
 /// Writes the batches to a new ring. An append refuses a batch exactly when `limit`
-/// does, or else as the room says, and the build goes on after it.
+/// does, and the build goes on after it. The ring takes each other batch: the area
+/// holds one largest record of each commit.
 async fn build(shard: &Shard, input: &Input) -> Built {
     let (buffer, slots) = shard.open().await.expect("a new ring opens");
     let mut room = Room::new();
