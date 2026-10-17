@@ -849,6 +849,17 @@ mod tests {
     }
 
     #[test]
+    fn a_hidden_folder_meets_only_a_step_inside_the_folders() {
+        let one = One::default();
+        let working = Rc::clone(&one.2);
+        let hidden = ["/work/data".into(), "/out/h".into()];
+        let paths = Paths::new(one).within(&["/work".into()], &hidden).unwrap();
+        assert_eq!(reached(&paths, "/out/h/a"), Err(Error::Outside));
+        *working.borrow_mut() = PathBuf::from("/work/data");
+        assert_eq!(reached(&paths, "link/a"), Err(Error::Hidden));
+    }
+
+    #[test]
     fn a_dot_dot_that_stays_in_another_mount_of_a_folder_passes() {
         let one = One::default();
         let working = Rc::clone(&one.2);
