@@ -336,10 +336,10 @@
   "`{path}` is in the data directory {data} of this MCP server, which no tool reads or
   writes", with the fix "Give a path outside {data}".
   A new name that a write or `make_dir` makes in a directory on the way to the data
-  directory, while nothing is at it, is `ops.no-data` (1): "`{path}` is a new name in
-  a directory on the way to the data
-  directory {data} of this MCP server, and nothing is at {data} now", with the fix
-  "Start the node on {data} again, or give a path in another directory".
+  directory, while nothing is at it, is `ops.no-data` (1): "`{path}` is a new name in a
+  directory on the way to the data directory {data} of this MCP server, and nothing is
+  at {data} now", with the fix "Start the node on {data} again, or give a path in
+  another directory".
   A path under a folder that a program replaced after the start is
   `ops.folder-changed` (1): "`{path}` is under a folder of this MCP server ({folders})
   that a program replaced after it started", with the fix "Start `foundation mcp`
