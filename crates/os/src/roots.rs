@@ -104,8 +104,19 @@ mod tests {
 
     use super::Source;
 
+    /// The `Source` of `file` and `dirs`, each `:` of `dirs` the separator of the OS.
     fn of(file: Option<&str>, dirs: Option<&str>) -> Source {
-        Source::of(file.map(OsStr::new), dirs.map(OsStr::new))
+        let dirs = dirs.map(native);
+        Source::of(file.map(OsStr::new), dirs.as_deref().map(OsStr::new))
+    }
+
+    /// `text` with each `:` made the separator of the OS.
+    fn native(text: &str) -> String {
+        if cfg!(windows) {
+            text.replace(':', ";")
+        } else {
+            text.to_owned()
+        }
     }
 
     #[test]
@@ -139,7 +150,7 @@ mod tests {
                 dirs: vec![PathBuf::from("/b"), PathBuf::from("/a")],
             }
         );
-        assert_eq!(source.to_string(), "SSL_CERT_DIR=/b:/a");
+        assert_eq!(source.to_string(), native("SSL_CERT_DIR=/b:/a"));
     }
 
     #[test]
@@ -160,7 +171,7 @@ mod tests {
         let source = of(Some("/roots.pem"), Some("/a:/b"));
         assert_eq!(
             source.to_string(),
-            "SSL_CERT_FILE=/roots.pem SSL_CERT_DIR=/a:/b"
+            native("SSL_CERT_FILE=/roots.pem SSL_CERT_DIR=/a:/b")
         );
     }
 }
