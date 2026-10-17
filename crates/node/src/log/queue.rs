@@ -14,7 +14,7 @@ use env::thread::{Error, Handle};
 use tracing::Dispatch;
 use tracing_subscriber::fmt::MakeWriter;
 
-use self::lines::{Batch, Lines, Taken, Waited, Writer};
+use self::lines::{Batch, Lines, Run, Taken, Waited, Writer};
 use super::Line;
 
 /// The lines that the queue holds. A line that finds it full drops.
@@ -102,12 +102,9 @@ impl Flush {
     /// logs ERROR `panicked` with the field `panic`, the text of the panic, after each
     /// line in the queue; this line never drops. Then it calls `previous`. It sets no
     /// dispatch and starts no thread, so a panic inside an event does not abort. While
-    /// a thread `log` runs, it first waits up to `bound` for the log to write each
-    /// line. It calls `previous` when no thread `log` runs on another thread, before or
-    /// after that wait, or when the log wrote each line within `bound`: as after each
-    /// shard has ended, for a panic of the writer, and once the writer panics in the
-    /// wait. When `bound` passes while the thread `log` still runs, it does not call
-    /// `previous`: the writer may block that write too.
+    /// a thread `log` runs on another thread, it first waits up to `bound` for the log
+    /// to write each line. It calls `previous` unless `bound` passes while that thread
+    /// still runs: the writer may block the write of `previous` too.
     #[must_use]
     pub fn hook(&self, previous: Hook, bound: Duration) -> Hook {
         let flush = self.clone();
@@ -137,9 +134,7 @@ impl Flush {
         let waited = self.queue.lines.wait(sent, bound);
         // After a panic of the writer, its thread keeps its handle: that panic has
         // reached the panic hook.
-        if waited == Waited::Written
-            && let Some(ended) = self.queue.lines.ended()
-        {
+        if let Some(ended) = self.queue.lines.ended() {
             join(ended);
         }
         waited
@@ -158,7 +153,7 @@ impl Drop for Hold {
     }
 }
 
-/// What each event, each [`Flush`], and the thread `log` share.
+/// What each [`Flush`], each [`Hold`], and the thread `log` share.
 #[derive(Debug)]
 pub(super) struct Queue {
     /// The lines and the run of the thread `log`. Closed while no [`Hold`] is left,
@@ -184,21 +179,19 @@ impl Queue {
     /// [`Hold`] is left or a line waits. The thread takes the writer from `lines`, so
     /// a start that fails keeps it.
     fn resume(self: &Arc<Self>) -> Result<(), Error> {
-        let Some(run) = self.lines.start() else {
-            return Ok(());
+        let spawn = |run: Run| {
+            let queue = Arc::clone(self);
+            let drain = move || {
+                let (writer, batch) = run.begin();
+                Drain {
+                    queue,
+                    writer: Some(writer),
+                    batch,
+                }
+            };
+            self.threads.start("log", drain)
         };
-        let key = run.key();
-        let queue = Arc::clone(self);
-        let drain = move || {
-            let (writer, batch) = run.begin();
-            Drain {
-                queue,
-                writer: Some(writer),
-                batch,
-            }
-        };
-        let started = self.threads.start("log", drain)?;
-        if let Some(ended) = self.lines.started(key, started) {
+        if let Some(ended) = self.lines.resume(spawn)? {
             join(ended);
         }
         Ok(())

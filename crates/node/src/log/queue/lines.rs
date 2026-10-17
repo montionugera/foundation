@@ -23,7 +23,7 @@ use std::sync::{Condvar, Mutex, MutexGuard};
 #[derive(Debug)]
 pub(super) struct Lines {
     inner: Mutex<Inner>,
-    /// Signals each change of `Inner::written` and `Inner::running`.
+    /// Signals each change of `Inner::written`, `Inner::running`, and `Inner::kept`.
     written: Condvar,
     /// The lines that can wait. A line that finds this many drops.
     bound: usize,
@@ -50,14 +50,16 @@ struct Inner {
     /// A thread `log` runs or starts. When false, `writer` is there, other than after
     /// the writer panicked: then no thread starts again.
     running: bool,
-    /// The thread `log` that holds `writer`, or `None` from a start to its
-    /// [`Run::begin`].
+    /// The thread `log` of the last run that began, or `None` from a start to its
+    /// [`Run::begin`]. Read only while `running`.
     thread: Option<ThreadId>,
     /// The lines that the thread `log` has written or counted as dropped.
     written: u64,
-    /// The runs that started, so [`Lines::started`] knows a later one.
+    /// The runs that started, so [`Lines::resume`] knows a later one.
     runs: u64,
-    /// The thread `log` that runs or ran last, other than one that [`Lines::started`]
+    /// The last of `runs` whose handle [`Lines::resume`] kept, or whose spawn failed.
+    kept: u64,
+    /// The thread `log` that runs or ran last, other than one that [`Lines::resume`]
     /// gave back.
     handle: Option<Handle>,
 }
@@ -71,9 +73,9 @@ impl Inner {
     }
 }
 
-/// A run of the thread `log` that [`Lines::start`] gave. Its new thread calls
-/// [`Run::begin`]. A drop before that ends the run with the writer kept, as for a
-/// thread that did not start.
+/// A run of the thread `log` that [`Lines::resume`] gives to its spawn. Its new thread
+/// calls [`Run::begin`]. A drop before that ends the run with the writer kept, as for
+/// a thread that did not start.
 #[must_use = "a dropped Run ends its run"]
 #[derive(Debug)]
 pub(super) struct Run {
@@ -83,11 +85,6 @@ pub(super) struct Run {
 }
 
 impl Run {
-    /// The key of the run, for [`Lines::started`].
-    pub(super) fn key(&self) -> u64 {
-        self.key
-    }
-
     /// Gives the writer and an empty batch to the calling thread, the thread `log` of
     /// the run.
     pub(super) fn begin(mut self) -> (Writer, Batch) {
@@ -95,11 +92,10 @@ impl Run {
         let thread = thread::current().id();
         let mut inner = lines.lock();
         inner.thread = Some(thread);
-        let writer = inner
-            .writer
-            .take()
-            .expect("invariant: the writer waits for the run that started");
+        let writer = inner.writer.take();
         drop(inner);
+        let writer =
+            writer.expect("invariant: the writer waits for the run that started");
         (writer, lines.batch())
     }
 }
@@ -107,7 +103,10 @@ impl Run {
 impl Drop for Run {
     fn drop(&mut self) {
         if let Some(lines) = self.lines.take() {
-            lines.lock().running = false;
+            let mut inner = lines.lock();
+            let writer = inner.writer.take();
+            inner.end(writer);
+            drop(inner);
             lines.written.notify_all();
         }
     }
@@ -180,6 +179,7 @@ impl Lines {
             thread: None,
             written: 0,
             runs: 0,
+            kept: 0,
             handle: None,
         };
         Self {
@@ -245,9 +245,41 @@ impl Lines {
         self.lock().sent
     }
 
-    /// Starts a run of the thread `log` when none runs, the writer has not panicked,
-    /// and the lines are open or a line waits. Gives `None` when it starts none.
-    pub(super) fn start(self: &Arc<Self>) -> Option<Run> {
+    /// Starts a run of the thread `log` with `spawn` when none runs, the writer has not
+    /// panicked, and the lines are open or a line waits, and keeps the handle that
+    /// `spawn` gives. Gives the handle to join, outside the lock: the one it replaces,
+    /// or that of `spawn` when a later run has started, since its run has then ended.
+    /// Gives `Ok(None)` when it starts no run.
+    ///
+    /// # Errors
+    ///
+    /// The error of `spawn`, which drops its [`Run`], so the next resume can start one.
+    pub(super) fn resume<E>(
+        self: &Arc<Self>,
+        spawn: impl FnOnce(Run) -> Result<Handle, E>,
+    ) -> Result<Option<Handle>, E> {
+        let Some(run) = self.start() else {
+            return Ok(None);
+        };
+        let key = run.key;
+        let spawned = spawn(run);
+        let mut inner = self.lock();
+        let latest = inner.runs == key;
+        if latest {
+            inner.kept = key;
+        }
+        let ended = match spawned {
+            Ok(handle) if latest => Ok(inner.handle.replace(handle)),
+            Ok(handle) => Ok(Some(handle)),
+            Err(error) => Err(error),
+        };
+        drop(inner);
+        self.written.notify_all();
+        ended
+    }
+
+    /// Starts a run when [`Lines::resume`] may.
+    fn start(self: &Arc<Self>) -> Option<Run> {
         let mut inner = self.lock();
         let waiting = inner.sent > inner.written;
         if inner.running || inner.writer.is_none() || (inner.closed && !waiting) {
@@ -260,18 +292,6 @@ impl Lines {
             lines: Some(Arc::clone(self)),
             key: inner.runs,
         })
-    }
-
-    /// Keeps `handle`, the thread of the run of key `run`, and gives the handle to
-    /// join: the one it replaces, or `handle` itself when a later run has started,
-    /// since its run then has ended.
-    pub(super) fn started(&self, run: u64, handle: Handle) -> Option<Handle> {
-        let mut inner = self.lock();
-        if inner.runs == run {
-            inner.handle.replace(handle)
-        } else {
-            Some(handle)
-        }
     }
 
     /// Takes the handle of the thread `log` that ran last, to join, when no run runs
@@ -333,12 +353,13 @@ impl Lines {
     }
 
     /// Blocks until the first `sent` lines are written and, while the lines are
-    /// closed, the run has ended, or until `bound` passes or the writer panicked.
-    /// Blocks on real time.
+    /// closed, the run has ended and its handle is kept, or until `bound` passes or
+    /// the writer panicked. Blocks on real time.
     pub(super) fn wait(&self, sent: u64, bound: Duration) -> Waited {
         let busy = |inner: &mut Inner| {
             let live = inner.running || inner.writer.is_some();
-            live && (inner.written < sent || (inner.closed && inner.running))
+            let ending = inner.running || inner.kept != inner.runs;
+            live && (inner.written < sent || (inner.closed && ending))
         };
         let (inner, late) = wait_while(&self.written, self.lock(), bound, busy);
         if late {
@@ -408,10 +429,13 @@ fn sink() -> Writer {
 #[cfg(test)]
 #[cfg(not(loom))]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::task::Waker;
+    use std::time::Duration;
 
-    use super::{Batch, Lines, Taken, sink};
+    use env::thread::Handle;
+
+    use super::{Batch, Lines, Taken, Waited, sink};
 
     #[test]
     fn a_panic_line_counts_among_the_lines_sent() {
@@ -454,43 +478,99 @@ mod tests {
         assert!(Lines::new(4, 4, sink()).batch().lines.capacity() >= 4);
     }
 
+    /// A handle that adds `run` to `joined` at its join.
+    fn handle(joined: &Arc<Mutex<Vec<u64>>>, run: u64) -> Handle {
+        let joined = Arc::clone(joined);
+        Handle::new(move || {
+            joined.lock().unwrap().push(run);
+            Ok(())
+        })
+    }
+
     #[test]
     fn a_run_whose_thread_did_not_start_leaves_the_lines_for_the_next_start() {
         let lines = Arc::new(Lines::new(4, 4, sink()));
         lines.open();
-        let run = lines.start().expect("the lines are open");
-        assert!(lines.start().is_none(), "a run runs");
-        drop(run);
-        let run = lines.start().expect("the run ended");
-        assert_eq!(run.key(), 2);
-        assert!(run.begin().1.lines.capacity() >= 4);
+        let failed = lines.resume(|run| {
+            assert!(lines.start().is_none(), "a run runs");
+            drop(run);
+            Err(())
+        });
+        assert!(matches!(failed, Err(())));
+        lines.close();
+        assert_eq!(lines.wait(lines.sent(), Duration::ZERO), Waited::Written);
+        lines.open();
+        let mut begun = None;
+        let resumed = lines.resume(|run| {
+            assert_eq!(run.key, 2);
+            begun = Some(run.begin());
+            Ok::<_, ()>(Handle::new(|| Ok(())))
+        });
+        assert!(resumed.is_ok_and(|ended| ended.is_none()));
+        assert!(begun.expect("the run began").1.lines.capacity() >= 4);
     }
 
     #[test]
     fn a_handle_of_a_run_after_a_later_start_comes_back_to_join() {
         let lines = Arc::new(Lines::new(4, 4, sink()));
+        let joined = Arc::new(Mutex::new(Vec::new()));
         lines.open();
-        let first = lines.start().expect("the lines are open").key();
-        let second = lines.start().expect("the first run ended").key();
-        let handle = || env::thread::Handle::new(|| Ok(()));
-        assert!(lines.started(second, handle()).is_none());
-        assert!(
-            lines.started(first, handle()).is_some(),
-            "the first run ended"
-        );
-        assert!(lines.ended().is_some(), "the second run ended");
+        let first = lines.resume(|run| {
+            drop(run);
+            let later = lines.resume(|run| {
+                drop(run);
+                Ok::<_, ()>(handle(&joined, 2))
+            });
+            assert!(later.is_ok_and(|ended| ended.is_none()));
+            Ok::<_, ()>(handle(&joined, 1))
+        });
+        let first = first.expect("the spawn gave a handle");
+        first.expect("the first run ended").join().unwrap();
+        lines.ended().expect("the later run ended").join().unwrap();
         assert!(lines.ended().is_none());
+        assert_eq!(*joined.lock().unwrap(), [1, 2]);
+    }
+
+    #[test]
+    fn a_start_after_a_run_on_this_thread_runs_elsewhere_until_its_begin() {
+        let lines = Arc::new(Lines::new(4, 4, sink()));
+        lines.open();
+        let (writer, mut batch) = lines.start().expect("the lines are open").begin();
+        lines.close();
+        let taken = lines.take(&mut batch, Waker::noop(), &mut Some(writer));
+        assert_eq!(taken, Taken::Closed);
+        lines.open();
+        let run = lines.start().expect("the run ended");
+        assert!(lines.runs_elsewhere(), "the new run has not begun");
+        drop(run);
+    }
+
+    #[test]
+    fn a_run_whose_writer_panicked_keeps_its_handle() {
+        let lines = Arc::new(Lines::new(4, 4, sink()));
+        lines.open();
+        let mut begun = None;
+        let resumed = lines.resume(|run| {
+            begun = Some(run.begin());
+            Ok::<_, ()>(Handle::new(|| Ok(())))
+        });
+        assert!(resumed.is_ok_and(|ended| ended.is_none()));
+        lines.lose();
+        assert!(lines.ended().is_none(), "the writer panicked");
     }
 
     #[test]
     fn a_run_that_runs_keeps_its_handle() {
         let lines = Arc::new(Lines::new(4, 4, sink()));
         lines.open();
-        let run = lines.start().expect("the lines are open");
-        let handle = env::thread::Handle::new(|| Ok(()));
-        assert!(lines.started(run.key(), handle).is_none());
+        let mut held = None;
+        let resumed = lines.resume(|run| {
+            held = Some(run);
+            Ok::<_, ()>(Handle::new(|| Ok(())))
+        });
+        assert!(resumed.is_ok_and(|ended| ended.is_none()));
         assert!(lines.ended().is_none(), "the run runs");
-        drop(run);
+        drop(held);
         assert!(lines.ended().is_some(), "the run ended");
     }
 }
@@ -625,41 +705,91 @@ mod model {
         })
     }
 
-    /// Keeps the handle of `run`, which `spawn` started, and joins the handle that
-    /// comes back.
-    fn started(lines: &Lines, run: u64, handle: Handle) {
-        if let Some(ended) = lines.started(run, handle) {
+    /// Resumes with `spawn`, as `Queue::resume` does, and joins the handle that comes
+    /// back.
+    fn resume(lines: &Arc<Lines>) {
+        let resumed = lines.resume(|run| Ok::<_, ()>(spawn(lines, run)));
+        if let Some(ended) = resumed.unwrap() {
             ended.join().unwrap();
         }
     }
 
-    /// A start that keeps its handle after a later run has started joins its own run,
-    /// which has ended, and not the later one, which runs until the close.
+    /// A wait beside the panic of the writer ends with the lines lost.
+    #[test]
+    fn a_wait_beside_a_lost_writer_ends_lost() {
+        loom::model(|| {
+            let lines = Arc::new(Lines::new(4, 4, sink()));
+            lines.push(b"a".to_vec());
+            let begun = lines.start().expect("a line waits").begin();
+            let waiter = {
+                let lines = Arc::clone(&lines);
+                thread::spawn(move || lines.wait(1, Duration::ZERO))
+            };
+            lines.lose();
+            assert_eq!(waiter.join().unwrap(), Waited::Lost);
+            drop(begun);
+        });
+    }
+
+    /// A wait beside a run that drops before its begin ends, as for a thread that did
+    /// not start.
+    #[test]
+    fn a_wait_beside_a_run_that_drops_before_its_begin_ends() {
+        loom::model(|| {
+            let lines = Arc::new(Lines::new(4, 4, sink()));
+            lines.open();
+            let mut held = None;
+            let resumed = lines.resume(|run| {
+                held = Some(run);
+                Ok::<_, ()>(Handle::new(|| Ok(())))
+            });
+            assert!(resumed.unwrap().is_none());
+            lines.close();
+            let waiter = {
+                let lines = Arc::clone(&lines);
+                thread::spawn(move || lines.wait(0, Duration::ZERO))
+            };
+            drop(held);
+            assert_eq!(waiter.join().unwrap(), Waited::Written);
+        });
+    }
+
+    /// A resume that keeps its handle after a later run has started joins its own
+    /// run, which has ended, and not the later one, which runs until the close.
     #[test]
     fn a_start_joins_only_a_run_that_has_ended() {
         loom::model(|| {
             let lines = Arc::new(Lines::new(4, 4, sink()));
             lines.push(b"a".to_vec());
-            let first = lines.start().expect("a line waits");
-            let key = first.key();
-            let handle = spawn(&lines, first);
             let later = {
                 let lines = Arc::clone(&lines);
                 thread::spawn(move || {
                     lines.open();
-                    if let Some(run) = lines.start() {
-                        let key = run.key();
-                        started(&lines, key, spawn(&lines, run));
-                    }
+                    resume(&lines);
                 })
             };
-            started(&lines, key, handle);
+            resume(&lines);
             later.join().unwrap();
             lines.close();
             assert_eq!(lines.wait(lines.sent(), Duration::ZERO), Waited::Written);
-            if let Some(ended) = lines.ended() {
-                ended.join().unwrap();
-            }
+            lines.ended().expect("each run ended").join().unwrap();
+        });
+    }
+
+    /// A wait beside the resume of another thread ends only once that resume keeps
+    /// the handle of its run, so the wait can join it.
+    #[test]
+    fn a_wait_beside_a_resume_gets_the_handle_to_join() {
+        loom::model(|| {
+            let lines = Arc::new(Lines::new(4, 4, sink()));
+            lines.push(b"a".to_vec());
+            let other = {
+                let lines = Arc::clone(&lines);
+                thread::spawn(move || resume(&lines))
+            };
+            assert_eq!(lines.wait(1, Duration::ZERO), Waited::Written);
+            lines.ended().expect("the run ended").join().unwrap();
+            other.join().unwrap();
         });
     }
 }

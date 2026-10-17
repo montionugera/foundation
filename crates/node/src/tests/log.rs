@@ -1554,3 +1554,32 @@ fn the_bench_log_gives_the_dispatch_of_its_level() {
     });
     assert_eq!(enabled, (true, false));
 }
+
+#[test]
+fn a_wait_beside_a_resume_joins_the_thread_log() {
+    let threads = os::threads().expect("threads");
+    for round in 0..500 {
+        let lines = Lines::default();
+        let (_, mesh) = clock::Clock::new(os::clock());
+        let wall = os::wall().expect("a wall clock");
+        let log = to(&lines, false, tracing::Level::INFO);
+        let log = log::open(log, &threads, wall, mesh);
+        tracing::dispatcher::with_default(&log.dispatch, numbered(0, 1));
+        let resume = {
+            let log = log.clone();
+            threads.start("resume", move || async move { assert!(log.resume()) })
+        };
+        // The resume of the other thread starts the run, so the wait starts none.
+        while !format!("{log:?}").contains("running: true") && lines.read().is_empty() {
+            std::hint::spin_loop();
+        }
+        assert!(log.wait(Duration::from_secs(10)), "round {round}");
+        resume
+            .expect("the thread starts")
+            .join()
+            .expect("the resume ends");
+        assert_eq!(lines.read().len(), 1, "round {round}");
+        let debug = format!("{log:?}");
+        assert!(debug.contains("handle: None"), "round {round}: {debug}");
+    }
+}
