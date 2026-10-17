@@ -23,7 +23,7 @@ use std::sync::{Condvar, Mutex, MutexGuard};
 #[derive(Debug)]
 pub(super) struct Lines {
     inner: Mutex<Inner>,
-    /// Signals each change of `Inner::written`, `Inner::running`, and `Inner::resumed`.
+    /// Signals each change of `Inner::written`, `Inner::running`, and `Inner::resuming`.
     written: Condvar,
     /// The lines that can wait. A line that finds this many drops.
     bound: usize,
@@ -57,9 +57,8 @@ struct Inner {
     written: u64,
     /// The runs that started, so [`Lines::resume`] knows a later one.
     runs: u64,
-    /// The last of `runs` whose [`Lines::resume`] has returned. The resume of a run
-    /// that a later run follows sets nothing.
-    resumed: u64,
+    /// The calls of [`Lines::resume`] that started a run and have not returned.
+    resuming: u64,
     /// The thread `log` that runs or ran last, until a [`Lines::resume`] or a
     /// [`Lines::wait`] joins it.
     handle: Option<Handle>,
@@ -105,7 +104,7 @@ impl Drop for Run {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Waited {
     /// The lines were written and, while the lines are closed, the run has ended and
-    /// its resume has returned.
+    /// each resume has returned.
     Written,
     /// The bound passed first.
     Late,
@@ -169,7 +168,7 @@ impl Lines {
             thread: None,
             written: 0,
             runs: 0,
-            resumed: 0,
+            resuming: 0,
             handle: None,
         };
         Self {
@@ -255,22 +254,20 @@ impl Lines {
         let Some(run) = self.start() else {
             return Ok(());
         };
-        let resume = Resume {
-            lines: self,
-            key: run.key,
-        };
+        let key = run.key;
+        let resume = Resume(self);
         let handle = spawn(run)?;
         let mut inner = self.lock();
-        let ended = if inner.runs == resume.key {
+        let ended = if inner.runs == key {
             inner.handle.replace(handle)
         } else {
             Some(handle)
         };
         drop(inner);
-        drop(resume);
         if let Some(ended) = ended {
             join(ended);
         }
+        drop(resume);
         Ok(())
     }
 
@@ -284,6 +281,7 @@ impl Lines {
         inner.running = true;
         inner.thread = None;
         inner.runs += 1;
+        inner.resuming += 1;
         Some(Run {
             lines: Some(Arc::clone(self)),
             key: inner.runs,
@@ -340,7 +338,7 @@ impl Lines {
     }
 
     /// Blocks until the first `sent` lines are written and, while the lines are
-    /// closed, the run has ended and its resume has returned, or until `bound` passes
+    /// closed, the run has ended and each resume has returned, or until `bound` passes
     /// or the writer panicked. Blocks on real time. Then, outside the lock, joins the
     /// thread `log` when no run runs, other than after the writer panicked: that panic
     /// has reached the panic hook.
@@ -351,7 +349,7 @@ impl Lines {
     pub(super) fn wait(&self, sent: u64, bound: Duration) -> Waited {
         let busy = |inner: &mut Inner| {
             let live = inner.running || inner.writer.is_some();
-            let ending = inner.running || inner.resumed != inner.runs;
+            let ending = inner.running || inner.resuming > 0;
             live && (inner.written < sent || (inner.closed && ending))
         };
         let (mut inner, late) = wait_while(&self.written, self.lock(), bound, busy);
@@ -381,21 +379,14 @@ impl Lines {
     }
 }
 
-/// The [`Lines::resume`] of run `key`. Its drop, also when the spawn unwinds, ends
-/// the resume, so no wait waits for it.
-struct Resume<'a> {
-    lines: &'a Lines,
-    key: u64,
-}
+/// A [`Lines::resume`] that started a run. Its drop, after the join of the resume
+/// or as the spawn unwinds, ends the resume, so no wait waits for it.
+struct Resume<'a>(&'a Lines);
 
 impl Drop for Resume<'_> {
     fn drop(&mut self) {
-        let mut inner = self.lines.lock();
-        if inner.runs == self.key {
-            inner.resumed = self.key;
-        }
-        drop(inner);
-        self.lines.written.notify_all();
+        self.0.lock().resuming -= 1;
+        self.0.written.notify_all();
     }
 }
 
@@ -621,6 +612,53 @@ mod tests {
         drop(held);
         assert_eq!(lines.wait(0, Duration::ZERO), Waited::Written);
         assert_eq!(*joined.lock().unwrap(), [1], "the run ended");
+    }
+
+    #[test]
+    fn a_closed_wait_waits_for_a_resume_that_a_later_run_follows() {
+        let lines = Arc::new(Lines::new(4, 4, sink()));
+        lines.open();
+        let first = lines.resume(|run| {
+            drop(run);
+            let later = lines.resume(|run| {
+                drop(run);
+                Ok(Handle::new(|| Ok(())))
+            });
+            assert_eq!(later, Ok(()));
+            lines.close();
+            assert_eq!(lines.wait(0, Duration::ZERO), Waited::Late, "a resume runs");
+            Ok(Handle::new(|| Ok(())))
+        });
+        assert_eq!(first, Ok(()));
+        assert_eq!(lines.wait(0, Duration::ZERO), Waited::Written);
+    }
+
+    #[test]
+    fn a_closed_wait_waits_for_a_resume_that_joins_the_run_before_it() {
+        let lines = Arc::new(Lines::new(4, 4, sink()));
+        lines.open();
+        let waited = Arc::new(Mutex::new(None));
+        let first = lines.resume(|run| {
+            drop(run);
+            let (lines, waited) = (Arc::clone(&lines), Arc::clone(&waited));
+            Ok(Handle::new(move || {
+                lines.close();
+                *waited.lock().unwrap() = Some(lines.wait(0, Duration::ZERO));
+                Ok(())
+            }))
+        });
+        assert_eq!(first, Ok(()));
+        let second = lines.resume(|run| {
+            drop(run);
+            Ok(Handle::new(|| Ok(())))
+        });
+        assert_eq!(second, Ok(()));
+        assert_eq!(
+            *waited.lock().unwrap(),
+            Some(Waited::Late),
+            "the join is in a resume"
+        );
+        assert_eq!(lines.wait(0, Duration::ZERO), Waited::Written);
     }
 
     #[test]
