@@ -125,7 +125,10 @@
   `started`, shard 0 logs a warning "parts of the OS roots were not read" with the
   count `failed` of all failures and the `source` of the read, once, when the read has
   a failure (`laptop.architect-2`, 2026-10-16T22:48:23Z, #2945:
-  https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6226140961), "a part
+  https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6226140961; the
+  count `failed`, and the count of the rest with no `source`: `laptop.architect-2`,
+  2026-10-17T01:43:59Z, #2949:
+  https://github.com/synnaxlabs/foundation/pull/2963#issuecomment-6228097941), "a part
   of the OS roots was not read" with the `error` of each of the first 16 failures,
   "more parts of the OS roots were not read" with the count `unlisted` of the rest, "OS
   roots that do not parse are skipped" with the count `skipped`, and "the OS roots hold
@@ -146,7 +149,9 @@
   the store. `os` owns this pick, so `node` never derives it from its `vars`, and `node`
   cuts the `source` as it cuts an `error` (`laptop.architect-2`, 2026-10-16T22:27:09Z,
   #2920: https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225879413).
-  This supersedes the warning for each failure that
+  This supersedes the `source` on the count line of
+  https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225879413, the
+  warning for each failure that
   https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6213377062 approved,
   and `node::Config::roots: Vec<Vec<u8>>` of
   https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207437988, which
