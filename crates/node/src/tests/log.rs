@@ -1681,6 +1681,32 @@ fn a_text_line_names_mesh_time_once_when_a_span_field_has_that_name() {
     );
 }
 
+#[test]
+fn a_text_line_near_mesh_time_keeps_a_span_field_named_mesh_time() {
+    let (mut sim, host) = host(1);
+    let lines = Lines::default();
+    let (mut clock, mesh) = clock::Clock::new(host.clock());
+    let source = clock.add();
+    clock.push(
+        source,
+        clock::source::Wall::new(host.wall(), host.clock()).measure(),
+    );
+    let format = ops::Log {
+        json: false,
+        level: tracing::Level::INFO,
+    };
+    let writer = Box::new(lines.clone());
+    let log = log::open(Log { writer, format }, &host.threads(), host.wall(), mesh);
+    write(&mut sim, &log, || {
+        let span = tracing::error_span!("s", mesh_time = "t");
+        span.in_scope(|| tracing::info!(target: "test", "e"));
+    });
+    assert_eq!(
+        lines.read(),
+        ["2026-01-01T00:00:00.000000Z INFO test: e mesh_time=t"]
+    );
+}
+
 /// A kind whose first run changes what it shows, 2 s apart so that the status writer
 /// writes each step, and ends with `first`. Each later run returns `Ok`.
 struct Flaky {
