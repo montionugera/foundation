@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::ffi::CStr;
 use std::num::NonZeroU32;
+use std::panic::{self, AssertUnwindSafe};
 
 use proptest::prelude::*;
 
@@ -489,7 +490,7 @@ fn describe_splits_by_the_message_size_of_the_session() {
         out,
         (
             Ok(vec![none(), none(), none()]),
-            Ok(vec![described(Some(11), -2, 1), none()])
+            Ok(vec![described(Some(11), -1, 1), none()])
         )
     );
 }
@@ -1165,17 +1166,24 @@ fn a_page_asks_for_the_references_that_fit_one_message() {
     assert_eq!(page, Ok(Some(fits)));
 }
 
-/// Gives the answer of a Read of the Value of [`VALUE`] to `read`.
+/// Gives the answer of a Read of the Value of [`VALUE`] to `read`, and panics as `read`
+/// does after the client and the server close.
 fn read_answer(read: impl FnOnce(&service::Answer) + Send + 'static) {
-    let ((), _) = run(0, async move |node| {
+    let (outcome, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
             let answer = client.serve(&Request::values(&[(&VALUE).into()])).await;
-            read(&answer.expect("the read works"));
+            let answer = answer.expect("the read works");
+            let outcome = panic::catch_unwind(AssertUnwindSafe(|| read(&answer)));
+            drop(answer);
             client.close().await;
+            outcome
         })
-        .await;
+        .await
     });
+    if let Err(payload) = outcome {
+        panic::resume_unwind(payload);
+    }
 }
 
 #[test]
@@ -1375,4 +1383,67 @@ fn a_browse_past_one_message_keeps_the_session() {
         out,
         (Err(Status::BAD_REQUEST_TOO_LARGE), Ok(Some(1)), Ok(()))
     );
+}
+
+/// A describe whose future drops in the third step of its walk drops each supertype,
+/// also those of the first two steps, so three such describes of other variables
+/// keep none.
+#[test]
+fn a_dropped_describe_keeps_no_supertypes() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let server = peer.server;
+            server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+            server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+            let mut sets = Vec::new();
+            for set in 0..3 {
+                let mut nodes = Vec::new();
+                for index in 0..513 {
+                    let at = set * 1000 + index;
+                    let (grand, parent, data_type, node) = (
+                        ns1(20_000 + at),
+                        ns1(30_000 + at),
+                        ns1(40_000 + at),
+                        ns1(50_000 + at),
+                    );
+                    server.add_data_type(&grand, &DOUBLE, c"Grand");
+                    server.add_data_type(&parent, &grand, c"Parent");
+                    server.add_data_type(&data_type, &parent, c"Child");
+                    server.add_variable(
+                        &node,
+                        &ROOT,
+                        HAS_COMPONENT,
+                        c"v",
+                        &data_type,
+                        -1,
+                        3,
+                    );
+                    nodes.push(node);
+                }
+                sets.push(nodes);
+            }
+            let browses = server.count_browses();
+            let mut client = peer.connected().await;
+            let mut kept = Vec::new();
+            for nodes in &sets {
+                let start = browses.get();
+                {
+                    let mut describe = std::pin::pin!(client.describe(nodes));
+                    let ended = std::future::poll_fn(|cx| {
+                        if browses.get() >= start + 3 {
+                            return std::task::Poll::Ready(None);
+                        }
+                        describe.as_mut().poll(cx).map(Some)
+                    })
+                    .await;
+                    assert!(ended.is_none(), "the describe ends in its third step");
+                }
+                kept.push(client.supertypes.len());
+            }
+            client.close().await;
+            kept
+        })
+        .await
+    });
+    assert_eq!(out, [0, 0, 0]);
 }

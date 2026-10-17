@@ -81,7 +81,7 @@ fn roots() {
     let none = held(os::Roots::default);
     let big = held(|| os::Roots {
         certificates: vec![vec![0_u8; 1 << 20]; 8],
-        failures: Vec::new(),
+        ..os::Roots::default()
     });
     assert!(
         big < none + (1 << 20),
@@ -122,6 +122,7 @@ fn config(
             writer: Box::new(std::io::sink()),
             format: ops::Log::default(),
         },
+        threads: host.threads(),
     }
 }
 

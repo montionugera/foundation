@@ -122,10 +122,25 @@
   https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6218554197). Main
   reads the store once, so a change to it takes effect at the next start. Before
   `started`, shard 0 logs a warning "a part of the OS roots was not read" with the
-  `error` of each failure, "OS roots that do not parse are skipped" with the count
-  `skipped`, and "the OS roots hold no certificate, so an https connect with no CA of
-  its connector fails". It logs them also with `Region::Absent`. This supersedes
-  `node::Config::roots: Vec<Vec<u8>>` of
+  `error` of each of the first 16 failures, "more parts of the OS roots were not read"
+  with the count `unlisted` of the rest and the `source` of the read, "OS roots that do
+  not parse are skipped" with the count `skipped`, and "the OS roots hold no
+  certificate, so an https connect with no CA of its connector fails". It logs them also
+  with `Region::Absent`. The cap of 16 failures keeps the warnings from filling the log
+  queue and dropping `started` (`laptop.architect-2`, 2026-10-16T20:40:05Z, #2920:
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6224274551). For the
+  same reason, an `error` of more than 1024 bytes keeps at most its first and last 510
+  bytes, cut at char boundaries and joined by `…`, as a line of a PEM file can be of any
+  length (`laptop.architect-2`, 2026-10-16T22:26:26Z, #2920:
+  https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225870705).
+  `os::roots` gives the `source` as `os::Source`: `the OS store`, or the paths of
+  `SSL_CERT_FILE` and `SSL_CERT_DIR` that it read in place of the store. `os` owns this
+  pick, so `node` never derives it from its `vars`, and `node` cuts the `source` as it
+  cuts an `error` (`laptop.architect-2`, 2026-10-16T22:27:09Z, #2920:
+  https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225879413). This
+  supersedes the warning for each failure that
+  https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6213377062 approved,
+  and `node::Config::roots: Vec<Vec<u8>>` of
   https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207437988, which
   read the OS outside `os`, so its failures did not reach the node log
   (`laptop.architect-2`, 2026-10-16T10:09:09Z:

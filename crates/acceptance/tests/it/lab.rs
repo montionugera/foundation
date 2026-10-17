@@ -268,6 +268,7 @@ impl Lab {
                     writer: Box::new(std::io::sink()),
                     format: ops::Log::default(),
                 },
+                threads: host.threads(),
             });
             member.node = Some(node);
         }

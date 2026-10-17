@@ -16,7 +16,7 @@ use types::sample::Scalar;
 use super::*;
 use crate::event::Time;
 use crate::kind::Kind;
-use crate::sim::{Variables, serve};
+use crate::sim::{Variables, serve, tree};
 
 /// The sim tree of `sim::serve` from its folder `Plant`.
 const PLANT: &str = "Plant";
@@ -315,7 +315,7 @@ fn matches_each_point_under_a_folder_once_past_a_loop() {
     let paths: Vec<String> = (found.entries.iter())
         .map(|entry| entry.path.to_string())
         .collect();
-    let odd = ["Guid", "Level", "Level (ns=1;s=Plant.Odd.Twin)"];
+    let odd = ["guid", "Level", "Level (ns=1;s=Plant.Odd.Twin)"];
     let line = [
         "Temperature",
         "Speed",
@@ -334,9 +334,6 @@ fn matches_each_point_under_a_folder_once_past_a_loop() {
     assert_eq!(found.end, End::Done);
 }
 
-/// The node of the GUID of the folder `Guid` of `Plant/Odd`.
-const GUID: &str = "ns=1;g=00000005-0006-0007-0800-000000000000";
-
 /// The entry `Twin` of `Plant/Odd`, named apart from `Level`.
 fn twin() -> Entry {
     let name = "Level (ns=1;s=Plant.Odd.Twin)";
@@ -351,8 +348,8 @@ fn twin() -> Entry {
 fn drops_a_repeated_node_and_names_a_repeated_name_apart() {
     let found = browse(level("Plant/Odd", None)).expect("found");
     let guid = Entry {
-        path: "Plant/Odd/Guid".parse().expect("a path"),
-        tag: GUID.to_owned(),
+        path: "Plant/Odd/guid".parse().expect("a path"),
+        tag: tree::GUID.to_owned(),
         shape: unreadable(
             "its node ID is a GUID or opaque, which the kind cannot read",
         ),

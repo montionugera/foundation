@@ -1,5 +1,5 @@
-//! `wal::Writer`, `log::Logs`, and a header table, for the bench targets and the
-//! `alloc` test only. Not a stable surface.
+//! `wal::Writer`, `log::Logs`, the commit task, and a header table, for the bench
+//! targets and the `alloc` and `memory` tests only. Not a stable surface.
 
 use std::num::{NonZeroU32, NonZeroU64};
 use std::{hint, iter, mem};
@@ -14,6 +14,8 @@ use crate::group;
 use crate::log::Carried;
 use crate::record::{ALIGN, BLOCK};
 use crate::wal::{Ends, Layout, Position, Writer};
+
+pub use crate::buffer::bench::Deadline;
 
 /// The blocks that each ring of the `wal` bench adds to its ID. With the three
 /// blocks that each record keeps free, each commit of 1 record then trims at 68 and
