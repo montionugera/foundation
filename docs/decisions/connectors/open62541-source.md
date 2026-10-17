@@ -856,16 +856,17 @@
   `pem_password_cb` in the declarations of the output of `cc -E`, and fails on each name
   of one in the copy other than in a call that gives a callback of `PASSWORDS` at its
   place (#3017, #3027). It reads the readers from the declarations of one `cc -E` pass
-  of the `openssl/pem.h` of aws-lc alone, with the flags of aws-lc and none of the copy,
-  so no file or header of the copy changes the set. It checks the calls in a `cc -E`
-  pass of each file with the flags of its build, so it reads the unit that compiles. In
-  aws-lc-sys 0.45.0, the one other function that takes a `pem_password_cb`,
-  `SSL_CTX_set_default_passwd_cb` of `openssl/ssl.h`, is in neither `AWS_LC` nor
-  `AWS_LC_KEYS`, so the check refuses each call of it. It compiles each file with
-  `-Werror=implicit-function-declaration`, as GCC 14 does by default, so a call with no
-  declaration fails the build on each GCC. `AWS_LC` holds the PEM readers, since this
-  check is the one guard of their password. Supersedes "The PEM
-  readers belong in `AWS_LC_KEYS`" of
+  of each `openssl/*.h` of aws-lc together, with the flags of aws-lc and none of the
+  copy, so no file or header of the copy changes the set, and a pass that fails fails
+  the check. It checks the calls in a `cc -E` pass of each file with the flags of its
+  build, so it reads the unit that compiles. In aws-lc-sys 0.45.0, the readers are the
+  PEM readers of `openssl/pem.h` and `SSL_CTX_set_default_passwd_cb` of `openssl/ssl.h`,
+  which is in neither `AWS_LC` nor `AWS_LC_KEYS`, so the check refuses each call of it.
+  It compiles each file with `-Werror=implicit-function-declaration`, as GCC 14 does by
+  default, and with `-ftrack-macro-expansion=0`, so a call with no declaration fails the
+  build on each GCC, also of a name of aws-lc, which is a macro of a system header.
+  `AWS_LC` holds the PEM readers, since this check is the one guard of their password.
+  Supersedes "The PEM readers belong in `AWS_LC_KEYS`" of
   https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231723849, whose
   reason was the read of the console. The callbacks that return -1, and the check that
   reads the functions from the declarations: decided by `laptop.architect-2`
@@ -874,26 +875,26 @@
   decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6238536489,
   2026-10-17 18:26 UTC;
-  https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6238944949,
-  2026-10-17 18:51 UTC;
-  https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6241016919,
-  2026-10-17 21:03 UTC). `OMITTED` in `cargo
-  xtask open62541` is the closed list of the release files that the library compiles and
-  the copy leaves out, each with its reason: the file stores, `create_certificate.c`,
-  and each policy file other than `Basic256Sha256`, `Aes128_Sha256_RsaOaep`,
-  `Aes256_Sha256_RsaPss`, and their common code. So the copy compiles only the three
-  current policies and `None`, and the production code adds no other. `shim.c` defines
-  each symbol that the rest of the copy names from a left-out file to print its name and
-  abort, and a test calls each one. A test fails on another policy file in
-  `sources.txt`. A test fails when the production code names a policy or a certificate
-  group, or a function `UA_CertificateUtils_*`, other than at its stub in `shim.c`, and
-  a test fails when the objects of `shim.c` or `server.c` name aws-lc or a symbol of
-  `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps no state: the copy
-  removes its `static` flag, which it wrote with no lock and which guarded only the
-  calls for OpenSSL before 1.1, and the build fails when `OPENSSL_API_COMPAT` is
-  defined. Lost: the about 35 file and clock calls of the
-  left-out files, each keyed in `FUNCTION_SYMBOLS`; and a copy of each deprecated and
-  ECC policy file. Decided by `laptop.architect-2`
+  https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6238944949, 2026-10-17
+  18:51 UTC; https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6241016919,
+  2026-10-17 21:03 UTC). The pass of each `openssl/*.h`: OK of `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6241360552).
+  `OMITTED` in `cargo xtask open62541` is the closed list of the release files that the
+  library compiles and the copy leaves out, each with its reason: the file stores,
+  `create_certificate.c`, and each policy file other than `Basic256Sha256`,
+  `Aes128_Sha256_RsaOaep`, `Aes256_Sha256_RsaPss`, and their common code. So the copy
+  compiles only the three current policies and `None`, and the production code adds no
+  other. `shim.c` defines each symbol that the rest of the copy names from a left-out
+  file to print its name and abort, and a test calls each one. A test fails on another
+  policy file in `sources.txt`. A test fails when the production code names a policy or
+  a certificate group, or a function `UA_CertificateUtils_*`, other than at its stub in
+  `shim.c`, and a test fails when the objects of `shim.c` or `server.c` name aws-lc or a
+  symbol of `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps no state:
+  the copy removes its `static` flag, which it wrote with no lock and which guarded only
+  the calls for OpenSSL before 1.1, and the build fails when `OPENSSL_API_COMPAT` is
+  defined. Lost: the about 35 file and clock calls of the left-out files, each keyed in
+  `FUNCTION_SYMBOLS`; and a copy of each deprecated and ECC policy file. Decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6230888200,
   2026-10-17 06:51 UTC). The `UA_Openssl_Init` sentences: decided by
   `laptop.architect-2`
