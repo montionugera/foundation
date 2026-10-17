@@ -34,7 +34,7 @@ jobs:
   # push skips every job, because the queue already ran them on the same commit.
   changes:
     if: github.event_name != 'push' || github.actor == 'github-merge-queue[bot]'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read
@@ -102,51 +102,151 @@ jobs:
               - '.claude/skills/build/wait_test.sh'
               - '.github/workflows/**'
 
+  # The required checks `check`, `macos`, and `windows`, one for each OS of LINUX CI.
+  # A matrix job that skips reports one check named by the unexpanded expression, so
+  # this job always runs, and each step skips when the filter found no change.
   check:
     needs: changes
-    if: "!cancelled() && needs.changes.outputs.rust != 'false'"
-    runs-on: ubuntu-latest
+    if: "!cancelled()"
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each OS lists the flags that leave out what fails on it, each with the open
+        # issue that removes it: `crates` do not build with all their targets, the tests
+        # of `untested` fail, and so do `tests`, each a full test path that `--exact`
+        # matches in its binary. The lists only shrink (LINUX CI).
+        include:
+          - name: check
+            runner: ubuntu-24.04
+            crates: []
+            untested: []
+            tests: []
+          - name: macos
+            runner: macos-15
+            crates: []
+            untested: []
+            tests:
+              - --skip wall::gives_a_bound_under_sixteen_seconds_when_a_daemon_runs # #2965
+          - name: windows
+            runner: windows-2025
+            crates:
+              - --exclude connector-opcua # #2968
+              - --exclude node # #2968, #682, #2955, #2956, #477, #2957
+              - --exclude acceptance # #2968, #682, #2955, #2956, #477, #2957
+              - --exclude xtask # #2238
+              - --exclude ops # #2971
+            untested:
+              - --exclude sim # #2973
+              - --exclude secret # #2973
+              - --exclude connector-influx # #2973
+            tests:
+              - --skip kind::tests::reads_a_secret_at_each_call_and_retries_one_the_store_has_not # #2973
+              - --skip supervisor::tests::heals_a_run_when_a_secret_file_too_large_is_cut # #2973
+              - --skip supervisor::tests::heals_a_run_when_the_missing_secret_is_written # #2973
+              - --skip browse::gives_a_secret_that_is_not_there_as_a_retry # #2973
+              - --skip driver::tests::home::set_home_gives_the_cause_when_the_write_of_its_entry_stops_the_group # #2973
+              - --skip driver::tests::in_use::an_open_refuses_a_file_that_does_not_name_a_pointer # #2973
+              - --skip driver::tests::serve::serve_gives_no_code_of_the_mesh_when_the_group_stops # #2973
+              - --skip log::tests::a_second_open_gives_busy_on_the_lock_while_the_first_log_lives # #2973
+              - --skip log::tests::refuses_a_bad_record_with_a_good_one_after_it # #2973
+              - --skip log::tests::refuses_a_file_that_is_not_the_next_log_file # #2973
+              - --skip log::tests::refuses_a_lock_that_has_bytes # #2973
+              - --skip log::tests::refuses_a_record_of_another_format_version # #2973
+              - --skip log::tests::refuses_a_write_after_a_failed_or_dropped_one # #2973
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUST: ${{ needs.changes.outputs.rust }}
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - if: env.RUST != 'false'
+        uses: actions/checkout@v4
+      - if: env.RUST != 'false'
+        uses: Swatinem/rust-cache@v2
       - name: Format
+        if: env.RUST != 'false' && runner.os == 'Linux'
         run: |
           cargo fmt --check
           cargo fmt --check --manifest-path fuzz/Cargo.toml
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        if: "!cancelled() && env.RUST != 'false'"
+        run: >-
+          cargo clippy --workspace ${{ join(matrix.crates, ' ') }} --all-targets
+          --all-features --keep-going -- -D warnings
       - name: Layers
+        if: "!cancelled() && env.RUST != 'false' && runner.os == 'Linux'"
         run: cargo xtask layers
       - name: Globals
+        if: "!cancelled() && env.RUST != 'false' && runner.os == 'Linux'"
         run: cargo xtask globals
       - name: Oracles
+        if: "!cancelled() && env.RUST != 'false' && runner.os == 'Linux'"
         run: cargo xtask oracles
       - name: Test
-        run: cargo test --workspace --all-features
+        if: "!cancelled() && env.RUST != 'false'"
+        run: >-
+          cargo test --workspace ${{ join(matrix.crates, ' ') }}
+          ${{ join(matrix.untested, ' ') }} --all-features --no-fail-fast
+          -- --exact ${{ join(matrix.tests, ' ') }}
       # Root tests mount a filesystem. Only this runner, which is discarded after the
       # job, runs them.
       - name: Root tests
+        if: "!cancelled() && env.RUST != 'false' && runner.os == 'Linux'"
         run: |
           cargo clippy -p os --all-features --test root -- -D warnings
           cargo test -p os --all-features --test root
 
+  # The required checks `features`, `features-macos`, and `features-windows`. It runs
+  # as `check` does, and each OS leaves out the `crates` of its entry of `check`.
   features:
     needs: changes
-    if: "!cancelled() && needs.changes.outputs.rust != 'false'"
-    runs-on: ubuntu-latest
+    if: "!cancelled()"
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: features
+            runner: ubuntu-24.04
+            crates: []
+          - name: features-macos
+            runner: macos-15
+            crates: []
+          - name: features-windows
+            runner: windows-2025
+            crates:
+              - --exclude connector-opcua # #2968
+              - --exclude node # #2968, #682, #2955, #2956, #477, #2957
+              - --exclude acceptance # #2968, #682, #2955, #2956, #477, #2957
+              - --exclude xtask # #2238
+              - --exclude ops # #2971
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUST: ${{ needs.changes.outputs.rust }}
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+      - if: env.RUST != 'false'
+        uses: actions/checkout@v4
+      - if: env.RUST != 'false'
+        uses: Swatinem/rust-cache@v2
+      - if: env.RUST != 'false'
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-hack@0.6.45
       - name: Each feature alone
-        run: cargo hack check --workspace --each-feature --no-dev-deps
+        if: env.RUST != 'false'
+        run: >-
+          cargo hack check --workspace ${{ join(matrix.crates, ' ') }} --each-feature
+          --no-dev-deps
 
   deny:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.deps != 'false'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/install-action@v2
@@ -179,7 +279,7 @@ jobs:
   wait:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.wait != 'false'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read
@@ -194,7 +294,7 @@ jobs:
   loom:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.models != 'false'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
@@ -208,7 +308,7 @@ jobs:
   shuttle:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.models != 'false'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
@@ -218,7 +318,7 @@ jobs:
   miri:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.models != 'false'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned nightly
@@ -233,7 +333,7 @@ jobs:
   sanitizers:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.rust != 'false'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned nightly
@@ -246,7 +346,7 @@ jobs:
   fuzz:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.rust != 'false'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned nightly
@@ -293,7 +393,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
       contents: read
@@ -342,7 +442,7 @@ jobs:
     if: >-
       !cancelled() && needs.changes.outputs.rust != 'false' &&
       (github.event_name == 'pull_request' || github.event_name == 'merge_group')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
       contents: read
