@@ -128,18 +128,21 @@ impl kind::Kind for Kind {
     /// it. In one folder, a second reference to a node gives no entry, and a name that
     /// an earlier entry has gets ` (<tag>)` after it. A cursor of an earlier browse
     /// skips the references before its page again, so it assumes that the server
-    /// keeps their order. Then it closes the session, as `run` does. The header of
-    /// each request holds the mesh time of the node, which it reads before the
-    /// connect.
+    /// keeps their order. The browse keeps at most 16 MiB of the tags and names of
+    /// the references before its pages. Then it closes the session, as `run` does.
+    /// The header of each request holds the mesh time of the node, which it reads
+    /// before the connect.
     ///
     /// # Errors
     ///
     /// [`Error::Config`] with the diagnostic of `parse` for `address`, and with
     /// `opcua.bad-cursor` for a cursor that the kind did not give, or that skips more
-    /// than 100 000 references. [`Error::Retry`] when the node has no mesh time, as
-    /// [`browse::Context::time`] gives it. [`Error::Device`]
-    /// when the connect, a Browse, a `BrowseNext`, or a Read fails. The errors of
-    /// [`browse::walk`].
+    /// than 100 000 references and that this browse does not hold. [`Error::Retry`]
+    /// when the node has no mesh time, as [`browse::Context::time`] gives it.
+    /// [`Error::Device`] when the connect, a Browse, a `BrowseNext`, or a Read fails,
+    /// also with `BadContinuationPointInvalid` when the server freed the point of a
+    /// cursor that skips more than 100 000 references, and when the tags and names
+    /// that the browse keeps pass 16 MiB. The errors of [`browse::walk`].
     fn browse(
         &self,
         ctx: &browse::Context<'_>,
@@ -155,11 +158,7 @@ async fn walk(
 ) -> Result<browse::Found, Error> {
     let address =
         config::endpoint(ctx.config()).map_err(|error| Error::Config(vec![error]))?;
-    let mesh = ctx.time().await?;
-    let time = event::Time {
-        clock: ctx.clock().clone(),
-        wall: Box::new(move || mesh.now()),
-    };
+    let time = event::Time::mesh(ctx.clock().clone(), ctx.time().await?);
     let found = session(
         time,
         ctx.net().clone(),
@@ -174,11 +173,7 @@ async fn walk(
 
 async fn run(ctx: Context<Config>) -> Result<(), Error> {
     let mut frames = Frames::open(&ctx).await?;
-    let mesh = frames.writer.time();
-    let time = event::Time {
-        clock: ctx.clock().clone(),
-        wall: Box::new(move || mesh.now()),
-    };
+    let time = event::Time::mesh(ctx.clock().clone(), frames.writer.time());
     let ran = session(
         time,
         ctx.net().clone(),
@@ -228,8 +223,8 @@ async fn read(
 ) -> Result<(), Error> {
     let reads = &ctx.config().reads;
     let nodes: Vec<Node> = reads.iter().map(|read| read.node.clone()).collect();
-    let (nodes, large) = client.nodes(&nodes);
-    if let Some(large) = large.into_iter().next() {
+    let nodes = client.nodes(&nodes);
+    if let Some(large) = nodes.large().first() {
         return Err(large_read(reads, large));
     }
     let missed = ctx.count("missed");
@@ -489,7 +484,7 @@ fn sample_type(read: &Read, data_type: Type) -> Diagnostic {
 
 /// The error of a read of `reads` whose node alone needs a Read past one message of the
 /// server.
-fn large_read(reads: &[Read], Large { index, bytes, most }: Large) -> Error {
+fn large_read(reads: &[Read], &Large { index, bytes, most }: &Large) -> Error {
     let read = &reads[index];
     Error::Config(vec![Diagnostic::new(
         LARGE_READ,
@@ -506,10 +501,15 @@ fn large_read(reads: &[Read], Large { index, bytes, most }: Large) -> Error {
 /// Why a run ended with [`Error::Device`].
 #[derive(Debug)]
 pub(crate) enum Failure {
-    Connect { address: String, status: Status },
+    Connect {
+        address: String,
+        status: Status,
+    },
     Read(Status),
     Check(Status),
     Browse(Status),
+    /// The tags and names before the pages of a browse pass [`crate::browse::BYTES`].
+    Names,
 }
 
 impl fmt::Display for Failure {
@@ -525,6 +525,11 @@ impl fmt::Display for Failure {
             Self::Browse(status) => {
                 write!(f, "the browse failed with {}", status.name())
             }
+            Self::Names => write!(
+                f,
+                "the tags and names of the browse pass {} MiB",
+                crate::browse::BYTES >> 20
+            ),
         }
     }
 }

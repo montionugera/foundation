@@ -82,7 +82,7 @@
   kind reads only what it needs to reach the device, so a block with only `kind`,
   `node`, and `address` browses. A kind reads mesh time with `browse::Context::time`,
   which races `Hub::time` against `WAIT` (5 s) and gives `Error::Retry` with "the node
-  has no mesh time after 5 s" at the bound, so a kind that reads no mesh time never
+  has no mesh time after 5s" at the bound, so a kind that reads no mesh time never
   waits (`laptop.architect-2`, 2026-10-17T03:22:56Z:
   https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6228993285).
   `browse::Context` and `kind::Context` stay two types: each input that both give is a
