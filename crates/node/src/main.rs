@@ -92,6 +92,7 @@ fn run(args: &[OsString], vars: BTreeMap<OsString, OsString>) -> Result<u8, Fail
 fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
     let (ran, run) = mpsc::channel();
     let (started, threads) = mpsc::channel();
+    let (opened, reaches) = mpsc::channel();
     let config = env::shards::Config {
         name: "cli".into(),
         core: None,
@@ -112,15 +113,23 @@ fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
             io::stdout().lock(),
             io::stderr().lock(),
             &os::paths(),
-            async |dir: &Path| reach(dir, &tasks).await.map(send),
+            async |dir: &Path| reach(dir, &tasks, &opened).await.map(send),
         )
         .await;
         ran.send(run).expect("invariant: `main` keeps the receiver");
     });
+    let shard = shard.map_err(failed)?;
+    // Each reach joins here as it comes, so a server that reaches many times holds no
+    // ended thread. The stdin thread goes to `threads`, since it ends only with the
+    // shard.
+    let joined = reaches
+        .iter()
+        .map(env::thread::Handle::join)
+        .fold(Ok(()), Result::and);
     shard
-        .map_err(failed)?
         .join()
         .expect("invariant: the shard of the command line does not panic");
+    joined.map_err(failed)?;
     threads
         .try_iter()
         .try_for_each(env::thread::Handle::join)
@@ -146,12 +155,19 @@ fn input(started: &mpsc::Sender<env::thread::Handle>) -> io::Result<os::Input> {
     Ok(input)
 }
 
-/// The client of the node that runs on the data directory `dir`. The I/O thread that
-/// reads `dir` ends before this returns.
-async fn reach(dir: &Path, tasks: &Tasks) -> Result<program::Session, Failure> {
+/// The client of the node that runs on the data directory `dir`. It sends the handle
+/// of the I/O thread that reads `dir` to `opened`, for the main thread to join.
+async fn reach(
+    dir: &Path,
+    tasks: &Tasks,
+    opened: &mpsc::Sender<env::thread::Handle>,
+) -> Result<program::Session, Failure> {
     let threads = os::threads().map_err(failed)?;
-    let (disk, thread) =
+    let (disk, handle) =
         os::stored(dir, &threads, "files-reach").map_err(|error| stored(dir, error))?;
+    opened
+        .send(handle)
+        .expect("invariant: `main` keeps the receiver");
     let reached = node::client::reach(node::client::Config {
         files: env::files::Files::new(disk),
         net: net(),
@@ -160,9 +176,6 @@ async fn reach(dir: &Path, tasks: &Tasks) -> Result<program::Session, Failure> {
         tasks: tasks.clone(),
     })
     .await;
-    // `node::client::reach` drops its files before it returns, so this join waits for
-    // no read.
-    thread.join().map_err(failed)?;
     reached.map_err(|error| unreached(dir, error))
 }
 
