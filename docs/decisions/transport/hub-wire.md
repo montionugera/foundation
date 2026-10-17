@@ -347,9 +347,11 @@
   (`laptop.architect`, 2026-10-17T00:30:34Z:
   https://github.com/synnaxlabs/foundation/pull/2959#issuecomment-6227359257, item 1).
   `Reader::decode` takes it too, `None` gives the error of the finish at that point and
-  changes nothing, and `Reader::finished` is private. `Frames::open` gives the frames
-  alone, and `Frames::live` gives the open position, then the end of the last frame
-  with a sample, from one `Gaps` that a latest session keeps too. The mode stays in
+  changes nothing (`laptop.architect`, 2026-10-17T07:11:33Z:
+  https://github.com/synnaxlabs/foundation/pull/3009#issuecomment-6231063968, item 1),
+  and `Reader::finished` is private. `Frames::open` gives the frames alone, and
+  `Frames::live` gives the open position, then the end of the last frame with a
+  sample, from one `Gaps` that a latest session keeps too. The mode stays in
   `Reader`, which both the reader's node and the program make for a session
   (`laptop.architect`, 2026-10-17T06:34:47Z:
   https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6230737986, items
