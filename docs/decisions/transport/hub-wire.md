@@ -317,10 +317,19 @@
   retired: where a reply is due, a message of kind 3 gives `Error::Kind { kind: 3 }`,
   so a reader stops the stream as `MALFORMED` and a program's reader gives
   `Error::Reply` of it. Kind 3 stays reserved: no new reply takes it, so a peer of
-  another version never reads a new reply as `Behind` (`laptop.monitor` for the
-  person, 2026-10-16T21:05Z). The home never finishes a reader session, so
+  another version never reads a new reply as `Behind` (`laptop.monitor`, go on the
+  key choice of kind (f), 2026-10-16T21:05Z:
+  https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6227366041). The
+  home finishes its stream only after the reader finished its own, so
   `wire::hub::Reader::finished` gives the error of each finish, `Unfinished` inside a
   body and `Finished` at each other point, in place of `Reader::end`
-  (`laptop.architect`,
+  (`laptop.architect`, 2026-10-16T20:56:06Z:
   https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6224535856; plan:
   https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6224525816).
+  Supersedes the Behind rule
+  (https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6046877541,
+  https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6047310321), the
+  #1631 amendment
+  (https://github.com/synnaxlabs/foundation/issues/1689#issuecomment-6050026992), and
+  the `Step::Behind` arm of the program's reader
+  (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6206217799).
