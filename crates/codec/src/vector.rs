@@ -80,16 +80,16 @@ pub(crate) fn header_len(fields: usize, width: usize) -> usize {
 }
 
 /// Writes one vector of `W`-byte samples with `plan` into the front of `out` and
-/// returns its length. Each codec but raw writes the integers that `key` gives.
+/// returns its length. Each codec but raw writes the integers that `sortable` gives.
 pub(crate) fn write<const W: usize>(
     chunk: &[u8],
     plan: Plan,
-    key: impl Fn(u64) -> u64 + Copy,
+    sortable: impl Fn(u64) -> u64 + Copy,
     out: &mut [u8],
 ) -> usize {
     let mut out = Writer { out, len: 0 };
     let count = chunk.len().div_euclid(W);
-    let samples = word::samples::<W>(chunk).map(key);
+    let samples = word::samples::<W>(chunk).map(sortable);
     let mask = word::mask(W);
     match plan {
         Plan::Raw => out.raw(chunk, W),
@@ -317,14 +317,14 @@ fn field(header: &[u8], index: usize, width: usize) -> u64 {
 
 impl Vector<'_> {
     /// Writes the samples into `out`, which holds exactly them. Each codec but raw
-    /// gives the samples of the integers through `unkey`, the inverse of the `key` of
-    /// [`write`].
+    /// gives the samples of the integers through `sample`, the inverse of the
+    /// `sortable` of [`write`].
     pub(crate) fn decode<const W: usize>(
         &self,
         out: &mut [u8],
-        unkey: impl Fn(u64) -> u64,
+        sample: impl Fn(u64) -> u64,
     ) {
-        let store = |value| word::store::<W>(unkey(value));
+        let store = |value| word::store::<W>(sample(value));
         let body = self.body;
         let mut samples = out.as_chunks_mut::<W>().0.iter_mut();
         match self.plan {

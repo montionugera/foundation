@@ -1578,10 +1578,10 @@ mod tests {
                 .collect()
         }
 
-        /// The bits of the floats of `scalar` whose sortable integers are `keys`.
-        fn floats(scalar: Scalar, keys: &[u8]) -> Vec<u8> {
+        /// The bits of the floats of `scalar` whose sortable integers are `sortables`.
+        fn floats(scalar: Scalar, sortables: &[u8]) -> Vec<u8> {
             match scalar {
-                Scalar::F32 => keys
+                Scalar::F32 => sortables
                     .as_chunks::<4>()
                     .0
                     .iter()
@@ -1589,7 +1589,7 @@ mod tests {
                         word::store::<4>(float::bits::<4>(word::load(sortable)))
                     })
                     .collect(),
-                _ => keys
+                _ => sortables
                     .as_chunks::<8>()
                     .0
                     .iter()
@@ -1701,8 +1701,8 @@ mod tests {
                 len in select(&[0, 1, 1_023, 1_024, 1_025]),
                 words in proptest::collection::vec(any::<u64>(), 1_026),
             ) {
-                let keys = samples(scalar, tag, len, &words);
-                let values = floats(scalar, &keys);
+                let sortables = samples(scalar, tag, len, &words);
+                let values = floats(scalar, &sortables);
                 let encoded = check(scalar, &values);
                 if len >= 1_023 {
                     prop_assert_eq!(encoded[0], tag, "{:?} at {}", scalar, len);
@@ -1716,16 +1716,17 @@ mod tests {
                 len in 0..2_100_usize,
                 words in proptest::collection::vec(any::<u64>(), 2_101),
             ) {
-                let keys = samples(scalar, tag, len, &words);
+                let sortables = samples(scalar, tag, len, &words);
                 let unsigned = match scalar {
                     Scalar::F32 => Scalar::U32,
                     _ => Scalar::U64,
                 };
-                let values = floats(scalar, &keys);
+                let values = floats(scalar, &sortables);
                 let vector = VECTOR_LEN * scalar.width();
-                for (chunk, keys) in values.chunks(vector).zip(keys.chunks(vector)) {
+                let chunks = values.chunks(vector).zip(sortables.chunks(vector));
+                for (chunk, sortables) in chunks {
                     let encoded = check(scalar, chunk);
-                    let expected = encode(unsigned, keys);
+                    let expected = encode(unsigned, sortables);
                     prop_assert_eq!(encoded[0], expected[0]);
                     if encoded[0] == 0 {
                         prop_assert_eq!(encoded.len(), expected.len());

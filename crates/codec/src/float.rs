@@ -52,7 +52,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn key_keeps_the_order_of_floats(a in any::<f64>(), b in any::<f64>()) {
+        fn sortable_keeps_the_order_of_floats(a in any::<f64>(), b in any::<f64>()) {
             let order = |value: f64| sortable::<8>(value.to_bits());
             prop_assert_eq!(a.total_cmp(&b), order(a).cmp(&order(b)));
             #[expect(
@@ -66,7 +66,7 @@ mod tests {
         }
 
         #[test]
-        fn bits_inverts_key(value in any::<u64>()) {
+        fn bits_inverts_sortable(value in any::<u64>()) {
             prop_assert_eq!(bits::<8>(sortable::<8>(value)), value);
             let narrow = value & word::mask(4);
             prop_assert_eq!(sortable::<4>(narrow) & !word::mask(4), 0);

@@ -11,7 +11,7 @@ pub(crate) enum Order {
 }
 
 /// Writes one vector of `W`-byte samples into the front of `out` with the smallest
-/// plan for the integers that `key` gives, and returns its length. The plan is raw
+/// plan for the integers that `sortable` gives, and returns its length. The plan is raw
 /// when no codec saves at least 1/8 of the raw size.
 ///
 /// # Panics
@@ -20,14 +20,18 @@ pub(crate) enum Order {
 pub(crate) fn encode<const W: usize>(
     chunk: &[u8],
     order: Order,
-    key: impl Fn(u64) -> u64 + Copy,
+    sortable: impl Fn(u64) -> u64 + Copy,
     out: &mut [u8],
 ) -> usize {
-    vector::write::<W>(chunk, plan::<W>(chunk, order, key), key, out)
+    vector::write::<W>(chunk, plan::<W>(chunk, order, sortable), sortable, out)
 }
 
 /// The plan of [`encode`].
-fn plan<const W: usize>(chunk: &[u8], order: Order, key: impl Fn(u64) -> u64) -> Plan {
+fn plan<const W: usize>(
+    chunk: &[u8],
+    order: Order,
+    sortable: impl Fn(u64) -> u64,
+) -> Plan {
     // No codec saves 1/8 of one sample. Skips the statistics of a poll.
     if chunk.len() == W {
         return Plan::Raw;
@@ -39,7 +43,7 @@ fn plan<const W: usize>(chunk: &[u8], order: Order, key: impl Fn(u64) -> u64) ->
         Order::Signed => high,
         Order::Unsigned => 0,
     };
-    let mut samples = word::samples::<W>(chunk).map(key);
+    let mut samples = word::samples::<W>(chunk).map(sortable);
     let first = samples.next().expect("invariant: a vector holds a sample");
     let (mut min, mut max) = (first ^ sign, first ^ sign);
     let (mut delta_min, mut delta_max) = (u64::MAX, 0);
