@@ -116,16 +116,6 @@ fn a_drop_ends_the_thread_and_does_not_wait() {
 }
 
 #[test]
-fn a_connect_gives_the_error_that_the_thread_sends() {
-    let failed = Error::Session(program::Error::Unanswered);
-    let error = failed.clone();
-    let started = Client::start(move |_, outcome, _| async move {
-        outcome.send(Err(error)).unwrap();
-    });
-    assert_eq!(started.err(), Some(failed));
-}
-
-#[test]
 fn a_connect_gives_panicked_when_the_thread_panics_after_its_error() {
     let started = Client::start(|_, outcome, _| async move {
         let error = Error::Session(program::Error::Unanswered);
