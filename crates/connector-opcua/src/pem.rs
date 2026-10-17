@@ -135,6 +135,16 @@ fn each_read_refuses_an_encrypted_pem_with_no_prompt() {
     }
 }
 
+/// A child that exits before it reads its standard input, as a correct read of a PEM
+/// does, gives its output: more bytes than a pipe holds make the write fail.
+#[test]
+#[cfg(unix)]
+#[cfg_attr(not(target_os = "linux"), ignore = "needs setsid")]
+fn a_child_that_reads_no_stdin_gives_its_output() {
+    let output = crate::child::detached("pem::no_such_test", &[], &vec![0; 1 << 20]);
+    assert!(output.status.success(), "{output:?}");
+}
+
 /// The status of `UA_CertificateUtils_decryptPrivateKey` on `key` with `password`.
 fn decrypt(key: &str, password: &[u8]) -> Status {
     let mut key = key.as_bytes().to_vec();
@@ -178,6 +188,8 @@ fn decrypt_each_password() {
         let status = decrypt(LONG_KEY, &vec![b'a'; length]);
         assert_eq!(status.name(), "BadSecurityChecksFailed", "{length}");
     }
+    let status = decrypt(EMPTY_KEY, &[b'a'; 1025]);
+    assert_eq!(status.name(), "BadSecurityChecksFailed");
 }
 
 /// A password that does not fit in the buffer of aws-lc gives an error, and no read or

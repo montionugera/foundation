@@ -63,7 +63,11 @@ pub(crate) fn detached(name: &str, envs: &[(&str, &str)], stdin: &[u8]) -> Outpu
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    // The child can exit before it reads `stdin`.
+    match child.stdin.take().unwrap().write_all(stdin) {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        result => result.unwrap(),
+    }
     child.wait_with_output().unwrap()
 }
 
