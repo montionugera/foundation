@@ -114,7 +114,8 @@ jobs:
       matrix:
         # Each OS lists the flags that leave out what fails on it, each with the open
         # issue that removes it: `crates` do not build with all their targets, the tests
-        # of `untested` fail, and so do `tests`. The lists only shrink (LINUX CI).
+        # of `untested` fail, and so do `tests`, each a full test path that `--exact`
+        # matches in its binary. The lists only shrink (LINUX CI).
         include:
           - name: check
             runner: ubuntu-24.04
@@ -144,9 +145,9 @@ jobs:
               - --skip supervisor::tests::heals_a_run_when_a_secret_file_too_large_is_cut # #2973
               - --skip supervisor::tests::heals_a_run_when_the_missing_secret_is_written # #2973
               - --skip browse::gives_a_secret_that_is_not_there_as_a_retry # #2973
-              - --skip home::set_home_gives_the_cause_when_the_write_of_its_entry_stops_the_group # #2973
-              - --skip in_use::an_open_refuses_a_file_that_does_not_name_a_pointer # #2973
-              - --skip serve::serve_gives_no_code_of_the_mesh_when_the_group_stops # #2973
+              - --skip driver::tests::home::set_home_gives_the_cause_when_the_write_of_its_entry_stops_the_group # #2973
+              - --skip driver::tests::in_use::an_open_refuses_a_file_that_does_not_name_a_pointer # #2973
+              - --skip driver::tests::serve::serve_gives_no_code_of_the_mesh_when_the_group_stops # #2973
               - --skip log::tests::a_second_open_gives_busy_on_the_lock_while_the_first_log_lives # #2973
               - --skip log::tests::refuses_a_bad_record_with_a_good_one_after_it # #2973
               - --skip log::tests::refuses_a_file_that_is_not_the_next_log_file # #2973
@@ -188,7 +189,7 @@ jobs:
         run: >-
           cargo test --workspace ${{ join(matrix.crates, ' ') }}
           ${{ join(matrix.untested, ' ') }} --all-features --no-fail-fast
-          -- ${{ join(matrix.tests, ' ') }}
+          -- --exact ${{ join(matrix.tests, ' ') }}
       # Root tests mount a filesystem. Only this runner, which is discarded after the
       # job, runs them.
       - name: Root tests

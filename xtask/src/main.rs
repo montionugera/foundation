@@ -864,18 +864,44 @@ mod tests {
             .filter_map(|line| line.strip_prefix("          - name: "))
             .collect();
         assert_eq!(names, ["check", "macos", "windows"]);
+        // A step that its `if` skips on an OS passes there.
+        for step in ["Clippy", "Test"] {
+            let start = (check.iter())
+                .position(|line| *line == format!("      - name: {step}"))
+                .unwrap_or_else(|| panic!("the job `check` has no step `{step}`"));
+            assert_eq!(
+                check[start + 1],
+                "        if: \"!cancelled() && env.RUST != 'false'\"",
+                "the `if` of the step `{step}`"
+            );
+        }
     }
 
     #[test]
     fn each_exception_of_an_os_names_the_issue_that_removes_it() {
         let check = check_job();
-        let items: Vec<&str> = (check.iter())
-            .filter_map(|line| line.strip_prefix("              - "))
-            .collect();
-        assert!(
-            !items.is_empty(),
-            "the matrix of `check` lists no exception"
-        );
+        // The lists are empty at the goal of LINUX CI, so the parse is checked by the
+        // keys of each entry. Only a block list puts its items where the check below
+        // reads them.
+        for key in ["crates:", "untested:", "tests:"] {
+            let entries: Vec<&str> = (check.iter())
+                .filter_map(|line| line.strip_prefix("            "))
+                .filter(|line| line.starts_with(key))
+                .collect();
+            assert_eq!(
+                entries.len(),
+                3,
+                "the entries of the matrix that give `{key}`"
+            );
+            for entry in entries {
+                assert!(
+                    entry == key || entry == format!("{key} []"),
+                    "`{entry}` of ci.yaml is not a block list or `[]`"
+                );
+            }
+        }
+        let items =
+            (check.iter()).filter_map(|line| line.strip_prefix("              - "));
         for item in items {
             let issues = item.split_once(" # ").map(|(_, comment)| comment);
             assert!(
