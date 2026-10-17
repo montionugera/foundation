@@ -1,7 +1,7 @@
 //! The files of each node's host by path, apart from its disk.
 
 use std::collections::btree_map::Entry::Occupied;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
@@ -18,8 +18,9 @@ pub(crate) struct Paths {
     /// Each file, symbolic link, and directory, by node and by path from `/`, with
     /// its inode.
     entries: BTreeMap<(usize, PathBuf), (u64, Entry)>,
-    /// The codes of the faults that wait on each path, by node, in turn.
-    faults: BTreeMap<(usize, PathBuf), VecDeque<i32>>,
+    /// The faults that wait, in the order set: the node, the path as given, and the
+    /// code. A relative path takes the working directory at the call.
+    faults: Vec<(usize, PathBuf, i32)>,
     /// The working directory of each node that set one, else `/`.
     working: BTreeMap<usize, PathBuf>,
     homes: BTreeMap<usize, PathBuf>,
@@ -215,8 +216,7 @@ impl Paths {
     }
 
     pub(crate) fn fail(&mut self, node: usize, path: &Path, code: i32) {
-        let key = (node, self.absolute(node, path));
-        self.faults.entry(key).or_default().push_back(code);
+        self.faults.push((node, path.to_path_buf(), code));
     }
 
     /// Makes a symbolic link at `path`, which is absolute with no `..`, and so each
@@ -244,9 +244,8 @@ impl Paths {
 
     /// Moves the entry at `from` to `to`, both absolute with no `..`, with each entry
     /// under it and their inodes. A link at the last name of either is not followed.
-    /// The working directory stays on the directory that it resolves to, moved with
-    /// `from` when it is at or under it, as a host keeps a process on the directory
-    /// itself. Its path stays as set while it still names that directory.
+    /// The working directory becomes the path that it resolves to, moved with `from`
+    /// when it is at or under it, as a host keeps a process on the directory itself.
     pub(crate) fn move_entry(&mut self, node: usize, from: &Path, to: &Path) {
         let from = self.entry(node, from);
         let to = self.entry(node, to);
@@ -263,10 +262,10 @@ impl Paths {
             to.display(),
             from.display()
         );
-        let working = self.working.get(&node).cloned().and_then(|set| {
-            let dir = self.resolve(node, &set).ok()?;
-            Some((set, dir))
-        });
+        let working = self
+            .working
+            .get(&node)
+            .and_then(|dir| self.resolve(node, dir).ok());
         let mut moved: Vec<_> = self.under(node, &from).cloned().collect();
         moved.push(from.clone());
         for path in moved {
@@ -275,14 +274,12 @@ impl Paths {
             let path = to.join(path.strip_prefix(&from).expect("under `from`"));
             self.entries.insert((node, path), entry);
         }
-        if let Some((set, dir)) = working {
+        if let Some(dir) = working {
             let dir = match dir.strip_prefix(&from) {
                 Ok(under) => to.join(under),
                 Err(_) => dir,
             };
-            if self.resolve(node, &set).ok() != Some(dir.clone()) {
-                self.working.insert(node, dir);
-            }
+            self.working.insert(node, dir);
         }
     }
 
@@ -358,9 +355,13 @@ impl Paths {
         if path.as_os_str().is_empty() {
             return Err(Error::NotFound);
         }
-        let fault = self.faults.get_mut(&(node, self.absolute(node, path)));
-        match fault.and_then(VecDeque::pop_front) {
-            Some(code) => Err(Error::Io { code }),
+        let at = self.absolute(node, path);
+        let fault = self
+            .faults
+            .iter()
+            .position(|(on, given, _)| *on == node && self.absolute(node, given) == at);
+        match fault.map(|fault| self.faults.remove(fault)) {
+            Some((.., code)) => Err(Error::Io { code }),
             None => Ok(()),
         }
     }
