@@ -10,6 +10,8 @@
 //! - `undispatched`: the control, the same event with no dispatch, as before a node
 //!   had a log.
 //! - `span`: a `trace` span entered and dropped under the level `trace`.
+//! - `entered`: an enter and an exit of the span of a connector under the level
+//!   `info`, as each poll of the run of a connector makes.
 //! - `build`: the build of the dispatch, once for each node.
 //!
 //! The writer is `io::sink`, so no line counts its write to stderr.
@@ -150,6 +152,16 @@ fn span(bencher: Bencher<'_, '_>) {
             let span = tracing::trace_span!("frame", ty = %divan::black_box("STREAM"));
             drop(span.entered());
         });
+    });
+}
+
+#[divan::bench]
+fn entered(bencher: Bencher<'_, '_>) {
+    let d = dispatch(false, Level::INFO);
+    tracing::dispatcher::with_default(d.dispatch(), || {
+        let span =
+            tracing::error_span!("connector", connector = "plant.a", kind = "opcua");
+        bencher.bench_local(|| drop(divan::black_box(&span).enter()));
     });
 }
 
