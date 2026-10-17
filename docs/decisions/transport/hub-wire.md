@@ -344,8 +344,10 @@
   (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6206217799).
   Amended (#2790, PR 2): the end of the stream is one more input.
   `wire::hub::Reader::decode` and `Frames::decode` take `Option<&[u8]>`, and `None`
-  gives the error of the finish at that point and changes nothing, so
-  `Frames::finished` goes and `Reader::finished` is private. `Frames::open` gives the
+  gives the error of the finish at that point and changes nothing (the `Option` input:
+  `laptop.architect`, 2026-10-17T00:30:34Z:
+  https://github.com/synnaxlabs/foundation/pull/2959#issuecomment-6227359257, item 1),
+  so `Frames::finished` goes and `Reader::finished` is private. `Frames::open` gives the
   frames alone, and `Frames::live` gives the open position, then the end of the last
   frame with a sample, from one `Gaps` that a latest session keeps too. The mode stays
   in `Reader`, which both the reader's node and the program make for a session
@@ -353,4 +355,8 @@
   https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6230737986,
   2026-10-17T06:34:47Z; lost: a mode argument of `Frames::open`, which a program maps
   from the client mode).
-  Supersedes "and gives its `live` with the frames" of `Frames::open` above.
+  Supersedes "and gives its `live` with the frames" of `Frames::open` above
+  (https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206979704), and
+  "`wire::hub::Reader::finished` gives the error of each finish" above
+  (https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6224535856):
+  `decode(None)` gives it now.
