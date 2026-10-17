@@ -33,6 +33,7 @@ config-hcl = { path = "../config-hcl" }
 connector = { path = "../connector", features = ["sim"] }
 counting = { path = "../counting" }
 hub = { path = "../hub", features = ["sim"] }
+proptest = { workspace = true }
 sim = { path = "../sim" }
 transport = { path = "../transport" }
 

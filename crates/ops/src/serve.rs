@@ -39,10 +39,11 @@ mod tests;
 /// `subject` has `apply`, and drops each other home with no error. `status` shows only
 /// each connector on whose label and status channels `subject` has `read`. When it
 /// shows none, also when the node places none, it needs `read` on the name of the
-/// node, and gives `ops.denied` with no grant. It waits at most 1 s from the request. A
-/// connector is `unknown` when no status as the spec defines it comes in that time, and
-/// `status` gives `ops.channel-read` when the reader of a connector fails for another
-/// cause.
+/// node, and gives `ops.denied` with no grant. It gives the failures of the read of the
+/// OS roots of the node only to a subject with `read` on the name of the node. It
+/// waits at most 1 s from the request. A connector is `unknown` when no status as the
+/// spec defines it comes in that time, and `status` gives `ops.channel-read` when the
+/// reader of a connector fails for another cause.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
@@ -491,7 +492,8 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Body, Error>
 
 /// The reply of `status`: its output. It leaves out each connector unless `subject`
 /// has `read` on its label and on each of its status channels. When it leaves out each
-/// connector, or the node places none, it needs `read` on the name of the node.
+/// connector, or the node places none, it needs `read` on the name of the node. It
+/// gives the failures of the OS roots only with `read` on the name of the node.
 async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
     let asked = node.clock.now();
     let spec = used::spec(&node.mesh).await?;
@@ -503,15 +505,19 @@ async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
                 .channels()
                 .all(|name| check.allows(Action::Read, name))
     });
-    let output = if placed.is_empty() {
-        if !check.allows(Action::Read, &node.name) {
+    let node_read = check.allows(Action::Read, &node.name);
+    let connectors = if placed.is_empty() {
+        if !node_read {
             return Err(check.denied(Action::Read, On::Nothing));
         }
-        status::Output {
-            connectors: Vec::new(),
-        }
+        Vec::new()
     } else {
         status::read(node, subject, &placed, asked).await?
+    };
+    let shown = node_read && !node.roots.clean();
+    let output = status::Output {
+        connectors,
+        roots: shown.then(|| node.roots.clone()),
     };
     Ok(Body::line(&Answer::Done { output: &output })?)
 }

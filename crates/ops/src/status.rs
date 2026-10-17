@@ -24,12 +24,77 @@ mod tests;
 /// The longest that `status` waits for the frames, from the request.
 const WAIT: Span = Span::SECOND;
 
+/// The most bytes of the failures that [`Roots`] keeps, so that they fit in the reply
+/// of `status` also with each byte escaped.
+const KEPT: usize = 1 << 20;
+
 /// The status of each connector on the node, as `status` gives it.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub(crate) struct Output {
     /// Each connector that the spec in use places on the node, and whose label and
     /// status channels the subject may read, in name order.
     pub(crate) connectors: Vec<Status>,
+    /// The failures of the read of the OS roots of the node, or `None` when the read
+    /// had none or the subject may not read the name of the node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) roots: Option<Roots>,
+}
+
+/// The failures of the read of the OS roots of a node, which `status` gives.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Roots {
+    /// Where the read looked.
+    source: String,
+    /// The text of each failure, in the order of the read.
+    failures: Vec<String>,
+    /// The count of the failures after `failures`, which the node does not keep.
+    unlisted: usize,
+}
+
+impl Roots {
+    /// The `failures` of a read of the OS roots from `source`, in the order of the
+    /// read. Keeps each failure in full, in order, while the kept text is at most
+    /// 1 MiB, and from the first that does not fit only counts them, so that the
+    /// reply of `status` stays in its bound.
+    #[must_use]
+    pub fn new(source: String, mut failures: Vec<String>) -> Self {
+        let mut bytes = 0;
+        let kept = failures
+            .iter()
+            .take_while(|failure| {
+                bytes += failure.len();
+                bytes <= KEPT
+            })
+            .count();
+        let unlisted = failures.len() - kept;
+        failures.truncate(kept);
+        Self {
+            source,
+            failures,
+            unlisted,
+        }
+    }
+
+    /// Whether the read had no failure.
+    pub(crate) fn clean(&self) -> bool {
+        self.failures.is_empty() && self.unlisted == 0
+    }
+
+    /// The lines of these failures in [`Output::text`].
+    fn lines(&self) -> String {
+        let failed = self.failures.len() + self.unlisted;
+        let source = escape_controls(&self.source);
+        let head = format!("OS roots: failures: {failed}, source: {source}\n");
+        let errors = (self.failures.iter())
+            .map(|failure| format!("OS roots: error: {}\n", escape_controls(failure)));
+        let unlisted = (self.unlisted > 0).then(|| {
+            format!("OS roots: {} more failures are left out\n", self.unlisted)
+        });
+        std::iter::once(head)
+            .chain(errors)
+            .chain(unlisted)
+            .collect()
+    }
 }
 
 /// The status of one connector.
@@ -172,15 +237,14 @@ pub(crate) async fn read(
     subject: &Name,
     placed: &[Placed<'_>],
     asked: Monotonic,
-) -> Result<Output, Error> {
+) -> Result<Vec<Status>, Error> {
     let reads = placed.iter().map(|placed| newest(node, subject, placed));
     let readings = before(reads, node.clock.sleep_until(asked + WAIT)).await;
-    let connectors = placed
+    placed
         .iter()
         .zip(readings)
         .map(|(placed, reading)| Ok(status(placed, reading.transpose()?.flatten())))
-        .collect::<Result<_, Error>>()?;
-    Ok(Output { connectors })
+        .collect()
 }
 
 /// The newest status of `placed`, or `None` when the frame holds no status or lacks a
@@ -313,8 +377,21 @@ impl Output {
     /// <text>` when it has an error. `COUNTS` holds each count as `<name>=<value>`,
     /// in name order, or `-` when `state` is `unknown`. Each control character of a
     /// value is escaped, so a value stays on its line. With no connector, one line
-    /// that does not tell whether the node places a connector.
+    /// that does not tell whether the node places a connector. With `roots`, then a
+    /// blank line, a line `OS roots: failures: <count>, source: <source>`, a line `OS
+    /// roots: error: <text>` for each kept failure, and a line `OS roots: <count> more
+    /// failures are left out` when it does not keep each.
     pub(crate) fn text(&self) -> String {
+        let mut text = self.connectors();
+        if let Some(roots) = &self.roots {
+            text.push('\n');
+            text.push_str(&roots.lines());
+        }
+        text
+    }
+
+    /// The text of the connectors in [`Output::text`].
+    fn connectors(&self) -> String {
         if self.connectors.is_empty() {
             return "You can read no connector on this node.\n".to_owned();
         }

@@ -9,6 +9,17 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 struct Output {
     connectors: Vec<Connector>,
+    #[serde(default)]
+    roots: Option<Roots>,
+}
+
+/// The failures of the read of the OS roots in `foundation status --json`.
+#[derive(Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Roots {
+    pub(crate) source: String,
+    pub(crate) failures: Vec<String>,
+    pub(crate) unlisted: u64,
 }
 
 /// One connector in `foundation status --json`. Each key must be present, also with a
@@ -117,7 +128,12 @@ fn an_unknown_key_is_refused() {
         ),
         (
             format!(r#"{{"connectors":[{connector}}}],"extra":0}}"#),
-            "expected `connectors`",
+            "expected `connectors` or `roots`",
+        ),
+        (
+            r#"{"connectors":[],"roots":{"source":"","failures":[],"unlisted":0,"extra":0}}"#
+                .to_owned(),
+            "expected one of `source`, `failures`, `unlisted`",
         ),
     ];
     for (json, expected) in cases {
@@ -130,4 +146,11 @@ fn an_unknown_key_is_refused() {
             format!("unknown field `extra`, {expected} at line 1 column {column}"),
         );
     }
+}
+
+/// The failures of the OS roots in `json`, the output of `foundation status --json`, or
+/// `None` when it has none. Panics when `json` has another shape.
+pub(crate) fn roots(json: &[u8]) -> Option<Roots> {
+    let output: Output = serde_json::from_slice(json).expect("the status JSON");
+    output.roots
 }

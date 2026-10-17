@@ -4754,6 +4754,7 @@ pub(crate) mod port {
                 clock,
                 name,
                 secrets: connector::testing::create_secrets(files),
+                roots: ops::Roots::default(),
             }))
         }
 
@@ -7301,6 +7302,55 @@ pub(crate) mod port {
                 "\n",
             );
             assert_eq!(reply, connectors);
+        }
+
+        /// `status` through `operate` gives each failure of the read of the OS roots
+        /// of the node, in full, past the 16 that the log lists.
+        #[test]
+        fn status_gives_each_failure_of_the_roots_in_full() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let founding = region(&[member(OWN, &KEY, &host)]);
+            let mut failures: Vec<String> =
+                (0..17).map(|n| format!("failure {n}")).collect();
+            failures.push(format!("head {} tail", "x".repeat(3000)));
+            let node = Node::start(Config {
+                region: Region::Given(founding),
+                roots: os::roots::Roots {
+                    failures: failures.clone(),
+                    ..os::roots::Roots::default()
+                },
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            let watch = format!(
+                "subject \"plant.operator\" {{ keys = [\"{OPERATOR}\"] }}\n\
+                 access \"plant.watch\" {{\n  subjects = \"plant.operator\"\n  \
+                 select = \"plant.node{OWN}\"\n  allow = [read]\n}}\n"
+            );
+            let (node, _) = applied_on(&mut sim, node, watch);
+            let replied = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&replied);
+            node.operate(move |ops| async move {
+                let subject = "plant.operator".parse().expect("a name");
+                let reply = ops::serve(&ops, &subject, b"{\"status\":{}}\n").await;
+                *out.lock().unwrap() = Some(reply);
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let reply = replied.lock().unwrap().take().expect("a reply");
+            let reply: serde_json::Value =
+                serde_json::from_slice(&reply).expect("JSON");
+            let roots = serde_json::json!({
+                "source": "the OS store",
+                "failures": failures,
+                "unlisted": 0,
+            });
+            let expected = serde_json::json!({
+                "output": { "connectors": [], "roots": roots },
+            });
+            assert_eq!(reply, expected);
         }
 
         /// The node runs a `modbus` connector that an apply places on it. With no

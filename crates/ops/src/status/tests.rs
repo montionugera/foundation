@@ -19,7 +19,10 @@ use types::name::Name;
 use types::sample::Type;
 use types::time::Span;
 
-use super::{Class, Failure, Output, State, Status};
+use proptest::collection::vec;
+use proptest::prelude::*;
+
+use super::{Class, Failure, Output, Roots, State, Status};
 use crate::common::{self, Fixture, SAM, founded, front_ends, name, solo};
 use crate::serve::serve;
 use crate::{Config, Failure as Lost, Node, Run};
@@ -267,6 +270,12 @@ fn escapes_a_newline_in_the_text_of_an_error() {
 
 /// The node of `mesh` on `fixture`, with the kinds of [`kinds`].
 fn create_node(fixture: &Fixture, mesh: mesh::Mesh) -> Node {
+    create_node_on(fixture, mesh, Roots::default())
+}
+
+/// The node of `mesh` on `fixture`, with the kinds of [`kinds`] and the failures of
+/// `roots`.
+fn create_node_on(fixture: &Fixture, mesh: mesh::Mesh, roots: Roots) -> Node {
     let made = Cell::new(0);
     let key = move || {
         made.set(made.get() + 1);
@@ -281,6 +290,7 @@ fn create_node(fixture: &Fixture, mesh: mesh::Mesh) -> Node {
         clock: fixture.sim.clock(),
         name: fixture.name.clone(),
         secrets: connector::testing::create_secrets(fixture.sim.files()),
+        roots,
     })
 }
 
@@ -1133,6 +1143,7 @@ fn escapes_a_newline_in_each_value_of_the_table() {
             note: Some("n\nn".to_owned()),
             ..line("plant.plc", State::Running, None, Some(error))
         }],
+        roots: None,
     };
     let text = "CONNECTOR  KIND  STATE    ADDRESS  COUNTS\n\
                 a\\nb       k\\nk  running  x\\ny     -\n\
@@ -1168,6 +1179,7 @@ fn writes_a_table_of_each_count_then_the_note_and_the_error_of_each_connector() 
                 ..line("yard.meter", State::Unknown, None, None)
             },
         ],
+        roots: None,
     };
     let expected = "\
 CONNECTOR    KIND    STATE    ADDRESS                     COUNTS
@@ -1222,6 +1234,108 @@ fn the_command_line_writes_the_status_block_of_the_quickstart_page() {
 fn writes_a_line_in_place_of_the_table_with_no_connector() {
     let output = Output {
         connectors: Vec::new(),
+        roots: None,
     };
     assert_eq!(output.text(), "You can read no connector on this node.\n");
+}
+
+/// The failures `failure 0` to `failure <count - 1>`.
+fn failures(count: usize) -> Vec<String> {
+    (0..count).map(|n| format!("failure {n}")).collect()
+}
+
+#[test]
+fn gives_each_failure_of_the_roots_in_full_to_a_subject_that_may_read_the_node() {
+    solo(|fixture, mesh| async move {
+        let mut failed = failures(17);
+        failed.push(format!("head {} tail", "x".repeat(3000)));
+        let roots = Roots::new("the OS store".into(), failed.clone());
+        let node = create_node_on(&fixture, mesh, roots);
+        applied(&fixture, &node, &reader("edge")).await;
+        let (head, _) = status(&node, "sam").await;
+        let expected = json!({ "output": {
+            "connectors": [],
+            "roots": { "source": "the OS store", "failures": failed, "unlisted": 0 },
+        }});
+        assert_eq!(head, expected);
+    });
+}
+
+#[test]
+fn gives_no_roots_to_a_subject_that_may_read_a_connector_but_not_the_node() {
+    solo(|fixture, mesh| async move {
+        let roots = Roots::new("the OS store".into(), failures(1));
+        let node = create_node_on(&fixture, mesh, roots);
+        let text = [reader("site.a.**"), connector("site.a", "steady", "edge")];
+        applied(&fixture, &node, &text.concat()).await;
+        let (head, _) = status(&node, "sam").await;
+        let expected =
+            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        assert_eq!(head, expected);
+    });
+}
+
+#[test]
+fn the_command_line_writes_the_failures_of_the_roots_after_the_connectors() {
+    solo(|fixture, mesh| async move {
+        let mut failed = failures(2);
+        failed.push("bad\nline".into());
+        failed.push("x".repeat(1 << 20));
+        let roots = Roots::new("SSL_CERT_DIR=/a".into(), failed);
+        let node = create_node_on(&fixture, mesh, roots);
+        applied(&fixture, &node, &connector("site.a", "steady", "edge")).await;
+        supervise(&fixture, &node, &["site.a"]).await;
+        let shown = "\
+CONNECTOR  KIND    STATE    ADDRESS                COUNTS
+site.a     steady  running  opc.tcp://site.a:4840  confirmed=10 in=12
+
+OS roots: failures: 4, source: SSL_CERT_DIR=/a
+OS roots: error: failure 0
+OS roots: error: failure 1
+OS roots: error: bad\\nline
+OS roots: 1 more failures are left out
+";
+        let paths = fixture.sim.paths();
+        let written = cli(&node, &paths, &["status"]).await;
+        assert_eq!(written, (Run::Exit(0), shown.to_owned(), String::new()));
+    });
+}
+
+#[test]
+fn writes_the_failures_of_the_roots_after_the_line_of_no_connector() {
+    let output = Output {
+        connectors: Vec::new(),
+        roots: Some(Roots::new("the OS store".into(), failures(1))),
+    };
+    let text = "You can read no connector on this node.\n\nOS roots: failures: 1, \
+                source: the OS store\nOS roots: error: failure 0\n";
+    assert_eq!(output.text(), text);
+}
+
+#[test]
+fn roots_keep_the_failures_that_fit_in_a_mebibyte() {
+    let fits = vec!["x".repeat(1 << 19), "y".repeat(1 << 19)];
+    let roots = Roots::new(String::new(), fits.clone());
+    assert_eq!((roots.failures, roots.unlisted), (fits.clone(), 0));
+    let mut over = fits.clone();
+    over.push("z".into());
+    over.push(String::new());
+    let roots = Roots::new(String::new(), over);
+    assert_eq!((roots.failures, roots.unlisted), (fits, 2));
+}
+
+proptest! {
+    #[test]
+    fn roots_keep_a_prefix_of_at_most_a_mebibyte_and_count_the_rest(
+        sizes in vec(0usize..(1 << 18), 0..24),
+    ) {
+        let failed: Vec<String> = sizes.iter().map(|&size| "x".repeat(size)).collect();
+        let roots = Roots::new(String::new(), failed.clone());
+        let kept = roots.failures.len();
+        prop_assert_eq!(&roots.failures[..], &failed[..kept]);
+        prop_assert!(roots.failures.iter().map(String::len).sum::<usize>() <= 1 << 20);
+        prop_assert_eq!(kept + roots.unlisted, failed.len());
+        let total = |count: usize| failed[..count].iter().map(String::len).sum::<usize>();
+        prop_assert!(kept == failed.len() || total(kept + 1) > 1 << 20);
+    }
 }

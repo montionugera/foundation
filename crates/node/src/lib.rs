@@ -1210,7 +1210,13 @@ impl Serve {
             let serve = pin!(async move {
                 // `hold` polls `serve` only once the file `address` holds the address.
                 let trusted = trust::roots(&roots);
-                drop(roots);
+                let os::roots::Roots {
+                    certificates,
+                    failures,
+                    source,
+                } = roots;
+                drop(certificates);
+                let failed = ops::Roots::new(source.to_string(), failures);
                 tracing::info!(%name, address = %address.bound, shards, "started");
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,
@@ -1241,6 +1247,7 @@ impl Serve {
                             clock: clock.clone(),
                             name: name.clone(),
                             secrets: secrets.clone(),
+                            roots: failed,
                         }));
                         let config = connector::supervisor::Config {
                             kinds,
