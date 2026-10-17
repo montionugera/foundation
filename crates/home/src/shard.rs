@@ -392,9 +392,9 @@ impl Shard {
     }
 
     /// Stops carrying the index at `slot`. Each named reader of the index stops holding
-    /// its position, and the shard appends, in part order, an entry that holds no named
-    /// reader for each part of the named records of the index that holds one. With no
-    /// mesh time, a restart restores the holds. When a part finds no block or no room,
+    /// its position, and the shard appends, in part order, an entry with no named
+    /// reader for each part that holds a named record of the index. With no mesh time,
+    /// a restart restores the holds. When a part finds no block or no room,
     /// a restart restores the holds of that part and the parts after it. A later
     /// [`carry`](Self::carry) in the same run does not. Its frames stay in the buffer,
     /// so a later carry of `slot` continues each path from its tail in the buffer: the

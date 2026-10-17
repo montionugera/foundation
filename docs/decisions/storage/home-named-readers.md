@@ -84,8 +84,8 @@
   the entry that drops it appends, not at its commit: decided by `laptop.architect`
   (2026-10-17T03:20:57Z:
   https://github.com/synnaxlabs/foundation/pull/2967#issuecomment-6228975494).
-  Supersedes
-  https://github.com/synnaxlabs/foundation/issues/2833#issuecomment-6227434486 item 1.
+  Supersedes "a removal frees its room only at its commit" of item 1 of
+  https://github.com/synnaxlabs/foundation/issues/2833#issuecomment-6227434486.
   Decided by `laptop.architect` (2026-10-16T05:22:26Z:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208708096;
   `Unrecorded` and the trim gap until #406: 2026-10-16T07:08:03Z:
