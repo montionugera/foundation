@@ -29,10 +29,15 @@ fn assert_aborts(child: impl FnOnce()) {
         .unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(aborted(output.status), "{:?}: {stderr}", output.status);
+    #[cfg(unix)]
     assert!(
         stderr.contains("panic in a destructor during cleanup"),
         "{stderr}"
     );
+    // The MSVC runtime ends the process at the panic in the cleanup, before Rust can
+    // write its text, and libtest holds what the panic hook wrote.
+    #[cfg(windows)]
+    assert_eq!(stderr, "");
 }
 
 /// Whether `status` is that of an abort: SIGABRT, or on Windows the code of a fast
