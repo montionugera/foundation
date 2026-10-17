@@ -20,7 +20,7 @@ use types::channel;
 use types::frame::key_set::{Group, Interner, KeySet};
 use types::frame::{Form, Path, Range};
 use types::sample::{Scalar, Type};
-use wire::hub::{Due, Error, Frames, Head, Mode, Open, Reader, Step};
+use wire::hub::{Due, Error, Frames, FromHome, Head, Mode, Open, Reader, Step};
 
 /// What one step gave, with a frame's series copied out.
 #[derive(Debug, PartialEq)]
@@ -104,7 +104,11 @@ fn run(places: u8, mode: Mode, bytes: &[u8], in_place: bool) -> Vec<Seen> {
     let mut reply = true;
     let mut frames = match opened {
         Ok(frames) => {
-            seen.push(Seen::Opened(frames.live()));
+            let Ok(FromHome::Opened { live }) = Reader::new(&open).decode(first) else {
+                panic!("frames opened with no Opened");
+            };
+            assert_eq!(frames.live(), live, "live is not the open position");
+            seen.push(Seen::Opened(live));
             frames
         }
         Err(error) => {
