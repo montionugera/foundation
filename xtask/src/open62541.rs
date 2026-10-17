@@ -512,6 +512,8 @@ pub(crate) struct Crypto {
     include: Vec<PathBuf>,
     /// The prefix of each of its symbols, with the `_` that ends it.
     prefix: String,
+    /// Its `openssl/pem.h`, by path, so that no header of the copy takes its place.
+    pem: PathBuf,
 }
 
 impl Crypto {
@@ -542,7 +544,12 @@ impl Crypto {
         let include = vec![dir.join("generated-include"), dir.join("aws-lc/include")];
         // The line that the build script of `connector-opcua` reads.
         let prefix = Self::read_prefix(&include[0].join(PREFIX_HEADER))?;
-        Ok(Self { include, prefix })
+        let pem = include[1].join("openssl/pem.h");
+        Ok(Self {
+            include,
+            prefix,
+            pem,
+        })
     }
 
     /// The prefix that the `boringssl_prefix_symbols.h` at `header` defines.
@@ -1390,7 +1397,8 @@ fn build<'a>(
         let compile = compiler(&["-c", "-o", &object.to_string_lossy()])?;
         // With `pem.h` in each file, `readers` finds each reader, also one that the
         // copy declares itself.
-        let preprocess = compiler(&["-E", "-dI", "-include", "openssl/pem.h"])?;
+        let pem = crypto.pem.to_string_lossy();
+        let preprocess = compiler(&["-E", "-dI", "-include", &pem])?;
         children.push((source, object, compile, preprocess));
     }
     children
@@ -2453,9 +2461,14 @@ n = read_x(b, 0, 0, 0);
         remove(&root).unwrap();
     }
 
-    /// The result of [`check`] on a copy of the committed copy with `text` after the
-    /// end of `src/util/ua_util.c`, with the prefix of aws-lc.
-    fn check_with_util(name: &str, text: &str) -> (Result<(), Vec<String>>, String) {
+    /// The result of [`check`] on a copy of the committed copy with each (path, text)
+    /// of `files` and with `text` after the end of `src/util/ua_util.c`, with the
+    /// prefix of aws-lc.
+    fn check_with_util(
+        name: &str,
+        files: &[(&str, &str)],
+        text: &str,
+    ) -> (Result<(), Vec<String>>, String) {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let root = temp(name);
         std::fs::create_dir(root.join("patches")).unwrap();
@@ -2466,6 +2479,7 @@ n = read_x(b, 0, 0, 0);
                 .arg(root.join("patches")),
         )
         .unwrap();
+        create_files(&root.join(DEST), files);
         let path = root.join(DEST).join(UTIL);
         let util = std::fs::read_to_string(&path).unwrap();
         std::fs::write(&path, util + text).unwrap();
@@ -2493,6 +2507,7 @@ n = read_x(b, 0, 0, 0);
     fn check_fails_a_read_of_the_copy_with_no_declaration() {
         let (result, _) = check_with_util(
             "undeclared",
+            &[],
             "void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
         );
         let errors = result.unwrap_err();
@@ -2518,6 +2533,7 @@ n = read_x(b, 0, 0, 0);
         let line = util_end() + 2;
         let (result, prefix) = check_with_util(
             "declared",
+            &[],
             "#include <openssl/base.h>\n\
              void *PEM_read_bio_X509(void *, void *, void *, void *);\n\
              void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
@@ -2536,6 +2552,38 @@ n = read_x(b, 0, 0, 0);
                 ),
             ])
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
+    fn check_finds_a_read_past_each_pem_h_of_the_copy() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let crypto = Crypto::locked(workspace).unwrap();
+        let pem = std::fs::read_to_string(&crypto.pem).unwrap();
+        let line = util_end() + 1;
+        for (path, header) in [
+            ("openssl/pem.h", "#define OPENSSL_HEADER_PEM_H\n"),
+            ("include/openssl/pem.h", pem.as_str()),
+        ] {
+            let (result, prefix) = check_with_util(
+                "pem",
+                &[(path, header)],
+                "#include <openssl/pem.h>\n\
+                 void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
+            );
+            assert_eq!(
+                result,
+                Err(vec![format!(
+                    "{UTIL}: {UTIL}:{line}: gives `{prefix}PEM_read_bio_X509` the \
+                     callback `0`, which PASSWORDS does not list"
+                )]),
+                "{path}"
+            );
+        }
     }
 
     #[test]
@@ -3015,11 +3063,13 @@ End of search list.
     /// The symbol prefix of [`crypto`].
     const PREFIX: &str = "fixture_";
 
-    /// A [`Crypto`] with no include directory and the symbol prefix [`PREFIX`].
+    /// A [`Crypto`] with no include directory, the symbol prefix [`PREFIX`], and an
+    /// empty `pem.h`.
     fn crypto() -> Crypto {
         Crypto {
             include: Vec::new(),
             prefix: PREFIX.to_owned(),
+            pem: PathBuf::from("/dev/null"),
         }
     }
 
@@ -3662,6 +3712,7 @@ End of search list.
         let crypto = Crypto {
             include: vec![dir.join("crypto")],
             prefix: PREFIX.to_owned(),
+            pem: PathBuf::from("/dev/null"),
         };
         assert_eq!(
             inspect(
