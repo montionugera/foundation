@@ -111,12 +111,13 @@ pub struct Config<M> {
     pub vars: BTreeMap<OsString, OsString>,
     /// The CA certificates that each `https` connect of a connector trusts. Main gives
     /// [`os::roots::read()`]. When the read has a failure, shard 0 logs a warning with
-    /// the count of its failures and its [`os::roots::Source`], cut to 1024 bytes, that
-    /// names `foundation status`, then one for each of the first 16 failures, its text
-    /// cut the same way. It logs one for the count of certificates that do not parse,
-    /// and one when no certificate is left. It logs each of them also with
-    /// [`Region::Absent`], which runs no connector. With a region, the node gives the
-    /// failures to [`ops::Config::roots`], which `foundation status` shows.
+    /// the count of its failures and its [`os::roots::Source`], cut to 1024 bytes, then
+    /// one for each of the first 16 failures, its text cut the same way. It logs one
+    /// for the count of certificates that do not parse, and one when no certificate is
+    /// left. It logs each of them also with [`Region::Absent`], which runs no
+    /// connector. With a region, the node gives the failures to
+    /// [`ops::Config::roots`], which `foundation status` shows, and the first warning
+    /// names that command.
     pub roots: os::roots::Roots,
     /// Where and how the node writes its log. Each shard writes the events of its
     /// thread there, and [`Node::join`] the event `stopped`.
@@ -1210,14 +1211,14 @@ impl Serve {
                 secret::Resolver::new(vars, files.clone(), &directory::secrets());
             let serve = pin!(async move {
                 // `hold` polls `serve` only once the file `address` holds the address.
-                let trusted = trust::roots(&roots);
+                let trusted = trust::roots(&roots, mesh.is_some());
                 let os::roots::Roots {
                     certificates,
                     failures,
                     source,
                 } = roots;
                 drop(certificates);
-                let failed = ops::Roots::new(source.to_string(), failures);
+                let shown = ops::Roots::new(source.to_string(), failures);
                 tracing::info!(%name, address = %address.bound, shards, "started");
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,
@@ -1248,7 +1249,7 @@ impl Serve {
                             clock: clock.clone(),
                             name: name.clone(),
                             secrets: secrets.clone(),
-                            roots: failed,
+                            roots: shown,
                         }));
                         let config = connector::supervisor::Config {
                             kinds,

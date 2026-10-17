@@ -10,7 +10,7 @@ use types::byte::Size;
 use types::time::Span;
 
 use super::{config, heap};
-use crate::{Config, Error, Flush, Log, Node, log};
+use crate::{Config, Error, Flush, Log, Node, Region, log};
 
 /// The stamp of a line at the start of the sim.
 const START: &str = "2026-01-01T00:00:00.000000Z";
@@ -213,17 +213,29 @@ fn a_node_logs_its_start_and_its_stop_in_json() {
     );
 }
 
-/// The warnings that a node on `roots` logs in a run of a second.
+/// The warnings that a node with no region on `roots` logs in a run of a second.
 fn warned(roots: os::roots::Roots) -> Vec<String> {
     logged(roots, tracing::Level::WARN)
 }
 
-/// The lines at `level` or above that a node on `roots` logs in a run of a second.
+/// The lines at `level` or above that a node with no region on `roots` logs in a run
+/// of a second.
 fn logged(roots: os::roots::Roots, level: tracing::Level) -> Vec<String> {
+    logged_in(Region::Absent, roots, level)
+}
+
+/// The lines at `level` or above that a node with `region` on `roots` logs in a run of
+/// a second.
+fn logged_in(
+    region: Region,
+    roots: os::roots::Roots,
+    level: tracing::Level,
+) -> Vec<String> {
     let (mut sim, host) = host(1);
     let lines = Lines::default();
     let log = to(&lines, false, level);
     let node = Node::start(Config {
+        region,
         roots,
         log,
         ..config(&host, Size::MEBIBYTE, Box::new(heap))
@@ -275,12 +287,27 @@ fn a_node_warns_of_its_roots_before_it_starts() {
     );
 }
 
-/// The first warning of a read of the roots with `failed` failures from `source`.
+/// The first warning of a read of the roots with `failed` failures from `source`, on a
+/// node with no region.
 fn summary(failed: usize, source: &str) -> String {
     format!(
-        "{WARN} parts of the OS roots were not read, and `foundation status` gives \
-         each failed={failed} source=\"{source}\""
+        "{WARN} parts of the OS roots were not read failed={failed} source=\"{source}\""
     )
+}
+
+#[test]
+fn a_node_with_a_region_names_the_command_that_gives_each_failure_of_its_roots() {
+    let warn = "2026-01-01T00:00:00.005947Z WARN node::trust:";
+    assert_eq!(
+        logged_in(Region::Stored, failed(1), tracing::Level::WARN),
+        [
+            format!(
+                "{warn} parts of the OS roots were not read, and `foundation status` gives \
+                 each failed=1 source=\"the OS store\""
+            ),
+            format!("{warn} a part of the OS roots was not read error=\"failure 0\""),
+        ]
+    );
 }
 
 /// The roots with only the CA and `failures`.

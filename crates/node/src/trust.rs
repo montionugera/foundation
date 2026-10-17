@@ -17,20 +17,24 @@ const LONGEST: usize = 1024;
 const MARK: &str = "…";
 
 /// The roots of `roots`. When the read has a failure, logs a warning with the count of
-/// its failures and its source, cut to `LONGEST` bytes, that names the command that
-/// gives each failure, then one for each of the first `LISTED` failures, its text cut
-/// the same way. Logs a warning for the count of certificates that do not parse, and
-/// when no certificate is left.
-pub(crate) fn roots(roots: &os::roots::Roots) -> connector::http::Roots {
+/// its failures and its source, cut to `LONGEST` bytes, then one for each of the first
+/// `LISTED` failures, its text cut the same way. When `served`, the node serves the
+/// command that gives each failure, and the first warning names it. Logs a warning for
+/// the count of certificates that do not parse, and when no certificate is left.
+pub(crate) fn roots(roots: &os::roots::Roots, served: bool) -> connector::http::Roots {
     let failed = roots.failures.len();
     if failed > 0 {
         let source = roots.source.to_string();
         let source = cut(&source);
-        tracing::warn!(
-            failed,
-            %source,
-            "parts of the OS roots were not read, and `foundation status` gives each"
-        );
+        if served {
+            tracing::warn!(
+                failed,
+                %source,
+                "parts of the OS roots were not read, and `foundation status` gives each"
+            );
+        } else {
+            tracing::warn!(failed, %source, "parts of the OS roots were not read");
+        }
     }
     for failure in roots.failures.iter().take(LISTED) {
         let error = cut(failure);
