@@ -18,7 +18,7 @@ import foundation
 
 PATIENCE = 90.0
 # The node sends its close before it exits. No call of the client shows that the client
-# took it, so a test gives the client 1 s on loopback.
+# took it, so a test gives the client 1 s on loopback. It goes with item 1 of #2953.
 CLOSED = 1.0
 ADMIN = "@admin"
 # The encoding of the base point of Ed25519: a public key that is not of small order.
@@ -44,7 +44,7 @@ def budget(pool: int, disk: int) -> bytes:
 
 class Node:
     """`foundation start --name edge` in a new directory, with a budget of 1 GiB of
-    pool and 8 MiB of disk for each core."""
+    pool and 8 MiB of disk for each core. It goes with #3064."""
 
     def __init__(self) -> None:
         self.dir = tempfile.TemporaryDirectory(prefix="foundation-python-")
@@ -142,7 +142,48 @@ class ClientTest(unittest.TestCase):
     def test_a_with_block_closes_the_client(self) -> None:
         with self.node.connect() as client:
             self.assertIsInstance(client, foundation.Client)
+        self.node.stop()
+        time.sleep(CLOSED)
         self.assertIsNone(client.close())
+
+    def test_a_with_block_that_raised_gets_no_note_when_the_close_succeeds(self) -> None:
+        with self.assertRaises(KeyError) as raised:
+            with self.node.connect():
+                raise KeyError("in the block")
+        self.assertFalse(hasattr(raised.exception, "__notes__"))
+
+    def test_two_threads_that_close_one_client_both_return(self) -> None:
+        client = self.node.connect()
+        threads = [
+            threading.Thread(target=client.close, daemon=True) for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(PATIENCE)
+        self.assertEqual([thread.is_alive() for thread in threads], [False, False])
+
+    def test_other_threads_run_while_a_client_closes(self) -> None:
+        client = self.node.connect()
+        self.node.process.send_signal(signal.SIGSTOP)
+        self.addCleanup(self.node.process.send_signal, signal.SIGCONT)
+        count = 0
+        closed = threading.Event()
+
+        def counter() -> None:
+            nonlocal count
+            while not closed.is_set():
+                count += 1
+                time.sleep(0.001)
+
+        thread = threading.Thread(target=counter, daemon=True)
+        thread.start()
+        try:
+            client.close()
+        finally:
+            closed.set()
+            thread.join()
+        self.assertGreater(count, 20)
 
     def test_a_subject_that_the_spec_does_not_list_is_refused(self) -> None:
         with self.assertRaises(ConnectionError) as raised:
