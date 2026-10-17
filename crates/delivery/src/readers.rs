@@ -1276,7 +1276,8 @@ pub(super) mod tests {
     }
 
     /// The lowest position that any reader holds, path by path, or `None` when no
-    /// reader holds.
+    /// reader holds. It reads the sessions of `readers`, because no call of `Readers`
+    /// gives the floor.
     pub(super) fn floor(readers: &Readers) -> Option<Position> {
         let open = readers.complete.iter().map(|session| session.position);
         let closed = readers.closed.iter().map(|closed| closed.position);

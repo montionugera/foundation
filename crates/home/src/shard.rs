@@ -4661,6 +4661,8 @@ mod tests {
                     wakes.extend(woken(&mut shard));
                 }
                 assert_eq!(wakes, [reader]);
+                // The buffer of the shard gives the first seq that the ring holds: no
+                // call of `Shard` gives it.
                 let ring = shard.buffer.reader();
                 let read = ring.read(Slot::new(0), Path::Live, Mark::at(1), 1).await;
                 let gap = read.expect("the read ends").gap.expect("a trim");
