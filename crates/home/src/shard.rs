@@ -492,9 +492,8 @@ impl Shard {
             let place = self.readers.ticked()[at];
             if let Some(mesh) = mesh {
                 self.readers.advance(place, mesh);
-                self.append_records(place, mesh);
             }
-            self.arm(place, monotonic, mesh);
+            self.record_named(place, monotonic, mesh);
         }
         self.readers.prune();
         let commits = self.buffer.commits();
@@ -992,33 +991,26 @@ impl Shard {
     }
 
     /// Appends the records of the named readers of the index at `place` when they
-    /// changed and the node has mesh time `mesh`, then arms the tick for the index at
-    /// monotonic time `monotonic`. Call it after each change of the named readers of
-    /// the index.
+    /// changed and the node has mesh time `mesh`, and marks them recorded when each
+    /// part appended, then arms the tick for the index at monotonic time `monotonic`.
+    /// Call it after each change of the named readers of the index.
     fn record_named(
         &mut self,
         place: usize,
         monotonic: Monotonic,
         mesh: Option<Stamp>,
     ) {
-        if let Some(mesh) = mesh {
-            self.append_records(place, mesh);
+        if let Some(mesh) = mesh
+            && self.readers.changed(place)
+        {
+            let records = self.readers.records(place);
+            let appended = self.append_named(place, &records, mesh);
+            let appended = appended.expect("invariant: each record has a part");
+            if appended.all() {
+                self.readers.recorded(place, !records.is_empty());
+            }
         }
         self.arm(place, monotonic, mesh);
-    }
-
-    /// Appends the records of the named readers of the index at `place` at mesh time
-    /// `mesh` when they changed, and marks them recorded.
-    fn append_records(&mut self, place: usize, mesh: Stamp) {
-        if !self.readers.changed(place) {
-            return;
-        }
-        let records = self.readers.records(place);
-        let appended = self.append_named(place, &records, mesh);
-        let appended = appended.expect("invariant: each record of a tick has a part");
-        if appended.all() {
-            self.readers.recorded(place, !records.is_empty());
-        }
     }
 
     /// Appends the parts of the named records of the index at `place` that `records`
