@@ -270,9 +270,10 @@ impl Paths {
         self.allowed(self.key(path)?, &resolved)
     }
 
-    /// `Ok` when the file at `resolved`, whose key is `own` or which is not there for
-    /// `None`, passes each limit. The caller takes `own` from the path as the call
-    /// reaches it: the resolved path of a new name can be longer than the host takes.
+    /// `Ok` when the file at `resolved`, whose key is `own`, passes each limit. `None`
+    /// is a name with no key: nothing, or a link that does not resolve. The caller
+    /// takes `own` from the path as the call reaches it: the resolved path of a new
+    /// name can be longer than the host takes.
     fn allowed(&self, own: Option<Key>, resolved: &Path) -> Result<(), Error> {
         let mut dirs = Vec::new();
         for dir in resolved.ancestors().skip(1) {

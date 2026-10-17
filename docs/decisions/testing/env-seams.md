@@ -967,3 +967,13 @@
   https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224298302; the hard
   link text and a folder that is a file, 2026-10-16T21:03:02Z,
   https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224644233).
+  Amended (2026-10-17T06:14:25Z, #2895): `make_dir` of a path that does not resolve
+  checks its name in its resolved directory, with the key of the file at that name,
+  before the driver makes it. So a loop or a link to nothing beside a hidden folder that
+  is not there, or in a hidden folder that a program moves away, gives `Hidden`, not
+  `Io` 17, and so does a hidden file at a path that ends in `/` or `/.`. `Io` 17 still
+  comes where the name passes the limits. Supersedes "`make_dir` of a path that does not
+  resolve checks its resolved directory, since no folder is at a name that does not
+  resolve" of the amendment of 2026-10-16T17:13:18Z. Decided by `laptop.architect-2`
+  (2026-10-17T06:14:25Z,
+  https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417).
