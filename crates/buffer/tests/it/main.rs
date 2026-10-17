@@ -3897,6 +3897,33 @@ fn an_open_refuses_a_carry_record_of_the_wrong_shape() {
     }
 }
 
+#[test]
+fn an_open_refuses_a_carry_record_with_a_valid_entry() {
+    let one = carry_body(&[carried(2, 4, 0, None)]);
+    let header = [
+        &2_u128.to_le_bytes()[..],
+        &[0],
+        &4_u64.to_le_bytes(),
+        &1_u32.to_le_bytes(),
+        &7_i64.to_le_bytes(),
+        &[1],
+        &30_i64.to_le_bytes(),
+        &[0],
+        &3_u32.to_le_bytes(),
+    ]
+    .concat();
+    let mut with = [one.clone(), header, vec![9; 3]].concat();
+    with[2] = 1;
+    run(160, move |shard| async move {
+        shard.create_two_records().await;
+        shard.put_carry(3 * BLOCK, &one).await;
+        let opened = shard.open(layout(AREA, BODY_MAX), &mut Slots::new()).await;
+        assert_eq!(opened.map(drop), Ok(()), "the body with no entry opens");
+        shard.put_carry(3 * BLOCK, &with).await;
+        shard.open_invalid(layout(AREA, BODY_MAX), 3 * BLOCK).await;
+    });
+}
+
 /// A trim passed the record with the first entry with no samples that index 1 has at
 /// seq 3, and kept a record with two more. A carry record after the kept ones gives
 /// the count of them all. Each case: the seqs of the entries with no samples of each
