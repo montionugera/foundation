@@ -1,11 +1,11 @@
 //! The files of each node's host by path, apart from its disk.
 
 use std::collections::btree_map::Entry::Occupied;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
-use env::paths::{Error, Found, Kind, names_directory};
+use env::paths::{Error, Found, Key, Kind, names_directory};
 
 use crate::{DIRECTORY, EXISTS, LOOP, NOT_DIRECTORY};
 
@@ -15,13 +15,17 @@ const LINKS: usize = 40;
 /// The files of the hosts of a run.
 #[derive(Default)]
 pub(crate) struct Paths {
-    /// Each file, symbolic link, and directory, by node and by path from `/`.
-    entries: BTreeMap<(usize, PathBuf), Entry>,
-    /// The codes of the faults that wait on each path, by node, in turn.
-    faults: BTreeMap<(usize, PathBuf), VecDeque<i32>>,
+    /// Each file, symbolic link, and directory, by node and by path from `/`, with
+    /// its inode.
+    entries: BTreeMap<(usize, PathBuf), (u64, Entry)>,
+    /// The faults that wait, in the order set: the node, the path as given, and the
+    /// code. A relative path takes the working directory at the call.
+    faults: Vec<(usize, PathBuf, i32)>,
     /// The working directory of each node that set one, else `/`.
     working: BTreeMap<usize, PathBuf>,
     homes: BTreeMap<usize, PathBuf>,
+    /// The last inode made. `/` is inode 0, and the device of each key is 0.
+    made: u64,
 }
 
 enum Entry {
@@ -39,7 +43,7 @@ impl Paths {
         most: usize,
     ) -> Result<Found, Error> {
         let at = self.check(node, path)?;
-        if let Some(Entry::File(bytes)) = self.entries.get(&(node, at.clone())) {
+        if let Some((_, Entry::File(bytes))) = self.entries.get(&(node, at.clone())) {
             if bytes.len() > most {
                 return Ok(Found::Large(Kind::File));
             }
@@ -79,7 +83,10 @@ impl Paths {
         if directory {
             return Err(Error::Io { code: DIRECTORY });
         }
-        self.entries.insert((node, at), Entry::File(bytes.to_vec()));
+        // A new file, as the rename of a write of `os` makes.
+        let inode = self.inode();
+        self.entries
+            .insert((node, at), (inode, Entry::File(bytes.to_vec())));
         Ok(())
     }
 
@@ -109,11 +116,12 @@ impl Paths {
         let at = dir.join(name);
         match self.entries.get(&(node, at.clone())) {
             None => {
-                self.entries.insert((node, at), Entry::Directory);
+                let inode = self.inode();
+                self.entries.insert((node, at), (inode, Entry::Directory));
                 Ok(())
             }
-            Some(Entry::Directory) => Ok(()),
-            Some(Entry::Link(_))
+            Some((_, Entry::Directory)) => Ok(()),
+            Some((_, Entry::Link(_)))
                 if self
                     .resolve(node, path)
                     .is_ok_and(|to| self.directory(node, &to)) =>
@@ -156,7 +164,7 @@ impl Paths {
                 }
                 Component::Normal(name) => {
                     at.push(name);
-                    if let Some(Entry::Link(target)) =
+                    if let Some((_, Entry::Link(target))) =
                         self.entries.get(&(node, at.clone()))
                     {
                         links += 1;
@@ -184,14 +192,31 @@ impl Paths {
         Ok(at)
     }
 
+    /// The key of the file at `path`, after each symbolic link.
+    pub(crate) fn key(&mut self, node: usize, path: &Path) -> Result<Key, Error> {
+        let at = self.resolve(node, path)?;
+        if at == Path::new("/") {
+            return Ok(Key::new(0, 0));
+        }
+        match self.entries.get(&(node, at)) {
+            Some((inode, Entry::File(_) | Entry::Directory)) => Ok(Key::new(0, *inode)),
+            _ => Err(Error::NotFound),
+        }
+    }
+
+    /// A new inode.
+    fn inode(&mut self) -> u64 {
+        self.made += 1;
+        self.made
+    }
+
     pub(crate) fn home(&self, node: usize) -> Option<PathBuf> {
         let home = self.homes.get(&node)?;
         self.resolve(node, home).ok()
     }
 
     pub(crate) fn fail(&mut self, node: usize, path: &Path, code: i32) {
-        let key = (node, self.absolute(node, path));
-        self.faults.entry(key).or_default().push_back(code);
+        self.faults.push((node, path.to_path_buf(), code));
     }
 
     /// Makes a symbolic link at `path`, which is absolute with no `..`, and so each
@@ -200,19 +225,65 @@ impl Paths {
         let at = self.place(node, path);
         let there = self.entries.contains_key(&(node, at.clone()));
         assert!(!there, "{} is there", path.display());
+        let inode = self.inode();
         self.entries
-            .insert((node, at), Entry::Link(target.to_path_buf()));
+            .insert((node, at), (inode, Entry::Link(target.to_path_buf())));
     }
 
     /// Makes a directory at `path`, which is absolute with no `..`, and so each
     /// directory above it.
     pub(crate) fn place_dir(&mut self, node: usize, path: &Path) {
         let at = self.place(node, path);
+        let inode = self.inode();
         let entry = self.entries.entry((node, at));
         let there =
-            matches!(&entry, Occupied(on) if !matches!(on.get(), Entry::Directory));
+            matches!(&entry, Occupied(on) if !matches!(on.get().1, Entry::Directory));
         assert!(!there, "{} is there", path.display());
-        entry.or_insert(Entry::Directory);
+        entry.or_insert((inode, Entry::Directory));
+    }
+
+    /// Moves the entry at `from` to `to`, both absolute with no `..`, with each entry
+    /// under it and their inodes. A link at the last name of either is not followed.
+    /// The working directory stays on the directory that it resolves to, moved with
+    /// `from` when it is at or under it, as a host keeps a process on the directory
+    /// itself. Its path changes only when it no longer resolves there.
+    pub(crate) fn move_entry(&mut self, node: usize, from: &Path, to: &Path) {
+        let from = self.entry(node, from);
+        let to = self.entry(node, to);
+        assert!(
+            self.entries.contains_key(&(node, from.clone())),
+            "nothing is at {}",
+            from.display()
+        );
+        let there = self.entries.contains_key(&(node, to.clone()));
+        assert!(!there, "{} is there", to.display());
+        assert!(
+            !to.starts_with(&from),
+            "{} is under {}",
+            to.display(),
+            from.display()
+        );
+        let given = self.working.get(&node).cloned();
+        let working = given.as_ref().and_then(|dir| self.resolve(node, dir).ok());
+        let mut moved: Vec<_> = self.under(node, &from).cloned().collect();
+        moved.push(from.clone());
+        for path in moved {
+            let entry = self.entries.remove(&(node, path.clone()));
+            let entry = entry.expect("invariant: each moved path has an entry");
+            let path = to.join(path.strip_prefix(&from).expect("under `from`"));
+            self.entries.insert((node, path), entry);
+        }
+        if let (Some(given), Some(dir)) = (given, working) {
+            let dir = match dir.strip_prefix(&from) {
+                Ok(under) => to.join(under),
+                Err(_) => dir,
+            };
+            // The text stays while it still resolves there, so a fault keeps its
+            // spelling across a move elsewhere.
+            if self.resolve(node, &given).ok().as_ref() != Some(&dir) {
+                self.working.insert(node, dir);
+            }
+        }
     }
 
     pub(crate) fn set_working(&mut self, node: usize, dir: &Path) {
@@ -250,9 +321,29 @@ impl Paths {
             Err(e) => Err(e),
         };
         let at = at.unwrap_or_else(|e| panic!("{} gave {e:?}", path.display()));
+        let inode = self.inode();
         self.entries
             .entry((node, at.clone()))
-            .or_insert(Entry::Directory);
+            .or_insert((inode, Entry::Directory));
+        at.join(name)
+    }
+
+    /// `path` with its directory resolved, which is there.
+    ///
+    /// # Panics
+    ///
+    /// When `path` is `/`, or its directory does not resolve or is not a directory.
+    fn entry(&self, node: usize, path: &Path) -> PathBuf {
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+            panic!("{} has no directory", path.display());
+        };
+        let at = self.resolve(node, dir);
+        let at = at.unwrap_or_else(|e| panic!("{} gave {e:?}", dir.display()));
+        assert!(
+            self.directory(node, &at),
+            "{} is not a directory",
+            dir.display()
+        );
         at.join(name)
     }
 
@@ -267,9 +358,13 @@ impl Paths {
         if path.as_os_str().is_empty() {
             return Err(Error::NotFound);
         }
-        let fault = self.faults.get_mut(&(node, self.absolute(node, path)));
-        match fault.and_then(VecDeque::pop_front) {
-            Some(code) => Err(Error::Io { code }),
+        let at = self.absolute(node, path);
+        let fault = self
+            .faults
+            .iter()
+            .position(|(on, given, _)| *on == node && self.absolute(node, given) == at);
+        match fault.map(|fault| self.faults.remove(fault)) {
+            Some((.., code)) => Err(Error::Io { code }),
             None => Ok(()),
         }
     }
@@ -281,12 +376,12 @@ impl Paths {
 
     fn directory(&self, node: usize, path: &Path) -> bool {
         let entry = self.entries.get(&(node, path.to_path_buf()));
-        path == Path::new("/") || matches!(entry, Some(Entry::Directory))
+        path == Path::new("/") || matches!(entry, Some((_, Entry::Directory)))
     }
 
     fn file(&self, node: usize, path: &Path) -> bool {
         let entry = self.entries.get(&(node, path.to_path_buf()));
-        matches!(entry, Some(Entry::File(_)))
+        matches!(entry, Some((_, Entry::File(_))))
     }
 
     /// The path of each entry strictly under `dir`.

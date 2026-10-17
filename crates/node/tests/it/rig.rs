@@ -77,6 +77,9 @@ impl Rig {
         };
         #[cfg(unix)]
         sweep(&dir, remove);
+        // The node shows canonical paths, and on macOS the temporary directory is under
+        // a link.
+        let dir = std::fs::canonicalize(&dir).expect("the new directory is there");
         let rig = Self {
             dir,
             disk: u64::try_from(cores).expect("invariant: a core count fits u64")
@@ -483,6 +486,21 @@ impl Talk {
             .expect("write the input");
         let answered = |seen: &Seen| seen.stdout == output.as_bytes();
         (self.running).until(&self.clock, PATIENCE, "the command answers", answered);
+    }
+
+    /// Writes `line` to the standard input of the command, waits until its standard
+    /// output has one more line, and gives that line. When 90 s pass first, panics
+    /// with the output so far.
+    pub(crate) fn answer(&mut self, line: &str) -> String {
+        let before = self.running.watch.seen().stdout.len();
+        self.stdin
+            .write_all(line.as_bytes())
+            .expect("write the input");
+        let answered = |seen: &Seen| seen.stdout[before..].contains(&b'\n');
+        (self.running).until(&self.clock, PATIENCE, "the command answers", answered);
+        let seen = self.running.watch.seen();
+        let mut lines = seen.stdout[before..].split(|&b| b == b'\n');
+        String::from_utf8_lossy(lines.next().expect("a line")).into_owned()
     }
 
     /// Gives the command no input for `span`.

@@ -331,12 +331,29 @@
   The `out` of `plan` through MCP must resolve
   to a name that ends in `.plan`, else `ops.plan-name` (2). A path outside the folders
   is `ops.outside` (2): "`{path}` is not under a folder of this MCP server ({folders})",
-  with a fix that names the working directory, where a relative path starts, and
-  `--files`. A path in the data directory is `ops.hidden` (2):
+  with the fix "Give a path under one of those folders. A relative path starts at the
+  working directory of this MCP server, which was {working} at its start. To reach
+  another folder, add `--files <DIR>` to the command of the MCP server".
+  The fix stays true after a program moves that directory. A path in the data
+  directory is `ops.hidden` (2):
   "`{path}` is in the data directory {data} of this MCP server, which no tool reads or
-  writes", with the fix "Give a path outside {data}". `ops.plan-name`, `ops.outside`,
-  and `ops.hidden` are tool errors (`isError`); `ops.wide-folder`, `ops.folder`, and
-  `ops.data` end the start.
+  writes", with the fix "Give a path outside {data}".
+  A new name that a write or `make_dir` makes in a directory on the way to the data
+  directory, while nothing is at it, is `ops.no-data` (1): "`{path}` is a new name in a
+  directory on the way to the data directory {data} of this MCP server, and nothing is
+  at {data} now", with the fix "Start the node on {data} again, or give a path in
+  another directory".
+  A path under a folder that a program moved or replaced after the start, or into the
+  directory that the folder was at the start, is `ops.folder-changed` (1): "`{path}`
+  is under a folder of this MCP server ({folders}) that a program moved or replaced
+  after it started", with the fix "Start `foundation mcp` again" (both:
+  `laptop.architect-2`, 2026-10-17T05:16:48Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230063256; the
+  moved folder and the fix of `ops.outside`, 2026-10-17T07:17:06Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231111995).
+  `ops.plan-name`, `ops.outside`, `ops.hidden`, `ops.no-data`, and
+  `ops.folder-changed` are tool errors (`isError`); `ops.wide-folder`, `ops.folder`,
+  and `ops.data` end the start.
   The command line keeps free paths, since a person types them. Decided by
   `laptop.monitor` for the person, who delegated it at 2026-10-16T04:51:01Z with "I'll
   let you choose the right path" (2026-10-16T04:51:22Z,

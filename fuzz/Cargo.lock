@@ -359,6 +359,7 @@ dependencies = [
 name = "connector-opcua"
 version = "0.0.0"
 dependencies = [
+ "aws-lc-sys",
  "block",
  "cc",
  "connector",
@@ -689,7 +690,6 @@ dependencies = [
  "control",
  "delivery",
  "env",
- "tracing",
  "types",
 ]
 

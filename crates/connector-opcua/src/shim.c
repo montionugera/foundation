@@ -8,7 +8,9 @@
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #include <open62541/client_config_default.h>
 #include <open62541/client_highlevel_async.h>
+#include <open62541/plugin/certificategroup_default.h>
 #include <open62541/plugin/eventloop.h>
+#include <open62541/plugin/securitypolicy_default.h>
 #include <open62541/types.h>
 #include <open62541/util.h>
 #include "mp_printf.h"
@@ -25,12 +27,6 @@
 #include <unistd.h>
 #ifdef _WIN32
 #include <windows.h>
-#endif
-
-/* The reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
- * open62541` needs encryption off. */
-#ifdef UA_ENABLE_ENCRYPTION
-#error "connector-opcua builds open62541 with encryption off"
 #endif
 
 /* The global clocks give a fixed time, so no OS clock enters through the C code.
@@ -76,8 +72,10 @@ static void die(const char *format, ...) {
     abort();
 }
 
-/* The library calls these only when a config has no event loop, and ours always has
- * one, so a call is a defect. */
+/* The library calls the constructors of the POSIX loop only when a config has no event
+ * loop, and ours always has one. `cargo xtask open62541` omits the file stores and the
+ * deprecated and ECC policies, and the production code adds none. So a call is a
+ * defect. */
 static void refuse(const char *name) { die("called %s, which is not built", name); }
 
 UA_EventLoop *UA_EventLoop_new_POSIX(const UA_Logger *logger) {
@@ -110,6 +108,53 @@ UA_InterruptManager *UA_InterruptManager_new_POSIX(const UA_String name) {
     return NULL;
 }
 
+#define REFUSE_RSA(name)                                                              \
+    UA_StatusCode name(UA_SecurityPolicy *policy, const UA_ByteString certificate,     \
+                       const UA_ByteString key, const UA_Logger *logger) {             \
+        (void)policy, (void)certificate, (void)key, (void)logger;                      \
+        refuse(#name);                                                                 \
+        return UA_STATUSCODE_BADINTERNALERROR;                                         \
+    }
+#define REFUSE_ECC(name)                                                              \
+    UA_StatusCode name(UA_SecurityPolicy *policy, const UA_ApplicationType type,       \
+                       const UA_ByteString certificate, const UA_ByteString key,       \
+                       const UA_Logger *logger) {                                      \
+        (void)policy, (void)type, (void)certificate, (void)key, (void)logger;          \
+        refuse(#name);                                                                 \
+        return UA_STATUSCODE_BADINTERNALERROR;                                         \
+    }
+REFUSE_RSA(UA_SecurityPolicy_Basic128Rsa15)
+REFUSE_RSA(UA_SecurityPolicy_Basic256)
+REFUSE_ECC(UA_SecurityPolicy_EccBrainpoolP256r1)
+REFUSE_ECC(UA_SecurityPolicy_EccBrainpoolP384r1)
+REFUSE_ECC(UA_SecurityPolicy_EccCurve25519)
+REFUSE_ECC(UA_SecurityPolicy_EccCurve448)
+REFUSE_ECC(UA_SecurityPolicy_EccNistP256)
+REFUSE_ECC(UA_SecurityPolicy_EccNistP256AesGcm)
+REFUSE_ECC(UA_SecurityPolicy_EccNistP256ChaChaPoly)
+REFUSE_ECC(UA_SecurityPolicy_EccNistP384)
+
+#if defined(__linux__) || defined(UA_ARCHITECTURE_WIN32)
+UA_StatusCode UA_CertificateGroup_Filestore(UA_CertificateGroup *certGroup,
+                                            UA_NodeId *certificateGroupId,
+                                            const UA_String storePath,
+                                            const UA_Logger *logger,
+                                            const UA_KeyValueMap *params) {
+    (void)certGroup, (void)certificateGroupId, (void)storePath, (void)logger,
+        (void)params;
+    refuse("UA_CertificateGroup_Filestore");
+    return UA_STATUSCODE_BADINTERNALERROR;
+}
+
+UA_StatusCode UA_SecurityPolicy_Filestore(UA_SecurityPolicy *policy,
+                                          UA_SecurityPolicy *innerPolicy,
+                                          const UA_String storePath) {
+    (void)policy, (void)innerPolicy, (void)storePath;
+    refuse("UA_SecurityPolicy_Filestore");
+    return UA_STATUSCODE_BADINTERNALERROR;
+}
+#endif
+
 /* `src/ffi.rs` mirrors these and asserts the same sizes. */
 _Static_assert(sizeof(UA_NodeId) == 24, "UA_NodeId changed");
 _Static_assert(sizeof(UA_DataType) == 96, "UA_DataType changed");
@@ -134,6 +179,19 @@ _Static_assert(UA_NS0ID_BOOLEAN == 1 && UA_NS0ID_SBYTE == 2 &&
                    UA_NS0ID_UINT64 == 9 && UA_NS0ID_FLOAT == 10 &&
                    UA_NS0ID_DOUBLE == 11,
                "the id of a scalar type is not its index in UA_TYPES plus 1");
+_Static_assert(UA_TYPES_STRING == UA_NS0ID_STRING - 1 &&
+                   UA_TYPES_DATETIME == UA_NS0ID_DATETIME - 1 &&
+                   UA_TYPES_GUID == UA_NS0ID_GUID - 1 &&
+                   UA_TYPES_BYTESTRING == UA_NS0ID_BYTESTRING - 1 &&
+                   UA_TYPES_XMLELEMENT == UA_NS0ID_XMLELEMENT - 1 &&
+                   UA_TYPES_NODEID == UA_NS0ID_NODEID - 1 &&
+                   UA_TYPES_EXPANDEDNODEID == UA_NS0ID_EXPANDEDNODEID - 1 &&
+                   UA_TYPES_STATUSCODE == UA_NS0ID_STATUSCODE - 1 &&
+                   UA_TYPES_QUALIFIEDNAME == UA_NS0ID_QUALIFIEDNAME - 1 &&
+                   UA_TYPES_LOCALIZEDTEXT == UA_NS0ID_LOCALIZEDTEXT - 1 &&
+                   UA_TYPES_DATAVALUE == UA_NS0ID_DATAVALUE - 1 &&
+                   UA_TYPES_DIAGNOSTICINFO == UA_NS0ID_DIAGNOSTICINFO - 1,
+               "the id of a built-in type is not its index in UA_TYPES plus 1");
 _Static_assert(SHIM_ARRAY == 0x8000, "SHIM_ARRAY is `ffi::ARRAY`");
 _Static_assert(UA_DATATYPEKIND_BOOLEAN == 0 && UA_DATATYPEKIND_SBYTE == 1 &&
                    UA_DATATYPEKIND_BYTE == 2 && UA_DATATYPEKIND_INT16 == 3 &&
@@ -1159,25 +1217,34 @@ static UA_Boolean id_of(const UA_NodeId *id, shim_node *out) {
     return true;
 }
 
+/* A node of this server by a number or a name. */
+#define SHIM_HELD_NODE 0
+/* A node of this server by a GUID or opaque key. */
+#define SHIM_HELD_KEY 1
+/* A node of another server, or of a namespace by its URI. */
+#define SHIM_HELD_REMOTE 2
+_Static_assert(SHIM_HELD_NODE == 0 && SHIM_HELD_KEY == 1 && SHIM_HELD_REMOTE == 2,
+               "ffi::held changed");
+
 /* A reference of a browse, as `ffi::Reference` gives it. Each text borrows from the
  * answer. */
 typedef struct {
-    /* The node, valid only when `local`. */
+    /* The node, valid only when `held` is 0. */
     shim_node node;
     /* The reference type, valid only when `typed`. */
     shim_node via;
     UA_String name;
     UA_String display;
     UA_UInt32 class;
-    /* Whether the node is in this server, by a number or a name. */
-    UA_Boolean local;
+    /* One of the `SHIM_HELD_*` values. */
+    UA_Byte held;
     /* Whether the reference type is by a number or a name. */
     UA_Boolean typed;
 } shim_reference;
 
 _Static_assert(sizeof(shim_reference) == 88, "shim_reference changed");
 _Static_assert(offsetof(shim_reference, class) == 80, "shim_reference.class moved");
-_Static_assert(offsetof(shim_reference, local) == 84, "shim_reference.local moved");
+_Static_assert(offsetof(shim_reference, held) == 84, "shim_reference.held moved");
 _Static_assert(offsetof(shim_reference, typed) == 85, "shim_reference.typed moved");
 
 /* Writes reference `index` of result `result` of `answer`, a Browse or BrowseNext
@@ -1187,12 +1254,27 @@ void shim_browse_reference(const UA_BrowseResponse *answer, size_t result, size_
     const UA_ReferenceDescription *reference =
         &answer->results[result].references[index];
     const UA_ExpandedNodeId *node = &reference->nodeId;
-    out->local = id_of(&node->nodeId, &out->node) && node->serverIndex == 0 &&
-                 node->namespaceUri.length == 0;
+    UA_Boolean keyed = id_of(&node->nodeId, &out->node);
+    if(node->serverIndex != 0 || node->namespaceUri.length != 0) {
+        out->held = SHIM_HELD_REMOTE;
+    } else {
+        out->held = keyed ? SHIM_HELD_NODE : SHIM_HELD_KEY;
+    }
     out->typed = id_of(&reference->referenceTypeId, &out->via);
     out->name = reference->browseName.name;
     out->display = reference->displayName.text;
     out->class = (UA_UInt32)reference->nodeClass;
+}
+
+/* Writes the text of the node of reference `index` of result `result` of `answer`, as
+ * `shim_browse_reference` reads it, to `out`, which the caller frees with
+ * `shim_buffer_free`. Gives `BadOutOfMemory` when an allocation fails. */
+UA_StatusCode shim_browse_text(const UA_BrowseResponse *answer, size_t result,
+                               size_t index, UA_String *out) {
+    const UA_ReferenceDescription *reference =
+        &answer->results[result].references[index];
+    UA_String_init(out);
+    return UA_ExpandedNodeId_print(&reference->nodeId, out);
 }
 
 /* Gives a TranslateBrowsePathsToNodeIds request of the path `HasProperty` to

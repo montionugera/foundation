@@ -49,9 +49,11 @@ pub struct Config {
 }
 
 impl Config {
-    /// Settings for a pool that commits at most `budget_bytes` bytes at once. Resident
-    /// memory can pass the budget by up to two partial pages per size class, because a
-    /// purge rounds in to page bounds.
+    /// Settings for a pool that keeps [`Pool::committed`] at most `budget_bytes`.
+    /// Resident memory can pass the budget by up to two partial pages per size class,
+    /// because a purge rounds in to page bounds, and by the pages that a
+    /// [`Memory::discard`] leaves resident. The commit charge of the system can pass it
+    /// by the pages that a discard keeps committed.
     ///
     /// # Errors
     ///
@@ -186,7 +188,17 @@ struct Header {
     /// Bytes from the region to this header.
     offset: usize,
     class: usize,
+    /// Bytes of the whole pages in the payload: what a discard of it gives back.
+    pages: usize,
     payload: Track,
+}
+
+impl Header {
+    /// Gives a free block, off its list, to one holder.
+    fn lend(&self) {
+        self.refs.store(1, Relaxed);
+        self.payload.write();
+    }
 }
 
 const _: () = assert!(
@@ -213,6 +225,9 @@ struct Class {
     /// The most bytes `carved` ever was: the range a release purges.
     reached: Cell<usize>,
     free: Cell<usize>,
+    /// Bytes of the whole payload pages of the blocks on `free`.
+    coolable: Cell<usize>,
+    cold: Cold,
     /// Blocks that holders have, or that wait in `Region::returned`.
     lent: Cell<usize>,
     /// `Pool::purges` when a block last returned.
@@ -224,6 +239,40 @@ impl Class {
     fn idle(&self) -> bool {
         self.lent.get() == 0 && self.carved.get() != 0
     }
+
+    /// Bytes of the budget that the class holds.
+    fn held(&self) -> usize {
+        self.carved.get() - self.cold.credit.get()
+    }
+}
+
+/// Free blocks of one class whose payload pages went back. Each keeps its header,
+/// which links the list.
+#[derive(Default)]
+struct Cold {
+    head: Cell<usize>,
+    /// Bytes of the budget that the blocks gave back.
+    credit: Cell<usize>,
+}
+
+impl Cold {
+    /// Adds `block`, at `offset`, which gave back `pages` bytes.
+    fn push(&self, offset: usize, block: &Header, pages: usize) {
+        block.next.store(self.head.get(), Relaxed);
+        self.head.set(offset);
+        self.credit.set(self.credit.get() + pages);
+    }
+
+    /// Removes `block`, the head, which gave back `pages` bytes.
+    fn pop(&self, block: &Header, pages: usize) {
+        self.head.set(block.next.load(Relaxed));
+        self.credit.set(self.credit.get() - pages);
+    }
+
+    fn clear(&self) {
+        self.head.set(NONE);
+        self.credit.set(0);
+    }
 }
 
 /// A pool of blocks owned by one shard.
@@ -233,14 +282,17 @@ impl Class {
 ///
 /// Blocks come in sizes, 64-byte steps up to 256 bytes and then four sizes per
 /// doubling up to 2 GiB, each with 64 bytes in front. A free block keeps its budget
-/// for its own size until another size needs the budget and no block of that size
-/// is in use: `alloc` then gives the pages of the whole size back and takes the
-/// budget. `purge` gives back the pages of a size that stayed idle across two of
-/// its calls.
+/// for its own size until another size needs the budget. `alloc` then gives back the
+/// pages of each size with no block in use, and if that does not cover the need, the
+/// pages of free blocks of other sizes. A free block gives back only the whole pages
+/// in its payload, so one with less than two pages of payload can give back none.
+/// `purge` gives back the pages of a size that stayed idle across two of its calls.
 pub struct Pool {
     region: NonNull<Region>,
     budget: usize,
     span: usize,
+    /// [`Memory::page`] of the region.
+    page: usize,
     committed: Cell<usize>,
     /// Calls of `purge` so far: the clock that `Class::returned_at` reads.
     purges: Cell<u64>,
@@ -257,8 +309,8 @@ impl Pool {
     ///
     /// # Panics
     ///
-    /// If `memory` is shorter than [`Config::reservation`], or is not aligned to
-    /// [`ALIGN`].
+    /// If `memory` is shorter than [`Config::reservation`], is not aligned to
+    /// [`ALIGN`], or has a page that is not a power of two of at least [`ALIGN`].
     #[must_use]
     #[expect(clippy::needless_pass_by_value, reason = "settings move into a pool")]
     pub fn new(config: Config, memory: impl Memory + 'static) -> Self {
@@ -278,6 +330,11 @@ impl Pool {
             region.is_aligned(),
             "pool memory must be aligned to 64 bytes"
         );
+        let page = memory.page();
+        assert!(
+            page.is_power_of_two() && page >= ALIGN,
+            "pool memory pages must be a power of two of at least 64 bytes, got {page}"
+        );
         let first = Region {
             returned: AtomicUsize::new(NONE),
             owed: AtomicUsize::new(0),
@@ -291,6 +348,7 @@ impl Pool {
             region,
             budget,
             span,
+            page,
             committed: Cell::new(0),
             purges: Cell::new(0),
             classes: (0..classes).map(|_| Class::default()).collect(),
@@ -335,7 +393,8 @@ impl Pool {
     }
 
     /// Returns a writable block of `len` bytes, aligned to [`ALIGN`]. It never waits.
-    /// The bytes are not cleared: a block that is used again keeps its old bytes.
+    /// The bytes are not cleared: a block that is used again holds bytes that are not
+    /// known.
     ///
     /// # Errors
     ///
@@ -343,7 +402,8 @@ impl Pool {
     ///   succeeds later.
     /// - [`Error::Exhausted`] when the budget has no room for the block now.
     /// - [`Error::Refused`] when the system refused memory for the block after the
-    ///   pool gave back each idle size. The sizes stay given back.
+    ///   pool gave back each idle size. The sizes, and the pages of free blocks that
+    ///   the budget needed, stay given back.
     pub fn alloc(&self, len: usize) -> Result<Unique, Error> {
         let index = class_of(len);
         if index >= self.classes.len() {
@@ -356,49 +416,19 @@ impl Pool {
         if class.free.get() == NONE {
             self.reclaim();
         }
-        let header = if class.free.get() == NONE {
-            let size = class_footprint(index);
-            let available = self.press(index);
-            if size > available {
-                return Err(Error::Exhausted {
-                    requested: len,
-                    available,
-                });
-            }
-            let offset = self.span_start(index) + class.carved.get();
-            let mut idle = self.idle(index);
-            while let Err(Refused) = self.shared().memory.commit(offset, size) {
-                let Some(other) = idle.next() else {
-                    return Err(Error::Refused { requested: len });
-                };
-                self.release(other);
-            }
-            let carved = class.carved.get() + size;
-            class.carved.set(carved);
-            class.reached.set(class.reached.get().max(carved));
-            self.committed.set(self.committed.get() + size);
-            // SAFETY: the carved bytes of a class are at most `committed`, which the
-            // room check keeps at or below the budget, and a span is at least that.
-            let header = unsafe { self.header(offset) };
-            let fresh = Header {
-                refs: AtomicUsize::new(1),
-                next: AtomicUsize::new(NONE),
-                offset,
-                class: index,
-                payload: Track::new(),
-            };
-            // SAFETY: the block is committed and aligned, and no holder has it.
-            unsafe { header.write(fresh) };
-            header
-        } else {
+        let header = if class.free.get() != NONE {
             // SAFETY: a block on a free list has a header, and only the pool uses it.
             let header = unsafe { self.header(class.free.get()) };
             // SAFETY: as above.
             let free = unsafe { header.as_ref() };
             class.free.set(free.next.load(Relaxed));
-            free.refs.store(1, Relaxed);
-            free.payload.write();
+            class.coolable.set(class.coolable.get() - free.pages);
+            free.lend();
             header
+        } else if class.cold.head.get() != NONE {
+            self.thaw(index, len)?
+        } else {
+            self.carve(index, len)?
         };
         class.lent.set(class.lent.get() + 1);
         #[expect(
@@ -420,6 +450,67 @@ impl Pool {
         let mut block = self.alloc(bytes.len())?;
         block.copy_from_slice(bytes);
         Ok(block.freeze())
+    }
+
+    /// The first cold block of class `index`, which takes back its budget and makes no
+    /// commit.
+    fn thaw(&self, index: usize, len: usize) -> Result<NonNull<Header>, Error> {
+        let class = &self.classes[index];
+        // SAFETY: a block on a cold list has a header, and only the pool uses it.
+        let header = unsafe { self.header(class.cold.head.get()) };
+        // SAFETY: as above.
+        let block = unsafe { header.as_ref() };
+        let need = block.pages;
+        let available = self.press(index, need);
+        if need > available {
+            return Err(Error::Exhausted {
+                requested: len,
+                available,
+            });
+        }
+        self.committed.set(self.committed.get() + need);
+        class.cold.pop(block, need);
+        block.lend();
+        Ok(header)
+    }
+
+    /// A new block of class `index` at the end of its carved range.
+    fn carve(&self, index: usize, len: usize) -> Result<NonNull<Header>, Error> {
+        let class = &self.classes[index];
+        let size = class_footprint(index);
+        let available = self.press(index, size);
+        if size > available {
+            return Err(Error::Exhausted {
+                requested: len,
+                available,
+            });
+        }
+        let start = self.span_start(index) + class.carved.get();
+        let mut idle = self.idle(index);
+        while let Err(Refused) = self.shared().memory.commit(start, size) {
+            let Some(other) = idle.next() else {
+                return Err(Error::Refused { requested: len });
+            };
+            self.release(other);
+        }
+        self.committed.set(self.committed.get() + size);
+        let carved = class.carved.get() + size;
+        class.carved.set(carved);
+        class.reached.set(class.reached.get().max(carved));
+        // SAFETY: the carved bytes of a class are at most `committed`, which the room
+        // check keeps at or below the budget, and a span is at least that.
+        let header = unsafe { self.header(start) };
+        let fresh = Header {
+            refs: AtomicUsize::new(1),
+            next: AtomicUsize::new(NONE),
+            offset: start,
+            class: index,
+            pages: self.pages(start, index),
+            payload: Track::new(),
+        };
+        // SAFETY: the block is committed and aligned, and no holder has it.
+        unsafe { header.write(fresh) };
+        Ok(header)
     }
 
     /// Takes back the blocks that holders dropped, so that `alloc` can use them
@@ -451,41 +542,45 @@ impl Pool {
         before - self.committed.get()
     }
 
-    /// Bytes of the budget in use: the carved range of each size class, which holds
-    /// the blocks that holders have and the free blocks that keep their pages. A size
-    /// whose blocks are all free gives its range back when another size needs the
-    /// budget.
+    /// Bytes of the budget in use: the carved range of each size class, less the
+    /// pages that free blocks gave back.
     #[must_use]
     pub fn committed(&self) -> usize {
         self.committed.get()
     }
 
-    /// Gives back the carved range of each class with no block in use until the
-    /// budget has room for one block of class `index`. Returns the room. `alloc`
-    /// calls it when `index` has no free block.
+    /// Makes room in the budget for `need` bytes of class `index`, which has no free
+    /// block, and returns the room. It gives back the carved range of each other
+    /// class with no block in use, then the payload pages of free blocks of the
+    /// other classes for the rest of the need.
     ///
-    /// It walks nothing when the budget has the room already, and purges nothing
-    /// when the idle classes cannot cover the need together.
-    fn press(&self, index: usize) -> usize {
-        let size = class_footprint(index);
+    /// It walks nothing when the budget has the room already, and gives back nothing
+    /// when all of those together cannot cover the need.
+    fn press(&self, index: usize, need: usize) -> usize {
         let mut available = self.budget - self.committed.get();
-        if available >= size {
+        if available >= need {
             return available;
         }
+        let short = need - available;
         let spare: usize = self
             .idle(index)
-            .map(|other| self.classes[other].carved.get())
+            .map(|other| self.classes[other].held())
             .sum();
-        if available + spare < size {
+        let rest = short.saturating_sub(spare);
+        if rest != 0 && self.coolable(index) < rest {
             return available;
         }
         for other in self.idle(index) {
-            available += self.release(other);
-            if available >= size {
-                break;
+            if available >= need {
+                return available;
             }
+            available += self.release(other);
         }
-        available
+        if rest == 0 {
+            return available;
+        }
+        // Each idle class went back, so `rest` is what the room still lacks.
+        available + self.cool(index, rest)
     }
 
     /// Idle classes above `index` smallest first, so one release covers the
@@ -499,24 +594,95 @@ impl Pool {
             .filter(move |&other| self.classes[other].idle())
     }
 
+    /// Classes in use other than `index` whose payload holds a page, largest first:
+    /// the classes whose free blocks can give pages back.
+    fn cooling(&self, index: usize) -> impl Iterator<Item = usize> {
+        (0..self.classes.len()).rev().filter(move |&other| {
+            other != index
+                && self.classes[other].lent.get() != 0
+                && class_payload(other) >= self.page
+        })
+    }
+
+    /// Gives back the payload pages of free blocks of the classes that `cooling`
+    /// names until they cover `need`, and returns the bytes of the budget given
+    /// back. Each such block moves to the cold list of its class, and a block whose
+    /// payload holds no whole page stays free.
+    fn cool(&self, index: usize, need: usize) -> usize {
+        let mut given = 0;
+        for other in self.cooling(index) {
+            let class = &self.classes[other];
+            let mut previous = NONE;
+            let mut offset = class.free.get();
+            while offset != NONE && given < need {
+                // SAFETY: a block on a free list has a header, and only the pool uses
+                // it.
+                let header = unsafe { self.header(offset) };
+                // SAFETY: as above.
+                let block = unsafe { header.as_ref() };
+                let next = block.next.load(Relaxed);
+                let pages = block.pages;
+                if pages == 0 {
+                    previous = offset;
+                } else {
+                    if previous == NONE {
+                        class.free.set(next);
+                    } else {
+                        // SAFETY: as above.
+                        let header = unsafe { self.header(previous) };
+                        // SAFETY: as above.
+                        let previous = unsafe { header.as_ref() };
+                        previous.next.store(next, Relaxed);
+                    }
+                    self.shared()
+                        .memory
+                        .discard(offset + HEADER, class_payload(other));
+                    class.coolable.set(class.coolable.get() - pages);
+                    class.cold.push(offset, block, pages);
+                    given += pages;
+                }
+                offset = next;
+            }
+        }
+        self.committed.set(self.committed.get() - given);
+        given
+    }
+
+    /// The bytes that [`cool`](Self::cool) can give back for class `index`.
+    fn coolable(&self, index: usize) -> usize {
+        self.cooling(index)
+            .map(|other| self.classes[other].coolable.get())
+            .sum()
+    }
+
+    /// Bytes of the whole pages in the payload of the block of class `index` at
+    /// `offset`: what a discard of that payload gives back.
+    fn pages(&self, offset: usize, index: usize) -> usize {
+        let first = (offset + HEADER).div_ceil(self.page);
+        let end = (offset + class_footprint(index)) / self.page;
+        end.saturating_sub(first) * self.page
+    }
+
     /// First byte of the span of class `index`.
     fn span_start(&self, index: usize) -> usize {
         HEADER + index * self.span
     }
 
     /// Gives back the carved range of class `index`, which has no block in use, and
-    /// returns the bytes it held. The purge covers `reached`, so pages that an
-    /// earlier, longer carve touched go back too.
+    /// returns the bytes of the budget it held. The purge covers `reached`, so pages
+    /// that an earlier, longer carve touched go back too.
     fn release(&self, index: usize) -> usize {
         let class = &self.classes[index];
-        let carved = class.carved.get();
+        let held = class.held();
         self.shared()
             .memory
             .purge(self.span_start(index), class.reached.get());
         class.carved.set(0);
         class.free.set(NONE);
-        self.committed.set(self.committed.get() - carved);
-        carved
+        class.coolable.set(0);
+        class.cold.clear();
+        self.committed.set(self.committed.get() - held);
+        held
     }
 
     /// Blocks that holders have, or that wait in `Region::returned`.
@@ -553,6 +719,7 @@ impl Pool {
             let class = &self.classes[header.class];
             header.next.store(class.free.get(), Relaxed);
             class.free.set(offset);
+            class.coolable.set(class.coolable.get() + header.pages);
             class.lent.set(class.lent.get() - 1);
             class.returned_at.set(purges);
             offset = next;
@@ -867,6 +1034,7 @@ mod fixture {
     pub(crate) enum Call {
         Commit { offset: usize, len: usize },
         Purge { offset: usize, len: usize },
+        Discard { offset: usize, len: usize },
     }
 
     /// What a pool did with its memory, and the switch of that memory.
@@ -889,13 +1057,19 @@ mod fixture {
         }
     }
 
+    /// The byte that [`Watched`] writes over the pages it discards.
+    const DISCARDED: u8 = 0xdd;
+
     /// Memory that records its calls and counts its drops.
     pub(crate) struct Watched {
         memory: Scarce,
         watch: Arc<Watch>,
+        page: usize,
     }
 
-    // SAFETY: each method is the one of `Scarce`.
+    // SAFETY: each method is the one of `Scarce`, or a `page` of at least `ALIGN`
+    // bytes, each of whose units of `ALIGN` bytes a purge gives back. A discard
+    // writes only the whole pages in its range.
     unsafe impl Memory for Watched {
         fn base(&self) -> NonNull<u8> {
             self.memory.base()
@@ -913,6 +1087,25 @@ mod fixture {
         fn purge(&self, offset: usize, len: usize) {
             self.watch.record(Call::Purge { offset, len });
             self.memory.purge(offset, len);
+        }
+
+        /// Also writes [`DISCARDED`] over the whole pages in the range, since a
+        /// discard leaves their contents unknown.
+        fn discard(&self, offset: usize, len: usize) {
+            self.watch.record(Call::Discard { offset, len });
+            self.memory.discard(offset, len);
+            let start = offset.next_multiple_of(self.page);
+            let end = (offset + len) / self.page * self.page;
+            if start < end {
+                // SAFETY: the range lies in the memory.
+                let pages = unsafe { self.base().add(start) };
+                // SAFETY: as above, and no block in use lies in it.
+                unsafe { pages.write_bytes(DISCARDED, end - start) };
+            }
+        }
+
+        fn page(&self) -> usize {
+            self.page
         }
     }
 
@@ -973,6 +1166,15 @@ mod fixture {
                 self.mark(offset.div_ceil(PAGE)..(offset + len) / PAGE, false);
                 self.heap.purge(offset, len);
             }
+
+            fn discard(&self, offset: usize, len: usize) {
+                self.mark(offset.div_ceil(PAGE)..(offset + len) / PAGE, false);
+                self.heap.discard(offset, len);
+            }
+
+            fn page(&self) -> usize {
+                PAGE
+            }
         }
 
         impl Paged {
@@ -1005,6 +1207,14 @@ mod fixture {
     }
 
     pub(crate) fn create_watched_pool(budget: usize) -> (Pool, Arc<Watch>) {
+        create_watched_pool_of(budget, 4096)
+    }
+
+    /// A watched pool whose memory has pages of `page` bytes.
+    pub(crate) fn create_watched_pool_of(
+        budget: usize,
+        page: usize,
+    ) -> (Pool, Arc<Watch>) {
         let config = config(budget);
         let (memory, switch) = Scarce::new(config.reservation());
         let watch = Arc::new(Watch {
@@ -1015,6 +1225,7 @@ mod fixture {
         let memory = Watched {
             memory,
             watch: Arc::clone(&watch),
+            page,
         };
         (Pool::new(config, memory), watch)
     }
@@ -1064,6 +1275,12 @@ mod tests {
         }
 
         fn purge(&self, _offset: usize, _len: usize) {}
+
+        fn discard(&self, _offset: usize, _len: usize) {}
+
+        fn page(&self) -> usize {
+            self.0.page()
+        }
     }
 
     mod reservation {
@@ -1213,6 +1430,7 @@ mod tests {
     }
 
     mod new {
+        use super::fixture::create_watched_pool_of;
         use super::*;
 
         #[test]
@@ -1232,6 +1450,24 @@ mod tests {
                 Config::new(128).expect("the budget fits"),
                 memory,
             ));
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "pool memory pages must be a power of two of at least 64 bytes, \
+                        got 96"
+        )]
+        fn panics_when_the_page_is_not_a_power_of_two() {
+            drop(create_watched_pool_of(128, 96));
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "pool memory pages must be a power of two of at least 64 bytes, \
+                        got 32"
+        )]
+        fn panics_when_the_page_is_under_64_bytes() {
+            drop(create_watched_pool_of(128, 32));
         }
 
         #[test]
@@ -1485,8 +1721,40 @@ mod tests {
 
     /// `alloc` moves the budget of an idle size to another size when it has to.
     mod pressure {
-        use super::fixture::Call::{Commit, Purge};
+        use std::sync::Arc;
+
+        use super::fixture::Call::{Commit, Discard, Purge};
+        use super::fixture::{Watch, create_watched_pool_of};
         use super::*;
+
+        /// An idle size whose free block was cold goes back whole, and its blocks do
+        /// not overlap when it carves again.
+        #[test]
+        fn carves_apart_the_blocks_of_a_size_whose_cold_block_went_back() {
+            let config = Config::new(4 * 16_448).expect("the budget fits");
+            let heap = Heap::new(config.reservation());
+            let pool = Pool::new(config, heap);
+            let mut held: Vec<_> = (0..4)
+                .map(|_| pool.alloc(16_384).expect("the budget has room"))
+                .collect();
+            drop(held.remove(2));
+            let small = pool.alloc(8000).expect("the free block gives its pages");
+            drop((held, small));
+            drop(pool.alloc(30_000).expect("the idle sizes go back"));
+            assert_eq!(pool.committed(), 41_088, "committed after the release");
+            let mut blocks: Vec<_> = (0..4)
+                .map(|_| pool.alloc(16_384).expect("the budget has room"))
+                .collect();
+            for (fill, block) in (1_u8..).zip(blocks.iter_mut()) {
+                block.fill(fill);
+            }
+            for (fill, block) in (1_u8..).zip(blocks.iter()) {
+                assert!(
+                    block.iter().all(|&byte| byte == fill),
+                    "block {fill} changed"
+                );
+            }
+        }
 
         #[test]
         fn carves_without_a_purge_when_the_budget_has_the_room() {
@@ -1726,6 +1994,335 @@ mod tests {
             drop(held);
         }
 
+        /// A pool of 1024 bytes with pages of 128 bytes, and three blocks of 256 bytes
+        /// at 3136, 3456, and 3776, whose payloads hold 2, 1, and 2 whole pages. It
+        /// holds the first block. The others are free, with the block at 3456 at the
+        /// head of the free list.
+        fn create_free_blocks() -> (Pool, Arc<Watch>, Unique) {
+            let (pool, watch) = create_watched_pool_of(1024, 128);
+            let mut blocks: Vec<_> = (0..3)
+                .map(|_| pool.alloc(256).expect("the budget has room"))
+                .collect();
+            let held = blocks.remove(0);
+            drop(blocks);
+            assert_eq!(pool.committed(), 960);
+            (pool, watch, held)
+        }
+
+        #[test]
+        fn gives_the_pages_of_a_free_block_of_a_size_in_use_to_another_size() {
+            let (pool, watch, held) = create_free_blocks();
+            let small = pool.alloc(64).expect("a free block gives its pages");
+            assert_eq!(pool.committed(), 960);
+            assert_eq!(
+                watch.calls()[3..],
+                [
+                    Discard {
+                        offset: 3520,
+                        len: 256
+                    },
+                    Commit {
+                        offset: 64,
+                        len: 128
+                    },
+                ],
+                "the header of the free block stays, and the other free block too"
+            );
+            drop((held, small));
+        }
+
+        #[test]
+        fn gives_the_pages_of_each_free_block_that_the_need_takes() {
+            let (pool, watch, held) = create_free_blocks();
+            let large = pool.alloc(320).expect("the free blocks give 384 bytes");
+            assert_eq!(pool.committed(), 960);
+            assert_eq!(
+                watch.calls()[3..],
+                [
+                    Discard {
+                        offset: 3520,
+                        len: 256
+                    },
+                    Discard {
+                        offset: 3840,
+                        len: 256
+                    },
+                    Commit {
+                        offset: 4160,
+                        len: 384
+                    },
+                ]
+            );
+            drop((held, large));
+        }
+
+        #[test]
+        fn gives_back_the_pages_of_only_the_free_blocks_that_the_need_takes() {
+            let (pool, watch) = create_watched_pool_of(960, 128);
+            let mut blocks: Vec<_> = (0..3)
+                .map(|_| pool.alloc(256).expect("the budget has room"))
+                .collect();
+            let held = blocks.remove(0);
+            drop(blocks);
+            let small = pool
+                .alloc(192)
+                .expect("one free block gives the need exactly");
+            assert_eq!(pool.committed(), 960);
+            assert_eq!(
+                watch.calls()[3..],
+                [
+                    Discard {
+                        offset: 3328,
+                        len: 256
+                    },
+                    Commit {
+                        offset: 1984,
+                        len: 256
+                    },
+                ],
+                "the other free block keeps its pages"
+            );
+            drop((held, small));
+        }
+
+        #[test]
+        fn counts_each_free_block_of_a_size_with_many_blocks_in_use() {
+            let (pool, watch) = create_watched_pool_of(1152, 64);
+            let mut blocks: Vec<_> = (0..6)
+                .map(|_| pool.alloc(128).expect("the budget has room"))
+                .collect();
+            let held: Vec<_> = blocks.drain(..2).collect();
+            drop(blocks);
+            let large = pool.alloc(384).expect("four free blocks give 512 bytes");
+            assert_eq!(pool.committed(), 1088);
+            let discards = watch
+                .calls()
+                .iter()
+                .filter(|call| matches!(call, Discard { .. }))
+                .count();
+            assert_eq!(discards, 4);
+            drop((held, large));
+        }
+
+        #[test]
+        fn keeps_free_a_block_whose_payload_holds_no_whole_page() {
+            let (pool, watch) = create_watched_pool_of(960, 128);
+            let mut blocks: Vec<_> = (0..5)
+                .map(|_| pool.alloc(128).expect("the budget has room"))
+                .collect();
+            let held = blocks.remove(0);
+            drop(blocks);
+            let small = pool.alloc(192).expect("two free blocks give a page each");
+            assert_eq!(pool.committed(), 960);
+            assert_eq!(
+                watch.calls()[5..],
+                [
+                    Discard {
+                        offset: 1280,
+                        len: 128
+                    },
+                    Discard {
+                        offset: 1664,
+                        len: 128
+                    },
+                    Commit {
+                        offset: 1984,
+                        len: 256
+                    },
+                ],
+                "the payloads at 1472 and 1856 hold no whole page"
+            );
+            let free: Vec<_> = (0..2)
+                .map(|_| pool.alloc(128).expect("a free block"))
+                .collect();
+            assert_eq!(
+                watch.calls().len(),
+                8,
+                "the blocks at 1408 and 1792 stayed free"
+            );
+            let mut offsets: Vec<_> = free
+                .iter()
+                .map(|block| block.as_ptr().addr() - held.as_ptr().addr())
+                .collect();
+            offsets.sort_unstable();
+            assert_eq!(offsets, [1408 - 1024, 1792 - 1024], "only the free blocks");
+            drop((held, small, free));
+        }
+
+        #[test]
+        fn gives_back_no_page_while_the_free_blocks_cannot_cover_the_need() {
+            let (pool, watch, held) = create_free_blocks();
+            assert_eq!(pool.alloc(512).err(), Some(exhausted(512, 64)));
+            assert_eq!(pool.committed(), 960, "the free blocks give only 384 bytes");
+            assert_eq!(watch.calls().len(), 3, "no page went back");
+            drop(held);
+        }
+
+        #[test]
+        fn gives_the_pages_of_an_idle_size_before_those_of_free_blocks() {
+            let (pool, watch) = create_watched_pool_of(1152, 128);
+            drop(pool.alloc(64).expect("the budget has room"));
+            let mut blocks: Vec<_> = (0..3)
+                .map(|_| pool.alloc(256).expect("the budget has room"))
+                .collect();
+            let held = blocks.remove(0);
+            drop(blocks);
+            assert_eq!(pool.committed(), 1088);
+            let large = pool.alloc(320).expect("the idle size and the free blocks");
+            assert_eq!(pool.committed(), 960);
+            assert_eq!(
+                watch.calls()[4..],
+                [
+                    Purge {
+                        offset: 64,
+                        len: 128
+                    },
+                    Discard {
+                        offset: 3904,
+                        len: 256
+                    },
+                    Discard {
+                        offset: 4224,
+                        len: 256
+                    },
+                    Commit {
+                        offset: 4672,
+                        len: 384
+                    },
+                ]
+            );
+            drop((held, large));
+        }
+
+        #[test]
+        fn gives_back_no_page_of_a_free_block_under_one_page() {
+            let (pool, watch) = create_watched_pool_of(448, 128);
+            let blocks: Vec<_> = (0..3)
+                .map(|_| pool.alloc(64).expect("the budget has room"))
+                .collect();
+            let held = blocks.into_iter().next();
+            assert_eq!(pool.alloc(128).err(), Some(exhausted(128, 64)));
+            assert_eq!(pool.committed(), 384);
+            assert_eq!(watch.calls().len(), 3, "no page went back");
+            drop(held);
+        }
+
+        #[test]
+        fn serves_a_cold_block_before_it_carves() {
+            let (pool, watch, held) = create_free_blocks();
+            drop(pool.alloc(64).expect("a free block gives its pages"));
+            let warm = pool.alloc(256).expect("the free block");
+            let cold = pool.alloc(256).expect("the idle size gives room");
+            assert_eq!(
+                cold.as_ptr().addr() - held.as_ptr().addr(),
+                3456 - 3136,
+                "the block that gave its pages"
+            );
+            assert_eq!(pool.committed(), 960);
+            assert_eq!(
+                watch.calls()[5..],
+                [Purge {
+                    offset: 64,
+                    len: 128
+                }],
+                "a cold block makes no commit"
+            );
+            drop((held, warm, cold));
+        }
+
+        #[test]
+        fn serves_a_cold_block_while_the_system_refuses_each_commit() {
+            let (pool, watch, held) = create_free_blocks();
+            drop(pool.alloc(64).expect("a free block gives its pages"));
+            let warm = pool.alloc(256).expect("the free block");
+            watch.switch.refuse();
+            let cold = pool.alloc(256).expect("a cold block makes no commit");
+            assert_eq!(cold.as_ptr().addr() - held.as_ptr().addr(), 3456 - 3136);
+            assert_eq!(pool.committed(), 960);
+            assert!(
+                !watch.calls()[5..]
+                    .iter()
+                    .any(|call| matches!(call, Commit { .. })),
+                "a commit for the cold block"
+            );
+            drop((held, warm, cold));
+        }
+
+        #[test]
+        fn gives_the_pages_of_a_block_that_was_cold_again() {
+            let (pool, _watch, held) = create_free_blocks();
+            drop(pool.alloc(64).expect("a free block gives its pages"));
+            let warm = pool.alloc(256).expect("the free block");
+            drop(pool.alloc(256).expect("the cold block"));
+            let small = pool
+                .alloc(64)
+                .expect("the block that was cold gives its pages");
+            drop((held, warm, small));
+        }
+
+        #[test]
+        fn gives_back_the_whole_budget_of_a_cold_block_that_was_served() {
+            let (pool, _watch, held) = create_free_blocks();
+            drop(pool.alloc(64).expect("a free block gives its pages"));
+            let warm = pool.alloc(256).expect("the free block");
+            let cold = pool.alloc(256).expect("the cold block");
+            drop((held, warm, cold));
+            pool.purge();
+            pool.purge();
+            assert_eq!(pool.committed(), 0);
+        }
+
+        #[test]
+        #[cfg_attr(miri, ignore = "Miri takes hours over the 32 MiB that it commits")]
+        fn counts_the_free_pages_of_large_blocks_with_a_large_page() {
+            const PAGE: usize = 2 << 20;
+            let large = footprint(4 << 20);
+            let (pool, _watch) = create_watched_pool_of(8 * large, PAGE);
+            let mut blocks: Vec<_> = (0..8)
+                .map(|_| pool.alloc(4 << 20).expect("the budget has room"))
+                .collect();
+            let held = blocks.remove(0);
+            drop(blocks);
+            let small = pool
+                .alloc(1 << 20)
+                .expect("the free blocks give their pages");
+            assert_eq!(
+                pool.committed(),
+                8 * large - PAGE + footprint(1 << 20),
+                "one free block gives one page"
+            );
+            drop((held, small));
+        }
+
+        #[test]
+        fn gives_back_the_resident_payload_pages_of_a_free_block() {
+            use super::fixture::paged::{PAGE, create_paged_pool, resident};
+
+            let (pool, pages) = create_paged_pool(1024);
+            let mut blocks: Vec<_> = (0..3)
+                .map(|_| pool.alloc(256).expect("the budget has room"))
+                .collect();
+            let held = blocks.remove(0);
+            drop(blocks);
+            let free = 3456 / PAGE..3776_usize.div_ceil(PAGE);
+            assert_eq!(resident(&pages, free.clone()), 3 * PAGE);
+            let small = pool.alloc(64).expect("a free block gives its pages");
+            assert_eq!(
+                resident(&pages, free.clone()),
+                2 * PAGE,
+                "the pages of its header and of the next header stay"
+            );
+            drop(small);
+            let warm = pool.alloc(256).expect("the free block");
+            let cold = pool.alloc(256).expect("the cold block");
+            assert_eq!(
+                resident(&pages, free),
+                2 * PAGE,
+                "a cold block makes no commit, so its page comes back at a write"
+            );
+            drop((held, warm, cold));
+        }
+
         #[test]
         fn purges_the_class_above_first() {
             let (pool, watch) = create_watched_pool(640);
@@ -1898,8 +2495,155 @@ mod tests {
             );
         }
 
+        /// The offsets of the blocks on the list that starts at `head`.
+        fn list(pool: &Pool, mut head: usize) -> Vec<usize> {
+            let mut offsets = Vec::new();
+            while head != NONE {
+                offsets.push(head);
+                // SAFETY: a block on a list of the pool has a header.
+                let header = unsafe { pool.header(head) };
+                // SAFETY: as above.
+                head = unsafe { header.as_ref() }.next.load(Relaxed);
+            }
+            offsets
+        }
+
+        /// Bytes of the pages of `page` bytes that lie fully in the payload of the
+        /// block of class `index` at `offset`.
+        fn whole_pages(offset: usize, index: usize, page: usize) -> usize {
+            let payload = offset + HEADER..offset + class_footprint(index);
+            let pages = (offset / page..=payload.end / page).filter(|&at| {
+                payload.start <= at * page && (at + 1) * page <= payload.end
+            });
+            pages.count() * page
+        }
+
+        /// The budget that an alloc of class `index` needs, and the room for it: the
+        /// budget less what the sizes in use hold, other than the whole payload
+        /// pages of their free blocks. It reads the lists of the pool, since the
+        /// room depends on the offsets of the free and cold blocks, which no public
+        /// call gives.
+        fn need_and_room(pool: &Pool, index: usize, page: usize) -> (usize, usize) {
+            let cold = pool.classes[index].cold.head.get();
+            let need = if cold == NONE {
+                class_footprint(index)
+            } else {
+                whole_pages(cold, index, page)
+            };
+            let kept: usize = pool
+                .classes
+                .iter()
+                .enumerate()
+                .filter(|&(other, class)| other == index || class.lent.get() != 0)
+                .map(|(other, class)| {
+                    let given: usize = if other != index && class_payload(other) >= page
+                    {
+                        list(pool, class.free.get())
+                            .into_iter()
+                            .map(|offset| whole_pages(offset, other, page))
+                            .sum()
+                    } else {
+                        0
+                    };
+                    class.carved.get() - class.cold.credit.get() - given
+                })
+                .sum();
+            (need, pool.budget - kept)
+        }
+
+        /// Checks the credit of each cold list and the coolable bytes of each free
+        /// list against their blocks, and `committed` against the carved ranges less
+        /// those credits. Only the lists show which blocks are cold.
+        fn check_cold(pool: &Pool, page: usize) -> Result<(), TestCaseError> {
+            let mut held = 0;
+            for (index, class) in pool.classes.iter().enumerate() {
+                let cold = list(pool, class.cold.head.get());
+                let credit: usize = cold
+                    .iter()
+                    .map(|&offset| whole_pages(offset, index, page))
+                    .sum();
+                let coolable: usize = list(pool, class.free.get())
+                    .into_iter()
+                    .map(|offset| whole_pages(offset, index, page))
+                    .sum();
+                prop_assert_eq!(class.coolable.get(), coolable);
+                prop_assert_eq!(class.cold.credit.get(), credit);
+                held += class.carved.get() - credit;
+            }
+            prop_assert_eq!(pool.committed(), held);
+            Ok(())
+        }
+
         proptest! {
             #![proptest_config(cases())]
+
+            /// As the property above, with pages that free blocks give back: the room
+            /// is the budget less what the sizes in use hold, other than the whole
+            /// payload pages of their free blocks. An alloc that fails for room gives
+            /// back no page, and a discard changes no byte of a held block.
+            #[test]
+            fn serves_each_alloc_that_fits_in_the_room_free_pages_leave(
+                steps in prop::collection::vec(
+                    (0_usize..=1024, prop::option::of(0_usize..8)),
+                    1..32,
+                ),
+                // Drawn after `steps`, so a saved failure replays the same steps.
+                refusals in prop::collection::vec(prop::bool::weighted(0.2), 32),
+            ) {
+                const BUDGET: usize = 4096;
+                const PAGE: usize = 128;
+                let (pool, watch) = create_watched_pool_of(BUDGET, PAGE);
+                let mut blocks: Vec<(Unique, u8)> = Vec::new();
+                let steps = steps.into_iter().zip(refusals).zip(1_u8..);
+                for (((len, dropped), refusing), fill) in steps {
+                    if refusing {
+                        watch.switch.refuse();
+                    } else {
+                        watch.switch.allow();
+                    }
+                    // The model reads the lists after the pool takes back the
+                    // dropped blocks, as the alloc does first.
+                    pool.reclaim();
+                    let index = class_of(len);
+                    let warm = pool.classes[index].free.get() != NONE;
+                    let (need, room) = need_and_room(&pool, index, PAGE);
+                    let before = pool.committed();
+                    let calls = watch.calls().len();
+                    match pool.alloc(len) {
+                        Ok(mut block) => {
+                            block.fill(fill);
+                            blocks.push((block, fill));
+                        }
+                        Err(error) => {
+                            prop_assert!(!warm, "{error} with a free block");
+                            if need > room {
+                                prop_assert_eq!(error, exhausted(len, BUDGET - before));
+                                prop_assert_eq!(watch.calls().len(), calls);
+                            } else {
+                                prop_assert!(refusing, "{error} with {room} room");
+                                prop_assert_eq!(error, refused(len));
+                                let idle = pool
+                                    .classes
+                                    .iter()
+                                    .enumerate()
+                                    .any(|(other, class)| other != index && class.idle());
+                                prop_assert!(!idle, "refused with an idle size left");
+                            }
+                        }
+                    }
+                    check_cold(&pool, PAGE)?;
+                    prop_assert!(pool.committed() <= BUDGET);
+                    let lent: usize =
+                        blocks.iter().map(|(block, _)| footprint(block.len())).sum();
+                    prop_assert!(pool.committed() >= lent);
+                    if let Some(index) = dropped.filter(|_| !blocks.is_empty()) {
+                        blocks.swap_remove(index % blocks.len());
+                    }
+                }
+                for (block, fill) in &blocks {
+                    prop_assert!(block.iter().all(|byte| byte == fill));
+                }
+            }
 
             /// Each byte of the budget that no size in use holds is room for a block,
             /// and `committed` is the carved range of each size. A refused commit

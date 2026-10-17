@@ -9,6 +9,13 @@ use super::{
 #[repr(C)]
 pub(crate) struct Server([u8; 0]);
 
+/// `shim_counts` of `server.c`.
+#[repr(C)]
+pub(crate) struct Counts {
+    pub(crate) browses: usize,
+    pub(crate) points: usize,
+}
+
 /// `UA_LifecycleState` of a server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]
@@ -115,6 +122,14 @@ const _: () = {
     assert!(offset_of!(QualifiedName, name) == at(1), "name moved");
 };
 
+/// A constructor of an RSA policy.
+pub(crate) type Rsa =
+    unsafe extern "C" fn(*mut c_void, Bytes, Bytes, *const c_void) -> u32;
+
+/// A constructor of an ECC policy, which takes the type of the application too.
+pub(crate) type Ecc =
+    unsafe extern "C" fn(*mut c_void, c_int, Bytes, Bytes, *const c_void) -> u32;
+
 unsafe extern "C" {
     pub(crate) fn UA_readNumber(
         buf: *const u8,
@@ -131,6 +146,89 @@ unsafe extern "C" {
     pub(crate) fn UA_ConnectionManager_new_POSIX_UDP(name: Bytes) -> *mut c_void;
     pub(crate) fn UA_ConnectionManager_new_POSIX_Ethernet(name: Bytes) -> *mut c_void;
     pub(crate) fn UA_InterruptManager_new_POSIX(name: Bytes) -> *mut c_void;
+
+    pub(crate) fn UA_SecurityPolicy_Basic128Rsa15(
+        policy: *mut c_void,
+        certificate: Bytes,
+        key: Bytes,
+        logger: *const c_void,
+    ) -> u32;
+    pub(crate) fn UA_SecurityPolicy_Basic256(
+        policy: *mut c_void,
+        certificate: Bytes,
+        key: Bytes,
+        logger: *const c_void,
+    ) -> u32;
+    pub(crate) fn UA_SecurityPolicy_EccBrainpoolP256r1(
+        policy: *mut c_void,
+        kind: c_int,
+        certificate: Bytes,
+        key: Bytes,
+        logger: *const c_void,
+    ) -> u32;
+    pub(crate) fn UA_SecurityPolicy_EccBrainpoolP384r1(
+        policy: *mut c_void,
+        kind: c_int,
+        certificate: Bytes,
+        key: Bytes,
+        logger: *const c_void,
+    ) -> u32;
+    pub(crate) fn UA_SecurityPolicy_EccCurve25519(
+        policy: *mut c_void,
+        kind: c_int,
+        certificate: Bytes,
+        key: Bytes,
+        logger: *const c_void,
+    ) -> u32;
+    pub(crate) fn UA_SecurityPolicy_EccCurve448(
+        policy: *mut c_void,
+        kind: c_int,
+        certificate: Bytes,
+        key: Bytes,
+        logger: *const c_void,
+    ) -> u32;
+    pub(crate) fn UA_SecurityPolicy_EccNistP256(
+        policy: *mut c_void,
+        kind: c_int,
+        certificate: Bytes,
+        key: Bytes,
+        logger: *const c_void,
+    ) -> u32;
+    pub(crate) fn UA_SecurityPolicy_EccNistP256AesGcm(
+        policy: *mut c_void,
+        kind: c_int,
+        certificate: Bytes,
+        key: Bytes,
+        logger: *const c_void,
+    ) -> u32;
+    pub(crate) fn UA_SecurityPolicy_EccNistP256ChaChaPoly(
+        policy: *mut c_void,
+        kind: c_int,
+        certificate: Bytes,
+        key: Bytes,
+        logger: *const c_void,
+    ) -> u32;
+    pub(crate) fn UA_SecurityPolicy_EccNistP384(
+        policy: *mut c_void,
+        kind: c_int,
+        certificate: Bytes,
+        key: Bytes,
+        logger: *const c_void,
+    ) -> u32;
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) fn UA_CertificateGroup_Filestore(
+        group: *mut c_void,
+        key: *mut c_void,
+        path: Bytes,
+        logger: *const c_void,
+        params: *mut c_void,
+    ) -> u32;
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) fn UA_SecurityPolicy_Filestore(
+        policy: *mut c_void,
+        inner: *mut c_void,
+        path: Bytes,
+    ) -> u32;
 
     pub(crate) fn UA_Client_connectSecureChannelAsync(
         client: *mut super::Client,
@@ -187,7 +285,7 @@ unsafe extern "C" {
     pub(crate) fn shim_server_reads(server: *mut Server, most: u32);
     pub(crate) fn shim_server_references(server: *mut Server, most: u32);
     pub(crate) fn shim_server_browses(server: *mut Server, browse: u32, translate: u32);
-    pub(crate) fn shim_server_count_browses(server: *mut Server) -> *const usize;
+    pub(crate) fn shim_server_count(server: *mut Server) -> *const Counts;
     pub(crate) fn UA_Client_getConnectionAttribute(
         client: *mut super::Client,
         key: QualifiedName,

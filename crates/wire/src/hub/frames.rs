@@ -19,8 +19,8 @@ pub struct Frames {
     /// The ends are whole and the draft is not given.
     drafting: bool,
     draft: Option<Draft>,
-    /// `None` in a latest session.
-    gaps: Option<Gaps>,
+    /// Also in a latest session, for [`Frames::live`].
+    gaps: Gaps,
 }
 
 /// What [`Frames`] waits for next.
@@ -45,52 +45,40 @@ pub enum Step {
     More,
     /// A whole frame.
     Frame(Frame),
-    /// The home ended the session, and no message follows. No case gives it; #2790
-    /// removes it.
-    Behind,
 }
 
 impl Frames {
     /// The frames of the session that `reader` decodes, opened by `message`, the
     /// first message of the session, or `None` when the stream ended before it. The
-    /// places of the session are the entries of `set`, in order. Returns the frames
-    /// and the open position of `Opened`.
+    /// places of the session are the entries of `set`, in order.
     ///
     /// # Errors
     ///
-    /// [`Error::Finished`] when `message` is `None`, each [`Error`] of
-    /// [`Reader::decode`], and [`Error::Unopened`] for any other message. The caller
-    /// then stops the stream as `MALFORMED`.
+    /// Each [`Error`] of [`Reader::decode`], so [`Error::Finished`] when `message` is
+    /// `None` and [`Error::Unopened`] for a head. The caller then stops the stream as
+    /// `MALFORMED`.
     ///
     /// # Panics
     ///
-    /// When `set` has more than one group, or `reader` is past `Opened` and decodes
-    /// `message`.
+    /// When `set` has more than one group, or `reader` is past `Opened`.
     pub fn open(
         mut reader: Reader,
         set: Arc<KeySet>,
         message: Option<&[u8]>,
-    ) -> Result<(Self, u64), Error> {
+    ) -> Result<Self, Error> {
         assert_eq!(set.groups().len(), 1, "a session is on one index");
-        let Some(message) = message else {
-            return Err(reader
-                .end()
-                .expect_err("invariant: a reader before opened may not end"));
-        };
+        assert!(reader.unopened(), "`reader` is past `Opened`: {reader:?}");
         match reader.decode(message)? {
-            FromHome::Opened { live } => {
-                let frames = Self {
-                    gaps: (!reader.latest()).then(|| Gaps::new(live)),
-                    reader,
-                    set,
-                    head: None,
-                    ends: Vec::new(),
-                    drafting: false,
-                    draft: None,
-                };
-                Ok((frames, live))
-            }
-            _ => panic!("a reader before opened gives only opened"),
+            FromHome::Opened { live } => Ok(Self {
+                reader,
+                set,
+                head: None,
+                ends: Vec::new(),
+                drafting: false,
+                draft: None,
+                gaps: Gaps::new(live),
+            }),
+            other => unreachable!("invariant: a reader before opened gave {other:?}"),
         }
     }
 
@@ -108,7 +96,17 @@ impl Frames {
     #[must_use]
     #[inline]
     pub fn lost(&self) -> ops::Range<u64> {
-        self.gaps.as_ref().map_or(0..0, Gaps::last)
+        if self.reader.latest() {
+            return 0..0;
+        }
+        self.gaps.last()
+    }
+
+    /// The first live seq of the index that the session has not passed: its open
+    /// position, then the end of the last frame with a sample.
+    #[must_use]
+    pub fn live(&self) -> u64 {
+        self.gaps.live()
     }
 
     /// What the frames wait for. Ask it before each input: a call that dropped
@@ -130,25 +128,22 @@ impl Frames {
         })
     }
 
-    /// Takes the next message, whole. A body message is copied into the draft.
+    /// Takes the next message, whole, or the end of the stream when `None`. A body
+    /// message is copied into the draft.
     ///
     /// # Errors
     ///
-    /// Each [`Error`] of [`Reader::decode`]. The caller then stops the stream as
-    /// `MALFORMED`.
+    /// Each [`Error`] of [`Reader::decode`], so for `None` the error of a stream that
+    /// the home finished at this point. The frames stay as they were. The caller then
+    /// stops the stream as `MALFORMED`.
     ///
     /// # Panics
     ///
     /// When [`Frames::due`] gives [`Due::Draft`].
     #[inline]
-    pub fn decode(&mut self, message: &[u8]) -> Result<Step, Error> {
+    pub fn decode(&mut self, message: Option<&[u8]>) -> Result<Step, Error> {
         assert!(!self.drafting, "a draft is due before the next message");
-        if let Some(start) = self.reader.body() {
-            let last = last(self.reader.decode(message))?;
-            let draft = self.draft.as_mut().expect("invariant: a body has a draft");
-            prefix(rest(draft, start), message.len()).copy_from_slice(message);
-            return Ok(self.received_body(last));
-        }
+        let start = self.reader.body();
         match self.reader.decode(message)? {
             FromHome::Head(head) => {
                 self.head = Some(head);
@@ -161,9 +156,14 @@ impl Frames {
                 self.drafting = last;
                 Ok(Step::More)
             }
-            FromHome::Behind => Ok(Step::Behind),
-            FromHome::Opened { .. } | FromHome::Body { .. } => {
-                unreachable!("invariant: an open decoder gives no opened or body here")
+            FromHome::Opened { .. } => {
+                unreachable!("invariant: an open decoder outside a body gave an opened")
+            }
+            FromHome::Body { bytes, last } => {
+                let start = start.expect("invariant: body bytes come inside a body");
+                let draft = self.draft.as_mut().expect("invariant: a body has a draft");
+                prefix(rest(draft, start), bytes.len()).copy_from_slice(bytes);
+                Ok(self.received_body(last))
             }
         }
     }
@@ -203,18 +203,6 @@ impl Frames {
         }
     }
 
-    /// The error of a stream that the home finished here.
-    ///
-    /// # Panics
-    ///
-    /// After [`Step::Behind`], where the stream may end.
-    #[must_use]
-    pub fn finished(&self) -> Error {
-        self.reader
-            .end()
-            .expect_err("a stream may end after Behind")
-    }
-
     /// The step of the body message that arrived, a frame when it is the `last`.
     fn received_body(&mut self, last: bool) -> Step {
         if last {
@@ -228,9 +216,7 @@ impl Frames {
     fn freeze(&mut self) -> Frame {
         let head = self.head.take().expect("invariant: a frame has a head");
         let mut draft = self.draft.take().expect("invariant: a frame has a draft");
-        if let Some(gaps) = &mut self.gaps {
-            gaps.pass(head.range);
-        }
+        self.gaps.pass(head.range);
         draft.set_count(0, head.range.count);
         draft.set_seq(0, head.range.seq);
         draft.freeze(head.path)
@@ -258,14 +244,6 @@ fn prefix(rest: &mut [u8], len: usize) -> &mut [u8] {
     })
 }
 
-/// Whether the body message that `decoded` gave is the last of its body.
-fn last(decoded: Result<FromHome<'_>, Error>) -> Result<bool, Error> {
-    match decoded? {
-        FromHome::Body { last, .. } => Ok(last),
-        _ => unreachable!("invariant: inside a body the decoder gives body bytes"),
-    }
-}
-
 fn to_usize(n: u32) -> usize {
     usize::try_from(n).expect("invariant: a usize holds a u32")
 }
@@ -278,7 +256,7 @@ mod tests {
 
     use super::*;
     use crate::hub::tests::{encode_ends, encode_reply, key};
-    use crate::hub::{BEHIND, HEAD, Mode, OPENED, Open, Reply};
+    use crate::hub::{HEAD, Mode, OPENED, Open, Reply};
 
     /// Index key 1 (entry 0), then an `I64` of key 2 (entry 1).
     fn create_set() -> Arc<KeySet> {
@@ -312,10 +290,8 @@ mod tests {
     /// The frames of an opened session of 2 places, latest when `latest`.
     fn opened(latest: bool) -> Frames {
         let opened = opened_at(0);
-        let (frames, _) =
-            Frames::open(create_reader(latest), create_set(), Some(&opened))
-                .expect("opened");
-        frames
+        Frames::open(create_reader(latest), create_set(), Some(&opened))
+            .expect("opened")
     }
 
     /// A live head of `count` samples from `seq` with `series` series.
@@ -338,12 +314,12 @@ mod tests {
 
     /// Takes a head and the ends of 2 series of 16 bytes each.
     fn ends(frames: &mut Frames) {
-        let step = frames.decode(&head(4, 2, 2));
+        let step = frames.decode(Some(&head(4, 2, 2)));
         assert!(matches!(step, Ok(Step::Head(h)) if h.series == 2));
-        let step = frames.decode(&encode_ends(&[(0, 16)]));
+        let step = frames.decode(Some(&encode_ends(&[(0, 16)])));
         assert!(matches!(step, Ok(Step::More)));
         assert!(matches!(frames.due(), Ok(Due::Message)));
-        let step = frames.decode(&encode_ends(&[(1, 32)]));
+        let step = frames.decode(Some(&encode_ends(&[(1, 32)])));
         assert!(matches!(step, Ok(Step::More)));
         assert!(matches!(frames.due(), Ok(Due::Draft(_))));
     }
@@ -356,10 +332,13 @@ mod tests {
     }
 
     #[test]
-    fn gives_the_open_position_of_opened() {
-        let opened =
-            Frames::open(create_reader(false), create_set(), Some(&opened_at(7)));
-        assert!(matches!(opened, Ok((_, 7))));
+    fn gives_the_open_position_of_opened_as_live() {
+        for latest in [false, true] {
+            let opened = opened_at(5);
+            let frames =
+                Frames::open(create_reader(latest), create_set(), Some(&opened));
+            assert_eq!(frames.map(|frames| frames.live()), Ok(5));
+        }
     }
 
     #[test]
@@ -367,7 +346,7 @@ mod tests {
         let mut frames = opened(false);
         assert!(matches!(frames.due(), Ok(Due::Message)));
         assert_eq!(
-            frames.decode(&opened_at(0)).map(drop),
+            frames.decode(Some(&opened_at(0))).map(drop),
             Err(Error::Reopen { kind: OPENED })
         );
     }
@@ -379,8 +358,7 @@ mod tests {
         };
         let head = head(4, 2, 2);
         assert_eq!(open(Some(&head)), Err(Error::Unopened { kind: HEAD }));
-        let behind = encode_reply(Reply::Behind);
-        assert_eq!(open(Some(&behind)), Err(Error::Unopened { kind: BEHIND }));
+        assert_eq!(open(Some(&[3])), Err(Error::Kind { kind: 3 }));
         assert_eq!(open(Some(&[])), Err(Error::Empty));
         assert_eq!(open(None), Err(Error::Finished));
     }
@@ -402,11 +380,27 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "a reader before opened gives only opened")]
+    #[should_panic(expected = "`reader` is past `Opened`")]
     fn panics_at_a_reader_past_opened() {
         let mut reader = create_reader(false);
-        reader.decode(&opened_at(0)).expect("opened");
+        reader.decode(Some(&opened_at(0))).expect("opened");
         let _frames = Frames::open(reader, create_set(), Some(&head(4, 2, 2)));
+    }
+
+    #[test]
+    #[should_panic(expected = "`reader` is past `Opened`")]
+    fn panics_at_a_reader_past_opened_at_the_end_of_the_stream() {
+        let mut reader = create_reader(false);
+        reader.decode(Some(&opened_at(0))).expect("opened");
+        let _frames = Frames::open(reader, create_set(), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "`reader` is past `Opened`")]
+    fn panics_at_a_reader_past_opened_at_a_refused_message() {
+        let mut reader = create_reader(false);
+        reader.decode(Some(&opened_at(0))).expect("opened");
+        let _frames = Frames::open(reader, create_set(), Some(&[]));
     }
 
     #[test]
@@ -415,8 +409,8 @@ mod tests {
         let body: Vec<u8> = (0..32).collect();
         ends(&mut frames);
         assert!(matches!(draft(&mut frames, &pool), Step::More));
-        assert!(matches!(frames.decode(&body[..10]), Ok(Step::More)));
-        let Ok(Step::Frame(frame)) = frames.decode(&body[10..]) else {
+        assert!(matches!(frames.decode(Some(&body[..10])), Ok(Step::More)));
+        let Ok(Step::Frame(frame)) = frames.decode(Some(&body[10..])) else {
             panic!("a frame");
         };
         check(&frame, &body);
@@ -449,8 +443,8 @@ mod tests {
     #[test]
     fn gives_a_frame_with_no_body_at_its_draft() {
         let (pool, mut frames) = (create_pool(), opened(false));
-        frames.decode(&head(4, 2, 2)).expect("a head");
-        let step = frames.decode(&encode_ends(&[(0, 0), (1, 0)]));
+        frames.decode(Some(&head(4, 2, 2))).expect("a head");
+        let step = frames.decode(Some(&encode_ends(&[(0, 0), (1, 0)])));
         assert!(matches!(step, Ok(Step::More)));
         let Step::Frame(frame) = draft(&mut frames, &pool) else {
             panic!("a frame");
@@ -458,7 +452,7 @@ mod tests {
         assert_eq!(frame.series(0), Some(&[][..]));
         assert_eq!(frame.range(0), Some(Range { seq: 4, count: 2 }));
         assert!(matches!(frames.due(), Ok(Due::Message)));
-        assert_eq!(frames.finished(), Error::Finished);
+        assert_eq!(frames.decode(None).map(drop), Err(Error::Finished));
     }
 
     /// A call that drops at its wait for the pool finds the draft due again.
@@ -476,11 +470,11 @@ mod tests {
         ends(&mut frames);
         draft(&mut frames, &pool);
         let first: Vec<u8> = (0..32).collect();
-        assert!(matches!(frames.decode(&first), Ok(Step::Frame(_))));
-        frames.decode(&head(6, 1, 1)).expect("a head");
-        frames.decode(&encode_ends(&[(0, 8)])).expect("ends");
+        assert!(matches!(frames.decode(Some(&first)), Ok(Step::Frame(_))));
+        frames.decode(Some(&head(6, 1, 1))).expect("a head");
+        frames.decode(Some(&encode_ends(&[(0, 8)]))).expect("ends");
         draft(&mut frames, &pool);
-        let Ok(Step::Frame(frame)) = frames.decode(&[7; 8]) else {
+        let Ok(Step::Frame(frame)) = frames.decode(Some(&[7; 8])) else {
             panic!("a frame");
         };
         assert_eq!(frame.range(0), Some(Range { seq: 6, count: 1 }));
@@ -491,16 +485,16 @@ mod tests {
     #[test]
     fn refuses_ends_that_break_the_layout() {
         let mut frames = opened(false);
-        frames.decode(&head(4, 2, 1)).expect("a head");
-        frames.decode(&encode_ends(&[(1, 8)])).expect("ends");
+        frames.decode(Some(&head(4, 2, 1))).expect("a head");
+        frames.decode(Some(&encode_ends(&[(1, 8)]))).expect("ends");
         assert_eq!(
             frames.due().map(drop),
             Err(types::frame::Error::IndexAbsent { entry: 1, index: 0 })
         );
         let mut frames = opened(false);
-        frames.decode(&head(4, 2, 2)).expect("a head");
+        frames.decode(Some(&head(4, 2, 2))).expect("a head");
         frames
-            .decode(&encode_ends(&[(0, 16), (1, 8)]))
+            .decode(Some(&encode_ends(&[(0, 16), (1, 8)])))
             .expect("ends");
         assert_eq!(
             frames.due().map(drop),
@@ -516,9 +510,9 @@ mod tests {
         let (pool, mut frames) = (create_pool(), opened(false));
         ends(&mut frames);
         draft(&mut frames, &pool);
-        frames.decode(&[0; 30]).expect("body");
+        frames.decode(Some(&[0; 30])).expect("body");
         assert_eq!(
-            frames.decode(&[0; 3]).map(drop),
+            frames.decode(Some(&[0; 3])).map(drop),
             Err(Error::Body { len: 3, remain: 2 })
         );
     }
@@ -533,22 +527,25 @@ mod tests {
     }
 
     #[test]
-    fn gives_behind_and_the_error_of_each_finish() {
+    fn gives_the_error_of_each_finish() {
         let (pool, mut frames) = (create_pool(), opened(false));
-        assert_eq!(frames.finished(), Error::Finished);
+        assert_eq!(frames.decode(None).map(drop), Err(Error::Finished));
         ends(&mut frames);
         draft(&mut frames, &pool);
-        frames.decode(&[0; 30]).expect("body");
-        assert_eq!(frames.finished(), Error::Unfinished { remain: 2 });
-        frames.decode(&[0; 2]).expect("body");
-        let behind = encode_reply(Reply::Behind);
-        assert!(matches!(frames.decode(&behind), Ok(Step::Behind)));
-        assert_eq!(frames.decode(&behind).map(drop), Err(Error::Ended));
-        let mut frames = opened(true);
+        frames.decode(Some(&[0; 30])).expect("body");
         assert_eq!(
-            frames.decode(&behind).map(drop),
-            Err(Error::Latest { kind: 3 })
+            frames.decode(None).map(drop),
+            Err(Error::Unfinished { remain: 2 })
         );
+        frames.decode(Some(&[0; 2])).expect("body");
+        assert_eq!(frames.decode(None).map(drop), Err(Error::Finished));
+        for latest in [false, true] {
+            let mut frames = opened(latest);
+            assert_eq!(
+                frames.decode(Some(&[3])).map(drop),
+                Err(Error::Kind { kind: 3 })
+            );
+        }
     }
 
     #[test]
@@ -556,7 +553,7 @@ mod tests {
     fn panics_at_a_message_before_a_due_draft() {
         let mut frames = opened(false);
         ends(&mut frames);
-        let _step = frames.decode(&[0; 4]);
+        let _step = frames.decode(Some(&[0; 4]));
     }
 
     #[test]
@@ -595,14 +592,6 @@ mod tests {
         let _step = frames.received(33);
     }
 
-    #[test]
-    #[should_panic(expected = "a stream may end after Behind")]
-    fn panics_at_a_finish_after_behind() {
-        let mut frames = opened(false);
-        frames.decode(&encode_reply(Reply::Behind)).expect("behind");
-        let _error = frames.finished();
-    }
-
     mod lost {
         use proptest::prelude::*;
 
@@ -611,17 +600,15 @@ mod tests {
         /// The frames of a session of 2 places opened at `live`, latest when `latest`.
         fn opened_at_live(latest: bool, live: u64) -> Frames {
             let opened = opened_at(live);
-            let (frames, _) =
-                Frames::open(create_reader(latest), create_set(), Some(&opened))
-                    .expect("opened");
-            frames
+            Frames::open(create_reader(latest), create_set(), Some(&opened))
+                .expect("opened")
         }
 
         /// Gives `frames` a frame of `count` samples from `seq` with no body, and
         /// gives what `lost` is then.
         fn lost_at(frames: &mut Frames, seq: u64, count: u32) -> ops::Range<u64> {
-            frames.decode(&head(seq, count, 1)).expect("a head");
-            frames.decode(&encode_ends(&[(0, 0)])).expect("ends");
+            frames.decode(Some(&head(seq, count, 1))).expect("a head");
+            frames.decode(Some(&encode_ends(&[(0, 0)]))).expect("ends");
             let Step::Frame(frame) = draft(frames, &create_pool()) else {
                 panic!("a frame");
             };
@@ -664,6 +651,17 @@ mod tests {
         }
 
         #[test]
+        fn gives_the_end_of_the_last_frame_with_a_sample_as_live() {
+            for latest in [false, true] {
+                let mut frames = opened_at_live(latest, 5);
+                lost_at(&mut frames, 7, 3);
+                assert_eq!(frames.live(), 10);
+                lost_at(&mut frames, 12, 0);
+                assert_eq!(frames.live(), 10);
+            }
+        }
+
+        #[test]
         fn gives_no_gap_in_a_latest_session() {
             let mut frames = opened_at_live(true, 5);
             assert_eq!(lost_at(&mut frames, 9, 2), 0..0);
@@ -696,6 +694,7 @@ mod tests {
                     let lost = lost_at(&mut frames, seq, count);
                     if count == 0 {
                         prop_assert_eq!(lost, 0..0);
+                        prop_assert_eq!(frames.live(), covered);
                         continue;
                     }
                     if !lost.is_empty() {
@@ -704,6 +703,7 @@ mod tests {
                     }
                     prop_assert_eq!(covered, seq);
                     covered = seq.checked_add(u64::from(count)).expect("small");
+                    prop_assert_eq!(frames.live(), covered);
                 }
             }
 
@@ -711,9 +711,13 @@ mod tests {
             fn gives_no_gap_at_any_frame_of_a_latest_session(
                 (live, sent) in jumps(),
             ) {
-                let mut frames = opened_at_live(true, live);
+                let (mut frames, mut end) = (opened_at_live(true, live), live);
                 for (seq, count) in sent {
                     prop_assert_eq!(lost_at(&mut frames, seq, count), 0..0);
+                    if count > 0 {
+                        end = seq.checked_add(u64::from(count)).expect("small");
+                    }
+                    prop_assert_eq!(frames.live(), end);
                 }
             }
         }

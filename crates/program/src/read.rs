@@ -142,16 +142,20 @@ impl Reader {
                 }
                 Due::Body(body) => match receiver.recv_into(body).await {
                     Ok(Some(len)) => self.frames.received(len).map_err(Error::Reply)?,
-                    Ok(None) => return Err(Error::Reply(self.frames.finished())),
+                    Ok(None) => self.frames.decode(None).map_err(Error::Reply)?,
                     Err(Stream::TooLarge { .. }) => {
-                        let message = recv(receiver, &self.frames).await?;
-                        self.frames.decode(&message).map_err(Error::Reply)?
+                        let message = receiver.recv().await?;
+                        self.frames
+                            .decode(message.as_deref())
+                            .map_err(Error::Reply)?
                     }
                     Err(error) => return Err(error.into()),
                 },
                 Due::Message => {
-                    let message = recv(receiver, &self.frames).await?;
-                    self.frames.decode(&message).map_err(Error::Reply)?
+                    let message = receiver.recv().await?;
+                    self.frames
+                        .decode(message.as_deref())
+                        .map_err(Error::Reply)?
                 }
             };
             match step {
@@ -160,10 +164,6 @@ impl Reader {
                     self.note(&frame);
                     self.warn();
                     return Ok(frame);
-                }
-                // #2790 removes this arm.
-                Step::Behind => {
-                    return Err(Error::Reply(wire::hub::Error::Kind { kind: 3 }));
                 }
             }
         }
@@ -229,7 +229,7 @@ async fn start(
         }
     };
     let message = receiver.recv().await?;
-    let (frames, _) = Frames::open(start.home, start.set, message.as_deref())
+    let frames = Frames::open(start.home, start.set, message.as_deref())
         .map_err(Error::Reply)?;
     Ok((start.places, frames))
 }
@@ -241,12 +241,4 @@ fn end((sender, receiver): (Sender, Receiver), error: &Error) {
         sender.reset(Code(MALFORMED));
         receiver.stop(Code(MALFORMED));
     }
-}
-
-/// The next message of `receiver`, whose replies `frames` decodes.
-async fn recv(receiver: &mut Receiver, frames: &Frames) -> Result<block::Block, Error> {
-    receiver
-        .recv()
-        .await?
-        .ok_or_else(|| Error::Reply(frames.finished()))
 }

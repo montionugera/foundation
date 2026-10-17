@@ -10,7 +10,7 @@ use types::byte::Size;
 use types::time::Span;
 
 use super::{config, heap};
-use crate::{Config, Error, Flush, Log, Node, log};
+use crate::{Config, Error, Flush, Log, Node, Region, log};
 
 /// The stamp of a line at the start of the sim.
 const START: &str = "2026-01-01T00:00:00.000000Z";
@@ -73,17 +73,25 @@ impl io::Write for Panics {
     }
 }
 
-/// A writer to stderr that waits 300 ms at the line `n=2`, then panics.
-struct Ends;
+/// A writer to stderr that, at the line `n=2`, sends on `entered`, waits for the hook
+/// on `hooked`, and panics 100 ms later, so the hook waits when it panics.
+struct Ends {
+    entered: mpsc::Sender<()>,
+    hooked: mpsc::Receiver<()>,
+}
 
 impl io::Write for Ends {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if bytes.windows(3).any(|word| word == b"n=2") {
+            self.entered.send(()).unwrap_or_default();
             #[expect(
                 clippy::disallowed_methods,
-                reason = "a hook waits on the writer"
+                reason = "the writer panics in the wait of the hook"
             )]
-            std::thread::sleep(Duration::from_millis(300));
+            {
+                self.hooked.recv().unwrap_or_default();
+                std::thread::sleep(Duration::from_millis(100));
+            }
             panic!("the writer panics");
         }
         io::stderr().write(bytes)
@@ -184,9 +192,9 @@ fn a_node_logs_its_start_and_its_stop_in_text() {
     assert_eq!(
         lines.read(),
         [
-            "2026-01-01T00:00:00.004198Z INFO node: started name=edge \
+            "2026-01-01T00:00:00.004235Z INFO node: started name=edge \
              address=10.0.0.1:7000 shards=4",
-            "2026-01-01T00:00:01.000004Z INFO node: stopped",
+            "2026-01-01T00:00:01.000048Z INFO node: stopped",
         ]
     );
 }
@@ -201,29 +209,41 @@ fn a_node_logs_its_start_and_its_stop_in_json() {
         lines.read(),
         [
             concat!(
-                r#"{"timestamp":"2026-01-01T00:00:00.004198Z","level":"INFO","#,
+                r#"{"timestamp":"2026-01-01T00:00:00.004235Z","level":"INFO","#,
                 r#""target":"node","fields":{"message":"started","name":"edge","#,
                 r#""address":"10.0.0.1:7000","shards":4}}"#,
             ),
             concat!(
-                r#"{"timestamp":"2026-01-01T00:00:01.000004Z","level":"INFO","#,
+                r#"{"timestamp":"2026-01-01T00:00:01.000048Z","level":"INFO","#,
                 r#""target":"node","fields":{"message":"stopped"}}"#,
             ),
         ]
     );
 }
 
-/// The warnings that a node on `roots` logs in a run of a second.
-fn warned(roots: os::Roots) -> Vec<String> {
+/// The warnings that a node with no region on `roots` logs in a run of a second.
+fn warned(roots: os::roots::Roots) -> Vec<String> {
     logged(roots, tracing::Level::WARN)
 }
 
-/// The lines at `level` or above that a node on `roots` logs in a run of a second.
-fn logged(roots: os::Roots, level: tracing::Level) -> Vec<String> {
+/// The lines at `level` or above that a node with no region on `roots` logs in a run
+/// of a second.
+fn logged(roots: os::roots::Roots, level: tracing::Level) -> Vec<String> {
+    logged_in(Region::Absent, roots, level)
+}
+
+/// The lines at `level` or above that a node with `region` on `roots` logs in a run of
+/// a second.
+fn logged_in(
+    region: Region,
+    roots: os::roots::Roots,
+    level: tracing::Level,
+) -> Vec<String> {
     let (mut sim, host) = host(1);
     let lines = Lines::default();
     let log = to(&lines, false, level);
     let node = Node::start(Config {
+        region,
         roots,
         log,
         ..config(&host, Size::MEBIBYTE, Box::new(heap))
@@ -236,22 +256,23 @@ fn logged(roots: os::Roots, level: tracing::Level) -> Vec<String> {
 }
 
 /// The start of each warning of the roots.
-const WARN: &str = "2026-01-01T00:00:00.004198Z WARN node::trust:";
-const SKIPPED: &str = "2026-01-01T00:00:00.004198Z WARN node::trust: OS roots that do \
+const WARN: &str = "2026-01-01T00:00:00.004235Z WARN node::trust:";
+const SKIPPED: &str = "2026-01-01T00:00:00.004235Z WARN node::trust: OS roots that do \
                        not parse are skipped skipped=1";
-const NONE: &str = "2026-01-01T00:00:00.004198Z WARN node::trust: the OS roots hold no \
+const NONE: &str = "2026-01-01T00:00:00.004235Z WARN node::trust: the OS roots hold no \
                     certificate, so an https connect with no CA of its connector fails";
 
 #[test]
 fn a_node_warns_of_a_failure_of_its_roots_and_of_a_skipped_one() {
-    let roots = os::Roots {
+    let roots = os::roots::Roots {
         certificates: vec![super::CA.to_vec(), b"not DER".to_vec()],
         failures: vec!["failed to read PEM from file at '/roots.pem'".into()],
-        ..os::Roots::default()
+        ..os::roots::Roots::default()
     };
     assert_eq!(
         warned(roots),
         [
+            summary(1, "the OS store"),
             format!(
                 "{WARN} a part of the OS roots was not read error=\"failed to read PEM \
                  from file at '/roots.pem'\""
@@ -263,7 +284,7 @@ fn a_node_warns_of_a_failure_of_its_roots_and_of_a_skipped_one() {
 
 #[test]
 fn a_node_warns_of_its_roots_before_it_starts() {
-    let lines = logged(os::Roots::default(), tracing::Level::INFO);
+    let lines = logged(os::roots::Roots::default(), tracing::Level::INFO);
     let warned = lines.iter().position(|line| line == NONE);
     let started = lines
         .iter()
@@ -274,17 +295,40 @@ fn a_node_warns_of_its_roots_before_it_starts() {
     );
 }
 
+/// The first warning of a read of the roots with `failed` failures from `source`, on a
+/// node with no region.
+fn summary(failed: usize, source: &str) -> String {
+    format!(
+        "{WARN} parts of the OS roots were not read failed={failed} source=\"{source}\""
+    )
+}
+
+#[test]
+fn a_node_with_a_region_names_the_command_that_gives_each_failure_of_its_roots() {
+    let warn = "2026-01-01T00:00:00.006100Z WARN node::trust:";
+    assert_eq!(
+        logged_in(Region::Stored, failed(1), tracing::Level::WARN),
+        [
+            format!(
+                "{warn} parts of the OS roots were not read, and `foundation status` \
+                 gives each failed=1 source=\"the OS store\""
+            ),
+            format!("{warn} a part of the OS roots was not read error=\"failure 0\""),
+        ]
+    );
+}
+
 /// The roots with only the CA and `failures`.
-fn failing(failures: Vec<String>) -> os::Roots {
-    os::Roots {
+fn failing(failures: Vec<String>) -> os::roots::Roots {
+    os::roots::Roots {
         certificates: vec![super::CA.to_vec()],
         failures,
-        source: os::Source::Store,
+        source: os::roots::Source::default(),
     }
 }
 
 /// The roots with only the CA and `count` failures.
-fn failed(count: usize) -> os::Roots {
+fn failed(count: usize) -> os::roots::Roots {
     failing((0..count).map(|n| format!("failure {n}")).collect())
 }
 
@@ -298,42 +342,31 @@ fn listed(count: usize) -> Vec<String> {
 }
 
 #[test]
-fn a_node_warns_of_the_first_16_failures_of_its_roots_and_counts_the_rest() {
-    let mut expected = listed(16);
-    expected.push(format!(
-        "{WARN} more parts of the OS roots were not read unlisted=1 source=\"the OS \
-         store\""
-    ));
+fn a_node_warns_of_the_count_and_the_first_16_failures_of_its_roots() {
+    let mut expected = vec![summary(17, "the OS store")];
+    expected.extend(listed(16));
     assert_eq!(warned(failed(17)), expected);
 }
 
 #[test]
-fn the_count_of_the_failures_of_the_roots_gives_the_paths_that_were_read() {
-    let roots = os::Roots {
-        source: os::Source::Paths {
+fn one_failure_of_the_roots_gives_the_paths_that_were_read_once() {
+    let roots = os::roots::Roots {
+        source: os::roots::Source {
             file: Some("/roots.pem".into()),
             dirs: vec!["/a".into(), "/b".into()],
         },
-        ..failed(17)
+        ..failed(1)
     };
-    let lines = warned(roots);
-    assert_eq!(
-        lines.last().map(String::as_str),
-        Some(
-            format!(
-                "{WARN} more parts of the OS roots were not read unlisted=1 \
-                 source=\"SSL_CERT_FILE=/roots.pem SSL_CERT_DIR=/a:/b\""
-            )
-            .as_str()
-        )
-    );
+    let mut expected = vec![summary(1, "SSL_CERT_FILE=/roots.pem SSL_CERT_DIR=/a:/b")];
+    expected.extend(listed(1));
+    assert_eq!(warned(roots), expected);
 }
 
 #[test]
-fn a_long_source_of_the_roots_is_cut_on_the_count_line() {
+fn a_long_source_of_the_roots_is_cut() {
     let dir = format!("/{}", long(3000));
-    let roots = os::Roots {
-        source: os::Source::Paths {
+    let roots = os::roots::Roots {
+        source: os::roots::Source {
             file: None,
             dirs: vec![dir.clone().into()],
         },
@@ -342,17 +375,16 @@ fn a_long_source_of_the_roots_is_cut_on_the_count_line() {
     let source = format!("SSL_CERT_DIR={dir}");
     let (head, tail) = (&source[..510], &source[source.len() - 510..]);
     assert_eq!(
-        warned(roots).last(),
-        Some(&format!(
-            "{WARN} more parts of the OS roots were not read unlisted=1 \
-             source=\"{head}…{tail}\""
-        ))
+        warned(roots).first(),
+        Some(&summary(17, &format!("{head}…{tail}")))
     );
 }
 
 #[test]
-fn a_node_with_16_failures_of_its_roots_warns_of_each_with_no_count() {
-    assert_eq!(warned(failed(16)), listed(16));
+fn a_node_with_16_failures_of_its_roots_warns_of_each() {
+    let mut expected = vec![summary(16, "the OS store")];
+    expected.extend(listed(16));
+    assert_eq!(warned(failed(16)), expected);
 }
 
 /// Whether `lines` hold `started`.
@@ -378,9 +410,12 @@ fn a_long_failure_of_the_roots_warns_with_its_head_and_its_tail() {
     let (head, tail) = (&failure[..510], &failure[failure.len() - 510..]);
     assert_eq!(
         lines,
-        [format!(
-            "{WARN} a part of the OS roots was not read error=\"{head}…{tail}\""
-        )]
+        [
+            summary(1, "the OS store"),
+            format!(
+                "{WARN} a part of the OS roots was not read error=\"{head}…{tail}\""
+            ),
+        ]
     );
 }
 
@@ -389,17 +424,19 @@ fn a_failure_of_the_roots_of_1024_bytes_warns_whole_and_one_of_1025_is_cut() {
     let whole = long(1024);
     assert_eq!(
         warned(failing(vec![whole.clone()])),
-        [format!(
-            "{WARN} a part of the OS roots was not read error={whole}"
-        )]
+        [
+            summary(1, "the OS store"),
+            format!("{WARN} a part of the OS roots was not read error={whole}"),
+        ]
     );
     let failure = long(1025);
     let (head, tail) = (&failure[..510], &failure[failure.len() - 510..]);
     assert_eq!(
         warned(failing(vec![failure.clone()])),
-        [format!(
-            "{WARN} a part of the OS roots was not read error={head}…{tail}"
-        )]
+        [
+            summary(1, "the OS store"),
+            format!("{WARN} a part of the OS roots was not read error={head}…{tail}"),
+        ]
     );
 }
 
@@ -409,9 +446,10 @@ fn a_long_failure_of_the_roots_is_cut_at_char_boundaries() {
     let (head, tail) = (&failure[..509], &failure[failure.len() - 509..]);
     assert_eq!(
         warned(failing(vec![failure.clone()])),
-        [format!(
-            "{WARN} a part of the OS roots was not read error={head}…{tail}"
-        )]
+        [
+            summary(1, "the OS store"),
+            format!("{WARN} a part of the OS roots was not read error={head}…{tail}"),
+        ]
     );
 }
 
@@ -437,10 +475,10 @@ fn failures_of_the_roots_whose_escapes_grow_them_keep_started() {
 
 #[test]
 fn a_node_with_no_root_warns_that_an_https_connect_with_no_ca_fails() {
-    assert_eq!(warned(os::Roots::default()), [NONE]);
-    let roots = os::Roots {
+    assert_eq!(warned(os::roots::Roots::default()), [NONE]);
+    let roots = os::roots::Roots {
         certificates: vec![b"not DER".to_vec()],
-        ..os::Roots::default()
+        ..os::roots::Roots::default()
     };
     assert_eq!(warned(roots), [SKIPPED, NONE]);
 }
@@ -478,21 +516,21 @@ fn a_node_that_fails_at_its_start_logs_the_error_with_no_mesh_time() {
 #[test]
 fn a_wall_step_shows_mesh_time_beside_the_stamp() {
     let text = [
-        "2026-01-01T00:00:00.004198Z INFO node: started name=edge \
+        "2026-01-01T00:00:00.004235Z INFO node: started name=edge \
          address=10.0.0.1:7000 shards=4",
-        "2026-01-01T00:00:03.000004Z INFO node: stopped \
-         mesh_time=2026-01-01T00:00:01.000004Z",
+        "2026-01-01T00:00:03.000048Z INFO node: stopped \
+         mesh_time=2026-01-01T00:00:01.000048Z",
     ];
     let json = [
         concat!(
-            r#"{"timestamp":"2026-01-01T00:00:00.004198Z","level":"INFO","#,
+            r#"{"timestamp":"2026-01-01T00:00:00.004235Z","level":"INFO","#,
             r#""target":"node","fields":{"message":"started","name":"edge","#,
             r#""address":"10.0.0.1:7000","shards":4}}"#,
         ),
         concat!(
-            r#"{"timestamp":"2026-01-01T00:00:03.000004Z","level":"INFO","#,
+            r#"{"timestamp":"2026-01-01T00:00:03.000048Z","level":"INFO","#,
             r#""target":"node","fields":{"message":"stopped"},"#,
-            r#""mesh_time":"2026-01-01T00:00:01.000004Z"}"#,
+            r#""mesh_time":"2026-01-01T00:00:01.000048Z"}"#,
         ),
     ];
     for (json, written) in [(false, text), (true, json)] {
@@ -760,9 +798,9 @@ fn a_wait_after_the_hold_drops_waits_for_the_thread_log_to_end_then_joins_it() {
     assert!(log.wait(Duration::ZERO), "the thread log has ended");
     // A join leaves no trace other than the empty slot of the handle.
     let debug = format!("{log:?}");
-    assert!(debug.contains("running: false, thread: None"), "{debug}");
+    assert!(debug.contains("running: false"), "{debug}");
     assert!(
-        debug.contains("handle: Mutex { data: None"),
+        debug.contains("handle: None"),
         "the wait joins the thread: {debug}"
     );
 }
@@ -808,10 +846,10 @@ fn a_line_after_the_shards_end_comes_before_stopped() {
     assert_eq!(
         lines.read(),
         [
-            "2026-01-01T00:00:00.004198Z INFO node: started name=edge \
+            "2026-01-01T00:00:00.004235Z INFO node: started name=edge \
              address=10.0.0.1:7000 shards=4",
-            "2026-01-01T00:00:01.000004Z INFO test: late",
-            "2026-01-01T00:00:01.000004Z INFO node: stopped",
+            "2026-01-01T00:00:01.000048Z INFO test: late",
+            "2026-01-01T00:00:01.000048Z INFO node: stopped",
         ]
     );
 }
@@ -881,9 +919,9 @@ fn a_thread_log_that_cannot_start_at_the_join_keeps_its_lines_for_the_wait() {
     assert_eq!(
         lines.read(),
         [
-            "2026-01-01T00:00:00.004198Z INFO node: started name=edge \
+            "2026-01-01T00:00:00.004235Z INFO node: started name=edge \
              address=10.0.0.1:7000 shards=4",
-            "2026-01-01T00:00:01.000004Z INFO node: stopped",
+            "2026-01-01T00:00:01.000048Z INFO node: stopped",
         ]
     );
 }
@@ -1096,7 +1134,10 @@ fn writer(
             free,
         }),
         Case::Writes => Box::new(Panics(Lines::default())),
-        Case::Ends => Box::new(Ends),
+        Case::Ends => Box::new(Ends {
+            entered,
+            hooked: free,
+        }),
         Case::Full => Box::new(Gated {
             entered,
             free: Some(free),
@@ -1104,6 +1145,34 @@ fn writer(
         Case::Free | Case::Late | Case::Abort | Case::Json | Case::Hang => {
             Box::new(io::stderr())
         }
+    }
+}
+
+/// The panic hook of the child of `case`: the hook of `log` over the hook before it.
+/// For [`Case::Ends`], it first frees the writer on `free`.
+fn hook(
+    case: Case,
+    log: &Flush,
+    free: &mpsc::Sender<()>,
+) -> Box<dyn Fn(&panic::PanicHookInfo<'_>) + Send + Sync> {
+    let previous = match case {
+        Case::Abort => Box::new(|info: &panic::PanicHookInfo<'_>| {
+            let line = format!("the hook before runs: {info}\n");
+            drop(io::Write::write_all(&mut io::stderr(), line.as_bytes()));
+            std::process::abort();
+        }),
+        _ => panic::take_hook(),
+    };
+    let hook = log.hook(previous, Duration::from_secs(1));
+    match case {
+        Case::Ends => {
+            let hooked = free.clone();
+            Box::new(move |info| {
+                hooked.send(()).unwrap_or_default();
+                hook(info);
+            })
+        }
+        _ => hook,
     }
 }
 
@@ -1124,15 +1193,7 @@ fn panics(case: Case) -> ! {
     let log = log::open(Log { writer, format }, &threads, wall, mesh);
     tracing::dispatcher::with_default(&log.dispatch, numbered(0, 3));
     let hold = log.hold().expect("the thread log starts");
-    let previous = match case {
-        Case::Abort => Box::new(|info: &panic::PanicHookInfo<'_>| {
-            let line = format!("the hook before runs: {info}\n");
-            drop(io::Write::write_all(&mut io::stderr(), line.as_bytes()));
-            std::process::abort();
-        }),
-        _ => panic::take_hook(),
-    };
-    panic::set_hook(log.hook(previous, Duration::from_secs(1)));
+    panic::set_hook(hook(case, &log, &free));
     match case {
         Case::Late => {
             drop(hold);
@@ -1158,13 +1219,20 @@ fn panics(case: Case) -> ! {
             assert!(!log.wait(Duration::from_millis(500)), "the pipe is full");
             drop(hold);
         }
+        Case::Ends => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the bound starts after n=2"
+            )]
+            blocked.recv().expect("the writer reaches n=2");
+        }
         Case::Full => {
             #[expect(clippy::disallowed_methods, reason = "the writer blocks first")]
             blocked.recv().expect("the writer blocks");
             tracing::dispatcher::with_default(&log.dispatch, numbered(3, 1100));
             free.send(()).expect("the writer waits");
         }
-        Case::Free | Case::Stuck | Case::Abort | Case::Json | Case::Ends => {}
+        Case::Free | Case::Stuck | Case::Abort | Case::Json => {}
     }
     panic!("the test panics");
 }
@@ -1485,4 +1553,69 @@ fn the_bench_log_gives_the_dispatch_of_its_level() {
         )
     });
     assert_eq!(enabled, (true, false));
+}
+
+#[test]
+fn a_wait_beside_a_resume_joins_the_thread_log() {
+    let threads = os::threads().expect("threads");
+    for round in 0..500 {
+        let lines = Lines::default();
+        let (_, mesh) = clock::Clock::new(os::clock());
+        let wall = os::wall().expect("a wall clock");
+        let log = to(&lines, false, tracing::Level::INFO);
+        let log = log::open(log, &threads, wall, mesh);
+        tracing::dispatcher::with_default(&log.dispatch, numbered(0, 1));
+        let resume = {
+            let log = log.clone();
+            threads.start("resume", move || async move { assert!(log.resume()) })
+        };
+        // The resume of the other thread starts the run, so the wait starts none. Only
+        // `running` shows that it started, and only the empty slot of the handle shows
+        // the join.
+        while !format!("{log:?}").contains("running: true") && lines.read().is_empty() {
+            std::hint::spin_loop();
+        }
+        assert!(log.wait(Duration::from_secs(10)), "round {round}");
+        resume
+            .expect("the thread starts")
+            .join()
+            .expect("the resume ends");
+        assert_eq!(lines.read().len(), 1, "round {round}");
+        let debug = format!("{log:?}");
+        assert!(debug.contains("handle: None"), "round {round}: {debug}");
+    }
+}
+
+/// A driver whose start drops its body and panics, as `os` passes the panic of the
+/// build of a thread to its caller.
+struct Unwinds;
+
+impl env::threads::Driver for Unwinds {
+    fn start(
+        &self,
+        name: &str,
+        body: env::threads::Body,
+        _: tracing::Dispatch,
+    ) -> Result<env::thread::Handle, env::thread::Error> {
+        drop(body);
+        panic!("the start of {name} panicked");
+    }
+}
+
+#[test]
+fn a_wait_after_a_start_that_panicked_has_nothing_to_wait_for() {
+    let threads = env::threads::Threads::new(Unwinds);
+    let lines = Lines::default();
+    let (_, mesh) = clock::Clock::new(os::clock());
+    let wall = os::wall().expect("a wall clock");
+    let log = log::open(
+        to(&lines, false, tracing::Level::INFO),
+        &threads,
+        wall,
+        mesh,
+    );
+    let held = panic::catch_unwind(panic::AssertUnwindSafe(|| log.hold()));
+    assert!(held.is_err(), "the start panicked");
+    let debug = format!("{log:?}");
+    assert!(log.wait(Duration::from_secs(1)), "{debug}");
 }

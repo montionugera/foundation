@@ -107,12 +107,13 @@
   does and which #1248 needs again in another layer; and trust of an end certificate
   that is equal to a root, which is a later step on #2894 when a user's server cannot
   get a new certificate. The influx kind reads its CA from `ca` (INFLUX KIND).
-  The roots are `node::Config::roots`, an `os::Roots`, and main gives `os::roots()`:
-  the certificate files on Linux and the keychain on macOS. When `SSL_CERT_FILE` is
-  set, or `SSL_CERT_DIR` holds a path that is not empty, it reads only that file and
-  those paths, on each OS. A path that is not there, or a `SSL_CERT_DIR` path that is
-  not a directory, gives a failure and no root of the OS store. The person approved
-  this override (2026-10-16T14:53:55Z:
+  The roots are `node::Config::roots`, an `os::roots::Roots`, and main gives
+  `os::roots::read()`: the certificate files on Linux, the keychain on macOS, and the
+  ROOT store of the current user on Windows. When `SSL_CERT_FILE` is set, or
+  `SSL_CERT_DIR` holds a path that is not empty, it reads only that file and those
+  paths, on each OS. A path that is not there, or a `SSL_CERT_DIR` path that is not a
+  directory, gives a failure and no root of the OS store. The person approved this
+  override (2026-10-16T14:53:55Z:
   https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6218177938). An
   empty `SSL_CERT_DIR` names no directory, so the node reads the OS store. On Linux, a
   `SSL_CERT_DIR` of only `:` characters also reads the directory of that whole name in
@@ -121,24 +122,59 @@
   (`laptop.architect-2`, 2026-10-16T15:14:05Z:
   https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6218554197). Main
   reads the store once, so a change to it takes effect at the next start. Before
-  `started`, shard 0 logs a warning "a part of the OS roots was not read" with the
-  `error` of each of the first 16 failures, "more parts of the OS roots were not read"
-  with the count `unlisted` of the rest and the `source` of the read, "OS roots that do
-  not parse are skipped" with the count `skipped`, and "the OS roots hold no
-  certificate, so an https connect with no CA of its connector fails". It logs them also
-  with `Region::Absent`. The cap of 16 failures keeps the warnings from filling the log
-  queue and dropping `started` (`laptop.architect-2`, 2026-10-16T20:40:05Z, #2920:
-  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6224274551). For the
-  same reason, an `error` of more than 1024 bytes keeps at most its first and last 510
-  bytes, cut at char boundaries and joined by `…`, as a line of a PEM file can be of any
-  length (`laptop.architect-2`, 2026-10-16T22:26:26Z, #2920:
+  `started`, shard 0 logs a warning "parts of the OS roots were not read, and
+  `foundation status` gives each" with the count `failed` of all failures and the
+  `source` of the read, once, when the read has a failure (`laptop.architect-2`,
+  2026-10-16T22:48:23Z, #2945:
+  https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6226140961; the count
+  `failed`: `laptop.architect-2`, 2026-10-17T01:43:59Z, #2949:
+  https://github.com/synnaxlabs/foundation/pull/2963#issuecomment-6228097941), "a part
+  of the OS roots was not read" with the `error` of each of the first 16 failures, "OS
+  roots that do not parse are skipped" with the count `skipped`, and "the OS roots hold
+  no certificate, so an https connect with no CA of its connector fails". It logs them
+  also with `Region::Absent`, which serves no `status`, so there the first warning is
+  "parts of the OS roots were not read", with no command (`laptop.architect-2`,
+  2026-10-17T05:23:16Z, #2996:
+  https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230135838). The
+  first warning is the one count line: no warning counts the failures after the first
+  16 (`laptop.architect-2`, 2026-10-17T04:59:46Z, #2945:
+  https://github.com/synnaxlabs/foundation/issues/2945#issuecomment-6229906709, which
+  supersedes the `unlisted` warning of
+  https://github.com/synnaxlabs/foundation/pull/2963#issuecomment-6228097941).
+  `foundation status` on the running node gives the `source` and each failure, in full,
+  to a subject with `read` on the name of the node, as `roots` in its JSON, and as
+  `OS roots:` lines in its text when the read had a failure. `ops::roots::Failures`
+  keeps the failures in order while they and the `source` hold at most 1 MiB of
+  memory, and counts the rest as `unlisted`, so the node keeps at most 1 MiB for them
+  and the reply stays in its 16 MiB bound (`laptop.architect-2`, 2026-10-17T04:59:46Z,
+  #2945: https://github.com/synnaxlabs/foundation/issues/2945#issuecomment-6229906709;
+  the memory of each failure: `laptop.architect-2`, 2026-10-17T05:23:16Z, #2996:
+  https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230135838; the
+  name: `laptop.architect-2`, 2026-10-17T05:23:46Z, #2996:
+  https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230140617; the
+  `source` in the bound: `laptop.architect-2`, 2026-10-17T06:22:40Z, #2996:
+  https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230639091). A
+  `source` of more than 1 MiB keeps no failure. The list comes from the running node,
+  since a shell can read other roots, and a file on disk of the failures is refused
+  (`laptop.architect-2`, 2026-10-16T22:27:09Z, #2945:
+  https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225879413). The cap
+  of 16 failures keeps the warnings from filling the log queue and dropping `started`
+  (`laptop.architect-2`, 2026-10-16T20:40:05Z, #2920:
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6224274551).
+  For the same reason, an `error` of more than 1024 bytes keeps at most its first and
+  last 510 bytes, cut at char boundaries and joined by `…`, as a line of a PEM file can
+  be of any length (`laptop.architect-2`, 2026-10-16T22:26:26Z, #2920:
   https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225870705).
-  `os::roots` gives the `source` as `os::Source`: `the OS store`, or the paths of
-  `SSL_CERT_FILE` and `SSL_CERT_DIR` that it read in place of the store. `os` owns this
-  pick, so `node` never derives it from its `vars`, and `node` cuts the `source` as it
-  cuts an `error` (`laptop.architect-2`, 2026-10-16T22:27:09Z, #2920:
-  https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225879413). This
-  supersedes the warning for each failure that
+  `os::roots::read()` gives the `source` as `os::roots::Source` (the name:
+  `laptop.architect-2`, 2026-10-16T22:48:23Z, #2949:
+  https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6226140961; the
+  module: `laptop.architect-2`, 2026-10-17T00:52:47Z, #2949:
+  https://github.com/synnaxlabs/foundation/pull/2963#issuecomment-6227609581): `the OS
+  store`, or the paths of `SSL_CERT_FILE` and `SSL_CERT_DIR` that it read in place of
+  the store. `os` owns this pick, so `node` never derives it from its `vars`, and `node`
+  cuts the `source` as it cuts an `error` (`laptop.architect-2`, 2026-10-16T22:27:09Z,
+  #2920: https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225879413).
+  This supersedes the warning for each failure that
   https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6213377062 approved,
   and `node::Config::roots: Vec<Vec<u8>>` of
   https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207437988, which
@@ -147,10 +183,10 @@
   https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6213160739; the
   order before `started`, 2026-10-16T10:22:32Z:
   https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6213377062).
-  `laptop.architect-2` ruled `Tls`, `tokio-rustls`, the name `server` of the test
-  host, the `CA:TRUE` text, and the refusal (2026-10-16T07:51:33Z:
-  https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044).
-  Decided by `laptop.architect-2` (2026-10-16T03:30:01Z:
+  `laptop.architect-2` ruled `Tls`, `tokio-rustls`, the name `server` of the test host,
+  the `CA:TRUE` text, and the refusal (2026-10-16T07:51:33Z:
+  https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044). Decided
+  by `laptop.architect-2` (2026-10-16T03:30:01Z:
   https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207437988;
   2026-10-16T03:30:54Z:
   https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207447936) and

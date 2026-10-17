@@ -483,6 +483,7 @@ dependencies = [
 name = "connector-opcua"
 version = "0.0.0"
 dependencies = [
+ "aws-lc-sys",
  "block",
  "cc",
  "codec",
@@ -949,7 +950,6 @@ dependencies = [
  "home",
  "proptest",
  "sim",
- "tracing",
  "types",
 ]
 
@@ -1377,6 +1377,7 @@ dependencies = [
  "env",
  "hub",
  "mesh",
+ "proptest",
  "schemars",
  "secret",
  "serde",

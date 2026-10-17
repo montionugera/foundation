@@ -289,10 +289,10 @@ impl<C> Context<C> {
     /// Takes the reader that the supervisor opened for this run, under the connector's
     /// name, from the settings that `check` gave. `None` when `check` gave none, or
     /// after the first call. Return the end of the reader with `?`: KIND TABLE gives
-    /// its class. After [`hub::reader::Ended::Behind`] or
-    /// [`hub::reader::Ended::Removed`], the supervisor opens a new reader from the
-    /// selector before the next run, so a channel that the spec defined again with a
-    /// new key is read, and the open gives `Config` when the selector matches nothing.
+    /// its class. After [`hub::reader::Ended::Removed`], the supervisor opens a new
+    /// reader from the selector before the next run, so a channel that the spec defined
+    /// again with a new key is read, and the open gives `Config` when the selector
+    /// matches nothing.
     /// A reader with a hold opens again at its held position while its index keeps its
     /// key, and reads the frames after it from disk. Past a frame that the buffer lost
     /// for no room, the next run reads the frame after it. Each close starts the hold
@@ -639,7 +639,7 @@ fn writer_error(error: hub::writer::Error) -> Error {
 }
 
 /// The class of the end of the reader of a run, for a kind that returns it with `?`:
-/// `Retry` for `Behind`, `Removed`, `Replaced`, `Buffer`, and `Pool`.
+/// `Retry` for `Removed`, `Replaced`, `Buffer`, and `Pool`.
 ///
 /// # Panics
 ///
@@ -653,11 +653,9 @@ impl From<hub::reader::Ended> for Error {
     fn from(ended: hub::reader::Ended) -> Self {
         use hub::reader::Ended;
         match ended {
-            Ended::Behind
-            | Ended::Removed(_)
-            | Ended::Replaced
-            | Ended::Buffer(_)
-            | Ended::Pool(_) => Self::Retry(Box::new(ended)),
+            Ended::Removed(_) | Ended::Replaced | Ended::Buffer(_) | Ended::Pool(_) => {
+                Self::Retry(Box::new(ended))
+            }
             Ended::Stream(_)
             | Ended::Refused(_)
             | Ended::Message(_)
@@ -1360,12 +1358,13 @@ mod tests {
     /// frees the ring (#406).
     #[test]
     fn retries_when_the_named_readers_fill_an_entry() {
-        let full = reader_error(hub::reader::Error::Full { limit: 4032 });
+        let full = reader_error(hub::reader::Error::Full { limit: 257_728 });
         assert!(matches!(full, Error::Retry(_)), "{full:?}");
         assert_eq!(
             full.to_string(),
-            "an attempt failed: the records of the named readers of the index would \
-             pass 4032 bytes: read the index from fewer connectors in complete mode, \
+            "an attempt failed: no part of the named records of the index has room for \
+             the reader: the records of an index hold at most 257728 bytes: read the \
+             index from fewer connectors in complete mode, \
              set `mode = \"latest\"` on one, or wait for the hold of a removed reader \
              to end"
         );

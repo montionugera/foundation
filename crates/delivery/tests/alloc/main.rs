@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use delivery::{Next, Position, Reader, Readers, Start, complete, latest};
+use delivery::{Error, Next, Position, Reader, Readers, Start, complete, latest};
 
 use types::channel;
 use types::frame::key_set::{Group, Interner, KeySet};
@@ -147,11 +147,20 @@ fn complete(frame: &impl Fn() -> Frame, set: &Arc<KeySet>) {
         readers.close(closed.into(), Some(Stamp::from_nanos(0)));
     });
     assert_eq!(allocations, 0, "an ack or a call on a closed key allocated");
-    assert_eq!(
-        readers.floor(),
-        Some(position),
-        "each ack reached its session"
-    );
+    let flipped = Position {
+        backfill: Some(0),
+        ..position
+    };
+    for &key in &keys {
+        assert_eq!(
+            readers.ack(key, flipped),
+            Err(Error::Ack {
+                from: position,
+                to: flipped
+            }),
+            "each ack reached its session"
+        );
+    }
 }
 
 /// Opens a complete session at live seq `live` with credit for `limit_bytes`.
@@ -242,7 +251,7 @@ fn missed(frame: &impl Fn() -> Frame, set: &Arc<KeySet>) {
             match readers.take(key.into()) {
                 Next::Frame(_) => {}
                 Next::Disk { .. } => break true,
-                Next::Empty | Next::Behind => break false,
+                Next::Empty => break false,
             }
         }
     };
@@ -274,7 +283,7 @@ fn flow(
 ///
 /// # Panics
 ///
-/// If the session gets [`Next::Behind`].
+/// If the session reads from disk.
 fn taken(readers: &mut Readers, key: complete::Key) -> usize {
     let mut count = 0;
     loop {
@@ -282,7 +291,6 @@ fn taken(readers: &mut Readers, key: complete::Key) -> usize {
             Next::Frame(_) => count += 1,
             Next::Empty => return count,
             Next::Disk { .. } => panic!("the session reads from disk"),
-            Next::Behind => panic!("the session is behind"),
         }
     }
 }

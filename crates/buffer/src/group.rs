@@ -546,9 +546,8 @@ mod tests {
         let Window { place, len } = cursor.window();
         let step = cursor.next(&bytes[index(place)..index(place) + len]);
         assert_eq!(step, Ok(Step::End));
-        let (writer, _) = cursor
-            .writer(opened.tail.offset(), 1)
-            .expect("the ring is empty");
+        let mut writer = cursor.writer();
+        writer.restart(1).expect("the ring is empty");
         let memory = pool(1 << 20);
         let parts = parts(&memory, &[&[7; 4032]]);
         let entry = entry(header(1, Path::Live, 0), parts);
@@ -591,7 +590,8 @@ mod tests {
             let Window { place, len } = cursor.window();
             let step = cursor.next(&bytes[index(place)..index(place) + len]);
             assert_eq!(step, Ok(Step::End), "a zeroed area ends at once");
-            let (writer, sealed) = cursor.writer(0, 1).expect("the ring is empty");
+            let mut writer = cursor.writer();
+            let sealed = writer.restart(1).expect("the ring is empty");
             let body = 1u32.to_le_bytes();
             let mut area = Self {
                 bytes,

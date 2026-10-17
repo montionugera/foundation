@@ -630,6 +630,14 @@ fn every() -> Vec<Error> {
             path: PathBuf::new(),
             data: PathBuf::from("/work/foundation-data"),
         },
+        Error::NoData {
+            path: PathBuf::new(),
+            data: PathBuf::from("/work/foundation-data"),
+        },
+        Error::FolderChanged {
+            path: PathBuf::new(),
+            folders: vec![PathBuf::from("/work")],
+        },
         Error::PlanName {
             path: PathBuf::new(),
             resolved: PathBuf::new(),
@@ -675,6 +683,8 @@ fn error_codes_and_fixes_match_the_golden_file() {
             | Error::Reply { .. }
             | Error::Outside { .. }
             | Error::Hidden { .. }
+            | Error::NoData { .. }
+            | Error::FolderChanged { .. }
             | Error::PlanName { .. }
             | Error::WideFolder { .. }
             | Error::Folder { .. }
@@ -1366,6 +1376,16 @@ mod serve {
     }
 
     #[test]
+    fn fuzz_inputs_reach_their_codes() {
+        let root = include_str!("../../../oracles/fuzz/ops_mcp/plan-root");
+        let out = run(&["mcp"], root.as_bytes()).stdout;
+        assert!(out.contains("ops.outside"), "{out}");
+        let outside = include_str!("../../../oracles/fuzz/ops_mcp/plan-outside");
+        let out = run(&["mcp"], outside.as_bytes()).stdout;
+        assert!(out.contains("ops.read"), "{out}");
+    }
+
+    #[test]
     fn mcp_answers_each_line_until_input_ends() {
         let note = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n";
         let input = format!("{PING}{note}{PING}");
@@ -1572,4 +1592,70 @@ fn the_data_directory_of_one_name_is_in_the_working_directory() {
         error.to_string(),
         "the directory . above the data directory `foundation-data` is not there"
     );
+}
+
+mod scope {
+    use std::path::{Path, PathBuf};
+
+    use crate::error::Error;
+    use crate::scope::Scope;
+
+    /// A host with the folder `/work`, which is the working directory, and the scope
+    /// of `foundation mcp` there, with the data directory `/work/foundation-data`.
+    fn work() -> (sim::node::Node, Scope) {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = sim.node(sim::node::Config::default());
+        host.make_dir(Path::new("/work"));
+        host.set_working_dir(Path::new("/work"));
+        let data = Path::new("/work/foundation-data");
+        let scope = Scope::mcp(&host.paths(), &[], data).expect("a scope");
+        (host, scope)
+    }
+
+    #[test]
+    fn a_plan_file_by_a_data_directory_moved_away_has_no_data() {
+        let (host, scope) = work();
+        let data = Path::new("/work/foundation-data");
+        host.move_path(data, Path::new("/data"));
+        assert_eq!(
+            scope.write(Path::new("out.plan"), b"x"),
+            Err(Error::NoData {
+                path: PathBuf::from("out.plan"),
+                data: data.to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_plan_file_in_a_folder_made_again_is_in_a_changed_folder() {
+        let (host, scope) = work();
+        host.move_path(Path::new("/work"), Path::new("/old"));
+        host.make_dir(Path::new("/work"));
+        assert_eq!(
+            scope.write(Path::new("out.plan"), b"x"),
+            Err(Error::FolderChanged {
+                path: PathBuf::from("out.plan"),
+                folders: vec![PathBuf::from("/work")],
+            })
+        );
+    }
+
+    #[test]
+    fn a_plan_file_in_a_files_folder_made_again_is_in_a_changed_folder() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = sim.node(sim::node::Config::default());
+        host.make_dir(Path::new("/plans"));
+        let data = Path::new("/data");
+        let scope =
+            Scope::mcp(&host.paths(), &["/plans".into()], data).expect("a scope");
+        host.move_path(Path::new("/plans"), Path::new("/old"));
+        host.make_dir(Path::new("/plans"));
+        assert_eq!(
+            scope.write(Path::new("/plans/out.plan"), b"x"),
+            Err(Error::FolderChanged {
+                path: PathBuf::from("/plans/out.plan"),
+                folders: vec![PathBuf::from("/plans")],
+            })
+        );
+    }
 }

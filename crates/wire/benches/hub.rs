@@ -43,7 +43,7 @@ fn head(series: u32) -> Reply {
 /// that no bench measures the inlining of its one call site.
 #[inline(never)]
 fn decode<'m>(reader: &mut Reader, message: &'m [u8]) -> Result<FromHome<'m>, Error> {
-    reader.decode(message)
+    reader.decode(Some(message))
 }
 
 /// A reader of `places` places that the home opened.
@@ -186,7 +186,7 @@ fn frames_of(places: u32, body: u32) -> (Frames, block::Pool) {
         channels: places,
     };
     let opened = [1, 0, 0, 0, 0, 0, 0, 0, 0];
-    let (frames, _) = Frames::open(Reader::new(&open), set_of(places), Some(&opened))
+    let frames = Frames::open(Reader::new(&open), set_of(places), Some(&opened))
         .expect("opened");
     let bytes = (u64::from(body) + (1 << 20)).next_power_of_two();
     let config = block::Config::new(bytes).expect("the budget fits");
@@ -207,7 +207,7 @@ fn build<'m>(
         let step = match frames.due().expect("the layout holds") {
             Due::Message => {
                 let message = messages.next().expect("a message");
-                frames.decode(divan::black_box(message))
+                frames.decode(Some(divan::black_box(message)))
             }
             Due::Body(rest) => {
                 let message = divan::black_box(messages.next().expect("a message"));
@@ -222,7 +222,6 @@ fn build<'m>(
         match step.expect("the frame decodes") {
             Step::Head(_) | Step::More => {}
             Step::Frame(frame) => return frame.body()[0],
-            Step::Behind => panic!("behind"),
         }
     }
 }
@@ -237,6 +236,29 @@ fn build_a_frame(bencher: Bencher<'_, '_>, series: u32) {
     let run = run_of(series);
     let body = vec![7; usize::try_from(series * 8).expect("a u32 fits a usize")];
     let mut frame = || build(&mut frames, &pool, [&head, &run[..], &body]);
+    frame();
+    bencher.bench_local(frame);
+}
+
+/// As [`build_a_frame`], but each head has one sample, one seq past the head before
+/// it, so that each frame moves the live position of the latest session.
+#[divan::bench(args = SERIES)]
+fn build_a_sampled_frame(bencher: Bencher<'_, '_>, series: u32) {
+    let (mut frames, pool) = frames_of(series, series * 8);
+    let run = run_of(series);
+    let body = vec![7; usize::try_from(series * 8).expect("a u32 fits a usize")];
+    let mut seq = 0;
+    let mut frame = || {
+        let mut head = [0; 18];
+        Reply::Head(Head {
+            path: Path::Live,
+            range: Range { seq, count: 1 },
+            series,
+        })
+        .encode(&mut head);
+        seq += 1;
+        build(&mut frames, &pool, [&head, &run[..], &body])
+    };
     frame();
     bencher.bench_local(frame);
 }

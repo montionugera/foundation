@@ -28,6 +28,15 @@ pub(crate) struct Time {
 }
 
 impl Time {
+    /// Gives the monotonic time of `clock`, and the mesh time of `mesh` as the wall
+    /// time.
+    pub(crate) fn mesh(clock: Clock, mesh: hub::Time) -> Self {
+        Self {
+            clock,
+            wall: Box::new(move || mesh.now()),
+        }
+    }
+
     /// Gives the monotonic time of `clock` also as the wall time, from the Unix epoch,
     /// for a loop of a test or a benchmark, which has no wall time of a node. Past the
     /// last stamp, the wall time stays at the last stamp.

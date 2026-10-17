@@ -110,12 +110,15 @@ pub struct Config<M> {
     /// gives `std::env::vars_os()`.
     pub vars: BTreeMap<OsString, OsString>,
     /// The CA certificates that each `https` connect of a connector trusts. Main gives
-    /// [`os::roots`]. Shard 0 logs a warning for each of the first 16 failures, its
-    /// text cut to 1024 bytes, one for the count of the rest with the
-    /// [`os::Source`] of the read, cut the same way, one for the count of certificates
-    /// that do not parse, and one when no certificate is left. It logs each of them
-    /// also with [`Region::Absent`], which runs no connector.
-    pub roots: os::Roots,
+    /// [`os::roots::read()`]. When the read has a failure, shard 0 logs a warning with
+    /// the count of its failures and its [`os::roots::Source`], cut to 1024 bytes, then
+    /// one for each of the first 16 failures, its text cut the same way. It logs one
+    /// for the count of certificates that do not parse, and one when no certificate is
+    /// left. It logs each of them also with [`Region::Absent`], which runs no
+    /// connector. With a region, the node gives the failures to
+    /// [`ops::Config::roots`], which `foundation status` shows, and the first warning
+    /// names that command.
+    pub roots: os::roots::Roots,
     /// Where and how the node writes its log. Each shard writes the events of its
     /// thread there, and [`Node::join`] the event `stopped`.
     pub log: Log,
@@ -898,7 +901,7 @@ struct Serve {
     vars: Arc<BTreeMap<OsString, OsString>>,
     /// The CA certificates that the node's connectors trust, which the event `started`
     /// follows.
-    roots: os::Roots,
+    roots: os::roots::Roots,
     /// The node's name and shard count, which the claim and the event `started` read.
     name: types::name::Name,
     shards: usize,
@@ -1208,8 +1211,16 @@ impl Serve {
                 secret::Resolver::new(vars, files.clone(), &directory::secrets());
             let serve = pin!(async move {
                 // `hold` polls `serve` only once the file `address` holds the address.
-                let trusted = trust::roots(&roots);
-                drop(roots);
+                let trusted = trust::roots(&roots, mesh.is_some());
+                let os::roots::Roots {
+                    certificates,
+                    failures,
+                    source,
+                } = roots;
+                // Each local of this block lives until the node stops.
+                drop(certificates);
+                let text = source.to_string();
+                drop(source);
                 tracing::info!(%name, address = %address.bound, shards, "started");
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,
@@ -1224,37 +1235,38 @@ impl Serve {
                     entropy: entropy.clone(),
                     region,
                 });
-                let (ops, followed) = match mesh.as_ref() {
-                    Some(mesh) => {
-                        let member = mesh.member(key);
-                        let member =
-                            member.expect("invariant: a mesh opens only on a member");
-                        let name = member.card.card().name.clone();
-                        let kinds = Arc::new(kinds());
-                        let ops = Rc::new(ops::Node::new(ops::Config {
-                            mesh: mesh.clone(),
-                            keys: channel_keys(&time, &entropy),
-                            front_ends: front_ends(),
-                            kinds: Arc::clone(&kinds),
-                            hub: hub.clone(),
-                            clock: clock.clone(),
-                            name: name.clone(),
-                            secrets: secrets.clone(),
-                        }));
-                        let config = connector::supervisor::Config {
-                            kinds,
-                            clock: clock.clone(),
-                            entropy,
-                            net,
-                            roots: trusted,
-                            tasks: tasks.clone(),
-                            hub: hub.clone(),
-                            secrets,
-                        };
-                        let runs = connectors::Runs::new(config, name);
-                        (Some(ops), Some(follow(mesh, hub.clone(), runs).await))
-                    }
-                    None => (None, None),
+                let (ops, followed) = if let Some(mesh) = mesh.as_ref() {
+                    let member = mesh.member(key);
+                    let member =
+                        member.expect("invariant: a mesh opens only on a member");
+                    let name = member.card.card().name.clone();
+                    let kinds = Arc::new(kinds());
+                    let ops = Rc::new(ops::Node::new(ops::Config {
+                        mesh: mesh.clone(),
+                        keys: channel_keys(&time, &entropy),
+                        front_ends: front_ends(),
+                        kinds: Arc::clone(&kinds),
+                        hub: hub.clone(),
+                        clock: clock.clone(),
+                        name: name.clone(),
+                        secrets: secrets.clone(),
+                        roots: ops::roots::Failures::new(text, failures),
+                    }));
+                    let config = connector::supervisor::Config {
+                        kinds,
+                        clock: clock.clone(),
+                        entropy,
+                        net,
+                        roots: trusted,
+                        tasks: tasks.clone(),
+                        hub: hub.clone(),
+                        secrets,
+                    };
+                    let runs = connectors::Runs::new(config, name);
+                    (Some(ops), Some(follow(mesh, hub.clone(), runs).await))
+                } else {
+                    drop((text, failures));
+                    (None, None)
                 };
                 let handles = task::Handles { hub, ops };
                 let port = route::accept(
