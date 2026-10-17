@@ -4662,7 +4662,7 @@ fn fail_then_cut(
 }
 
 /// A failed sync near the end of an open that trims a ring with no free block, then
-/// a power cut near the end of the next open, keeps each tail. The failed sync can
+/// a power cut during the next open, keeps each tail. The failed sync can
 /// leave the checkpoint of the trim in the cache only, and the next open reads it
 /// there: it writes over the records that it frees only once it is durable. Each
 /// fault fails a sync of the first open: a later fault would fail a sync of the next.
@@ -4672,7 +4672,7 @@ fn a_cut_open_after_a_failed_sync_of_an_open_that_trims_keeps_each_tail() {
         let last = first_end(10_000, |fault| !fail_then_cut(seed, fault, 0).2);
         for fault in ((last - 300_000).max(0)..last).step_by(10_000) {
             let second = first_end(2_000, |cut| fail_then_cut(seed, fault, cut).3);
-            for cut in ((second - 40_000).max(0)..second).step_by(2_000) {
+            for cut in ((second - 400_000).max(0)..second).step_by(10_000) {
                 let (mut sim, node, ..) = fail_then_cut(seed, fault, cut);
                 let opened = sim.run_on(&node, |node, tasks| async move {
                     let mut slots = Slots::new();
@@ -4690,6 +4690,98 @@ fn a_cut_open_after_a_failed_sync_of_an_open_that_trims_keeps_each_tail() {
                 assert_eq!(tails, [tail(3, Some(30)), tail(2, Some(40))], "{case}");
             }
         }
+    }
+}
+
+/// On a new node with `seed`, appends a record of index 1 at each seq in a commit of
+/// its own to a ring that trims, and fails the sync of the commit of seq `failed`.
+/// Then stops the process, starts an open, and cuts the power `cut` ns into it.
+/// Gives the sim, the node, whether the last two commits wrote a checkpoint, and
+/// whether the open had ended before its cut.
+fn fail_a_commit_then_cut(
+    seed: u64,
+    failed: u64,
+    cut: i64,
+) -> (sim::Sim, sim::node::Node, bool, bool) {
+    let (mut sim, node) = create_node(seed);
+    let trimmed = sim.run_on(&node, move |node, tasks| async move {
+        let shard = Shard {
+            trimmed: true,
+            ..shard_on(node, tasks)
+        };
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let a = slots.index(key(1));
+        let parts = Parts::from(shard.block(3900));
+        let record = |seq: u64| {
+            let last = i64::try_from(seq).expect("a small seq") + 1;
+            [entry(1, a, Path::Live, seq, 1, Some(last), parts.clone())]
+        };
+        let headers = to_usize(AREA_START);
+        let mut before = shard.bytes().await[..headers].to_vec();
+        for seq in 0..failed {
+            if seq + 1 == failed {
+                before = shard.bytes().await[..headers].to_vec();
+            }
+            buffer.append(record(seq)).expect("the ring has room");
+            buffer.committed().await.expect("commits");
+        }
+        shard.node().fail_file(FilePath::new(RING), Operation::Sync);
+        buffer.append(record(failed)).expect("the ring has room");
+        let fault = Err(FileError::Io {
+            path: PathBuf::from(RING),
+            operation: Operation::Sync,
+            code: 5,
+        });
+        assert_eq!(buffer.committed().await, fault, "seq {failed}");
+        shard.bytes().await[..headers] != before
+    });
+    let trimmed = trimmed.expect("the commits run");
+    sim.crash(&node, sim::Crash::Process);
+    let open = start_open(&node, "open");
+    sim.run_for(Span::from_nanos(cut)).expect("the run goes on");
+    let ended = open.lock().expect("no panic").is_some();
+    sim.crash(&node, sim::Crash::Power);
+    (sim, node, trimmed, ended)
+}
+
+/// A failed sync of a commit that trims, then a power cut during the next open, keeps
+/// each durable tail. The failed sync can leave the checkpoint in the
+/// cache only, and the open reads it there.
+#[test]
+fn a_cut_open_after_a_failed_sync_of_a_commit_that_trims_keeps_each_tail() {
+    for seed in 0..2 {
+        let mut trims = 0;
+        for failed in 0..24 {
+            if !fail_a_commit_then_cut(seed, failed, 0).2 {
+                continue;
+            }
+            trims += 1;
+            let end =
+                first_end(2_000, |cut| fail_a_commit_then_cut(seed, failed, cut).3);
+            for cut in (0..end).step_by(10_000) {
+                let (mut sim, node, ..) = fail_a_commit_then_cut(seed, failed, cut);
+                let opened = sim.run_on(&node, |node, tasks| async move {
+                    let mut slots = Slots::new();
+                    let config = Config {
+                        trimmed: true,
+                        ..node_config(&node, tasks, DIR)
+                    };
+                    let buffer = Buffer::open(config, &mut slots).await?;
+                    Ok::<_, Error>(buffer.tail(slots.index(key(1)), Path::Live))
+                });
+                let case = format!("seed {seed}, seq {failed} failed, cut at {cut} ns");
+                let opened = opened.unwrap_or_else(|e| panic!("{case}: {e}"));
+                let got = opened.unwrap_or_else(|e| panic!("{case}: {e}"));
+                let last = i64::try_from(failed).expect("a small seq");
+                let kept = [tail(failed, Some(last)), tail(failed + 1, Some(last + 1))];
+                assert!(kept.contains(&got), "{case}: {got:?}");
+            }
+        }
+        assert!(trims > 1, "seed {seed}: {trims} failed commits trimmed");
     }
 }
 
