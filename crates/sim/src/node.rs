@@ -319,7 +319,10 @@ impl Node {
     }
 
     /// Makes the next read, write, or `make_dir` of `path` on the node's host fail
-    /// with `env::paths::Error::Io` and `code`. Faults on one path fire in turn, one
+    /// with `env::paths::Error::Io` and `code`. A call is of `path` when both give one
+    /// path from the working directory at that call, with `.` and `..` taken as text
+    /// and no link followed, so a relative `path` follows a later
+    /// [`Node::set_working_dir`]. Faults that a call is of fire in the order set, one
     /// per call, and a failed call changes no file.
     pub fn fail_path(&self, path: &Path, code: i32) {
         lock(&self.0.shared).paths().fail(self.0.node, path, code);
