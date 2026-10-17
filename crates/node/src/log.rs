@@ -101,7 +101,7 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
-        let Some(span) = ctx.span(id) else { return };
+        let span = ctx.span(id).expect("the registry has each new span");
         let mut fields = Spanned(Vec::new());
         attrs.record(&mut Values(|field: &Field, value| {
             fields.set(field.name(), value);
@@ -110,11 +110,11 @@ where
     }
 
     fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
-        let Some(span) = ctx.span(id) else { return };
+        let span = ctx.span(id).expect("the registry has each recorded span");
         let mut extensions = span.extensions_mut();
-        let Some(fields) = extensions.get_mut::<Spanned>() else {
-            return;
-        };
+        let fields = extensions
+            .get_mut::<Spanned>()
+            .expect("on_new_span keeps the fields of each span");
         values.record(&mut Values(|field: &Field, value| {
             fields.set(field.name(), value);
         }));
