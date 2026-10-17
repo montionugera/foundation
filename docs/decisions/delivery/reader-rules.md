@@ -91,4 +91,7 @@
   (`laptop.architect`, 2026-10-15T18:12:25Z:
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922).
   Amended (#2790): the `Behind` variants are removed (HUB WIRE).
-  Supersedes the three rulings of #2649 above on a frame that finds no room.
+  Supersedes the three rulings of #2649 above on a frame that finds no room. Amended
+  (#406): a trim keeps the newest entry of each nonzero tag on each path (STORE TRIM),
+  and a read never gives that copy. A read gives only the entries of the log of the
+  path, and the seqs that a trim freed are its gap.

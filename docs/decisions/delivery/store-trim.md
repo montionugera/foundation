@@ -169,3 +169,31 @@
   first sync only when the restart record goes past the room that the older header slot
   keeps, which keeps one sync for most opens with no trim and adds the tail of that slot
   to `Header::decode`.
+  As built (#406, 406-2): a trim keeps the newest durable entry of each nonzero tag on
+  each path of an index, as it keeps the tail of each path. The buffer keeps a heap copy
+  of each such entry (ENTRY TAGS), and the record that holds the copy is a holder, as
+  the record of a tail is: `kept` gives the oldest holder of either kind, so no trim
+  passes one. A commit carries each holder before the reach in a carry record (S4),
+  oldest first, with the bytes from the copy and no file read. A carry record has a
+  budget of bytes: a tail costs 42 bytes and an entry 51 bytes and its bytes, at most
+  1023 of each, within the body of the largest block. One block body holds any one
+  holder, so each commit with a holder before the reach carries at least the oldest. An
+  entry replaces the copy of its key only when its end mark is the same as or after the
+  end mark of the copy, so a carry of an older copy after a newer entry, at the commit
+  or at the walk, changes nothing. The walk gives `Error::Invalid` for a carried entry
+  with tag 0 or one that ends past the last seq, for a key that one carry body gives
+  twice, and for a copy whose path no record of the walk holds. Planned by
+  `laptop.architect` (#406, 2026-10-14T01:56:45Z:
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6159164617). The mark
+  rule, which replaces the rule of that plan that a commit does not carry a key whose
+  newer entry is in the taken records, and the holder of either kind are approved by
+  `laptop.architect` (#406, 2026-10-17T19:21:03Z:
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6239447936).
+  Deferred: a limit on the tagged state of a shard, with an exact refusal of the tagged
+  append. Until then, a ring whose tails and tagged entries pass its area less the
+  headroom carries them at each lap, and `append` gives `Rejected::Full` for data. No
+  state is lost. No key leaves, so the refusal lasts until the shard has more area.
+  Trigger to look again: a workload on the milestone path where the tails and tagged
+  entries of one shard pass a tenth of its area. OK by `laptop.architect` (#406,
+  2026-10-17T20:52:49Z:
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6240875264).
