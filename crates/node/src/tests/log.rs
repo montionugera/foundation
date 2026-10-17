@@ -214,12 +214,12 @@ fn a_node_logs_its_start_and_its_stop_in_json() {
 }
 
 /// The warnings that a node on `roots` logs in a run of a second.
-fn warned(roots: os::Roots) -> Vec<String> {
+fn warned(roots: os::roots::Roots) -> Vec<String> {
     logged(roots, tracing::Level::WARN)
 }
 
 /// The lines at `level` or above that a node on `roots` logs in a run of a second.
-fn logged(roots: os::Roots, level: tracing::Level) -> Vec<String> {
+fn logged(roots: os::roots::Roots, level: tracing::Level) -> Vec<String> {
     let (mut sim, host) = host(1);
     let lines = Lines::default();
     let log = to(&lines, false, level);
@@ -244,14 +244,15 @@ const NONE: &str = "2026-01-01T00:00:00.004198Z WARN node::trust: the OS roots h
 
 #[test]
 fn a_node_warns_of_a_failure_of_its_roots_and_of_a_skipped_one() {
-    let roots = os::Roots {
+    let roots = os::roots::Roots {
         certificates: vec![super::CA.to_vec(), b"not DER".to_vec()],
         failures: vec!["failed to read PEM from file at '/roots.pem'".into()],
-        ..os::Roots::default()
+        ..os::roots::Roots::default()
     };
     assert_eq!(
         warned(roots),
         [
+            summary(1, "the OS store"),
             format!(
                 "{WARN} a part of the OS roots was not read error=\"failed to read PEM \
                  from file at '/roots.pem'\""
@@ -263,7 +264,7 @@ fn a_node_warns_of_a_failure_of_its_roots_and_of_a_skipped_one() {
 
 #[test]
 fn a_node_warns_of_its_roots_before_it_starts() {
-    let lines = logged(os::Roots::default(), tracing::Level::INFO);
+    let lines = logged(os::roots::Roots::default(), tracing::Level::INFO);
     let warned = lines.iter().position(|line| line == NONE);
     let started = lines
         .iter()
@@ -274,17 +275,24 @@ fn a_node_warns_of_its_roots_before_it_starts() {
     );
 }
 
+/// The first warning of a read of the roots with `failed` failures from `source`.
+fn summary(failed: usize, source: &str) -> String {
+    format!(
+        "{WARN} parts of the OS roots were not read failed={failed} source=\"{source}\""
+    )
+}
+
 /// The roots with only the CA and `failures`.
-fn failing(failures: Vec<String>) -> os::Roots {
-    os::Roots {
+fn failing(failures: Vec<String>) -> os::roots::Roots {
+    os::roots::Roots {
         certificates: vec![super::CA.to_vec()],
         failures,
-        source: os::Source::Store,
+        source: os::roots::Source::default(),
     }
 }
 
 /// The roots with only the CA and `count` failures.
-fn failed(count: usize) -> os::Roots {
+fn failed(count: usize) -> os::roots::Roots {
     failing((0..count).map(|n| format!("failure {n}")).collect())
 }
 
@@ -299,41 +307,33 @@ fn listed(count: usize) -> Vec<String> {
 
 #[test]
 fn a_node_warns_of_the_first_16_failures_of_its_roots_and_counts_the_rest() {
-    let mut expected = listed(16);
+    let mut expected = vec![summary(17, "the OS store")];
+    expected.extend(listed(16));
     expected.push(format!(
-        "{WARN} more parts of the OS roots were not read unlisted=1 source=\"the OS \
-         store\""
+        "{WARN} more parts of the OS roots were not read unlisted=1"
     ));
     assert_eq!(warned(failed(17)), expected);
 }
 
 #[test]
-fn the_count_of_the_failures_of_the_roots_gives_the_paths_that_were_read() {
-    let roots = os::Roots {
-        source: os::Source::Paths {
+fn one_failure_of_the_roots_gives_the_paths_that_were_read_once() {
+    let roots = os::roots::Roots {
+        source: os::roots::Source {
             file: Some("/roots.pem".into()),
             dirs: vec!["/a".into(), "/b".into()],
         },
-        ..failed(17)
+        ..failed(1)
     };
-    let lines = warned(roots);
-    assert_eq!(
-        lines.last().map(String::as_str),
-        Some(
-            format!(
-                "{WARN} more parts of the OS roots were not read unlisted=1 \
-                 source=\"SSL_CERT_FILE=/roots.pem SSL_CERT_DIR=/a:/b\""
-            )
-            .as_str()
-        )
-    );
+    let mut expected = vec![summary(1, "SSL_CERT_FILE=/roots.pem SSL_CERT_DIR=/a:/b")];
+    expected.extend(listed(1));
+    assert_eq!(warned(roots), expected);
 }
 
 #[test]
-fn a_long_source_of_the_roots_is_cut_on_the_count_line() {
+fn a_long_source_of_the_roots_is_cut() {
     let dir = format!("/{}", long(3000));
-    let roots = os::Roots {
-        source: os::Source::Paths {
+    let roots = os::roots::Roots {
+        source: os::roots::Source {
             file: None,
             dirs: vec![dir.clone().into()],
         },
@@ -342,17 +342,16 @@ fn a_long_source_of_the_roots_is_cut_on_the_count_line() {
     let source = format!("SSL_CERT_DIR={dir}");
     let (head, tail) = (&source[..510], &source[source.len() - 510..]);
     assert_eq!(
-        warned(roots).last(),
-        Some(&format!(
-            "{WARN} more parts of the OS roots were not read unlisted=1 \
-             source=\"{head}…{tail}\""
-        ))
+        warned(roots).first(),
+        Some(&summary(17, &format!("{head}…{tail}")))
     );
 }
 
 #[test]
 fn a_node_with_16_failures_of_its_roots_warns_of_each_with_no_count() {
-    assert_eq!(warned(failed(16)), listed(16));
+    let mut expected = vec![summary(16, "the OS store")];
+    expected.extend(listed(16));
+    assert_eq!(warned(failed(16)), expected);
 }
 
 /// Whether `lines` hold `started`.
@@ -378,9 +377,12 @@ fn a_long_failure_of_the_roots_warns_with_its_head_and_its_tail() {
     let (head, tail) = (&failure[..510], &failure[failure.len() - 510..]);
     assert_eq!(
         lines,
-        [format!(
-            "{WARN} a part of the OS roots was not read error=\"{head}…{tail}\""
-        )]
+        [
+            summary(1, "the OS store"),
+            format!(
+                "{WARN} a part of the OS roots was not read error=\"{head}…{tail}\""
+            ),
+        ]
     );
 }
 
@@ -389,17 +391,19 @@ fn a_failure_of_the_roots_of_1024_bytes_warns_whole_and_one_of_1025_is_cut() {
     let whole = long(1024);
     assert_eq!(
         warned(failing(vec![whole.clone()])),
-        [format!(
-            "{WARN} a part of the OS roots was not read error={whole}"
-        )]
+        [
+            summary(1, "the OS store"),
+            format!("{WARN} a part of the OS roots was not read error={whole}"),
+        ]
     );
     let failure = long(1025);
     let (head, tail) = (&failure[..510], &failure[failure.len() - 510..]);
     assert_eq!(
         warned(failing(vec![failure.clone()])),
-        [format!(
-            "{WARN} a part of the OS roots was not read error={head}…{tail}"
-        )]
+        [
+            summary(1, "the OS store"),
+            format!("{WARN} a part of the OS roots was not read error={head}…{tail}"),
+        ]
     );
 }
 
@@ -409,9 +413,10 @@ fn a_long_failure_of_the_roots_is_cut_at_char_boundaries() {
     let (head, tail) = (&failure[..509], &failure[failure.len() - 509..]);
     assert_eq!(
         warned(failing(vec![failure.clone()])),
-        [format!(
-            "{WARN} a part of the OS roots was not read error={head}…{tail}"
-        )]
+        [
+            summary(1, "the OS store"),
+            format!("{WARN} a part of the OS roots was not read error={head}…{tail}"),
+        ]
     );
 }
 
@@ -437,10 +442,10 @@ fn failures_of_the_roots_whose_escapes_grow_them_keep_started() {
 
 #[test]
 fn a_node_with_no_root_warns_that_an_https_connect_with_no_ca_fails() {
-    assert_eq!(warned(os::Roots::default()), [NONE]);
-    let roots = os::Roots {
+    assert_eq!(warned(os::roots::Roots::default()), [NONE]);
+    let roots = os::roots::Roots {
         certificates: vec![b"not DER".to_vec()],
-        ..os::Roots::default()
+        ..os::roots::Roots::default()
     };
     assert_eq!(warned(roots), [SKIPPED, NONE]);
 }

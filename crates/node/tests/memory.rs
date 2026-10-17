@@ -5,7 +5,7 @@
 //! - `node::client::reach` makes two pools, one for its transport and its
 //!   `program::Session` and one for the frames of the session's reads, which together
 //!   reserve at most 128 MiB.
-//! - A started node keeps no `os::Roots` of `Config::roots`.
+//! - A started node keeps no `os::roots::Roots` of `Config::roots`.
 //!
 //! The count covers each thread, so this binary has no test harness.
 
@@ -65,7 +65,7 @@ fn name() {
 /// A node that has started on 8 MiB of roots holds less than 1 MiB more than one on
 /// no roots. The first start fills what each start keeps once, so it is not counted.
 fn roots() {
-    let held = |roots: fn() -> os::Roots| {
+    let held = |roots: fn() -> os::roots::Roots| {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = sim.node(sim::node::Config::default());
         let before = ALLOCATOR.held();
@@ -77,11 +77,11 @@ fn roots() {
         assert_eq!(node.join(), Ok(()), "the node ends");
         held
     };
-    held(os::Roots::default);
-    let none = held(os::Roots::default);
-    let big = held(|| os::Roots {
+    held(os::roots::Roots::default);
+    let none = held(os::roots::Roots::default);
+    let big = held(|| os::roots::Roots {
         certificates: vec![vec![0_u8; 1 << 20]; 8],
-        ..os::Roots::default()
+        ..os::roots::Roots::default()
     });
     assert!(
         big < none + (1 << 20),
@@ -94,7 +94,7 @@ fn roots() {
 fn config(
     host: &sim::node::Node,
     region: node::Region,
-    roots: os::Roots,
+    roots: os::roots::Roots,
 ) -> node::Config<block::Heap> {
     let files = host.clone();
     node::Config {
@@ -131,8 +131,11 @@ fn reach() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = sim.node(sim::node::Config::default());
     let listen = SocketAddr::new(host.addresses()[0], 7000);
-    let node =
-        node::Node::start(config(&host, node::Region::Stored, os::Roots::default()));
+    let node = node::Node::start(config(
+        &host,
+        node::Region::Stored,
+        os::roots::Roots::default(),
+    ));
     assert_eq!(sim.run_for(Span::SECOND), Ok(()), "the node runs");
     sim.crash(&host, sim::Crash::Process);
     drop(node);
