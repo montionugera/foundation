@@ -67,7 +67,7 @@ impl Frames {
         message: Option<&[u8]>,
     ) -> Result<Self, Error> {
         assert_eq!(set.groups().len(), 1, "a session is on one index");
-        assert!(reader.unopened(), "`reader` is past `Opened`");
+        assert!(reader.unopened(), "`reader` is past `Opened`: {reader:?}");
         match reader.decode(message)? {
             FromHome::Opened { live } => Ok(Self {
                 reader,

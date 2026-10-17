@@ -104,8 +104,11 @@ fn run(places: u8, mode: Mode, bytes: &[u8], in_place: bool) -> Vec<Seen> {
     let mut reply = true;
     let mut frames = match opened {
         Ok(frames) => {
-            let Ok(FromHome::Opened { live }) = Reader::new(&open).decode(first) else {
-                panic!("frames opened with no Opened");
+            let decoded = Reader::new(&open).decode(first);
+            let Ok(FromHome::Opened { live }) = decoded else {
+                panic!(
+                    "frames opened, but a reader of the first message gave {decoded:?}"
+                );
             };
             assert_eq!(frames.live(), live, "live is not the open position");
             seen.push(Seen::Opened(live));
