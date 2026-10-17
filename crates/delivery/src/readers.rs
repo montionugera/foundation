@@ -589,7 +589,8 @@ impl Readers {
     ///
     /// If this `Readers` never gave `key`, `set` is not the frame's key set, or the
     /// session is on disk and `seq` ends at or below the `from` of its last
-    /// [`Next::Disk`] or the end of a frame that [`Readers::fill`] gave it.
+    /// [`Next::Disk`], the `next` of a call to [`Readers::reached`], or the end of a
+    /// frame that [`Readers::fill`] gave it.
     pub fn fill(
         &mut self,
         key: complete::Key,
@@ -638,8 +639,8 @@ impl Readers {
     /// # Panics
     ///
     /// If this `Readers` never gave `key`, or the session is on disk and `next` is
-    /// below the `from` of its last [`Next::Disk`] or the end of a frame that
-    /// [`Readers::fill`] gave it.
+    /// below the `from` of its last [`Next::Disk`], the `next` of an earlier call, or
+    /// the end of a frame that [`Readers::fill`] gave it.
     pub fn reached(&mut self, key: complete::Key, next: u64, durable: u64) {
         let Some(i) = self.find(key) else {
             return;
@@ -3534,6 +3535,32 @@ pub(super) mod tests {
             let key = opened(&mut readers, 0, 10);
             assert_eq!(read(&mut readers, key), (vec![], 0));
             assert!(fill(&mut readers, &frames, key, 1, 0..2));
+            fill(&mut readers, &frames, key, 1, 0..2);
+        }
+
+        #[test]
+        #[should_panic(expected = "complete session 0 read to seq 1, below seq 3")]
+        fn reached_below_an_earlier_reached_panics() {
+            let frames = Frames::new(2);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 3..4);
+            let key = opened(&mut readers, 0, 10);
+            assert_eq!(read(&mut readers, key), (vec![], 0));
+            readers.reached(key, 3, 4);
+            readers.reached(key, 1, 4);
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "complete session 0 got a frame to seq 2, at or below seq 3"
+        )]
+        fn fill_at_or_below_an_earlier_reached_panics() {
+            let frames = Frames::new(2);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            let key = opened(&mut readers, 0, 10);
+            assert_eq!(read(&mut readers, key), (vec![], 0));
+            readers.reached(key, 3, 4);
             fill(&mut readers, &frames, key, 1, 0..2);
         }
 
