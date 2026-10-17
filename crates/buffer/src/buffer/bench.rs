@@ -184,9 +184,8 @@ mod tests {
     }
 
     /// The deadline after `trimming` of 1 and of 32 indexes, as the `deadline_trim`
-    /// bench times it, trims a step, carries no tail, and writes a checkpoint. Each
-    /// deadline of the warm-up writes a block, so the head is past two laps. It reads
-    /// the private `state`: `commit` gives only the tails of the carry record.
+    /// bench times it, trims a step, carries no tail, and writes a checkpoint. It
+    /// reads the private `state`: `commit` gives only the tails of the carry record.
     #[test]
     fn the_deadline_after_trimming_trims_a_step() {
         for (indexes, freed) in [(1, 101 * BLOCK), (32, 102 * BLOCK)] {
@@ -199,6 +198,26 @@ mod tests {
             assert_eq!(deadline.commit(1), 0, "{indexes}");
             assert_eq!(deadline.state.writer.tail() - tail, freed, "{indexes}");
             assert_ne!(deadline.state.header, header, "{indexes}");
+        }
+    }
+
+    /// Each deadline of `commit(1)` of 1 and of 32 indexes writes at least a block
+    /// over two laps, so the warm-up of `trimming` passes two laps. It reads the
+    /// private `state`: `commit` gives only the tails of the carry record.
+    #[test]
+    fn each_deadline_writes_a_block() {
+        for indexes in [1, 32] {
+            let blocks = 64 + PHASE;
+            let mut deadline = Deadline::new(indexes, blocks);
+            for commit in 0..=2 * blocks {
+                let head = deadline.state.writer.head();
+                deadline.commit(1);
+                let wrote = deadline.state.writer.head() - head;
+                assert!(
+                    wrote >= BLOCK,
+                    "{indexes} indexes, commit {commit}: {wrote}"
+                );
+            }
         }
     }
 

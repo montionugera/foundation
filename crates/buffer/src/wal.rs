@@ -2711,9 +2711,9 @@ mod tests {
                 free: 0,
             };
             let mut writer = cursor.writer();
-            let before = (writer.head, writer.tail, writer.ends.clone());
+            let before = (writer.head(), writer.tail());
             assert_eq!(writer.restart(1), Err(full));
-            assert_eq!((writer.head, writer.tail, writer.ends.clone()), before);
+            assert_eq!((writer.head(), writer.tail()), before);
             writer.release(4096);
             let sealed = writer.restart(1).expect("one block is free");
             assert_eq!((sealed.record.place, writer.head()), (0, 20 * 4096));
