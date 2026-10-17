@@ -10,8 +10,10 @@
 //! - `undispatched`: the control, the same event with no dispatch, as before a node
 //!   had a log.
 //! - `span`: a `trace` span entered and dropped under the level `trace`.
-//! - `entered`: an enter and an exit of the span of a connector under the level
-//!   `info`.
+//! - `status`: the status line `error` of a connector, with the span of the
+//!   connector as its parent, under the level `info`.
+//! - `recorded`: a record of a field of a `trace` span under the level `trace`, as
+//!   noq-proto makes for each frame.
 //! - `build`: the build of the dispatch, once for each node.
 //!
 //! The writer is `io::sink`, so no line counts its write to stderr.
@@ -156,12 +158,24 @@ fn span(bencher: Bencher<'_, '_>) {
 }
 
 #[divan::bench]
-fn entered(bencher: Bencher<'_, '_>) {
+fn status(bencher: Bencher<'_, '_>) {
     let d = dispatch(false, Level::INFO);
     tracing::dispatcher::with_default(d.dispatch(), || {
         let span =
             tracing::error_span!("connector", connector = "plant.a", kind = "opcua");
-        bencher.bench_local(|| drop(divan::black_box(&span).enter()));
+        bencher.bench_local(|| {
+            let error = divan::black_box("no route to host");
+            tracing::warn!(parent: &span, error, "error");
+        });
+    });
+}
+
+#[divan::bench]
+fn recorded(bencher: Bencher<'_, '_>) {
+    let d = dispatch(false, Level::TRACE);
+    tracing::dispatcher::with_default(d.dispatch(), || {
+        let span = tracing::trace_span!("frame", path = tracing::field::Empty);
+        bencher.bench_local(|| span.record("path", divan::black_box(1_u64)));
     });
 }
 
