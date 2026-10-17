@@ -572,9 +572,9 @@ fn a_dropped_serve_leaves_each_stream_until_the_cancel() {
 
 /// Pauses the server from 500 ms for a second, and cancels `until` in the pause. The
 /// client connects at once, or in the pause when `late`, and writes `sent` in the
-/// pause, so the server sees the cancel, the stream, and its bytes in one poll. Gives
-/// what `serve` gave and how the stream ended for the client.
-fn paused(late: bool, sent: &'static [u8]) -> (Option<Ended>, Option<End>) {
+/// pause, then its FIN when `late`, so the server sees the cancel, the stream, and its
+/// bytes in one poll. Gives what `serve` gave and how the stream ended for the client.
+fn paused(late: bool, sent: String) -> (Option<Ended>, Option<End>) {
     let mut network = Network::new();
     let (client, remote) = (network.client.clone(), network.remote);
     let out = Arc::new(Mutex::new(None));
@@ -596,7 +596,12 @@ fn paused(late: bool, sent: &'static [u8]) -> (Option<Ended>, Option<End>) {
                     if !late {
                         client.clock().sleep(in_pause).await;
                     }
-                    write(&mut tcp, sent).await;
+                    write(&mut tcp, sent.as_bytes()).await;
+                    if late {
+                        poll_fn(|cx| tcp.poll_close(cx))
+                            .await
+                            .expect("the close works");
+                    }
                     read(&mut tcp).await
                 }
                 Err(error) => End::Failed(error.to_string()),
@@ -622,14 +627,17 @@ fn paused(late: bool, sent: &'static [u8]) -> (Option<Ended>, Option<End>) {
 
 #[test]
 fn a_cancel_closes_a_stream_that_the_listener_gives_in_the_same_poll() {
-    let (ended, client) = paused(true, b"");
+    let (ended, client) = paused(true, String::new());
     assert_eq!(ended, Some((Ok(()), 0)));
     assert_eq!(client, Some(End::Closed(String::new())));
 }
 
 #[test]
 fn a_cancel_closes_a_stream_with_bytes_that_arrive_in_the_same_poll() {
-    let (ended, client) = paused(false, b"GET /a HTTP/1.1\r\nhost: server\r\n\r\n");
+    // More bytes than one read of the close takes.
+    let pad = "a".repeat(2000);
+    let sent = format!("GET /a HTTP/1.1\r\nhost: server\r\nx-pad: {pad}\r\n\r\n");
+    let (ended, client) = paused(false, sent);
     assert_eq!(ended, Some((Ok(()), 0)));
     assert_eq!(client, Some(End::Closed(String::new())));
 }
