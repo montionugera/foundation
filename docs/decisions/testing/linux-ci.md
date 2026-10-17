@@ -7,8 +7,11 @@
   Amended (the person, 2026-10-16, relayed word for word by `laptop.monitor`,
   2026-10-16T23:14:36Z, https://github.com/synnaxlabs/foundation/issues/2954#issuecomment-6226448224:
   "not cross compilation but full 3 platform support"): each PR also runs Clippy and
-  the tests of the workspace on macOS (`macos-latest`, arm64) and Windows
-  (`windows-latest`, x86-64), in the required jobs `macos` and `windows` of `ci.yaml`.
+  the tests of the workspace on macOS (arm64) and Windows (x86-64), in the required
+  jobs `macos` and `windows` of `ci.yaml`. Each job names its runner image
+  (`macos-15`, `windows-2025`, `ubuntu-24.04`), never `-latest`, so that only a PR
+  changes an image (`laptop.monitor`, 2026-10-17, in the goal of
+  https://github.com/synnaxlabs/foundation/issues/2954).
   Loom, shuttle, Miri, the sanitizers, fuzzing, mutants, and the root tests stay on
   Linux. A crate or test that fails on one of these OSes is an exception of that job,
   with the open issue that removes it. The list only shrinks, and the ONE NODE
