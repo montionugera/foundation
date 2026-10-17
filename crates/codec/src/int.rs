@@ -1,19 +1,27 @@
 //! Picks the codec of one integer vector from one pass of statistics.
 
-use crate::vector::Plan;
+use crate::vector::{self, Plan};
 use crate::word;
 
-/// The smallest plan for a vector of `W`-byte samples, read through `key`, or raw when
-/// no codec saves at least 1/8 of the raw size.
+/// Writes one vector of `W`-byte samples into the front of `out` with the smallest
+/// plan for the integers that `key` gives, and returns its length. The plan is raw
+/// when no codec saves at least 1/8 of the raw size. `signed` orders the integers as
+/// signed.
 ///
 /// # Panics
 ///
 /// Panics when `chunk` holds no sample.
-pub(crate) fn plan<const W: usize>(
+pub(crate) fn encode<const W: usize>(
     chunk: &[u8],
     signed: bool,
-    key: impl Fn(u64) -> u64,
-) -> Plan {
+    key: impl Fn(u64) -> u64 + Copy,
+    out: &mut [u8],
+) -> usize {
+    vector::write::<W>(chunk, plan::<W>(chunk, signed, key), key, out)
+}
+
+/// The plan of [`encode`].
+fn plan<const W: usize>(chunk: &[u8], signed: bool, key: impl Fn(u64) -> u64) -> Plan {
     // No codec saves 1/8 of one sample. Skips the statistics of a poll.
     if chunk.len() == W {
         return Plan::Raw;

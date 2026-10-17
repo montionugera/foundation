@@ -15,6 +15,7 @@
 )]
 
 mod bits;
+mod float;
 mod int;
 mod text;
 mod vector;
@@ -872,25 +873,13 @@ impl Layout {
 
     /// Encodes one vector into the front of `out` and returns its length.
     fn encode(self, chunk: &[u8], out: &mut [u8]) -> usize {
-        fn int<const W: usize>(chunk: &[u8], signed: bool, out: &mut [u8]) -> usize {
-            vector::write::<W>(
-                chunk,
-                int::plan::<W>(chunk, signed, identity),
-                identity,
-                out,
-            )
-        }
-        fn float<const W: usize>(chunk: &[u8], out: &mut [u8]) -> usize {
-            let key = word::sortable::<W>;
-            vector::write::<W>(chunk, int::plan::<W>(chunk, false, key), key, out)
-        }
         match self {
-            Self::Int8 { signed } => int::<1>(chunk, signed, out),
-            Self::Int16 { signed } => int::<2>(chunk, signed, out),
-            Self::Int32 { signed } => int::<4>(chunk, signed, out),
-            Self::Int64 { signed } => int::<8>(chunk, signed, out),
-            Self::Float32 => float::<4>(chunk, out),
-            Self::Float64 => float::<8>(chunk, out),
+            Self::Int8 { signed } => int::encode::<1>(chunk, signed, identity, out),
+            Self::Int16 { signed } => int::encode::<2>(chunk, signed, identity, out),
+            Self::Int32 { signed } => int::encode::<4>(chunk, signed, identity, out),
+            Self::Int64 { signed } => int::encode::<8>(chunk, signed, identity, out),
+            Self::Float32 => int::encode::<4>(chunk, false, float::key::<4>, out),
+            Self::Float64 => int::encode::<8>(chunk, false, float::key::<8>, out),
             Self::Raw { width } => vector::write_raw(chunk, width, out),
         }
     }
@@ -902,8 +891,8 @@ impl Layout {
             Self::Int16 { .. } => vector.decode::<2>(out, identity),
             Self::Int32 { .. } => vector.decode::<4>(out, identity),
             Self::Int64 { .. } => vector.decode::<8>(out, identity),
-            Self::Float32 => vector.decode::<4>(out, word::unsortable::<4>),
-            Self::Float64 => vector.decode::<8>(out, word::unsortable::<8>),
+            Self::Float32 => vector.decode::<4>(out, float::bits::<4>),
+            Self::Float64 => vector.decode::<8>(out, float::bits::<8>),
             Self::Raw { .. } => vector.copy(out),
         }
     }
@@ -1294,10 +1283,10 @@ mod tests {
             );
         }
 
-        /// The sortable integers of -1.0 and 1.0 are about 2^63 apart, so FFOR and
-        /// delta need 63 bits and the vector stays raw. Signed order needs 64.
+        /// The float keys of -1.0 and 1.0 are about 2^63 apart, so FFOR and delta
+        /// need 63 bits and the vector stays raw.
         #[test]
-        fn keeps_a_slow_signal_across_zero_raw() {
+        fn keeps_a_vector_across_zero_raw() {
             let ramp: Vec<u8> = (0..1024_i32)
                 .map(|i| -1.0 + 2.0 * f64::from(i) / 1023.0)
                 .flat_map(f64::to_le_bytes)
@@ -1535,17 +1524,13 @@ mod tests {
                     .as_chunks::<4>()
                     .0
                     .iter()
-                    .flat_map(|key| {
-                        word::store::<4>(word::unsortable::<4>(word::load(key)))
-                    })
+                    .flat_map(|key| word::store::<4>(float::bits::<4>(word::load(key))))
                     .collect(),
                 _ => keys
                     .as_chunks::<8>()
                     .0
                     .iter()
-                    .flat_map(|key| {
-                        word::store::<8>(word::unsortable::<8>(word::load(key)))
-                    })
+                    .flat_map(|key| word::store::<8>(float::bits::<8>(word::load(key))))
                     .collect(),
             }
         }

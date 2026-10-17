@@ -13,8 +13,7 @@
 //! Fields are samples unless marked. Sample arithmetic is modulo 2^b, where b is the
 //! bit count of a sample. Delta packs one residual for each sample after the first.
 //! Packed values are least significant bit first. A float vector of tag 1 to 3 holds
-//! the sortable integers of its samples: a float with its sign bit set has each bit
-//! flipped, and any other only its sign bit.
+//! the keys of its samples (`float::key`), in unsigned order.
 
 use std::{iter, mem};
 
