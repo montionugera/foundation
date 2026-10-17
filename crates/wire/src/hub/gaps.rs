@@ -2,8 +2,9 @@ use std::ops;
 
 use types::frame::Range;
 
-/// The gap of each frame of a complete reader of an index: the seqs that it lost just
-/// before the frame. The reader's node and the program each keep one for a session.
+/// The gap of each frame of a reader of an index, the seqs that it lost just before
+/// the frame, and its live position. Each `Frames` keeps one, and the reader's node
+/// keeps one for each complete reader.
 #[derive(Debug)]
 pub struct Gaps {
     live: u64,

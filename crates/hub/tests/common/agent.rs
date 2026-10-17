@@ -122,7 +122,7 @@ impl Stream {
             count: u32::try_from(run.len()).expect("the count fits a u32"),
             index: u32::try_from(set.groups()[0]).expect("the index fits a u32"),
         };
-        let Ok(FromHome::Opened { live }) = reader.decode(&next().await) else {
+        let Ok(FromHome::Opened { live }) = reader.decode(Some(&next().await)) else {
             panic!("then `Opened`");
         };
         self.live = Some(live);

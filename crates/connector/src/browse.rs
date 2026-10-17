@@ -12,9 +12,10 @@ use env::clock::Clock;
 use env::net::Net;
 use env::rng::Rng;
 use types::sample::Value;
+use types::time::Span;
 
 use crate::kind::{self, Error, config_error};
-use crate::{secret, supervisor};
+use crate::{deadline, secret, supervisor};
 
 /// The most points that one browse of a pattern gives.
 pub const LIMIT: usize = 500;
@@ -23,6 +24,9 @@ pub const LIMIT: usize = 500;
 /// for a pattern each entry that it walks, where a page with no entries counts as
 /// one.
 pub const VISITS: usize = 10_000;
+
+/// The most that [`Context::time`] waits for the node's first mesh time.
+pub const WAIT: Span = Span::from_nanos(5_000_000_000);
 
 /// The most folders that a pattern holds open at one time, its start with them.
 pub const DEPTH: usize = 64;
@@ -80,6 +84,22 @@ impl<'a> Context<'a> {
         source: &secret::Source,
     ) -> Result<secret::Value, Error> {
         kind::read_secret(&self.inputs.secrets, source).await
+    }
+
+    /// The node's mesh time. Waits for the node's first mesh time, at most [`WAIT`]
+    /// from the call, so a kind that reads no mesh time never waits.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Retry`] with "the node has no mesh time after 5s" when the node has
+    /// none at [`WAIT`]. Nothing retries a browse: the caller browses again once the
+    /// node has mesh time.
+    pub async fn time(&self) -> Result<hub::Time, Error> {
+        let late = self.inputs.clock.sleep(WAIT);
+        let time = deadline::before(self.inputs.hub.time(), late).await;
+        time.ok_or_else(|| {
+            Error::Retry(format!("the node has no mesh time after {WAIT}").into())
+        })
     }
 }
 

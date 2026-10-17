@@ -48,16 +48,7 @@ pub(crate) struct Read {
 /// Reads `address`, `rate`, and one or more `read` blocks, and no other key or block.
 pub(crate) fn parse(config: &Document) -> Result<Config, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
-    let address = read::required(
-        config,
-        kind::NOUN,
-        None,
-        "address",
-        address,
-        "Add an `address` attribute with the endpoint of the server, such as \
-         \"opc.tcp://plc:4840\""
-            .into(),
-    );
+    let address = endpoint(config);
     let rate = read::required(
         config,
         kind::NOUN,
@@ -83,6 +74,20 @@ pub(crate) fn parse(config: &Document) -> Result<Config, Vec<Diagnostic>> {
         }),
         _ => Err(diagnostics),
     }
+}
+
+/// Reads `address` of `config`, the endpoint of the server, as [`parse`] does.
+pub(crate) fn endpoint(config: &Document) -> Result<CString, Diagnostic> {
+    read::required(
+        config,
+        kind::NOUN,
+        None,
+        "address",
+        address,
+        "Add an `address` attribute with the endpoint of the server, such as \
+         \"opc.tcp://plc:4840\""
+            .into(),
+    )
 }
 
 /// Reads an endpoint URL: `opc.tcp://`, a host, and an optional port and path, as

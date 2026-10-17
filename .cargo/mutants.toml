@@ -129,6 +129,9 @@ exclude_re = [
   # macOS only. The mutants run is on Linux and does not build it; its tests run in
   # the `macos` check.
   'crates/os/src/allocate\.rs:',
+  # macOS only, as above. On macOS the mutant does not build: no arm then gives the
+  # `Ok` type.
+  'crates/os/src/memory\.rs:.*delete match arm 0 in .*Memory>::discard$',
   # macOS only, as above. `this_host_has_whole_pages_available` and
   # `the_free_inactive_and_purgeable_pages_are_available` catch its mutants.
   'crates/os/src/memory/available\.rs:.*macos::',
@@ -191,6 +194,10 @@ exclude_re = [
   # Only the `logs` bench and the `alloc` test call `buffer::bench::Logs::mark`,
   # and it gives nothing back. The `alloc` test kills the mutants of its body.
   'crates/buffer/src/bench\.rs:.*replace Logs::mark with \(\)$',
+  # Only the `wal` bench calls `buffer::bench::Deadline::trimming`, and it reads
+  # nothing back. `the_deadline_after_trimming_trims_a_step` kills the mutants
+  # through the private writer.
+  'crates/buffer/src/buffer/bench\.rs:.* in Deadline::trimming$',
   # A connector on another node runs here only in a mesh of two nodes, which no test of
   # `Node` starts yet (#2272, whose test removes this entry). The test of `Runs`
   # `a_connector_on_another_node_starts_no_run` kills it.

@@ -274,15 +274,14 @@ pub enum Error {
     },
     /// The reader is named and the node has no mesh time yet. Open it again later.
     Unsynced,
-    /// The reader is named and complete, holds no record, and the records of the
-    /// named readers of the index would pass `limit` bytes, the most that one entry of
-    /// the home's buffer holds. Close a named reader of the index whose hold is zero,
-    /// wait for a hold to end, or open this one unnamed. A reader that holds a record
-    /// opens over the limit, records nothing, and the home writes a warning event: a
-    /// restart of the home after its old hold ends resumes it at the live tail, until
-    /// #2833.
+    /// The reader is named and complete, its open adds a record, and no part of the
+    /// named records of the index has room for it: the records of the index hold
+    /// close to `limit` bytes. Close a named reader of the index whose hold is zero,
+    /// wait for a hold to end, or open this one unnamed. A reopen or a takeover never
+    /// gives it. The room of a closed reader's record is free when the entry that
+    /// drops it appends, at the close or a later tick.
     Full {
-        /// The most bytes of one entry.
+        /// The most bytes of the records of the named readers of one index.
         limit: usize,
     },
     /// The reader is named and complete, and the home had no room to record its
@@ -322,7 +321,8 @@ impl fmt::Display for Error {
             ),
             Self::Full { limit } => write!(
                 f,
-                "the records of the named readers of the index would pass {limit} bytes"
+                "no part of the named records of the index has room for the reader: \
+                 the records of an index hold at most {limit} bytes"
             ),
             Self::Unrecorded => f.write_str(
                 "the home had no room to record the position of the named reader: \

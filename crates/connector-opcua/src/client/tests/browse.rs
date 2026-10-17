@@ -9,7 +9,9 @@ use super::{
     Client, READ_RESPONSE, READS, RELAY, Relay, VALUE, drop_reads, long, recount_of,
     relayed, run, serve,
 };
-use crate::client::browse::{Class, Description, Page, Reference, Unit};
+use crate::client::browse::{
+    Base, Cause, Class, Description, Foreign, Page, Reference, Unit,
+};
 use crate::client::service::{self, Item, Request};
 use crate::ffi::{self, Service, Status};
 use crate::node::ns0::{self, HAS_COMPONENT, HAS_SUBTYPE, ORGANIZES};
@@ -75,7 +77,7 @@ fn named(name: &str) -> Node {
 }
 
 fn reference(
-    node: Option<Node>,
+    node: Result<Node, Foreign>,
     via: u32,
     name: &str,
     display: &str,
@@ -132,7 +134,7 @@ fn pages(
 
 /// A browse gives each forward hierarchical reference of an Object, a Variable, or a
 /// View, with its type, names, and class, and no reference of another kind or
-/// direction. A GUID node gives no node.
+/// direction. A GUID node gives its text.
 #[test]
 fn a_browse_gives_each_hierarchical_reference_with_its_names_and_class() {
     let pages = pages(ALL, |server| {
@@ -159,23 +161,26 @@ fn a_browse_gives_each_hierarchical_reference_with_its_names_and_class() {
     assert_eq!(
         references,
         [
-            reference(Some(ns1(7001)), ORGANIZES, "a", "The A", Class::Object),
-            reference(None, ORGANIZES, "guid", "guid", Class::Object),
+            reference(Ok(ns1(7001)), ORGANIZES, "a", "The A", Class::Object),
             reference(
-                Some(ns1(7003)),
-                HAS_PROPERTY,
-                "prop",
-                "prop",
-                Class::Variable
+                Err(Foreign {
+                    text: b"ns=1;g=00000001-0002-0003-0400-000000000000".to_vec(),
+                    cause: Cause::Key,
+                }),
+                ORGANIZES,
+                "guid",
+                "guid",
+                Class::Object
             ),
+            reference(Ok(ns1(7003)), HAS_PROPERTY, "prop", "prop", Class::Variable),
             reference(
-                Some(named("s;=\u{e9}")),
+                Ok(named("s;=\u{e9}")),
                 HAS_COMPONENT,
                 "speed",
                 "speed",
                 Class::Variable
             ),
-            reference(Some(ns1(7002)), ORGANIZES, "view", "view", Class::View),
+            reference(Ok(ns1(7002)), ORGANIZES, "view", "view", Class::View),
         ]
     );
 }
@@ -269,7 +274,7 @@ fn variables(server: &Server) -> Vec<Node> {
 
 fn described(base: Option<u32>, rank: i32, access: u8) -> Description {
     Description {
-        base,
+        base: base.map(Base::of),
         rank: Some(rank),
         access: Some(access),
         unit: None,
@@ -332,14 +337,14 @@ fn describe_browses_each_step_once_and_each_data_type_once() {
     let (out, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let nodes = deep(peer.server, 3);
-            let browses = peer.server.count_browses();
+            let count = peer.server.count();
             let mut client = peer.connected().await;
             let first = client.describe(&nodes).await;
-            let after_first = browses.get();
+            let after_first = count.browses();
             peer.server
                 .delete_reference(&DOUBLE, HAS_SUBTYPE, &ns1(10_000));
             let again = client.describe(&nodes).await;
-            let after_again = browses.get();
+            let after_again = count.browses();
             let mut other = peer.connected().await;
             let fresh = other.describe(&nodes[..1]).await;
             let bases = [first, again, fresh].map(|out| {
@@ -349,7 +354,7 @@ fn describe_browses_each_step_once_and_each_data_type_once() {
         })
         .await
     });
-    let double = Ok(vec![Some(11); 3]);
+    let double = Ok(vec![Some(Base::of(11)); 3]);
     assert_eq!(out, ([double.clone(), double, Ok(vec![None])], 2, 2));
 }
 
@@ -455,10 +460,10 @@ fn describe_splits_by_the_max_nodes_per_browse_and_translate_of_the_server() {
             for (index, node) in (0..).zip(&nodes) {
                 server.add_unit(&ns1(7300 + index), node, CEFACT, c"m", 0x004D_5452);
             }
-            let browses = server.count_browses();
+            let count = server.count();
             let mut client = peer.connected().await;
             let descriptions = client.describe(&nodes).await;
-            (descriptions, browses.get())
+            (descriptions, count.browses())
         })
         .await
     });
@@ -610,7 +615,7 @@ fn describe_after_a_failed_walk_result_gives_the_base() {
         })
         .await
     });
-    assert_eq!(bases, [Ok(None), Ok(Some(11))]);
+    assert_eq!(bases, [Ok(None), Ok(Some(Base::of(11)))]);
 }
 
 /// What a relay does to one response of the server.
@@ -727,7 +732,7 @@ fn the_calls_of_a_faulted_relay_work_with_no_fault() {
             units.map(|all| all.into_iter().map(|d| d.base).collect::<Vec<_>>()),
         )
     });
-    assert_eq!(out, (Ok(Some(2)), Ok(vec![Some(11)])));
+    assert_eq!(out, (Ok(Some(2)), Ok(vec![Some(Base::of(11))])));
 }
 
 /// An answer with more or fewer results than the request asked for fails the call, at
@@ -789,7 +794,7 @@ fn describe_on_a_server_whose_max_nodes_per_read_is_below_3() {
 
 /// Gives the base of a variable of a type `links` subtypes under Double, and the count
 /// of the Browse requests of its describe.
-fn walk_of(links: u32) -> (Result<Option<u32>, Status>, usize) {
+fn walk_of(links: u32) -> (Result<Option<Base>, Status>, usize) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let server = peer.server;
@@ -805,10 +810,10 @@ fn walk_of(links: u32) -> (Result<Option<u32>, Status>, usize) {
             }
             let variable = ns1(7200);
             server.add_variable(&child(&variable, &ns1(10_000)));
-            let browses = server.count_browses();
+            let count = server.count();
             let mut client = peer.connected().await;
             let described = client.describe(&[variable]).await;
-            (described.map(|all| all[0].base), browses.get())
+            (described.map(|all| all[0].base), count.browses())
         })
         .await
     });
@@ -819,7 +824,7 @@ fn walk_of(links: u32) -> (Result<Option<u32>, Status>, usize) {
 /// Browse for each link, and a type 17 under has none.
 #[test]
 fn a_walk_gives_the_base_at_16_links_and_none_at_17() {
-    assert_eq!(walk_of(16), (Ok(Some(11)), 16));
+    assert_eq!(walk_of(16), (Ok(Some(Base::of(11))), 16));
     assert_eq!(walk_of(17).0, Ok(None));
 }
 
@@ -835,10 +840,10 @@ fn describe_of_an_abstract_type_gives_no_base_and_browses_nothing() {
                 let node = ns1(7200 + index);
                 server.add_variable(&child(&node, &data_type));
             }
-            let browses = server.count_browses();
+            let count = server.count();
             let mut client = peer.connected().await;
             let described = client.describe(&[ns1(7200), ns1(7201)]).await;
-            (described, browses.get())
+            (described, count.browses())
         })
         .await
     });
@@ -879,19 +884,19 @@ fn describe_gives_the_base_of_each_type_of_namespace_0() {
                 server.add_variable(&child(&node, &Node::ns0(id)));
                 nodes.push(node);
             }
-            let browses = server.count_browses();
+            let count = server.count();
             let mut client = peer.connected().await;
             let described = client.describe(&nodes).await;
             let bases = described.map(|all| all.into_iter().map(|d| d.base).collect());
-            (bases, browses.get())
+            (bases, count.browses())
         })
         .await
     });
-    let bases: Vec<Option<u32>> = (1..=29)
+    let bases: Vec<Option<Base>> = (1..=29)
         .map(|id| match id {
             22 | 24 | 26..=28 => None,
-            29 => Some(6),
-            id => Some(id),
+            29 => Some(Base::of(6)),
+            id => Some(Base::of(id)),
         })
         .collect();
     assert_eq!(out, (Ok(bases), 0));
@@ -908,13 +913,14 @@ fn describe_of_each_variable_of_the_sim_tree_browses_once_for_its_type() {
         serve(&node, 4, async |mut peer| {
             let server = peer.server;
             tree::add(server);
-            let browses = server.count_browses();
+            let count = server.count();
             let mut client = peer.connected().await;
             let mut counts = Vec::new();
             for path in [tree::TEMPERATURE, tree::SPEED, tree::MODE, tree::RECIPE] {
-                let before = browses.get();
+                let before = count.browses();
                 let described = client.describe(&[tree::node(path)]).await;
-                counts.push((described.map(|all| all[0].base), browses.get() - before));
+                counts
+                    .push((described.map(|all| all[0].base), count.browses() - before));
             }
             client.close().await;
             counts
@@ -924,9 +930,9 @@ fn describe_of_each_variable_of_the_sim_tree_browses_once_for_its_type() {
     assert_eq!(
         out,
         [
-            (Ok(Some(11)), 0),
-            (Ok(Some(11)), 1),
-            (Ok(Some(6)), 1),
+            (Ok(Some(Base::of(11))), 0),
+            (Ok(Some(Base::of(11))), 1),
+            (Ok(Some(Base::of(6))), 1),
             (Ok(None), 1)
         ]
     );
@@ -949,11 +955,11 @@ fn a_walk_of_a_type_too_large_for_one_message_gives_no_base() {
             server.add_data_type(&data_type, &DOUBLE, c"Large");
             let node = ns1(7200);
             server.add_variable(&child(&node, &data_type));
-            let browses = server.count_browses();
+            let count = server.count();
             let mut client = peer.connected().await;
             let described = client.describe(&[node]).await;
             client.close().await;
-            (described, browses.get())
+            (described, count.browses())
         })
         .await
     });
@@ -990,7 +996,7 @@ fn the_facts_and_units_of_large_names_fit_one_message() {
             client.close().await;
             described.map(|all| {
                 all.iter()
-                    .filter(|d| d.base == Some(11) && d.unit.is_some())
+                    .filter(|d| d.base == Some(Base::of(11)) && d.unit.is_some())
                     .count()
             })
         })
@@ -1044,11 +1050,11 @@ fn describe_keeps_at_most_1024_supertypes_past_a_call() {
         let (out, _) = run(0, async move |node| {
             serve(&node, 4, async |mut peer| {
                 let nodes = deep(peer.server, count);
-                let browses = peer.server.count_browses();
+                let count = peer.server.count();
                 let mut client = peer.connected().await;
-                let first = client.describe(&nodes).await.map(|_| browses.get());
+                let first = client.describe(&nodes).await.map(|_| count.browses());
                 let kept = client.supertypes.len();
-                let again = client.describe(&nodes).await.map(|_| browses.get());
+                let again = client.describe(&nodes).await.map(|_| count.browses());
                 (first, kept, again)
             })
             .await
@@ -1132,7 +1138,7 @@ fn each_answer_fits_one_message_of_the_session() {
             client.close().await;
             described.map(|all| {
                 all.iter()
-                    .filter(|d| d.base == Some(11) && d.unit.is_some())
+                    .filter(|d| d.base == Some(Base::of(11)) && d.unit.is_some())
                     .count()
             })
         })
@@ -1428,15 +1434,15 @@ fn a_dropped_describe_keeps_no_supertypes() {
                 }
                 sets.push(nodes);
             }
-            let browses = server.count_browses();
+            let count = server.count();
             let mut client = peer.connected().await;
             let mut kept = Vec::new();
             for nodes in &sets {
-                let start = browses.get();
+                let start = count.browses();
                 {
                     let mut describe = std::pin::pin!(client.describe(nodes));
                     let ended = std::future::poll_fn(|cx| {
-                        if browses.get() >= start + 3 {
+                        if count.browses() >= start + 3 {
                             return std::task::Poll::Ready(None);
                         }
                         describe.as_mut().poll(cx).map(Some)
