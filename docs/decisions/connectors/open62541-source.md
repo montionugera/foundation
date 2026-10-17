@@ -843,7 +843,7 @@
   any file each function of aws-lc in `AWS_LC`, which reads no clock, file, network,
   randomness, or process state, by its name after the prefix. `AWS_LC_KEYS` keys each
   other call of aws-lc by its file and function, with its reason: each call that draws
-  (TLS RANDOMNESS), each call that reads the clock, and each PEM reader. `AWS_LC_INPUTS`
+  (TLS RANDOMNESS), and each call that reads the clock. `AWS_LC_INPUTS`
   lists the functions of aws-lc that read the clock, and a test fails when no test of
   `connector-opcua` names the function of each of their keys. With no password callback,
   a PEM reader of aws-lc reads a password from the console: it opens `/dev/tty`, or
@@ -855,10 +855,18 @@
   the empty password. `cargo xtask open62541` finds each function of aws-lc that takes a
   `pem_password_cb` in the declarations of the output of `cc -E`, and fails on each name
   of one in the copy other than in a call that gives a callback of `PASSWORDS` at its
-  place (#3017, #3027). The callbacks that return -1, and the check that reads the
+  place (#3017, #3027). It compiles each file with
+  `-Werror=implicit-function-declaration`, so a call of a reader with no declaration
+  fails the check. `AWS_LC` holds the PEM readers, since this check is the one guard of
+  their password. Supersedes "The PEM readers belong in `AWS_LC_KEYS`" of
+  https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231723849, whose
+  reason was the read of the console. The callbacks that return -1, and the check that reads the
   functions from the declarations: decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6237471608,
-  2026-10-17 17:20 UTC). `OMITTED` in `cargo
+  2026-10-17 17:20 UTC). The `-Werror` and `AWS_LC` sentences: decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6238536489,
+  2026-10-17 18:26 UTC). `OMITTED` in `cargo
   xtask open62541` is the closed list of the release files that the library compiles and
   the copy leaves out, each with its reason: the file stores, `create_certificate.c`,
   and each policy file other than `Basic256Sha256`, `Aes128_Sha256_RsaOaep`,
@@ -879,7 +887,9 @@
   2026-10-17 06:51 UTC). The `UA_Openssl_Init` sentences: decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231556855,
-  2026-10-17 08:08 UTC). The `AWS_LC_INPUTS` and `PLUGINS` sentences: approved by
-  `laptop.architect-2`
+  2026-10-17 08:08 UTC). The `PLUGINS` sentence: approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231723849,
-  2026-10-17 08:26 UTC).
+  2026-10-17 08:26 UTC). The `AWS_LC_INPUTS` and `UA_Openssl_Init` sentences, and the
+  PEM sentences before the `-Werror` sentence: approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6238447456,
+  2026-10-17 18:18 UTC).
