@@ -160,6 +160,21 @@ fn a_relative_path_is_under_the_working_directory_that_a_node_sets() {
 }
 
 #[test]
+fn within_checks_a_relative_path_that_does_not_resolve_from_the_working_directory() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    for dir in ["/work", "/out"] {
+        node.make_dir(Path::new(dir));
+    }
+    let within = node.paths().within(&[PathBuf::from("/work")], &[]).unwrap();
+    let path = Path::new("none/x");
+    for (dir, error) in [("/out", Error::Outside), ("/work", Error::NotFound)] {
+        node.set_working_dir(Path::new(dir));
+        assert_eq!(within.read(path, 1), Err(error), "{dir}");
+        assert_eq!(within.write(path, b"x"), Err(error), "{dir}");
+    }
+}
+
+#[test]
 fn the_home_is_none_until_a_node_sets_it_and_then_resolves() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let paths = node.paths();

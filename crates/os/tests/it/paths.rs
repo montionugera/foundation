@@ -429,7 +429,7 @@ fn within_makes_a_directory_of_a_name_longer_than_the_host_takes_as_free() {
 }
 
 /// A link that does not resolve, in a hidden folder that a program moves away, is under
-/// that folder by its place, as a new name there is.
+/// that folder by its place for each call, as a new name there is.
 #[test]
 fn within_hides_a_link_that_does_not_resolve_in_a_moved_hidden_folder() {
     run(|host| {
@@ -446,12 +446,20 @@ fn within_hides_a_link_that_does_not_resolve_in_a_moved_hidden_folder() {
         .unwrap();
         for name in [
             "work/moved/new",
+            "work/moved/none/x",
             "work/moved/loop",
+            "work/moved/loop/x",
             "work/moved/to-none",
+            "work/moved/to-none/x",
             "work/moved/sub/loop",
         ] {
-            let made = within.make_dir(&base.join(name));
-            assert_eq!(made, Err(Error::Hidden), "{name}");
+            let path = base.join(name);
+            let reached = [
+                within.read(&path, 1).map(|_| ()),
+                within.write(&path, b"x"),
+                within.make_dir(&path),
+            ];
+            assert_eq!(reached, [Err(Error::Hidden); 3], "{name}");
         }
     });
 }
