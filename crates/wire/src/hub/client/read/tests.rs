@@ -559,7 +559,7 @@ mod reader {
     }
 
     fn reply(home: &mut hub::Reader, message: &[u8]) -> Result<Home, hub::Error> {
-        home.decode(message).map(|event| match event {
+        home.decode(Some(message)).map(|event| match event {
             FromHome::Opened { live } => Home::Opened(live),
             FromHome::Head(head) => Home::Head(head.series),
             other => panic!("no test sends {other:?}"),
@@ -953,11 +953,11 @@ mod reader {
         let places = Places { count: 1, index: 0 };
         let mut home = after_run(Mode::Complete, places, &[stamp(1)]);
         assert_eq!(
-            home.decode(&encode_places(places)).err(),
+            home.decode(Some(&encode_places(places))).err(),
             Some(hub::Error::Kind { kind: 6 })
         );
         assert_eq!(
-            home.decode(&encode_run(&[stamp(7)])).err(),
+            home.decode(Some(&encode_run(&[stamp(7)]))).err(),
             Some(hub::Error::Kind { kind: 7 })
         );
         assert_eq!(reply(&mut home, &opened_at(0)), Ok(Home::Opened(0)));
@@ -1095,9 +1095,9 @@ mod reader {
             Places { count: 2, index: 1 },
             &[byte(1), stamp(2)],
         );
-        home.decode(&opened_at(0)).expect("the session opens");
+        home.decode(Some(&opened_at(0))).expect("the session opens");
         assert_eq!(
-            home.decode(&head(3)).err(),
+            home.decode(Some(&head(3))).err(),
             Some(hub::Error::Places {
                 series: 3,
                 places: 2
@@ -1112,19 +1112,18 @@ mod reader {
         let Ok(Some(start)) = reader.decode(Some(&encode_run(&[stamp(1)]))) else {
             panic!("the run gives a start");
         };
-        let (mut frames, _) =
-            hub::Frames::open(start.home, start.set, Some(&opened_at(5)))
-                .expect("the session opens");
+        let mut frames = hub::Frames::open(start.home, start.set, Some(&opened_at(5)))
+            .expect("the session opens");
         let head = Head {
             path: Path::Live,
             range: Range { seq: 9, count: 2 },
             series: 1,
         };
         frames
-            .decode(&encode_reply(Reply::Head(head)))
+            .decode(Some(&encode_reply(Reply::Head(head))))
             .expect("a head");
         frames
-            .decode(&crate::hub::tests::encode_ends(&[(0, 0)]))
+            .decode(Some(&crate::hub::tests::encode_ends(&[(0, 0)])))
             .expect("ends");
         let Ok(hub::Due::Draft(layout)) = frames.due() else {
             panic!("a draft is due");
@@ -1391,7 +1390,7 @@ proptest! {
         let mut home = start.home;
         let opened = crate::hub::Reply::Opened { live: 7 };
         let opened = crate::hub::tests::encode_reply(opened);
-        let opened = home.decode(&opened);
+        let opened = home.decode(Some(&opened));
         let live = match opened {
             Ok(crate::hub::FromHome::Opened { live }) => Some(live),
             _ => None,
