@@ -515,3 +515,6 @@ fn conversion(
         Scalar::Uuid => read!(Uuid, uuid, |value| u128::from_be_bytes(value)),
     })
 }
+
+#[cfg(test)]
+mod tests;
