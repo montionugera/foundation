@@ -180,8 +180,9 @@
   enters the span: an enter and an exit cost 7.4 ns, 740 ms/s at once per sample (P1
   judgment rejected,
   https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238199449). A live
-  span `connector` holds 632 B the first time and 297 B after, under the P1 limit, as
-  a default node runs no connector (`laptop.architect-2`, 2026-10-17T18:17:23Z,
+  span `connector` holds 632 B the first time and 297 B after. It is no idle memory,
+  as a node with default settings runs no connector (`laptop.architect-2`,
+  2026-10-17T18:17:23Z,
   https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238435066). The
   status writer writes these events (target `connector::status`): INFO `running` with
   `restarts`; `ended` with `Ok` at INFO, with `Device` or `Retry` at WARN, and with
