@@ -203,7 +203,8 @@
   read, or for the encoded request, status 2, fix `Make the config files smaller`; the
   check comes before the reach. `ops.write`: `the directory of the plan file <path> is
   not there` or `the write of the plan file <path> failed with OS error <code>`, status
-  1, fix ``Give `--out` a path in a directory that can be written``. `ops.bad-reply`:
+  1, fix ``Give `--out`, or `out` of the MCP tool, a path in a directory that can be
+  written``. `ops.bad-reply`:
   `the reply of the node is no reply: <why>`, status 1, fix ``Use a `foundation` program
   of the same version as the node``. A failure to reach the node, or of its request, has
   status 1 and one of the codes `node.not-running`, `node.unreadable`, `node.admin-key`,
@@ -313,3 +314,85 @@
   `vergen`, a new dependency for about 30 lines; a variable that the release sets, as
   each local build must say what it is; and a watch of `packed-refs` (git writes the
   file of a ref at each change of it).
+  Amended (2026-10-16T04:51:22Z, #2526): the tools of `foundation mcp` read and write
+  files only under their folders, each `--files <DIR>` (repeatable), else the working
+  directory, and never in the data directory. Each path, also each link in it, is
+  resolved before the check (`Paths::within` of ENV SEAMS). With no `--files`, a start
+  whose working directory resolves to the root or the home directory fails with
+  `ops.wide-folder` (2). A `--files` that is not there, that is a file, or that fails to
+  resolve is `ops.folder` (2). After these checks and before a tool serves,
+  `foundation mcp` makes its data directory with `Paths::make_dir`, and a failure is
+  `ops.data` (1), whose fix at `NotFound` names the directory above it. So a start that
+  these checks refuse makes nothing (the order: `laptop.architect-2`,
+  2026-10-16T20:44:36Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6224350407; the
+  make kept: `laptop.architect-2`, 2026-10-16T20:27:06Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6224071502).
+  The `out` of `plan` through MCP must resolve
+  to a name that ends in `.plan`, else `ops.plan-name` (2). A path outside the folders
+  is `ops.outside` (2): "`{path}` is not under a folder of this MCP server ({folders})",
+  with the fix "Give a path under one of those folders. A relative path starts at the
+  working directory of this MCP server, which was {working} at its start. To reach
+  another folder, add `--files <DIR>` to the command of the MCP server".
+  The fix stays true after a program moves that directory. A path in the data
+  directory is `ops.hidden` (2):
+  "`{path}` is in the data directory {data} of this MCP server, which no tool reads or
+  writes", with the fix "Give a path outside {data}".
+  A new name that a write or `make_dir` makes in a directory on the way to the data
+  directory, while nothing is at it, is `ops.no-data` (1): "`{path}` is a new name in a
+  directory on the way to the data directory {data} of this MCP server, and nothing is
+  at {data} now", with the fix "Start the node on {data} again, or give a path in
+  another directory".
+  A path under a folder that a program moved or replaced after the start, or into the
+  directory that the folder was at the start, is `ops.folder-changed` (1): "`{path}`
+  is under a folder of this MCP server ({folders}) that a program moved or replaced
+  after it started", with the fix "Start `foundation mcp` again" (both:
+  `laptop.architect-2`, 2026-10-17T05:16:48Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230063256; the
+  moved folder and the fix of `ops.outside`, 2026-10-17T07:17:06Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231111995).
+  `ops.plan-name`, `ops.outside`, `ops.hidden`, `ops.no-data`, and
+  `ops.folder-changed` are tool errors (`isError`); `ops.wide-folder`, `ops.folder`,
+  and `ops.data` end the start.
+  The command line keeps free paths, since a person types them. Decided by
+  `laptop.monitor` for the person, who delegated it at 2026-10-16T04:51:01Z with "I'll
+  let you choose the right path" (2026-10-16T04:51:22Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208345441; the
+  details by `laptop.architect-2`, 2026-10-16T04:52:58Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208362869; the
+  plan, approved by `laptop.architect-2` with conditions 1 to 5, 2026-10-16T08:08:47Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6211047580;
+  `ops.hidden`, 2026-10-16T08:13:29Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6211121615). Lost:
+  free paths for the tools, with which a model that text steers quotes or replaces any
+  file of the user; MCP roots, which the 2026-07-28 revision of the specification
+  deprecates; and `ops.outside` with no folders, which shows the agent no way out.
+  Amended (2026-10-16T04:45:05Z, #2526): one MCP server talks to one node, picked at
+  start with `foundation mcp --data <dir>`, and a tool call cannot pick another. A
+  failed `plan`, `apply`, or `status` is a tool result with `isError` and the text
+  `{"errors": [...]}`, while an unknown tool and a malformed request or argument stay a
+  JSON-RPC error. Each operation of `foundation --help` but `start` and `mcp` is a tool,
+  with the output schema of its `--json`. `version`, `docs`, and `status` have
+  `readOnlyHint`; `plan` and `apply` have `destructiveHint`, since the `out` of `plan`
+  replaces a file that is there, so a client that asks the person before a destructive
+  tool asks for `plan` too. `foundation mcp` reaches its node at the first tool call
+  that needs it, keeps that session, and reaches again only at the call after a
+  failure of a reach or a request. `node` reads standard input on an I/O thread of
+  `os` and gives `ops::cli` an async source of lines, so the shard that serves runs
+  while it waits for a line, and a kept session sends its keep-alive.
+  Decided by the person, "Yeah that's fine" (2026-10-16T04:45:05Z, relayed by
+  `laptop.monitor`,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208278565;
+  the tools and their hints by `laptop.architect-2`, 2026-10-16T04:46:50Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208295673; the
+  kept session and the read of input on a thread, `laptop.architect-2`,
+  2026-10-16T21:26:41Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6225017086). Lost: one
+  MCP server for many nodes, which lets text that steers the model pick the node; and a
+  reach at each call while the shard blocks on input, since a dropped session closes
+  only when the shard runs, so an idle server held 23 UDP ports and 3 GB after 200
+  calls.
+  Until #2939 (https://github.com/synnaxlabs/foundation/issues/2939) merges, the first
+  call after a stop or a restart of the node can give `node.no-reply` with nothing sent
+  to the node (the deferral, `laptop.architect-2`, 2026-10-16T22:15:00Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6225726721).

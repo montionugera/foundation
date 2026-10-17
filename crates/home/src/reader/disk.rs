@@ -2,8 +2,8 @@
 
 use std::fmt;
 
-use buffer::Mark;
 use types::frame::Path;
+use types::log::Mark;
 
 use super::complete;
 
