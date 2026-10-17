@@ -164,11 +164,20 @@ jobs:
                 wall::gives_a_bound_under_sixteen_seconds_when_a_daemon_runs # #2965
               )
               ;;
+            Windows)
+              crates=(
+                connector-opcua # #2968
+                node # #2968, #682, #2955, #2956, #477, #2957
+                acceptance # tests `node`
+                xtask # #2238
+              )
+              ;;
           esac
           echo "CRATES=${crates[*]/#/--exclude }" >> "$GITHUB_ENV"
           echo "TESTS=${tests[*]/#/--skip }" >> "$GITHUB_ENV"
       - name: Clippy
-        run: cargo clippy --workspace $CRATES --all-targets --all-features -- -D warnings
+        run: >-
+          cargo clippy --workspace $CRATES --all-targets --all-features -- -D warnings
       - name: Test
         if: ${{ !cancelled() }}
         run: cargo test --workspace $CRATES --all-features --no-fail-fast -- $TESTS

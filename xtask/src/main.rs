@@ -436,7 +436,7 @@ mod tests {
             &[
                 "    needs: changes",
                 "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"",
-                "    runs-on: ubuntu-latest",
+                "    runs-on: ubuntu-24.04",
                 "    steps:",
                 "      - uses: actions/checkout@v4",
                 "      - uses: Swatinem/rust-cache@v2",
@@ -456,7 +456,7 @@ mod tests {
             &[
                 "    needs: changes",
                 "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"",
-                "    runs-on: ubuntu-latest",
+                "    runs-on: ubuntu-24.04",
                 "    steps:",
                 "      - uses: actions/checkout@v4",
                 "      - uses: Swatinem/rust-cache@v2",
@@ -469,7 +469,7 @@ mod tests {
             &[
                 "    needs: changes",
                 "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"",
-                "    runs-on: ubuntu-latest",
+                "    runs-on: ubuntu-24.04",
                 "    steps:",
                 "      - uses: actions/checkout@v4",
                 "      - name: Install the pinned nightly",
