@@ -1090,21 +1090,21 @@ async fn walk(
         return Err(Error::Invalid { offset });
     }
     let mut newest: Vec<_> = newest.into_iter().collect();
-    newest.sort_unstable_by_key(|&(_, (offset, _, at))| (offset, at));
-    for ((slot, path, tag), (offset, entry, at)) in newest {
+    newest.sort_unstable_by_key(|&(_, (offset, at, _))| (offset, at));
+    for ((slot, path, tag), (offset, at, len)) in newest {
         if logs.holder(slot, path, tag) != Some(offset) {
             continue;
         }
         let place = AREA_START + header.layout.place(offset);
-        let bytes = read::bytes(file, pool, place, at, entry.bytes).await?;
-        logs.copy(slot, &entry, offset, slice::from_ref(&bytes));
+        let bytes = read::bytes(file, pool, place, at, len).await?;
+        logs.fill(slot, path, tag, &bytes);
     }
     Ok((cursor, logs))
 }
 
-/// The record offset, the header, and the body offset of the bytes of the newest
-/// entry of each nonzero tag on each path that a walk met.
-type Tagged = hash::Map<(Slot, Path, NonZeroU8), (u64, entry::Header, usize)>;
+/// The record offset, and the body offset and length of the bytes, of the newest
+/// entry of each nonzero tag on each path that a walk met in a data record.
+type Tagged = hash::Map<(Slot, Path, NonZeroU8), (u64, usize, u32)>;
 
 /// Feeds the logs the entries of a record body at `offset`, as appended and
 /// synced, and notes each entry with a nonzero tag in `newest`. Fails when an
@@ -1128,7 +1128,7 @@ fn recover(
         let slot = slots.index(header.index);
         logs.walk(slot, &header, offset).map_err(misplaced)?;
         if let Some(tag) = NonZeroU8::new(header.tag) {
-            newest.insert((slot, header.path, tag), (offset, header, at));
+            newest.insert((slot, header.path, tag), (offset, at, header.bytes));
         }
     }
     Ok(())

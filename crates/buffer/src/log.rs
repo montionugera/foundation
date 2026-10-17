@@ -805,6 +805,27 @@ impl Logs {
         }
     }
 
+    /// Gives the copy of the newest durable entry with `tag` on `path` of the index at
+    /// `slot` the bytes `bytes`. The walk notes each copy of a data record with no
+    /// bytes, and reads them after it.
+    ///
+    /// # Panics
+    ///
+    /// When the index has no such copy.
+    pub(crate) fn fill(
+        &mut self,
+        slot: Slot,
+        path: Path,
+        tag: NonZeroU8,
+        bytes: &[u8],
+    ) {
+        let &at = self
+            .tags
+            .get(&(slot, path, tag))
+            .expect("invariant: the walk noted the copy");
+        nth_mut(&mut self.copies, at).bytes = bytes.to_vec();
+    }
+
     /// Hides the records before the offset `tail` from each later
     /// [`find`](Self::find), and drops their runs. It visits each path once for each
     /// run and carried tail of the records that it hides, and each path whose lap
