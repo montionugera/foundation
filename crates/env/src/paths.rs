@@ -286,8 +286,13 @@ impl Paths {
             up[index] = count;
         }
         // Each step is a prefix of the resolved working directory or of `path`, never
-        // of their join, which can be longer than the host takes.
-        if path.is_relative() && !path.as_os_str().is_empty() {
+        // of their join, which can be longer than the host takes. On Windows, a path
+        // with only a root or only a drive is relative, but does not start there.
+        let first = path.components().next();
+        if matches!(
+            first,
+            Some(Component::Normal(_) | Component::CurDir | Component::ParentDir)
+        ) {
             let working = self.driver.resolve(Path::new("."))?;
             let mut below = working.components().count();
             let mut names = working.components().peekable();
@@ -858,6 +863,16 @@ mod tests {
         assert_eq!(reached(&paths, "/out/h/a"), Err(Error::Outside));
         *working.borrow_mut() = PathBuf::from("/work/data");
         assert_eq!(reached(&paths, "link/a"), Err(Error::Hidden));
+    }
+
+    #[test]
+    fn a_path_with_a_root_does_not_start_at_the_working_directory() {
+        let one = One::default();
+        *one.2.borrow_mut() = PathBuf::from("/work/data");
+        let paths = Paths::new(one)
+            .within(&["/work".into()], &["/work/data".into()])
+            .unwrap();
+        assert_eq!(reached(&paths, "/work/a"), Ok(()));
     }
 
     #[test]
