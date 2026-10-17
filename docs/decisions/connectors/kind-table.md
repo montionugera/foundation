@@ -69,8 +69,9 @@
   https://github.com/synnaxlabs/foundation/issues/2442#issuecomment-6131873162).
   A kind returns each end of its reader and each failed write with `?`:
   `From<hub::reader::Ended>` and `From<hub::writer::Failure>` for `kind::Error` give
-  the class, each in one match with no `_` arm. `Retry`: reader `Behind`, `Removed`,
-  `Replaced`, `Buffer`, and `Pool`, and writer `Removed` and `Home` `Full` and `Disk`.
+  the class, each in one match with no `_` arm. `Retry`: reader `Removed`, `Replaced`,
+  `Buffer`, and `Pool` (#2790 removed `Behind`), and writer `Removed` and `Home` `Full`
+  and `Disk`.
   A reader at its home ends `Pool` when a read from disk finds no block, and blocks
   come back as the sessions of the shard drain (#274 B1; `laptop.architect-2`,
   2026-10-15T18:05:36Z:

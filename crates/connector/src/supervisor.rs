@@ -1550,7 +1550,6 @@ mod tests {
             (error.to_string(), Step::Draft(error))
         };
         let retries = [
-            ended(Ended::Behind),
             ended(Ended::Removed(key)),
             ended(Ended::Replaced),
             ended(Ended::Buffer(full())),

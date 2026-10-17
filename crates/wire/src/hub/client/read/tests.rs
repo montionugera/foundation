@@ -479,7 +479,6 @@ mod reader {
     use types::frame::{Path, Range};
 
     const OPENED: u8 = 1;
-    const BEHIND: u8 = 3;
 
     fn opened_at(live: u64) -> Vec<u8> {
         encode_reply(Reply::Opened { live })
@@ -557,14 +556,12 @@ mod reader {
     enum Home {
         Opened(u64),
         Head(u32),
-        Behind,
     }
 
     fn reply(home: &mut hub::Reader, message: &[u8]) -> Result<Home, hub::Error> {
         home.decode(message).map(|event| match event {
             FromHome::Opened { live } => Home::Opened(live),
             FromHome::Head(head) => Home::Head(head.series),
-            FromHome::Behind => Home::Behind,
             other => panic!("no test sends {other:?}"),
         })
     }
@@ -790,7 +787,7 @@ mod reader {
                     more(),
                     Step::Event(Ok(Event::Start(vec![stamp(1), pt(2, "f64", "b")]))),
                     Step::Reply(Err(hub::Error::Length { len: 1 })),
-                    Step::Reply(Err(hub::Error::Unopened { kind: BEHIND })),
+                    Step::Reply(Err(hub::Error::Kind { kind: 3 })),
                 ],
             ),
             (
@@ -822,7 +819,7 @@ mod reader {
                     more(),
                     Step::Event(Ok(Event::Start(vec![stamp(1), pt(2, "f64", "b")]))),
                     Step::Reply(Ok(Home::Opened(0))),
-                    Step::Reply(Ok(Home::Behind)),
+                    Step::Reply(Err(hub::Error::Kind { kind: 3 })),
                 ],
             ),
             (
@@ -1109,19 +1106,43 @@ mod reader {
         assert_eq!(reply(&mut home, &head(2)), Ok(Home::Head(2)));
     }
 
+    /// The seqs that a session of `mode`, opened at 5, lost before a first frame at 9.
+    fn lost_before_a_frame(mode: Mode) -> std::ops::Range<u64> {
+        let mut reader = in_run(mode, Places { count: 1, index: 0 });
+        let Ok(Some(start)) = reader.decode(Some(&encode_run(&[stamp(1)]))) else {
+            panic!("the run gives a start");
+        };
+        let (mut frames, _) =
+            hub::Frames::open(start.home, start.set, Some(&opened_at(5)))
+                .expect("the session opens");
+        let head = Head {
+            path: Path::Live,
+            range: Range { seq: 9, count: 2 },
+            series: 1,
+        };
+        frames
+            .decode(&encode_reply(Reply::Head(head)))
+            .expect("a head");
+        frames
+            .decode(&crate::hub::tests::encode_ends(&[(0, 0)]))
+            .expect("ends");
+        let Ok(hub::Due::Draft(layout)) = frames.due() else {
+            panic!("a draft is due");
+        };
+        let config = block::Config::new(1 << 16).expect("the budget fits");
+        let memory = block::Heap::new(config.reservation());
+        let pool = block::Pool::new(config, memory);
+        let draft = layout
+            .draft(&pool, types::frame::Form::Encoded)
+            .expect("a block");
+        assert!(matches!(frames.draft(draft), hub::Step::Frame(_)));
+        frames.lost()
+    }
+
     #[test]
     fn opens_a_latest_session_for_a_latest_read() {
-        let places = Places { count: 1, index: 0 };
-        let mut latest = after_run(Mode::Latest, places, &[stamp(1)]);
-        latest.decode(&opened_at(0)).expect("the session opens");
-        assert_eq!(
-            latest.decode(&[BEHIND]).err(),
-            Some(hub::Error::Latest { kind: BEHIND })
-        );
-        let mut complete = after_run(Mode::Complete, places, &[stamp(1)]);
-        complete.decode(&opened_at(0)).expect("the session opens");
-        assert_eq!(reply(&mut complete, &[BEHIND]), Ok(Home::Behind));
-        assert_eq!(complete.end(), Ok(()));
+        assert_eq!(lost_before_a_frame(Mode::Latest), 0..0);
+        assert_eq!(lost_before_a_frame(Mode::Complete), 5..9);
     }
 }
 

@@ -148,6 +148,11 @@ again once to prove that the failure replays (r16 59).
 - **Test through the production path.** A component that passes its unit tests but
   fails when composed in `node` is broken. Production code never checks `cfg(test)`
   (r16 47).
+- **A model makes each case of the call it stands for.** When a test stands in for a
+  call of another crate with a model, whether the code makes that call or a caller gives
+  the code its output, the model makes each kind of output and each stop that the real
+  call makes, or a test through the production path covers each kind that the model
+  leaves out. The PR lists each kind, with the model line or the test that makes it.
 - **A test may check what another test checks.** "No defense in depth" in `CLAUDE.md`
   is about guards in production code. It is no reason to refuse an assertion in a test
   or a benchmark because another test catches the same change.

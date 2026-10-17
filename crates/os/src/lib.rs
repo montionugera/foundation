@@ -42,7 +42,7 @@ pub mod memory;
 mod net;
 #[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
 mod paths;
-mod roots;
+pub mod roots;
 mod shards;
 #[cfg(any(target_os = "linux", target_os = "macos"))] // #2957
 #[expect(unsafe_code, reason = "a signal mask is an OS call")]
@@ -56,7 +56,6 @@ mod wall;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
 pub use files::Disk;
-pub use roots::{Roots, Source};
 
 /// The monotonic clock of this node, which counts time while the machine sleeps. Each
 /// call starts a new clock at `Monotonic(0)`. Clones read the same clock. Never
@@ -238,32 +237,6 @@ pub fn stored(
     name: &str,
 ) -> Result<(Disk, env::thread::Handle), Error> {
     Disk::stored(dir, threads, name)
-}
-
-/// Reads the CA certificates of the OS store: the certificate files on Linux, and the
-/// keychain on macOS. When `SSL_CERT_FILE` is set, or `SSL_CERT_DIR` holds a path that
-/// is not empty, it reads only that file and those paths, on each OS. A path that is
-/// not there, or a `SSL_CERT_DIR` path that is not a directory, gives a failure and no
-/// root of the OS store. On Linux, a `SSL_CERT_DIR` of only `:` characters also reads
-/// the directory of that whole name in the working directory, when it is there. It
-/// blocks on the reads, gives the whole store in memory, and gives which of these it
-/// read.
-#[must_use]
-pub fn roots() -> Roots {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "`load_native_certs` reads these two, and the source states its pick"
-    )]
-    let source = Source::of(
-        std::env::var_os("SSL_CERT_FILE").as_deref(),
-        std::env::var_os("SSL_CERT_DIR").as_deref(),
-    );
-    let read = rustls_native_certs::load_native_certs();
-    Roots {
-        certificates: read.certs.into_iter().map(|der| der.to_vec()).collect(),
-        failures: read.errors.iter().map(ToString::to_string).collect(),
-        source,
-    }
 }
 
 /// Holds SIGINT and SIGTERM: the first that comes does not end the process, and the

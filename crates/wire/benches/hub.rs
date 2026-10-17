@@ -222,7 +222,6 @@ fn build<'m>(
         match step.expect("the frame decodes") {
             Step::Head(_) | Step::More => {}
             Step::Frame(frame) => return frame.body()[0],
-            Step::Behind => panic!("behind"),
         }
     }
 }

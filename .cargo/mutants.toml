@@ -2,6 +2,9 @@
 # `sim` is mutated and tested.
 all_features = true
 
+# The profile of `Cargo.toml` with no debug info.
+profile = "mutants"
+
 # Mutants that no caller or peer can see, that only a job outside the mutants run
 # kills, or that no test kills yet (with its open issue). Each has its reason.
 exclude_re = [
