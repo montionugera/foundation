@@ -1062,25 +1062,33 @@
   the end decides: `/out/h/a` and `/out/h/s/x` give `Outside`, whether `/out/h` is there
   or a program moves it away, and a link in `/out/h` that names a folder leads there, as
   a link outside the folders does. A handle of `/plans` within the handle of `/work`
-  gives `Outside` for each name in `/work`. This supersedes "in the deepest directory on
-  its way that is there gives `Hidden`" of the amendment of 2026-10-16T17:13:18Z for a
-  directory that is not under a folder. For the name of the first prefix that does not
-  resolve, it supersedes "each other error is the error of the call" of the amendment of
-  2026-10-16T17:13:18Z: that name takes no key, since an error of its key, such as `Io`
-  40 for a loop, tells what a hidden folder holds. Lost: the check only after a failed
-  resolve, since `/etc/foo/../../<base>/work/a.hcl` resolves only when `/etc/foo` is
-  there, so it reads `a.hcl` or gives `Outside`, which tells whether `/etc/foo` is
-  there; `Hidden` over `Outside` across prefixes, since `x/../work/data/y` then gives
-  `Hidden` when the outside `x` is there and `Outside` when it is not; a step at or
-  above the end of the walk, which needs a second pass and refuses a link outside the
-  folders that names a folder where a mount passes
+  gives `Outside` for each name in `/work`. It also supersedes "also when it is not
+  under the folders of another limit, and `Outside` is only for a path not under the
+  folders" of the amendment of 2026-10-16T08:08:47Z, and the shape decision "`Hidden`
+  wins over the `Outside` of another limit" of
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6217809418. This
+  supersedes "in the deepest directory on its way that is there gives `Hidden`" of the
+  amendment of 2026-10-16T17:13:18Z for a directory that is not under a folder. For the
+  name of the first prefix that does not resolve, it supersedes "each other error is the
+  error of the call" of the amendment of 2026-10-16T17:13:18Z: that name takes no key,
+  since an error of its key, such as `Io` 40 for a loop, tells what a hidden folder
+  holds. Lost: the check only after a failed resolve, since
+  `/etc/foo/../../<base>/work/a.hcl` resolves only when `/etc/foo` is there, so it reads
+  `a.hcl` or gives `Outside`, which tells whether `/etc/foo` is there; `Hidden` over
+  `Outside` across prefixes, since `x/../work/data/y` then gives `Hidden` when the
+  outside `x` is there and `Outside` when it is not; a step at or above the end of the
+  walk, which needs a second pass and refuses a link outside the folders that names a
+  folder where a mount passes
   (https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236577385); the
   check of each step that any `..` follows, since `/out/in/x/../a` through a link
   `/out/in` to a folder then gives `Outside` where `/out/in/a` reads; `Hidden` for each
   name in a directory that is not under a folder, beside a hidden folder that is not
   there, which also refuses a name that is there; `Hidden` for a path under a hidden
   folder that the folders of a limit refuse, which tells whether that folder is there
-  and which names it holds. Decided by `laptop.architect-2` (2026-10-17T07:45:44Z,
+  and which names it holds; `Hidden` over the `Outside` of another limit, whose fix
+  takes one step fewer, since a handle within another then tells which hidden folders
+  the other has outside its own folders. Decided by `laptop.architect-2`
+  (2026-10-17T07:45:44Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231358043; the check
   of the name at its place and the arm of `make_dir`, 2026-10-17T07:54:32Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231433128; the
@@ -1104,4 +1112,6 @@
   folders of a limit before its hidden folders, 2026-10-17T16:59:11Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237152656; the hidden
   folders only on a step that the folders of each limit hold, 2026-10-17T17:16:50Z,
-  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237413267).
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237413267; the
+  `Outside` of another limit over `Hidden`, 2026-10-17T17:27:38Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237608685).
