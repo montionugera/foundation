@@ -76,8 +76,11 @@ impl Paths {
     /// [`Error::Vacant`], since a call makes no other name. A prefix short of the whole
     /// path is checked against the folders only when a `..` after it takes the path
     /// above it, or nothing is there, and then also passes when it is a directory on
-    /// the way to a folder. A step meets `hidden` only when it passes the folders of
-    /// each limit. The name of the first prefix that does not resolve must pass them
+    /// the way to a folder. A step fails with [`Error::Hidden`] only when it passes
+    /// the folders of each limit. One that `hidden` holds and that the folders of a
+    /// limit do not hold passes, but the path then fails with [`Error::Outside`] unless
+    /// a later step fails, so a handle never reaches through a hidden folder of the one
+    /// it came from. The name of the first prefix that does not resolve must pass them
     /// too, at its place with no key, as a new name there does. A relative path starts
     /// at the working directory: the steps of that directory come first, and each
     /// prefix after them is a prefix of the path as given. A path whose steps pass and
@@ -270,7 +273,8 @@ impl Paths {
     /// relative path, then each prefix of its components that resolves, in order, where
     /// a step short of `path` meets the folders as its [`Way`] gives, then the name of
     /// the first prefix that does not resolve, at its place with no key. Else the error
-    /// of the first step that fails.
+    /// of the first step that fails, or [`Error::Outside`] when a step passes only as
+    /// [`Paths::allowed`] gives `Ok(true)`.
     fn check(&self, path: &Path, call: Call) -> Result<Result<(), Error>, Error> {
         if self.limits.is_empty() {
             return Ok(Ok(()));
@@ -280,6 +284,7 @@ impl Paths {
             parts.remove(0);
         }
         let mut part = PathBuf::new();
+        let mut through = false;
         let mut above = PathBuf::new();
         // `up[index]` is how many directories above the place before `parts[index]`
         // the rest of the path goes.
@@ -304,7 +309,12 @@ impl Paths {
                 below -= 1;
                 let short = names.peek().is_some() || !parts.is_empty();
                 let back = up[0] > below;
-                self.allowed(self.key(&above)?, &above, Way::of(short, back), call)?;
+                through |= self.allowed(
+                    self.key(&above)?,
+                    &above,
+                    Way::of(short, back),
+                    call,
+                )?;
             }
         }
         for (index, step) in parts.iter().enumerate() {
@@ -317,8 +327,12 @@ impl Paths {
                 break;
             };
             let back = up[index + 1] > 0;
-            self.allowed(self.key(&part)?, &resolved, Way::of(short, back), call)?;
+            through |=
+                self.allowed(self.key(&part)?, &resolved, Way::of(short, back), call)?;
             above = resolved;
+        }
+        if through {
+            return Err(Error::Outside);
         }
         Ok(self.driver.resolve(path).map(|_| ()))
     }
@@ -327,14 +341,16 @@ impl Paths {
     /// host gives for the name that the call reaches, which for a link is the key of
     /// the file that it names, and `None` for a name with no key. The caller takes it
     /// from that name, since the resolved path of a new name can be longer than the
-    /// host takes. `way` gives what the folders ask of it.
+    /// host takes. `way` gives what the folders ask of it. `Ok(true)` when the step
+    /// passes only since the folders of some limit do not hold it, and a hidden folder
+    /// does: the walk then fails with [`Error::Outside`] unless a later step fails.
     fn allowed(
         &self,
         own: Option<Key>,
         resolved: &Path,
         way: Way,
         call: Call,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let mut dirs = Vec::new();
         for dir in resolved.ancestors().skip(1) {
             dirs.push(self.driver.key(dir)?);
@@ -377,7 +393,7 @@ impl Paths {
                 Error::Outside
             });
         }
-        let mut vacant = false;
+        let (mut vacant, mut through) = (false, false);
         for limit in self.limits.iter() {
             for Hidden {
                 given,
@@ -395,17 +411,18 @@ impl Paths {
                     }
                     Err(_) => false,
                 };
-                // Only a step that the folders of each limit hold meets the hidden
-                // folders: elsewhere they would tell what is outside the folders.
+                // Only a step that the folders of each limit hold gets `Hidden`:
+                // elsewhere it would tell what is outside the folders.
                 if (moved || hidden) && (!down || inside()) {
                     return Err(Error::Hidden);
                 }
+                through |= moved || hidden;
             }
         }
         if vacant && way == Way::End && call == Call::Make {
             return Err(Error::Vacant);
         }
-        Ok(())
+        Ok(through)
     }
 
     /// The key of the deepest directory above `dir` that is there.
