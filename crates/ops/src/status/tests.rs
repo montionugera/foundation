@@ -830,6 +830,20 @@ fn refuses_a_subject_that_may_read_no_connector_on_the_node() {
 }
 
 #[test]
+fn refuses_a_subject_that_may_read_the_status_but_not_the_connector() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = [
+            reader("site.a.status.**"),
+            connector("site.a", "steady", "edge"),
+        ];
+        applied(&fixture, &node, &text.concat()).await;
+        let (head, rest) = status(&node, "sam").await;
+        assert_eq!((head, rest), (refused("sam"), Vec::new()));
+    });
+}
+
+#[test]
 fn refuses_a_subject_that_may_read_only_some_status_channels() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);

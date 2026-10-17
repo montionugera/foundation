@@ -497,9 +497,10 @@ async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
     let check = Check::new(&spec, subject);
     let mut placed = status::placed(spec.definitions(), &node.name);
     placed.retain(|placed| {
-        placed
-            .channels()
-            .all(|name| check.allows(Action::Read, name))
+        check.allows(Action::Read, placed.name())
+            && placed
+                .channels()
+                .all(|name| check.allows(Action::Read, name))
     });
     let output = if placed.is_empty() {
         if !check.allows(Action::Read, &node.name) {

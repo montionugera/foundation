@@ -100,6 +100,11 @@ pub(crate) struct Placed<'a> {
 }
 
 impl Placed<'_> {
+    /// The label of the connector.
+    pub(crate) fn name(&self) -> &Name {
+        self.name
+    }
+
     /// The names of the status channels, the index too.
     pub(crate) fn channels(&self) -> impl Iterator<Item = &Name> {
         self.channels.iter().map(|(name, _)| *name)
