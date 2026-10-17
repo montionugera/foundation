@@ -514,10 +514,9 @@ async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
     } else {
         status::read(node, subject, &placed, asked).await?
     };
-    let shown = readable && !node.roots.clean();
     let output = status::Output {
         connectors,
-        roots: shown.then(|| node.roots.clone()),
+        roots: readable.then(|| node.roots.clone()),
     };
     Ok(Body::line(&Answer::Done { output: &output })?)
 }

@@ -66,7 +66,8 @@ enum Command {
     Plan(PlanArgs),
     /// Apply a plan file of `foundation plan --out` on the node of `--data`.
     Apply(ApplyArgs),
-    /// Show the state of each connector on the node of `--data`.
+    /// Show the state of each connector of the node of `--data`, and the failures of its
+    /// OS roots.
     Status(NodeArgs),
     /// Answer MCP messages on standard input, one JSON-RPC message per line, until it
     /// closes.

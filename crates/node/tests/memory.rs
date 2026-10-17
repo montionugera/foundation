@@ -6,6 +6,8 @@
 //!   `program::Session` and one for the frames of the session's reads, which together
 //!   reserve at most 128 MiB.
 //! - A started node keeps no `os::roots::Roots` of `Config::roots`.
+//! - A started node with a region keeps less than 1 MiB of the failures of its OS
+//!   roots, and only their count when the first is over 1 MiB.
 //!
 //! The count covers each thread, so this binary has no test harness.
 
@@ -30,6 +32,7 @@ fn main() {
     name();
     reach();
     roots();
+    failures();
 }
 
 /// The peak of the bytes held while `run` runs, over those held before it.
@@ -65,21 +68,8 @@ fn name() {
 /// A node that has started on 8 MiB of roots holds less than 1 MiB more than one on
 /// no roots. The first start fills what each start keeps once, so it is not counted.
 fn roots() {
-    let held = |roots: fn() -> os::roots::Roots| {
-        let mut sim = sim::Sim::new(sim::Config::default());
-        let host = sim.node(sim::node::Config::default());
-        let before = ALLOCATOR.held();
-        let node = node::Node::start(config(&host, node::Region::Absent, roots()));
-        assert_eq!(sim.run_for(Span::SECOND), Ok(()), "the node runs");
-        let held = ALLOCATOR.held().saturating_sub(before);
-        node.stop();
-        assert_eq!(sim.run(), Ok(()), "the node stops");
-        assert_eq!(node.join(), Ok(()), "the node ends");
-        held
-    };
-    held(os::roots::Roots::default);
-    let none = held(os::roots::Roots::default);
-    let big = held(|| os::roots::Roots {
+    let none = held(&node::Region::Absent, os::roots::Roots::default);
+    let big = held(&node::Region::Absent, || os::roots::Roots {
         certificates: vec![vec![0_u8; 1 << 20]; 8],
         ..os::roots::Roots::default()
     });
@@ -88,6 +78,54 @@ fn roots() {
         "the node holds {} bytes more for 8 MiB of roots",
         big.saturating_sub(none)
     );
+}
+
+fn failures() {
+    let none = held(&node::Region::Stored, os::roots::Roots::default);
+    let failure =
+        "failed to read PEM from file: base64 decode error: InvalidCharacter(33)";
+    let many = || vec![failure.to_owned(); (8 << 20) / failure.len()];
+    let failed = held(&node::Region::Stored, move || os::roots::Roots {
+        failures: many(),
+        ..os::roots::Roots::default()
+    });
+    assert!(
+        failed < none + (1 << 20),
+        "the node holds {} bytes more for 8 MiB of failures of its roots",
+        failed.saturating_sub(none)
+    );
+    let unkept = held(&node::Region::Stored, move || {
+        let mut failures = vec!["x".repeat((1 << 20) + 1)];
+        failures.extend(many());
+        os::roots::Roots {
+            failures,
+            ..os::roots::Roots::default()
+        }
+    });
+    assert!(
+        unkept < none + (1 << 10),
+        "the node holds {} bytes more for failures of its roots that it does not keep",
+        unkept.saturating_sub(none)
+    );
+}
+
+/// The bytes that a node with `region` holds once it has run for a second on the
+/// roots that `roots` gives, after a first such run.
+fn held(region: &node::Region, roots: impl Fn() -> os::roots::Roots) -> usize {
+    let run = || {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = sim.node(sim::node::Config::default());
+        let before = ALLOCATOR.held();
+        let node = node::Node::start(config(&host, region.clone(), roots()));
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()), "the node runs");
+        let held = ALLOCATOR.held().saturating_sub(before);
+        node.stop();
+        assert_eq!(sim.run(), Ok(()), "the node stops");
+        assert_eq!(node.join(), Ok(()), "the node ends");
+        held
+    };
+    run();
+    run()
 }
 
 /// The config of a node on `host` that listens on port 7000.

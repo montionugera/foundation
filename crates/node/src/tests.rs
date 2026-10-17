@@ -7298,7 +7298,7 @@ pub(crate) mod port {
                 r#""counts":{"confirmed":0,"lost":0,"oversized":0},"#,
                 r#""error":{"class":"config","text":"#,
                 r#""the selector matches no channel. Select a channel that the spec "#,
-                r#"defines"},"note":null}]}}"#,
+                r#"defines"},"note":null}],"roots":null}}"#,
                 "\n",
             );
             assert_eq!(reply, connectors);
@@ -7385,7 +7385,7 @@ pub(crate) mod port {
                 r#""state":"restarting","address":"plc:502","restarts":6,"#,
                 r#""counts":{"in":0,"lost":0,"missed":0},"error":{"class":"device","#,
                 r#""text":"the lookup of plc failed: name plc has no address"},"#,
-                r#""note":null}]}}"#,
+                r#""note":null}],"roots":null}}"#,
                 "\n",
             );
             assert_eq!(reply, connectors);

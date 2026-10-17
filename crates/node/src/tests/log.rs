@@ -278,8 +278,8 @@ fn a_node_warns_of_its_roots_before_it_starts() {
 /// The first warning of a read of the roots with `failed` failures from `source`.
 fn summary(failed: usize, source: &str) -> String {
     format!(
-        "{WARN} parts of the OS roots were not read, and `foundation status` gives each \
-         failed={failed} source=\"{source}\""
+        "{WARN} parts of the OS roots were not read, and `foundation status` gives \
+         each failed={failed} source=\"{source}\""
     )
 }
 

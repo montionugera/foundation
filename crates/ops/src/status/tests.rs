@@ -142,8 +142,10 @@ fn gives_unknown_while_the_hub_lacks_one_status_channel_of_the_spec() {
         supervise(&fixture, &node, &["site.a"]).await;
         applied_alone(&node, &connector("site.a", "wide", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "wide")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "wide")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -162,8 +164,10 @@ fn gives_unknown_until_the_run_of_a_spec_with_more_counts_writes_its_start_frame
             waited < Span::SECOND,
             "the reply waited {waited} for the frame, not under 1 s"
         );
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "wide")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "wide")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
         supervise(&fixture, &node, &["site.a"]).await;
@@ -177,7 +181,7 @@ fn gives_unknown_until_the_run_of_a_spec_with_more_counts_writes_its_start_frame
             "counts": { "confirmed": 0, "extra": 0, "in": 0 },
             "error": null,
             "note": null,
-        }]}});
+        }], "roots": clean()}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -196,8 +200,10 @@ fn gives_unknown_until_the_run_of_a_spec_with_another_count_writes_its_start_fra
             waited < Span::SECOND,
             "the reply waited {waited} for the frame, not under 1 s"
         );
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "shifted")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "shifted")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
         supervise(&fixture, &node, &["site.a"]).await;
@@ -211,7 +217,7 @@ fn gives_unknown_until_the_run_of_a_spec_with_another_count_writes_its_start_fra
             "counts": { "in": 0, "other": 0 },
             "error": null,
             "note": null,
-        }]}});
+        }], "roots": clean()}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -235,7 +241,7 @@ fn gives_the_old_state_until_the_run_with_fewer_counts_writes_its_start_frame() 
                 "counts": counts,
                 "error": null,
                 "note": null,
-            }]}})
+            }], "roots": clean()}})
         };
         let (head, rest) = status(&node, "@admin").await;
         assert_eq!(head, running(json!({ "confirmed": 0, "in": 0 })));
@@ -427,6 +433,12 @@ async fn timed_status(
     (head, rest, clock.now() - start)
 }
 
+/// The roots of a node of `create_node`, whose read had no failure, as `status` gives
+/// them.
+fn clean() -> Value {
+    json!({ "source": "", "failures": [], "unlisted": 0 })
+}
+
 /// The status of `name` of `kind` with no frame of its status.
 fn unknown(name: &str, kind: &str) -> Value {
     json!({
@@ -475,7 +487,7 @@ fn gives_the_state_counts_and_error_of_each_connector_on_the_node() {
                 "note": null,
             },
             unknown("site.c", "steady"),
-        ]}});
+        ], "roots": clean()}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -531,7 +543,11 @@ fn the_command_line_writes_the_status_of_a_node_with_no_connector() {
         let line = "You can read no connector on this node.\n";
         assert_eq!(shown, (Run::Exit(0), line.to_owned(), String::new()));
         let shown = cli(&node, &paths, &["status", "--json"]).await;
-        let json = "{\"connectors\":[]}\n";
+        let json = concat!(
+            r#"{"connectors":[],"#,
+            r#""roots":{"failures":[],"source":"","unlisted":0}}"#,
+            "\n",
+        );
         assert_eq!(shown, (Run::Exit(0), json.to_owned(), String::new()));
     });
 }
@@ -572,7 +588,7 @@ fn gives_the_error_and_the_note_that_a_running_kind_shows() {
             "counts": { "confirmed": 10, "in": 12 },
             "error": { "class": "retry", "text": "busy" },
             "note": "polls",
-        }]}});
+        }], "roots": clean()}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -594,7 +610,7 @@ fn gives_no_error_once_the_running_kind_clears_the_error_of_a_failed_run() {
             "counts": { "confirmed": 10, "in": 12 },
             "error": null,
             "note": null,
-        }]}});
+        }], "roots": clean()}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -614,7 +630,10 @@ fn waits_one_second_in_all_for_connectors_that_no_supervisor_started() {
         assert_eq!(waited, Span::SECOND);
         let connectors: Vec<_> =
             names.iter().map(|name| unknown(name, "steady")).collect();
-        assert_eq!(head, json!({ "output": { "connectors": connectors } }));
+        assert_eq!(
+            head,
+            json!({ "output": { "connectors": connectors, "roots": clean() } })
+        );
     });
 }
 
@@ -654,8 +673,10 @@ fn gives_unknown_for_a_frame_with_no_status() {
             waited < Span::SECOND,
             "the reply waited {waited} for the frame, not under 1 s"
         );
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
     });
 }
@@ -671,8 +692,10 @@ fn leaves_out_each_connector_on_another_node() {
         ];
         applied(&fixture, &node, &text.concat()).await;
         let (head, _) = status(&node, "@admin").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
     });
 }
@@ -700,7 +723,7 @@ fn gives_no_connector_to_an_admin_on_a_node_that_places_none() {
         let node = create_node(&fixture, mesh);
         applied(&fixture, &node, "").await;
         let (head, rest, waited) = timed_status(&fixture, &node, "@admin").await;
-        let expected = json!({ "output": { "connectors": [] } });
+        let expected = json!({ "output": { "connectors": [], "roots": clean() } });
         assert_eq!((head, rest, waited), (expected, Vec::new(), Span::ZERO));
     });
 }
@@ -722,7 +745,10 @@ fn gives_no_connector_to_a_subject_that_may_read_the_node() {
         let text = reader("edge");
         applied(&fixture, &node, &text).await;
         let (head, _) = status(&node, "sam").await;
-        assert_eq!(head, json!({ "output": { "connectors": [] } }));
+        assert_eq!(
+            head,
+            json!({ "output": { "connectors": [], "roots": clean() } })
+        );
     });
 }
 
@@ -733,7 +759,7 @@ fn gives_no_connector_to_a_subject_that_may_read_the_node_and_no_status_channel(
         let text = [reader("edge"), connector("site.a", "steady", "edge")];
         applied(&fixture, &node, &text.concat()).await;
         let (head, rest) = status(&node, "sam").await;
-        let expected = json!({ "output": { "connectors": [] } });
+        let expected = json!({ "output": { "connectors": [], "roots": clean() } });
         assert_eq!((&head, rest), (&expected, Vec::new()));
         let output: Output =
             serde_json::from_value(head["output"].clone()).expect("output");
@@ -749,7 +775,7 @@ fn gives_no_connector_to_a_subject_whose_grant_on_the_node_is_a_connector_of_its
         let text = [reader("edge"), connector("edge", "steady", "edge")];
         applied(&fixture, &node, &text.concat()).await;
         let (head, rest) = status(&node, "sam").await;
-        let expected = json!({ "output": { "connectors": [] } });
+        let expected = json!({ "output": { "connectors": [], "roots": clean() } });
         assert_eq!((head, rest), (expected, Vec::new()));
     });
 }
@@ -766,7 +792,7 @@ fn gives_no_connector_to_a_subject_whose_grant_on_the_node_is_a_channel_of_its_n
         ];
         applied(&fixture, &node, &text.concat()).await;
         let (head, rest) = status(&node, "sam").await;
-        let expected = json!({ "output": { "connectors": [] } });
+        let expected = json!({ "output": { "connectors": [], "roots": clean() } });
         assert_eq!((head, rest), (expected, Vec::new()));
     });
 }
@@ -781,7 +807,7 @@ fn gives_no_connector_to_a_subject_whose_pattern_holds_the_name_of_the_node() {
             let text = reader("site.**");
             applied(&fixture, &node, &text).await;
             let (head, rest) = status(&node, "sam").await;
-            let expected = json!({ "output": { "connectors": [] } });
+            let expected = json!({ "output": { "connectors": [], "roots": clean() } });
             assert_eq!((head, rest), (expected, Vec::new()));
         },
     );
@@ -821,8 +847,10 @@ fn leaves_out_each_connector_whose_status_the_subject_may_not_read() {
         ];
         applied(&fixture, &node, &text.concat()).await;
         let (head, _) = status(&node, "sam").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": null,
+        }});
         assert_eq!(head, expected);
     });
 }
@@ -877,8 +905,10 @@ fn gives_unknown_when_the_hub_does_not_define_the_status_channels_yet() {
         let node = create_node(&fixture, mesh);
         applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -909,7 +939,10 @@ fn gives_unknown_for_a_connector_whose_channels_go_during_the_read() {
         });
         let (head, _) = status(&node, "@admin").await;
         let connectors = [unknown("site.a", "steady"), unknown("site.b", "steady")];
-        assert_eq!(head, json!({ "output": { "connectors": connectors } }));
+        assert_eq!(
+            head,
+            json!({ "output": { "connectors": connectors, "roots": clean() } })
+        );
     });
 }
 
@@ -926,8 +959,10 @@ fn waits_one_second_from_the_request_also_while_the_node_reads_a_new_spec() {
         applied_alone(&node, &text.concat()).await;
         let (head, _, waited) = timed_status(&fixture, &node, "@admin").await;
         assert_eq!(waited, Span::SECOND);
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
     });
 }
@@ -946,8 +981,10 @@ fn gives_unknown_while_the_hub_holds_old_status_names_on_another_index() {
         applied(&fixture, &node, &[old, EDGE].concat()).await;
         applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -1013,8 +1050,10 @@ fn gives_unknown_while_the_hub_holds_an_old_status_name_of_another_type() {
         write_user(&fixture, "site.a.status.time", &[7; 16]).await;
         applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -1033,8 +1072,10 @@ fn gives_unknown_while_the_hub_holds_old_status_names_with_other_keys() {
         .await;
         applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -1048,8 +1089,10 @@ fn gives_unknown_while_the_hub_holds_old_status_names_on_an_index_of_no_status()
         write_user(&fixture, "x.time", &[0]).await;
         applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -1269,8 +1312,10 @@ fn gives_no_roots_to_a_subject_that_may_read_a_connector_but_not_the_node() {
         let text = [reader("site.a.**"), connector("site.a", "steady", "edge")];
         applied(&fixture, &node, &text.concat()).await;
         let (head, _) = status(&node, "sam").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": null,
+        }});
         assert_eq!(head, expected);
     });
 }
@@ -1289,7 +1334,7 @@ fn the_command_line_writes_the_failures_of_the_roots_after_the_connectors() {
 CONNECTOR  KIND    STATE    ADDRESS                COUNTS
 site.a     steady  running  opc.tcp://site.a:4840  confirmed=10 in=12
 
-OS roots: failures: 4, source: SSL_CERT_DIR=/a
+OS roots: 4 failures, from SSL_CERT_DIR=/a
 OS roots: error: failure 0
 OS roots: error: failure 1
 OS roots: error: bad\\nline
@@ -1307,21 +1352,55 @@ fn writes_the_failures_of_the_roots_after_the_line_of_no_connector() {
         connectors: Vec::new(),
         roots: Some(Roots::new("the OS store".into(), failures(1))),
     };
-    let text = "You can read no connector on this node.\n\nOS roots: failures: 1, \
-                source: the OS store\nOS roots: error: failure 0\n";
+    let text = "You can read no connector on this node.\n\nOS roots: 1 failures, \
+                from the OS store\nOS roots: error: failure 0\n";
     assert_eq!(output.text(), text);
 }
 
 #[test]
-fn roots_keep_the_failures_that_fit_in_a_mebibyte() {
-    let fits = vec!["x".repeat(1 << 19), "y".repeat(1 << 19)];
-    let roots = Roots::new(String::new(), fits.clone());
-    assert_eq!((roots.failures, roots.unlisted), (fits.clone(), 0));
-    let mut over = fits.clone();
-    over.push("z".into());
-    over.push(String::new());
-    let roots = Roots::new(String::new(), over);
-    assert_eq!((roots.failures, roots.unlisted), (fits, 2));
+fn gives_the_count_of_a_first_failure_over_the_bound() {
+    solo(|fixture, mesh| async move {
+        let roots = Roots::new("s".into(), vec!["x".repeat((1 << 20) + 1)]);
+        let node = create_node_on(&fixture, mesh, roots);
+        applied(&fixture, &node, &reader("edge")).await;
+        let (head, _) = status(&node, "sam").await;
+        let expected = json!({ "output": {
+            "connectors": [],
+            "roots": { "source": "s", "failures": [], "unlisted": 1 },
+        }});
+        assert_eq!(head, expected);
+    });
+}
+
+/// A failure that holds `held` bytes with its `String`.
+fn holding(held: usize) -> String {
+    "x".repeat(held - size_of::<String>())
+}
+
+/// `roots` as `status` writes them.
+fn written(roots: &Roots) -> Value {
+    serde_json::to_value(roots).expect("roots convert to JSON")
+}
+
+#[test]
+fn roots_keep_the_failures_that_hold_at_most_a_mebibyte() {
+    let fits = vec![holding(1 << 19), holding(1 << 19)];
+    let roots = Roots::new("s".into(), fits.clone());
+    let expected = json!({ "source": "s", "failures": fits, "unlisted": 0 });
+    assert_eq!(written(&roots), expected);
+    let over = vec![holding(1 << 19), holding((1 << 19) + 1), String::new()];
+    let roots = Roots::new("s".into(), over.clone());
+    let expected = json!({ "source": "s", "failures": [over[0]], "unlisted": 2 });
+    assert_eq!(written(&roots), expected);
+}
+
+#[test]
+fn roots_from_json_keep_the_bound_and_add_the_count() {
+    let given =
+        json!({ "source": "s", "failures": ["x".repeat(1 << 21)], "unlisted": 3 });
+    let roots: Roots = serde_json::from_value(given).expect("roots from JSON");
+    let expected = json!({ "source": "s", "failures": [], "unlisted": 4 });
+    assert_eq!(written(&roots), expected);
 }
 
 proptest! {
@@ -1332,10 +1411,14 @@ proptest! {
         let failed: Vec<String> = sizes.iter().map(|&size| "x".repeat(size)).collect();
         let roots = Roots::new(String::new(), failed.clone());
         let kept = roots.failures.len();
+        let held = |count: usize| {
+            let failures = failed[..count].iter();
+            failures.map(|failure| size_of::<String>() + failure.len()).sum::<usize>()
+        };
         prop_assert_eq!(&roots.failures[..], &failed[..kept]);
-        prop_assert!(roots.failures.iter().map(String::len).sum::<usize>() <= 1 << 20);
-        prop_assert_eq!(kept + roots.unlisted, failed.len());
-        let total = |count: usize| failed[..count].iter().map(String::len).sum::<usize>();
-        prop_assert!(kept == failed.len() || total(kept + 1) > 1 << 20);
+        prop_assert!(held(kept) <= 1 << 20);
+        let counted = super::count(kept) + roots.unlisted;
+        prop_assert_eq!(counted, super::count(failed.len()));
+        prop_assert!(kept == failed.len() || held(kept + 1) > 1 << 20);
     }
 }

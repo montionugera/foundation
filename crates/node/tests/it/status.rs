@@ -9,7 +9,6 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 struct Output {
     connectors: Vec<Connector>,
-    #[serde(default)]
     roots: Option<Roots>,
 }
 
@@ -131,8 +130,11 @@ fn an_unknown_key_is_refused() {
             "expected `connectors` or `roots`",
         ),
         (
-            r#"{"connectors":[],"roots":{"source":"","failures":[],"unlisted":0,"extra":0}}"#
-                .to_owned(),
+            concat!(
+                r#"{"connectors":[],"roots":"#,
+                r#"{"source":"","failures":[],"unlisted":0,"extra":0}}"#,
+            )
+            .to_owned(),
             "expected one of `source`, `failures`, `unlisted`",
         ),
     ];

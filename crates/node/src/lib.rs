@@ -115,9 +115,8 @@ pub struct Config<M> {
     /// names `foundation status`, then one for each of the first 16 failures, its text
     /// cut the same way. It logs one for the count of certificates that do not parse,
     /// and one when no certificate is left. It logs each of them also with
-    /// [`Region::Absent`], which runs no connector. `foundation status` on the node
-    /// gives the failures to a subject with `read` on the name of the node, each in
-    /// full while they hold at most 1 MiB of text, and the count of the rest.
+    /// [`Region::Absent`], which runs no connector. With a region, the node gives the
+    /// failures to [`ops::Config::roots`], which `foundation status` shows.
     pub roots: os::roots::Roots,
     /// Where and how the node writes its log. Each shard writes the events of its
     /// thread there, and [`Node::join`] the event `stopped`.
