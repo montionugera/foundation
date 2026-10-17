@@ -62,6 +62,8 @@ pub trait Kind: Send + Sync + 'static {
     }
 
     /// Runs one connector until `ctx.cancel()` is cancelled or an error leaves it.
+    /// Call [`Context::clear_error`] once the run reaches the device: until then, the
+    /// status shows the error of the last run.
     fn run(
         &self,
         ctx: Context<Self::Config>,
