@@ -204,11 +204,8 @@ mod tests {
     ) -> Result<Accepted, Refusal> {
         let frames = Frames::new();
         let mut scratch = split::Scratch::default();
-        let mut split = scratch.split(
-            &frames.set,
-            &mut split::encoders(&frames.set),
-            frames.draft(&stamps(seconds)),
-        );
+        let mut writer = split::Writer::new(Arc::clone(&frames.set));
+        let mut split = scratch.split(&mut writer, frames.draft(&stamps(seconds)));
         let (_, stamps) = split.next().expect("the group of the index");
         index.check(key, path, stamps, now, mesh())
     }

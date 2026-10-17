@@ -82,43 +82,43 @@ impl Decoder {
     }
 }
 
-/// The buffers and encoders of [`split`], which a shard keeps from one write to the
-/// next.
+/// The buffers of [`split`] and the encoders of a writer of one key set, which a shard
+/// keeps from one write to the next.
 #[derive(Debug)]
 pub struct Scratch {
     split: split::Scratch,
-    encoders: Box<[codec::Encoder]>,
+    writer: split::Writer,
     groups: Vec<u32>,
 }
 
 impl Scratch {
     /// Empty buffers, and an encoder for each entry of `set`.
     #[must_use]
-    pub fn new(set: &KeySet) -> Self {
+    pub fn new(set: Arc<KeySet>) -> Self {
         Self {
             split: split::Scratch::default(),
-            encoders: split::encoders(set),
+            writer: split::Writer::new(set),
             groups: Vec::new(),
         }
     }
 }
 
-/// Checks `draft`, a writer's frame of `set`, and splits it: it encodes each raw
-/// series, walks every stamp of each group's index, then makes the index frame of each
-/// group and gives it to `index`. Returns the number of stamps walked.
+/// Checks `draft`, a writer's frame of the key set of `scratch`, and splits it: it
+/// encodes each raw series, walks every stamp of each group's index, then makes the
+/// index frame of each group and gives it to `index`. Returns the number of stamps
+/// walked.
 ///
 /// # Panics
 ///
-/// If `draft` is not of `set`, if a series does not fit its group's count, or if
-/// `pool` has no block for an index frame.
+/// If `draft` is not of the key set of `scratch`, if a series does not fit its
+/// group's count, or if `pool` has no block for an index frame.
 pub fn split(
     scratch: &mut Scratch,
     pool: &block::Pool,
-    set: &KeySet,
     draft: Draft,
     mut index: impl FnMut(Draft),
 ) -> usize {
-    let mut split = scratch.split.split(set, &mut scratch.encoders, draft);
+    let mut split = scratch.split.split(&mut scratch.writer, draft);
     scratch.groups.clear();
     let mut walked = 0;
     while let Some((group, stamps)) = split.next() {

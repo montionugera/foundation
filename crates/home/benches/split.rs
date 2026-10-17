@@ -33,7 +33,7 @@ fn main() {
         check(
             &case,
             &block::Pool::heap(POOL),
-            &mut Scratch::new(&case.set),
+            &mut Scratch::new(Arc::clone(&case.set)),
         );
     }
     divan::main();
@@ -190,13 +190,12 @@ fn cases() -> Vec<Case> {
 /// that a second split, with `scratch` warm, makes no heap allocation.
 fn check(case: &Case, pool: &block::Pool, scratch: &mut Scratch) {
     let mut checked = 0;
-    let walked =
-        home::bench::split(scratch, pool, &case.set, case.draft(pool), |frame| {
-            for (entry, series) in frame.iter() {
-                assert_eq!(series, case.encoded[entry], "{case}: series {entry}");
-                checked += 1;
-            }
-        });
+    let walked = home::bench::split(scratch, pool, case.draft(pool), |frame| {
+        for (entry, series) in frame.iter() {
+            assert_eq!(series, case.encoded[entry], "{case}: series {entry}");
+            checked += 1;
+        }
+    });
     let samples = to_usize(case.samples);
     assert_eq!(walked, samples, "{case}: the stamps walked");
     assert_eq!(
@@ -204,20 +203,19 @@ fn check(case: &Case, pool: &block::Pool, scratch: &mut Scratch) {
         "{case}: the series of the index frame"
     );
     let draft = case.draft(pool);
-    let warm =
-        ALLOCATOR.count(|| home::bench::split(scratch, pool, &case.set, draft, drop));
+    let warm = ALLOCATOR.count(|| home::bench::split(scratch, pool, draft, drop));
     assert_eq!(warm, (samples, 0), "{case}: a warm split allocates");
 }
 
 #[divan::bench(args = cases(), sample_count = 1000, sample_size = 16)]
 fn split(bencher: Bencher<'_, '_>, case: &Case) {
     let pool = block::Pool::heap(POOL);
-    let mut scratch = Scratch::new(&case.set);
+    let mut scratch = Scratch::new(Arc::clone(&case.set));
     check(case, &pool, &mut scratch);
     bencher
         .counter(ItemsCount::new(case.series))
         .with_inputs(|| case.draft(&pool))
         .bench_local_values(|draft| {
-            home::bench::split(&mut scratch, &pool, &case.set, draft, drop)
+            home::bench::split(&mut scratch, &pool, draft, drop)
         });
 }

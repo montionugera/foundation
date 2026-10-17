@@ -196,9 +196,7 @@ pub struct Config {
 /// The shard's state for an open writer.
 #[derive(Debug)]
 struct Session {
-    set: Arc<KeySet>,
-    /// The encoder of each entry of `set`.
-    encoders: Box<[codec::Encoder]>,
+    writer: split::Writer,
     /// The claim on the index of each group, by group number.
     claims: Vec<Claim>,
 }
@@ -555,8 +553,7 @@ impl Shard {
             claims.push(Claim { place, key });
         }
         let session = Session {
-            encoders: split::encoders(&set),
-            set,
+            writer: split::Writer::new(set),
             claims,
         };
         let places = session.claims.iter().map(|claim| claim.place);
@@ -623,11 +620,9 @@ impl Shard {
             return Err(Error::Resend);
         };
         let scratch = &mut self.scratch;
-        let mut split = scratch
-            .split
-            .split(&session.set, &mut session.encoders, frame);
+        let mut split = scratch.split.split(&mut session.writer, frame);
         while let Some((group, stamps)) = split.next() {
-            let claim = session.claim(group);
+            let claim = claim(&session.claims, group);
             let index = &mut self.indexes[claim.place];
             let checked = index.check(claim.key, path, stamps, now, mesh);
             scratch.checks.push((group, checked, None));
@@ -635,14 +630,13 @@ impl Shard {
         let places = scratch
             .checks
             .iter()
-            .map(|&(group, ..)| session.claim(group).place);
+            .map(|&(group, ..)| claim(&session.claims, group).place);
         let recorded = append_handoffs(&self.buffer, &mut self.indexes, places, mesh);
         let entries = &mut scratch.entries;
         let made = freeze(
             entries,
             self.buffer.pool(),
             &mut split,
-            &session.set,
             &mut scratch.checks,
             mesh,
         );
@@ -1075,12 +1069,10 @@ impl Shard {
     }
 }
 
-impl Session {
-    /// The writer's claim on the index of `group`.
-    fn claim(&self, group: u32) -> Claim {
-        let group = usize::try_from(group).expect("invariant: a usize holds a u32");
-        self.claims[group]
-    }
+/// The claim of `claims`, a writer's claims, on the index of `group`.
+fn claim(claims: &[Claim], group: u32) -> Claim {
+    let group = usize::try_from(group).expect("invariant: a usize holds a u32");
+    claims[group]
 }
 
 /// The midpoint of `mesh`, the best guess of the true time.
@@ -1099,10 +1091,10 @@ fn freeze(
     entries: &mut Vec<Entry>,
     pool: &block::Pool,
     split: &mut Split<'_>,
-    set: &KeySet,
     checks: &mut [(u32, Result<Accepted, Refusal>, Option<Frame>)],
     stored_at: Stamp,
 ) -> Result<(), block::Error> {
+    let set = split.set();
     for (group, checked, frozen) in checks {
         if let Ok(accepted) = checked
             && let Some(last) = accepted.last()
@@ -1158,7 +1150,7 @@ fn spend<'a>(
 ) -> &'a [Outcome] {
     out.clear();
     for (group, checked, frozen) in checks.drain(..) {
-        let claim = session.claim(group);
+        let claim = claim(&session.claims, group);
         let index = &mut indexes[claim.place];
         let slot = index.slot;
         out.push(match checked {
@@ -1173,7 +1165,7 @@ fn spend<'a>(
                 let range = range(&seq);
                 index.spend(accepted);
                 let frame = frozen.expect("invariant: a stored frame was frozen");
-                readers.applied(claim.place, frame, &session.set, seq);
+                readers.applied(claim.place, frame, session.writer.set(), seq);
                 Outcome::Applied { slot, range }
             }
             Ok(accepted) => {
