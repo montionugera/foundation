@@ -44,39 +44,40 @@ impl Paths {
     }
 
     /// The same files, where each call on a path that does not resolve under one of
-    /// `folders` fails with [`Error::Outside`], and one on a path that resolves under
-    /// one of `hidden` fails with [`Error::Hidden`]. Such a call reaches no file. Each
-    /// folder is resolved as [`Paths::resolve`] gives it, and a path is under a folder
-    /// when the folder is the file at the path or a directory that holds it, by the
-    /// file and not by its name: a name in other case on a file system that ignores
-    /// case, and a bind mount, reach the same folder. A folder of `folders` holds a
-    /// path only while the file at its resolved path is the file that was there at this
-    /// call, so one that a program renames away, replaces, or makes again holds nothing
-    /// until a new call of `within`. A write replaces a file, so a folder that is a
-    /// file holds nothing after a write to it, also through this handle. Each call
-    /// takes the file at each hidden folder again, from the path that the caller gave,
-    /// so a hidden file that a write replaces, and a hidden folder made after this
-    /// call, are hidden. A path also fails with [`Error::Hidden`] when a directory on
-    /// its way is the folder that was at a hidden path at this call, so a hidden folder
-    /// that a program renames away stays hidden, but not its own listing, and a
-    /// directory that the host gives the key of a hidden folder that it removed hides
-    /// what it holds. While nothing is at a hidden path, a call that makes a new name
-    /// in the deepest directory on its way that is there, when that directory is under
-    /// a folder of each limit, fails with [`Error::Hidden`], also for a name that does
-    /// not make that path. A folder whose file a call cannot take holds nothing at that
-    /// call. The limits hold on each step of a path: each prefix of its components that
-    /// resolves, in order and without an end `/` or `/.`, must pass them, and the first
-    /// that fails gives its error. A prefix short of the whole path is checked against
-    /// the folders only when a `..` after it takes the path above it, or nothing is
-    /// there, and then also passes when it is a directory on the way to a folder. A
-    /// step meets `hidden` only when it passes the folders of each limit. The name of
-    /// the first prefix that does not resolve must pass them too, at its place with no
-    /// key, as a new name there does. A relative path starts at the working directory:
-    /// the steps of that directory come first, and each prefix after them is a prefix
-    /// of the path as given. A path whose steps pass and that does not resolve gives
-    /// the error of its resolve. The limits of `self` hold too, so a handle never
-    /// reaches more than the one it came from. The check and the call are two steps: a
-    /// symbolic link that another program makes between them can lead the call out.
+    /// `folders` fails with [`Error::Outside`], and one on a path under the folders of
+    /// each limit that resolves under one of `hidden` fails with [`Error::Hidden`].
+    /// Such a call reaches no file. Each folder is resolved as [`Paths::resolve`] gives
+    /// it, and a path is under a folder when the folder is the file at the path or a
+    /// directory that holds it, by the file and not by its name: a name in other case
+    /// on a file system that ignores case, and a bind mount, reach the same folder. A
+    /// folder of `folders` holds a path only while the file at its resolved path is the
+    /// file that was there at this call, so one that a program renames away, replaces,
+    /// or makes again holds nothing until a new call of `within`. A write replaces a
+    /// file, so a folder that is a file holds nothing after a write to it, also through
+    /// this handle. Each call takes the file at each hidden folder again, from the path
+    /// that the caller gave, so a hidden file that a write replaces, and a hidden
+    /// folder made after this call, are hidden. A path also fails with
+    /// [`Error::Hidden`] when a directory on its way is the folder that was at a hidden
+    /// path at this call, so a hidden folder that a program renames away stays hidden,
+    /// but not its own listing, and a directory that the host gives the key of a hidden
+    /// folder that it removed hides what it holds. While nothing is at a hidden path, a
+    /// call that makes a new name in the deepest directory on its way that is there,
+    /// when that directory is under a folder of each limit, fails with
+    /// [`Error::Hidden`], also for a name that does not make that path. A folder whose
+    /// file a call cannot take holds nothing at that call. The limits hold on each step
+    /// of a path: each prefix of its components that resolves, in order and without an
+    /// end `/` or `/.`, must pass them, and the first that fails gives its error. A
+    /// prefix short of the whole path is checked against the folders only when a `..`
+    /// after it takes the path above it, or nothing is there, and then also passes when
+    /// it is a directory on the way to a folder. A step meets `hidden` only when it
+    /// passes the folders of each limit. The name of the first prefix that does not
+    /// resolve must pass them too, at its place with no key, as a new name there does.
+    /// A relative path starts at the working directory: the steps of that directory
+    /// come first, and each prefix after them is a prefix of the path as given. A path
+    /// whose steps pass and that does not resolve gives the error of its resolve. The
+    /// limits of `self` hold too, so a handle never reaches more than the one it came
+    /// from. The check and the call are two steps: a symbolic link that another program
+    /// makes between them can lead the call out.
     ///
     /// # Errors
     ///
