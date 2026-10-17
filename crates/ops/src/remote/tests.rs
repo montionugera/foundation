@@ -1,6 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::pin::pin;
+use std::slice;
 use std::task::{Context, Poll, Waker};
 
 use document::diagnostic::Code;
@@ -316,6 +317,33 @@ fn plan_of_a_request_one_byte_over_the_most_reaches_no_node() {
             Some(Error::Node(lost())),
             "a request of the most"
         );
+    });
+}
+
+/// The entry paths of the directory pass the most bytes of a request.
+#[test]
+fn plan_and_apply_of_a_directory_of_many_entries_give_read() {
+    solo(|fixture, mesh| async move {
+        let paths = fixture.sim.paths();
+        let dir = "d".repeat(4000);
+        paths.make_dir(Path::new(&dir)).expect("a directory");
+        for n in 0..4200 {
+            let path = PathBuf::from(format!("{dir}/f{n:04}"));
+            paths.write(&path, b"").expect("a write");
+        }
+        let remote = Remote::with(create_node(&fixture, mesh), Mode::Unsent);
+        let path = PathBuf::from(&dir);
+        let directory = format!("{dir} is a directory, not a file");
+        let planned = remote.plan(&paths, slice::from_ref(&path), None).await;
+        let Err(error) = planned else {
+            panic!("a plan of a directory");
+        };
+        assert_eq!(shown(&error), read("ops.read", &directory, 2), "plan");
+        let Err(error) = remote.apply(&paths, &path).await else {
+            panic!("an apply of a directory");
+        };
+        assert_eq!(shown(&error), read("ops.read", &directory, 2), "apply");
+        assert_eq!(remote.calls(), (0, 0));
     });
 }
 

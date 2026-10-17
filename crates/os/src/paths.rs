@@ -8,7 +8,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use env::entropy::Driver as _;
-use env::paths::{Error, Found, names_directory};
+use env::paths::{Error, Found, Kind, names_directory};
 use rustix::io::Errno;
 
 use crate::{dir, entropy, host};
@@ -74,7 +74,7 @@ fn read(path: &Path, most: usize) -> io::Result<Found> {
                 let entry = path.join(name?);
                 size = size.saturating_add(entry.as_os_str().len());
                 if size > most {
-                    return Ok(Found::Large);
+                    return Ok(Found::Large(Kind::Directory));
                 }
                 entries.push(entry);
             }
@@ -86,7 +86,7 @@ fn read(path: &Path, most: usize) -> io::Result<Found> {
     let mut bytes = Vec::new();
     File::from(file).take(over).read_to_end(&mut bytes)?;
     if bytes.len() > most {
-        return Ok(Found::Large);
+        return Ok(Found::Large(Kind::File));
     }
     Ok(Found::File(bytes))
 }

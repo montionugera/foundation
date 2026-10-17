@@ -106,7 +106,7 @@ impl env::files::Driver for Node {
                     Ok(descriptor)
                 }
                 Ok(Found::Directory(_)) => Err(io(DIRECTORY)),
-                Ok(Found::Large) => {
+                Ok(Found::Large(_)) => {
                     unreachable!("invariant: no file is over usize::MAX")
                 }
                 Err(env::paths::Error::NotFound) => Err(Error::NotFound {
