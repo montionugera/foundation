@@ -843,22 +843,6 @@ impl Readers {
         self.closed.iter().map(Closed::end).min()
     }
 
-    /// The lowest position that any reader holds, path by path, or `None` when no
-    /// reader holds. `buffer` may trim below it. Takes time linear in the readers.
-    #[must_use]
-    pub fn floor(&self) -> Option<Position> {
-        let open = self.complete.iter().map(|session| session.position);
-        let closed = self.closed.iter().map(|closed| closed.position);
-        open.chain(closed).reduce(|a, b| Position {
-            live: a.live.min(b.live),
-            backfill: match (a.backfill, b.backfill) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, None) => a,
-                (None, b) => b,
-            },
-        })
-    }
-
     /// The record of each named complete reader, open or held, in no order. The home
     /// appends them to the index log in up to 64 parts, and the newest entry of a part
     /// replaces the ones before it. Takes time linear in the named readers.
@@ -1281,12 +1265,27 @@ pub(super) mod tests {
         drained(readers);
     }
 
+    /// The lowest position that any reader holds, path by path, or `None` when no
+    /// reader holds.
+    pub(super) fn floor(readers: &Readers) -> Option<Position> {
+        let open = readers.complete.iter().map(|session| session.position);
+        let closed = readers.closed.iter().map(|closed| closed.position);
+        open.chain(closed).reduce(|a, b| Position {
+            live: a.live.min(b.live),
+            backfill: match (a.backfill, b.backfill) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, None) => a,
+                (None, b) => b,
+            },
+        })
+    }
+
     /// Makes each call on the closed session `key`, and asserts that they do not
     /// change the floor, the deadline, or whether a frame is pending. The caller
     /// checks its records, open sessions, key counters, and queued end after it: only
     /// an open or a panic of `queue` shows the last two.
     pub(super) fn dropped(readers: &mut Readers, key: Key) {
-        let before = (readers.floor(), readers.deadline(), readers.pending());
+        let before = (floor(readers), readers.deadline(), readers.pending());
         if let Key::Complete(key) = key {
             readers.grant(key, u64::MAX);
             assert_eq!(readers.ack(key, live(0)), Ok(()));
@@ -1297,7 +1296,7 @@ pub(super) mod tests {
             readers.close(key.into(), Some(at(i64::MAX)));
         }
         assert_eq!(
-            (readers.floor(), readers.deadline(), readers.pending()),
+            (floor(readers), readers.deadline(), readers.pending()),
             before
         );
     }
@@ -1467,7 +1466,7 @@ pub(super) mod tests {
                 .key;
             readers.ack(new, live(5)).expect("forward");
             assert_eq!(readers.ack(old, live(1)), Ok(()));
-            assert_eq!(readers.floor(), Some(live(5)));
+            assert_eq!(floor(&readers), Some(live(5)));
         }
 
         #[test]
@@ -1486,7 +1485,7 @@ pub(super) mod tests {
             };
             let records = drained(&mut readers);
             assert!(records.contains(&a), "{records:?}");
-            assert_eq!(readers.floor(), Some(live(2)));
+            assert_eq!(floor(&readers), Some(live(2)));
         }
 
         #[test]
@@ -1502,9 +1501,9 @@ pub(super) mod tests {
                 readers.open(of("a", "r", 10), resume(live(0)), 0, Charge::Whole);
             assert_eq!(again.replaced, Some(a.into()));
             readers.ack(b, live(3)).expect("forward");
-            assert_eq!(readers.floor(), Some(live(0)));
+            assert_eq!(floor(&readers), Some(live(0)));
             readers.ack(again.key, live(4)).expect("forward");
-            assert_eq!(readers.floor(), Some(live(3)));
+            assert_eq!(floor(&readers), Some(live(3)));
         }
 
         #[test]
@@ -1633,7 +1632,7 @@ pub(super) mod tests {
             assert_eq!(readers.ack(key, live(9)), Ok(()));
             assert_eq!(readers.ack(key, live(2)), Ok(()));
             assert_eq!(drained(&mut readers), []);
-            assert_eq!(readers.floor(), Some(live(4)));
+            assert_eq!(floor(&readers), Some(live(4)));
         }
 
         #[test]
@@ -1659,7 +1658,7 @@ pub(super) mod tests {
             drained(&mut readers);
             dropped(&mut readers, key.into());
             assert_eq!(drained(&mut readers), []);
-            assert_eq!(readers.floor(), Some(live(2)));
+            assert_eq!(floor(&readers), Some(live(2)));
             assert_eq!(readers.deadline(), Some(at(11)));
         }
 
@@ -1799,7 +1798,7 @@ pub(super) mod tests {
                 .open(Reader::Unnamed, Start::At(live(3)), 0, Charge::Whole)
                 .key;
             readers.close(key.into(), Some(at(5)));
-            assert_eq!(readers.floor(), None);
+            assert_eq!(floor(&readers), None);
             assert_eq!(readers.deadline(), None);
             assert_eq!(drained(&mut readers), []);
         }
@@ -1905,7 +1904,7 @@ pub(super) mod tests {
             let mut readers = Readers::new(0);
             readers.open(Reader::Unnamed, Start::At(live(3)), 0, Charge::Whole);
             readers.advance(at(i64::MAX));
-            assert_eq!(readers.floor(), Some(live(3)));
+            assert_eq!(floor(&readers), Some(live(3)));
             assert_eq!(readers.deadline(), None);
         }
 
@@ -1916,7 +1915,7 @@ pub(super) mod tests {
                 .open(Reader::Unnamed, Start::At(live(3)), 0, Charge::Whole)
                 .key;
             readers.close(key.into(), None);
-            assert_eq!(readers.floor(), None);
+            assert_eq!(floor(&readers), None);
         }
 
         #[test]
@@ -1929,9 +1928,9 @@ pub(super) mod tests {
             readers.close(key.into(), Some(at(5)));
             assert_eq!(readers.deadline(), Some(at(15)));
             readers.advance(at(14));
-            assert_eq!(readers.floor(), Some(live(4)));
+            assert_eq!(floor(&readers), Some(live(4)));
             readers.advance(at(15));
-            assert_eq!(readers.floor(), None);
+            assert_eq!(floor(&readers), None);
             assert_eq!(readers.deadline(), None);
         }
 
@@ -1942,7 +1941,7 @@ pub(super) mod tests {
                 .open(named("a", 0), Start::At(live(0)), 0, Charge::Whole)
                 .key;
             readers.close(key.into(), Some(at(5)));
-            assert_eq!(readers.floor(), None);
+            assert_eq!(floor(&readers), None);
         }
 
         #[test]
@@ -1999,7 +1998,7 @@ pub(super) mod tests {
             readers.open(Reader::Unnamed, Start::At(both(5, 9)), 0, Charge::Whole);
             readers.open(Reader::Unnamed, Start::At(both(7, 2)), 0, Charge::Whole);
             readers.open(Reader::Unnamed, Start::At(live(3)), 0, Charge::Whole);
-            assert_eq!(readers.floor(), Some(both(3, 2)));
+            assert_eq!(floor(&readers), Some(both(3, 2)));
         }
 
         #[test]
@@ -2007,12 +2006,12 @@ pub(super) mod tests {
             let mut readers = Readers::new(0);
             readers.open(Reader::Unnamed, Start::At(live(5)), 0, Charge::Whole);
             readers.open(Reader::Unnamed, Start::At(live(7)), 0, Charge::Whole);
-            assert_eq!(readers.floor(), Some(live(5)));
+            assert_eq!(floor(&readers), Some(live(5)));
         }
 
         #[test]
         fn is_none_without_readers() {
-            assert_eq!(Readers::new(0).floor(), None);
+            assert_eq!(floor(&Readers::new(0)), None);
         }
 
         #[test]
@@ -2020,7 +2019,7 @@ pub(super) mod tests {
             let mut readers = Readers::new(0);
             readers.open(Reader::Unnamed, Start::At(live(5)), 0, Charge::Whole);
             readers.open(Reader::Unnamed, Start::At(live(2)), 0, Charge::Whole);
-            assert_eq!(readers.floor(), Some(live(2)));
+            assert_eq!(floor(&readers), Some(live(2)));
         }
     }
 
@@ -2175,7 +2174,7 @@ pub(super) mod tests {
                 record("a", live(5), 10, None),
             ];
             let mut readers = restored(records, at(0), 0);
-            assert_eq!(readers.floor(), Some(live(5)));
+            assert_eq!(floor(&readers), Some(live(5)));
             let opened =
                 readers.open(named("a", 10), resume(live(0)), 0, Charge::Whole);
             assert_eq!(opened.position, live(5));
@@ -2191,7 +2190,7 @@ pub(super) mod tests {
         fn keeps_a_closed_reader_until_its_hold_ends() {
             let readers = restored([record("a", live(3), 10, Some(5))], at(8), 0);
             assert_eq!(readers.deadline(), Some(at(15)));
-            assert_eq!(readers.floor(), Some(live(3)));
+            assert_eq!(floor(&readers), Some(live(3)));
         }
 
         #[test]
@@ -2208,7 +2207,7 @@ pub(super) mod tests {
                 record("b", live(4), 10, None),
             ];
             let readers = restored(records, at(20), 0);
-            assert_eq!(readers.floor(), Some(live(3)));
+            assert_eq!(floor(&readers), Some(live(3)));
             assert_eq!(readers.deadline(), Some(at(30)));
         }
 
@@ -2235,7 +2234,7 @@ pub(super) mod tests {
         #[test]
         fn forgets_a_reader_whose_hold_ended() {
             let readers = restored([record("a", live(3), 10, Some(5))], at(15), 0);
-            assert_eq!(readers.floor(), None);
+            assert_eq!(floor(&readers), None);
         }
 
         #[test]
@@ -2287,7 +2286,7 @@ pub(super) mod tests {
                 .open(Reader::Unnamed, Start::At(live(1)), 0, Charge::Whole)
                 .key;
             readers.restore([record("a", live(3), 10, Some(5))], at(8));
-            assert_eq!(readers.floor(), Some(live(1)));
+            assert_eq!(floor(&readers), Some(live(1)));
             assert_eq!(readers.deadline(), Some(at(15)));
             assert_eq!(readers.ack(key, live(2)), Ok(()));
             let opened =
@@ -4369,7 +4368,7 @@ pub(super) mod tests {
                 | Input::Advance
                 | Input::Flush => {}
             }
-            assert_eq!(readers.floor(), model.floor());
+            assert_eq!(floor(readers), model.floor());
             assert_eq!(readers.deadline(), model.deadline());
             assert!(readers.deadline().is_none_or(|end| at(now) < end));
         }
@@ -4408,9 +4407,9 @@ pub(super) mod tests {
                 readers.advance(at(now + later));
                 assert_eq!(restored.deadline(), readers.deadline());
                 if flushed {
-                    assert_eq!(restored.floor(), readers.floor());
+                    assert_eq!(floor(&restored), floor(&readers));
                 } else {
-                    assert!(holds_more(restored.floor(), readers.floor()));
+                    assert!(holds_more(floor(&restored), floor(&readers)));
                 }
             }
         }
