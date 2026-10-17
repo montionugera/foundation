@@ -31,3 +31,48 @@ pub(crate) fn store<const W: usize>(value: u64) -> [u8; W] {
         .first_chunk()
         .expect("invariant: a sample is at most 8 bytes")
 }
+
+/// The integer that the codecs see for the bits of a float of `W` bytes. A float with
+/// its sign bit set has each bit flipped, and any other only its sign bit, so the
+/// integers keep the order of the floats. It is a bijection on the bits.
+pub(crate) fn sortable<const W: usize>(bits: u64) -> u64 {
+    let mask = mask(W);
+    let high = mask ^ mask.wrapping_shr(1);
+    let negative = 0_u64.wrapping_sub(u64::from(bits & high != 0));
+    bits ^ (negative & mask | high)
+}
+
+/// The bits of the float of `W` bytes whose [`sortable`] integer is `key`.
+pub(crate) fn unsortable<const W: usize>(key: u64) -> u64 {
+    let mask = mask(W);
+    let high = mask ^ mask.wrapping_shr(1);
+    let negative = 0_u64.wrapping_sub(u64::from(key & high == 0));
+    key ^ (negative & mask | high)
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn sortable_keeps_the_order_of_floats(a in any::<f64>(), b in any::<f64>()) {
+            let key = |value: f64| sortable::<8>(value.to_bits());
+            prop_assert_eq!(a.total_cmp(&b), key(a).cmp(&key(b)));
+            #[expect(clippy::cast_possible_truncation, reason = "an `f32` sample")]
+            let (a, b) = (a as f32, b as f32);
+            let key = |value: f32| sortable::<4>(value.to_bits().into());
+            prop_assert_eq!(a.total_cmp(&b), key(a).cmp(&key(b)));
+        }
+
+        #[test]
+        fn unsortable_inverts_sortable(bits in any::<u64>()) {
+            prop_assert_eq!(unsortable::<8>(sortable::<8>(bits)), bits);
+            let narrow = bits & mask(4);
+            prop_assert_eq!(sortable::<4>(narrow) & !mask(4), 0);
+            prop_assert_eq!(unsortable::<4>(sortable::<4>(narrow)), narrow);
+        }
+    }
+}

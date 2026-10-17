@@ -20,6 +20,7 @@ mod text;
 mod vector;
 mod word;
 
+use std::convert::identity;
 use std::{fmt, iter, mem};
 
 use types::sample::{Scalar, Sides, Type};
@@ -734,6 +735,9 @@ enum Layout {
     Int64 {
         signed: bool,
     },
+    /// Floats of 32 or 64 bits. Every codec applies to their sortable bits.
+    Float32,
+    Float64,
     /// Other samples of `width` bytes, stored raw.
     Raw {
         width: usize,
@@ -775,7 +779,9 @@ impl Layout {
             Scalar::U32 => Self::Int32 { signed: false },
             Scalar::I64 | Scalar::Stamp | Scalar::Span => Self::Int64 { signed: true },
             Scalar::U64 => Self::Int64 { signed: false },
-            Scalar::Bool | Scalar::F32 | Scalar::F64 | Scalar::Uuid => Self::Raw {
+            Scalar::F32 => Self::Float32,
+            Scalar::F64 => Self::Float64,
+            Scalar::Bool | Scalar::Uuid => Self::Raw {
                 width: scalar.width(),
             },
         }
@@ -785,8 +791,8 @@ impl Layout {
         match self {
             Self::Int8 { .. } => 1,
             Self::Int16 { .. } => 2,
-            Self::Int32 { .. } => 4,
-            Self::Int64 { .. } => 8,
+            Self::Int32 { .. } | Self::Float32 => 4,
+            Self::Int64 { .. } | Self::Float64 => 8,
             Self::Raw { width } => width,
         }
     }
@@ -866,19 +872,25 @@ impl Layout {
 
     /// Encodes one vector into the front of `out` and returns its length.
     fn encode(self, chunk: &[u8], out: &mut [u8]) -> usize {
+        fn int<const W: usize>(chunk: &[u8], signed: bool, out: &mut [u8]) -> usize {
+            vector::write::<W>(
+                chunk,
+                int::plan::<W>(chunk, signed, identity),
+                identity,
+                out,
+            )
+        }
+        fn float<const W: usize>(chunk: &[u8], out: &mut [u8]) -> usize {
+            let key = word::sortable::<W>;
+            vector::write::<W>(chunk, int::plan::<W>(chunk, false, key), key, out)
+        }
         match self {
-            Self::Int8 { signed } => {
-                vector::write::<1>(chunk, int::plan::<1>(chunk, signed), out)
-            }
-            Self::Int16 { signed } => {
-                vector::write::<2>(chunk, int::plan::<2>(chunk, signed), out)
-            }
-            Self::Int32 { signed } => {
-                vector::write::<4>(chunk, int::plan::<4>(chunk, signed), out)
-            }
-            Self::Int64 { signed } => {
-                vector::write::<8>(chunk, int::plan::<8>(chunk, signed), out)
-            }
+            Self::Int8 { signed } => int::<1>(chunk, signed, out),
+            Self::Int16 { signed } => int::<2>(chunk, signed, out),
+            Self::Int32 { signed } => int::<4>(chunk, signed, out),
+            Self::Int64 { signed } => int::<8>(chunk, signed, out),
+            Self::Float32 => float::<4>(chunk, out),
+            Self::Float64 => float::<8>(chunk, out),
             Self::Raw { width } => vector::write_raw(chunk, width, out),
         }
     }
@@ -886,10 +898,12 @@ impl Layout {
     /// Writes the samples of one vector into `out`, which holds exactly them.
     fn decode(self, vector: &Vector<'_>, out: &mut [u8]) {
         match self {
-            Self::Int8 { .. } => vector.decode::<1>(out),
-            Self::Int16 { .. } => vector.decode::<2>(out),
-            Self::Int32 { .. } => vector.decode::<4>(out),
-            Self::Int64 { .. } => vector.decode::<8>(out),
+            Self::Int8 { .. } => vector.decode::<1>(out, identity),
+            Self::Int16 { .. } => vector.decode::<2>(out, identity),
+            Self::Int32 { .. } => vector.decode::<4>(out, identity),
+            Self::Int64 { .. } => vector.decode::<8>(out, identity),
+            Self::Float32 => vector.decode::<4>(out, word::unsortable::<4>),
+            Self::Float64 => vector.decode::<8>(out, word::unsortable::<8>),
             Self::Raw { .. } => vector.copy(out),
         }
     }
@@ -1058,7 +1072,8 @@ mod tests {
         Scalar::Stamp,
         Scalar::Span,
     ];
-    const OTHERS: [Scalar; 4] = [Scalar::Bool, Scalar::F32, Scalar::F64, Scalar::Uuid];
+    const FLOATS: [Scalar; 2] = [Scalar::F32, Scalar::F64];
+    const OTHERS: [Scalar; 2] = [Scalar::Bool, Scalar::Uuid];
 
     /// Encodes `count` samples of `data_type` in `values` and checks that the bytes do
     /// not depend on what `out` held.
@@ -1118,7 +1133,8 @@ mod tests {
 
     /// Any sample type.
     fn any_type() -> impl Strategy<Value = Type> {
-        let scalar = || prop::sample::select([INTS.as_slice(), &OTHERS].concat());
+        let scalar =
+            || prop::sample::select([INTS.as_slice(), &FLOATS, &OTHERS].concat());
         prop_oneof![
             scalar().prop_map(Type::Scalar),
             (scalar(), 0..4_u32)
@@ -1248,6 +1264,34 @@ mod tests {
             );
             check(Scalar::I8, [3, -4], &[0, 0, 3, 0xfc]);
             check(Scalar::F32, [1], &[0, 0, 0, 0, 1, 0, 0, 0]);
+            check(Scalar::Bool, [1, 1, 1], &[0, 0, 1, 1, 1]);
+        }
+
+        #[test]
+        fn writes_the_sortable_bits_of_floats() {
+            let floats = |value: f32| bytes(4, [i128::from(value.to_bits()); 3]);
+            assert_eq!(
+                encode(Scalar::F32, &floats(1.0)),
+                [1, 0, 0, 0, 0x80, 0xbf, 0, 0]
+            );
+            assert_eq!(
+                encode(Scalar::F32, &floats(-1.0)),
+                [1, 0, 0xff, 0xff, 0x7f, 0x40, 0, 0]
+            );
+            let steps: Vec<u8> = [-0.0_f64, 0.0, f64::from_bits(1)]
+                .into_iter()
+                .cycle()
+                .take(40)
+                .flat_map(f64::to_le_bytes)
+                .collect();
+            assert_eq!(
+                encode(Scalar::F64, &steps)[..18],
+                [
+                    1, 2, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, //
+                    0xff, 0x7f, 0, 0, 0, 0, 0, 0, //
+                    0x24, 0x49,
+                ]
+            );
         }
 
         #[test]
@@ -1308,14 +1352,14 @@ mod tests {
 
         #[test]
         fn writes_nothing_for_no_samples() {
-            for scalar in INTS.into_iter().chain(OTHERS) {
+            for scalar in INTS.into_iter().chain(FLOATS).chain(OTHERS) {
                 assert_eq!(encode(scalar, &[]), [], "{scalar:?}");
             }
         }
 
         #[test]
         fn refuses_values_that_do_not_fit_the_count() {
-            for scalar in INTS.into_iter().chain(OTHERS) {
+            for scalar in INTS.into_iter().chain(FLOATS).chain(OTHERS) {
                 let width = scalar.width();
                 let mut out = [7; 64];
                 for (count, len) in
@@ -1471,6 +1515,67 @@ mod tests {
                 .collect()
         }
 
+        /// The bits of the floats of `scalar` whose sortable integers are `keys`.
+        fn floats(scalar: Scalar, keys: &[u8]) -> Vec<u8> {
+            match scalar {
+                Scalar::F32 => keys
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .flat_map(|key| {
+                        word::store::<4>(word::unsortable::<4>(word::load(key)))
+                    })
+                    .collect(),
+                _ => keys
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .flat_map(|key| {
+                        word::store::<8>(word::unsortable::<8>(word::load(key)))
+                    })
+                    .collect(),
+            }
+        }
+
+        #[test]
+        fn keeps_the_bits_of_each_class_of_float() {
+            let classes = [
+                0.0,
+                -0.0,
+                f64::MIN_POSITIVE,
+                f64::from_bits(1),
+                -f64::from_bits(1),
+                f64::MAX,
+                f64::MIN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NAN,
+                -f64::NAN,
+                f64::from_bits(0x7ff0_0000_0000_0001),
+                1.5,
+                -2.25,
+            ];
+            let runs = classes.iter().flat_map(|value| iter::repeat_n(*value, 70));
+            let tags = [
+                (runs.clone().collect::<Vec<f64>>(), vector::RLE),
+                (classes.repeat(70), vector::RAW),
+            ];
+            for (values, tag) in tags {
+                let wide: Vec<u8> =
+                    values.iter().flat_map(|v| v.to_le_bytes()).collect();
+                assert_eq!(check(Scalar::F64, &wide)[0], tag);
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "each class of f32"
+                )]
+                let narrow: Vec<u8> = values
+                    .iter()
+                    .flat_map(|value| (*value as f32).to_le_bytes())
+                    .collect();
+                assert_eq!(check(Scalar::F32, &narrow)[0], tag);
+            }
+        }
+
         fn check(scalar: Scalar, values: &[u8]) -> Vec<u8> {
             let count = values.len() / scalar.width();
             let encoded = encode(scalar, values);
@@ -1523,6 +1628,60 @@ mod tests {
                 let mut out = vec![0; values.len()];
                 prop_assert_eq!(decode(data_type, count, &encoded, &mut out), Ok(()));
                 prop_assert_eq!(out, values);
+            }
+
+            #[test]
+            fn every_float_codec(
+                scalar in select(&FLOATS),
+                tag in 0..4_u8,
+                len in select(&[0, 1, 1_023, 1_024, 1_025]),
+                words in proptest::collection::vec(any::<u64>(), 1_026),
+            ) {
+                let keys = samples(scalar, tag, len, &words);
+                let values = floats(scalar, &keys);
+                let encoded = check(scalar, &values);
+                if len >= 1_023 {
+                    prop_assert_eq!(encoded[0], tag, "{:?} at {}", scalar, len);
+                }
+            }
+
+            #[test]
+            fn floats_as_the_unsigned_integers_of_their_sortable_bits(
+                scalar in select(&FLOATS),
+                tag in 0..4_u8,
+                len in 0..2_100_usize,
+                words in proptest::collection::vec(any::<u64>(), 2_101),
+            ) {
+                let keys = samples(scalar, tag, len, &words);
+                let unsigned = match scalar {
+                    Scalar::F32 => Scalar::U32,
+                    _ => Scalar::U64,
+                };
+                let encoded = check(scalar, &floats(scalar, &keys));
+                let expected = encode(unsigned, &keys);
+                prop_assert_eq!(encoded.len(), expected.len());
+                let tags = |bytes: &[u8]| {
+                    let mut decoder = Decoder::new(unsigned, len, bytes);
+                    let mut out = vec![0; VECTOR_LEN * 8];
+                    let mut at = 0;
+                    let mut tags = Vec::new();
+                    while let Some(vector) = decoder.next(&mut out) {
+                        tags.push(bytes[at]);
+                        at = bytes.len() - decoder.rest.len();
+                        vector.expect("the bytes are valid");
+                    }
+                    tags
+                };
+                prop_assert_eq!(tags(&encoded), tags(&expected));
+            }
+
+            #[test]
+            fn any_float_series(
+                scalar in select(&FLOATS),
+                values in proptest::collection::vec(any::<u8>(), 0..2_100 * 8),
+            ) {
+                let width = scalar.width();
+                check(scalar, &values[..values.len() / width * width]);
             }
 
             #[test]
@@ -1628,6 +1787,10 @@ mod tests {
             delta[..2].copy_from_slice(&[2, 64]);
             delta[24..].fill(0xff);
             accepts(Scalar::U64, 2, &delta, &[[0; 8], [0xff; 8]].concat());
+            let mut ffor = [0; 24];
+            ffor[..2].copy_from_slice(&[1, 64]);
+            ffor[16..].fill(0xff);
+            accepts(Scalar::F64, 1, &ffor, &i64::MAX.to_le_bytes());
         }
 
         #[test]
@@ -1673,6 +1836,10 @@ mod tests {
             for tag in 4..=u8::MAX {
                 check(Scalar::U8, 1, &[tag, 0, 0], &Error::Tag { vector: 0, tag });
             }
+            for scalar in FLOATS {
+                let tag = 4;
+                check(scalar, 1, &[tag; 32], &Error::Tag { vector: 0, tag });
+            }
             for (scalar, tag) in
                 OTHERS.into_iter().flat_map(|s| (1..4).map(move |t| (s, t)))
             {
@@ -1689,6 +1856,8 @@ mod tests {
             check(Scalar::U64, 1, &[1, 65], &width(65, 64));
             check(Scalar::U8, 1, &[0, 1, 5], &width(1, 0));
             check(Scalar::F32, 1, &[0, 32, 0, 0, 0, 0, 0, 0], &width(32, 0));
+            check(Scalar::F32, 1, &[1, 33, 0, 0, 0, 0, 0, 0], &width(33, 32));
+            check(Scalar::F64, 1, &[2, 65, 0, 0, 0, 0, 0, 0], &width(65, 64));
             check(Scalar::U8, 1, &[3, 1, 1, 0, 5, 1, 0], &width(1, 0));
         }
 
@@ -1863,7 +2032,7 @@ mod tests {
 
             #[test]
             fn never_panics_on_random_bytes(
-                scalar in prop_oneof![select(&INTS), select(&OTHERS)],
+                scalar in prop_oneof![select(&INTS), select(&FLOATS), select(&OTHERS)],
                 count in 0..2_100_usize,
                 bytes in proptest::collection::vec(any::<u8>(), 0..64),
             ) {
@@ -1880,7 +2049,7 @@ mod tests {
 
             #[test]
             fn never_panics_on_changed_encodings(
-                scalar in select(&INTS),
+                scalar in prop_oneof![select(&INTS), select(&FLOATS)],
                 values in proptest::collection::vec(0..4_u8, 1..2_100 * 8),
                 at in any::<prop::sample::Index>(),
                 byte in any::<u8>(),
@@ -2027,7 +2196,7 @@ mod tests {
         proptest! {
             #[test]
             fn gives_what_decode_and_validate_give(
-                scalar in prop_oneof![select(&INTS), select(&OTHERS)],
+                scalar in prop_oneof![select(&INTS), select(&FLOATS), select(&OTHERS)],
                 values in proptest::collection::vec(0..4_u8, 0..2_100 * 8),
                 skew in prop_oneof![3 => Just(0_isize), 1 => -2..=2_isize],
                 change in weighted(0.25, (any::<Index>(), any::<u8>())),
@@ -2827,7 +2996,8 @@ mod tests {
         }
 
         fn any_case() -> impl Strategy<Value = (Type, Vec<Vec<u8>>)> {
-            let scalar = prop::sample::select([INTS.as_slice(), &OTHERS].concat());
+            let scalar =
+                prop::sample::select([INTS.as_slice(), &FLOATS, &OTHERS].concat());
             prop_oneof![
                 any_samples(1, 40, true).prop_map(|samples| (Type::String, samples)),
                 any_samples(1, 40, false).prop_map(|samples| (Type::Bytes, samples)),

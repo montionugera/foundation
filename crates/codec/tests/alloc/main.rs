@@ -15,7 +15,7 @@ use types::sample::{Scalar, Type};
 static ALLOCATOR: counting::Allocator = counting::Allocator::new();
 
 /// The scalars that use every codec.
-const INTS: [Scalar; 10] = [
+const CODED: [Scalar; 12] = [
     Scalar::I8,
     Scalar::I16,
     Scalar::I32,
@@ -26,10 +26,12 @@ const INTS: [Scalar; 10] = [
     Scalar::U64,
     Scalar::Stamp,
     Scalar::Span,
+    Scalar::F32,
+    Scalar::F64,
 ];
 
 /// The scalars that stay raw.
-const OTHERS: [Scalar; 4] = [Scalar::Bool, Scalar::F32, Scalar::F64, Scalar::Uuid];
+const OTHERS: [Scalar; 2] = [Scalar::Bool, Scalar::Uuid];
 
 const COUNTS: [usize; 6] = [
     0,
@@ -50,7 +52,7 @@ fn main() {
         1,
         "the allocator counts"
     );
-    for scalar in INTS {
+    for scalar in CODED {
         assert_eq!(round_trip(scalar), [true; 4], "{scalar:?} uses each codec");
         decode_every_width(scalar);
     }

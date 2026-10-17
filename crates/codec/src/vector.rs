@@ -12,7 +12,9 @@
 //!
 //! Fields are samples unless marked. Sample arithmetic is modulo 2^b, where b is the
 //! bit count of a sample. Delta packs one residual for each sample after the first.
-//! Packed values are least significant bit first.
+//! Packed values are least significant bit first. A float vector of tag 1 to 3 holds
+//! the sortable integers of its samples: a float with its sign bit set has each bit
+//! flipped, and any other only its sign bit.
 
 use std::{iter, mem};
 
@@ -76,12 +78,17 @@ pub(crate) fn header_len(fields: usize, width: usize) -> usize {
     fields.strict_add(2).next_multiple_of(width)
 }
 
-/// Writes one vector of `W`-byte integers with `plan` into the front of `out` and
-/// returns its length.
-pub(crate) fn write<const W: usize>(chunk: &[u8], plan: Plan, out: &mut [u8]) -> usize {
+/// Writes one vector of `W`-byte samples with `plan` into the front of `out` and
+/// returns its length. Each codec but raw writes the integers that `key` gives.
+pub(crate) fn write<const W: usize>(
+    chunk: &[u8],
+    plan: Plan,
+    key: impl Fn(u64) -> u64 + Copy,
+    out: &mut [u8],
+) -> usize {
     let mut out = Writer { out, len: 0 };
     let count = chunk.len().div_euclid(W);
-    let samples = word::samples::<W>(chunk);
+    let samples = word::samples::<W>(chunk).map(key);
     let mask = word::mask(W);
     match plan {
         Plan::Raw => out.raw(chunk, W),
@@ -112,7 +119,7 @@ pub(crate) fn write<const W: usize>(chunk: &[u8], plan: Plan, out: &mut [u8]) ->
             let values = out.take(runs.strict_mul(W)).as_chunks_mut::<W>().0;
             let lengths = out.take(runs.strict_mul(2)).as_chunks_mut::<2>().0;
             for ((run, length), (value, len)) in
-                self::runs::<W>(chunk).zip(values.iter_mut().zip(lengths))
+                self::runs(samples).zip(values.iter_mut().zip(lengths))
             {
                 *value = word::store(run);
                 *len = u16::try_from(length)
@@ -125,9 +132,9 @@ pub(crate) fn write<const W: usize>(chunk: &[u8], plan: Plan, out: &mut [u8]) ->
     out.len
 }
 
-/// The runs of equal samples in `chunk`: each value and its length.
-fn runs<const W: usize>(chunk: &[u8]) -> impl Iterator<Item = (u64, usize)> + '_ {
-    let mut samples = word::samples::<W>(chunk).peekable();
+/// The runs of equal `samples`: each value and its length.
+fn runs(samples: impl Iterator<Item = u64>) -> impl Iterator<Item = (u64, usize)> {
+    let mut samples = samples.peekable();
     iter::from_fn(move || {
         let value = samples.next()?;
         let mut len = 1_usize;
@@ -307,8 +314,15 @@ fn field(header: &[u8], index: usize, width: usize) -> u64 {
 }
 
 impl Vector<'_> {
-    /// Writes the samples into `out`, which holds exactly them.
-    pub(crate) fn decode<const W: usize>(&self, out: &mut [u8]) {
+    /// Writes the samples into `out`, which holds exactly them. Each codec but raw
+    /// gives the samples of the integers through `unkey`, the inverse of the `key` of
+    /// [`write`].
+    pub(crate) fn decode<const W: usize>(
+        &self,
+        out: &mut [u8],
+        unkey: impl Fn(u64) -> u64,
+    ) {
+        let store = |value| word::store::<W>(unkey(value));
         let body = self.body;
         let mut samples = out.as_chunks_mut::<W>().0.iter_mut();
         match self.plan {
@@ -318,11 +332,11 @@ impl Vector<'_> {
                 }
             }
             Plan::Ffor { reference, bits: 0 } => {
-                samples.into_slice().fill(word::store(reference));
+                samples.into_slice().fill(store(reference));
             }
             Plan::Ffor { reference, bits } => {
                 for (sample, residual) in samples.zip(bits::unpack(body, bits)) {
-                    *sample = word::store(reference.wrapping_add(residual));
+                    *sample = store(reference.wrapping_add(residual));
                 }
             }
             Plan::Delta {
@@ -332,18 +346,18 @@ impl Vector<'_> {
             } => {
                 let mut value = first;
                 for sample in samples {
-                    *sample = word::store(value);
+                    *sample = store(value);
                     value = value.wrapping_add(base);
                 }
             }
             Plan::Delta { first, base, bits } => {
                 let mut previous = first;
                 if let Some(sample) = samples.next() {
-                    *sample = word::store(first);
+                    *sample = store(first);
                 }
                 for (sample, residual) in samples.zip(bits::unpack(body, bits)) {
                     previous = previous.wrapping_add(base).wrapping_add(residual);
-                    *sample = word::store(previous);
+                    *sample = store(previous);
                 }
             }
             Plan::Rle { runs } => {
@@ -355,8 +369,9 @@ impl Vector<'_> {
                     .zip(lengths.as_chunks::<2>().0);
                 for (value, len) in runs {
                     let len = usize::from(u16::from_le_bytes(*len));
+                    let value = store(word::load(value));
                     for sample in samples.by_ref().take(len) {
-                        *sample = *value;
+                        *sample = value;
                     }
                 }
             }

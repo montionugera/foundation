@@ -3,13 +3,17 @@
 use crate::vector::Plan;
 use crate::word;
 
-/// The smallest plan for a vector of `W`-byte samples, or raw when no codec saves at
-/// least 1/8 of the raw size.
+/// The smallest plan for a vector of `W`-byte samples, read through `key`, or raw when
+/// no codec saves at least 1/8 of the raw size.
 ///
 /// # Panics
 ///
 /// Panics when `chunk` holds no sample.
-pub(crate) fn plan<const W: usize>(chunk: &[u8], signed: bool) -> Plan {
+pub(crate) fn plan<const W: usize>(
+    chunk: &[u8],
+    signed: bool,
+    key: impl Fn(u64) -> u64,
+) -> Plan {
     // No codec saves 1/8 of one sample. Skips the statistics of a poll.
     if chunk.len() == W {
         return Plan::Raw;
@@ -18,7 +22,7 @@ pub(crate) fn plan<const W: usize>(chunk: &[u8], signed: bool) -> Plan {
     let high = mask ^ mask.wrapping_shr(1);
     // Flipping the sign bit makes unsigned order match signed order.
     let sign = if signed { high } else { 0 };
-    let mut samples = word::samples::<W>(chunk);
+    let mut samples = word::samples::<W>(chunk).map(key);
     let first = samples.next().expect("invariant: a vector holds a sample");
     let (mut min, mut max) = (first ^ sign, first ^ sign);
     let (mut delta_min, mut delta_max) = (u64::MAX, 0);
@@ -70,6 +74,8 @@ fn width(range: u64) -> u8 {
     reason = "tests compute expected values from small inputs"
 )]
 mod tests {
+    use std::convert::identity;
+
     use proptest::prelude::*;
     use proptest::sample::select;
 
@@ -127,10 +133,10 @@ mod tests {
             })
             .collect();
         let plan = match width {
-            1 => plan::<1>(&chunk, signed),
-            2 => plan::<2>(&chunk, signed),
-            4 => plan::<4>(&chunk, signed),
-            _ => plan::<8>(&chunk, signed),
+            1 => plan::<1>(&chunk, signed, identity),
+            2 => plan::<2>(&chunk, signed, identity),
+            4 => plan::<4>(&chunk, signed, identity),
+            _ => plan::<8>(&chunk, signed, identity),
         };
         assert_eq!(
             plan.len(samples.len(), width),
@@ -152,7 +158,7 @@ mod tests {
             bits: 0,
         };
         assert_eq!(ffor.len(4, 2), delta.len(4, 2), "the sizes must tie");
-        assert_eq!(plan::<2>(&chunk, true), ffor);
+        assert_eq!(plan::<2>(&chunk, true, identity), ffor);
         let chunk = [[0; 24], [1; 24], [2; 24], [3; 24]].concat();
         let delta = Plan::Delta {
             first: 0,
@@ -161,7 +167,7 @@ mod tests {
         };
         let rle = Plan::Rle { runs: 4 };
         assert_eq!(delta.len(96, 1), rle.len(96, 1), "the sizes must tie");
-        assert_eq!(plan::<1>(&chunk, false), delta);
+        assert_eq!(plan::<1>(&chunk, false, identity), delta);
     }
 
     #[test]
@@ -170,10 +176,10 @@ mod tests {
             for sample in [0, 1, 0x80, u64::MAX] {
                 let chunk = &sample.to_le_bytes()[..width];
                 let plan = match width {
-                    1 => plan::<1>(chunk, true),
-                    2 => plan::<2>(chunk, false),
-                    4 => plan::<4>(chunk, true),
-                    _ => plan::<8>(chunk, false),
+                    1 => plan::<1>(chunk, true, identity),
+                    2 => plan::<2>(chunk, false, identity),
+                    4 => plan::<4>(chunk, true, identity),
+                    _ => plan::<8>(chunk, false, identity),
                 };
                 assert_eq!(plan, Plan::Raw, "{width}-byte sample {sample:#x}");
                 check(width, true, &[sample]);

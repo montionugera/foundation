@@ -7,11 +7,14 @@
   significant bit first. The person chose it ("Natural order") over FastLanes order
   for full vectors: a natural-order FFOR decode prototype took 197 ns per vector on an
   M3 Max, about 1.9% of a core at 100M samples/s. FastLanes order can come later as a
-  new tag. Raw and RLE have bit width 0. Integers, `Stamp`, and `Span` use all four
-  tags; other scalars use raw. Timestamp stride (BQ4) comes later as a new tag. The
-  validator checks tags, bit widths, lengths, and run sums, not padding. `max_len` of
-  the raw length (raw plus one raw header per vector) sizes the output, and the
-  encoder makes one pass. `codec/src/vector.rs` is the full spec. `codec` is the one
+  new tag. Raw and RLE have bit width 0. Integers, `Stamp`, `Span`, `f32`, and `f64`
+  use all four tags; other scalars use raw. A float vector of tag 1 to 3 holds the
+  sortable integers of its samples: a float with its sign bit set has each bit
+  flipped, and any other only its sign bit (#2997). Delta over them is the fdelta of
+  BQ4, and FFOR comes with it at no cost. Timestamp stride (BQ4) comes later as a new
+  tag. The validator checks tags, bit widths, lengths, and run sums, not padding.
+  `max_len` of the raw length (raw plus one raw header per vector) sizes the output,
+  and the encoder makes one pass. `codec/src/vector.rs` is the full spec. `codec` is the one
   place that checks a series against its count (#359): `encode` refuses raw values
   that do not hold `count` samples, and `validate` refuses encoded bytes that do not
   parse as `count` samples. The bytes do not carry the count, so a wrong count passes
