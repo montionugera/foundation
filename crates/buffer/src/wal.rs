@@ -279,7 +279,9 @@ impl Layout {
     /// parts in all, against the limits of one record of this ring, as
     /// [`Buffer::append`](crate::Buffer::append) does before it queues the batch.
     /// It does not check [`Limit::Block`](crate::Limit::Block), which
-    /// [`Buffer::block_max`](crate::Buffer::block_max) gives.
+    /// [`Buffer::block_max`](crate::Buffer::block_max) gives, or
+    /// [`Limit::Tagged`](crate::Limit::Tagged), which only an entry with a nonzero
+    /// tag meets.
     ///
     /// # Errors
     ///
@@ -314,7 +316,8 @@ impl Layout {
     }
 }
 
-/// A limit of one record, or of the pool block that holds one entry.
+/// A limit of one record, of the pool block that holds one entry, or of an entry
+/// with a nonzero tag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Limit {
     /// More entries than one record holds.
