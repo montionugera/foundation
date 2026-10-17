@@ -2,9 +2,10 @@
 
 use std::convert::Infallible;
 use std::future::poll_fn;
-use std::pin::Pin;
+use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::task::Poll;
 
 use bytes::Bytes;
 use env::net::{self, Listener};
@@ -171,35 +172,45 @@ pub(super) async fn run(
     answer: impl Fn(Request<Bytes>) -> Response<Bytes> + 'static,
 ) -> Result<(), net::Error> {
     let (group, stop) = (Group::new(tasks), until.child());
-    let accepted = until
-        .race(accept(listener, &group, &stop, tls, answer))
-        .await;
+    let accepted = accept(listener, &group, &until, &stop, tls, answer).await;
     stop.cancel();
     group.ended().await;
-    match accepted {
-        Some(Err(error)) => Err(error),
-        None => Ok(()),
-    }
+    accepted
 }
 
 /// Serves each stream that `listener` accepts on its own task of `group`, until
-/// `until`. Returns the error of the listener.
+/// `stop`, and accepts until `until` or the error of the listener. A listener that
+/// has failed when `until` is seen gives its error.
 async fn accept(
     mut listener: Listener,
     group: &Group,
     until: &Token,
+    stop: &Token,
     tls: Option<Arc<ServerConfig>>,
     answer: impl Fn(Request<Bytes>) -> Response<Bytes> + 'static,
-) -> Result<Infallible, net::Error> {
-    let answer = Rc::new(answer);
+) -> Result<(), net::Error> {
+    let (answer, mut cancelled) = (Rc::new(answer), pin!(until.wait()));
     loop {
-        let tcp = poll_fn(|cx| listener.poll_accept(cx)).await?;
+        let accepted = poll_fn(|cx| {
+            let cancelled = cancelled.as_mut().poll(cx).is_ready();
+            match listener.poll_accept(cx) {
+                Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+                Poll::Ready(Ok(_)) | Poll::Pending if cancelled => {
+                    Poll::Ready(Ok(None))
+                }
+                Poll::Ready(Ok(tcp)) => Poll::Ready(Ok(Some(tcp))),
+                Poll::Pending => Poll::Pending,
+            }
+        });
+        let Some(tcp) = accepted.await? else {
+            return Ok(());
+        };
         let answer = Rc::clone(&answer);
         let service = service_fn(move |request| respond(request, Rc::clone(&answer)));
-        let (tls, until) = (tls.clone(), until.clone());
+        let (tls, stop) = (tls.clone(), stop.clone());
         // A stream that fails has no one to tell.
         group.tasks().spawn(async move {
-            let served = until.race(async move {
+            let served = stop.race(async move {
                 let stream = match tls {
                     Some(config) => match Stream::server(tcp, config).await {
                         Ok(stream) => stream,
