@@ -260,7 +260,8 @@
   of a batch before such a frame lost, since a frame over the whole limit still stops
   the stream (`laptop.architect-2`, 2026-10-16T20:16:11Z,
   https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223891016). Only a
-  single line over the body limit of the server can still take a request past it.
+  single line over the body limit of the server, or a body limit under 4 MiB, can still
+  take a request past it.
   A 204 clears the error, and adds the fields of each frame that it acks to the count
   `confirmed` with `Count::add`, and the `count` of each gap line of those frames to the
   count `lost`: the seqs that the gap lines of this connector count, which InfluxDB took

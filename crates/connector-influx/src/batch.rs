@@ -67,7 +67,8 @@ struct Bodies {
     acked: Counts,
     /// The bodies full before the open one, oldest first.
     closed: VecDeque<Taken>,
-    /// The counts of the lines since the last close, also of a frame that goes on.
+    /// The counts of the lines since the end of the last frame that a closed body
+    /// acks, also of a frame that goes on.
     counts: Counts,
 }
 
