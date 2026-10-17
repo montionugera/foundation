@@ -903,7 +903,9 @@ mod tests {
         }
         calls.set(0);
         assert_eq!(paths.read(Path::new(&path), 1), Err(Error::NotFound));
-        assert_eq!(calls.get(), 16);
+        // On Windows a path with no drive is relative, so the steps of the working
+        // directory come first.
+        assert_eq!(calls.get(), if cfg!(windows) { 19 } else { 16 });
     }
 
     #[test]
