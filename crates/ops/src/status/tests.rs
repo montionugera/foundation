@@ -849,6 +849,9 @@ fn refuses_a_subject_that_may_read_only_some_status_channels() {
         let node = create_node(&fixture, mesh);
         let text = [
             reader("site.a.status.state"),
+            "access \"label\" {\n  subjects = \"sam\"\n  select = \"site.a\"\n  allow = \
+             [read]\n}\n"
+                .to_owned(),
             connector("site.a", "steady", "edge"),
         ];
         applied(&fixture, &node, &text.concat()).await;
