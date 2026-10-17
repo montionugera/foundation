@@ -3,7 +3,7 @@ use super::*;
 /// Writes a line of `len` bytes, of one sample.
 fn line(len: usize) -> impl FnOnce(&mut Vec<u8>) -> Counts {
     move |bytes| {
-        bytes.resize(bytes.len() + len, b'x');
+        bytes.extend(iter::repeat_n(b'x', len));
         Counts {
             samples: 1,
             ..Counts::default()
