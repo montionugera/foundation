@@ -720,6 +720,19 @@ pub(crate) fn within_agrees_with_free_on_each_end_of_a_link_that_does_not_resolv
         let free = host.paths.make_dir(&path);
         assert_eq!(within.make_dir(&path), free, "{name}");
     }
+    let file = Error::Io {
+        code: NOT_DIRECTORY,
+    };
+    for (name, error) in [
+        ("none/..", Error::NotFound),
+        ("a.hcl/..", file),
+        ("loop/..", Error::Io { code: 40 }),
+    ] {
+        let path = work.join(name);
+        let free = host.paths.make_dir(&path);
+        assert_eq!(free, Err(error), "{name}");
+        assert_eq!(within.make_dir(&path), free, "{name}");
+    }
 }
 
 pub(crate) fn a_directory_through_a_file_fails(host: &Host<'_>) {
