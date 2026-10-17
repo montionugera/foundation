@@ -1027,7 +1027,7 @@ fn a_cancel_closes_a_tls_stream_with_bytes_that_arrive_in_the_same_poll() {
             // In the pause of the server, and more bytes than one read of the close
             // takes.
             client.clock().sleep(Span::from_nanos(1_200_000_000)).await;
-            let pad = "a".repeat(4000);
+            let pad = "a".repeat(20000);
             let sent =
                 format!("GET /a HTTP/1.1\r\nhost: server\r\nx-pad: {pad}\r\n\r\n");
             let mut rest = sent.as_bytes();
