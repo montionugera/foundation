@@ -452,8 +452,9 @@ struct Hidden {
 enum Way {
     /// The step ends the walk: a folder holds it.
     End,
-    /// A `..` after the step takes the path above it: a folder holds it, or it is a
-    /// directory above one that is there.
+    /// A `..` after the step takes the path above it, or it is the name of the first
+    /// prefix that does not resolve and a step follows it: a folder holds it, or it
+    /// is a directory above one that is there.
     Short,
     /// No `..` takes the path above the step, so the step changes where the path ends
     /// only as a link or a mount, and the end meets the folders for it, when it is
