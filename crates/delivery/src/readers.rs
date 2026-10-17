@@ -3778,6 +3778,26 @@ pub(super) mod tests {
         }
 
         #[test]
+        fn is_on_disk_only_while_it_reads_from_disk() {
+            let frames = Frames::new(4);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            readers.queue(&frames.frame(2), &frames.set, 2..4);
+            let key = opened(&mut readers, 0, 10);
+            let live = opened(&mut readers, 4, 10);
+            assert!(readers.on_disk(key), "an open below the live frames");
+            assert!(!readers.on_disk(live), "an open at the live frames");
+            assert!(fill(&mut readers, &frames, key, 1, 0..2));
+            readers.reached(key, Mark::at(2), 2);
+            assert!(!readers.on_disk(key), "a wait for the commit");
+            assert_eq!(taken(&mut readers, key), [1]);
+            assert_eq!(released(&mut readers, 4), [key]);
+            assert!(readers.on_disk(key), "the read after the commit");
+            readers.close(key.into(), None);
+            assert!(!readers.on_disk(key), "a close");
+        }
+
+        #[test]
         fn reads_from_the_whole_mark_after_the_commit() {
             let frames = Frames::new(4);
             let mut readers = Readers::new(0);
