@@ -4671,9 +4671,7 @@ fn fail_a_commit_then_cut(
 ) -> (sim::Sim, sim::node::Node, bool, bool) {
     let (mut sim, node) = create_node(seed);
     let trimmed = sim.run_on(&node, move |node, tasks| async move {
-        let shard = Shard {
-            ..shard_on(node, tasks)
-        };
+        let shard = shard_on(node, tasks);
         let mut slots = Slots::new();
         let buffer = shard
             .open(layout(AREA, BODY_MAX), &mut slots)

@@ -1773,7 +1773,7 @@ mod tests {
                     buffer.append(batch).expect("the ring has room");
                     buffer.committed().await.expect("commits");
                     if commit == 0 {
-                        read = Some(hold(&buffer, one).await);
+                        read = Some(hold(&buffer, one, 0).await);
                     }
                 }
                 let state = buffer.shared.state.borrow();
@@ -1831,13 +1831,14 @@ mod tests {
         (read.gap, firsts, read.next)
     }
 
-    /// A read of the live path at `slot` from seq 0, polled once: it waits on its
-    /// file read, so no trim passes its record until it drops.
+    /// A read of the live path at `slot` from `seq`, polled once: it waits on its file
+    /// read, so no trim passes its record until it drops.
     async fn hold(
         buffer: &Buffer,
         slot: Slot,
+        seq: u64,
     ) -> Pin<Box<impl Future<Output = (Option<Range<u64>>, Vec<u64>, Mark)> + '_>> {
-        let mut read = Box::pin(read_from(buffer, slot, 0));
+        let mut read = Box::pin(read_from(buffer, slot, seq));
         let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
         assert!(first.is_pending(), "the read waits on a file read");
         read
@@ -1966,18 +1967,15 @@ mod tests {
                 let kept_now = || buffer.shared.state.borrow_mut().kept();
                 let mut kept = vec![kept_now()];
                 {
-                    let mut read = pin!(read_from(&buffer, one, 0));
-                    let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
-                    assert!(first.is_pending(), "the read waits on a file read");
+                    let read = hold(&buffer, one, 0).await;
                     kept.push(kept_now());
                     read.await;
                 }
                 kept.push(kept_now());
                 {
-                    let mut read = pin!(read_from(&buffer, one, 3));
-                    let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
-                    assert!(first.is_pending(), "the read waits on a file read");
+                    let read = hold(&buffer, one, 3).await;
                     kept.push(kept_now());
+                    drop(read);
                 }
                 kept.push(kept_now());
                 {
@@ -2116,9 +2114,7 @@ mod tests {
             |buffer, mut slots, pool| async move {
                 let one = create_three_records(&buffer, &mut slots, &pool).await;
                 {
-                    let mut read = pin!(read_from(&buffer, one, 0));
-                    let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
-                    assert!(first.is_pending(), "the read waits on a file read");
+                    let read = hold(&buffer, one, 0).await;
                     buffer.shared.state.borrow_mut().logs.hide(16384);
                     read.await;
                 }
@@ -2171,10 +2167,7 @@ mod tests {
                     let two = slots.index(channel::Key::from_u128(2));
                     let part = pool.alloc(100).expect("a block").freeze();
                     let read = {
-                        let mut read = pin!(read_from(&buffer, one, 0));
-                        let first =
-                            poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
-                        assert!(first.is_pending(), "the read waits on a file read");
+                        let read = hold(&buffer, one, 0).await;
                         commit_each(&buffer, (2, two), &part, 0..55).await;
                         read.await
                     };
@@ -2205,10 +2198,7 @@ mod tests {
                     let part = pool.alloc(100).expect("a block").freeze();
                     commit_each(&buffer, (1, one), &part, 0..11).await;
                     let (tail, (gap, firsts, _)) = {
-                        let mut read = pin!(read_from(&buffer, one, 30));
-                        let first =
-                            poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
-                        assert!(first.is_pending(), "the read waits on a file read");
+                        let read = hold(&buffer, one, 30).await;
                         commit_each(&buffer, (1, one), &part, 11..55).await;
                         (room(&buffer).1, read.await)
                     };
@@ -2459,10 +2449,7 @@ mod tests {
                         |first: u64| [entry(2, two, Path::Live, 3 * first, &part)];
                     let mut first = 0;
                     {
-                        let mut read = pin!(read_from(&buffer, one, 0));
-                        let polled =
-                            poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
-                        assert!(polled.is_pending(), "the read waits on a file read");
+                        let read = hold(&buffer, one, 0).await;
                         while buffer.append(next(first)).is_ok() {
                             buffer.committed().await.expect("commits");
                             first += 1;
@@ -2511,10 +2498,7 @@ mod tests {
                         |first: u64| [entry(2, two, Path::Live, 3 * first, &part)];
                     let mut first = 0;
                     let result = {
-                        let mut read = pin!(read_from(&buffer, one, 0));
-                        let polled =
-                            poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
-                        assert!(polled.is_pending(), "the read waits on a file read");
+                        let read = hold(&buffer, one, 0).await;
                         for _ in 0..2 {
                             while buffer.append(next(first)).is_ok() {
                                 buffer.committed().await.expect("commits");
@@ -2529,7 +2513,9 @@ mod tests {
                         let refused = buffer.append(next(first));
                         own.clock().sleep(Span::from_nanos(3_000_000)).await;
                         let again = buffer.append(next(first));
-                        (refused, again, commits, buffer.commits())
+                        let result = (refused, again, commits, buffer.commits());
+                        drop(read);
+                        result
                     };
                     *given.lock().expect("no panic held the lock") = Some(result);
                     buffer

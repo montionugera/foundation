@@ -150,7 +150,7 @@ const INTERVAL: Span = Span::from_nanos(1_000_000_000);
 pub struct Shard {
     /// The shard's number on its node.
     number: u32,
-    pub(crate) buffer: Buffer,
+    buffer: Buffer,
     clock: clock::Reader,
     limits: order::Limits,
     indexes: Vec<Index>,
@@ -684,6 +684,12 @@ impl Shard {
     /// those groups and handoffs were on disk.
     pub fn committed(&self) -> Commit {
         Commit(self.buffer.committed())
+    }
+
+    /// A reader of the ring, for [`crate::testing::hold`].
+    #[cfg(feature = "sim")]
+    pub(crate) fn reader(&self) -> buffer::Reader {
+        self.buffer.reader()
     }
 
     /// Resolves at the end of the next group commit after the call, also one in
@@ -1229,9 +1235,10 @@ mod tests {
 
     use super::*;
     use crate::common::{
-        self, create_interner, create_pool, data_type, hold, intern, key, values,
+        self, create_interner, create_pool, data_type, intern, key, values,
     };
     use crate::reader::complete::Charge;
+    use crate::testing::hold;
 
     const DIR: &str = "shard-0";
     const RING: &str = "shard-0/ring";
@@ -2184,7 +2191,6 @@ mod tests {
             let set = two_indexes();
             let mut shard = test.shard(1 << 16).await;
             let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
-            let reader = shard.buffer.reader();
             let mut held = None;
             let mut outcomes = Vec::new();
             for n in 0..24_i64 {
@@ -2197,7 +2203,7 @@ mod tests {
                     shard.committed().await.expect("the commit ends");
                 }
                 if held.is_none() {
-                    held = Some(hold(&reader, Slot::new(0)).await);
+                    held = Some(hold(&shard, Slot::new(0)));
                 }
             }
             let first = outcomes
@@ -2229,7 +2235,6 @@ mod tests {
             let mut shard = test.shard(1 << 16).await;
             let reader = complete(&mut shard, Slot::new(0));
             let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
-            let buffer = shard.buffer.reader();
             let mut held = None;
             let mut applied = Vec::new();
             for n in 0..u32::MAX {
@@ -2244,7 +2249,7 @@ mod tests {
                 applied.push(seq(at, 1));
                 shard.committed().await.expect("the commit ends");
                 if held.is_none() {
-                    held = Some(hold(&buffer, Slot::new(0)).await);
+                    held = Some(hold(&shard, Slot::new(0)));
                 }
             }
             woken(&mut shard);
@@ -2478,7 +2483,6 @@ mod tests {
             let set = two_indexes();
             let mut shard = test.shard(1 << 16).await;
             let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
-            let reader = shard.buffer.reader();
             let mut held = None;
             let mut stamp = 10;
             loop {
@@ -2490,7 +2494,7 @@ mod tests {
                 }
                 shard.committed().await.expect("the commit ends");
                 if held.is_none() {
-                    held = Some(hold(&reader, Slot::new(2)).await);
+                    held = Some(hold(&shard, Slot::new(2)));
                 }
             }
             let written = shard.write(a, LIVE, over_record(&test.pool, &set, 10));
@@ -2746,7 +2750,6 @@ mod tests {
             let set = two_indexes();
             let mut shard = test.shard(1 << 16).await;
             let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
-            let reader = shard.buffer.reader();
             let mut held = None;
             let mut seq = 0;
             loop {
@@ -2759,7 +2762,7 @@ mod tests {
                 }
                 shard.committed().await.expect("the commit ends");
                 if held.is_none() {
-                    held = Some(hold(&reader, Slot::new(2)).await);
+                    held = Some(hold(&shard, Slot::new(2)));
                 }
             }
             let subject = "b".repeat(64);
@@ -4584,7 +4587,6 @@ mod tests {
                 let mut shard = test.shard(1 << 16).await;
                 let reader = latest(&mut shard, Slot::new(2));
                 let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
-                let buffer = shard.buffer.reader();
                 let mut held = None;
                 let mut next = 0;
                 loop {
@@ -4597,7 +4599,7 @@ mod tests {
                     next += 1;
                     shard.committed().await.expect("the commit ends");
                     if held.is_none() {
-                        held = Some(hold(&buffer, Slot::new(2)).await);
+                        held = Some(hold(&shard, Slot::new(2)));
                     }
                 }
                 assert_eq!(taken(&mut shard, reader, 1), [seq(next, 1)]);
@@ -5422,7 +5424,6 @@ mod tests {
                 let set = two_indexes();
                 let mut shard = test.shard(1 << 16).await;
                 let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
-                let reader = shard.buffer.reader();
                 let mut held = None;
                 let mut n = 0_i64;
                 let lost_at = loop {
@@ -5433,7 +5434,7 @@ mod tests {
                         shard.write(a, LIVE, write).expect("written").to_vec();
                     shard.committed().await.expect("the commit ends");
                     if held.is_none() {
-                        held = Some(hold(&reader, Slot::new(0)).await);
+                        held = Some(hold(&shard, Slot::new(0)));
                     }
                     n += 1;
                     if let [Outcome::Lost { range, .. }] = written[..] {
