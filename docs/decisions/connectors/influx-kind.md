@@ -103,10 +103,11 @@
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155189112). With a
   `token`, a 401 or a 403 gives "InfluxDB at {host} answered {status}. Check the token
   {source}: {body}", so that the cut of a long error keeps the status. With no
-  `token`, "InfluxDB at {host} answered {status}: {body}". `{host}` is the host and
-  port of `address`, so each error names the device (condition of `laptop.monitor`,
-  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241940271). A
-  token that holds a byte that an HTTP header cannot hold gives `Error::Retry`.
+  `token`, "InfluxDB at {host} answered {status}: {body}". `{host}` is the host of
+  `address`, with its port when `address` names one, so each error names the device
+  (condition of `laptop.monitor`,
+  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241940271). A token
+  that holds a byte that an HTTP header cannot hold gives `Error::Retry`.
   Approved by `laptop.architect-2` on 2026-10-14T04:16:45Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6160767913); the
   401 and 403 text on 2026-10-14T20:02:29Z
