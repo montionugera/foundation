@@ -27,8 +27,8 @@ const WAIT: Span = Span::SECOND;
 /// The status of each connector on the node, as `status` gives it.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub(crate) struct Output {
-    /// Each connector that the spec in use places on the node, and whose status the
-    /// subject may read, in name order.
+    /// Each connector that the spec in use places on the node, and whose label and
+    /// status channels the subject may read, in name order.
     pub(crate) connectors: Vec<Status>,
 }
 

@@ -37,11 +37,12 @@ mod tests;
 /// adds or changes, and `admin` on the key of each definition other than a channel that
 /// the plan adds, changes, or removes. It gives a home only to an index on which
 /// `subject` has `apply`, and drops each other home with no error. `status` shows only
-/// each connector on whose status channels `subject` has `read`. When it shows none,
-/// also when the node places none, it needs `read` on the name of the node, and gives
-/// `ops.denied` with no grant. It waits at most 1 s from the request. A connector is
-/// `unknown` when no status as the spec defines it comes in that time, and `status`
-/// gives `ops.channel-read` when the reader of a connector fails for another cause.
+/// each connector on whose label and status channels `subject` has `read`. When it
+/// shows none, also when the node places none, it needs `read` on the name of the
+/// node, and gives `ops.denied` with no grant. It waits at most 1 s from the request. A
+/// connector is `unknown` when no status as the spec defines it comes in that time, and
+/// `status` gives `ops.channel-read` when the reader of a connector fails for another
+/// cause.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {

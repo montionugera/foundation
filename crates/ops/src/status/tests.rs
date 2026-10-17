@@ -667,7 +667,7 @@ fn leaves_out_each_connector_on_another_node() {
     });
 }
 
-/// The head of the refusal of `subject`, which reads no status channel.
+/// The head of the refusal of `subject`, which reads no connector of the node.
 fn refused(subject: &str) -> Value {
     let message = format!(
         "no access policy gives `{subject}` the action `read` on a request that names \
