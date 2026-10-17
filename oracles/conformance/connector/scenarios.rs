@@ -49,7 +49,7 @@ mod inputs {
         pub kinds: fn() -> Table,
         /// Defines on the rig what a connector of the kind needs, starts each writer
         /// that feeds it until `until`, and gives the config of one connector that
-        /// reaches the device at `device`.
+        /// reaches the device at `address`.
         pub setup:
             for<'a> fn(Plant<'a>) -> Pin<Box<dyn Future<Output = Document> + 'a>>,
         /// Runs the kind's simulator on `address` of the device node until `until`,

@@ -104,7 +104,7 @@ pub(crate) struct Client {
     /// The bounds of the server on a Browse and a Translate, once
     /// [`Client::describe`] reads them.
     bounds: Option<browse::Bounds>,
-    /// The endpoint of the last [`Client::open`], which each failure names.
+    /// The endpoint of the last [`Client::open`], which each failed server call names.
     address: String,
     /// Drops after `raw` is deleted, as it holds the loop of the client.
     connections: Manager,

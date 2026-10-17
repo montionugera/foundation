@@ -1,18 +1,18 @@
 - **CONNECTOR CONFORMANCE (#2247, #2641)** `oracles/conformance/connector/` holds the
   scenarios that each connector kind passes, the oracle of D4's conformance kit. Each
   kind crate runs them as its `conformance` test, from `<kind>/main.rs`: a `Suite` and
-  one `suite!` line, which expands to one `#[test]` for each scenario, and one that
-  checks that a scenario past `RING` fails. The `[[test]]` entry of each kind is part of
-  the oracle. The scenarios use only public items: the rig of `connector::testing`,
-  `hub::testing::Env`, the sim, `env`, `document`, `types`, and the `kind`, `status`,
-  and `cancel` modules of `connector`. Each runs two sim nodes: the plant (the rig and
-  the connector) and the device (the kind's simulator). A `Suite` gives plain inputs:
-  its table, a setup that defines what the connector needs and starts each writer that
-  feeds it, its simulator, the name of its progress count, its backoff form, and the
-  configs that its check refuses with their exact diagnostics. People own the scenarios.
-  A kind that fails one has a defect, or the person changes the scenario. The scenarios
-  cover kinds whose device is a TCP address: a device that is not TCP waits on #3075,
-  until the first suite of a kind with no TCP carrier.
+  one `suite!` line, which expands to one `#[test]` for each scenario, and two that
+  check that a scenario that is not done at `RING` fails. The `[[test]]` entry of each
+  kind is part of the oracle. The scenarios use only public items: the rig of
+  `connector::testing`, `hub::testing::Env`, the sim, `env`, `document`, `types`, and
+  the `kind`, `status`, and `cancel` modules of `connector`. Each runs two sim nodes:
+  the plant (the rig and the connector) and the device (the kind's simulator). A `Suite`
+  gives plain inputs: its table, a setup that defines what the connector needs and
+  starts each writer that feeds it, its simulator, the name of its progress count, its
+  backoff form, and the configs that its check refuses with their exact diagnostics.
+  People own the scenarios. A kind that fails one has a defect, or the person changes
+  the scenario. The scenarios cover kinds whose device is a TCP address: a device that
+  is not TCP waits on #3075, until the first suite of a kind with no TCP carrier.
 
   "Heals" means: within `HEAL` (the backoff cap of 1 min, plus 10 s), the state is
   Running, the error is gone, and the progress count grows past its value at the start
@@ -24,24 +24,25 @@
   or a third form. The rulings of these two deferrals and of the form of scenario 5:
   `laptop.architect-2`, 2026-10-17T22:04:56Z
   (https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241915192).
-  `laptop.monitor`, 2026-10-17T22:06:42Z, accepted both deferrals with one condition:
-  each form names the cause and the address of the device, which scenarios 2 and 3 check
+  `laptop.monitor` accepted both deferrals with one condition (relayed by
+  `laptop.architect-2`, 2026-10-17T22:06:42Z): each form names the cause and the address
+  of the device, which scenarios 2 and 3 check
   (https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241940271).
 
-  A scenario that runs past 90 s of plant time (`RING`, the sum of the steps of its
-  sim) fails. The 4 MiB ring of `home::testing::shard` fills after about 100 s for
-  `opcua` and for `influx` (finding 7 of
-  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241787008), and
-  then can lose a status, so a check of an absence can pass. The longest scenario
-  runs 20.2 s of plant time (`influx`, the device does not answer), and scenario 2 of
-  `influx` runs 19.7 s (box1, at 2026-10-17). A later suite measures its own fill.
-  The trigger is the merge of #3050, which trims the ring and adds the two tests that
-  fail now
-  (https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6241900155).
-  #3050 removes `RING`, with the person's approval, as it is in `oracles/`. OK of
-  `laptop.architect`, 2026-10-17T21:54:10Z:
-  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241806249. The
-  form of the check: `laptop.architect-2`, 2026-10-17T22:04:56Z:
+  A scenario that runs past 90 s of plant time (`RING`, the sum of the steps of its sim)
+  fails. The 4 MiB ring of `home::testing::shard` fills after about 100 s for `opcua`
+  and for `influx` (finding 7 of
+  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241787008), and then
+  can lose a status, so a check of an absence can pass. The longest scenario runs 20.2 s
+  of plant time (`influx`, the device does not answer), and scenario 2 of `influx` runs
+  19.7 s (box1, at 2026-10-17). A later suite measures its own fill. The trigger is the
+  merge of #3050, which trims the ring and adds the two tests that fail now
+  (https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6241900155). #3050
+  removes `RING`, its check in `run`, and the `suite!` tests `fails_past_the_ring` and
+  `fails_50_ms_past_the_ring`, with the person's approval, as they are in `oracles/`. OK
+  of `laptop.architect`, 2026-10-17T21:54:10Z:
+  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241806249. The form
+  of the check: `laptop.architect-2`, 2026-10-17T22:04:56Z:
   https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241915192.
 
   1. **Starts.** Within 10 s: Running, no error, 0 restarts, and progress above 0.

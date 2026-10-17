@@ -106,8 +106,11 @@
   `token`, "InfluxDB at {host} answered {status}: {body}". `{host}` is the host of
   `address`, with its port when `address` names one, so each error names the device
   (condition of `laptop.monitor`,
-  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241940271). A token
-  that holds a byte that an HTTP header cannot hold gives `Error::Retry`.
+  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241940271). The
+  texts with `{host}`: `laptop.architect-2`, 2026-10-17T23:01:30Z
+  (https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6242754079). They
+  supersede "InfluxDB answered ..." of the two approvals below. A token that holds a
+  byte that an HTTP header cannot hold gives `Error::Retry`.
   Approved by `laptop.architect-2` on 2026-10-14T04:16:45Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6160767913); the
   401 and 403 text on 2026-10-14T20:02:29Z
@@ -226,7 +229,8 @@
   `retry::Backoff` of 1 s to 1 min. No answer or failed request ends the run: an action
   in InfluxDB fixes a 400, a 404, a 413, or a 422, and the next try after it lands the
   request. The reader stays open meanwhile, as in an outage of InfluxDB. The text is
-  `InfluxDB at {host} answered {status}: {body}`, and for these four statuses it adds a
+  `InfluxDB at {host} answered {status}: {body}` (the same ruling of
+  2026-10-17T23:01:30Z), and for these four statuses it adds a
   fix. A 400 and a 422 (InfluxDB 1 gives 400, and InfluxDB 2 gives 422, for a field type
   conflict and for points past retention): "For a field type conflict, write to another
   `measurement` or delete the old field in InfluxDB. For points older than the retention
