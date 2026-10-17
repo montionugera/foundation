@@ -62,7 +62,8 @@
   `laptop.architect-2` (2026-10-15T20:38:04Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201785053), with
   the thread of #2764.
-  (8) P1 holds at `info`: about 1.1 µs for each run of a node and 33 KB idle. A level
+  (8) P1 holds at `info`. With each write on the thread of its event, the log cost about
+  1.1 µs for each run of a node and 33 KB idle, and #2764 adds the costs below. A level
   under `info` is an operator's choice for debug, and its cost is outside P1. At `debug`
   and `trace`, `noq-proto` writes a line for each packet and frame of QUIC, at about 425
   to 739 ns and 2 to 6 allocations before the write, and at `trace` a span at 118 ns and
@@ -84,8 +85,9 @@
   https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207344849).
   (9) The thread `log` writes each line, so no event waits on the writer. An event puts
   its line in a queue of 1024 lines and 1 MiB, and wakes the thread. The lines, the
-  count of dropped lines, the panic lines, the waker, and the run of the thread are
-  under one lock, so each line, each drop, and each close wakes the thread, and a line
+  count of dropped lines, the panic lines, the waker, and the run of the thread and its
+  handle are under one lock, so each line, each drop, and each close wakes the thread,
+  and a line
   that comes as the thread ends gets a thread that writes it; loom models check both.
   The thread takes the lines out under the lock and writes them with the lock free, and
   each line is formatted before its push, so a writer that never returns holds no lock.
@@ -112,8 +114,9 @@
   hook before it. The hook puts ERROR `panicked` with the field `panic` in the queue
   after each line there, also when the queue is full: this line never drops. It sets no
   dispatch and starts no thread, since a panic can come from inside an event. While a
-  thread `log` runs, the hook waits up to 1 s and calls the hook before it only when the
-  log wrote each line within that bound. When no thread `log` runs, as after each shard
+  thread `log` runs, the hook waits up to 1 s and calls the hook before it when the log
+  wrote each line within that bound, or when no thread `log` runs once the wait ends.
+  When no thread `log` runs, as after each shard
   has ended and the thread wrote each line, it calls the hook before it at once, and the
   line waits for the next `Flush::wait` (laptop.architect-2,
   https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209084526). A panic
