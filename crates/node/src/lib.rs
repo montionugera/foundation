@@ -110,11 +110,12 @@ pub struct Config<M> {
     /// gives `std::env::vars_os()`.
     pub vars: BTreeMap<OsString, OsString>,
     /// The CA certificates that each `https` connect of a connector trusts. Main gives
-    /// [`os::roots::read()`]. Shard 0 logs a warning for each of the first 16 failures,
-    /// its text cut to 1024 bytes, one for the count of the rest with the
-    /// [`os::roots::Source`] of the read, cut the same way, one for the count of
-    /// certificates that do not parse, and one when no certificate is left. It logs
-    /// each of them also with [`Region::Absent`], which runs no connector.
+    /// [`os::roots::read()`]. When the read has a failure, shard 0 logs a warning with
+    /// the count of its failures and its [`os::roots::Source`], cut to 1024 bytes, one
+    /// for each of the first 16 failures, its text cut the same way, and one for the
+    /// count of the rest. It logs one for the count of certificates that do not parse,
+    /// and one when no certificate is left. It logs each of them also with
+    /// [`Region::Absent`], which runs no connector.
     pub roots: os::roots::Roots,
     /// Where and how the node writes its log. Each shard writes the events of its
     /// thread there, and [`Node::join`] the event `stopped`.

@@ -122,13 +122,16 @@
   (`laptop.architect-2`, 2026-10-16T15:14:05Z:
   https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6218554197). Main
   reads the store once, so a change to it takes effect at the next start. Before
-  `started`, shard 0 logs a warning "a part of the OS roots was not read" with the
-  `error` of each of the first 16 failures, "more parts of the OS roots were not read"
-  with the count `unlisted` of the rest and the `source` of the read, "OS roots that do
-  not parse are skipped" with the count `skipped`, and "the OS roots hold no
-  certificate, so an https connect with no CA of its connector fails". It logs them also
-  with `Region::Absent`. The cap of 16 failures keeps the warnings from filling the log
-  queue and dropping `started` (`laptop.architect-2`, 2026-10-16T20:40:05Z, #2920:
+  `started`, shard 0 logs a warning "parts of the OS roots were not read" with the
+  count `failed` of all failures and the `source` of the read, once, when the read has
+  a failure (`laptop.architect-2`, 2026-10-16T22:48:23Z, #2945:
+  https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6226140961), "a part
+  of the OS roots was not read" with the `error` of each of the first 16 failures,
+  "more parts of the OS roots were not read" with the count `unlisted` of the rest, "OS
+  roots that do not parse are skipped" with the count `skipped`, and "the OS roots hold
+  no certificate, so an https connect with no CA of its connector fails". It logs them
+  also with `Region::Absent`. The cap of 16 failures keeps the warnings from filling
+  the log queue and dropping `started` (`laptop.architect-2`, 2026-10-16T20:40:05Z, #2920:
   https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6224274551). For the
   same reason, an `error` of more than 1024 bytes keeps at most its first and last 510
   bytes, cut at char boundaries and joined by `…`, as a line of a PEM file can be of any
