@@ -279,7 +279,7 @@ fn within_writes_a_new_name_whose_resolved_path_is_too_long_as_free() {
 }
 
 /// A work folder that a program moves away and makes again holds nothing at either
-/// name until a new `within`.
+/// name until a new `within`, and refuses its own name as replaced.
 #[test]
 fn a_folder_that_a_program_moves_and_makes_again_holds_nothing() {
     run(|host| {
@@ -289,7 +289,7 @@ fn a_folder_that_a_program_moves_and_makes_again_holds_nothing() {
         let moved = within.read(&base.join("moved/a.hcl"), 1);
         host.paths.write(&base.join("work/a.hcl"), b"y").unwrap();
         let made = within.read(&base.join("work/a.hcl"), 1);
-        assert_eq!((moved, made), (Err(Error::Outside), Err(Error::Outside)));
+        assert_eq!((moved, made), (Err(Error::Outside), Err(Error::Replaced)));
     });
 }
 
@@ -318,7 +318,7 @@ fn within_hides_a_hidden_name_whose_resolved_path_is_too_long() {
             .paths
             .within(slice::from_ref(&top), slice::from_ref(&key))
             .unwrap();
-        assert_eq!(within.write(&key, b"x"), Err(Error::Hidden));
+        assert_eq!(within.write(&key, b"x"), Err(Error::Vacant));
         assert!(!deep.join(&name).exists());
         assert_eq!(within.write(&top.join("b.hcl"), b"x"), Ok(()));
     });
@@ -1110,7 +1110,7 @@ fn within_makes_no_file_at_a_hidden_name_in_other_case() {
         let there = (fs::metadata(&key).is_ok(), fs::metadata(&dir).is_ok());
         assert_eq!(
             (wrote, made, there),
-            (Err(Error::Hidden), Err(Error::Hidden), (false, false))
+            (Err(Error::Vacant), Err(Error::Vacant), (false, false))
         );
     });
 }

@@ -52,21 +52,22 @@ impl Paths {
     /// case, and a bind mount, reach the same folder. A folder of `folders` holds a
     /// path only while the file at its resolved path is the file that was there at this
     /// call, so one that a program renames away, replaces, or makes again holds nothing
-    /// until a new call of `within`. A write replaces a file, so a folder that is a
-    /// file holds nothing after a write to it, also through this handle. Each call
-    /// takes the file at each hidden folder again, from the path that the caller gave,
-    /// so a hidden file that a write replaces, and a hidden folder made after this
-    /// call, are hidden. A path also fails with [`Error::Hidden`] when a directory on
-    /// its way is the folder that was at a hidden path at this call, so a hidden folder
-    /// that a program renames away stays hidden, but not its own listing, and a
-    /// directory that the host gives the key of a hidden folder that it removed hides
-    /// what it holds. While nothing is at a hidden path, a call that makes a new name
-    /// in the deepest directory on its way that is there fails with [`Error::Hidden`],
-    /// also for a name that does not make that path. A folder whose file a call cannot
-    /// take holds nothing at that call. The limits of `self` hold too, so a handle
-    /// never reaches more than the one it came from. The check and the call are two
-    /// steps: a symbolic link that another program makes between them can lead the call
-    /// out.
+    /// until a new call of `within`, and a path under its resolved path fails with
+    /// [`Error::Replaced`]. A write replaces a file, so a folder that is a file holds
+    /// nothing after a write to it, also through this handle. Each call takes the file
+    /// at each hidden folder again, from the path that the caller gave, so a hidden
+    /// file that a write replaces, and a hidden folder made after this call, are
+    /// hidden. A path also fails with [`Error::Hidden`] when a directory on its way is
+    /// the folder that was at a hidden path at this call, so a hidden folder that a
+    /// program renames away stays hidden, but not its own listing, and a directory that
+    /// the host gives the key of a hidden folder that it removed hides what it holds.
+    /// While nothing is at a hidden path, a call that makes a new name in the deepest
+    /// directory on its way that is there fails with [`Error::Vacant`], also for a name
+    /// that does not make that path, unless another hidden folder refuses it with
+    /// [`Error::Hidden`]. A folder whose file a call cannot take holds nothing at that
+    /// call. The limits of `self` hold too, so a handle never reaches more than the one
+    /// it came from. The check and the call are two steps: a symbolic link that another
+    /// program makes between them can lead the call out.
     ///
     /// # Errors
     ///
@@ -156,17 +157,17 @@ impl Paths {
     ///
     /// # Errors
     ///
-    /// [`Error::NotFound`] when nothing is at `path`, [`Error::Outside`] or
-    /// [`Error::Hidden`] past the limits of [`Paths::within`], [`Error::Io`] 22 when
-    /// `path` is a file that is neither a regular file nor a directory, such as a FIFO
-    /// or a device, else [`Error::Io`]. When another writer changes a link in `path`
-    /// during the call, it gives the error of the open of the file that the link then
-    /// names, and opens that file, also a device. On Linux, the walk of a link that a
-    /// rename replaces during the call can read only a first part of its old target,
-    /// also none of it, so the call can open the folder of the link, or a folder on the
-    /// way to that target, such as `/`, and the rest of `path` resolves under that
-    /// folder. When the link is the last part of `path`, the read gives the entries of
-    /// that folder.
+    /// [`Error::NotFound`] when nothing is at `path`, [`Error::Outside`],
+    /// [`Error::Hidden`], [`Error::Vacant`], or [`Error::Replaced`] past the limits of
+    /// [`Paths::within`], [`Error::Io`] 22 when `path` is a file that is neither a
+    /// regular file nor a directory, such as a FIFO or a device, else [`Error::Io`].
+    /// When another writer changes a link in `path` during the call, it gives the error
+    /// of the open of the file that the link then names, and opens that file, also a
+    /// device. On Linux, the walk of a link that a rename replaces during the call can
+    /// read only a first part of its old target, also none of it, so the call can open
+    /// the folder of the link, or a folder on the way to that target, such as `/`, and
+    /// the rest of `path` resolves under that folder. When the link is the last part of
+    /// `path`, the read gives the entries of that folder.
     ///
     /// ```
     /// use std::path::{Path, PathBuf};
@@ -195,8 +196,8 @@ impl Paths {
     ///
     /// [`Error::NotFound`] when the directory of `path`, the directory that it names,
     /// or the file that a symbolic link at `path` names is not there,
-    /// [`Error::Outside`] or [`Error::Hidden`] past the limits of [`Paths::within`],
-    /// else [`Error::Io`].
+    /// [`Error::Outside`], [`Error::Hidden`], [`Error::Vacant`], or [`Error::Replaced`]
+    /// past the limits of [`Paths::within`], else [`Error::Io`].
     ///
     /// ```
     /// use std::path::Path;
@@ -222,8 +223,9 @@ impl Paths {
     /// # Errors
     ///
     /// [`Error::NotFound`] when the directory above `path` is not there,
-    /// [`Error::Outside`] or [`Error::Hidden`] past the limits of [`Paths::within`],
-    /// else [`Error::Io`], also when a file or a link to nothing is at `path`.
+    /// [`Error::Outside`], [`Error::Hidden`], [`Error::Vacant`], or [`Error::Replaced`]
+    /// past the limits of [`Paths::within`], else [`Error::Io`], also when a file or a
+    /// link to nothing is at `path`.
     ///
     /// ```
     /// use std::path::Path;
@@ -277,6 +279,7 @@ impl Paths {
             dirs.push(self.driver.key(dir)?);
         }
         let keys: Vec<_> = own.into_iter().chain(dirs.iter().copied()).collect();
+        let mut vacant = false;
         for limit in self.limits.iter() {
             for Hidden {
                 given,
@@ -288,7 +291,9 @@ impl Paths {
                 let hidden = match self.key(given) {
                     Ok(Some(key)) => keys.contains(&key),
                     Ok(None) => {
-                        own.is_none() && dirs.first() == self.above(resolved).as_ref()
+                        vacant |= own.is_none()
+                            && dirs.first() == self.above(resolved).as_ref();
+                        false
                     }
                     Err(_) => false,
                 };
@@ -297,12 +302,24 @@ impl Paths {
                 }
             }
         }
+        // `Hidden` of any hidden folder wins over `Vacant`.
+        if vacant {
+            return Err(Error::Vacant);
+        }
         for limit in self.limits.iter() {
+            let now = |dir: &PathBuf| self.driver.key(dir).ok();
             let held = |(dir, was): &(PathBuf, Key)| {
-                keys.contains(was) && self.driver.key(dir).ok() == Some(*was)
+                keys.contains(was) && now(dir) == Some(*was)
             };
             if !limit.folders.iter().any(held) {
-                return Err(Error::Outside);
+                let replaced = limit.folders.iter().any(|(dir, was)| {
+                    resolved.starts_with(dir) && now(dir) != Some(*was)
+                });
+                return Err(if replaced {
+                    Error::Replaced
+                } else {
+                    Error::Outside
+                });
             }
         }
         Ok(())
@@ -391,6 +408,12 @@ pub enum Error {
     Outside,
     /// The path resolves under a hidden folder of [`Paths::within`].
     Hidden,
+    /// Nothing is at a hidden path of [`Paths::within`], and the call makes a new name
+    /// in the deepest directory on the way to it that is there.
+    Vacant,
+    /// The path is under the resolved path of a folder of [`Paths::within`], where a
+    /// program put another file after that call.
+    Replaced,
 }
 
 /// What `os` and `sim` implement: the calls of [`Paths`], with the same contracts.
@@ -622,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_that_is_not_there_is_not_found_and_a_hidden_one_hides_its_name() {
+    fn a_missing_folder_is_not_found_and_a_new_name_by_a_hidden_one_is_vacant() {
         let free = Paths::new(One::default());
         let none = ["/none/a".into()];
         assert_eq!(
@@ -635,7 +658,7 @@ mod tests {
         let work = ["/work".into()];
         let paths = free.within(&work, &new).unwrap();
         for path in ["/work/new", "/work/new2"] {
-            assert_eq!(reached(&paths, path), Err(Error::Hidden), "{path}");
+            assert_eq!(reached(&paths, path), Err(Error::Vacant), "{path}");
         }
         assert_eq!(reached(&paths, "/work/a"), Ok(()));
         assert_eq!(reached(&paths, "/work/b/new"), Ok(()));
@@ -685,7 +708,7 @@ mod tests {
         let paths = free.within(&["/work/swapx".into()], &[]).unwrap();
         free.write(Path::new("/work/a"), b"x").unwrap();
         assert_eq!(reached(&paths, "/work/swap/a"), Err(Error::Outside));
-        assert_eq!(reached(&paths, "/work/swapx/a"), Err(Error::Outside));
+        assert_eq!(reached(&paths, "/work/swapx/a"), Err(Error::Replaced));
     }
 
     #[test]
