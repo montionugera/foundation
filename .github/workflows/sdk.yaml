@@ -153,3 +153,13 @@ jobs:
         run: |
           venv/bin/python -m unittest discover -s sdk/python/tests \
             -p '${{ matrix.tests }}' -v
+
+  # The required check. It fails when a job above failed or was cancelled. A pull
+  # request with no change under the filter skips each job, and it passes.
+  sdk:
+    needs: [changes, node, wheel, gate]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
