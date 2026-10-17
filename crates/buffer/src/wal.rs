@@ -21,11 +21,11 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::ops::Range;
 
-use crate::carry;
 use crate::entry::{self, ENTRIES_MAX};
 use crate::record::{
     self, ALIGN, AREA_START, BLOCK, Body, Check, HEADER_LEN, Head, Kind, Record,
 };
+use crate::{carry, group};
 
 /// The body of a restart record: one chain value.
 const RESTART_LEN: usize = 4;
@@ -64,10 +64,22 @@ fn spare(kind: Kind) -> u64 {
     }
 }
 
-/// The smallest body a layout allows: the rest of a block after the record header.
-/// A record takes whole blocks, so a smaller body saves no disk.
-const BODY_MIN: usize = ALIGN - HEADER_LEN;
-const _: () = assert!(entry::table_len(1) <= BODY_MIN, "a body holds one entry");
+/// The body of a record of one block.
+const BLOCK_BODY: usize = ALIGN - HEADER_LEN;
+const _: () = assert!(entry::table_len(1) <= BLOCK_BODY, "a block holds one entry");
+
+/// The smallest body a layout allows: the whole blocks that hold a record of the
+/// carry body of one tail and one tagged entry of [`Layout::ENTRY_MAX_MIN`] bytes,
+/// less the record header. So the holders of each record fit one carry record, and a
+/// carry record of the least body fills its blocks.
+const BODY_MIN: usize = (HEADER_LEN + carry::body_len(1, 1, Layout::ENTRY_MAX_MIN))
+    .next_multiple_of(ALIGN)
+    - HEADER_LEN;
+const _: () = assert!(BODY_MIN == 8183, "the docs give the least body_max");
+const _: () = assert!(
+    HEADER_LEN + BODY_MIN <= group::META_LEN,
+    "each pool that a buffer takes has a block for a carry record of BODY_MIN"
+);
 
 /// Bytes of the whole blocks that hold a record header and the largest entry table.
 const TABLE: usize = (HEADER_LEN + entry::TABLE_MAX).next_multiple_of(ALIGN);
@@ -81,8 +93,8 @@ fn to_u64(len: usize) -> u64 {
 }
 
 /// The size of the largest record of a body of at most `body_max` bytes, in whole
-/// blocks, or `None` when `body_max` is under one block less the record header, over
-/// `u32::MAX`, or so large that the record does not fit in a `usize`.
+/// blocks, or `None` when `body_max` is under [`BODY_MIN`], over `u32::MAX`, or so
+/// large that the record does not fit in a `usize`.
 fn window(body_max: usize) -> Option<u64> {
     let body = BODY_MIN..=usize::try_from(u32::MAX).unwrap_or(usize::MAX);
     let window = HEADER_LEN
@@ -136,7 +148,8 @@ impl Position {
     }
 }
 
-/// Sizes that do not make a ring. [`Layout::new`] says which sizes do.
+/// Sizes that do not make a ring, such as a `body_max` under 8183 bytes.
+/// [`Layout::new`] says which sizes do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Unfit {
     /// The area that was asked for, in bytes.
@@ -178,21 +191,23 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// The least [`entry_max`](Self::entry_max) of any layout and the least
-    /// [`Buffer::block_max`](crate::Buffer::block_max) of any buffer: the bytes of
-    /// parts that one entry alone holds in a record at the smallest `body_max`.
-    pub const ENTRY_MAX_MIN: usize = BODY_MIN - entry::table_len(1);
+    /// The bytes of parts that one entry alone holds in a record of one block: the
+    /// least [`Buffer::block_max`](crate::Buffer::block_max) of any buffer, and the
+    /// most bytes of an entry with a nonzero tag.
+    pub const ENTRY_MAX_MIN: usize = BLOCK_BODY - entry::table_len(1);
 
     /// A ring of `area` bytes whose records hold a body of at most `body_max` bytes.
     ///
     /// # Errors
     ///
-    /// [`Unfit`] when `body_max` is under 4087 bytes (one block less the record
-    /// header), over `u32::MAX`, or so large that the largest record does not fit in a
-    /// `usize`. Also when `area` is not a multiple of [`ALIGN`], when it is less than
-    /// four times the largest record (a 9-byte header and `body_max`, in whole
-    /// 4096-byte blocks) and three blocks, or when the ring file (two header blocks and
-    /// the area) does not fit in a `u64`. A ring of that area that holds only its
+    /// [`Unfit`] when `body_max` is under 8183 bytes (two blocks less the record
+    /// header, which hold the carry body of one tail and one tagged entry of
+    /// [`ENTRY_MAX_MIN`](Self::ENTRY_MAX_MIN) bytes), over `u32::MAX`, or so large
+    /// that the largest record does not fit in a `usize`.
+    /// Also when `area` is not a multiple of [`ALIGN`], when it is less than four
+    /// times the largest record (a 9-byte header and `body_max`, in whole 4096-byte
+    /// blocks) and three blocks, or when the ring file (two header blocks and the
+    /// area) does not fit in a `u64`. A ring of that area that holds only its
     /// restart record takes any record, wherever the restart record is.
     pub fn new(area: u64, body_max: usize) -> Result<Self, Unfit> {
         match window(body_max) {
@@ -220,7 +235,7 @@ impl Layout {
     ///
     /// # Panics
     ///
-    /// When `body_max` is a size that [`Layout::new`] refuses at any area: under 4087
+    /// When `body_max` is a size that [`Layout::new`] refuses at any area: under 8183
     /// bytes, over `u32::MAX`, or so large that the largest record does not fit in a
     /// `usize`.
     pub fn fit(len: u64, body_max: usize) -> Result<Self, Small> {
@@ -349,7 +364,8 @@ pub enum Limit {
         max: usize,
     },
     /// An entry with a nonzero tag whose parts, joined, pass
-    /// [`Layout::ENTRY_MAX_MIN`]: a carry record of one block must hold it.
+    /// [`Layout::ENTRY_MAX_MIN`], so a carry record of the least `body_max` holds it
+    /// with its tail.
     Tagged {
         /// Bytes of the entry's parts.
         len: usize,
@@ -1598,25 +1614,25 @@ mod tests {
         fn refuses_sizes_that_do_not_make_a_ring() {
             let block = 4096;
             let cases = [
-                ("an area of part blocks", 7 * block + 1, 4087),
-                ("a body under one block less the header", 8 * block, 4086),
-                ("an area of one record of two blocks", 2 * block, 4088),
-                ("an area of one record of one block", block, 4087),
-                ("an area of two records", 4 * block, 4088),
+                ("an area of part blocks", 11 * block + 1, 8183),
+                ("a body under the least body", 11 * block, 8182),
+                ("a body of one block less the header", 11 * block, 4087),
+                ("an area of one record of two blocks", 2 * block, 8183),
+                ("an area of two records", 4 * block, 8183),
                 (
-                    "an area of four one-block records and one block",
-                    5 * block,
-                    4087,
+                    "an area of four two-block records and two blocks",
+                    10 * block,
+                    8183,
                 ),
                 (
-                    "an area of four two-block records and one block",
-                    9 * block,
-                    4088,
+                    "an area of four three-block records and two blocks",
+                    14 * block,
+                    8184,
                 ),
                 ("a body over u32::MAX", u64::MAX - 4095, usize::MAX),
                 ("a record size over u64", u64::MAX - 4095, usize::MAX - 8),
-                ("a file over u64", u64::MAX - 4095, 4087),
-                ("a file one byte over u64", u64::MAX - 8191, 4087),
+                ("a file over u64", u64::MAX - 4095, 8183),
+                ("a file one byte over u64", u64::MAX - 8191, 8183),
             ];
             for (case, area, body_max) in cases {
                 let unfit = Unfit { area, body_max };
@@ -1628,7 +1644,7 @@ mod tests {
         fn takes_the_largest_aligned_area() {
             let area = u64::MAX - 12287;
             assert_eq!(
-                Layout::new(area, 4087).map(Layout::file_len),
+                Layout::new(area, 8183).map(Layout::file_len),
                 Ok(u64::MAX - 4095)
             );
         }
@@ -1683,39 +1699,42 @@ mod tests {
         fn carry_max_is_body_max_up_to_the_body_of_the_most_tails() {
             let most =
                 |area, body_max| Layout::new(area, body_max).map(Layout::carry_max);
-            assert_eq!(most(7 * 4096, 4087), Ok(4087));
+            assert_eq!(most(11 * 4096, 8183), Ok(8183));
             let tails = carry::body_len(carry::TAILS_MAX, 0, 0);
             assert_eq!((tails, most(67 * 4096, 65527)), (42970, Ok(tails)));
         }
 
         #[test]
-        fn holds_an_entry_of_4032_bytes_at_the_smallest_body() {
+        fn holds_an_entry_of_8128_bytes_at_the_smallest_body() {
             assert_eq!(Layout::ENTRY_MAX_MIN, 4032);
             assert_eq!(
-                Layout::new(7 * 4096, 4087).map(Layout::entry_max),
-                Ok(Layout::ENTRY_MAX_MIN)
+                Layout::new(11 * 4096, 8183).map(Layout::entry_max),
+                Ok(8128)
             );
         }
 
         #[test]
         fn takes_an_area_of_four_records_and_three_blocks() {
-            assert_eq!(Layout::new(7 * 4096, 4087).map(Layout::area), Ok(7 * 4096));
             assert_eq!(
-                Layout::new(11 * 4096, 4088).map(Layout::area),
+                Layout::new(11 * 4096, 8183).map(Layout::area),
                 Ok(11 * 4096)
+            );
+            assert_eq!(
+                Layout::new(15 * 4096, 8184).map(Layout::area),
+                Ok(15 * 4096)
             );
         }
 
         #[test]
         fn fits_the_smallest_ring_in_its_file_and_no_ring_in_a_byte_less() {
-            let min = 9 * 4096;
-            assert_eq!(Layout::fit(min, 4087).map(Layout::file_len), Ok(min));
+            let min = 13 * 4096;
+            assert_eq!(Layout::fit(min, 8183).map(Layout::file_len), Ok(min));
             for len in [min - 1, 8191, 0] {
-                assert_eq!(Layout::fit(len, 4087), Err(Small { len, min }));
+                assert_eq!(Layout::fit(len, 8183), Err(Small { len, min }));
             }
             assert_eq!(
                 Small { len: 8191, min }.to_string(),
-                "a ring file of 8191 bytes holds no ring; it needs at least 36864 bytes"
+                "a ring file of 8191 bytes holds no ring; it needs at least 53248 bytes"
             );
             let _: &dyn std::error::Error = &Small { len: 8191, min };
         }
@@ -1723,15 +1742,15 @@ mod tests {
         #[test]
         fn fits_the_largest_file() {
             assert_eq!(
-                Layout::fit(u64::MAX, 4087).map(Layout::file_len),
+                Layout::fit(u64::MAX, 8183).map(Layout::file_len),
                 Ok(u64::MAX - 4095)
             );
         }
 
         #[test]
-        #[should_panic(expected = "a body of at most 4086 bytes makes no ring")]
-        fn panics_on_a_body_under_a_block() {
-            let _layout = Layout::fit(u64::MAX, 4086);
+        #[should_panic(expected = "a body of at most 8182 bytes makes no ring")]
+        fn panics_on_a_body_under_the_least_body() {
+            let _layout = Layout::fit(u64::MAX, 8182);
         }
 
         #[test]
@@ -1941,7 +1960,7 @@ mod tests {
 
         #[test]
         fn is_full_when_the_wrap_passes_the_end_of_the_offsets() {
-            let small = Layout::new(19 * 4096, 4088).expect("the sizes make a ring");
+            let small = Layout::new(19 * 4096, 8183).expect("the sizes make a ring");
             let mut writer = Writer::empty(small, u64::MAX - 28671);
             let full = Full {
                 needed: 3 * 4096,
@@ -1976,11 +1995,11 @@ mod tests {
             assert_eq!(plan.map(|plan| plan.place), Ok(0));
         }
 
-        /// The writer of a ring of 16 blocks whose records each take one block.
-        /// After its restart record, record `n` of `records` ends at block `n + 1`
-        /// with the chain value `n`, and is synced.
+        /// The writer of a ring of 19 blocks whose records each take one block, and
+        /// whose largest record takes two. After its restart record, record `n` of
+        /// `records` ends at block `n + 1` with the chain value `n`, and is synced.
         fn filled(records: u32) -> Writer {
-            let layout = Layout::new(16 * 4096, 4087).expect("the sizes make a ring");
+            let layout = Layout::new(19 * 4096, 8183).expect("the sizes make a ring");
             let mut writer = Writer::empty(layout, 0);
             push(&mut writer, 1..=records);
             writer
@@ -2013,7 +2032,7 @@ mod tests {
             assert_eq!(filled(9).trimmed(None), None);
         }
 
-        /// The ring of [`filled`] has a lead of 10 blocks past the headroom of 6, so
+        /// The ring of [`filled`] has a lead of 10 blocks past the headroom of 9, so
         /// a step is 5 blocks.
         #[test]
         fn a_small_ring_steps_half_its_lead() {
@@ -2039,13 +2058,13 @@ mod tests {
             assert_eq!(writer.trimmed(None), Some(at(202, 201)));
         }
 
-        /// Two queued records make the headroom 9 blocks and the lead 7, so the
+        /// Three queued records make the headroom 12 blocks and the lead 7, so the
         /// low mark is at 3 blocks and the high mark at 6.5. Once they sync, the low
         /// mark is at the tail.
         #[test]
         fn trimmed_leaves_three_times_the_records_not_yet_synced_free() {
-            let mut writer = filled(7);
-            let queued: Vec<Ends> = (8..=9)
+            let mut writer = filled(6);
+            let queued: Vec<Ends> = (7..=9)
                 .map(|chain| queue(&mut writer, 8, chain).expect("the ring has room"))
                 .collect();
             assert_eq!(writer.trimmed(None), Some(at(7, 6)));
@@ -2953,8 +2972,8 @@ mod tests {
         /// with no data, so it takes its largest record.
         #[test]
         fn takes_the_largest_record_after_opens_with_no_data() {
-            let layout = Layout::new(7 * 4096, 4087).expect("the smallest area");
-            let mut area = vec![0; 7 * 4096];
+            let layout = Layout::new(11 * 4096, 8183).expect("the smallest area");
+            let mut area = vec![0; 11 * 4096];
             for chain in 1..=5 {
                 let mut cursor = Cursor::new(layout, START, PIECE);
                 loop {
@@ -2971,7 +2990,7 @@ mod tests {
                 area[place..place + HEADER_LEN].copy_from_slice(&sealed.record.header);
                 area[place + HEADER_LEN..place + HEADER_LEN + RESTART_LEN]
                     .copy_from_slice(&chain.to_le_bytes());
-                let appended = writer.append(4087).map(drop);
+                let appended = writer.append(8183).map(drop);
                 assert_eq!(appended, Ok(()), "the open of {chain}");
             }
         }

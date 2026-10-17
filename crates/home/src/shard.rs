@@ -75,7 +75,7 @@ const INTERVAL: Span = Span::from_nanos(1_000_000_000);
 /// #         clock: node.clock(),
 /// #         tasks,
 /// #         entropy: node.entropy(),
-/// #         layout: Layout::new(1 << 18, 4087).expect("a ring"),
+/// #         layout: Layout::new(1 << 18, 8183).expect("a ring"),
 /// #         commit: Span::from_nanos(10_000_000),
 /// #         trimmed: false,
 /// #     };
@@ -1233,8 +1233,8 @@ mod tests {
     const BLOCK: usize = 4096;
     /// A ring with room for each test but the full ring.
     const AREA: u64 = 1 << 18;
-    /// A body that keeps a record in one block.
-    const BODY_MAX: usize = 4087;
+    /// The least body.
+    const BODY_MAX: usize = 8183;
     const POOL: usize = 1 << 21;
     const COMMIT: Span = Span::from_nanos(10_000_000);
     const LEASE: Span = Span::from_nanos(1_000_000);
@@ -1618,10 +1618,10 @@ mod tests {
         frame(&create_pool(4 * POOL), set, &series)
     }
 
-    /// A frame that no record of `BODY_MAX` holds: entry 0 with 600 stamps from `first`
-    /// and entry 1 with as many scattered values, which do not compress.
+    /// A frame that no record of `BODY_MAX` holds: entry 0 with 1200 stamps from
+    /// `first` and entry 1 with as many scattered values, which do not compress.
     fn over_record(pool: &Pool, set: &KeySet, first: i64) -> Draft {
-        let len = 600;
+        let len = 1200;
         let stamps: Vec<i64> = (first..).take(len).collect();
         frame(pool, set, &[(0, &stamps), (1, &scattered(len))])
     }
@@ -2419,7 +2419,7 @@ mod tests {
             let set = two_indexes();
             let mut shard = test.shard(AREA).await;
             let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
-            for (label, stamp) in [(LIVE, 700), (BACKFILL, 5)] {
+            for (label, stamp) in [(LIVE, 1300), (BACKFILL, 5)] {
                 let over_record = over_record(&test.pool, &set, 10);
                 assert_eq!(shard.write(a, label, over_record), Err(Error::Large));
                 let small = frame(&test.pool, &set, &[(0, &[stamp]), (1, &[1])]);
@@ -2491,11 +2491,11 @@ mod tests {
             assert!(shard.indexes[0].handoff().is_some(), "no room at the open");
             // The handoff is appended before the bodies, so the size is never checked.
             let written = shard.write(b, LIVE, over_record(&test.pool, &set, 10));
-            assert_eq!(written, Ok(&[lost(0, 0, 600)][..]));
-            let over_block = over_block(&set, 1000, &[(2, &[stamp])]);
+            assert_eq!(written, Ok(&[lost(0, 0, 1200)][..]));
+            let over_block = over_block(&set, 1300, &[(2, &[stamp])]);
             assert_eq!(
                 shard.write(b, LIVE, over_block),
-                Ok(&[lost(0, 600, 240_000), lost(2, 13, 1)][..])
+                Ok(&[lost(0, 1200, 240_000), lost(2, 13, 1)][..])
             );
         });
     }
@@ -4159,7 +4159,7 @@ mod tests {
     #[test]
     fn records_the_largest_handoff_in_the_smallest_ring() {
         run(42, |test| async move {
-            let buffer = test.create_buffer(AREA, 4087, 1).await;
+            let buffer = test.create_buffer(AREA, 8183, 1).await;
             let mut shard = test.over(buffer).await;
             assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
             let set = intern(&[Group {
@@ -6338,14 +6338,15 @@ mod tests {
                     shard.ack(a, live(1)).expect("forward");
                 }
 
-                /// Fills the pool, then frees the smallest block that holds the body of
-                /// a part, so that one part can append. Returns the blocks it keeps.
+                /// The most bytes of the body of a part.
+                const PART: usize = buffer::Layout::ENTRY_MAX_MIN;
+
+                /// Fills the pool but for one block of the body of a part, so that one
+                /// part can append. Returns the blocks it keeps.
                 fn fill_but_one(test: &Test) -> Vec<block::Unique> {
-                    let mut blocks = test.fill();
-                    let part = blocks.iter().enumerate();
-                    let part = part.filter(|(_, block)| block.len() >= 4032);
-                    let part = part.min_by_key(|(_, block)| block.len());
-                    drop(blocks.swap_remove(part.expect("a block").0));
+                    let part = test.pool.alloc(PART).expect("a block");
+                    let blocks = test.fill();
+                    drop(part);
                     blocks
                 }
 

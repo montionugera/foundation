@@ -260,10 +260,10 @@ mod tests {
     }
 
     fn any_header() -> impl Strategy<Value = Header> {
-        (1..64u64, 0..64u64, any::<u32>(), any::<u64>()).prop_flat_map(
+        (2..64u64, 0..64u64, any::<u32>(), any::<u64>()).prop_flat_map(
             |(blocks, tail, chain, seq)| {
                 let most = usize::try_from(blocks * 4096).expect("a small size") - 9;
-                (4087..=most).prop_map(move |body_max| {
+                (8183..=most).prop_map(move |body_max| {
                     header((4 * blocks + 3) * 4096, body_max, tail * 4096, chain, seq)
                 })
             },
@@ -301,7 +301,7 @@ mod tests {
     /// torn. Bytes past the first sector are not read.
     #[test]
     fn checks_only_the_first_sector() {
-        let whole = header(8 * 4096, 4087, 0, 1, 0);
+        let whole = header(11 * 4096, 8183, 0, 1, 0);
         let mut block = whole.encode();
         block[COVER] = 1;
         block[ALIGN - 1] = 1;
@@ -312,10 +312,10 @@ mod tests {
 
     #[test]
     fn starts_at_offset_zero_and_alternates_the_two_blocks() {
-        let first = Header::new(layout(8 * 4096, 4087), 9);
-        assert_eq!(first, header(8 * 4096, 4087, 0, 9, 0));
+        let first = Header::new(layout(11 * 4096, 8183), 9);
+        assert_eq!(first, header(11 * 4096, 8183, 0, 9, 0));
         let second = first.next(Position::new(4096, 3).expect("aligned"));
-        assert_eq!(second, header(8 * 4096, 4087, 4096, 3, 1));
+        assert_eq!(second, header(11 * 4096, 8183, 4096, 3, 1));
         let third = second.next(Position::new(8192, 4).expect("aligned"));
         let places: Vec<u64> =
             [first, second, third].iter().map(Header::place).collect();
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn reads_no_header_from_a_wrong_magic_with_a_right_crc() {
-        let mut block = header(8 * 4096, 4087, 0, 1, 0).encode();
+        let mut block = header(11 * 4096, 8183, 0, 1, 0).encode();
         block[..8].copy_from_slice(b"SYNXRING");
         seal(&mut block);
         assert_eq!(Header::decode(&block, &[0; ALIGN]), Err(Error::Missing));
@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn tells_a_damaged_ring_from_no_ring() {
-        let mut block = header(8 * 4096, 4087, 0, 1, 0).encode();
+        let mut block = header(11 * 4096, 8183, 0, 1, 0).encode();
         block[CRC_AT] ^= 1;
         assert_eq!(Header::decode(&block, &[0; ALIGN]), Err(Error::Damaged));
         assert_eq!(Header::decode(&[0; ALIGN], &block), Err(Error::Damaged));
@@ -349,8 +349,8 @@ mod tests {
 
     #[test]
     fn takes_the_first_block_on_a_tie() {
-        let a = header(8 * 4096, 4087, 0, 1, 4);
-        let b = header(8 * 4096, 4087, 4096, 2, 4);
+        let a = header(11 * 4096, 8183, 0, 1, 4);
+        let b = header(11 * 4096, 8183, 4096, 2, 4);
         assert_eq!(Header::decode(&a.encode(), &b.encode()), Ok(a));
         assert_eq!(Header::decode(&b.encode(), &a.encode()), Ok(b));
     }
@@ -360,11 +360,11 @@ mod tests {
     /// when the other block is older and readable.
     #[test]
     fn refuses_a_version_it_does_not_read() {
-        let mut block = header(8 * 4096, 4087, 0, 1, 3).encode();
+        let mut block = header(11 * 4096, 8183, 0, 1, 3).encode();
         block[8..10].copy_from_slice(&2u16.to_le_bytes());
         block[CRC_AT + 4..CRC_AT + 12].copy_from_slice(&u64::MAX.to_le_bytes());
         seal(&mut block);
-        let older = header(8 * 4096, 4087, 0, 1, 2).encode();
+        let older = header(11 * 4096, 8183, 0, 1, 2).encode();
         assert_eq!(Header::decode(&block, &older), Err(Error::Version(2)));
         assert_eq!(Header::decode(&older, &block), Err(Error::Version(2)));
     }
@@ -374,35 +374,35 @@ mod tests {
     fn refuses_sizes_that_do_not_make_a_ring_and_an_unaligned_tail() {
         let unfit = |area, body_max| Error::Unfit(Unfit { area, body_max });
         let unaligned = Error::Unaligned(Unaligned { offset: 4097 });
-        let part = (8 * 4096u64 + 1).to_le_bytes();
+        let part = (11 * 4096u64 + 1).to_le_bytes();
         let off = 4097u64.to_le_bytes();
-        let small = 4086u32;
+        let small = 8182u32;
         let short = (6 * 4096u64).to_le_bytes();
         let cases: [(&str, Patch<'_>, Error); 5] = [
             (
-                "a body under one block less the header",
+                "a body under the least body",
                 &[(18, &small.to_le_bytes())],
-                unfit(8 * 4096, 4086),
+                unfit(11 * 4096, 8182),
             ),
             (
                 "an area under four records and three blocks",
                 &[(10, &short)],
-                unfit(6 * 4096, 4087),
+                unfit(6 * 4096, 8183),
             ),
             (
                 "an area of a part block",
                 &[(10, &part)],
-                unfit(8 * 4096 + 1, 4087),
+                unfit(11 * 4096 + 1, 8183),
             ),
             ("a tail off a boundary", &[(22, &off)], unaligned),
             (
                 "both",
                 &[(10, &part), (22, &off)],
-                unfit(8 * 4096 + 1, 4087),
+                unfit(11 * 4096 + 1, 8183),
             ),
         ];
         for (case, fields, expected) in cases {
-            let mut block = header(8 * 4096, 4087, 0, 1, 0).encode();
+            let mut block = header(11 * 4096, 8183, 0, 1, 0).encode();
             for (at, bytes) in fields {
                 block[*at..at + bytes.len()].copy_from_slice(bytes);
             }
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn reads_the_next_checkpoint_from_either_block() {
-        let old = header(8 * 4096, 4087, 0, 1, 4);
+        let old = header(11 * 4096, 8183, 0, 1, 4);
         let new = old.next(Position::new(4096, 2).expect("aligned"));
         assert_eq!((old.place(), new.place()), (0, 4096));
         assert_eq!(Header::decode(&old.encode(), &new.encode()), Ok(new));
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn reads_the_checkpoint_after_the_last_seq() {
-        let old = header(8 * 4096, 4087, 4096, 3, u64::MAX);
+        let old = header(11 * 4096, 8183, 4096, 3, u64::MAX);
         let new = old.next(Position::new(8192, 4).expect("aligned"));
         assert_eq!((old.place(), new.place()), (4096, 0));
         assert_eq!(Header::decode(&old.encode(), &new.encode()), Ok(new));

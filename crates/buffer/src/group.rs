@@ -172,8 +172,8 @@ impl Group {
     /// fits the layout and the ring of `writer`, and each entry is at most
     /// `block_max`. With a `carry_max`, the carry body of each holder that the
     /// record can have, each entry as a tail and each entry with a nonzero tag also
-    /// as a copy, is at most `carry_max` bytes, unless the record has one entry. So
-    /// one carry record moves every holder of the record. When the group has no
+    /// as a copy, is at most `carry_max` bytes. So one carry record moves every
+    /// holder of the record. When the group has no
     /// blocks, it takes them from `pool`. Counts the bytes of the batch in the
     /// group, so the caller then gives each entry of `batch` to
     /// [`take`](Self::take), in order.
@@ -200,7 +200,7 @@ impl Group {
         let layout = writer.layout();
         layout.check(count, parts, len).map_err(Rejected::Large)?;
         let (copies, copy_len) = copies(batch, block_max).map_err(Rejected::Large)?;
-        if let Some(max) = carry_max.filter(|_| copies > 0 && count > 1) {
+        if let Some(max) = carry_max.filter(|_| copies > 0) {
             let len = carry::body_len(count, copies, copy_len);
             if len > max {
                 return Err(Rejected::Large(Limit::Carry { len, max }));
@@ -621,7 +621,7 @@ mod tests {
     #[test]
     fn a_ring_that_a_header_opens_holds_one_entry_of_4032_bytes() {
         use crate::header;
-        let small = Layout::new(AREA, 4087).expect("the sizes make a ring");
+        let small = Layout::new(AREA, 8183).expect("the sizes make a ring");
         let block = header::Header::new(small, CHAIN).encode();
         let opened = header::Header::decode(&block, &[0; 4096]).expect("a whole block");
         let bytes = vec![0; index(AREA)];
@@ -1372,10 +1372,9 @@ mod tests {
         assert_eq!(pushed, Ok(0..2), "tag 0 and a tagged entry at the most fit");
     }
 
-    /// With a `carry_max`, a batch of more than one entry whose carry body passes it
-    /// names [`Limit::Carry`], a group whose record would pass it refuses the batch
-    /// as [`Rejected::Record`], and a batch of one entry, or a group with no tag,
-    /// fits. A cleared group counts no copy.
+    /// With a `carry_max`, a batch whose carry body passes it names [`Limit::Carry`],
+    /// a group whose record would pass it refuses the batch as [`Rejected::Record`],
+    /// and a group with no tag fits. A cleared group counts no copy.
     #[test]
     fn keeps_the_carry_body_of_a_record_at_most_carry_max() {
         let mut area = Area::new();
@@ -1413,7 +1412,10 @@ mod tests {
         assert_eq!(fit(&mut group, &pair, Some(239)), Ok(()));
         assert_eq!(fit(&mut group, &one, Some(431)), Err(Rejected::Record));
         assert_eq!(fit(&mut group, &one, Some(432)), Ok(()));
-        assert_eq!(fit(&mut Group::default(), &one, Some(0)), Ok(()));
+        assert_eq!(
+            fit(&mut Group::default(), &one, Some(196)),
+            Err(Rejected::Large(Limit::Carry { len: 197, max: 196 }))
+        );
         let plain = [
             entry(header(2, Path::Live, 0), part()),
             entry(header(4, Path::Live, 0), part()),
@@ -1485,7 +1487,7 @@ mod tests {
         /// byte more.
         #[test]
         fn one_entry_alone_takes_the_entry_max(
-            body_max in prop_oneof![Just(4087), 4087..=60_000usize],
+            body_max in prop_oneof![Just(8183), 8183..=60_000usize],
         ) {
             let area = Area::with_body_max(body_max);
             let max = area.layout.entry_max();

@@ -1638,7 +1638,7 @@ mod tests {
                     clock: shard.clock(),
                     tasks,
                     entropy: shard.entropy(),
-                    layout: Layout::new(64 * 4096, 8000)
+                    layout: Layout::new(64 * 4096, 8183)
                         .expect("the sizes make a ring"),
                     commit: COMMIT,
                     trimmed,
@@ -1722,7 +1722,7 @@ mod tests {
             |buffer, mut slots, pool| async move {
                 let one = slots.index(channel::Key::from_u128(1));
                 let part = pool.alloc(100).expect("a block").freeze();
-                let big = pool.alloc(8000).expect("a block").freeze();
+                let big = pool.alloc(8183).expect("a block").freeze();
                 buffer
                     .append([entry(1, one, Path::Live, 0, &part)])
                     .expect("the ring has room");
@@ -1732,8 +1732,8 @@ mod tests {
                     entry(1, one, Path::Live, 6, &big),
                 ];
                 let body = Limit::Body {
-                    len: 8206,
-                    max: 8000,
+                    len: 8389,
+                    max: 8183,
                 };
                 assert_eq!(buffer.append(refused), Err(Rejected::Large(body)));
                 assert_eq!(buffer.tail(one, Path::Live), tail);
@@ -2752,10 +2752,10 @@ mod tests {
 
         /// The [`room`] after an open of the ring that [`fill`] leaves: the open frees
         /// the records before the holder of path 1.
-        const OPENED: Room = (8000, 3 * 4096, 62 * 4096, Some(3 * 4096));
+        const OPENED: Room = (8183, 3 * 4096, 62 * 4096, Some(3 * 4096));
 
         /// The [`room`] after the first commit of [`OPENED`] that has its pool blocks.
-        const CARRIED: Room = (8000, 3 * 4096, 64 * 4096, Some(63 * 4096));
+        const CARRIED: Room = (8183, 3 * 4096, 64 * 4096, Some(63 * 4096));
 
         /// The durable seq of path 1 after an open of the ring on `node`.
         fn durable_after_open(sim: &mut sim::Sim, node: &sim::node::Node) -> u64 {
@@ -2791,12 +2791,12 @@ mod tests {
                 commit_after_open(&mut sim, &node, first + 1, false);
             assert_eq!(
                 opened,
-                (8000, 37 * 4096, 65 * 4096, Some(63 * 4096)),
+                (8183, 37 * 4096, 65 * 4096, Some(63 * 4096)),
                 "the open frees past the old holder of path 1"
             );
             assert_eq!(
                 committed,
-                (8000, 37 * 4096, 66 * 4096, Some(63 * 4096)),
+                (8183, 37 * 4096, 66 * 4096, Some(63 * 4096)),
                 "the commit writes its data record and no carry record"
             );
             assert_eq!(durable_after_open(&mut sim, &node), 9);
@@ -2913,8 +2913,8 @@ mod tests {
                 rooms[..3],
                 [
                     OPENED,
-                    (8000, 3 * 4096, 63 * 4096, Some(3 * 4096)),
-                    (8000, 3 * 4096, 64 * 4096, Some(3 * 4096)),
+                    (8183, 3 * 4096, 63 * 4096, Some(3 * 4096)),
+                    (8183, 3 * 4096, 64 * 4096, Some(3 * 4096)),
                 ],
                 "no block, no trim, no carry, then no room for a carry"
             );
@@ -2925,7 +2925,7 @@ mod tests {
             );
             assert_eq!(
                 rooms[4],
-                (8000, 38 * 4096, 65 * 4096, Some(64 * 4096)),
+                (8183, 38 * 4096, 65 * 4096, Some(64 * 4096)),
                 "the trim passes the old holder of path 1"
             );
         }
@@ -2993,7 +2993,7 @@ mod tests {
             assert_eq!(opened, OPENED);
             assert_eq!(
                 starved,
-                (8000, 3 * 4096, 63 * 4096, Some(3 * 4096)),
+                (8183, 3 * 4096, 63 * 4096, Some(3 * 4096)),
                 "the commit writes its data record, and no carry record takes a block"
             );
             sim.crash(&node, sim::Crash::Power);
@@ -3033,9 +3033,9 @@ mod tests {
             assert_eq!(
                 rooms,
                 [
-                    (8000, 3 * 4096, 64 * 4096, Some(3 * 4096)),
+                    (8183, 3 * 4096, 64 * 4096, Some(3 * 4096)),
                     (4087, 3 * 4096, 65 * 4096, Some(64 * 4096)),
-                    (8000, 38 * 4096, 65 * 4096, Some(64 * 4096)),
+                    (8183, 38 * 4096, 65 * 4096, Some(64 * 4096)),
                 ],
                 "the restart record takes the owed block, the first commit carries \
                  paths 1 and 2, and the next trims past the old holder of path 1"
@@ -3103,7 +3103,7 @@ mod tests {
             );
             let found = found.lock().expect("no panic held the lock").take();
             let ((gap, firsts, next), room) = found.expect("the shard gave the result");
-            assert_eq!(room, (8000, 58 * 4096, 101 * 4096, Some(100 * 4096)));
+            assert_eq!(room, (8183, 58 * 4096, 101 * 4096, Some(100 * 4096)));
             assert_eq!(gap, Some(0..171));
             assert_eq!(firsts, (57..100).map(|n| 3 * n).collect::<Vec<_>>());
             assert_eq!(next, Mark::at(300));
@@ -3150,11 +3150,11 @@ mod tests {
             let found = found.lock().expect("no panic held the lock").take();
             let (before, refused, queued, fits) =
                 found.expect("the shard gave the result");
-            assert_eq!(before, (8000, 29 * 4096, 71 * 4096, Some(70 * 4096)));
-            assert_eq!(refused, (565, FULL));
+            assert_eq!(before, (8183, 29 * 4096, 71 * 4096, Some(70 * 4096)));
+            assert_eq!(refused, (583, FULL));
             assert_eq!(
                 queued,
-                (8000, 29 * 4096, 90 * 4096, Some(70 * 4096)),
+                (8183, 29 * 4096, 90 * 4096, Some(70 * 4096)),
                 "the queued records fill the ring but the three blocks that stay free"
             );
             assert_eq!(fits, Ok(()));
