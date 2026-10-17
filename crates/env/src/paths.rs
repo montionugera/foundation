@@ -390,7 +390,7 @@ impl Paths {
             let replaced = limit.folders.iter().any(|(dir, was)| {
                 keys.contains(was)
                     || resolved.starts_with(dir)
-                    || short && dir.starts_with(resolved)
+                    || way != Way::End && dir.starts_with(resolved)
                     || self
                         .driver
                         .resolve(dir)
