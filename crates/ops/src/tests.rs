@@ -9,7 +9,7 @@ use std::task::{Context, Poll, Waker};
 use document::Source;
 use serde_json::{Map, Value, json};
 
-use crate::error::{Action, Among, Error, On, Unread};
+use crate::error::{Action, Among, Error, On, Unread, Unwritten};
 use crate::operation::{self, Response, TABLE};
 use crate::{FrontEnd, FrontEnds};
 use crate::{front_end, plan};
@@ -29,12 +29,15 @@ struct Exit {
 /// host that holds no file. Such a command does not wait, so one poll ends it.
 fn offline(
     args: impl IntoIterator<Item = OsString>,
-    input: impl io::BufRead,
+    mut input: impl io::BufRead,
     output: impl io::Write,
     errors: impl io::Write,
 ) -> crate::Run {
     let mut sim = sim::Sim::new(sim::Config::default());
-    let paths = sim.node(sim::node::Config::default()).paths();
+    let host = sim.node(sim::node::Config::default());
+    host.make_dir(Path::new("/work"));
+    host.set_working_dir(Path::new("/work"));
+    let paths = host.paths();
     let request = async |_: &[u8]| -> Result<Vec<u8>, crate::Failure> {
         panic!("a command sent a request")
     };
@@ -43,6 +46,7 @@ fn offline(
         reached.set(reached.get() + 1);
         Ok(request)
     };
+    let input = async || crate::line(&mut input);
     let cli = crate::cli(args, input, output, errors, &paths, reach);
     let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
     else {
@@ -79,8 +83,32 @@ fn failed(stderr: &str) -> Exit {
     }
 }
 
+/// The reply of [`crate::mcp::respond`] to `message`, with the paths of a host that
+/// holds no file and a link that reaches no node. It must not wait.
+fn respond(message: &str) -> Option<String> {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let paths = sim.node(sim::node::Config::default()).paths();
+    let request = async |_: &[u8]| -> Result<Vec<u8>, crate::Failure> {
+        panic!("a message sent a request")
+    };
+    let reached = Cell::new(0);
+    let mut link = crate::remote::Link::new(async || {
+        reached.set(reached.get() + 1);
+        Ok(request)
+    });
+    let scope = crate::scope::Scope::free(&paths);
+    let respond = crate::mcp::respond(message, &scope, &mut link);
+    let Poll::Ready(reply) =
+        pin!(respond).poll(&mut Context::from_waker(Waker::noop()))
+    else {
+        panic!("a message waited");
+    };
+    assert_eq!(reached.get(), 0, "a message reached a node");
+    reply
+}
+
 fn ask(message: &Value) -> Value {
-    let reply = crate::mcp::respond(&message.to_string()).expect("a reply");
+    let reply = respond(&message.to_string()).expect("a reply");
     assert!(!reply.contains('\n'), "one line: {reply}");
     serde_json::from_str(&reply).expect("json")
 }
@@ -119,9 +147,8 @@ fn each_operation_appears_once_in_the_cli_the_tools_and_the_docs() {
     let tools = tools();
     let tools = tools["tools"].as_array().expect("tools is a list");
     let docs = operation::docs();
-    // Six more for `start`, `plan`, `apply`, `status`, `mcp`, and `help`, which are
-    // not operations.
-    assert_eq!(command.get_subcommands().count(), TABLE.len() + 6);
+    // Three more for `start`, `mcp`, and `help`, which are not operations.
+    assert_eq!(command.get_subcommands().count(), TABLE.len() + 3);
     assert_eq!(tools.len(), TABLE.len());
     let inputs = operation::inputs();
     let outputs = operation::outputs();
@@ -167,22 +194,17 @@ fn each_schema_is_a_closed_object() {
     }
 }
 
+/// `remote::tests` holds the case of each operation that runs on a node.
 #[test]
 fn json_output_parses_back_to_the_typed_output() {
-    for spec in TABLE {
-        let exit = cli(&[spec.name, "--json"]);
-        assert_eq!(
-            (exit.status, exit.stderr.as_str()),
-            (0, ""),
-            "{}",
-            spec.name
-        );
+    for name in ["version", "docs"] {
+        let exit = cli(&[name, "--json"]);
+        assert_eq!((exit.status, exit.stderr.as_str()), (0, ""), "{name}");
         let output: Value = serde_json::from_str(&exit.stdout).expect("json");
         let response: Response =
-            serde_json::from_value(json!({ spec.name: output.clone() }))
-                .expect(spec.name);
+            serde_json::from_value(json!({ name: output.clone() })).expect(name);
         assert_eq!(response.json(), output);
-        let call = call(&json!({ "name": spec.name, "arguments": {} }));
+        let call = call(&json!({ "name": name, "arguments": {} }));
         assert_eq!(
             call["result"],
             json!({
@@ -539,6 +561,7 @@ fn a_call_with_no_arguments_runs() {
 }
 
 /// One error of each variant but `Config`, `Node`, and `Remote`.
+#[expect(clippy::too_many_lines, reason = "one value of each variant")]
 fn every() -> Vec<Error> {
     let pointer = spec::Pointer {
         version: 0,
@@ -589,11 +612,46 @@ fn every() -> Vec<Error> {
         },
         Error::Write {
             path: PathBuf::new(),
-            error: env::paths::Error::NotFound,
+            cause: Unwritten::NotFound,
         },
         Error::LargeRequest,
         Error::Reply {
             message: String::new(),
+        },
+        Error::Outside {
+            path: PathBuf::new(),
+            limits: crate::scope::Limits {
+                folders: vec![PathBuf::from("/work")],
+                data: PathBuf::from("/work/foundation-data"),
+                working: PathBuf::from("/work"),
+            },
+        },
+        Error::Hidden {
+            path: PathBuf::new(),
+            data: PathBuf::from("/work/foundation-data"),
+        },
+        Error::NoData {
+            path: PathBuf::new(),
+            data: PathBuf::from("/work/foundation-data"),
+        },
+        Error::FolderChanged {
+            path: PathBuf::new(),
+            folders: vec![PathBuf::from("/work")],
+        },
+        Error::PlanName {
+            path: PathBuf::new(),
+            resolved: PathBuf::new(),
+        },
+        Error::WideFolder {
+            working: PathBuf::new(),
+        },
+        Error::Folder {
+            path: PathBuf::new(),
+            cause: crate::error::Unusable::File,
+        },
+        Error::Data {
+            path: PathBuf::from("/work/foundation-data"),
+            error: env::paths::Error::NotFound,
         },
     ]
 }
@@ -623,6 +681,14 @@ fn error_codes_and_fixes_match_the_golden_file() {
             | Error::Write { .. }
             | Error::LargeRequest
             | Error::Reply { .. }
+            | Error::Outside { .. }
+            | Error::Hidden { .. }
+            | Error::NoData { .. }
+            | Error::FolderChanged { .. }
+            | Error::PlanName { .. }
+            | Error::WideFolder { .. }
+            | Error::Folder { .. }
+            | Error::Data { .. }
             | Error::Config(_)
             | Error::Node(_)
             | Error::Remote { .. } => {}
@@ -1063,7 +1129,7 @@ mod start {
 mod mcp {
     use serde_json::{Value, json};
 
-    use super::ask;
+    use super::{ask, respond};
 
     fn request(id: Value, method: &str, params: Value) -> Value {
         let mut request = json!({ "jsonrpc": "2.0", "method": method });
@@ -1141,11 +1207,7 @@ mod mcp {
             json!({ "jsonrpc": "2.0", "id": 1, "result": {} }),
             json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": 1, "message": "x" } }),
         ] {
-            assert_eq!(
-                crate::mcp::respond(&response.to_string()),
-                None,
-                "{response}"
-            );
+            assert_eq!(respond(&response.to_string()), None, "{response}");
         }
     }
 
@@ -1154,7 +1216,7 @@ mod mcp {
         for id in ["18446744073709551616", "-0", "1.0", "1.5", "null"] {
             let message = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"ping"}}"#);
             let reply: Value =
-                serde_json::from_str(&crate::mcp::respond(&message).expect("a reply"))
+                serde_json::from_str(&respond(&message).expect("a reply"))
                     .expect("json");
             assert_eq!(
                 reply,
@@ -1170,9 +1232,9 @@ mod mcp {
     #[test]
     fn a_notification_gets_no_reply() {
         let note = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
-        assert_eq!(crate::mcp::respond(&note.to_string()), None);
+        assert_eq!(respond(&note.to_string()), None);
         let unknown = json!({ "jsonrpc": "2.0", "method": "nope", "params": 5 });
-        assert_eq!(crate::mcp::respond(&unknown.to_string()), None);
+        assert_eq!(respond(&unknown.to_string()), None);
     }
 
     #[test]
@@ -1186,8 +1248,7 @@ mod mcp {
     #[test]
     fn bad_json_is_a_parse_error() {
         let reply: Value =
-            serde_json::from_str(&crate::mcp::respond("{").expect("a reply"))
-                .expect("json");
+            serde_json::from_str(&respond("{").expect("a reply")).expect("json");
         assert_eq!(reply, failure(Value::Null, -32700, "Parse error"));
     }
 
@@ -1302,6 +1363,26 @@ mod serve {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    /// A last line of exactly 1 MiB with no `\n` is not longer than 1 MiB.
+    #[test]
+    fn a_last_line_of_the_limit_with_no_newline_runs() {
+        let ping = PING.trim_end();
+        let last = format!("{}{ping}", " ".repeat(crate::mcp::LIMIT - ping.len()));
+        let line = crate::line(&mut last.as_bytes()).unwrap();
+        assert_eq!(line, crate::Line::Bytes(last.clone().into_bytes()));
+        assert_eq!(run(&["mcp"], last.as_bytes()).stdout, PONG);
+    }
+
+    #[test]
+    fn fuzz_inputs_reach_their_codes() {
+        let root = include_str!("../../../oracles/fuzz/ops_mcp/plan-root");
+        let out = run(&["mcp"], root.as_bytes()).stdout;
+        assert!(out.contains("ops.outside"), "{out}");
+        let outside = include_str!("../../../oracles/fuzz/ops_mcp/plan-outside");
+        let out = run(&["mcp"], outside.as_bytes()).stdout;
+        assert!(out.contains("ops.outside"), "{out}");
     }
 
     #[test]
@@ -1499,4 +1580,82 @@ fn the_places_of_one_file_share_its_path() {
     };
     assert_eq!(&*a.file, "site.hcl");
     assert!(std::sync::Arc::ptr_eq(&a.file, &b.file));
+}
+
+#[test]
+fn the_data_directory_of_one_name_is_in_the_working_directory() {
+    let error = Error::Data {
+        path: PathBuf::from("foundation-data"),
+        error: env::paths::Error::NotFound,
+    };
+    assert_eq!(
+        error.to_string(),
+        "the directory . above the data directory `foundation-data` is not there"
+    );
+}
+
+mod scope {
+    use std::path::{Path, PathBuf};
+
+    use crate::error::Error;
+    use crate::scope::Scope;
+
+    /// A host with the folder `/work`, which is the working directory, and the scope
+    /// of `foundation mcp` there, with the data directory `/work/foundation-data`.
+    fn work() -> (sim::node::Node, Scope) {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = sim.node(sim::node::Config::default());
+        host.make_dir(Path::new("/work"));
+        host.set_working_dir(Path::new("/work"));
+        let data = Path::new("/work/foundation-data");
+        let scope = Scope::mcp(&host.paths(), &[], data).expect("a scope");
+        (host, scope)
+    }
+
+    #[test]
+    fn a_plan_file_by_a_data_directory_moved_away_has_no_data() {
+        let (host, scope) = work();
+        let data = Path::new("/work/foundation-data");
+        host.move_path(data, Path::new("/data"));
+        assert_eq!(
+            scope.write(Path::new("out.plan"), b"x"),
+            Err(Error::NoData {
+                path: PathBuf::from("out.plan"),
+                data: data.to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_plan_file_in_a_folder_made_again_is_in_a_changed_folder() {
+        let (host, scope) = work();
+        host.move_path(Path::new("/work"), Path::new("/old"));
+        host.make_dir(Path::new("/work"));
+        assert_eq!(
+            scope.write(Path::new("out.plan"), b"x"),
+            Err(Error::FolderChanged {
+                path: PathBuf::from("out.plan"),
+                folders: vec![PathBuf::from("/work")],
+            })
+        );
+    }
+
+    #[test]
+    fn a_plan_file_in_a_files_folder_made_again_is_in_a_changed_folder() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = sim.node(sim::node::Config::default());
+        host.make_dir(Path::new("/plans"));
+        let data = Path::new("/data");
+        let scope =
+            Scope::mcp(&host.paths(), &["/plans".into()], data).expect("a scope");
+        host.move_path(Path::new("/plans"), Path::new("/old"));
+        host.make_dir(Path::new("/plans"));
+        assert_eq!(
+            scope.write(Path::new("/plans/out.plan"), b"x"),
+            Err(Error::FolderChanged {
+                path: PathBuf::from("/plans/out.plan"),
+                folders: vec![PathBuf::from("/plans")],
+            })
+        );
+    }
 }

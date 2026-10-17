@@ -51,33 +51,40 @@ impl Paths {
     /// directory that holds it, by the file and not by its name: a name in other case
     /// on a file system that ignores case, and a bind mount, reach the same folder. A
     /// folder of `folders` holds a path only while the file at its resolved path is the
-    /// file that was there at this call, so one that a program renames away, replaces,
-    /// or makes again holds nothing until a new call of `within`. A write replaces a
-    /// file, so a folder that is a file holds nothing after a write to it, also through
-    /// this handle. Each call takes the file at each hidden folder again, from the path
-    /// that the caller gave, so a hidden file that a write replaces, and a hidden
-    /// folder made after this call, are hidden. A path also fails with
-    /// [`Error::Hidden`] when a directory on its way is the folder that was at a hidden
-    /// path at this call, so a hidden folder that a program renames away stays hidden,
-    /// but not its own listing, and a directory that the host gives the key of a hidden
-    /// folder that it removed hides what it holds. While nothing is at a hidden path, a
-    /// call that makes a new name in the deepest directory on its way that is there,
-    /// when that directory is under a folder of each limit, fails with
-    /// [`Error::Hidden`], also for a name that does not make that path. A folder whose
-    /// file a call cannot take holds nothing at that call. The limits hold on each step
-    /// of a path: each prefix of its components that resolves, in order and without an
-    /// end `/` or `/.`, must pass them, and the first that fails gives its error. A
-    /// prefix short of the whole path is checked against the folders only when a `..`
-    /// after it takes the path above it, or nothing is there, and then also passes when
-    /// it is a directory on the way to a folder. A step meets `hidden` only when it
-    /// passes the folders of each limit. The name of the first prefix that does not
-    /// resolve must pass them too, at its place with no key, as a new name there does.
-    /// A relative path starts at the working directory: the steps of that directory
-    /// come first, and each prefix after them is a prefix of the path as given. A path
-    /// whose steps pass and that does not resolve gives the error of its resolve. The
-    /// limits of `self` hold too, so a handle never reaches more than the one it came
-    /// from. The check and the call are two steps: a symbolic link that another program
-    /// makes between them can lead the call out.
+    /// file that was there at this call, so one that a program renames away or replaces
+    /// holds nothing until a new call of `within`, and a path that resolves under it,
+    /// by its resolved path at this call or by the one that it resolves to now, or into
+    /// the directory that it was at this call, fails with [`Error::Replaced`]. One that
+    /// a program removes and makes again holds nothing too, unless the host gives the
+    /// new folder the key of the old one, as ext4 can. A write replaces a file, so a
+    /// folder that is a file holds nothing after a write to it, also through this
+    /// handle. Each call takes the file at each hidden folder again, from the path that
+    /// the caller gave, so a hidden file that a write replaces, and a hidden folder
+    /// made after this call, are hidden. A path also fails with [`Error::Hidden`] when
+    /// a directory on its way is the folder that was at a hidden path at this call, so
+    /// a hidden folder that a program renames away stays hidden, but not its own
+    /// listing, and a directory that the host gives the key of a hidden folder that it
+    /// removed hides what it holds. While nothing is at a hidden path, a write or a
+    /// `make_dir` that makes a new name in the deepest directory on its way that is
+    /// there fails with [`Error::Vacant`], also for a name that does not make that
+    /// path, unless the limits refuse it with [`Error::Hidden`], [`Error::Outside`], or
+    /// [`Error::Replaced`]. A read there finds nothing, and fails with
+    /// [`Error::NotFound`]. A folder whose file a call cannot take holds nothing at
+    /// that call. The limits hold on each step of a path: each prefix of its components
+    /// that resolves, in order and without an end `/` or `/.`, must pass them, and the
+    /// first that fails gives its error. Only the whole path can give
+    /// [`Error::Vacant`], since a call makes no other name. A prefix short of the whole
+    /// path is checked against the folders only when a `..` after it takes the path
+    /// above it, or nothing is there, and then also passes when it is a directory on
+    /// the way to a folder. A step meets `hidden` only when it passes the folders of
+    /// each limit. The name of the first prefix that does not resolve must pass them
+    /// too, at its place with no key, as a new name there does. A relative path starts
+    /// at the working directory: the steps of that directory come first, and each
+    /// prefix after them is a prefix of the path as given. A path whose steps pass and
+    /// that does not resolve gives the error of its resolve. The limits of `self` hold
+    /// too, so a handle never reaches more than the one it came from. The check and the
+    /// call are two steps: a symbolic link that another program makes between them can
+    /// lead the call out.
     ///
     /// # Errors
     ///
@@ -167,17 +174,17 @@ impl Paths {
     ///
     /// # Errors
     ///
-    /// [`Error::NotFound`] when nothing is at `path`, [`Error::Outside`] or
-    /// [`Error::Hidden`] past the limits of [`Paths::within`], [`Error::Io`] 22 when
-    /// `path` is a file that is neither a regular file nor a directory, such as a FIFO
-    /// or a device, else [`Error::Io`]. When another writer changes a link in `path`
-    /// during the call, it gives the error of the open of the file that the link then
-    /// names, and opens that file, also a device. On Linux, the walk of a link that a
-    /// rename replaces during the call can read only a first part of its old target,
-    /// also none of it, so the call can open the folder of the link, or a folder on the
-    /// way to that target, such as `/`, and the rest of `path` resolves under that
-    /// folder. When the link is the last part of `path`, the read gives the entries of
-    /// that folder.
+    /// [`Error::NotFound`] when nothing is at `path`, [`Error::Outside`],
+    /// [`Error::Hidden`], or [`Error::Replaced`] past the limits of [`Paths::within`],
+    /// [`Error::Io`] 22 when `path` is a file that is neither a regular file nor a
+    /// directory, such as a FIFO or a device, else [`Error::Io`]. When another writer
+    /// changes a link in `path` during the call, it gives the error of the open of the
+    /// file that the link then names, and opens that file, also a device. On Linux, the
+    /// walk of a link that a rename replaces during the call can read only a first part
+    /// of its old target, also none of it, so the call can open the folder of the link,
+    /// or a folder on the way to that target, such as `/`, and the rest of `path`
+    /// resolves under that folder. When the link is the last part of `path`, the read
+    /// gives the entries of that folder.
     ///
     /// ```
     /// use std::path::{Path, PathBuf};
@@ -192,7 +199,7 @@ impl Paths {
     /// }
     /// ```
     pub fn read(&self, path: &Path, most: usize) -> Result<Found, Error> {
-        self.check(path)??;
+        self.check(path, Call::Read)??;
         self.driver.read(path, most)
     }
 
@@ -206,8 +213,8 @@ impl Paths {
     ///
     /// [`Error::NotFound`] when the directory of `path`, the directory that it names,
     /// or the file that a symbolic link at `path` names is not there,
-    /// [`Error::Outside`] or [`Error::Hidden`] past the limits of [`Paths::within`],
-    /// else [`Error::Io`].
+    /// [`Error::Outside`], [`Error::Hidden`], [`Error::Vacant`], or [`Error::Replaced`]
+    /// past the limits of [`Paths::within`], else [`Error::Io`].
     ///
     /// ```
     /// use std::path::Path;
@@ -219,7 +226,7 @@ impl Paths {
     /// }
     /// ```
     pub fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
-        self.check(path)??;
+        self.check(path, Call::Make)??;
         self.driver.write(path, bytes)
     }
 
@@ -233,8 +240,9 @@ impl Paths {
     /// # Errors
     ///
     /// [`Error::NotFound`] when the directory above `path` is not there,
-    /// [`Error::Outside`] or [`Error::Hidden`] past the limits of [`Paths::within`],
-    /// else [`Error::Io`], also when a file or a link to nothing is at `path`.
+    /// [`Error::Outside`], [`Error::Hidden`], [`Error::Vacant`], or [`Error::Replaced`]
+    /// past the limits of [`Paths::within`], else [`Error::Io`], also when a file or a
+    /// link to nothing is at `path`.
     ///
     /// ```
     /// use std::path::Path;
@@ -246,24 +254,24 @@ impl Paths {
     /// }
     /// ```
     pub fn make_dir(&self, path: &Path) -> Result<(), Error> {
-        match self.check(path)? {
+        match self.check(path, Call::Make)? {
             // A link that does not resolve can lead to a directory that its place
             // does not hold. A directory made there resolves.
             Err(_) => {
                 self.driver.make_dir(path)?;
-                self.check(path)?
+                self.check(path, Call::Make)?
             }
             Ok(()) => self.driver.make_dir(path),
         }
     }
 
     /// `Ok` with the result of the resolve of `path` when each step of it passes each
-    /// limit: each prefix of the resolved working directory first for a relative path,
+    /// limit for `call`: each prefix of the resolved working directory first for a relative path,
     /// then each prefix of its components that resolves, in order, where a step short
     /// of `path` meets the folders as its [`Way`] gives, then the name of the first
     /// prefix that does not resolve, at its place with no key. Else the error of the
     /// first step that fails.
-    fn check(&self, path: &Path) -> Result<Result<(), Error>, Error> {
+    fn check(&self, path: &Path, call: Call) -> Result<Result<(), Error>, Error> {
         if self.limits.is_empty() {
             return Ok(Ok(()));
         }
@@ -296,7 +304,7 @@ impl Paths {
                 below -= 1;
                 let short = names.peek().is_some() || !parts.is_empty();
                 let back = up[0] > below;
-                self.allowed(self.key(&above)?, &above, Way::of(short, back))?;
+                self.allowed(self.key(&above)?, &above, Way::of(short, back), call)?;
             }
         }
         for (index, step) in parts.iter().enumerate() {
@@ -304,12 +312,12 @@ impl Paths {
             let short = index + 1 < parts.len();
             let Ok(resolved) = self.driver.resolve(&part) else {
                 if let Component::Normal(name) = step {
-                    self.allowed(None, &above.join(name), Way::of(short, true))?;
+                    self.allowed(None, &above.join(name), Way::of(short, true), call)?;
                 }
                 break;
             };
             let back = up[index + 1] > 0;
-            self.allowed(self.key(&part)?, &resolved, Way::of(short, back))?;
+            self.allowed(self.key(&part)?, &resolved, Way::of(short, back), call)?;
             above = resolved;
         }
         Ok(self.driver.resolve(path).map(|_| ()))
@@ -325,6 +333,7 @@ impl Paths {
         own: Option<Key>,
         resolved: &Path,
         way: Way,
+        call: Call,
     ) -> Result<(), Error> {
         let mut dirs = Vec::new();
         for dir in resolved.ancestors().skip(1) {
@@ -348,9 +357,27 @@ impl Paths {
                 .all(|limit| limit.folders.iter().any(passes))
         };
         let down = way == Way::Down && own.is_some();
-        if !down && !inside() {
-            return Err(Error::Outside);
+        if !down
+            && let Some(limit) = self
+                .limits
+                .iter()
+                .find(|limit| !limit.folders.iter().any(passes))
+        {
+            let replaced = limit.folders.iter().any(|(dir, was)| {
+                keys.contains(was)
+                    || resolved.starts_with(dir)
+                    || self
+                        .driver
+                        .resolve(dir)
+                        .is_ok_and(|to| resolved.starts_with(to))
+            });
+            return Err(if replaced {
+                Error::Replaced
+            } else {
+                Error::Outside
+            });
         }
+        let mut vacant = false;
         for limit in self.limits.iter() {
             for Hidden {
                 given,
@@ -362,7 +389,9 @@ impl Paths {
                 let hidden = match self.key(given) {
                     Ok(Some(key)) => keys.contains(&key),
                     Ok(None) => {
-                        own.is_none() && dirs.first() == self.above(resolved).as_ref()
+                        vacant |= own.is_none()
+                            && dirs.first() == self.above(resolved).as_ref();
+                        false
                     }
                     Err(_) => false,
                 };
@@ -372,6 +401,9 @@ impl Paths {
                     return Err(Error::Hidden);
                 }
             }
+        }
+        if vacant && way == Way::End && call == Call::Make {
+            return Err(Error::Vacant);
         }
         Ok(())
     }
@@ -391,6 +423,14 @@ impl Paths {
             Err(e) => Err(e),
         }
     }
+}
+
+/// What a call of [`Paths`] does at its path.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Call {
+    Read,
+    /// A write or a `make_dir`, which can make a new name.
+    Make,
 }
 
 /// A hidden folder of one call of [`Paths::within`].
@@ -483,6 +523,16 @@ pub enum Error {
     Outside,
     /// The path resolves under a hidden folder of [`Paths::within`].
     Hidden,
+    /// Nothing is at a hidden path of [`Paths::within`], and a write or a
+    /// [`Paths::make_dir`] makes a new name in the deepest directory on the way to it
+    /// that is there.
+    Vacant,
+    /// No folder of [`Paths::within`] holds the path, and a program moved or replaced a
+    /// folder of that call after it: the folder's path names another file, or nothing,
+    /// or the OS refuses its key. The path resolves under that folder, by the path that
+    /// the folder resolved to at that call or by the one that it resolves to now, or
+    /// into the directory that the folder was at that call.
+    Replaced,
 }
 
 /// What `os` and `sim` implement: the calls of [`Paths`], with the same contracts.
@@ -555,12 +605,14 @@ mod tests {
     /// resolves only after a directory is made, and `/none/deep`, a link to a directory
     /// that does not resolve, and each path in it, never. The key of a path ignores
     /// case, and a last name that starts with `new` resolves but has no key yet. The
-    /// key of a last name that starts with `swap` in any case takes the bytes of the
-    /// file after the path, so a write gives it a new key: after a write of `x`,
-    /// `/work/swap` has the key that `/work/swapx` had before it. A last name `io`
-    /// gives `Io` 5 for its key. A path in `/volume` has the key of the path without
-    /// `/volume`, as a second mount of `/` does. It counts its calls of `resolve` and
-    /// `key`, and a relative path is under its working directory, `/` at first.
+    /// last name `Gone`, in that case, gives `Io` 13 for its key after a write of
+    /// `gone`. The key of a last name that starts with `swap` in any case takes the
+    /// bytes of the file after the path, so a write gives it a new key: after a write
+    /// of `x`, `/work/swap` has the key that `/work/swapx` had before it. A last name
+    /// `io` gives `Io` 5 for its key. After a write of `hop`, `/hop` is a link to
+    /// `/out`. A path in `/volume` has the key of the path without `/volume`, as a
+    /// second mount of `/` does. It counts its calls of `resolve` and `key`, and a
+    /// relative path is under its working directory, `/` at first.
     #[derive(Debug, Default)]
     struct One(RefCell<Vec<u8>>, Rc<Cell<usize>>, Rc<RefCell<PathBuf>>);
 
@@ -590,6 +642,11 @@ mod tests {
 
         fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
             self.1.set(self.1.get() + 1);
+            if *self.0.borrow() == b"hop"
+                && let Ok(rest) = path.strip_prefix("/hop")
+            {
+                return Ok(Path::new("/out").join(rest));
+            }
             match path.strip_prefix("link") {
                 _ if path.as_os_str().is_empty() => Err(Error::NotFound),
                 _ if path.starts_with("/none/deep")
@@ -626,6 +683,9 @@ mod tests {
             if name == b"io" {
                 return Err(Error::Io { code: 5 });
             }
+            if name == b"Gone" && *self.0.borrow() == b"gone" {
+                return Err(Error::Io { code: 13 });
+            }
             let mut folded = at.as_os_str().as_encoded_bytes().to_ascii_lowercase();
             if name.to_ascii_lowercase().starts_with(b"swap") {
                 folded.extend_from_slice(&self.0.borrow());
@@ -639,13 +699,19 @@ mod tests {
         }
     }
 
-    /// What a write, a read, and a `make_dir` of `path` give, which agree.
+    /// What a write and a `make_dir` of `path` give, which agree. A read gives the
+    /// same, but passes the limits where they give `Vacant`.
     fn reached(paths: &Paths, path: &str) -> Result<(), Error> {
         let path = Path::new(path);
         let written = paths.write(path, b"x");
         let read = paths.read(path, 1).map(|_| ());
         let made = paths.make_dir(path);
-        assert_eq!([&written, &read], [&made; 2], "{}", path.display());
+        let passed = if written == Err(Error::Vacant) {
+            Ok(())
+        } else {
+            written
+        };
+        assert_eq!([&made, &read], [&written, &passed], "{}", path.display());
         written
     }
 
@@ -715,6 +781,15 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_whose_key_the_os_refuses_is_replaced() {
+        let free = Paths::new(One::default());
+        let within = free.within(&["/Gone".into()], &[]).unwrap();
+        free.write(Path::new("/x"), b"gone").unwrap();
+        let read = within.read(Path::new("/gone/a"), 1).map(|_| ());
+        assert_eq!(read, Err(Error::Replaced));
+    }
+
+    #[test]
     fn make_dir_checks_a_path_that_does_not_resolve_by_its_place() {
         // A new `One` for each path: a made directory makes each name in `/none`
         // resolve.
@@ -734,7 +809,7 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_that_is_not_there_is_not_found_and_a_hidden_one_hides_its_name() {
+    fn a_missing_folder_is_not_found_and_a_new_name_by_a_hidden_one_is_vacant() {
         let free = Paths::new(One::default());
         let none = ["/none/a".into()];
         assert_eq!(
@@ -747,7 +822,7 @@ mod tests {
         let work = ["/work".into()];
         let paths = free.within(&work, &new).unwrap();
         for path in ["/work/new", "/work/new2"] {
-            assert_eq!(reached(&paths, path), Err(Error::Hidden), "{path}");
+            assert_eq!(reached(&paths, path), Err(Error::Vacant), "{path}");
         }
         assert_eq!(reached(&paths, "/work/a"), Ok(()));
         assert_eq!(reached(&paths, "/work/b/new"), Ok(()));
@@ -796,8 +871,17 @@ mod tests {
         let free = Paths::new(One::default());
         let paths = free.within(&["/work/swapx".into()], &[]).unwrap();
         free.write(Path::new("/work/a"), b"x").unwrap();
-        assert_eq!(reached(&paths, "/work/swap/a"), Err(Error::Outside));
-        assert_eq!(reached(&paths, "/work/swapx/a"), Err(Error::Outside));
+        assert_eq!(reached(&paths, "/work/swap/a"), Err(Error::Replaced));
+        assert_eq!(reached(&paths, "/work/swapx/a"), Err(Error::Replaced));
+    }
+
+    #[test]
+    fn a_folder_that_a_link_replaces_holds_nothing() {
+        let free = Paths::new(One::default());
+        let paths = free.within(&["/hop".into()], &[]).unwrap();
+        free.write(Path::new("/x"), b"hop").unwrap();
+        let read = paths.read(Path::new("/hop/a"), 3).map(|_| ());
+        assert_eq!(read, Err(Error::Replaced));
     }
 
     #[test]
