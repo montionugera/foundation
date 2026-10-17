@@ -62,7 +62,11 @@ mod tests {
         fn sortable_keeps_the_order_of_floats(a in any::<f64>(), b in any::<f64>()) {
             let key = |value: f64| sortable::<8>(value.to_bits());
             prop_assert_eq!(a.total_cmp(&b), key(a).cmp(&key(b)));
-            #[expect(clippy::cast_possible_truncation, reason = "an `f32` sample")]
+            #[expect(
+                clippy::as_conversions,
+                clippy::cast_possible_truncation,
+                reason = "an `f32` sample"
+            )]
             let (a, b) = (a as f32, b as f32);
             let key = |value: f32| sortable::<4>(value.to_bits().into());
             prop_assert_eq!(a.total_cmp(&b), key(a).cmp(&key(b)));

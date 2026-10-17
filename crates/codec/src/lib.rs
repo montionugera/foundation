@@ -1578,6 +1578,7 @@ mod tests {
                     values.iter().flat_map(|v| v.to_le_bytes()).collect();
                 assert_eq!(check(Scalar::F64, &wide)[0], tag);
                 #[expect(
+                    clippy::as_conversions,
                     clippy::cast_possible_truncation,
                     reason = "each class of f32"
                 )]
