@@ -283,7 +283,7 @@ pub enum Found {
 /// What is at a path: a file or a directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// A file.
+    /// A regular file.
     File,
     /// A directory.
     Directory,
