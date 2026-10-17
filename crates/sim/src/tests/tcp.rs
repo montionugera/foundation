@@ -1890,3 +1890,25 @@ fn streams_counts_each_connect_and_stream_that_a_task_holds() {
     sim.crash(&a, Crash::Power);
     assert_eq!(a.streams(), 0);
 }
+
+#[test]
+fn streams_counts_a_refused_connect_and_no_orphan() {
+    let (mut sim, a, b) = pair(0, link::Config::default());
+    let mut listener = listen(&b, 4433);
+    start(&b, "server", move |_| async move {
+        let mut tcp = accept(&mut listener).await;
+        close(&mut tcp).await.unwrap();
+        drop(tcp);
+        pending::<()>().await;
+    });
+    let (open, refused) = (at(&b, 4433), at(&b, 4434));
+    start(&a, "client", move |node| async move {
+        let _open = connect(&node, open, options()).await.unwrap();
+        let mut connecting = pin!(connect(&node, refused, options()));
+        assert!(poll_once(connecting.as_mut()).await.is_none());
+        pending::<()>().await;
+    });
+    sim.run_for(Span::from_nanos(20 * delay().nanos())).unwrap();
+    // The server's end waits for the client's FIN after its driver dropped it.
+    assert_eq!((a.streams(), b.streams()), (2, 0));
+}
