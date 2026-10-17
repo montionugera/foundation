@@ -1218,7 +1218,6 @@ impl Serve {
                     source,
                 } = roots;
                 drop(certificates);
-                let shown = ops::roots::Failures::new(source.to_string(), failures);
                 tracing::info!(%name, address = %address.bound, shards, "started");
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,
@@ -1233,38 +1232,38 @@ impl Serve {
                     entropy: entropy.clone(),
                     region,
                 });
-                let (ops, followed) = match mesh.as_ref() {
-                    Some(mesh) => {
-                        let member = mesh.member(key);
-                        let member =
-                            member.expect("invariant: a mesh opens only on a member");
-                        let name = member.card.card().name.clone();
-                        let kinds = Arc::new(kinds());
-                        let ops = Rc::new(ops::Node::new(ops::Config {
-                            mesh: mesh.clone(),
-                            keys: channel_keys(&time, &entropy),
-                            front_ends: front_ends(),
-                            kinds: Arc::clone(&kinds),
-                            hub: hub.clone(),
-                            clock: clock.clone(),
-                            name: name.clone(),
-                            secrets: secrets.clone(),
-                            roots: shown,
-                        }));
-                        let config = connector::supervisor::Config {
-                            kinds,
-                            clock: clock.clone(),
-                            entropy,
-                            net,
-                            roots: trusted,
-                            tasks: tasks.clone(),
-                            hub: hub.clone(),
-                            secrets,
-                        };
-                        let runs = connectors::Runs::new(config, name);
-                        (Some(ops), Some(follow(mesh, hub.clone(), runs).await))
-                    }
-                    None => (None, None),
+                let (ops, followed) = if let Some(mesh) = mesh.as_ref() {
+                    let member = mesh.member(key);
+                    let member =
+                        member.expect("invariant: a mesh opens only on a member");
+                    let name = member.card.card().name.clone();
+                    let kinds = Arc::new(kinds());
+                    let ops = Rc::new(ops::Node::new(ops::Config {
+                        mesh: mesh.clone(),
+                        keys: channel_keys(&time, &entropy),
+                        front_ends: front_ends(),
+                        kinds: Arc::clone(&kinds),
+                        hub: hub.clone(),
+                        clock: clock.clone(),
+                        name: name.clone(),
+                        secrets: secrets.clone(),
+                        roots: ops::roots::Failures::new(source.to_string(), failures),
+                    }));
+                    let config = connector::supervisor::Config {
+                        kinds,
+                        clock: clock.clone(),
+                        entropy,
+                        net,
+                        roots: trusted,
+                        tasks: tasks.clone(),
+                        hub: hub.clone(),
+                        secrets,
+                    };
+                    let runs = connectors::Runs::new(config, name);
+                    (Some(ops), Some(follow(mesh, hub.clone(), runs).await))
+                } else {
+                    drop((source, failures));
+                    (None, None)
                 };
                 let handles = task::Handles { hub, ops };
                 let port = route::accept(

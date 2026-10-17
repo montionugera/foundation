@@ -35,13 +35,24 @@ fn main() {
     roots_of_many_failures_hold_at_most_a_mebibyte();
 }
 
+/// The failures of one byte hold their `String`, and also their spare capacity.
 fn roots_of_many_failures_hold_at_most_a_mebibyte() {
+    hold_at_most_a_mebibyte("of one byte", || "x".to_owned());
+    hold_at_most_a_mebibyte("with spare", || {
+        let mut failure = String::with_capacity(64);
+        failure.push('x');
+        failure
+    });
+}
+
+fn hold_at_most_a_mebibyte(made: &str, failure: impl Fn() -> String) {
     let before = ALLOCATOR.held();
-    let roots = ops::roots::Failures::new(String::new(), vec!["x".to_owned(); 100_000]);
+    let failures = (0..100_000).map(|_| failure()).collect();
+    let roots = ops::roots::Failures::new(String::new(), failures);
     let held = ALLOCATOR.held() - before;
     assert!(
         held <= 1 << 20,
-        "the roots of 100000 failures hold {held} bytes"
+        "the roots of 100000 failures {made} hold {held} bytes"
     );
     drop(roots);
 }

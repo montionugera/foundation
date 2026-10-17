@@ -30,7 +30,8 @@ pub(crate) fn roots(roots: &os::roots::Roots, served: bool) -> connector::http::
             tracing::warn!(
                 failed,
                 %source,
-                "parts of the OS roots were not read, and `foundation status` gives each"
+                "parts of the OS roots were not read, and `foundation status` gives \
+                 each"
             );
         } else {
             tracing::warn!(failed, %source, "parts of the OS roots were not read");

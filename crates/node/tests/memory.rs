@@ -107,6 +107,16 @@ fn failures() {
         "the node holds {} bytes more for failures of its roots that it does not keep",
         unkept.saturating_sub(none)
     );
+    let none = held(&node::Region::Absent, os::roots::Roots::default);
+    let unserved = held(&node::Region::Absent, move || os::roots::Roots {
+        failures: many(),
+        ..os::roots::Roots::default()
+    });
+    assert!(
+        unserved < none + (1 << 10),
+        "a node with no region holds {} bytes more for failures it shows to no one",
+        unserved.saturating_sub(none)
+    );
 }
 
 /// The bytes that a node with `region` holds once it has run for a second on the

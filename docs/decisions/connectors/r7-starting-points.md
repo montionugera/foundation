@@ -144,10 +144,12 @@
   `foundation status` on the running node gives the `source` and each failure, in full,
   to a subject with `read` on the name of the node, as `roots` in its JSON, and as
   `OS roots:` lines in its text when the read had a failure. `ops::roots::Failures`
-  keeps the failures in order while they hold at most 1 MiB of memory, and counts the
-  rest as `unlisted`, so the node keeps at most 1 MiB for them and the reply stays in
-  its 16 MiB bound (`laptop.architect-2`, 2026-10-17T04:59:46Z, #2945:
-  https://github.com/synnaxlabs/foundation/issues/2945#issuecomment-6229906709; the
+  keeps the failures in order while they and the `source` hold at most 1 MiB of
+  memory, and counts the rest as `unlisted`, so the node keeps at most 1 MiB for them
+  and the reply stays in its 16 MiB bound (`laptop.architect-2`, 2026-10-17T04:59:46Z,
+  #2945: https://github.com/synnaxlabs/foundation/issues/2945#issuecomment-6229906709;
+  the memory of each failure: `laptop.architect-2`, 2026-10-17T05:23:16Z, #2996:
+  https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230135838; the
   name: `laptop.architect-2`, 2026-10-17T05:23:46Z, #2996:
   https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230140617). The
   list comes from the running node, since a shell can read other roots, and a file on

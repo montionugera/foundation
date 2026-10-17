@@ -302,8 +302,8 @@ fn a_node_with_a_region_names_the_command_that_gives_each_failure_of_its_roots()
         logged_in(Region::Stored, failed(1), tracing::Level::WARN),
         [
             format!(
-                "{warn} parts of the OS roots were not read, and `foundation status` gives \
-                 each failed=1 source=\"the OS store\""
+                "{warn} parts of the OS roots were not read, and `foundation status` \
+                 gives each failed=1 source=\"the OS store\""
             ),
             format!("{warn} a part of the OS roots was not read error=\"failure 0\""),
         ]

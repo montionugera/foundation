@@ -1369,3 +1369,15 @@ fn gives_the_count_of_a_first_failure_over_the_bound() {
         assert_eq!(head, expected);
     });
 }
+
+#[test]
+fn writes_the_count_of_a_first_failure_over_the_bound() {
+    let roots = Failures::new("s".into(), vec!["x".repeat((1 << 20) + 1)]);
+    let output = Output {
+        connectors: Vec::new(),
+        roots: Some(roots),
+    };
+    let text = "You can read no connector on this node.\n\nOS roots: 1 failures, from \
+                s\nOS roots: left out: 1\n";
+    assert_eq!(output.text(), text);
+}

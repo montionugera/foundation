@@ -324,9 +324,9 @@ impl Output {
     /// `OS roots: left out: <count>` when it does not keep each.
     pub(crate) fn text(&self) -> String {
         let mut text = self.connectors();
-        if let Some(roots) = self.roots.as_ref().filter(|roots| !roots.clean()) {
+        if let Some(lines) = self.roots.as_ref().and_then(Failures::lines) {
             text.push('\n');
-            text.push_str(&roots.lines());
+            text.push_str(&lines);
         }
         text
     }

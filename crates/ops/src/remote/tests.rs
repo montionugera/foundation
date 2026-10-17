@@ -490,6 +490,29 @@ fn status_whose_reply_has_bytes_after_its_first_line_gives_bad_reply() {
 }
 
 #[test]
+fn status_text_of_roots_with_the_largest_unlisted_count_gives_the_largest_count() {
+    solo(|fixture, mesh| async move {
+        let reply = format!(
+            "{}\n",
+            json!({ "output": { "connectors": [], "roots": {
+                "source": "s", "failures": ["a"], "unlisted": u64::MAX,
+            }}})
+        );
+        let remote =
+            Remote::with(create_node(&fixture, mesh), Mode::Reply(reply.into_bytes()));
+        let paths = fixture.sim.paths();
+        let (run, output, errors) = remote.cli(&paths, &["status"]).await;
+        let text = "You can read no connector on this node.\n\nOS roots: \
+                    18446744073709551615 failures, from s\nOS roots: error: a\n\
+                    OS roots: left out: 18446744073709551615\n";
+        assert_eq!(
+            (run, output.as_str(), errors.as_str()),
+            (Run::Exit(0), text, "")
+        );
+    });
+}
+
+#[test]
 fn status_that_reaches_no_node_gives_its_failure() {
     solo(|fixture, mesh| async move {
         for (mode, calls) in [(Mode::Unreached, (1, 0)), (Mode::Unsent, (1, 1))] {
