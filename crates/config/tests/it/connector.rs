@@ -471,3 +471,45 @@ fn refuses_files_with_a_private_key_in_another_block() {
     let found = config::connector(&[read(text)], &name("plant"));
     assert_eq!(found.expect_err("an alarm"), alarms);
 }
+
+#[test]
+fn refuses_a_fill_in_kind_as_check_does() {
+    let text = "connector \"plant\" {\n  kind = fill(\"kind\")\n  node = \"edge\"\n}\n";
+    let unfilled = vec![(
+        "config.unfilled",
+        Some(29),
+        "the import found no value for kind".to_owned(),
+        "Write the value in place of `fill`".to_owned(),
+    )];
+    assert_eq!(problems(text), unfilled);
+    assert_eq!(refused(text, "plant"), unfilled);
+}
+
+#[test]
+fn refuses_a_fill_in_the_body_of_the_connector() {
+    let text = "connector \"plant\" {\n  kind = \"opcua\"\n  node = \"edge\"\n  \
+                address = fill(\"address\")\n}\n";
+    assert_eq!(
+        refused(text, "plant"),
+        vec![(
+            "config.unfilled",
+            Some(65),
+            "the import found no value for address".to_owned(),
+            "Write the value in place of `fill`".to_owned(),
+        )]
+    );
+}
+
+#[test]
+fn refuses_a_reserved_label_as_check_does() {
+    let text = "connector \"@plant\" {\n  kind = \"influx\"\n  node = \"edge\"\n}\n";
+    let reserved = vec![(
+        "config.reserved-name",
+        Some(10),
+        "\"@plant\" has a segment that starts with `@`, which is reserved".to_owned(),
+        "Remove the `@` from each segment".to_owned(),
+    )];
+    assert_eq!(problems(text)[..1], reserved[..]);
+    assert_eq!(refused(text, "@plant"), reserved);
+    assert_eq!(refused(text, "@PLANT"), reserved);
+}
