@@ -216,18 +216,29 @@ impl Status {
     pub(crate) fn note(&self, note: &dyn fmt::Display) {
         let note = cut(&note.to_string());
         self.change(|run| {
-            let changed = run.note != note;
+            if run.note == note {
+                return false;
+            }
+            tracing::info!(note = note.as_str(), "note");
             run.note = note;
-            changed
+            true
         });
     }
 
-    /// Stages `new`, unless it is the error that the run shows, or no run runs.
+    /// Stages and logs `new`, unless it is the error that the run shows, or no run
+    /// runs.
     fn set(&self, new: Shown) {
         self.change(|run| {
-            let changed = run.error != new;
+            if run.error == new {
+                return false;
+            }
+            match &new {
+                Shown::Nothing => {}
+                Shown::Cleared => tracing::info!("cleared"),
+                Shown::Error(error) => tracing::warn!(error = error.as_str(), "error"),
+            }
             run.error = new;
-            changed
+            true
         });
     }
 
@@ -348,6 +359,15 @@ impl Class {
             Err(kind::Error::Retry(source)) => (Some(Self::Retry), source.to_string()),
         };
         (class, cut(&text))
+    }
+
+    /// The name of the class in a line of the log.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Config => "config",
+            Self::Device => "device",
+            Self::Retry => "retry",
+        }
     }
 
     /// The value of `class` for `class`.
@@ -517,6 +537,7 @@ impl Writer {
             }
             session.started = true;
             session.phase = Phase::Running;
+            tracing::info!(restarts = session.restarts, "running");
         });
         self.values.run.replace(Some(Run::default()));
         true
@@ -531,6 +552,15 @@ impl Writer {
     ) -> impl Future<Output = ()> + use<'_> {
         self.values.run.take();
         let (class, error) = Class::with_text(end);
+        match class {
+            None => tracing::info!("ended"),
+            Some(Class::Config) => {
+                tracing::error!(class = "config", error = error.as_str(), "ended");
+            }
+            Some(class @ (Class::Device | Class::Retry)) => {
+                tracing::warn!(class = class.name(), error = error.as_str(), "ended");
+            }
+        }
         self.set(move |session| {
             session.class = class;
             session.error.set(&mut session.series, error);
@@ -545,12 +575,14 @@ impl Writer {
         self.applied().await;
         let next = self.clock.now() + span;
         self.change(|session| session.phase = Phase::Waiting(next));
+        tracing::info!(backoff = %span, "restarting");
         next
     }
 
     /// Writes `state` 2.
     pub(crate) async fn stop(&self) {
         self.set(|session| session.phase = Phase::Stopped).await;
+        tracing::info!("stopped");
     }
 
     /// Writes the change of state that `change` makes, after [`Self::applied`], so
