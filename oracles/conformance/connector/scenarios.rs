@@ -186,9 +186,9 @@ const HOLD: Span = Span::from_nanos(10_000_000_000);
 const LOST: Span = Span::from_nanos(30_000_000_000);
 /// How soon a connector heals: the backoff cap of 1 min, plus 10 s.
 const HEAL: Span = Span::from_nanos(70_000_000_000);
-/// The longest plant time of a scenario. The ring of the rig fills after about
-/// 100 s, and then loses each frame and status, until #3050 trims it.
-const BOUND: Span = Span::from_nanos(90_000_000_000);
+/// The longest plant time of a scenario. The ring of the rig's home fills after about
+/// 100 s for each kind with a suite, and then can lose a status, until #3050 trims it.
+const RING: Span = Span::from_nanos(90_000_000_000);
 /// How soon [`Run::stop`] returns.
 const STOP: Span = Span::from_nanos(5_000_000_000);
 /// The name of each connector of the scenarios.
@@ -425,12 +425,15 @@ where
             end.cancel();
         });
     drop(started.expect("the plant shard starts"));
-    let clock: Clock = plant.clock();
-    let start = clock.now();
+    let mut ran = Span::ZERO;
     while !done.cancelled() {
-        let ran = clock.now() - start;
-        assert!(ran <= BOUND, "the scenario runs past {BOUND} of plant time");
+        assert!(
+            ran <= RING,
+            "the scenario ran past {RING} of plant time, where the ring of the rig's \
+             home can lose a status (#160)"
+        );
         sim.run_for(STEP).expect("the run goes on");
+        ran = Span::from_nanos(ran.nanos() + STEP.nanos());
         if crash.cancelled() && !crashed.cancelled() {
             sim.crash(&host, Crash::Power);
             crashed.cancel();
