@@ -133,7 +133,9 @@
   each cursor, at most 16 MiB of them across its cursors, past which the browse gives
   `Error::Device` (round 2 findings 1 and 2, 2026-10-17T03:40:23Z, for this bound and
   for `VISITS`:
-  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229156018). The
+  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229156018, approved
+  by `laptop.architect-2`, 2026-10-17T04:05:28Z:
+  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229428004). The
   bound of browses at once is #2981. Until PR 5b2 of #2705 (#2969), a server that gives
   `BadNoContinuationPoints` fails the browse with `Error::Device` and its status. A
   node whose Read alone does not fit one message of the server gives no value.
