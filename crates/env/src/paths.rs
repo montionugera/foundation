@@ -532,11 +532,11 @@ mod tests {
     /// names `/out`. A directory that it makes is the file `dir`. A name in `/none`
     /// resolves only after a directory is made, and `/none/deep`, a link to a directory
     /// that does not resolve, never. The key of a path ignores case, and a last name
-    /// that starts with `new` resolves but has no key yet, and the last name `Gone`, in that case,
-    /// gives `Io` 13 for its key after a write of `gone`. The key of a last name that
-    /// starts with `swap` in any case takes the bytes of the file after the path, so a
-    /// write gives it a new key: after a write of `x`, `/work/swap` has the key that
-    /// `/work/swapx` had before it. A last name `io` gives `Io` 5 for its key.
+    /// that starts with `new` resolves but has no key yet. The last name `Gone`, in
+    /// that case, gives `Io` 13 for its key after a write of `gone`. The key of a last
+    /// name that starts with `swap` in any case takes the bytes of the file after the
+    /// path, so a write gives it a new key: after a write of `x`, `/work/swap` has the
+    /// key that `/work/swapx` had before it. A last name `io` gives `Io` 5 for its key.
     #[derive(Debug, Default)]
     struct One(RefCell<Vec<u8>>);
 
