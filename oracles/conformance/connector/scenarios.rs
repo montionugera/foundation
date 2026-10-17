@@ -143,7 +143,7 @@ const PORT: u16 = 9000;
 const STEP: Span = Span::from_nanos(100_000_000);
 /// How soon a connector of a device that serves is Running with progress.
 const START: Span = Span::from_nanos(10_000_000_000);
-/// How soon a connector of an absent device restarts twice.
+/// How soon a connector of an absent device shows its backoff form.
 const ABSENT: Span = Span::MINUTE;
 /// How long a connector of [`Backoff::Run`] holds its backoff status.
 const HOLD: Span = Span::from_nanos(10_000_000_000);
