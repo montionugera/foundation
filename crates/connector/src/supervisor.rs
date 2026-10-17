@@ -1531,7 +1531,9 @@ mod tests {
             let [_, second, third] = runs[..] else {
                 panic!("seed {seed}: three runs: {runs:?}");
             };
-            let (at, samples, ..) = &statuses[5];
+            let Some((at, samples, ..)) = statuses.get(5) else {
+                panic!("seed {seed}: a sixth status: {statuses:?}");
+            };
             assert_eq!(
                 samples[..2],
                 [1, 2],
