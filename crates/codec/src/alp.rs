@@ -34,7 +34,8 @@ const TOP: usize = 5;
 const RUN: usize = 32;
 /// Runs of a search of all pairs.
 const RUNS: usize = 8;
-/// Values after which an encoder searches all pairs again.
+/// Values of vectors that ALP can make smaller, after which an encoder searches all
+/// pairs again.
 const SEARCH: usize = 102_400;
 
 const _: () = assert!(
@@ -305,7 +306,7 @@ impl Stats {
 pub(crate) struct Pairs {
     top: [Pair; TOP],
     len: usize,
-    /// Values since the last search of all pairs.
+    /// Values of vectors that ALP can make smaller since the last search of all pairs.
     values: usize,
 }
 
@@ -315,7 +316,9 @@ impl Pairs {
     #[inline(never)]
     pub(crate) fn plan<const W: usize>(&mut self, chunk: &[u8], best: Plan) -> Plan {
         let count = chunk.len().div_euclid(W);
-        if count < 2 {
+        let limit = best.len(count, W);
+        let header = vector::header_len(Header::fields(W), W);
+        if limit <= header {
             return best;
         }
         if self.len == 0 || self.values >= SEARCH {
@@ -323,11 +326,6 @@ impl Pairs {
             self.values = 0;
         }
         self.values = self.values.strict_add(count);
-        let limit = best.len(count, W);
-        let header = vector::header_len(Header::fields(W), W);
-        if limit <= header {
-            return best;
-        }
         let mut buffer = [0; RUN * 8];
         let picked = if count <= RUN {
             chunk

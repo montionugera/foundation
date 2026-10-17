@@ -1970,6 +1970,22 @@ mod tests {
             }
         }
 
+        /// A vector that ALP cannot make smaller does not search the pairs. After a
+        /// constant vector, which every pair encodes in 0 bits, decimals take ALP.
+        #[test]
+        fn skips_the_search_at_a_vector_that_alp_cannot_make_smaller() {
+            let decimals: Vec<f64> = (0..1_024)
+                .map(|k| f64::from(2_000 + (k * 7_919) % 1_000) / 100.0)
+                .collect();
+            for (len, alp) in [(1_024, 1_296), (16, 40)] {
+                let mut encoder = Encoder::new(Type::Scalar(Scalar::F64));
+                let constant = write(&mut encoder, Scalar::F64, &[1.0; 1_024]);
+                assert_eq!(constant[0], vector::FFOR, "{len}");
+                let out = write(&mut encoder, Scalar::F64, &decimals[..len]);
+                assert_eq!((out[0], out.len()), (vector::ALP, alp), "{len}");
+            }
+        }
+
         /// Each float whose integer does not decode to its bits is an exception: NaN,
         /// infinities, -0.0, subnormals, and floats past the integers of the sample
         /// width. Quarters decode exactly under e = 2 and f = 0.
@@ -2036,10 +2052,11 @@ mod tests {
             assert_eq!((encoded[0], encoded.len()), (vector::DELTA, 24));
         }
 
-        /// A vector of one sample does not search the pairs, and a vector of two does.
-        /// Its integers keep `e` = 0, so quarters after it do not use ALP.
+        /// A vector of one sample, which ALP cannot make smaller, does not search the
+        /// pairs, and a vector of three does. Its integers keep `e` = 0, so quarters
+        /// after it do not use ALP.
         #[test]
-        fn searches_the_pairs_at_the_first_vector_of_two_samples() {
+        fn searches_the_pairs_at_the_first_vector_that_alp_can_make_smaller() {
             for scalar in FLOATS {
                 let quarters: Vec<f64> =
                     (0..1_024).map(|k| f64::from(k % 89) / 4.0).collect();
@@ -2048,7 +2065,7 @@ mod tests {
                 let after = write(&mut encoder, scalar, &quarters);
                 assert_eq!(after[0], vector::ALP, "{scalar:?}");
                 let mut encoder = Encoder::new(Type::Scalar(scalar));
-                write(&mut encoder, scalar, &[1.0, 2.0]);
+                write(&mut encoder, scalar, &[1.0, 1_000_000.0, 3.0]);
                 let after = write(&mut encoder, scalar, &quarters);
                 assert_ne!(after[0], vector::ALP, "{scalar:?}");
             }
