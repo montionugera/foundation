@@ -112,14 +112,15 @@
   hook, to `Flush::hook` over the hook before it. The hook puts ERROR `panicked` with
   the field `panic` in the queue after each line there, also when the queue is full:
   this line never drops. It sets no dispatch and starts no thread, since a panic can
-  come from inside an event. While a thread `log` runs, the hook waits up to 1 s and
-  calls the hook before it when the log wrote each line within that bound, or when no
-  thread `log` runs once the wait ends. When no thread `log` runs, as after each shard
-  has ended and the thread wrote each line, it calls the hook before it at once, and the
-  line waits for the next `Flush::wait` (laptop.architect-2,
+  come from inside an event. While a thread `log` runs on another thread, the hook
+  waits up to 1 s for the log to write each line. It calls the hook before it unless
+  that bound passes while that thread still runs, since the writer may block that write
+  too. So when no thread `log` runs, as after each shard has ended and the thread wrote
+  each line, it calls the hook before it at once, and the line waits for the next
+  `Flush::wait` (laptop.architect-2,
   https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209084526). A panic
   of the writer, on the thread `log`, also calls it at once, since only that thread
-  writes the line, and a hook that waits as the writer panics then calls it too.
+  writes the line.
   Decision by `laptop.monitor` (2026-10-15T21:39:25Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202838819). The
   plan by `laptop.architect-2` (2026-10-15T21:43:54Z,
