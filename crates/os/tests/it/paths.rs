@@ -280,7 +280,7 @@ fn within_writes_a_new_name_whose_resolved_path_is_too_long_as_free() {
 }
 
 /// A work folder that a program moves away and makes again holds nothing at either
-/// name until a new `within`, and refuses its own name as replaced.
+/// name until a new `within`, and refuses a path at each name as replaced.
 #[test]
 fn a_folder_that_a_program_moves_and_makes_again_holds_nothing() {
     run(|host| {
@@ -290,7 +290,7 @@ fn a_folder_that_a_program_moves_and_makes_again_holds_nothing() {
         let moved = within.read(&base.join("moved/a.hcl"), 1);
         host.paths.write(&base.join("work/a.hcl"), b"y").unwrap();
         let made = within.read(&base.join("work/a.hcl"), 1);
-        assert_eq!((moved, made), (Err(Error::Outside), Err(Error::Replaced)));
+        assert_eq!((moved, made), (Err(Error::Replaced), Err(Error::Replaced)));
     });
 }
 

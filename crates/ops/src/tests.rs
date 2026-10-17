@@ -1632,30 +1632,29 @@ mod scope {
         host.move_path(Path::new("/work"), Path::new("/old"));
         host.make_dir(Path::new("/work"));
         assert_eq!(
-            scope.write(Path::new("/work/out.plan"), b"x"),
+            scope.write(Path::new("out.plan"), b"x"),
             Err(Error::FolderChanged {
-                path: PathBuf::from("/work/out.plan"),
+                path: PathBuf::from("out.plan"),
                 folders: vec![PathBuf::from("/work")],
             })
         );
     }
 
-    /// The process stays on its working directory when it moves, so a relative path
-    /// resolves in the moved folder, which no folder of the scope holds.
     #[test]
-    fn a_relative_plan_file_in_a_moved_working_directory_is_outside() {
-        let (host, scope) = work();
-        host.move_path(Path::new("/work"), Path::new("/old"));
-        host.make_dir(Path::new("/work"));
+    fn a_plan_file_in_a_files_folder_made_again_is_in_a_changed_folder() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = sim.node(sim::node::Config::default());
+        host.make_dir(Path::new("/plans"));
+        let data = Path::new("/data");
+        let scope =
+            Scope::mcp(&host.paths(), &["/plans".into()], data).expect("a scope");
+        host.move_path(Path::new("/plans"), Path::new("/old"));
+        host.make_dir(Path::new("/plans"));
         assert_eq!(
-            scope.write(Path::new("out.plan"), b"x"),
-            Err(Error::Outside {
-                path: PathBuf::from("out.plan"),
-                limits: crate::scope::Limits {
-                    folders: vec![PathBuf::from("/work")],
-                    data: PathBuf::from("/work/foundation-data"),
-                    working: PathBuf::from("/work"),
-                },
+            scope.write(Path::new("/plans/out.plan"), b"x"),
+            Err(Error::FolderChanged {
+                path: PathBuf::from("/plans/out.plan"),
+                folders: vec![PathBuf::from("/plans")],
             })
         );
     }

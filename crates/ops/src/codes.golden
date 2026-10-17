@@ -15,7 +15,7 @@ ops.read	Fix the cause in the message, then run the command again
 ops.write	Give `--out`, or `out` of the MCP tool, a path in a directory that can be written
 ops.large-request	Make the config files smaller
 ops.bad-reply	Use a `foundation` program of the same version as the node
-ops.outside	Give a path under one of those folders. A relative path is relative to the working directory /work. To reach another folder, add `--files <DIR>` to the command of the MCP server
+ops.outside	Give a path under one of those folders. A relative path starts at the working directory of this MCP server, which was /work at its start. To reach another folder, add `--files <DIR>` to the command of the MCP server
 ops.hidden	Give a path outside /work/foundation-data
 ops.no-data	Start the node on /work/foundation-data again, or give a path in another directory
 ops.folder-changed	Start `foundation mcp` again

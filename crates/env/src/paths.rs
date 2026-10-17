@@ -53,7 +53,8 @@ impl Paths {
     /// path only while the file at its resolved path is the file that was there at this
     /// call, so one that a program renames away or replaces holds nothing until a new
     /// call of `within`, and a path that resolves under it, by its resolved path at
-    /// this call or by the one that it resolves to now, fails with [`Error::Replaced`].
+    /// this call or by the one that it resolves to now, or into the directory that it
+    /// was at this call, fails with [`Error::Replaced`].
     /// One that a program removes and makes again holds nothing too, unless the host
     /// gives the new folder the key of the old one, as ext4 can. A write replaces a
     /// file, so a folder that is a file holds nothing after a write to it, also through
@@ -316,10 +317,9 @@ impl Paths {
                 keys.contains(was) && now(dir) == Some(*was)
             };
             if !limit.folders.iter().any(held) {
-                // A folder that the path resolves under, then or now, holds it
-                // unless its key changed.
-                let replaced = limit.folders.iter().any(|(dir, _)| {
-                    resolved.starts_with(dir)
+                let replaced = limit.folders.iter().any(|(dir, was)| {
+                    keys.contains(was)
+                        || resolved.starts_with(dir)
                         || self
                             .driver
                             .resolve(dir)
@@ -433,10 +433,11 @@ pub enum Error {
     /// [`Paths::make_dir`] makes a new name in the deepest directory on the way to it
     /// that is there.
     Vacant,
-    /// The path resolves under a folder of [`Paths::within`], by the path that the
-    /// folder resolved to at that call or by the one that it resolves to now, and a
-    /// program replaced the folder after that call: its path names another file, or
-    /// nothing.
+    /// No folder of [`Paths::within`] holds the path, and a program moved or
+    /// replaced a folder of that call after it: the folder's path names another
+    /// file, or nothing. The path resolves under that folder, by the path that
+    /// the folder resolved to at that call or by the one that it resolves to now,
+    /// or into the directory that the folder was at that call.
     Replaced,
 }
 
@@ -737,7 +738,7 @@ mod tests {
         let free = Paths::new(One::default());
         let paths = free.within(&["/work/swapx".into()], &[]).unwrap();
         free.write(Path::new("/work/a"), b"x").unwrap();
-        assert_eq!(reached(&paths, "/work/swap/a"), Err(Error::Outside));
+        assert_eq!(reached(&paths, "/work/swap/a"), Err(Error::Replaced));
         assert_eq!(reached(&paths, "/work/swapx/a"), Err(Error::Replaced));
     }
 

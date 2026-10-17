@@ -354,8 +354,9 @@ impl Error {
             Self::Outside { limits, .. } => (
                 OUTSIDE,
                 format!(
-                    "Give a path under one of those folders. A relative path is relative \
-                     to the working directory {}. To reach another folder, add \
+                    "Give a path under one of those folders. A relative path starts at the \
+                     working directory of this MCP server, which was {} at its start. To \
+                     reach another folder, add \
                      `--files <DIR>` to the command of the MCP server",
                     limits.working.display()
                 ),
@@ -681,7 +682,7 @@ impl fmt::Display for Error {
             Self::FolderChanged { path, folders } => write!(
                 f,
                 "`{}` is under a folder of this MCP server ({}) that a program \
-                 replaced after it started",
+                 moved or replaced after it started",
                 path.display(),
                 listed(folders)
             ),

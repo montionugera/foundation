@@ -777,7 +777,7 @@ fn mcp_refuses_a_file_in_a_folder_made_again() {
         "code": "ops.folder-changed",
         "message": format!(
             "`cfg/plant.hcl` is under a folder of this MCP server ({}) that a program \
-             replaced after it started",
+             moved or replaced after it started",
             resolved.display()
         ),
         "fix": "Start `foundation mcp` again",
@@ -815,7 +815,7 @@ fn mcp_refuses_a_file_in_a_folder_made_again_in_other_case() {
         "code": "ops.folder-changed",
         "message": format!(
             "`cfg/plant.hcl` is under a folder of this MCP server ({}) that a program \
-             replaced after it started",
+             moved or replaced after it started",
             resolved.display()
         ),
         "fix": "Start `foundation mcp` again",
@@ -853,7 +853,7 @@ fn mcp_refuses_a_file_in_a_folder_replaced_by_a_link() {
         "code": "ops.folder-changed",
         "message": format!(
             "`cfg/plant.hcl` is under a folder of this MCP server ({}) that a program \
-             replaced after it started",
+             moved or replaced after it started",
             resolved.display()
         ),
         "fix": "Start `foundation mcp` again",
