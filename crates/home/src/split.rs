@@ -1345,13 +1345,13 @@ mod tests {
             let error = split.frame(&pool, 0).expect_err("a full pool");
 
             let exhausted = block::Error::Exhausted {
-                requested: 128,
+                requested: 120,
                 available,
             };
             assert_eq!(error, exhausted);
             assert_eq!(
                 error.to_string(),
-                format!("pool is full: asked for 128 bytes, {available} bytes free")
+                format!("pool is full: asked for 120 bytes, {available} bytes free")
             );
         }
 
