@@ -43,7 +43,7 @@ fn head(series: u32) -> Reply {
 /// that no bench measures the inlining of its one call site.
 #[inline(never)]
 fn decode<'m>(reader: &mut Reader, message: &'m [u8]) -> Result<FromHome<'m>, Error> {
-    reader.decode(message)
+    reader.decode(Some(message))
 }
 
 /// A reader of `places` places that the home opened.
@@ -186,7 +186,7 @@ fn frames_of(places: u32, body: u32) -> (Frames, block::Pool) {
         channels: places,
     };
     let opened = [1, 0, 0, 0, 0, 0, 0, 0, 0];
-    let (frames, _) = Frames::open(Reader::new(&open), set_of(places), Some(&opened))
+    let frames = Frames::open(Reader::new(&open), set_of(places), Some(&opened))
         .expect("opened");
     let bytes = (u64::from(body) + (1 << 20)).next_power_of_two();
     let config = block::Config::new(bytes).expect("the budget fits");
@@ -207,7 +207,7 @@ fn build<'m>(
         let step = match frames.due().expect("the layout holds") {
             Due::Message => {
                 let message = messages.next().expect("a message");
-                frames.decode(divan::black_box(message))
+                frames.decode(Some(divan::black_box(message)))
             }
             Due::Body(rest) => {
                 let message = divan::black_box(messages.next().expect("a message"));

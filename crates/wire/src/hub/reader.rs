@@ -86,11 +86,17 @@ impl Reader {
         self.latest
     }
 
-    /// Decodes the next message from the home.
+    /// Decodes the next message from the home, or the end of the stream when `None`.
     ///
     /// # Errors
     ///
-    /// Three checks, in order; the error is that of the first check that fails.
+    /// For `None`, the error of a stream that the home finished at this point:
+    /// [`Error::Unfinished`] inside a body, else [`Error::Finished`]. The home
+    /// finishes its stream only after the reader finished its own. The reader stays
+    /// as it was.
+    ///
+    /// For a message, three checks, in order; the error is that of the first check
+    /// that fails.
     ///
     /// 1. The bytes: the [`Error`] of a message that does not decode as a reply
     ///    (`Opened` or a head) or, where a run continues, as a message of that run. A
@@ -107,7 +113,13 @@ impl Reader {
     ///
     /// The session is then not valid ([`MALFORMED`](crate::header::MALFORMED)), and
     /// the caller stops it.
-    pub fn decode<'m>(&mut self, message: &'m [u8]) -> Result<FromHome<'m>, Error> {
+    pub fn decode<'m>(
+        &mut self,
+        message: Option<&'m [u8]>,
+    ) -> Result<FromHome<'m>, Error> {
+        let Some(message) = message else {
+            return Err(self.finished());
+        };
         let (event, next) = match self.next {
             Next::Opened | Next::Head => self.reply(message)?,
             Next::Ends { remain } => {
@@ -175,10 +187,9 @@ impl Reader {
     }
 
     /// The error of a stream that the home finished here: [`Error::Unfinished`] inside
-    /// a body, else [`Error::Finished`]. The home finishes its stream only after the
-    /// reader finished its own.
+    /// a body, else [`Error::Finished`].
     #[must_use]
-    pub fn finished(&self) -> Error {
+    pub(in crate::hub) fn finished(&self) -> Error {
         match self.next {
             Next::Body(body) => Error::Unfinished {
                 remain: body.remain(),
@@ -286,13 +297,15 @@ mod tests {
     /// A reader of `places` places that the home opened.
     fn opened(places: u32) -> Reader {
         let mut reader = Reader::new(&open(places));
-        reader.decode(&opened_at(0)).expect("the session opens");
+        reader
+            .decode(Some(&opened_at(0)))
+            .expect("the session opens");
         reader
     }
 
     /// The event for `message`, with the ends collected.
     fn event(reader: &mut Reader, message: &[u8]) -> Result<Event, Error> {
-        reader.decode(message).map(|event| match event {
+        reader.decode(Some(message)).map(|event| match event {
             FromHome::Opened { live } => Event::Opened(live),
             FromHome::Head(head) => Event::Head(head.series),
             FromHome::Ends { ends, last } => Event::Ends(ends.collect(), last),
@@ -343,7 +356,7 @@ mod tests {
     #[test]
     fn sends_no_body_when_the_last_end_is_0() {
         let mut reader = opened(2);
-        reader.decode(&head(2)).expect("the head decodes");
+        reader.decode(Some(&head(2))).expect("the head decodes");
         let ends = encode_ends(&[(0, 0), (1, 0)]);
         assert_eq!(
             event(&mut reader, &ends),
@@ -357,9 +370,9 @@ mod tests {
     #[test]
     fn takes_the_body_length_from_the_last_end() {
         let mut reader = opened(2);
-        reader.decode(&head(2)).expect("the head decodes");
+        reader.decode(Some(&head(2))).expect("the head decodes");
         reader
-            .decode(&encode_ends(&[(0, 16), (1, 0)]))
+            .decode(Some(&encode_ends(&[(0, 16), (1, 0)])))
             .expect("the ends decode");
         let next = head_at(Path::Live, 6, 1, 1);
         assert_eq!(event(&mut reader, &next), Ok(Event::Head(1)));
@@ -368,9 +381,9 @@ mod tests {
     /// A reader of one place that took a head of 2 samples from seq 4 with no body.
     fn at_end_6() -> Reader {
         let mut reader = opened(1);
-        reader.decode(&head(1)).expect("the head decodes");
+        reader.decode(Some(&head(1))).expect("the head decodes");
         reader
-            .decode(&encode_ends(&[(0, 0)]))
+            .decode(Some(&encode_ends(&[(0, 0)])))
             .expect("the end decodes");
         reader
     }
@@ -378,7 +391,9 @@ mod tests {
     #[test]
     fn refuses_a_head_on_the_backfill_path() {
         assert_eq!(
-            opened(1).decode(&head_at(Path::Backfill, 4, 2, 1)).err(),
+            opened(1)
+                .decode(Some(&head_at(Path::Backfill, 4, 2, 1)))
+                .err(),
             Some(Error::Backfill)
         );
     }
@@ -387,7 +402,7 @@ mod tests {
     fn refuses_a_head_that_starts_before_the_end_of_the_last() {
         let mut reader = at_end_6();
         assert_eq!(
-            reader.decode(&head_at(Path::Live, 5, 0, 1)).err(),
+            reader.decode(Some(&head_at(Path::Live, 5, 0, 1))).err(),
             Some(Error::Seq { seq: 5, end: 6 })
         );
     }
@@ -398,7 +413,7 @@ mod tests {
         let empty = head_at(Path::Live, 6, 0, 1);
         assert_eq!(event(&mut reader, &empty), Ok(Event::Head(1)));
         reader
-            .decode(&encode_ends(&[(0, 0)]))
+            .decode(Some(&encode_ends(&[(0, 0)])))
             .expect("the end decodes");
         assert_eq!(event(&mut reader, &empty), Ok(Event::Head(1)));
     }
@@ -427,28 +442,28 @@ mod tests {
             (head_at(Path::Live, 0, 0, 1), Error::Seq { seq: 0, end: 6 }),
         ];
         for (message, error) in cases {
-            assert_eq!(reader.decode(&message).err(), Some(error));
+            assert_eq!(reader.decode(Some(&message)).err(), Some(error));
         }
     }
 
     #[test]
     fn refuses_a_head_before_opened_whatever_its_series() {
         assert_eq!(
-            Reader::new(&open(1)).decode(&head(1)).err(),
+            Reader::new(&open(1)).decode(Some(&head(1))).err(),
             Some(Error::Unopened { kind: 2 })
         );
         assert_eq!(
-            Reader::new(&open(2)).decode(&head(1)).err(),
+            Reader::new(&open(2)).decode(Some(&head(1))).err(),
             Some(Error::Unopened { kind: 2 })
         );
         let mut reader = Reader::new(&open(1));
         assert_eq!(
-            reader.decode(&head(3)).err(),
+            reader.decode(Some(&head(3))).err(),
             Some(Error::Unopened { kind: 2 })
         );
         assert_eq!(event(&mut reader, &opened_at(0)), Ok(Event::Opened(0)));
         assert_eq!(
-            reader.decode(&head(3)).err(),
+            reader.decode(Some(&head(3))).err(),
             Some(Error::Places {
                 series: 3,
                 places: 1
@@ -463,40 +478,58 @@ mod tests {
             channels: 1,
         };
         for mut reader in [Reader::new(&open(1)), Reader::new(&latest)] {
-            assert_eq!(reader.decode(&[3]).err(), Some(Error::Kind { kind: 3 }));
+            assert_eq!(
+                reader.decode(Some(&[3])).err(),
+                Some(Error::Kind { kind: 3 })
+            );
             assert_eq!(event(&mut reader, &opened_at(0)), Ok(Event::Opened(0)));
-            assert_eq!(reader.decode(&[3]).err(), Some(Error::Kind { kind: 3 }));
+            assert_eq!(
+                reader.decode(Some(&[3])).err(),
+                Some(Error::Kind { kind: 3 })
+            );
             assert_eq!(event(&mut reader, &head(1)), Ok(Event::Head(1)));
         }
     }
 
+    /// Each `None` leaves the reader as it was, so the next message decodes.
     #[test]
     fn gives_the_error_of_each_finish() {
         let mut reader = Reader::new(&open(2));
-        assert_eq!(reader.finished(), Error::Finished);
-        reader.decode(&opened_at(0)).expect("the session opens");
-        assert_eq!(reader.finished(), Error::Finished);
-        reader.decode(&head(2)).expect("the head decodes");
-        assert_eq!(reader.finished(), Error::Finished);
+        assert_eq!(reader.decode(None).err(), Some(Error::Finished));
+        reader
+            .decode(Some(&opened_at(0)))
+            .expect("the session opens");
+        assert_eq!(reader.decode(None).err(), Some(Error::Finished));
+        reader.decode(Some(&head(2))).expect("the head decodes");
+        assert_eq!(reader.decode(None).err(), Some(Error::Finished));
         let ends = encode_ends(&[(0, 3), (1, 10)]);
         let (first, second) = ends.split_at(ends::LEN);
-        reader.decode(first).expect("the ends decode");
-        assert_eq!(reader.finished(), Error::Finished);
-        reader.decode(second).expect("the ends decode");
-        assert_eq!(reader.finished(), Error::Unfinished { remain: 10 });
-        reader.decode(&[7; 4]).expect("the body decodes");
-        assert_eq!(reader.finished(), Error::Unfinished { remain: 6 });
-        reader.decode(&[7; 6]).expect("the body decodes");
-        assert_eq!(reader.finished(), Error::Finished);
+        reader.decode(Some(first)).expect("the ends decode");
+        assert_eq!(reader.decode(None).err(), Some(Error::Finished));
+        reader.decode(Some(second)).expect("the ends decode");
+        assert_eq!(
+            reader.decode(None).err(),
+            Some(Error::Unfinished { remain: 10 })
+        );
+        reader.decode(Some(&[7; 4])).expect("the body decodes");
+        assert_eq!(
+            reader.decode(None).err(),
+            Some(Error::Unfinished { remain: 6 })
+        );
+        reader.decode(Some(&[7; 6])).expect("the body decodes");
+        assert_eq!(reader.decode(None).err(), Some(Error::Finished));
     }
 
     #[test]
     fn reads_the_retired_kind_in_a_run_as_run_bytes() {
         let mut reader = opened(1);
-        reader.decode(&head(1)).expect("the head decodes");
-        assert_eq!(reader.decode(&[3]).err(), Some(Error::Length { len: 1 }));
+        reader.decode(Some(&head(1))).expect("the head decodes");
+        assert_eq!(
+            reader.decode(Some(&[3])).err(),
+            Some(Error::Length { len: 1 })
+        );
         reader
-            .decode(&encode_ends(&[(0, 1)]))
+            .decode(Some(&encode_ends(&[(0, 1)])))
             .expect("the end decodes");
         assert_eq!(event(&mut reader, &[3]), Ok(Event::Body(vec![3], true)));
     }
@@ -506,7 +539,7 @@ mod tests {
         let mut reader = Reader::new(&open(1));
         assert_eq!(event(&mut reader, &opened_at(5)), Ok(Event::Opened(5)));
         let error = reader
-            .decode(&head_at(Path::Live, 4, 1, 1))
+            .decode(Some(&head_at(Path::Live, 4, 1, 1)))
             .expect_err("the head starts before the open position");
         assert_eq!(error, Error::Seq { seq: 4, end: 5 });
         assert_eq!(
@@ -524,7 +557,7 @@ mod tests {
     fn refuses_a_second_opened() {
         let mut reader = opened(1);
         assert_eq!(
-            reader.decode(&opened_at(0)).err(),
+            reader.decode(Some(&opened_at(0))).err(),
             Some(Error::Reopen { kind: 1 })
         );
     }
@@ -533,12 +566,12 @@ mod tests {
     fn decodes_the_reply_before_the_order() {
         let mut reader = Reader::new(&open(1));
         assert_eq!(
-            reader.decode(&[HEAD, 0]).err(),
+            reader.decode(Some(&[HEAD, 0])).err(),
             Some(Error::Length { len: 2 })
         );
         let mut reader = opened(1);
         assert_eq!(
-            reader.decode(&[OPENED, 0]).err(),
+            reader.decode(Some(&[OPENED, 0])).err(),
             Some(Error::Length { len: 2 })
         );
     }
@@ -547,13 +580,13 @@ mod tests {
     fn refuses_a_head_of_no_series() {
         let mut bytes = head(1);
         bytes[14] = 0;
-        assert_eq!(opened(1).decode(&bytes).err(), Some(Error::Series));
+        assert_eq!(opened(1).decode(Some(&bytes)).err(), Some(Error::Series));
     }
 
     #[test]
     fn refuses_a_head_with_more_series_than_places() {
         assert_eq!(
-            opened(3).decode(&head(4)).err(),
+            opened(3).decode(Some(&head(4))).err(),
             Some(Error::Places {
                 series: 4,
                 places: 3
@@ -569,13 +602,13 @@ mod tests {
     #[test]
     fn refuses_a_run_message_with_more_ends_than_remain() {
         let mut reader = opened(3);
-        reader.decode(&head(3)).expect("the head decodes");
+        reader.decode(Some(&head(3))).expect("the head decodes");
         reader
-            .decode(&encode_ends(&[(0, 8)]))
+            .decode(Some(&encode_ends(&[(0, 8)])))
             .expect("the first end decodes");
         let three = encode_ends(&[(1, 16), (2, 24), (3, 32)]);
         assert_eq!(
-            reader.decode(&three).err(),
+            reader.decode(Some(&three)).err(),
             Some(Error::Run {
                 items: 3,
                 remain: 2
@@ -590,17 +623,20 @@ mod tests {
     #[test]
     fn reads_a_body_message_before_the_ends_run_ends_as_ends() {
         let mut reader = opened(2);
-        reader.decode(&head(2)).expect("the head decodes");
+        reader.decode(Some(&head(2))).expect("the head decodes");
         reader
-            .decode(&encode_ends(&[(0, 8)]))
+            .decode(Some(&encode_ends(&[(0, 8)])))
             .expect("the first end decodes");
-        assert_eq!(reader.decode(&[0; 9]).err(), Some(Error::Length { len: 9 }));
         assert_eq!(
-            reader.decode(&[0; 17]).err(),
+            reader.decode(Some(&[0; 9])).err(),
+            Some(Error::Length { len: 9 })
+        );
+        assert_eq!(
+            reader.decode(Some(&[0; 17])).err(),
             Some(Error::Length { len: 17 })
         );
         assert_eq!(
-            reader.decode(&[0; 16]).err(),
+            reader.decode(Some(&[0; 16])).err(),
             Some(Error::Run {
                 items: 2,
                 remain: 1
@@ -611,13 +647,13 @@ mod tests {
     #[test]
     fn reads_a_reply_byte_inside_a_run_as_the_run() {
         let mut reader = opened(1);
-        reader.decode(&head(1)).expect("the head decodes");
+        reader.decode(Some(&head(1))).expect("the head decodes");
         assert_eq!(
-            reader.decode(&[OPENED]).err(),
+            reader.decode(Some(&[OPENED])).err(),
             Some(Error::Length { len: 1 })
         );
         reader
-            .decode(&encode_ends(&[(0, 2)]))
+            .decode(Some(&encode_ends(&[(0, 2)])))
             .expect("the end decodes");
         assert_eq!(
             event(&mut reader, &[OPENED]),
@@ -632,13 +668,13 @@ mod tests {
     #[test]
     fn reads_a_whole_head_inside_a_run_as_the_run() {
         let mut reader = opened(1);
-        reader.decode(&head(1)).expect("the head decodes");
+        reader.decode(Some(&head(1))).expect("the head decodes");
         assert_eq!(
-            reader.decode(&head(2)).err(),
+            reader.decode(Some(&head(2))).err(),
             Some(Error::Length { len: 18 })
         );
         reader
-            .decode(&encode_ends(&[(0, 18)]))
+            .decode(Some(&encode_ends(&[(0, 18)])))
             .expect("the end decodes");
         assert_eq!(event(&mut reader, &head(2)), Ok(Event::Body(head(2), true)));
     }
@@ -646,20 +682,20 @@ mod tests {
     #[test]
     fn refuses_a_body_longer_than_the_last_end() {
         let mut reader = opened(1);
-        reader.decode(&head(1)).expect("the head decodes");
+        reader.decode(Some(&head(1))).expect("the head decodes");
         reader
-            .decode(&encode_ends(&[(0, 10)]))
+            .decode(Some(&encode_ends(&[(0, 10)])))
             .expect("the end decodes");
         assert_eq!(
-            reader.decode(&[0; 11]).err(),
+            reader.decode(Some(&[0; 11])).err(),
             Some(Error::Body {
                 len: 11,
                 remain: 10
             })
         );
-        reader.decode(&[0; 6]).expect("the body starts");
+        reader.decode(Some(&[0; 6])).expect("the body starts");
         assert_eq!(
-            reader.decode(&[0; 5]).err(),
+            reader.decode(Some(&[0; 5])).err(),
             Some(Error::Body { len: 5, remain: 4 })
         );
         assert_eq!(reader.body(), Some(6));
@@ -668,15 +704,17 @@ mod tests {
     #[test]
     fn refuses_an_empty_message_at_each_step() {
         let mut reader = Reader::new(&open(1));
-        assert_eq!(reader.decode(&[]).err(), Some(Error::Empty));
-        reader.decode(&opened_at(0)).expect("the session opens");
-        assert_eq!(reader.decode(&[]).err(), Some(Error::Empty));
-        reader.decode(&head(1)).expect("the head decodes");
-        assert_eq!(reader.decode(&[]).err(), Some(Error::Empty));
+        assert_eq!(reader.decode(Some(&[])).err(), Some(Error::Empty));
         reader
-            .decode(&encode_ends(&[(0, 1)]))
+            .decode(Some(&opened_at(0)))
+            .expect("the session opens");
+        assert_eq!(reader.decode(Some(&[])).err(), Some(Error::Empty));
+        reader.decode(Some(&head(1))).expect("the head decodes");
+        assert_eq!(reader.decode(Some(&[])).err(), Some(Error::Empty));
+        reader
+            .decode(Some(&encode_ends(&[(0, 1)])))
             .expect("the end decodes");
-        assert_eq!(reader.decode(&[]).err(), Some(Error::Empty));
+        assert_eq!(reader.decode(Some(&[])).err(), Some(Error::Empty));
     }
 
     /// A frame the home sends: its series count is the count of its ends, and its body

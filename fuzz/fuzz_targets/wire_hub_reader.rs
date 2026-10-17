@@ -53,10 +53,12 @@ fn reader(places: u32, mode: Mode) -> Reader {
 /// and took no head. A head that it refuses for its path reads from its
 /// bytes.
 fn reply(message: &[u8]) -> Result<Reply, Error> {
-    if let Ok(FromHome::Opened { live }) = reader(u32::MAX, COMPLETE).decode(message) {
+    if let Ok(FromHome::Opened { live }) =
+        reader(u32::MAX, COMPLETE).decode(Some(message))
+    {
         return Ok(Reply::Opened { live });
     }
-    match opened(u32::MAX).decode(message) {
+    match opened(u32::MAX).decode(Some(message)) {
         Ok(FromHome::Head(head)) => Ok(Reply::Head(head)),
         Err(Error::Backfill) => Ok(Reply::Head(head(message))),
         Err(error) => Err(error),
@@ -151,8 +153,8 @@ fn refused(next: Next, places: u32, end: u64, message: &[u8], error: &Error) -> 
 
 /// Each event of the session in `bytes` must encode to its message and come in the
 /// order of a session, each refusal must be the one that the order or the heads give,
-/// the body must be where [`Reader::body`] says, and [`Reader::finished`] must give the
-/// error of each point.
+/// the body must be where [`Reader::body`] says, and [`Reader::decode`] of `None` must
+/// give the error of each point and leave the reader as it was.
 fn read(bytes: &[u8]) {
     let [places, rest @ ..] = bytes else {
         return;
@@ -169,7 +171,7 @@ fn read_session(places: u32, mode: Mode, rest: &[u8]) {
     let mut next = Next::Opened;
     let mut end = 0;
     for message in fuzz::messages(rest) {
-        let decoded = reader.decode(message);
+        let decoded = reader.decode(Some(message));
         if matches!(next, Next::Opened | Next::Head) && message.first() == Some(&3) {
             let refused = matches!(decoded, Err(Error::Kind { kind: 3 }));
             assert!(refused, "the retired kind 3 gave {decoded:?}");
@@ -241,7 +243,11 @@ fn read_session(places: u32, mode: Mode, rest: &[u8]) {
             Next::Body { remain, .. } => Error::Unfinished { remain },
             Next::Opened | Next::Head | Next::Ends(_) => Error::Finished,
         };
-        assert_eq!(reader.finished(), finished, "the finish gave another error");
+        assert_eq!(
+            reader.decode(None).err(),
+            Some(finished),
+            "the finish gave another error"
+        );
     }
 }
 
@@ -250,7 +256,7 @@ fn opened(places: u32) -> Reader {
     let mut reader = reader(places, COMPLETE);
     let mut out = vec![0; Reply::Opened { live: 0 }.encoded_len()];
     Reply::Opened { live: 0 }.encode(&mut out);
-    match reader.decode(&out) {
+    match reader.decode(Some(&out)) {
         Ok(FromHome::Opened { live: 0 }) => reader,
         other => panic!("an opened did not read back: {other:?}"),
     }
@@ -274,7 +280,7 @@ fn write(input: &mut Unstructured) -> arbitrary::Result<()> {
     };
     let mut out = vec![0; Reply::Head(head).encoded_len()];
     Reply::Head(head).encode(&mut out);
-    match opened(series).decode(&out) {
+    match opened(series).decode(Some(&out)) {
         Ok(FromHome::Head(decoded)) => assert_eq!(decoded, head, "the head changed"),
         other => panic!("a head did not read back: {other:?}"),
     }
@@ -288,13 +294,13 @@ fn write(input: &mut Unstructured) -> arbitrary::Result<()> {
     let mut out = vec![0; head.encoded_len()];
     head.encode(&mut out);
     let mut decoder = opened(series);
-    decoder.decode(&out).expect("the head decodes");
+    decoder.decode(Some(&out)).expect("the head decodes");
     let written = (0..series)
         .map(|_| input.arbitrary::<(u32, u32)>())
         .collect::<arbitrary::Result<Vec<_>>>()?;
     let mut out = vec![0; written.len() * ends::LEN];
     ends::encode(written.iter().copied(), &mut out);
-    match decoder.decode(&out) {
+    match decoder.decode(Some(&out)) {
         Ok(FromHome::Ends { ends, last: true }) => {
             assert_eq!(ends.collect::<Vec<_>>(), written, "the ends changed");
         }
@@ -304,7 +310,7 @@ fn write(input: &mut Unstructured) -> arbitrary::Result<()> {
     let live: u64 = input.arbitrary()?;
     let mut out = vec![0; Reply::Opened { live }.encoded_len()];
     Reply::Opened { live }.encode(&mut out);
-    match reader(1, COMPLETE).decode(&out) {
+    match reader(1, COMPLETE).decode(Some(&out)) {
         Ok(FromHome::Opened { live: read }) => {
             assert_eq!(read, live, "the opened changed")
         }
