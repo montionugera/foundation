@@ -22,6 +22,8 @@ mod vector;
 mod word;
 
 use std::convert::identity;
+
+use int::Order;
 use std::{fmt, iter, mem};
 
 use types::sample::{Scalar, Sides, Type};
@@ -725,16 +727,16 @@ impl Ends {
 enum Layout {
     /// Integers of 8, 16, 32, or 64 bits. Every codec applies.
     Int8 {
-        signed: bool,
+        order: Order,
     },
     Int16 {
-        signed: bool,
+        order: Order,
     },
     Int32 {
-        signed: bool,
+        order: Order,
     },
     Int64 {
-        signed: bool,
+        order: Order,
     },
     /// Floats of 32 or 64 bits. Every codec applies to their sortable bits.
     Float32,
@@ -768,18 +770,36 @@ impl Front {
 
 impl Layout {
     /// The layout of the ends of a variable series.
-    const END: Self = Self::Int32 { signed: false };
+    const END: Self = Self::Int32 {
+        order: Order::Unsigned,
+    };
 
     fn of(scalar: Scalar) -> Self {
         match scalar {
-            Scalar::I8 => Self::Int8 { signed: true },
-            Scalar::U8 => Self::Int8 { signed: false },
-            Scalar::I16 => Self::Int16 { signed: true },
-            Scalar::U16 => Self::Int16 { signed: false },
-            Scalar::I32 => Self::Int32 { signed: true },
-            Scalar::U32 => Self::Int32 { signed: false },
-            Scalar::I64 | Scalar::Stamp | Scalar::Span => Self::Int64 { signed: true },
-            Scalar::U64 => Self::Int64 { signed: false },
+            Scalar::I8 => Self::Int8 {
+                order: Order::Signed,
+            },
+            Scalar::U8 => Self::Int8 {
+                order: Order::Unsigned,
+            },
+            Scalar::I16 => Self::Int16 {
+                order: Order::Signed,
+            },
+            Scalar::U16 => Self::Int16 {
+                order: Order::Unsigned,
+            },
+            Scalar::I32 => Self::Int32 {
+                order: Order::Signed,
+            },
+            Scalar::U32 => Self::Int32 {
+                order: Order::Unsigned,
+            },
+            Scalar::I64 | Scalar::Stamp | Scalar::Span => Self::Int64 {
+                order: Order::Signed,
+            },
+            Scalar::U64 => Self::Int64 {
+                order: Order::Unsigned,
+            },
             Scalar::F32 => Self::Float32,
             Scalar::F64 => Self::Float64,
             Scalar::Bool | Scalar::Uuid => Self::Raw {
@@ -874,12 +894,16 @@ impl Layout {
     /// Encodes one vector into the front of `out` and returns its length.
     fn encode(self, chunk: &[u8], out: &mut [u8]) -> usize {
         match self {
-            Self::Int8 { signed } => int::encode::<1>(chunk, signed, identity, out),
-            Self::Int16 { signed } => int::encode::<2>(chunk, signed, identity, out),
-            Self::Int32 { signed } => int::encode::<4>(chunk, signed, identity, out),
-            Self::Int64 { signed } => int::encode::<8>(chunk, signed, identity, out),
-            Self::Float32 => int::encode::<4>(chunk, false, float::key::<4>, out),
-            Self::Float64 => int::encode::<8>(chunk, false, float::key::<8>, out),
+            Self::Int8 { order } => int::encode::<1>(chunk, order, identity, out),
+            Self::Int16 { order } => int::encode::<2>(chunk, order, identity, out),
+            Self::Int32 { order } => int::encode::<4>(chunk, order, identity, out),
+            Self::Int64 { order } => int::encode::<8>(chunk, order, identity, out),
+            Self::Float32 => {
+                int::encode::<4>(chunk, Order::Unsigned, float::key::<4>, out)
+            }
+            Self::Float64 => {
+                int::encode::<8>(chunk, Order::Unsigned, float::key::<8>, out)
+            }
             Self::Raw { width } => vector::write_raw(chunk, width, out),
         }
     }
@@ -1283,8 +1307,8 @@ mod tests {
             );
         }
 
-        /// The float keys of -1.0 and 1.0 are about 2^63 apart, so FFOR and delta
-        /// need 63 bits and the vector stays raw.
+        /// The keys of -1.0 and 1.0 are about 2^63 apart, so FFOR and delta need 63 bits
+        /// and the vector stays raw.
         #[test]
         fn keeps_a_vector_across_zero_raw() {
             let ramp: Vec<u8> = (0..1024_i32)
@@ -1294,6 +1318,18 @@ mod tests {
             let encoded = encode(Scalar::F64, &ramp);
             assert_eq!(encoded[..2], [0, 0]);
             assert_eq!(encoded.len(), 8 + ramp.len());
+        }
+
+        /// The keys of the subnormals and zeros next to 0.0 are 3 apart, so FFOR needs 2
+        /// bits. In signed order they are far apart and delta, with 3 bits, wins.
+        #[test]
+        fn orders_float_keys_as_unsigned() {
+            let values = [-5e-324, -0.0, 0.0, 5e-324_f64];
+            let cycle: Vec<u8> = (0..1024)
+                .flat_map(|i| values[i % values.len()].to_le_bytes())
+                .collect();
+            let encoded = encode(Scalar::F64, &cycle);
+            assert_eq!(encoded[..2], [1, 2]);
         }
 
         #[test]
@@ -1656,22 +1692,18 @@ mod tests {
                     Scalar::F32 => Scalar::U32,
                     _ => Scalar::U64,
                 };
-                let encoded = check(scalar, &floats(scalar, &keys));
-                let expected = encode(unsigned, &keys);
-                prop_assert_eq!(encoded.len(), expected.len());
-                let tags = |bytes: &[u8]| {
-                    let mut decoder = Decoder::new(unsigned, len, bytes);
-                    let mut out = vec![0; VECTOR_LEN * 8];
-                    let mut at = 0;
-                    let mut tags = Vec::new();
-                    while let Some(vector) = decoder.next(&mut out) {
-                        tags.push(bytes[at]);
-                        at = bytes.len() - decoder.rest.len();
-                        vector.expect("the bytes are valid");
+                let values = floats(scalar, &keys);
+                let vector = VECTOR_LEN * scalar.width();
+                for (chunk, keys) in values.chunks(vector).zip(keys.chunks(vector)) {
+                    let encoded = check(scalar, chunk);
+                    let expected = encode(unsigned, keys);
+                    prop_assert_eq!(encoded[0], expected[0]);
+                    if encoded[0] == 0 {
+                        prop_assert_eq!(encoded.len(), expected.len());
+                    } else {
+                        prop_assert_eq!(encoded, expected);
                     }
-                    tags
-                };
-                prop_assert_eq!(tags(&encoded), tags(&expected));
+                }
             }
 
             #[test]
@@ -1820,6 +1852,8 @@ mod tests {
             check(Scalar::U64, 3, &[3, 0, 1, 0, 0, 0, 0], &truncated(0, 24, 7));
             check(Scalar::U8, 3, &[3, 0, 1, 0, 7], &truncated(0, 7, 5));
             check(Scalar::Uuid, 1, &[0; 31], &truncated(0, 32, 31));
+            check(Scalar::F32, 3, &[3, 0, 1], &truncated(0, 4, 3));
+            check(Scalar::F64, 3, &[3, 0, 1, 0, 0, 0, 0], &truncated(0, 24, 7));
         }
 
         #[test]
@@ -1858,6 +1892,12 @@ mod tests {
             check(Scalar::F32, 1, &[1, 33, 0, 0, 0, 0, 0, 0], &width(33, 32));
             check(Scalar::F64, 1, &[2, 65, 0, 0, 0, 0, 0, 0], &width(65, 64));
             check(Scalar::U8, 1, &[3, 1, 1, 0, 5, 1, 0], &width(1, 0));
+            check(
+                Scalar::F32,
+                1,
+                &[3, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+                &width(1, 0),
+            );
         }
 
         #[test]
@@ -1870,6 +1910,12 @@ mod tests {
             check(Scalar::U8, 3, &[3, 0, 1, 0, 7, 2, 0], &runs(2));
             check(Scalar::U8, 3, &[3, 0, 1, 0, 7, 4, 0], &runs(4));
             check(Scalar::U8, 3, &[3, 0, 0, 0], &runs(0));
+            check(
+                Scalar::F32,
+                3,
+                &[3, 0, 1, 0, 0, 0, 0x80, 0xbf, 2, 0, 0, 0],
+                &runs(2),
+            );
             check(
                 Scalar::U8,
                 3,
@@ -2843,7 +2889,9 @@ mod tests {
         use super::*;
 
         const STRING: Variable = Variable {
-            element: Layout::Int8 { signed: false },
+            element: Layout::Int8 {
+                order: Order::Unsigned,
+            },
         };
 
         fn list(element: Scalar) -> Variable {

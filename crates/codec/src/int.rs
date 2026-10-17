@@ -3,25 +3,31 @@
 use crate::vector::{self, Plan};
 use crate::word;
 
+/// The order in which the codecs compare the integers of a vector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Order {
+    Signed,
+    Unsigned,
+}
+
 /// Writes one vector of `W`-byte samples into the front of `out` with the smallest
 /// plan for the integers that `key` gives, and returns its length. The plan is raw
-/// when no codec saves at least 1/8 of the raw size. `signed` orders the integers as
-/// signed.
+/// when no codec saves at least 1/8 of the raw size.
 ///
 /// # Panics
 ///
 /// Panics when `chunk` holds no sample.
 pub(crate) fn encode<const W: usize>(
     chunk: &[u8],
-    signed: bool,
+    order: Order,
     key: impl Fn(u64) -> u64 + Copy,
     out: &mut [u8],
 ) -> usize {
-    vector::write::<W>(chunk, plan::<W>(chunk, signed, key), key, out)
+    vector::write::<W>(chunk, plan::<W>(chunk, order, key), key, out)
 }
 
 /// The plan of [`encode`].
-fn plan<const W: usize>(chunk: &[u8], signed: bool, key: impl Fn(u64) -> u64) -> Plan {
+fn plan<const W: usize>(chunk: &[u8], order: Order, key: impl Fn(u64) -> u64) -> Plan {
     // No codec saves 1/8 of one sample. Skips the statistics of a poll.
     if chunk.len() == W {
         return Plan::Raw;
@@ -29,7 +35,10 @@ fn plan<const W: usize>(chunk: &[u8], signed: bool, key: impl Fn(u64) -> u64) ->
     let mask = word::mask(W);
     let high = mask ^ mask.wrapping_shr(1);
     // Flipping the sign bit makes unsigned order match signed order.
-    let sign = if signed { high } else { 0 };
+    let sign = match order {
+        Order::Signed => high,
+        Order::Unsigned => 0,
+    };
     let mut samples = word::samples::<W>(chunk).map(key);
     let first = samples.next().expect("invariant: a vector holds a sample");
     let (mut min, mut max) = (first ^ sign, first ^ sign);
@@ -123,7 +132,7 @@ mod tests {
         if best * 8 <= raw * 7 { best } else { raw }
     }
 
-    fn check(width: usize, signed: bool, samples: &[u64]) {
+    fn check(width: usize, order: Order, samples: &[u64]) {
         let chunk: Vec<u8> = samples
             .iter()
             .flat_map(|sample| sample.to_le_bytes().into_iter().take(width))
@@ -133,7 +142,7 @@ mod tests {
             .iter()
             .map(|sample| {
                 let value = i128::from(sample & word::mask(width));
-                if signed {
+                if order == Order::Signed {
                     (value << shift) >> shift
                 } else {
                     value
@@ -141,10 +150,10 @@ mod tests {
             })
             .collect();
         let plan = match width {
-            1 => plan::<1>(&chunk, signed, identity),
-            2 => plan::<2>(&chunk, signed, identity),
-            4 => plan::<4>(&chunk, signed, identity),
-            _ => plan::<8>(&chunk, signed, identity),
+            1 => plan::<1>(&chunk, order, identity),
+            2 => plan::<2>(&chunk, order, identity),
+            4 => plan::<4>(&chunk, order, identity),
+            _ => plan::<8>(&chunk, order, identity),
         };
         assert_eq!(
             plan.len(samples.len(), width),
@@ -166,7 +175,7 @@ mod tests {
             bits: 0,
         };
         assert_eq!(ffor.len(4, 2), delta.len(4, 2), "the sizes must tie");
-        assert_eq!(plan::<2>(&chunk, true, identity), ffor);
+        assert_eq!(plan::<2>(&chunk, Order::Signed, identity), ffor);
         let chunk = [[0; 24], [1; 24], [2; 24], [3; 24]].concat();
         let delta = Plan::Delta {
             first: 0,
@@ -175,7 +184,7 @@ mod tests {
         };
         let rle = Plan::Rle { runs: 4 };
         assert_eq!(delta.len(96, 1), rle.len(96, 1), "the sizes must tie");
-        assert_eq!(plan::<1>(&chunk, false, identity), delta);
+        assert_eq!(plan::<1>(&chunk, Order::Unsigned, identity), delta);
     }
 
     #[test]
@@ -184,13 +193,13 @@ mod tests {
             for sample in [0, 1, 0x80, u64::MAX] {
                 let chunk = &sample.to_le_bytes()[..width];
                 let plan = match width {
-                    1 => plan::<1>(chunk, true, identity),
-                    2 => plan::<2>(chunk, false, identity),
-                    4 => plan::<4>(chunk, true, identity),
-                    _ => plan::<8>(chunk, false, identity),
+                    1 => plan::<1>(chunk, Order::Signed, identity),
+                    2 => plan::<2>(chunk, Order::Unsigned, identity),
+                    4 => plan::<4>(chunk, Order::Signed, identity),
+                    _ => plan::<8>(chunk, Order::Unsigned, identity),
                 };
                 assert_eq!(plan, Plan::Raw, "{width}-byte sample {sample:#x}");
-                check(width, true, &[sample]);
+                check(width, Order::Signed, &[sample]);
             }
         }
     }
@@ -199,7 +208,7 @@ mod tests {
         #[test]
         fn picks_the_smallest_exact_size(
             width in select(&[1_usize, 2, 4, 8]),
-            signed in any::<bool>(),
+            order in select(&[Order::Signed, Order::Unsigned]),
             shift in 0..64_u32,
             repeat in 1..300_usize,
             cumulative in any::<bool>(),
@@ -214,7 +223,7 @@ mod tests {
                     Some(*sum)
                 })
                 .collect();
-            check(width, signed, &samples);
+            check(width, order, &samples);
         }
     }
 }
