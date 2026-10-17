@@ -31,7 +31,7 @@ const _: () = assert!(
 const TIMEOUT: Span = Span::from_nanos(10_000_000_000);
 /// The largest answer body read, for the text of an error.
 const BODY_MAX: usize = 1 << 16;
-/// The waits between the attempts of one batch.
+/// The waits between the attempts of one request.
 const RETRY: retry::Config = retry::Config {
     first: Span::SECOND,
     cap: Span::MINUTE,
@@ -39,16 +39,18 @@ const RETRY: retry::Config = retry::Config {
 
 enum Event<'a> {
     Cancelled,
-    /// What the batch that InfluxDB took acks and counts.
-    Sent(Ack),
+    /// What the request body that InfluxDB took acks and counts.
+    Sent(Option<Ack>),
     Frame(Result<Received<'a>, Ended>),
 }
 
 /// Writes the frames of the run's reader to InfluxDB until the cancel, with one
-/// request in flight. While one is in flight it reads the next batch, up to 5,000
-/// lines or 4 MiB of them, and acks a batch and counts its samples, lost seqs, and
-/// oversized samples only after InfluxDB answers 204, or with no request when the
-/// batch holds no line.
+/// request in flight. While one is in flight it reads the next batch, until a request
+/// body closes, or holds 5,000 lines or 4 MiB of them, so the lines of a frame can span
+/// requests.
+/// It acks a frame and counts its samples, lost seqs, and oversized samples only after
+/// InfluxDB answers 204 to the request of its last line, or with no request when no
+/// line waits for one.
 pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let mut reader = ctx.reader().expect("invariant: check gives a reader");
     let ctx = &ctx;
@@ -99,10 +101,12 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
             Event::Cancelled => return Ok(()),
             Event::Sent(ack) => {
                 flight.set(None);
-                reader.ack(ack.position);
-                confirmed.add(ack.samples);
-                lost.add(ack.lost);
-                oversized.add(ack.oversized);
+                if let Some(ack) = ack {
+                    reader.ack(ack.position);
+                    confirmed.add(ack.counts.samples);
+                    lost.add(ack.counts.lost);
+                    oversized.add(ack.counts.oversized);
+                }
             }
             Event::Frame(Ok(received)) => batch.add(&received)?,
             Event::Frame(Err(ended)) => return Err(ended.into()),
@@ -276,8 +280,8 @@ fn fix(status: StatusCode) -> &'static str {
         }
         StatusCode::PAYLOAD_TOO_LARGE => {
             ". Raise the request size limit of InfluxDB (`--max-http-request-size` of \
-             InfluxDB 3, `max-body-size` of InfluxDB 1), or write fewer or shorter \
-             samples in each frame"
+             InfluxDB 3, `max-body-size` of InfluxDB 1), or write fewer channels or \
+             shorter samples at each sample time"
         }
         _ => "",
     }

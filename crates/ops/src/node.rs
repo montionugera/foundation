@@ -10,6 +10,7 @@ use types::name::Name;
 
 use crate::front_end::{File, FrontEnds};
 use crate::plan::Documents;
+use crate::roots::Failures;
 use crate::{apply, used};
 
 #[cfg(test)]
@@ -25,6 +26,7 @@ pub struct Node {
     pub(crate) hub: hub::Hub,
     pub(crate) clock: Clock,
     pub(crate) name: Name,
+    pub(crate) roots: Failures,
 }
 
 /// The dependencies of a [`Node`].
@@ -47,6 +49,9 @@ pub struct Config {
     pub clock: Clock,
     /// The name of the node.
     pub name: Name,
+    /// The failures of the read of the OS roots of the node. `status` gives them to a
+    /// subject with `read` on the name of the node.
+    pub roots: Failures,
 }
 
 impl Node {
@@ -61,6 +66,7 @@ impl Node {
             hub,
             clock,
             name,
+            roots,
         } = config;
         Self {
             mesh,
@@ -70,6 +76,7 @@ impl Node {
             hub,
             clock,
             name,
+            roots,
         }
     }
 

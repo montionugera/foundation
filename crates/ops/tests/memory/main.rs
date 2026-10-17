@@ -1,6 +1,6 @@
-//! The tests that bound the heap of `serve` with one count of the bytes it holds. The
-//! count covers each thread, so this binary has no test harness. The sim runs on one
-//! thread, so the count is exact.
+//! The tests that bound the heap of `serve` and of `ops::roots::Failures` with one
+//! count of the bytes they hold. The count covers each thread, so this binary has no
+//! test harness. The sim runs on one thread, so the count is exact.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -33,6 +33,29 @@ const STEPS_BYTES: usize = 8 << 20;
 fn main() {
     a_reply_of_many_problems_holds_no_more_than_the_bound();
     a_reply_of_many_changes_holds_no_more_than_the_bound();
+    roots_of_many_failures_hold_at_most_a_mebibyte();
+}
+
+/// The failures of one byte hold their `String`, and also their spare capacity.
+fn roots_of_many_failures_hold_at_most_a_mebibyte() {
+    hold_at_most_a_mebibyte("of one byte", || "x".to_owned());
+    hold_at_most_a_mebibyte("with spare", || {
+        let mut failure = String::with_capacity(64);
+        failure.push('x');
+        failure
+    });
+}
+
+fn hold_at_most_a_mebibyte(made: &str, failure: impl Fn() -> String) {
+    let before = ALLOCATOR.held();
+    let failures = (0..100_000).map(|_| failure()).collect();
+    let roots = ops::roots::Failures::new(String::new(), failures);
+    let held = ALLOCATOR.held() - before;
+    assert!(
+        held <= 1 << 20,
+        "the roots of 100000 failures {made} hold {held} bytes"
+    );
+    drop(roots);
 }
 
 fn a_reply_of_many_problems_holds_no_more_than_the_bound() {
@@ -97,6 +120,7 @@ fn serve_large(text: &str) {
             hub,
             clock: sim_node.clock(),
             name: "edge".parse().expect("a name"),
+            roots: ops::roots::Failures::new(String::new(), Vec::new()),
         });
         let subject = "@admin".parse().expect("a name");
         let before = ALLOCATOR.held();

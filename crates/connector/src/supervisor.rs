@@ -460,6 +460,9 @@ mod tests {
     use types::sample::{Scalar, Type};
 
     const BAD: Code = Code::new("test.bad");
+    /// The least count of sim seeds of a test whose outcome the seed decides, through
+    /// the order of tasks ready at one instant or the draws of `entropy`.
+    const SEEDS: u64 = 64;
 
     /// What one run of [`Script`] does.
     #[derive(Clone, Debug)]
@@ -1240,7 +1243,7 @@ mod tests {
     #[test]
     fn writes_no_backoff_when_the_next_try_passed_before_the_write() {
         let (statuses, runs) =
-            refuse_the_last_wait(vec![Step::Hold(ms(2_000))], Span::ZERO);
+            refuse_the_last_wait(0, vec![Step::Hold(ms(2_000))], Span::ZERO);
         let [_, again] = runs[..] else {
             panic!("two runs: {runs:?}");
         };
@@ -1449,10 +1452,16 @@ mod tests {
     /// Runs `steps` and fills the pool from 1.5 s after the start of the last run
     /// for 1 s, so the home refuses the frame of the wait after it. The last step
     /// holds a task for 2 s. The wall steps forward by `wall` 2.001 s after the start
-    /// of the last run. Returns the status and the start of each run.
-    fn refuse_the_last_wait(steps: Vec<Step>, wall: Span) -> (Vec<Written>, Vec<Span>) {
+    /// of the last run. Runs in a sim of `seed`. Returns the status and the start of
+    /// each run.
+    fn refuse_the_last_wait(
+        seed: u64,
+        steps: Vec<Step>,
+        wall: Span,
+    ) -> (Vec<Written>, Vec<Span>) {
         let count = steps.len();
-        run_on(move |node, tasks| async move {
+        let node = sim::node::Config::default();
+        run_with(seed, node, move |node, tasks| async move {
             let script = Script {
                 steps: Mutex::new(steps.into()),
                 ..Script::default()
@@ -1502,7 +1511,7 @@ mod tests {
     #[test]
     fn writes_the_backoff_that_is_left_when_the_home_refused_the_wait() {
         let steps = vec![Step::Device(Span::ZERO), Step::Hold(ms(2_000))];
-        let (statuses, runs) = refuse_the_last_wait(steps, Span::ZERO);
+        let (statuses, runs) = refuse_the_last_wait(0, steps, Span::ZERO);
         let [_, second, third] = runs[..] else {
             panic!("three runs: {runs:?}");
         };
@@ -1522,18 +1531,52 @@ mod tests {
         );
     }
 
+    /// The hub reads the wall up to 1 s late, so the step can show after the write of
+    /// the backoff, at a few seeds. A backoff of zero shows no slew. The test needs
+    /// 128 seeds of 512 that show both, and one with a backoff whose write does not
+    /// show the step.
     #[test]
     fn writes_the_backoff_that_is_left_after_a_wall_step_in_the_wait() {
         let steps = vec![Step::Device(Span::ZERO), Step::Hold(ms(2_000))];
-        let (statuses, _) = refuse_the_last_wait(steps, ms(10_000));
-        let (at, samples, ..) = &statuses[5];
-        assert_eq!(samples[..2], [1, 2], "the second wait: {statuses:?}");
-        let (run, again, ..) = &statuses[6];
-        assert_eq!(again[0], 0, "the next try: {statuses:?}");
-        // `backoff` is the wait by the node's clock. After the step, the hub's time
-        // slews toward the wall at the 500 ppm of MESH SLEW.
-        let (backoff, wait) = (samples[3], between(*at, *run).nanos());
-        assert_eq!(wait - backoff, backoff / 2_000, "{statuses:?}");
+        let wall = ms(10_000);
+        let (seeds, mut slewed, mut late) = (8 * SEEDS, 0, 0);
+        for seed in 0..seeds {
+            let (statuses, _) = refuse_the_last_wait(seed, steps.clone(), wall);
+            let (before, ..) = &statuses[4];
+            let (at, samples, ..) = &statuses[5];
+            assert_eq!(
+                samples[..2],
+                [1, 2],
+                "seed {seed}: the second wait: {statuses:?}"
+            );
+            let (run, again, ..) = &statuses[6];
+            assert_eq!(again[0], 0, "seed {seed}: the next try: {statuses:?}");
+            let (backoff, wait) = (samples[3], between(*at, *run).nanos());
+            if backoff == 0 {
+                assert_eq!(wait, 1, "seed {seed}: the next ns: {statuses:?}");
+                continue;
+            }
+            if between(*before, *at) < wall {
+                late += 1;
+                continue;
+            }
+            // `backoff` is the wait by the node's clock. After the step, the hub's
+            // time slews toward the wall at the 500 ppm of MESH SLEW, 1 ns at each
+            // 2 us tick. The wait holds `backoff / 2_000` ticks or one more, and a
+            // status write takes at least the ns after the one before it.
+            let gain = wait - backoff - backoff / 2_000;
+            assert!(
+                gain == 0 || gain == 1,
+                "seed {seed}: the wait of {wait} ns gains {gain} ns over the backoff \
+                 of {backoff} ns and its slew, not 0 or 1: {statuses:?}"
+            );
+            slewed += 1;
+        }
+        assert!(
+            slewed >= 128 && late >= 1,
+            "of {seeds} seeds, {slewed} show the step and a slew, and {late} show the \
+             step after the write"
+        );
     }
 
     #[test]
@@ -3258,7 +3301,7 @@ mod tests {
         S: FnOnce(Scene) -> T + Send + 'static,
         T: Future<Output = ()> + 'static,
     {
-        run_with(node, |node, tasks| async move {
+        run_with(0, node, |node, tasks| async move {
             let kinds = Table::new().with("tally", counted(run));
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.tally").await;
@@ -3611,17 +3654,32 @@ mod tests {
     #[test]
     fn returns_at_a_cancel_while_the_status_channels_wait_to_open() {
         let (returned, runs, _) =
-            unsynced(Span::from_nanos(30_000_000_000), Span::SECOND, false);
+            unsynced(0, Span::from_nanos(30_000_000_000), Span::SECOND, false);
         assert_eq!(returned, Span::SECOND, "the call returns at the cancel");
         assert_eq!(runs, []);
     }
 
     /// The caller removes the status channels and cancels as the mesh time arrives.
+    /// The order in which the tasks wake, which the seed picks, decides whether a run
+    /// starts at that instant. Each order returns at the cancel.
     #[test]
     fn returns_at_a_cancel_with_a_removal_as_the_mesh_time_arrives() {
-        let (returned, runs, _) = unsynced(Span::SECOND, Span::SECOND, true);
-        assert_eq!(returned, Span::SECOND, "the call returns at the cancel");
-        assert_eq!(runs, []);
+        let mut started = 0;
+        for seed in 0..SEEDS {
+            let (returned, runs, statuses) =
+                unsynced(seed, Span::SECOND, Span::SECOND, true);
+            assert_eq!(returned, Span::SECOND, "seed {seed}: returns at the cancel");
+            assert_eq!(statuses, [], "seed {seed}: no status channel");
+            match runs[..] {
+                [] => {}
+                [at] if at == Span::SECOND => started += 1,
+                _ => panic!("seed {seed}: no run, or one run at the cancel: {runs:?}"),
+            }
+        }
+        assert!(
+            0 < started && started < SEEDS,
+            "{started} of {SEEDS} seeds start a run, not each order"
+        );
     }
 
     #[test]
@@ -3657,22 +3715,25 @@ mod tests {
     fn starts_the_first_run_once_the_node_has_mesh_time() {
         let two = Span::from_nanos(2_000_000_000);
         let three = Span::from_nanos(3_000_000_000);
-        let (returned, runs, statuses) = unsynced(two, three, false);
+        let (returned, runs, statuses) = unsynced(0, two, three, false);
         assert_eq!(runs, [two]);
         assert_eq!(returned, Span::from_nanos(3_000_000_000));
         assert_eq!(states(&statuses), [(0, 0, 0), (3, 0, 0), (2, 0, 0)]);
     }
 
     /// Runs a `Script` connector with no step on a node whose mesh time starts
-    /// `delay` after the call, and cancels it at `cancel`, after it removes the status
-    /// channels when `removed`. Checks that the call returns `Ok`, and gives when it
-    /// returned and when each run started, and the status frames.
+    /// `delay` after the call, in a sim of `seed`, and cancels it at `cancel`, after
+    /// it removes the status channels when `removed`. Checks that the call returns
+    /// `Ok`, and gives when it returned and when each run started, and the status
+    /// frames.
     fn unsynced(
+        seed: u64,
         delay: Span,
         cancel: Span,
         removed: bool,
     ) -> (Span, Vec<Span>, Vec<Written>) {
-        run_on(move |node, tasks| async move {
+        let node = sim::node::Config::default();
+        run_with(seed, node, move |node, tasks| async move {
             let hub =
                 hub::testing::open_unsynced(env(&node, tasks.clone()), delay).await;
             let status = create_status("plant.script");
@@ -5078,5 +5139,89 @@ mod tests {
                 "a lease of {nanos} ns, the second write at its end"
             );
         }
+    }
+
+    /// A kind whose browse reads the mesh time and gives no entries.
+    struct Mesh;
+
+    impl Kind for Mesh {
+        type Config = ();
+
+        fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+            Ok(())
+        }
+
+        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+            Ok(Channels::default())
+        }
+
+        fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+            std::future::ready(Ok(()))
+        }
+
+        async fn browse(
+            &self,
+            ctx: &browse::Context<'_>,
+            _: &browse::Query,
+        ) -> Result<browse::Found, Error> {
+            ctx.time().await?;
+            Ok(browse::Found {
+                entries: Vec::new(),
+                values: Vec::new(),
+                end: browse::End::Done,
+            })
+        }
+    }
+
+    /// What a browse of [`Mesh`] gives on a node whose mesh time starts `delay` after
+    /// the call, and when it returned.
+    fn browse_unsynced(delay: Span) -> (Result<browse::Found, Error>, Span) {
+        run_on(move |node, tasks| async move {
+            let clock = node.clock();
+            let inputs = Config {
+                kinds: Arc::new(Table::new().with("mesh", Mesh)),
+                clock: clock.clone(),
+                entropy: node.entropy(),
+                net: node.net(),
+                roots: http::Roots::default(),
+                tasks: tasks.clone(),
+                hub: hub::testing::open_unsynced(env(&node, tasks), delay).await,
+                secrets: testing::create_secrets(node.files()),
+            };
+            let start = clock.now();
+            let query = browse::Query {
+                start: browse::Path::root(),
+                scope: browse::Scope::Level(None),
+                values: browse::Values::Skipped,
+            };
+            let found = Supervisor::new(inputs)
+                .browse("mesh", &config(), &query)
+                .await;
+            (found, clock.now() - start)
+        })
+    }
+
+    #[test]
+    fn a_browse_reads_the_mesh_time_once_the_node_has_it() {
+        let (found, returned) = browse_unsynced(Span::from_nanos(4_000_000_000));
+        assert_eq!(found.expect("found").end, browse::End::Done);
+        assert_eq!(returned, Span::from_nanos(4_000_000_000));
+    }
+
+    #[test]
+    fn a_browse_gives_a_retry_when_the_node_has_no_mesh_time_at_the_bound() {
+        let (found, returned) = browse_unsynced(Span::from_nanos(6_000_000_000));
+        let Err(Error::Retry(error)) = found else {
+            panic!("not a retry: {found:?}");
+        };
+        assert_eq!(error.to_string(), "the node has no mesh time after 5s");
+        assert_eq!(returned, browse::WAIT);
+    }
+
+    #[test]
+    fn a_browse_reads_the_mesh_time_that_starts_at_the_bound() {
+        let (found, returned) = browse_unsynced(browse::WAIT);
+        assert_eq!(found.expect("found").end, browse::End::Done);
+        assert_eq!(returned, browse::WAIT);
     }
 }
