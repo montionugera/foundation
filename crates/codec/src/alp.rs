@@ -34,8 +34,8 @@ const TOP: usize = 5;
 const RUN: usize = 32;
 /// Runs of a search of all pairs.
 const RUNS: usize = 8;
-/// Values of vectors that ALP can make smaller, after which an encoder searches all
-/// pairs again.
+/// Values of vectors whose best exact size is over the ALP header, after which an
+/// encoder searches all pairs again.
 const SEARCH: usize = 102_400;
 
 const _: () = assert!(
@@ -306,7 +306,7 @@ impl Stats {
 pub(crate) struct Pairs {
     top: [Pair; TOP],
     len: usize,
-    /// Values of vectors that ALP can make smaller since the last search of all pairs.
+    /// Values of vectors over the ALP header since the last search of all pairs.
     values: usize,
 }
 

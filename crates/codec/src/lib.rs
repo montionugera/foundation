@@ -1970,10 +1970,11 @@ mod tests {
             }
         }
 
-        /// A vector that ALP cannot make smaller does not search the pairs. After a
-        /// constant vector, which every pair encodes in 0 bits, decimals take ALP.
+        /// A vector whose best exact size is not over the ALP header does not search
+        /// the pairs. After a constant vector, which every pair encodes in 0 bits,
+        /// decimals take ALP.
         #[test]
-        fn skips_the_search_at_a_vector_that_alp_cannot_make_smaller() {
+        fn skips_the_search_at_a_vector_not_over_the_alp_header() {
             let decimals: Vec<f64> = (0..1_024)
                 .map(|k| f64::from(2_000 + (k * 7_919) % 1_000) / 100.0)
                 .collect();
@@ -2052,11 +2053,11 @@ mod tests {
             assert_eq!((encoded[0], encoded.len()), (vector::DELTA, 24));
         }
 
-        /// A vector of one sample, which ALP cannot make smaller, does not search the
-        /// pairs, and a vector of three does. Its integers keep `e` = 0, so quarters
-        /// after it do not use ALP.
+        /// A vector of one sample, not over the ALP header, does not search the pairs,
+        /// and a vector of three does. Its integers keep `e` = 0, so quarters after it
+        /// do not use ALP.
         #[test]
-        fn searches_the_pairs_at_the_first_vector_that_alp_can_make_smaller() {
+        fn searches_the_pairs_at_the_first_vector_over_the_alp_header() {
             for scalar in FLOATS {
                 let quarters: Vec<f64> =
                     (0..1_024).map(|k| f64::from(k % 89) / 4.0).collect();
