@@ -1016,7 +1016,9 @@
   withdraws item 1 of 6231727914 and item 1 of 6232020329; the path of a fault,
   2026-10-17T16:12:13Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236404985, which
-  states what one path is, as `absolute` gave it for item 2 of 6232020329: `.` and `..` taken as text, and no link followed; the path of the working directory on a move, 2026-10-17T16:16:39Z,
+  states what one path is, as `absolute` gave it for item 2 of 6232020329: `.` and `..`
+  taken as text, and no link followed; the path of the working directory on a move,
+  2026-10-17T16:16:39Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236468300, which
   supersedes "`working` becomes its resolved path when it resolves" of 6231322001 and
   "`move_entry` goes back to the rule of 6231322001, and 7c9caa232 goes" of item 2 of
