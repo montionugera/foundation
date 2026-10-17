@@ -557,3 +557,12 @@
   https://github.com/synnaxlabs/foundation/pull/2986#issuecomment-6229838366, and
   2026-10-17T04:55:38Z:
   https://github.com/synnaxlabs/foundation/pull/2986#issuecomment-6229874537).
+  Amended (#2989): `delivery` keeps the whole read cursor of a complete session on
+  disk, a `types::log::Mark`, which moves from `buffer` with no re-export.
+  `Next::Disk { from }` gives it, and `reached(key, next, durable)` takes the `next` of
+  the read whole, so a read goes on past the entries with no samples at a seq that the
+  read before it gave. A frame that `fill` gives moves the cursor to `Mark::at` its
+  end. The panics of `reached` compare marks in their order. `home` keeps no mark: it
+  asks `delivery::Readers::on_disk` before it decodes a read, and drops the read of a
+  session that is not on disk (`laptop.architect`, 2026-10-17T06:49:04Z:
+  https://github.com/synnaxlabs/foundation/issues/2989#issuecomment-6230866460).
