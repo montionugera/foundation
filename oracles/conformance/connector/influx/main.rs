@@ -86,7 +86,7 @@ async fn setup(plant: Plant<'_>) -> Document {
             clock.sleep(PERIOD).await;
         }
     });
-    config(&format!("http://{}", plant.device), Some("plant"))
+    config(&format!("http://{}", plant.address), Some("plant"))
 }
 
 /// Writes one sample of `edge.time` at the time of `writer`, and `1.0` to `edge.a`.

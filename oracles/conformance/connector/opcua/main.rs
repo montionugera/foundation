@@ -73,7 +73,7 @@ fn setup(plant: &Plant<'_>) -> Document {
         definitions.push((name(channel), Definition::Channel(Channel { key, kind })));
     }
     plant.rig.define(definitions);
-    let address = format!("opc.tcp://{}", plant.device);
+    let address = format!("opc.tcp://{}", plant.address);
     let reads = CHANNELS
         .iter()
         .zip(NODES)

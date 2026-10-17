@@ -99,7 +99,7 @@ mod inputs {
         /// The tasks of the shard of the rig.
         pub tasks: &'a Tasks,
         /// The address of the device.
-        pub device: SocketAddr,
+        pub address: SocketAddr,
         /// Cancelled once the scenario ends.
         pub until: &'a Token,
     }
@@ -166,10 +166,17 @@ macro_rules! suite {
         }
 
         #[test]
-        fn stops_at_a_write_channel_that_the_hub_does_not_define() {
-            $crate::scenarios::stops_at_a_write_channel_that_the_hub_does_not_define(
-                &$suite,
-            );
+        fn stops_at_a_write_channel_that_no_spec_defines() {
+            $crate::scenarios::stops_at_a_write_channel_that_no_spec_defines(&$suite);
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "the scenario ran past 90s of plant time, where the ring of the \
+                        rig's home can lose a status (#160)"
+        )]
+        fn fails_past_the_ring() {
+            $crate::scenarios::fails_past_the_ring(&$suite);
         }
     };
 }
@@ -230,7 +237,7 @@ impl Scene {
             rig: &self.rig,
             node: &self.node,
             tasks: &self.tasks,
-            device: self.address,
+            address: self.address,
             until: &self.until,
         };
         (self.suite.setup)(plant).await
@@ -654,13 +661,11 @@ pub(crate) fn refuses_each_config_with_its_diagnostics(suite: &'static Suite) {
     });
 }
 
-/// For a kind whose check gives writes, a write channel that the hub does not define
-/// gives Stopped, class Config, no restart, and the text of
-/// `connector.unknown-channel`. A kind whose check gives no writes passes with no
-/// check, until the read form of #2642.
-pub(crate) fn stops_at_a_write_channel_that_the_hub_does_not_define(
-    suite: &'static Suite,
-) {
+/// For a kind whose check gives writes, a write channel that no spec defines gives
+/// Stopped, class Config, no restart, and the text of `connector.unknown-channel`. A
+/// kind whose check gives no writes passes with no check, until the read form of
+/// #2642.
+pub(crate) fn stops_at_a_write_channel_that_no_spec_defines(suite: &'static Suite) {
     run(suite, direct, move |scene| async move {
         let config = scene.setup().await;
         let checked = (suite.kinds)().check(suite.kind(), None, &config);
@@ -687,5 +692,13 @@ pub(crate) fn stops_at_a_write_channel_that_the_hub_does_not_define(
             other => panic!("a config error, not {other:?}"),
         }
         scene.stop(served).await;
+    });
+}
+
+/// A scenario that runs 1 s past [`RING`] fails.
+pub(crate) fn fails_past_the_ring(suite: &'static Suite) {
+    run(suite, direct, |scene| async move {
+        let past = Span::from_nanos(RING.nanos() + Span::SECOND.nanos());
+        scene.node.clock().sleep(past).await;
     });
 }
