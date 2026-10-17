@@ -7,12 +7,12 @@
 //! `present` of the channels, a different `present` in turn, so the frames hold each
 //! channel once before they hold one again. The batch writes to a bucket, so a `u64`
 //! channel is a `u` field. Each round adds `FRAMES` frames to one batch with
-//! `Batch::add`, then takes its body with `Batch::take`, as the send loop does for one
-//! request. Only these two calls are timed. The figures are per frame: the ns of the
-//! warm-up rounds, in which the batch first sees each channel; the ns of each later
-//! round, at percentiles over the rounds; the ns for each sample of a channel in the
-//! frame at p50; and the allocations. It checks that `Batch::add` makes no allocation
-//! after the warm-up rounds.
+//! `Batch::add`, each followed by `Batch::full`, then takes each body with
+//! `Batch::take`, as the send loop does. Only these calls are timed. The figures are
+//! per frame: the ns of the warm-up rounds, in which the batch first sees each channel;
+//! the ns of each later round, at percentiles over the rounds; the ns for each sample
+//! of a channel in the frame at p50; and the allocations. It checks that, after the
+//! warm-up rounds, `Batch::add` allocates only the next body at each close.
 //!
 //! Then, for each count in `NEW`, it times `Batch::add` of one frame of that many
 //! channels, one sample time each, on a new batch, so each channel is new to it.
@@ -48,11 +48,12 @@ const FRAMES: usize = 16;
 /// frees.
 const ROUNDS: usize = 20;
 /// Each `(channels, samples, present, types)`.
-const SHAPES: [(usize, usize, usize, &[Type]); 16] = [
+const SHAPES: [(usize, usize, usize, &[Type]); 17] = [
     (1, 1, 1, F64),
     (8, 1, 8, F64),
     (64, 1, 64, F64),
     (1, 100, 1, F64),
+    (1, 400, 1, F64),
     (8, 100, 8, F64),
     (64, 10, 64, F64),
     (8, 1, 4, F64),
@@ -206,20 +207,28 @@ async fn bench(
         let mut figures = (0, 0);
         for _ in 0..FRAMES {
             let received = reader.next().await.expect("a frame");
-            let (added, (ns, allocs)) = timed(|| batch.add(&received));
+            let ((added, _), (ns, allocs)) =
+                timed(|| (batch.add(&received), batch.full()));
             added.expect("each channel holds a type that a bucket stores");
             figures = (figures.0 + ns, figures.1 + allocs);
             let position = received.position();
             reader.ack(position);
         }
-        let (taken, (ns, allocs)) = timed(|| batch.take());
-        body = taken.expect("a batch").body.len();
+        let (bodies, (ns, allocs)) = timed(|| {
+            let mut bodies = 0;
+            while let Some(taken) = batch.take() {
+                body = taken.body.len();
+                bodies += 1;
+            }
+            bodies
+        });
         if round < warmup {
             first += figures.0 + ns;
         } else {
             assert_eq!(
-                figures.1, 0,
-                "{channels} x {samples}: add allocates nothing"
+                figures.1,
+                bodies - 1,
+                "{channels} x {samples}: add allocates only the next body at a close"
             );
             nanos.push((figures.0 + ns) / u64::try_from(FRAMES).expect("few"));
             allocations += figures.1 + allocs;

@@ -31,7 +31,7 @@ const _: () = assert!(
 const TIMEOUT: Span = Span::from_nanos(10_000_000_000);
 /// The largest answer body read, for the text of an error.
 const BODY_MAX: usize = 1 << 16;
-/// The waits between the attempts of one batch.
+/// The waits between the attempts of one request.
 const RETRY: retry::Config = retry::Config {
     first: Span::SECOND,
     cap: Span::MINUTE,

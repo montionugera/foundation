@@ -1458,6 +1458,13 @@ fn reads_no_frame_into_a_batch_of_5000_lines_or_more() {
     );
 }
 
+/// A body of 5,000 lines closes in the middle of a frame, and the rest of the frame
+/// goes on in the next body.
+#[test]
+fn splits_a_frame_at_5000_lines() {
+    assert_eq!(lines_of_each_request(&[2_500, 2_499, 2]), [1, 1, 5_000, 1]);
+}
+
 /// A gap line counts toward the 5,000 lines of a full batch.
 #[test]
 fn reads_no_frame_into_a_batch_of_4999_lines_and_a_gap_line() {
@@ -1598,7 +1605,7 @@ fn wide(answers: &[(StatusCode, &'static str)], frames: &'static [usize]) -> Wid
 fn sends_a_frame_of_over_6_mib_after_a_batch_of_4_mib_in_more_requests() {
     let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
     let wide = wide(&[failed], &[1, 260, 450]);
-    assert_eq!(wide.lines, [vec![1, 1, 266, 266, 178], vec![]]);
+    assert_eq!(wide.lines, [vec![1, 1, 265, 265, 180], vec![]]);
     assert_eq!(
         wide.errors,
         ["", "InfluxDB answered 500 Internal Server Error: ", ""]
@@ -1611,14 +1618,14 @@ fn sends_a_frame_of_over_6_mib_after_a_batch_of_4_mib_in_more_requests() {
 #[test]
 fn sends_a_frame_over_the_body_limit_in_more_requests() {
     let wide = wide(&[], &[700]);
-    assert_eq!(wide.lines, [vec![266, 266, 168], vec![]]);
+    assert_eq!(wide.lines, [vec![265, 265, 170], vec![]]);
     assert_eq!(wide.errors, [""]);
     assert_eq!(wide.confirmed, [0, 700 * 64, 0]);
     assert_eq!(wide.points, 700);
 }
 
 /// A batch is full, so the run reads no frame, while a body of a frame's lines waits
-/// for its request, and while the open body is at the bound.
+/// for its request. A line that takes a body past 4 MiB moves to the next body.
 #[test]
 fn is_full_until_each_closed_body_is_taken() {
     let (full, lines) = run(|node, tasks| async move {
@@ -1660,10 +1667,16 @@ fn is_full_until_each_closed_body_is_taken() {
         }
         (full, lines)
     });
-    assert_eq!(full, [true, true, false, false, true, false]);
+    assert_eq!(full, [true, true, false, false, true, false, false]);
     assert_eq!(
         lines,
-        [(266, false), (266, false), (168, true), (266, true)]
+        [
+            (265, false),
+            (265, false),
+            (170, true),
+            (265, false),
+            (1, true)
+        ]
     );
 }
 
@@ -1679,15 +1692,105 @@ fn acks_and_counts_a_frame_in_more_requests_only_after_its_last_request() {
     answers.extend([failed; 100]);
     let wide = wide(&answers, &[700]);
     let [first, second] = wide.lines;
-    assert_eq!(first[..3], [266, 266, 168]);
-    assert!(first[3..].iter().all(|&lines| lines == 168), "{first:?}");
-    assert_eq!(second, [266, 266, 168]);
+    assert_eq!(first[..3], [265, 265, 170]);
+    assert!(first[3..].iter().all(|&lines| lines == 170), "{first:?}");
+    assert_eq!(second, [265, 265, 170]);
     assert_eq!(
         wide.errors,
         ["", "InfluxDB answered 500 Internal Server Error: ", ""]
     );
     assert_eq!(wide.confirmed, [0, 700 * 64]);
     assert_eq!(wide.points, 700);
+}
+
+/// A request that holds the ends of more frames acks the last of them.
+#[test]
+fn acks_the_last_frame_that_ends_in_a_request() {
+    let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
+    let wide = wide(&[failed], &[1, 1, 1]);
+    assert_eq!(wide.lines, [vec![1, 1, 2], vec![]]);
+}
+
+/// A frame that ends in a body that the next frame closes is acked and counted with
+/// the request of that body.
+#[test]
+fn acks_a_frame_with_the_body_that_the_next_frame_closes() {
+    let (taken, failed) = (
+        (StatusCode::NO_CONTENT, ""),
+        (StatusCode::INTERNAL_SERVER_ERROR, ""),
+    );
+    let mut answers = vec![failed, taken, taken, taken];
+    answers.extend([failed; 100]);
+    let wide = wide(&answers, &[1, 260, 450]);
+    let [first, second] = wide.lines;
+    assert_eq!(first[..5], [1, 1, 265, 265, 180]);
+    assert_eq!(second, [265, 185]);
+    assert_eq!(wide.confirmed, [0, 64, 261 * 64, 0, 450 * 64]);
+}
+
+/// The lost seqs and the oversized samples of a frame in more requests count once,
+/// after the request of its last line: a run whose last request fails counts none,
+/// and the next run counts each once.
+#[test]
+fn counts_the_lost_and_oversized_of_a_frame_in_more_requests_after_its_last() {
+    let (lines, counts) = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let names = wide_names();
+        let channels = ["edge.time", "edge.a", "edge.b", "edge.text"];
+        let channels = channels.into_iter().chain(names.iter().map(String::as_str));
+        let mut writer = plant.writer(&channels.collect::<Vec<_>>()).await;
+        let run = plant.start(plant.config());
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        let sent = plant.got().len();
+        let (taken, failed) = (
+            (StatusCode::NO_CONTENT, ""),
+            (StatusCode::INTERNAL_SERVER_ERROR, ""),
+        );
+        plant.answers.borrow_mut().push_back(taken);
+        plant.answers.borrow_mut().extend([failed; 100]);
+        write_lost(&mut writer, first + 1);
+        let long = "\\".repeat(32_769);
+        let mut text = vec![long.as_bytes()];
+        text.extend([b"a".as_slice(); 265]);
+        let text = variable(Type::String, &text);
+        let wide = [255; 266];
+        let mut columns: Vec<_> =
+            (WIDE..WIDE + 64).map(|key| (key, &wide[..])).collect();
+        columns.push((23, &text));
+        write_raw(&mut writer, first + 4, 266, &columns);
+        plant.clock.sleep(Span::from_nanos(10_000_000_000)).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        plant.answers.borrow_mut().clear();
+        let lines = |got: &[Got]| -> Vec<usize> {
+            got.iter().map(|(_, body)| body.lines().count()).collect()
+        };
+        let mut runs = vec![lines(&plant.got()[sent..])];
+        plant.got.borrow_mut().clear();
+        let run = plant.start(plant.config());
+        plant.clock.sleep(Span::from_nanos(10_000_000_000)).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        runs.push(lines(&plant.got()));
+        let counts = (
+            plant.lost.borrow().clone(),
+            plant.oversized.borrow().clone(),
+            plant.confirmed.borrow().clone(),
+        );
+        (runs, counts)
+    });
+    assert_eq!(lines[0][..2], [266, 1]);
+    assert!(
+        lines[0][2..].iter().all(|&lines| lines == 1),
+        "{:?}",
+        lines[0]
+    );
+    assert_eq!(lines[1], [266, 1]);
+    assert_eq!(
+        counts,
+        (vec![0, 3], vec![0, 1], vec![0, 2, 0, 266 * 64 + 265])
+    );
 }
 
 /// What one frame gave: the end of the run once it returned, each request, the stamp

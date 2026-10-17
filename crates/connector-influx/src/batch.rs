@@ -1,10 +1,10 @@
-//! The lines of the frames that a reader gives, in one request body.
+//! The lines of the frames that a reader gives, in request bodies.
 
 use connector::kind::Error;
 use document::diagnostic::{Code, Diagnostic};
 use std::collections::VecDeque;
-use std::iter;
 use std::ops::Range;
+use std::{iter, mem};
 
 use hub::reader::{Position, Received};
 use types::frame::Path;
@@ -23,12 +23,11 @@ const UNSIGNED: Code = Code::new("influx.unsigned");
 
 /// The most lines of a request body.
 const LINES_MAX: usize = 5_000;
-/// The bytes of lines at which a request body takes no more. A line goes in whole, so
-/// this leaves 6 MiB for the last line under the 10 MiB limit of InfluxDB 3.
+/// The most bytes of lines of a request body, other than a body of one line.
 const BYTES_MAX: usize = 1 << 22;
 
-/// The lines of the frames added since the last [`Batch::take`], in request bodies,
-/// and the reader's position to ack after them.
+/// The lines of the frames added and not taken, in request bodies, and the reader's
+/// position to ack after each frame.
 #[derive(Debug)]
 pub struct Batch {
     measurement: Measurement,
@@ -38,13 +37,13 @@ pub struct Batch {
     /// The gap of the reader's index, made at the first gap.
     gap: Option<Gap>,
     layout: Option<Layout>,
-    body: Body,
+    decode: Decode,
+    bodies: Bodies,
 }
 
-/// The lines of a batch, and the buffers that decode a frame into them.
+/// The buffers that decode a frame.
 #[derive(Debug, Default)]
-struct Body {
-    bodies: Bodies,
+struct Decode {
     times: Vec<u8>,
     /// The samples of each data channel of the frame, by the order of `entries`.
     raw: Vec<Vec<u8>>,
@@ -67,6 +66,12 @@ struct Bodies {
     /// The bodies full before the open one, oldest first.
     closed: VecDeque<Taken>,
     /// The counts of the lines since the end of the last frame.
+    pending: Counts,
+}
+
+/// The counts of some lines.
+#[derive(Clone, Copy, Debug, Default)]
+struct Counts {
     samples: u64,
     lost: u64,
     oversized: u64,
@@ -87,13 +92,13 @@ pub struct Taken {
 pub struct Ack {
     /// The reader's position after the last frame that ends in the lines.
     pub position: Position,
-    /// The samples written as fields, of each frame that ends in the lines and not of
-    /// an earlier [`Taken`]: a NaN or infinite sample is not.
+    /// The samples written as fields, of each frame that ends in the lines: a NaN or
+    /// infinite sample is not.
     pub samples: u64,
-    /// The seqs that the gap lines count.
+    /// The seqs that the gap lines of each frame that ends in the lines count.
     pub lost: u64,
-    /// The `string` and `bytes` samples left out as a field of over 65,536 bytes as
-    /// written.
+    /// The `string` and `bytes` samples of each frame that ends in the lines, left
+    /// out as a field of over 65,536 bytes as written.
     pub oversized: u64,
 }
 
@@ -127,7 +132,8 @@ impl Batch {
             connector: connector.clone(),
             gap: None,
             layout: None,
-            body: Body::default(),
+            decode: Decode::default(),
+            bodies: Bodies::default(),
         }
     }
 
@@ -135,9 +141,9 @@ impl Batch {
     /// channel of the frame, keyed by the channel's name. A line whose values are each
     /// NaN or infinite is left out. Before them, it adds the `live` gap line of the
     /// frame's [`Received::gap`], at the stamp of the frame's first sample, also when
-    /// that line is left out, with the count of the gap's seqs. A request body takes
-    /// no line once it holds 5,000 lines or 4 MiB of them, so the lines of one frame
-    /// can span bodies.
+    /// that line is left out, with the count of the gap's seqs. A request body holds at
+    /// most 5,000 lines, and at most 4 MiB of them or one line, so the lines of one
+    /// frame can span bodies.
     ///
     /// # Errors
     ///
@@ -148,7 +154,7 @@ impl Batch {
         if let Some(seqs) = received.gap() {
             let connector = &self.connector;
             let gap = (self.gap).get_or_insert_with(|| live(connector, received));
-            self.body.gap(gap, received, seqs);
+            self.decode.gap(&mut self.bodies, gap, received, seqs);
         }
         let (view, set) = (received.view(), received.set());
         let data = || {
@@ -157,7 +163,7 @@ impl Batch {
                 .filter(|&entry| set.index(entry) != entry)
         };
         let Some(first) = data().next() else {
-            self.body.bodies.end(received.position());
+            self.bodies.end(received.position());
             return Ok(());
         };
         let layout = match &mut self.layout {
@@ -167,28 +173,30 @@ impl Batch {
         for at in data() {
             layout.add(&self.measurement, self.unsigned, received, at)?;
         }
-        self.body.write(&self.measurement, layout, received, first);
-        self.body.bodies.end(received.position());
+        let (measurement, bodies) = (&self.measurement, &mut self.bodies);
+        self.decode
+            .write(bodies, measurement, layout, received, first);
+        self.bodies.end(received.position());
         Ok(())
     }
 
-    /// Whether the batch holds a request body of 5,000 lines or 4 MiB of them, so the
-    /// caller sends it before it adds more.
+    /// Whether the batch holds a closed request body, or an open one of 5,000 lines or
+    /// 4 MiB of them, so the caller takes the bodies before it adds more.
     #[must_use]
     pub fn full(&self) -> bool {
-        let bodies = &self.body.bodies;
-        !bodies.closed.is_empty() || bodies.at_bound()
+        !self.bodies.closed.is_empty() || self.bodies.at_bound()
     }
 
     /// The oldest request body of the frames added, or `None` when the batch holds
     /// none.
     pub fn take(&mut self) -> Option<Taken> {
-        let bodies = &mut self.body.bodies;
+        let bodies = &mut self.bodies;
         if let Some(taken) = bodies.closed.pop_front() {
             return Some(taken);
         }
         bodies.ack?;
-        Some(bodies.close())
+        let most = bodies.most.max(bodies.bytes.len());
+        Some(bodies.close(Vec::with_capacity(most)))
     }
 }
 
@@ -198,27 +206,42 @@ impl Bodies {
         self.lines >= LINES_MAX || self.bytes.len() >= BYTES_MAX
     }
 
-    /// Closes the open body, with its ack, and gives it.
-    fn close(&mut self) -> Taken {
+    /// Closes the open body, with its ack, gives it, and opens `next`.
+    fn close(&mut self, next: Vec<u8>) -> Taken {
         self.lines = 0;
         self.most = self.most.max(self.bytes.len());
-        let bytes = Vec::with_capacity(self.most);
         Taken {
-            body: std::mem::replace(&mut self.bytes, bytes),
+            body: mem::replace(&mut self.bytes, next),
             ack: self.ack.take(),
         }
     }
 
-    /// Closes the open body into `closed` when it takes no more lines, before a line.
-    fn make_room(&mut self) {
+    /// Writes one line into the open body with `write`, which gives the line's counts.
+    /// The open body closes before the line at the bound, and after the line when it
+    /// passes 4 MiB with other lines: the line then moves to the next body. A line
+    /// that `write` leaves out counts as no line.
+    fn line(&mut self, write: impl FnOnce(&mut Vec<u8>) -> Counts) {
         if self.at_bound() {
-            let taken = self.close();
+            let taken = self.close(Vec::with_capacity(self.bytes.len()));
             self.closed.push_back(taken);
         }
+        let start = self.bytes.len();
+        self.pending.add(write(&mut self.bytes));
+        if self.bytes.len() == start {
+            return;
+        }
+        if self.bytes.len() > BYTES_MAX && start > 0 {
+            let mut next = Vec::with_capacity(self.bytes.len());
+            next.extend(self.bytes.drain(start..));
+            let taken = self.close(next);
+            self.closed.push_back(taken);
+        }
+        self.lines = self.lines.saturating_add(1);
     }
 
     /// Ends a frame at `position`: the open body acks it, with the counts of its lines.
     fn end(&mut self, position: Position) {
+        let pending = mem::take(&mut self.pending);
         let ack = self.ack.get_or_insert(Ack {
             position,
             samples: 0,
@@ -226,19 +249,30 @@ impl Bodies {
             oversized: 0,
         });
         ack.position = position;
-        ack.samples = ack
-            .samples
-            .saturating_add(std::mem::take(&mut self.samples));
-        ack.lost = ack.lost.saturating_add(std::mem::take(&mut self.lost));
-        let oversized = std::mem::take(&mut self.oversized);
-        ack.oversized = ack.oversized.saturating_add(oversized);
+        ack.samples = ack.samples.saturating_add(pending.samples);
+        ack.lost = ack.lost.saturating_add(pending.lost);
+        ack.oversized = ack.oversized.saturating_add(pending.oversized);
     }
 }
 
-impl Body {
-    /// Writes the line of `gap` with the seqs `seqs`, which end at the first sample
-    /// of `received`, at that sample's stamp.
-    fn gap(&mut self, gap: &mut Gap, received: &Received<'_>, seqs: Range<u64>) {
+impl Counts {
+    fn add(&mut self, other: Self) {
+        self.samples = self.samples.saturating_add(other.samples);
+        self.lost = self.lost.saturating_add(other.lost);
+        self.oversized = self.oversized.saturating_add(other.oversized);
+    }
+}
+
+impl Decode {
+    /// Writes to `bodies` the line of `gap` with the seqs `seqs`, which end at the
+    /// first sample of `received`, at that sample's stamp.
+    fn gap(
+        &mut self,
+        bodies: &mut Bodies,
+        gap: &mut Gap,
+        received: &Received<'_>,
+        seqs: Range<u64>,
+    ) {
         let index = index(received);
         self.times(received, index);
         let (first, _) = self.times.split_first_chunk::<8>().unwrap_or_else(|| {
@@ -247,11 +281,10 @@ impl Body {
         let stamp = Stamp::from_nanos(i64::from_le_bytes(*first));
         let end = seqs.end;
         gap.add(seqs);
-        let bodies = &mut self.bodies;
-        bodies.make_room();
-        let lost = gap.line(&mut bodies.bytes, end, stamp);
-        bodies.lines = bodies.lines.saturating_add(1);
-        bodies.lost = bodies.lost.saturating_add(lost);
+        bodies.line(|bytes| Counts {
+            lost: gap.line(bytes, end, stamp),
+            ..Counts::default()
+        });
     }
 
     /// Decodes the stamps of the index at `index` of `received` into `times`, and
@@ -269,10 +302,11 @@ impl Body {
         count
     }
 
-    /// Writes the lines of `measurement` of `received`, whose first data channel is
-    /// at `first`, with the `layout` of its channels.
+    /// Writes to `bodies` the lines of `measurement` of `received`, whose first data
+    /// channel is at `first`, with the `layout` of its channels.
     fn write(
         &mut self,
+        bodies: &mut Bodies,
         measurement: &Measurement,
         layout: &Layout,
         received: &Received<'_>,
@@ -291,23 +325,21 @@ impl Body {
                 .expect("invariant: the hub gives valid series");
         }
         for (line, &time) in self.times.as_chunks::<8>().0.iter().enumerate() {
-            let bodies = &mut self.bodies;
-            bodies.make_room();
-            let mut text = measurement.begin(&mut bodies.bytes);
-            for (&at, raw) in self.entries.iter().zip(&self.raw) {
-                let channel = layout.channel(at);
-                (channel.convert)(raw, count, line, &channel.field, &mut text);
-            }
-            let oversized = text.oversized();
-            let oversized =
-                u64::try_from(oversized).expect("invariant: usize fits u64");
-            bodies.oversized = bodies.oversized.saturating_add(oversized);
-            let wrote = text.end(Stamp::from_nanos(i64::from_le_bytes(time)));
-            if wrote > 0 {
-                bodies.lines = bodies.lines.saturating_add(1);
-            }
-            let wrote = u64::try_from(wrote).expect("invariant: usize fits u64");
-            bodies.samples = bodies.samples.saturating_add(wrote);
+            bodies.line(|bytes| {
+                let mut text = measurement.begin(bytes);
+                for (&at, raw) in self.entries.iter().zip(&self.raw) {
+                    let channel = layout.channel(at);
+                    (channel.convert)(raw, count, line, &channel.field, &mut text);
+                }
+                let oversized =
+                    u64::try_from(text.oversized()).expect("invariant: usize fits u64");
+                let wrote = text.end(Stamp::from_nanos(i64::from_le_bytes(time)));
+                Counts {
+                    samples: u64::try_from(wrote).expect("invariant: usize fits u64"),
+                    lost: 0,
+                    oversized,
+                }
+            });
         }
     }
 }
