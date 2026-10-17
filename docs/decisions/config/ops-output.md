@@ -420,10 +420,12 @@
   `reason`. A point also has `type` (as a `type` attribute takes it, such as `f64`),
   `unit`, `unit_code`, and `access` (`read`, `write`, or `read-write`), each `null` when
   the device cannot know it. Only with `values` a point has `value`, `null` when the
-  device gave none: a bool and each integer are a JSON bool and number, a finite float a
-  number, a float that is not finite `"NaN"`, `"inf"`, or `"-inf"`, a stamp RFC 3339
-  text in UTC with nine fraction digits, a span its text such as `"250us"`, and a UUID
-  its hyphenated text. `end` is `"done"`, `{"next":"<cursor>"}`, `"limit"`, or
+  device gave none: a bool and each integer of 32 bits or fewer are a JSON bool and
+  number, an `i64` or `u64` its decimal text such as `"9007199254740993"`, a finite
+  float a number, a float that is not finite `"NaN"`, `"Infinity"`, or `"-Infinity"`, a
+  stamp RFC 3339 text in UTC with nine fraction digits, a span its text such as
+  `"250us"`, and a UUID its hyphenated text. The text form uses the same texts. `end`
+  is `"done"`, `{"next":"<cursor>"}`, `"limit"`, or
   `"budget"`. The text gives one line for each entry: `<path>/` for a folder, `<path>
   <type> <unit> <access>` and then the value with `values` for a point, and `<path>
   unreadable: <reason>`. A fact that the device cannot know is `?`, so each line keeps
@@ -441,3 +443,11 @@
   last item gives `?`. The type is the text of `types::sample::Type`, which a `type`
   attribute takes, not the `float64` of the plan. Lost: one `unit` field, which drops
   the code when the device gives a text, so an agent cannot tell which it got.
+  `laptop.monitor` accepted kinds (e) and (f) with two conditions on (e), which follow
+  the proto3 JSON mapping: an `i64` or `u64` is text, since a JSON number past 2^53
+  loses digits in JavaScript and in many JSON tools with no error, and a float that is
+  not finite is `"Infinity"` or `"-Infinity"`, since JavaScript `Number("inf")` gives
+  NaN (as `laptop.architect-2` records, 2026-10-17T22:24:28Z,
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6242201049). One
+  function of `ops` maps a value to JSON, so each later output with values takes this
+  rule.
