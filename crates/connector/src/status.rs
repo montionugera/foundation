@@ -1159,6 +1159,13 @@ mod tests {
         assert_eq!(text.capacity(), text.len());
     }
 
+    /// The tests of the lines of the status writer are in `node`, which has a log.
+    #[test]
+    fn names_each_class_in_a_line_of_the_log() {
+        let names = [Class::Config, Class::Device, Class::Retry].map(Class::name);
+        assert_eq!(names, ["config", "device", "retry"]);
+    }
+
     /// A constant spare capacity of the value cancels in each difference of held bytes
     /// that a caller can measure, so only this one sees it.
     #[test]
