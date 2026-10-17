@@ -18,7 +18,7 @@
   https://github.com/synnaxlabs/foundation/pull/2274#issuecomment-6098836145).
   Supersedes the clause "no caller matches its variants" of
   https://github.com/synnaxlabs/foundation/issues/275#issuecomment-6093580361.
-  Amended (2026-10-17T18:24:36Z, #406): `Shard::open` gives no error, because
+  Amended (2026-10-17T18:24:36Z, #3056): `Shard::open` gives no error, because
   `Buffer::newest` reads no file (ENTRY TAGS). Only `Buffer::open` gives the
   `buffer::Error` that `node` puts in `Error::Buffer` (`laptop.architect`,
   https://github.com/synnaxlabs/foundation/pull/3056#issuecomment-6238515205).
