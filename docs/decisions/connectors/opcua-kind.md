@@ -98,15 +98,15 @@
   kind browses from the Objects folder (`i=85`) on one session, which it closes at the
   end, and gives `Error::Device` when the connect, a Browse, a `BrowseNext`, or a Read
   fails. The header of each request holds the mesh time of the node, which the kind
-  reads with `browse::Context::time` before the connect. An entry is one forward `HierarchicalReferences`
-  reference: an Object or a View is a folder, and a Variable is a point with its type,
-  unit, and `access`, or is unreadable with a reason: the server does not let the user
-  read it, its value rank is that of an array, or its type is another built-in type. A
-  node that `Node` cannot hold (a GUID or opaque key, a name that is empty or not UTF-8,
-  or another server) is unreadable, so `import` refuses it by shape. Its tag is the text
-  of its ID, with `%` and each byte that is not UTF-8 as `%XX`, and `s%=` in place of
-  the `s=` of a name, so no node ID that the kind reads has it (key choices e and f, the
-  plan, 2026-10-16T21:13:48Z:
+  reads with `browse::Context::time` before the connect. An entry is one forward
+  `HierarchicalReferences` reference: an Object or a View is a folder, and a Variable is
+  a point with its type, unit, and `access`, or is unreadable with a reason: the server
+  does not let the user read it, its value rank is that of an array, or its type is
+  another built-in type. A node that `Node` cannot hold (a GUID or opaque key, a name
+  that is empty or not UTF-8, or another server) is unreadable, so `import` refuses it
+  by shape. Its tag is the text of its ID, with `%` and each byte that is not UTF-8 as
+  `%XX`, and `s%=` in place of the `s=` of a name, so no node ID that the kind reads has
+  it (key choices e and f, the plan, 2026-10-16T21:13:48Z:
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6224806107). In the
   pages of one folder, a second reference to a node gives no entry, a name that an
   earlier entry has gets ` (<tag>)` after it, and an empty name is the tag. So the plain
