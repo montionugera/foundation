@@ -103,9 +103,10 @@
   records) and `State::synced`, with no file write. `new` refuses more than 54 indexes,
   whose group is over a body of two blocks. `trimming` makes the task on the ring of ID
   4096 and runs `commit(1)` past two laps and up to the deadline before a trim, which it
-  finds from the period between two trims. So a time holds the mean cost of a deadline
-  of a buffer that trims in steps, `deadline_trim` the cost of the deadline that trims a
-  step, and `deadline_carry` that of a carry record of 32 tails. `benches/logs.rs` also
+  finds from the period between two trims. `trimming` takes a nonzero count of indexes.
+  So a time holds the mean cost of a deadline of a buffer that trims in steps,
+  `deadline_trim` the cost of the deadline that trims a step, and `deadline_carry` that
+  of a carry record of 32 tails. `benches/logs.rs` also
   gets the case `lap_shrink` of 10000 paths, which times only the commit of `lap_end`
   that ends the lap of 2756 paths, each with a shrink, while the other paths wait. Lost:
   a sim `Buffer` over a sim file, timed from `append` to the end of the commit, whose

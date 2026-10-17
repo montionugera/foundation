@@ -17,6 +17,8 @@
 //! `deadline_trim` times only the deadline that trims a step of 100 blocks on the ring
 //! of ID 4096.
 
+use std::num::NonZeroU32;
+
 use buffer::bench::{Deadline, Group, PHASE, Ring, SAMPLE_SIZE};
 use divan::Bencher;
 use divan::counter::ItemsCount;
@@ -105,7 +107,9 @@ fn deadline_carry(bencher: Bencher<'_, '_>) {
 fn deadline_trim(bencher: Bencher<'_, '_>, indexes: u32) {
     bencher
         .counter(ItemsCount::new(usize::try_from(indexes).expect("fits")))
-        .with_inputs(|| Deadline::trimming(indexes))
+        .with_inputs(|| {
+            Deadline::trimming(NonZeroU32::new(indexes).expect("each arg is nonzero"))
+        })
         .bench_local_values(|mut deadline| {
             deadline.commit(divan::black_box(1));
             deadline

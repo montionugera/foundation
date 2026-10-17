@@ -130,13 +130,11 @@ impl Deadline {
     ///
     /// # Panics
     ///
-    /// When `indexes` is 0, since the ring then never trims, or as [`new`](Self::new)
-    /// does.
+    /// As [`new`](Self::new) does.
     #[must_use]
-    pub fn trimming(indexes: u32) -> Self {
-        assert!(indexes > 0, "a deadline of no indexes never trims");
+    pub fn trimming(indexes: NonZeroU32) -> Self {
         let blocks = 4096 + crate::bench::PHASE;
-        let mut deadline = Self::new(indexes, blocks);
+        let mut deadline = Self::new(indexes.get(), blocks);
         let mut commits = 0..=2 * blocks;
         while deadline.state.writer.head() <= 2 * blocks * BLOCK {
             commits.next().expect("each deadline writes a block");
@@ -193,7 +191,8 @@ mod tests {
     #[test]
     fn the_deadline_after_trimming_trims_a_step() {
         for (indexes, freed) in [(1, 101 * BLOCK), (32, 102 * BLOCK)] {
-            let mut deadline = Deadline::trimming(indexes);
+            let nonzero = NonZeroU32::new(indexes).expect("a nonzero count");
+            let mut deadline = Deadline::trimming(nonzero);
             let (tail, header) = (deadline.state.writer.tail(), deadline.state.header);
             let area = (4096 + PHASE) * BLOCK;
             assert_eq!(deadline.state.writer.layout().area(), area, "{indexes}");
@@ -208,12 +207,6 @@ mod tests {
     fn a_deadline_of_no_indexes_takes_no_entry() {
         let mut deadline = Deadline::new(0, 64 + PHASE);
         assert_eq!((deadline.commit(2), deadline.commit(2)), (0, 0));
-    }
-
-    #[test]
-    #[should_panic(expected = "a deadline of no indexes never trims")]
-    fn trimming_of_no_indexes_panics() {
-        let _deadline = Deadline::trimming(0);
     }
 
     #[test]
