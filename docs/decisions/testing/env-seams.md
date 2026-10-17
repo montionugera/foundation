@@ -1010,17 +1010,17 @@
   first, each prefix of the resolved working directory, then each prefix of the path as
   given, never a prefix of their join, since a join can be longer than the host takes
   where neither is. So a relative path and the absolute path that it names give one
-  result. `../work/a` with the working directory `/out` gives `Outside`, as
-  `/out/../work/a` does. So when the working directory is outside the folders and not on
-  the way to one, each relative path gives `Outside`, also one that leads into a folder;
-  the fix of `ops.outside` names that directory, so the user gives an absolute path. A
-  prefix resolves as `resolve` does, and the walk stops at the first prefix that does
-  not resolve. Each prefix that resolves is checked as the whole path is, and a prefix
-  short of the whole path also passes when it is a directory on the way to a folder, by
-  key. The name of the first prefix that does not resolve is checked at its place, in
-  the resolved prefix before it, with no key, as a new name there is. The first step
-  that fails gives its error. When each passes and the path does not resolve, the call
-  gives the error of its resolve. So `workshop/../work/a.hcl` gives `Outside`,
+  result where the host takes both. `../work/a` with the working directory `/out` gives
+  `Outside`, as `/out/../work/a` does. So when the working directory is outside the
+  folders and not on the way to one, each relative path gives `Outside`, also one that
+  leads into a folder; the fix of `ops.outside` names that directory, so the user gives
+  an absolute path. A prefix resolves as `resolve` does, and the walk stops at the first
+  prefix that does not resolve. Each prefix that resolves is checked as the whole path
+  is, and a prefix short of the whole path also passes when it is a directory on the way
+  to a folder, by key. The name of the first prefix that does not resolve is checked at
+  its place, in the resolved prefix before it, with no key, as a new name there is. The
+  first step that fails gives its error. When each passes and the path does not resolve,
+  the call gives the error of its resolve. So `workshop/../work/a.hcl` gives `Outside`,
   `work/data/../a.hcl` gives `Hidden`, and a loop or a link to nothing in a hidden
   folder that a program moves away gives `Hidden` on `read` and `write` too. `make_dir`
   makes the directory only when each step passes. When the path did not resolve, the
@@ -1061,4 +1061,6 @@
   and its deferral to #3018, 2026-10-17T08:19:29Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231662179; the walk
   of a relative path by its own prefixes, 2026-10-17T08:53:56Z,
-  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231983300).
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231983300; the walk
+  of the working directory first, 2026-10-17T16:01:56Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236262586).
