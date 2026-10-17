@@ -240,6 +240,29 @@ fn build_a_frame(bencher: Bencher<'_, '_>, series: u32) {
     bencher.bench_local(frame);
 }
 
+/// As [`build_a_frame`], but each head has one sample, one seq past the head before
+/// it, so that each frame moves the live position of the latest session.
+#[divan::bench(args = SERIES)]
+fn build_a_sampled_frame(bencher: Bencher<'_, '_>, series: u32) {
+    let (mut frames, pool) = frames_of(series, series * 8);
+    let run = run_of(series);
+    let body = vec![7; usize::try_from(series * 8).expect("a u32 fits a usize")];
+    let mut seq = 0;
+    let mut frame = || {
+        let mut head = [0; 18];
+        Reply::Head(Head {
+            path: Path::Live,
+            range: Range { seq, count: 1 },
+            series,
+        })
+        .encode(&mut head);
+        seq += 1;
+        build(&mut frames, &pool, [&head, &run[..], &body])
+    };
+    frame();
+    bencher.bench_local(frame);
+}
+
 /// Builds a frame of one series with [`Frames`], its body in `messages` messages of
 /// 1 024 bytes received in place.
 #[divan::bench(args = [1, 8, 64])]
