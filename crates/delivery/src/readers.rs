@@ -143,20 +143,14 @@ struct Flow {
 }
 
 impl Flow {
-    /// Spends the charge of `frame`, of key set `set` and with the charge `whole`,
-    /// for the samples `seq`. Returns `false` and spends nothing when no credit is
-    /// left.
-    fn pay(
-        &mut self,
-        frame: &Frame,
-        set: &KeySet,
-        whole: u64,
-        seq: &Range<u64>,
-    ) -> bool {
+    /// Spends the charge of `frame`, of key set `set` and with the charge `whole`, for
+    /// samples that end at seq `end`, and records `end` as `given`. Returns `false`,
+    /// and spends and records nothing, when no credit is left.
+    fn pay(&mut self, frame: &Frame, set: &KeySet, whole: u64, end: u64) -> bool {
         if !self.credit.spend(self.cost.charge(frame, set, whole)) {
             return false;
         }
-        self.given = seq.end;
+        self.given = end;
         true
     }
 }
@@ -637,7 +631,7 @@ impl Readers {
             flow.lag = Lag::None;
             return false;
         }
-        if !flow.pay(&frame, set, frame.charge(), &seq) {
+        if !flow.pay(&frame, set, frame.charge(), seq.end) {
             return false;
         }
         flow.waiting.push_back(frame);
@@ -743,7 +737,7 @@ impl Readers {
             owed.set += 1;
         }
         let set = &self.sets[owed.set];
-        if !flow.pay(frame, set, frame.charge(), seq) {
+        if !flow.pay(frame, set, frame.charge(), seq.end) {
             flow.lag = Lag::Owed(owed);
             return Next::Empty;
         }
@@ -956,7 +950,7 @@ fn give<'a>(
         if !matches!(flow.lag, Lag::None) || seq.end <= session.position.live {
             continue;
         }
-        if !flow.pay(frame, set, whole, seq) {
+        if !flow.pay(frame, set, whole, seq.end) {
             flow.lag = Lag::Owed(at);
             owing += 1;
             continue;
