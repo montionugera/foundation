@@ -1021,43 +1021,49 @@
   by count: each name after it adds one, each `..` takes one away, and it is checked
   when the count goes below zero, with the names of the working directory below it
   counted first; or when nothing is there, and then also passes when it is a directory
-  on the way to a folder, by key. The hidden folders hold on each prefix. A path through
-  another mount of a folder, such as `/System/Volumes/Data` on macOS or a bind mount on
-  Linux, or through a link outside the folders that names one, gives what the folder's
-  own path gives, as #2898 rules. The name of the first prefix that does not resolve is
-  checked at its place, in the resolved prefix before it, with no key, as a new name
-  there is. The first step that fails gives its error. When each passes and the path
-  does not resolve, the call gives the error of its resolve. So `workshop/../work/a.hcl`
-  gives `Outside`, `work/data/../a.hcl` gives `Hidden`, and a loop or a link to nothing
-  in a hidden folder that a program moves away gives `Hidden` on `read` and `write` too.
-  `make_dir` makes the directory only when each step passes. When the path did not
-  resolve, the call checks it again after it makes it, and a path with no last name,
-  such as one that ends in `..`, gets the error of the driver. The check gives an error
-  of a step apart from the result of the resolve, so an error of a step, such as `Io` of
-  a key, makes nothing. The cost is one resolve and one check for each name of the path,
-  and for a relative path one resolve of the working directory and one check for each of
-  its names, on each call of such a handle. Only `foundation mcp` of #2919 makes one.
-  The walk resolves each prefix, and a resolve on `os` walks each name of its prefix, so
-  the cost grows with the cube of the depth: a read of a file 1905 names deep in a
-  folder takes 72 s on `os` (Linux, Xeon Platinum 8488C, release), where the free handle
-  takes 214 µs, and the call blocks its thread for that time. Only `foundation mcp`
-  makes such a call, in a process of its own, so no node waits on it. A resolve on `os`
-  fails past the longest path that the host takes, which bounds the walk, and a path
-  stops at its first step that does not resolve. #3018 removes this cost. The cost that
-  stays until #3018: a symbolic link in the folders that names nothing passes by its own
-  place and gives `NotFound`, while one that names a file outside gives `Outside`, or
-  `Hidden` for a file in a hidden folder, so a tool can learn whether the target of such
-  a link is there. Supersedes "the deepest prefix" rule and the rule of the key of the
-  name in `make_dir` of the amendment of 2026-10-17T06:28:34Z; the check of a name in
-  `make_dir` of the amendment of 2026-10-17T06:14:25Z is now a step of the walk for each
-  call, with no key, which supersedes its "with the key of the file at that name". It
-  also supersedes "a path that does not resolve, such as a link to nothing or a loop,
-  passes the limits by its own place" of the amendment of 2026-10-16T08:08:47Z. Each
-  limit checks its folders before its hidden folders, so a step that the folders of a
-  limit refuse gives `Outside`, also beside a hidden folder that is not there: with the
-  folder `/work` and nothing at the hidden folder `/out/h`, `/out/x` and `/out/y` give
-  `Outside`, whether each is there or not. This supersedes "in the deepest directory on
-  its way that is there gives `Hidden`" of the amendment of 2026-10-16T17:13:18Z for a
+  on the way to a folder, by key. The hidden folders hold on each prefix that passes the
+  folders of each limit. A path through another mount of a folder, such as
+  `/System/Volumes/Data` on macOS or a bind mount on Linux, or through a link outside
+  the folders that names one, gives what the folder's own path gives, as #2898 rules.
+  The name of the first prefix that does not resolve is checked at its place, in the
+  resolved prefix before it, with no key, as a new name there is. The first step that
+  fails gives its error. When each passes and the path does not resolve, the call gives
+  the error of its resolve. So `workshop/../work/a.hcl` gives `Outside`,
+  `work/data/../a.hcl` gives `Hidden`, and a loop or a link to nothing in a hidden
+  folder that a program moves away gives `Hidden` on `read` and `write` too. `make_dir`
+  makes the directory only when each step passes. When the path did not resolve, the
+  call checks it again after it makes it, and a path with no last name, such as one that
+  ends in `..`, gets the error of the driver. The check gives an error of a step apart
+  from the result of the resolve, so an error of a step, such as `Io` of a key, makes
+  nothing. The cost is one resolve and one check for each name of the path, and for a
+  relative path one resolve of the working directory and one check for each of its
+  names, on each call of such a handle. Only `foundation mcp` of #2919 makes one. The
+  walk resolves each prefix, and a resolve on `os` walks each name of its prefix, so the
+  cost grows with the cube of the depth: a read of a file 1905 names deep in a folder
+  takes 72 s on `os` (Linux, Xeon Platinum 8488C, release), where the free handle takes
+  214 µs, and the call blocks its thread for that time. Only `foundation mcp` makes such
+  a call, in a process of its own, so no node waits on it. A resolve on `os` fails past
+  the longest path that the host takes, which bounds the walk, and a path stops at its
+  first step that does not resolve. #3018 removes this cost. The cost that stays until
+  #3018: a symbolic link in the folders that names nothing passes by its own place and
+  gives `NotFound`, while one that names a file outside gives `Outside`, or `Hidden` for
+  a file in a hidden folder, so a tool can learn whether the target of such a link is
+  there. Supersedes "the deepest prefix" rule and the rule of the key of the name in
+  `make_dir` of the amendment of 2026-10-17T06:28:34Z; the check of a name in `make_dir`
+  of the amendment of 2026-10-17T06:14:25Z is now a step of the walk for each call, with
+  no key, which supersedes its "with the key of the file at that name". It also
+  supersedes "a path that does not resolve, such as a link to nothing or a loop, passes
+  the limits by its own place" of the amendment of 2026-10-16T08:08:47Z. A step meets
+  the hidden folders only when it passes the folders of each limit, so a step that the
+  folders of a limit refuse gives `Outside`, also beside a hidden folder that is not
+  there: with the folder `/work` and nothing at the hidden folder `/out/h`, `/out/x` and
+  `/out/y` give `Outside`, whether each is there or not. A short step that no `..` takes
+  the path above, and that the folders of a limit refuse, passes, and the end decides:
+  `/out/h/a` and `/out/h/s/x` give `Outside`, whether `/out/h` is there or a program
+  moves it away, and a link in `/out/h` that names a folder leads there, as a link
+  outside the folders does. A handle of `/plans` within the handle of `/work` gives
+  `Outside` for each name in `/work`. This supersedes "in the deepest directory on its
+  way that is there gives `Hidden`" of the amendment of 2026-10-16T17:13:18Z for a
   directory that is not under a folder. For the name of the first prefix that does not
   resolve, it supersedes "each other error is the error of the call" of the amendment of
   2026-10-16T17:13:18Z: that name takes no key, since an error of its key, such as `Io`
@@ -1072,8 +1078,9 @@
   check of each step that any `..` follows, since `/out/in/x/../a` through a link
   `/out/in` to a folder then gives `Outside` where `/out/in/a` reads; `Hidden` for each
   name in a directory that is not under a folder, beside a hidden folder that is not
-  there, which also refuses a name that is there. Decided by `laptop.architect-2`
-  (2026-10-17T07:45:44Z,
+  there, which also refuses a name that is there; `Hidden` for a path under a hidden
+  folder that the folders of a limit refuse, which tells whether that folder is there
+  and which names it holds. Decided by `laptop.architect-2` (2026-10-17T07:45:44Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231358043; the check
   of the name at its place and the arm of `make_dir`, 2026-10-17T07:54:32Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231433128; the
@@ -1093,6 +1100,6 @@
   of a short step where nothing is there, 2026-10-17T16:30:59Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236681131; the count
   of the `..` that takes the path above a step, 2026-10-17T16:38:50Z,
-  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236820865; the folders
-  of a limit before its hidden folders, 2026-10-17T16:59:11Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236820865; the
+  folders of a limit before its hidden folders, 2026-10-17T16:59:11Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237152656).
