@@ -129,4 +129,22 @@ fn main() {
     });
     assert_eq!(allocations, 0, "the purge path allocated");
     assert_eq!(pool.committed(), 0, "each idle size gave its pages back");
+    cold_block();
+}
+
+/// A free large block gives its pages to a small alloc, and the large alloc takes it
+/// back.
+fn cold_block() {
+    let config = Config::new(2 * 16_448).expect("the budget fits");
+    let heap = Heap::new(config.reservation());
+    let pool = Pool::new(config, heap);
+    let held = pool.alloc(16_384).expect("the budget has room");
+    drop(pool.alloc(16_384).expect("the budget has room"));
+    let allocations = count(|| {
+        for len in [8000, 16_384].into_iter().cycle().take(64) {
+            drop(pool.alloc(len).expect("the free block gives its pages"));
+        }
+    });
+    assert_eq!(allocations, 0, "the path of a cold block allocated");
+    drop(held);
 }
