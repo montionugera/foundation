@@ -78,7 +78,7 @@ pub(crate) fn plan<const W: usize>(
             ffor,
             |best, plan| if len(plan) < len(best) { plan } else { best },
         );
-    if len(best).strict_mul(8) <= len(Plan::Raw).strict_mul(7) {
+    if best.saves(count, W) {
         best
     } else {
         Plan::Raw

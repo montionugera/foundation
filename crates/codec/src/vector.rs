@@ -72,6 +72,13 @@ impl Plan {
             .strict_add(self.body_len(count, width))
     }
 
+    /// Whether the vector saves 1/8 of the raw vector of `count` samples of `width`
+    /// bytes, the least saving that an encoder keeps.
+    pub(crate) fn saves(self, count: usize, width: usize) -> bool {
+        self.len(count, width).strict_mul(8)
+            <= Self::Raw.len(count, width).strict_mul(7)
+    }
+
     #[inline]
     fn header_len(self, width: usize) -> usize {
         let fields = match self {

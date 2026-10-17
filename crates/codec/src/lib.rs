@@ -1929,6 +1929,25 @@ mod tests {
             assert_eq!(check(Scalar::F32, &floats(Scalar::F32, &values)), expected);
         }
 
+        /// The 1/8 saving is of the raw vector, header included, as for the integer
+        /// codecs.
+        #[test]
+        fn picks_alp_that_saves_an_eighth_of_the_raw_vector() {
+            let cases: [(Scalar, &[f64], usize); 3] = [
+                (Scalar::F64, &[0.01, 12_345_678.91, 5.5, 777.77, 1.25], 40),
+                (Scalar::F64, &[0.25, 0.5, 0.75], 24),
+                (Scalar::F32, &[0.25, 0.5, 0.75, 1.25, 1.5], 20),
+            ];
+            for (scalar, values, len) in cases {
+                let encoded = check(scalar, &floats(scalar, values));
+                assert_eq!(
+                    (encoded[0], encoded.len()),
+                    (vector::ALP, len),
+                    "{values:?}"
+                );
+            }
+        }
+
         /// Each float whose integer does not decode to its bits is an exception: NaN,
         /// infinities, -0.0, subnormals, and floats past the integers of the sample
         /// width. Quarters decode exactly under e = 2 and f = 0.

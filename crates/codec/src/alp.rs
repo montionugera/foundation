@@ -327,8 +327,7 @@ impl Pairs {
             pair,
             exceptions: stats.exceptions,
         };
-        let len = alp.len(count, W);
-        if len < limit && len.strict_mul(8) <= chunk.len().strict_mul(7) {
+        if alp.len(count, W) < limit && alp.saves(count, W) {
             alp
         } else {
             best
