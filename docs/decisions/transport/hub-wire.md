@@ -348,7 +348,9 @@
   `Frames::finished` goes and `Reader::finished` is private. `Frames::open` gives the
   frames alone, and `Frames::live` gives the open position, then the end of the last
   frame with a sample, from one `Gaps` that a latest session keeps too. The mode stays
-  in `Reader`, which both the reader's node and the program make for a session (plan:
-  https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6230725979; lost:
-  a mode argument of `Frames::open`, which a program maps from the client mode).
+  in `Reader`, which both the reader's node and the program make for a session
+  (`laptop.architect`,
+  https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6230737986,
+  2026-10-17T06:34:47Z; lost: a mode argument of `Frames::open`, which a program maps
+  from the client mode).
   Supersedes "and gives its `live` with the frames" of `Frames::open` above.

@@ -55,8 +55,8 @@ impl Frames {
     /// # Errors
     ///
     /// Each [`Error`] of [`Reader::decode`], so [`Error::Finished`] when `message` is
-    /// `None` and [`Error::Unopened`] for a message that is not `Opened`. The caller
-    /// then stops the stream as `MALFORMED`.
+    /// `None` and [`Error::Unopened`] for a head. The caller then stops the stream as
+    /// `MALFORMED`.
     ///
     /// # Panics
     ///
