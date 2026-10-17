@@ -1,4 +1,4 @@
-//! Picks the codec of one integer vector from one pass of statistics.
+//! Encodes one vector of integers with the codec that one pass of statistics picks.
 
 use crate::vector::{self, Plan};
 use crate::word;
@@ -45,9 +45,9 @@ fn plan<const W: usize>(chunk: &[u8], order: Order, key: impl Fn(u64) -> u64) ->
     let (mut delta_min, mut delta_max) = (u64::MAX, 0);
     let (mut count, mut runs, mut previous) = (1_usize, 1_usize, first);
     for sample in samples {
-        let key = sample ^ sign;
-        min = min.min(key);
-        max = max.max(key);
+        let ordered = sample ^ sign;
+        min = min.min(ordered);
+        max = max.max(ordered);
         let delta = (sample.wrapping_sub(previous) & mask) ^ high;
         delta_min = delta_min.min(delta);
         delta_max = delta_max.max(delta);
@@ -99,6 +99,18 @@ mod tests {
     use super::*;
     use crate::VECTOR_LEN;
 
+    /// The tag, the bit width, and the length that [`encode`] gives for `chunk`.
+    fn encoded(width: usize, chunk: &[u8], order: Order) -> (u8, u8, usize) {
+        let mut out = vec![0; chunk.len() + 16];
+        let len = match width {
+            1 => encode::<1>(chunk, order, identity, &mut out),
+            2 => encode::<2>(chunk, order, identity, &mut out),
+            4 => encode::<4>(chunk, order, identity, &mut out),
+            _ => encode::<8>(chunk, order, identity, &mut out),
+        };
+        (out[0], out[1], len)
+    }
+
     /// The size of the smallest encoding, computed from the samples as `i128`.
     fn smallest(values: &[i128], width: usize) -> usize {
         let n = values.len();
@@ -149,16 +161,11 @@ mod tests {
                 }
             })
             .collect();
-        let plan = match width {
-            1 => plan::<1>(&chunk, order, identity),
-            2 => plan::<2>(&chunk, order, identity),
-            4 => plan::<4>(&chunk, order, identity),
-            _ => plan::<8>(&chunk, order, identity),
-        };
+        let (tag, bits, len) = encoded(width, &chunk, order);
         assert_eq!(
-            plan.len(samples.len(), width),
+            len,
             smallest(&values, width),
-            "{plan:?} for {width}-byte samples {values:?}"
+            "tag {tag} at {bits} bits for {width}-byte samples {values:?}"
         );
     }
 
@@ -175,7 +182,8 @@ mod tests {
             bits: 0,
         };
         assert_eq!(ffor.len(4, 2), delta.len(4, 2), "the sizes must tie");
-        assert_eq!(plan::<2>(&chunk, Order::Signed, identity), ffor);
+        let (tag, bits, _) = encoded(2, &chunk, Order::Signed);
+        assert_eq!((tag, bits), (vector::FFOR, 2));
         let chunk = [[0; 24], [1; 24], [2; 24], [3; 24]].concat();
         let delta = Plan::Delta {
             first: 0,
@@ -184,7 +192,8 @@ mod tests {
         };
         let rle = Plan::Rle { runs: 4 };
         assert_eq!(delta.len(96, 1), rle.len(96, 1), "the sizes must tie");
-        assert_eq!(plan::<1>(&chunk, Order::Unsigned, identity), delta);
+        let (tag, bits, _) = encoded(1, &chunk, Order::Unsigned);
+        assert_eq!((tag, bits), (vector::DELTA, 1));
     }
 
     #[test]
@@ -192,13 +201,13 @@ mod tests {
         for width in [1, 2, 4, 8] {
             for sample in [0, 1, 0x80, u64::MAX] {
                 let chunk = &sample.to_le_bytes()[..width];
-                let plan = match width {
-                    1 => plan::<1>(chunk, Order::Signed, identity),
-                    2 => plan::<2>(chunk, Order::Unsigned, identity),
-                    4 => plan::<4>(chunk, Order::Signed, identity),
-                    _ => plan::<8>(chunk, Order::Unsigned, identity),
-                };
-                assert_eq!(plan, Plan::Raw, "{width}-byte sample {sample:#x}");
+                for order in [Order::Signed, Order::Unsigned] {
+                    assert_eq!(
+                        encoded(width, chunk, order),
+                        (vector::RAW, 0, vector::header_len(0, width) + width),
+                        "{width}-byte sample {sample:#x}"
+                    );
+                }
                 check(width, Order::Signed, &[sample]);
             }
         }
