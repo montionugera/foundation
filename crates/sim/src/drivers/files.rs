@@ -113,7 +113,7 @@ impl env::files::Driver for Node {
                     path: path.to_path_buf(),
                 }),
                 Err(env::paths::Error::Io { code }) => Err(io(code)),
-                Err(env::paths::Error::Outside) => {
+                Err(env::paths::Error::Outside | env::paths::Error::Hidden) => {
                     unreachable!("invariant: the paths of a host have no limit")
                 }
             }

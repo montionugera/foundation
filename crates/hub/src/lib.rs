@@ -11,6 +11,7 @@ pub mod serve;
 mod task;
 #[cfg(feature = "sim")]
 pub mod testing;
+mod time;
 mod used;
 pub mod writer;
 
@@ -28,6 +29,7 @@ use types::name::Name;
 
 pub use link::{Link, Served};
 use reader::Reader;
+pub use time::Time;
 use writer::Writer;
 
 /// The `home` items that hub calls give, so that layer 3 names them through `hub`.
@@ -124,7 +126,9 @@ struct State {
     /// The readers that [`::home::Shard::woken`] gave last.
     woken: Vec<::home::reader::Key>,
     commit: commit::Task,
-    /// The gate task, woken at each new carry and each writer open and close.
+    /// The gate task, woken at each new carry, each writer open and close, and each
+    /// named complete open: the calls that make the home's deadline earlier by one
+    /// second or more.
     gate: task::Waiter,
     /// The error that ended the home's buffer.
     failed: Option<env::files::Error>,
@@ -231,6 +235,14 @@ impl Hub {
         state.define(definitions);
     }
 
+    /// The node's mesh time. Waits for the node's first mesh time, as the open of a
+    /// writer does, so the [`Time`] it gives always has a stamp. Dropping the future
+    /// ends the wait.
+    pub async fn time(&self) -> Time {
+        time::known(&self.0).await;
+        Time(Rc::clone(&self.0))
+    }
+
     /// Opens a writer session on `config.channels` and the index of each. It waits
     /// for the node's first mesh time, and while the mesh names no home for an index,
     /// for one. A later spec in use that removes or changes one of its channels ends
@@ -268,9 +280,13 @@ impl Hub {
     /// [`reader::Error::Empty`] when the selector matches no channel, and
     /// [`reader::Error::ManyIndexes`] when the channels are on more than one index.
     /// Then [`reader::Error::Mesh`] when the mesh stopped. A named reader:
-    /// [`reader::Error::Remote`] when the home is another node, and
-    /// [`reader::Error::Unsynced`] before the node has mesh time. At the home of
-    /// another node: [`reader::Error::Transport`] when the dial or the stream fails,
+    /// [`reader::Error::Remote`] when the home is another node,
+    /// [`reader::Error::Unsynced`] before the node has mesh time, and, when complete,
+    /// [`reader::Error::Full`] when it holds no record and the records of the named
+    /// readers of the index would pass one entry of the buffer, and
+    /// [`reader::Error::Unrecorded`] when the home had no room to record the reader's
+    /// position. At the home of another node:
+    /// [`reader::Error::Transport`] when the dial or the stream fails,
     /// [`reader::Error::Refused`] when the home refuses the session,
     /// [`reader::Error::Message`] for a reply that breaks the hub protocol, and
     /// [`reader::Error::Pool`] when the shard's pool has no block for the open.

@@ -31,14 +31,13 @@
   name, "Give another name, or leave it out for `<default>`", needs no other item: `ops`
   calls `names` again with the refused names as `None`, on the failure path only. No
   name of a path is empty: `walk` refuses an entry that a kind gives with an empty
-  name (BROWSE), and `Path::from_str` refuses an empty name. `names` keeps its own
-  copy of the characters of a segment (A3), and its `expect` stops the import loudly
-  when `types` allows fewer. The copy goes when `types` gives them (#2868). Lost: a
-  namer with state (`give`, then `next`), where nothing makes the caller give each
-  given name before the first default; a `Document` from `Kind::block`, where an
-  attribute of one pick merges into the one connector body and collides on a second
-  pick; and the run error `Error`, which has variants that a hook with no I/O cannot
-  give. The person's words of decision 5,
+  name (BROWSE), and `Path::from_str` refuses an empty name. `names` takes the
+  characters of a segment from `Name::segment_char` (A3), so its `expect` checks an
+  invariant that holds. Lost: a namer with state (`give`, then `next`), where nothing
+  makes the caller give each given name before the first default; a `Document` from
+  `Kind::block`, where an attribute of one pick merges into the one connector body and
+  collides on a second pick; and the run error `Error`, which has variants that a hook
+  with no I/O cannot give. The person's words of decision 5,
   through `laptop.monitor`, 2026-10-15 17:28 UTC: "Yeah, that's fine"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198090285); given
   names first, and one set of name rules in `config`: `laptop.architect-2`, on that
@@ -54,3 +53,45 @@
   writes, the block for each access, and #2868: `laptop.architect-2`, 2026-10-16 14:31
   UTC, on the round 1 architecture review of #2859
   (https://github.com/synnaxlabs/foundation/pull/2859#issuecomment-6217747802).
+  `fill` is a reserved call. `config::check` reads each value at any depth, also in the
+  config of a kind, and each call `fill` gives only a problem of `fill` at its span,
+  after `config.private-key`, with the fix "Write the value in place of `fill`".
+  `fill("<what>")` gives `config.unfilled`, "the import found no value for <what>". A
+  call `fill` of other arguments gives `config.bad-fill`, "`fill` takes one string". A
+  call `fill` inside a call `fill` gives no problem of its own. `config::plan::check`
+  gives the same problems for each connector config of a plan file, after
+  `config.private-key`. `import::unfilled` gives the call `fill` that a value is, as an
+  `import::Fill`: `Of(<what>)` or `Bad`. So only `connector` knows the name and shape of
+  the call. No kind may give a call `fill` a meaning of its own.
+  `config::import::{channel, index}` writes the `channel` blocks of an import, so the
+  grammar of a `channel` block stays in the crate that parses it, and no kind or `ops`
+  code writes one. A missing sample type is `fill("the sample type")`. The unit is what
+  `spec::unit::Unit::given` gives (A16). An empty text or code counts as none. When
+  `Unit::given` gives none for a text or a code, the unit is `fill("the unit, which the
+  device gives as <what>")`, so nothing drops in silence. `<what>` is `"<unit>"`, `the
+  code "<code>"`, or `"<unit>" with the code "<code>"`. A text that reads is the unit,
+  and a code that does not read drops. A sample type that holds no number gets no unit.
+  Lost: a value kind `document::Kind::Fill`, where each front end writes and reads it
+  and a rule of import goes into the syntax-neutral model; and a refusal of `fill` in
+  the parse of each kind, one rule in each kind, where a `channel` block is no kind's.
+  `unfilled`, `config.unfilled`, `config::import`, the reserved call, and the fix text:
+  `laptop.architect-2`, 2026-10-16 14:58 UTC
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6218269338). The
+  unit map: `laptop.monitor` objected to a `fill` for each unit that is not ASCII ("an
+  import of 500 points in `°C` stops 500 times"), and `laptop.architect-2` ruled the
+  order of `Unit::given`, 2026-10-16 15:00 UTC
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6218302597).
+  `Unit::given`, `Facts::unit_code`, and a public `DataType::numeric`:
+  `laptop.architect-2`, 2026-10-16 15:04 UTC
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6218371040).
+  `import::FILL`, `config.bad-fill`, and the `fill` of a code that does not read:
+  `laptop.architect-2`, 2026-10-16 15:55 UTC, on the round 1 architecture review of
+  #2883 (https://github.com/synnaxlabs/foundation/pull/2883#issuecomment-6219336388).
+  `import::Fill` in place of a public `import::FILL`, and no problem for a `fill`
+  inside a `fill`: `laptop.architect-2`, 2026-10-16 16:06 UTC, on the round 2 review
+  of #2883 (https://github.com/synnaxlabs/foundation/pull/2883#issuecomment-6219539273).
+  Supersedes https://github.com/synnaxlabs/foundation/pull/2883#issuecomment-6219336388,
+  item 3: a public `import::FILL`.
+  `config::plan::check` refuses a `fill` in a connector config: `laptop.architect-2`,
+  2026-10-16 16:27 UTC, on the round 3 fix of #2883
+  (https://github.com/synnaxlabs/foundation/pull/2883#issuecomment-6219969435).

@@ -12,7 +12,7 @@ use types::name::Name;
 use types::time::Rate;
 
 use crate::pdu::Table;
-use crate::poll::Order;
+use crate::read::Order;
 
 #[cfg(test)]
 mod tests;

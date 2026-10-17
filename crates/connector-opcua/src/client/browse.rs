@@ -2,6 +2,7 @@
 //! variable.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::mem;
 use std::num::{NonZeroU32, NonZeroUsize};
 
 use super::service::{self, Answer, Item, Request, Sizes};
@@ -42,7 +43,7 @@ const ENUMERATION: u32 = 29;
 const INT32: u32 = 6;
 
 /// The most supertypes that a client keeps past a call of [`Client::describe`]: a call
-/// that ends with more clears them.
+/// that ends with more, or drops in its walk, clears them.
 const SUPERTYPES: usize = 1024;
 
 /// One page of the references of a node.
@@ -175,7 +176,8 @@ impl Client {
     /// time. A fact whose request alone, or its answer, does not fit is `None`. At its
     /// first call, it reads the limits of a Browse and a Translate. It browses each
     /// data type once per client, with one Browse request for each step of the walk of
-    /// the types of a call, and keeps at most 1024 supertypes past a call.
+    /// the types of a call, and keeps at most 1024 supertypes past a call. A call that
+    /// ends with more, or drops in its walk, clears them.
     ///
     /// # Errors
     ///
@@ -192,9 +194,11 @@ impl Client {
         let types = self.facts(nodes, &mut descriptions).await?;
         self.units(nodes, bounds.translate, &mut descriptions)
             .await?;
-        let bases = self.walk(&types, bounds.browse).await;
-        if self.supertypes.len() > SUPERTYPES {
-            self.supertypes.clear();
+        // A drop of the call in the walk drops them, so they never pass the cap.
+        let mut supertypes = mem::take(&mut self.supertypes);
+        let bases = self.walk(&types, bounds.browse, &mut supertypes).await;
+        if supertypes.len() <= SUPERTYPES {
+            self.supertypes = supertypes;
         }
         let bases = bases?;
         for (description, base) in descriptions.iter_mut().zip(bases) {
@@ -316,15 +320,16 @@ impl Client {
 
     /// Browses the supertype of each data type that a walk from `types` needs and the
     /// client has not browsed, until [`base`] knows each of `types`, with Browse
-    /// requests of at most `most` nodes, and gives the base of each. The client keeps
-    /// the first supertype of each Good result, and releases the continuation point of
-    /// a type with more. A result that is not Good, or a type whose request or answer
+    /// requests of at most `most` nodes, and gives the base of each. It adds to
+    /// `supertypes` the first supertype of each Good result, and releases the
+    /// continuation point of a type with more. A result that is not Good, or a type whose request or answer
     /// does not fit one message, gives no base in this call, and the next call browses
     /// that type again.
     async fn walk(
         &mut self,
         types: &[Option<Node>],
         most: Option<NonZeroUsize>,
+        supertypes: &mut BTreeMap<Node, Option<Node>>,
     ) -> Result<Vec<Option<u32>>, Status> {
         let build = |raw: &[ffi::Node<'_>]| {
             Request::browse(raw, HAS_SUBTYPE, true, DATA_TYPE, NonZeroU32::MIN)
@@ -337,7 +342,7 @@ impl Client {
             for data_type in types {
                 match data_type
                     .as_ref()
-                    .map(|data_type| base(&self.supertypes, &failed, data_type))
+                    .map(|data_type| base(supertypes, &failed, data_type))
                 {
                     None => bases.push(None),
                     Some(Ok(base)) => bases.push(base),
@@ -365,7 +370,7 @@ impl Client {
                     let browsed = answer
                         .browsed(offset, |found| first = first.take().or(found.node));
                     if let Ok(point) = browsed {
-                        self.supertypes.insert(missing[index].clone(), first);
+                        supertypes.insert(missing[index].clone(), first);
                         points.extend(point);
                     } else {
                         failed.insert(missing[index].clone());

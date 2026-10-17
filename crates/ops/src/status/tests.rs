@@ -124,7 +124,10 @@ fn kinds() -> Table {
         .with("opcua", Scripted::new(opcua, Script::Steady))
         .with(
             "influx",
-            Scripted::new(&[("confirmed", 1517), ("lost", 0)], Script::Steady),
+            Scripted::new(
+                &[("confirmed", 1517), ("lost", 0), ("oversized", 0)],
+                Script::Steady,
+            ),
         )
 }
 
@@ -319,6 +322,7 @@ async fn supervise(fixture: &Fixture, node: &Node, names: &[&str]) -> cancel::To
         clock: fixture.sim.clock(),
         entropy: fixture.sim.entropy(),
         net: fixture.sim.net(),
+        roots: connector::http::Roots::default(),
         tasks: fixture.tasks.clone(),
         hub: fixture.hub.clone(),
         secrets: connector::testing::create_secrets(fixture.sim.files()),

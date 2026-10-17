@@ -1,10 +1,11 @@
-//! Two calls of `node` hold far less than a pool that they must not make.
+//! Calls of `node` hold far less than what they must not keep.
 //!
 //! - `node::name` on a data directory with no file `name` and no mesh directory makes
 //!   no pool for the read of a founding, whose reservation is over 2 MiB.
 //! - `node::client::reach` makes two pools, one for its transport and its
 //!   `program::Session` and one for the frames of the session's reads, which together
 //!   reserve at most 128 MiB.
+//! - A started node keeps no `os::Roots` of `Config::roots`.
 //!
 //! The count covers each thread, so this binary has no test harness.
 
@@ -28,6 +29,7 @@ const REACH_BOUND: usize = 1 << 27;
 fn main() {
     name();
     reach();
+    roots();
 }
 
 /// The peak of the bytes held while `run` runs, over those held before it.
@@ -60,13 +62,42 @@ fn name() {
     assert!(peak < NAME_BOUND, "`name` held {peak} bytes at once");
 }
 
-/// `reach` on a data directory whose node crashed, so the dial gets no answer.
-fn reach() {
-    let mut sim = sim::Sim::new(sim::Config::default());
-    let host = sim.node(sim::node::Config::default());
-    let listen = SocketAddr::new(host.addresses()[0], 7000);
+/// A node that has started on 8 MiB of roots holds less than 1 MiB more than one on
+/// no roots. The first start fills what each start keeps once, so it is not counted.
+fn roots() {
+    let held = |roots: fn() -> os::Roots| {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = sim.node(sim::node::Config::default());
+        let before = ALLOCATOR.held();
+        let node = node::Node::start(config(&host, node::Region::Absent, roots()));
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()), "the node runs");
+        let held = ALLOCATOR.held().saturating_sub(before);
+        node.stop();
+        assert_eq!(sim.run(), Ok(()), "the node stops");
+        assert_eq!(node.join(), Ok(()), "the node ends");
+        held
+    };
+    held(os::Roots::default);
+    let none = held(os::Roots::default);
+    let big = held(|| os::Roots {
+        certificates: vec![vec![0_u8; 1 << 20]; 8],
+        ..os::Roots::default()
+    });
+    assert!(
+        big < none + (1 << 20),
+        "the node holds {} bytes more for 8 MiB of roots",
+        big.saturating_sub(none)
+    );
+}
+
+/// The config of a node on `host` that listens on port 7000.
+fn config(
+    host: &sim::node::Node,
+    region: node::Region,
+    roots: os::Roots,
+) -> node::Config<block::Heap> {
     let files = host.clone();
-    let node = node::Node::start(node::Config {
+    node::Config {
         shards: host.shards(),
         clock: host.clock(),
         wall: host.wall(),
@@ -81,16 +112,27 @@ fn reach() {
         }),
         entropy: host.entropy(),
         net: host.net(),
-        listen,
-        region: node::Region::Stored,
+        listen: SocketAddr::new(host.addresses()[0], 7000),
+        region,
         name: "edge".parse().expect("a name"),
         settings: node::Settings::default(),
         vars: std::collections::BTreeMap::new(),
+        roots,
         log: node::Log {
             writer: Box::new(std::io::sink()),
             format: ops::Log::default(),
         },
-    });
+        threads: host.threads(),
+    }
+}
+
+/// `reach` on a data directory whose node crashed, so the dial gets no answer.
+fn reach() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = sim.node(sim::node::Config::default());
+    let listen = SocketAddr::new(host.addresses()[0], 7000);
+    let node =
+        node::Node::start(config(&host, node::Region::Stored, os::Roots::default()));
     assert_eq!(sim.run_for(Span::SECOND), Ok(()), "the node runs");
     sim.crash(&host, sim::Crash::Process);
     drop(node);

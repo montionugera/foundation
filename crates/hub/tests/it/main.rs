@@ -837,6 +837,27 @@ fn opens_a_writer_once_the_node_has_mesh_time_and_a_reader_before() {
 }
 
 #[test]
+fn gives_its_time_once_the_node_has_mesh_time() {
+    unsynced(6, |mut test| async move {
+        let hub = test.hub.clone();
+        let mut waiting = pin!(hub.time());
+        test.clock.sleep(Span::SECOND).await;
+        assert!(poll_once(waiting.as_mut()).is_pending());
+        test.sync().await;
+        let synced = test.clock.now();
+        let time = waiting.await;
+        let waited = test.clock.now() - synced;
+        assert!(
+            waited <= Span::SECOND,
+            "gave {waited} after sync, more than 1 s"
+        );
+        let writer = test.writer("a", &["value"]).await;
+        assert_eq!(time.now(), writer.now());
+        assert_eq!(time.now().nanos(), test.now());
+    });
+}
+
+#[test]
 fn the_time_of_a_writer_reads_mesh_time_also_after_the_writer_drops() {
     run(5, |test| async move {
         let writer = test.writer("a", &["value"]).await;
@@ -2047,13 +2068,10 @@ fn gives_a_complete_reader_its_waiting_frames_then_the_missed_ones_from_disk() {
         let mut reader = test.reader(&["value"], Mode::Complete).await;
         let mut writer = test.writer("a", &["value"]).await;
         let now = test.now();
-        let first = test
-            .race(|| {
-                for n in 0..20 {
-                    write_wide(&mut writer, now, n);
-                }
-            })
-            .await;
+        for n in 0..20 {
+            write_wide(&mut writer, now, n);
+        }
+        test.clock.sleep(SETTLE).await;
         let frame = reader.next().await.expect("a frame");
         let range = frame.view().range(0).expect("the index is present");
         assert_eq!(
@@ -2066,10 +2084,8 @@ fn gives_a_complete_reader_its_waiting_frames_then_the_missed_ones_from_disk() {
         for n in 20..200 {
             write_wide(&mut writer, now, n);
         }
-        test.clock.sleep(SETTLE).await;
-        // The frames past the window miss at this commit.
-        write_wide(&mut writer, now, 200);
-        test.clock.sleep(SETTLE).await;
+        // The frames past the window go to disk at this commit.
+        let first = test.race(|| write_wide(&mut writer, now, 200)).await;
         let taken = take_waiting(&test.clock, &mut reader).await;
         let ranges: Vec<_> = taken.into_iter().map(|(range, _)| range).collect();
         assert_eq!(ranges, wide(1, 200));

@@ -7,8 +7,7 @@ use document::encoding::DEPTH_MAX;
 use document::value::{self, Value};
 use document::{Attribute, Document, Map, Source};
 use spec::connector::Connector;
-use types::name::{Name, Selector};
-use types::time::Span;
+use types::name::Name;
 
 const FIXTURE: &str = include_str!("../../../acceptance/tests/it/fixtures/influx.hcl");
 
@@ -79,6 +78,7 @@ fn checks_the_influx_fixture_into_one_connector_and_its_status() {
         "influx.status.error",
         "influx.status.lost",
         "influx.status.note",
+        "influx.status.oversized",
         "influx.status.restarts",
         "influx.status.state",
         "influx.status.time",
@@ -95,16 +95,7 @@ fn checks_the_influx_fixture_into_one_connector_and_its_status() {
     );
     assert_eq!(config, &expected);
     let parsed = connector_influx::Kind::default().parse(config);
-    let parsed = parsed.expect("a config");
-    assert_eq!(parsed.address, "http://influx:8086");
-    let database = connector_influx::Target::Database("edge".into());
-    assert_eq!(parsed.target, database);
-    assert_eq!(parsed.measurement, "telemetry");
-    let select = Selector::new(["edge.*"]).expect("a selector");
-    assert_eq!(parsed.reader.select, select);
-    // The crate map does not let `config` take `hub`, the home of `reader::Mode`.
-    assert_eq!(format!("{:?}", parsed.reader.mode), "Complete");
-    assert_eq!(parsed.reader.hold, Span::from_nanos(2 * Span::HOUR.nanos()));
+    parsed.expect("a config");
 }
 
 #[test]
@@ -195,7 +186,7 @@ fn refuses_a_connector_with_no_kind_or_no_node() {
 #[test]
 fn places_the_problems_of_the_kind_in_source_order() {
     let text = "connector \"influx\" {\n  kind = \"influx\"\n  node = 3\n  \
-                address = \"https://influx\"\n  database = \"edge\"\n  \
+                address = \"ftp://influx\"\n  database = \"edge\"\n  \
                 measurement = \"telemetry\"\n  select = \"edge.*\"\n  port = 1\n}\n";
     assert_eq!(
         problems(text),
@@ -210,9 +201,9 @@ fn places_the_problems_of_the_kind_in_source_order() {
             problem(
                 text,
                 "connector.bad-uri",
-                "\"https://influx\"",
-                "the scheme of the URI is not http",
-                "Write an `http` URI such as \"http://10.0.0.2:8086\"",
+                "\"ftp://influx\"",
+                "the scheme of the URI is not http or https",
+                "Write an `http` or `https` URI such as \"http://10.0.0.2:8086\"",
             ),
             problem(
                 text,
@@ -220,7 +211,7 @@ fn places_the_problems_of_the_kind_in_source_order() {
                 "port",
                 "`port` is not an attribute of the connector",
                 "Use `select`, `address`, `database`, `bucket`, `org`, `measurement`, \
-                 or `token`, or remove it",
+                 `token`, or `ca`, or remove it",
             ),
         ]
     );

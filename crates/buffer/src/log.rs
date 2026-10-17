@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 use std::collections::vec_deque::Drain;
 use std::fmt;
-use std::num::NonZeroU8;
+use std::num::{NonZeroU8, NonZeroU64};
 
 use types::channel::{self, Slot};
 use types::frame::Path;
@@ -14,7 +14,7 @@ use types::hash;
 use types::time::Stamp;
 
 use crate::carry;
-use crate::entry::{Header, Last};
+use crate::entry::{Header, Kind, Samples};
 
 /// Where one path of an index stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -65,6 +65,44 @@ pub(crate) enum Invalid {
         given: u64,
         walked: u64,
     },
+}
+
+/// An [`Invalid`] of one path, without the index and the path, which
+/// [`Logs::change`] adds.
+#[derive(Clone, Copy, Debug)]
+enum Fault {
+    Below { first: u64, tail: u64 },
+    Past { first: u64, len: u32 },
+    Crowded { seq: u64 },
+    Counted { seq: u64, given: u64, walked: u64 },
+}
+
+impl Fault {
+    /// The error of the fault on `path` of `index`.
+    const fn on(self, index: channel::Key, path: Path) -> Invalid {
+        match self {
+            Self::Below { first, tail } => Invalid::Below {
+                index,
+                path,
+                first,
+                tail,
+            },
+            Self::Past { first, len } => Invalid::Past {
+                index,
+                path,
+                first,
+                len,
+            },
+            Self::Crowded { seq } => Invalid::Crowded { index, path, seq },
+            Self::Counted { seq, given, walked } => Invalid::Counted {
+                index,
+                path,
+                seq,
+                given,
+                walked,
+            },
+        }
+    }
 }
 
 impl fmt::Display for Invalid {
@@ -131,40 +169,6 @@ impl fmt::Display for Invalid {
     }
 }
 
-impl Tail {
-    /// Moves the tail past the entry: `seq` to `first + len`, and `stamp` to
-    /// `last` when the entry has one. A `first` past the tail is a skip ahead.
-    ///
-    /// # Errors
-    ///
-    /// [`Invalid`] when `first` is below the tail or `first + len` does not fit in
-    /// a `u64`. The tail does not move.
-    pub(crate) fn advance(&mut self, header: &Header) -> Result<(), Invalid> {
-        if header.first < self.seq {
-            return Err(Invalid::Below {
-                index: header.index,
-                path: header.path,
-                first: header.first,
-                tail: self.seq,
-            });
-        }
-        let past = Invalid::Past {
-            index: header.index,
-            path: header.path,
-            first: header.first,
-            len: header.len,
-        };
-        self.seq = header
-            .first
-            .checked_add(u64::from(header.len))
-            .ok_or(past)?;
-        if let Some(last) = header.stamp() {
-            self.stamp = Some(last);
-        }
-        Ok(())
-    }
-}
-
 /// Where a read of a path stands: before the entries that end past `seq`, and
 /// past the first `given` entries with no samples at `seq`. Marks order as reads
 /// do.
@@ -201,15 +205,16 @@ impl Mark {
             seq: first,
             given: self
                 .count(first)
-                .expect("invariant: the log checked the entry"),
+                .expect("invariant: the log checked the entry")
+                .get(),
         }
     }
 
     /// The count of an entry with no samples at `first` that comes at this mark on
     /// its path, or `None` past `u64::MAX`.
-    fn count(self, first: u64) -> Option<u64> {
+    fn count(self, first: u64) -> Option<NonZeroU64> {
         let given = if first == self.seq { self.given } else { 0 };
-        given.checked_add(1)
+        NonZeroU64::MIN.checked_add(given)
     }
 }
 
@@ -249,25 +254,43 @@ impl Position {
         }
     }
 
-    /// Moves past the entry, as [`Tail::advance`], and returns the mark before it.
+    /// Moves past the entry of `samples` at `first`, and returns the mark before it
+    /// and the kind of the entry's header: its samples, or its count. The tail's
+    /// `seq` goes to `first` plus the `len` of `samples`, and its `stamp` to their
+    /// `last` when they have one. A `first` past the tail is a skip ahead.
     ///
     /// # Errors
     ///
-    /// As [`Tail::advance`], and [`Invalid::Crowded`]. Nothing changes.
-    fn advance(&mut self, header: &Header) -> Result<Mark, Invalid> {
+    /// [`Fault::Below`] when `first` is below the tail, [`Fault::Past`] when `first`
+    /// plus `samples.len` does not fit in a `u64`, and [`Fault::Crowded`]. Nothing
+    /// changes.
+    fn advance(
+        &mut self,
+        first: u64,
+        samples: Option<Samples>,
+    ) -> Result<(Mark, Kind), Fault> {
         let start = self.mark();
-        let given = if header.len == 0 {
-            start.count(header.first).ok_or(Invalid::Crowded {
-                index: header.index,
-                path: header.path,
-                seq: header.first,
-            })?
-        } else {
-            0
+        if first < start.seq {
+            return Err(Fault::Below {
+                first,
+                tail: start.seq,
+            });
+        }
+        let Some(samples) = samples else {
+            let given = start.count(first).ok_or(Fault::Crowded { seq: first })?;
+            self.tail.seq = first;
+            self.given = given.get();
+            return Ok((start, Kind::Record(given)));
         };
-        self.tail.advance(header)?;
-        self.given = given;
-        Ok(start)
+        let len = samples.len.get();
+        self.tail.seq = first
+            .checked_add(u64::from(len))
+            .ok_or(Fault::Past { first, len })?;
+        if let Some(last) = samples.last {
+            self.tail.stamp = Some(last);
+        }
+        self.given = 0;
+        Ok((start, Kind::Samples(samples)))
     }
 }
 
@@ -328,8 +351,8 @@ impl Log {
         !self.due && offset >= self.lap.saturating_add(area)
     }
 
-    /// Whether the room is over four times the most runs that a trim of the lap
-    /// met, or over four with none.
+    /// Whether the room is over four times the larger of the runs that the path
+    /// holds and the most runs that a trim of the lap met, or over four with none.
     fn oversized(&self) -> bool {
         self.runs.capacity() > self.keep() << 2
     }
@@ -337,11 +360,12 @@ impl Log {
     fn keep(&self) -> usize {
         usize::try_from(self.peak)
             .expect("invariant: u32 fits usize")
+            .max(self.runs.len())
             .max(1)
     }
 
-    /// Shrinks the room to twice the most runs that a trim of the lap met, or to two
-    /// with none.
+    /// Shrinks the room to twice the larger of the runs that the path holds and the
+    /// most runs that a trim of the lap met, or to two with none.
     #[cold]
     fn shrink(&mut self) {
         // No deque holds more than `isize::MAX` bytes, so no shift overflows.
@@ -367,8 +391,9 @@ impl Log {
     /// # Panics
     ///
     /// When `offset` is below the newest record of the path.
-    fn sync(&mut self, header: &Header, offset: u64) -> Result<bool, Invalid> {
-        let start = self.durable.advance(header)?;
+    fn sync(&mut self, header: &Header, offset: u64) -> Result<bool, Fault> {
+        let samples = header.samples();
+        let (start, _) = self.durable.advance(header.first, samples)?;
         let newest = self.runs.back().map(|run| run.offset).max(self.holder);
         if let Some(newest) = newest {
             assert!(
@@ -376,7 +401,7 @@ impl Log {
                 "invariant: record {offset} comes after record {newest}"
             );
         }
-        if header.stamp() == self.durable.tail.stamp {
+        if samples.and_then(|samples| samples.last) == self.durable.tail.stamp {
             self.holder = Some(offset);
         }
         if self.runs.back().is_some_and(|run| run.offset == offset) {
@@ -392,6 +417,10 @@ const SHRINKS: usize = 256;
 
 /// The trims of a [`Logs::hide`] for each shrink that it adds to [`SHRINKS`].
 const TRIMS: usize = 4;
+
+/// The items after the reach that one [`Logs::carry`] walks to fill its record, for
+/// each tail that the record may hold.
+const FILL: usize = 4;
 
 /// The paths whose lap end waits for a shrink, and the shrinks of a [`Logs::hide`]
 /// with no trim.
@@ -431,12 +460,13 @@ impl Laps {
         }
     }
 
-    /// Ends the lap of `log`, at place `at`, at a trim at `offset`, and starts the
-    /// next there. When the room is over four times the most runs that a trim of the
-    /// lap met, or over four with none, the end shrinks it. So runs that swing inside
-    /// a lap take no allocation, and the room is at most four times the most runs of
-    /// two laps. When the end needs a shrink, and a path waits or `budget` has none
-    /// left, the lap stays open and the path waits at the back of `due`.
+    /// Ends the lap of `log`, at place `at`, at a trim at `offset`, and starts the next
+    /// there. When the room is over four times the larger of the runs that the path
+    /// holds and the most runs that a trim of the lap met, or over four with none, the
+    /// end shrinks it. So runs that swing inside a lap take no allocation, and the room
+    /// is at most four times the most runs of two laps. When the end needs a shrink,
+    /// and a path waits or `budget` has none left, the lap stays open and the path
+    /// waits at the back of `due`.
     #[cold]
     fn end(&mut self, budget: &mut Budget, log: &mut Log, at: u32, offset: u64) {
         if log.oversized() {
@@ -487,7 +517,11 @@ impl Budget {
 
     /// Takes a shrink. Returns false when none is left.
     fn take(&mut self) -> bool {
-        if self.used >= self.most.saturating_add(self.trims / TRIMS) {
+        let left = self
+            .most
+            .checked_add(self.trims / TRIMS)
+            .expect("invariant: the shrinks of a hide fit in memory");
+        if self.used >= left {
             return false;
         }
         self.used = self
@@ -525,7 +559,7 @@ pub(crate) struct Logs {
     items: Items,
     /// Each item before this number is stale.
     stale: u64,
-    /// An [`idle`](Self::idle) has passed each item before this number.
+    /// A [`carry`](Self::carry) has passed each item before this number.
     scanned: u64,
 }
 
@@ -683,32 +717,37 @@ impl Logs {
         holding.map(|(_, offset, _)| offset)
     }
 
-    /// Puts in `carried` the appended tail of each path whose holder is before
-    /// `reach`, at most `limit`, oldest holder first. When it puts in one, it fills
-    /// `carried` up to `limit` with the oldest holders after `reach`, so that small
-    /// carry records merge. The next call goes on at the first path that this call
-    /// left out. Call it in the borrow that takes the records of a commit: each
-    /// appended entry is then in a taken record, so the tail is the end after those
-    /// records, and the carry record goes right after them.
-    pub(crate) fn idle(&mut self, reach: u64, limit: usize, carried: &mut Carried) {
-        let mut room = limit;
+    /// Clears `carried`, then puts in it the appended tail of each path whose holder
+    /// is before `reach`, at most `limit`, oldest holder first. When it puts in one,
+    /// it fills `carried` up to `limit` with the oldest holders in the next [`FILL`]
+    /// `* limit` items after `reach`, so that small carry records merge. The next
+    /// call goes on at the first item that this call did not walk. Call it in the
+    /// borrow that takes the records of a commit: each appended entry is then in a
+    /// taken record, so the tail is the end after those records, and the carry record
+    /// goes right after them.
+    pub(crate) fn carry(&mut self, reach: u64, limit: usize, carried: &mut Carried) {
+        carried.clear();
+        let mut walk = limit.saturating_mul(FILL);
         for (number, offset, at) in self.items.since(self.scanned) {
-            if offset >= reach && carried.tails.is_empty() {
-                self.scanned = number;
-                return;
+            if offset >= reach {
+                let filling = !carried.tails.is_empty();
+                let Some(left) = walk.checked_sub(1).filter(|_| filling) else {
+                    self.scanned = number;
+                    return;
+                };
+                walk = left;
             }
             let log = nth(&self.paths, at);
             if log.holder != Some(offset) {
                 continue;
             }
-            let Some(left) = room.checked_sub(1) else {
+            if carried.tails.len() == limit {
                 self.scanned = number;
                 return;
-            };
+            }
             if carried.tails.is_empty() {
                 carried.first = number;
             }
-            room = left;
             carried.tails.push(carry::Tail {
                 index: log.index,
                 path: log.path,
@@ -721,7 +760,7 @@ impl Logs {
         self.scanned = self.items.added();
     }
 
-    /// Takes back the [`idle`](Self::idle) call that filled `carried`, whose carry
+    /// Takes back the [`carry`](Self::carry) call that filled `carried`, whose carry
     /// record no commit writes, so that the next call gives its tails again.
     /// Clears `carried`.
     pub(crate) fn dropped(&mut self, carried: &mut Carried) {
@@ -855,37 +894,37 @@ impl Logs {
         Ok(())
     }
 
-    /// Moves the appended tail of the header's path past the entry, as
-    /// [`Tail::advance`]. For an entry with no samples, sets its [`Last::Count`] to
-    /// the entries with no samples at its seq on the path, it included.
+    /// Moves the appended tail of `path` of `index` past the entry of `samples` at
+    /// seq `first`, as [`Position::advance`], and gives the kind of its header. The
+    /// kind of an entry with no samples counts the entries with no samples at its
+    /// seq on the path, it included.
     ///
     /// # Errors
     ///
-    /// [`Invalid`] as [`Tail::advance`], and [`Invalid::Crowded`]. Nothing changes.
+    /// [`Invalid`] as [`Position::advance`]. Nothing changes.
     pub(crate) fn append(
         &mut self,
         slot: Slot,
-        header: &mut Header,
-    ) -> Result<(), Invalid> {
-        let (given, _) = self.change(slot, header, |log| {
-            log.appended.advance(header)?;
-            Ok(log.appended.given)
+        index: channel::Key,
+        path: Path,
+        first: u64,
+        samples: Option<Samples>,
+    ) -> Result<Kind, Invalid> {
+        let (kind, _) = self.change(slot, index, path, |log| {
+            Ok(log.appended.advance(first, samples)?.1)
         })?;
-        if header.len == 0 {
-            header.last = Last::Count(given);
-        }
-        Ok(())
+        Ok(kind)
     }
 
     /// Moves the durable tail of the header's path past the entry, as
-    /// [`Tail::advance`], and adds the record at `offset` to the path's runs when it
-    /// is not the newest. The record becomes the path's holder when the entry gives
+    /// [`Position::advance`], and adds the record at `offset` to the path's runs when
+    /// it is not the newest. The record becomes the path's holder when the entry gives
     /// the durable stamp. A nonzero tag makes `offset` the newest record of its tag
     /// on the path.
     ///
     /// # Errors
     ///
-    /// [`Invalid`] as [`Tail::advance`]. Nothing changes.
+    /// [`Invalid`] as [`Position::advance`]. Nothing changes.
     ///
     /// # Panics
     ///
@@ -897,7 +936,9 @@ impl Logs {
         header: &Header,
         offset: u64,
     ) -> Result<(), Invalid> {
-        let (added, at) = self.change(slot, header, |log| log.sync(header, offset))?;
+        let (added, at) = self.change(slot, header.index, header.path, |log| {
+            log.sync(header, offset)
+        })?;
         if added {
             self.items.push(offset, at);
         }
@@ -927,7 +968,7 @@ impl Logs {
         offset: u64,
     ) -> Result<(), Invalid> {
         let key = (slot, header.path);
-        if let Last::Count(given) = header.last
+        if let Kind::Record(given) = header.kind
             && !self.places.contains_key(&key)
         {
             let mut log = Log::new(header.index, header.path);
@@ -936,25 +977,21 @@ impl Logs {
                     seq: header.first,
                     stamp: None,
                 },
-                given: given
-                    .checked_sub(1)
-                    .expect("invariant: the count of a parsed entry is at least 1"),
+                given: given.get() - 1,
             };
             log.appended = log.durable;
             self.add(key, log);
         }
-        self.change(slot, header, |log| {
+        self.change(slot, header.index, header.path, |log| {
             let mut appended = log.appended;
-            appended.advance(header)?;
-            if let Last::Count(given) = header.last
-                && given != appended.given
+            let (_, walked) = appended.advance(header.first, header.samples())?;
+            if let (Kind::Record(given), Kind::Record(walked)) = (header.kind, walked)
+                && given != walked
             {
-                return Err(Invalid::Counted {
-                    index: header.index,
-                    path: header.path,
+                return Err(Fault::Counted {
                     seq: header.first,
-                    given,
-                    walked: appended.given,
+                    given: given.get(),
+                    walked: walked.get(),
                 });
             }
             log.appended = appended;
@@ -963,34 +1000,39 @@ impl Logs {
         self.sync(slot, header, offset)
     }
 
-    /// Applies `change` to the log of the header's path, which starts empty when
-    /// the path is new, and gives the place of the log. A change that fails on a new
-    /// path adds nothing.
+    /// Applies `change` to the log of `slot` on `path`, which starts empty when the
+    /// path is new, and gives the place of the log. A change that fails on a new path
+    /// adds nothing.
+    ///
+    /// # Errors
+    ///
+    /// The [`Invalid`] of the [`Fault`] that `change` gives, on `path` of `index`.
     ///
     /// # Panics
     ///
-    /// When the log of `slot` on the header's path holds another index than the
-    /// header's.
+    /// When the log of `slot` on `path` holds another index than `index`.
     fn change<T>(
         &mut self,
         slot: Slot,
-        header: &Header,
-        change: impl FnOnce(&mut Log) -> Result<T, Invalid>,
+        index: channel::Key,
+        path: Path,
+        change: impl FnOnce(&mut Log) -> Result<T, Fault>,
     ) -> Result<(T, u32), Invalid> {
-        let key = (slot, header.path);
+        let invalid = |fault: Fault| fault.on(index, path);
+        let key = (slot, path);
         if let Some(&at) = self.places.get(&key) {
             let log = nth_mut(&mut self.paths, at);
             assert!(
-                log.index == header.index,
+                log.index == index,
                 "invariant: slot {} holds index {} and index {}",
                 slot.get(),
                 log.index,
-                header.index,
+                index,
             );
-            return Ok((change(log)?, at));
+            return Ok((change(log).map_err(invalid)?, at));
         }
-        let mut log = Log::new(header.index, header.path);
-        let changed = change(&mut log)?;
+        let mut log = Log::new(index, path);
+        let changed = change(&mut log).map_err(invalid)?;
         Ok((changed, self.add(key, log)))
     }
 }
@@ -1110,6 +1152,8 @@ impl Items {
 #[cfg(test)]
 #[expect(clippy::arithmetic_side_effects, reason = "a test may panic")]
 mod tests {
+    use std::num::NonZeroU32;
+
     use super::*;
     use proptest::prelude::*;
 
@@ -1131,16 +1175,36 @@ mod tests {
             index: channel::Key::from_u128(u128::from(index)),
             path,
             first,
-            len,
             stored_at: Stamp::from_nanos(7),
-            last: if len == 0 {
-                Last::Count(0)
-            } else {
-                Last::Stamp(last.map(Stamp::from_nanos))
-            },
+            kind: kind(len, last),
             tag: 0,
             bytes: 0,
         }
+    }
+
+    /// The kind of an entry of `len` samples: an entry with no samples counts 1
+    /// until [`append`] counts it.
+    fn kind(len: u32, last: Option<i64>) -> Kind {
+        match NonZeroU32::new(len) {
+            Some(len) => Kind::Samples(Samples {
+                len,
+                last: last.map(Stamp::from_nanos),
+            }),
+            None => Kind::Record(NonZeroU64::MIN),
+        }
+    }
+
+    /// Appends the entry of `header` on `slot`, as the buffer does, and gives
+    /// `header` the kind that the logs give.
+    fn append(logs: &mut Logs, slot: Slot, header: &mut Header) -> Result<(), Invalid> {
+        header.kind = logs.append(
+            slot,
+            header.index,
+            header.path,
+            header.first,
+            header.samples(),
+        )?;
+        Ok(())
     }
 
     fn run(seq: u64, given: u64, offset: u64) -> Run {
@@ -1205,10 +1269,12 @@ mod tests {
     fn tail(fed: &Fed, slot: Slot, path: Path) -> Tail {
         Tail {
             seq: on(fed, slot, path)
-                .map(|header| header.first + u64::from(header.len))
+                .map(|header| header.first + u64::from(header.len()))
                 .max()
                 .unwrap_or(0),
-            stamp: on(fed, slot, path).filter_map(Header::stamp).last(),
+            stamp: on(fed, slot, path)
+                .filter_map(|header| header.samples()?.last)
+                .last(),
         }
     }
 
@@ -1230,7 +1296,7 @@ mod tests {
                 });
             }
             marks.push(at);
-            at = at.after(header.first, header.len);
+            at = at.after(header.first, header.len());
         }
         (runs, marks)
     }
@@ -1252,7 +1318,7 @@ mod tests {
                     let at = slot(next.index);
                     let first = logs.appended(at, next.path).seq + next.skip;
                     let mut header = header(next.index, next.path, first, next.len, next.last);
-                    logs.append(at, &mut header).expect("appends");
+                    append(&mut logs, at, &mut header).expect("appends");
                     fed.push((at, header, offset));
                     let (durable, _) = fed.split_at(synced);
                     prop_assert_eq!(logs.appended(at, next.path), tail(&fed, at, next.path));
@@ -1277,7 +1343,7 @@ mod tests {
                         let run = runs.iter().rev().find(|run| run.offset == *offset);
                         let found = Found::Run(key, *run.expect("an entry has a run"));
                         prop_assert_eq!(logs.find(slot(index), path, *before), found);
-                        end = before.after(header.first, header.len);
+                        end = before.after(header.first, header.len());
                     }
                     prop_assert_eq!(logs.find(slot(index), path, end), Found::End(end));
                 }
@@ -1322,7 +1388,7 @@ mod tests {
                         .zip(&marks)
                         .last()
                         .map_or(Mark::at(0), |(header, before)| {
-                            before.after(header.first, header.len)
+                            before.after(header.first, header.len())
                         });
                     marks.push(end);
                     // No call of `Logs` shows the drop, so the model reads the runs.
@@ -1378,12 +1444,12 @@ mod tests {
                     let first = logs.appended(at, next.path).seq + next.skip;
                     let mut header =
                         header(next.index, next.path, first, next.len, next.last);
-                    logs.append(at, &mut header).expect("appends");
+                    append(&mut logs, at, &mut header).expect("appends");
                     queued.push((next.index, header));
                 }
                 let reach = 8192 * *reach.min(&number);
                 let mut carried = Carried::default();
-                logs.idle(reach, *limit, &mut carried);
+                logs.carry(reach, *limit, &mut carried);
                 let holders = model.holders();
                 for (index, header) in &queued {
                     prop_assert_eq!(logs.sync(slot(*index), header, synced_at), Ok(()));
@@ -1413,7 +1479,7 @@ mod tests {
     }
 
     /// What the logs hold for each path, by index and path: the holder, the
-    /// durable end, and the stamp. Also the holders whose tail `idle` gave.
+    /// durable end, and the stamp. Also the holders whose tail `carry` gave.
     #[derive(Default)]
     struct Model {
         paths: hash::Map<(u32, Path), (u64, Mark, Option<Stamp>)>,
@@ -1430,10 +1496,11 @@ mod tests {
                 .collect()
         }
 
-        /// Checks the tails of one call of `idle` up to `reach` with `limit`, made
+        /// Checks the tails of one call of `carry` up to `reach` with `limit`, made
         /// when each path had its holder in `holders`, after the sync of the
         /// entries that it saw appended. Tails past `reach` only fill a call that
-        /// gave a tail before it.
+        /// gave a tail before it, and a fill stops after a bounded walk, so only the
+        /// holders before the newest tail must all be given.
         fn check(
             &mut self,
             tails: &[carry::Tail],
@@ -1461,13 +1528,18 @@ mod tests {
                 let first = self.given.insert((key.0, key.1, holder));
                 prop_assert!(first, "given twice");
             }
-            if tails.len() < limit {
-                let end = if tails.is_empty() { reach } else { u64::MAX };
-                let left = holders.iter().find(|&(&(index, path), &holder)| {
-                    holder < end && !self.given.contains(&(index, path, holder))
-                });
-                prop_assert!(left.is_none(), "{:?} is left out", left);
-            }
+            let newest = tails
+                .last()
+                .map_or(0, |tail| holders[&(index_of(tail.index), tail.path)]);
+            let end = if tails.len() < limit {
+                reach.max(newest)
+            } else {
+                newest
+            };
+            let left = holders.iter().find(|&(&(index, path), &holder)| {
+                holder < end && !self.given.contains(&(index, path, holder))
+            });
+            prop_assert!(left.is_none(), "{:?} is left out", left);
             Ok(())
         }
 
@@ -1480,13 +1552,10 @@ mod tests {
                     .get(&key)
                     .copied()
                     .unwrap_or((offset, Mark::at(0), None));
-            let end = end.after(header.first, header.len);
-            let stamp = header.stamp().or(stamp);
-            let holder = if header.stamp() == stamp {
-                offset
-            } else {
-                holder
-            };
+            let end = end.after(header.first, header.len());
+            let last = header.samples().and_then(|samples| samples.last);
+            let stamp = last.or(stamp);
+            let holder = if last == stamp { offset } else { holder };
             self.paths.insert(key, (holder, end, stamp));
         }
 
@@ -1519,11 +1588,19 @@ mod tests {
     #[test]
     fn each_path_of_an_index_has_its_own_tail() {
         let mut logs = Logs::new(AREA);
-        logs.append(slot(1), &mut header(1, Path::Live, 0, 3, Some(30)))
-            .expect("appends");
-        logs.append(slot(1), &mut header(1, Path::Backfill, 0, 1, Some(10)))
-            .expect("appends");
-        logs.append(slot(2), &mut header(2, Path::Live, 0, 5, None))
+        append(
+            &mut logs,
+            slot(1),
+            &mut header(1, Path::Live, 0, 3, Some(30)),
+        )
+        .expect("appends");
+        append(
+            &mut logs,
+            slot(1),
+            &mut header(1, Path::Backfill, 0, 1, Some(10)),
+        )
+        .expect("appends");
+        append(&mut logs, slot(2), &mut header(2, Path::Live, 0, 5, None))
             .expect("appends");
         let live = Tail {
             seq: 3,
@@ -1549,10 +1626,18 @@ mod tests {
     #[test]
     fn a_skip_ahead_moves_the_seq_past_the_gap() {
         let mut logs = Logs::new(AREA);
-        logs.append(slot(1), &mut header(1, Path::Live, 0, 2, Some(2)))
-            .expect("appends");
-        logs.append(slot(1), &mut header(1, Path::Live, 10, 1, Some(11)))
-            .expect("appends");
+        append(
+            &mut logs,
+            slot(1),
+            &mut header(1, Path::Live, 0, 2, Some(2)),
+        )
+        .expect("appends");
+        append(
+            &mut logs,
+            slot(1),
+            &mut header(1, Path::Live, 10, 1, Some(11)),
+        )
+        .expect("appends");
         let expected = Tail {
             seq: 11,
             stamp: Some(Stamp::from_nanos(11)),
@@ -1563,9 +1648,13 @@ mod tests {
     #[test]
     fn an_entry_with_no_last_stamp_keeps_the_stamp() {
         let mut logs = Logs::new(AREA);
-        logs.append(slot(1), &mut header(1, Path::Live, 0, 2, Some(2)))
-            .expect("appends");
-        logs.append(slot(1), &mut header(1, Path::Live, 2, 0, None))
+        append(
+            &mut logs,
+            slot(1),
+            &mut header(1, Path::Live, 0, 2, Some(2)),
+        )
+        .expect("appends");
+        append(&mut logs, slot(1), &mut header(1, Path::Live, 2, 0, None))
             .expect("appends");
         let expected = Tail {
             seq: 2,
@@ -1577,7 +1666,7 @@ mod tests {
     #[test]
     fn an_entry_below_the_tail_is_invalid_and_leaves_the_tail() {
         let mut logs = Logs::new(AREA);
-        logs.append(slot(1), &mut header(1, Path::Live, 0, 3, None))
+        append(&mut logs, slot(1), &mut header(1, Path::Live, 0, 3, None))
             .expect("appends");
         let invalid = Invalid::Below {
             index: channel::Key::from_u128(1),
@@ -1586,7 +1675,11 @@ mod tests {
             tail: 3,
         };
         assert_eq!(
-            logs.append(slot(1), &mut header(1, Path::Live, 2, 1, Some(9))),
+            append(
+                &mut logs,
+                slot(1),
+                &mut header(1, Path::Live, 2, 1, Some(9))
+            ),
             Err(invalid)
         );
         assert_eq!(
@@ -1613,7 +1706,11 @@ mod tests {
             len: 1,
         };
         assert_eq!(
-            logs.append(slot(1), &mut header(1, Path::Live, u64::MAX, 1, Some(9))),
+            append(
+                &mut logs,
+                slot(1),
+                &mut header(1, Path::Live, u64::MAX, 1, Some(9))
+            ),
             Err(invalid)
         );
         assert_eq!(
@@ -1710,9 +1807,9 @@ mod tests {
         00000000-0000-0000-0000-000000000002")]
     fn a_slot_with_a_second_index_is_a_broken_invariant() {
         let mut logs = Logs::new(AREA);
-        logs.append(slot(1), &mut header(1, Path::Live, 0, 3, None))
+        append(&mut logs, slot(1), &mut header(1, Path::Live, 0, 3, None))
             .expect("appends");
-        logs.append(slot(1), &mut header(2, Path::Live, 3, 2, None))
+        append(&mut logs, slot(1), &mut header(2, Path::Live, 3, 2, None))
             .expect("the invariant panics first");
     }
 
@@ -1873,7 +1970,7 @@ mod tests {
     fn the_oldest_holder_of_a_tail_is_kept() {
         let mut logs = Logs::new(AREA);
         assert_eq!(logs.kept(), None, "no path has a synced entry");
-        logs.append(slot(1), &mut header(1, Path::Live, 0, 3, None))
+        append(&mut logs, slot(1), &mut header(1, Path::Live, 0, 3, None))
             .expect("appends");
         assert_eq!(logs.kept(), None, "an appended entry holds nothing");
         logs.sync(slot(1), &header(1, Path::Live, 0, 3, None), 4096)
@@ -1967,7 +2064,7 @@ mod tests {
             header(1, Path::Live, 0, 3, last),
             header(1, Path::Live, 3, 0, None),
         ] {
-            logs.append(slot(1), &mut header).expect("appends");
+            append(&mut logs, slot(1), &mut header).expect("appends");
             logs.sync(slot(1), &header, 4096).expect("syncs");
         }
         logs
@@ -2035,7 +2132,7 @@ mod tests {
             let mut logs = Logs::new(AREA);
             for (given, offset) in [(3, 4096), (4, 8192)] {
                 let header = Header {
-                    last: Last::Count(given),
+                    kind: Kind::Record(NonZeroU64::new(given).expect("from 1")),
                     ..header(1, Path::Live, 3, 0, None)
                 };
                 logs.walk(slot(1), &header, offset).expect("walks");
@@ -2064,7 +2161,7 @@ mod tests {
             assert_eq!(logs.durable(slot(1), Path::Live), tail);
             assert_eq!(logs.appended(slot(1), Path::Live), tail);
             let mut tails = Carried::default();
-            logs.clone().idle(16384, 2, &mut tails);
+            logs.clone().carry(16384, 2, &mut tails);
             assert_eq!(tails.tails(), [carried(3, 4, Some(20))]);
             assert_eq!(logs.kept(), Some(12288));
         }
@@ -2072,12 +2169,12 @@ mod tests {
         /// The entry at 8192 is in a record that the commit took, so the tail goes
         /// past it.
         #[test]
-        fn idle_gives_the_appended_tail_of_a_taken_record() {
+        fn carry_gives_the_appended_tail_of_a_taken_record() {
             let mut logs = walked(Some(20));
-            logs.append(slot(1), &mut header(1, Path::Live, 3, 2, None))
+            append(&mut logs, slot(1), &mut header(1, Path::Live, 3, 2, None))
                 .expect("appends");
             let mut tails = Carried::default();
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             assert_eq!(tails.tails(), [carried(5, 0, Some(20))]);
         }
 
@@ -2085,9 +2182,9 @@ mod tests {
         fn hold_makes_the_carry_record_the_holder() {
             let mut logs = walked(Some(20));
             let mut header = header(1, Path::Live, 3, 2, None);
-            logs.append(slot(1), &mut header).expect("appends");
+            append(&mut logs, slot(1), &mut header).expect("appends");
             let mut tails = Carried::default();
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             logs.sync(slot(1), &header, 8192).expect("syncs");
             assert_eq!(logs.kept(), Some(4096));
             logs.hold(&tails, 12288);
@@ -2099,8 +2196,7 @@ mod tests {
             assert_eq!(logs.durable(slot(1), Path::Live), tail);
             let runs: Vec<Run> = logs.runs(slot(1), Path::Live).collect();
             assert_eq!(runs, [run(0, 0, 4096), run(3, 1, 8192)]);
-            tails.clear();
-            logs.idle(16384, 2, &mut tails);
+            logs.carry(16384, 2, &mut tails);
             assert_eq!(tails.tails(), [carried(5, 0, Some(20))]);
             assert_eq!(logs.kept(), Some(12288));
         }
@@ -2109,20 +2205,19 @@ mod tests {
         /// gives the tail again. A scan that is not dropped goes on past it, and a
         /// drop of no tails keeps the scan where it is.
         #[test]
-        fn idle_after_a_dropped_carry_gives_its_tails_again() {
+        fn carry_after_a_dropped_carry_gives_its_tails_again() {
             let mut logs = walked(Some(20));
             let mut tails = Carried::default();
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             assert_eq!(tails.tails(), [carried(3, 1, Some(20))]);
             logs.dropped(&mut tails);
             assert_eq!(tails.tails(), []);
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             assert_eq!(tails.tails(), [carried(3, 1, Some(20))]);
-            tails.clear();
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             assert_eq!(tails.tails(), []);
             logs.dropped(&mut tails);
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             assert_eq!(tails.tails(), []);
         }
 
@@ -2131,9 +2226,13 @@ mod tests {
         fn hold_keeps_the_appended_tail_of_a_queued_path() {
             let mut logs = walked(Some(20));
             let mut tails = Carried::default();
-            logs.idle(8192, 2, &mut tails);
-            logs.append(slot(1), &mut header(1, Path::Live, 3, 2, Some(50)))
-                .expect("appends");
+            logs.carry(8192, 2, &mut tails);
+            append(
+                &mut logs,
+                slot(1),
+                &mut header(1, Path::Live, 3, 2, Some(50)),
+            )
+            .expect("appends");
             logs.hold(&tails, 8192);
             let durable = Tail {
                 seq: 3,
@@ -2152,10 +2251,10 @@ mod tests {
         #[should_panic(expected = "invariant: the carried tail")]
         fn a_carried_tail_that_is_not_the_durable_end_is_a_broken_invariant() {
             let mut logs = walked(Some(20));
-            logs.append(slot(1), &mut header(1, Path::Live, 3, 2, None))
+            append(&mut logs, slot(1), &mut header(1, Path::Live, 3, 2, None))
                 .expect("appends");
             let mut tails = Carried::default();
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             logs.hold(&tails, 12288);
         }
 
@@ -2164,7 +2263,7 @@ mod tests {
         fn a_carry_record_at_the_holder_is_a_broken_invariant() {
             let mut logs = walked(Some(20));
             let mut tails = Carried::default();
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             logs.hold(&tails, 4096);
         }
 
@@ -2176,7 +2275,7 @@ mod tests {
             logs.recover(slot(1), &carried(3, 1, None), 8192)
                 .expect("the walk met the end");
             let mut header = header(1, Path::Live, 3, 2, None);
-            logs.append(slot(1), &mut header).expect("appends");
+            append(&mut logs, slot(1), &mut header).expect("appends");
             logs.sync(slot(1), &header, 12288).expect("syncs");
             logs.hide(12288);
             let later = run(3, 1, 12288);
@@ -2195,7 +2294,7 @@ mod tests {
             logs.recover(slot(1), &carried(3, 1, None), 4096)
                 .expect("a new path");
             let mut header = header(1, Path::Live, 3, 0, None);
-            logs.append(slot(1), &mut header).expect("appends");
+            append(&mut logs, slot(1), &mut header).expect("appends");
             logs.sync(slot(1), &header, 8192).expect("syncs");
             let before = logs.clone();
             let tail = carried(3, 3, None);
@@ -2226,11 +2325,11 @@ mod tests {
         fn refuses_more_entries_with_no_samples_after_a_carried_tail_of_a_met_path() {
             let mut logs = Logs::new(AREA);
             let mut header = header(1, Path::Live, 3, 0, None);
-            logs.append(slot(1), &mut header).expect("appends");
+            append(&mut logs, slot(1), &mut header).expect("appends");
             logs.sync(slot(1), &header, 4096).expect("syncs");
             logs.recover(slot(1), &carried(3, 1, None), 8192)
                 .expect("the walk met the end");
-            logs.append(slot(1), &mut header).expect("appends");
+            append(&mut logs, slot(1), &mut header).expect("appends");
             logs.sync(slot(1), &header, 12288).expect("syncs");
             let before = logs.clone();
             let tail = carried(3, 3, None);
@@ -2277,7 +2376,7 @@ mod tests {
             let mut logs = Logs::new(AREA);
             for (first, offset) in [(3, 4096), (5, 8192)] {
                 let mut header = header(1, Path::Live, first, 0, None);
-                logs.append(slot(1), &mut header).expect("appends");
+                append(&mut logs, slot(1), &mut header).expect("appends");
                 logs.sync(slot(1), &header, offset).expect("syncs");
             }
             let before = logs.clone();
@@ -2349,7 +2448,7 @@ mod tests {
         fn a_carry_of_a_queued_path_keeps_its_appended_tail() {
             let mut logs = walked(Some(30));
             let mut queued = header(1, Path::Live, 3, 2, Some(50));
-            logs.append(slot(1), &mut queued).expect("appends");
+            append(&mut logs, slot(1), &mut queued).expect("appends");
             logs.recover(slot(1), &carried(3, 1, Some(30)), 8192)
                 .expect("the walk met the end");
             let appended = Tail {
@@ -2376,7 +2475,7 @@ mod tests {
     fn counted(records: &mut [(u64, Header)]) {
         let mut logs = Logs::new(AREA);
         for (_, header) in records {
-            logs.append(slot(1), header).expect("appends");
+            append(&mut logs, slot(1), header).expect("appends");
         }
     }
 
@@ -2397,7 +2496,7 @@ mod tests {
         let mut logs = walk_from(records, 0);
         assert_eq!(logs.kept(), Some(holder));
         let mut tails = Carried::default();
-        logs.idle(holder, 1023, &mut tails);
+        logs.carry(holder, 1023, &mut tails);
         assert_eq!(tails.tails(), []);
         logs.hide(holder);
         let walked = walk_from(records, holder);
@@ -2481,7 +2580,7 @@ mod tests {
         let logs = walk_from(&records, 0);
         for given in [2, 4] {
             let entry = Header {
-                last: Last::Count(given),
+                kind: Kind::Record(NonZeroU64::new(given).expect("from 1")),
                 ..header(1, Path::Live, 3, 0, None)
             };
             let mut walked = logs.clone();
@@ -2514,7 +2613,7 @@ mod tests {
     #[test]
     fn an_entry_with_no_samples_after_the_largest_count_is_crowded() {
         let largest = Header {
-            last: Last::Count(u64::MAX),
+            kind: Kind::Record(NonZeroU64::MAX),
             ..header(1, Path::Live, 3, 0, None)
         };
         let logs = walk_from(&[(4096, largest)], 0);
@@ -2525,7 +2624,7 @@ mod tests {
         };
         let mut appended = logs.clone();
         let mut next = header(1, Path::Live, 3, 0, None);
-        assert_eq!(appended.append(slot(1), &mut next), Err(crowded));
+        assert_eq!(append(&mut appended, slot(1), &mut next), Err(crowded));
         assert_eq!(appended, logs);
         let mut walked = logs.clone();
         assert_eq!(walked.walk(slot(1), &largest, 8192), Err(crowded));
@@ -2540,17 +2639,17 @@ mod tests {
     #[test]
     fn after_the_largest_count_other_entries_append() {
         let largest = Header {
-            last: Last::Count(u64::MAX),
+            kind: Kind::Record(NonZeroU64::MAX),
             ..header(1, Path::Live, 3, 0, None)
         };
         let logs = walk_from(&[(4096, largest)], 0);
         let mut later = logs.clone();
         let mut skip = header(1, Path::Live, 5, 0, None);
-        assert_eq!(later.append(slot(1), &mut skip), Ok(()));
-        assert_eq!(skip.last, Last::Count(1));
+        assert_eq!(append(&mut later, slot(1), &mut skip), Ok(()));
+        assert_eq!(skip.kind, Kind::Record(NonZeroU64::MIN));
         let mut samples = logs;
         let mut data = header(1, Path::Live, 3, 2, Some(9));
-        assert_eq!(samples.append(slot(1), &mut data), Ok(()));
+        assert_eq!(append(&mut samples, slot(1), &mut data), Ok(()));
     }
 
     /// The bytes that the runs and the items of `logs` hold. No call of `Logs` shows
@@ -2584,7 +2683,7 @@ mod tests {
             let offset = 4096 * (record + 1);
             for index in 1..=paths {
                 let mut entry = header(index, Path::Live, 0, 0, None);
-                logs.append(slot(index), &mut entry).expect("appends");
+                append(&mut logs, slot(index), &mut entry).expect("appends");
                 logs.sync(slot(index), &entry, offset).expect("syncs");
             }
         }
@@ -2609,7 +2708,7 @@ mod tests {
             let mut logs = Logs::new(4096);
             for index in 1..=paths {
                 let mut entry = header(index, Path::Live, 0, 1, Some(1));
-                logs.append(slot(index), &mut entry).expect("appends");
+                append(&mut logs, slot(index), &mut entry).expect("appends");
                 logs.sync(slot(index), &entry, 4096).expect("syncs");
             }
             let (runs, items) = held(&logs);
@@ -2643,13 +2742,13 @@ mod tests {
                         let at = slot(index);
                         let first = logs.appended(at, Path::Live).seq;
                         let mut entry = header(index, Path::Live, first, 1, Some(1));
-                        logs.append(at, &mut entry).expect("appends");
+                        append(&mut logs, at, &mut entry).expect("appends");
                         logs.sync(at, &entry, offset).expect("syncs");
                     }
                 }
                 offset += 4096;
                 let mut tails = Carried::default();
-                logs.idle(offset, usize::MAX, &mut tails);
+                logs.carry(offset, usize::MAX, &mut tails);
                 logs.hold(&tails, offset);
                 assert_eq!(logs.kept(), Some(offset));
                 logs.hide(offset);
@@ -2679,7 +2778,7 @@ mod tests {
         let mut logs = Logs::new(area);
         for record in 1..=count {
             let mut entry = header(1, Path::Live, record - 1, 1, Some(1));
-            logs.append(slot(1), &mut entry).expect("appends");
+            append(&mut logs, slot(1), &mut entry).expect("appends");
             logs.sync(slot(1), &entry, 4096 * record).expect("syncs");
         }
         logs
@@ -2725,7 +2824,7 @@ mod tests {
     #[test]
     fn a_trim_inside_a_lap_keeps_the_room() {
         let mut log = log_with(16, 3);
-        trim(&mut Laps::new(), &mut budget(usize::MAX), &mut log, 4096);
+        trim(&mut Laps::new(), &mut budget(1 << 20), &mut log, 4096);
         assert_eq!(room_of(&log), (16, 2));
         assert_eq!((log.lap, log.peak), (0, 3));
     }
@@ -2733,7 +2832,7 @@ mod tests {
     #[test]
     fn the_trim_that_ends_a_lap_keeps_the_room_of_runs_that_fill_a_quarter_of_it() {
         let mut log = log_with(16, 4);
-        trim(&mut Laps::new(), &mut budget(usize::MAX), &mut log, AREA);
+        trim(&mut Laps::new(), &mut budget(1 << 20), &mut log, AREA);
         assert_eq!(room_of(&log), (16, 4));
         assert_eq!((log.lap, log.peak), (AREA, 4));
     }
@@ -2741,7 +2840,7 @@ mod tests {
     /// The lap met 5 runs, though 1 is left at its end.
     #[test]
     fn the_trim_that_ends_a_lap_shrinks_the_room_to_twice_the_most_runs_of_the_lap() {
-        let (mut laps, mut budget) = (Laps::new(), budget(usize::MAX));
+        let (mut laps, mut budget) = (Laps::new(), budget(1 << 20));
         let mut log = log_with(32, 5);
         for record in 1..=4 {
             trim(&mut laps, &mut budget, &mut log, 4096 * record);
@@ -2754,7 +2853,7 @@ mod tests {
 
     #[test]
     fn the_trim_that_ends_a_lap_with_no_run_keeps_room_for_two() {
-        let (mut laps, mut budget) = (Laps::new(), budget(usize::MAX));
+        let (mut laps, mut budget) = (Laps::new(), budget(1 << 20));
         let mut log = log_with(8, 1);
         trim(&mut laps, &mut budget, &mut log, 4096);
         trim(&mut laps, &mut budget, &mut log, AREA);
@@ -2763,7 +2862,7 @@ mod tests {
 
     #[test]
     fn a_lap_ends_at_the_first_trim_an_area_after_its_start() {
-        let (mut laps, mut budget) = (Laps::new(), budget(usize::MAX));
+        let (mut laps, mut budget) = (Laps::new(), budget(1 << 20));
         let mut log = log_with(16, 0);
         log.lap = 4096;
         trim(&mut laps, &mut budget, &mut log, AREA);
@@ -2803,22 +2902,35 @@ mod tests {
         assert!(laps.due.is_empty());
     }
 
-    /// A trim in the wait meets 8 runs, so the end needs no shrink. Only this test,
-    /// through `Laps::due`, kills a drain that takes a shrink for a path that needs
-    /// none. #2774 moves the kill to `tests/memory`.
+    /// A path syncs 14 runs while its lap end waits, so the drain keeps room for 16.
     #[test]
-    fn a_lap_that_waits_and_needs_no_shrink_at_its_close_ends_with_none_left() {
-        let (mut laps, mut budget) = (Laps::new(), budget(0));
-        let mut log = log_with(32, 3);
-        trim(&mut laps, &mut budget, &mut log, AREA);
-        log.runs.extend((3..8).map(|n| run(n, 0, AREA + 4096 * n)));
-        assert!(!log.trim(AREA + 4096, AREA));
-        laps.finish(&mut budget, std::slice::from_mut(&mut log), 2 * AREA);
-        assert_eq!(
-            (room_of(&log), log.lap, log.due),
-            ((32, 8), 2 * AREA, false)
-        );
-        assert!(laps.due.is_empty());
+    fn a_drain_keeps_room_for_the_runs_synced_in_the_wait() {
+        let mut logs = Logs::new(4 * 4096);
+        logs.laps.most = 0;
+        let mut seq = 0;
+        let mut sync = |logs: &mut Logs, offset: u64| {
+            let mut entry = header(1, Path::Live, seq, 1, Some(1));
+            append(logs, slot(1), &mut entry).expect("appends");
+            logs.sync(slot(1), &entry, offset).expect("syncs");
+            seq += 1;
+        };
+        for record in 1..=13 {
+            sync(&mut logs, 4096 * record);
+            if record > 8 {
+                logs.hide(4096 * record);
+            }
+        }
+        assert!(logs.paths[0].due, "the lap end waits");
+        assert_eq!(room(&logs), (16, 1));
+        for n in 1..=14 {
+            sync(&mut logs, 4096 * 13 + 100 * n);
+        }
+        assert_eq!(room(&logs), (16, 15));
+        logs.laps.most = 1;
+        logs.hide(logs.hidden);
+        assert!(!logs.paths[0].due, "the drain ends the lap");
+        sync(&mut logs, 4096 * 13 + 100 * 15);
+        assert_eq!(room(&logs), (16, 16));
     }
 
     #[test]
@@ -2827,20 +2939,6 @@ mod tests {
         let mut log = log_with(32, 3);
         trim(&mut Laps::new(), &mut budget, &mut log, AREA);
         assert_eq!((room_of(&log), budget.used), ((6, 3), 1));
-    }
-
-    /// Only this test, through `Laps::due`, kills a lap end that goes ahead of a path
-    /// that waits. #2774 moves the kill to `tests/memory`.
-    #[test]
-    fn a_lap_end_that_needs_a_shrink_waits_behind_a_path_that_waits() {
-        let (mut laps, mut budget) = (Laps::new(), budget(1));
-        laps.due.push_back(0);
-        let mut log = log_with(32, 3);
-        if log.trim(AREA, AREA) {
-            laps.end(&mut budget, &mut log, 1, AREA);
-        }
-        assert_eq!((room_of(&log), log.due, budget.used), ((32, 3), true, 0));
-        assert_eq!(laps.due, [0, 1]);
     }
 
     #[test]
@@ -2862,8 +2960,7 @@ mod tests {
     /// trims to its own record, and the lap that holds 2 runs needs a shrink of each
     /// path at the trim of record 12. That `hide`, and each `hide` after it, trims
     /// 100,000 runs, so it shrinks 256 + 25,000 paths, first in, first out, until
-    /// each has room for 4. A path that shrinks at its trim starts its next lap there,
-    /// and one that waits at the tail of the `hide` that ends its wait.
+    /// each has room for 4.
     #[test]
     fn a_hide_shrinks_256_paths_and_one_for_each_four_trims_and_the_rest_wait_in_turn()
     {
@@ -2878,7 +2975,7 @@ mod tests {
                 let at = slot(index);
                 let first = logs.appended(at, Path::Live).seq;
                 let mut entry = header(index, Path::Live, first, 1, Some(1));
-                logs.append(at, &mut entry).expect("appends");
+                append(&mut logs, at, &mut entry).expect("appends");
                 logs.sync(at, &entry, 4096 * record).expect("syncs");
             }
             if record > 8 {
@@ -2911,41 +3008,6 @@ mod tests {
         assert_eq!(shrunk, expected);
         assert!(logs.laps.due.is_empty());
         assert!(logs.paths.iter().all(|log| log.runs.capacity() == 4));
-        let laps = [0, budget - 1, budget].map(|at| logs.paths[at].lap);
-        assert_eq!(laps, [4096 * 16, 4096 * 16, 4096 * 14]);
-    }
-
-    /// 4096 paths each hold a run in records 1 to 9, and a carry record takes the
-    /// tail of each. A hide drops the runs, and the hide of the carry record ends the
-    /// lap of each with no run to drop: it counts the 4096 carried tails as trims, so
-    /// it shrinks 256 + 1024 paths. It reads private state: #2774 moves the kill to
-    /// `tests/memory`.
-    #[test]
-    fn a_hide_counts_each_carried_tail_as_a_trim() {
-        let paths: u32 = 4096;
-        let mut logs = Logs::new(4 * 4096);
-        for record in 1..=9 {
-            for index in 1..=paths {
-                let at = slot(index);
-                let first = logs.appended(at, Path::Live).seq;
-                let mut entry = header(index, Path::Live, first, 1, Some(1));
-                logs.append(at, &mut entry).expect("appends");
-                logs.sync(at, &entry, 4096 * record).expect("syncs");
-            }
-        }
-        carry_idle(&mut logs, 4096 * 12);
-        logs.hide(4096 * 12);
-        assert!(logs.paths.iter().all(|log| log.runs.is_empty()));
-        let rooms: Vec<usize> =
-            logs.paths.iter().map(|log| log.runs.capacity()).collect();
-        logs.hide(4096 * 13);
-        let shrunk = logs
-            .paths
-            .iter()
-            .zip(&rooms)
-            .filter(|&(log, &room)| log.runs.capacity() < room)
-            .count();
-        assert_eq!((shrunk, logs.laps.due.len()), (256 + 1024, 4096 - 1280));
     }
 
     /// Writes one record at `offset`, with an entry of 51 bytes of each of
@@ -2962,7 +3024,7 @@ mod tests {
             let s = slot(index);
             let first = logs.appended(s, Path::Live).seq;
             let mut entry = header(index, Path::Live, first, 1, Some(1));
-            logs.append(s, &mut entry).expect("appends");
+            append(logs, s, &mut entry).expect("appends");
             logs.sync(s, &entry, at).expect("syncs");
             count += 1;
         }
@@ -3040,10 +3102,64 @@ mod tests {
         assert_eq!(size_of::<((Slot, Path), u32)>(), 12);
     }
 
+    /// Appends and syncs the next entry of index `index` in the record at `offset`.
+    fn synced(logs: &mut Logs, index: u32, offset: u64) {
+        let first = logs
+            .log(slot(index), Path::Live)
+            .map_or(0, |log| log.appended.tail.seq + 1);
+        let mut entry = header(index, Path::Live, first, 1, Some(10));
+        append(logs, slot(index), &mut entry).expect("appends");
+        logs.sync(slot(index), &entry, offset).expect("syncs");
+    }
+
+    /// Index 1 holds the record before the reach, index 2 syncs in each of the 12
+    /// records after it, and index 3 holds the record after those. A call of limit 3
+    /// takes the tail of index 1, then fills from the 12 items after the reach, so it
+    /// takes index 2 and not index 3. The next call goes on at index 3.
+    #[test]
+    fn a_fill_walks_four_items_for_each_tail_after_the_reach() {
+        let mut logs = Logs::new(AREA);
+        synced(&mut logs, 1, 4096);
+        for record in 2..=13 {
+            synced(&mut logs, 2, 4096 * record);
+        }
+        synced(&mut logs, 3, 4096 * 14);
+        let indexes = |tails: &Carried| -> Vec<u128> {
+            tails
+                .tails()
+                .iter()
+                .map(|tail| tail.index.as_u128())
+                .collect()
+        };
+        let mut tails = Carried::default();
+        logs.carry(8192, 3, &mut tails);
+        assert_eq!(indexes(&tails), [1, 2]);
+        logs.carry(4096 * 15, 3, &mut tails);
+        assert_eq!(indexes(&tails), [3]);
+    }
+
+    /// A call clears `carried` first, so a call that takes no tail before the reach
+    /// gives none and stops there, also when `carried` holds the tails of a call
+    /// before it.
+    #[test]
+    fn a_carry_with_no_tail_before_the_reach_stops_at_it() {
+        let mut logs = Logs::new(AREA);
+        synced(&mut logs, 1, 4096);
+        let mut tails = Carried::default();
+        logs.carry(8192, 2, &mut tails);
+        synced(&mut logs, 2, 12288);
+        assert_eq!(tails.tails().len(), 1);
+        logs.carry(8192, 2, &mut tails);
+        assert_eq!(tails.tails(), []);
+        logs.carry(16384, 2, &mut tails);
+        let indexes: Vec<_> = tails.tails().iter().map(|tail| tail.index).collect();
+        assert_eq!(indexes, [channel::Key::from_u128(2)]);
+    }
+
     /// Gives the tail of each idle path a carry record at `offset`, as a commit does.
     fn carry_idle(logs: &mut Logs, offset: u64) {
         let mut tails = Carried::default();
-        logs.idle(offset, usize::MAX, &mut tails);
+        logs.carry(offset, usize::MAX, &mut tails);
         logs.hold(&tails, offset);
     }
 
@@ -3074,7 +3190,7 @@ mod tests {
         logs.hide(4096 * 9);
         assert_eq!(room(&logs), (2, 0));
         let mut entry = header(1, Path::Live, 8, 1, Some(1));
-        logs.append(slot(1), &mut entry).expect("appends");
+        append(&mut logs, slot(1), &mut entry).expect("appends");
         logs.sync(slot(1), &entry, 4096 * 10).expect("syncs");
         assert_eq!(room(&logs), (2, 1));
         assert_eq!(
@@ -3127,7 +3243,7 @@ mod tests {
                         let at = slot(index);
                         let first = logs.appended(at, Path::Live).seq;
                         let mut entry = header(index, Path::Live, first, 1, Some(1));
-                        logs.append(at, &mut entry).expect("appends");
+                        append(&mut logs, at, &mut entry).expect("appends");
                         prop_assert_eq!(logs.sync(at, &entry, offset), Ok(()));
                     }
                 }
@@ -3248,11 +3364,11 @@ mod tests {
                     let first = logs.appended(at, next.path).seq + next.skip;
                     let mut header =
                         header(next.index, next.path, first, next.len, next.last);
-                    logs.append(at, &mut header).expect("appends");
+                    append(&mut logs, at, &mut header).expect("appends");
                     queued.push((next.index, header));
                 }
                 let mut carried = Carried::default();
-                logs.idle(8192 * *reach.min(&number), *limit, &mut carried);
+                logs.carry(8192 * *reach.min(&number), *limit, &mut carried);
                 for (index, header) in &queued {
                     prop_assert_eq!(logs.sync(slot(*index), header, synced_at), Ok(()));
                 }
@@ -3359,7 +3475,7 @@ mod tests {
             .iter()
             .filter(|(_, header)| (header.index, header.path) == (key, path))
             .filter_map(|&(_, header)| {
-                at = at.after(header.first, header.len);
+                at = at.after(header.first, header.len());
                 (at > from).then_some((header, at))
             })
             .collect()

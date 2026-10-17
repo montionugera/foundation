@@ -15,7 +15,7 @@ use types::hash;
 use types::time::Stamp;
 
 use crate::buffer::Error;
-use crate::entry::{self, Header};
+use crate::entry::{self, Header, Samples};
 use crate::log::{Mark, Run};
 use crate::record::{self, ALIGN, AREA_START, HEADER_LEN};
 use crate::wal::Layout;
@@ -25,24 +25,35 @@ use crate::wal::Layout;
 pub struct Stored {
     /// The first seq.
     pub first: u64,
-    /// How many samples. A caller record has `len` 0.
-    pub len: u32,
+    /// The samples, `None` for a caller record.
+    pub samples: Option<Samples>,
     /// Mesh time at which the home stored it.
     pub stored_at: Stamp,
-    /// The newest stamp of the entry's samples; none for a caller record.
-    pub last: Option<Stamp>,
     /// The tag the caller gave.
     pub tag: u8,
     /// The bytes of the entry: its parts, joined.
     pub bytes: Block,
 }
 
+impl Stored {
+    /// The seqs of the samples, from `first`: none for a caller record.
+    ///
+    /// # Panics
+    ///
+    /// When the samples end past `u64::MAX`, which no read gives.
+    #[must_use]
+    pub fn seqs(&self) -> Range<u64> {
+        let len = self.samples.map_or(0, |samples| samples.len.get());
+        let end = self.first.checked_add(u64::from(len));
+        self.first..end.expect("the samples end past u64::MAX")
+    }
+}
+
 impl PartialEq for Stored {
     fn eq(&self, other: &Self) -> bool {
         self.first == other.first
-            && self.len == other.len
+            && self.samples == other.samples
             && self.stored_at == other.stored_at
-            && self.last == other.last
             && self.tag == other.tag
             && *self.bytes == *other.bytes
     }
@@ -196,7 +207,7 @@ impl<'a> Reading<'a> {
             if (header.index, header.path) != (index, self.path) {
                 continue;
             }
-            at = at.after(header.first, header.len);
+            at = at.after(header.first, header.len());
             if at > self.read.next {
                 wanted.push((header, offset, at));
             }
@@ -248,9 +259,8 @@ pub(crate) async fn newest(
 fn stored(header: Header, bytes: Block) -> Stored {
     Stored {
         first: header.first,
-        len: header.len,
+        samples: header.samples(),
         stored_at: header.stored_at,
-        last: header.stamp(),
         tag: header.tag,
         bytes,
     }
@@ -310,10 +320,49 @@ mod tests {
     use block::{Block, Config, Heap, Pool};
     use types::time::Stamp;
 
-    use super::Stored;
+    use std::num::NonZeroU32;
+
+    use super::{Samples, Stored};
 
     fn block(pool: &Pool, bytes: &[u8]) -> Block {
         pool.copy(bytes).expect("the pool has room")
+    }
+
+    fn stored(pool: &Pool, first: u64, samples: Option<Samples>) -> Stored {
+        Stored {
+            first,
+            samples,
+            stored_at: Stamp::from_nanos(0),
+            tag: 0,
+            bytes: block(pool, &[]),
+        }
+    }
+
+    fn pool() -> Pool {
+        let config = Config::new(1 << 20).expect("the budget fits");
+        Pool::new(config.clone(), Heap::new(config.reservation()))
+    }
+
+    #[test]
+    fn the_seqs_of_an_entry_start_at_its_first_and_count_its_samples() {
+        let pool = pool();
+        let samples = Samples {
+            len: NonZeroU32::new(3).expect("not 0"),
+            last: None,
+        };
+        assert_eq!(stored(&pool, 4, Some(samples)).seqs(), 4..7);
+        assert_eq!(stored(&pool, 4, None).seqs(), 4..4);
+        assert_eq!(stored(&pool, u64::MAX, None).seqs(), u64::MAX..u64::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "the samples end past u64::MAX")]
+    fn the_seqs_of_samples_past_the_last_seq_panic() {
+        let samples = Samples {
+            len: NonZeroU32::MIN,
+            last: None,
+        };
+        drop(stored(&pool(), u64::MAX, Some(samples)).seqs());
     }
 
     #[test]
@@ -322,9 +371,11 @@ mod tests {
         let pool = Pool::new(config.clone(), Heap::new(config.reservation()));
         let base = Stored {
             first: 1,
-            len: 2,
+            samples: Some(Samples {
+                len: NonZeroU32::new(2).expect("not 0"),
+                last: Some(Stamp::from_nanos(4)),
+            }),
             stored_at: Stamp::from_nanos(3),
-            last: Some(Stamp::from_nanos(4)),
             tag: 5,
             bytes: block(&pool, &[6, 7]),
         };
@@ -339,15 +390,18 @@ mod tests {
                 ..base.clone()
             },
             Stored {
-                len: 0,
+                samples: None,
+                ..base.clone()
+            },
+            Stored {
+                samples: base.samples.map(|samples| Samples {
+                    last: None,
+                    ..samples
+                }),
                 ..base.clone()
             },
             Stored {
                 stored_at: Stamp::from_nanos(0),
-                ..base.clone()
-            },
-            Stored {
-                last: None,
                 ..base.clone()
             },
             Stored {

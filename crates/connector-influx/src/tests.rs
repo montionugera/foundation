@@ -9,6 +9,7 @@ use document::{Attribute, Block, Map, Position, Source, Span};
 use env::tasks::Tasks;
 
 use super::*;
+use crate::line::Measurement;
 
 mod send;
 
@@ -97,8 +98,9 @@ fn reads_the_address_and_the_reader() {
     let expected = Config {
         address: "http://influx:8086".parse().expect("a URI"),
         target: Target::Database("plant".into()),
-        measurement: "telemetry".into(),
+        measurement: Measurement::new("telemetry", &[]).expect("a name"),
         token: None,
+        ca: None,
         reader: reader::read(&config, &KEYS, &[]).expect("the reader settings"),
     };
     assert_eq!(Kind.parse(&config), Ok(expected));
@@ -117,7 +119,7 @@ fn call(function: &str, argument: &str) -> Value {
 }
 
 #[test]
-fn reads_the_source_of_a_token() {
+fn reads_the_source_of_a_token_and_a_ca() {
     for (value, source) in [
         (
             call("env", "INFLUX_TOKEN"),
@@ -128,30 +130,40 @@ fn reads_the_source_of_a_token() {
             secret::Source::Secret("plant.influx_token".parse().expect("a name")),
         ),
     ] {
-        let config = plus(influx(), &[(60, "token", value)]);
+        for key in ["token", "ca"] {
+            let https = config(string("https://influx:8086"));
+            let config = plus(https, &[(60, key, value.clone())]);
+            let parsed = Kind.parse(&config).expect("parses");
+            let read = if key == "token" {
+                parsed.token
+            } else {
+                parsed.ca
+            };
+            assert_eq!(read, Some(source.clone()), "{key}");
+        }
+    }
+}
+
+#[test]
+fn refuses_a_token_or_a_ca_that_is_not_a_source() {
+    for key in ["token", "ca"] {
+        let config = plus(influx(), &[(60, key, string("my-t0ken"))]);
         assert_eq!(
-            Kind.parse(&config).map(|config| config.token),
-            Ok(Some(source))
+            Kind.parse(&config),
+            Err(vec![refused(
+                "secret.source",
+                61,
+                "a secret takes where its value comes from, never the value",
+                "Write `env(\"NAME\")`, `file(\"/absolute/path\")`, or \
+                 `secret(\"name\")`",
+            )]),
+            "{key}"
         );
     }
 }
 
 #[test]
-fn refuses_a_token_that_is_not_a_source() {
-    let config = plus(influx(), &[(60, "token", string("my-t0ken"))]);
-    assert_eq!(
-        Kind.parse(&config),
-        Err(vec![refused(
-            "secret.source",
-            61,
-            "a secret takes where its value comes from, never the value",
-            "Write `env(\"NAME\")`, `file(\"/absolute/path\")`, or `secret(\"name\")`",
-        )])
-    );
-}
-
-#[test]
-fn checks_to_its_reader_and_the_counts_confirmed_and_lost_and_no_device_channel() {
+fn checks_to_its_reader_and_the_counts_confirmed_lost_and_oversized_and_no_device() {
     let config = config(string("http://influx:8086"));
     let reader = reader::read(&config, &KEYS, &[]);
     let table = Table::new().with("influx", Kind);
@@ -163,6 +175,7 @@ fn checks_to_its_reader_and_the_counts_confirmed_and_lost_and_no_device_channel(
             counts: vec![
                 "confirmed".parse().expect("a name"),
                 "lost".parse().expect("a name"),
+                "oversized".parse().expect("a name"),
             ],
         })
     );
@@ -178,11 +191,34 @@ fn reads_an_address_with_a_path_of_slash() {
 }
 
 #[test]
+fn reads_an_https_address() {
+    let config = config(string("https://influx:8086"));
+    assert_eq!(
+        Kind.parse(&config).map(|config| config.address),
+        Ok("https://influx:8086".parse().expect("a URI"))
+    );
+}
+
+#[test]
+fn refuses_a_ca_with_an_http_address() {
+    let config = plus(influx(), &[(60, "ca", call("secret", "plant.ca"))]);
+    assert_eq!(
+        Kind.parse(&config),
+        Err(vec![refused(
+            "influx.ca-with-http",
+            60,
+            "the connector has a `ca`, which only an `https` address takes",
+            "Use an `https` address, or remove `ca`",
+        )])
+    );
+}
+
+#[test]
 fn refuses_an_address_that_uri_refuses() {
     for (address, message) in [
         (
-            string("https://influx:8086"),
-            "the scheme of the URI is not http",
+            string("ftp://influx:8086"),
+            "the scheme of the URI is not http or https",
         ),
         (
             string("http://admin:hunter2@influx:8086"),
@@ -196,7 +232,10 @@ fn refuses_an_address_that_uri_refuses() {
             string("http://influx:0"),
             "the port of the URI is not a number from 1 to 65535",
         ),
-        (string("influx"), "the scheme of the URI is not http"),
+        (
+            string("influx"),
+            "the scheme of the URI is not http or https",
+        ),
         (
             string("http://influx:8086/#site"),
             "the URI has a fragment, which no request sends",
@@ -213,7 +252,7 @@ fn refuses_an_address_that_uri_refuses() {
                 "connector.bad-uri",
                 1,
                 message,
-                "Write an `http` URI such as \"http://10.0.0.2:8086\"",
+                "Write an `http` or `https` URI such as \"http://10.0.0.2:8086\"",
             )]),
             "{address:?}"
         );
@@ -512,7 +551,7 @@ fn refuses_each_key_it_does_not_take() {
                 60,
                 "`user` is not an attribute of the connector",
                 "Use `select`, `address`, `database`, `bucket`, `org`, `measurement`, \
-                 or `token`, or remove it",
+                 `token`, or `ca`, or remove it",
             ),
             refused(
                 "document.unknown-block",

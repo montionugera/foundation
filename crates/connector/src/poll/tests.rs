@@ -21,7 +21,6 @@ use types::sample::{Scalar, Type, Value};
 use types::time::{Span, Stamp};
 
 use super::Writer;
-use crate::cancel;
 use crate::common::{env, run_on};
 use crate::kind::{Channels, Context, Error, Kind, Table};
 use crate::testing::Rig;
@@ -89,13 +88,6 @@ impl Kind for Polls {
         })
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
         let mut writer = Writer::open(&ctx, self.channels.map(name).to_vec()).await?;
         *self.types.lock().expect("no panic") = writer.types().collect();
@@ -104,7 +96,7 @@ impl Kind for Polls {
                 return Ok(());
             }
             let ((), stamp) = writer.request(std::future::ready(())).await;
-            writer.write(values, stamp)?;
+            writer.write(values.iter().copied(), stamp)?;
         }
         ctx.cancel().wait().await;
         Ok(())
@@ -642,9 +634,29 @@ fn panics_with_the_channel_whose_value_is_left_out() {
 
 /// One value more than the channels.
 #[test]
-#[should_panic(expected = "a value of each channel")]
+#[should_panic(expected = "invariant: a kind gives more values than its 3 channels")]
 fn panics_at_values_of_another_length() {
     let mut values = Vec::from(values(1.5, 7, -3, [true; 3]));
     values.push(Some(U16(8)));
     run_of(CHANNELS, vec![values], (0, 0), |_, _, _| async {});
+}
+
+/// One value less than the channels.
+#[test]
+#[should_panic(expected = "invariant: a kind gives 2 values for 3 channels")]
+fn panics_at_fewer_values_than_channels() {
+    let mut values = Vec::from(values(1.5, 7, -3, [true; 3]));
+    values.pop();
+    run_of(CHANNELS, vec![values], (0, 0), |_, _, _| async {});
+}
+
+/// One value less than the channels, after a frame that keeps each value, whose slot
+/// of the last channel is still full.
+#[test]
+#[should_panic(expected = "invariant: a kind gives 2 values for 3 channels")]
+fn panics_at_fewer_values_after_a_frame_that_keeps_each() {
+    let all = Vec::from(values(1.5, 7, -3, [true; 3]));
+    let mut short = Vec::from(values(2.5, 8, -4, [true; 3]));
+    short.pop();
+    run_of(CHANNELS, vec![all, short], (0, 0), |_, _, _| async {});
 }

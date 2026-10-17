@@ -138,7 +138,7 @@ fn file(paths: &Paths, path: &Path) -> Result<Vec<u8>, Error> {
         Ok(Found::Directory(_)) => Err(unread(Unread::Directory)),
         Err(paths::Error::NotFound) => Err(unread(Unread::NotFound)),
         Err(paths::Error::Io { code }) => Err(unread(Unread::Io { code })),
-        Err(paths::Error::Outside) => {
+        Err(paths::Error::Outside | paths::Error::Hidden) => {
             unreachable!("invariant: the command line reads with no limit")
         }
     }

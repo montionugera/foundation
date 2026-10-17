@@ -4,6 +4,7 @@ use std::convert::Infallible;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use env::net::{self, Listener};
@@ -14,9 +15,52 @@ use http_body::Body as _;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
+use rustls::ServerConfig;
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use types::time::Stamp;
 
+use super::Roots;
 use super::body::Whole;
 use super::stream::Stream;
+use super::tls::At;
+
+/// A certificate that [`serve_tls`] gives. The test CA of [`ca`] signs each one
+/// other than [`Certificate::OtherCa`]. Each is valid from 2026-01-01 to 2027-01-01
+/// UTC, other than [`Certificate::Expired`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Certificate {
+    /// For the host `server`.
+    Valid,
+    /// For the host `other`.
+    OtherHost,
+    /// For the host `server`, valid from 2026-01-01 to 2026-02-01 UTC.
+    Expired,
+    /// For the host `server`, signed by a CA that [`ca`] does not hold.
+    OtherCa,
+    /// For the IP addresses `10.0.0.2` and `fd00::2`.
+    Ip,
+}
+
+/// The PEM text of the test CA of [`ca`].
+pub const CA: &str = include_str!("sim/tls/ca.pem");
+
+/// The PEM text of the CA that signs [`Certificate::OtherCa`], which [`ca`] does not
+/// hold.
+pub const OTHER_CA: &str = include_str!("sim/tls/other-ca.pem");
+
+/// Roots that hold only the test CA, which is valid from 2025-01-01 to 2036-01-01
+/// UTC.
+///
+/// # Panics
+///
+/// Never: the CA is a fixed file that parses.
+#[must_use]
+pub fn ca() -> Roots {
+    Roots::default()
+        .with_pem(CA)
+        .expect("invariant: the test CA parses")
+}
 
 /// Answers HTTP/1.1 requests on each stream that `listener` accepts, each stream on
 /// its own task of `tasks`, with keep-alive. `answer` gets each request with its
@@ -29,8 +73,87 @@ use super::stream::Stream;
 /// It runs until the listener fails, and returns that error. Dropping the future stops
 /// only the accepts: each stream it accepted runs on.
 pub async fn serve(
+    listener: Listener,
+    tasks: Tasks,
+    answer: impl Fn(Request<Bytes>) -> Response<Bytes> + 'static,
+) -> net::Error {
+    run(listener, tasks, None, answer).await
+}
+
+/// As [`serve`], under TLS 1.2 or 1.3 with `certificate`. A stream whose handshake
+/// fails ends with no answer. It sends no session ticket.
+pub async fn serve_tls(
+    listener: Listener,
+    tasks: Tasks,
+    certificate: Certificate,
+    answer: impl Fn(Request<Bytes>) -> Response<Bytes> + 'static,
+) -> net::Error {
+    run(listener, tasks, Some(server(certificate)), answer).await
+}
+
+pub(super) fn server(certificate: Certificate) -> Arc<ServerConfig> {
+    let (pem, key) = match certificate {
+        Certificate::Valid => (
+            include_str!("sim/tls/server.pem"),
+            include_str!("sim/tls/server.key"),
+        ),
+        Certificate::OtherHost => (
+            include_str!("sim/tls/other.pem"),
+            include_str!("sim/tls/other.key"),
+        ),
+        Certificate::Expired => (
+            include_str!("sim/tls/expired.pem"),
+            include_str!("sim/tls/expired.key"),
+        ),
+        Certificate::OtherCa => (
+            include_str!("sim/tls/stranger.pem"),
+            include_str!("sim/tls/stranger.key"),
+        ),
+        Certificate::Ip => (
+            include_str!("sim/tls/ip.pem"),
+            include_str!("sim/tls/ip.key"),
+        ),
+    };
+    config(pem, key, rustls::DEFAULT_VERSIONS)
+}
+
+/// A server config for the certificate chain `pem` and its `key` that takes only
+/// `versions` and sends no session ticket.
+///
+/// # Panics
+///
+/// If `pem` or `key` does not parse, or the key does not match.
+pub(super) fn config(
+    pem: &str,
+    key: &str,
+    versions: &[&'static rustls::SupportedProtocolVersion],
+) -> Arc<ServerConfig> {
+    let chain = CertificateDer::pem_slice_iter(pem.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .expect("the certificates parse");
+    let key = PrivateKeyDer::from_pem_slice(key.as_bytes()).expect("the key parses");
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    // The server checks no client certificate, so it reads no time.
+    #[expect(clippy::disallowed_methods, reason = "it passes a fixed time")]
+    let builder = ServerConfig::builder_with_details(
+        provider,
+        Arc::new(At(Stamp::from_nanos(0))),
+    );
+    let mut config = builder
+        .with_protocol_versions(versions)
+        .expect("invariant: aws-lc-rs has suites of each version")
+        .with_no_client_auth()
+        .with_single_cert(chain, key)
+        .expect("the key matches its certificate");
+    config.send_tls13_tickets = 0;
+    Arc::new(config)
+}
+
+/// As [`serve`], under TLS with `tls` when it is `Some`.
+pub(super) async fn run(
     mut listener: Listener,
     tasks: Tasks,
+    tls: Option<Arc<ServerConfig>>,
     answer: impl Fn(Request<Bytes>) -> Response<Bytes> + 'static,
 ) -> net::Error {
     let answer = Rc::new(answer);
@@ -41,18 +164,24 @@ pub async fn serve(
         };
         let answer = Rc::clone(&answer);
         let service = service_fn(move |request| respond(request, Rc::clone(&answer)));
-        let stream = Stream {
-            tcp,
-            received: Rc::default(),
-        };
-        // The person approved this server on the condition that it gets no timer.
-        let served = http1::Builder::new()
-            .auto_date_header(false)
-            .header_read_timeout(None)
-            .half_close(true)
-            .serve_connection(stream, service);
+        let tls = tls.clone();
         // A stream that fails has no one to tell.
-        tasks.spawn(async move { drop(served.await) });
+        tasks.spawn(async move {
+            let stream = match tls {
+                Some(config) => match Stream::server(tcp, config).await {
+                    Ok(stream) => stream,
+                    Err(_) => return,
+                },
+                None => Stream::plain(tcp, Rc::default()),
+            };
+            // The person approved this server on the condition that it gets no timer.
+            let served = http1::Builder::new()
+                .auto_date_header(false)
+                .header_read_timeout(None)
+                .half_close(true)
+                .serve_connection(stream, service);
+            drop(served.await);
+        });
     }
 }
 

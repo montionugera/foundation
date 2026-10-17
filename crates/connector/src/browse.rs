@@ -27,6 +27,10 @@ pub const VISITS: usize = 10_000;
 /// The most folders that a pattern holds open at one time, its start with them.
 pub const DEPTH: usize = 64;
 
+/// The most `*` in the names of a pattern, since each adds a piece that a walk tests in
+/// each name.
+pub const STARS: usize = 256;
+
 /// One browse's inputs: the connector block as the files give it, and the node's
 /// network, clock, randomness, and secrets. It is not `Send`.
 #[derive(Debug)]
@@ -524,19 +528,64 @@ impl fmt::Debug for Path {
 
 /// A pattern of paths: `/` splits names, `**` alone between two `/` matches any
 /// number of names (none too), `*` matches any text in one name, and `\` takes the
-/// next character as it is.
+/// next character as it is. A run of `**` names is one, and a pattern holds at most
+/// [`DEPTH`] other names. A run of `*` in a name is one, and a pattern holds at most
+/// [`STARS`] `*` in its names other than `**`.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Pattern {
     segments: Vec<Segment>,
 }
 
-/// What one segment of a [`Pattern`] matches.
+/// What one segment of a [`Pattern`] matches. No two `Any` are next to each other.
 #[derive(Clone, PartialEq, Eq)]
 enum Segment {
     /// Any number of names.
     Any,
-    /// One name, with each `None` as any text. No two `None` are next to each other.
-    Name(Vec<Option<char>>),
+    /// One name.
+    Name(Glob),
+}
+
+/// The text of one name of a pattern, split at each `*`. With one piece, a name
+/// matches when it is that piece. Else it matches when it holds at least the bytes of
+/// all pieces, starts with the first, ends with the last, and holds the pieces between
+/// in order. Each piece between the first and the last is not empty.
+#[derive(Clone, PartialEq, Eq)]
+struct Glob {
+    pieces: Vec<String>,
+    /// The bytes of all pieces.
+    len: usize,
+}
+
+impl Glob {
+    fn new(pieces: Vec<String>) -> Self {
+        let len = pieces.iter().map(String::len).sum();
+        Self { pieces, len }
+    }
+
+    /// Whether `name` matches, in time linear in the length of `name`.
+    fn matches(&self, name: &str) -> bool {
+        let [first, middle @ .., last] = self.pieces.as_slice() else {
+            return self.pieces.first().is_some_and(|piece| piece == name);
+        };
+        // So that the first and the last piece do not overlap in `name`, and so that
+        // `middle`, of pieces that are not empty, holds no more pieces than `name` has
+        // bytes.
+        if name.len() < self.len
+            || !name.starts_with(first.as_str())
+            || !name.ends_with(last.as_str())
+        {
+            return false;
+        }
+        // With `*` the only wildcard, the leftmost place of each piece is right.
+        let mut rest = &name[first.len()..name.len() - last.len()];
+        for piece in middle {
+            match rest.find(piece.as_str()) {
+                Some(at) => rest = &rest[at + piece.len()..],
+                None => return false,
+            }
+        }
+        true
+    }
 }
 
 /// The positions in a pattern's segments that a prefix of a path reaches, in order,
@@ -547,25 +596,21 @@ struct State(Vec<usize>);
 impl Pattern {
     /// The state of the empty path.
     fn start(&self) -> State {
-        self.close(vec![0])
+        self.close([0])
     }
 
     /// The state after `name` from `state`.
     fn step(&self, state: &State, name: &str) -> State {
-        let name: Vec<char> = name.chars().collect();
-        let mut next = Vec::new();
-        for &at in &state.0 {
-            match self.segments.get(at) {
-                Some(Segment::Any) => next.push(at),
-                Some(Segment::Name(glob)) if glob_matches(glob, &name) => {
-                    next.push(at + 1);
-                }
-                Some(Segment::Name(_)) | None => {}
-            }
-        }
-        next.sort_unstable();
-        next.dedup();
-        self.close(next)
+        self.close(
+            state
+                .0
+                .iter()
+                .filter_map(|&at| match self.segments.get(at) {
+                    Some(Segment::Any) => Some(at),
+                    Some(Segment::Name(glob)) if glob.matches(name) => Some(at + 1),
+                    Some(Segment::Name(_)) | None => None,
+                }),
+        )
     }
 
     /// Whether the path of `state` matches.
@@ -579,55 +624,46 @@ impl Pattern {
     }
 
     /// `positions` and each one after an `Any` in it, since `Any` matches no name too.
-    fn close(&self, mut positions: Vec<usize>) -> State {
-        let mut i = 0;
-        while let Some(&at) = positions.get(i) {
-            let after = at + 1;
-            if self.segments.get(at) == Some(&Segment::Any)
-                && !positions.contains(&after)
-            {
-                positions.push(after);
-            }
-            i += 1;
-        }
-        positions.sort_unstable();
-        State(positions)
-    }
-}
-
-/// Whether `name` matches `glob`, in which `None` is any text.
-fn glob_matches(glob: &[Option<char>], name: &[char]) -> bool {
-    let (mut g, mut n) = (0, 0);
-    // Past the last `None`, and where in `name` its text ends now.
-    let mut star = None;
-    while n < name.len() {
-        match glob.get(g) {
-            Some(None) => {
-                g += 1;
-                star = Some((g, n));
-            }
-            Some(Some(c)) if *c == name[n] => {
-                g += 1;
-                n += 1;
-            }
-            _ => match &mut star {
-                Some((after, end)) => {
-                    *end += 1;
-                    g = *after;
-                    n = *end;
+    /// `positions` is in order, so the state is too, in time linear in its count. No
+    /// two `Any` segments are next to each other, so `at + 1` is the only position
+    /// that `at` adds.
+    fn close(&self, positions: impl IntoIterator<Item = usize>) -> State {
+        let mut reached: Vec<usize> = Vec::new();
+        for at in positions {
+            let any = self.segments.get(at) == Some(&Segment::Any);
+            for at in [Some(at), any.then_some(at + 1)].into_iter().flatten() {
+                if reached.last().is_none_or(|&last| last < at) {
+                    reached.push(at);
                 }
-                None => return false,
-            },
+            }
         }
+        State(reached)
     }
-    glob[g..].iter().all(Option::is_none)
 }
 
 impl FromStr for Pattern {
     type Err = Malformed;
 
+    /// Reads a pattern. A run of `**` names is one, and a run of `*` in a name is one.
+    ///
+    /// # Errors
+    ///
+    /// [`Malformed`] when the text is not a pattern, holds more than [`DEPTH`] names
+    /// other than `**`, or more than [`STARS`] `*` in those names.
     fn from_str(text: &str) -> Result<Self, Malformed> {
-        let segments = split(text)?.into_iter().map(segment).collect();
+        let mut segments: Vec<Segment> =
+            split(text)?.into_iter().map(segment).collect();
+        segments.dedup_by(|a, b| *a == Segment::Any && *b == Segment::Any);
+        let globs = segments.iter().filter_map(|segment| match segment {
+            Segment::Any => None,
+            Segment::Name(glob) => Some(glob),
+        });
+        if globs.clone().count() > DEPTH {
+            return Err(Malformed::Deep);
+        }
+        if globs.map(|glob| glob.pieces.len() - 1).sum::<usize>() > STARS {
+            return Err(Malformed::Stars);
+        }
         Ok(Self { segments })
     }
 }
@@ -639,12 +675,14 @@ impl fmt::Display for Pattern {
             f.write_str(separator)?;
             match segment {
                 Segment::Any => f.write_str("**")?,
-                Segment::Name(glob) => {
-                    for c in glob {
-                        match c {
-                            None => f.write_str("*")?,
-                            Some(c) => escape(f, *c)?,
+                Segment::Name(Glob { pieces, .. }) => {
+                    let mut star = "";
+                    for piece in pieces {
+                        f.write_str(star)?;
+                        for c in piece.chars() {
+                            escape(f, c)?;
                         }
+                        star = "*";
                     }
                 }
             }
@@ -683,16 +721,20 @@ fn segment(name: Vec<Char>) -> Segment {
     if let [Char::Star, Char::Star] = name.as_slice() {
         return Segment::Any;
     }
-    let mut glob: Vec<Option<char>> = Vec::new();
+    let mut pieces = vec![String::new()];
     for c in name {
-        let c = match c {
-            Char::Star if glob.last() == Some(&None) => continue,
-            Char::Star => None,
-            Char::Plain(c) | Char::Escaped(c) => Some(c),
-        };
-        glob.push(c);
+        match c {
+            // A run of `*` is one.
+            Char::Star
+                if pieces.len() > 1 && pieces.last().is_some_and(String::is_empty) => {}
+            Char::Star => pieces.push(String::new()),
+            Char::Plain(c) | Char::Escaped(c) => pieces
+                .last_mut()
+                .expect("invariant: one piece at the least")
+                .push(c),
+        }
     }
-    Segment::Name(glob)
+    Segment::Name(Glob::new(pieces))
 }
 
 /// The names of `text`, split on each `/` that no `\` takes.
@@ -730,6 +772,12 @@ pub enum Malformed {
     Empty,
     /// The text ends in a `\` that takes no character.
     Escape,
+    /// A pattern holds more than [`DEPTH`] names other than `**`, so a walk can match
+    /// no path. Only a pattern gives it.
+    Deep,
+    /// A pattern holds more than [`STARS`] `*` in its names other than `**`, a run of
+    /// `*` as one. Only a pattern gives it.
+    Stars,
 }
 
 impl fmt::Display for Malformed {
@@ -737,6 +785,14 @@ impl fmt::Display for Malformed {
         match self {
             Self::Empty => f.write_str("a name in it is empty"),
             Self::Escape => f.write_str("it ends in a `\\` that takes no character"),
+            Self::Deep => write!(
+                f,
+                "it has more than {DEPTH} names, and a browse finds no path that long"
+            ),
+            Self::Stars => write!(
+                f,
+                "it has more than {STARS} `*`, and each costs a search of each name"
+            ),
         }
     }
 }
@@ -831,6 +887,8 @@ pub struct Facts {
     pub data_type: Option<types::sample::Type>,
     /// The unit, as the device gives it.
     pub unit: Option<String>,
+    /// The UN/CEFACT Recommendation 20 common code of the unit, such as `CEL`.
+    pub unit_code: Option<String>,
     /// Whether a connector can read it, write it, or both.
     pub access: Option<Access>,
 }

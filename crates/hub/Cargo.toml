@@ -46,6 +46,11 @@ harness = false
 test = true
 
 [[bench]]
+name = "named"
+harness = false
+test = true
+
+[[bench]]
 name = "open"
 harness = false
 test = true
@@ -62,6 +67,11 @@ test = true
 
 [[bench]]
 name = "woken"
+harness = false
+test = true
+
+[[bench]]
+name = "write"
 harness = false
 test = true
 

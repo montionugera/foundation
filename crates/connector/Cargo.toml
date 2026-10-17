@@ -13,6 +13,10 @@ bytes.workspace = true
 http.workspace = true
 http-body.workspace = true
 hyper.workspace = true
+rustls = { workspace = true, features = ["tls12"] }
+rustls-webpki.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
 block = { path = "../block" }
 codec = { path = "../codec" }
 env = { path = "../env" }
@@ -45,6 +49,11 @@ harness = false
 [[test]]
 name = "browse"
 harness = false
+
+[[bench]]
+name = "browse"
+harness = false
+test = true
 
 [[bench]]
 name = "origin"

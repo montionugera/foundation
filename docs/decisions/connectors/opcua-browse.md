@@ -7,18 +7,22 @@
   another server. A page asks for at most the references whose answer fits one message
   that the client takes, but for at least 1. A request that does not fit one message
   that the client sends gives `BadRequestTooLarge` and sends nothing, so the session
-  stays. A continuation point lives in its session. `Client::describe` gives the base
-  type, the `ValueRank`, the `UserAccessLevel`, and the `EngineeringUnits` of each
-  variable. The base is the first built-in type of namespace 0 up the inverse
-  `HasSubtype` references; a subtype of `Enumeration` is Int32, as OPC 10000-3, 5.8
-  encodes it; `Structure`, `BaseDataType`, the abstract numbers, a loop, a walk of more
-  than 16 links, and a type on the walk whose id is not a number or a name give none.
-  Each step of the walk is one Browse of each type of the call that the client does not
-  know yet, for at most one supertype each, and the client keeps the supertype of each
-  Good result and releases the continuation point of a type with more. The client keeps
-  at most 1024 supertypes past a call, and clears them at the end of a call with more. A
-  result that is not Good gives no base in that call, and the next call browses the type
-  again (`laptop.architect-2`, 2026-10-16T17:48:08Z:
+  stays (`laptop.architect-2`, 2026-10-16T20:51:36Z:
+  https://github.com/synnaxlabs/foundation/pull/2902#issuecomment-6224462055). A
+  continuation point lives in its session. `Client::describe` gives the base type, the
+  `ValueRank`, the `UserAccessLevel`, and the `EngineeringUnits` of each variable. The
+  base is the first built-in type of namespace 0 up the inverse `HasSubtype` references;
+  a subtype of `Enumeration` is Int32, as OPC 10000-3, 5.8 encodes it; `Structure`,
+  `BaseDataType`, the abstract numbers, a loop, a walk of more than 16 links, and a type
+  on the walk whose id is not a number or a name give none. Each step of the walk is one
+  Browse of each type of the call that the client does not know yet, for at most one
+  supertype each, and the client keeps the supertype of each Good result and releases
+  the continuation point of a type with more. The client keeps at most 1024 supertypes
+  past a call, and clears them at the end of a call with more, and when a call drops in
+  its walk (`laptop.architect-2`, 2026-10-16T20:51:36Z:
+  https://github.com/synnaxlabs/foundation/pull/2902#issuecomment-6224462055). A result
+  that is not Good gives no base in that call, and the next call browses the type again
+  (`laptop.architect-2`, 2026-10-16T17:48:08Z:
   https://github.com/synnaxlabs/foundation/pull/2902#issuecomment-6221380182). The unit
   comes from a Translate of `HasProperty` `0:EngineeringUnits`, then a Read of the Value
   of each target. The client sends one request at a time, and splits each by the limit
