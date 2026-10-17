@@ -495,6 +495,12 @@ pub(crate) fn within_refuses_a_new_name_by_a_hidden_folder_that_is_not_there(
         within.write(&base.join("work/b.hcl"), b"x"),
         Err(Error::Vacant)
     );
+    // A read makes no name, and finds nothing.
+    let read = within.read(&base.join("work/b.hcl"), ALL);
+    assert_eq!(
+        (read, within.read(&data, ALL)),
+        (Err(Error::NotFound), Err(Error::NotFound))
+    );
     assert_eq!(within.write(&base.join("work/sub/b.hcl"), b"x"), Ok(()));
     assert_eq!(paths.read(&data, ALL), Err(Error::NotFound));
     paths.make_dir(&data).unwrap();

@@ -724,6 +724,32 @@ fn mcp_refuses_a_plan_file_outside_the_folders_while_the_data_directory_is_gone(
     assert_eq!(gone, first.replace("\"id\":1", "\"id\":2"));
 }
 
+/// A plan of a file that is not there, while the data directory is gone, says that
+/// the file is not there.
+#[test]
+fn mcp_reads_a_missing_file_while_the_data_directory_is_gone() {
+    let mut rig = Rig::new();
+    rig.config(concat!(
+        "channel \"plant.time\" { kind = \"index\" }\n",
+        "placement \"plant.home\" {\n  select = \"plant.*\"\n  home = \"edge\"\n}\n",
+    ));
+    rig.start_with(&["--name", "edge", "--data", "plant"]);
+    let mut mcp = rig.talk(&["mcp", "--data", "plant"]);
+    let plan = |id| {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\
+             \"params\":{{\"name\":\"plan\",\"arguments\":{{\"files\":\
+             [\"gone.hcl\"]}}}}}}\n"
+        )
+    };
+    let first = mcp.answer(&plan(1));
+    assert!(first.contains("ops.read"), "{first}");
+    let data = std::fs::canonicalize(rig.dir.join("plant")).expect("a resolve");
+    std::fs::remove_dir_all(&data).expect("a remove");
+    let gone = mcp.answer(&plan(2));
+    assert_eq!(gone, first.replace("\"id\":1", "\"id\":2"));
+}
+
 /// The user moves the folder of `--files` away and makes it again while `foundation
 /// mcp` runs. A file in it is refused with a cause that names the folder and a fix that
 /// works. The old folder stays, so the host cannot give the new one its key.

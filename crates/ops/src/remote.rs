@@ -114,8 +114,8 @@ where
 ///
 /// - [`Error::Config`] with `ops.path-not-utf8` when `plan` is not UTF-8.
 /// - [`Error::Read`] when the plan file does not read.
-/// - [`Error::Outside`], [`Error::Hidden`], [`Error::NoData`], or
-///   [`Error::FolderChanged`] when `plan` is past the limits of `scope`.
+/// - [`Error::Outside`], [`Error::Hidden`], or [`Error::FolderChanged`] when `plan`
+///   is past the limits of `scope`.
 /// - [`Error::LargeRequest`] when the plan file does not fit one request.
 /// - [`Error::Node`] with the failure of the reach or of the request.
 /// - Each error of [`serve::reply`].

@@ -174,8 +174,8 @@ impl Scope {
     ///
     /// - [`Error::LargeRequest`] when it has more.
     /// - [`Error::Read`] when it is a directory, is not there, or does not read.
-    /// - [`Error::Outside`], [`Error::Hidden`], [`Error::NoData`], or
-    ///   [`Error::FolderChanged`] when the limits refuse it.
+    /// - [`Error::Outside`], [`Error::Hidden`], or [`Error::FolderChanged`] when the
+    ///   limits refuse it.
     pub(crate) fn read(&self, path: &Path) -> Result<Vec<u8>, Error> {
         let unread = |cause| Error::Read {
             path: path.to_owned(),
@@ -190,9 +190,11 @@ impl Scope {
             Err(
                 error @ (paths::Error::Outside
                 | paths::Error::Hidden
-                | paths::Error::Vacant
                 | paths::Error::Replaced),
             ) => Err(self.refused(path, error)),
+            Err(paths::Error::Vacant) => {
+                unreachable!("invariant: a read is never vacant")
+            }
         }
     }
 

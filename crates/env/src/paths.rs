@@ -63,14 +63,15 @@ impl Paths {
     /// at a hidden path at this call, so a hidden folder that a program renames away
     /// stays hidden, but not its own listing, and a directory that the host gives the
     /// key of a hidden folder that it removed hides what it holds. While nothing is at
-    /// a hidden path, a call that makes a new name in the deepest directory on its way
-    /// that is there fails with [`Error::Vacant`], also for a name that does not make
-    /// that path, unless the limits refuse it with [`Error::Hidden`],
-    /// [`Error::Outside`], or [`Error::Replaced`]. A folder whose file a call cannot
-    /// take holds nothing at that call. The limits of `self` hold too, so a handle
-    /// never reaches more than the one it came from. The check and the call are two
-    /// steps: a symbolic link that another program makes between them can lead the call
-    /// out.
+    /// a hidden path, a write or a `make_dir` that makes a new name in the deepest
+    /// directory on its way that is there fails with [`Error::Vacant`], also for a name
+    /// that does not make that path, unless the limits refuse it with
+    /// [`Error::Hidden`], [`Error::Outside`], or [`Error::Replaced`]. A read there
+    /// finds nothing, and fails with [`Error::NotFound`]. A folder whose file a call
+    /// cannot take holds nothing at that call. The limits of `self` hold too, so a
+    /// handle never reaches more than the one it came from. The check and the call are
+    /// two steps: a symbolic link that another program makes between them can lead the
+    /// call out.
     ///
     /// # Errors
     ///
@@ -161,16 +162,16 @@ impl Paths {
     /// # Errors
     ///
     /// [`Error::NotFound`] when nothing is at `path`, [`Error::Outside`],
-    /// [`Error::Hidden`], [`Error::Vacant`], or [`Error::Replaced`] past the limits of
-    /// [`Paths::within`], [`Error::Io`] 22 when `path` is a file that is neither a
-    /// regular file nor a directory, such as a FIFO or a device, else [`Error::Io`].
-    /// When another writer changes a link in `path` during the call, it gives the error
-    /// of the open of the file that the link then names, and opens that file, also a
-    /// device. On Linux, the walk of a link that a rename replaces during the call can
-    /// read only a first part of its old target, also none of it, so the call can open
-    /// the folder of the link, or a folder on the way to that target, such as `/`, and
-    /// the rest of `path` resolves under that folder. When the link is the last part of
-    /// `path`, the read gives the entries of that folder.
+    /// [`Error::Hidden`], or [`Error::Replaced`] past the limits of [`Paths::within`],
+    /// [`Error::Io`] 22 when `path` is a file that is neither a regular file nor a
+    /// directory, such as a FIFO or a device, else [`Error::Io`]. When another writer
+    /// changes a link in `path` during the call, it gives the error of the open of the
+    /// file that the link then names, and opens that file, also a device. On Linux, the
+    /// walk of a link that a rename replaces during the call can read only a first part
+    /// of its old target, also none of it, so the call can open the folder of the link,
+    /// or a folder on the way to that target, such as `/`, and the rest of `path`
+    /// resolves under that folder. When the link is the last part of `path`, the read
+    /// gives the entries of that folder.
     ///
     /// ```
     /// use std::path::{Path, PathBuf};
@@ -185,7 +186,7 @@ impl Paths {
     /// }
     /// ```
     pub fn read(&self, path: &Path, most: usize) -> Result<Found, Error> {
-        self.check(path)?;
+        self.check(path, Call::Read)?;
         self.driver.read(path, most)
     }
 
@@ -212,7 +213,7 @@ impl Paths {
     /// }
     /// ```
     pub fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
-        self.check(path)?;
+        self.check(path, Call::Make)?;
         self.driver.write(path, bytes)
     }
 
@@ -240,7 +241,11 @@ impl Paths {
     /// }
     /// ```
     pub fn make_dir(&self, path: &Path) -> Result<(), Error> {
-        match (self.check(path), path.parent(), path.file_name()) {
+        match (
+            self.check(path, Call::Make),
+            path.parent(),
+            path.file_name(),
+        ) {
             // A link to nothing or a loop does not resolve. The call makes nothing
             // through a link at `path`, so its directory is what the limits check: no
             // folder is at a name that does not resolve.
@@ -250,11 +255,11 @@ impl Paths {
                 } else {
                     dir
                 };
-                self.allowed(dir, &self.driver.resolve(dir)?)?;
+                self.allowed(dir, &self.driver.resolve(dir)?, Call::Make)?;
                 self.driver.make_dir(path)?;
                 // A link that does not resolve can still lead to a directory, which
                 // the place does not hold. A directory made at the place resolves.
-                self.check(path)
+                self.check(path, Call::Make)
             }
             (checked, ..) => {
                 checked?;
@@ -263,17 +268,17 @@ impl Paths {
         }
     }
 
-    /// `Ok` when `path` passes each limit. A path that does not resolve fails with the
-    /// error of its resolve, as the call would.
-    fn check(&self, path: &Path) -> Result<(), Error> {
+    /// `Ok` when `path` passes each limit for `call`. A path that does not resolve
+    /// fails with the error of its resolve, as the call would.
+    fn check(&self, path: &Path, call: Call) -> Result<(), Error> {
         if self.limits.is_empty() {
             return Ok(());
         }
-        self.allowed(path, &self.driver.resolve(path)?)
+        self.allowed(path, &self.driver.resolve(path)?, call)
     }
 
-    /// `Ok` when `path`, which resolves to `resolved`, passes each limit.
-    fn allowed(&self, path: &Path, resolved: &Path) -> Result<(), Error> {
+    /// `Ok` when `path`, which resolves to `resolved`, passes each limit for `call`.
+    fn allowed(&self, path: &Path, resolved: &Path, call: Call) -> Result<(), Error> {
         // The key of the file itself comes from `path`, as the call reaches it: the
         // resolved path of a new name can be longer than the host takes.
         let own = self.key(path)?;
@@ -321,7 +326,7 @@ impl Paths {
                 });
             }
         }
-        if vacant {
+        if vacant && call == Call::Make {
             return Err(Error::Vacant);
         }
         Ok(())
@@ -342,6 +347,14 @@ impl Paths {
             Err(e) => Err(e),
         }
     }
+}
+
+/// What a call of [`Paths`] does at its path.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Call {
+    Read,
+    /// A write or a `make_dir`, which can make a new name.
+    Make,
 }
 
 /// A hidden folder of one call of [`Paths::within`].
@@ -410,8 +423,9 @@ pub enum Error {
     Outside,
     /// The path resolves under a hidden folder of [`Paths::within`].
     Hidden,
-    /// Nothing is at a hidden path of [`Paths::within`], and the call makes a new name
-    /// in the deepest directory on the way to it that is there.
+    /// Nothing is at a hidden path of [`Paths::within`], and a write or a
+    /// [`Paths::make_dir`] makes a new name in the deepest directory on the way to it
+    /// that is there.
     Vacant,
     /// The path is under the resolved path of a folder of [`Paths::within`], where a
     /// program put another file after that call.
@@ -558,13 +572,19 @@ mod tests {
         }
     }
 
-    /// What a write, a read, and a `make_dir` of `path` give, which agree.
+    /// What a write and a `make_dir` of `path` give, which agree. A read gives the
+    /// same, but passes the limits where they give `Vacant`.
     fn reached(paths: &Paths, path: &str) -> Result<(), Error> {
         let path = Path::new(path);
         let written = paths.write(path, b"x");
         let read = paths.read(path, 1).map(|_| ());
         let made = paths.make_dir(path);
-        assert_eq!([&written, &read], [&made; 2], "{}", path.display());
+        let passed = if written == Err(Error::Vacant) {
+            Ok(())
+        } else {
+            written
+        };
+        assert_eq!([&made, &read], [&written, &passed], "{}", path.display());
         written
     }
 
