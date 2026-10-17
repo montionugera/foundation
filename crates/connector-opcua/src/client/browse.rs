@@ -5,17 +5,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
 use std::num::{NonZeroU32, NonZeroUsize};
 
+use types::sample::Scalar;
+
 use super::service::{self, Answer, Item, Request, Sizes};
 use super::{Client, id_bytes, limit};
 use crate::ffi::{self, Service, Status};
+use crate::node::ns0::{ENUMERATION, HAS_SUBTYPE};
 use crate::node::{Key, Node};
-use crate::value::Value;
+use crate::value::{SCALARS, Value};
 
 /// `HierarchicalReferences`.
 const HIERARCHICAL: u32 = 33;
-
-/// `HasSubtype`.
-const HAS_SUBTYPE: u32 = 45;
 
 /// The mask of the node classes Object (1), Variable (2), and View (128).
 const CLASSES: u32 = 0b1000_0011;
@@ -35,9 +35,6 @@ const CEFACT: &[u8] = b"http://www.opcfoundation.org/UA/units/un/cefact";
 
 /// The most steps of a walk up the `HasSubtype` references.
 const STEPS: usize = 16;
-
-/// The id of `Enumeration`.
-const ENUMERATION: u32 = 29;
 
 /// The id of `Int32`.
 const INT32: u32 = 6;
@@ -62,9 +59,8 @@ pub(crate) struct Point(Vec<u8>);
 /// A reference to a node.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Reference {
-    /// The node, or `None` when its key is a GUID or opaque, or a name that is empty
-    /// or not UTF-8, or it is a node of another server.
-    pub(crate) node: Option<Node>,
+    /// The node, or its text when [`Node`] cannot hold it.
+    pub(crate) node: Result<Node, Foreign>,
     /// The text of its browse name.
     pub(crate) name: String,
     /// The text of its display name.
@@ -75,27 +71,74 @@ pub(crate) struct Reference {
     pub(crate) via: Option<Node>,
 }
 
+/// A node of a [`Reference`] that [`Node`] cannot hold.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Foreign {
+    /// The bytes of its text in the form of OPC 10000-6, 5.3.1.10, such as
+    /// `ns=1;g=<guid>`, with the bytes of a name as the server gave them.
+    pub(crate) text: Vec<u8>,
+    pub(crate) cause: Cause,
+}
+
+/// Why [`Node`] cannot hold a node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cause {
+    /// Its key is a GUID or opaque.
+    Key,
+    /// Its key is a name that is empty or not UTF-8.
+    Name,
+    /// It is a node of another server, or of a namespace by its URI.
+    Remote,
+}
+
 /// The node class of a [`Reference`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Class {
     Object,
     Variable,
     View,
+    /// A class that the request did not ask for.
+    Other,
 }
 
 /// What a server says of a variable.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Description {
-    /// The id in namespace 0 of the built-in type of its data type, such as 11 for
-    /// Double, as [`base`] gives it. `None` also when a type on the walk has an id
-    /// that is not a number or a name.
-    pub(crate) base: Option<u32>,
+    /// The built-in type of its data type, as [`base`] gives it. `None` also when a
+    /// type on the walk has an id that is not a number or a name.
+    pub(crate) base: Option<Base>,
     /// Its `ValueRank`: -1 for a scalar.
     pub(crate) rank: Option<i32>,
     /// Its `UserAccessLevel`.
     pub(crate) access: Option<u8>,
     /// Its `EngineeringUnits`.
     pub(crate) unit: Option<Unit>,
+}
+
+/// The built-in type of the data type of a variable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Base {
+    /// A type from Boolean to Double, which a read decodes, as its sample type.
+    Scalar(Scalar),
+    /// Another built-in type, by its name, such as `String`.
+    Other(&'static str),
+}
+
+impl Base {
+    /// Gives the base of the built-in type of the id `id` in namespace 0.
+    ///
+    /// # Panics
+    ///
+    /// If `id` is not of a built-in type, 1 to 25.
+    pub(crate) fn of(id: u32) -> Self {
+        let index = usize::try_from(id - 1).expect("invariant: a u32 fits a usize");
+        // The index of a built-in type in `UA_TYPES` is its id less 1, as `shim.c`
+        // asserts, and `SCALARS` is at the same index.
+        match SCALARS.get(index) {
+            Some(&scalar) => Self::Scalar(scalar),
+            None => Self::Other(ffi::types()[index].name()),
+        }
+    }
 }
 
 /// The `EUInformation` of a variable.
@@ -119,12 +162,13 @@ pub(super) struct Bounds {
 }
 
 impl Client {
-    /// Browses the forward hierarchical references of `node` and their subtypes, to
-    /// the node classes Object, Variable, and View, and gives the first page of at
-    /// most `most` references, in server order. It asks for fewer when an answer of
-    /// `most` references, each with its texts at 256 bytes, would be past one message
-    /// that the client takes, but for at least 1. `None` when the server does not have
-    /// `node`.
+    /// Browses the forward hierarchical references of `node` and their subtypes, to the
+    /// node classes Object, Variable, and View, and gives the first page of at most
+    /// `most` references, in server order, with [`Class::Other`] for a reference of
+    /// another class from a server that does not filter by class. It asks for fewer
+    /// when an answer of `most` references, each with its texts at 256 bytes, would be
+    /// past one message that the client takes, but for at least 1. `None` when the
+    /// server does not have `node`.
     ///
     /// # Errors
     ///
@@ -212,13 +256,8 @@ impl Client {
         if let Some(bounds) = self.bounds {
             return Ok(bounds);
         }
-        let nodes = BOUNDS.map(|number| Node {
-            namespace: 0,
-            key: Key::Number(number),
-        });
-        let nodes = self
-            .nodes(&nodes)
-            .expect("invariant: a read of two nodes by number fits one message");
+        let nodes = BOUNDS.map(Node::ns0);
+        let nodes = self.numbered(&nodes);
         let values = self.read(&nodes).await?;
         let [browse, translate] = values else {
             panic!("invariant: a read gives one value for each node");
@@ -330,7 +369,7 @@ impl Client {
         types: &[Option<Node>],
         most: Option<NonZeroUsize>,
         supertypes: &mut BTreeMap<Node, Option<Node>>,
-    ) -> Result<Vec<Option<u32>>, Status> {
+    ) -> Result<Vec<Option<Base>>, Status> {
         let build = |raw: &[ffi::Node<'_>]| {
             Request::browse(raw, HAS_SUBTYPE, true, DATA_TYPE, NonZeroU32::MIN)
         };
@@ -367,8 +406,9 @@ impl Client {
                 answer.has(range.len())?;
                 for (offset, index) in range.enumerate() {
                     let mut first = None;
-                    let browsed = answer
-                        .browsed(offset, |found| first = first.take().or(found.node));
+                    let browsed = answer.browsed(offset, |found| {
+                        first = first.take().or(found.node.ok());
+                    });
                     if let Ok(point) = browsed {
                         supertypes.insert(missing[index].clone(), first);
                         points.extend(point);
@@ -400,7 +440,7 @@ impl Client {
 }
 
 /// Gives the page of the one result of `answer`, a Browse or `BrowseNext` answer, with
-/// each reference of the classes of [`CLASSES`].
+/// each reference, and [`Class::Other`] for a class out of [`CLASSES`].
 ///
 /// # Errors
 ///
@@ -414,8 +454,7 @@ fn page(answer: &Answer) -> Result<Page, Status> {
             1 => Class::Object,
             2 => Class::Variable,
             128 => Class::View,
-            // A server that does not filter by the class of the request.
-            _ => return,
+            _ => Class::Other,
         };
         references.push(Reference {
             node: found.node,
@@ -451,13 +490,13 @@ fn base(
     supertypes: &BTreeMap<Node, Option<Node>>,
     failed: &BTreeSet<Node>,
     data_type: &Node,
-) -> Result<Option<u32>, Node> {
+) -> Result<Option<Base>, Node> {
     let mut at = data_type;
     for _ in 0..=STEPS {
         if let (0, Key::Number(id)) = (at.namespace, &at.key) {
             match *id {
-                1..=21 | 23 | 25 => return Ok(Some(*id)),
-                ENUMERATION => return Ok(Some(INT32)),
+                1..=21 | 23 | 25 => return Ok(Some(Base::of(*id))),
+                ENUMERATION => return Ok(Some(Base::of(INT32))),
                 22 | 24 | 26..=28 => return Ok(None),
                 _ => {}
             }

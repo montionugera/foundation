@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use env::paths::{Error, Found};
+use env::paths::{Error, Found, Key};
 
 use super::Node;
 use crate::state::lock;
@@ -26,5 +26,9 @@ impl env::paths::Driver for Node {
 
     fn home(&self) -> Option<PathBuf> {
         lock(&self.shared).paths().home(self.node)
+    }
+
+    fn key(&self, path: &Path) -> Result<Key, Error> {
+        lock(&self.shared).paths().key(self.node, path)
     }
 }

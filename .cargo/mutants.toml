@@ -2,6 +2,9 @@
 # `sim` is mutated and tested.
 all_features = true
 
+# The profile of `Cargo.toml` with no debug info.
+profile = "mutants"
+
 # Mutants that no caller or peer can see, that only a job outside the mutants run
 # kills, or that no test kills yet (with its open issue). Each has its reason.
 exclude_re = [
@@ -11,6 +14,9 @@ exclude_re = [
   # A larger size only allocates more for a decoded value, and no count sees it.
   # `fuzz::tests` checks the sizes.
   'crates/connector-opcua/src/ffi\.rs:.*replace & with (\||\^) in DataType::size',
+  # The bits of the type id and of the array flag of a mask are disjoint, so `^` gives
+  # the mask that `|` gives.
+  'crates/connector-opcua/src/server\.rs:.*replace \| with \^ in doubles$',
   # Benchmarks ship in no binary; the run itself checks them.
   '^bench/',
   # `main` reads the arguments and calls a task. Each task has its own tests.

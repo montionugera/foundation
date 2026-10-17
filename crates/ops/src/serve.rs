@@ -37,11 +37,12 @@ mod tests;
 /// adds or changes, and `admin` on the key of each definition other than a channel that
 /// the plan adds, changes, or removes. It gives a home only to an index on which
 /// `subject` has `apply`, and drops each other home with no error. `status` shows only
-/// each connector on whose status channels `subject` has `read`. When it shows none,
-/// also when the node places none, it needs `read` on the name of the node, and gives
-/// `ops.denied` with no grant. It waits at most 1 s from the request. A connector is
-/// `unknown` when no status as the spec defines it comes in that time, and `status`
-/// gives `ops.channel-read` when the reader of a connector fails for another cause.
+/// each connector on whose label and status channels `subject` has `read`. When it
+/// shows none, also when the node places none, it needs `read` on the name of the
+/// node, and gives `ops.denied` with no grant. It waits at most 1 s from the request. A
+/// connector is `unknown` when no status as the spec defines it comes in that time, and
+/// `status` gives `ops.channel-read` when the reader of a connector fails for another
+/// cause.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
@@ -488,18 +489,19 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Body, Error>
     Ok(Body::line(&Answer::Done { output: &effect })?)
 }
 
-/// The reply of `status`: its output. It leaves out each connector on whose status
-/// channels `subject` has no `read`. When it leaves out each connector, or the node
-/// places none, it needs `read` on the name of the node.
+/// The reply of `status`: its output. It leaves out each connector unless `subject`
+/// has `read` on its label and on each of its status channels. When it leaves out each
+/// connector, or the node places none, it needs `read` on the name of the node.
 async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
     let asked = node.clock.now();
     let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject);
     let mut placed = status::placed(spec.definitions(), &node.name);
     placed.retain(|placed| {
-        placed
-            .channels()
-            .all(|name| check.allows(Action::Read, name))
+        check.allows(Action::Read, placed.name())
+            && placed
+                .channels()
+                .all(|name| check.allows(Action::Read, name))
     });
     let output = if placed.is_empty() {
         if !check.allows(Action::Read, &node.name) {

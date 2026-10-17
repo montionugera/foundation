@@ -9,11 +9,14 @@ use super::{
     Client, READ_RESPONSE, READS, RELAY, Relay, VALUE, drop_reads, long, recount_of,
     relayed, run, serve,
 };
-use crate::client::browse::{Class, Description, Page, Reference, Unit};
+use crate::client::browse::{
+    Base, Cause, Class, Description, Foreign, Page, Reference, Unit,
+};
 use crate::client::service::{self, Item, Request};
 use crate::ffi::{self, Service, Status};
+use crate::node::ns0::{self, HAS_COMPONENT, HAS_SUBTYPE, ORGANIZES};
 use crate::node::{Key, Name, Node};
-use crate::server::{Limits, Server};
+use crate::server::{self, Limits, Server, Variable};
 
 const BAD_CONTINUATION_POINT_INVALID: Status = Status(0x804A_0000);
 
@@ -29,31 +32,36 @@ const TRANSLATE_RESPONSE: [u8; 4] = [0x01, 0x00, 0x2D, 0x02];
 /// No bound on the references of a page, other than the size of a message.
 const ALL: NonZeroU32 = NonZeroU32::MAX;
 
-const OBJECTS: Node = ns0(85);
-const ORGANIZES: u32 = 35;
-const HAS_COMPONENT: u32 = 47;
+const OBJECTS: Node = Node::ns0(ns0::OBJECTS);
 const HAS_PROPERTY: u32 = 46;
-const HAS_SUBTYPE: u32 = 45;
-const BASE_DATA_TYPE: Node = ns0(24);
-const DOUBLE: Node = ns0(11);
-const STRUCTURE: Node = ns0(22);
-const ENUMERATION: Node = ns0(29);
+const BASE_DATA_TYPE: Node = Node::ns0(ns0::BASE_DATA_TYPE);
+const DOUBLE: Node = Node::ns0(ns0::DOUBLE);
+const STRUCTURE: Node = Node::ns0(ns0::STRUCTURE);
+const ENUMERATION: Node = Node::ns0(ns0::ENUMERATION);
 
 const ROOT: Node = ns1(7000);
 
 const CEFACT: &CStr = c"http://www.opcfoundation.org/UA/units/un/cefact";
 
-const fn ns0(id: u32) -> Node {
-    Node {
-        namespace: 0,
-        key: Key::Number(id),
-    }
-}
-
 const fn ns1(id: u32) -> Node {
     Node {
         namespace: 1,
         key: Key::Number(id),
+    }
+}
+
+/// The variable `node` under [`ROOT`] by `HasComponent`, with the browse name `v`,
+/// the `DataType` `data_type`, the rank -1, the access 3, and no value.
+fn child(node: &Node, data_type: &Node) -> Variable {
+    Variable {
+        node: node.clone(),
+        parent: ROOT,
+        reference: HAS_COMPONENT,
+        name: c"v",
+        data_type: data_type.clone(),
+        rank: -1,
+        access: 3,
+        value: None,
     }
 }
 
@@ -69,7 +77,7 @@ fn named(name: &str) -> Node {
 }
 
 fn reference(
-    node: Option<Node>,
+    node: Result<Node, Foreign>,
     via: u32,
     name: &str,
     display: &str,
@@ -80,7 +88,7 @@ fn reference(
         name: name.to_owned(),
         display: display.to_owned(),
         class,
-        via: Some(ns0(via)),
+        via: Some(Node::ns0(via)),
     }
 }
 
@@ -126,22 +134,22 @@ fn pages(
 
 /// A browse gives each forward hierarchical reference of an Object, a Variable, or a
 /// View, with its type, names, and class, and no reference of another kind or
-/// direction. A GUID node gives no node.
+/// direction. A GUID node gives its text.
 #[test]
 fn a_browse_gives_each_hierarchical_reference_with_its_names_and_class() {
     let pages = pages(ALL, |server| {
         server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
         server.add_folder(&ns1(7001), &ROOT, ORGANIZES, c"a", c"The A");
-        server.add_variable(
-            &named("s;=\u{e9}"),
-            &ROOT,
-            HAS_COMPONENT,
-            c"speed",
-            &DOUBLE,
-            -1,
-            3,
-        );
-        server.add_variable(&ns1(7003), &ROOT, HAS_PROPERTY, c"prop", &DOUBLE, -1, 1);
+        server.add_variable(&Variable {
+            name: c"speed",
+            ..child(&named("s;=\u{e9}"), &DOUBLE)
+        });
+        server.add_variable(&Variable {
+            reference: HAS_PROPERTY,
+            name: c"prop",
+            access: 1,
+            ..child(&ns1(7003), &DOUBLE)
+        });
         server.add_view(&ns1(7002), &ROOT, c"view");
         server.add_guid(&ROOT);
         server.add_reference(&ns1(7001), ORGANIZES, &ROOT);
@@ -153,23 +161,26 @@ fn a_browse_gives_each_hierarchical_reference_with_its_names_and_class() {
     assert_eq!(
         references,
         [
-            reference(Some(ns1(7001)), ORGANIZES, "a", "The A", Class::Object),
-            reference(None, ORGANIZES, "guid", "guid", Class::Object),
+            reference(Ok(ns1(7001)), ORGANIZES, "a", "The A", Class::Object),
             reference(
-                Some(ns1(7003)),
-                HAS_PROPERTY,
-                "prop",
-                "prop",
-                Class::Variable
+                Err(Foreign {
+                    text: b"ns=1;g=00000001-0002-0003-0400-000000000000".to_vec(),
+                    cause: Cause::Key,
+                }),
+                ORGANIZES,
+                "guid",
+                "guid",
+                Class::Object
             ),
+            reference(Ok(ns1(7003)), HAS_PROPERTY, "prop", "prop", Class::Variable),
             reference(
-                Some(named("s;=\u{e9}")),
+                Ok(named("s;=\u{e9}")),
                 HAS_COMPONENT,
                 "speed",
                 "speed",
                 Class::Variable
             ),
-            reference(Some(ns1(7002)), ORGANIZES, "view", "view", Class::View),
+            reference(Ok(ns1(7002)), ORGANIZES, "view", "view", Class::View),
         ]
     );
 }
@@ -244,10 +255,16 @@ fn variables(server: &Server) -> Vec<Node> {
     let mut nodes = Vec::new();
     for (index, data_type) in (0..).zip(types) {
         let node = ns1(7200 + index);
-        server.add_variable(&node, &ROOT, HAS_COMPONENT, c"v", &data_type, -1, 3);
+        server.add_variable(&child(&node, &data_type));
         nodes.push(node);
     }
-    server.add_variable(&ns1(7250), &ROOT, HAS_COMPONENT, c"array", &DOUBLE, 1, 1);
+    server.add_variable(&Variable {
+        name: c"array",
+        rank: 1,
+        access: 1,
+        value: Some(server::doubles()),
+        ..child(&ns1(7250), &DOUBLE)
+    });
     nodes.push(ns1(7250));
     // open62541 checks the type of a variable only at its add.
     server.delete_reference(&DOUBLE, HAS_SUBTYPE, &ns1(7105));
@@ -257,7 +274,7 @@ fn variables(server: &Server) -> Vec<Node> {
 
 fn described(base: Option<u32>, rank: i32, access: u8) -> Description {
     Description {
-        base,
+        base: base.map(Base::of),
         rank: Some(rank),
         access: Some(access),
         unit: None,
@@ -305,7 +322,7 @@ fn deep(server: &Server, count: u32) -> Vec<Node> {
             );
             server.add_data_type(&parent, &DOUBLE, c"Parent");
             server.add_data_type(&data_type, &parent, c"Child");
-            server.add_variable(&node, &ROOT, HAS_COMPONENT, c"v", &data_type, -1, 3);
+            server.add_variable(&child(&node, &data_type));
             node
         })
         .collect()
@@ -337,7 +354,7 @@ fn describe_browses_each_step_once_and_each_data_type_once() {
         })
         .await
     });
-    let double = Ok(vec![Some(11); 3]);
+    let double = Ok(vec![Some(Base::of(11)); 3]);
     assert_eq!(out, ([double.clone(), double, Ok(vec![None])], 2, 2));
 }
 
@@ -353,7 +370,7 @@ fn describe_gives_the_unit_of_each_variable() {
             server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
             for index in 0..5 {
                 let node = ns1(7200 + index);
-                server.add_variable(&node, &ROOT, HAS_COMPONENT, c"v", &DOUBLE, -1, 3);
+                server.add_variable(&child(&node, &DOUBLE));
             }
             let unit = |index: u32, uri, text, code| {
                 server.add_unit(
@@ -412,7 +429,7 @@ fn describe_splits_by_the_max_nodes_per_read_of_the_server() {
             server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
             let nodes: Vec<Node> = (0..5).map(|index| ns1(7200 + index)).collect();
             for (index, node) in (0..).zip(&nodes) {
-                server.add_variable(node, &ROOT, HAS_COMPONENT, c"v", &DOUBLE, -1, 3);
+                server.add_variable(&child(node, &DOUBLE));
                 server.add_unit(&ns1(7300 + index), node, CEFACT, c"m", 0x004D_5452);
             }
             let mut client = peer.connected().await;
@@ -485,7 +502,7 @@ fn describe_splits_by_the_message_size_of_the_session() {
         out,
         (
             Ok(vec![none(), none(), none()]),
-            Ok(vec![described(Some(11), -2, 1), none()])
+            Ok(vec![described(Some(11), -1, 1), none()])
         )
     );
 }
@@ -598,7 +615,7 @@ fn describe_after_a_failed_walk_result_gives_the_base() {
         })
         .await
     });
-    assert_eq!(bases, [Ok(None), Ok(Some(11))]);
+    assert_eq!(bases, [Ok(None), Ok(Some(Base::of(11)))]);
 }
 
 /// What a relay does to one response of the server.
@@ -715,7 +732,7 @@ fn the_calls_of_a_faulted_relay_work_with_no_fault() {
             units.map(|all| all.into_iter().map(|d| d.base).collect::<Vec<_>>()),
         )
     });
-    assert_eq!(out, (Ok(Some(2)), Ok(vec![Some(11)])));
+    assert_eq!(out, (Ok(Some(2)), Ok(vec![Some(Base::of(11))])));
 }
 
 /// An answer with more or fewer results than the request asked for fails the call, at
@@ -777,7 +794,7 @@ fn describe_on_a_server_whose_max_nodes_per_read_is_below_3() {
 
 /// Gives the base of a variable of a type `links` subtypes under Double, and the count
 /// of the Browse requests of its describe.
-fn walk_of(links: u32) -> (Result<Option<u32>, Status>, usize) {
+fn walk_of(links: u32) -> (Result<Option<Base>, Status>, usize) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let server = peer.server;
@@ -792,15 +809,7 @@ fn walk_of(links: u32) -> (Result<Option<u32>, Status>, usize) {
                 server.add_data_type(&ns1(10_000 + link), &parent, c"Link");
             }
             let variable = ns1(7200);
-            server.add_variable(
-                &variable,
-                &ROOT,
-                HAS_COMPONENT,
-                c"v",
-                &ns1(10_000),
-                -1,
-                3,
-            );
+            server.add_variable(&child(&variable, &ns1(10_000)));
             let browses = server.count_browses();
             let mut client = peer.connected().await;
             let described = client.describe(&[variable]).await;
@@ -815,7 +824,7 @@ fn walk_of(links: u32) -> (Result<Option<u32>, Status>, usize) {
 /// Browse for each link, and a type 17 under has none.
 #[test]
 fn a_walk_gives_the_base_at_16_links_and_none_at_17() {
-    assert_eq!(walk_of(16), (Ok(Some(11)), 16));
+    assert_eq!(walk_of(16), (Ok(Some(Base::of(11))), 16));
     assert_eq!(walk_of(17).0, Ok(None));
 }
 
@@ -829,15 +838,7 @@ fn describe_of_an_abstract_type_gives_no_base_and_browses_nothing() {
             server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
             for (index, data_type) in (0..).zip([STRUCTURE, BASE_DATA_TYPE]) {
                 let node = ns1(7200 + index);
-                server.add_variable(
-                    &node,
-                    &ROOT,
-                    HAS_COMPONENT,
-                    c"v",
-                    &data_type,
-                    -1,
-                    3,
-                );
+                server.add_variable(&child(&node, &data_type));
             }
             let browses = server.count_browses();
             let mut client = peer.connected().await;
@@ -870,13 +871,17 @@ fn describe_gives_the_base_of_each_type_of_namespace_0() {
             };
             for id in [26, 27, 28].into_iter().chain(1..=25).chain([29]) {
                 if id != 24 {
-                    server.add_data_type(&ns0(id), &ns0(parent(id)), c"Type");
+                    server.add_data_type(
+                        &Node::ns0(id),
+                        &Node::ns0(parent(id)),
+                        c"Type",
+                    );
                 }
             }
             let mut nodes = Vec::new();
             for id in 1..=29 {
                 let node = ns1(7200 + id);
-                server.add_variable(&node, &ROOT, HAS_COMPONENT, c"v", &ns0(id), -1, 3);
+                server.add_variable(&child(&node, &Node::ns0(id)));
                 nodes.push(node);
             }
             let browses = server.count_browses();
@@ -887,14 +892,49 @@ fn describe_gives_the_base_of_each_type_of_namespace_0() {
         })
         .await
     });
-    let bases: Vec<Option<u32>> = (1..=29)
+    let bases: Vec<Option<Base>> = (1..=29)
         .map(|id| match id {
             22 | 24 | 26..=28 => None,
-            29 => Some(6),
-            id => Some(id),
+            29 => Some(Base::of(6)),
+            id => Some(Base::of(id)),
         })
         .collect();
     assert_eq!(out, (Ok(bases), 0));
+}
+
+/// Each variable of the sim tree that has a data type of the tree has that type: a
+/// describe of it browses the one step up to its base, and one of `Temperature`, a
+/// Double, browses nothing.
+#[cfg(feature = "sim")]
+#[test]
+fn describe_of_each_variable_of_the_sim_tree_browses_once_for_its_type() {
+    use crate::sim::tree;
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let server = peer.server;
+            tree::add(server);
+            let browses = server.count_browses();
+            let mut client = peer.connected().await;
+            let mut counts = Vec::new();
+            for path in [tree::TEMPERATURE, tree::SPEED, tree::MODE, tree::RECIPE] {
+                let before = browses.get();
+                let described = client.describe(&[tree::node(path)]).await;
+                counts.push((described.map(|all| all[0].base), browses.get() - before));
+            }
+            client.close().await;
+            counts
+        })
+        .await
+    });
+    assert_eq!(
+        out,
+        [
+            (Ok(Some(Base::of(11))), 0),
+            (Ok(Some(Base::of(11))), 1),
+            (Ok(Some(Base::of(6))), 1),
+            (Ok(None), 1)
+        ]
+    );
 }
 
 /// On a server with a `MaxMessageSize` of 8192 bytes, a walk whose Browse of a type
@@ -913,7 +953,7 @@ fn a_walk_of_a_type_too_large_for_one_message_gives_no_base() {
             let data_type = named(&"t".repeat(8100));
             server.add_data_type(&data_type, &DOUBLE, c"Large");
             let node = ns1(7200);
-            server.add_variable(&node, &ROOT, HAS_COMPONENT, c"v", &data_type, -1, 3);
+            server.add_variable(&child(&node, &data_type));
             let browses = server.count_browses();
             let mut client = peer.connected().await;
             let described = client.describe(&[node]).await;
@@ -945,15 +985,7 @@ fn the_facts_and_units_of_large_names_fit_one_message() {
             let mut nodes = Vec::new();
             for index in 0..150 {
                 let node = ns1(7200 + index);
-                server.add_variable(
-                    &node,
-                    &ROOT,
-                    HAS_COMPONENT,
-                    c"v",
-                    &data_type,
-                    -1,
-                    3,
-                );
+                server.add_variable(&child(&node, &data_type));
                 let unit = named(&format!("{index:0>200}"));
                 server.add_unit(&unit, &node, CEFACT, c"m", 0x004D_5452);
                 nodes.push(node);
@@ -963,7 +995,7 @@ fn the_facts_and_units_of_large_names_fit_one_message() {
             client.close().await;
             described.map(|all| {
                 all.iter()
-                    .filter(|d| d.base == Some(11) && d.unit.is_some())
+                    .filter(|d| d.base == Some(Base::of(11)) && d.unit.is_some())
                     .count()
             })
         })
@@ -990,15 +1022,7 @@ fn a_walk_releases_its_points() {
                 server.add_data_type(&data_type, &DOUBLE, c"Child");
                 server.add_reference(&ns1(9001), HAS_SUBTYPE, &data_type);
                 server.add_reference(&ns1(9002), HAS_SUBTYPE, &data_type);
-                server.add_variable(
-                    &node,
-                    &ROOT,
-                    HAS_COMPONENT,
-                    c"v",
-                    &data_type,
-                    -1,
-                    3,
-                );
+                server.add_variable(&child(&node, &data_type));
                 nodes.push(node);
             }
             let mut client = peer.connected().await;
@@ -1053,7 +1077,7 @@ fn codes(ids: Vec<i32>) -> Result<Vec<Option<String>>, Status> {
             let mut nodes = Vec::new();
             for (index, id) in (0..).zip(ids) {
                 let node = ns1(7200 + index);
-                server.add_variable(&node, &ROOT, HAS_COMPONENT, c"v", &DOUBLE, -1, 3);
+                server.add_variable(&child(&node, &DOUBLE));
                 server.add_unit(&ns1(20_000 + index), &node, CEFACT, c"u", id);
                 nodes.push(node);
             }
@@ -1113,7 +1137,7 @@ fn each_answer_fits_one_message_of_the_session() {
             client.close().await;
             described.map(|all| {
                 all.iter()
-                    .filter(|d| d.base == Some(11) && d.unit.is_some())
+                    .filter(|d| d.base == Some(Base::of(11)) && d.unit.is_some())
                     .count()
             })
         })
@@ -1404,15 +1428,7 @@ fn a_dropped_describe_keeps_no_supertypes() {
                     server.add_data_type(&grand, &DOUBLE, c"Grand");
                     server.add_data_type(&parent, &grand, c"Parent");
                     server.add_data_type(&data_type, &parent, c"Child");
-                    server.add_variable(
-                        &node,
-                        &ROOT,
-                        HAS_COMPONENT,
-                        c"v",
-                        &data_type,
-                        -1,
-                        3,
-                    );
+                    server.add_variable(&child(&node, &data_type));
                     nodes.push(node);
                 }
                 sets.push(nodes);

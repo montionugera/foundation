@@ -16,20 +16,25 @@ const LONGEST: usize = 1024;
 /// The mark in place of the middle of a failure that is too long.
 const MARK: &str = "…";
 
-/// The roots of `roots`. Logs a warning for each of the first `LISTED` failures of the
-/// read, its text cut to `LONGEST` bytes, for the count of the rest with the source of
-/// the read, cut the same way, for the count of certificates that do not parse, and
-/// when no certificate is left.
-pub(crate) fn roots(roots: &os::Roots) -> connector::http::Roots {
+/// The roots of `roots`. When the read has a failure, logs a warning with the count of
+/// its failures and its source, cut to `LONGEST` bytes, then one for each of the first
+/// `LISTED` failures, its text cut the same way, and one for the count of the rest.
+/// Logs a warning for the count of certificates that do not parse, and when no
+/// certificate is left.
+pub(crate) fn roots(roots: &os::roots::Roots) -> connector::http::Roots {
+    let failed = roots.failures.len();
+    if failed > 0 {
+        let source = roots.source.to_string();
+        let source = cut(&source);
+        tracing::warn!(failed, %source, "parts of the OS roots were not read");
+    }
     for failure in roots.failures.iter().take(LISTED) {
         let error = cut(failure);
         tracing::warn!(%error, "a part of the OS roots was not read");
     }
-    let unlisted = roots.failures.len().saturating_sub(LISTED);
+    let unlisted = failed.saturating_sub(LISTED);
     if unlisted > 0 {
-        let source = roots.source.to_string();
-        let source = cut(&source);
-        tracing::warn!(unlisted, %source, "more parts of the OS roots were not read");
+        tracing::warn!(unlisted, "more parts of the OS roots were not read");
     }
     let (trusted, skipped) =
         connector::http::Roots::from_der(roots.certificates.iter().map(Vec::as_slice));
