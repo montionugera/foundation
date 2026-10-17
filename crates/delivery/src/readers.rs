@@ -618,6 +618,8 @@ impl Readers {
             return false;
         };
         let flow = &mut self.flows[i];
+        // Bind only the seq: a load of the whole mark after the two 8-byte stores of
+        // the last fill stalls.
         let Lag::Disk {
             from: Mark { seq: from, .. },
         } = flow.lag
