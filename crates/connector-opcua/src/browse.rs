@@ -294,3 +294,7 @@ fn bad_cursor(cursor: &Cursor) -> Error {
         "Browse from the first page, with no cursor".into(),
     )])
 }
+
+#[cfg(test)]
+#[cfg(feature = "sim")]
+mod tests;
