@@ -159,24 +159,22 @@ impl Client {
         &self,
         request: Request<Bytes>,
     ) -> Result<Response<Bytes>, Error> {
-        Box::pin(self.timed(request)).await
-    }
-
-    /// The exchange of `request`, up to the timeout.
-    async fn timed(&self, request: Request<Bytes>) -> Result<Response<Bytes>, Error> {
-        let origin = origin(request.uri())?;
-        let deadline = self.clock.now().checked_add(self.timeout);
-        let exchange = self.exchange(&origin, request, deadline);
-        match deadline {
-            Some(deadline) => (before(exchange, self.clock.sleep_until(deadline))
-                .await)
-                .unwrap_or_else(|| {
-                    Err(Error::TimedOut {
-                        origin: origin.to_string(),
-                    })
-                }),
-            None => exchange.await,
-        }
+        Box::pin(async move {
+            let origin = origin(request.uri())?;
+            let deadline = self.clock.now().checked_add(self.timeout);
+            let exchange = self.exchange(&origin, request, deadline);
+            match deadline {
+                Some(deadline) => (before(exchange, self.clock.sleep_until(deadline))
+                    .await)
+                    .unwrap_or_else(|| {
+                        Err(Error::TimedOut {
+                            origin: origin.to_string(),
+                        })
+                    }),
+                None => exchange.await,
+            }
+        })
+        .await
     }
 
     async fn exchange(
