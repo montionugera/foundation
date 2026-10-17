@@ -206,10 +206,12 @@
   writes no event. A status line costs 1038 ns (M3 Max), so a connector costs about
   2.1 µs/s, and no decision bounds the count of connectors, but the cost reaches the
   limit of 10 ms/s only at about 4,800 connectors that each change their error text
-  each second (P1 judgment accepted, `laptop.architect-2`, 2026-10-17T21:01:17Z,
+  and their note each second (P1 judgment accepted, `laptop.architect-2`, 2026-10-17T21:01:17Z,
   https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6240978616; text,
   2026-10-17T21:15:36Z,
-  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6241220566).
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6241220566 and
+  item 2 of 2026-10-17T21:18:47Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6241254217).
   By `laptop.architect-2` (item 2 of 2026-10-17T17:22:08Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6237505740; A of
   2026-10-17T18:08:57Z,
@@ -219,4 +221,8 @@
   2026-10-17T18:39:43Z,
   https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238748209; item 1
   of 2026-10-17T18:45:36Z,
-  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238847435).
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238847435; item 1
+  of 2026-10-17T21:18:47Z, which replaces the reason of item 1 of 18:34:35Z: a flush
+  asleep at the close still writes once, so the writer checks the close before the
+  lines,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6241254217).
