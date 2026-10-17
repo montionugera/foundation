@@ -1984,7 +1984,51 @@ mod tests {
             }
         }
 
+        /// The bits of a float of `width` bytes of kind `kind`, 0 to 4: a NaN with
+        /// payload `payload`, an infinity, -0.0, a subnormal, or a float too large for
+        /// the integers of a pair with `e` = 2.
+        fn special(width: usize, kind: u8, negative: bool, payload: u64) -> u64 {
+            let (exponent, mantissa) = if width == 4 { (8, 23) } else { (11, 52) };
+            let ones = (1 << exponent) - 1;
+            let fraction = payload % ((1 << mantissa) - 1) + 1;
+            let (field, fraction) = match kind {
+                0 => (ones, fraction),
+                1 => (ones, 0),
+                2 => (0, 0),
+                3 => (0, fraction),
+                _ => ((ones >> 1) + u64::from(word::bits(width)) - 7, fraction),
+            };
+            let sign = u64::from(negative || kind == 2) << (exponent + mantissa);
+            sign | field << mantissa | fraction
+        }
+
         proptest! {
+            /// Each special float is an exception and keeps its bits, among quarters
+            /// that keep `e` = 2 and `f` = 0.
+            #[test]
+            fn keeps_the_bits_of_special_floats(
+                scalar in select(&FLOATS),
+                specials in proptest::collection::btree_map(
+                    0..1_024_usize,
+                    (0..5_u8, any::<bool>(), any::<u64>()),
+                    1..32,
+                ),
+            ) {
+                let width = scalar.width();
+                let values: Vec<f64> =
+                    (0..1_024).map(|k| f64::from(k % 97) / 4.0).collect();
+                let mut values = floats(scalar, &values);
+                for (position, (kind, negative, payload)) in &specials {
+                    let bits = special(width, *kind, *negative, *payload);
+                    values[position * width..][..width]
+                        .copy_from_slice(&bits.to_le_bytes()[..width]);
+                }
+                let encoded = check(scalar, &values);
+                let exceptions = u8::try_from(specials.len()).expect("under 32");
+                prop_assert_eq!(encoded[0], vector::ALP);
+                prop_assert_eq!(fields(width, &encoded), [2, 0, exceptions, 0]);
+            }
+
             /// An `f64` decimal decodes exactly under some pair. An `f32` one often
             /// does not, as `10^-e` in 4 bytes is too far from its decimal, so it may
             /// keep the integer codecs.
