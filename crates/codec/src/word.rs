@@ -34,7 +34,8 @@ pub(crate) fn store<const W: usize>(value: u64) -> [u8; W] {
 
 /// The integer that the codecs see for the bits of a float of `W` bytes. A float with
 /// its sign bit set has each bit flipped, and any other only its sign bit, so the
-/// integers keep the order of the floats. It is a bijection on the bits.
+/// integers keep the order of the floats in unsigned order. It is a bijection on the
+/// bits.
 pub(crate) fn sortable<const W: usize>(bits: u64) -> u64 {
     let mask = mask(W);
     let high = mask ^ mask.wrapping_shr(1);

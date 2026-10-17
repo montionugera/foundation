@@ -1294,6 +1294,19 @@ mod tests {
             );
         }
 
+        /// The sortable integers of -1.0 and 1.0 are about 2^63 apart, so FFOR and
+        /// delta need 63 bits and the vector stays raw. Signed order needs 64.
+        #[test]
+        fn keeps_a_slow_signal_across_zero_raw() {
+            let ramp: Vec<u8> = (0..1024_i32)
+                .map(|i| -1.0 + 2.0 * f64::from(i) / 1023.0)
+                .flat_map(f64::to_le_bytes)
+                .collect();
+            let encoded = encode(Scalar::F64, &ramp);
+            assert_eq!(encoded[..2], [0, 0]);
+            assert_eq!(encoded.len(), 8 + ramp.len());
+        }
+
         #[test]
         fn pads_headers_and_bodies_to_the_sample_width() {
             check(
