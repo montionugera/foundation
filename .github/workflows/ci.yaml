@@ -170,6 +170,8 @@ jobs:
                 node # #2968, #682, #2955, #2956, #477, #2957
                 acceptance # tests `node`
                 xtask # #2238
+                ops # #2971
+                os # #682
               )
               ;;
           esac
