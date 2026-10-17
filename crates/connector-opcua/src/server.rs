@@ -362,10 +362,10 @@ impl Server {
     ///
     /// If open62541 cannot allocate the counts.
     #[cfg(test)]
-    pub(crate) fn count_browses(&self) -> Browses<'_> {
+    pub(crate) fn count(&self) -> Counts<'_> {
         // SAFETY: the server lives.
-        let counts = unsafe { ffi::test::shim_server_count_browses(self.raw()) };
-        Browses {
+        let counts = unsafe { ffi::test::shim_server_count(self.raw()) };
+        Counts {
             counts: NonNull::new(counts.cast_mut())
                 .expect("open62541 allocates the counts"),
             server: std::marker::PhantomData,
@@ -651,18 +651,18 @@ pub(crate) struct Limits {
     pub(crate) chunks: u32,
 }
 
-/// The count of the Browse requests of a [`Server`], from [`Server::count_browses`].
+/// The counts of the Browse requests of a [`Server`], from [`Server::count`].
 #[cfg(test)]
-pub(crate) struct Browses<'s> {
+pub(crate) struct Counts<'s> {
     /// Lives until the delete of the server.
     counts: NonNull<ffi::test::Counts>,
     server: std::marker::PhantomData<&'s Server>,
 }
 
 #[cfg(test)]
-impl Browses<'_> {
-    /// Gives the count.
-    pub(crate) fn get(&self) -> usize {
+impl Counts<'_> {
+    /// Gives the count of the Browse requests.
+    pub(crate) fn browses(&self) -> usize {
         // SAFETY: the server lives, and runs on this thread.
         unsafe { self.counts.as_ref().browses }
     }
@@ -670,7 +670,7 @@ impl Browses<'_> {
     /// Gives the most continuation points that one session held when the server
     /// processed a request, from the count.
     pub(crate) fn points(&self) -> usize {
-        // SAFETY: as `get`.
+        // SAFETY: as `browses`.
         unsafe { self.counts.as_ref().points }
     }
 }

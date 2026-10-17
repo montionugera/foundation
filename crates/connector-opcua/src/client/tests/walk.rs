@@ -392,11 +392,11 @@ fn held(
         serve(&node, 4, async |mut peer| {
             setup(peer.server);
             peer.server.report_points(most);
-            let browses = peer.server.count_browses();
+            let count = peer.server.count();
             let mut client = peer.connected().await;
             let found = browse::walk(&mut Browse::new(&mut client), &query).await;
             client.close().await;
-            (found, browses.points(), browses.get())
+            (found, count.points(), count.browses())
         })
         .await
     });

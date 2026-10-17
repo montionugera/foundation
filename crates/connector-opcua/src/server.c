@@ -123,7 +123,7 @@ static void count_clear(UA_Logger *logger) { UA_free(logger->context); }
 /* Counts each Browse request that `server` processes from now, and the most
  * continuation points that one of its sessions holds, and gives the counts, which live
  * until the delete of `server`, or NULL when out of memory. */
-const shim_counts *shim_server_count_browses(UA_Server *server) {
+const shim_counts *shim_server_count(UA_Server *server) {
     shim_counter *counter = (shim_counter *)UA_calloc(1, sizeof(*counter));
     if(!counter)
         return NULL;
