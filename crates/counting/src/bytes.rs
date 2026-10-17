@@ -355,10 +355,7 @@ mod tests {
     // The trait's own `realloc` allocates before it frees, so it never gives back the
     // old block. glibc shrinks this block in place.
     #[test]
-    #[cfg_attr(
-        any(miri, not(all(target_os = "linux", target_env = "gnu"))),
-        ignore = "only glibc is known to shrink this block in place"
-    )]
+    #[cfg_attr(miri, ignore = "Miri does not shrink a block in place")]
     fn shrinks_a_block_in_place_as_the_system_does() {
         let bytes = Bytes::new();
         let ptr = filled(&bytes);

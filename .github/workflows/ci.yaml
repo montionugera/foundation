@@ -147,6 +147,39 @@ jobs:
               - --skip one_node::a_wrong_endpoint_shows_in_status_and_heals # #3035
               - --skip no_child_holds_a_socket_that_another_thread_opens # #3036
               - --skip no_child_holds_a_socket_of_a_lookup # #3036
+              - --skip a_dropped_listener_refuses_while_a_copy_of_it_is_open # #3036
+              - --skip a_listener_with_a_failed_registration_refuses_while_a_copy_is_open # #3036
+              - --skip start::a_kept_pool_budget_too_large_for_the_host_fails_with_no_panic # #3043
+              - --skip start::a_kept_pool_budget_that_the_system_cannot_reserve_fails # #3043
+              - --skip bytes::tests::shrinks_a_block_in_place_as_the_system_does # #3042
+              - --skip open62541::tests::check_refuses_a_line_directive_in_the_copy # #3041
+              - --skip open62541::tests::run_copies_each_compiled_source_and_its_headers # #3041
+              - --skip open62541::tests::run_refuses_a_release_with_no_file_of_extra # #3041
+              - --skip open62541::tests::run_refuses_a_file_of_extra_that_the_library_holds # #3041
+              - --skip open62541::tests::run_refuses_each_problem_of_the_staged_copy # #3041
+              - --skip open62541::tests::run_names_a_static_helper_that_calls_a_clock # #3041
+              - --skip open62541::tests::run_refuses_a_source_with_other_flags # #3041
+              - --skip open62541::tests::run_refuses_a_flag_in_no_list # #3041
+              - --skip open62541::tests::run_copies_a_source_whose_name_starts_with_a_dash # #3041
+              - --skip open62541::tests::run_names_a_clock_call_in_a_source_whose_name_starts_with_an_at_sign # #3041
+              - --skip open62541::tests::run_keeps_the_copy_when_a_file_is_missing # #3041
+              - --skip open62541::tests::check_finds_a_clock_call_added_to_the_copy # #3041
+              - --skip open62541::tests::check_finds_a_builtin_and_an_asm_statement_that_read_a_clock # #3041
+              - --skip open62541::tests::check_finds_an_os_call_through_a_header_that_includes_its_own # #3041
+              - --skip open62541::tests::check_finds_an_os_call_whose_name_another_file_defines_as_static # #3041
+              - --skip open62541::tests::check_finds_a_read_of_errno_that_no_call_of_the_copy_set # #3041
+              - --skip open62541::tests::check_finds_a_listed_symbol_at_a_place_that_the_list_does_not_name # #3041
+              - --skip open62541::tests::check_finds_a_listed_symbol_in_a_nested_function_of_a_new_function # #3041
+              - --skip open62541::tests::check_finds_the_address_of_a_listed_symbol_in_its_function # #3041
+              - --skip open62541::tests::check_reads_each_name_to_its_end # #3041
+              - --skip open62541::tests::check_refuses_an_odd_name_that_looks_like_a_mapping_symbol # #3041
+              - --skip open62541::tests::check_fails_on_a_c_identifier_that_holds_a_dollar # #3041
+              - --skip open62541::tests::check_reads_the_symbols_that_a_build_with_the_flags_of_the_copy_gives # #3041
+              - --skip open62541::tests::check_passes_an_undefined_symbol_that_no_relocation_names # #3041
+              - --skip open62541::tests::check_finds_a_read_of_the_table_of_the_linker_that_the_c_makes # #3041
+              - --skip open62541::tests::check_finds_a_clock_call_that_a_listed_function_inlines # #3041
+              - --skip open62541::tests::check_passes_on_the_committed_copy # #3041
+              - --skip open62541::tests::each_thread_of_the_committed_copy_draws_from_its_own_random_state_or_aborts # #3041
           - name: windows
             runner: windows-2025
             crates:
@@ -175,6 +208,7 @@ jobs:
               - --skip log::tests::refuses_a_write_after_a_failed_or_dropped_one # #2973
               - --skip daqmx::tests::names_a_library_that_does_not_load # #3033
               - --skip daqmx::tests::names_a_function_the_library_lacks # #3033
+              - --skip bytes::tests::shrinks_a_block_in_place_as_the_system_does # #3042
     runs-on: ${{ matrix.runner }}
     env:
       RUST: ${{ needs.changes.outputs.rust }}

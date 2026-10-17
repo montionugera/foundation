@@ -797,7 +797,7 @@ mod tests {
         #[test]
         #[cfg_attr(
             not(target_os = "linux"),
-            ignore = "only Linux: only /proc shows the registrations of the poller"
+            ignore = "only Linux: the case is one of epoll"
         )]
         fn a_dropped_receiver_drops_its_registration() {
             use std::os::unix::fs::MetadataExt;

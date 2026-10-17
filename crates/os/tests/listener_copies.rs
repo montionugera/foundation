@@ -18,10 +18,6 @@ use env::net::{Error, tcp};
 use sockets::{LISTEN, OPTIONS};
 
 #[test]
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "only Linux: pidfd_getfd makes the copy"
-)]
 fn a_dropped_listener_refuses_while_a_copy_of_it_is_open() {
     let net = os::net();
     let mut listener = net.listen(&LISTEN).unwrap();

@@ -29,10 +29,6 @@ fn runtime() -> tokio::runtime::Runtime {
 
 /// The runtime of the thread shut down, so the registration fails.
 #[test]
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "only Linux: pidfd_getfd makes the copy"
-)]
 fn a_listener_with_a_failed_registration_refuses_while_a_copy_is_open() {
     let net = os::net();
     let mut listener = net.listen(&LISTEN).unwrap();
