@@ -137,7 +137,7 @@
   `os::roots::read()` gives the `source` as `os::roots::Source` (the name:
   `laptop.architect-2`, 2026-10-16T22:48:23Z, #2949:
   https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6226140961; the
-  module: `laptop.architect-2`, #2949:
+  module: `laptop.architect-2`, 2026-10-17T00:52:47Z, #2949:
   https://github.com/synnaxlabs/foundation/pull/2963#issuecomment-6227609581):
   `the OS store`, or the paths of `SSL_CERT_FILE` and `SSL_CERT_DIR` that it read in
   place of the store. `os` owns this pick, so `node` never derives it from its `vars`,
