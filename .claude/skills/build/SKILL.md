@@ -64,9 +64,11 @@ or a line range.
    each merge of `main` that the PR needs, then ask for the next round. After round 3,
    fix only each defect, with a test that fails without the fix, add each input that
    `docs/claude/testing.md`, "Fuzzing", asks for, in a commit that changes nothing else,
-   apply each `Text fixes:` item of round 3, link each approval, OK, and link that
-   "Done" asks for, and defer the rest. A design flaw is deferred only with the OK of
-   its design approver (`/review`, "Round cap").
+   add the test that kills each mutant that the required `mutants` check reports on code
+   of the PR, in one commit that changes only tests, apply each `Text fixes:` item of
+   round 3, link each approval, OK, and link that "Done" asks for, and defer the rest.
+   A design flaw is deferred only with the OK of its design approver (`/review`, "Round
+   cap").
 9. If review changed code, run the gate again. When review is done (`/review`,
    "Done"), run `gh pr ready <n>` and `gh pr merge <n> --auto`. The merge queue takes
    it when the checks pass.

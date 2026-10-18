@@ -58,8 +58,9 @@ mark of its reviewer: `defect` (wrong behavior, data loss, a crash, or an oracle
 weakening), `design flaw`, or no mark. The author fixes each finding marked `defect` in
 this PR, with a test that fails without the fix, and CI checks it. A defect is never
 deferred. Each other finding of round 3, other than a missing input that
-`docs/claude/testing.md`, "Fuzzing", asks for, is a deferral ("Findings" step 3) on the
-last round comment (above). The deferral of a design flaw needs the explicit OK of its
+`docs/claude/testing.md`, "Fuzzing", asks for and a missing test that kills a mutant of
+the required `mutants` check (below), is a deferral ("Findings" step 3) on the last
+round comment (above). The deferral of a design flaw needs the explicit OK of its
 design approver. Without that OK, the author closes the PR, and the new design starts as
 a new PR at round 1. A missing approval, OK, or link that "Done" asks for is no finding
 to defer.
@@ -73,6 +74,13 @@ The range after round 3 holds only these:
 - each input that `docs/claude/testing.md`, "Fuzzing", asks for, in a commit that
   changes nothing else, with the arm that it reaches and how the author checked it in
   the PR body;
+- one commit that holds only the tests that kill the mutants that the required
+  `mutants` check of CI reports on code of the PR, and changes no other code, with each
+  mutant, the test that kills it, and how the author checked it in the PR body. Another
+  test of round 3 goes in only when it kills such a mutant (`laptop.director`,
+  https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6238255593, and the
+  person's "fine",
+  https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6238287170);
 - the `Text fixes:` items of round 3, applied as "Second round" step 2 says;
 - each change that an approval or OK of "Done" asks for. The PR links the comment that
   asks for it.
