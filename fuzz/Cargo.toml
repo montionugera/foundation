@@ -14,6 +14,7 @@ cargo-fuzz = true
 [patch.crates-io]
 noq-proto = { path = "../patches/noq-proto" }
 noq-udp = { path = "../patches/noq-udp" }
+tracing-core = { path = "../patches/tracing-core" }
 
 [dependencies]
 block = { path = "../crates/block" }
