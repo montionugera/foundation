@@ -1067,13 +1067,14 @@ fn child(case: &str) -> String {
         .env(CHILD, case)
         .output()
         .expect("the child runs");
-    let ended = if case == "abort" { None } else { Some(101) };
+    let aborts = ["abort", "opcua"].contains(&case);
+    let ended = if aborts { None } else { Some(101) };
     assert_eq!(output.status.code(), ended, "the end of the child");
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
         const SIGABRT: i32 = 6;
-        let signal = (case == "abort").then_some(SIGABRT);
+        let signal = aborts.then_some(SIGABRT);
         assert_eq!(
             output.status.signal(),
             signal,
@@ -1133,6 +1134,8 @@ enum Case {
     Abort,
     /// The log writes JSON lines to stderr.
     Json,
+    /// The log writes to stderr, and a refused call of open62541 panics and aborts.
+    Opcua,
     /// The log writes to a stderr that nothing reads, then drops its hold.
     Hang,
 }
@@ -1159,9 +1162,12 @@ fn writer(
             entered,
             free: Some(free),
         }),
-        Case::Free | Case::Late | Case::Abort | Case::Json | Case::Hang => {
-            Box::new(io::stderr())
-        }
+        Case::Free
+        | Case::Late
+        | Case::Abort
+        | Case::Json
+        | Case::Opcua
+        | Case::Hang => Box::new(io::stderr()),
     }
 }
 
@@ -1249,6 +1255,7 @@ fn panics(case: Case) -> ! {
             tracing::dispatcher::with_default(&log.dispatch, numbered(3, 1100));
             free.send(()).expect("the writer waits");
         }
+        Case::Opcua => connector_opcua::sim::call_refused(),
         Case::Free | Case::Stuck | Case::Abort | Case::Json => {}
     }
     panic!("the test panics");
@@ -1266,6 +1273,7 @@ fn a_panic_writes_the_queued_lines_then_the_panic() {
         Ok("full") => panics(Case::Full),
         Ok("abort") => panics(Case::Abort),
         Ok("json") => panics(Case::Json),
+        Ok("opcua") => panics(Case::Opcua),
         Ok("hang") => panics(Case::Hang),
         _ => {}
     }
@@ -1318,6 +1326,23 @@ fn a_panic_writes_its_line_before_a_hook_before_that_aborts() {
     assert_eq!(lines.len(), 4, "{stderr}");
     assert_panicked(lines[3], &stderr);
     assert!(hook.contains("the test panics"), "{stderr}");
+}
+
+#[test]
+fn a_refused_call_of_open62541_writes_its_line_before_the_abort() {
+    let stderr = child("opcua");
+    let (lines, hook) = split(&stderr);
+    assert_eq!(lines.len(), 4, "{stderr}");
+    let panicked = (lines[3].strip_prefix(
+        r#"ERROR node: panicked panic="panicked at crates/connector-opcua/src/log.rs:"#,
+    ))
+    .unwrap_or_else(|| panic!("not the panic line: {stderr}"));
+    let text = "open62541 called UA_EventLoop_new_POSIX, which is not built";
+    assert!(
+        panicked.ends_with(&format!(r#":\n{text}" mesh_time=none"#)),
+        "{stderr}"
+    );
+    assert!(hook.contains(text), "{stderr}");
 }
 
 #[test]

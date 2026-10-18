@@ -66,7 +66,7 @@ const FILE_STORES: &[&str] = if cfg!(any(target_os = "linux", windows)) {
 const CHILD: &str = "CONNECTOR_OPCUA_REFUSED";
 
 /// Makes the call that `CHILD` names, and does nothing when it is not set.
-/// `each_refused_call_prints_its_name_and_aborts` sets it in a child process.
+/// `each_refused_call_panics_once_with_its_name_and_aborts` sets it in a child process.
 #[test]
 fn call_refused() {
     #[expect(

@@ -74,6 +74,16 @@ unsafe extern "C" fn connector_opcua_die(line: *const c_char, length: usize) -> 
     std::process::abort()
 }
 
+/// Calls a function that the copy of open62541 does not build, as a refused call or an
+/// abort of open62541 does in a run: the process panics with `open62541 called
+/// UA_EventLoop_new_POSIX, which is not built`, so the panic hook runs, and aborts.
+#[cfg(feature = "sim")]
+pub fn call_refused() -> ! {
+    // SAFETY: it aborts before it reads its argument.
+    unsafe { crate::ffi::test::UA_EventLoop_new_POSIX(std::ptr::null()) };
+    unreachable!("open62541 returned from a refused call")
+}
+
 /// Gives the `length` bytes at `line`, with U+FFFD for each sequence that is not
 /// UTF-8.
 ///
