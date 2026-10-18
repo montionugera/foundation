@@ -247,12 +247,13 @@ impl Drop for Erased {
                 // SAFETY: the page starts under `len`.
                 let page = unsafe { self.0.base.add(start) };
                 // Words, as a volatile erase of bytes writes one at a time.
-                // SAFETY: the allocation holds whole pages, a commit initialized the
-                // page, and nothing else holds it at the drop.
                 #[expect(
                     clippy::cast_ptr_alignment,
                     reason = "a page is aligned to ALIGN"
                 )]
+                // SAFETY: a page is aligned to `ALIGN`, the allocation holds whole
+                // pages, a commit initialized the page, and nothing else holds it at
+                // the drop.
                 let words = unsafe {
                     slice::from_raw_parts_mut(page.as_ptr().cast::<u64>(), PAGE / 8)
                 };
