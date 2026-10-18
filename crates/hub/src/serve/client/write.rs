@@ -314,7 +314,8 @@ struct Stored {
     /// The count of frames through the last one taken since the call of the commit in
     /// `due`.
     taken: Option<u64>,
-    /// The block of the next `Stored`. It is `Some` whenever `taken` is.
+    /// The block of the next `Stored`. Between frames, it is `Some` exactly when `taken`
+    /// is.
     next: Option<Unique>,
     /// The commit that is due, the count of frames that it covers, and the block of its
     /// `Stored`.
@@ -339,6 +340,8 @@ impl Stored {
         if let Outcome::Taken { .. } = outcome {
             self.taken = Some(self.counted);
             self.call(state);
+        } else if self.taken.is_none() {
+            self.next = None;
         }
     }
 

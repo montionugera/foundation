@@ -720,6 +720,34 @@ fn refuses_a_frame_whose_stored_finds_no_block_as_full() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
+/// A refused frame leaves the stream no block when no taken frame waits for a `Stored`:
+/// a frame after the pool fills finds no block for its `Stored`, and is refused as
+/// `Full`.
+#[test]
+fn holds_no_block_for_a_stored_after_a_refused_frame() {
+    let stamps: Vec<i64> = (1..=32).collect();
+    // The blocks of the outcome and of the draft of 32 samples, 560 bytes.
+    let ready = spare_for_a_while(vec![Outcome::LEN_MAX, 560]);
+    let home = read_session(444, ready, move |mut agent| async move {
+        agent.admit().await;
+        let mut stream = write(&agent).await;
+        let (ends, body) = frame(&[(0, &[]), (1, &[10])]);
+        stream.frame(untimed(2), &ends, &body).await;
+        let codec = refused(wire::hub::write::Refusal::Codec);
+        assert_eq!(stream.reply().await, codec);
+        agent.sleep(Span::from_nanos(START.nanos() * 3 / 2)).await;
+        send(&mut stream, &stamps, &stamps).await;
+        let full = refused(wire::hub::write::Refusal::Full);
+        assert_eq!(stream.reply().await, full);
+        agent.sleep(START).await;
+        send(&mut stream, &[100], &[100]).await;
+        assert_eq!(stream.reply().await, taken(0, 1));
+        assert_eq!(end(&mut stream).await, [stored(3)]);
+        finish(&mut agent).await;
+    });
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
 /// A backfill frame whose entry finds no block at the home is refused as `Full`, and
 /// the stream takes it once the pool has room.
 #[test]
