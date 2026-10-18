@@ -201,7 +201,7 @@ impl Parts {
     ) -> Result<Appended, Full> {
         self.place(records)?;
         let listed = Listed::new(records);
-        for (part, body) in self.changed(records, &listed) {
+        for (part, body) in self.changed(&listed) {
             if !state::append(buffer, tag(part), Some(&body), head) {
                 self.keys.retain(|(_, placed)| placed.state != Kept::Added);
                 return Ok(Appended { until: part });
@@ -260,9 +260,9 @@ impl Parts {
     }
 
     /// The body of each part, in part order, whose records differ from the ones that
-    /// its last entry holds, when the parts hold `records`, which
-    /// [`place`](Self::place) placed. `listed` holds `records` by key.
-    fn changed(&self, records: &[Record], listed: &Listed<'_>) -> Vec<(u8, Vec<u8>)> {
+    /// its last entry holds, when the parts hold the records of `listed`, which
+    /// [`place`](Self::place) placed.
+    fn changed(&self, listed: &Listed<'_>) -> Vec<(u8, Vec<u8>)> {
         let mut changed = [false; PARTS as usize];
         for (key, placed) in &self.keys {
             let now = listed
@@ -272,9 +272,10 @@ impl Parts {
                 changed[usize::from(placed.part)] = true;
             }
         }
-        let mut sorted: Vec<(u8, &Record)> = records
+        let mut sorted: Vec<(u8, &Record)> = listed
+            .0
             .iter()
-            .map(|record| (self.part(&record.reader), record))
+            .map(|&record| (self.part(&record.reader), record))
             .filter(|&(part, _)| changed[usize::from(part)])
             .collect();
         sorted.sort_unstable_by(|a, b| (a.0, &a.1.reader).cmp(&(b.0, &b.1.reader)));
@@ -568,7 +569,7 @@ mod tests {
 
     /// The bodies of the parts that `records` change.
     fn changed(parts: &Parts, records: &[Record]) -> Vec<(u8, Vec<u8>)> {
-        parts.changed(records, &listed(records))
+        parts.changed(&listed(records))
     }
 
     /// The bytes of the records that each part keeps room for, with the head.
