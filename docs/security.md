@@ -281,7 +281,7 @@ state on `main`.
   chunk. The chunks that `transport` holds for a session have at most `window_bytes`
   bytes together, plus two chunks for each stream (#2361). Who may open a blob stream is
   not built: `node` rejects each one until it routes them from member nodes only
-  (#1229).
+  (#1232).
 - `blob::peer::get` trusts the peer no more than `serve` does: a head over the largest
   block of its pool stops the stream with `TOO_LARGE`, and bytes that do not hash to the
   digest stop it with `MISMATCH` and are not stored. So a binary that a peer serves
