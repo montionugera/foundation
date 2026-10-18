@@ -16,6 +16,7 @@ mod browse;
 mod common;
 mod error;
 mod front_end;
+mod import;
 mod mcp;
 mod node;
 mod operation;
@@ -66,13 +67,13 @@ pub enum Run {
 /// answer of the line before. A closed `output` ends the run with no error, because
 /// its reader has left.
 ///
-/// `plan`, `apply`, `status`, and `browse` run on the node of `--data`, else of
-/// `foundation-data`. Each reads the files it names through `paths`, calls `reach` with
-/// that data directory once, and calls what it gives with the body of one request. A
-/// [`Failure`] of either is the error of the command, with status 1. `foundation mcp`
-/// runs each tool call of `plan`, `apply`, `status`, and `browse` on the node of its
-/// own `--data`. It calls `reach` at its first such call, and again only at the call
-/// after a [`Failure`] of what `reach` gave. `start` and the other operations call
+/// `plan`, `apply`, `status`, `browse`, and `import` run on the node of `--data`, else
+/// of `foundation-data`. Each reads the files it names through `paths`, calls `reach`
+/// with that data directory once, and calls what it gives with the body of one request.
+/// A [`Failure`] of either is the error of the command, with status 1. `foundation mcp`
+/// runs each tool call of `plan`, `apply`, `status`, `browse`, and `import` on the node
+/// of its own `--data`. It calls `reach` at its first such call, and again only at the
+/// call after a [`Failure`] of what `reach` gave. `start` and the other operations call
 /// neither.
 ///
 /// The tools of `foundation mcp` read and write only under each `--files` folder,

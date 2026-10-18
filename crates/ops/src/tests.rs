@@ -394,6 +394,26 @@ fn a_text_error_writes_control_characters_as_escapes() {
     }
 }
 
+/// An error of a list shows its one problem, else the count of its problems, and no
+/// error panics when it is shown.
+#[test]
+fn a_list_error_shows_its_one_problem_or_the_count() {
+    let one = Error::DuplicatePick {
+        paths: vec!["x".to_owned()],
+    };
+    assert_eq!(one.to_string(), "the import picks the point `x` twice");
+    let two = Error::BadPoint {
+        points: vec![
+            ("a//b".to_owned(), Malformed::Empty),
+            ("c//d".to_owned(), Malformed::Empty),
+        ],
+    };
+    assert_eq!(two.to_string(), "the import has 2 problems");
+    for error in every() {
+        let _shown = error.to_string();
+    }
+}
+
 #[test]
 fn a_json_error_keeps_the_callers_text() {
     let exit = cli(&["\u{1b}x", "--json"]);
@@ -675,53 +695,88 @@ fn every() -> Vec<Error> {
             text: String::new(),
             cause: Malformed::Escape,
         },
+        Error::NoPick,
+        Error::PickLimit { picked: 501 },
+        Error::MatchLimit,
+        Error::BadPoint {
+            points: vec![(String::new(), Malformed::Empty)],
+        },
+        Error::DuplicatePick {
+            paths: vec!["Line/Pump".to_owned()],
+        },
+        Error::BadName {
+            names: vec![(String::new(), String::new(), types::name::Error::Empty)],
+        },
+        Error::UnreadablePoint {
+            points: vec![("Line/Pump".to_owned(), "no access".to_owned())],
+        },
+        Error::PickBudget,
+        Error::MatchBudget,
+        Error::LargeImport,
+        Error::FileChanged {
+            path: PathBuf::new(),
+        },
     ]
+}
+
+/// Matches each variant, so a new variant fails to compile until it joins [`every`]
+/// and the golden file.
+fn listed(error: &Error) {
+    // `Config` holds the codes of the front ends, of `config`, and the ones below.
+    // `Node` holds the codes of `node`, and `Remote` the codes of a reply.
+    match error {
+        Error::Argument { .. }
+        | Error::Unknown { .. }
+        | Error::Input { .. }
+        | Error::Output { .. }
+        | Error::Plan(_)
+        | Error::Behind(_)
+        | Error::Stale { .. }
+        | Error::Apply(_)
+        | Error::Stopped(_)
+        | Error::Request { .. }
+        | Error::Denied { .. }
+        | Error::LargeReply
+        | Error::LargeBrowse
+        | Error::LargeStatus
+        | Error::ChannelRead { .. }
+        | Error::Read { .. }
+        | Error::Write { .. }
+        | Error::LargeRequest
+        | Error::Reply { .. }
+        | Error::Outside { .. }
+        | Error::Hidden { .. }
+        | Error::NoData { .. }
+        | Error::FolderChanged { .. }
+        | Error::PlanName { .. }
+        | Error::WideFolder { .. }
+        | Error::Folder { .. }
+        | Error::Data { .. }
+        | Error::Browse { .. }
+        | Error::BrowseNode { .. }
+        | Error::BadStart { .. }
+        | Error::BadPattern { .. }
+        | Error::NoPick
+        | Error::PickLimit { .. }
+        | Error::MatchLimit
+        | Error::BadPoint { .. }
+        | Error::DuplicatePick { .. }
+        | Error::BadName { .. }
+        | Error::UnreadablePoint { .. }
+        | Error::PickBudget
+        | Error::MatchBudget
+        | Error::LargeImport
+        | Error::FileChanged { .. }
+        | Error::Config(_)
+        | Error::Node(_)
+        | Error::Remote { .. } => {}
+    }
 }
 
 #[test]
 fn error_codes_and_fixes_match_the_golden_file() {
     let every = every();
-    for error in &every {
-        // A new variant fails this match, so it joins `every` and the golden file.
-        // `Config` holds the codes of the front ends, of `config`, and the ones below.
-        // `Node` holds the codes of `node`, and `Remote` the codes of a reply.
-        match error {
-            Error::Argument { .. }
-            | Error::Unknown { .. }
-            | Error::Input { .. }
-            | Error::Output { .. }
-            | Error::Plan(_)
-            | Error::Behind(_)
-            | Error::Stale { .. }
-            | Error::Apply(_)
-            | Error::Stopped(_)
-            | Error::Request { .. }
-            | Error::Denied { .. }
-            | Error::LargeReply
-            | Error::LargeBrowse
-            | Error::LargeStatus
-            | Error::ChannelRead { .. }
-            | Error::Read { .. }
-            | Error::Write { .. }
-            | Error::LargeRequest
-            | Error::Reply { .. }
-            | Error::Outside { .. }
-            | Error::Hidden { .. }
-            | Error::NoData { .. }
-            | Error::FolderChanged { .. }
-            | Error::PlanName { .. }
-            | Error::WideFolder { .. }
-            | Error::Folder { .. }
-            | Error::Data { .. }
-            | Error::Browse { .. }
-            | Error::BrowseNode { .. }
-            | Error::BadStart { .. }
-            | Error::BadPattern { .. }
-            | Error::Config(_)
-            | Error::Node(_)
-            | Error::Remote { .. } => {}
-        }
-    }
+    every.iter().for_each(listed);
     let mut lines: Vec<_> = every
         .iter()
         .flat_map(|error| error.problems().into_owned())
@@ -732,6 +787,7 @@ fn error_codes_and_fixes_match_the_golden_file() {
         "hcl",
         FrontEnd {
             read: |_, _| Err(Vec::new()),
+            update: |_, _, _| Err(Vec::new()),
         },
     );
     let unknown = front_end::unknown(Source(0), &front_ends);
@@ -1159,6 +1215,8 @@ mod mcp {
     use serde_json::{Value, json};
 
     use super::{ask, respond};
+    use crate::mcp::GUIDE;
+    use crate::operation::{self, TABLE};
 
     fn request(id: Value, method: &str, params: Value) -> Value {
         let mut request = json!({ "jsonrpc": "2.0", "method": method });
@@ -1190,9 +1248,27 @@ mod mcp {
                     "protocolVersion": "2025-06-18",
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "foundation", "version": env!("CARGO_PKG_VERSION") },
+                    "instructions": GUIDE,
                 },
             })
         );
+    }
+
+    /// Each name in backticks in the guide is a tool, an input of one, or `fill`.
+    #[test]
+    fn the_guide_names_only_tools_their_inputs_and_fill() {
+        let inputs = operation::inputs();
+        let named: Vec<&str> = GUIDE.split('`').skip(1).step_by(2).collect();
+        assert!(named.contains(&"import"), "{named:?}");
+        for name in named {
+            let input = inputs.values().any(|schema| {
+                schema["properties"]
+                    .as_object()
+                    .is_some_and(|properties| properties.contains_key(name))
+            });
+            let tool = TABLE.iter().any(|spec| spec.name == name);
+            assert!(tool || input || name == "fill", "`{name}` in the guide");
+        }
     }
 
     #[test]

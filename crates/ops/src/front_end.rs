@@ -5,8 +5,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use document::diagnostic::{Code, Diagnostic};
+use document::encoding::Checked;
 use document::{Document, Position, Source, Span};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 const UNKNOWN_EXTENSION: Code = Code::new("ops.unknown-extension");
 const PATH_NOT_UTF8: Code = Code::new("ops.path-not-utf8");
@@ -20,6 +21,17 @@ pub struct FrontEnd {
     ///
     /// Each problem in the text, with its span: at least one.
     pub read: fn(source: Source, text: &str) -> Result<Document, Vec<Diagnostic>>,
+    /// Writes `document` into `text`, the text of the file `source`, and keeps each
+    /// byte of `text` that keeps its value and its place.
+    ///
+    /// # Errors
+    ///
+    /// Each problem in `text`, or each part of `document` that the syntax cannot hold.
+    pub update: fn(
+        source: Source,
+        text: &str,
+        document: &Checked,
+    ) -> Result<String, Vec<Diagnostic>>,
 }
 
 /// The front end of each file extension that a node reads. It holds at least one.
@@ -40,6 +52,18 @@ impl FrontEnds {
     pub fn with(mut self, extension: &'static str, front_end: FrontEnd) -> Self {
         self.0.insert(extension, front_end);
         self
+    }
+
+    /// The front end of the file at `path`, by its extension.
+    fn of(&self, path: &str) -> Option<&FrontEnd> {
+        Path::new(path)
+            .file_name()
+            .map(|name| {
+                name.to_str()
+                    .expect("invariant: a part of a UTF-8 path is UTF-8")
+            })
+            .and_then(|name| name.rsplit_once('.'))
+            .and_then(|(_, extension)| self.0.get(extension))
     }
 
     /// Each extension, in order.
@@ -63,8 +87,7 @@ impl fmt::Debug for FrontEnds {
 }
 
 /// One config file: its path, as the user or a directory listing gave it, and its text.
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Serialize)]
 pub(crate) struct File {
     pub(crate) path: PathBuf,
     pub(crate) text: String,
@@ -93,15 +116,7 @@ pub(crate) fn read(
             diagnostics.push(not_utf8(&file.path));
             continue;
         };
-        let front_end = Path::new(path)
-            .file_name()
-            .map(|name| {
-                name.to_str()
-                    .expect("invariant: a part of a UTF-8 path is UTF-8")
-            })
-            .and_then(|name| name.rsplit_once('.'))
-            .and_then(|(_, extension)| front_ends.0.get(extension));
-        let Some(front_end) = front_end else {
+        let Some(front_end) = front_ends.of(path) else {
             diagnostics.push(unknown(Source(source), front_ends));
             continue;
         };
@@ -121,6 +136,30 @@ pub(crate) fn read(
     } else {
         Err(diagnostics)
     }
+}
+
+/// The text of `file`, the file `source` that [`read`] read, with `document` written
+/// into it by its front end.
+///
+/// # Errors
+///
+/// Each problem that the front end gives.
+///
+/// # Panics
+///
+/// When the path of `file` is not UTF-8 or has no front end in `front_ends`.
+pub(crate) fn update(
+    file: &File,
+    source: Source,
+    document: &Checked,
+    front_ends: &FrontEnds,
+) -> Result<String, Vec<Diagnostic>> {
+    let front_end = file
+        .path
+        .to_str()
+        .and_then(|path| front_ends.of(path))
+        .expect("invariant: `read` read the file with a front end");
+    (front_end.update)(source, &file.text, document)
 }
 
 /// The `ops.path-not-utf8` diagnostic of `path`.
