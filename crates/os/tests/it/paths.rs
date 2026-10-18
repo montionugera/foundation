@@ -39,6 +39,15 @@ fn too_long() -> i32 {
     Errno::NAMETOOLONG.raw_os_error()
 }
 
+/// The longest path, in bytes, that the host takes.
+fn most() -> usize {
+    if cfg!(target_os = "macos") {
+        1023
+    } else {
+        4095
+    }
+}
+
 /// A directory that takes no new file: a write that makes one in it gives `EACCES`.
 fn sealed(scratch: &Scratch) -> PathBuf {
     let dir = scratch.0.join("sealed");
@@ -251,11 +260,7 @@ fn a_hidden_folder_that_a_program_moves_and_makes_again_stays_hidden() {
 fn within_refuses_a_new_name_whose_resolved_path_is_too_long() {
     run(|host| {
         let (within, base) = cases::within_work(host);
-        let most: usize = if cfg!(target_os = "macos") {
-            1023
-        } else {
-            4095
-        };
+        let most = most();
         let mut found = Vec::new();
         for top in ["work", "work/data"] {
             let top = base.join(top);
@@ -349,11 +354,7 @@ fn a_folder_made_again_read_in_other_case_is_replaced() {
 fn within_refuses_a_hidden_name_whose_resolved_path_is_too_long() {
     run(|host| {
         let (_, base) = cases::within_work(host);
-        let most: usize = if cfg!(target_os = "macos") {
-            1023
-        } else {
-            4095
-        };
+        let most = most();
         let top = base.join("work");
         let (mut deep, mut relative) = (top.clone(), PathBuf::new());
         while deep.as_os_str().len() + 201 < most - 50 {
@@ -378,11 +379,7 @@ fn within_refuses_a_hidden_name_whose_resolved_path_is_too_long() {
 fn within_refuses_a_long_hidden_file() {
     run(|host| {
         let (_, base) = cases::within_work(host);
-        let most: usize = if cfg!(target_os = "macos") {
-            1023
-        } else {
-            4095
-        };
+        let most = most();
         let top = base.join("work");
         let (mut deep, mut relative) = (top.clone(), PathBuf::new());
         while deep.as_os_str().len() + 201 < most - 50 {
@@ -566,7 +563,7 @@ fn within_reads_a_file_deep_in_its_folder_in_the_worst_case_time() {
         let mut dir = base.join("work");
         for _ in 0..1900 {
             dir.push("a");
-            if dir.as_os_str().len() > 4000 {
+            if dir.as_os_str().len() + 95 > most() {
                 dir.pop();
                 break;
             }
@@ -580,6 +577,12 @@ fn within_reads_a_file_deep_in_its_folder_in_the_worst_case_time() {
         let took = clock.now() - start;
         assert_eq!(read, Ok(Found::File(b"x".to_vec())));
         assert!(took < Span::from_nanos(560_000_000), "took {took}");
+        // `remove_dir_all` of `Scratch` holds a handle for each level.
+        fs::remove_file(&file).unwrap();
+        while dir != base.join("work") {
+            fs::remove_dir(&dir).unwrap();
+            dir.pop();
+        }
     });
 }
 
@@ -594,7 +597,7 @@ fn within_reads_a_long_path_from_a_deep_directory_in_the_worst_case_time() {
         }
         assert_eq!(within.make_dir(&dir.join("s")), Ok(()));
         let mut path = dir.into_os_string();
-        while path.len() + 5 < 4000 {
+        while path.len() + 100 < most() {
             path.push("/s/..");
         }
         let path = PathBuf::from(path).join("f");
@@ -881,11 +884,7 @@ fn a_write_of_a_name_that_is_too_long_makes_no_file_beside_it() {
 /// the OS where a shorter name is at that path.
 #[test]
 fn a_write_whose_hidden_file_has_a_path_that_is_too_long_makes_no_file() {
-    let most = if cfg!(target_os = "macos") {
-        1023
-    } else {
-        4095
-    };
+    let most = most();
     let scratch = Scratch::new();
     // The OS counts the path behind each symbolic link.
     let mut dir = fs::canonicalize(&scratch.0).unwrap();
@@ -1314,5 +1313,43 @@ fn a_hidden_path_that_fails_its_key_fails_no_other_call() {
         let through_file = within.read(&plan, 1);
         let ok = Ok(Found::File(b"x".to_vec()));
         assert_eq!((unsearchable, through_file), (ok.clone(), ok));
+    });
+}
+
+/// A path of `s/..` from a directory 1900 names deep, longer than the host takes: the
+/// host refuses it at once, and the walk stops at the longest path that the host
+/// takes, in the bound of ENV SEAMS.
+#[test]
+fn within_stops_a_long_path_of_dots_from_a_deep_directory() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        let mut dir = base.join("work");
+        for _ in 0..1900 {
+            dir.push("a");
+            if dir.as_os_str().len() + 95 > most() {
+                dir.pop();
+                break;
+            }
+            fs::create_dir(&dir).unwrap();
+        }
+        fs::create_dir(dir.join("s")).unwrap();
+        let mut path = dir.into_os_string();
+        while path.len() < 64 * 1024 {
+            path.push("/s/..");
+        }
+        let path = PathBuf::from(path).join("f");
+        let clock = os::clock();
+        let start = clock.now();
+        let free = host.paths.read(&path, 1);
+        let free_took = clock.now() - start;
+        let start = clock.now();
+        let read = within.read(&path, 1);
+        let took = clock.now() - start;
+        let too_long = Err(Error::Io { code: too_long() });
+        assert_eq!((free, read), (too_long.clone(), too_long));
+        assert!(
+            took < Span::from_nanos(560_000_000),
+            "took {took}, free {free_took}"
+        );
     });
 }
