@@ -83,3 +83,12 @@
   https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6159574954, and the
   OPC UA type of an array or a String at 2026-10-15T19:32:35Z:
   https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6200602125).
+  The client checks the queued chunks of each request id against `CHUNKS` and its
+  largest message, as a server can interleave the chunks of answers (OPC UA Part 6),
+  and holds at most `CHUNKS` squared queued chunks in all (64, at most 4 MiB), as a
+  server can send chunks of any request id. A chunk past either bound closes the
+  channel, and the read gives `BadSecureChannelClosed`. The copy of open62541 makes
+  these checks (`docs/dependencies.md`, "Local patches"). Lost: a refusal of the
+  chunks of a request id with no call in flight (an answer after the timeout of its
+  call closes the channel); the bound of one message on the queue of all ids (an
+  interleave of two answers that each fit closes the channel) (#3097).
