@@ -133,6 +133,7 @@
   person's "fine", relayed by `laptop.monitor`, 2026-10-17T18:06:35Z:
   https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6238287170; one
   commit for each run: `laptop.director`, 2026-10-18T23:16:14Z:
-  https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256390941).
-  Supersedes, for such a test, "Each other finding is a deferral" and "After round 3,
-  the PR changes only by these changes" above.
+  https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256390941). It
+  supersedes "in one commit" of that ruling of #3047. Supersedes, for such a test, "Each
+  other finding is a deferral" and "After round 3, the PR changes only by these changes"
+  above.
