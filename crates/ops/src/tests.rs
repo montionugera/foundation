@@ -48,7 +48,8 @@ fn offline(
         Ok(request)
     };
     let input = async || crate::line(&mut input);
-    let cli = crate::cli(args, input, output, errors, &paths, reach);
+    let front_ends = crate::common::front_ends();
+    let cli = crate::cli(args, input, output, errors, &paths, &front_ends, reach);
     let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
     else {
         panic!("a command waited");
@@ -97,7 +98,7 @@ fn respond(message: &str) -> Option<String> {
         reached.set(reached.get() + 1);
         Ok(request)
     });
-    let scope = crate::scope::Scope::free(&paths);
+    let scope = crate::scope::Scope::free(&paths, &crate::common::front_ends());
     let respond = crate::mcp::respond(message, &scope, &mut link);
     let Poll::Ready(reply) =
         pin!(respond).poll(&mut Context::from_waker(Waker::noop()))
@@ -633,6 +634,10 @@ fn every() -> Vec<Error> {
             path: PathBuf::new(),
             cause: Unread::NotFound,
         },
+        Error::NoConfig {
+            path: PathBuf::from("d"),
+            extensions: "`.hcl`".to_owned(),
+        },
         Error::Write {
             path: PathBuf::new(),
             cause: Unwritten::NotFound,
@@ -741,6 +746,7 @@ fn listed(error: &Error) {
         | Error::LargeStatus
         | Error::ChannelRead { .. }
         | Error::Read { .. }
+        | Error::NoConfig { .. }
         | Error::Write { .. }
         | Error::LargeRequest
         | Error::Reply { .. }
@@ -1491,6 +1497,9 @@ mod serve {
         let missing = include_str!("../../../oracles/fuzz/ops_mcp/plan-missing");
         let out = run(&["mcp"], missing.as_bytes()).stdout;
         assert!(out.contains("ops.read"), "{out}");
+        let directory = include_str!("../../../oracles/fuzz/ops_mcp/plan-directory");
+        let out = run(&["mcp"], directory.as_bytes()).stdout;
+        assert!(out.contains("ops.no-config"), "{out}");
     }
 
     #[test]
@@ -1716,7 +1725,8 @@ mod scope {
         host.make_dir(Path::new("/work"));
         host.set_working_dir(Path::new("/work"));
         let data = Path::new("/work/foundation-data");
-        let scope = Scope::mcp(&host.paths(), &[], data).expect("a scope");
+        let scope = Scope::mcp(&host.paths(), &crate::common::front_ends(), &[], data)
+            .expect("a scope");
         (host, scope)
     }
 
@@ -1754,8 +1764,13 @@ mod scope {
         let host = sim.node(sim::node::Config::default());
         host.make_dir(Path::new("/plans"));
         let data = Path::new("/data");
-        let scope =
-            Scope::mcp(&host.paths(), &["/plans".into()], data).expect("a scope");
+        let scope = Scope::mcp(
+            &host.paths(),
+            &crate::common::front_ends(),
+            &["/plans".into()],
+            data,
+        )
+        .expect("a scope");
         host.move_path(Path::new("/plans"), Path::new("/old"));
         host.make_dir(Path::new("/plans"));
         assert_eq!(

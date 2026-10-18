@@ -793,7 +793,7 @@ pub(super) async fn admit(hello: &mut Incoming, clock: &env::clock::Clock) -> Sp
 }
 
 /// Takes each block of `pool` that it has room for.
-fn fill(pool: &block::Pool) -> Vec<block::Unique> {
+pub(super) fn fill(pool: &block::Pool) -> Vec<block::Unique> {
     let mut held = Vec::new();
     let mut len = pool.largest();
     while len > 0 {

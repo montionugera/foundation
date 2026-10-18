@@ -73,7 +73,10 @@ fn crashed(sim: &mut sim::Sim) -> sim::node::Node {
 fn reach_on_a_directory_where_no_node_ran_gives_not_running() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
-    assert_eq!(reached(&mut sim, &host), Err(client::Error::NotRunning));
+    assert_eq!(
+        reached(&mut sim, &host),
+        Err(client::Error::Local(sector::local::Error::NotRunning))
+    );
 }
 
 #[test]
@@ -85,7 +88,10 @@ fn reach_after_a_clean_stop_gives_not_running() {
     node.stop();
     assert_eq!(sim.run(), Ok(()));
     assert_eq!(node.join(), Ok(()));
-    assert_eq!(reached(&mut sim, &host), Err(client::Error::NotRunning));
+    assert_eq!(
+        reached(&mut sim, &host),
+        Err(client::Error::Local(sector::local::Error::NotRunning))
+    );
 }
 
 /// A node with no region writes no `admin.key`.
@@ -107,7 +113,7 @@ fn reach_with_an_admin_key_that_no_node_wrote_gives_key() {
     let written = sim.run_on(&host, |host, _| async move {
         let files = host.files();
         let mode = env::files::Mode::Write;
-        let file = files.open(Path::new(crate::admin::FILE), mode).await?;
+        let file = files.open(Path::new(sector::admin::FILE), mode).await?;
         let pool = pool();
         let block = pool.copy(b"x").expect("a block");
         file.write_at(0, &[block]).await
@@ -117,17 +123,44 @@ fn reach_with_an_admin_key_that_no_node_wrote_gives_key() {
 }
 
 #[test]
+fn reach_on_an_address_of_another_version_gives_version() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = crashed(&mut sim);
+    let written = sim.run_on(&host, |host, _| async move {
+        let files = host.files();
+        let path = Path::new(sector::address::FILE);
+        files.remove(path).await?;
+        let mut body = b"foundation/address/2".to_vec();
+        body.resize(120, 0);
+        body.extend_from_slice(&crc32c::crc32c(&body).to_le_bytes());
+        let mode = env::files::Mode::Create { len: 124 };
+        let file = files.open(path, mode).await?;
+        let pool = pool();
+        let block = pool.copy(&body).expect("a block");
+        file.write_at(0, &[block]).await
+    });
+    assert_eq!(written, Ok(Ok(())));
+    let version = client::Error::Local(sector::local::Error::Version {
+        file: "address",
+        found: b'2',
+        expected: b'1',
+    });
+    assert_eq!(reached(&mut sim, &host), Err(version));
+}
+
+#[test]
 fn reach_whose_read_of_address_fails_gives_the_file_error() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = crashed(&mut sim);
     let operation = env::files::Operation::ReadAt;
-    host.fail_file(Path::new(crate::address::FILE), operation);
+    host.fail_file(Path::new(sector::address::FILE), operation);
     let error = env::files::Error::Io {
         path: PathBuf::from("address"),
         operation,
         code: 5,
     };
-    assert_eq!(reached(&mut sim, &host), Err(client::Error::Files(error)));
+    let error = client::Error::Local(sector::local::Error::Files(error));
+    assert_eq!(reached(&mut sim, &host), Err(error));
 }
 
 #[test]
@@ -135,13 +168,14 @@ fn reach_whose_read_of_the_admin_key_fails_gives_the_file_error() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = crashed(&mut sim);
     let operation = env::files::Operation::ReadAt;
-    host.fail_file(Path::new(crate::admin::FILE), operation);
+    host.fail_file(Path::new(sector::admin::FILE), operation);
     let error = env::files::Error::Io {
         path: PathBuf::from("admin.key"),
         operation,
         code: 5,
     };
-    assert_eq!(reached(&mut sim, &host), Err(client::Error::Files(error)));
+    let error = client::Error::Local(sector::local::Error::Files(error));
+    assert_eq!(reached(&mut sim, &host), Err(error));
 }
 
 #[test]
@@ -154,7 +188,10 @@ fn reach_makes_no_file() {
         })
     };
     let before = list(&mut sim);
-    assert_eq!(reached(&mut sim, &host), Err(client::Error::NotRunning));
+    assert_eq!(
+        reached(&mut sim, &host),
+        Err(client::Error::Local(sector::local::Error::NotRunning))
+    );
     assert_eq!(list(&mut sim), before);
 }
 
@@ -386,13 +423,12 @@ fn operator(
     let slot = Arc::clone(&out);
     shard(host, move |host, tasks| async move {
         let files = host.files();
-        let address = crate::address::read(&files).await.expect("a read");
-        let address = address.expect("a node runs");
+        let local = sector::local::read(&files).await.expect("a node runs");
         let (transport, pool) = program(&host, tasks.clone());
         let config = program::Config {
-            via: address.key,
-            node: address.public_key,
-            addresses: vec![Address::Udp(address.bound)],
+            via: local.key,
+            node: local.public_key,
+            addresses: vec![Address::Udp(local.address)],
             subject: "plant.operator".parse().unwrap(),
             key: OPERATOR,
             clock: host.clock(),

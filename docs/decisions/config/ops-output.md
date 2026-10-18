@@ -214,22 +214,32 @@
   plan file as a list of numbers, which is four times the bytes.
   `plan`, `apply`, `status` (STATUS OPERATION), `browse`, and `import` (IMPORT OP) run
   on the node of `foundation-data`, which `node::client::reach` reaches. The command
-  line gives four codes of its own. `ops.read`: `no file is at <path>`, `<path> is a
-  directory, not a file`, or `the text of <path> is not UTF-8`, status 2, and `the read
-  of <path> failed with OS error <code>`, status 1, each with the fix `Fix the cause in
-  the message, then run the command again`. `ops.large-request`: `the request has more
-  than <n> bytes, the most that a request holds`, for config files whose bytes together
-  pass that bound at their read, or for the encoded request, status 2, fix `Make the
-  config files smaller`; the check comes before the reach. `ops.write`: `the directory
-  of the plan file <path> is not there` or `the write of the plan file <path> failed
-  with OS error <code>`, status 1, fix ``Give `--out`, or `out` of the MCP tool, a path
-  in a directory that can be written``. `ops.bad-reply`: `the reply of the node is no
-  reply: <why>`, status 1, fix ``Use a `foundation` program of the same version as the
-  node``. A failure to reach the node, or of its request, has status 1 and one of the
-  codes `node.not-running`, `node.unreadable`, `node.admin-key`, `node.socket`,
-  `node.unanswered`, `node.session`, `node.refused`, and `node.no-reply`, with the
-  message and fix of decision 3 of plan revision 4 (`laptop.architect-2`,
-  2026-10-11T07:10:55Z,
+  line gives five codes of its own. `ops.read`: `no file is at <path>`, `<path> is a
+  directory, not a file`, `<path> holds more entries than one read lists`, or `the text
+  of <path> is not UTF-8`, status 2, and `the read of <path> failed with OS error
+  <code>`, status 1, each with the fix `Fix the cause in the message, then run the
+  command again`. `ops.large-request`: `the request has more than <n> bytes, the most
+  that a request holds`, for config files whose JSON together passes that bound at their
+  read, where each file counts first by its bytes, before the check of its text, or for
+  the encoded request (`laptop.architect-2`, 2026-10-18T20:17:02Z,
+  https://github.com/synnaxlabs/foundation/pull/3241#issuecomment-6254647508), status
+  2, fix `Make the config files smaller`; the check comes before the reach. `ops.write`:
+  `the directory of the plan file <path> is not there` or `the write of the plan file
+  <path> failed with OS error <code>`, status 1, fix ``Give `--out`, or `out` of the MCP
+  tool, a path in a directory that can be written``. `ops.no-config`: `<path> holds no
+  config file`, status 2, fix ``Add a file whose name ends in `.hcl` and does not start
+  with `.` to <path>, or give another path``, which names each extension of the table,
+  for a directory of `plan`, `browse`, or `import` that gives no config file (FRONT
+  ENDS; `laptop.architect-2`, 2026-10-18T18:23:36Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253485402, and for
+  `browse` and `import`, 2026-10-18T18:34:45Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253598063).
+  `ops.bad-reply`: `the reply of the node is no reply: <why>`, status 1, fix ``Use a
+  `foundation` program of the same version as the node``. A failure to reach the node,
+  or of its request, has status 1 and one of the codes `node.not-running`,
+  `node.unreadable`, `node.admin-key`, `node.version`, `node.socket`, `node.unanswered`,
+  `node.session`, `node.refused`, and `node.no-reply`, with the message and fix of
+  decision 3 of plan revision 4 (`laptop.architect-2`, 2026-10-11T07:10:55Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913). The
   fix of `node.not-running` is ``Start one with `foundation start --name <name>` ``,
   with no `--data`, by decision 7 of plan revision 5
@@ -238,6 +248,29 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136677419).
   `node.session` is by `laptop.architect-2` (2026-10-13T01:44:19Z,
   https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936).
+  `node.version`: `<dir>/data/<file> holds format version <found>, and this
+  foundation reads version <expected>`, with each version byte as its ASCII char, a
+  version of the set of SECTOR VERSIONS, fix ``Use a `foundation` program of the
+  same version as the node``, when `address` or `admin.key` holds a format of another
+  version, which `reach` gives as
+  `node::client::Error::Local(sector::local::Error::Version { .. })`
+  (`laptop.architect-2`: item 7 of
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252508020 at
+  2026-10-18T16:49:11Z;
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252530569 at
+  2026-10-18T16:51:27Z; the code and its fields in
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252630274 at
+  2026-10-18T17:01:02Z; the fix text, that of `ops.bad-reply`, in
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252780856 at
+  2026-10-18T17:15:38Z; the wrapped variant in
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252975559 at
+  2026-10-18T17:34:06Z; the names `found` and `expected`, over `held` and `read` of
+  6252630274, in item 1 of
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6253217340 at
+  2026-10-18T17:57:52Z; the byte as its char, over the escaped byte of 6252630274,
+  in item B of
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6253248771 at
+  2026-10-18T18:00:53Z).
   `node.socket` covers a socket of the program that broke, with the message `the
   socket of this program failed: <the transport error>` (`laptop.architect-2`,
   2026-10-13T02:10:54Z, item 4 of
@@ -419,9 +452,9 @@
   call after a stop or a restart of the node can give `node.no-reply` with nothing sent
   to the node (the deferral, `laptop.architect-2`, 2026-10-16T22:15:00Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6225726721).
-  `browse` (BROWSE) is `foundation browse <connector> <file>... [--start <path>]
-  [--match <pattern> | --cursor <cursor>] [--values]`, and the MCP tool `browse` takes
-  `connector`, `files`, `start`, `match`, `cursor`, and `values`. The request is
+  `browse` (BROWSE) is `foundation browse <connector> <file or directory>... [--start
+  <path>] [--match <pattern> | --cursor <cursor>] [--values]`, and the MCP tool `browse`
+  takes `connector`, `files`, `start`, `match`, `cursor`, and `values`. The request is
   `{"browse":{...}}` with these fields, and `files` as `plan` sends them. The node
   checks, in this order, and stops at the first failure: the files read; the connector
   is a name (`ops.argument`); `config::connector` finds its block; the subject has

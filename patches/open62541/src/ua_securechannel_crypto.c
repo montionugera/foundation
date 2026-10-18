@@ -739,38 +739,17 @@ signAndEncryptSym(UA_MessageContext *messageContext,
     return sp->symEncryptionAlgorithm.encrypt(sp, cc, &dataToEncrypt);
 }
 
-void
-setBufPos(UA_MessageContext *mc) {
-    /* Forward the data pointer so that the payload is encoded after the message
-     * header. This has to be a symmetric message because OPN (with asymmetric
-     * encryption) does not support chunking. */
-    mc->buf_pos = &mc->messageBuffer.data[UA_SECURECHANNEL_SYMMETRIC_HEADER_TOTALLENGTH];
-    mc->buf_end = &mc->messageBuffer.data[mc->messageBuffer.length];
-
-    if(mc->channel->securityMode == UA_MESSAGESECURITYMODE_NONE)
-        return;
-
-    const UA_SecureChannel *channel = mc->channel;
+size_t
+UA_SecureChannel_securedOverhead(const UA_SecureChannel *channel, size_t length) {
     const UA_SecurityPolicy *sp = channel->securityPolicy;
     void *cc = channel->channelContext;
 
-    /* For AEAD (ChaCha20-Poly1305): no padding, no block alignment.
-     * Only reserve space for the authentication tag (signature size). */
-    if(UA_SecurityPolicy_isAead(sp)) {
-        size_t sigsize =
-            sp->symSignatureAlgorithm.getLocalSignatureSize(sp, cc);
-        mc->buf_end -= sigsize;
-        UA_LOG_TRACE_CHANNEL(sp->logger, channel,
-                             "Prepare an AEAD symmetric message buffer of length %lu "
-                             "with a usable maximum payload length of %lu",
-                             (long unsigned)mc->messageBuffer.length,
-                             (long unsigned)((uintptr_t)mc->buf_end -
-                                             (uintptr_t)mc->messageBuffer.data));
-        return;
-    }
+    /* Reserve space for the signature. For AEAD (ChaCha20-Poly1305), it is the
+     * authentication tag, with no padding and no block alignment. */
+    size_t overhead = sp->symSignatureAlgorithm.getLocalSignatureSize(sp, cc);
+    if(UA_SecurityPolicy_isAead(sp))
+        return overhead;
 
-    size_t sigsize =
-        sp->symSignatureAlgorithm.getLocalSignatureSize(sp, cc);
     size_t plainBlockSize =
         sp->symEncryptionAlgorithm.getRemotePlainTextBlockSize(sp, cc);
 
@@ -779,24 +758,46 @@ setBufPos(UA_MessageContext *mc) {
      * sizes are identical. */
     UA_assert(sp->symEncryptionAlgorithm.getRemoteBlockSize(sp, cc) == plainBlockSize);
 
-    /* Leave enough space for the signature and padding */
-    mc->buf_end -= sigsize;
+    /* Leave enough space for the padding */
     UA_assert(plainBlockSize > 0);
-    mc->buf_end -= mc->messageBuffer.length % plainBlockSize;
+    overhead += length % plainBlockSize;
 
     if(channel->securityMode == UA_MESSAGESECURITYMODE_SIGNANDENCRYPT) {
         /* Reserve space for the padding bytes */
         UA_Boolean extraPadding =
             (sp->symEncryptionAlgorithm.getRemoteKeyLength(sp, cc) > 2048);
-        mc->buf_end -= (UA_LIKELY(!extraPadding)) ? 1 : 2;
+        overhead += (UA_LIKELY(!extraPadding)) ? 1 : 2;
     }
+    return overhead;
+}
 
-    UA_LOG_TRACE_CHANNEL(sp->logger, channel,
-                         "Prepare a symmetric message buffer of length %lu "
-                         "with a usable maximum payload length of %lu",
-                         (long unsigned)mc->messageBuffer.length,
-                         (long unsigned)((uintptr_t)mc->buf_end -
-                                         (uintptr_t)mc->messageBuffer.data));
+size_t
+UA_SecureChannel_receivedPayload(const UA_SecureChannel *channel, size_t length) {
+    size_t payload = UA_SecureChannel_chunkPayload(channel, length);
+    if(channel->securityMode != UA_MESSAGESECURITYMODE_SIGNANDENCRYPT)
+        return payload;
+    const UA_SecurityPolicy *sp = channel->securityPolicy;
+    if(UA_SecurityPolicy_isAead(sp))
+        return payload;
+    void *cc = channel->channelContext;
+    /* Part 6, 6.7.2.5.1: the sender keeps at least one byte for the padding size */
+    size_t blocks = (length - UA_SECURECHANNEL_CHANNELHEADER_LENGTH -
+                     UA_SECURECHANNEL_SYMMETRIC_SECURITYHEADER_LENGTH -
+                     sp->symSignatureAlgorithm.getRemoteSignatureSize(sp, cc) - 1) /
+        sp->symEncryptionAlgorithm.getRemoteBlockSize(sp, cc);
+    size_t body = sp->symEncryptionAlgorithm.getRemotePlainTextBlockSize(sp, cc) *
+        blocks - UA_SECURECHANNEL_SEQUENCEHEADER_LENGTH;
+    return body < payload ? body : payload;
+}
+
+void
+setBufPos(UA_MessageContext *mc) {
+    /* Forward the data pointer so that the payload is encoded after the message
+     * header. This has to be a symmetric message because OPN (with asymmetric
+     * encryption) does not support chunking. */
+    mc->buf_pos = &mc->messageBuffer.data[UA_SECURECHANNEL_SYMMETRIC_HEADER_TOTALLENGTH];
+    mc->buf_end = mc->buf_pos +
+        UA_SecureChannel_chunkPayload(mc->channel, mc->messageBuffer.length);
 }
 
 /****************************/
