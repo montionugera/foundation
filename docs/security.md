@@ -28,7 +28,7 @@ attacker can use is a GitHub issue with the `security` label and a failing test.
 | Relay | Drop or delay what it carries | Read or change it: it sees only ciphertext |
 | Unknown client | Open a TLS session with no certificate (`Peer::Client`) | Sign a hello for a subject in the spec |
 | Subject | Sign hellos and session opens with a key in the spec | Go past its `access` allows |
-| Member node | Act as itself and as the connectors placed on it; read and change the traffic of subjects connected through it; use their open sessions until the hello expires; drop or delay what it forwards; put chunks on each node until its store is at the free floor, after which the node's own puts of new chunks give `Error::Floor` (until #1233); hold the pool of the chunk store of each node with put heads, so that its blob streams fail | Hold another node's key; change the spec |
+| Member node | Act as itself and as the connectors placed on it; read and change the traffic of subjects connected through it; use their open sessions until the hello expires; drop or delay what it forwards; put chunks on each node until its store is at the free floor, after which the node's own puts of new chunks give `Error::Floor` (until #1233); hold the 8 receipts of the chunk store of each node with put heads, so that each later put of a peer waits | Hold another node's key; change the spec |
 | Home of an index | Write any data into the index, run its gate, lie to its readers | Act outside its placement |
 | Voter | Vote and stall its region; break `raft` safety (Node to node); until #1273, commit a home that is not a member, so that each node that opens an unnamed reader of its index aborts; until #3179, hold back the card of a member, a minute at a time, with a forged or old card | Forge a spec change, not built (#1213), or move a home outside placement, not built (#2287) |
 | Time source | Shift the clocks that follow it, within what the estimator accepts | |
@@ -281,10 +281,10 @@ state on `main`.
   holds at most one chunk in memory for each stream. `transport` copies each part of a
   chunk and holds no block of it, so a peer that delays its acks pins only copies inside
   `window_bytes`. `node` routes a blob stream only from a node that is a member of its
-  region at the header, and rejects each other one (#1232). The store takes its
-  blocks from its own pool, cut from the budget of shard 0. So a member that sends put
-  heads and no bodies holds only that pool: blob streams then fail, and the transport
-  and the mesh go on.
+  region at the header, and rejects each other one (#1232). A put head holds no block,
+  and at most 8 receipts are open at one time (BLOB PEER). So a member that sends put
+  heads and no bodies holds no block of the pool of shard 0: the transport and the
+  mesh go on, and each later put of a peer waits for a receipt.
 - `blob::peer::get` trusts the peer no more than `serve` does: a head of the oldest open
   digest over the largest block of its pool stops the stream with `TOO_LARGE`, and bytes
   that do not hash to the digest stop it with `MISMATCH` and are not stored. So a binary

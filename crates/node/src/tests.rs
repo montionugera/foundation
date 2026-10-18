@@ -4912,14 +4912,7 @@ pub(crate) mod port {
             let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
             let mut region = region(&pair(&hosts));
             if keys > 0 {
-                let keys = (0..keys).map(|n| {
-                    let mut bytes = [0; 32];
-                    bytes[..2].copy_from_slice(&n.to_le_bytes());
-                    PrivateKey(bytes).public()
-                });
-                let subject = Subject::new(keys.collect()).unwrap();
-                let label = Kind::Subject.key("plant.operator").unwrap();
-                region.definitions = [(label, Definition::Subject(subject))].into();
+                region.definitions = subject(keys);
             }
             let node = Node::start(Config {
                 region: Region::Given(region),
@@ -4929,6 +4922,18 @@ pub(crate) mod port {
             node.stop();
             assert_eq!(sim.run(), Ok(()));
             node.join()
+        }
+
+        /// The definitions of the subject `plant.operator` of `keys` keys.
+        fn subject(keys: u16) -> BTreeMap<Name, Definition> {
+            let keys = (0..keys).map(|n| {
+                let mut bytes = [0; 32];
+                bytes[..2].copy_from_slice(&n.to_le_bytes());
+                PrivateKey(bytes).public()
+            });
+            let subject = Subject::new(keys.collect()).unwrap();
+            let label = Kind::Subject.key("plant.operator").unwrap();
+            [(label, Definition::Subject(subject))].into()
         }
 
         /// A node of the least message limit that its transport takes, 1472 bytes,
@@ -5100,6 +5105,62 @@ pub(crate) mod port {
             assert_eq!(seen, Some((Ok(()), Ok(vec![]), Some(b"chunk".to_vec()))));
         }
 
+        /// A put of a member whose bytes do not hash to its digest ends its stream with
+        /// `MISMATCH`, and the node logs the store's error as a warning.
+        #[test]
+        fn a_store_failure_on_a_blob_stream_of_a_member_logs_a_warning() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let lines = super::super::log::Lines::default();
+            let node = Node::start(Config {
+                region: Region::Given(region(&pair(&hosts))),
+                log: super::super::log::to(&lines, false, tracing::Level::INFO),
+                ..config(&hosts[0], Size::MEBIBYTE, Box::new(heap))
+            });
+            let peer = sim.node(sim::node::Config::default());
+            let at = [Address::Udp(listen(&hosts[0]))];
+            let digest = types::digest::Digest::of(b"chunk");
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&peer, move |own, tasks| async move {
+                let (transport, pool) = transport(&own, tasks, OTHER.1);
+                let session =
+                    transport.dial(KEY.public(), &at).await.expect("a session");
+                let (mut sender, mut receiver) =
+                    session.open(Class::Complete).await.expect("a stream");
+                let header = wire::header::encode(wire::Protocol::Blob);
+                let mut head = [0; wire::blob::Put::LEN];
+                wire::blob::Put { digest, len: 5 }.encode(&mut head);
+                for bytes in [&header[..], &head, b"other"] {
+                    drop(sender.send(pool.copy(bytes).unwrap()).await);
+                }
+                let read = receiver.recv().await.map(|m| m.map(|b| b.to_vec()));
+                *seen.lock().unwrap() = Some(read);
+                drop((sender, session, transport));
+            });
+            assert_eq!(sim.run_for(Span::HOUR), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            assert_eq!(sim.run(), Ok(()));
+            let code = Code(wire::blob::MISMATCH);
+            let read = out.lock().unwrap().take();
+            assert_eq!(read, Some(Err(transport::Error::Reset { code })));
+            let found = types::digest::Digest::of(b"other");
+            let error = blob::Error::Mismatch { digest, found };
+            let warned: Vec<_> = lines
+                .read()
+                .iter()
+                .filter_map(|line| line.get(28..).map(str::to_owned))
+                .filter(|line| line.starts_with("WARN "))
+                .collect();
+            let line = format!(
+                "WARN node::route: the store ended a blob stream of a member \
+                 error=\"{error}\""
+            );
+            assert_eq!(warned, [line]);
+        }
+
         /// A member that sends put heads of the largest block of shard 0's pool and no
         /// bodies, more than the 8 puts that the store holds open, holds no block of
         /// the pool, so a hub stream of the member still goes to the hub, which stops
@@ -5119,12 +5180,13 @@ pub(crate) mod port {
                     transport.dial(KEY.public(), &at).await.expect("a session");
                 let message = |bytes: &[u8]| pool.copy(bytes).unwrap();
                 let mut streams = Vec::new();
-                let largest = block::Pool::heap(block::Config::new(512 << 10).unwrap())
-                    .largest();
+                let largest =
+                    block::Pool::heap(block::Config::new(512 << 10).unwrap()).largest();
                 let largest = u32::try_from(largest).unwrap();
                 // A head of each size of block, from the largest down, in fewer streams
                 // than the 64 of a session.
-                let lens = std::iter::successors(Some(largest), |len| Some(len * 5 / 6));
+                let lens =
+                    std::iter::successors(Some(largest), |len| Some(len * 5 / 6));
                 let lens = lens.take_while(|&len| len >= 64);
                 for (byte, len) in (0_u16..).zip(lens) {
                     let (mut sender, receiver) =
