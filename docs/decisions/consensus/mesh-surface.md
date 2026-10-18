@@ -157,15 +157,18 @@
   of a peer only when a member holds the key that its transport proves. It gives the
   key, not a `Member`, which a caller reads with `Mesh::member` when it needs the
   record. At most one member holds a key: `region::State::fits` refuses a second with
-  `Unfit::Held`, at open and at each join. A `Card` change keeps the public key of its
-  member (MEMBER RECORD), so `Held` holds with no new check (`laptop.architect`,
-  2026-10-18T03:29:11Z:
-  https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245196820).
+  `Unfit::Held`, at open and at each join.
   Lost: a map by public key, a second copy that each write of the members must keep in
   step; `Option<Member>`, which clones the names, addresses, and status at each stream,
   and which a caller can keep after the record changes; `admits -> bool`, which fits
   only one caller. Decided by `laptop.architect` (2026-10-08T22:29:26Z:
-  https://github.com/synnaxlabs/foundation/issues/2023#issuecomment-6070338077). The
+  https://github.com/synnaxlabs/foundation/issues/2023#issuecomment-6070338077). A
+  `Card` change keeps the public key of its member (MEMBER RECORD), so `Held` holds
+  with no new check (`laptop.architect`, 2026-10-18T03:29:11Z:
+  https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245196820).
+  Supersedes the trigger "the change that first replaces a card checks `Held` against
+  each other member" of
+  https://github.com/synnaxlabs/foundation/issues/2023#issuecomment-6070338077. The
   scan makes `region::State::new` O(n²) in the members: 129 µs at 255 members on a
   shared Intel Xeon Platinum 8488C, accepted by `laptop.architect`
   (2026-10-08T23:10:50Z:
