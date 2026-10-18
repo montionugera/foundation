@@ -229,8 +229,11 @@
   program finishes the stream: the writer closes before the node waits for those
   commits. Each frame takes a block for its outcome from the home's pool before it takes
   a draft, and a frame that finds none stops the stream with `BUSY`, so the home took no
-  frame past the last outcome. Then the frame takes a block for the next `Stored` when
-  the stream holds none, and a frame that finds none gets `Refused(Full)`. So each
+  frame past the last outcome. After its body, right before the home takes it, the
+  frame takes a block for the next `Stored` when the stream holds none, and a frame
+  that finds none gets `Refused(Full)`. A frame that the home does not take, while no
+  taken frame waits for a `Stored`, gives that block back, so a stream holds at most
+  two such blocks, and none while it idles. So each
   taken frame has the block of its `Stored`: the node sends each `Stored` when its
   commit ends, also while the pool is full, and the finish waits only for the commits.
   A stream that stops sends no `Stored` after the stop (amended by #3207). A
@@ -314,6 +317,9 @@
   accepted by `laptop.monitor` as a key choice at 2026-10-18T18:54:12Z
   (https://github.com/synnaxlabs/foundation/issues/3207#issuecomment-6253796728) and
   2026-10-18T18:58:45Z
-  (https://github.com/synnaxlabs/foundation/issues/3207#issuecomment-6253842265). Lost:
+  (https://github.com/synnaxlabs/foundation/issues/3207#issuecomment-6253842265). The
+  reserve after the body and the release after a frame that the home does not take:
+  OK of `laptop.architect` at 2026-10-18T19:40:34Z
+  (https://github.com/synnaxlabs/foundation/pull/3247#issuecomment-6254282232). Lost:
   a `Stored` that finds no block tries again every 10 ms, which sends it up to 10 ms
   after a free and keeps a poller of the pool.
