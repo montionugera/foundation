@@ -38,7 +38,7 @@ impl Walk {
             steps: Vec::new(),
             names: VecDeque::new(),
             at: 0,
-            links: 0,
+            links: LINKS,
         };
         let end = walker.run(path);
         Self {
@@ -74,6 +74,7 @@ struct Walker<'a> {
     names: VecDeque<Name>,
     /// The step of the directory that the next name is in.
     at: usize,
+    /// The links that the walk can still follow.
     links: usize,
 }
 
@@ -172,12 +173,12 @@ impl Walker<'_> {
         let index = self.steps.len() - 1;
         match entry {
             Ok(Entry::Link(_, target)) => {
-                self.links += 1;
-                if self.links > LINKS {
+                let Some(links) = self.links.checked_sub(1) else {
                     self.steps[index].own = None;
                     self.at = index;
                     return Err(self.driver.looped());
-                }
+                };
+                self.links = links;
                 if target.has_root() {
                     self.root(&target)?;
                 } else {

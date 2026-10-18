@@ -372,11 +372,10 @@ impl Paths {
             };
             match (&walk.end, walk.steps.last()) {
                 (Ok(Ok(())), Some(Step { own: Some(key), .. })) => Seen::There(*key),
-                (Ok(Ok(())) | Err(Error::NotFound), Some(step))
-                    if step.own.is_none() =>
-                {
-                    Seen::Vacant(deepest(step))
-                }
+                (
+                    Ok(Ok(())) | Err(Error::NotFound),
+                    Some(step @ Step { own: None, .. }),
+                ) => Seen::Vacant(deepest(step)),
                 _ => Seen::Refused,
             }
         });
@@ -623,17 +622,20 @@ mod tests {
     use super::*;
 
     /// One file, at any path but one under `/none`, where each other name is a
-    /// directory. The name `link` is a link to `/out`, and `/none/deep` one to
-    /// `/none/new/a`. A directory that it makes is the file `dir`. A name in `/none` is
-    /// there only while the last write made a directory, and a name that starts with
-    /// `new` never. The key of a path ignores case. The name `Gone`, in that case,
-    /// gives `Io` 13 after a write of `gone`. The key of a name that starts with `swap`
-    /// in any case takes the bytes of the file after the path, so a write gives it a
-    /// new key: after a write of `x`, `/work/swap` has the key that `/work/swapx` had
-    /// before it. The name `io` gives `Io` 5. After a write of `hop`, `/hop` is a link
-    /// to `/out`. A path in `/volume` has the key of the path without `/volume`, as a
-    /// second mount of `/` does. It counts its calls of `entry`, and a relative path is
-    /// under its working directory, `/` at first.
+    /// directory, other than a name that ends in `.hcl`, which is a file, and a path
+    /// with a name after one, which gives `Io` 20. After a write of `loop`, the name
+    /// `loop` is a link to itself. `c<n>` for n from 1 is a link to `c<n - 1>`, and
+    /// `link` a link to `/out`.
+    /// `/none/deep` is a link to `/none/new/a`. A directory that it makes is the file
+    /// `dir`. A name in `/none` is there only while the last write made a directory,
+    /// and a name that starts with `new` never. The key of a path ignores case. The
+    /// name `Gone`, in that case, gives `Io` 13 after a write of `gone`. The key of a
+    /// name that starts with `swap` in any case takes the bytes of the file after the
+    /// path, so a write gives it a new key: after a write of `x`, `/work/swap` has the
+    /// key that `/work/swapx` had before it. The name `io` gives `Io` 5. After a write
+    /// of `hop`, `/hop` is a link to `/out`. A path in `/volume` has the key of the path
+    /// without `/volume`, as a second mount of `/` does. It counts its calls of
+    /// `entry`, and a relative path is under its working directory, `/` at first.
     #[derive(Debug, Default)]
     struct One(RefCell<Vec<u8>>, Rc<Cell<usize>>, Rc<RefCell<PathBuf>>);
 
@@ -672,6 +674,10 @@ mod tests {
             if name == b"io" {
                 return Err(Error::Io { code: 5 });
             }
+            let bytes = path.as_os_str().as_encoded_bytes();
+            if bytes.windows(5).any(|part| part == b".hcl/") {
+                return Err(Error::Io { code: 20 });
+            }
             if name == b"Gone" && *data == b"gone" {
                 return Err(Error::Io { code: 13 });
             }
@@ -700,7 +706,17 @@ mod tests {
                 Some("/none/deep") => Entry::Link(key, "/none/new/a".into()),
                 Some("/hop") if *data == b"hop" => Entry::Link(key, "/out".into()),
                 _ if name == b"link" => Entry::Link(key, "/out".into()),
-                _ => Entry::Directory(key),
+                _ if name == b"loop" && *data == b"loop" => {
+                    Entry::Link(key, "loop".into())
+                }
+                _ if name.ends_with(b".hcl") => Entry::File(key),
+                _ => match name
+                    .strip_prefix(b"c")
+                    .and_then(|n| str::from_utf8(n).ok()?.parse::<u8>().ok())
+                {
+                    Some(n @ 1..) => Entry::Link(key, format!("c{}", n - 1).into()),
+                    _ => Entry::Directory(key),
+                },
             })
         }
 
@@ -1080,5 +1096,54 @@ mod tests {
         for path in ["a\\", "a\\.."] {
             assert_eq!(names_directory(Path::new(path)), cfg!(windows), "{path:?}");
         }
+    }
+
+    #[test]
+    fn a_file_before_a_name_or_an_end_in_a_separator_gives_the_error_of_the_host() {
+        let paths = Paths::new(One::default())
+            .within(&["/work".into()], &[])
+            .unwrap();
+        paths.write(Path::new("/work/a.hcl"), b"x").unwrap();
+        let file = Ok(Found::File(b"x".to_vec()));
+        assert_eq!(paths.read(Path::new("/work/a.hcl"), 1), file);
+        for path in [
+            "/work/a.hcl/",
+            "/work/a.hcl/.",
+            "/work/a.hcl/..",
+            "/work/a.hcl/x",
+        ] {
+            assert_eq!(reached(&paths, path), Err(Error::Io { code: 20 }), "{path}");
+        }
+    }
+
+    #[test]
+    fn a_walk_follows_40_links_and_past_them_gives_the_error_of_the_host() {
+        let paths = Paths::new(One::default());
+        let resolved = paths.resolve(Path::new("/work/c40"));
+        assert_eq!(resolved, Ok(PathBuf::from("/work/c0")));
+        let looped = Err(Error::Io { code: 40 });
+        assert_eq!(paths.resolve(Path::new("/work/c41")), looped);
+        paths.write(Path::new("/work/a"), b"loop").unwrap();
+        assert_eq!(paths.resolve(Path::new("/work/loop")), looped);
+    }
+
+    #[test]
+    fn make_dir_gives_replaced_for_a_loop_at_the_path_of_a_folder() {
+        let paths = Paths::new(One::default());
+        let within = paths.within(&["/work/loop".into()], &[]).unwrap();
+        paths.write(Path::new("/work/a"), b"loop").unwrap();
+        let made = within.make_dir(Path::new("/work/loop"));
+        assert_eq!(made, Err(Error::Replaced));
+    }
+
+    #[test]
+    fn make_dir_reaches_the_host_when_the_host_refuses_the_last_name() {
+        let paths = Paths::new(One::default())
+            .within(&["/work".into()], &[])
+            .unwrap();
+        let made = paths.make_dir(Path::new("/work/io"));
+        assert_eq!(made, Err(Error::Io { code: 5 }));
+        let file = Ok(Found::File(b"dir".to_vec()));
+        assert_eq!(paths.read(Path::new("/work/a"), 3), file);
     }
 }

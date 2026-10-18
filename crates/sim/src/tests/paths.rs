@@ -5,7 +5,7 @@ mod cases;
 
 use std::path::{Path, PathBuf};
 
-use env::paths::{Error, Found};
+use env::paths::{Driver, Entry, Error, Found};
 
 use crate::{Config, Crash, Sim, node};
 use cases::Host;
@@ -330,6 +330,21 @@ fn the_home_is_none_until_a_node_sets_it_and_then_resolves() {
     assert_eq!(paths.home(), None);
     node.make_dir(Path::new("/users"));
     assert_eq!(paths.home(), Some(PathBuf::from("/users/user")));
+}
+
+#[test]
+fn an_entry_follows_a_link_before_an_end_in_a_separator_as_lstat_does() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/out"));
+    node.link_path(Path::new("/link"), Path::new("/out"));
+    let link = node.0.entry(Path::new("/link"));
+    assert!(
+        matches!(&link, Ok(Entry::Link(_, target)) if target == Path::new("/out")),
+        "{link:?}"
+    );
+    let end = node.0.entry(Path::new("/link/"));
+    assert!(matches!(end, Ok(Entry::Directory(_))), "{end:?}");
+    assert_eq!(end, node.0.entry(Path::new("/out")));
 }
 
 #[test]
