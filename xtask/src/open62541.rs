@@ -460,7 +460,7 @@ const SYMBOLS: [&str; 30] = [
 /// an algorithm and not its result. A PEM reader reads no console only with a callback
 /// of [`PASSWORDS`], which [`passwords`] checks.
 #[rustfmt::skip]
-const AWS_LC: [&str; 149] = [
+const AWS_LC: [&str; 150] = [
     "ASN1_INTEGER_cmp", "BIO_free", "BIO_new_mem_buf", "BIO_reset", "BN_bin2bn",
     "BN_bn2binpad", "BN_free", "BN_new", "BN_set_word", "ECDSA_SIG_free",
     "ECDSA_SIG_get0", "ECDSA_SIG_new", "ECDSA_SIG_set0", "ECDSA_size",
@@ -489,17 +489,17 @@ const AWS_LC: [&str; 149] = [
     "EVP_sha256", "EVP_sha384", "GENERAL_NAME_free", "HMAC", "OBJ_txt2nid",
     "OPENSSL_cleanse", "OPENSSL_free", "OPENSSL_sk_free", "OPENSSL_sk_new_null",
     "OPENSSL_sk_num", "OPENSSL_sk_pop_free_ex", "OPENSSL_sk_push", "OPENSSL_sk_value",
-    "PEM_read_bio_PrivateKey", "PEM_read_bio_X509", "PEM_read_bio_X509_CRL",
-    "PEM_read_bio_X509_REQ", "RSA_free", "RSA_new", "RSA_size", "X509V3_EXT_conf_nid",
-    "X509_CRL_digest", "X509_CRL_free", "X509_CRL_get_REVOKED", "X509_CRL_get_issuer",
-    "X509_EXTENSION_free", "X509_NAME_add_entry_by_txt", "X509_NAME_cmp",
-    "X509_NAME_dup", "X509_NAME_free", "X509_NAME_new", "X509_NAME_oneline",
-    "X509_REQ_add_extensions", "X509_REQ_free", "X509_REQ_get_pubkey", "X509_REQ_new",
-    "X509_REQ_set_pubkey", "X509_REQ_set_subject_name", "X509_REQ_set_version",
+    "PEM_read_bio_PrivateKey", "PEM_read_bio_X509", "PEM_read_bio_X509_AUX",
+    "PEM_read_bio_X509_CRL", "PEM_read_bio_X509_REQ", "RSA_free", "RSA_new", "RSA_size",
+    "X509V3_EXT_conf_nid", "X509_CRL_digest", "X509_CRL_free", "X509_CRL_get_REVOKED",
+    "X509_CRL_get_issuer", "X509_EXTENSION_free", "X509_NAME_add_entry_by_txt",
+    "X509_NAME_cmp", "X509_NAME_dup", "X509_NAME_free", "X509_NAME_new",
+    "X509_NAME_oneline", "X509_REQ_add_extensions", "X509_REQ_free",
+    "X509_REQ_get_pubkey", "X509_REQ_new", "X509_REQ_set_pubkey",
+    "X509_REQ_set_subject_name", "X509_REQ_set_version",
     "X509_REVOKED_get0_serialNumber", "X509_check_private_key", "X509_cmp",
     "X509_cmp_time_posix", "X509_digest", "X509_free", "X509_get0_pubkey",
-    "X509_get0_serialNumber",
-    "X509_get_ext", "X509_get_ext_by_NID", "X509_get_ext_d2i",
+    "X509_get0_serialNumber", "X509_get_ext", "X509_get_ext_by_NID", "X509_get_ext_d2i",
     "X509_get_extension_flags", "X509_get_issuer_name", "X509_get_key_usage",
     "X509_get_notAfter", "X509_get_notBefore", "X509_get_pubkey",
     "X509_get_subject_name", "X509_verify", "d2i_AutoPrivateKey", "d2i_ECDSA_SIG",

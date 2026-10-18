@@ -1029,18 +1029,26 @@
   back to back, or of PEM certificates; the copy loads each certificate of each
   trust entry, and refuses an entry whose load stops before its end, and the
   constructor of the group gives that status (ruling A). PEM is read by the loop of
-  `PEM_read_bio_X509` of aws-lc, which skips the text outside each certificate
-  block, not by the leaf loader of the copy, which drops a block that does not start
-  with the exact line `-----BEGIN CERTIFICATE-----` (round 2 of review of #3271). An
-  issuer entry keeps the
+  `PEM_read_bio_X509_AUX` of aws-lc, which takes `CERTIFICATE`, `X509 CERTIFICATE`,
+  and `TRUSTED CERTIFICATE` blocks and skips the text outside them, not by the leaf
+  loader of the copy, which drops a block that does not start with the exact line
+  `-----BEGIN CERTIFICATE-----` (round 2 of review of #3271). This supersedes item 1
+  of https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255744593. A
+  DER entry with a byte after its last certificate, and DER then PEM in one entry,
+  give `BadInternalError`; a block with a damaged `BEGIN` line is text, so the
+  connect fails closed with an untrusted certificate (`laptop.architect-2`,
+  2026-10-18 22:30 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255959458).
+  `laptop.monitor` accepted that the readers of aws-lc read the trust, and our own
+  PEM parser lost (message 20c8b048 to `box1.builder-3`). An issuer entry keeps the
   load of the release (`laptop.architect-2`,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255744593, item
   2). The validity check of the own certificate and the map
   of each refusal in `kind.rs` move to PR 2b (`laptop.architect-2`,
   2026-10-18 21:37 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255457069, items 1
-  and 2). The person accepted the trust as one byte string, through `laptop.monitor`
-  (2026-10-18 22:11 UTC), on one condition: the user never sees only
+  and 2). `laptop.monitor` accepted the trust as one byte string
+  (2026-10-18 22:03 UTC), on one condition: the user never sees only
   `BadInternalError`. The check of PR 2b names the source and the certificate that
   does not parse, before the run, and the plan of PR 2b names the test that pins that
   text (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6255781688).

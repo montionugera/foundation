@@ -186,6 +186,15 @@ fn a_client_that_trusts_a_second_x509_certificate_block_reads() {
 }
 
 #[test]
+fn a_client_that_trusts_a_second_trusted_certificate_block_reads() {
+    let (other, server) = blocks();
+    let server = server.replace(" CERTIFICATE-----", " TRUSTED CERTIFICATE-----");
+    let trust = format!("{other}{server}").into_bytes().leak();
+    let read = trusting(trust).expect("the client connects");
+    assert_eq!(read.answer, Ok(read.value));
+}
+
+#[test]
 fn a_client_with_a_pem_certificate_and_key_reads() {
     let client = with(CLIENT_PEM, SERVER.certificate);
     let (read, _) = connect(
