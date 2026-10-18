@@ -8,6 +8,7 @@ mod admin;
 #[doc(hidden)]
 pub mod bench;
 mod budget;
+mod card;
 mod cause;
 pub mod client;
 mod connectors;
@@ -936,10 +937,7 @@ impl Bind {
             .map_err(|error| Error::Port { listen, error })?;
         let region = match self.region {
             Region::Absent => Opening::Absent,
-            Region::Stored => Opening::Stored {
-                name: name.clone(),
-                addresses: root::addresses(bound.addresses()),
-            },
+            Region::Stored => Opening::Stored { name: name.clone() },
             #[cfg(feature = "sim")]
             Region::Given(founding) => Opening::Given(founding),
         };
@@ -961,6 +959,8 @@ struct Endpoint {
     part: transport::port::Part,
     /// Where the port is bound.
     bound: SocketAddr,
+    /// The addresses of the port that a peer can dial.
+    addresses: mesh::card::addresses::Addresses,
     region: Opening,
     clock: env::clock::Clock,
     entropy: env::entropy::Entropy,
@@ -973,12 +973,8 @@ struct Endpoint {
 enum Opening {
     /// No region: the node opens no mesh.
     Absent,
-    /// The founding in the mesh directory, else the root region with a card of `name`
-    /// and `addresses`.
-    Stored {
-        name: types::name::Name,
-        addresses: mesh::card::addresses::Addresses,
-    },
+    /// The founding in the mesh directory, else the root region with a card of `name`.
+    Stored { name: types::name::Name },
     /// This founding.
     #[cfg(feature = "sim")]
     Given(mesh::region::Founding),
@@ -987,7 +983,7 @@ enum Opening {
 impl Opening {
     /// The founding of the region in `files`, or `None` for no region. When the mesh
     /// directory holds no founding, it is the root region that [`root::founding`]
-    /// gives.
+    /// gives, with `addresses` on its card.
     ///
     /// # Errors
     ///
@@ -1000,10 +996,11 @@ impl Opening {
         time: &clock::Reader,
         entropy: &env::entropy::Entropy,
         identity: &identity::Identity,
+        addresses: mesh::card::addresses::Addresses,
     ) -> Result<Option<mesh::region::Founding>, Error> {
         match self {
             Self::Absent => Ok(None),
-            Self::Stored { name, addresses } => {
+            Self::Stored { name } => {
                 let stored = mesh::founding(files, &directory::mesh(), pool).await;
                 if let Some(founding) = stored.map_err(Error::Mesh)? {
                     return Ok(Some(founding));
@@ -1029,12 +1026,14 @@ impl Endpoint {
         settings: Settings,
     ) -> Self {
         let bound = address::bound(&port);
+        let addresses = mesh::card::addresses::Addresses::dialable(port.addresses());
         let mut parts = port.split(NonZeroUsize::MIN);
         Self {
             part: parts
                 .pop()
                 .expect("invariant: a port splits into the parts asked for"),
             bound,
+            addresses,
             region,
             clock,
             entropy,
@@ -1091,6 +1090,7 @@ impl Endpoint {
             time,
             &self.entropy,
             &identity,
+            self.addresses,
         );
         let founding = match founding.await {
             Ok(Some(founding)) => founding,
@@ -1183,6 +1183,7 @@ impl Serve {
         let (key, entropy) = (identity.key, endpoint.entropy.clone());
         let (clock, net) = (endpoint.clock.clone(), endpoint.net.clone());
         let address = endpoint.address(&identity);
+        let addresses = endpoint.addresses.clone();
         let (settings, vars, name) = (endpoint.settings, self.vars, self.name);
         let roots = self.roots;
         let shards = self.shards;
@@ -1216,6 +1217,7 @@ impl Serve {
                 drop(certificates);
                 let text = source.to_string();
                 drop(source);
+                let mut calls = scope::Scope::new(tasks.clone());
                 tracing::info!(%name, address = %address.bound, shards, "started");
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,
@@ -1258,9 +1260,16 @@ impl Serve {
                         roots: ops::roots::Failures::new(text, failures),
                     }));
                     let runs = connectors::Runs::new(supervisor, tasks.clone(), name);
+                    let set = card::set(
+                        mesh.clone(),
+                        addresses,
+                        address.bound,
+                        clock.clone(),
+                    );
+                    calls.spawn(Box::pin(set));
                     (Some(ops), Some(follow(mesh, hub.clone(), runs).await))
                 } else {
-                    drop((text, failures));
+                    drop((text, failures, addresses));
                     (None, None)
                 };
                 let handles = task::Handles { hub, ops };

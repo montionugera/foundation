@@ -167,11 +167,22 @@
   Shard 0 reads the founding of the mesh directory with `mesh::founding`. When the
   directory holds none, the node founds the root region alone: one member, the node,
   whose card has `Config::name`, the public halves of the two private keys of
-  `node.key`, the addresses that the port bound but an IPv6 address with flow info or a
-  scope, and version 1, with 64 zero bytes as its admission; that node as the one voter;
-  the definitions of `spec::founding::create` with the public key of the first admin;
-  and no home. The card filter: approved by `laptop.architect` (2026-10-10T23:18:37Z,
-  https://github.com/synnaxlabs/foundation/pull/2310#issuecomment-6103243825). The
+  `node.key`, the addresses that the port bound that a peer can dial
+  (`Addresses::dialable`: no unspecified address, and no IPv6 address with flow info
+  or a scope), and version 1, with 64 zero bytes as its admission; that node as the one
+  voter; the definitions of `spec::founding::create` with the public key of the first
+  admin; and no home. The card filter: approved by `laptop.architect`
+  (2026-10-10T23:18:37Z,
+  https://github.com/synnaxlabs/foundation/pull/2310#issuecomment-6103243825), and
+  amended (2026-10-18, #2283 PR C) to drop an unspecified address. At each start with a
+  region, the node calls `Mesh::set_addresses` with those addresses. The start does
+  not wait for the call, and the stop of the node ends it. When the addresses are
+  empty, the call first logs the warning "no peer can dial this node: give `--listen`
+  an address of this host", with the bound address. After `mesh::Error::Soon`, it logs
+  a warning and calls again a minute later. After another error but
+  `mesh::Error::Stopped`, it logs a warning, and the card keeps its addresses. Key
+  choices 2 and 9, accepted:
+  https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6245123301. The
   first admin's private key is in the file `admin.key` of the data
   directory: 54 bytes, the tag `foundation/admin/1`, the Ed25519 private key, and the
   CRC32C of those 50 bytes (little-endian), in one sector. Shard 0 reads it, or makes it
