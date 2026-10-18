@@ -730,6 +730,46 @@ fn a_record_panics_when_its_status_reader_ends() {
 }
 
 #[test]
+fn a_record_keeps_each_status_of_a_frame_oldest_first() {
+    on_rig(
+        || Table::new().with("ends", Ends),
+        |rig, clock| async move {
+            let (config, plant) = (Document::default(), name("plant.ends"));
+            let names = rig.define_status("ends", &plant, &config);
+            let record = rig.record(&names).await;
+            let lasts = &STATUS_LASTS;
+            let mut writer = open_status(rig.hub(), "plant.ends", lasts).await;
+            write_columns(&mut writer, statuses(&[(1, 5), (0, 6)]));
+            clock.sleep(Span::SECOND).await;
+            let got: Vec<_> = record
+                .readings()
+                .into_iter()
+                .map(|reading| (reading.state, reading.restarts))
+                .collect();
+            assert_eq!(got, [(State::Restarting, 5), (State::Running, 6)]);
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "invariant: each status frame holds the whole status")]
+fn a_record_panics_at_a_frame_with_no_state() {
+    on_rig(
+        || Table::new().with("ends", Ends),
+        |rig, clock| async move {
+            let (config, plant) = (Document::default(), name("plant.ends"));
+            let names = rig.define_status("ends", &plant, &config);
+            let _record = rig.record(&names).await;
+            let lasts = &["class", "restarts"];
+            let mut writer = open_status(rig.hub(), "plant.ends", lasts).await;
+            let columns = vec![Column::Numbers(vec![0]), Column::Numbers(vec![1])];
+            write_columns(&mut writer, columns);
+            clock.sleep(Span::SECOND).await;
+        },
+    );
+}
+
+#[test]
 #[should_panic(expected = "the status reader missed the seqs ")]
 fn next_panics_at_a_status_that_its_reader_missed() {
     on_rig(
