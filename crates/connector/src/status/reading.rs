@@ -54,6 +54,7 @@ impl Reading {
     ///
     /// As [`Self::of`], and when a channel of `received` has fewer samples than
     /// another.
+    #[cfg(any(test, feature = "sim"))]
     pub(crate) fn each(received: &Received<'_>) -> Option<Vec<Self>> {
         let view = received.view();
         let counts = view.iter().map(|(entry, _)| {
@@ -164,9 +165,10 @@ fn nth_back(data_type: Type, count: u32, bytes: &[u8], back: u32) -> Vec<u8> {
         let width = width.expect("invariant: a fixed type has a width");
         raw.rchunks_exact(width).nth(back)
     };
-    sample
-        .expect("a channel with a sample `back` before its last")
-        .to_vec()
+    let sample = sample.unwrap_or_else(|| {
+        panic!("a channel with {count} samples has none {back} before its last")
+    });
+    sample.to_vec()
 }
 
 /// The sample `bytes` of an unsigned type of at most 8 bytes, as a `u64`.
