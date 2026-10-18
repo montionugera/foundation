@@ -2088,7 +2088,7 @@ fn relay_url(node: &node::Node) -> String {
 /// A rewrite that puts the URL of the test server in place of each copy of the URL of
 /// [`RELAY`], as a server behind a NAT or in a container gives a URL that its client
 /// did not dial.
-fn to_server(node: &node::Node) -> impl FnMut(&mut Vec<u8>) {
+fn to_server(node: &node::Node) -> impl FnMut(&mut Vec<u8>) + use<> {
     let from = relay_url(node).into_bytes();
     let to = format!("opc.tcp://{}:{PORT}", node.addresses()[0]).into_bytes();
     assert_eq!(from.len(), to.len(), "the message keeps its length");
@@ -2219,37 +2219,24 @@ fn a_connect_through_a_switch_of_the_endpoint_url_reads() {
 /// switch the security mode, and the client refuses that mode before it dials.
 #[test]
 fn a_switch_of_the_security_mode_ends_with_its_status() {
-    let (out, _) = run(0, async |node| {
-        serve(&node, 4, async |mut peer| {
-            let control = Relay::default();
-            let url = relay_url(&node);
-            let clock = Clock::clone(&peer.clock);
-            let mut from = vec![1, 0, 0, 0, 47, 0, 0, 0];
-            from.extend_from_slice(b"http://opcfoundation.org/UA/SecurityPolicy#None");
-            let rewrite = |message: &mut Vec<u8>| {
-                let endpoints = message.starts_with(b"MSG")
-                    && message[24..28] == ENDPOINTS_RESPONSE;
-                if endpoints && control.accepts.get() == 1 {
-                    let mut at = 0;
-                    while let Some(found) = message[at..]
-                        .windows(from.len())
-                        .position(|w| *w == from[..])
-                    {
-                        at += found;
-                        message[at] = 2;
-                        at += from.len();
-                    }
+    let out = relayed_connect(|_| {
+        let mut from = vec![1, 0, 0, 0, 47, 0, 0, 0];
+        from.extend_from_slice(b"http://opcfoundation.org/UA/SecurityPolicy#None");
+        move |control: &Relay, message: &mut Vec<u8>| {
+            let endpoints =
+                message.starts_with(b"MSG") && message[24..28] == ENDPOINTS_RESPONSE;
+            if endpoints && control.accepts.get() == 1 {
+                let mut at = 0;
+                while let Some(found) = message[at..]
+                    .windows(from.len())
+                    .position(|w| *w == from[..])
+                {
+                    at += found;
+                    message[at] = 2;
+                    at += from.len();
                 }
-            };
-            let status = relayed(&node, &control, rewrite, async {
-                let status = peer.connect(&url).await.err();
-                clock.sleep(Span::from_nanos(10_000_000)).await;
-                status
-            })
-            .await;
-            (status, control.accepts.get())
-        })
-        .await
+            }
+        }
     });
     assert_eq!(out, (Some(Status::BAD_SECURITY_MODE_REJECTED), 1));
 }
@@ -2308,53 +2295,51 @@ fn a_connect_message_that_the_client_cannot_process_ends_the_connect_with_its_st
 /// `bad` with the key of another channel. Gives the status of the connect, and the
 /// accepts 10 ms after it ends.
 fn bad_connect_message(bad: usize) -> (Option<Status>, usize) {
-    let (out, _) = run(0, async move |node| {
-        serve(&node, 4, async |mut peer| {
-            let control = Relay::default();
-            let url = relay_url(&node);
-            let clock = Clock::clone(&peer.clock);
-            let mut given = 0;
-            let mut to = to_server(&node);
-            let rewrite = |message: &mut Vec<u8>| {
-                to(message);
-                if message.starts_with(b"MSG") {
-                    if given == bad {
-                        message[8] ^= 0xFF;
-                    }
-                    given += 1;
+    relayed_connect(move |node| {
+        let mut given = 0;
+        let mut to = to_server(node);
+        move |_: &Relay, message: &mut Vec<u8>| {
+            to(message);
+            if message.starts_with(b"MSG") {
+                if given == bad {
+                    message[8] ^= 0xFF;
                 }
-            };
-            let status = relayed(&node, &control, rewrite, async {
-                let status = peer.connect(&url).await.err();
-                clock.sleep(Span::from_nanos(10_000_000)).await;
-                status
-            })
-            .await;
-            (status, control.accepts.get())
-        })
-        .await
-    });
-    out
+                given += 1;
+            }
+        }
+    })
 }
 
 /// Connects through a relay that gives the client the first `pass` messages of the
 /// server, and cuts both streams at the next one. Gives the status of the connect, and
 /// the accepts 10 ms after it ends.
 fn cut_after(pass: usize) -> (Option<Status>, usize) {
+    relayed_connect(move |_| {
+        let mut given = 0;
+        move |control: &Relay, message: &mut Vec<u8>| {
+            if given == pass {
+                message.clear();
+                control.cut.set(true);
+            } else {
+                given += 1;
+            }
+        }
+    })
+}
+
+/// Connects through a relay that gives each message of the server to the rewrite that
+/// `make` makes from the node. Gives the status of the connect, and the accepts 10 ms
+/// after it ends.
+fn relayed_connect<R: FnMut(&Relay, &mut Vec<u8>)>(
+    make: impl FnOnce(&node::Node) -> R + Send + 'static,
+) -> (Option<Status>, usize) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let control = Relay::default();
             let url = relay_url(&node);
             let clock = Clock::clone(&peer.clock);
-            let mut given = 0;
-            let rewrite = |message: &mut Vec<u8>| {
-                if given == pass {
-                    message.clear();
-                    control.cut.set(true);
-                } else {
-                    given += 1;
-                }
-            };
+            let mut rewrite = make(&node);
+            let rewrite = |message: &mut Vec<u8>| rewrite(&control, message);
             let status = relayed(&node, &control, rewrite, async {
                 let status = peer.connect(&url).await.err();
                 clock.sleep(Span::from_nanos(10_000_000)).await;
