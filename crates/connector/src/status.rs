@@ -159,14 +159,15 @@ pub(crate) fn check(kind: &str, counts: &[Name]) {
     }
 }
 
-/// The status channels of one connector, which its supervisor and its kind share.
-/// Each write gives one sample on every status channel, with the last value of each.
+/// The status channels of one connector, which its supervisor and its kind share,
+/// and the span of its run, the parent of the events of both. Each write gives one
+/// sample on every status channel, with the last value of each.
 #[derive(Debug)]
 pub(crate) struct Status(Rc<Values>);
 
 impl Status {
-    /// A status with each of `counts` at 0, that no writer writes yet, whose events
-    /// have `span` as their parent.
+    /// A status with each of `counts` at 0, that no writer writes yet, of the run whose
+    /// span is `span`.
     pub(crate) fn new(counts: Vec<Name>, span: tracing::Span) -> Self {
         Self(Rc::new(Values {
             counts: counts.into_iter().map(|n| (n, Cell::new(0))).collect(),
@@ -182,7 +183,7 @@ impl Status {
         Self(Rc::clone(&self.0))
     }
 
-    /// The parent of each event of the status.
+    /// The span of the run, the parent of each event of the supervisor and the kind.
     pub(crate) fn span(&self) -> &tracing::Span {
         &self.0.span
     }
@@ -383,11 +384,11 @@ impl Class {
     }
 }
 
-/// The last value of each count, what the run shows, and whether the status waits
-/// for a write.
+/// The last value of each count, what the run shows, whether the status waits for a
+/// write, and the span of the run.
 struct Values {
     counts: Box<[(Name, Cell<u64>)]>,
-    /// The parent of each event of the status.
+    /// The parent of each event of the supervisor and the kind.
     span: tracing::Span,
     /// `None` while no run runs: what a task of the last run shows is not written.
     run: RefCell<Option<Run>>,
