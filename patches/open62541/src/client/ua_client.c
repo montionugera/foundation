@@ -1260,15 +1260,15 @@ getConnectionttribute(UA_Client *client, const UA_QualifiedName key,
         /* MessageLimits: the payload bytes of a chunk that the client sends and of
          * one that it receives, the negotiated remoteMaxMessageSize and
          * remoteMaxChunkCount, then the encoded size of the authentication token.
-         * Only as a copy. Both sides of a channel have the same symmetric sizes, so
-         * a received chunk has the payload of a sent one of its length. */
+         * Only as a copy, and only on an open channel. */
         if(!copy)
             return UA_STATUSCODE_BADNOTSUPPORTED;
         const UA_SecureChannel *channel = &client->channel;
         const UA_ConnectionConfig *config = &channel->config;
         UA_UInt32 limits[5] = {
             (UA_UInt32)UA_SecureChannel_chunkPayload(channel, config->sendBufferSize),
-            (UA_UInt32)UA_SecureChannel_chunkPayload(channel, config->recvBufferSize),
+            (UA_UInt32)UA_SecureChannel_receivedPayload(channel,
+                                                        config->recvBufferSize),
             config->remoteMaxMessageSize, config->remoteMaxChunkCount,
             (UA_UInt32)UA_calcSizeBinary(&client->authenticationToken,
                                          &UA_TYPES[UA_TYPES_NODEID], NULL)};

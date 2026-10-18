@@ -283,11 +283,11 @@ fn a_chunk_leaves_its_bytes_past_a_block_empty() {
 }
 
 /// A server with a buffer of 8192 bytes and 4 chunks sends an answer of at most 4
-/// chunks of 8136 bytes less 21 in `Sign`, and of 8135 in `SignAndEncrypt`: 955
-/// Doubles of 34 bytes after 36, and not 956.
+/// chunks of 8136 bytes less 21 in `Sign`, 955 Doubles of 34 bytes after 36, and of
+/// 8120 in `SignAndEncrypt`, 953 Doubles.
 #[test]
 fn an_answer_takes_the_chunks_of_the_server_in_each_mode() {
-    for mode in MODES {
+    for (mode, split) in [(Mode::SIGN, [955, 1]), (Mode::SIGN_AND_ENCRYPT, [953, 3])] {
         let (reads, _) = run(0, async move |node| {
             let time = event::Time::since(node.clock(), START);
             serve_on(&node, 4, time, Some(&SERVED), async |mut peer| {
@@ -309,7 +309,44 @@ fn an_answer_takes_the_chunks_of_the_server_in_each_mode() {
         });
         let (counts, values, value) = reads;
         let read = (counts, values);
-        assert_eq!(read, (vec![955, 1], Ok(vec![Ok(value); 956])), "{mode:?}");
+        assert_eq!(read, (split.to_vec(), Ok(vec![Ok(value); 956])), "{mode:?}");
+    }
+}
+
+/// A received chunk holds the smaller of the payload of a sent one and the
+/// `MaxBodySize` of Part 6. In `SignAndEncrypt`, the second is 508 blocks of 16 bytes
+/// less 8 in a chunk of 8192 bytes, and 509 blocks less 8 in one of 8200, 1 byte past
+/// the first.
+#[test]
+fn a_received_chunk_holds_the_smaller_of_two_payloads() {
+    for (mode, buffer, payloads) in [
+        (Mode::SIGN, 8192, [8136, 8136]),
+        (Mode::SIGN_AND_ENCRYPT, 8192, [8135, 8120]),
+        (Mode::SIGN, 8200, [8136, 8136]),
+        (Mode::SIGN_AND_ENCRYPT, 8200, [8135, 8135]),
+    ] {
+        let (limits, _) = run(0, async move |node| {
+            let time = event::Time::since(node.clock(), START);
+            serve_on(&node, 4, time, Some(&SERVED), async |mut peer| {
+                peer.server.set_limits(Limits {
+                    buffer,
+                    ..Limits::default()
+                });
+                let client = peer
+                    .secure(Policy::Basic256Sha256, mode, &CLIENT_SIDE, START)
+                    .await
+                    .expect("the client connects");
+                let mut limits = [0; 5];
+                // SAFETY: the client lives, and its channel is open.
+                let status = Status(unsafe {
+                    ffi::shim_client_limits(client.raw.as_ptr(), &raw mut limits)
+                });
+                client.close().await;
+                (status, [limits[0], limits[1]])
+            })
+            .await
+        });
+        assert_eq!(limits, (Status::GOOD, payloads), "{mode:?} {buffer}");
     }
 }
 

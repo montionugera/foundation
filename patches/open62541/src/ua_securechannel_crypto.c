@@ -775,6 +775,25 @@ UA_SecureChannel_chunkPayload(const UA_SecureChannel *channel, size_t length) {
     return payload;
 }
 
+size_t
+UA_SecureChannel_receivedPayload(const UA_SecureChannel *channel, size_t length) {
+    size_t payload = UA_SecureChannel_chunkPayload(channel, length);
+    if(channel->securityMode != UA_MESSAGESECURITYMODE_SIGNANDENCRYPT)
+        return payload;
+    const UA_SecurityPolicy *sp = channel->securityPolicy;
+    if(UA_SecurityPolicy_isAead(sp))
+        return payload;
+    void *cc = channel->channelContext;
+    /* Part 6, 6.7.2.5.1: the sender keeps at least one byte for the padding size */
+    size_t blocks = (length - UA_SECURECHANNEL_CHANNELHEADER_LENGTH -
+                     UA_SECURECHANNEL_SYMMETRIC_SECURITYHEADER_LENGTH -
+                     sp->symSignatureAlgorithm.getRemoteSignatureSize(sp, cc) - 1) /
+        sp->symEncryptionAlgorithm.getRemoteBlockSize(sp, cc);
+    size_t body = sp->symEncryptionAlgorithm.getRemotePlainTextBlockSize(sp, cc) *
+        blocks - UA_SECURECHANNEL_SEQUENCEHEADER_LENGTH;
+    return body < payload ? body : payload;
+}
+
 void
 setBufPos(UA_MessageContext *mc) {
     /* Forward the data pointer so that the payload is encoded after the message
