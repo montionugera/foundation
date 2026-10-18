@@ -41,7 +41,12 @@ pub async fn serve(store: &Store, incoming: Incoming) -> Result<(), Error> {
         // With no code, both halves drop, which ends them with code 0.
         Err(error) => {
             let code = match error {
-                Error::Store(error) => refusal(error),
+                Error::Store(crate::Error::Mismatch { .. }) => Some(Code(MISMATCH)),
+                Error::Store(
+                    crate::Error::Floor { .. }
+                    | crate::Error::Files(files::Error::Full { .. }),
+                ) => Some(Code(FULL)),
+                Error::Store(_) => None,
                 error => error.code(),
             };
             if let Some(code) = code {
@@ -50,18 +55,6 @@ pub async fn serve(store: &Store, incoming: Incoming) -> Result<(), Error> {
         }
     }
     answered
-}
-
-/// The code with which `serve` refuses the put that `error` failed, or `None` for a
-/// failure of the store.
-fn refusal(error: &crate::Error) -> Option<Code> {
-    match error {
-        crate::Error::Mismatch { .. } => Some(Code(MISMATCH)),
-        crate::Error::Floor { .. } | crate::Error::Files(files::Error::Full { .. }) => {
-            Some(Code(FULL))
-        }
-        _ => None,
-    }
 }
 
 /// Ends both halves of a stream with `code`.
@@ -448,7 +441,7 @@ pub enum Error {
 impl Error {
     /// The code of a fault of the peer that the stream stops with, or `None` when it
     /// drops with code 0. A store error is a failure of this node: only `serve` takes
-    /// a code for it, from [`refusal`].
+    /// a code for it.
     fn code(&self) -> Option<Code> {
         match self {
             Self::Wire(error) => Some(Code(error.code())),
