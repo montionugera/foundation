@@ -197,6 +197,8 @@ jobs:
               - --skip pem::each_read_refuses_an_encrypted_pem_with_no_prompt # #3070
               - --skip child::a_detached_child_that_reads_no_stdin_gives_its_output # #3070
             gates:
+              - crates/block/tests/alloc/main.rs resident # #3196
+              - crates/block/tests/alloc/main.rs untouched # #3196
               - crates/node/tests/it/start.rs a_node_whose_standard_output_is_closed_runs_and_exits_0_at_sigterm # #3127
               - crates/node/tests/it/start.rs a_node_whose_standard_output_nobody_reads_exits_0_at_sigterm # #3127
               - crates/os/src/net/lowat.rs tests::a_socket_with_no_tcp_gives_the_kernel_code # #3129
@@ -249,6 +251,8 @@ jobs:
               - --skip daqmx::tests::names_a_library_that_does_not_load # #3033
               - --skip daqmx::tests::names_a_function_the_library_lacks # #3033
             gates:
+              - crates/block/tests/alloc/main.rs resident # #3196
+              - crates/block/tests/alloc/main.rs untouched # #3196
               - crates/connector-opcua/src/child.rs a_detached_child_that_reads_no_stdin_gives_its_output # #2968
               - crates/connector-opcua/src/link.rs the_shim_check_finds_a_cc_relative_to_the_crate # #2968
               - crates/connector-opcua/src/link.rs the_shim_check_writes_no_file # #2968
