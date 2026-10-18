@@ -419,26 +419,26 @@ impl Mesh {
     pub(crate) async fn propose(&self, change: Change) -> Result<Position, Error> {
         let mut data = Vec::new();
         change.encode(&mut data);
-        let member = match &change {
-            Change::Card(card) => card.key,
+        match &change {
+            Change::Card(card) => {
+                let now = self.clock.now();
+                let proposal = {
+                    let mut group = self.group.borrow_mut();
+                    group.taking()?;
+                    group.propose_card(card.key, now, data)?
+                };
+                self.held(proposal).await
+            }
             Change::Join(join) => {
                 let (key, public_key) = (join.card.key, join.card.card.public_key);
-                return self
-                    .proposed(|group| {
-                        group.check_join(key, public_key)?;
-                        Ok(group.raft.propose(data)?)
-                    })
-                    .await;
+                self.proposed(|group| {
+                    group.check_join(key, public_key)?;
+                    Ok(group.raft.propose(data)?)
+                })
+                .await
             }
-            _ => return self.propose_data(data).await,
-        };
-        let now = self.clock.now();
-        let proposal = {
-            let mut group = self.group.borrow_mut();
-            group.taking()?;
-            group.propose_card(member, now, data)?
-        };
-        self.held(proposal).await
+            _ => self.propose_data(data).await,
+        }
     }
 
     /// Proposes `voters` as the next set of voters, and returns once the entry is on
@@ -833,15 +833,7 @@ impl Group {
         if let Some(member) = self.state.member(key) {
             return Some(Known::Applied(member.public_key()));
         }
-        let joins = |below| {
-            self.unapplied
-                .range(..below)
-                .filter_map(|(_, written)| match written {
-                    Written::Join(of, public) if *of == key => Some(*public),
-                    _ => None,
-                })
-        };
-        if let Some(public) = one(joins(u64::MAX)) {
+        if let Some(public) = one(self.joins(key, u64::MAX)) {
             return Some(Known::Unapplied(public));
         }
         let named =
@@ -851,7 +843,18 @@ impl Group {
                     Written::Named(named) if named.contains(&key) => Some(index),
                     _ => None,
                 })?;
-        one(joins(named)).map(Known::Unapplied)
+        one(self.joins(key, named)).map(Known::Unapplied)
+    }
+
+    // The public key of each join of `key` in the log below index `below` that is
+    // not applied, in order.
+    fn joins(&self, key: node::Key, below: u64) -> impl Iterator<Item = PublicKey> {
+        self.unapplied
+            .range(..below)
+            .filter_map(move |(_, written)| match written {
+                Written::Join(of, public) if *of == key => Some(*public),
+                Written::Join(..) | Written::Named(_) => None,
+            })
     }
 
     // Takes the joins and configuration entries that `raft` appended since the last
@@ -922,13 +925,9 @@ impl Group {
             return Ok(());
         }
         let member = self.state.member(key).map(Member::public_key);
-        let joins = self.unapplied.values().filter_map(|written| match written {
-            Written::Join(of, public) if *of == key => Some(*public),
-            Written::Join(..) | Written::Named(_) => None,
-        });
         if member
             .into_iter()
-            .chain(joins)
+            .chain(self.joins(key, u64::MAX))
             .any(|held| held != public_key)
         {
             return Err(Error::Contested { key });
