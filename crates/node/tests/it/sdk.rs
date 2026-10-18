@@ -612,3 +612,5 @@ fn a_warm_write_makes_no_allocation_on_the_thread_of_its_caller() {
     assert_eq!(client.close(), Ok(()));
     rig.stop();
 }
+
+mod read;

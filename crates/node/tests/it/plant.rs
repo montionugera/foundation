@@ -70,13 +70,17 @@ pub(crate) fn admin(rig: &Rig) -> (Node, Subject) {
     (node, subject)
 }
 
-/// The channels of the tests of writers: the index `plant.time`, and `plant.a` and
-/// `plant.b` of `i64` on it, homed at the node `edge`.
+/// The channels of the tests of writers and readers: the index `plant.time`, and
+/// `plant.a` and `plant.b` of `i64` on it, and the index `cell.time` and `cell.c` of
+/// `i64` on it, homed at the node `edge`.
 const CHANNELS: &str = concat!(
     "channel \"plant.time\" { kind = \"index\" }\n",
     "channel \"plant.a\" {\n  data_type = \"i64\"\n  index = \"plant.time\"\n}\n",
     "channel \"plant.b\" {\n  data_type = \"i64\"\n  index = \"plant.time\"\n}\n",
+    "channel \"cell.time\" { kind = \"index\" }\n",
+    "channel \"cell.c\" {\n  data_type = \"i64\"\n  index = \"cell.time\"\n}\n",
     "placement \"plant.home\" {\n  select = \"plant.*\"\n  home = \"edge\"\n}\n",
+    "placement \"cell.home\" {\n  select = \"cell.*\"\n  home = \"edge\"\n}\n",
 );
 
 /// A rig whose node runs with [`CHANNELS`] applied, its node, and its admin. Waits
@@ -91,6 +95,8 @@ pub(crate) fn planted() -> (Rig, Node, Subject) {
     rig.wait("the hub knows the channels", || {
         let channels = vec!["plant.a".parse().unwrap(), "plant.b".parse().unwrap()];
         let writer = client.open_writer(Config::new(channels));
+        writer.and_then(Writer::close).map_err(|e| e.to_string())?;
+        let writer = client.open_writer(Config::new(vec!["cell.c".parse().unwrap()]));
         writer.and_then(Writer::close).map_err(|e| e.to_string())
     });
     assert_eq!(client.close(), Ok(()));
