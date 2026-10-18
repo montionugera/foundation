@@ -127,7 +127,7 @@
   `config.duplicate-name` with the path and the name, or one `config.duplicate-name`
   that names both paths. Each has the fix "Give another name, or leave it out for
   `<default>`", with the default of the run with each refused name left out, or "Give
-  another name" when that run gives none or refuses a name. `add` gives no problem of a
+  another name" when that run gives none, refuses a name, or has a pick with no name that is not under `start`. `add` gives no problem of a
   block outside the connector block other than `config.private-key`. An `index` that is
   not a name, in the `channel` block of the first channel that the connector writes that
   has one, gives its diagnostic. The implied names of the other connectors with their
