@@ -12,12 +12,12 @@ use proptest::prelude::*;
 use types::name::Name;
 use types::sample::{Scalar, Type};
 
-/// A kind whose block of a point is `read "<channel>" { tag = "<tag>" }`, with
-/// `scale = fill("the scale")` for a tag that starts with `scaled`, and `scale =
-/// fill()` for a tag that starts with `unfilled`. It refuses a tag that starts with
-/// `bad`. The tag of a `read` block is its `tag` without a leading
-/// `ns=0;`, so two texts can name one point. It writes the channel of each `read`
-/// block, and its check refuses a channel whose last segment is `refused`.
+/// A kind whose block of a point is `read "<channel>" { tag = "<tag>" }`, with `scale =
+/// fill("the scale")` for a tag that starts with `scaled`, and `scale = fill()` for a
+/// tag that starts with `unfilled`. It refuses a tag that starts with `bad`. The tag of
+/// a `read` block is its `tag` without a leading `ns=0;`, so two texts can name one
+/// point. It writes the channel of each `read` block, and its check refuses a channel
+/// whose last segment is `refused`.
 struct Points;
 
 impl Kind for Points {
