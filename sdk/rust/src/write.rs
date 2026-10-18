@@ -281,8 +281,8 @@ impl Writer {
 ///
 /// # Panics
 ///
-/// When the node gives no place for a name of `channels`: the node names each place
-/// of a channel of the open with its name in the open.
+/// When the node gives no place for a name of `channels`: `program` gives
+/// `Unplaced` for such places.
 fn ordered(
     channels: &[Name],
     node: &[Place],

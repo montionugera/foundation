@@ -382,7 +382,11 @@ async fn start(
     loop {
         let message = receiver.recv().await?;
         if let Some(start) = decoder.decode(message.as_deref())? {
-            return Ok(start);
+            let placed = |name: &&Name| start.places.iter().any(|p| p.name == **name);
+            return match open.channels.iter().find(|name| !placed(name)) {
+                Some(name) => Err(Error::Unplaced(name.clone())),
+                None => Ok(start),
+            };
         }
     }
 }

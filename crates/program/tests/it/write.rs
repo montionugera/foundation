@@ -1080,22 +1080,29 @@ fn gives_the_error_of_the_renewal_to_an_open_writer() {
     );
 }
 
-/// Places that name one channel twice, or a stream that the node finishes before the
-/// last place, give the error of the places, and the program stops the write as
-/// `MALFORMED`.
+/// Places that name one channel twice, a stream that the node finishes before the
+/// last place, or places with no place of a channel of the open give the error of the
+/// places, and the program stops the write as `MALFORMED`.
 #[test]
 fn stops_a_write_whose_places_are_not_valid() {
     let twice = vec![place(1, STAMP, "time"), place(1, STAMP, "again")];
     let whole = vec![place(1, STAMP, "time"), place(2, I64, "value")];
+    let other = vec![place(1, STAMP, "time"), place(2, I64, "other")];
+    let message = Error::Message;
     let cases = [
         (
             727,
             twice,
             2,
-            wire::hub::client::Error::Repeated { key: key(1) },
+            message(wire::hub::client::Error::Repeated { key: key(1) }),
         ),
-        (728, whole, 1, wire::hub::client::Error::Finished),
+        (728, whole, 1, message(wire::hub::client::Error::Finished)),
+        (729, other, 2, Error::Unplaced("value".parse().unwrap())),
     ];
+    assert_eq!(
+        cases[2].3.to_string(),
+        "the node gave no place for the channel value of the open of a writer"
+    );
     for (seed, places, sent, error) in cases {
         by_hand(
             seed,
@@ -1115,7 +1122,7 @@ fn stops_a_write_whose_places_are_not_valid() {
             move |session, node| {
                 Box::pin(async move {
                     let got = session.writer(config(&["value"], 1)).await.map(drop);
-                    assert_eq!(got, Err(Error::Message(error)));
+                    assert_eq!(got, Err(error));
                     node.clock().sleep(QUIET).await;
                 })
             },
