@@ -668,6 +668,21 @@ mod tests {
         file.expect("the dropped put left a file").close().await;
     }
 
+    /// Drops a put of `block` with its first file call, the read of the free bytes,
+    /// in flight.
+    async fn drop_put_in_free(
+        node: &sim::node::Node,
+        store: &Store,
+        digest: Digest,
+        block: &Block,
+    ) {
+        {
+            let mut put = pin!(store.put(digest, block));
+            assert_eq!(poll_once(&mut put).await, Poll::Pending);
+        }
+        node.clock().sleep(Span::from_nanos(200_000)).await;
+    }
+
     /// Fails unless the file of `digest` holds `bytes`.
     async fn assert_bytes(node: &sim::node::Node, digest: Digest, bytes: &[u8]) {
         let file = node.files().open(&path(digest), Mode::Read).await.unwrap();
@@ -1937,56 +1952,77 @@ mod tests {
 
         #[test]
         fn counts_one_for_a_torn_listed_file_after_a_put_dropped_before_its_create() {
-            let (mut sim, node) = create_default_node(0);
-            sim.run_on(&node, |node, _| async move {
-                let (digest, block) = chunk(7, 3000);
-                let (_, other) = chunk(8, 3000);
-                node.files().create_dir(Path::new(DIR)).await.unwrap();
-                create_file(&node, &path(digest), &other).await;
-                let store = open(&node).await.unwrap();
-                {
-                    let mut put = pin!(store.put(digest, &block));
-                    assert_eq!(poll_once(&mut put).await, Poll::Pending);
-                }
-                node.clock().sleep(Span::from_nanos(200_000)).await;
-                assert_bytes(&node, digest, &other).await;
-                assert_absent(&store, digest).await;
-                assert_eq!(store.status(), status(1, 0));
-            })
-            .unwrap();
+            for seed in 0..64 {
+                let (mut sim, node) = create_default_node(seed);
+                sim.run_on(&node, move |node, _| async move {
+                    let (digest, block) = chunk(7, 3000);
+                    let (_, other) = chunk(8, 3000);
+                    node.files().create_dir(Path::new(DIR)).await.unwrap();
+                    create_file(&node, &path(digest), &other).await;
+                    let store = open(&node).await.unwrap();
+                    drop_put_in_free(&node, &store, digest, &block).await;
+                    assert_bytes(&node, digest, &other).await;
+                    assert_absent(&store, digest).await;
+                    assert_eq!(store.status(), status(1, 0), "seed {seed}");
+                })
+                .unwrap();
+            }
+        }
+
+        #[test]
+        fn counts_one_for_a_torn_listed_file_after_a_put_dropped_in_its_floor_check() {
+            for seed in 0..64 {
+                let (mut sim, node) = create_default_node(seed);
+                sim.run_on(&node, move |node, _| async move {
+                    let (digest, block) = chunk(7, 3000);
+                    let (_, other) = chunk(8, 3000);
+                    node.files().create_dir(Path::new(DIR)).await.unwrap();
+                    create_file(&node, &path(digest), &other).await;
+                    let free_bytes = node.files().free().await.unwrap();
+                    let store = open_leaving(&node, free_bytes).await;
+                    drop_put(&node, &store, digest, &block).await;
+                    assert_bytes(&node, digest, &other).await;
+                    assert_absent(&store, digest).await;
+                    assert_eq!(store.status(), status(1, 0), "seed {seed}");
+                })
+                .unwrap();
+            }
         }
 
         #[test]
         fn counts_none_for_a_torn_listed_file_after_a_put_dropped_in_its_create() {
-            let (mut sim, node) = create_default_node(0);
-            sim.run_on(&node, |node, _| async move {
-                let (digest, block) = chunk(7, 3000);
-                let (_, other) = chunk(8, 3000);
-                node.files().create_dir(Path::new(DIR)).await.unwrap();
-                create_file(&node, &path(digest), &other).await;
-                let store = open(&node).await.unwrap();
-                drop_put(&node, &store, digest, &block).await;
-                assert_bytes(&node, digest, &other).await;
-                assert_absent(&store, digest).await;
-                assert_eq!(store.status(), status(0, 0));
-            })
-            .unwrap();
+            for seed in 0..64 {
+                let (mut sim, node) = create_default_node(seed);
+                sim.run_on(&node, move |node, _| async move {
+                    let (digest, block) = chunk(7, 3000);
+                    let (_, other) = chunk(8, 3000);
+                    node.files().create_dir(Path::new(DIR)).await.unwrap();
+                    create_file(&node, &path(digest), &other).await;
+                    let store = open(&node).await.unwrap();
+                    drop_put(&node, &store, digest, &block).await;
+                    assert_bytes(&node, digest, &other).await;
+                    assert_absent(&store, digest).await;
+                    assert_eq!(store.status(), status(0, 0), "seed {seed}");
+                })
+                .unwrap();
+            }
         }
 
         #[test]
-        fn a_put_dropped_before_its_create_leaves_no_state_for_a_digest_with_no_file() {
-            let (mut sim, node) = create_default_node(0);
-            sim.run_on(&node, |node, _| async move {
-                let store = open(&node).await.unwrap();
-                let (digest, block) = chunk(7, 3000);
-                {
-                    let mut put = pin!(store.put(digest, &block));
-                    assert_eq!(poll_once(&mut put).await, Poll::Pending);
-                }
-                let text = format!("{store:?}");
-                assert!(!text.contains("Listed"), "{text}");
-            })
-            .unwrap();
+        fn a_get_after_a_put_dropped_before_its_create_makes_no_file_call() {
+            for seed in 0..64 {
+                let (mut sim, node) = create_default_node(seed);
+                sim.run_on(&node, move |node, _| async move {
+                    let store = open(&node).await.unwrap();
+                    let (digest, block) = chunk(7, 3000);
+                    drop_put_in_free(&node, &store, digest, &block).await;
+                    node.fail_file(&path(digest), Operation::Open);
+                    assert_absent(&store, digest).await;
+                    assert_no_open(&node, &path(digest)).await;
+                    assert_eq!(store.status(), status(0, 0));
+                })
+                .unwrap();
+            }
         }
 
         // The open lists names, so it cannot tell the file from a torn write.
