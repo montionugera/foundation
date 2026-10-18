@@ -640,7 +640,7 @@ pub(crate) fn reader_error(error: hub::reader::Error) -> Error {
     let (code, fix) = match error {
         Hub::Empty => (NO_CHANNEL, "Select a channel that the spec defines"),
         Hub::ManyIndexes { .. } => (MANY_INDEXES, "Select channels of one index"),
-        Hub::Full { .. } => return Error::Retry(Box::new(Full(error))),
+        Hub::Full => return Error::Retry(Box::new(Full(error))),
         Hub::Remote { .. } | Hub::Mesh(_) | Hub::Unrecorded => {
             return Error::Retry(Box::new(error));
         }
@@ -1406,13 +1406,12 @@ mod tests {
     /// frees the ring (#406).
     #[test]
     fn retries_when_the_named_readers_fill_an_entry() {
-        let full = reader_error(hub::reader::Error::Full { limit: 257_728 });
+        let full = reader_error(hub::reader::Error::Full);
         assert!(matches!(full, Error::Retry(_)), "{full:?}");
         assert_eq!(
             full.to_string(),
             "an attempt failed: no part of the named records of the index has room for \
-             the reader: the records of an index hold at most 257728 bytes: read the \
-             index from fewer connectors in complete mode, \
+             the reader: read the index from fewer connectors in complete mode, \
              set `mode = \"latest\"` on one, or wait for the hold of a removed reader \
              to end"
         );
