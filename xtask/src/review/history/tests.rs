@@ -76,24 +76,31 @@ impl Repo {
         (repo, end)
     }
 
+    /// Puts `name`, a name of any bytes, in the index with git's `mode` and the text
+    /// `text`, through plumbing: a work tree on macOS refuses a name that is not
+    /// UTF-8, Windows passes no such name as an argument, and a link on Windows needs
+    /// a privilege.
+    fn add(&self, mode: &str, name: &[u8], text: &str) {
+        std::fs::write(self.dir.join("blob"), text).unwrap();
+        let blob = self.git(&["hash-object", "-w", "blob"]);
+        let entry =
+            [mode.as_bytes(), b" ", blob.as_bytes(), b"\t", name, b"\0"].concat();
+        let mut child = self
+            .command()
+            .args(["update-index", "-z", "--index-info"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&entry).unwrap();
+        assert!(child.wait().unwrap().success());
+    }
+
     /// Commits a tree of `files`, each a name of any bytes and its text, with
-    /// `parents`, through plumbing, since a work tree on macOS refuses a name that is
-    /// not UTF-8. Returns the commit.
-    #[cfg(unix)]
+    /// `parents`, through plumbing. Returns the commit.
     fn commit_tree(&self, files: &[(&[u8], &str)], parents: &[&str]) -> String {
-        use std::os::unix::ffi::OsStrExt;
         self.git(&["read-tree", "--empty"]);
         for (name, text) in files {
-            std::fs::write(self.dir.join("blob"), text).unwrap();
-            let blob = self.git(&["hash-object", "-w", "blob"]);
-            let info = [b"100644,", blob.as_bytes(), b",", name].concat();
-            let status = self
-                .command()
-                .args(["update-index", "--add", "--cacheinfo"])
-                .arg(std::ffi::OsStr::from_bytes(&info))
-                .status()
-                .unwrap();
-            assert!(status.success());
+            self.add("100644", name, text);
         }
         let tree = self.git(&["write-tree"]);
         let parents = parents.iter().flat_map(|p| ["-p", p]);
@@ -1012,7 +1019,6 @@ fn an_added_line_is_numbered_in_the_end() {
     repo.remove();
 }
 
-#[cfg(unix)]
 #[test]
 fn reads_a_merge_whose_messages_are_not_utf8() {
     let repo = Repo::new("merge-bytes");
@@ -1030,7 +1036,6 @@ fn reads_a_merge_whose_messages_are_not_utf8() {
     repo.remove();
 }
 
-#[cfg(unix)]
 #[test]
 fn a_conflict_in_a_code_path_that_is_not_utf8_counts() {
     let repo = Repo::new("merge-bytes-code");
@@ -1754,16 +1759,15 @@ fn names_the_file_when_a_file_and_a_directory_of_its_name_trade_places() {
     repo.remove();
 }
 
-#[cfg(unix)]
 #[test]
 fn reads_a_link_that_a_file_replaces_as_code() {
     let (repo, _) = Repo::with_pr("link");
-    std::os::unix::fs::symlink("// a", repo.dir.join("x.rs")).unwrap();
-    repo.git(&["add", "x.rs"]);
+    repo.add("120000", b"x.rs", "// a");
     repo.git(&["commit", "--quiet", "-m", "link"]);
     let from = repo.head();
-    std::fs::remove_file(repo.dir.join("x.rs")).unwrap();
-    let end = repo.commit("x.rs", "// a\n");
+    repo.add("100644", b"x.rs", "// a\n");
+    repo.git(&["commit", "--quiet", "-m", "file"]);
+    let end = repo.head();
     assert_eq!(
         repo.code_change(&from, &end),
         Ok(Some("changes code at `x.rs`".to_string()))
@@ -1802,20 +1806,10 @@ fn a_decomposed_name_does_not_hide_code() {
     repo.remove();
 }
 
-#[cfg(unix)]
 #[test]
 fn names_a_path_that_is_not_utf8() {
-    use std::os::unix::ffi::OsStrExt;
     let (repo, from) = Repo::with_pr("bytes");
-    let blob = repo.git(&["rev-parse", "HEAD:b.txt"]);
-    let info = [b"100644,", blob.as_bytes(), b",a\xff.rs"].concat();
-    let status = repo
-        .command()
-        .args(["update-index", "--add", "--cacheinfo"])
-        .arg(std::ffi::OsStr::from_bytes(&info))
-        .status()
-        .unwrap();
-    assert!(status.success());
+    repo.add("100644", b"a\xff.rs", "pr\n");
     repo.git(&["commit", "--quiet", "-m", "bytes"]);
     assert_eq!(
         repo.code_change(&from, &repo.head()),
