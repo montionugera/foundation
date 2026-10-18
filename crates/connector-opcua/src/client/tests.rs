@@ -17,6 +17,7 @@ use sim::{Sim, node};
 use types::quality::Quality;
 use types::time::{Span, Stamp};
 
+use self::common::is;
 use super::{
     Calls, Client, Flight, GRACE, Large, Nodes, READS, Request, SPLIT, STATE, Slots,
     UNREAD, answer, id_bytes, most,
@@ -2054,12 +2055,11 @@ async fn relay(
                 return Poll::Ready(());
             }
             let ended = to_server.pump(cx, &mut client, &mut server, |message| {
-                let close =
-                    message.starts_with(b"MSG") && message[24..28] == CLOSE_SESSION;
+                let close = is(message, CLOSE_SESSION);
                 control
                     .closes
                     .set(control.closes.get() + usize::from(close));
-                if message.starts_with(b"MSG") && message[24..28] == BROWSE {
+                if is(message, BROWSE) {
                     assert_eq!(message[28], 4, "a token that is a GUID");
                     let time = message[47..55].try_into().expect("8 bytes");
                     control.browses.borrow_mut().push(i64::from_le_bytes(time));
@@ -2195,9 +2195,7 @@ fn a_connect_through_a_switch_of_the_endpoint_url_reads() {
             let url = relay_url(&node);
             let mut to = to_server(&node);
             let rewrite = |message: &mut Vec<u8>| {
-                let endpoints = message.starts_with(b"MSG")
-                    && message[24..28] == ENDPOINTS_RESPONSE;
-                if endpoints && control.accepts.get() == 1 {
+                if is(message, ENDPOINTS_RESPONSE) && control.accepts.get() == 1 {
                     to(message);
                 }
             };
@@ -2223,9 +2221,7 @@ fn a_switch_of_the_security_mode_ends_with_its_status() {
         let mut from = vec![1, 0, 0, 0, 47, 0, 0, 0];
         from.extend_from_slice(b"http://opcfoundation.org/UA/SecurityPolicy#None");
         move |control: &Relay, message: &mut Vec<u8>| {
-            let endpoints =
-                message.starts_with(b"MSG") && message[24..28] == ENDPOINTS_RESPONSE;
-            if endpoints && control.accepts.get() == 1 {
+            if is(message, ENDPOINTS_RESPONSE) && control.accepts.get() == 1 {
                 let mut at = 0;
                 while let Some(found) = message[at..]
                     .windows(from.len())
@@ -2358,11 +2354,6 @@ fn an_err_in_place_of_the_activate_answer_ends_the_connect_with_its_status() {
 
 /// The type of an `ActivateSession` answer.
 const ACTIVATE_RESPONSE: [u8; 4] = [0x01, 0x00, 0xD6, 0x01];
-
-/// Whether `message` is a `MSG` of the answer type `kind`.
-fn is(message: &[u8], kind: [u8; 4]) -> bool {
-    message.starts_with(b"MSG") && message[24..28] == kind
-}
 
 /// Gives an `ERR` of `status` with no reason.
 fn err(status: Status) -> Vec<u8> {
@@ -2522,8 +2513,8 @@ impl Pipe {
 
 /// Gives the request handle of `message` when it is a Read response.
 fn handle(message: &[u8]) -> Option<u32> {
-    let read = message.starts_with(b"MSG") && message[24..28] == READ_RESPONSE;
-    read.then(|| u32::from_le_bytes(message[36..40].try_into().expect("4 bytes")))
+    is(message, READ_RESPONSE)
+        .then(|| u32::from_le_bytes(message[36..40].try_into().expect("4 bytes")))
 }
 
 /// Makes the Read response `message`, with no diagnostics, string table, or header
