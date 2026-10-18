@@ -72,11 +72,11 @@
   https://github.com/synnaxlabs/foundation/issues/1382#issuecomment-6046807570).
   The leader appends no join whose node key has another public key in its applied state
   or in a join of its log, applied or not (`Error::Contested`). So with a leader that
-  does not lie, no log holds two such joins. For the applied joins, each node keeps the
-  public key of the first join of each node key, also of a join that apply refused. It
-  fills these keys again from its log at start. When #253 compacts the log, the snapshot
-  carries them: a follower can still hold a compacted join unapplied
-  (`laptop.architect`, 2026-10-18T22:57:42Z,
+  does not lie, no log holds two such joins. For the applied joins, the region state
+  keeps the public key of the first join of each node key, also of a join that apply
+  refused (`State::joined`). When #253 compacts the log, the snapshot carries them: a
+  follower can still hold a compacted join unapplied (`laptop.architect`,
+  2026-10-18T22:57:42Z,
   https://github.com/synnaxlabs/foundation/pull/3280#issuecomment-6256217638, which
   supersedes "in an unapplied join of its log" and the `Error::Contested` text of item 1
   of https://github.com/synnaxlabs/foundation/issues/2345#issuecomment-6105042526). A

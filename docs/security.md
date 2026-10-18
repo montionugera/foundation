@@ -189,8 +189,10 @@ state on `main`.
   card or a body that does not decode in a committed entry is a refused change, not a
   stopped group. The proposing voter and the join answer are not built (#336). A ticket
   holder that learns a node key out of band can take it with its own join, when that
-  join gets to the leader first. The real join is refused. The key gives no authority
-  before its join applies (MESH DRIVER).
+  join gets to the leader first. The real join is refused. A join that apply refuses
+  still binds its node key, so a voter that lies can deny a node key that it learns,
+  with no ticket. The node joins with a new key. The key gives no authority before its
+  join applies (MESH DRIVER).
 - `apply` signs the plan hash, and every node checks every change record (BQ12). So
   a voter that lies can stall its region, and cannot change access, keys, or
   placement. Not built (`spec`). Until #1213, a `Change::Spec` has no signature, and

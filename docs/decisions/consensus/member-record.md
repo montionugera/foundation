@@ -171,13 +171,14 @@
   member checks, which covers only where they run. Decided by `laptop.architect`
   (2026-10-07T11:11:49Z):
   https://github.com/synnaxlabs/foundation/pull/1328#issuecomment-6036702954. A refused
-  change is a no-op on every node, so a forged card in the log cannot stop a node. A
-  `Join` holds a `card::Unchecked`, not a `card::Signed`: it has the byte form of a
-  signed card, decode keeps a join whose signature does not hold, and apply refuses it
-  as `Forged`. Each number in a change is little endian; a `Ticket` is the public key,
-  the prefix behind a length byte, a reusable byte (0 or 1), the expiry (8 bytes), and
-  the ephemeral span behind a presence byte. Decided by `laptop.architect`
-  (2026-10-07T09:27:39Z):
+  change changes no region state, with one exception: a refused `Join` binds its node
+  key to its public key when no join bound it before (MESH DRIVER). So a forged card in
+  the log cannot stop a node. A `Join` holds a `card::Unchecked`, not a `card::Signed`:
+  it has the byte form of a signed card, decode keeps a join whose signature does not
+  hold, and apply refuses it as `Forged`. Each number in a change is little endian; a
+  `Ticket` is the public key, the prefix behind a length byte, a reusable byte (0 or 1),
+  the expiry (8 bytes), and the ephemeral span behind a presence byte. Decided by
+  `laptop.architect` (2026-10-07T09:27:39Z):
   https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6035046918. The
   reserved name check is region state, not a ticket check, because "no member name is
   reserved" holds for every member, like "no key twice". Decided by `laptop.architect`
