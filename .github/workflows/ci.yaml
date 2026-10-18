@@ -216,7 +216,6 @@ jobs:
               - crates/os/tests/it/files.rs the_file_size_limit_test_passes_under_a_limit_that_its_parent_set # #3129
               - crates/os/tests/it/net/udp.rs each_batch_sent_one_datagram_at_a_time_arrives_whole # #3129
               - crates/os/tests/it/paths.rs within_checks_a_relative_path_longer_once_joined_by_its_own_prefixes # #3129
-              - crates/os/tests/it/paths.rs within_stops_a_long_path_of_steps_that_resolve # #3129
               - crates/os/tests/refused.rs # #3129
               - crates/os/tests/udp_descriptors.rs # #3129
           - name: windows
@@ -292,6 +291,8 @@ jobs:
               - crates/os/tests/dropped.rs # #2955
               - crates/os/tests/exec.rs # #2955
               - crates/os/tests/held.rs # #2955
+              - crates/os/tests/hidden_deep_working.rs # #2956
+              - crates/os/tests/hidden_working.rs # #2956
               - crates/os/tests/inherited.rs # #2956
               - crates/os/tests/interrupt/main.rs unix # #2957
               - crates/os/tests/it/main.rs clock # #682
