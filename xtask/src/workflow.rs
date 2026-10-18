@@ -35,15 +35,41 @@ pub(crate) fn lines(text: &str) -> Result<Vec<Line<'_>>, String> {
             continue;
         }
         let code = code(text)?;
-        let header = code.trim_end_matches(['-', '+']);
-        block = (header.ends_with(": |") || header.ends_with(": >"))
-            .then(|| text.len() - text.trim_start_matches([' ', '-']).len());
+        block = opened(text, code)?;
         read.push(Line {
             text,
             code: Some(code),
         });
     }
     Ok(read)
+}
+
+/// The indent that each line of the text of a block scalar passes, when `code`, the
+/// code of the YAML line `text`, ends in its header.
+///
+/// # Errors
+///
+/// When the header is the only node of `text`: its text can then start at its indent.
+fn opened(text: &str, code: &str) -> Result<Option<usize>, String> {
+    let Some(before) = (code.trim_end())
+        .trim_end_matches(|c| matches!(c, '1'..='9' | '+' | '-'))
+        .strip_suffix(['|', '>'])
+    else {
+        return Ok(None);
+    };
+    if before.trim().is_empty() {
+        return Err(format!("ci.yaml has a node that can run on: `{text}`"));
+    }
+    let node = before.trim_end();
+    Ok(if !before.ends_with(' ') {
+        None
+    } else if node.ends_with(':') {
+        Some(text.len() - text.trim_start_matches([' ', '-']).len())
+    } else if node.split_whitespace().all(|word| word == "-") {
+        Some(node.len() - 1)
+    } else {
+        None
+    })
 }
 
 /// The text of the YAML `line` before its comment.
@@ -178,6 +204,38 @@ mod tests {
         );
         let codes: Vec<_> = lines(text).unwrap().into_iter().map(|l| l.code).collect();
         assert_eq!(codes, [Some("a: |"), None, None, None, Some("c: d")]);
+    }
+
+    #[test]
+    fn lines_gives_no_code_to_the_text_after_each_form_of_block_header() {
+        for header in [
+            "a: | ",
+            "a: |2",
+            "a: >1-",
+            "a: |-2 # c",
+            "a: > # c",
+            "a:  |+",
+            "a:\n- |",
+            "a:\n- - >",
+        ] {
+            let text = format!("{header}\n    [ \"$A\" = b ]\nc: d\n");
+            let codes: Vec<_> =
+                lines(&text).unwrap().into_iter().map(|l| l.code).collect();
+            assert_eq!(codes[codes.len() - 2..], [None, Some("c: d")], "{header:?}");
+        }
+    }
+
+    #[test]
+    fn lines_reads_a_plain_scalar_that_ends_in_a_bar_as_code() {
+        let text = "a: b - |\nc: d |\n";
+        assert_eq!(texts(text), ["a: b - |", "c: d |"]);
+        let codes: Vec<_> = lines(text).unwrap().into_iter().map(|l| l.code).collect();
+        assert_eq!(codes, [Some("a: b - |"), Some("c: d |")]);
+    }
+
+    #[test]
+    fn lines_refuses_a_block_header_on_a_line_of_its_own() {
+        assert_eq!(lines("a:\n  |\n  b\n"), refused("  |"));
     }
 
     #[test]
