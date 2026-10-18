@@ -229,18 +229,18 @@
   program finishes the stream: the writer closes before the node waits for those
   commits. Each frame takes a block for its outcome from the home's pool before it takes
   a draft, and a frame that finds none stops the stream with `BUSY`, so the home took no
-  frame past the last outcome. After its body, right before the home takes it, the
-  frame takes a block for the next `Stored` when the stream holds none, and a frame
-  that finds none gets `Refused(Full)`. A frame that the home does not take, while no
-  taken frame waits for a `Stored`, gives that block back, so a stream holds at most
-  two such blocks, and none while it idles. So each
-  taken frame has the block of its `Stored`: the node sends each `Stored` when its
-  commit ends, also while the pool is full, and the finish waits only for the commits.
-  A stream that stops sends no `Stored` after the stop (amended by #3207). A
-  write takes a stream of any class: at the node, the class sets only the priority and
-  the carrier of its replies. The two key choices, the wait at the finish and the ends
-  in the body budget, went to `laptop.monitor` at 2026-10-18T07:43:08Z, with no
-  objection. Approved by `laptop.architect` at 2026-10-18T07:45:01Z
+  frame past the last outcome. After its body, right before the home takes it, the frame
+  takes a block for the next `Stored` when the stream holds none, and a frame that finds
+  none gets `Refused(Full)`. A frame that the home does not take, while no taken frame
+  waits for a `Stored`, gives that block back, so a stream holds at most two such
+  blocks, and none while it idles. So each taken frame has the block of its `Stored`:
+  the node sends each `Stored` when its commit ends, also while the pool is full, and
+  the finish waits only for the commits. A stream that stops sends no `Stored` after the
+  stop (amended by #3207). A write takes a stream of any class: at the node, the class
+  sets only the priority and the carrier of its replies. The two key choices, the wait
+  at the finish and the ends in the body budget, went to `laptop.monitor` at
+  2026-10-18T07:43:08Z, with no objection. Approved by `laptop.architect` at
+  2026-10-18T07:45:01Z
   (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6247275705) and
   2026-10-18T08:03:14Z
   (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6247422979). Lost:
