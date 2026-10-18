@@ -23,12 +23,12 @@ use types::time::{Monotonic, Span, Stamp};
 use wire::Protocol;
 use wire::header::MALFORMED;
 use wire::hub::client::{
-    BODY_BYTES_MAX, Challenge, Mode, OPEN_BYTES_MAX, Request, Response, Signed,
+    BODY_BYTES_MAX, Challenge, OPEN_BYTES_MAX, Request, Response, Signed,
 };
 
 pub use read::Reader;
 use turn::{Taken, Turn};
-pub use wire::hub::client::{Place, Refusal};
+pub use wire::hub::client::{Mode, Place, Refusal};
 pub use write::Writer;
 
 /// How long each hello of a [`Session`] lives. The session renews it at half its life.
@@ -535,7 +535,7 @@ pub enum Error {
     /// The series of [`Writer::draft`] break a rule of the frame layout. Nothing was
     /// taken, and the writer goes on.
     Layout(types::frame::Error),
-    /// The config of a writer names no channel. Nothing was sent.
+    /// The config of a stream names no channel. Nothing was sent.
     Unnamed,
     /// [`Writer::write`] cannot send a frame: it holds no sample, or it is of
     /// [`write::Time::Node`] and is encoded or holds more than one sample. Nothing was
@@ -584,7 +584,7 @@ impl fmt::Display for Error {
             Self::Layout(error) => {
                 write!(f, "the series of the draft are not valid: {error}")
             }
-            Self::Unnamed => f.write_str("the writer names no channel"),
+            Self::Unnamed => f.write_str("the stream names no channel"),
             Self::Unsent { count: 0, .. } => {
                 f.write_str("the frame holds no sample, so it was not sent")
             }
