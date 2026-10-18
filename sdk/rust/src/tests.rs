@@ -45,6 +45,11 @@ fn each_error_names_its_cause() {
     );
 }
 
+// These tests build the client through the private `Client::start`, with a `main`
+// that they control. `connect` is `start` with `run` as its `main`. A client that
+// connects needs a node, and these tests run none. No input of `connect` makes a
+// correct client's thread panic, show when it ends, or log a given event.
+
 /// A client whose thread sends `Ok`, waits for its end, and then runs `after`.
 fn client(after: impl FnOnce() -> Result<(), Error> + Send + 'static) -> Client {
     let started = Client::start(|_, outcome, ended| async move {
@@ -108,16 +113,6 @@ fn a_drop_ends_the_thread_and_does_not_wait() {
     #[expect(clippy::disallowed_methods, reason = "the test waits for the thread")]
     let outcome = end.recv_timeout(Duration::from_secs(10));
     assert_eq!(outcome, Ok(()));
-}
-
-#[test]
-fn a_connect_gives_the_error_that_the_thread_sends() {
-    let failed = Error::Session(program::Error::Unanswered);
-    let error = failed.clone();
-    let started = Client::start(move |_, outcome, _| async move {
-        outcome.send(Err(error)).unwrap();
-    });
-    assert_eq!(started.err(), Some(failed));
 }
 
 #[test]

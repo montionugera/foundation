@@ -133,6 +133,18 @@ each patched release` step of the `deny` job in
 | `open62541` (C library) | 1.5.9 | `privateKeyPasswordCallback` of `plugins/crypto/openssl/certificategroup.c` returns -1 when the password does not fit in the buffer of aws-lc. It returns -1 because aws-lc refuses the PEM only on a result below 0 (`laptop.architect-2`, 2026-10-17 17:20 UTC, https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6237471608) | The release copies no password that does not fit, but returns its length, so aws-lc reads that many bytes from its buffer of 1024 bytes (#3027). `a_password_longer_than_the_buffer_of_aws_lc_is_refused` fails with the release lines, and with `>=` for `>`, which refuses a password of 1024 bytes. At a new release, make the change again |
 | `open62541` (C library) | 1.5.9 | `UA_Openssl_Init` of `plugins/crypto/openssl/securitypolicy_common.c` has an empty body: no `static` flag `bInit`, and no branch for the API of OpenSSL before 1.1. In its place, `#error` fails a build that defines `OPENSSL_API_COMPAT` (`laptop.architect-2`, 2026-10-17 08:08 UTC, https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231556855) | aws-lc, and OpenSSL 1.1 and later, need no init call, so the flag was state with no work. It is a mutable global of the process, which the rules of the repo forbid (#2934). `the_copy_refuses_a_build_that_defines_openssl_api_compat` fails with the release lines, as `nm` shows `bInit`, and with no `#error`. At a new release, make the change again |
 
+## The Python SDK
+
+These ship in the wheels of `sdk-python`, never in the binary. The person approved `pyo3`
+and `maturin` on 2026-10-15 (SDK DATA PATH,
+https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198508264).
+
+| Crate or tool | Used by | Why | License | Version | Approved |
+| --- | --- | --- | --- | --- | --- |
+| `pyo3` | `sdk-python` | The module `foundation._native`: the Python types, the GIL, and the exceptions (C6). Its tree: `pyo3-ffi`, `pyo3-macros`, `pyo3-macros-backend`, `pyo3-build-config`, `portable-atomic`, and, at build time only, `target-lexicon` (Apache-2.0 with LLVM exception, an exception in `deny.toml`) | MIT or Apache-2.0 | 0.30.1 | 2026-10-15 |
+| `maturin` (tool) | `sdk/python/pyproject.toml`, `.github/workflows/sdk.yaml` | The build backend of the wheels: builds `sdk-python` with the profile `wheel` and packs the module with `foundation/__init__.py` | MIT or Apache-2.0 | 1.15.0 | 2026-10-15 |
+| `PyO3/maturin-action` (GitHub Action) | `.github/workflows/sdk.yaml` | Runs `maturin` in the `manylinux_2_28` container, so the Linux wheels install on glibc 2.28 and later | MIT | 1.51.0 (`3e2bdf6ba6453a61e649744019b8a2d906c7eb38`) | 2026-10-17 (#2923) |
+
 ## Tests, benchmarks, and tools
 
 These never ship in the binary.
