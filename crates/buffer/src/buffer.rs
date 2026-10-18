@@ -1131,7 +1131,7 @@ fn recover(
 ) -> Result<usize, Error> {
     let unread = |_: entry::Invalid| Error::Invalid { offset };
     let misplaced = |_: log::Invalid| Error::Invalid { offset };
-    let (mut count, mut copies, mut copy_len) = (0, 0, 0);
+    let (mut count, mut copy_len) = (0, 0);
     for header in entry::parse(body.start, body.len).map_err(unread)? {
         let (header, at) = header.map_err(unread)?;
         let requested = usize::try_from(header.bytes).unwrap_or(usize::MAX);
@@ -1146,10 +1146,10 @@ fn recover(
         count += 1;
         if let Some(tag) = NonZeroU8::new(header.tag) {
             newest.insert((slot, header.path, tag), (offset, at, header.bytes));
-            (copies, copy_len) = (copies + 1, copy_len + requested);
+            copy_len += carry::copy_len(requested);
         }
     }
-    Ok(carry::holders_len(count, copies, copy_len))
+    Ok(carry::holders_len(count, copy_len))
 }
 
 /// Feeds the logs the tails and the entries of a carry record body at `offset`.

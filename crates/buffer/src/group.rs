@@ -86,16 +86,17 @@ fn need(starts: &[usize], len: usize) -> usize {
     group.saturating_add(parts)
 }
 
-/// The entries of `batch` with a nonzero tag, and their bytes together.
+/// The bytes that the copies of the entries of `batch` with a nonzero tag take in a
+/// carry body.
 ///
 /// # Errors
 ///
 /// [`Limit::Block`] for the first entry over `block_max`, else [`Limit::Tagged`] for
 /// the first entry with a nonzero tag over [`Layout::ENTRY_MAX_MIN`].
-fn copies(batch: &[Entry], block_max: usize) -> Result<(usize, usize), Limit> {
+fn copies(batch: &[Entry], block_max: usize) -> Result<usize, Limit> {
     let max = Layout::ENTRY_MAX_MIN;
     let mut tagged = None;
-    let (mut copies, mut copy_len) = (0_usize, 0_usize);
+    let mut copy_len = 0_usize;
     for entry in batch {
         let len = entry.parts.bytes();
         if len > block_max {
@@ -108,11 +109,10 @@ fn copies(batch: &[Entry], block_max: usize) -> Result<(usize, usize), Limit> {
             if tagged.is_none() && len > max {
                 tagged = Some(Limit::Tagged { len, max });
             }
-            copies = copies.saturating_add(1);
-            copy_len = copy_len.saturating_add(len);
+            copy_len = copy_len.saturating_add(carry::copy_len(len));
         }
     }
-    tagged.map_or(Ok((copies, copy_len)), Err)
+    tagged.map_or(Ok(copy_len), Err)
 }
 
 /// The entries of one group commit, in append order. The first fit takes the block
@@ -129,8 +129,8 @@ pub(crate) struct Group {
     writes: Vec<Block>,
     /// The bytes of every entry together.
     bytes: usize,
-    /// The entries with a nonzero tag, and their bytes together.
-    copies: usize,
+    /// The bytes that the copies of the entries with a nonzero tag take in a carry
+    /// body, 0 when none has one.
     copy_len: usize,
     /// The carry body of the holders of the record when [`fit`](Self::fit) was
     /// `trimmed`, else 0.
@@ -138,6 +138,9 @@ pub(crate) struct Group {
     meta: Option<Unique>,
     wrap: Option<Unique>,
 }
+
+// A group moves by value at each commit. Past 128 bytes, a move is a call of memcpy.
+const _: () = assert!(size_of::<Group>() <= 128, "a group moves inline");
 
 /// Why a group did not take a batch. Nothing changed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -203,9 +206,9 @@ impl Group {
         let len = batch.iter().map(|entry| entry.parts.bytes()).sum::<usize>();
         let layout = writer.layout();
         layout.check(count, parts, len).map_err(Rejected::Large)?;
-        let (copies, copy_len) = copies(batch, block_max).map_err(Rejected::Large)?;
+        let copy_len = copies(batch, block_max).map_err(Rejected::Large)?;
         let max = layout.carry_max();
-        let carry = carry::holders_len(count, copies, copy_len);
+        let carry = carry::holders_len(count, copy_len);
         if carry > max {
             return Err(Rejected::Large(Limit::Carry { len: carry, max }));
         }
@@ -216,11 +219,8 @@ impl Group {
                 self.bytes.saturating_add(len),
             )
             .map_err(|_over: Limit| Rejected::Record)?;
-        let (copies, copy_len) = (
-            self.copies.saturating_add(copies),
-            self.copy_len.saturating_add(copy_len),
-        );
-        let carry = carry::holders_len(start.saturating_add(count), copies, copy_len);
+        let copy_len = self.copy_len.saturating_add(copy_len);
+        let carry = carry::holders_len(start.saturating_add(count), copy_len);
         if carry > max {
             return Err(Rejected::Record);
         }
@@ -243,7 +243,7 @@ impl Group {
             .bytes
             .checked_add(len)
             .expect("invariant: a body fits in usize");
-        (self.copies, self.copy_len, self.carry) = (copies, copy_len, carry);
+        (self.copy_len, self.carry) = (copy_len, carry);
         Ok(())
     }
 
@@ -429,7 +429,7 @@ impl Sealed {
     /// Each entry with a nonzero tag, in order: its slot, its header, and its parts.
     pub(crate) fn tagged(&self) -> impl Iterator<Item = (Slot, &Header, &[Block])> {
         let group = &self.group;
-        let headers = if group.copies == 0 {
+        let headers = if group.copy_len == 0 {
             &[]
         } else {
             group.headers.as_slice()
@@ -453,7 +453,7 @@ impl Sealed {
         group.slots.clear();
         group.writes.clear();
         group.bytes = 0;
-        (group.copies, group.copy_len, group.carry) = (0, 0, 0);
+        (group.copy_len, group.carry) = (0, 0);
         group
     }
 }
@@ -1441,7 +1441,7 @@ mod tests {
         fit(&mut group, &[tagged(1, 100)], true).expect("fits");
         let closed = group.close(&mut area.writer);
         let group = area.commit(closed).clear();
-        assert_eq!((group.copies, group.copy_len, group.carry), (0, 0, 0));
+        assert_eq!((group.copy_len, group.carry), (0, 0));
     }
 
     proptest! {

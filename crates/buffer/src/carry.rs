@@ -116,18 +116,27 @@ pub(crate) const fn body_len(tails: usize, entries: usize, bytes: usize) -> usiz
     .expect("invariant: a carry body fits in memory")
 }
 
-/// The carry body of the holders of a record of `count` entries, of which `copies`
-/// of `bytes` bytes together have a nonzero tag: each entry as a tail and each such
-/// entry also as a copy. 0 when `copies` is 0.
+/// The bytes that a copy of an entry of `bytes` bytes takes in a carry body: its
+/// header and its bytes.
+pub(crate) const fn copy_len(bytes: usize) -> usize {
+    entry::HEADER_LEN
+        .checked_add(bytes)
+        .expect("invariant: a copy fits in memory")
+}
+
+/// The carry body of the holders of a record of `count` entries whose copies take
+/// `copy_len` bytes, each as [`copy_len`] gives it: each entry as a tail and each
+/// entry with a nonzero tag also as a copy. 0 when `copy_len` is 0, so when no entry
+/// has a nonzero tag.
 ///
 /// # Panics
 ///
-/// As [`body_len`] does, when `copies` is not 0.
-pub(crate) const fn holders_len(count: usize, copies: usize, bytes: usize) -> usize {
-    if copies == 0 {
+/// As [`body_len`] does, when `copy_len` is not 0.
+pub(crate) const fn holders_len(count: usize, copy_len: usize) -> usize {
+    if copy_len == 0 {
         return 0;
     }
-    body_len(count, copies, bytes)
+    body_len(count, 0, copy_len)
 }
 
 /// Writes the body that holds `tails` and `entries`, each header with its bytes, at
