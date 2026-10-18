@@ -1045,11 +1045,27 @@
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256155598; and for
   the last, with the DER test, 2026-10-18 22:58 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256221476). A block
-  with any byte after its certificate gives `BadInternalError`: a block of two
-  certificates, and a `TRUSTED CERTIFICATE` with trust settings, which the verify of
-  the group does not apply. So a trust file that limits or rejects a certificate never
-  makes the client trust it (the two `architecture` runs after round 3 of review of
-  #3271; ruling of `laptop.architect-2` owed).
+  that holds two certificates gives `BadInternalError`, since the AUX reader of aws-lc
+  reads the bytes after the first certificate of a block of any label as trust
+  settings (`laptop.architect-2`, 2026-10-18 23:35 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256562565, item 2,
+  which supersedes that part of item 1 of 6256155598). So does a block with a byte
+  after its certificate that is not trust settings. A certificate whose trust settings
+  reject any extended key use is dropped. Other trust settings are not read: a
+  certificate that rejects or trusts only named uses is trusted, as in the default
+  verify of aws-lc (`laptop.architect-2`, 2026-10-18 23:35 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256562565, item 1).
+  The person decided the full trust check, which #3300 builds (`laptop.monitor`,
+  2026-10-18 23:39 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256601061): "Ok
+  fine. Approved". The trust load passes the role of its side to the check, so a
+  certificate that its settings do not trust for that role, or reject for it, is not a
+  trust anchor, and a certificate with no settings is unchanged. No purpose check of
+  the own certificate of the peer. A refused certificate gives a status that names the
+  trust file, the certificate, and the role. This replaces the refusal of each block
+  with settings of d6d52bac8. Until #3300, this PR keeps the drop above
+  (`laptop.architect-2`, 2026-10-18 23:38 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256593552).
   `laptop.monitor` accepted that the readers of aws-lc read the trust, and our own PEM
   parser lost (message 20c8b048 to `box1.builder-3`,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256452096). An

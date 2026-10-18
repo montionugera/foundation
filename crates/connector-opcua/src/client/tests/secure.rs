@@ -9,9 +9,9 @@ use crate::client::{Credentials, Large, Mode};
 use crate::event;
 use crate::ffi::{self, Status};
 use crate::secure::{
-    ANONYMOUS, BROKEN_TRUST, CLIENT, CLIENT_ONLY_SERVER, CLIENT_PEM, EC, EMPTY_URI,
-    END, HEADED_TRUST, Identity, LINE_TRUST, LONG_BLOCK_TRUST, ONE_BLOCK_TRUST, OTHER,
-    Policy, REJECTED_SERVER, SERVER, START, TRUST, TWO_URIS, UNNAMED,
+    ANONYMOUS, BROKEN_TRUST, CLIENT, CLIENT_PEM, EC, EMPTY_URI, END, HEADED_TRUST,
+    Identity, LINE_TRUST, LONG_BLOCK_TRUST, ONE_BLOCK_TRUST, OTHER, Policy,
+    REJECTED_SERVER, SERVER, START, TRUST, TWO_URIS, UNNAMED,
 };
 use crate::server::Limits;
 use crate::value::{Fault, Value};
@@ -289,12 +289,10 @@ fn a_trust_of_a_block_with_a_byte_after_its_certificate_ends_the_connect() {
 }
 
 #[test]
-fn a_trusted_certificate_block_with_trust_settings_ends_the_connect() {
-    for settings in [REJECTED_SERVER, CLIENT_ONLY_SERVER] {
-        let (other, _) = blocks();
-        let trust = [other.as_bytes(), settings].concat();
-        assert_eq!(trusting(trust), Err(Status::BAD_INTERNAL_ERROR));
-    }
+fn a_trusted_certificate_block_that_rejects_any_use_is_not_trusted() {
+    let (other, _) = blocks();
+    let trust = [other.as_bytes(), REJECTED_SERVER].concat();
+    assert_eq!(trusting(trust), Err(Status::BAD_CERTIFICATE_UNTRUSTED));
 }
 
 #[test]

@@ -90,14 +90,9 @@ pub(crate) const LINE_TRUST: &[u8] = include_bytes!("secure/line-trust.der");
 /// [`SERVER`], then the first 300 bytes of [`OTHER`], in PEM.
 pub(crate) const BROKEN_TRUST: &[u8] = include_bytes!("secure/broken-trust.pem");
 
-/// [`SERVER`] as a `TRUSTED CERTIFICATE` that rejects server authentication, as
-/// `openssl x509 -addreject serverAuth -trustout` writes it.
+/// [`SERVER`] as a `TRUSTED CERTIFICATE` that rejects any extended key use, as
+/// `openssl x509 -addreject anyExtendedKeyUsage -trustout` writes it.
 pub(crate) const REJECTED_SERVER: &[u8] = include_bytes!("secure/server-rejected.pem");
-
-/// [`SERVER`] as a `TRUSTED CERTIFICATE` that trusts it only for client
-/// authentication, as `openssl x509 -addtrust clientAuth -trustout` writes it.
-pub(crate) const CLIENT_ONLY_SERVER: &[u8] =
-    include_bytes!("secure/server-for-clients.pem");
 
 /// The DER of [`SERVER`] and one zero byte, in the base64 of one PEM block.
 pub(crate) const LONG_BLOCK_TRUST: &[u8] =
