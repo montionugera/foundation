@@ -885,6 +885,8 @@ fn files_of_a_dir_with_a_missing_parent_gives_dir_and_makes_nothing() {
     assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 0);
 }
 
+/// Only Linux: the test answers a call with a seccomp filter.
+///
 /// Each call syncs the holders of `dir` and `dir/data`, also when they are there: an
 /// entry that a call made before a crash is not durable until then.
 #[cfg(target_os = "linux")]
@@ -949,6 +951,7 @@ fn files_of_a_missing_dir_under_a_parent_it_cannot_write_gives_the_cause() {
     assert!(matches!(found, os::Error::Dir(_)));
 }
 
+/// Only Linux: the test answers a call with a seccomp filter.
 #[cfg(target_os = "linux")]
 #[test]
 fn files_whose_holder_sync_fails_gives_dir() {
@@ -1044,6 +1047,8 @@ fn hold_while_another_create_fails(mode: Mode) {
     writer_thread.join().unwrap();
 }
 
+/// Only Linux: the test answers a call with a seccomp filter.
+///
 /// The `ftruncate` that frees the blocks of a failed create also fails.
 #[cfg(target_os = "linux")]
 #[test]
@@ -1081,6 +1086,8 @@ fn unlock_gives(errno: i32) {
     });
 }
 
+/// Only Linux: the test answers a call with a seccomp filter.
+///
 /// The unlock of a closed write handle fails, as an NFS `LOCKU` or a FUSE daemon can.
 #[cfg(target_os = "linux")]
 #[test]
@@ -1101,6 +1108,8 @@ fn a_close_whose_unlock_fails_closes_the_file() {
     crate::panics::assert_joins(handle.unwrap(), Ok(()));
 }
 
+/// Only Linux: the test answers a call with a seccomp filter.
+///
 /// An unlock that gives `EBADF` is a broken invariant: the close panics the I/O thread.
 #[cfg(target_os = "linux")]
 #[test]
@@ -1121,6 +1130,8 @@ fn a_close_whose_unlock_gives_ebadf_panics_the_io_thread() {
     crate::panics::assert_joins(thread, crate::panics::panicked("files"));
 }
 
+/// Only Linux: the test answers a call with a seccomp filter.
+///
 /// An unlock that gives `EINVAL` is a broken invariant too: the close panics the I/O
 /// thread.
 #[cfg(target_os = "linux")]
@@ -1142,6 +1153,8 @@ fn a_close_whose_unlock_gives_einval_panics_the_io_thread() {
     crate::panics::assert_joins(thread, crate::panics::panicked("files"));
 }
 
+/// Only Linux: the test answers a call with a seccomp filter.
+///
 /// A write open that another disk holds the lock of gives `Busy`, holds no lock, and so
 /// sends no unlock.
 #[cfg(target_os = "linux")]
@@ -1169,6 +1182,8 @@ fn a_busy_write_open_sends_no_unlock() {
     holder_thread.join().unwrap();
 }
 
+/// Only Linux: the test answers a call with a seccomp filter.
+///
 /// A read handle holds no lock, so its close sends no unlock.
 #[cfg(target_os = "linux")]
 #[test]

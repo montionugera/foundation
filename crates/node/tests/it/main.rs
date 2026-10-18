@@ -829,6 +829,8 @@ fn mcp_refuses_a_file_in_a_folder_made_again() {
     assert_eq!(mcp.close().status.code(), Some(0));
 }
 
+/// Only macOS: a file system of Linux keeps the case of a name.
+///
 /// A folder of `--files` made again in another case, on a file system that ignores
 /// case, is a folder that a program replaced.
 #[cfg(target_os = "macos")]

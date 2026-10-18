@@ -21,6 +21,7 @@ mod fsize;
 #[cfg(target_os = "linux")]
 mod kept;
 mod log;
+/// Only Linux: `memory::available_under` reads the cgroups of Linux.
 #[cfg(target_os = "linux")]
 mod memory;
 #[cfg(any(target_os = "linux", target_os = "macos"))] // #2955

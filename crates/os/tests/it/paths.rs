@@ -133,7 +133,7 @@ fn within_hides_a_pipe_and_ends() {
     assert_eq!(ended, Ok(Ok(Err(Error::Hidden))));
 }
 
-/// APFS ignores the case and the form of a name.
+/// Only macOS: APFS ignores the case and the form of a name.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_hidden_folder_holds_each_case_and_form_of_its_names() {
@@ -164,6 +164,8 @@ fn a_hidden_folder_holds_each_case_and_form_of_its_names() {
     });
 }
 
+/// Only macOS: only macOS has a data volume.
+///
 /// The resolve keeps the prefix of the data volume, so the text of the path is under
 /// no folder.
 #[cfg(target_os = "macos")]
@@ -192,7 +194,7 @@ fn a_folder_holds_its_files_through_the_data_volume() {
     });
 }
 
-/// `/proc` and `/sys` are each inode 1, on two devices.
+/// Only Linux: `/proc` and `/sys` are each inode 1, on two devices.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_folder_is_its_device_and_its_inode() {
@@ -296,8 +298,8 @@ fn a_folder_that_a_program_moves_and_makes_again_holds_nothing() {
     });
 }
 
-/// APFS ignores the case of a name, so a folder made again in another case is the
-/// folder that a program replaced.
+/// Only macOS: APFS ignores the case of a name, so a folder made again in another
+/// case is the folder that a program replaced.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_folder_made_again_in_other_case_is_replaced() {
@@ -317,6 +319,8 @@ fn a_folder_made_again_in_other_case_is_replaced() {
     });
 }
 
+/// Only macOS: APFS ignores the case of a name.
+///
 /// The old folder stays, so the host cannot give the new one its key.
 #[cfg(target_os = "macos")]
 #[test]
@@ -602,7 +606,8 @@ fn a_write_gives_the_group_and_other_users_no_access_whatever_the_old_mode() {
     write_over_each_mode(&Scratch::new().0);
 }
 
-/// A directory in `/private/tmp` takes its group, `wheel`, which a user is not in.
+/// Only macOS: a directory in `/private/tmp` takes its group, `wheel`, which a user
+/// is not in.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_write_gives_no_access_in_a_directory_that_took_the_group_of_another() {
@@ -1200,6 +1205,8 @@ fn a_home_through_a_link_that_is_not_there_is_as_a_resolve_gives_it() {
     assert!(stdout.contains("1 passed"), "{stdout}");
 }
 
+/// Only macOS: APFS ignores the case of a name.
+///
 /// A hidden file that is not there yet, written by a name in other case.
 #[cfg(target_os = "macos")]
 #[test]
