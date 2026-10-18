@@ -182,7 +182,11 @@
   a warning and calls again a minute later. After another error but
   `mesh::Error::Stopped`, it logs a warning, and the card keeps its addresses. Key
   choices 2 and 9, accepted:
-  https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6245123301. The
+  https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6245123301. In
+  `sim`, as on Linux, each node has one link-local address, `fe80::` plus its host, on
+  one interface. Only a bind of it keeps its scope, which must be the index of that
+  interface, and no packet reaches it (`laptop.architect-2`, 2026-10-18T09:56:35Z,
+  https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248485617). The
   first admin's private key is in the file `admin.key` of the data
   directory: 54 bytes, the tag `foundation/admin/1`, the Ed25519 private key, and the
   CRC32C of those 50 bytes (little-endian), in one sector. Shard 0 reads it, or makes it

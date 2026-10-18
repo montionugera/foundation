@@ -1,7 +1,7 @@
 //! One simulated node and its settings.
 
 use std::fmt;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 
@@ -425,6 +425,18 @@ impl Node {
     #[must_use]
     pub fn addresses(&self) -> [IpAddr; 2] {
         net::addresses(self.0.node)
+    }
+
+    /// The node's link-local IPv6 address, `fe80::` plus `k + 1`, and the index of the
+    /// one interface that holds it. A bind of it takes that index as its scope. No
+    /// packet reaches it.
+    ///
+    /// # Panics
+    ///
+    /// As [`Node::addresses`].
+    #[must_use]
+    pub fn link_local(&self) -> (Ipv6Addr, u32) {
+        (net::link_local(self.0.node), net::INTERFACE)
     }
 
     /// Steps the wall clock by `span`, forward or back, as when NTP or an operator

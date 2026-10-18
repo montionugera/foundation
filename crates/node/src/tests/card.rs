@@ -117,19 +117,27 @@ fn a_start_on_the_unspecified_ip_warns_that_no_peer_can_dial_the_node() {
     assert_eq!(found.lines.len(), 1, "{:?}", found.lines);
 }
 
-/// A node bound to an IPv6 address with a scope starts, and its card does not hold
-/// the address, which means something only on the node.
+/// A node bound to the link-local address of its host, with its scope, starts. Its
+/// card holds no address, which means something only on the host, and it warns that
+/// no peer can dial the node.
 #[test]
 fn a_start_on_a_scoped_address_keeps_it_off_the_card() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
-    let IpAddr::V6(v6) = host.addresses()[1] else {
-        panic!("the second address is IPv6");
-    };
-    let scoped = SocketAddr::V6(SocketAddrV6::new(v6, PORT, 0, 2));
-    let found = started(&mut sim, &host, scoped);
-    assert_eq!((found.version, found.addresses), (1, Vec::new()));
-    assert_eq!(found.lines.len(), 1, "{:?}", found.lines);
+    let (ip, interface) = host.link_local();
+    let scoped = SocketAddr::V6(SocketAddrV6::new(ip, PORT, 0, interface));
+    assert_eq!(
+        started(&mut sim, &host, scoped),
+        Started {
+            version: 1,
+            addresses: Vec::new(),
+            lines: vec![
+                "2026-01-01T00:00:00.004956Z WARN node::card: no peer can dial this node: give `--listen` an \
+                 address of this host bound=[fe80::1%2]:7000"
+                    .into()
+            ],
+        }
+    );
 }
 
 /// Another change of the card less than a minute before the start: the start warns,

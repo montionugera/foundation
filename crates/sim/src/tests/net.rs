@@ -1106,21 +1106,55 @@ fn port_zero_binds_the_lowest_free_port() {
     assert_eq!(again.local(), taken);
 }
 
-/// A bind of an IPv6 address keeps its scope and drops its flow info, as
-/// `getsockname` gives; also on port 0.
+/// A bind of the link-local address with the index of its interface keeps the scope
+/// and drops the flow info, as `getsockname` gives on Linux; also on port 0.
 #[test]
-fn a_v6_bind_keeps_its_scope_and_no_flow_info() {
+fn a_link_local_bind_keeps_its_scope_and_no_flow_info() {
+    let mut sim = sim(0);
+    let node = sim.node(node::Config::default());
+    let (ip, interface) = node.link_local();
+    assert_eq!((ip, interface), ("fe80::1".parse().unwrap(), 2));
+    for port in [4433, 0] {
+        let local = SocketAddr::V6(SocketAddrV6::new(ip, port, 5, interface));
+        let (sender, _receiver) = bind(&node, local).unwrap();
+        let port = sender.local().port();
+        let kept = SocketAddr::V6(SocketAddrV6::new(ip, port, 0, interface));
+        assert_eq!(sender.local(), kept);
+    }
+}
+
+/// A link-local bind fails with `EINVAL` with no scope, with `ENODEV` with the index
+/// of no interface, and with `EADDRNOTAVAIL` for the link-local address of another
+/// node.
+#[test]
+fn a_link_local_bind_needs_the_scope_of_the_interface_and_its_own_address() {
+    let (_sim, a, b) = pair(0, link::Config::default());
+    let (ip, interface) = a.link_local();
+    let at = |ip, scope| SocketAddr::V6(SocketAddrV6::new(ip, 4433, 0, scope));
+    let cases = [
+        (at(ip, 0), 22),
+        (at(ip, interface + 1), 19),
+        (at(b.link_local().0, interface), 99),
+    ];
+    for (local, code) in cases {
+        assert_eq!(bind(&a, local).unwrap_err(), Net::Io { code }, "{local}");
+    }
+}
+
+/// A bind of an IPv6 address that is not link-local drops its scope and flow info, as
+/// `getsockname` gives on Linux.
+#[test]
+fn a_v6_bind_that_is_not_link_local_drops_its_scope() {
     let mut sim = sim(0);
     let node = sim.node(node::Config::default());
     let IpAddr::V6(v6) = node.addresses()[1] else {
         panic!("the second address is IPv6");
     };
-    for port in [4433, 0] {
-        let local = SocketAddr::V6(SocketAddrV6::new(v6, port, 5, 2));
+    for ip in [v6, Ipv6Addr::UNSPECIFIED] {
+        let local = SocketAddr::V6(SocketAddrV6::new(ip, 4433, 5, 2));
         let (sender, _receiver) = bind(&node, local).unwrap();
-        let port = sender.local().port();
-        let kept = SocketAddr::V6(SocketAddrV6::new(v6, port, 0, 2));
-        assert_eq!(sender.local(), kept);
+        let dropped = SocketAddr::V6(SocketAddrV6::new(ip, 4433, 0, 0));
+        assert_eq!(sender.local(), dropped);
     }
 }
 
