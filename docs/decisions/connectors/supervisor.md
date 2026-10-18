@@ -161,11 +161,16 @@
   `laptop.architect-2`, 2026-10-10T15:29:59Z:
   https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6099110161). The
   tests of each kind build that config through `connector::testing::Rig`, behind
-  `sim` (`Rig::open`, or `Rig::trusting` for the roots of an `https` connect).
-  `browse_relayed` of `connector-opcua`, whose hub gets its mesh time late, opens it
-  with `hub::testing::open_unsynced` and builds the config by hand, until the rig
-  takes that delay (#3039) (`laptop.architect-2`, 2026-10-18T16:20:05Z:
-  https://github.com/synnaxlabs/foundation/pull/3214#issuecomment-6252209074). The
+  `sim` (`Rig::open`, `Rig::trusting` for the roots of an `https` connect, or
+  `Rig::unsynced` for a hub whose mesh time comes late) (`laptop.architect-2`,
+  2026-10-18T16:20:05Z:
+  https://github.com/synnaxlabs/foundation/pull/3214#issuecomment-6252209074). A
+  second open of one connector name reuses the status channels that the rig defined
+  for it when the kind's check gives the same counts, so a status reader goes on;
+  other counts panic. `Rig::define_status` defines them before the first open, for a
+  reader that starts first. `Rig::supervisor` serves a browse only
+  (`laptop.architect-2`, 2026-10-18T16:10:06Z:
+  https://github.com/synnaxlabs/foundation/pull/3214#issuecomment-6252107337). The
   unit tests of `connector` build it with the crate-private `testing::create_config`,
   which `Rig` also calls, and which opens the hub through `hub::testing::open`, other
   than the tests of the wait for mesh time (below) and one test with no status
