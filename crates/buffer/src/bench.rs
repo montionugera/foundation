@@ -221,7 +221,8 @@ pub struct Logs {
     headers: Vec<(Slot, Header)>,
     offset: u64,
     commits: u32,
-    /// The body of a carry record of a tail of each index, or of the most tails.
+    /// The most body of a carry record: the tails, and the copies of tagged logs,
+    /// of each index, at most the body of [`carry::TAILS_MAX`] tails.
     room: usize,
     carried: Carried,
     /// The carry body that [`carry`](Self::carry) writes, empty when no entry has a
@@ -268,7 +269,11 @@ impl Logs {
             header.tag = 1;
         }
         let count = logs.headers.len().min(carry::TAILS_MAX);
-        logs.room = carry::body_len(count, count, 8 * count);
+        logs.room = carry::body_len(count, count, 8 * count).min(carry::body_len(
+            carry::TAILS_MAX,
+            0,
+            0,
+        ));
         logs.body = vec![0; logs.room];
         logs
     }
@@ -731,5 +736,13 @@ mod tests {
                 assert_eq!(logs.carried.len(), len, "{indexes} indexes");
             }
         }
+    }
+
+    /// The tagged logs of the most tails carry at most the body of one carry record
+    /// of any layout. It reads the private `room`: `carry` gives nothing.
+    #[test]
+    fn tagged_logs_of_the_most_tails_carry_at_most_one_carry_body() {
+        let logs = Logs::tagged(u32::try_from(carry::TAILS_MAX).expect("fits"));
+        assert_eq!(logs.room, carry::body_len(carry::TAILS_MAX, 0, 0));
     }
 }
