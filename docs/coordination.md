@@ -176,7 +176,8 @@ PR merges (`laptop.director`, 2026-10-17T05:58:56Z,
 https://github.com/synnaxlabs/foundation/pull/2999#issuecomment-6230437331, and the OKs
 of `laptop.architect`, 2026-10-17T07:53:30Z,
 https://github.com/synnaxlabs/foundation/pull/2993#issuecomment-6231424805, and
-<time>, <link>).
+2026-10-18T06:07:24Z,
+https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246397172).
 
 ## Cloud machines
 
@@ -234,6 +235,10 @@ budget, its limits, and step 3. Step 4 checks each by its instance, because they
   skill or this doc sends to `laptop.coordinator`, because `laptop.monitor` admits in
   its place (`laptop.monitor`, factory message `c9b2b7da`,
   https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6231345513).
+  `laptop.monitor` states the pause in
+  https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246411227, and
+  edits it when the pause ends. A session reads it with `gh api
+  repos/synnaxlabs/foundation/issues/comments/6246411227 --jq .body`.
 - **The person reviews only what only the person can decide.** The architect decides the
   rest inside the decisions the person made, in a comment on the issue. The builder adds
   the ruling to `docs/decisions/` in the code PR, so the record and the code merge
