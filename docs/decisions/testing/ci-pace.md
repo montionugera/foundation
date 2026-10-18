@@ -33,3 +33,10 @@
   https://github.com/synnaxlabs/foundation/issues/2756#issuecomment-6202718051, and of
   `laptop.architect-2` for `sim` (2026-10-15T21:32:24Z):
   https://github.com/synnaxlabs/foundation/issues/2756#issuecomment-6202725115.
+  Amended (#3135): Miri runs on eight hosted runners, `miri shard <k>`, each with
+  `cargo xtask miri <k>/8`, and the required check `miri` passes when each shard
+  passed. A unit is a test of a lib, the doc tests of a crate, or another test target
+  whole, once for each set of `MIRIFLAGS`. The units go in order of test, then of
+  flags, and shard `k` takes each eighth unit from unit `k`, so the two runs of a slow
+  test go to two shards. The one job took 35 min (run 39096947760); the slowest shard
+  took 9 min 14 s (run 39104791982). Approval of `ci.yaml` by the person: owed.
