@@ -45,8 +45,9 @@
   order of the paths, in one session to the device. Each path is from the root, as an
   `Entry` gives it, and under the start, so one point has one path whatever the start.
   The walk finds the start first, with `connector.no-folder` as for the other scopes.
-  It reads each folder that a path is under at most once, before the next, and stops a
-  folder when it has seen each name that a path takes in it, so an import of 500 points
+  It reads the folder at each prefix of the paths at most once, before the next, and
+  stops a folder when it has seen each name that a path takes in it, so an import of 500
+  points
   opens no 500 sessions. A path at a folder, at no entry, or not under the start gives
   `connector.no-point` ("the device has no point at "<path>"", or "the path "<path>" is
   not under the start "<start>""), with the fix "Give the path of a point that `browse`

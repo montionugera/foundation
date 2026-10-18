@@ -25,6 +25,9 @@
   present by the kind's compare of node IDs, not by text: the OPC UA kind gives
   `i=2258` for a written `ns=0;i=2258` (`laptop.architect-2`, 2026-10-18T02:10:56Z,
   item 2: https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074).
+  Each kind that gives blocks has a property test that `tag` of each block that
+  `block(t, ..)` gives is `Some(t)` (`laptop.architect-2`, 2026-10-18T02:44:21Z, finding
+  4: https://github.com/synnaxlabs/foundation/pull/3102#issuecomment-6244852270).
   `import::names(connector, start, picks, taken)` gives the channel name of each pick,
   in pick order: each given name as it is, then the default `<connector>.<path>` of each
   other pick. Each name of the path below `start` is one segment, with `_` in place of

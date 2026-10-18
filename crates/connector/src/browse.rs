@@ -1132,7 +1132,7 @@ pub enum Scope {
     Match(Pattern),
     /// The entry at each path, in the order of the paths: a point or an unreadable
     /// entry. Each path is from the root, as an [`Entry`] gives it, and under the
-    /// start. The walk reads the folder at each path at most once.
+    /// start. The walk reads the folder at each prefix of the paths at most once.
     Points(Vec<Path>),
 }
 
