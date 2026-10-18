@@ -39,7 +39,7 @@ const BODY: Body = Body {
         },
         Attribute {
             name: "hold",
-            value: "a span",
+            value: "a span of zero or more, such as \"2h\"",
             presence: Presence::Default("\"0s\""),
             summary: "How long the home holds the position of a complete reader after \
                       its session closes.",

@@ -29,7 +29,7 @@ pub(crate) const BLOCK: schema::Block = schema::Block {
     forms: &[BODY],
 };
 
-/// The keys that `check` reads. The kind reads each other key and block.
+/// The body of a `connector` block. The kind reads each other key and block.
 const BODY: Body = Body {
     summary: "A connector: a link to one external system, which a node runs. Its \
               kind takes each other attribute and block.",

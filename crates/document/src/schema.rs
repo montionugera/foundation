@@ -2,7 +2,8 @@
 //! reads, and the text that the docs give.
 
 /// What the body of one kind of block takes. Its check refuses each attribute and
-/// block that it does not state, and `foundation docs` states it.
+/// block that it does not state, other than those that it gives to another check,
+/// such as the kind of a `connector`, and `foundation docs` states it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Body {
     /// One sentence on what the body defines, with the `kind` that picks it when its

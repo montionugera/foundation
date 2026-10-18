@@ -85,7 +85,7 @@ const READ: Body = Body {
             name: "address",
             value: "an integer, 0 to 65535",
             presence: Presence::Required,
-            summary: "The address of the protocol, from 0.",
+            summary: "The address of the value in its table, from 0.",
         },
         Attribute {
             name: "table",
