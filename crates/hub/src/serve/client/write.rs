@@ -36,7 +36,7 @@ const OUTCOME_BYTES: usize = Reply::Outcome(Outcome::Taken {
 const STORED_BYTES: usize = Reply::Stored { through: 0 }.encoded_len();
 
 /// How long the last `Stored` that finds the pool full waits before it tries again.
-const RETRY: Span = Span::from_nanos(10 * Span::MILLISECOND.nanos());
+const RETRY: Span = Span::from_nanos(10_000_000);
 
 /// Serves the write of `subject` that `write` starts: verifies its open, opens its
 /// writer, and sends its places, then writes each frame of the program and sends its
