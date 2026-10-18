@@ -165,11 +165,11 @@
   status 1. A body that is not this form is `ops.bad-request`, with the cause in the
   message, cut to its first 256 bytes at a char boundary and then `...` when it is
   longer, so that each such reply fits (`laptop.architect-2`, 2026-10-18T00:09:33Z,
-  https://github.com/synnaxlabs/foundation/issues/3084#issuecomment-6243561471), and
-  the fix ``Use a `foundation` program of the same version as the node``. So
-  is each operation other than `plan`, `apply`, `status`, and `browse`, with the
-  cause ``the operation `<name>` does not run on a node``. A subject with no grant gets
-  `ops.denied` (SERVE ACCESS). An output of more than
+  https://github.com/synnaxlabs/foundation/issues/3084#issuecomment-6243561471), and the
+  fix ``Use a `foundation` program of the same version as the node``. So is each
+  operation other than `plan`, `apply`, `status`, and `browse`, with the cause ``the
+  operation `<name>` does not run on a node``. A subject with no grant gets `ops.denied`
+  (SERVE ACCESS). An output of more than
   `wire::hub::client::BODY_BYTES_MAX` bytes is `ops.large-reply`, with the bound in the
   message and the fix `Plan and apply the change in smaller steps`, since
   `hub::serve::Reply::send` panics on such a body (`laptop.architect`,
@@ -184,8 +184,8 @@
   https://github.com/synnaxlabs/foundation/pull/3079#issuecomment-6243126104), or
   `ops.large-status` for `status`. `ops.large-status`, status 1: ``the reply of the
   status has more than <n> bytes, the most that a reply holds``, fix `Read the status
-  channels of each connector with a client of the node`, since a `status` request
-  cannot ask for less (`laptop.architect-2`, 2026-10-18T00:09:33Z,
+  channels of each connector with a client of the node`, since a `status` request cannot
+  ask for less (`laptop.architect-2`, 2026-10-18T00:09:33Z,
   https://github.com/synnaxlabs/foundation/issues/3084#issuecomment-6243561471). `serve`
   stops writing a reply at the bound. The places of the problems of one file share its
   path (`laptop.architect`, 2026-10-12T20:11:00Z,
