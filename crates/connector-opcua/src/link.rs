@@ -432,6 +432,8 @@ const OUTSIDE: &[&str] = if cfg!(target_os = "macos") {
         "__stack_chk_guard",
         "__stderrp",
         "__stdoutp",
+        "__strncpy_chk",
+        "_tlv_bootstrap",
         "abort",
         "access",
         "bcmp",
@@ -444,6 +446,7 @@ const OUTSIDE: &[&str] = if cfg!(target_os = "macos") {
         "fprintf",
         "fputs",
         "fwrite",
+        "isdigit",
         "memcmp",
         "memcpy",
         "memmove",
@@ -747,9 +750,9 @@ fn unlisted_gives_each_name_that_no_list_admits_by_its_object() {
     assert_eq!(
         unlisted(&defined, &undefined, |name| name.starts_with("__asan")),
         [
-            "2-ua_client.o: fgets",
-            "2-ua_client.o: malloc",
-            "3-shim.o: stdin"
+            "2-ua_client.o: fgets".to_owned(),
+            "2-ua_client.o: malloc".to_owned(),
+            format!("3-shim.o: {STDIN}")
         ]
     );
 }
