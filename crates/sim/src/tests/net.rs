@@ -1304,8 +1304,8 @@ fn a_send_to_a_v6_address_from_a_mapped_v4_source_fails() {
     sent(|_| any(), make, Err(Net::Io { code: 22 }));
 }
 
-/// As on Linux, a send that names an IPv6 source to an IPv4 address, or from an IPv4
-/// socket, gets code 22 (`EINVAL`), also when the source is the node's own.
+/// As `os` gives on Linux, a send that names an IPv6 source to an IPv4 address, or from
+/// an IPv4 socket, gets code 22 (`EINVAL`), also when the source is the node's own.
 #[test]
 fn a_send_to_a_v4_address_from_a_v6_source_fails() {
     let make = |a: &node::Node, b: &node::Node| Transmit {
@@ -1316,7 +1316,7 @@ fn a_send_to_a_v4_address_from_a_v6_source_fails() {
     sent(|_| any(), make, Err(Net::Io { code: 22 }));
 }
 
-/// As on Linux, an IPv4 source that is not unicast gets code 22 (`EINVAL`).
+/// As `os` gives on Linux, an IPv4 source that is not unicast gets code 22 (`EINVAL`).
 #[test]
 fn a_send_from_a_v4_source_that_is_not_unicast_fails() {
     let ips = [

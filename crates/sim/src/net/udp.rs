@@ -370,8 +370,8 @@ impl<'a> Udp<'a> {
 /// [`Error::Unreachable`] when the socket's family cannot reach the destination, and
 /// [`Error::Io`] when `transmit` names a source that is neither the link-local `local`
 /// nor the address of `node` of the destination's family: code 99 for a unicast IPv4
-/// source to an IPv4 destination, and code 22 (`EINVAL`) for each other source, as on
-/// Linux.
+/// source to an IPv4 destination (#3187), and code 22 (`EINVAL`) for each other source,
+/// as `os` gives on Linux.
 fn route(
     node: usize,
     local: SocketAddr,
