@@ -88,6 +88,8 @@
   2026-10-18T10:40:06Z for interface 2 and code 99
   (https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248857687), for
   the send rule at 2026-10-18T11:40:34Z
-  (https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6249478620), and for
-  the routable source at 2026-10-18T11:50:48Z
-  (https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6249571217).
+  (https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6249478620), for the
+  routable source at 2026-10-18T11:50:48Z
+  (https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6249571217), and for
+  code 22 at 2026-10-18T12:25:24Z
+  (https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6249888848).
