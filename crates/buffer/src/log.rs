@@ -380,9 +380,8 @@ impl Log {
     /// When `offset` is below the newest record of the path.
     fn sync(&mut self, header: &Header, offset: u64) -> Result<bool, Fault> {
         let samples = header.samples();
-        let mut durable = self.durable;
-        let (start, _) = durable.advance(header.first, samples)?;
-        Ok(self.hold(durable, start, samples, offset))
+        let (start, _) = self.durable.advance(header.first, samples)?;
+        Ok(self.hold(start, samples, offset))
     }
 
     /// Moves both tails past the walk's entry `header` of the record at `offset`, as
@@ -411,24 +410,18 @@ impl Log {
             });
         }
         self.appended = durable;
-        Ok(self.hold(durable, start, samples, offset))
+        self.durable = durable;
+        Ok(self.hold(start, samples, offset))
     }
 
-    /// Moves the durable tail to `durable`, past the entry of `samples` after the mark
-    /// `start` in the record at `offset`. Makes the record the holder when the entry
-    /// gives the durable stamp. Returns true when it adds a run of the record.
+    /// Holds the record at `offset` for the entry of `samples` that moved the durable
+    /// tail past the mark `start`. Makes the record the holder when the entry gives
+    /// the durable stamp. Returns true when it adds a run of the record.
     ///
     /// # Panics
     ///
     /// When `offset` is below the newest record of the path.
-    fn hold(
-        &mut self,
-        durable: Position,
-        start: Mark,
-        samples: Option<Samples>,
-        offset: u64,
-    ) -> bool {
-        self.durable = durable;
+    fn hold(&mut self, start: Mark, samples: Option<Samples>, offset: u64) -> bool {
         let newest = self.runs.back().map(|run| run.offset).max(self.holder);
         if let Some(newest) = newest {
             assert!(
