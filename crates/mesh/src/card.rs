@@ -12,8 +12,7 @@ use crate::bytes::{
 
 pub mod addresses;
 
-/// The tag of the statement of a card.
-pub(crate) const TAG: &[u8] = b"foundation/card/1";
+const TAG: &[u8] = b"foundation/card/1";
 
 /// What a node states about itself. Its own Ed25519 key signs all of it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,21 +177,32 @@ impl Unchecked {
     ///
     /// [`Forged`] when it does not hold for `card.public_key`.
     pub(crate) fn check(self) -> Result<Signed, Forged> {
-        let key = self.card.public_key;
-        self.check_with(key)
+        self.verify(self.card.public_key)?;
+        Ok(Signed(self))
     }
 
-    /// The signed card, when the signature holds for `key`, which need not be the
-    /// key of the card.
+    /// Checks that the signature holds for `key`, which need not be the key of the
+    /// card.
     ///
     /// # Errors
     ///
     /// [`Forged`] when it does not hold for `key`.
-    pub(crate) fn check_with(self, key: PublicKey) -> Result<Signed, Forged> {
+    pub(crate) fn verify(&self, key: PublicKey) -> Result<(), Forged> {
         let statement = statement(TAG, self.key, &self.card);
         key.verify(&statement, &self.signature)
-            .map_err(|_bad: BadSignature| Forged { node: self.key })?;
-        Ok(Signed(self))
+            .map_err(|_bad: BadSignature| Forged { node: self.key })
+    }
+
+    /// `card` of node `key`, signed with `private_key`, which need not be the key of
+    /// the card.
+    #[cfg(test)]
+    pub(crate) fn sign(key: node::Key, card: Card, private_key: &PrivateKey) -> Self {
+        let signature = Pair::new(private_key).sign(&statement(TAG, key, &card));
+        Self {
+            key,
+            card,
+            signature,
+        }
     }
 }
 
@@ -421,6 +431,17 @@ mod tests {
             Signed::check(key(2), fixed(), signature),
             Err(Forged { node: key(2) })
         );
+    }
+
+    /// A card that holds another public key verifies for the key that signed it, and
+    /// does not check.
+    #[test]
+    fn a_card_that_verifies_for_another_key_does_not_check() {
+        let unchecked = Unchecked::sign(key(2), fixed_of(9), &private(2));
+        assert_eq!(unchecked.verify(public(2)), Ok(()));
+        let forged = Forged { node: key(2) };
+        assert_eq!(unchecked.verify(public(9)), Err(forged));
+        assert_eq!(unchecked.check(), Err(forged));
     }
 
     fn fixed_of(id: u8) -> Card {
