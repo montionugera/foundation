@@ -175,3 +175,38 @@ fn a_close_of_a_client_with_a_live_reader_returns_and_ends_the_reader() {
     assert_eq!(reader.next().map(drop), Err(Error::Closed));
     rig.stop();
 }
+
+/// Only Unix: `counting::Local` names the thread with `pthread_self`. A warm `next` of
+/// a reader of two indexes makes no allocation on the caller's thread. A complete
+/// reader gets each frame after its commit, so each call is one record of the ring,
+/// which the node never trims (#160): about 2,000 calls fill it.
+#[cfg(unix)]
+#[test]
+fn a_warm_next_makes_no_allocation_on_the_thread_of_its_caller() {
+    const WARMUP: usize = 100;
+    const CALLS: usize = 300;
+    let (mut rig, node, subject) = planted();
+    let client = Client::connect(&node, subject).unwrap();
+    let mut reader = reader(&client, &["plant.a", "cell.c"], Mode::Complete);
+    let mut plants = writer(&client, &["plant.a"]);
+    let mut cells = writer(&client, &["cell.c"]);
+    let mut call = || {
+        for writer in [&mut plants, &mut cells] {
+            let written = writer.write(&[(0, Value::I64(1))]);
+            assert!(
+                matches!(written, Ok(sdk::write::Outcome::Taken { .. })),
+                "{written:?}"
+            );
+            let frame = reader.next().unwrap();
+            assert_eq!(frame.count(), 1);
+        }
+    };
+    (0..WARMUP).for_each(|_| call());
+    let ((), allocations) = crate::ALLOCATOR.count(|| (0..CALLS).for_each(|_| call()));
+    assert_eq!(allocations, 0, "{CALLS} warm calls of next allocate");
+    assert_eq!(plants.close(), Ok(()));
+    assert_eq!(cells.close(), Ok(()));
+    drop(reader);
+    assert_eq!(client.close(), Ok(()));
+    rig.stop();
+}
