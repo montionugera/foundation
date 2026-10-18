@@ -354,15 +354,31 @@ state on `main`.
   stamp, and a larger count after a carried tail: the open refuses each (#2796);
   `carry_met_after_carry` gives a larger count to a path whose only entry has no
   samples, then a second carry record, and the open refuses the first; and `carry_twice`
-  lists one path twice in one record, which it refuses. Three hold entries in a carry
-  record, and the open refuses each: `carry_entry` holds one valid entry,
-  `carry_entry_cut` counts one entry that the body does not hold, and
-  `carry_entries_over_max` counts 1024 entries. Four reach the count of an
+  lists one path twice in one record, which it refuses. Nine hold entries in a carry
+  record. The open takes three: `carry_entry_tagged` holds a new tagged entry,
+  `carry_entry_older` one of an earlier mark than the copy of its data record, and
+  `carry_entry_replaces` one of the same mark, which replaces that copy. It refuses
+  six: `carry_entry` holds an entry with tag 0, `carry_entry_past` one that ends past
+  the last seq, `carry_entry_twice` one tagged entry twice, `carry_entry_unmet` one of a
+  path that no record holds, `carry_entry_cut` counts one entry that the body does not
+  hold, and `carry_entries_over_max` counts 1024 entries. The open refuses
+  `tagged_over_max`, a data record with a tagged entry of 4244 bytes, over
+  `Layout::ENTRY_MAX_MIN`. Four reach the count of an
   entry with no samples (#2796), and the open refuses each: `empty_count_zero` gives a
   count of 0, `empty_presence` a presence byte of 2, `empty_counted` a count that is not
   the walked one on a path that the walk met, and `empty_crowded` an entry with no
   samples after a count of `u64::MAX` at its seq. The `body_over_max` input holds a data
-  record that follows the chain with a body over `body_max`.
+  record that follows the chain with a body over `body_max`. In `carry_limit`, the
+  carry record of the holders of a batch of tagged entries passes the carry limit,
+  and the append refuses it as `Limit::Carry`. The build of `offsets_past_tail_25`
+  and `offsets_walk_25` starts at a late block of the area, and each moves the tail
+  to its last lap: the record at the tail, or the one after it, passes the last
+  offset, and the open refuses it. `open_full_tail_25` moves the tail to the last lap
+  of a block with no room for the restart record of the open, and the build of
+  `wrap_start` wraps. In `wrap_full_25`, the commit fits only without the end of the
+  area that it skips, and the append refuses it as `Full`. `holders_over_carry` sets
+  the `body_max` of both headers between the body of a record of three tagged entries
+  and the carry body of its holders, and the open refuses it.
 
 ### Device to connector
 

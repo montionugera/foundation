@@ -70,11 +70,12 @@
   never loses the frames of a first open, a reopen, or a takeover. After a failed
   commit, the open opens, and its reader ends with the error of the commit. Another
   entry that finds no room or no block stays due for the next tick, so a restart before
-  it resumes at an older position: a repeat, not a loss. Trimming must keep the newest
-  entry of each part of each index (#406). Until it does, a trim (STORE TRIM) can free
-  such an entry, and a restart resumes the readers of its part at the live tail, and
-  those of each later part when no index keeps an entry of its tag, as HANDOFF RECORD
-  states for a handoff. A named complete open that adds a record that no part has room
+  it resumes at an older position: a repeat, not a loss. A trim keeps the newest entry
+  of each part of each index (STORE TRIM; `laptop.architect`, #406,
+  2026-10-14T01:56:45Z:
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6159164617).
+  A named complete open that adds a
+  record that no part has room
   for gives `Unopened::Full`, with a `limit` of 257,728 bytes (64 parts of 4027 bytes of
   records), and `hub` gives `reader::Error::Full`. A reopen or a takeover never gives
   it, as a held record keeps its part. A latest reader adds no record. Parts: decided by
@@ -90,7 +91,7 @@
   https://github.com/synnaxlabs/foundation/issues/2833#issuecomment-6227434486.
   Decided by `laptop.architect` (2026-10-16T05:22:26Z:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208708096;
-  `Unrecorded` and the trim gap until #406: 2026-10-16T07:08:03Z:
+  `Unrecorded`, and the trim gap that #406 closed: 2026-10-16T07:08:03Z:
   https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6210093371; the reopen
   in its hold and the failed commit: 2026-10-16T09:43:45Z:
   https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6212725793; the read
