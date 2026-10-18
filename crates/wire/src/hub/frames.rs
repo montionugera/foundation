@@ -109,7 +109,11 @@ impl Frames {
     ///
     /// When a draft is due, each [`types::frame::Error`] of [`Layout::from_ends`]. The
     /// caller then stops the stream as `MALFORMED`.
-    #[inline]
+    #[expect(
+        clippy::inline_always,
+        reason = "as a call, it made a frame of one series 30 ns slower"
+    )]
+    #[inline(always)]
     pub fn due(&mut self) -> Result<Due<'_>, types::frame::Error> {
         Ok(match self.assembly.due(self.reader.body())? {
             part::Due::Message => Due::Message,
