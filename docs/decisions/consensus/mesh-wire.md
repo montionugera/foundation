@@ -28,18 +28,20 @@
   stream with code 16, the first code of the mesh protocol (PROTOCOL HEADER), and resets
   a reply half with the same code. A request from a node that a committed configuration
   removed, when `Start.voters` or a committed `Voters` entry held it (RAFT VOTERS), gets
-  code 17 instead (`Error::Removed`). A group that stopped gives code 16 on a one-way
-  stream. On a stream that goes both ways it gives no mesh code: it can stop in the
-  write of the entry, which then applies after a new open. A `raft` message that finds
-  no block in the pool is not a refusal: the receiver drops it, the stream goes on, and
-  `raft` sends it again. The receiver holds no block while the group writes the entry:
-  it drops the block of the proposal before it gives the change to the group, and takes
-  the block of the answer after the answer. With no block for the answer, the peer gets
-  no answer: the group can hold the entry of the proposal. The reply half ends with no
-  answer and no mesh code. A reply half that ends with no answer and with no code 2 or
-  16 says nothing about the change, and the peer forwards it again. Lost: the block of
-  the answer first, because a block held while the group writes can take the room that
-  the write needs, and only the end of the write frees it (decided by the architect,
+  code 17 instead (`Error::Removed`). A `Change::Card` over the bound of MESH DRIVER
+  gets code 18 instead (`Error::Soon`), and the peer gives `Error::Soon` and does not
+  forward it again. A group that stopped gives code 16 on a one-way stream. On a stream
+  that goes both ways it gives no mesh code: it can stop in the write of the entry,
+  which then applies after a new open. A `raft` message that finds no block in the pool
+  is not a refusal: the receiver drops it, the stream goes on, and `raft` sends it
+  again. The receiver holds no block while the group writes the entry: it drops the
+  block of the proposal before it gives the change to the group, and takes the block of
+  the answer after the answer. With no block for the answer, the peer gets no answer:
+  the group can hold the entry of the proposal. The reply half ends with no answer and
+  no mesh code. A reply half that ends with no answer and with no code 2, 16, or 18 says
+  nothing about the change, and the peer forwards it again. Lost: the block of the
+  answer first, because a block held while the group writes can take the room that the
+  write needs, and only the end of the write frees it (decided by the architect,
   2026-10-07T13:07:00Z:
   https://github.com/synnaxlabs/foundation/pull/1386#issuecomment-6038576823). The
   sentences on a group that stopped and on an answer with no block are from a later
