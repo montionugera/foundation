@@ -327,6 +327,7 @@ dependencies = [
  "spec",
  "tokio",
  "tokio-rustls",
+ "tracing",
  "types",
 ]
 
@@ -359,6 +360,7 @@ dependencies = [
 name = "connector-opcua"
 version = "0.0.0"
 dependencies = [
+ "aws-lc-sys",
  "block",
  "cc",
  "connector",

@@ -20,8 +20,8 @@ use std::task::{Context, Poll, Wake, Waker};
 
 use block::{Block, Heap, Pool};
 use buffer::{
-    Buffer, Commit, Config, End, Entry, Error, Layout, Limit, Mark, Parts, Read,
-    Rejected, Samples, Stored, Tail, Unfit,
+    Buffer, Commit, Config, End, Entry, Error, Layout, Limit, Parts, Read, Rejected,
+    Samples, Stored, Tail, Unfit,
 };
 use env::clock::Clock;
 use env::entropy::Entropy;
@@ -30,6 +30,7 @@ use env::tasks::Tasks;
 use proptest::prelude::*;
 use types::channel::{self, Slot, Slots};
 use types::frame::Path;
+use types::log::Mark;
 use types::time::{Span, Stamp};
 
 use crate::memory::Memory;

@@ -15,7 +15,7 @@ on:
 
 jobs:
   times:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       CRATE: ${{ inputs.crate }}
@@ -23,6 +23,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+      # As in `check` of `ci.yaml`, but `cargo test -p sdk-python` builds no node.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Node
+        run: |
+          echo "PYO3_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
+          echo "FOUNDATION_NODE=$PWD/target/debug/foundation" >> "$GITHUB_ENV"
+          [ "$CRATE" != sdk-python ] || cargo build -p node --bin foundation
       - name: Build
         run: |
           cargo test -p "$CRATE" --all-features --tests --no-run --message-format json \

@@ -31,12 +31,13 @@ use crate::carry;
 use crate::entry::{self, ENTRIES_MAX, Entry};
 use crate::group::{self, Closed, Group, Sealed};
 use crate::header::{self, Header};
-use crate::log::{self, Carried, Found, Logs, Mark, Tail};
+use crate::log::{self, Carried, Found, Logs, Tail};
 use crate::read::{self, Read, Reading};
 use crate::record::{self, ALIGN, AREA_START, Body, HEADER_LEN};
 use crate::wal::{
     self, Cursor, Ends, Layout, Limit, Plan, Position, Step, Unfit, Window, Writer,
 };
+use types::log::Mark;
 
 #[cfg(feature = "sim")]
 pub(crate) mod bench;
@@ -2174,7 +2175,7 @@ mod tests {
                 };
                 let mut tails = Vec::new();
                 {
-                    let from = Mark::at(0).after(0, 0);
+                    let from = log::after(Mark::at(0), 0, 0);
                     let reader = buffer.reader();
                     let mut read = pin!(reader.read(one, Path::Live, from, usize::MAX));
                     let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
@@ -2560,7 +2561,7 @@ mod tests {
                 "reopen",
                 |buffer, mut slots, _| async move {
                     let one = slots.index(channel::Key::from_u128(1));
-                    let from = Mark::at(0).after(0, 0);
+                    let from = log::after(Mark::at(0), 0, 0);
                     let read = buffer
                         .reader()
                         .read(one, Path::Live, from, usize::MAX)

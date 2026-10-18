@@ -12,6 +12,7 @@
 //!   the status writer writes no more.
 //! - `clear`: a clear of the shown error, with no poll, after a clear.
 //! - `show`: a show of the same error, with no poll, after it was shown.
+//! - `note`: a note of the same text, with no poll, after it was noted.
 //!
 //! Each figure is ns per step, with the count of the allocations of the steps. Judge
 //! `poll` by its p50. A line panics when its last status state is not `stopped`, or
@@ -20,17 +21,17 @@
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::task::{self, Poll};
 use std::time::Instant;
 
 use connector::cancel::Token;
 use connector::kind::{Channels, Context, Error, Kind, Table};
-use connector::testing::{self, Rig};
+use connector::testing::Rig;
 use document::Document;
 use document::diagnostic::Diagnostic;
 use hub::reader::Mode;
-use types::channel;
 use types::name::{Name, Selector};
 use types::time::Span;
 
@@ -44,8 +45,6 @@ const ROUNDS: usize = 100;
 const REMOVED: Span = Span::from_nanos(500_000_000);
 /// When a `Closed` kind starts its rounds, after the writer saw the removal.
 const CLOSED: Span = Span::from_nanos(3_000_000_000);
-/// The first key of the status channels, which the rig gives its first connector.
-const STATUS: channel::Key = channel::Key::from_u128(1 << 64);
 
 fn main() {
     let lines = [
@@ -56,6 +55,7 @@ fn main() {
         Step::Closed,
         Step::Clear,
         Step::Show,
+        Step::Note,
     ]
     .map(run);
     print(&lines);
@@ -71,6 +71,7 @@ enum Step {
     Closed,
     Clear,
     Show,
+    Note,
 }
 
 impl Step {
@@ -83,6 +84,7 @@ impl Step {
             Self::Closed => "poll + set (closed)",
             Self::Clear => "clear",
             Self::Show => "show",
+            Self::Note => "note",
         }
     }
 }
@@ -128,13 +130,14 @@ impl Kind for Steps {
                     Step::Poll => {}
                     Step::Clear => ctx.clear_error(),
                     Step::Show => ctx.error(&"refused"),
+                    Step::Note => ctx.note(&"steady"),
                     Step::Add => count.add(std::hint::black_box(1)),
                     _ => count.set(std::hint::black_box(i)),
                 };
                 allocations += ALLOCATOR.count(set).1;
                 if !matches!(
                     self.step,
-                    Step::Set | Step::Add | Step::Clear | Step::Show
+                    Step::Set | Step::Add | Step::Clear | Step::Show | Step::Note
                 ) {
                     Yield(false).await;
                 }
@@ -193,17 +196,15 @@ fn run(step: Step) -> Line {
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("steps", kind);
-        let mut rig = Rig::open(env, node.net(), kinds).await;
+        let rig = Rc::new(Rig::open(env, node.net(), kinds).await);
         let connector: Name = "plant.steps".parse().expect("a valid name");
         if matches!(step, Step::Closed) {
-            let status = testing::create_status(&connector, &[samples()], STATUS);
-            let (hub, clock) = (rig.hub().clone(), node.clock());
+            let (rig, clock) = (Rc::clone(&rig), node.clock());
             let removed = format!("{connector}.status.samples");
             let removed: Name = removed.parse().expect("a valid name");
             tasks.spawn(async move {
                 clock.sleep(REMOVED).await;
-                let kept = status.iter().filter(|(name, _)| *name != removed);
-                hub.set_definitions(kept.map(|(name, def)| (name, def)));
+                rig.remove(&[removed]);
             });
         }
         let (hub, state) = (rig.hub().clone(), format!("{connector}.status.state"));

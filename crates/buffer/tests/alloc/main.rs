@@ -18,9 +18,10 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 use block::{Heap, Pool};
-use buffer::{Buffer, Config, Entry, Layout, Mark, Parts, Read, Samples};
+use buffer::{Buffer, Config, Entry, Layout, Parts, Read, Samples};
 use types::channel::{self, Slots};
 use types::frame::Path;
+use types::log::Mark;
 use types::time::{Span, Stamp};
 
 use crate::memory::Memory;

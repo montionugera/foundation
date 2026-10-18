@@ -60,6 +60,19 @@ impl Supervisor {
         Self(Rc::new(config))
     }
 
+    /// The kinds of the connectors that the supervisor runs.
+    #[must_use]
+    pub fn kinds(&self) -> &kind::Table {
+        &self.0.kinds
+    }
+
+    /// The sources that [`kind::Context::secret`] reads for the connectors of the
+    /// supervisor.
+    #[must_use]
+    pub fn secrets(&self) -> &secret::Resolver {
+        &self.0.secrets
+    }
+
     /// Browses the device of the connector block `config` of `kind` as `query`
     /// asks, with the network, clock, randomness, and secrets of the supervisor. It
     /// connects apart from any run of the connector and keeps no state after it
@@ -247,10 +260,13 @@ impl Call<'_> {
             Ok(channels) => channels,
             Err(diagnostics) => return Start::Done(Err(Error::Config(diagnostics))),
         };
+        // At ERROR, so that each status line has the span at each level.
+        let span = tracing::error_span!("connector", connector = %name, kind);
         let mut open = pin!(status::Writer::open(
             hub,
             name,
             channels.counts,
+            span,
             clock.clone(),
             (*cancel).clone()
         ));
@@ -956,6 +972,16 @@ mod tests {
             Err(Error::Config(diagnostics)) => diagnostics,
             other => panic!("a config error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn gives_the_kinds_of_its_config() {
+        let kinds = run_on(|node, tasks| async move {
+            let kinds = Table::new().with("script", Script::default());
+            let inputs = create_config(&node, tasks, kinds, "plant.script").await;
+            format!("{:?}", Supervisor::new(inputs).kinds())
+        });
+        assert_eq!(kinds, "{\"script\"}");
     }
 
     #[test]
@@ -3255,6 +3281,216 @@ mod tests {
         })
     }
 
+    /// Each event of `connector::status` as `<field>=<value>...`, values in `Debug`.
+    struct Capture(Arc<Mutex<Vec<String>>>);
+
+    impl tracing::Subscriber for Capture {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            if event.metadata().target() != "connector::status" {
+                return;
+            }
+            let mut fields = Vec::new();
+            event.record(&mut |field: &tracing::field::Field,
+                               value: &dyn fmt::Debug| {
+                fields.push(format!("{}={value:?}", field.name()));
+            });
+            let mut lines = self.0.lock().expect("no panic holds the lock");
+            lines.push(fields.join(" "));
+        }
+
+        fn enter(&self, _: &tracing::span::Id) {}
+
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// The status frames of [`tally_until`], and its events of `connector::status`.
+    fn tally_logged(
+        kind: impl Kind + 'static,
+        cancel: Option<Span>,
+    ) -> (Vec<Written>, Vec<String>) {
+        tally_logged_on(sim::Config::default(), kind, cancel, None)
+    }
+
+    /// As [`tally_logged`], on a sim of `config`, where the hub removes the status
+    /// channels at `removed`.
+    fn tally_logged_on(
+        config: sim::Config,
+        kind: impl Kind + 'static,
+        cancel: Option<Span>,
+        removed: Option<Span>,
+    ) -> (Vec<Written>, Vec<String>) {
+        let mut sim = sim::Sim::new(config);
+        let node = sim.node(sim::node::Config::default());
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let log = tracing::Dispatch::new(Capture(Arc::clone(&lines)));
+        let out = Arc::new(Mutex::new(None));
+        let (slot, own) = (Arc::clone(&out), node.clone());
+        let config = env::shards::Config {
+            name: "logged".into(),
+            core: None,
+        };
+        let start = node
+            .shards()
+            .logged(log)
+            .start(config, move |tasks| async move {
+                let (statuses, _) =
+                    tally_on(own, tasks, kind, &["samples"], cancel, removed).await;
+                *slot.lock().expect("no panic holds the lock") = Some(statuses);
+            });
+        drop(start.expect("a shard with no core starts"));
+        assert_eq!(sim.run(), Ok(()));
+        let statuses = out.lock().expect("no panic holds the lock").take();
+        let lines = lines.lock().expect("no panic holds the lock").clone();
+        (statuses.expect("the run ends"), lines)
+    }
+
+    /// A show whose frame gets no block, then a show that replaces it before the next
+    /// write: each gives its line, and the channel gets only the second.
+    #[test]
+    fn logs_a_shown_error_that_a_later_error_replaces_before_the_channel_gets_it() {
+        let kind = counted(move |ctx: Context<()>| async move {
+            let channels = status_names("plant.tally", &["samples"]);
+            let writer = ctx.writer(channels, Authority(1), None).await;
+            let writer = writer.expect("the writer opens");
+            let mut held = fill(&writer);
+            ctx.error(&"x");
+            ctx.clock().sleep(ms(900)).await;
+            held.extend(fill(&writer));
+            ctx.clock().sleep(ms(200)).await;
+            ctx.error(&"y");
+            drop(held);
+            ctx.clock().sleep(ms(1_900)).await;
+            Ok(())
+        });
+        let (statuses, lines) = tally_logged(kind, None);
+        let errors = statuses
+            .iter()
+            .map(|(at, _, error, _)| (*at, error.as_str()));
+        assert_eq!(
+            errors.take(2).collect::<Vec<_>>(),
+            [(Span::ZERO, ""), (ms(2_000), "y")]
+        );
+        let shown = lines
+            .iter()
+            .filter(|line| line.starts_with("message=error"));
+        assert_eq!(
+            shown.collect::<Vec<_>>(),
+            [r#"message=error error="x""#, r#"message=error error="y""#]
+        );
+    }
+
+    /// A clear of no error, a write of the same error, and a show of the text of an
+    /// end of another class: only the shows and the clear that change the text or the
+    /// class give a line.
+    #[test]
+    fn logs_a_clear_or_a_show_only_when_it_changes_the_text_or_the_class() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let kind = counted(move |ctx: Context<()>| {
+            let run = runs.fetch_add(1, Ordering::Relaxed);
+            async move {
+                let clock = ctx.clock().clone();
+                match run {
+                    0 => {
+                        ctx.clear_error();
+                        clock.sleep(ms(1_100)).await;
+                        ctx.error(&"x");
+                        clock.sleep(ms(1_100)).await;
+                        ctx.note(&"n");
+                        clock.sleep(ms(1_100)).await;
+                        Err(Error::Device("x".into()))
+                    }
+                    1 => {
+                        ctx.error(&"x");
+                        clock.sleep(ms(1_100)).await;
+                        Err(Error::Retry("".into()))
+                    }
+                    _ => {
+                        ctx.clear_error();
+                        clock.sleep(ms(1_100)).await;
+                        Ok(())
+                    }
+                }
+            }
+        });
+        let (_, lines) = tally_logged(kind, None);
+        let skipped = ["message=running", "message=restarting", "message=ended"];
+        let shown = lines
+            .iter()
+            .filter(|line| !skipped.iter().any(|skipped| line.starts_with(skipped)));
+        assert_eq!(
+            shown.collect::<Vec<_>>(),
+            [
+                r#"message=error error="x""#,
+                r#"message=note note="n""#,
+                r#"message=error error="x""#,
+                "message=cleared",
+                "message=stopped",
+            ]
+        );
+    }
+
+    /// The hub refuses the frame of the end of run 0 as `Removed` while the flush
+    /// waits for its next write, and run 1 shows `y` before that wait ends: no line
+    /// gives `y`.
+    #[test]
+    fn logs_no_error_after_the_hub_refuses_a_frame_as_removed() {
+        for seed in 0..32 {
+            let runs = Arc::new(AtomicUsize::new(0));
+            let kind = counted(move |ctx: Context<()>| {
+                let run = runs.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    let clock = ctx.clock().clone();
+                    if run == 0 {
+                        ctx.error(&"a");
+                        clock.sleep(ms(1_050)).await;
+                        ctx.error(&"b");
+                        clock.sleep(ms(50)).await;
+                        return Err(Error::Retry("down".into()));
+                    }
+                    ctx.error(&"y");
+                    clock.sleep(ms(2_000)).await;
+                    Ok(())
+                }
+            });
+            let config = sim::Config {
+                seed,
+                ..sim::Config::default()
+            };
+            let (_, lines) = tally_logged_on(config, kind, None, Some(ms(1_020)));
+            let shown = lines
+                .iter()
+                .filter(|line| line.starts_with("message=error"));
+            assert_eq!(
+                shown.collect::<Vec<_>>(),
+                [r#"message=error error="a""#],
+                "seed {seed}: {lines:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn names_the_class_of_an_end_in_its_line() {
+        let kind = counted(|_| async { Err(Error::Device("jammed".into())) });
+        let (_, lines) = tally_logged(kind, Some(ms(500)));
+        let ended = lines.iter().find(|line| line.starts_with("message=ended"));
+        assert_eq!(
+            ended.map(String::as_str),
+            Some(r#"message=ended class="device" error="jammed""#)
+        );
+    }
+
     #[test]
     fn writes_a_count_again_when_the_pool_has_no_room_for_its_frame() {
         assert_eq!(hogged(true), HOGGED);
@@ -3554,38 +3790,54 @@ mod tests {
         counts: &'static [&'static str],
         cancel: Option<Span>,
     ) -> (Vec<Written>, Span) {
-        run_on(move |node, tasks| async move {
-            let kinds = Table::new().with("tally", kind);
-            let inputs =
-                create_config(&node, tasks.clone(), kinds, "plant.tally").await;
-            let connector = name("plant.tally");
-            let counts: Vec<_> = counts.iter().map(|count| name(count)).collect();
-            let status = testing::create_status(&connector, &counts, STATUS);
-            inputs
-                .hub
-                .set_definitions(status.iter().map(|(name, def)| (name, def)));
-            let statuses =
-                read_status(&inputs.hub, "plant.tally", &counts, &tasks).await;
-            let (token, clock) = (Token::new(), node.clock());
-            if let Some(cancel) = cancel {
-                let (canceller, sleeper) = (token.clone(), clock.clone());
-                tasks.spawn(async move {
-                    sleeper.sleep(cancel).await;
-                    canceller.cancel();
-                });
-            }
-            let start = clock.now();
-            let result = Supervisor::new(inputs)
-                .open("tally", connector, &config(), &token)
-                .await
-                .run()
-                .await;
-            result.expect("the run returns ok");
-            let returned = clock.now() - start;
-            clock.sleep(Span::SECOND).await;
-            let statuses = statuses.borrow().clone();
-            (statuses, returned)
-        })
+        run_on(move |node, tasks| tally_on(node, tasks, kind, counts, cancel, None))
+    }
+
+    /// The body of [`tally_until`], on a shard of `node`, where the hub removes the
+    /// status channels at `removed`.
+    async fn tally_on(
+        node: sim::node::Node,
+        tasks: Tasks,
+        kind: impl Kind + 'static,
+        counts: &'static [&'static str],
+        cancel: Option<Span>,
+        removed: Option<Span>,
+    ) -> (Vec<Written>, Span) {
+        let kinds = Table::new().with("tally", kind);
+        let inputs = create_config(&node, tasks.clone(), kinds, "plant.tally").await;
+        let connector = name("plant.tally");
+        let counts: Vec<_> = counts.iter().map(|count| name(count)).collect();
+        let status = testing::create_status(&connector, &counts, STATUS);
+        inputs
+            .hub
+            .set_definitions(status.iter().map(|(name, def)| (name, def)));
+        let statuses = read_status(&inputs.hub, "plant.tally", &counts, &tasks).await;
+        let (token, clock) = (Token::new(), node.clock());
+        if let Some(removed) = removed {
+            let (hub, sleeper) = (inputs.hub.clone(), clock.clone());
+            tasks.spawn(async move {
+                sleeper.sleep(removed).await;
+                hub.set_definitions(std::iter::empty());
+            });
+        }
+        if let Some(cancel) = cancel {
+            let (canceller, sleeper) = (token.clone(), clock.clone());
+            tasks.spawn(async move {
+                sleeper.sleep(cancel).await;
+                canceller.cancel();
+            });
+        }
+        let start = clock.now();
+        let result = Supervisor::new(inputs)
+            .open("tally", connector, &config(), &token)
+            .await
+            .run()
+            .await;
+        result.expect("the run returns ok");
+        let returned = clock.now() - start;
+        clock.sleep(Span::SECOND).await;
+        let statuses = statuses.borrow().clone();
+        (statuses, returned)
     }
 
     #[test]

@@ -433,7 +433,6 @@ fn a_kept_pool_budget_that_gives_a_shard_too_little_fails() {
 
 /// A file `budget` with a checksum that matches and the largest pool budget. On one
 /// core, the part of shard 0 is the whole budget.
-#[cfg_attr(not(target_os = "linux"), ignore = "needs taskset")]
 #[test]
 fn a_kept_pool_budget_too_large_for_the_host_fails_with_no_panic() {
     let rig = Rig::new();
@@ -453,7 +452,6 @@ fn a_kept_pool_budget_too_large_for_the_host_fails_with_no_panic() {
 
 /// A kept pool budget of 1 PiB, whose part on one core is under `usize::MAX` bytes and
 /// more than the address space of the host.
-#[cfg_attr(not(target_os = "linux"), ignore = "needs taskset")]
 #[test]
 fn a_kept_pool_budget_that_the_system_cannot_reserve_fails() {
     let rig = Rig::new();
@@ -473,7 +471,14 @@ fn a_kept_pool_budget_that_the_system_cannot_reserve_fails() {
 }
 
 /// A first start under an address space of 1 GiB, which its pool budget does not fit.
-#[cfg_attr(not(target_os = "linux"), ignore = "needs taskset and prlimit")]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "only Linux: macOS does not enforce a limit of address space"
+)]
+#[cfg_attr(
+    windows,
+    ignore = "only Linux: Windows has no limit on the address space of a process"
+)]
 #[test]
 fn a_first_pool_budget_that_the_system_cannot_reserve_fails() {
     let rig = Rig::new();

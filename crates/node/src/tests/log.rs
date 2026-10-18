@@ -1,9 +1,14 @@
 use std::io;
 use std::panic;
 use std::process::{Command, Stdio};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::Duration;
 
+use connector::kind::Error as KindError;
+use document::Document;
+use document::diagnostic::Diagnostic;
 use proptest::prelude::*;
 use serde_json::{Value, json};
 use types::byte::Size;
@@ -73,17 +78,25 @@ impl io::Write for Panics {
     }
 }
 
-/// A writer to stderr that waits 300 ms at the line `n=2`, then panics.
-struct Ends;
+/// A writer to stderr that, at the line `n=2`, sends on `entered`, waits for the hook
+/// on `hooked`, and panics 100 ms later, so the hook waits when it panics.
+struct Ends {
+    entered: mpsc::Sender<()>,
+    hooked: mpsc::Receiver<()>,
+}
 
 impl io::Write for Ends {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if bytes.windows(3).any(|word| word == b"n=2") {
+            self.entered.send(()).unwrap_or_default();
             #[expect(
                 clippy::disallowed_methods,
-                reason = "a hook waits on the writer"
+                reason = "the writer panics in the wait of the hook"
             )]
-            std::thread::sleep(Duration::from_millis(300));
+            {
+                self.hooked.recv().unwrap_or_default();
+                std::thread::sleep(Duration::from_millis(100));
+            }
             panic!("the writer panics");
         }
         io::stderr().write(bytes)
@@ -607,11 +620,18 @@ fn opened(
     json: bool,
     writer: Box<dyn io::Write + Send>,
 ) -> Flush {
+    opened_at(host, json, tracing::Level::INFO, writer)
+}
+
+/// As [`opened`], at `level`.
+fn opened_at(
+    host: &sim::node::Node,
+    json: bool,
+    level: tracing::Level,
+    writer: Box<dyn io::Write + Send>,
+) -> Flush {
     let (_, mesh) = clock::Clock::new(host.clock());
-    let format = ops::Log {
-        json,
-        level: tracing::Level::INFO,
-    };
+    let format = ops::Log { json, level };
     log::open(Log { writer, format }, &host.threads(), host.wall(), mesh)
 }
 
@@ -625,9 +645,14 @@ fn write(sim: &mut sim::Sim, log: &Flush, events: impl FnOnce()) {
 /// What a log of `json` lines writes for the events of `events`, on a host whose
 /// mesh clock has not synced.
 fn written(json: bool, events: impl FnOnce()) -> String {
+    written_at(json, tracing::Level::INFO, events)
+}
+
+/// As [`written`], at `level`.
+fn written_at(json: bool, level: tracing::Level, events: impl FnOnce()) -> String {
     let (mut sim, host) = host(1);
     let lines = Lines::default();
-    let log = opened(&host, json, Box::new(lines.clone()));
+    let log = opened_at(&host, json, level, Box::new(lines.clone()));
     write(&mut sim, &log, events);
     let bytes = lines.0.lock().unwrap_or_else(PoisonError::into_inner);
     String::from_utf8(bytes.clone()).expect("a log writes UTF-8")
@@ -790,9 +815,9 @@ fn a_wait_after_the_hold_drops_waits_for_the_thread_log_to_end_then_joins_it() {
     assert!(log.wait(Duration::ZERO), "the thread log has ended");
     // A join leaves no trace other than the empty slot of the handle.
     let debug = format!("{log:?}");
-    assert!(debug.contains("running: false, thread: None"), "{debug}");
+    assert!(debug.contains("running: false"), "{debug}");
     assert!(
-        debug.contains("handle: Mutex { data: None"),
+        debug.contains("handle: None"),
         "the wait joins the thread: {debug}"
     );
 }
@@ -1126,7 +1151,10 @@ fn writer(
             free,
         }),
         Case::Writes => Box::new(Panics(Lines::default())),
-        Case::Ends => Box::new(Ends),
+        Case::Ends => Box::new(Ends {
+            entered,
+            hooked: free,
+        }),
         Case::Full => Box::new(Gated {
             entered,
             free: Some(free),
@@ -1134,6 +1162,34 @@ fn writer(
         Case::Free | Case::Late | Case::Abort | Case::Json | Case::Hang => {
             Box::new(io::stderr())
         }
+    }
+}
+
+/// The panic hook of the child of `case`: the hook of `log` over the hook before it.
+/// For [`Case::Ends`], it first frees the writer on `free`.
+fn hook(
+    case: Case,
+    log: &Flush,
+    free: &mpsc::Sender<()>,
+) -> Box<dyn Fn(&panic::PanicHookInfo<'_>) + Send + Sync> {
+    let previous = match case {
+        Case::Abort => Box::new(|info: &panic::PanicHookInfo<'_>| {
+            let line = format!("the hook before runs: {info}\n");
+            drop(io::Write::write_all(&mut io::stderr(), line.as_bytes()));
+            std::process::abort();
+        }),
+        _ => panic::take_hook(),
+    };
+    let hook = log.hook(previous, Duration::from_secs(1));
+    match case {
+        Case::Ends => {
+            let hooked = free.clone();
+            Box::new(move |info| {
+                hooked.send(()).unwrap_or_default();
+                hook(info);
+            })
+        }
+        _ => hook,
     }
 }
 
@@ -1154,15 +1210,7 @@ fn panics(case: Case) -> ! {
     let log = log::open(Log { writer, format }, &threads, wall, mesh);
     tracing::dispatcher::with_default(&log.dispatch, numbered(0, 3));
     let hold = log.hold().expect("the thread log starts");
-    let previous = match case {
-        Case::Abort => Box::new(|info: &panic::PanicHookInfo<'_>| {
-            let line = format!("the hook before runs: {info}\n");
-            drop(io::Write::write_all(&mut io::stderr(), line.as_bytes()));
-            std::process::abort();
-        }),
-        _ => panic::take_hook(),
-    };
-    panic::set_hook(log.hook(previous, Duration::from_secs(1)));
+    panic::set_hook(hook(case, &log, &free));
     match case {
         Case::Late => {
             drop(hold);
@@ -1188,13 +1236,20 @@ fn panics(case: Case) -> ! {
             assert!(!log.wait(Duration::from_millis(500)), "the pipe is full");
             drop(hold);
         }
+        Case::Ends => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the bound starts after n=2"
+            )]
+            blocked.recv().expect("the writer reaches n=2");
+        }
         Case::Full => {
             #[expect(clippy::disallowed_methods, reason = "the writer blocks first")]
             blocked.recv().expect("the writer blocks");
             tracing::dispatcher::with_default(&log.dispatch, numbered(3, 1100));
             free.send(()).expect("the writer waits");
         }
-        Case::Free | Case::Stuck | Case::Abort | Case::Json | Case::Ends => {}
+        Case::Free | Case::Stuck | Case::Abort | Case::Json => {}
     }
     panic!("the test panics");
 }
@@ -1445,6 +1500,497 @@ fn a_json_line_gives_a_128_bit_integer_as_a_number() {
     assert_eq!(line["fields"], json!({ "big": 5, "small": -5 }));
 }
 
+/// An event of a run in the span of its connector.
+fn spanned() {
+    let connector =
+        tracing::error_span!("connector", connector = "press", kind = "opcua");
+    let _connector = connector.enter();
+    let run = tracing::info_span!("run", run = 1_u64);
+    let _run = run.enter();
+    tracing::warn!(target: "test", error = "a b", "ended");
+}
+
+#[test]
+fn a_line_gives_the_fields_of_each_span_outer_first_then_those_of_its_event() {
+    assert_eq!(
+        written(false, spanned),
+        concat!(
+            "2026-01-01T00:00:00.000000Z WARN test: ended connector=press kind=opcua ",
+            r#"run=1 error="a b" mesh_time=none"#,
+            "\n",
+        )
+    );
+    assert_eq!(
+        written(true, spanned),
+        concat!(
+            r#"{"timestamp":"2026-01-01T00:00:00.000000Z","level":"WARN","#,
+            r#""target":"test","fields":{"message":"ended","connector":"press","#,
+            r#""kind":"opcua","run":1,"error":"a b"},"mesh_time":null}"#,
+            "\n",
+        )
+    );
+}
+
+#[test]
+fn a_line_gives_no_field_of_a_span_below_the_level_of_the_log() {
+    assert_eq!(
+        written_at(false, tracing::Level::WARN, spanned),
+        concat!(
+            "2026-01-01T00:00:00.000000Z WARN test: ended connector=press kind=opcua ",
+            r#"error="a b" mesh_time=none"#,
+            "\n",
+        )
+    );
+}
+
+#[test]
+fn a_line_gives_the_last_value_of_each_span_field() {
+    let line = written(false, || {
+        let span = tracing::error_span!("s", a = 1_u64, b = tracing::field::Empty);
+        span.record("b", "x");
+        span.record("a", 2_u64);
+        span.in_scope(|| tracing::info!(target: "test", "e"));
+    });
+    assert_eq!(
+        line,
+        "2026-01-01T00:00:00.000000Z INFO test: e a=2 b=x mesh_time=none\n"
+    );
+}
+
+#[test]
+fn a_line_gives_no_field_of_a_span_that_it_is_not_in() {
+    let line = written(false, || {
+        let outer = tracing::error_span!("outer", a = 1_u64);
+        let _outer = outer.enter();
+        tracing::error_span!("inner", b = 2_u64).in_scope(|| {});
+        tracing::info!(target: "test", "e");
+    });
+    assert_eq!(
+        line,
+        "2026-01-01T00:00:00.000000Z INFO test: e a=1 mesh_time=none\n"
+    );
+}
+
+/// An event with the key `b` in an inner span with the key `a`, in an outer span
+/// with the keys `c`, `a`, `b`, and `message`.
+fn repeated() {
+    let outer =
+        tracing::error_span!("outer", c = 1_u64, a = 1_u64, b = 1_u64, message = "m");
+    let _outer = outer.enter();
+    let inner = tracing::error_span!("inner", a = 2_u64);
+    let _inner = inner.enter();
+    tracing::info!(target: "test", b = 3_u64, "e");
+}
+
+#[test]
+fn a_field_of_an_inner_span_or_of_the_event_replaces_one_of_an_outer_span() {
+    assert_eq!(
+        written(false, repeated),
+        "2026-01-01T00:00:00.000000Z INFO test: e c=1 a=2 b=3 mesh_time=none\n"
+    );
+    assert_eq!(
+        written(true, repeated),
+        concat!(
+            r#"{"timestamp":"2026-01-01T00:00:00.000000Z","level":"INFO","#,
+            r#""target":"test","fields":{"message":"e","c":1,"a":2,"b":3},"#,
+            r#""mesh_time":null}"#,
+            "\n",
+        )
+    );
+}
+
+/// A value whose `Debug` logs an event, as a value that warns on its own read does.
+struct Logs;
+
+impl std::fmt::Debug for Logs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        tracing::warn!(target: "test", "inner");
+        f.write_str("logs")
+    }
+}
+
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a hang fails the test, not the run"
+)]
+fn a_record_whose_value_logs_does_not_hang() {
+    let (sent, got) = mpsc::channel();
+    std::thread::spawn(move || {
+        let line = written(false, || {
+            let span = tracing::error_span!("s", v = tracing::field::Empty);
+            let _entered = span.enter();
+            span.record("v", tracing::field::debug(Logs));
+            tracing::info!(target: "test", "e");
+        });
+        drop(sent.send(line));
+    });
+    let line = got.recv_timeout(Duration::from_secs(20));
+    assert!(line.is_ok(), "the record hangs: {line:?}");
+}
+
+#[test]
+fn a_span_field_named_message_is_a_field_of_an_event_with_no_message() {
+    let line = written(false, || {
+        let span = tracing::error_span!("s", message = "m");
+        span.in_scope(|| tracing::info!(target: "test", n = 1_u64));
+    });
+    assert_eq!(
+        line,
+        "2026-01-01T00:00:00.000000Z INFO test: message=m n=1 mesh_time=none\n"
+    );
+}
+
+#[test]
+fn a_span_with_no_field_adds_no_field() {
+    let line = written(false, || {
+        tracing::error_span!("s")
+            .in_scope(|| tracing::info!(target: "test", n = 1_u64));
+    });
+    assert_eq!(
+        line,
+        "2026-01-01T00:00:00.000000Z INFO test: n=1 mesh_time=none\n"
+    );
+}
+
+#[test]
+fn a_json_line_names_message_once_when_a_later_message_is_not_text() {
+    let line = written(
+        true,
+        || tracing::info!(target: "test", message = 1_u64, "e"),
+    );
+    assert_eq!(
+        line,
+        concat!(
+            r#"{"timestamp":"2026-01-01T00:00:00.000000Z","level":"INFO","#,
+            r#""target":"test","fields":{"message":1},"mesh_time":null}"#,
+            "\n",
+        )
+    );
+}
+
+#[test]
+fn a_text_line_names_mesh_time_once_when_a_span_field_has_that_name() {
+    let line = written(false, || {
+        let span = tracing::error_span!("s", mesh_time = "t");
+        span.in_scope(|| tracing::info!(target: "test", "e"));
+    });
+    assert_eq!(
+        line,
+        "2026-01-01T00:00:00.000000Z INFO test: e mesh_time=none\n"
+    );
+}
+
+#[test]
+fn a_text_line_leaves_out_a_span_field_named_mesh_time_near_and_apart_from_mesh_time() {
+    let near = "2026-01-01T00:00:00.000000Z INFO test: e";
+    let apart = "2026-01-01T00:00:02.000000Z INFO test: e \
+                 mesh_time=2026-01-01T00:00:00.000000Z";
+    for (step, line) in [(None, near), (Some(Span::from_nanos(2_000_000_000)), apart)] {
+        let (mut sim, host) = host(1);
+        let lines = Lines::default();
+        let (mut clock, mesh) = clock::Clock::new(host.clock());
+        let source = clock.add();
+        #[expect(clippy::disallowed_methods, reason = "the test syncs mesh time")]
+        let measured = clock::source::Wall::new(host.wall(), host.clock()).measure();
+        clock.push(source, measured);
+        if let Some(step) = step {
+            host.step_wall(step);
+        }
+        let format = ops::Log {
+            json: false,
+            level: tracing::Level::INFO,
+        };
+        let writer = Box::new(lines.clone());
+        let log = log::open(Log { writer, format }, &host.threads(), host.wall(), mesh);
+        write(&mut sim, &log, || {
+            let span = tracing::error_span!("s", mesh_time = "t");
+            span.in_scope(|| tracing::info!(target: "test", "e"));
+        });
+        assert_eq!(lines.read(), [line], "step: {step:?}");
+    }
+}
+
+/// A kind whose first run changes what it shows, 2 s apart so that the status writer
+/// writes each step, and ends with `first`. Each later run calls `again`, then returns
+/// `Ok` 2 s later.
+struct Flaky {
+    first: fn() -> KindError,
+    again: fn(&connector::kind::Context<()>),
+    failed: AtomicBool,
+}
+
+impl connector::kind::Kind for Flaky {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<connector::kind::Channels, Vec<Diagnostic>> {
+        Ok(connector::kind::Channels::default())
+    }
+
+    fn run(
+        &self,
+        ctx: connector::kind::Context<()>,
+    ) -> impl Future<Output = Result<(), KindError>> {
+        let first = (!self.failed.swap(true, Relaxed)).then_some(self.first);
+        let again = self.again;
+        async move {
+            let Some(first) = first else {
+                again(&ctx);
+                ctx.clock().sleep(Span::from_nanos(2_000_000_000)).await;
+                return Ok(());
+            };
+            let steps: [&dyn Fn(); 9] = [
+                &|| ctx.clear_error(),
+                &|| {
+                    ctx.error(&"a b");
+                    ctx.error(&"a b");
+                },
+                &|| {
+                    ctx.error(&"b");
+                    ctx.error(&"c");
+                },
+                &|| ctx.clear_error(),
+                &|| {
+                    ctx.note(&"n");
+                    ctx.note(&"n");
+                },
+                &|| ctx.error(&"d"),
+                &|| {
+                    ctx.error(&"e");
+                    ctx.note(&"m");
+                },
+                &|| ctx.error(&"f"),
+                &|| ctx.note(&"o"),
+            ];
+            for step in steps {
+                step();
+                ctx.clock().sleep(Span::from_nanos(2_000_000_000)).await;
+            }
+            Err(first())
+        }
+    }
+}
+
+/// The lines of `connector::status` of the connector `plant.a` of [`Flaky`] that
+/// ends its first run with `first` and calls `again` in each later run, over 60 s, at
+/// `level` and above, each with no stamp and no mesh time. When `removed`, the hub
+/// removes the status channels at 11 s, between the shows of `d` and `e`.
+fn status_lines(
+    level: tracing::Level,
+    first: fn() -> KindError,
+    again: fn(&connector::kind::Context<()>),
+    removed: bool,
+) -> Vec<String> {
+    let (mut sim, host) = host(1);
+    let lines = Lines::default();
+    let log = opened_at(&host, false, level, Box::new(lines.clone()));
+    let config = env::shards::Config {
+        name: "connector".into(),
+        core: None,
+    };
+    let node = host.clone();
+    let shards = host.shards().logged(log.dispatch.clone());
+    let start = shards.start(config, move |tasks| async move {
+        let env = hub::testing::Env {
+            files: node.files(),
+            clock: node.clock(),
+            wall: node.wall(),
+            entropy: node.entropy(),
+            tasks,
+        };
+        let flaky = Flaky {
+            first,
+            again,
+            failed: AtomicBool::new(false),
+        };
+        let kinds = connector::kind::Table::new().with("flaky", flaky);
+        let rig = connector::testing::Rig::open(env, node.net(), kinds).await;
+        let name = "plant.a".parse().expect("a name");
+        let run = rig.supervise("flaky", name, Document::default()).await;
+        node.clock().sleep(Span::from_nanos(11_000_000_000)).await;
+        if removed {
+            rig.hub().set_definitions(std::iter::empty());
+        }
+        node.clock().sleep(Span::from_nanos(49_000_000_000)).await;
+        drop(run.stop().await);
+    });
+    drop(start.expect("a shard with no core starts"));
+    assert_eq!(sim.run(), Ok(()));
+    assert!(log.resume(), "the thread log starts");
+    assert_eq!(sim.run(), Ok(()));
+    (lines.read().iter())
+        .filter_map(|line| line.split_once(" connector::status: "))
+        .map(|(head, rest)| {
+            let level = head.rsplit(' ').next().expect("a level");
+            let rest = rest.strip_suffix(" mesh_time=none").expect("no mesh time");
+            format!("{level} {rest}")
+        })
+        .collect()
+}
+
+/// The fields of the span of the connector of [`status_lines`].
+const AT: &str = "connector=plant.a kind=flaky";
+
+/// The lines of [`status_lines`] from the first start to the end of the first run:
+/// one for each value that the writer takes, so none for the clear of no error, for
+/// `b`, for a value written again, or for `f` at the write of `o`, and two for the one
+/// write of `e` and `m`.
+fn first_run() -> [String; 10] {
+    [
+        format!("INFO running {AT} restarts=0"),
+        format!(r#"WARN error {AT} error="a b""#),
+        format!("WARN error {AT} error=c"),
+        format!("INFO cleared {AT}"),
+        format!("INFO note {AT} note=n"),
+        format!("WARN error {AT} error=d"),
+        format!("WARN error {AT} error=e"),
+        format!("INFO note {AT} note=m"),
+        format!("WARN error {AT} error=f"),
+        format!("INFO note {AT} note=o"),
+    ]
+}
+
+/// The lines of [`status_lines`] from the backoff after the first run to the end.
+fn restart() -> [String; 4] {
+    [
+        format!("INFO restarting {AT} backoff=942.005325ms"),
+        format!("INFO running {AT} restarts=1"),
+        format!("INFO ended {AT}"),
+        format!("INFO stopped {AT}"),
+    ]
+}
+
+#[test]
+fn a_connector_logs_each_change_of_its_status_with_its_name_and_kind() {
+    let lines = status_lines(
+        tracing::Level::INFO,
+        || KindError::Retry("down".into()),
+        |_| {},
+        false,
+    );
+    let mut logged = first_run().to_vec();
+    logged.push(format!("WARN ended {AT} class=retry error=down"));
+    logged.extend(restart());
+    assert_eq!(lines, logged);
+}
+
+#[test]
+fn a_status_writer_logs_the_values_of_the_frame_that_the_hub_refuses_as_removed() {
+    let lines = status_lines(
+        tracing::Level::INFO,
+        || KindError::Retry("down".into()),
+        |_| {},
+        true,
+    );
+    let mut logged = first_run()[..8].to_vec();
+    logged.push(format!("WARN ended {AT} class=retry error=down"));
+    logged.extend(restart());
+    assert_eq!(lines, logged);
+}
+
+#[test]
+fn a_connector_logs_a_device_error_as_a_warning() {
+    let lines = status_lines(
+        tracing::Level::INFO,
+        || KindError::Device("jammed".into()),
+        |_| {},
+        false,
+    );
+    let mut logged = first_run().to_vec();
+    logged.push(format!("WARN ended {AT} class=device error=jammed"));
+    logged.extend(restart());
+    assert_eq!(lines, logged);
+}
+
+#[test]
+fn a_connector_logs_a_show_of_the_text_of_a_device_error_as_a_new_class() {
+    let lines = status_lines(
+        tracing::Level::INFO,
+        || KindError::Device("jammed".into()),
+        |ctx| ctx.error(&"jammed"),
+        false,
+    );
+    let mut logged = first_run().to_vec();
+    logged.push(format!("WARN ended {AT} class=device error=jammed"));
+    let [restarting, running, ended, stopped] = restart();
+    logged.extend([restarting, running, format!("WARN error {AT} error=jammed")]);
+    logged.extend([ended, stopped]);
+    assert_eq!(lines, logged);
+}
+
+#[test]
+fn a_connector_logs_a_clear_of_a_retry_error_with_no_text() {
+    let lines = status_lines(
+        tracing::Level::INFO,
+        || KindError::Retry("".into()),
+        connector::kind::Context::clear_error,
+        false,
+    );
+    let mut logged = first_run().to_vec();
+    logged.push(format!(r#"WARN ended {AT} class=retry error="""#));
+    let [restarting, running, ended, stopped] = restart();
+    logged.extend([
+        restarting,
+        running,
+        format!("INFO cleared {AT}"),
+        ended,
+        stopped,
+    ]);
+    assert_eq!(lines, logged);
+}
+
+#[test]
+fn a_connector_logs_a_config_error_as_an_error_and_stops() {
+    let lines = status_lines(tracing::Level::INFO, refused, |_| {}, false);
+    let mut logged = first_run().to_vec();
+    logged.push(format!(
+        r#"ERROR ended {AT} class=config error="no n. set n""#
+    ));
+    logged.push(format!("INFO stopped {AT}"));
+    assert_eq!(lines, logged);
+}
+
+#[test]
+fn a_connector_gives_its_name_and_kind_to_an_error_line() {
+    let lines = status_lines(tracing::Level::ERROR, refused, |_| {}, false);
+    assert_eq!(
+        lines,
+        [format!(
+            r#"ERROR ended {AT} class=config error="no n. set n""#
+        )]
+    );
+}
+
+/// A config error of [`Flaky`].
+fn refused() -> KindError {
+    let code = document::diagnostic::Code::new("test.refused");
+    let diagnostic = Diagnostic::new(code, None, "no n".to_owned(), "set n".to_owned());
+    KindError::Config(vec![diagnostic])
+}
+
+#[test]
+fn a_connector_gives_its_name_and_kind_to_each_status_line_at_each_level() {
+    let lines = status_lines(
+        tracing::Level::WARN,
+        || KindError::Retry("down".into()),
+        |_| {},
+        false,
+    );
+    let logged = [
+        format!(r#"WARN error {AT} error="a b""#),
+        format!("WARN error {AT} error=c"),
+        format!("WARN error {AT} error=d"),
+        format!("WARN error {AT} error=e"),
+        format!("WARN error {AT} error=f"),
+        format!("WARN ended {AT} class=retry error=down"),
+    ];
+    assert_eq!(lines, logged);
+}
+
 proptest! {
     #[test]
     fn a_text_message_is_one_line_that_reads_back(message in any::<String>()) {
@@ -1515,4 +2061,69 @@ fn the_bench_log_gives_the_dispatch_of_its_level() {
         )
     });
     assert_eq!(enabled, (true, false));
+}
+
+#[test]
+fn a_wait_beside_a_resume_joins_the_thread_log() {
+    let threads = os::threads().expect("threads");
+    for round in 0..500 {
+        let lines = Lines::default();
+        let (_, mesh) = clock::Clock::new(os::clock());
+        let wall = os::wall().expect("a wall clock");
+        let log = to(&lines, false, tracing::Level::INFO);
+        let log = log::open(log, &threads, wall, mesh);
+        tracing::dispatcher::with_default(&log.dispatch, numbered(0, 1));
+        let resume = {
+            let log = log.clone();
+            threads.start("resume", move || async move { assert!(log.resume()) })
+        };
+        // The resume of the other thread starts the run, so the wait starts none. Only
+        // `running` shows that it started, and only the empty slot of the handle shows
+        // the join.
+        while !format!("{log:?}").contains("running: true") && lines.read().is_empty() {
+            std::hint::spin_loop();
+        }
+        assert!(log.wait(Duration::from_secs(10)), "round {round}");
+        resume
+            .expect("the thread starts")
+            .join()
+            .expect("the resume ends");
+        assert_eq!(lines.read().len(), 1, "round {round}");
+        let debug = format!("{log:?}");
+        assert!(debug.contains("handle: None"), "round {round}: {debug}");
+    }
+}
+
+/// A driver whose start drops its body and panics, as `os` passes the panic of the
+/// build of a thread to its caller.
+struct Unwinds;
+
+impl env::threads::Driver for Unwinds {
+    fn start(
+        &self,
+        name: &str,
+        body: env::threads::Body,
+        _: tracing::Dispatch,
+    ) -> Result<env::thread::Handle, env::thread::Error> {
+        drop(body);
+        panic!("the start of {name} panicked");
+    }
+}
+
+#[test]
+fn a_wait_after_a_start_that_panicked_has_nothing_to_wait_for() {
+    let threads = env::threads::Threads::new(Unwinds);
+    let lines = Lines::default();
+    let (_, mesh) = clock::Clock::new(os::clock());
+    let wall = os::wall().expect("a wall clock");
+    let log = log::open(
+        to(&lines, false, tracing::Level::INFO),
+        &threads,
+        wall,
+        mesh,
+    );
+    let held = panic::catch_unwind(panic::AssertUnwindSafe(|| log.hold()));
+    assert!(held.is_err(), "the start panicked");
+    let debug = format!("{log:?}");
+    assert!(log.wait(Duration::from_secs(1)), "{debug}");
 }

@@ -253,6 +253,7 @@ mod tests {
     }
 
     /// `tagged` copies the bytes of each index at each sync, and `new` copies none.
+    /// It reads the private `state`: `commit` gives only the tails of the carry record.
     #[test]
     fn a_tagged_deadline_copies_each_index() {
         let tag = std::num::NonZeroU8::MIN;

@@ -12,6 +12,7 @@ use std::ops::Deref;
 use types::channel::{self, Slot};
 use types::frame::Path;
 use types::hash;
+use types::log::Mark;
 use types::time::Stamp;
 
 use crate::carry;
@@ -188,66 +189,46 @@ impl fmt::Display for Invalid {
     }
 }
 
-/// Where a read of a path stands: before the entries that end past `seq`, and
-/// past the first `given` entries with no samples at `seq`. Marks order as reads
-/// do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Mark {
-    /// The seq that the entries the read has not given end past.
-    pub seq: u64,
-    /// How many entries with no samples at `seq` the read gave.
-    pub given: u64,
+/// The mark after an entry of `len` samples from `first` that comes at `mark` on its
+/// path.
+///
+/// # Panics
+///
+/// When `first + len` passes `u64::MAX`: the tail checked the entry. When `given`
+/// passes `u64::MAX`: the log checked the entry.
+pub(crate) fn after(mark: Mark, first: u64, len: u32) -> Mark {
+    if len != 0 {
+        let seq = first
+            .checked_add(u64::from(len))
+            .expect("invariant: the tail checked the entry");
+        return Mark::at(seq);
+    }
+    Mark {
+        seq: first,
+        given: count(mark, first)
+            .expect("invariant: the log checked the entry")
+            .get(),
+    }
 }
 
-impl Mark {
-    /// The mark before every entry that ends past `seq`.
-    #[must_use]
-    pub const fn at(seq: u64) -> Self {
-        Self { seq, given: 0 }
-    }
+/// The count of an entry with no samples at `first` that comes at `mark` on its path,
+/// or `None` past `u64::MAX`.
+fn count(mark: Mark, first: u64) -> Option<NonZeroU64> {
+    let given = if first == mark.seq { mark.given } else { 0 };
+    NonZeroU64::MIN.checked_add(given)
+}
 
-    /// The mark after an entry of `len` samples from `first` that comes at this
-    /// mark on its path.
-    ///
-    /// # Panics
-    ///
-    /// When `first + len` passes `u64::MAX`: the tail checked the entry. When
-    /// `given` passes `u64::MAX`: the log checked the entry.
-    pub(crate) fn after(self, first: u64, len: u32) -> Self {
-        if len != 0 {
-            let seq = first
-                .checked_add(u64::from(len))
-                .expect("invariant: the tail checked the entry");
-            return Self::at(seq);
-        }
-        Self {
+/// The mark after an entry of `kind` at `first` on its path, or `None` when it ends
+/// past the last seq. The entries of a path end at rising marks.
+fn end(first: u64, kind: Kind) -> Option<Mark> {
+    match kind {
+        Kind::Samples(samples) => first
+            .checked_add(u64::from(samples.len.get()))
+            .map(Mark::at),
+        Kind::Record(given) => Some(Mark {
             seq: first,
-            given: self
-                .count(first)
-                .expect("invariant: the log checked the entry")
-                .get(),
-        }
-    }
-
-    /// The count of an entry with no samples at `first` that comes at this mark on
-    /// its path, or `None` past `u64::MAX`.
-    fn count(self, first: u64) -> Option<NonZeroU64> {
-        let given = if first == self.seq { self.given } else { 0 };
-        NonZeroU64::MIN.checked_add(given)
-    }
-
-    /// The mark after an entry of `kind` at `first` on its path, or `None` when it
-    /// ends past the last seq. The entries of a path end at rising marks.
-    fn end(first: u64, kind: Kind) -> Option<Self> {
-        match kind {
-            Kind::Samples(samples) => first
-                .checked_add(u64::from(samples.len.get()))
-                .map(Self::at),
-            Kind::Record(given) => Some(Self {
-                seq: first,
-                given: given.get(),
-            }),
-        }
+            given: given.get(),
+        }),
     }
 }
 
@@ -310,7 +291,7 @@ impl Position {
             });
         }
         let Some(samples) = samples else {
-            let given = start.count(first).ok_or(Fault::Crowded { seq: first })?;
+            let given = count(start, first).ok_or(Fault::Crowded { seq: first })?;
             self.tail.seq = first;
             self.given = given.get();
             return Ok((start, Kind::Record(given)));
@@ -584,8 +565,7 @@ pub(crate) struct Newest {
 impl Newest {
     /// The mark after the entry on its path.
     fn end(&self) -> Mark {
-        Mark::end(self.first, self.kind.into())
-            .expect("invariant: the log checked the entry")
+        end(self.first, self.kind.into()).expect("invariant: the log checked the entry")
     }
 }
 
@@ -844,7 +824,7 @@ impl Logs {
         parts: &[P],
     ) {
         let tag = NonZeroU8::new(header.tag).expect("invariant: a copy has a tag");
-        let end = Mark::end(header.first, header.kind)
+        let end = end(header.first, header.kind)
             .expect("invariant: the log checked the entry");
         if let Some(bytes) = self.note(slot, header, tag, end, offset) {
             fill(bytes, parts);
@@ -1084,7 +1064,7 @@ impl Logs {
             first: header.first,
             len: header.len(),
         };
-        let end = Mark::end(header.first, header.kind).ok_or(past.on(index, path))?;
+        let end = end(header.first, header.kind).ok_or(past.on(index, path))?;
         if self.holder(slot, path, tag) == Some(offset) {
             return Err(Invalid::Twice { index, path, tag });
         }
@@ -1358,7 +1338,7 @@ impl Logs {
         })?;
         self.sync(slot, header, offset)?;
         if let Some(tag) = NonZeroU8::new(header.tag) {
-            let end = Mark::end(header.first, header.kind)
+            let end = end(header.first, header.kind)
                 .expect("invariant: the log checked the entry");
             if let Some(bytes) = self.note(slot, header, tag, end, offset) {
                 bytes.clear();
@@ -1781,7 +1761,7 @@ mod tests {
                 });
             }
             marks.push(at);
-            at = at.after(header.first, header.len());
+            at = after(at, header.first, header.len());
         }
         (runs, marks)
     }
@@ -1828,7 +1808,7 @@ mod tests {
                         let run = runs.iter().rev().find(|run| run.offset == *offset);
                         let found = Found::Run(key, *run.expect("an entry has a run"));
                         prop_assert_eq!(logs.find(slot(index), path, *before), found);
-                        end = before.after(header.first, header.len());
+                        end = after(*before, header.first, header.len());
                     }
                     prop_assert_eq!(logs.find(slot(index), path, end), Found::End(end));
                 }
@@ -1873,7 +1853,7 @@ mod tests {
                         .zip(&marks)
                         .last()
                         .map_or(Mark::at(0), |(header, before)| {
-                            before.after(header.first, header.len())
+                            after(*before, header.first, header.len())
                         });
                     marks.push(end);
                     // No call of `Logs` shows the drop, so the model reads the runs.
@@ -2091,7 +2071,7 @@ mod tests {
                     .get(&key)
                     .copied()
                     .unwrap_or((offset, Mark::at(0), None));
-            let end = end.after(header.first, header.len());
+            let end = after(end, header.first, header.len());
             let last = header.samples().and_then(|samples| samples.last);
             let stamp = last.or(stamp);
             let holder = if last == stamp { offset } else { holder };
@@ -2102,7 +2082,7 @@ mod tests {
         /// in the record at `offset`, unless its copy has a later end mark.
         fn copy(&mut self, index: u32, header: &Header, bytes: usize, offset: u64) {
             let key = (index, header.path, header.tag);
-            let end = Mark::end(header.first, header.kind).expect("a valid entry");
+            let end = end(header.first, header.kind).expect("a valid entry");
             let later = self
                 .copies
                 .get(&key)
@@ -2631,13 +2611,13 @@ mod tests {
 
     #[test]
     fn a_mark_moves_past_an_entry_as_a_read_does() {
-        assert_eq!(mark(0, 0).after(0, 3), mark(3, 0));
-        assert_eq!(mark(1, 0).after(0, 3), mark(3, 0), "inside the entry");
-        assert_eq!(mark(3, 0).after(5, 2), mark(7, 0), "a skip ahead");
-        assert_eq!(mark(3, 0).after(3, 0), mark(3, 1), "no samples");
-        assert_eq!(mark(3, 1).after(3, 0), mark(3, 2), "no samples again");
+        assert_eq!(after(mark(0, 0), 0, 3), mark(3, 0));
+        assert_eq!(after(mark(1, 0), 0, 3), mark(3, 0), "inside the entry");
+        assert_eq!(after(mark(3, 0), 5, 2), mark(7, 0), "a skip ahead");
+        assert_eq!(after(mark(3, 0), 3, 0), mark(3, 1), "no samples");
+        assert_eq!(after(mark(3, 1), 3, 0), mark(3, 2), "no samples again");
         assert_eq!(
-            mark(3, 2).after(5, 0),
+            after(mark(3, 2), 5, 0),
             mark(5, 1),
             "no samples after a skip"
         );
@@ -2647,7 +2627,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "invariant: the tail checked the entry")]
     fn a_mark_past_the_last_seq_is_a_broken_invariant() {
-        let _: Mark = mark(0, 0).after(u64::MAX, 1);
+        let _: Mark = after(mark(0, 0), u64::MAX, 1);
     }
 
     /// Record 1 holds [2, 5) and an entry with no samples at 5; record 2 starts at
@@ -4296,7 +4276,7 @@ mod tests {
             .iter()
             .filter(|(_, header)| (header.index, header.path) == (key, path))
             .filter_map(|&(_, header)| {
-                at = at.after(header.first, header.len());
+                at = after(at, header.first, header.len());
                 (at > from).then_some((header, at))
             })
             .collect()

@@ -12,8 +12,9 @@ Rules:
    injected downward.
 7. Only `os` touches the real clock, files, network, serial ports, randomness, and
    threads, through the `env` seams it implements. Only `clock` reads wall time
-   through `env`; everyone else asks `clock`. Only `node` builds real seams, and only
-   `sim` builds simulated ones. Below `hub`, only `home` writes channels, and only its
+   through `env`; everyone else asks `clock`. Only `node` builds real seams in the
+   binary, and `sdk` builds those of a client from `os` (SDK CLIENT). Only `sim`
+   builds simulated ones. Below `hub`, only `home` writes channels, and only its
    companion samples.
 8. Tests follow the same rules, with these extra dev-dependencies only: any crate may
    take `sim`, `counting`, and `waker` (`laptop.architect`, 2026-10-10 06:25 UTC,
@@ -43,6 +44,9 @@ Rules:
    `codec`, so its read tests decode the encoded series of each frame
    (`laptop.architect`, 2026-10-15T23:36:14Z,
    https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204521616).
+   `node` may take `sdk`, so its tests run the client of a program against a real node
+   (`laptop.architect`, 2026-10-16T21:33:33Z,
+   https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225122027).
    A crate may also take itself, so its tests and benches build with its own `sim`
    feature (STORED BENCH; `laptop.architect`, 2026-10-08T01:01:28Z:
    https://github.com/synnaxlabs/foundation/pull/1568#issuecomment-6049989224). A
@@ -80,7 +84,7 @@ Order: layer 1 (`block`, `ring`, `counting`, `waker`) -> `types` -> (`env`, `doc
 `raft`, `estimate`, `control`, `delivery`) -> `codec` -> `wire` -> `spec` -> `access`;
 layer 2 `os` -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`, `program`) ->
 `mesh` -> (`home`, `replica`) -> `hub`; layer 3 `secret` -> `connector` ->
-`connector-<kind>`; layer 4 (`config-hcl`, `config`) -> `ops` -> `node`.
+`connector-<kind>`; layer 4 (`config-hcl`, `config`) -> `ops` -> `node` -> `sdk`.
 
 | Layer | Crate | Job (one sentence) | Allowed dependencies |
 | --- | --- | --- | --- |
@@ -88,13 +92,13 @@ layer 2 `os` -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`, `program`) -
 | 1 | `ring` | Carries handles between shards through bounded single-producer, single-consumer rings, owns the wake protocol (loom-checked) and the `latest` cell that one shard writes and every shard reads, and holds its own unsafe slot code (memory delegation, 2026-10-04). A consumer parks at once: the shard idle loop owns the spin window through `try_pop` (#46). | none |
 | 1 | `counting` | Counts heap allocations so tests and benchmarks can assert that code does not allocate, counts the heap bytes held and given out so tests can bound the memory of a structure and what code allocates, finds freed blocks that hold given bytes so tests can assert that code erases a secret, and holds the `unsafe impl GlobalAlloc` of every crate, except the allocation test of `block` (`crates/block/tests/alloc`), which keeps its own. A dev-dependency only. | none |
 | 1 | `waker` | Makes wakers for tests that own a value that is not `Send`, so a test can give a future a waker whose drop runs its code. Holds the `unsafe` of those wakers. A waker used on another thread aborts the process. A dev-dependency only (`laptop.architect`, 2026-10-10 06:25 UTC, #2254, https://github.com/synnaxlabs/foundation/issues/2254#issuecomment-6094631943, 06:28 UTC, https://github.com/synnaxlabs/foundation/issues/2254#issuecomment-6094654313; the abort, 2026-10-10 09:11 UTC, #2265, https://github.com/synnaxlabs/foundation/pull/2265#issuecomment-6095996730, items 3 and 4 withdrawn 09:19 UTC, https://github.com/synnaxlabs/foundation/pull/2265#issuecomment-6096058772). | none |
-| 1 | `types` | Defines byte-level values: time, byte sizes, sample types, series, frames, key sets, masks, views, keys, slots, quality, names, node keys, Ed25519 public and private keys, with the derive, the sign, and the verify, subject hellos, connection keys, control authority, content digests, the one selector matcher, and the one quote form for text in diagnostics. It also holds the wakers of the futures that wait for one event (`wait::Set`) (`laptop.architect`, 2026-10-10 05:33 UTC, #1701, https://github.com/synnaxlabs/foundation/issues/1701#issuecomment-6094250342). | `block` |
+| 1 | `types` | Defines byte-level values: time, byte sizes, sample types, series, frames, key sets, masks, views, keys, slots, quality, names, node keys, Ed25519 public and private keys, with the derive, the sign, and the verify, subject hellos, connection keys, control authority, content digests, the mark where a read of a log stands (`log::Mark`), the one selector matcher, and the one quote form for text in diagnostics. It also holds the wakers of the futures that wait for one event (`wait::Set`) (`laptop.architect`, 2026-10-10 05:33 UTC, #1701, https://github.com/synnaxlabs/foundation/issues/1701#issuecomment-6094250342). | `block` |
 | 1 | `env` | Defines the injected seams for monotonic time, the OS wall clock (read only by `clock`), files, the network, serial ports, randomness, shards, dedicated threads, and task spawning. Its tests hold one `unsafe` module, `tasks::tests::hooked`: a waker whose clone and drop run a closure of the test, and the tests that use it. Each test of `env` runs under Miri (laptop.architect-2, 2026-10-10 03:57 UTC, #2218, https://github.com/synnaxlabs/foundation/pull/2218#issuecomment-6093523974). | `types`, `block` |
 | 1 | `document` | Defines the syntax-neutral Document with source positions, diagnostics, shared value readers, and its canonical encoding. | `types` |
 | 1 | `raft` | Runs a sans-I/O replicated log (etcd model, PreVote, CheckQuorum) that knows nothing about specs. | `types` |
 | 1 | `estimate` | Computes clock offset and error bounds from measurements, the peer exchange, and device oscillator fits, slews mesh time, and chooses what mesh time follows. | `types` |
 | 1 | `control` | Decides who holds control of an index: authority, ties, control leases, handoffs, start state after failover. | `types` |
-| 1 | `delivery` | Keeps each reader's state per index: positions, credits, live frames for complete readers, latest mailbox, holds, floors, position records, masks. | `types`, `block` |
+| 1 | `delivery` | Keeps each reader's state per index: positions, credits, live frames for complete readers, latest mailbox, holds, position records, masks. | `types`, `block` |
 | 1 | `codec` | Compresses and checks one series: per-vector selection, codecs, header validation, format version. | `types`, `block` |
 | 1 | `wire` | Defines every message between two nodes, or between a program and the node it connects to, except the bodies of the mesh protocol, which `mesh` encodes (MESH WIRE): per-connection short numbers, predicted seq and counts, session, credit, and replication messages, format version, and builds the frames of a reader session from its messages (HUB WIRE). | `types`, `block`, `codec` |
 | 1 | `spec` | Defines the definitions (channels, types, units, connectors with opaque config, regions, policies, open folders), the prolly tree, hashes, diffs, and `spec::resolve`. | `types`, `document` |
@@ -119,19 +123,22 @@ layer 2 `os` -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`, `program`) -
 | 4 | `ops` | Holds the operation table and handlers, generates the CLI, MCP tools, and docs, and runs each operation on the node that must run it. | `config`, `connector`, `secret`, `hub`, `mesh`, `blob`, `sim`, layer 1 |
 | 4 | `acceptance` | Runs the MVP acceptance scenarios against whole meshes built from `node`. Test-only. | all crates |
 | 4 | `node` | Is the composition root: real seams, pools and shards, all tables (kinds, front ends, time sources, secret stores), the status collector, process lifecycle, and upgrades. | all crates |
+| 4 | `sdk` | Is the Rust client of a program, outside the binary: it runs a `program::Session` on a shard of `os`, and the Python SDK wraps it. | `program`, `transport`, `os`, `env`, `types`, `block` |
 
 `fuzz` holds the fuzz targets, outside the workspace. It is test-only, builds on the
 pinned nightly, may depend on any crate, and no crate depends on it (#252;
 `laptop.architect`, 2026-10-09T04:18Z,
 https://github.com/synnaxlabs/foundation/pull/2099#issuecomment-6074164278).
 
-Outside the binary: the Rust SDK `sdk` builds on `program`, and the Python SDK wraps
-`sdk` with PyO3 (C6, SDK DATA PATH; the crate, `laptop.architect`,
+Outside the binary: the Rust SDK `sdk` (`sdk/rust`, layer 4, last) builds on `program`,
+`transport`, `env`, `types`, and `block`, and takes its clock, entropy, network, and
+the shard of its client from `os` (#2923). The Python SDK
+wraps `sdk` with PyO3 (C6, SDK DATA PATH; the crate, `laptop.architect`,
 2026-10-15T17:56:55Z,
 https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198730147; its name,
 `laptop.architect`, 2026-10-15T18:23:47Z,
 https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6199257488; its
 dependency on `access`, `laptop.architect`, 2026-10-15T18:05:02Z,
 https://github.com/synnaxlabs/foundation/issues/2722#issuecomment-6198883707). Other
-SDKs hand-write their data path against golden vectors (D12). Supersedes "the Rust
-SDK reuses `block`, `types`, `codec`, and `wire`".
+SDKs hand-write their data path against golden vectors (D12). Supersedes "the Rust SDK
+reuses `block`, `types`, `codec`, and `wire`".

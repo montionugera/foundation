@@ -4,6 +4,7 @@
 
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
+#![cfg(any(target_os = "linux", target_os = "macos"))] // #2955
 
 #[path = "common/copies.rs"]
 mod copies;
@@ -17,10 +18,6 @@ use env::net::{Error, tcp};
 use sockets::{LISTEN, OPTIONS};
 
 #[test]
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "needs pidfd_getfd and the shutdown of a listener"
-)]
 fn a_dropped_listener_refuses_while_a_copy_of_it_is_open() {
     let net = os::net();
     let mut listener = net.listen(&LISTEN).unwrap();

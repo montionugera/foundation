@@ -162,13 +162,12 @@ state on `main`.
 
 ### Agent host and CLI to `ops`
 
-- Caller to `ops`: the CLI and the MCP surface have only `version` and `docs`
-  today. #353: `call` accepts a list as arguments, but the schema says `object`; a
-  text error prints the caller's text raw, so a new line forges a `fix:` line. It
-  does not have the `security` label while no operation takes real arguments.
-- Mesh to agent, to attack when `ops` gets real operations: text from a spec file
-  or a peer that reaches a tool description or a tool result, as an instruction to
-  the agent.
+- Caller to `ops`: the CLI and the MCP surface have `version`, `docs`, `plan`,
+  `apply`, and `status`. The MCP tools read and write files only under their
+  folders, never in the data directory (OPS OUTPUT). `tools/call` takes only an
+  object as arguments (#310), and a text error escapes the caller's text (#377).
+- Mesh to agent: text from a spec file or a peer that reaches a tool description or a
+  tool result (`status`, `plan`), as an instruction to the agent (#2924).
 - A change of each definition other than a channel needs `admin` on its key, because
   a policy governs its whole region, a subject's keys decide who acts as it, a region
   record makes a region, and a connector reaches channels by `select` (SERVE ACCESS).
@@ -382,6 +381,11 @@ state on `main`.
   from it. OPEN62541 SOURCE bars it for each nonce, key, and session token of Foundation
   code, and states what a security policy that encrypts, or an OPC UA server of
   Foundation, changes first. Neither is built.
+- A certificate that a server sends is untrusted input, and so is a key or a
+  certificate that the node loads. No PEM read of the open62541 copy waits on the
+  console or sets a signal handler: each refuses an encrypted PEM that it has no
+  password for, and a password that does not fit in the buffer of aws-lc (OPEN62541
+  SOURCE).
 
 ### Encoded series
 
@@ -556,5 +560,6 @@ directory (`node::budget::decode`, #2174), the parsers of `/proc/self/mountinfo`
 reply of its node (`ops::serve`, #2563), the newest handoff record of each index in the
 ring (`home::handoff::read`, #2278), the newest named reader entry of each index in
 the ring (`home::named::read`, #2278), the buffer entry that a complete reader reads from
-disk (`home::stored::Decoder::frame`, #2738), and the chunk processing of open62541
-(`ua_securechannel.c`, #1990).
+disk (`home::stored::Decoder::frame`, #2738), the chunk processing of open62541
+(`ua_securechannel.c`, #1990), and the read of the certificate that an OPC UA server
+sends (`openSSLLoadLeafCertificate` of the OpenSSL plugins, #3058).

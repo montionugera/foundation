@@ -6,6 +6,13 @@
   https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6073808019).
   Supersedes the ENV SEAMS and `Driver` texts of item 4 of
   https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6072358016.
+  Amended (2026-10-17, #2923): outside the binary, `sdk` takes its clock, entropy,
+  network, and the shard of its client from `os` (`laptop.architect-2`,
+  2026-10-17T00:22:08Z,
+  https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6227271021, and
+  2026-10-17T17:32:45Z,
+  https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237701374). So a
+  composition root holds `Shards`: `node`, or `sdk` for a client.
   Amended (2026-10-10, #2064): `tasks::Group` is the one counting group of `env`. It
   counts each task spawned through the `Tasks` that `Group::tasks` gives until the
   task's future has dropped, and `Group::ended` gives an `Ended` that resolves only
@@ -529,7 +536,7 @@
   https://github.com/synnaxlabs/foundation/pull/2109#issuecomment-6074628714). macOS has
   no such flag, and std sets it in a second call on an accepted stream too, so on
   macOS that child may hold the socket and its port, as the doc of `os::net()` says. A
-  Foundation node spawns no process, so only tests see it, and CI runs on Linux. Lost:
+  Foundation node spawns no process, so only tests see it. Lost:
   `POSIX_SPAWN_CLOEXEC_DEFAULT` on the spawn side, which std does not set, and which
   needs a spawn seam and `unsafe` for tests only. Decided by `laptop.architect-2`
   (2026-10-08T21:01:28Z: https://github.com/synnaxlabs/foundation/issues/2000). On
@@ -614,11 +621,17 @@
   the `ops::cli` sentence by `laptop.architect` (2026-10-11 08:10 UTC,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106994274). One
   bound holds for a read: the bytes of a file, or the bytes of the entry paths of a
-  directory. A path that ends in `/`, `.`, or `..` names a directory, and the empty path
-  names nothing. `env::paths::names_directory` holds the rule for the text of a path,
-  and each driver asks it. Lost: a copy in each driver. The copy of `os` lost its `..`
-  arm once, and the cases that both drivers share passed (rounds 4 and 5 of #2424;
-  `laptop.architect-2`, 2026-10-11T20:23:25Z:
+  directory. Past the bound, the read gives `Found::Large` with the `Kind` of what is at
+  the path, so a caller tells a large file from a large directory with one read. Lost:
+  two variants `LargeFile` and `LargeDirectory`, whose names repeat "Large"; a field
+  `directory: bool`, a bool where a type belongs (`laptop.architect-2`,
+  2026-10-17T04:33:58Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6229681928). A path
+  that ends in `/`, `.`, or `..` names a directory, and the empty path names nothing.
+  `env::paths::names_directory` holds the rule for the text of a path, and each driver
+  asks it. Lost: a copy in each driver. The copy of `os` lost its `..` arm once, and the
+  cases that both drivers share passed (rounds 4 and 5 of #2424; `laptop.architect-2`,
+  2026-10-11T20:23:25Z:
   https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6113352507, item 2).
   It splits the text where `std::path::is_separator` says, so on Windows it also splits
   at `\`. Each other rule of a Windows path, as a drive, a device name, or a verbatim
@@ -918,7 +931,9 @@
   at `within`. A folder of `folders` keeps the key of what was there at `within`, and
   holds a path only while the file at its resolved path has that key, so a folder that a
   program removes, renames away, replaces with a link, or makes again holds nothing
-  until a new `within`. A write replaces a file, so a folder that is a file holds
+  until a new `within`. A folder that a program removes and makes again holds again
+  when the host gives it the old key, as ext4 can. A write replaces a file, so a
+  folder that is a file holds
   nothing after a write to it, also through this handle. A folder of `hidden` that is
   not there gives no error, also when the limits of the handle refuse it, and one that
   is there gives its key, also when the limits refuse it. That key comes from the path
@@ -967,6 +982,66 @@
   https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224298302; the hard
   link text and a folder that is a file, 2026-10-16T21:03:02Z,
   https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224644233).
+  Amended (2026-10-17T05:16:48Z, #2919): `paths::Error` has two more variants, so a
+  caller can give a true cause. `Vacant`: nothing is at a hidden path of `within`, and
+  a write or `make_dir` makes a new name in the deepest directory on the way to it
+  that is there.
+  It is the refusal of a new name beside a missing hidden folder, which gave `Hidden`.
+  Supersedes "gives `Hidden`, also for a name that does not make that folder" of the
+  amendment of 2026-10-16T20:27:04Z
+  (https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224070884).
+  A hidden folder that is there, and one that a program moved away, still give
+  `Hidden`, which wins over `Vacant`. `Outside` and `Replaced` win over `Vacant`.
+  A read gives `NotFound` where a write gives `Vacant`.
+  `Replaced`: no folder of `within` holds the path, and a program moved or replaced a
+  folder of that call after it: the folder's path names another file, or nothing, or the
+  OS refuses its key. The path resolves under that folder, by the path that the folder
+  resolved to at that call or by the one that it resolves to now, or into the directory
+  that the folder was at that call. It replaces `Outside`, which such a path gave. So a
+  folder that is a file gives `Replaced` after a write to it, and so does a folder that
+  a program makes again in other case or replaces with a link, and a path into a folder
+  that a program moved away. The common cases pin each on both drivers, other than a
+  folder made again in other case, which an `os` test pins on macOS.
+  `sim::Node::move_path` renames a file, a link, or a directory of a host from outside
+  the node, with its key, so the common cases move a folder away on both drivers. When
+  the node's working directory resolves, it stays on the directory that it resolves to,
+  as on a host: it moves with it when that directory is `from` or under it, and a move
+  of a link on its way leaves it there. It keeps its path while that path resolves to
+  that directory, and else takes the path of the directory. A call is of the path of a
+  fault of `sim::Node::fail_path` when both give one path from the working directory at
+  that call, with `.` and `..` taken as text and no link followed, so a relative path
+  follows a later `set_working_dir`. Faults that a call is of fire in the order set, one
+  per call. Decided by `laptop.architect-2` (2026-10-17T05:16:48Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230063256; the order,
+  a read, `Replaced` by the path now, and `move_path`, 2026-10-17T06:33:57Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230731316; a path
+  into the moved folder and the moved working directory, 2026-10-17T07:17:06Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231111995; the
+  working directory that a move keeps on the directory that it resolves to,
+  2026-10-17T07:41:22Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231322001; the common
+  cases, 2026-10-17T08:26:44Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231727914; the
+  faults, 2026-10-17T08:58:04Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6232020329; a key that
+  the OS refuses, 2026-10-17T16:01:08Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236248693, which
+  withdraws item 1 of 6231727914 and item 1 of 6232020329; the path of a fault,
+  2026-10-17T16:12:13Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236404985, which
+  states what one path is, as `absolute` gave it for item 2 of 6232020329: `.` and `..`
+  taken as text, and no link followed; the path of the working directory on a move,
+  2026-10-17T16:16:39Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236468300, which
+  supersedes "`working` becomes its resolved path when it resolves" of 6231322001 and
+  "`move_entry` goes back to the rule of 6231322001, and 7c9caa232 goes" of item 2 of
+  6232020329). Lost: a second look in `ops` after a refusal, which puts a `Paths` with
+  no limits in the scope that limits `foundation mcp`, states the rule of `within`
+  again, and gives a false text when a file changes between the two looks. Lost too: the
+  error of the key of a folder that the OS refuses, which needs the codes of each host
+  in `env`; the next `within` gives it. Lost too: a working directory resolved at
+  `set_working_dir`, which cannot hold where nothing is there yet, so it needs a second
+  rule.
   Amended (2026-10-17T06:14:25Z, #2895): `make_dir` of a path that does not resolve
   checks its name in its resolved directory, with the key of the file at that name,
   before the driver makes it. So a loop or a link to nothing beside a hidden folder that
@@ -979,3 +1054,201 @@
   https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417; the end in
   `/` or `/.`, 2026-10-17T06:28:33Z,
   https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230686685).
+  Amended (2026-10-17T06:14:25Z, #3006): with `Vacant` of #2919, that loop or link to
+  nothing beside a hidden folder that is not there gives `Vacant`, not `Hidden`. One in
+  a hidden folder that a program moved away still gives `Hidden`. Supersedes "a loop or
+  a link to nothing beside a hidden folder that is not there ... gives `Hidden`" of the
+  amendment of 2026-10-17T06:14:25Z (#2895)
+  (https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417). Decided
+  by `laptop.architect-2` (2026-10-17T06:14:25Z,
+  https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417; the four
+  cases, 2026-10-17T07:41:22Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6231322001).
+  Amended (2026-10-17T06:28:34Z, #3005): on a handle of `within`, a path that does not
+  resolve is checked by the deepest prefix of its components that resolves, with the key
+  of the file at that prefix. Components drop an end `/` and `/.`. A relative path
+  starts at the working directory, as `.` (2026-10-17T07:40:31Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231315185). An error
+  of that check wins, `Hidden` over `Outside`; else the call gives the error of its
+  resolve. So a hidden file at a path that ends in `/` or `/.`, or with a name after it,
+  gives `Hidden`, not `Io` 20, on `read`, `write`, and `make_dir`; `<hidden>/none/x`
+  gives `Hidden`, not `NotFound`; and a path outside the folders that does not resolve
+  gives `Outside`, not `NotFound`. The arm of `make_dir` still checks its name in its
+  resolved directory, and there each error of the key of the name is no key, not the
+  error of the call, since an error before the check, such as `Io` 40 for a loop, tells
+  what a hidden folder holds. The walk runs only after a failed resolve. Supersedes "A
+  path that does not resolve fails with the error of its resolve" of the amendment of
+  2026-10-16T04:52:58Z, and "The cost of the resolve error of a path: a tool can learn
+  whether a directory outside the folders is there" of the amendment of
+  2026-10-16T05:41:58Z. Lost: a driver call that gives the deepest resolved prefix, one
+  walk but a new seam that `os` and `sim` must both keep, for a path that only fails; a
+  lexical drop of the end `/` only, which leaves `<hidden>/none/x`. Decided by
+  `laptop.architect-2` (2026-10-17T06:28:34Z,
+  https://github.com/synnaxlabs/foundation/issues/3005#issuecomment-6230686853). The
+  rule of the key of the name in `make_dir` is the text that the architecture review of
+  #3000 asked for
+  (https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230706661).
+  Amended (2026-10-17T07:45:44Z, #3005): on a handle of `within`, the limits hold on
+  each step of every path, not only of a path that does not resolve. Take each prefix of
+  the components of the path, in order, without an end `/` or `/.`, the whole path last.
+  A relative path starts at the working directory: the steps of that directory come
+  first, each prefix of the resolved working directory, then each prefix of the path as
+  given, never a prefix of their join, since a join can be longer than the host takes
+  where neither is. So a relative path and the absolute path that it names give one
+  result where the host takes both. `../work/a` with the working directory `/out` gives
+  `Outside`, as `/out/../work/a` does. So when the working directory is outside the
+  folders and not on the way to one, a relative path gives `Outside` when a `..` takes
+  the path above the working directory or its file is outside; the fix of `ops.outside`
+  of #2919 names that directory, so the user gives an absolute path. A prefix resolves
+  as `resolve` does, and the walk stops at the first prefix that does not resolve. Each
+  prefix that resolves is checked as the whole path is, but a prefix short of the whole
+  path is checked against the folders only when a `..` after it takes the path above it,
+  by count: each name after it adds one, each `..` takes one away, and it is checked
+  when the count goes below zero, with the names of the working directory below it
+  counted first; or when nothing is there, and then also passes when it is a directory
+  on the way to a folder, by key. The hidden folders hold on each prefix that passes the
+  folders of each limit. A path through another mount of a folder, such as
+  `/System/Volumes/Data` on macOS or a bind mount on Linux, or through a link outside
+  the folders that names one, gives what the folder's own path gives, as #2898 rules.
+  The name of the first prefix that does not resolve is checked at its place, in the
+  resolved prefix before it, with no key, as a new name there is. The first step that
+  fails gives its error. When each passes and the path does not resolve, the call gives
+  the error of its resolve. So `workshop/../work/a.hcl` gives `Outside`,
+  `work/data/../a.hcl` gives `Hidden`, and a loop or a link to nothing in a hidden
+  folder that a program moves away gives `Hidden` on `read` and `write` too. `make_dir`
+  makes the directory only when each step passes. When the path did not resolve, the
+  call checks it again after it makes it, and a path with no last name, such as one that
+  ends in `..`, gets the error of the driver. The check gives an error of a step apart
+  from the result of the resolve, so an error of a step, such as `Io` of a key, makes
+  nothing. The cost is one resolve and one check for each name of the path, and for a
+  relative path one resolve of the working directory and one check for each of its
+  names, on each call of such a handle. Only `foundation mcp` of #2919 makes one. The
+  walk resolves each prefix, and a resolve on `os` walks each name of its prefix, so the
+  cost grows with the cube of the depth: a read of a file 1905 names deep in a folder
+  takes 72 s on `os` (Linux, Xeon Platinum 8488C, release), where the free handle takes
+  214 µs, and the call blocks its thread for that time. Only `foundation mcp` makes such
+  a call, in a process of its own, so no node waits on it. A resolve on `os` fails past
+  the longest path that the host takes, which bounds the walk, and a path stops at its
+  first step that does not resolve. #3018 removes this cost. The cost that stays until
+  #3018: a symbolic link in the folders that names nothing passes by its own place and
+  gives `NotFound`, while one that names a file outside gives `Outside`, or `Hidden` for
+  a file in a hidden folder, so a tool can learn whether the target of such a link is
+  there. Supersedes "the deepest prefix" rule and the rule of the key of the name in
+  `make_dir` of the amendment of 2026-10-17T06:28:34Z; the check of a name in `make_dir`
+  of the amendment of 2026-10-17T06:14:25Z (#2895) is now a step of the walk for each
+  call, with no key, which supersedes its "with the key of the file at that name". It
+  also supersedes "a path that does not resolve, such as a link to nothing or a loop,
+  passes the limits by its own place" of the amendment of 2026-10-16T08:08:47Z. A step
+  meets the hidden folders only when it passes the folders of each limit, so a step that
+  the folders of a limit refuse gives `Outside`, also beside a hidden folder that is not
+  there: with the folder `/work` and nothing at the hidden folder `/out/h`, `/out/x` and
+  `/out/y` give `Outside`, whether each is there or not. A short step that is there,
+  that no `..` takes the path above, and that the folders of a limit refuse, passes, and
+  the end decides: `/out/h/a` and `/out/h/s/x` give `Outside`, whether `/out/h` is there
+  or a program moves it away, and a link in `/out/h` that names a folder leads there, as
+  a link outside the folders does. A handle of `/plans` within the handle of `/work`
+  gives `Outside` for each name in `/work`. It also supersedes "also when it is not
+  under the folders of another limit, and `Outside` is only for a path not under the
+  folders" of the amendment of 2026-10-16T08:08:47Z, and the shape decision "`Hidden`
+  wins over the `Outside` of another limit" of
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6217809418, and
+  "`Hidden` over `Outside`" of the amendment of 2026-10-17T06:28:34Z
+  (https://github.com/synnaxlabs/foundation/issues/3005#issuecomment-6230686853). This
+  supersedes "in the deepest directory on its way that is there gives `Hidden`" of the
+  amendment of 2026-10-16T17:13:18Z for a directory that is not under a folder. For the
+  name of the first prefix that does not resolve, it supersedes "each other error is the
+  error of the call" of the amendment of 2026-10-16T17:13:18Z: that name takes no key,
+  since an error of its key, such as `Io` 40 for a loop, tells what a hidden folder
+  holds. Lost: the check only after a failed resolve, since
+  `/etc/foo/../../<base>/work/a.hcl` resolves only when `/etc/foo` is there, so it reads
+  `a.hcl` or gives `Outside`, which tells whether `/etc/foo` is there; `Hidden` over
+  `Outside` across prefixes, since `x/../work/data/y` then gives `Hidden` when the
+  outside `x` is there and `Outside` when it is not; a step at or above the end of the
+  walk, which needs a second pass and refuses a link outside the folders that names a
+  folder where a mount passes
+  (https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236577385); the
+  check of each step that any `..` follows, since `/out/in/x/../a` through a link
+  `/out/in` to a folder then gives `Outside` where `/out/in/a` reads; `Hidden` for each
+  name in a directory that is not under a folder, beside a hidden folder that is not
+  there, which also refuses a name that is there; `Hidden` for a path under a hidden
+  folder that the folders of a limit refuse, which tells whether that folder is there
+  and which names it holds; `Hidden` over the `Outside` of another limit, whose fix
+  takes one step fewer, since a handle within another then tells which hidden folders
+  the other has outside its own folders. Decided by `laptop.architect-2`
+  (2026-10-17T07:45:44Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231358043; the check
+  of the name at its place and the arm of `make_dir`, 2026-10-17T07:54:32Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231433128; the
+  working directory as the first steps of a relative path, and the error of a step apart
+  from the resolve, 2026-10-17T08:13:25Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231604694; the cost
+  and its deferral to #3018, 2026-10-17T08:19:29Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231662179; the walk
+  of a relative path by its own prefixes, 2026-10-17T08:53:56Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231983300; `make_dir`
+  of a path with no last name, 2026-10-17T08:44:48Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6231896085; the walk
+  of the working directory first, 2026-10-17T16:01:56Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236262586; the check
+  of a short step against the folders only before a `..`, 2026-10-17T16:24:25Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236577385; the check
+  of a short step where nothing is there, 2026-10-17T16:30:59Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236681131; the count
+  of the `..` that takes the path above a step, 2026-10-17T16:38:50Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6236820865; the
+  folders of a limit before its hidden folders, 2026-10-17T16:59:11Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237152656; the hidden
+  folders only on a step that the folders of each limit hold, 2026-10-17T17:16:50Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237413267; the
+  `Outside` of another limit over `Hidden`, 2026-10-17T17:27:38Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237608685; the
+  supersede of "`Hidden` over `Outside`" of 2026-10-17T06:28:34Z, 2026-10-17T17:38:58Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237821711).
+  Amended (2026-10-17T20:57:47Z, #3005, with #2919): with `Vacant` and `Replaced` of
+  #2919, a step that the folders of a limit refuse gives `Replaced` in place of
+  `Outside` when it resolves under a folder of that limit that a program moved or
+  replaced, as the whole path does: with the folder `work` made again, `work/../b.hcl`
+  gives `Replaced`, where `b.hcl` gives `Outside`. Only the whole path can give
+  `Vacant`, since a call makes no other name, and only after it passes each other limit.
+  A step short of it, and a read, pass where a write gives `Vacant`, so beside a hidden
+  folder that is not there, `work/none/x` and a path below a loop or a link to nothing
+  give the error of their resolve. Supersedes the order "`Hidden`, then `Outside` or
+  `Replaced`" of item 1 of
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6230731316:
+  `Replaced`, as `Outside`, comes before `Hidden`. Decided by `laptop.architect-2`
+  (2026-10-17T20:57:47Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6240944707;
+  `Replaced` before `Hidden`, 2026-10-17T21:04:57Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6241042085).
+  Amended (2026-10-17T21:25:15Z, #3005): a step short of the path that a hidden folder
+  holds is checked against the folders, as one before a `..` is, and passes them only
+  when they hold it or it is a directory on the way to a folder. It still gets no
+  `Hidden` unless it passes the folders of each limit, as the ruling of
+  2026-10-17T17:16:50Z
+  (https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237413267) rules. So
+  with `wide` within `work` and the hidden `work/data` and `work/sub/s`, and `narrow`
+  within `work/sub` from `wide`, `narrow` gives `Outside` for `work/data/l/a.hcl` and
+  `work/data/l/s/a` through a link `l` to `work/sub`, as for `work/data/none/a.hcl`,
+  where `wide` gives `Hidden`. With one limit, a path through a hidden folder outside
+  the folders (`/out/h/l/a` with `l` a link to `/work`) gives `Outside`, where it gave
+  `Ok`. Supersedes "passes, and the end decides" and "a link in `/out/h` that names a
+  folder leads there, as a link outside the folders does" of the amendment of
+  2026-10-17T07:45:44Z for a step that a hidden folder holds, and "through a link
+  outside the folders that names one" of that amendment for a link in a hidden folder
+  (https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6237413267, item 3).
+  Decided by `laptop.architect-2` (2026-10-17T21:25:15Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6241334906).
+  Amended (2026-10-17T21:54:23Z, #3005): a step short of the path that the folders check
+  passes as a directory on the way to a folder only while that folder is there, and else
+  gives `Replaced` when its path is on the way to the path of a folder that a program
+  moved or replaced. So with the folder `work/data/pub` and the hidden `work/data`,
+  after a program moves `pub` to `work/old`, `work/data/pub/a` gives `Replaced`, where
+  it gave `Hidden`. A step before a `..` is one too: with the folders `work/data/pub`
+  and `work/b`, after the same move, `work/data/../b/f` gives `Replaced`, where it read.
+  Supersedes "and then also passes when it is a directory on the way to a folder, by
+  key" of the amendment of 2026-10-17T07:45:44Z and "or it is a directory on the way to
+  a folder" of the amendment of 2026-10-17T21:25:15Z for a folder that is not there.
+  Decided by `laptop.architect-2` (2026-10-17T21:54:23Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6241808609; the
+  supersede, 2026-10-17T22:18:40Z,
+  https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6242108210).

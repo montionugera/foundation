@@ -31,17 +31,35 @@
   integers and booleans as JSON numbers and booleans, and each other value a string.
   By `laptop.architect-2` (items 2 and 3 of 2026-10-15T20:27:52Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201604736).
+  The fields of each span of the event at the level or above come before the fields
+  of the event, outer span first, with no span name. A key appears once in a line: a
+  field of an inner span or of the event replaces a field of an outer span with the
+  same key, at its own place, so a span field `message` cannot hide the message of
+  the event. In a text line, the key `mesh_time` is the line's: a field of that name
+  is left out, also near mesh time, where the line gives no `mesh_time`, so no field
+  reads as the time of the line. A JSON line keeps the field in `fields`. By
+  `laptop.architect-2` (item 1 of 2026-10-17T17:22:08Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6237505740; item
+  2 of 2026-10-17T18:45:36Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238847435).
   (4) `node::log` builds the `fmt` layer of `tracing-subscriber` with a `FormatEvent`
   of its own, which reads `clock::log::Reader::now` once for each line and writes the
   whole line, with `log_internal_errors(false)`, so a failed write drops the line and
   `fmt` writes nothing of its own to stderr. A `LevelFilter` of `--log-level` is under
-  it. `fmt` keeps the buffer of each thread, the one write of each line, and the span
-  fields that a later step needs. Features `fmt`, `registry`, and `std` only: no
-  `ansi`, `json`, or `tracing-serde`. By `laptop.architect-2` (2026-10-15T20:28:52Z,
+  it. `fmt` keeps the buffer of each thread and the one write of each line. Its
+  `FormatFields` writes nothing, so no layer formats a value while it holds the lock
+  of a span, and an event that a `Debug` or a `Display` writes cannot wait on that
+  lock (`laptop.architect-2`, B of 2026-10-17T18:08:57Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238313830). A private
+  `Layer` keeps the typed fields of each span for item (3), since `fmt` keeps them only
+  as one `String` for each span (2026-10-17T17:22:08Z, link of item (3)). Features
+  `fmt`, `registry`, and `std` only: no `ansi`, `json`, or `tracing-serde`. By
+  `laptop.architect-2` (2026-10-15T20:28:52Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201622804).
-  Lost: a `Layer` of our own, which builds again what `fmt` gives; the `json` format
-  of `fmt`, which needs a second clock read or a splice for `mesh_time`. The writer
-  of `fmt` puts each line in the queue of item 9, so no event waits on stderr.
+  Lost: a `Layer` of our own for each line, which builds again what `fmt` gives; the
+  `json` format of `fmt`, which needs a second clock read or a splice for
+  `mesh_time`. The writer of `fmt` puts each line in the queue of item 9, so no event
+  waits on stderr.
   (5) No dispatch is global (crate map rule 9, `clippy.toml`). `Node::start` makes the
   dispatch from `Config::log` and gives it to its shards through `Shards::logged`.
   `node::Log` holds the writer and the `ops::Log` that `start` parses, whose default
@@ -62,7 +80,8 @@
   `laptop.architect-2` (2026-10-15T20:38:04Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201785053), with
   the thread of #2764.
-  (8) P1 holds at `info`: about 1.1 µs for each run of a node and 33 KB idle. A level
+  (8) P1 holds at `info`. With each write on the thread of its event, the log cost about
+  1.1 µs for each run of a node and 33 KB idle, and #2764 adds the costs below. A level
   under `info` is an operator's choice for debug, and its cost is outside P1. At `debug`
   and `trace`, `noq-proto` writes a line for each packet and frame of QUIC, at about 425
   to 739 ns and 2 to 6 allocations before the write, and at `trace` a span at 118 ns and
@@ -76,49 +95,52 @@
   (AWS c7i.metal-24xl, quiet host,
   https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6221594837). #2913
   measures it on Linux with the thread on its own CPU. #2815 carries the allocations and
-  the span fields that `Line` never prints. #2807
-  carries the WARN of `noq-proto` for each Initial packet with an invalid retry token.
-  By `laptop.architect-2` (2026-10-16T01:49:38Z,
+  the span fields that `Line` never prints. #2807 carries the WARN of `noq-proto` for
+  each Initial packet with an invalid retry token. By `laptop.architect-2`
+  (2026-10-16T01:49:38Z,
   https://github.com/synnaxlabs/foundation/pull/2762#issuecomment-6206195113), and the
   split to #2807 (2026-10-16T03:22:23Z,
   https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207344849).
   (9) The thread `log` writes each line, so no event waits on the writer. An event puts
   its line in a queue of 1024 lines and 1 MiB, and wakes the thread. The lines, the
-  count of dropped lines, the panic lines, the waker, and the run of the thread are
-  under one lock, so each line, each drop, and each close wakes the thread, and a line
-  that comes as the thread ends gets a thread that writes it; loom models check both.
-  The thread takes the lines out under the lock and writes them with the lock free, and
-  each line is formatted before its push, so a writer that never returns holds no lock.
-  Nothing that can panic runs under the lock: the panic hook takes the same lock. A line
-  drops when 1024 lines wait or when it does not fit in 1 MiB with them, and each line
-  after it drops until the thread takes the queue. The thread writes WARN `dropped`
-  (target `node::log`) with the field `lines`, their count, after the last line that
-  came before the first of them. At λ lines a second, 1024 lines hold a stall of the
-  writer of 1024/λ s: 10 ms at 100,000 lines a second, a rate only `debug` and `trace`
-  reach (item 8). The thread writes at most one batch beside the lines that wait, so the
-  log holds at most 2048 lines and 2 MiB, beside the panic lines. The count line reports
-  each loss. The depth of the queue gets a gauge when the node has metrics. A write that
-  fails drops its line. A
-  write that panics ends the thread `log`, and no later line reaches the writer; a
-  release build, with `panic = "abort"`, ends there. The thread starts with the node,
-  which fails with `Error::Start` when it cannot. It ends once each shard has ended and
-  the queue is empty, so a sim run ends. A line after that waits in the queue for
-  `Node::join` (after `stopped`) or `Flush::wait`. Each starts the thread again through
-  one private resume, which starts it only when none runs and a line or the count of a
-  drop waits, so at most one thread `log` runs and the lines keep their order. Inside a
-  `tracing` event, no OS thread can start and no dispatch can be set. A line from
-  another thread after the last `Flush::wait` of `main` is lost. `main` waits up to 1 s
-  for the log at its end. `main` alone sets the panic hook, to `Flush::hook` over the
-  hook before it. The hook puts ERROR `panicked` with the field `panic` in the queue
-  after each line there, also when the queue is full: this line never drops. It sets no
-  dispatch and starts no thread, since a panic can come from inside an event. While a
-  thread `log` runs, the hook waits up to 1 s and calls the hook before it only when the
-  log wrote each line within that bound. When no thread `log` runs, as after each shard
-  has ended and the thread wrote each line, it calls the hook before it at once, and the
-  line waits for the next `Flush::wait` (laptop.architect-2,
+  count of dropped lines, the panic lines, the waker, and the run of the thread and its
+  handle are under one lock, so each line, each drop, and each close wakes the thread,
+  and a line that comes as the thread ends gets a thread that writes it; loom models
+  check both. The thread takes the lines out under the lock and writes them with the
+  lock free, and each line is formatted before its push, so a writer that never returns
+  holds no lock. Nothing that can panic runs under the lock: the panic hook takes the
+  same lock. A line drops when 1024 lines wait or when it does not fit in 1 MiB with
+  them, and each line after it drops until the thread takes the queue. The thread writes
+  WARN `dropped` (target `node::log`) with the field `lines`, their count, after the
+  last line that came before the first of them. At λ lines a second, 1024 lines hold a
+  stall of the writer of 1024/λ s: 10 ms at 100,000 lines a second, a rate only `debug`
+  and `trace` reach (item 8). The thread writes at most one batch beside the lines that
+  wait, so the log holds at most 2048 lines and 2 MiB, beside the panic lines. The count
+  line reports each loss. The depth of the queue gets a gauge when the node has metrics.
+  A write that fails drops its line. A write that panics ends the thread `log`, and no
+  later line reaches the writer; a release build, with `panic = "abort"`, ends there.
+  The thread starts with the node, which fails with `Error::Start` when it cannot. It
+  ends once each shard has ended and the queue is empty, so a sim run ends. A line after
+  that waits in the queue for `Node::join` (after `stopped`) or `Flush::wait`. Each
+  starts the thread again through one private resume, which starts it only when none
+  runs and a line or the count of a drop waits, so at most one thread `log` runs and the
+  lines keep their order. Inside a `tracing` event, no OS thread can start and no
+  dispatch can be set. A line from another thread after the last `Flush::wait` of `main`
+  is lost. `main` waits up to 1 s for the log at its end. `main` alone sets the panic
+  hook, to `Flush::hook` over the hook before it. The hook puts ERROR `panicked` with
+  the field `panic` in the queue after each line there, also when the queue is full:
+  this line never drops. It sets no dispatch and starts no thread, since a panic can
+  come from inside an event. While a thread `log` runs on another thread, the hook
+  waits up to 1 s for the log to write each line. It calls the hook before it unless
+  that bound passes while that thread still runs, since the writer may block that write
+  too (laptop.architect-2, 2026-10-17T08:31:40Z,
+  https://github.com/synnaxlabs/foundation/pull/3024#issuecomment-6231774507). So when
+  no thread `log` runs, as after each shard has ended and the thread wrote each line, it
+  calls the hook before it at once, and the line waits for the next `Flush::wait`
+  (laptop.architect-2,
   https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209084526). A panic
   of the writer, on the thread `log`, also calls it at once, since only that thread
-  writes the line, and a hook that waits as the writer panics then calls it too.
+  writes the line.
   Decision by `laptop.monitor` (2026-10-15T21:39:25Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202838819). The
   plan by `laptop.architect-2` (2026-10-15T21:43:54Z,
@@ -157,3 +179,48 @@
   count of drops: the byte cap, the panic line past the bound, the drop until the take,
   and the end of a run in the take each need one step over the queue and the counts,
   which a second lock beside the channel would give, at the cost of two locks to order.
+  (10) Each `connector::supervisor::Supervisor::open` whose config checks makes the span
+  `connector` at ERROR, with the fields `connector` and `kind`, and the status writer
+  gives it as the parent of each of its events, so that each status line has them at
+  each level. No poll enters the span: an enter and an exit cost 7.4 ns, 740 ms/s at
+  once per sample (P1 judgment rejected, `laptop.architect-2`, 2026-10-17T18:01:03Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238199449). A live
+  span `connector` holds 632 B for the first span and 297 B for each later one (M3 Max,
+  counting allocator). It is no idle memory, as a node with default settings runs no
+  connector (`laptop.architect-2`, 2026-10-17T18:17:23Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238435066). The
+  status writer writes these events (target `connector::status`): INFO `running` with
+  `restarts`; `ended` with `Ok` at INFO, with `Device` or `Retry` at WARN, and with
+  `Config` at ERROR, each error with `class` (`config`, `device`, or `retry`) and
+  `error`, the cut text of the `error` channel; INFO `restarting` with `backoff`; INFO
+  `stopped`. A show, a clear, or a note of the running kind writes WARN `error` with
+  `error`, INFO `cleared`, or INFO `note` with `note`, only when the status writer takes
+  a new value for the next frame: of `error` or `class` for a show or a clear, and of
+  `note` for a note. The channels get that value, other than when the pool has no block
+  for the frame or the home does not apply it and a later value replaces it before the
+  next write, or when the hub refuses the frame as `Removed` or it fails on disk, after
+  which the writer writes no frame and no such line. A connector writes at most two such
+  lines each second: one `error` or `cleared`, and one `note`. A count writes no event.
+  A status line costs 1038 ns (M3 Max), so a connector costs about 2.1 µs/s, and no
+  decision bounds the count of connectors, but the cost reaches the limit of 10 ms/s
+  only at about 4,800 connectors that each change their error text and their note each
+  second (P1 judgment accepted, `laptop.architect-2`, 2026-10-17T21:01:17Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6240978616; text,
+  2026-10-17T21:15:36Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6241220566 and item 2
+  of 2026-10-17T21:18:47Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6241254217). By
+  `laptop.architect-2` (item 2 of 2026-10-17T17:22:08Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6237505740; A of
+  2026-10-17T18:08:57Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238313830; items 1 to
+  3 of 2026-10-17T18:34:35Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238662426;
+  2026-10-17T18:39:43Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238748209; item 1 of
+  2026-10-17T18:45:36Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238847435; item 1 of
+  2026-10-17T21:18:47Z, which replaces the reason of item 1 of 18:34:35Z: a flush asleep
+  at the close still calls the write once more, so the writer checks the close before
+  the lines,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6241254217).

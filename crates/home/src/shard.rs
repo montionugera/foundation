@@ -195,7 +195,7 @@ pub struct Config {
 /// The shard's state for an open writer.
 #[derive(Debug)]
 struct Session {
-    set: Arc<KeySet>,
+    writer: split::Writer,
     /// The claim on the index of each group, by group number.
     claims: Vec<Claim>,
 }
@@ -546,7 +546,10 @@ impl Shard {
             let key = self.indexes[place].gate.open(control.clone(), lease, now);
             claims.push(Claim { place, key });
         }
-        let session = Session { set, claims };
+        let session = Session {
+            writer: split::Writer::new(set),
+            claims,
+        };
         let places = session.claims.iter().map(|claim| claim.place);
         append_handoffs(&self.buffer, &mut self.indexes, places, mesh);
         let key = writer::Key {
@@ -603,17 +606,17 @@ impl Shard {
         frame: Draft,
     ) -> Result<&[Outcome], Error> {
         let number = key.on(self.number);
-        let Some(session) = self.writers.get(&number) else {
+        let (now, mesh) = self.time();
+        let Some(session) = self.writers.get_mut(&number) else {
             panic!("writer {number} is not open");
         };
         let Label::Path(path) = label else {
             return Err(Error::Resend);
         };
-        let (now, mesh) = self.time();
         let scratch = &mut self.scratch;
-        let mut split = scratch.split.split(&session.set, frame);
+        let mut split = scratch.split.split(&mut session.writer, frame);
         while let Some((group, stamps)) = split.next() {
-            let claim = session.claim(group);
+            let claim = claim(&session.claims, group);
             let index = &mut self.indexes[claim.place];
             let checked = index.check(claim.key, path, stamps, now, mesh);
             scratch.checks.push((group, checked, None));
@@ -621,14 +624,13 @@ impl Shard {
         let places = scratch
             .checks
             .iter()
-            .map(|&(group, ..)| session.claim(group).place);
+            .map(|&(group, ..)| claim(&session.claims, group).place);
         let recorded = append_handoffs(&self.buffer, &mut self.indexes, places, mesh);
         let entries = &mut scratch.entries;
         let made = freeze(
             entries,
             self.buffer.pool(),
             &mut split,
-            &session.set,
             &mut scratch.checks,
             mesh,
         );
@@ -1061,12 +1063,10 @@ impl Shard {
     }
 }
 
-impl Session {
-    /// The writer's claim on the index of `group`.
-    fn claim(&self, group: u32) -> Claim {
-        let group = usize::try_from(group).expect("invariant: a usize holds a u32");
-        self.claims[group]
-    }
+/// The claim of `claims`, a writer's claims, on the index of `group`.
+fn claim(claims: &[Claim], group: u32) -> Claim {
+    let group = usize::try_from(group).expect("invariant: a usize holds a u32");
+    claims[group]
 }
 
 /// The midpoint of `mesh`, the best guess of the true time.
@@ -1085,10 +1085,10 @@ fn freeze(
     entries: &mut Vec<Entry>,
     pool: &block::Pool,
     split: &mut Split<'_>,
-    set: &KeySet,
     checks: &mut [(u32, Result<Accepted, Refusal>, Option<Frame>)],
     stored_at: Stamp,
 ) -> Result<(), block::Error> {
+    let set = split.set();
     for (group, checked, frozen) in checks {
         if let Ok(accepted) = checked
             && let Some(last) = accepted.last()
@@ -1144,7 +1144,7 @@ fn spend<'a>(
 ) -> &'a [Outcome] {
     out.clear();
     for (group, checked, frozen) in checks.drain(..) {
-        let claim = session.claim(group);
+        let claim = claim(&session.claims, group);
         let index = &mut indexes[claim.place];
         let slot = index.slot;
         out.push(match checked {
@@ -1159,7 +1159,7 @@ fn spend<'a>(
                 let range = range(&seq);
                 index.spend(accepted);
                 let frame = frozen.expect("invariant: a stored frame was frozen");
-                readers.applied(claim.place, frame, &session.set, seq);
+                readers.applied(claim.place, frame, session.writer.set(), seq);
                 Outcome::Applied { slot, range }
             }
             Ok(accepted) => {
@@ -1218,6 +1218,7 @@ mod tests {
     use types::frame::Form;
     use types::frame::Range;
     use types::frame::key_set::Group;
+    use types::log::Mark;
     use types::name::Name;
     use types::sample::{Scalar, Type};
     use types::time::Span;
@@ -1260,6 +1261,9 @@ mod tests {
         reader: clock::Reader,
         tasks: Tasks,
         entropy: Entropy,
+        /// Whether each ring that [`Test::create_buffer`] makes trims its tail when an
+        /// append does not fit.
+        trimmed: bool,
     }
 
     impl Test {
@@ -1276,6 +1280,7 @@ mod tests {
                 node,
                 pool: Rc::new(pool),
                 tasks,
+                trimmed: false,
             }
         }
 
@@ -1334,14 +1339,7 @@ mod tests {
             body_max: usize,
             slots: u32,
         ) -> Buffer {
-            self.open_buffer(self.buffer_config(area, body_max), slots)
-                .await
-        }
-
-        /// The config of the ring of the node, made with `area` bytes and bodies of
-        /// `body_max` when it is new, with no trim.
-        fn buffer_config(&self, area: u64, body_max: usize) -> buffer::Config {
-            buffer::Config {
+            let config = buffer::Config {
                 files: self.node.files(),
                 dir: PathBuf::from(DIR),
                 pool: Rc::clone(&self.pool),
@@ -1350,12 +1348,8 @@ mod tests {
                 entropy: self.entropy.clone(),
                 layout: Layout::new(area, body_max).expect("a ring"),
                 commit: COMMIT,
-                trimmed: false,
-            }
-        }
-
-        /// The buffer of `config`, with slots 0 to `slots` assigned.
-        async fn open_buffer(&self, config: buffer::Config, slots: u32) -> Buffer {
+                trimmed: self.trimmed,
+            };
             let mut assigned = Slots::new();
             for n in 0..slots {
                 assigned.index(key(Slot::new(n)));
@@ -3817,19 +3811,6 @@ mod tests {
     /// Frames of a record each, which lap a ring of `AREA` bytes three times.
     const LAPPED: u64 = 3 * AREA / 4096;
 
-    /// A shard as [`Test::shard`] makes, over a buffer that trims.
-    async fn trimming(test: &Test) -> Shard {
-        let config = buffer::Config {
-            trimmed: true,
-            ..test.buffer_config(AREA, BODY_MAX)
-        };
-        let buffer = test.open_buffer(config, 4).await;
-        let mut shard = test.over(buffer).await;
-        assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
-        assert!(shard.carry(Slot::new(2), key(Slot::new(2))));
-        shard
-    }
-
     /// Writer `a` takes control, and its frames lap a ring that trims, so a trim
     /// passes the record of the handoff and only carried copies of it stay. After a
     /// power cut, the gate has the holder for the grace.
@@ -3837,9 +3818,12 @@ mod tests {
     fn restores_the_holder_after_its_handoff_record_is_trimmed() {
         let (mut sim, node) = create_node(182);
         sim.run_on(&node, |node, tasks| async move {
-            let test = Test::new(node, tasks);
+            let test = Test {
+                trimmed: true,
+                ..Test::new(node, tasks)
+            };
             let set = two_indexes();
-            let mut shard = trimming(&test).await;
+            let mut shard = test.shard(AREA).await;
             let marked = test.now();
             let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
             for seq in 0..LAPPED {
@@ -3865,9 +3849,12 @@ mod tests {
         .expect("the first run ends");
         sim.crash(&node, sim::Crash::Power);
         sim.run_on(&node, |node, tasks| async move {
-            let test = Test::new(node, tasks);
+            let test = Test {
+                trimmed: true,
+                ..Test::new(node, tasks)
+            };
             let set = two_indexes();
-            let mut shard = trimming(&test).await;
+            let mut shard = test.shard(AREA).await;
             let b = shard.open_writer(writer("b", 1, &set)).expect("synced");
             let next =
                 frame(&test.pool, &set, &[(0, &[1000]), (1, &[2]), (2, &[1000])]);
@@ -4700,6 +4687,45 @@ mod tests {
                 shard.committed().await.expect("the commit ends");
                 assert_eq!(woken(&mut shard), [reader]);
                 assert_eq!(taken(&mut shard, reader, 0), [seq(4, 1)]);
+            });
+        }
+
+        /// The session takes seq 0, spends its credit, and misses the later frames
+        /// while the ring trims them. Its read from disk gives the frames from the
+        /// first seq the ring holds, with no frame for the trimmed seqs between.
+        #[test]
+        fn gives_a_trimmed_range_as_a_jump_in_seq() {
+            run(7041, |test| async move {
+                let test = Test {
+                    trimmed: true,
+                    ..test
+                };
+                let mut shard = test.shard(AREA).await;
+                let session = shard.open_complete(Slot::new(0), 1, Charge::Whole).key;
+                let reader = reader::Key::from(session);
+                let set = two_indexes();
+                let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+                write(&test, &mut shard, a, &[10]);
+                shard.committed().await.expect("the commit ends");
+                assert_eq!(woken(&mut shard), [reader]);
+                assert_eq!(taken(&mut shard, reader, 0), [seq(0, 1)]);
+                let mut wakes = Vec::new();
+                for stamp in 2..=300 {
+                    write(&test, &mut shard, a, &[stamp * 10]);
+                    shard.committed().await.expect("the commit ends");
+                    wakes.extend(woken(&mut shard));
+                }
+                assert_eq!(wakes, [reader]);
+                // The buffer of the shard gives the first seq that the ring holds: no
+                // call of `Shard` gives it.
+                let ring = shard.buffer.reader();
+                let read = ring.read(Slot::new(0), Path::Live, Mark::at(1), 1).await;
+                let gap = read.expect("the read ends").gap.expect("a trim");
+                assert_eq!(gap.start, 1);
+                shard.grant(session, CREDIT);
+                let frames = caught_up(&mut shard, session, 0).await;
+                let held: Vec<_> = (gap.end..300).map(|s| seq(s, 1)).collect();
+                assert_eq!(frames, held);
             });
         }
 
@@ -6826,6 +6852,30 @@ mod tests {
                 }
 
                 #[test]
+                fn wakes_no_session_that_a_takeover_replaced_while_its_entry_waits() {
+                    run(705, |test| async move {
+                        let set = two_indexes();
+                        let mut shard = test.shard(AREA).await;
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        let a = open_held(&mut shard);
+                        committed(&test, &mut shard, w, &[10, 20]).await;
+                        assert_eq!(
+                            taken(&mut shard, a.into(), 0),
+                            [seq(0, 1), seq(1, 1)]
+                        );
+                        shard.ack(a, live(1)).expect("forward");
+                        shard.close_reader(a.into());
+                        shard.committed().await.expect("the commit ends");
+                        let replaced = open_held(&mut shard);
+                        assert_eq!(taken(&mut shard, replaced.into(), 0), []);
+                        let _a = open_held(&mut shard);
+                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(woken(&mut shard), []);
+                    });
+                }
+
+                #[test]
                 fn keeps_the_old_position_when_the_tick_finds_no_block() {
                     let before = async |test: &Test, shard: &mut Shard, w| {
                         let a = open(shard, "a");
@@ -7004,9 +7054,12 @@ mod tests {
                 fn keeps_each_part_past_a_trim_of_its_record() {
                     let (mut sim, node) = create_node(216);
                     sim.run_on(&node, |node, tasks| async move {
-                        let test = Test::new(node, tasks);
+                        let test = Test {
+                            trimmed: true,
+                            ..Test::new(node, tasks)
+                        };
                         let set = two_indexes();
-                        let mut shard = trimming(&test).await;
+                        let mut shard = test.shard(AREA).await;
                         let w =
                             shard.open_writer(writer("w", 1, &set)).expect("synced");
                         for n in 0..8 {
@@ -7020,8 +7073,11 @@ mod tests {
                     .expect("the first run ends");
                     sim.crash(&node, sim::Crash::Power);
                     sim.run_on(&node, |node, tasks| async move {
-                        let test = Test::new(node, tasks);
-                        let shard = trimming(&test).await;
+                        let test = Test {
+                            trimmed: true,
+                            ..Test::new(node, tasks)
+                        };
+                        let shard = test.shard(AREA).await;
                         for n in 0..8 {
                             assert_eq!(
                                 records_of(&shard, &longest(n)),
@@ -8180,6 +8236,56 @@ mod tests {
     #[test]
     fn writes_and_reads_a_series_of_each_type() {
         check_write_and_read(87, 3, every_type().to_vec());
+    }
+
+    /// One channel gets quarters, then sixteenths, and the other the reverse. A new
+    /// encoder for the second frame, or one encoder for both channels, would pick
+    /// another ALP pair.
+    #[test]
+    fn encodes_the_frames_of_a_writer_with_one_encoder_for_each_series() {
+        run(88, |test| async move {
+            let float = Type::Scalar(Scalar::F64);
+            let set = intern(&[Group {
+                index: key(Slot::new(2)),
+                data: &[(key(Slot::new(3)), float), (key(Slot::new(4)), float)],
+            }]);
+            let mut shard = test.shard(AREA).await;
+            let reader = complete(&mut shard, Slot::new(2));
+            let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+            let [quarters, sixteenths] = [4.0, 16.0].map(|denominator| {
+                (0..16)
+                    .map(|k| (f64::from(k) / denominator).to_bits().cast_signed())
+                    .collect::<Vec<i64>>()
+            });
+            let series = [[&quarters, &sixteenths], [&sixteenths, &quarters]];
+            for (seq, [first, second]) in [0, 16].into_iter().zip(series) {
+                let stamps: Vec<i64> = (1..=16).map(|n| n + seq).collect();
+                let write =
+                    frame(&test.pool, &set, &[(0, &stamps), (1, first), (2, second)]);
+                let applied = applied(2, seq.cast_unsigned(), 16);
+                assert_eq!(shard.write(a, LIVE, write), Ok(&[applied][..]));
+            }
+            shard.committed().await.expect("the commit ends");
+            assert_eq!(woken(&mut shard), [reader]);
+            let (frames, end) = drain(&mut shard, reader);
+            assert_eq!(frames.len(), 2, "{end:?}");
+            for channel in 0..2 {
+                let mut encoder = codec::Encoder::new(float);
+                for (frame, values) in frames.iter().zip(&series) {
+                    let raw: Vec<u8> = values[channel]
+                        .iter()
+                        .flat_map(|v| v.to_le_bytes())
+                        .collect();
+                    let mut out = vec![0; codec::max_len(float, raw.len())];
+                    let len = encoder.encode(16, &raw, &mut out).expect("floats");
+                    assert_eq!(
+                        frame.series(channel + 1),
+                        Some(&out[..len]),
+                        "{channel}"
+                    );
+                }
+            }
+        });
     }
 
     proptest::proptest! {
