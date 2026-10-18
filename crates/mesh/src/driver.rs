@@ -1506,6 +1506,8 @@ mod tests {
         joins: BTreeMap<u8, Change>,
         /// Each settle of `joins` that returned, in order: its node and what it gave.
         settled: Vec<(u8, Settled)>,
+        /// Each `Error::Contested` that a serve gave, in order, with its node.
+        contested: Vec<(u8, Error)>,
         /// The members that are not founding voters.
         learners: BTreeSet<u8>,
         /// The home that each node sets next.
@@ -1774,16 +1776,23 @@ mod tests {
 
     /// Serves each stream of each session that a peer opens to `transport`, as `node`
     /// does. The group refuses no message of a cluster.
-    async fn accept(mesh: Mesh, transport: Rc<Transport>, tasks: Tasks) -> ! {
+    async fn accept(
+        mesh: Mesh,
+        transport: Rc<Transport>,
+        tasks: Tasks,
+        id: u8,
+        board: Arc<Mutex<Board>>,
+    ) -> ! {
         loop {
             let session = transport.accept().await.unwrap();
             let Peer::Node(peer) = session.peer() else {
                 panic!("a peer with no node key opened a session");
             };
-            let (mesh, streams) = (mesh.clone(), tasks.clone());
+            let (mesh, streams, board) =
+                (mesh.clone(), tasks.clone(), Arc::clone(&board));
             tasks.spawn(async move {
                 while let Ok(mut incoming) = session.accept().await {
-                    let mesh = mesh.clone();
+                    let (mesh, board) = (mesh.clone(), Arc::clone(&board));
                     streams.spawn(async move {
                         let Ok(Some(header)) = incoming.receiver.recv().await else {
                             return;
@@ -1791,12 +1800,10 @@ mod tests {
                         let protocol = wire::header::decode(&header).unwrap();
                         assert_eq!(protocol, (Protocol::Mesh, &[][..]));
                         match mesh.serve(peer, incoming).await {
-                            Ok(())
-                            | Err(
-                                Error::Stream(_)
-                                | Error::Soon
-                                | Error::Contested { .. },
-                            ) => {}
+                            Ok(()) | Err(Error::Stream(_) | Error::Soon) => {}
+                            Err(error @ Error::Contested { .. }) => {
+                                board.lock().unwrap().contested.push((id, error));
+                            }
                             Err(error) => panic!("a voter refused a message: {error}"),
                         }
                     });
@@ -2156,9 +2163,10 @@ mod tests {
         config.founding.members = IDS.map(member).into();
         config.founding.definitions = founding;
         let mesh = Mesh::open(config).await.unwrap();
-        let (serving, streams) = (mesh.clone(), tasks.clone());
+        let (serving, streams, serves) =
+            (mesh.clone(), tasks.clone(), Arc::clone(&board));
         tasks.spawn(async move {
-            accept(serving, transport, streams).await;
+            accept(serving, transport, streams, id, serves).await;
         });
         script(&mesh, &node, &tasks, id, &board);
         let mut watch = mesh.watch(INDEX);
@@ -7712,7 +7720,7 @@ mod tests {
             let transport = Rc::clone(&config.transport);
             let mesh = Mesh::open(config).await.unwrap();
             if id == 1 {
-                accept(mesh, transport, tasks).await;
+                accept(mesh, transport, tasks, id, Arc::default()).await;
             }
             let mut first = history();
             let second = first.split_off(3);

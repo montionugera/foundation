@@ -34,7 +34,8 @@ fn a_leader_refuses_a_join_whose_key_has_another_public_key_in_its_log() {
         assert_eq!(refused.unwrap_err().to_string(), text);
         assert_eq!(mesh.propose(join_change(4)).await, Ok(after(first, 2)));
         assert_eq!(mesh.answer(public(2), twin(4)).await, Err(contested(4)));
-        assert_eq!(mesh.propose(home_to(1)).await, Ok(after(first, 3)));
+        assert_eq!(mesh.propose(join_change(3)).await, Ok(after(first, 3)));
+        assert_eq!(mesh.propose(home_to(1)).await, Ok(after(first, 4)));
     });
 }
 
@@ -77,8 +78,14 @@ fn a_voter_gives_contested_for_a_join_that_the_leader_refuses() {
             .joins
             .insert(follower, twin(follower));
         cluster.run(seconds(5));
+        let board = cluster.board();
         let settled = vec![(follower, Err(contested(follower)))];
-        assert_eq!(cluster.board().settled, settled, "run {run}");
+        assert_eq!(board.settled, settled, "run {run}");
+        assert_eq!(
+            board.contested,
+            [(leader, contested(follower))],
+            "run {run}"
+        );
         let script = [(leader, [encoded(&home_to(9))].into())].into();
         cluster.board.lock().unwrap().script = script;
         cluster.run(seconds(5));
