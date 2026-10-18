@@ -503,7 +503,8 @@
   with `mp_vsnprintf` and gives it to `connector_opcua_put_line` in `src/log.rs`, which
   writes one event with the span of its loop as its parent: the span of the run for the
   loop of a run (LOG OUTPUT (11)), and no span for a browse (#3108), the test server,
-  and the loop of `bench::Client`; `bench::Log` takes the span that its caller gives. A
+  and the loops of `bench::Client` and `bench::client::Client`; `bench::Log` takes the
+  span that its caller gives. A
   longer line is cut, not dropped. The line of a refused call and the line before an
   abort of `shim.c` go to `connector_opcua_die`, which panics with it, so the panic hook
   writes it before the abort: an event in the queue of the log is lost at an abort.
