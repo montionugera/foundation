@@ -245,6 +245,7 @@ fn writes_each_frame_to_a_reader_on_the_home_in_order() {
             writer.places(),
             [place(1, STAMP, "time"), place(2, I64, "value")]
         );
+        assert_eq!(writer.index(), 0);
         frame(&mut writer, 1, 0, &[(2, 10)]).await;
         assert_eq!(writer.write(Time::Node).await, Ok(taken(0, 1)));
         let first = reader.next().await.expect("a frame");
@@ -259,6 +260,32 @@ fn writes_each_frame_to_a_reader_on_the_home_in_order() {
             [(key(2), vec![20, 21]), (key(1), vec![stamp + 5, stamp + 6])]
         );
     });
+}
+
+/// `index` gives the place that the home gives for the index, also when it is not
+/// the first place.
+#[test]
+fn gives_the_place_of_the_index() {
+    by_hand(
+        767,
+        |session, node| async move {
+            let mut write = accept_stream(&session, |first| {
+                Write::decode(first).expect("a write").body()
+            })
+            .await;
+            let places = [place(2, I64, "value"), place(1, STAMP, "time")];
+            start(&mut write, &places, 1, places.len()).await;
+            node.clock().sleep(QUIET).await;
+        },
+        |session, node| {
+            Box::pin(async move {
+                let writer =
+                    session.writer(config(&["value"], 1)).await.expect("opens");
+                assert_eq!(writer.index(), 1);
+                node.clock().sleep(QUIET).await;
+            })
+        },
+    );
 }
 
 /// A frame whose series fill fewer places than the writer has puts each series at its

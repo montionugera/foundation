@@ -28,6 +28,7 @@ use wire::hub::client::{
 
 pub use read::Reader;
 use turn::{Taken, Turn};
+pub use wire::hub::client::Place;
 pub use write::Writer;
 
 /// How long each hello of a [`Session`] lives. The session renews it at half its life.
