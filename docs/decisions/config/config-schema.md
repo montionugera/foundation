@@ -29,8 +29,9 @@
   Lost: a hand-written `reference.md` with a test that compares its names, whose values
   and defaults drift with no test; a `fn reference(&self) -> String` on each check,
   which keeps a second key list; a `default: Option<&str>`, whose `None` cannot state
-  the influx targets or an absence that gives no value; a `OneOf` group, which cannot
-  state "`database`, or `bucket` and `org`"; a list of alternative sets on `Body`, whose
+  the influx targets or an absence that gives no value; an enum with `OneOf`, which
+  grows into a rule language that the check already states; a list of
+  alternative sets on `Body`, whose
   removal test is not exact for `placement`, which refuses with its own code, and which
   gives each body one more field.
   Decided by `laptop.architect-2` at 2026-10-18T21:28:29Z
