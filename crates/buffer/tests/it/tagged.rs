@@ -790,6 +790,53 @@ fn the_open_refuses_a_record_whose_holders_pass_a_carry_record() {
     });
 }
 
+/// The body of a carry record with `tails` and one copy of tag 1 of index 77, an
+/// entry with no samples at seq 0 and the bytes `old`.
+fn carry_body_with_copy(tails: &[Vec<u8>]) -> Vec<u8> {
+    let counts = [
+        &u16::try_from(tails.len()).expect("few tails").to_le_bytes()[..],
+        &1u16.to_le_bytes(),
+    ];
+    let header = [
+        &77u128.to_le_bytes()[..],
+        &[0],
+        &0u64.to_le_bytes(),
+        &0u32.to_le_bytes(),
+        &7i64.to_le_bytes(),
+        &[&[0][..], &1u64.to_le_bytes()].concat(),
+        &[1],
+        &3u32.to_le_bytes(),
+    ];
+    [
+        counts.concat(),
+        tails.concat(),
+        header.concat(),
+        b"old".to_vec(),
+    ]
+    .concat()
+}
+
+/// A carry record that holds a copy of a path that no record and no tail holds
+/// gives `Invalid` at the record, as no buffer writes it. With the tail of the
+/// path, the same ring opens and gives the copy.
+#[test]
+fn the_open_refuses_a_carried_copy_of_a_path_that_no_record_holds() {
+    run(411, |shard| async move {
+        shard.create_two_records().await;
+        let ring = layout(AREA, BODY_MAX);
+        shard.put_carry(3 * BLOCK, &carry_body_with_copy(&[])).await;
+        shard.open_invalid(ring, 3 * BLOCK).await;
+        let tail = carried(77, 0, 1, None);
+        shard
+            .put_carry(3 * BLOCK, &carry_body_with_copy(&[tail]))
+            .await;
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("opens");
+        let copy = vec![(slots.index(key(77)), kept(b"old"))];
+        assert_eq!(newest(&buffer, Path::Live, 1), copy);
+    });
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 
