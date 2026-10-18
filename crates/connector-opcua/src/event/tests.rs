@@ -323,6 +323,39 @@ fn the_wall_of_a_test_loop_stays_at_the_last_stamp_when_it_moves_past_it() {
 }
 
 #[test]
+fn the_wall_of_a_negative_start_moves_past_a_span_of_i64_max() {
+    let mut sim = Sim::new(sim::Config::default());
+    let clock = sim
+        .node(sim::node::Config {
+            monotonic: Monotonic(0),
+            wall: Stamp::from_nanos(i64::MIN),
+            ..sim::node::Config::default()
+        })
+        .clock();
+    let time = Time::since(clock, Stamp::from_nanos(i64::MIN));
+    sim.run_for(Span::from_nanos(i64::MAX)).unwrap();
+    assert_eq!((time.wall)(), Stamp::from_nanos(-1));
+    sim.run_for(Span::from_nanos(1000)).unwrap();
+    assert_eq!((time.wall)(), Stamp::from_nanos(999));
+}
+
+#[test]
+fn the_wall_of_a_negative_start_reaches_the_last_stamp() {
+    let mut sim = Sim::new(sim::Config::default());
+    let clock = sim
+        .node(sim::node::Config {
+            monotonic: Monotonic(0),
+            wall: Stamp::from_nanos(i64::MIN),
+            ..sim::node::Config::default()
+        })
+        .clock();
+    let time = Time::since(clock, Stamp::from_nanos(-1_000_000_000));
+    sim.run_for(Span::from_nanos(i64::MAX)).unwrap();
+    sim.run_for(Span::from_nanos(2_000_000_000)).unwrap();
+    assert_eq!((time.wall)(), Stamp::from_nanos(i64::MAX));
+}
+
+#[test]
 fn the_monotonic_wall_stays_at_the_last_stamp_when_its_clock_runs_past_it() {
     let mut sim = Sim::new(sim::Config::default());
     let clock = sim
