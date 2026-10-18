@@ -349,10 +349,9 @@ fn list(
             "`cargo miri nextest list` could not list the lib tests".to_string()
         );
     }
-    tested(
-        &serde_json::from_slice(&output.stdout)
-            .map_err(|e| format!("`cargo miri nextest list` gave no JSON: {e}"))?,
-    )
+    let list = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("`cargo miri nextest list` gave no JSON: {e}"))?;
+    tested(&list)
 }
 
 /// Runs the lib tests of the packages `libs` in the partition of `shard` with
