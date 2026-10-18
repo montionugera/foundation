@@ -108,11 +108,10 @@ impl Reader {
     ///
     /// [`Error::Closed`] when the client's session ended at a close or a drop, and
     /// [`Error::Panicked`] when the client's thread panicked. [`Error::Session`] when
-    /// the session failed. [`Error::Decode`] when a series
-    /// does not decode. Else [`Error::Stream`] with each error of
-    /// `program::Reader::next`, such as `Refused(Refusal::Unknown)` when a channel was
-    /// removed.
-    /// After an error, each call gives the same error.
+    /// the session failed. [`Error::Decode`] when a series does not decode. Else
+    /// [`Error::Stream`] with each error of `program::Reader::next`, such as
+    /// `Refused(Refusal::Unknown)` when a channel was removed. After an error, each
+    /// call gives the same error.
     #[expect(
         clippy::should_implement_trait,
         reason = "the frame borrows the reader, which `Iterator` cannot give"

@@ -1,6 +1,7 @@
 //! The time of a write of 2 values through `sdk` and through `program`, against a node
 //! process on loopback, of the two legs that `sdk` adds between the caller and the
-//! client's thread, and of a write and the read of its frame. Run with `cargo bench -p node --bench sdk`.
+//! client's thread, and of a write and the read of its frame. Run with
+//! `cargo bench -p node --bench sdk`.
 //!
 //! Each line gives the p50 and p99 of the calls of each round, in µs:
 //!
@@ -23,8 +24,9 @@
 //! each send, as it does between the calls of a program.
 //!
 //! Each write must give `Taken`: the rig's disk budget holds about 40,000 frames, and a
-//! frame past it is `Lost`. So the two read lines run on a node of their own. Judge `sdk` against `program` from one run, and each leg
-//! against its p50: a p99 far over it is a wait for a wake.
+//! frame past it is `Lost`. So the two read lines run on a node of their own. Judge
+//! `sdk` against `program` from one run, and each leg against its p50: a p99 far over
+//! it is a wait for a wake.
 //!
 //! Only Unix: the rig stops its node with SIGTERM.
 
