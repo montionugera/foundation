@@ -154,3 +154,15 @@ fn unbuilt() {}
 
 #[cfg_attr(miri, test)]
 fn flagged_test() {}
+
+m! {
+    if #[cfg(windows)] {}
+    {
+        #[test]
+        fn after() {}
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[doc(hidden)] {}
+}

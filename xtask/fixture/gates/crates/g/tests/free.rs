@@ -42,3 +42,28 @@ m! {
     #[cfg(unix)]
     extern "C" fn foreign() {}
 }
+
+#[cfg(unix)]
+impl Case for &mut Rig {
+    fn case() {}
+}
+
+#[cfg(unix)]
+impl Case for [u8; 2] {
+    fn case() {}
+}
+
+#[cfg(unix)]
+impl Case for (u8, Rig) {
+    fn case() {}
+}
+
+#[cfg(unix)]
+impl Case for <Rig as Case>::Out {
+    fn case() {}
+}
+
+#[cfg(unix)]
+impl Case for Cell<Rig, 'static> {
+    fn case() {}
+}
