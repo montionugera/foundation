@@ -309,10 +309,11 @@ pub(crate) fn writes(
     })
 }
 
-/// Each channel that the `connector` block `block` with the label `key` implies, with
-/// the counts that its kind in `kinds` gives. With no counts when its kind does not
-/// check its body, and none when a status name is too long, as `plan` refuses both.
-pub(crate) fn implied(block: &Block, key: &Name, kinds: &Table) -> Vec<Name> {
+/// Each channel that the `connector` block `block` with the label `key` implies or
+/// writes, with the counts that its kind in `kinds` gives. With no counts and no
+/// written channels when its kind does not check its body, and none when a status name
+/// is too long, as `plan` refuses both.
+pub(crate) fn names(block: &Block, key: &Name, kinds: &Table) -> Vec<Name> {
     let kind = block.body.attributes.get("kind");
     let kind = kind.and_then(|kind| read::name(&kind.value).ok());
     let config = Checked::new(config(block)).ok();
@@ -323,7 +324,13 @@ pub(crate) fn implied(block: &Block, key: &Name, kinds: &Table) -> Vec<Name> {
     let writes = writes(key, channels.unwrap_or_default(), None);
     writes.map_or_else(
         |_| Vec::new(),
-        |writes| writes.implied_names().cloned().collect(),
+        |writes| {
+            writes
+                .implied_names()
+                .chain(writes.channels())
+                .cloned()
+                .collect()
+        },
     )
 }
 

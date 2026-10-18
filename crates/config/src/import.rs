@@ -88,15 +88,17 @@ pub struct Added {
 /// of the first channel that the connector writes that has one. Else, for each given
 /// name of a pick that is not present, `config.reserved-name` for a segment that starts
 /// with `@`, `config.duplicate-name` for a name that the files define or imply or that
-/// the connector writes, in any ASCII case, and one `config.duplicate-name` that names
+/// a connector writes, in any ASCII case, and one `config.duplicate-name` that names
 /// both paths for a name that an earlier pick has. Each names the path and the name,
-/// with the fix "Give another name, or leave it out for `<default>`". Else the
-/// diagnostics of [`Table::block`]. Else `document.too-deep`.
+/// with the fix "Give another name, or leave it out for `<default>`", with the default
+/// of the run with each refused name left out, or "Give another name" when that run
+/// gives none. Else the diagnostics of [`Table::block`]. Else `document.too-deep`.
 ///
 /// # Panics
 ///
 /// When a pick that is not present, with no given name or a refused one, has a path
-/// that is not under `start`, as [`import::names`] does.
+/// that is not under `start`, as [`import::names`] does, or when a kind of `kinds`
+/// writes a call `fill` of other arguments.
 pub fn add(
     documents: &[Document],
     connector: &Name,
@@ -121,29 +123,36 @@ pub fn add(
     taken.extend(writes.channels().cloned());
     let existing =
         index_of(&blocks, writes.channels()).map_err(|problem| vec![problem])?;
-    // A pick that ends `Unnamed` makes no later pick of its tag present, and opening
-    // such a pick can leave another `Unnamed`, so name until no pick changes.
-    let mut unnamed = BTreeSet::new();
-    let (open, index, names) = loop {
-        let open = open(picks, &tags, &unnamed);
-        let given = open.iter().map(|&at| (picks[at].path, picks[at].name));
-        let (index, names) = name(connector, start, given, &taken, existing.clone());
-        let dropped = open.iter().zip(&names).filter(|(_, name)| name.is_none());
-        let before = unnamed.len();
-        unnamed.extend(dropped.map(|(&at, _)| at));
-        if unnamed.len() == before {
-            break (open, index, names);
-        }
-    };
+    let given = |at: usize| picks[at].name;
+    let (open, index, names) = named(
+        connector,
+        start,
+        picks,
+        &given,
+        &tags,
+        &taken,
+        existing.as_ref(),
+    );
     let open_picks: Vec<&Pick<'_>> = open.iter().map(|&at| &picks[at]).collect();
-    let refused = refused(&open_picks, &taken);
+    let refused: Vec<_> = refused(&open_picks, &taken)
+        .into_iter()
+        .map(|(at, problem)| (open[at], problem))
+        .collect();
     if !refused.is_empty() {
-        let kept = open_picks.iter().enumerate().map(|(at, pick)| {
+        let kept = |at| {
             let refused = refused.iter().any(|(refused, _)| *refused == at);
-            (pick.path, pick.name.filter(|_| !refused))
-        });
-        let (_, names) = name(connector, start, kept, &taken, existing);
-        return Err(fixed(refused, &names));
+            picks[at].name.filter(|_| !refused)
+        };
+        let (open, _, names) = named(
+            connector,
+            start,
+            picks,
+            &kept,
+            &tags,
+            &taken,
+            existing.as_ref(),
+        );
+        return Err(fixed(refused, &open, &names));
     }
     let written = written(kinds, kind, &open_picks, names, &index)?;
     let (source, at, item) = place(documents, block);
@@ -188,11 +197,50 @@ fn open(
         .collect()
 }
 
-/// `refused` with the fix of each, where `names` holds the default of each pick.
-fn fixed(refused: Vec<(usize, Diagnostic)>, names: &[Option<Name>]) -> Vec<Diagnostic> {
+/// The place of each pick of `picks` that is not present, the index, and the name of
+/// each of those picks, where `given` gives the given name of the pick at a place.
+fn named<'a>(
+    connector: &Name,
+    start: &Path,
+    picks: &[Pick<'a>],
+    given: &dyn Fn(usize) -> Option<&'a Name>,
+    tags: &BTreeSet<String>,
+    taken: &[Name],
+    existing: Option<&Name>,
+) -> (Vec<usize>, Name, Vec<Option<Name>>) {
+    // A pick that ends `Unnamed` makes no later pick of its tag present, and opening
+    // such a pick can leave another `Unnamed`, so name until no pick changes.
+    let mut unnamed = BTreeSet::new();
+    loop {
+        let open = open(picks, tags, &unnamed);
+        let given = open.iter().map(|&at| (picks[at].path, given(at)));
+        let (index, names) = name(connector, start, given, taken, existing.cloned());
+        let dropped = open.iter().zip(&names).filter(|(_, name)| name.is_none());
+        let before = unnamed.len();
+        unnamed.extend(dropped.map(|(&at, _)| at));
+        if unnamed.len() == before {
+            return (open, index, names);
+        }
+    }
+}
+
+/// `refused` with the fix of each, by the place of its pick, where `names` holds the
+/// name of the pick at each place of `open` with each refused name left out.
+fn fixed(
+    refused: Vec<(usize, Diagnostic)>,
+    open: &[usize],
+    names: &[Option<Name>],
+) -> Vec<Diagnostic> {
     refused
         .into_iter()
         .map(|(at, mut problem)| {
+            // A refused name is reserved, which no default is, or another source holds
+            // it. So the run with it left out frees no name, and no pick that ends
+            // `Unnamed` takes one: the pick stays open.
+            let at = open
+                .iter()
+                .position(|&open| open == at)
+                .expect("invariant: a refused pick stays open with its name left out");
             problem.fix = match &names[at] {
                 Some(default) => format!(
                     "Give another name, or leave it out for {:?}",
@@ -240,7 +288,7 @@ fn written(
         match kinds.block(kind, pick.tag, pick.facts, &name) {
             Ok(blocks) => {
                 let channel = channel(&name, index, pick.facts);
-                let fills = fills(&blocks, &channel);
+                let fills = fills(&blocks, &channel, kind, pick.tag);
                 written.body.extend(blocks);
                 written.channels.push(channel);
                 written.outcomes.push(Outcome::Added { name, fills });
@@ -274,14 +322,14 @@ fn place(documents: &[Document], block: &Block) -> (Source, usize, usize) {
 }
 
 /// Each name that `blocks` define as a channel or a connector, and each channel that
-/// each connector other than `connector` implies.
+/// each connector other than `connector` implies or writes.
 fn taken(blocks: &[&Block], connector: &Name, kinds: &Table) -> Vec<Name> {
     let mut taken: Vec<Name> = crate::names(blocks, definition::Kind::Channel)
         .map(|(name, ..)| name)
         .collect();
     for (name, _, block) in crate::names(blocks, definition::Kind::Connector) {
         if name != *connector {
-            taken.extend(crate::connector::implied(block, &name, kinds));
+            taken.extend(crate::connector::names(block, &name, kinds));
         }
         taken.push(name);
     }
@@ -372,13 +420,14 @@ fn index_of<'a>(
     index.map(|index| read::name(&index.value)).transpose()
 }
 
-/// The text of each `fill("<what>")` in `blocks` and in `channel`.
+/// The text of each `fill("<what>")` in `blocks` and in `channel`, the blocks of the
+/// kind `kind` for the tag `tag`.
 ///
 /// # Panics
 ///
 /// If a call `fill` there has other arguments, which neither a kind nor [`channel`]
 /// writes.
-fn fills(blocks: &[Block], channel: &Block) -> Vec<String> {
+fn fills(blocks: &[Block], channel: &Block, kind: &str, tag: &str) -> Vec<String> {
     let mut fills = Vec::new();
     for block in blocks.iter().chain([channel]) {
         walk::each(&block.body, &mut |part| match part {
@@ -387,9 +436,10 @@ fn fills(blocks: &[Block], channel: &Block) -> Vec<String> {
                     fills.push(what.to_owned());
                     false
                 }
-                Some(Fill::Bad) => {
-                    panic!("invariant: a kind writes each call `fill` as `fill` does")
-                }
+                Some(Fill::Bad) => panic!(
+                    "invariant: a kind writes each call `fill` as `fill` does, and the \
+                     kind {kind:?} does not for the tag {tag:?}"
+                ),
                 None => true,
             },
             Part::Block(_) | Part::Key(..) => true,

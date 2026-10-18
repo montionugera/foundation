@@ -397,7 +397,10 @@ fn adds_a_point_whose_earlier_pick_has_no_name() {
 }
 
 #[test]
-#[should_panic(expected = "invariant: a kind writes each call `fill` as `fill` does")]
+#[should_panic(
+    expected = "invariant: a kind writes each call `fill` as `fill` does, and the kind \
+                \"points\" does not for the tag \"unfilled\""
+)]
 fn panics_on_a_call_fill_of_a_kind_with_no_text() {
     drop(added(&[PLANT], &[want("A/x", "unfilled")]));
 }
@@ -649,6 +652,103 @@ fn refuses_a_bad_given_name_with_no_default_with_a_fix_to_give_another() {
             "Give another name"
         )]
     );
+}
+
+#[test]
+fn adds_a_point_after_two_picks_of_its_tag_with_no_name() {
+    let wants = [
+        want(&vec!["a"; 130].join("/"), "t8"),
+        want(&vec!["b"; 130].join("/"), "t8"),
+        want("x", "t8"),
+    ];
+    let added = added(&[PLANT], &wants).expect("it adds");
+    assert_eq!(
+        added.picks,
+        vec![Outcome::Unnamed, Outcome::Unnamed, outcome("plc.x")]
+    );
+}
+
+#[test]
+fn refuses_a_status_name_of_another_connector_whose_check_fails() {
+    let other = "connector \"mqtt\" {\n  kind = \"points\"\n  node = \"edge\"\n\n  \
+                 read \"mqtt.refused\" {\n    tag = \"t0\"\n  }\n}\n";
+    let wants = [named("x", "t1", "mqtt.status.time")];
+    let problems = problems(added(&[PLANT, other], &wants).expect_err("in use"));
+    assert_eq!(
+        problems,
+        vec![problem(
+            "config.duplicate-name",
+            "the name \"mqtt.status.time\" of the point at \"x\" is in use in the files",
+            "Give another name, or leave it out for \"plc.x\"",
+        )]
+    );
+}
+
+#[test]
+fn gives_the_fix_the_default_of_the_run_without_the_refused_names() {
+    let long = vec!["a"; 130].join("/");
+    let left = [want(&long, "t1"), want("x y", "t1"), want("x_y", "t2")];
+    let rerun = added(&[PLANT], &left).expect("it adds");
+    assert_eq!(
+        rerun.picks,
+        vec![Outcome::Unnamed, outcome("plc.x_y"), outcome("plc.x_y_2")]
+    );
+    let wants = [
+        named(&long, "t1", "plc"),
+        want("x y", "t1"),
+        named("x_y", "t2", "plc"),
+    ];
+    let problems = problems(added(&[PLANT], &wants).expect_err("in use"));
+    let message = format!(
+        "the name \"plc\" of the point at {:?} is in use in the files",
+        path(&long).to_string()
+    );
+    assert_eq!(
+        problems,
+        vec![
+            problem("config.duplicate-name", &message, "Give another name"),
+            problem(
+                "config.duplicate-name",
+                "the name \"plc\" of the point at \"x_y\" is in use in the files",
+                "Give another name, or leave it out for \"plc.x_y_2\"",
+            ),
+        ]
+    );
+}
+
+#[test]
+fn gives_no_default_a_channel_that_another_connector_writes() {
+    let other = "connector \"line\" {\n  kind = \"points\"\n  node = \"cloud\"\n\n  \
+                 read \"plc.A.x\" {\n    tag = \"t0\"\n  }\n}\n";
+    let members = std::collections::BTreeSet::from([name("edge"), name("cloud")]);
+    let pointer = spec::Pointer {
+        version: 0,
+        root: types::digest::Digest::of(b""),
+    };
+    let applied = std::collections::BTreeMap::new();
+    let plan = |texts: &[&str]| {
+        let documents: Vec<Document> = (0..)
+            .zip(texts)
+            .map(|(source, text)| read(source, text))
+            .collect();
+        config::plan::plan(&documents, pointer, &applied, &members, &kinds())
+            .map(|_| ())
+            .map_err(problems)
+    };
+    assert_eq!(plan(&[PLANT, other]), Ok(()));
+    let added = added(&[PLANT, other], &[want("A/x", "t1")]).expect("it adds");
+    let text = updated(PLANT, &added);
+    assert_eq!(plan(&[&text, other]), Ok(()));
+    assert_eq!(added.picks, vec![outcome("plc.A.x_2")]);
+}
+
+#[test]
+fn adds_no_index_that_another_connector_writes() {
+    let other = "connector \"line\" {\n  kind = \"points\"\n  node = \"edge\"\n\n  \
+                 read \"plc.time\" {\n    tag = \"t0\"\n  }\n}\n";
+    config::check(&[read(0, PLANT), read(1, other)], &kinds()).expect("it checks");
+    let added = added(&[PLANT, other], &[want("A/x", "t1")]).expect("it adds");
+    assert_eq!(added.index, Some(name("plc.time_2")));
 }
 
 #[test]
