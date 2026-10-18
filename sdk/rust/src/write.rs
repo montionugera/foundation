@@ -192,9 +192,7 @@ impl Writer {
         self.frame.clear(count);
         for &(place, bytes) in series {
             let (node, _) = self.place(place)?;
-            self.frame.push(Part { node, place }, bytes.len(), |to| {
-                to.copy_from_slice(bytes);
-            });
+            self.frame.copy(Part { node, place }, bytes);
         }
         self.call(Time::Frame(Path::Live))
     }
@@ -368,6 +366,12 @@ impl Frame {
         self.bytes.resize(start + len, 0);
         fill(&mut self.bytes[start..]);
         self.parts.push((part, start, len));
+    }
+
+    /// Adds `bytes` as a series at `part`.
+    fn copy(&mut self, part: Part, bytes: &[u8]) {
+        self.parts.push((part, self.bytes.len(), bytes.len()));
+        self.bytes.extend_from_slice(bytes);
     }
 
     /// The place of the node and bytes of each series, in the order of the pushes, or
