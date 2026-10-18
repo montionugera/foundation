@@ -86,6 +86,13 @@ impl Drop for Running<'_> {
         reason = "a `pthread_t` on Linux is a `c_ulong`, of the width of a pointer"
     )
 )]
+#[cfg_attr(
+    target_vendor = "apple",
+    expect(
+        trivial_numeric_casts,
+        reason = "a `pthread_t` on macOS is a `uintptr_t`"
+    )
+)]
 fn current() -> usize {
     // SAFETY: `pthread_self` has no precondition.
     let thread = unsafe { libc::pthread_self() };
