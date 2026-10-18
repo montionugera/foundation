@@ -1105,6 +1105,19 @@ fn a_flood_of_warnings_drops_past_100_lines_and_counts_them_before_the_next_wind
 }
 
 #[test]
+fn a_thousand_warnings_in_one_second_give_100_lines_and_a_count_of_900() {
+    let lines = logged(|f| {
+        for _ in 0..1000 {
+            warn(f, 1);
+            f.advance(Span::MILLISECOND);
+        }
+    });
+    let mut want = vec![warned(1).remove(0); 100];
+    want.push(dropped("WARN", 900));
+    assert_eq!(lines, want);
+}
+
+#[test]
 fn an_error_in_a_flood_of_warnings_goes_to_the_log() {
     let lines = logged(|f| {
         warn(f, 150);
