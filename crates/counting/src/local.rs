@@ -25,8 +25,9 @@ pub struct Local {
     allocations: AtomicU64,
 }
 
-/// No call runs. No thread has it as its `pthread_t`.
-const NONE: usize = 0;
+/// No call runs. No thread has it as its `pthread_t`: Linux and macOS give a pointer,
+/// and Miri gives a small count from 0.
+const NONE: usize = usize::MAX;
 
 impl Local {
     /// Returns an allocator that counts nothing.
@@ -212,5 +213,12 @@ mod tests {
     #[test]
     fn returns_the_result_of_the_closure() {
         assert_eq!(Local::new().count(|| "result"), ("result", 0));
+    }
+
+    #[test]
+    fn shows_the_count_of_a_call() {
+        let local = Local::new();
+        local.allocations.store(2, Relaxed);
+        assert_eq!(format!("{local:?}"), "Local { allocations: 2, .. }");
     }
 }
