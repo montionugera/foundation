@@ -93,6 +93,14 @@ fn checks_access_the_picks_and_the_paths_in_order() {
                        import";
         let fix = "Import at most 500 points at a time";
         assert_eq!(reply, refusal("ops.import-limit", 2, message, fix));
+        let most = vec![json!({ "path": "a//b" }); 500];
+        let (reply, _) = imported(&node, &json!({ "points": most })).await;
+        assert_eq!(
+            reply["errors"].as_array().map(Vec::len),
+            Some(500),
+            "{reply}"
+        );
+        assert_eq!(reply["errors"][0]["code"], "ops.bad-point");
 
         let (reply, text) = imported(&node, &json!({ "points": bad })).await;
         let problem = |message: &str| {
