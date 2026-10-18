@@ -385,23 +385,11 @@ fn a_folder_made_again_read_in_other_case_is_replaced() {
 #[test]
 fn within_refuses_a_hidden_name_whose_resolved_path_is_too_long() {
     run(|host| {
-        let (_, base) = cases::within_work(host);
-        let most = most();
-        let top = base.join("work");
-        let (mut deep, mut relative) = (top.clone(), PathBuf::new());
-        while deep.as_os_str().len() + 201 < most - 50 {
-            deep.push("d".repeat(200));
-            relative.push("d".repeat(200));
-            fs::create_dir(&deep).unwrap();
-        }
-        symlink(&relative, top.join("s")).unwrap();
-        let name = "f".repeat(most - deep.as_os_str().len());
-        let key = top.join("s").join(&name);
-        let within = host
-            .paths
-            .within(slice::from_ref(&top), slice::from_ref(&key));
-        let too_long = Error::Io { code: too_long() };
-        assert_eq!(within.err(), Some(too_long));
+        cases::within_refuses_a_hidden_name_whose_resolved_path_is_too_long(
+            host,
+            most(),
+            too_long(),
+        );
     });
 }
 

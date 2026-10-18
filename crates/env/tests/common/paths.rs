@@ -400,6 +400,30 @@ pub(crate) fn a_path_as_long_as_the_host_takes(
     assert_eq!(got, [too_long; 3]);
 }
 
+/// A hidden file that is not there, at a short path through a relative link, whose
+/// resolved path is one byte past the `most` bytes that the host takes.
+pub(crate) fn within_refuses_a_hidden_name_whose_resolved_path_is_too_long(
+    host: &Host<'_>,
+    most: usize,
+    code: i32,
+) {
+    let (_, base) = within_work(host);
+    let top = base.join("work");
+    let (mut deep, mut relative) = (top.clone(), PathBuf::new());
+    while deep.as_os_str().len() + 201 < most - 50 {
+        deep.push("d".repeat(200));
+        relative.push("d".repeat(200));
+        (host.make_dir)(&deep);
+    }
+    (host.make_link)(&top.join("s"), &relative);
+    let name = "f".repeat(most - deep.as_os_str().len());
+    let key = top.join("s").join(&name);
+    let within = host
+        .paths
+        .within(slice::from_ref(&top), slice::from_ref(&key));
+    assert_eq!(within.err(), Some(Error::Io { code }));
+}
+
 pub(crate) fn within_gives_not_found_through_a_directory_that_is_not_there(
     host: &Host<'_>,
 ) {

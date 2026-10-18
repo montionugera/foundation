@@ -66,6 +66,17 @@ fn a_path_as_long_as_the_host_takes_reads_and_one_byte_longer_fails() {
     run(|host| cases::a_path_as_long_as_the_host_takes(host, 4095, 36));
 }
 
+/// A hidden file that is not there, at a short path through a relative link, whose
+/// resolved path is one byte past the Linux `PATH_MAX`.
+#[test]
+fn within_refuses_a_hidden_name_whose_resolved_path_is_too_long() {
+    run(|host| {
+        cases::within_refuses_a_hidden_name_whose_resolved_path_is_too_long(
+            host, 4095, 36,
+        );
+    });
+}
+
 #[test]
 #[should_panic(expected = "the target of /link is too long")]
 fn a_link_takes_no_target_that_linux_refuses() {
