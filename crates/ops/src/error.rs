@@ -607,7 +607,9 @@ impl Error {
             ),
             Self::LargeImport => (
                 LARGE_IMPORT,
-                "Import fewer points at a time".to_owned(),
+                "Import fewer points at a time, or move other blocks out of the file \
+                 of the connector block"
+                    .to_owned(),
             ),
             Self::FileChanged { .. } => (
                 FILE_CHANGED,

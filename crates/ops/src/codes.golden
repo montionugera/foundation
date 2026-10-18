@@ -36,7 +36,7 @@ ops.duplicate-pick	Pick each point once
 ops.bad-name	Give another name, or leave it out for the default name
 ops.unreadable-point	Leave the point out of the import
 ops.import-budget	Narrow the start or the match, or pick fewer points
-ops.large-import	Import fewer points at a time
+ops.large-import	Import fewer points at a time, or move other blocks out of the file of the connector block
 ops.file-changed	Run the import again on the file as it is now
 ops.more-problems	Fix the problems above, then run it again
 ops.unknown-extension	Use a file that ends in `.hcl`

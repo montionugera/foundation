@@ -394,7 +394,8 @@ fn a_reply_past_the_bound_gives_large_import() {
             "the reply of the import has more than {BODY_BYTES_MAX} bytes, the most \
              that a reply holds"
         );
-        let fix = "Import fewer points at a time";
+        let fix = "Import fewer points at a time, or move other blocks out of the \
+                   file of the connector block";
         assert_eq!(reply, refusal("ops.large-import", 1, &message, fix));
         assert_eq!(text, "");
     });
