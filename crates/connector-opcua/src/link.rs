@@ -418,7 +418,8 @@ fn the_copy_links_the_timer() {
 /// that they may name in the libc of the target, other than [`PLUGINS`]. In glibc: on
 /// x86-64 with GCC or Clang at each optimization level, and on 64-bit Arm with Clang
 /// at `-O2` and `-moutline-atomics`. In the libc of macOS: on 64-bit Arm with Apple
-/// Clang at `-O0`, the level of the workspace crates in the tests.
+/// Clang at `-O0`, the level of the workspace crates in the tests. Empty on another
+/// OS, so the tests fail on each name until it has its list.
 const OUTSIDE: &[&str] = if cfg!(target_os = "macos") {
     &[
         "__chkstk_darwin",
@@ -455,7 +456,7 @@ const OUTSIDE: &[&str] = if cfg!(target_os = "macos") {
         "strtok_r",
         "write",
     ]
-} else {
+} else if cfg!(target_os = "linux") {
     &[
         "_GLOBAL_OFFSET_TABLE_",
         "__ctype_b_loc",
@@ -499,6 +500,8 @@ const OUTSIDE: &[&str] = if cfg!(target_os = "macos") {
         "syslog",
         "write",
     ]
+} else {
+    &[]
 };
 
 /// The symbol of `stdin` in the libc of the target.
