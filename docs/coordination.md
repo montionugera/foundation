@@ -76,11 +76,11 @@ use memory" (RAM).
 Each session on a box has a share of its memory. `docs/claude/testing.md` (mutation
 testing) gives the runs that the share caps. The share is the group cap less 5 GiB for
 the Claude processes and the system, divided by the sessions that the table counts on
-the box, rounded down (#803). A session that the table does not count runs no capped
-run until `laptop.monitor` counts it. So the sum of the capped runs stays under the
-group cap, also while the group cap is not set. A share is at least 9G, so that
-`--jobs 4` of a mutants run fits (#803). `laptop.monitor` keeps this table and the group
-caps current
+the box, rounded down (#803). A session that the table does not count runs no capped run
+until `laptop.monitor` counts it. So the sum of the capped runs stays under the group
+cap, also while the group cap is not set. A share is at least 9G, so that a mutants run
+with `--jobs 4 --jobserver-tasks 4` fits (#803). `laptop.monitor` keeps this table and
+the group caps current
 (https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256405286):
 
 | Box | RAM | Group cap | Sessions counted | Share |
