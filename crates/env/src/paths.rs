@@ -301,7 +301,8 @@ impl Paths {
                 let hidden = match seen {
                     Seen::There(key) => has(*key),
                     Seen::Vacant(deepest) => {
-                        vacant |= own.is_none() && above.nearest(index) == *deepest;
+                        let up = steps[index].up.and_then(|up| steps[up].own);
+                        vacant |= own.is_none() && up == *deepest;
                         false
                     }
                     Seen::Refused => true,

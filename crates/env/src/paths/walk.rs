@@ -108,21 +108,13 @@ pub(super) struct Above<'a> {
     steps: &'a [Step],
     /// For each key asked: at each step, a directory above that step has the key.
     held: RefCell<Vec<(Key, Vec<bool>)>>,
-    /// The key of the nearest directory above each step that has one.
-    nearest: Vec<Option<Key>>,
 }
 
 impl<'a> Above<'a> {
     pub(super) fn new(steps: &'a [Step]) -> Self {
-        let mut nearest: Vec<Option<Key>> = Vec::with_capacity(steps.len());
-        // The step above a step comes before it.
-        for step in steps {
-            nearest.push(step.up.and_then(|up| steps[up].own.or(nearest[up])));
-        }
         Self {
             steps,
             held: RefCell::new(Vec::new()),
-            nearest,
         }
     }
 
@@ -133,6 +125,7 @@ impl<'a> Above<'a> {
             return column[index];
         }
         let mut column: Vec<bool> = Vec::with_capacity(self.steps.len());
+        // The step above a step comes before it.
         for step in self.steps {
             column.push(
                 step.up
@@ -142,11 +135,6 @@ impl<'a> Above<'a> {
         let holds = column[index];
         held.push((key, column));
         holds
-    }
-
-    /// The key of the nearest directory above step `index` that has one.
-    pub(super) fn nearest(&self, index: usize) -> Option<Key> {
-        self.nearest[index]
     }
 }
 
@@ -259,7 +247,6 @@ impl Walker<'_> {
     fn begin(&mut self) -> Result<(), Error> {
         self.steps.clear();
         self.names.clear();
-        self.in_file = false;
         if self.rooted {
             self.start(self.given, names_directory(self.given))
         } else {

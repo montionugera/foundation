@@ -199,14 +199,14 @@ impl Paths {
         dir: u64,
         name: &OsStr,
     ) -> Result<(u64, &Entry), Error> {
-        let at = self.find(node, dir).ok_or(Error::NotFound)?;
+        let at = self.find(dir).ok_or(Error::NotFound)?;
         self.at(node, &at.join(name)).ok_or(Error::NotFound)
     }
 
     /// The inode of the directory above the directory `dir`, and `/` above `/`.
     /// `NotFound` when `dir` is not there.
     pub(crate) fn up(&self, node: usize, dir: u64) -> Result<u64, Error> {
-        let at = self.find(node, dir).ok_or(Error::NotFound)?;
+        let at = self.find(dir).ok_or(Error::NotFound)?;
         let above = self.at(node, at.parent().unwrap_or(&at));
         let (inode, _) =
             above.expect("invariant: the directory above a directory is there");
@@ -214,15 +214,14 @@ impl Paths {
     }
 
     /// The path of the directory `inode` now, or `None` when it is not there.
-    fn find(&self, node: usize, inode: u64) -> Option<PathBuf> {
+    fn find(&self, inode: u64) -> Option<PathBuf> {
         if inode == 0 {
             return Some(PathBuf::from("/"));
         }
+        // Each inode of a run is of one entry, and that of a directory stays one.
         self.entries
             .iter()
-            .find(|((on, _), (at, entry))| {
-                *on == node && *at == inode && matches!(entry, Entry::Directory)
-            })
+            .find(|(_, (at, _))| *at == inode)
             .map(|((_, path), _)| path.clone())
     }
 

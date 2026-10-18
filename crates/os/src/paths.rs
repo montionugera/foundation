@@ -84,7 +84,8 @@ struct Dir {
 }
 
 impl Dir {
-    /// Opens the directory `name` of `at`, with no link followed.
+    /// Opens the directory `name` of `at`, with no link followed. `ENOTDIR` or
+    /// `ELOOP` when another file or a link is there.
     fn open(at: BorrowedFd<'_>, name: &OsStr) -> Result<Self, Errno> {
         let flags = SEARCH | OFlags::NOFOLLOW | OFlags::DIRECTORY | OFlags::CLOEXEC;
         match rustix::fs::openat(at, name, flags, Mode::empty()) {
@@ -97,7 +98,7 @@ impl Dir {
             Err(Errno::ACCESS) => {
                 let stat = rustix::fs::statat(at, name, AtFlags::SYMLINK_NOFOLLOW)?;
                 if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
-                    return Err(Errno::ACCESS);
+                    return Err(Errno::NOTDIR);
                 }
                 Ok(Self {
                     fd: None,
@@ -110,6 +111,12 @@ impl Dir {
 
     fn entry(&self, name: &OsStr) -> Result<Entry, Errno> {
         let fd = self.fd.as_ref().ok_or(Errno::ACCESS)?;
+        // The open comes first, so no swap after a stat makes it follow a link.
+        let refused = match Self::open(fd.as_fd(), name) {
+            Ok(dir) => return Ok(Entry::Directory(Box::new(dir))),
+            Err(e @ (Errno::NOTDIR | Errno::LOOP)) => e,
+            Err(e) => return Err(e),
+        };
         let stat = rustix::fs::statat(fd, name, AtFlags::SYMLINK_NOFOLLOW)?;
         let key = key(&stat);
         Ok(match FileType::from_raw_mode(stat.st_mode) {
@@ -117,9 +124,8 @@ impl Dir {
                 let target = rustix::fs::readlinkat(fd, name, Vec::new())?;
                 Entry::Link(key, OsString::from_vec(target.into_bytes()).into())
             }
-            FileType::Directory => {
-                Entry::Directory(Box::new(Self::open(fd.as_fd(), name)?))
-            }
+            // A program put a directory at `name` after the open.
+            FileType::Directory => return Err(refused),
             _ => Entry::File(key),
         })
     }
