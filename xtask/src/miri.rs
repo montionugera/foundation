@@ -888,31 +888,36 @@ mod tests {
         );
     }
 
-    /// The `cargo` of a toolchain folder that lists one doc test of `model`, no lib
-    /// test, and fails each other command.
-    #[cfg(unix)]
-    const CARGO: &str = r#"#!/bin/sh
-case "$*" in
-*"nextest list"*) echo '{"rust-suites":{}}' ;;
-*--ignored*) ;;
-*--list*) echo 'src/lib.rs - x (line 1): test' ;;
-*) exit 1 ;;
-esac
+    /// The source of a `cargo` for a toolchain folder that lists one doc test of
+    /// `model`, no lib test, and fails each other command.
+    const CARGO: &str = r#"fn main() {
+    let args = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
+    if args.contains("nextest list") {
+        println!("{{\"rust-suites\":{{}}}}");
+    } else if args.contains("--ignored") {
+    } else if args.contains("--list") {
+        println!("src/lib.rs - x (line 1): test");
+    } else {
+        std::process::exit(1);
+    }
+}
 "#;
 
-    /// Only Unix: the test runs a shell script as `cargo`.
-    #[cfg(unix)]
     #[test]
     fn run_runs_each_part_of_each_pass_and_the_lib_tests() {
-        use std::os::unix::fs::PermissionsExt;
         let root =
             create_model_root("xtask-miri-run-all", "test = true\ndoctest = true");
         let toolchain = root.join("toolchain");
-        let cargo = toolchain.join("bin/cargo");
         std::fs::create_dir_all(toolchain.join("bin")).unwrap();
-        std::fs::write(&cargo, CARGO).unwrap();
-        let executable = std::fs::Permissions::from_mode(0o755);
-        std::fs::set_permissions(&cargo, executable).unwrap();
+        std::fs::write(root.join("cargo.rs"), CARGO).unwrap();
+        let cargo = format!("bin/cargo{}", std::env::consts::EXE_SUFFIX);
+        let built = Command::new("rustc")
+            .arg(root.join("cargo.rs"))
+            .arg("-o")
+            .arg(toolchain.join(cargo))
+            .status()
+            .unwrap();
+        assert!(built.success(), "rustc failed on the stand-in cargo");
         let pin = toolchain.to_str().unwrap();
         std::fs::write(root.join("rust-toolchain-nightly"), pin).unwrap();
         let ran = run(&root, Shard::ALL).map_err(|mut problems| {
