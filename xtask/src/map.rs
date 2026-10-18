@@ -36,6 +36,7 @@ pub(crate) const TEST_EDGES: &[(&str, &str)] = &[
     ("ops", "transport"),
     ("node", "sdk"),
     ("sdk-python", "transport"),
+    ("sdk-python", "program"),
 ];
 
 /// Every crate with its layer and the workspace crates it may depend on.

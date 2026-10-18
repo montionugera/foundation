@@ -20,6 +20,7 @@ sdk = { path = "../rust" }
 types = { path = "../../crates/types" }
 
 [dev-dependencies]
+program = { path = "../../crates/program" }
 transport = { path = "../../crates/transport" }
 
 [lints]
