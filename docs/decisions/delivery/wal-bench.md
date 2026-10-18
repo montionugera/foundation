@@ -127,3 +127,14 @@
   https://github.com/synnaxlabs/foundation/pull/2739#issuecomment-6203672199. The two
   lost designs have only the text approval (2026-10-16T20:11:06Z):
   https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6223804759.
+  `benches/open.rs` (`test = true`) times `Buffer::open` of a full ring that trims, on
+  one shard of a sim node: rings of 256 MiB with 16, 64, and 256 indexes, and of 1024
+  MiB with 64 indexes, with one data entry of each index in each commit. The fill
+  commits until a read of the first index finds that it lost at least as many seqs as
+  it keeps, so the ring wrapped twice. The files are those of the `memory` driver of
+  the tests, which ENV SEAMS does not give, until #2136 deletes it. So a time is the
+  CPU time of the open, not the start time that P1 judges. Lost: the files of the sim
+  node, whose model of a disk made an open 4 to 11 times slower on box2 (916.9, 1051.5,
+  and 1161.3 ms for 16, 64, and 256 indexes at 256 MiB), so a time would measure the
+  sim. Lost: a count of commits from the sizes of the record format, which copies
+  private sizes and does not check the wrap.
