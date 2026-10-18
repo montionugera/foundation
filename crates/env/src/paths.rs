@@ -566,9 +566,9 @@ pub trait Driver: Debug {
     fn entry(&self, path: &Path) -> Result<Entry, Error>;
 
     /// The absolute path that the host walks for `path`, as text: a relative path on
-    /// the resolved working directory. It reads no file other than the working
-    /// directory. On a host other than Windows, it keeps each `..`, and it gives an end
-    /// `/` or `/.` as an end `/`.
+    /// the resolved working directory, and on Windows the path that Win32 makes of it.
+    /// It reads no file other than the working directory. On a host other than
+    /// Windows, it keeps each `..`, and it gives an end `/` or `/.` as an end `/`.
     ///
     /// # Errors
     ///

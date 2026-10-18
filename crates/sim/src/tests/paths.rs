@@ -332,6 +332,8 @@ fn the_home_is_none_until_a_node_sets_it_and_then_resolves() {
     assert_eq!(paths.home(), Some(PathBuf::from("/users/user")));
 }
 
+/// The walk never asks `entry` for a path that ends in `/`, so no `Paths` call
+/// reaches this arm.
 #[test]
 fn an_entry_follows_a_link_before_an_end_in_a_separator_as_lstat_does() {
     let node = Sim::new(Config::default()).node(node::Config::default());

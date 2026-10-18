@@ -1252,40 +1252,57 @@
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6241808609; the
   supersede, 2026-10-17T22:18:40Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6242108210).
-  Amended (2026-10-18T00:20:52Z, #3018, with #3077): `Paths` walks a path name by
-  name, as a host does, and `Paths::resolve` is this walk. `Driver::resolve` and
-  `Driver::key` go. `Driver::absolute` gives the absolute path that the host walks: on
-  a host other than Windows, it keeps each `..`, and it gives an end `/` or `/.` as an
-  end `/`. `Driver::entry` gives what one `lstat` gives at a path, with no link at its
-  last name followed: a link with its key and its target as written, a directory, or
-  another file, each with its key. A link puts the names of its target before the rest,
-  from the root of the `absolute` of a target with a root, else from the directory of
-  the link. Past `LINKS` (40) links, the walk gives `Driver::looped`, the code of the
-  host on the normal `Io` path (`Io` 40 on Linux and `sim`, 62 on macOS), so `ops` maps
-  no new variant. A host can take fewer: macOS stops at 32 (`MAXSYMLINKS`), so a path
-  through 33 to 40 links passes the walk and the call fails with `Io` 62 from the host.
-  The host reaches the file; the walk only checks. A link to nothing at the last name
-  resolves as its target does, so a handle of `within` checks it at its target, where
-  it can give `Outside`. A handle of `within` checks each step of the walk in order,
-  also each step of a link target. `Paths::home` walks `Driver::home`, which gives the
-  path as the host gives it. The state of a folder is the `entry` of its resolved path,
-  so a link that a program puts in place of a folder, or of a directory above it, is
-  not that directory, also when it names it: after a rename of `work` to `real` and a
-  link `work` to `real`, a read of `work/a.hcl` gives `Replaced`. Each call takes the
-  state of each folder once, and walks each hidden folder from the path that the caller
-  gave, so the deepest directory on its way comes from that call and is never a file
-  (#3077). The cost, for each call, is one `entry` for each name of the walk, and on a
-  handle of `within` also one `entry` for each folder and for each directory above it,
-  and one walk of each hidden folder. Each name goes to the host by its resolved path,
-  so a name whose resolved path is longer than the host takes fails with `Io` (36 on
-  Linux, 63 on macOS), also where the free handle reaches it by a relative path, and a
-  hidden folder with such a path fails `within`. On `os` (Linux, Xeon Platinum 8488C,
-  release), a read 1900 names deep and a read of a 4000-byte path of `..` each take
-  under 560 ms, as two tests pin. The `within` doc states the gap between the check and
-  the call: "The check and the call are two steps: a process that can write a symbolic
-  link in a folder between them can lead the call to a path that the check refused
-  (#3094)." The gap is a containment escape, its issue is #3094, and #3018 files no
-  other issue for it. Supersedes `Driver::link` and `Driver::working` of
+  Amended (2026-10-18T00:20:52Z, #3018, with #3077): `Paths` walks a path name by name,
+  as a host does, and `Paths::resolve` is this walk. `Driver::resolve` and `Driver::key`
+  go. `Driver::absolute` gives the absolute path that the host walks: on a host other
+  than Windows, it keeps each `..`, and it gives an end `/` or `/.` as an end `/`.
+  `Driver::entry` gives what one `lstat` gives at a path, with no link at its last name
+  followed: a link with its key and its target as written (the key gives a link step a
+  file, so the check asks it as a step that changes where the path ends; the key of a
+  link meets no folder or hidden key, since those come from the ends of walks), a
+  directory, or another file, each with its key. A link puts the names of its target
+  before the rest, from the root of the `absolute` of a target with a root, else from
+  the directory of the link. Past `LINKS` (40) links, the walk gives `Driver::looped`,
+  the code of the host on the normal `Io` path (`Io` 40 on Linux and `sim`, 62 on
+  macOS), so `ops` maps no new variant. A host can take fewer: macOS stops at 32
+  (`MAXSYMLINKS`), so a path through 33 to 40 links passes the walk and the call fails
+  with `Io` 62 from the host. The host reaches the file; the walk only checks. On
+  Windows, which `os` has no driver for before #2956, and where #2956 tests each rule on
+  the Windows host: `absolute` gives the path that Win32 makes (`GetFullPathNameW`). A
+  path with only a root starts at the root of the current drive, one with only a drive
+  (`C:a`) at the working directory of that drive, and each `..` is taken by text, as
+  Win32 takes it before it follows a link, so `C:\..\work\a` is `C:\work\a`. `entry`
+  gives a junction and a symbolic link as `Link`, with the target as the absolute path
+  that Windows follows: a relative target on the directory of the link, with each `..`
+  taken by text. A reparse point that is not a name surrogate (a cloud file) is the file
+  or directory that its attributes give, and another name surrogate fails with `Io`. A
+  `\\?\` path takes `..` as a name, so `absolute` fails with `Io` 123 for one with a `.`
+  or `..` name. A driver gives the walk the names as the host takes them, and where it
+  cannot, it fails with `Io`. A disagreement that a driver misses is a defect of that
+  driver. A link to nothing at the last name resolves as its target does, so a handle of
+  `within` checks it at its target, where it can give `Outside`. A handle of `within`
+  checks each step of the walk in order, also each step of a link target. `Paths::home`
+  walks `Driver::home`, which gives the path as the host gives it. The state of a folder
+  is the `entry` of its resolved path, so a link that a program puts in place of a
+  folder, or of a directory above it, is not that directory, also when it names it:
+  after a rename of `work` to `real` and a link `work` to `real`, a read of `work/a.hcl`
+  gives `Replaced`. Each call takes the state of each folder once, and walks each hidden
+  folder from the path that the caller gave, so the deepest directory on its way comes
+  from that call and is never a file (#3077). The cost, for each call, is one `entry`
+  for each name of the walk, and on a handle of `within` also one `entry` for each
+  folder and for each directory above it, and one walk of each hidden folder; a step
+  that fails the folders also walks each folder, to tell `Replaced` from `Outside`. Each
+  name goes to the host by its resolved path, so a name whose resolved path is longer
+  than the host takes fails with `Io` (36 on Linux, 63 on macOS), also where the free
+  handle reaches it by a relative path, and a hidden folder with such a path fails
+  `within`. On `os` (Linux, Xeon Platinum 8488C, debug), a read 1900 names deep takes
+  150 ms and a read of a 4000-byte path of `..` takes 5 ms; two tests pin each under
+  560 ms. The
+  `within` doc states the gap between the check and the call: "The check and the call
+  are two steps: a process that can write a symbolic link in a folder between them can
+  lead the call to a path that the check refused (#3094)." The gap is a containment
+  escape, its issue is #3094, and #3018 files no other issue for it. Supersedes
+  `Driver::link` and `Driver::working` of
   https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6231386142; "A
   prefix resolves as `resolve` does, and the walk stops at the first prefix that does
   not resolve", "never a prefix of their join, since a join can be longer than the host
@@ -1311,6 +1328,12 @@
   conditions of `laptop.monitor` for the plan, 2026-10-17T07:49:57Z,
   https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6231393232; `entry`,
   `absolute`, `looped`, and the surface, 2026-10-18T00:20:52Z,
-  https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6243660689), after
+  https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6243660689; the key
+  of `Entry::Link` and the Windows rules, 2026-10-18T01:16:08Z,
+  https://github.com/synnaxlabs/foundation/pull/3098#issuecomment-6244123264, from the
+  plan, https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6243618446,
+  and https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6238302038,
+  https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6238398268, and
+  https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6238425408), after
   the decision of `laptop.monitor` (2026-10-18T00:21:40Z, the gap and its doc,
   https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6243671534).
