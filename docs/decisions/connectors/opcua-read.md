@@ -94,13 +94,12 @@
   and `laptop.architect-2`, 2026-10-18T03:48:17Z,
   https://github.com/synnaxlabs/foundation/pull/3121#issuecomment-6245342591). The
   copy of open62541 makes these checks (`docs/dependencies.md`, "Local patches").
-  A Raspberry Pi 4 (P1, idle under 50 MB) runs few OPC UA clients. Lost: a refusal of
-  the chunks of a request id with no call in flight (no call times out in open62541,
-  so each request stays in flight until its answer); the bound of one message on the
-  queue of all ids (an interleave of two answers that each fit closes the channel);
-  the bound of `CHUNKS` squared (an interleave of more than 9 answers that each fit
-  closes the channel) (#3097). The per-id checks: `laptop.architect-2`,
-  2026-10-18T03:44:48Z,
+  Lost: a refusal of the chunks of a request id with no call in flight (no call times
+  out in open62541, so each request stays in flight until its answer); the bound of
+  one message on the queue of all ids (an interleave of two answers that each fit
+  closes the channel); the bound of `CHUNKS` squared (an interleave of more than 9
+  answers that each fit closes the channel) (#3097). The per-id checks:
+  `laptop.architect-2`, 2026-10-18T03:44:48Z,
   https://github.com/synnaxlabs/foundation/pull/3121#issuecomment-6245316650. The
   person, through `laptop.monitor` (kind (a)/(d)), 2026-10-18T03:47:06Z,
   https://github.com/synnaxlabs/foundation/pull/3121#issuecomment-6245333593: "A
