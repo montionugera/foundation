@@ -52,14 +52,14 @@
   `laptop.architect` (2026-10-11T20:45:21Z:
   https://github.com/synnaxlabs/foundation/pull/2438#issuecomment-6113562774), which
   supersede "after the port binds" of the first link. On a node with a region, shard 0
-  also cuts an eighth of its part, rounded down, for the pool of the chunk store, so
+  also cuts a quarter of its part, rounded down, for the pool of the chunk store, so
   the parts still add up to the budget. `node` calls `Config::memory` for it just after
   the call of shard 0 and moves it into shard 0 with its pool, and the purge task of
   shard 0 purges both. A store pool with no memory is `Error::Memory` with core 0
   (`laptop.architect`, 2026-10-18T19:07:27Z:
   https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6253931889;
-  `laptop.architect-2`, 2026-10-18T19:12:02Z:
-  https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6253982711, and
-  2026-10-18T19:19:06Z:
+  `laptop.architect-2`, 2026-10-18T19:19:06Z:
   https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6254066588, which
-  limits it to a node with a region).
+  limits it to a node with a region, and 2026-10-18T19:36:18Z:
+  https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6254240239, which
+  gives it a quarter).

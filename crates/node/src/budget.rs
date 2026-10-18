@@ -23,8 +23,8 @@ pub(crate) const LEN: usize = TAG.len() + 16 + 4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Budget {
     /// The most bytes the node's pools may commit, split evenly across its shards;
-    /// shard 0 also takes the remainder. On a node with a region, shard 0 gives an
-    /// eighth of its part to the pool of the chunk store. The pool of each shard must
+    /// shard 0 also takes the remainder. On a node with a region, shard 0 gives a
+    /// quarter of its part to the pool of the chunk store. The pool of each shard must
     /// hold the largest block its buffer reads and be enough to open its ring, else
     /// [`crate::Node::join`] gives [`Error::Buffer`]: [`buffer::Error::Budget`] names
     /// the least pool.
