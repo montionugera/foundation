@@ -53,25 +53,16 @@ impl Node {
         reason = "a shard that did not panic sent its read"
     )]
     pub fn local(dir: &Path) -> Result<(Self, Option<Subject>), Error> {
-        let thread = |e: &dyn fmt::Display| Error::Thread {
-            reason: e.to_string(),
-        };
         let threads = os::threads().map_err(|e| thread(&e))?;
         let (disk, files) = os::stored(dir, &threads, "foundation-sdk-files")
             .map_err(|error| opened(dir, error))?;
-        let shards = os::shards().map_err(|e| thread(&e))?;
         let (sender, read) = mpsc::channel();
-        let config = env::shards::Config {
-            name: "foundation-sdk".into(),
-            core: None,
-        };
-        let shard = shards.start(config, move |_| async move {
+        let shard = shard(move |_| async move {
             let local = sector::local::read(&Files::new(disk)).await;
             sender
                 .send(local)
                 .expect("invariant: `local` keeps the receiver");
-        });
-        let shard = shard.map_err(|e| thread(&e))?;
+        })?;
         let joined = shard.join().and(files.join());
         joined.map_err(|_panicked| Error::Panicked)?;
         let local = read
@@ -111,12 +102,32 @@ fn opened(dir: &Path, error: os::Error) -> Error {
                 ),
             }))
         }
-        error @ (os::Error::Thread(_)
-        | os::Error::Cores(_)
-        | os::Error::Memory(_)
-        | os::Error::Wall(_)) => Error::Thread {
-            reason: error.to_string(),
-        },
+        os::Error::Thread(error) => thread(&error),
+        os::Error::Cores(_) | os::Error::Memory(_) | os::Error::Wall(_) => {
+            unreachable!("invariant: `os::stored` gives only `Dir` and `Thread`")
+        }
+    }
+}
+
+/// Starts a shard of `os` that logs to the caller's dispatch, and runs `main` on it.
+fn shard<M, F>(main: M) -> Result<Handle, Error>
+where
+    M: FnOnce(Tasks) -> F + Send + 'static,
+    F: Future<Output = ()> + 'static,
+{
+    let log = tracing::dispatcher::get_default(Clone::clone);
+    let shards = os::shards().map_err(|e| thread(&e))?.logged(log);
+    let config = env::shards::Config {
+        name: "foundation-sdk".into(),
+        core: None,
+    };
+    shards.start(config, main).map_err(|e| thread(&e))
+}
+
+/// The [`Error::Thread`] of `error`.
+fn thread(error: &dyn fmt::Display) -> Error {
+    Error::Thread {
+        reason: error.to_string(),
     }
 }
 
@@ -173,20 +184,9 @@ impl Client {
             + 'static,
         F: Future<Output = ()> + 'static,
     {
-        let thread = |e: &dyn fmt::Display| Error::Thread {
-            reason: e.to_string(),
-        };
-        let log = tracing::dispatcher::get_default(Clone::clone);
-        let shards = os::shards().map_err(|e| thread(&e))?.logged(log);
         let (sender, outcome) = mpsc::channel();
         let (end, ended) = oneshot::channel();
-        let config = env::shards::Config {
-            name: "foundation-sdk".into(),
-            core: None,
-        };
-        let handle = shards
-            .start(config, move |tasks| main(tasks, sender, ended))
-            .map_err(|e| thread(&e))?;
+        let handle = shard(move |tasks| main(tasks, sender, ended))?;
         #[expect(
             clippy::disallowed_methods,
             reason = "connect blocks its caller, which may run a Tokio runtime"
@@ -244,7 +244,8 @@ impl Thread {
 /// session ended before [`Client::close`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// The client's thread or its runtime cannot start.
+    /// A thread of the client or of [`Node::local`], or the client's runtime, cannot
+    /// start.
     Thread {
         /// The text of the error of `env` or `os`.
         reason: String,
