@@ -112,7 +112,8 @@ pub trait Device {
     /// Gives one page of the entries of `folder`, or of the root when `None`, in
     /// device order, from `cursor`, or from the first entry when `None`. A page holds
     /// at most [`LIMIT`] entries. `None` when the device no longer has `folder` as a
-    /// folder.
+    /// folder. A walk may never ask for the page at a `next` that it got, so a kind
+    /// bounds the state that it keeps for its cursors in one session.
     ///
     /// # Errors
     ///

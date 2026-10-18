@@ -110,7 +110,9 @@
   a third context, or a second shared input with a body of its own, as `secret` has in
   `read_secret`. A kind implements `browse::Device` on its open session, so one walk is
   one session and can use a continuation point; a `Cursor` that a front end gets holds
-  no session state. `level` takes a folder as the
+  no session state. A walk may never ask for the page at a `next` that it got, so a kind
+  bounds the state that it keeps for its cursors in one session.
+  `level` takes a folder as the
   `Entry` that the device gave, never a path, and gives at most `LIMIT` entries a page;
   `values` gives `types::sample::Value`, so there is one value model. Trigger for a text
   value: a kind that reads a `string` channel. Lost: a count of matches up to the
