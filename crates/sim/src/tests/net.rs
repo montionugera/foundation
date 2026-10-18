@@ -1241,6 +1241,37 @@ fn a_send_from_an_address_of_another_node_fails() {
     sent(|a| at(a, 4433), spoof, Err(Net::Io { code: 99 }));
 }
 
+/// As with `IPV6_PKTINFO` on Linux, a socket on the link-local address sends from the
+/// routable IPv6 address of its node when the transmit names it.
+#[test]
+fn a_link_local_socket_sends_from_a_routable_source_that_it_names() {
+    let (mut sim, a, b) = pair(0, link::Config::default());
+    let (ip, interface) = a.link_local();
+    let local = SocketAddr::V6(SocketAddrV6::new(ip, 4433, 0, interface));
+    let (mut sender, _a) = bind(&a, local).unwrap();
+    let to = SocketAddr::new(b.addresses()[1], 4433);
+    let (_b, receiver) = bind(&b, to).unwrap();
+    let log = Log::default();
+    let _receive = receive(&b, receiver, &log);
+    let source = a.addresses()[1];
+    let send = a.shards().start(shard("send"), move |_| async move {
+        let transmit = Transmit {
+            source: Some(source),
+            ..transmit(to, b"abc")
+        };
+        poll_fn(|cx| sender.poll_send(cx, &transmit)).await.unwrap();
+    });
+    let _send = send.unwrap();
+    sim.run_for(Span::SECOND).unwrap();
+    let sources: Vec<_> = log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, meta, _)| meta.source)
+        .collect();
+    assert_eq!(sources, [SocketAddr::new(source, 4433)]);
+}
+
 /// The digest of a run that sends 20 datagrams over a jittered link.
 fn digest(seed: u64) -> u64 {
     let link = link::Config {

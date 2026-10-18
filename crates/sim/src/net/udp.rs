@@ -361,8 +361,9 @@ impl<'a> Udp<'a> {
 /// The source and destination addresses of the datagrams of `transmit` from a
 /// socket of `node` bound to `local`. As on Linux, a socket on IPv6 takes an
 /// IPv4-mapped address as the IPv4 address. A datagram from a link-local `local`
-/// leaves from it, which is an address of `node` because a bind takes only the
-/// link-local address of its own node.
+/// leaves from it, or, as with `IPV6_PKTINFO`, from the routable address of `node`
+/// that `transmit` names. A bind takes only the link-local address of its own node,
+/// so `local` is an address of `node`.
 ///
 /// # Errors
 ///
@@ -388,13 +389,13 @@ fn route(
         return Err(Error::Unreachable { remote });
     }
     let [v4, v6] = addresses(node);
-    let own = match local.ip() {
-        IpAddr::V6(ip) if ip.is_unicast_link_local() => local.ip(),
-        _ if destination.is_ipv4() => v4,
-        _ => v6,
+    let routable = if destination.is_ipv4() { v4 } else { v6 };
+    let link_local = match local.ip() {
+        IpAddr::V6(ip) if ip.is_unicast_link_local() => Some(local.ip()),
+        _ => None,
     };
-    let ip = ip.unwrap_or(own);
-    if ip != own {
+    let ip = ip.or(link_local).unwrap_or(routable);
+    if ip != routable && Some(ip) != link_local {
         return Err(Error::Io {
             code: NOT_AVAILABLE,
         });
