@@ -41,11 +41,11 @@
     it leaves out, as `- <file> <path in the file> # #<issue>`, or, in a case of "No
     `#[ignore]`", the first line of the doc of the item is `Only <OS>` or starts with
     `Only <OS>:`, where `<OS>` names each OS on which the item builds, as for a reason.
-    The list comes first, so a doc can give the OSes that no list item names. A gate
-    covers a test module, a test function, a test in the body of a macro call, and each
-    function of a test or bench target with no harness. `cargo xtask skips` refuses
-    each other gate, and each list item that names no gate. A `cfg` on a statement is
-    not read.
+    The list comes first, so a doc covers only each OS that no list item names, and the
+    review checks its claim on each of those OSes. A gate covers a test module, a test
+    function, a test in the body of a macro call, and each function of a test or bench
+    target with no harness. `cargo xtask skips` refuses each other gate, and each list
+    item that names no gate. A `cfg` on a statement is not read.
   - For `/review`, CI does not run an OS for a crate or a test on the list of that OS
     (`laptop.director`,
     https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229528745).
@@ -103,7 +103,10 @@
     (https://github.com/synnaxlabs/foundation/issues/2954#issuecomment-6231250077).
   - The gates on the lists: `laptop.director`, 2026-10-17T16:02:01Z, option 1
     (https://github.com/synnaxlabs/foundation/issues/3015#issuecomment-6236264009).
-    The doc form `Only <OS>`, in place of a reason: `box1.builder-1` in #3015.
+    The doc form `Only <OS>`, which covers only each OS that no item names, and whose
+    claim the review checks on each of those OSes: `laptop.director`,
+    2026-10-18T04:21:59Z
+    (https://github.com/synnaxlabs/foundation/issues/3015#issuecomment-6245603833).
   - A new crate on a list: the person, relayed by `laptop.monitor` at
     2026-10-17T17:30:12Z
     (https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237654845):
