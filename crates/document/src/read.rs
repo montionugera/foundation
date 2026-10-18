@@ -10,7 +10,7 @@ use types::{byte, time};
 
 use crate::diagnostic::{Code, Diagnostic, Note};
 use crate::value::{Kind, Value};
-use crate::{Block, Document, Label, Span};
+use crate::{Block, Document, Label, Span, schema};
 
 const UNKNOWN_ATTRIBUTE: Code = Code::new("document.unknown-attribute");
 const UNKNOWN_BLOCK: Code = Code::new("document.unknown-block");
@@ -321,21 +321,18 @@ pub fn repeated(body: &Document, of: &str, keyword: &str) -> Vec<Diagnostic> {
         .collect()
 }
 
-/// Reports each attribute of `body` whose key is not in `keys`, and each block whose
-/// keyword is not in `blocks`, in that order. `of` names `body` in each message, such
+/// Reports each attribute of `config` that `body` does not state, and each block whose
+/// keyword it does not state, in that order. `of` names `config` in each message, such
 /// as "the `retention` block".
 ///
 /// Returns a `document.unknown-attribute` diagnostic at the key of each such
 /// attribute, and a `document.unknown-block` diagnostic at the keyword of each such
-/// block. Each fix names the keys and blocks it takes.
+/// block. Each fix names the keys and blocks that `body` takes.
 #[must_use]
-pub fn unknown(
-    body: &Document,
-    of: &str,
-    keys: &[&str],
-    blocks: &[&str],
-) -> Vec<Diagnostic> {
-    let attributes = body
+pub fn unknown(config: &Document, of: &str, body: &schema::Body) -> Vec<Diagnostic> {
+    let keys: Vec<&str> = body.attributes.iter().map(|key| key.name).collect();
+    let blocks: Vec<&str> = body.blocks.iter().map(|block| block.keyword).collect();
+    let attributes = config
         .attributes
         .iter()
         .filter(|attribute| !keys.contains(&&*attribute.key))
@@ -344,16 +341,16 @@ pub fn unknown(
                 UNKNOWN_ATTRIBUTE,
                 attribute.key_span,
                 format!("`{}` is not an attribute of {of}", attribute.key),
-                match (keys, blocks) {
+                match (keys.as_slice(), blocks.as_slice()) {
                     ([], [_, ..]) => format!(
                         "Move it into the {} block that it sets, or remove it",
-                        one_of(blocks)
+                        one_of(&blocks)
                     ),
-                    _ => use_or_remove(keys),
+                    _ => use_or_remove(&keys),
                 },
             )
         });
-    let inner = body
+    let inner = config
         .blocks
         .iter()
         .filter(|block| !blocks.contains(&&*block.keyword))
@@ -362,7 +359,7 @@ pub fn unknown(
                 UNKNOWN_BLOCK,
                 block.keyword_span,
                 format!("{of} cannot hold the `{}` block", block.keyword),
-                use_or_remove(blocks),
+                use_or_remove(&blocks),
             )
         });
     attributes.chain(inner).collect()
@@ -1302,6 +1299,42 @@ mod tests {
         use super::*;
         use crate::{Attribute, read};
 
+        const fn attribute(name: &'static str) -> schema::Attribute {
+            schema::Attribute {
+                name,
+                value: "a string",
+                default: None,
+                summary: "",
+            }
+        }
+
+        const fn block(keyword: &'static str) -> schema::Block {
+            schema::Block {
+                keyword,
+                label: None,
+                forms: &[],
+            }
+        }
+
+        /// A schema body that states `attributes` and `blocks`.
+        const fn takes(
+            attributes: &'static [schema::Attribute],
+            blocks: &'static [schema::Block],
+        ) -> schema::Body {
+            schema::Body {
+                summary: "",
+                attributes,
+                blocks,
+                examples: &[],
+            }
+        }
+
+        const SELECT: schema::Attribute = attribute("select");
+        const ADDRESS: schema::Attribute = attribute("address");
+        const READER: schema::Block = block("reader");
+        const CHANNEL: schema::Block = block("channel");
+        const RETENTION: schema::Block = block("retention");
+
         /// A body with an attribute at the offset of each key, and a block at the
         /// offset of each keyword.
         fn body(keys: &[(u32, &str)], keywords: &[(u32, &str)]) -> Document {
@@ -1343,7 +1376,7 @@ mod tests {
             );
             let of = "the `influx` connector";
             assert_eq!(
-                unknown(&body, of, &["select", "address"], &["reader"]),
+                unknown(&body, of, &takes(&[SELECT, ADDRESS], &[READER])),
                 [
                     diagnostic(
                         "document.unknown-attribute",
@@ -1371,7 +1404,7 @@ mod tests {
         fn tells_attributes_and_blocks_apart() {
             let body = body(&[(1, "reader")], &[(2, "select")]);
             assert_eq!(
-                unknown(&body, "the connector", &["select"], &["reader"]),
+                unknown(&body, "the connector", &takes(&[SELECT], &[READER])),
                 [
                     diagnostic(
                         "document.unknown-attribute",
@@ -1393,7 +1426,7 @@ mod tests {
         fn says_only_remove_it_when_it_takes_no_key() {
             let body = body(&[(1, "disk")], &[(2, "inner")]);
             assert_eq!(
-                unknown(&body, "the `retention` block", &[], &[]),
+                unknown(&body, "the `retention` block", &takes(&[], &[])),
                 [
                     diagnostic(
                         "document.unknown-attribute",
@@ -1415,7 +1448,7 @@ mod tests {
         fn says_to_move_an_attribute_into_a_block_when_it_takes_only_blocks() {
             let body = body(&[(1, "disk")], &[]);
             assert_eq!(
-                unknown(&body, "a file", &[], &["channel", "retention"]),
+                unknown(&body, "a file", &takes(&[], &[CHANNEL, RETENTION])),
                 [diagnostic(
                     "document.unknown-attribute",
                     1,
@@ -1430,7 +1463,7 @@ mod tests {
         fn reports_nothing_when_each_key_is_known() {
             let body = body(&[(1, "select")], &[(2, "reader")]);
             assert_eq!(
-                unknown(&body, "the connector", &["select"], &["reader"]),
+                unknown(&body, "the connector", &takes(&[SELECT], &[READER])),
                 []
             );
         }

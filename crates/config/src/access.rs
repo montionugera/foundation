@@ -1,6 +1,7 @@
 use std::slice;
 
 use document::diagnostic::{Code, Diagnostic};
+use document::schema::{self, Attribute, Body};
 use document::value::{Kind, Value};
 use document::{Block, read};
 use spec::access::{Action, Actions, Error, Policy};
@@ -14,7 +15,56 @@ const BAD_ACTION: Code = Code::new("config.bad-action");
 const EMPTY_ALLOW: Code = Code::new("config.empty-allow");
 const BAD_AUTHORITY: Code = Code::new("config.bad-authority");
 const AUTHORITY_WITHOUT_WRITE: Code = Code::new("config.authority-without-write");
-const KEYS: [&str; 4] = ["subjects", "select", "allow", "authority"];
+/// The `access` block.
+pub(crate) const BLOCK: schema::Block = schema::Block {
+    keyword: "access",
+    label: Some("the name of the policy"),
+    forms: &[BODY],
+};
+
+const BODY: Body = Body {
+    summary: "Allows the subjects that it selects to do actions on names. A subject \
+              may do what the union of its policies allows, and nothing else.",
+    attributes: &[
+        Attribute {
+            name: "subjects",
+            value: "a selector",
+            default: None,
+            summary: "The subjects that it allows.",
+        },
+        Attribute {
+            name: "select",
+            value: "a selector",
+            default: None,
+            summary: "The names that it allows them to use.",
+        },
+        Attribute {
+            name: "allow",
+            value: "an action, or a list of them: \"read\", \"write\", \"plan\", \
+                    \"apply\", \"secret\", or \"admin\"",
+            default: None,
+            summary: "The actions that it allows.",
+        },
+        Attribute {
+            name: "authority",
+            value: "an integer, 0 to 255",
+            default: Some("0"),
+            summary: "The highest control authority that a write may claim. Only a \
+                      policy that allows \"write\" takes it.",
+        },
+    ],
+    blocks: &[],
+    examples: &[EXAMPLE],
+};
+
+const EXAMPLE: &str = "\
+access \"site_a_operators\" {
+  subjects  = \"site_a.operators.*\"
+  select    = \"site_a.**\"
+  allow     = [\"read\", \"write\"]
+  authority = 100
+}
+";
 
 /// The word of each action in a Document.
 const ACTIONS: [(&str, Action); 6] = [
@@ -33,7 +83,7 @@ pub(crate) fn check(
     block: &Block,
     _: Option<&Name>,
 ) -> Option<Definition> {
-    let unknown = found.unknown(block, &KEYS);
+    let unknown = found.unknown(block, &BODY);
     let fix = "Add a `subjects` attribute with the subjects that it allows, such as \
                \"site_a.operators.*\"";
     let subjects = found.required(block, "subjects", read::selector, fix.into());

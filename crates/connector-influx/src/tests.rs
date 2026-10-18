@@ -101,7 +101,7 @@ fn reads_the_address_and_the_reader() {
         measurement: Measurement::new("telemetry", &[]).expect("a name"),
         token: None,
         ca: None,
-        reader: reader::read(&config, &KEYS, &[]).expect("the reader settings"),
+        reader: reader::read(&config, &BODY).expect("the reader settings"),
     };
     assert_eq!(Kind.parse(&config), Ok(expected));
 }
@@ -165,7 +165,7 @@ fn refuses_a_token_or_a_ca_that_is_not_a_source() {
 #[test]
 fn checks_to_its_reader_and_the_counts_confirmed_lost_and_oversized_and_no_device() {
     let config = config(string("http://influx:8086"));
-    let reader = reader::read(&config, &KEYS, &[]);
+    let reader = reader::read(&config, &BODY);
     let table = Table::new().with("influx", Kind);
     assert_eq!(
         table.check("influx", None, &config),

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use document::diagnostic::{Code, Diagnostic};
+use document::schema::{self, Attribute, Body};
 use document::{Block, Span, read};
 use spec::definition;
 use spec::placement::{Error, Nodes, Policy};
@@ -10,7 +11,55 @@ use crate::{Definition, Found, span};
 
 const EMPTY_PLACEMENT: Code = Code::new("config.empty-placement");
 const ROLE_OVERLAP: Code = Code::new("config.role-overlap");
-const KEYS: [&str; 4] = ["select", "home", "standby", "copies"];
+
+/// The `placement` block.
+pub(crate) const BLOCK: schema::Block = schema::Block {
+    keyword: "placement",
+    label: Some("the name of the policy"),
+    forms: &[BODY],
+};
+
+const BODY: Body = Body {
+    summary: "Places the connectors and indexes that it selects on nodes. It names at \
+              least one node, and each node has one role.",
+    attributes: &[
+        Attribute {
+            name: "select",
+            value: "a selector",
+            default: None,
+            summary: "The connectors and indexes that it places.",
+        },
+        Attribute {
+            name: "home",
+            value: "the name of a node",
+            default: Some("none"),
+            summary: "The node that orders, buffers, and gates the selected indexes.",
+        },
+        Attribute {
+            name: "standby",
+            value: "the name of a node",
+            default: Some("none"),
+            summary: "The node that takes over when the home fails.",
+        },
+        Attribute {
+            name: "copies",
+            value: "the name of a node, or a list of them",
+            default: Some("none"),
+            summary: "The nodes that keep a copy that is never promoted.",
+        },
+    ],
+    blocks: &[],
+    examples: &[EXAMPLE],
+};
+
+const EXAMPLE: &str = "\
+placement \"site_a\" {
+  select  = \"site_a.*\"
+  home    = \"edge\"
+  standby = \"edge_b\"
+  copies  = [\"cloud\"]
+}
+";
 
 /// Checks a `placement` block and gives its policy.
 pub(crate) fn check(
@@ -18,7 +67,7 @@ pub(crate) fn check(
     block: &Block,
     _: Option<&Name>,
 ) -> Option<Definition> {
-    let unknown = found.unknown(block, &KEYS);
+    let unknown = found.unknown(block, &BODY);
     let select =
         found.select(block, "connectors and indexes that it places", "site_a.*");
     let home = found.attribute(block, "home", read::name);
@@ -62,9 +111,11 @@ pub(crate) fn nodes(policy: &Policy) -> impl Iterator<Item = &Name> {
 /// The span of the first `home`, `standby`, or copy of `block`, a checked `placement`
 /// block, that names each node.
 pub(crate) fn spans(block: &Block) -> BTreeMap<Name, Option<Span>> {
-    let attributes = KEYS[1..]
+    let attributes = BODY
+        .attributes
         .iter()
-        .filter_map(|key| block.body.attributes.get(key));
+        .filter(|key| key.name != "select")
+        .filter_map(|key| block.body.attributes.get(key.name));
     let values = attributes.flat_map(|attribute| read::items(&attribute.value));
     let mut spans = BTreeMap::new();
     for value in values {

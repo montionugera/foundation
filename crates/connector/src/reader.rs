@@ -1,6 +1,7 @@
 //! The reader settings that each out connector reads from its config.
 
 use document::diagnostic::{Code, Diagnostic};
+use document::schema::{self, Attribute, Body};
 use document::value::Value;
 use document::{Block, Document};
 use hub::reader::Mode;
@@ -12,7 +13,41 @@ use crate::kind;
 const BAD_MODE: Code = Code::new("connector.bad-mode");
 const LATEST_HOLD: Code = Code::new("connector.latest-hold");
 
-const READER_KEYS: [&str; 2] = ["mode", "hold"];
+/// The `select` attribute, which the body of each kind that reads states.
+pub const SELECT: Attribute = Attribute {
+    name: "select",
+    value: "a selector",
+    default: None,
+    summary: "The channels that the connector reads.",
+};
+
+/// The `reader` block, which the body of each kind that reads states.
+pub const READER: schema::Block = schema::Block {
+    keyword: "reader",
+    label: None,
+    forms: &[READER_BODY],
+};
+
+const READER_BODY: Body = Body {
+    summary: "How the connector reads its channels. At most one.",
+    attributes: &[
+        Attribute {
+            name: "mode",
+            value: "\"complete\" or \"latest\"",
+            default: Some("\"complete\""),
+            summary: "Which frames the reader gets: each frame, or only the latest.",
+        },
+        Attribute {
+            name: "hold",
+            value: "a span",
+            default: Some("\"0s\""),
+            summary: "How long the home holds the position of a complete reader after \
+                      its session closes.",
+        },
+    ],
+    blocks: &[],
+    examples: &[],
+};
 
 /// The reader settings of an out connector. The reader has its connector's name and no
 /// maximum age, and opens as [`hub::reader::Config::name`] says.
@@ -31,9 +66,9 @@ pub struct Settings {
 
 /// Reads the `select` attribute of `config` and its one `reader` block, with the
 /// attributes `mode` (`"complete"` or `"latest"`, as a string or a reference) and
-/// `hold`. With no `reader` block, the reader is complete and has no hold. `keys` and
-/// `blocks` are the kind's own attributes and blocks. Each other key of `config` that
-/// `read` does not read gives `document.unknown-attribute` or `document.unknown-block`.
+/// `hold`. With no `reader` block, the reader is complete and has no hold. `body` is
+/// the body of the kind's config. Each attribute and block of `config` that `body`
+/// does not state gives `document.unknown-attribute` or `document.unknown-block`.
 ///
 /// # Errors
 ///
@@ -44,24 +79,13 @@ pub struct Settings {
 ///
 /// # Panics
 ///
-/// When `keys` holds `select` or `blocks` holds `reader`: the kind's lists are
-/// internal, and `read` reads those two itself.
-pub fn read(
-    config: &Document,
-    keys: &[&str],
-    blocks: &[&str],
-) -> Result<Settings, Vec<Diagnostic>> {
+/// When `body` does not state [`SELECT`] and [`READER`]: the kind's body is internal.
+pub fn read(config: &Document, body: &Body) -> Result<Settings, Vec<Diagnostic>> {
     assert!(
-        !keys.contains(&"select") && !blocks.contains(&"reader"),
-        "a kind lists `select` or `reader`, which `read` reads itself: keys {keys:?}, \
-         blocks {blocks:?}"
+        body.attributes.contains(&SELECT) && body.blocks.contains(&READER),
+        "the body of a kind that reads states `SELECT` and `READER`: {body:?}"
     );
-    let mut diagnostics = document::read::unknown(
-        config,
-        kind::NOUN,
-        &[&["select"], keys].concat(),
-        &[&["reader"], blocks].concat(),
-    );
+    let mut diagnostics = document::read::unknown(config, kind::NOUN, body);
     let select = keep(
         document::read::required(
             config,
@@ -98,8 +122,7 @@ fn block(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> (Mode, Span) {
     diagnostics.extend(document::read::unknown(
         &block.body,
         "the `reader` block",
-        &READER_KEYS,
-        &[],
+        &READER_BODY,
     ));
     let attribute = |key: &str| block.body.attributes.get(key);
     let mode = attribute("mode").map(|mode| keep(self::mode(&mode.value), diagnostics));

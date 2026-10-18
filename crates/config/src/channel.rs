@@ -1,4 +1,5 @@
 use document::diagnostic::{Code, Diagnostic};
+use document::schema::{self, Attribute, Body};
 use document::value::Value;
 use document::{Block, read};
 use spec::channel::{Data, Edge, Error, Kind};
@@ -12,8 +13,139 @@ const BAD_CHANNEL_KIND: Code = Code::new("config.bad-channel-kind");
 const BAD_DATA_TYPE: Code = Code::new("config.bad-data-type");
 const BAD_UNIT: Code = Code::new("config.bad-unit");
 const UNKNOWN_CHANNEL: Code = Code::new("config.unknown-channel");
-const INDEX_KEYS: [&str; 3] = ["kind", "error", "control"];
-const DATA_KEYS: [&str; 5] = ["kind", "data_type", "index", "quality", "unit"];
+
+/// The `channel` block, with one form for each kind of channel.
+pub(crate) const BLOCK: schema::Block = schema::Block {
+    keyword: "channel",
+    label: Some("the name of the channel"),
+    forms: &[INDEX, DATA],
+};
+
+const INDEX: Body = Body {
+    summary: "An index channel, with `kind = \"index\"`: the time base of the data \
+              channels that point at it.",
+    attributes: &[
+        Attribute {
+            name: "kind",
+            value: "\"index\"",
+            default: None,
+            summary: "Makes the channel an index.",
+        },
+        ERROR,
+        CONTROL,
+    ],
+    blocks: &[],
+    examples: &[EXAMPLE_INDEX],
+};
+
+const DATA: Body = Body {
+    summary: "A data channel, with `kind = \"data\"` or no `kind`: the samples of \
+              one value, timed by its index.",
+    attributes: &[KIND_DATA, DATA_TYPE, INDEX_EDGE, QUALITY, UNIT],
+    blocks: &[],
+    examples: &[EXAMPLE_DATA],
+};
+
+/// What each kind of channel takes, for a block whose `kind` does not read.
+const ANY: Body = Body {
+    summary: "A channel of either kind.",
+    attributes: &[
+        CONTROL, DATA_TYPE, ERROR, INDEX_EDGE, KIND_DATA, QUALITY, UNIT,
+    ],
+    blocks: &[],
+    examples: &[],
+};
+
+const ERROR: Attribute = Attribute {
+    name: "error",
+    value: "the name of a data channel",
+    default: Some("none"),
+    summary: "The channel that holds the clock error bound of its timestamps.",
+};
+
+const CONTROL: Attribute = Attribute {
+    name: "control",
+    value: "the name of a data channel on another index",
+    default: Some("none"),
+    summary: "The channel that the home writes control handoffs to.",
+};
+
+const KIND_DATA: Attribute = Attribute {
+    name: "kind",
+    value: "\"data\"",
+    default: Some("\"data\""),
+    summary: "Makes the channel a data channel.",
+};
+
+const DATA_TYPE: Attribute = Attribute {
+    name: "data_type",
+    value: "a data type, such as \"f64\", \"f32[3]\", \"list<u8, 16>\", \
+            \"string\", \"bytes\", or \"quality\"",
+    default: None,
+    summary: "The type of each sample.",
+};
+
+const INDEX_EDGE: Attribute = Attribute {
+    name: "index",
+    value: "the name of an index channel",
+    default: None,
+    summary: "The index channel that times its samples.",
+};
+
+const QUALITY: Attribute = Attribute {
+    name: "quality",
+    value: "the name of a data channel of type \"quality\"",
+    default: Some("none"),
+    summary: "The channel that holds the quality of its samples.",
+};
+
+const UNIT: Attribute = Attribute {
+    name: "unit",
+    value: "a unit, such as \"kPa\"",
+    default: Some("none"),
+    summary: "The unit of a numeric sample.",
+};
+
+const EXAMPLE_INDEX: &str = "\
+channel \"edge.time\" {
+  kind    = \"index\"
+  error   = \"edge.time_error\"
+  control = \"edge.control\"
+}
+
+channel \"edge.time_error\" {
+  data_type = \"u64\"
+  index     = \"edge.time\"
+}
+
+channel \"edge.control_time\" {
+  kind = \"index\"
+}
+
+channel \"edge.control\" {
+  data_type = \"string\"
+  index     = \"edge.control_time\"
+}
+";
+
+const EXAMPLE_DATA: &str = "\
+channel \"edge.pressure\" {
+  kind      = \"data\"
+  data_type = \"f64\"
+  index     = \"edge.time\"
+  quality   = \"edge.pressure_quality\"
+  unit      = \"kPa\"
+}
+
+channel \"edge.time\" {
+  kind = \"index\"
+}
+
+channel \"edge.pressure_quality\" {
+  data_type = \"quality\"
+  index     = \"edge.time\"
+}
+";
 
 /// The check of the attributes of one kind of channel.
 type Attributes = fn(&mut Found<'_>, &Block) -> Option<Kind<Name>>;
@@ -39,10 +171,7 @@ pub(crate) fn check(
         }
     });
     let Ok(attributes) = attributes else {
-        let mut keys: Vec<&str> = INDEX_KEYS.into_iter().chain(DATA_KEYS).collect();
-        keys.sort_unstable();
-        keys.dedup();
-        drop(found.unknown(block, &keys));
+        drop(found.unknown(block, &ANY));
         return None;
     };
     let attributes = attributes.unwrap_or(data);
@@ -50,7 +179,7 @@ pub(crate) fn check(
 }
 
 fn index(found: &mut Found<'_>, block: &Block) -> Option<Kind<Name>> {
-    let unknown = found.unknown(block, &INDEX_KEYS);
+    let unknown = found.unknown(block, &INDEX);
     let error = edge(found, block, Edge::Error);
     let control = edge(found, block, Edge::Control);
     let (Ok(()), Ok(error), Ok(control)) = (unknown, error, control) else {
@@ -60,7 +189,7 @@ fn index(found: &mut Found<'_>, block: &Block) -> Option<Kind<Name>> {
 }
 
 fn data(found: &mut Found<'_>, block: &Block) -> Option<Kind<Name>> {
-    let unknown = found.unknown(block, &DATA_KEYS);
+    let unknown = found.unknown(block, &DATA);
     let index = edge(found, block, Edge::Index).and_then(|index| {
         index.ok_or_else(|| {
             let fix = "Add an `index` attribute with the name of an index channel, \

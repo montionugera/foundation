@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::slice;
 
 use document::diagnostic::{Code, Diagnostic, Note};
+use document::schema::{self, Attribute, Body};
 use document::value::{Kind, Value};
 use document::{Block, Span};
 use spec::definition;
@@ -17,7 +18,33 @@ const PUBLIC_KEY_ALGORITHM: Code = Code::new("config.public-key-algorithm");
 const NO_PUBLIC_KEYS: Code = Code::new("config.no-public-keys");
 const DUPLICATE_PUBLIC_KEY: Code = Code::new("config.duplicate-public-key");
 const SUBJECT_IS_CONNECTOR: Code = Code::new("config.subject-is-connector");
-const KEYS: [&str; 1] = ["keys"];
+/// The `subject` block.
+pub(crate) const BLOCK: schema::Block = schema::Block {
+    keyword: "subject",
+    label: Some("the name of the subject"),
+    forms: &[BODY],
+};
+
+const BODY: Body = Body {
+    summary: "A person, an agent, or a program that signs its own hello. A connector \
+              is a subject with no such block: its node vouches for it.",
+    attributes: &[Attribute {
+        name: "keys",
+        value: "the line of an OpenSSH ed25519 `.pub` file, or a list of them",
+        default: None,
+        summary: "The public keys of the subject.",
+    }],
+    blocks: &[],
+    examples: &[EXAMPLE],
+};
+
+const EXAMPLE: &str = "\
+subject \"site_a.operators.alice\" {
+  keys = \"ssh-ed25519 \
+          AAAAC3NzaC1lZDI1NTE5AAAAIGVVuOR8JKYpAcWLMUveadmJ1wUAmYGgIDtqlhFe7Yhg \
+          alice@laptop\"
+}
+";
 
 /// Checks a `subject` block and gives its subject.
 pub(crate) fn check(
@@ -25,7 +52,7 @@ pub(crate) fn check(
     block: &Block,
     _: Option<&Name>,
 ) -> Option<Definition> {
-    let unknown = found.unknown(block, &KEYS);
+    let unknown = found.unknown(block, &BODY);
     let fix = "Add a `keys` attribute with the line of a `.pub` file, such as \
                \"ssh-ed25519 AAAA... alice@laptop\"";
     let subject = found.required(block, "keys", subject, fix.into());

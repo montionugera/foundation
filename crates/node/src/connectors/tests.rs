@@ -11,6 +11,7 @@ use connector::kind::{Channels, Context, Error, Kind, Table};
 use connector::testing;
 use document::diagnostic::Diagnostic;
 use document::encoding::Checked;
+use document::schema::Body;
 use document::value::{self, Value};
 use document::{Attribute, Document, Map};
 use spec::connector::Connector;
@@ -402,6 +403,14 @@ fn kinds(
         )
 }
 
+/// The body of a kind that takes only what a reader takes.
+const READS: Body = Body {
+    summary: "A reader.",
+    attributes: &[connector::reader::SELECT],
+    blocks: &[connector::reader::READER],
+    examples: &[],
+};
+
 /// The settings of a complete reader of the channels that `select` matches.
 fn settings(select: &str) -> connector::reader::Settings {
     let select = Attribute {
@@ -416,7 +425,7 @@ fn settings(select: &str) -> connector::reader::Settings {
         attributes: Map::new(vec![select]).expect("one key"),
         blocks: Vec::new(),
     };
-    connector::reader::read(&config, &[], &[]).expect("the reader settings")
+    connector::reader::read(&config, &READS).expect("the reader settings")
 }
 
 /// The definitions of `spec`: each connector and its status channels.
