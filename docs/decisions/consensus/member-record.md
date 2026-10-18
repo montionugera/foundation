@@ -65,16 +65,20 @@
   (2026-10-07T13:12:52Z):
   https://github.com/synnaxlabs/foundation/issues/1397#issuecomment-6038688551. The
   voter runs the check of apply on its applied state at the stamp, before it gives the
-  join: `region::State::check`, the one function that apply also calls, never a copy. So
-  a join that its state refuses never gets into the log, which grows on every node until
-  #253, and the joining node gets the exact refusal. The check takes the card, then the
-  ticket and the admission, then the fit of the member. So a peer with no good admission
-  learns only that its card or its admission is forged, or that no ticket of the key
-  that it sent is recorded, never a key or a name that the region holds
-  (`laptop.architect`, 2026-10-11T08:12:48Z:
-  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6107014728). A voter
-  whose state lags can refuse a valid request; the node then tries again or tries
-  another voter of its ticket.
+  join: `region::State::check`, which runs the one function that apply also runs
+  (`State::admitted`), never a copy. So a join that its state refuses never gets into
+  the log, which grows on every node until #253, and the joining node gets the exact
+  refusal. The check takes the card, then the ticket and the admission, then the fit of
+  the member, then the use of the ticket. So a peer with no good admission learns only
+  that its card or its admission is forged, or that no ticket of the key that it sent is
+  recorded, never a key or a name that the region holds. A repeat of an applied join
+  finds its node a member before the use counts, so it gets `Unfit::Duplicate`, not
+  `Used` (`laptop.architect`, 2026-10-11T08:12:48Z:
+  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6107014728, and
+  2026-10-18T22:43:22Z:
+  https://github.com/synnaxlabs/foundation/pull/3280#issuecomment-6256084322, which
+  supersedes the order of item 1 of the first). A voter whose state lags can refuse a
+  valid request; the node then tries again or tries another voter of its ticket.
   Decided by `laptop.architect` (2026-10-07T13:11:29Z), ruling 3 of
   https://github.com/synnaxlabs/foundation/pull/1390#issuecomment-6038661706. After a
   stop, `stamp` gives the cause first and draws no entropy, because a stamp after a stop
@@ -120,9 +124,10 @@
   equality. `Ticket::admission` signs `foundation/admission/1`, the card's node key, and
   the card's byte form. The region's `ticket::Record` holds the public key, the
   `Options` (prefix, reusable, expiry, ephemeral), and the use count. `Record::check`
-  refuses, in this order, a forged admission, a name outside the prefix, a join at or
-  after the expiry, and a second use of a single-use ticket. Apply counts a use only
-  when all checks pass, so a refused join never uses up a ticket. The expiry is the
+  refuses, in this order, a forged admission, a name outside the prefix, and a join at
+  or after the expiry. `Record::unused` refuses a second use of a single-use ticket.
+  Apply counts a use only when all checks pass, so a refused join never uses up a
+  ticket. The expiry is the
   first mesh time at which the ticket admits no node, so the `Expired` text is "ticket
   {public_key} expired at {expiry}, and the join is at {at}". The text and the admit
   order approved by `laptop.architect` (2026-10-07T11:03:29Z):
@@ -144,14 +149,13 @@
   mesh time interval; a voter with no mesh time of known error at or after the Unix
   epoch stamps no `Join`), the node key, the card and its signature, the admission,
   and the status keys, which the voter assigns (UUIDv7). Apply refuses, in this order,
-  a forged card, a reserved name (A3), a name outside the region, a status channel
-  `<name>.<status>` that is longer than a name can be or reserved, a key that is
-  already a member, a public key that the card of a member holds (`Unfit::Held`;
-  `laptop.architect`, 2026-10-08T22:29:26Z,
+  a forged card, an unknown ticket, each refusal of `Record::check`, a reserved name
+  (A3), a name outside the region, a status channel `<name>.<status>` that is longer
+  than a name can be or reserved, a key that is already a member, a public key that the
+  card of a member holds (`Unfit::Held`; `laptop.architect`, 2026-10-08T22:29:26Z,
   https://github.com/synnaxlabs/foundation/issues/2023#issuecomment-6070338077), a
-  name that a member holds, a status key that a member holds or
-  that the join repeats (A4), an unknown ticket, and each refusal of `Record::check`.
-  So no refusal counts a use. A member's names are its card name and each
+  name that a member holds, a status key that a member holds or that the join repeats
+  (A4), and the refusal of `Record::unused`. So no refusal counts a use. A member's names are its card name and each
   `<name>.<status>`, and two names are equal when they differ only in ASCII case (A3,
   X27), so each full name maps to at most one member. Region state cannot see the keys
   of the spec, so the status key check covers members only. The name and key checks are

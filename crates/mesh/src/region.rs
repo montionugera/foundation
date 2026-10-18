@@ -323,8 +323,9 @@ impl State {
     }
 
     // The checked card of `join` and its names from `fits`, when the region admits
-    // it. The ticket checks come before `fits`, so a refusal names a key or a name of
-    // the region only to a peer with a good admission.
+    // it. The admission comes before `fits`, so a refusal names a key or a name of
+    // the region only to a peer with a good admission. The use comes after it, so a
+    // repeat of an applied join gets `Unfit::Duplicate`.
     fn admitted(&self, join: &Join) -> Result<(card::Signed, Vec<String>), Refused> {
         let card = join.card.clone().check().map_err(Refused::Forged)?;
         let record =
@@ -337,6 +338,7 @@ impl State {
             .check(&card, &join.admission, join.at)
             .map_err(Refused::Ticket)?;
         let names = self.fits(&card, &join.status)?;
+        record.unused().map_err(Refused::Ticket)?;
         Ok((card, names))
     }
 
@@ -1538,7 +1540,7 @@ mod tests {
 
     // Each join fails more than one check, and the refusal names the first. Ticket 9
     // is not recorded, so a peer with no good admission learns no key or name of the
-    // region.
+    // region. After ticket 7 admits node 3, a join with it fails its use last.
     #[test]
     fn a_join_refusal_names_the_first_check_that_fails() {
         let mut state = open_state();
@@ -1551,13 +1553,29 @@ mod tests {
             apply_join(&mut state, join(7, 3, "plant.edge.a")),
             Ok(false)
         );
+        let after = state.clone();
         let used = Refused::Ticket(ticket::Refused::Used {
             public_key: public(7),
         });
-        assert_eq!(
-            apply_join(&mut state, join(7, 1, "plant.edge.a")),
-            Err(used)
-        );
+        let held = Unfit::Taken {
+            name: name("plant.edge.a"),
+            key: node(3),
+        };
+        let cases = [
+            (
+                join(7, 3, "plant.edge.a"),
+                Unfit::Duplicate { key: node(3) }.into(),
+            ),
+            (join(7, 4, "plant.edge.a"), held.into()),
+            (
+                with_status(join(7, 4, "plant.edge.b"), &[("disk", 10)]),
+                used,
+            ),
+        ];
+        for (join, refused) in cases {
+            assert_eq!(apply_join(&mut state, join), Err(refused));
+            assert_eq!(state, after);
+        }
     }
 
     // Joins on `open_state` that fail the card or the ticket, and a check of the

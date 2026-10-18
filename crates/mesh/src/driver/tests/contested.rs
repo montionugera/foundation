@@ -1,5 +1,5 @@
 //! Tests of the check of the leader that no two joins give one node key two public
-//! keys.
+//! keys, and of a join that repeats one that applied.
 
 use super::*;
 
@@ -84,4 +84,19 @@ fn a_voter_gives_contested_for_a_join_that_the_leader_refuses() {
         cluster.run(seconds(5));
         assert_eq!(cluster.board().at, [after(at, 1)], "run {run}");
     }
+}
+
+// MESH DRIVER: a repeat of a `Join` finds its node a member and is refused as
+// `Unfit::Duplicate` before the ticket counts a use. Ticket 8 admits one use.
+#[test]
+fn a_repeat_of_a_join_with_a_one_use_ticket_is_refused_as_duplicate() {
+    solo(|node, tasks| async move {
+        let mesh = recorded(&node, &tasks, &[ticket_of(8, "plant", false, LAST)]).await;
+        let join = join_change_with(&common::member(4).card, 8, NOW);
+        let first = mesh.attempt().unwrap().settle(join.clone()).await;
+        assert_eq!(first, Ok(Some(Ok(()))));
+        let repeat = mesh.attempt().unwrap().settle(join).await;
+        let duplicate = Refused::from(Unfit::Duplicate { key: key(4) });
+        assert_eq!(repeat, Ok(Some(Err(duplicate))));
+    });
 }
