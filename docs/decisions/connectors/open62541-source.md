@@ -1037,26 +1037,35 @@
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255744593. A DER
   entry with a byte after its last certificate, and DER then PEM in one entry, give
   `BadInternalError`. What aws-lc reads as text is dropped: a block with a damaged
-  `BEGIN` line, DER bytes after PEM, a second certificate in the base64 of one block,
-  and a damaged first DER certificate before a PEM block. So the connect fails closed
-  with an untrusted certificate (`laptop.architect-2`, 2026-10-18 22:30 UTC,
+  `BEGIN` line, DER bytes after PEM, and a damaged first DER certificate before a PEM
+  block. So the connect fails closed with an untrusted certificate
+  (`laptop.architect-2`, 2026-10-18 22:30 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255959458; for the
-  second and third, 2026-10-18 22:50 UTC,
+  second, 2026-10-18 22:50 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256155598; and for
   the last, with the DER test, 2026-10-18 22:58 UTC,
-  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256221476).
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256221476). A block
+  that holds two certificates gives `BadInternalError`, since the reader of
+  `TRUSTED CERTIFICATE` reads the bytes after the first as trust settings. A
+  certificate whose trust settings reject any extended key use is dropped, as
+  `openssl verify` refuses it, so a trust file that distrusts a certificate never makes
+  the client trust it (the `architecture` run after round 3 of review of #3271).
   `laptop.monitor` accepted that the readers of aws-lc read the trust, and our own PEM
-  parser lost (message 20c8b048 to `box1.builder-3`). An issuer entry keeps the load of
-  the release (`laptop.architect-2`, 2026-10-18 22:07 UTC,
-  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255744593, item 2).
+  parser lost (message 20c8b048 to `box1.builder-3`,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256452096). An
+  issuer entry keeps the load of the release (`laptop.architect-2`, 2026-10-18 22:07
+  UTC, https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255744593,
+  item 2).
   The validity check of the own certificate and the map of each refusal in `kind.rs`
   move to PR 2b (`laptop.architect-2`, 2026-10-18 21:37 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255457069, items 1
   and 2). `laptop.monitor` accepted the trust as one byte string
-  (2026-10-18 22:03 UTC), on one condition: the user never sees only
-  `BadInternalError`. The check of PR 2b names the source and the certificate that
-  does not parse, before the run, and the plan of PR 2b names the test that pins that
-  text (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6255781688).
+  (2026-10-18 22:03 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256452096), on one
+  condition: the user never sees only `BadInternalError`. The check of PR 2b names the
+  source and the certificate that does not parse, before the run, and the plan of PR
+  2b names the test that pins that text
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6255781688).
   `Client::connect` keeps its `Option`, on the condition that PR 2b makes `kind.rs`
   pass the value of the config, or splits `connect` or gives it an enum
   (`laptop.director`, 2026-10-18 21:48 UTC,

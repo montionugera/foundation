@@ -10,7 +10,8 @@ use crate::event;
 use crate::ffi::{self, Status};
 use crate::secure::{
     ANONYMOUS, BROKEN_TRUST, CLIENT, CLIENT_PEM, EC, EMPTY_URI, END, HEADED_TRUST,
-    Identity, LINE_TRUST, OTHER, Policy, SERVER, START, TRUST, TWO_URIS, UNNAMED,
+    Identity, LINE_TRUST, ONE_BLOCK_TRUST, OTHER, Policy, REJECTED_SERVER, SERVER,
+    START, TRUST, TWO_URIS, UNNAMED,
 };
 use crate::server::Limits;
 use crate::value::{Fault, Value};
@@ -267,6 +268,25 @@ fn a_trust_of_a_damaged_der_then_pem_drops_the_der() {
     assert_eq!(damaged[4], 0x30, "the to-be-signed part is a sequence");
     damaged[4] = 0x31;
     let trust = [&damaged, b"\n".as_slice(), other.as_bytes()].concat();
+    assert_eq!(trusting(trust), Err(Status::BAD_CERTIFICATE_UNTRUSTED));
+}
+
+#[test]
+fn a_trust_of_pem_then_der_drops_the_der() {
+    let (other, _) = blocks();
+    let trust = [other.as_bytes(), SERVER.certificate].concat();
+    assert_eq!(trusting(trust), Err(Status::BAD_CERTIFICATE_UNTRUSTED));
+}
+
+#[test]
+fn a_trust_of_two_certificates_in_one_block_ends_the_connect() {
+    assert_eq!(trusting(ONE_BLOCK_TRUST), Err(Status::BAD_INTERNAL_ERROR));
+}
+
+#[test]
+fn a_trusted_certificate_block_that_rejects_any_use_is_not_trusted() {
+    let (other, _) = blocks();
+    let trust = [other.as_bytes(), REJECTED_SERVER].concat();
     assert_eq!(trusting(trust), Err(Status::BAD_CERTIFICATE_UNTRUSTED));
 }
 

@@ -432,8 +432,9 @@ openSSLLoadCertificateStack(const UA_ByteString cert) {
 /* Pushes each certificate of the bytestring onto the stack. A bytestring that starts
  * with a DER certificate is DER certificates back to back, and fails on any byte
  * after the last one. Else it is PEM: each block that aws-lc reads as a certificate,
- * also a `TRUSTED CERTIFICATE`, and aws-lc skips all else as text. Gives false when
- * no certificate loads, and for any error but the end of PEM. */
+ * also a `TRUSTED CERTIFICATE`, and aws-lc skips all else as text. A certificate that
+ * rejects any extended key use is dropped, as `openssl verify` refuses it. Gives false
+ * when no certificate loads, and for any error but the end of PEM. */
 static UA_Boolean
 openSSLLoadEachCertificate(const UA_ByteString cert, STACK_OF(X509) *stack) {
     const UA_Byte *at = cert.data;
@@ -450,8 +451,12 @@ openSSLLoadEachCertificate(const UA_ByteString cert, STACK_OF(X509) *stack) {
         return false;
     int pushed = sk_X509_num(stack);
     while((x509 = PEM_read_bio_X509_AUX(bio, NULL, UA_OpenSSL_refusePassword,
-                                        NULL)))
-        sk_X509_push(stack, x509);
+                                        NULL))) {
+        if(X509_check_trust(x509, NID_anyExtendedKeyUsage, 0) == X509_TRUST_REJECTED)
+            X509_free(x509);
+        else
+            sk_X509_push(stack, x509);
+    }
     BIO_free(bio);
     uint32_t error = ERR_peek_last_error();
     ERR_clear_error();
