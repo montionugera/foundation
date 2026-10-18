@@ -237,8 +237,9 @@ mod record {
     }
 
     /// The index, the path byte, and the seq of each tail of the carry record at
-    /// `block`, whose body is `[count: u32]` and tails of `index: u128, path: u8,
-    /// seq: u64` and 17 more bytes.
+    /// `block`, whose body is `[tails: u16][entries: u16]` and tails of `index: u128,
+    /// path: u8, seq: u64` and 17 more bytes. It reads the two counts as one u32,
+    /// which is the tail count while no carry record holds an entry.
     pub(super) fn tails(image: &[u8], block: usize) -> Vec<(u128, u8, u64)> {
         let body = block * BLOCK + HEAD;
         let count = usize::try_from(word(image, body)).expect("invariant: a u32 fits");

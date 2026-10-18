@@ -873,7 +873,8 @@ impl Buffer {
 }
 
 // Each pool that `group::block_max` accepts holds a block of `META_LEN` bytes, so
-// it holds the largest carry record.
+// it holds the largest carry record that `State::carry` writes, which holds tails
+// only.
 const _: () = assert!(
     HEADER_LEN + carry::body_len(carry::TAILS_MAX, 0, 0) <= group::META_LEN,
     "a block of the group table holds a full carry record"

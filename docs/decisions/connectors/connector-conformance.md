@@ -29,13 +29,21 @@
   (https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241940271).
 
   The ring of `home::testing::shard` trims, so a scenario runs past the fill of its
-  4 MiB, at about 100 s of plant time for `opcua` and for `influx` (finding 7 of
+  4 MiB, at about 100 s of plant time for `opcua` and for `influx` while data moves
+  (finding 7 of
   https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241787008). Before
   the trim, the rig then lost each status, so a check of an absence could pass. The
-  third forms of scenarios 2 and 3 run past the fill. Both failed on a ring with no
-  trim (https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6241900155).
-  #3050 adds them and removes the bound of 90 s of plant time (`RING`) and its tests,
-  which stood until the trim. OK of `laptop.architect`, 2026-10-17T21:54:10Z:
+  third form of scenario 3 runs past the fill for both kinds, and the third form of
+  scenario 2 for `influx` only: with no device, `opcua` does not fill its ring. On a
+  ring with no trim, the third form of scenario 3 failed for both kinds, and that of
+  scenario 2 for `influx`
+  (https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6241900155).
+  `connector::testing::Run` panics on a status frame with a gap, so a status lost for
+  no room or to a trim fails the scenario. #3050 adds them and removes the bound of
+  90 s of plant time (`RING`) and its tests: `laptop.architect-2`,
+  2026-10-17T22:04:56Z, item 8 of
+  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241915192, with the
+  deferral OK of `laptop.architect`, 2026-10-17T21:54:10Z:
   https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241806249.
 
   1. **Starts.** Within 10 s: Running, no error, 0 restarts, and progress above 0.
@@ -49,15 +57,16 @@
      behind a link that delays each packet by 1 h, and within 1 min comes the same
      backoff form, with no heal. Ruling of `laptop.architect-2` at 2026-10-17T22:04:56Z
      (https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241915192). In
-     a third form, no simulator for 90 s after the backoff form shows, then the
-     simulator starts: heals.
-  3. **Device lost while running**, in two forms: the simulator stops (each
-     connection closed), and the device node crashes (`Sim::crash`, no close reaches
-     the plant). Within 30 s: an error of class Device or Retry whose text names the
-     address of the device, in the backoff form (`Run`: Running and 0 restarts).
-     Then the device comes back: heals, no count and no restart count went down, and
-     for `Restart`, the restarts grew. In a third form, the simulator stops after 2
-     min of Running: within 30 s, an error of class Device or Retry.
+     a third form, no simulator for 90 s after the check of the backoff form ends
+     (for `Run`, 100 s after the backoff form shows), then the simulator starts:
+     heals.
+  3. **Device lost while running**, in three forms. In the first two: the simulator
+     stops (each connection closed), and the device node crashes (`Sim::crash`, no close
+     reaches the plant). Within 30 s: an error of class Device or Retry whose text names
+     the address of the device, in the backoff form (`Run`: Running and 0 restarts).
+     Then the device comes back: heals, no count and no restart count went down, and for
+     `Restart`, the restarts grew. In a third form, the simulator stops after 2 min of
+     Running: within 30 s, an error of class Device or Retry.
   4. **Stop.** `Run::stop` gives `Ok` within 5 s while Running, in the backoff form,
      and while the plant connects over a link that delays each packet by 1 h (the
      plant holds 1 stream before the stop). After it, the plant node holds no open
