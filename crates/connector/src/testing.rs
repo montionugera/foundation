@@ -302,7 +302,7 @@ impl Rig {
         names
     }
 
-    /// Panics at the next open of `name` until `run` is cancelled. The rig holds
+    /// Makes each next open of `name` panic until `run` is cancelled. The rig holds
     /// the status channels of `name`.
     fn track(&self, name: &Name, run: Token) {
         let mut held = self.held.borrow_mut();
@@ -334,7 +334,7 @@ struct Held {
     /// The names, the index first.
     names: Vec<Name>,
     /// Cancelled once the last run that [`Rig::supervise`] started for the connector
-    /// ends.
+    /// ends. `None` when it started none.
     run: Option<Token>,
 }
 
