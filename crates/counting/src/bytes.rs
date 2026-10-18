@@ -354,8 +354,9 @@ mod tests {
 
     // The trait's own `realloc` allocates before it frees, so it never gives back the
     // old block. glibc, macOS, and Windows each shrink this block in place. Windows
-    // moves a small block: one of 64 B that shrinks to 56 B. macOS moves a block of
-    // 64 KiB that shrinks to 32 KiB, from its medium region to its small one.
+    // moves a small block: one of 64 B that shrinks to 56 B. macOS 15 on
+    // `macos-15-arm64` moves a block of 64 KiB that shrinks to 32 KiB, from its medium
+    // region to its small one.
     #[test]
     #[cfg_attr(miri, ignore = "Miri does not shrink a block in place")]
     fn shrinks_a_block_in_place_as_the_system_does() {
