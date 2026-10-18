@@ -186,10 +186,11 @@
   of `laptop.architect`, 2026-10-18T03:32:43Z,
   https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245224489). After
   another error but `mesh::Error::Stopped`, it logs a warning, and the card keeps its
-  addresses. The call at each start, its warnings, and the link-local test: ruling
-  items 1 to 3 of `laptop.architect-2` (2026-10-18T09:56:35Z,
-  https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248485617). Key
-  choices 8 and 9, accepted (2026-10-18T03:19:32Z):
+  addresses. The call at each start and its warnings: items 2 and 3 of the plan
+  (https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248469212), OK'd
+  by `laptop.architect-2` (2026-10-18T09:56:35Z,
+  https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248485617), which
+  also gives the link-local test. Key choices 8 and 9, accepted (2026-10-18T03:19:32Z):
   https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6245123301. A test
   binds the node to the link-local address of the sim host, as SIM NETWORK gives. The
   first admin's private key is in the file `admin.key` of the data

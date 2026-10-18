@@ -76,7 +76,12 @@
   its scope: scope 0 gives code 22 (`EINVAL`), another index gives code 19 (`ENODEV`),
   and the link-local address of another node gives code 99. Each other IPv6 bind drops
   its scope, and no IPv6 bind keeps flow info. A datagram from the link-local address
-  leaves from it, but no packet reaches it: the first test that sends to one adds it
-  to the addresses of the node and a check of the scope of a send. Decided by
-  `laptop.architect-2` at 2026-10-18T09:56:35Z
-  (https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248485617).
+  leaves from it, and the peer sees it with scope 2, the index of its own interface, but
+  no packet reaches it: the first test that sends to one adds it to the addresses of the
+  node and a check of the scope of a send. Decided by `laptop.architect-2` at
+  2026-10-18T09:56:35Z
+  (https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248485617), at
+  2026-10-18T10:40:06Z for interface 2 and code 99
+  (https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248857687), and
+  for the send rule at 2026-10-18T11:40:34Z
+  (https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6249478620).
