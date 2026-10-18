@@ -845,7 +845,8 @@
   an abort between the chunks of another answer closes the channel. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3093#issuecomment-6243716532,
-  2026-10-18 00:27 UTC).
+  2026-10-18 00:27 UTC). Supersedes "Keep `deleteChunks` as it is" of
+  https://github.com/synnaxlabs/foundation/issues/2505#issuecomment-6134670336.
   #2934 builds the copy with `UA_ENABLE_ENCRYPTION_OPENSSL` against the `libcrypto` of
   the one `aws-lc-sys` of `Cargo.lock`, not a second crypto library. Directed by
   `laptop.architect-2`
