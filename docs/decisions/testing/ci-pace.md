@@ -35,8 +35,12 @@
   https://github.com/synnaxlabs/foundation/issues/2756#issuecomment-6202725115.
   Amended (#3135): Miri runs on eight hosted runners, `miri shard <k>`, each with
   `cargo xtask miri <k>/8`, and the required check `miri` passes when each shard
-  passed. A unit is a test of a lib, the doc tests of a crate, or another test target
-  whole, once for each set of `MIRIFLAGS`. The units go in order of test, then of
-  flags, and shard `k` takes each eighth unit from unit `k`, so the two runs of a slow
-  test go to two shards. The one job took 35 min (run 39096947760); the slowest shard
-  took 9 min 14 s (run 39104791982). Approval of `ci.yaml` by the person: owed.
+  passed. For each set of `MIRIFLAGS`, `cargo miri nextest` runs the lib tests of the
+  partition `hash:<k+1>/8`, and fails when it runs none. `cargo miri test` runs the
+  doc tests of each crate and each other test target whole; these units go in order of
+  target, then of flags, and shard `k` takes each eighth unit from unit `k`. Ruling of
+  `laptop.director` (nextest in place of our own runner):
+  https://github.com/synnaxlabs/foundation/pull/3151#issuecomment-6246962539. The one
+  job took 35 min (run 39096947760). In run 39109178137 the slowest shard took 415 s
+  with `hash`, 700 s with `count`, and 709 s with `slice`. OK of the person for
+  cargo-nextest: owed. Approval of `ci.yaml` by the person: owed.
