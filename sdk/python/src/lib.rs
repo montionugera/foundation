@@ -1,6 +1,7 @@
 //! The native module `foundation._native` of the Python SDK: the Rust SDK `sdk`, for
 //! Python.
 
+use std::mem;
 use std::net::SocketAddr;
 use std::process;
 use std::sync::{Mutex, PoisonError};
@@ -129,6 +130,25 @@ impl Client {
                 Ok(())
             }
             closed => closed,
+        }
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        if process::id() != self.process {
+            // `get_mut` takes no lock, so a lock that the fork copied as held does not
+            // block.
+            let session = self
+                .session
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner);
+            #[expect(
+                clippy::mem_forget,
+                reason = "the drop of the session wakes the parent's runtime and detaches \
+                          its thread, which this process does not have"
+            )]
+            mem::forget(session.take());
         }
     }
 }
