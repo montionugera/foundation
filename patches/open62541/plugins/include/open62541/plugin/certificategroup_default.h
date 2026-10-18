@@ -10,6 +10,7 @@
 #define UA_CERTIFICATEGROUP_CERTIFICATE_H_
 
 #include <open62541/plugin/certificategroup.h>
+#include <open62541/plugin/eventloop.h>
 #include <open62541/util.h>
 
 _UA_BEGIN_DECLS
@@ -22,6 +23,8 @@ UA_CertificateGroup_AcceptAll(UA_CertificateGroup *certGroup);
 /*
  * Initialises and configures a certificate group with an in-memory backend.
  * The trustList parameter allows for the pre-configuration of the group with certificate files.
+ * The eventLoop gives the time of the validity check through its dateTime_now. A
+ * NULL eventLoop gives BadInternalError.
  *
  * **Configuration parameters for the Certificate Memorystore backend**
  *
@@ -37,6 +40,7 @@ UA_CertificateGroup_Memorystore(UA_CertificateGroup *certGroup,
                                 UA_NodeId *certificateGroupId,
                                 const UA_TrustListDataType *trustList,
                                 const UA_Logger *logger,
+                                UA_EventLoop *eventLoop,
                                 const UA_KeyValueMap *params);
 
 #if defined(__linux__) || defined(UA_ARCHITECTURE_WIN32) || defined(__APPLE__) || defined(__OpenBSD__)

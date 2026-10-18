@@ -87,21 +87,11 @@ fn read() {
             UA_CertificateUtils_checkCA(&bytes(ENCRYPTED_CERTIFICATE))
         }),
         #[cfg(feature = "sim")]
-        "remote certificate" => {
-            let mut sim = sim::Sim::new(sim::Config::default());
-            let clock = sim.node(sim::node::Config::default()).clock();
-            let time = crate::event::Time::monotonic(clock);
-            let events =
-                crate::event::Loop::new(time, &mut env::rng::Rng::from_seed(0));
-            // SAFETY: as above, and the loop lives past the call.
-            Status(unsafe {
-                ffi::test::shim_verify_certificate(
-                    &bytes(ENCRYPTED_CERTIFICATE),
-                    std::ptr::null(),
-                    events.raw(),
-                )
-            })
-        }
+        "remote certificate" => crate::validity::verify(
+            ENCRYPTED_CERTIFICATE.as_bytes(),
+            None,
+            types::time::Stamp::EPOCH,
+        ),
         _ => panic!("no read is named {name}"),
     };
     let expected = if name == "remote certificate" {

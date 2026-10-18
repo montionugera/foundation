@@ -8,7 +8,7 @@
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 use env::rng::Rng;
-use types::time::Stamp;
+use types::time::{Span, Stamp};
 
 use crate::event::{self, Loop};
 use crate::ffi::{self, Bytes, Status};
@@ -29,25 +29,27 @@ const LONG: &[u8] = include_bytes!("validity/long.der");
 /// Self-signed, not a CA, valid from the Unix epoch to one hour after it.
 const EPOCH: &[u8] = include_bytes!("validity/epoch.der");
 
-/// 2001-01-01, in seconds from the Unix epoch.
-const START: i64 = 978_307_200;
+/// 2001-01-01.
+const START: Stamp = from_secs(978_307_200);
 
 /// 2002-01-01.
-const END: i64 = 1_009_843_200;
+const END: Stamp = from_secs(1_009_843_200);
 
 /// 2001-07-01.
-const CA_END: i64 = 993_945_600;
+const CA_END: Stamp = from_secs(993_945_600);
 
 /// 2200-01-01.
-const LONG_END: i64 = 7_258_118_400;
+const LONG_END: Stamp = from_secs(7_258_118_400);
 
 /// 2001-03-01.
-const MARCH: i64 = 983_404_800;
+const MARCH: Stamp = from_secs(983_404_800);
 
 /// 2001-08-01.
-const AUGUST: i64 = 996_624_000;
+const AUGUST: Stamp = from_secs(996_624_000);
 
-const SECOND: i64 = 1_000_000_000;
+const fn from_secs(secs: i64) -> Stamp {
+    Stamp::from_nanos(secs * Span::SECOND.nanos())
+}
 
 fn bytes(der: &[u8]) -> Bytes {
     Bytes {
@@ -57,25 +59,37 @@ fn bytes(der: &[u8]) -> Bytes {
 }
 
 /// Gives the status of the check of `certificate` by a memory group that trusts
-/// `trusted`, on a loop whose wall time is `nanos` from the Unix epoch.
-fn verify(certificate: &[u8], trusted: &[u8], nanos: i64) -> &'static str {
+/// `trusted`, or nothing when it is `None`, on a loop whose wall time is `wall`.
+pub(crate) fn verify(
+    certificate: &[u8],
+    trusted: Option<&[u8]>,
+    wall: Stamp,
+) -> Status {
     let mut sim = sim::Sim::new(sim::Config::default());
     let clock = sim.node(sim::node::Config::default()).clock();
     let time = event::Time {
         clock,
-        wall: Box::new(move || Stamp::from_nanos(nanos)),
+        wall: Box::new(move || wall),
     };
     let events = Loop::new(time, &mut Rng::from_seed(0));
-    // SAFETY: both point at live bytes, which the call only reads, and the loop lives
-    // past the call.
-    let status = unsafe {
+    let trusted = trusted.map(bytes);
+    // SAFETY: both point at live bytes or are null, the call only reads them, and the
+    // loop lives past the call.
+    Status(unsafe {
         ffi::test::shim_verify_certificate(
             &bytes(certificate),
-            &bytes(trusted),
+            trusted
+                .as_ref()
+                .map_or(std::ptr::null(), std::ptr::from_ref),
             events.raw(),
         )
-    };
-    Status(status).name()
+    })
+}
+
+/// Gives the name of the status of [`verify`] of `certificate` by a group that trusts
+/// `trusted`.
+fn name(certificate: &[u8], trusted: &[u8], wall: Stamp) -> &'static str {
+    verify(certificate, Some(trusted), wall).name()
 }
 
 /// Each bound of the window of a leaf, `notBefore` and `notAfter` in
@@ -83,13 +97,13 @@ fn verify(certificate: &[u8], trusted: &[u8], nanos: i64) -> &'static str {
 #[test]
 fn a_leaf_is_valid_only_inside_its_window_on_the_loop() {
     let at = [
-        (START * SECOND - 1, "BadCertificateTimeInvalid"),
-        (START * SECOND, "Good"),
-        (END * SECOND - 1, "Good"),
-        (END * SECOND, "BadCertificateTimeInvalid"),
+        (START - Span::NANOSECOND, "BadCertificateTimeInvalid"),
+        (START, "Good"),
+        (END - Span::NANOSECOND, "Good"),
+        (END, "BadCertificateTimeInvalid"),
     ];
-    for (nanos, expected) in at {
-        assert_eq!(verify(LEAF, LEAF, nanos), expected, "{nanos}");
+    for (wall, expected) in at {
+        assert_eq!(name(LEAF, LEAF, wall), expected, "{wall}");
     }
 }
 
@@ -97,47 +111,50 @@ fn a_leaf_is_valid_only_inside_its_window_on_the_loop() {
 /// it.
 #[test]
 fn a_leaf_past_its_window_on_the_loop_is_refused_inside_it_on_the_os_clock() {
-    assert_eq!(
-        verify(LONG, LONG, LONG_END * SECOND),
-        "BadCertificateTimeInvalid"
-    );
+    assert_eq!(name(LONG, LONG, LONG_END), "BadCertificateTimeInvalid");
 }
 
 /// A wall time less than a second before the Unix epoch is in the second before it, so
 /// it is before `notBefore` of [`EPOCH`].
 #[test]
 fn a_wall_just_before_the_epoch_is_before_a_window_from_the_epoch() {
-    for nanos in [-SECOND - 1, -SECOND + 1, -1] {
+    let second = Stamp::EPOCH - Span::SECOND;
+    let before = [
+        second - Span::NANOSECOND,
+        second + Span::NANOSECOND,
+        Stamp::EPOCH - Span::NANOSECOND,
+    ];
+    for wall in before {
         assert_eq!(
-            verify(EPOCH, EPOCH, nanos),
+            name(EPOCH, EPOCH, wall),
             "BadCertificateTimeInvalid",
-            "{nanos}"
+            "{wall}"
         );
     }
-    assert_eq!(verify(EPOCH, EPOCH, 0), "Good");
+    assert_eq!(name(EPOCH, EPOCH, Stamp::EPOCH), "Good");
 }
 
 /// An issuer outside its window gives its own code, while its leaf is inside.
 #[test]
 fn an_issuer_past_its_window_on_the_loop_is_refused() {
-    const { assert!(CA_END < AUGUST && AUGUST < END) };
-    assert_eq!(verify(ISSUED, CA, MARCH * SECOND), "Good");
-    assert_eq!(
-        verify(ISSUED, CA, AUGUST * SECOND),
-        "BadCertificateIssuerTimeInvalid"
-    );
+    const { assert!(CA_END.nanos() < AUGUST.nanos() && AUGUST.nanos() < END.nanos()) };
+    assert_eq!(name(ISSUED, CA, MARCH), "Good");
+    assert_eq!(name(ISSUED, CA, AUGUST), "BadCertificateIssuerTimeInvalid");
 }
 
-/// A group with no loop has no time, so it refuses each certificate.
+/// The constructor of a memory group refuses a group with no loop, which has no time,
+/// also for a certificate that the check would refuse before its window.
 #[test]
-fn a_group_with_no_loop_refuses_each_certificate() {
-    // SAFETY: both point at live bytes, which the call only reads.
-    let status = unsafe {
-        ffi::test::shim_verify_certificate(
-            &bytes(LEAF),
-            &bytes(LEAF),
-            std::ptr::null_mut(),
-        )
-    };
-    assert_eq!(Status(status).name(), "BadInternalError");
+fn a_group_with_no_loop_is_refused() {
+    for trusted in [LEAF, CA] {
+        // SAFETY: both point at live bytes, which the call only reads.
+        let status = unsafe {
+            ffi::test::shim_verify_certificate(
+                &bytes(LEAF),
+                &bytes(trusted),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(Status(status).name(), "BadInternalError");
+    }
 }

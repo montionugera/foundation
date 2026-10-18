@@ -53,6 +53,8 @@ struct MemoryCertStore {
     STACK_OF(X509) *trustedCertificates;
     STACK_OF(X509) *issuerCertificates;
     STACK_OF(X509_CRL) *crls;
+
+    UA_EventLoop *eventLoop;
 };
 
 static UA_Boolean
@@ -596,7 +598,7 @@ openSSL_verifyChain(UA_CertificateGroup *cg, MemoryCertStore *ctx, STACK_OF(X509
         /* Verification Step: Validity Period */
         ASN1_TIME *notBefore = X509_get_notBefore(cert);
         ASN1_TIME *notAfter = X509_get_notAfter(cert);
-        UA_EventLoop *el = cg->eventLoop;
+        UA_EventLoop *el = ctx->eventLoop;
         UA_DateTime since = el->dateTime_now(el) - UA_DATETIME_UNIX_EPOCH;
         /* The second that holds the time, also before the epoch */
         int64_t now = since / UA_DATETIME_SEC - (since % UA_DATETIME_SEC < 0);
@@ -614,8 +616,7 @@ openSSL_verifyChain(UA_CertificateGroup *cg, MemoryCertStore *ctx, STACK_OF(X509
 static UA_StatusCode
 verifyCertificate(UA_CertificateGroup *certGroup, const UA_ByteString *certificate) {
     /* Check parameter */
-    if(certGroup == NULL || certGroup->context == NULL ||
-       certGroup->eventLoop == NULL)
+    if(certGroup == NULL || certGroup->context == NULL)
         return UA_STATUSCODE_BADINTERNALERROR;
 
     UA_StatusCode ret = UA_STATUSCODE_GOOD;
@@ -681,9 +682,10 @@ UA_CertificateGroup_Memorystore(UA_CertificateGroup *certGroup,
                                 UA_NodeId *certificateGroupId,
                                 const UA_TrustListDataType *trustList,
                                 const UA_Logger *logger,
+                                UA_EventLoop *eventLoop,
                                 const UA_KeyValueMap *params) {
 
-    if(certGroup == NULL || certificateGroupId == NULL) {
+    if(certGroup == NULL || certificateGroupId == NULL || eventLoop == NULL) {
         return UA_STATUSCODE_BADINTERNALERROR;
     }
 
@@ -712,6 +714,7 @@ UA_CertificateGroup_Memorystore(UA_CertificateGroup *certGroup,
         goto cleanup;
     }
     certGroup->context = context;
+    context->eventLoop = eventLoop;
     /* Default values */
     context->maxTrustListSize = 65535;
     context->maxRejectedListSize = 100;

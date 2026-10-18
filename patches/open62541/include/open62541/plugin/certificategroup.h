@@ -43,10 +43,6 @@ struct UA_CertificateGroup {
      * automatically. */
     const UA_Logger *logging;
 
-    /* The loop whose dateTime_now gives the time of the validity check. The owner
-     * of the group sets it. With NULL, each check gives BadInternalError. */
-    struct UA_EventLoop *eventLoop;
-
     UA_StatusCode (*getTrustList)(UA_CertificateGroup *certGroup,
                                   UA_TrustListDataType *trustList);
 

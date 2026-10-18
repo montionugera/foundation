@@ -365,8 +365,9 @@ UA_StatusCode shim_server_add_view(UA_Server *server, shim_node node, shim_node 
 }
 
 /* Gives the status of `verifyCertificate` of a memory certificate group, the check of
- * the remote certificate of each channel, on `certificate`. The trust list holds
- * `trusted`, or nothing when it is NULL, and the group reads the time of `el`. */
+ * the remote certificate of each channel, on `certificate`, or the status of the
+ * constructor of the group when it fails. The trust list holds `trusted`, or nothing
+ * when it is NULL, and the group reads the time of `el`. */
 UA_StatusCode shim_verify_certificate(const UA_ByteString *certificate,
                                       const UA_ByteString *trusted, UA_EventLoop *el) {
     UA_CertificateGroup group;
@@ -381,10 +382,9 @@ UA_StatusCode shim_verify_certificate(const UA_ByteString *certificate,
     UA_NodeId id = UA_NODEID_NUMERIC(
         0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
     UA_StatusCode status =
-        UA_CertificateGroup_Memorystore(&group, &id, &trust, NULL, NULL);
+        UA_CertificateGroup_Memorystore(&group, &id, &trust, NULL, el, NULL);
     if(status != UA_STATUSCODE_GOOD)
         return status;
-    group.eventLoop = el;
     status = group.verifyCertificate(&group, certificate);
     group.clear(&group);
     return status;
