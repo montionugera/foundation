@@ -842,7 +842,9 @@ fn the_open_refuses_a_carried_copy_of_a_path_that_no_record_holds() {
 
 /// A carry record that holds the copy of tag 1 of index 77 twice gives `Invalid` at
 /// the record, both when a data record before it holds an older entry of the tag
-/// and when it holds a newer one. With one copy, the ring opens.
+/// and when it holds a newer one. With one copy, the ring opens, and `newest` gives
+/// the carried bytes when the data entry has the same mark, and the data bytes when
+/// it is newer.
 #[test]
 fn the_open_refuses_a_carry_record_that_holds_a_copy_twice() {
     for first in [0, 4] {
@@ -862,8 +864,16 @@ fn the_open_refuses_a_carry_record_that_holds_a_copy_twice() {
             shard
                 .put_carry(2 * BLOCK, &carry_body_with_copies(&tails, 1))
                 .await;
-            let opened = shard.open(ring, &mut Slots::new()).await;
-            assert_eq!(opened.map(drop), Ok(()), "a data entry at {first}");
+            let mut slots = Slots::new();
+            let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let bytes = if first == 0 {
+                kept(b"old")
+            } else {
+                kept(&shard.block(10))
+            };
+            let expected = vec![(slots.index(key(77)), bytes)];
+            let found = newest(&buffer, Path::Live, 1);
+            assert_eq!(found, expected, "a data entry at {first}");
         });
     }
 }
