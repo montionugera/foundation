@@ -380,13 +380,16 @@ mod tests {
             '\r', '\t', '\u{85}', '\u{a0}', '\u{2028}', '\u{2029}', '\u{7f}',
         ] {
             let text = format!("a:\r\n  #{c}  b:\n\r");
-            assert_eq!(
-                lines(&text),
-                Err(format!(
-                    "ci.yaml has a character that is not printable ASCII, LF, or CR \
-                     LF: {c:?}"
-                )),
-            );
+            assert_eq!(lines(&text), unprintable(c));
         }
+        for text in ["a:\r  b:\n", "a:\n  b:\r", "a:\r\r\n  b:\n"] {
+            assert_eq!(lines(text), unprintable('\r'), "{text:?}");
+        }
+    }
+
+    fn unprintable(c: char) -> Result<Vec<Line<'static>>, String> {
+        Err(format!(
+            "ci.yaml has a character that is not printable ASCII, LF, or CR LF: {c:?}"
+        ))
     }
 }

@@ -71,3 +71,34 @@
   (https://github.com/synnaxlabs/foundation/issues/1532#issuecomment-6043854311).
   Supersedes the connect sentence of
   https://github.com/synnaxlabs/foundation/pull/1473#issuecomment-6042821949.
+  Amended (2026-10-18, #2283 PR C): as on Linux, each node has one link-local address,
+  `fe80::` plus its host, on interface 2 (`Node::link_local`). Only a bind of it keeps
+  its scope: scope 0 gives code 22 (`EINVAL`), another index gives code 19 (`ENODEV`),
+  and the link-local address of another node gives code 99. Each other IPv6 bind drops
+  its scope, and no IPv6 bind keeps flow info. A datagram from the link-local address
+  leaves from it, and the peer sees it with scope 2, the index of its own interface, but
+  no packet reaches it: the first test that sends to one adds it to the addresses of the
+  node, and a check of the scope of a send. As with `IPV6_PKTINFO` on Linux, a socket on
+  the link-local address that names the routable IPv6 address of its node as the source
+  sends from that address. A send that names another source gives code 22 (`EINVAL`),
+  as `os` gives on Linux, when the source or the destination is IPv6 or the source is
+  not unicast: the link-local address from a socket that is not on it, an address of
+  another node, an IPv4 source to an IPv6 destination, or an unspecified, multicast, or
+  broadcast IPv4 source. A unicast IPv4 source that is not on the node, to an IPv4
+  destination, gives code 99 (`EADDRNOTAVAIL`), not the `Unreachable` that `os` gives
+  on Linux, until #3187. Decided by `laptop.architect-2` at 2026-10-18T09:56:35Z
+  (https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248485617), at
+  2026-10-18T10:40:06Z for interface 2 and code 99
+  (https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248857687), for
+  the send rule at 2026-10-18T11:40:34Z
+  (https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6249478620), for the
+  routable source at 2026-10-18T11:50:48Z
+  (https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6249571217), for
+  code 22 at 2026-10-18T12:25:24Z
+  (https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6249888848),
+  2026-10-18T12:34:23Z
+  (https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6249972408), and
+  2026-10-18T12:39:34Z
+  (https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6250020326), and
+  for code 99 of a unicast IPv4 source at 2026-10-18T13:31:33Z
+  (https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6250512376).

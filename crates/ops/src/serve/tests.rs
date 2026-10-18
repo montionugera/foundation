@@ -8,11 +8,14 @@ use spec::definition::Definition;
 use types::name::Name;
 use wire::hub::client::BODY_BYTES_MAX;
 
-use super::{Body, Large, serve};
+use super::{Answer, Body, Large, failed, serve};
 use crate::Node;
 use crate::common::{
-    BOB, EVE, NODE, SAM, SITE, create_node, fail_sync, name, placed_site, plant, solo,
+    BOB, EVE, NODE, SAM, SITE, create_node, fail_sync, more_problems, name,
+    placed_site, plant, solo,
 };
+use crate::error::{Error, Problem};
+use crate::front_end::File;
 use crate::plan;
 
 const DENIED_FIX: &str =
@@ -179,6 +182,117 @@ fn plans_applies_and_plans_no_change() {
     });
 }
 
+/// A config problem whose message is `len` times `a`.
+fn problem(len: usize) -> Problem {
+    Problem {
+        code: "config.duplicate-name".to_owned(),
+        message: "a".repeat(len),
+        fix: String::new(),
+        place: None,
+        notes: Vec::new(),
+    }
+}
+
+/// The reply of `errors` with status 2.
+fn reply_of(errors: &[Problem]) -> Vec<u8> {
+    let failed = Answer::<(), _>::Failed { errors, status: 2 };
+    let mut reply = serde_json::to_vec(&failed).expect("JSON");
+    reply.push(b'\n');
+    reply
+}
+
+#[test]
+fn an_error_over_the_bound_keeps_the_problems_that_fit_to_the_byte() {
+    let max = usize::try_from(BODY_BYTES_MAX).expect("a usize");
+    let rest = [problem(200), problem(200)];
+    let empty = reply_of(&[problem(0), Problem::more(rest.len())]).len();
+    let fitting = [problem(max - empty)].into_iter().chain(rest.clone());
+    let error = Error::Config(fitting.collect());
+    let reply = failed(&error, &Error::LargeReply).0;
+    assert_eq!(reply.len(), max);
+    assert_eq!(reply, reply_of(&[problem(max - empty), Problem::more(2)]));
+    let over = [problem(max - empty + 1)].into_iter().chain(rest);
+    let reply = failed(&Error::Config(over.collect()), &Error::LargeReply).0;
+    assert_eq!(split(&reply), (large(), &b""[..]));
+}
+
+/// The count of the rest has one digit fewer after the second problem than after the
+/// first, so the second fits only when its own count is used.
+#[test]
+fn an_error_over_the_bound_counts_the_rest_after_each_problem() {
+    let max = usize::try_from(BODY_BYTES_MAX).expect("a usize");
+    let rest = std::iter::repeat_n(problem(200), 9);
+    let empty = reply_of(&[problem(0), problem(0), Problem::more(9)]).len();
+    let kept = [problem(max - empty), problem(0)];
+    let error = Error::Config(kept.iter().cloned().chain(rest).collect());
+    let reply = failed(&error, &Error::LargeReply).0;
+    assert_eq!(reply.len(), max);
+    assert_eq!(
+        reply,
+        reply_of(&[kept[0].clone(), kept[1].clone(), Problem::more(9)])
+    );
+}
+
+#[test]
+fn a_plan_error_whose_first_problem_does_not_fit_gives_large_reply() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let max = usize::try_from(BODY_BYTES_MAX).expect("a usize");
+        let path = format!("{}.hcl", "x".repeat(max - 200));
+        let body = plan_body(&[(&path, "nope \"a\" {}\n")]);
+        assert!(
+            body.len() <= max,
+            "the request of {} bytes passes the bound of {max} bytes",
+            body.len()
+        );
+        let reply = serve(&node, &admin(), &body).await;
+        assert_eq!(split(&reply), (large(), &b""[..]));
+    });
+}
+
+/// The rest after the second problem has one digit fewer than after the first, so
+/// `serve` keeps the second only when it counts the rest after each problem.
+#[test]
+fn a_plan_error_over_the_bound_counts_the_rest_after_each_problem() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let max = usize::try_from(BODY_BYTES_MAX).expect("a usize");
+        let block = "nope \"a\" {}\n";
+        let rest = block.repeat(10);
+        let kept = |path: &str| {
+            let files = [
+                File {
+                    path: path.into(),
+                    text: block.to_owned(),
+                },
+                File {
+                    path: "b.hcl".into(),
+                    text: rest.clone(),
+                },
+            ];
+            let documents =
+                plan::Documents::read(&files, &node.front_ends).expect("documents");
+            let error = documents
+                .names(node.supervisor.kinds())
+                .expect_err("an error");
+            let mut kept = error.problems()[..2].to_vec();
+            kept.push(Problem::more(9));
+            reply_of(&kept)
+        };
+        let short = kept("a.hcl").len();
+        let path = format!("{}.hcl", "a".repeat(1 + max - short));
+        let expected = kept(&path);
+        assert_eq!(expected.len(), max);
+        let body = plan_body(&[(&path, block), ("b.hcl", &rest)]);
+        assert!(
+            body.len() <= max,
+            "the request of {} bytes passes the bound of {max} bytes",
+            body.len()
+        );
+        assert_eq!(serve(&node, &admin(), &body).await, expected);
+    });
+}
+
 #[test]
 fn gives_the_reply_of_an_error_as_one_line() {
     solo(|fixture, mesh| async move {
@@ -261,6 +375,40 @@ fn refuses_each_body_that_is_no_request() {
             assert_eq!(split(&reply), (bad(message), &b""[..]), "{text}");
         }
         assert_eq!(mesh.pointer().version, 0);
+    });
+}
+
+#[test]
+fn quotes_the_first_bytes_of_a_long_cause_for_each_path() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let mib = 1 << 20;
+        let name = "é".repeat(mib / 2);
+        let string = "a".repeat(mib);
+        let fits = "b".repeat(256 - "the operation `` does not run on a node".len());
+        let over = format!("{fits}c");
+        let cases = [
+            (
+                format!("{{\"{fits}\":{{}}}}\n"),
+                format!("the operation `{fits}` does not run on a node"),
+            ),
+            (
+                format!("{{\"{over}\":{{}}}}\n"),
+                format!("the operation `{over}` does not run on a nod..."),
+            ),
+            (
+                format!("{{\"{name}\":{{}}}}\n"),
+                format!("the operation `{}...", &name[..240]),
+            ),
+            (
+                format!("{{\"plan\":\"{string}\"}}\n"),
+                format!("invalid type: string \"{}...", &string[..234]),
+            ),
+        ];
+        for (body, message) in cases {
+            let reply = serve(&node, &admin(), body.as_bytes()).await;
+            assert_eq!(split(&reply), (bad(&message), &b""[..]));
+        }
     });
 }
 
@@ -1314,13 +1462,13 @@ fn gives_a_reply_at_the_bound_and_refuses_one_over_it() {
 }
 
 #[test]
-fn refuses_the_reply_of_many_problems_at_a_long_path() {
+fn gives_the_problems_that_fit_of_many_at_a_long_path() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         let path = format!("{}.hcl", "x".repeat((64 << 10) - 4));
         let text = "nope \"a\" {}\n".repeat(2_000);
         let reply = serve(&node, &admin(), &plan_body(&[(&path, &text)])).await;
-        assert_eq!(split(&reply), (large(), &b""[..]));
+        more_problems(&reply, "document.unknown-block", 2_000, 2);
     });
 }
 

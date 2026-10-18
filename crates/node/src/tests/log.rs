@@ -25,11 +25,11 @@ const CHILD: &str = "NODE_LOG_CHILD";
 
 /// The lines a log writes, which each clone shares.
 #[derive(Clone, Default)]
-struct Lines(Arc<Mutex<Vec<u8>>>);
+pub(super) struct Lines(Arc<Mutex<Vec<u8>>>);
 
 impl Lines {
     /// Each line written, without its newline.
-    fn read(&self) -> Vec<String> {
+    pub(super) fn read(&self) -> Vec<String> {
         let bytes = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let text = String::from_utf8(bytes.clone()).expect("a log writes UTF-8");
         text.lines().map(str::to_owned).collect()
@@ -156,7 +156,7 @@ impl io::Write for Stuck {
 }
 
 /// The log of `json` lines of `level` and above to `lines`.
-fn to(lines: &Lines, json: bool, level: tracing::Level) -> Log {
+pub(super) fn to(lines: &Lines, json: bool, level: tracing::Level) -> Log {
     Log {
         writer: Box::new(lines.clone()),
         format: ops::Log { json, level },

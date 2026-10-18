@@ -42,7 +42,10 @@ fn main() -> ExitCode {
         ["oracles"] => oracles::check(root),
         ["skips"] => skips::check(root),
         [name @ ("loom" | "shuttle")] => cfg::test(root, name),
-        ["miri"] => miri::run(root),
+        ["miri"] => miri::run(root, miri::Shard::ALL),
+        ["miri", shard] => miri::Shard::parse(shard)
+            .map_err(|e| vec![e])
+            .and_then(|shard| miri::run(root, shard)),
         ["sanitizers"] => sanitizers::run(root),
         ["fuzz"] => fuzz::run(root, fuzz::SECONDS),
         ["fuzz", seconds] => fuzz::seconds(seconds)
@@ -62,7 +65,8 @@ fn main() -> ExitCode {
         _ => {
             eprintln!(
                 "usage: cargo xtask <layers|globals|oracles|skips>\n       \
-                 cargo xtask <loom|shuttle|miri|sanitizers>\n       \
+                 cargo xtask <loom|shuttle|sanitizers>\n       \
+                 cargo xtask miri [<index>/<count>]\n       \
                  cargo xtask fuzz [seconds]\n       \
                  cargo xtask open62541 [tag]\n       \
                  cargo xtask review <pr> <head sha>\n       \
@@ -379,7 +383,7 @@ mod tests {
 
     /// The lines of each model job of `ci.yaml` under its key. A step or a key that
     /// the job gains can change what it runs, so the whole job is pinned.
-    const JOBS: [(&str, &[&str]); 3] = [
+    const JOBS: [(&str, &[&str]); 4] = [
         (
             "loom",
             &[
@@ -414,10 +418,15 @@ mod tests {
             ],
         ),
         (
-            "miri",
+            "miri-shard",
             &[
                 "    needs: changes",
                 "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"",
+                "    name: miri shard ${{ matrix.shard }}",
+                "    strategy:",
+                "      fail-fast: false",
+                "      matrix:",
+                "        shard: [0, 1, 2, 3, 4, 5, 6, 7]",
                 "    runs-on: ubuntu-24.04",
                 "    steps:",
                 "      - uses: actions/checkout@v4",
@@ -426,9 +435,29 @@ mod tests {
                 "          rustup toolchain install \"$(cat rust-toolchain-nightly)\" \
              --profile minimal \\",
                 "            --component miri,rust-src",
+                "      - uses: taiki-e/install-action@v2",
+                "        with:",
+                "          tool: cargo-nextest@0.9.146",
                 "      - uses: Swatinem/rust-cache@v2",
                 "      - name: Miri",
-                "        run: cargo xtask miri",
+                "        env:",
+                "          SHARD: ${{ matrix.shard }}",
+                "        run: cargo xtask miri \"$SHARD/8\"",
+            ],
+        ),
+        (
+            "miri",
+            &[
+                "    needs: [changes, miri-shard]",
+                "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"",
+                "    runs-on: ubuntu-24.04",
+                "    steps:",
+                "      - name: The result of the shards",
+                "        env:",
+                "          RESULT: ${{ needs.miri-shard.result }}",
+                "        run: |",
+                "          [ \"$RESULT\" = success ] ||",
+                "            { echo \"::error::The miri shards ended in $RESULT.\"; exit 1; }",
             ],
         ),
     ];
@@ -439,11 +468,11 @@ mod tests {
     ///
     /// When a model job is not its job in [`JOBS`].
     fn pin_jobs(jobs: &[&str]) {
-        for (task, job) in JOBS {
-            let found = under(jobs, &format!("  {task}:"));
+        for (key, job) in JOBS {
+            let found = under(jobs, &format!("  {key}:"));
             assert!(
                 found == job,
-                "the {task} job of .github/workflows/ci.yaml is not the job that the \
+                "the {key} job of .github/workflows/ci.yaml is not the job that the \
                  check pins: {found:#?}"
             );
         }
@@ -668,7 +697,7 @@ mod tests {
             miri::packages(&metadata).unwrap(),
         ];
         pin_jobs(&jobs);
-        for ((task, _), packages) in JOBS.into_iter().zip(packages) {
+        for (task, packages) in ["loom", "shuttle", "miri"].into_iter().zip(packages) {
             for select::Package { name, .. } in packages {
                 assert!(
                     models.contains(&format!("'crates/{name}/**'").as_str()),

@@ -24,9 +24,13 @@
   the cache that no sync covers, and a put that trusted a read of them would return
   before they are durable. A put refuses a chunk longer than the largest block of the
   pool before any file call. A put of a digest that a put stored since the open makes no
-  file call. A put whose future is dropped stores nothing that a get gives unchecked:
-  the next get of the digest reads and checks the file, and the next put writes it
-  again. Decided by the builder (#1515,
+  file call. A put whose future is dropped before it returns stores nothing that a get
+  gives unchecked: a get of the digest gives only bytes that it read and checked, and
+  the next put writes it again (`laptop.architect`, 2026-10-15T21:44:20Z:
+  https://github.com/synnaxlabs/foundation/pull/2565#issuecomment-6202917382).
+  Supersedes "the next get of the digest reads the file first" of change 1 of
+  https://github.com/synnaxlabs/foundation/pull/1515#issuecomment-6043557708. Decided
+  by the builder (#1515,
   https://github.com/synnaxlabs/foundation/pull/1515) and `laptop.architect`
   (2026-10-07T17:47:50Z):
   https://github.com/synnaxlabs/foundation/pull/1515#issuecomment-6043557708. Supersedes
@@ -71,6 +75,15 @@
   on a sound disk in normal work). Supersedes "`corruptions` keeps its rule" (item 3 of
   https://github.com/synnaxlabs/foundation/issues/2362#issuecomment-6106191288) and its
   doc of the field.
+  Amended (`laptop.architect`, 2026-10-11T20:14:21Z,
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6113261777): a put
+  marks the file of its digest as left by a put of this open only from its open with
+  `Mode::Create`, its first call that can make or change the file. A put that is
+  dropped before that call leaves the state of the digest as it was, so a file that a
+  crash tore still adds one to `corruptions`. Cost: a put that is dropped during that
+  open marks the file, also when the open did not run. Lost: the mark from the start of
+  the put, which made a get of a torn file that the put did not change add none, and
+  gave a digest with no file the state of a listed file.
   `Store::get` and `Store::put` are not a hot path. Each runs one time for each chunk
   call of `blob::peer` and of `mesh`. A chunk holds bytes of a spec tree or of an
   upgrade binary (BQ1). So a chunk message is a control message, and its rate does not

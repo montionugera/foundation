@@ -249,11 +249,6 @@ jobs:
               - --skip log::tests::refuses_a_write_after_a_failed_or_dropped_one # #2973
               - --skip daqmx::tests::names_a_library_that_does_not_load # #3033
               - --skip daqmx::tests::names_a_function_the_library_lacks # #3033
-              - --skip tests::each_exception_of_an_os_names_the_issue_that_removes_it # #3165
-              - --skip tests::models_filter_names_each_crate_that_a_model_task_selects # #3165
-              - --skip tests::models_filter_names_each_workspace_crate_that_miri_runs # #3165
-              - --skip tests::the_check_of_each_os_runs_on_each_event_so_that_it_reports_its_name # #3165
-              - --skip tests::the_feature_check_of_each_os_leaves_out_the_crates_of_its_check # #3165
               - --skip open62541::tests::check_fails_on_a_c_identifier_that_holds_a_dollar # #3166
               - --skip open62541::tests::check_finds_a_builtin_and_an_asm_statement_that_read_a_clock # #3166
               - --skip open62541::tests::check_finds_a_clock_call_added_to_the_copy # #3166
@@ -537,9 +532,15 @@ jobs:
       - name: Shuttle
         run: cargo xtask shuttle
 
-  miri:
+  # Each shard runs an eighth of the Miri tests.
+  miri-shard:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.models != 'false'"
+    name: miri shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -547,9 +548,27 @@ jobs:
         run: |
           rustup toolchain install "$(cat rust-toolchain-nightly)" --profile minimal \
             --component miri,rust-src
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.146
       - uses: Swatinem/rust-cache@v2
       - name: Miri
-        run: cargo xtask miri
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: cargo xtask miri "$SHARD/8"
+
+  # The required check. It passes when each shard passed.
+  miri:
+    needs: [changes, miri-shard]
+    if: "!cancelled() && needs.changes.outputs.models != 'false'"
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The result of the shards
+        env:
+          RESULT: ${{ needs.miri-shard.result }}
+        run: |
+          [ "$RESULT" = success ] ||
+            { echo "::error::The miri shards ended in $RESULT."; exit 1; }
 
   # Miri cannot run C, so ASan and UBSan check `connector-opcua` in its place.
   sanitizers:
