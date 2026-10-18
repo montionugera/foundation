@@ -39,6 +39,10 @@ fix), with Write or Edit, never with a heredoc, `sed -i`, `perl -pi`, or another
 place in Bash: auto mode blocks some of those, and three blocks in a row stop the
 session.
 
+On a box (Linux), run each `cargo test` in the memory cap of `docs/claude/testing.md`
+(mutation testing): `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 -p
+OOMPolicy=continue cargo test ...`.
+
 Read `docs/claude/testing.md` and the records of `docs/decisions/` the PR builds. Then
 read the diff (`gh pr diff <n>`) and every file it touches. In each round, each item,
 number, or claim of the PR title or body that is false at the PR head is a finding: the

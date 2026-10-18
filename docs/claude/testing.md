@@ -54,11 +54,13 @@ https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155299486).
 Benchmarks run on a dedicated machine. Mutation testing (`cargo mutants --in-diff`)
 checks on each PR that agent-written tests catch real changes. A missed mutant fails CI.
 A mutant that makes a test hang (a timeout) counts as caught. Each run on a box runs in
-a cgroup with a memory cap: `systemd-run --user --scope -p MemoryMax=<share> -p
-OOMPolicy=continue env -u CARGO_TARGET_DIR cargo mutants --jobs 4 ...`. A test run on a
-box of a mutant made by hand (`.claude/agents/reviewer.md`) runs in the same cap, with
-`cargo test` in place of `cargo mutants`. The share is 20G on box1 and 10G on box2, and
-a session runs one mutants run at a time (`laptop.monitor`,
+a cgroup with a memory cap of 16G and no swap: `systemd-run --user --scope -p
+MemoryMax=16G -p MemorySwapMax=0 -p OOMPolicy=continue env -u CARGO_TARGET_DIR cargo
+mutants --jobs 4 ...`. So does each test run on a box that a review agent starts
+(`.claude/agents/reviewer.md`, `.claude/agents/breaker.md`), also of a mutant made by
+hand, with `cargo test` in place of `cargo mutants`. 16G is a quarter of a box of 61 GB
+that runs 3 or 4 sessions (the person, 2026-10-17 16:13Z, <record link>). A session runs
+one mutants run at a time (`laptop.monitor`,
 https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6043431001,
 2026-10-07T17:40:51Z). A mutant that allocates in a loop then dies alone, its test
 fails, and the run counts it as caught. With no cap, the mutant fills the box and the
