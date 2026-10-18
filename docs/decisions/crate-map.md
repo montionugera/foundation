@@ -131,7 +131,7 @@ layer 2 (`os`, `sector`) -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`,
 | 4 | `ops` | Holds the operation table and handlers, generates the CLI, MCP tools, and docs, and runs each operation on the node that must run it. | `config`, `connector`, `secret`, `hub`, `mesh`, `blob`, `sim`, layer 1 |
 | 4 | `acceptance` | Runs the MVP acceptance scenarios against whole meshes built from `node`. Test-only. | all crates |
 | 4 | `node` | Is the composition root: real seams, pools and shards, all tables (kinds, front ends, time sources, secret stores), the status collector, process lifecycle, and upgrades. | all crates |
-| 4 | `sdk` | Is the Rust client of a program, outside the binary: it runs a `program::Session` on a shard of `os`, and the Python SDK wraps it. | `program`, `transport`, `os`, `sector`, `spec`, `env`, `types`, `block` (`sector`: https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252501317; `spec`: laptop.architect-2, item 2 of https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252530569) |
+| 4 | `sdk` | Is the Rust client of a program, outside the binary: it runs a `program::Session` on a shard of `os`, reads the node and its first admin from a data directory with `sector`, and the Python SDK wraps it. | `program`, `transport`, `os`, `sector`, `spec`, `env`, `types`, `block` (`sector`: https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252501317; `spec`: laptop.architect-2, item 2 of https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252530569) |
 | 4 | `sdk-python` | Is the Python SDK, outside the binary: a PyO3 module that wraps `sdk::Client` for Python programs. | `sdk`, `sector`, `types` (`sector`: laptop.architect-2, https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252530569, and laptop.architect, https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252972067); `transport` and `program` as dev-dependencies only (https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241731905, https://github.com/synnaxlabs/foundation/issues/3062#issuecomment-6250625861) |
 
 `fuzz` holds the fuzz targets, outside the workspace. It is test-only, builds on the
@@ -140,9 +140,11 @@ pinned nightly, may depend on any crate, and no crate depends on it (#252;
 https://github.com/synnaxlabs/foundation/pull/2099#issuecomment-6074164278).
 
 Outside the binary: the Rust SDK `sdk` (`sdk/rust`, layer 4) builds on `program`,
-`transport`, `env`, `types`, and `block`, and takes its clock, entropy, network, and
-the shard of its client from `os` (#2923). The Python SDK `sdk-python` (`sdk/python`,
-layer 4, last) wraps `sdk` with PyO3, and parses keys and names with `types`. It is
+`transport`, `sector`, `spec`, `env`, `types`, and `block`, and takes its clock,
+entropy, network, the disk of a data directory (`os::stored`), and its shards from `os`
+(#2923, #3212). The Python SDK `sdk-python` (`sdk/python`, layer 4, last) wraps `sdk`
+with PyO3, parses keys and names with `types`, and maps the errors of `sector::local`
+to its texts. It is
 the module `foundation._native` of the wheel `synnax-foundation` (`laptop.architect`,
 2026-10-17T18:41:45Z,
 https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6238783320). The data
