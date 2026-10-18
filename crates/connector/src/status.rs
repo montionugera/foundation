@@ -165,10 +165,12 @@ pub(crate) fn check(kind: &str, counts: &[Name]) {
 pub(crate) struct Status(Rc<Values>);
 
 impl Status {
-    /// A status with each of `counts` at 0, that no writer writes yet.
-    pub(crate) fn new(counts: Vec<Name>) -> Self {
+    /// A status with each of `counts` at 0, that no writer writes yet, whose events
+    /// have `span` as their parent.
+    pub(crate) fn new(counts: Vec<Name>, span: tracing::Span) -> Self {
         Self(Rc::new(Values {
             counts: counts.into_iter().map(|n| (n, Cell::new(0))).collect(),
+            span,
             run: RefCell::default(),
             staged: Cell::new(false),
             waker: Cell::new(None),
@@ -178,6 +180,11 @@ impl Status {
     /// The same status, for one more holder.
     pub(crate) fn share(&self) -> Self {
         Self(Rc::clone(&self.0))
+    }
+
+    /// The parent of each event of the status.
+    pub(crate) fn span(&self) -> &tracing::Span {
+        &self.0.span
     }
 
     /// The count `name`.
@@ -380,6 +387,8 @@ impl Class {
 /// for a write.
 struct Values {
     counts: Box<[(Name, Cell<u64>)]>,
+    /// The parent of each event of the status.
+    span: tracing::Span,
     /// `None` while no run runs: what a task of the last run shows is not written.
     run: RefCell<Option<Run>>,
     staged: Cell<bool>,
@@ -436,8 +445,6 @@ impl fmt::Debug for Values {
 pub(crate) struct Writer {
     session: RefCell<Session>,
     values: Rc<Values>,
-    /// The parent of each event of the status.
-    span: tracing::Span,
     clock: Clock,
     cancel: cancel::Token,
 }
@@ -495,7 +502,7 @@ impl Writer {
         };
         let (error, note) = (text(error), text(note));
         let group = set.entries()[entries[0]].group;
-        let status = Status::new(counts);
+        let status = Status::new(counts, span);
         let session = Session {
             hub: session,
             entries,
@@ -515,7 +522,6 @@ impl Writer {
         let writer = Self {
             session: RefCell::new(session),
             values: Rc::clone(&status.0),
-            span,
             clock,
             cancel,
         };
@@ -536,7 +542,7 @@ impl Writer {
             session.started = true;
             session.phase = Phase::Running;
             let restarts = session.restarts;
-            tracing::info!(parent: &self.span, restarts, "running");
+            tracing::info!(parent: &self.values.span, restarts, "running");
         });
         self.values.run.replace(Some(Run::default()));
         true
@@ -551,7 +557,7 @@ impl Writer {
     ) -> impl Future<Output = ()> + use<'_> {
         self.values.run.take();
         let (class, error) = Class::with_text(end);
-        let span = &self.span;
+        let span = &self.values.span;
         match class {
             None => tracing::info!(parent: span, "ended"),
             Some(class @ Class::Config) => {
@@ -577,14 +583,14 @@ impl Writer {
         self.applied().await;
         let next = self.clock.now() + span;
         self.change(|session| session.phase = Phase::Waiting(next));
-        tracing::info!(parent: &self.span, backoff = %span, "restarting");
+        tracing::info!(parent: &self.values.span, backoff = %span, "restarting");
         next
     }
 
     /// Writes `state` 2.
     pub(crate) async fn stop(&self) {
         self.set(|session| session.phase = Phase::Stopped).await;
-        tracing::info!(parent: &self.span, "stopped");
+        tracing::info!(parent: &self.values.span, "stopped");
     }
 
     /// Writes the change of state that `change` makes, after [`Self::applied`], so
@@ -622,7 +628,7 @@ impl Writer {
         change(&mut session);
         let now = self.clock.now();
         session.unapplied.get_or_insert(now);
-        session.write(&self.values, &self.span, now);
+        session.write(&self.values, now);
     }
 
     /// Polls `run` to its end. Meanwhile it writes the status that a kind staged or
@@ -682,9 +688,7 @@ impl Writer {
         }
         if self.values.staged.get() {
             let now = self.clock.now();
-            self.session
-                .borrow_mut()
-                .write(&self.values, &self.span, now);
+            self.session.borrow_mut().write(&self.values, now);
         }
     }
 }
@@ -748,7 +752,8 @@ impl Session {
     /// When the draft or the home refuses the frame for a cause that only a defect
     /// gives, which includes `Backwards` on the frame written again and a frame larger
     /// than the largest block of the pool.
-    fn write(&mut self, values: &Values, span: &tracing::Span, now: Monotonic) {
+    fn write(&mut self, values: &Values, now: Monotonic) {
+        let span = &values.span;
         values.staged.set(false);
         if self.closed {
             self.unapplied = None;
@@ -1188,7 +1193,7 @@ mod tests {
 
     #[test]
     fn debugs_each_value_but_the_waker() {
-        let status = Status::new(vec![name("samples")]);
+        let status = Status::new(vec![name("samples")], tracing::Span::none());
         status.count("samples").set(3);
         let want = "Status(Values { counts: \
                     [(Name(\"samples\"), Cell { value: 3 })], run: None, staged: \

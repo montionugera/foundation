@@ -394,6 +394,16 @@ impl<C> Context<C> {
     pub fn tasks(&self) -> &Tasks {
         &self.tasks
     }
+
+    /// The span `connector` of this run, with the fields `connector` and `kind`. Give
+    /// it as the parent of each event of the kind
+    /// (`tracing::warn!(parent: ctx.span(), ..)`), so its line names the connector. No
+    /// poll enters it. A task spawned through [`Context::tasks`] that writes an event
+    /// takes a clone of it.
+    #[must_use]
+    pub fn span(&self) -> &tracing::Span {
+        self.status.span()
+    }
 }
 
 /// The value of `source` from `secrets`, with the errors of [`Context::secret`].
@@ -1201,7 +1211,7 @@ mod tests {
                 3,
                 token.clone(),
                 tasks.clone(),
-                status::Status::new(Vec::new()),
+                status::Status::new(Vec::new(), tracing::Span::none()),
                 None,
                 inputs,
             );
@@ -1230,7 +1240,7 @@ mod tests {
         let (a, b) = run_on(|node, tasks| async move {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
-            let status = status::Status::new(Vec::new());
+            let status = status::Status::new(Vec::new(), tracing::Span::none());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             (ctx.rng().next_u64(), ctx.rng().next_u64())
@@ -1243,7 +1253,7 @@ mod tests {
         let (missing, read, changed) = run_on(|node, tasks| async move {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
-            let status = status::Status::new(Vec::new());
+            let status = status::Status::new(Vec::new(), tracing::Span::none());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             let token = name("plant.influx_token");
@@ -1285,7 +1295,7 @@ mod tests {
         let missing = run_on(|node, tasks| async move {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
-            let status = status::Status::new(Vec::new());
+            let status = status::Status::new(Vec::new(), tracing::Span::none());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             let source = secret::Source::Env("INFLUX_TOKEN".into());
@@ -1306,7 +1316,7 @@ mod tests {
         let bad = run_on(|node, tasks| async move {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
-            let status = status::Status::new(Vec::new());
+            let status = status::Status::new(Vec::new(), tracing::Span::none());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             let source = secret::Source::Secret(name("plant.Token"));

@@ -3281,25 +3281,56 @@ mod tests {
         })
     }
 
+    /// An event of the kind and one of a task that it spawns, each with the span of
+    /// the run as its parent, have the fields of the span.
+    #[test]
+    fn gives_a_kind_and_its_task_the_span_of_the_run() {
+        let kind = counted(move |ctx: Context<()>| async move {
+            tracing::warn!(target: "plant", parent: ctx.span(), "kind");
+            let span = ctx.span().clone();
+            ctx.tasks().spawn(async move {
+                tracing::info!(target: "plant", parent: &span, "task");
+            });
+            ctx.clock().sleep(ms(500)).await;
+            Ok(())
+        });
+        let (_, lines) =
+            tally_logged_on(sim::Config::default(), "plant", kind, None, None);
+        assert_eq!(
+            lines,
+            [
+                r#"WARN kind connector=plant.tally kind="tally""#,
+                r#"INFO task connector=plant.tally kind="tally""#,
+            ]
+        );
+    }
+
     /// The status frames of [`tally_until`], and its events of `connector::status`.
     fn tally_logged(
         kind: impl Kind + 'static,
         cancel: Option<Span>,
     ) -> (Vec<Written>, Vec<String>) {
-        tally_logged_on(sim::Config::default(), kind, cancel, None)
+        tally_logged_on(
+            sim::Config::default(),
+            "connector::status",
+            kind,
+            cancel,
+            None,
+        )
     }
 
-    /// As [`tally_logged`], on a sim of `config`, where the hub removes the status
-    /// channels at `removed`.
+    /// As [`tally_logged`], with the events of `target`, on a sim of `config`, where the
+    /// hub removes the status channels at `removed`.
     fn tally_logged_on(
         config: sim::Config,
+        target: &'static str,
         kind: impl Kind + 'static,
         cancel: Option<Span>,
         removed: Option<Span>,
     ) -> (Vec<Written>, Vec<String>) {
         let mut sim = sim::Sim::new(config);
         let node = sim.node(sim::node::Config::default());
-        let (capture, log) = testing::Capture::new("connector::status");
+        let (capture, log) = testing::Capture::new(target);
         let out = Arc::new(Mutex::new(None));
         let (slot, own) = (Arc::clone(&out), node.clone());
         let config = env::shards::Config {
@@ -3438,7 +3469,13 @@ mod tests {
                 seed,
                 ..sim::Config::default()
             };
-            let (_, lines) = tally_logged_on(config, kind, None, Some(ms(1_020)));
+            let (_, lines) = tally_logged_on(
+                config,
+                "connector::status",
+                kind,
+                None,
+                Some(ms(1_020)),
+            );
             let shown = lines.iter().filter(|line| line.starts_with("WARN error "));
             assert_eq!(
                 shown.collect::<Vec<_>>(),
