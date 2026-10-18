@@ -198,11 +198,7 @@ impl Writer {
             return Err(error.clone());
         }
         if self.cut {
-            let (sender, _) = self
-                .stream
-                .take()
-                .expect("invariant: a cut writer holds its stream");
-            sender.reset(Code(0));
+            // Dropping the stream resets it with `Code(0)`.
             let error = Error::Transport(transport::Error::Reset { code: Code(0) });
             return self.ending(Err(error));
         }
@@ -215,7 +211,6 @@ impl Writer {
             Ok(value) => return Ok(value),
             Err(error) => error,
         };
-        self.cut = false;
         if let Some(stream) = self.stream.take() {
             end(stream, &error);
         }
