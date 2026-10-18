@@ -1,29 +1,23 @@
 //! The messages of a write stream.
 
-use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 
 use types::authority::Authority;
-use types::ed25519::PublicKey;
-use types::frame;
 use types::frame::key_set::KeySet;
+use types::frame::{self, Form, Path};
 use types::name::Name;
-use types::node;
 use types::time::Span;
 
 use super::run::Run;
 use super::{Body, Error, OPEN_BYTES_MAX, Place, Places, WRITE, fields, text};
 use crate::common::{Fields, Writer};
 
-/// The most addresses of an [`Away`]: 32, the most of a card.
-pub const ADDRESSES_MAX: usize = 32;
+const LIVE: u8 = 0;
+const BACKFILL: u8 = 1;
+const NODE: u8 = 2;
 
-const UDP: u8 = 0;
-const TCP: u8 = 1;
-const RELAY: u8 = 2;
-
-const V4: u8 = 4;
-const V6: u8 = 6;
+const RAW: u8 = 0;
+const ENCODED: u8 = 1;
 
 const NO_LEASE: u8 = 0;
 const LEASE: u8 = 1;
@@ -185,177 +179,7 @@ impl Open {
     }
 }
 
-/// The reply that finishes a write stream at a node that is not the home of its
-/// index: where to dial the home. The node sends it in place of the places.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Away {
-    /// The home.
-    pub node: node::Key,
-    /// The key that `transport` pins for the home.
-    pub public_key: PublicKey,
-    /// Where to dial the home, at most [`ADDRESSES_MAX`].
-    pub addresses: Vec<Address>,
-}
-
-impl Away {
-    /// The bytes of the encoded away.
-    #[must_use]
-    pub fn encoded_len(&self) -> usize {
-        self.addresses
-            .iter()
-            .map(Address::encoded_len)
-            .fold(50, usize::saturating_add)
-    }
-
-    /// Writes the away into `out`.
-    ///
-    /// # Panics
-    ///
-    /// When `addresses` holds more than [`ADDRESSES_MAX`], an IPv6 address has flow
-    /// info or a scope, or `out` is not [`Away::encoded_len`] bytes.
-    pub fn encode(&self, out: &mut [u8]) {
-        let count = self.addresses.len();
-        assert!(
-            count <= ADDRESSES_MAX,
-            "{count} addresses are over the cap of {ADDRESSES_MAX}"
-        );
-        let mut out = Writer::new(out, self.encoded_len());
-        out.put(&[WRITE]);
-        out.put(&self.node.as_u128().to_le_bytes());
-        out.put(&self.public_key.to_bytes());
-        out.put(&[u8::try_from(count).expect("invariant: the count is at most 32")]);
-        for address in &self.addresses {
-            address.encode(&mut out);
-        }
-    }
-
-    /// Decodes an away.
-    ///
-    /// # Errors
-    ///
-    /// In the order of the bytes: [`Error::Empty`], [`Error::Kind`] for a message that
-    /// is not kind 7, [`Error::Length`] when it ends inside a field or holds bytes
-    /// after its last address, [`Error::SmallOrder`] for the key,
-    /// [`Error::Addresses`] when the count is over [`ADDRESSES_MAX`], and, for an
-    /// address, [`Error::Address`] for its kind, [`Error::SmallOrder`] for the key of
-    /// a relay, and [`Error::Family`].
-    pub fn decode(message: &[u8]) -> Result<Self, Error> {
-        let mut fields = fields(message, WRITE)?;
-        let node = node::Key::from_u128(u128::from_le_bytes(*fields.take()?));
-        let public_key = key(*fields.take()?)?;
-        let [count] = *fields.take()?;
-        let count = usize::from(count);
-        if count > ADDRESSES_MAX {
-            return Err(Error::Addresses {
-                count,
-                cap: ADDRESSES_MAX,
-            });
-        }
-        let addresses = (0..count)
-            .map(|_| Address::decode(&mut fields))
-            .collect::<Result<_, _>>()?;
-        fields.end()?;
-        Ok(Self {
-            node,
-            public_key,
-            addresses,
-        })
-    }
-}
-
-/// Where to dial a home, as `transport` dials it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Address {
-    /// A UDP socket.
-    Udp(SocketAddr),
-    /// A TCP socket.
-    Tcp(SocketAddr),
-    /// A relay node that forwards sessions to the home.
-    Relay {
-        /// The relay's key.
-        node: PublicKey,
-        /// The relay's socket.
-        at: SocketAddr,
-    },
-}
-
-impl Address {
-    fn encoded_len(&self) -> usize {
-        let (Self::Udp(at) | Self::Tcp(at) | Self::Relay { at, .. }) = self;
-        // The kind, the key of a relay, the family, the IP, and the port.
-        match (self, at.is_ipv4()) {
-            (Self::Relay { .. }, true) => 40,
-            (Self::Relay { .. }, false) => 52,
-            (_, true) => 8,
-            (_, false) => 20,
-        }
-    }
-
-    fn encode(&self, out: &mut Writer<'_>) {
-        let at = match *self {
-            Self::Udp(at) => {
-                out.put(&[UDP]);
-                at
-            }
-            Self::Tcp(at) => {
-                out.put(&[TCP]);
-                at
-            }
-            Self::Relay { node, at } => {
-                out.put(&[RELAY]);
-                out.put(&node.to_bytes());
-                at
-            }
-        };
-        match at {
-            SocketAddr::V4(at) => {
-                out.put(&[V4]);
-                out.put(&at.ip().octets());
-            }
-            SocketAddr::V6(at) => {
-                assert!(
-                    at.flowinfo() == 0 && at.scope_id() == 0,
-                    "the address {at} has flow info or a scope"
-                );
-                out.put(&[V6]);
-                out.put(&at.ip().octets());
-            }
-        }
-        out.put(&at.port().to_le_bytes());
-    }
-
-    fn decode(fields: &mut Fields<'_>) -> Result<Self, Error> {
-        let [kind] = *fields.take()?;
-        let relay = match kind {
-            UDP | TCP => None,
-            RELAY => Some(key(*fields.take()?)?),
-            kind => return Err(Error::Address { kind }),
-        };
-        let at = match *fields.take()? {
-            [V4] => {
-                let ip = <[u8; 4]>::into(*fields.take()?);
-                SocketAddr::V4(SocketAddrV4::new(
-                    ip,
-                    u16::from_le_bytes(*fields.take()?),
-                ))
-            }
-            [V6] => {
-                let ip = <[u8; 16]>::into(*fields.take()?);
-                let port = u16::from_le_bytes(*fields.take()?);
-                SocketAddr::V6(SocketAddrV6::new(ip, port, 0, 0))
-            }
-            [family] => return Err(Error::Family { family }),
-        };
-        Ok(match relay {
-            Some(node) => Self::Relay { node, at },
-            None if kind == UDP => Self::Udp(at),
-            None => Self::Tcp(at),
-        })
-    }
-}
-
-/// A decoder of the start of a write stream at the program: the places and their run,
-/// or an away.
+/// A decoder of the start of a write stream at the program: the places and their run.
 #[derive(Debug, Default)]
 pub struct Opening(Next);
 
@@ -363,58 +187,47 @@ pub struct Opening(Next);
 #[derive(Debug, Default)]
 enum Next {
     #[default]
-    First,
+    Places,
     Run(Run),
     Given,
 }
 
-/// How a write stream opened, at the program.
+/// The start of a write stream, at the program.
 #[derive(Debug)]
-pub enum Opened {
-    /// The node is the home of the index.
-    Home {
-        /// The places, in place order.
-        places: Vec<Place>,
-        /// The key set of each frame of the write, from [`KeySet::ordered`]: entry
-        /// `n` is place `n`.
-        set: Arc<KeySet>,
-    },
-    /// The node is not the home, and finished the stream.
-    Away(Away),
+pub struct Start {
+    /// The places, in place order.
+    pub places: Vec<Place>,
+    /// The key set of each frame of the write, from [`KeySet::ordered`]: entry `n` is
+    /// place `n`.
+    pub set: Arc<KeySet>,
 }
 
 impl Opening {
     /// Decodes the next message from the node, up to the last place, or `None` when
-    /// the node finished the stream. Gives how the write opened with an away or the
-    /// last place, else `None`.
+    /// the node finished the stream. Gives the start with the last place, else
+    /// `None`.
     ///
     /// # Errors
     ///
-    /// [`Error::Finished`] when `message` is `None`. The first message decodes as an
-    /// [`Away`] when its kind is 7, else as [`Places`], and gives their errors. A
-    /// message of the run gives the errors of a run of places, in order: the error of
-    /// its bytes ([`Error::Empty`], [`Error::Length`], [`Error::Sample`], or
-    /// [`Error::Name`]), [`Error::Run`], and [`Error::Unstamped`], then
-    /// [`Error::Repeated`] for the last message.
+    /// [`Error::Finished`] when `message` is `None`. The first message gives the errors
+    /// of [`Places::decode`]. A message of the run gives the errors of a run of places,
+    /// in order: the error of its bytes ([`Error::Empty`], [`Error::Length`],
+    /// [`Error::Sample`], or [`Error::Name`]), [`Error::Run`], and
+    /// [`Error::Unstamped`], then [`Error::Repeated`] for the last message.
     ///
     /// The stream is then not valid ([`MALFORMED`](crate::header::MALFORMED)), and
     /// the caller stops it. A refused message leaves the decoder as it was.
     ///
     /// # Panics
     ///
-    /// When it gave how the write opened before.
-    pub fn decode(&mut self, message: Option<&[u8]>) -> Result<Option<Opened>, Error> {
+    /// When it gave the start before.
+    pub fn decode(&mut self, message: Option<&[u8]>) -> Result<Option<Start>, Error> {
         match (&mut self.0, message) {
             (Next::Given, _) => {
                 panic!("a write stream is decoded after the decoder gave its start")
             }
             (_, None) => Err(Error::Finished),
-            (Next::First, Some(message)) if message.first() == Some(&WRITE) => {
-                let away = Away::decode(message)?;
-                self.0 = Next::Given;
-                Ok(Some(Opened::Away(away)))
-            }
-            (Next::First, Some(message)) => {
+            (Next::Places, Some(message)) => {
                 self.0 = Next::Run(Run::new(Places::decode(message)?));
                 Ok(None)
             }
@@ -423,7 +236,7 @@ impl Opening {
                     return Ok(None);
                 };
                 self.0 = Next::Given;
-                Ok(Some(Opened::Home {
+                Ok(Some(Start {
                     places,
                     set: Arc::new(set),
                 }))
@@ -432,8 +245,110 @@ impl Opening {
     }
 }
 
-fn key(bytes: [u8; 32]) -> Result<PublicKey, Error> {
-    PublicKey::new(bytes).map_err(|_small| Error::SmallOrder)
+/// The head of one frame that a program writes, after the open. The run of its
+/// [`ends`](crate::hub::ends) follows, then its body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Head {
+    /// Where the frame's stamps come from, and its path.
+    pub time: Time,
+    /// How the frame's series hold their samples.
+    pub form: Form,
+    /// The samples of each series, at least 1.
+    pub count: u32,
+    /// The count of the frame's series, at least 1 and at most the count of places.
+    pub series: u32,
+}
+
+/// Where the stamps of a frame come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Time {
+    /// The frame's index series holds them. The frame goes to this path.
+    Frame(Path),
+    /// The node writes a stamp over the frame's one sample of the index, which holds
+    /// any 8 bytes. The frame goes to the live path, and holds one sample of each
+    /// series, in the raw form.
+    Node,
+}
+
+impl Head {
+    /// The bytes of an encoded head.
+    pub const LEN: usize = 11;
+
+    /// Writes the head into `out`.
+    ///
+    /// # Panics
+    ///
+    /// When `count` or `series` is 0, when a head of [`Time::Node`] is encoded or has
+    /// a count other than 1, or when `out` is not [`Head::LEN`] bytes.
+    pub fn encode(&self, out: &mut [u8]) {
+        assert!(
+            self.count > 0 && self.series > 0,
+            "a head has {} samples of {} series, not at least 1 of 1",
+            self.count,
+            self.series
+        );
+        assert!(
+            self.time != Time::Node || (self.form == Form::Raw && self.count == 1),
+            "a head that the node stamps has {} samples in the {:?} form",
+            self.count,
+            self.form
+        );
+        let time = match self.time {
+            Time::Frame(Path::Live) => LIVE,
+            Time::Frame(Path::Backfill) => BACKFILL,
+            Time::Node => NODE,
+        };
+        let form = match self.form {
+            Form::Raw => RAW,
+            Form::Encoded => ENCODED,
+        };
+        let mut out = Writer::new(out, Self::LEN);
+        out.put(&[WRITE, time, form]);
+        out.put(&self.count.to_le_bytes());
+        out.put(&self.series.to_le_bytes());
+    }
+
+    /// Decodes a head.
+    ///
+    /// # Errors
+    ///
+    /// In order: [`Error::Empty`], [`Error::Kind`] for a message that is not kind 7,
+    /// [`Error::Length`], [`Error::Time`], [`Error::Form`], [`Error::Count`] and
+    /// [`Error::Series`] for 0, and [`Error::Untimed`] for a head of [`Time::Node`]
+    /// that is encoded or has a count other than 1.
+    pub fn decode(message: &[u8]) -> Result<Self, Error> {
+        let mut fields = fields(message, WRITE)?;
+        let [time, form] = *fields.take()?;
+        let count = u32::from_le_bytes(*fields.take()?);
+        let series = u32::from_le_bytes(*fields.take()?);
+        fields.end()?;
+        let time = match time {
+            LIVE => Time::Frame(Path::Live),
+            BACKFILL => Time::Frame(Path::Backfill),
+            NODE => Time::Node,
+            time => return Err(Error::Time { time }),
+        };
+        let form = match form {
+            RAW => Form::Raw,
+            ENCODED => Form::Encoded,
+            form => return Err(Error::Form { form }),
+        };
+        if count == 0 {
+            return Err(Error::Count);
+        }
+        if series == 0 {
+            return Err(Error::Series);
+        }
+        if time == Time::Node && (form != Form::Raw || count != 1) {
+            return Err(Error::Untimed { form, count });
+        }
+        Ok(Self {
+            time,
+            form,
+            count,
+            series,
+        })
+    }
 }
 
 /// A reply of the node on a write stream after the places.

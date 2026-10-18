@@ -1,7 +1,4 @@
-use std::net::{Ipv4Addr, Ipv6Addr};
-
 use proptest::prelude::*;
-use types::ed25519::PrivateKey;
 use types::name;
 
 use super::*;
@@ -14,28 +11,12 @@ fn write(length: u64) -> Write {
     }
 }
 
-fn key(byte: u8) -> PublicKey {
-    PrivateKey([byte; 32]).public()
-}
-
 fn open(lease: Option<Span>, names: &[&str]) -> Open {
     Open {
         authority: Authority(3),
         lease,
         channels: names.iter().map(|name| name.parse().unwrap()).collect(),
     }
-}
-
-fn away(addresses: Vec<Address>) -> Away {
-    Away {
-        node: node::Key::from_u128(0x0102),
-        public_key: key(7),
-        addresses,
-    }
-}
-
-fn v4(port: u16) -> SocketAddr {
-    SocketAddr::from((Ipv4Addr::new(10, 0, 0, 1), port))
 }
 
 fn encode_write(write: Write) -> Vec<u8> {
@@ -50,9 +31,18 @@ fn encode_open(open: &Open) -> Vec<u8> {
     out
 }
 
-fn encode_away(away: &Away) -> Vec<u8> {
-    let mut out = vec![0xaa; away.encoded_len()];
-    away.encode(&mut out);
+fn head(time: Time, form: Form, count: u32) -> Head {
+    Head {
+        time,
+        form,
+        count,
+        series: 2,
+    }
+}
+
+fn encode_head(head: Head) -> Vec<u8> {
+    let mut out = vec![0xaa; Head::LEN];
+    head.encode(&mut out);
     out
 }
 
@@ -70,14 +60,6 @@ fn not_utf8(bytes: &[u8]) -> text::Error<Box<name::Error>> {
 fn zeros(kind: u8, len: usize) -> Vec<u8> {
     let mut bytes = vec![0; len];
     bytes[0] = kind;
-    bytes
-}
-
-/// The bytes of an away with no addresses, then `count` and `rest`.
-fn away_with(count: u8, rest: &[u8]) -> Vec<u8> {
-    let mut bytes = encode_away(&away(Vec::new()));
-    *bytes.last_mut().unwrap() = count;
-    bytes.extend(rest);
     bytes
 }
 
@@ -125,29 +107,22 @@ mod pins {
     }
 
     #[test]
-    fn the_away() {
-        let v6 = SocketAddr::from((Ipv6Addr::LOCALHOST, 0x0a0b));
-        let away = away(vec![
-            Address::Udp(v4(0x0304)),
-            Address::Tcp(v6),
-            Address::Relay {
-                node: key(9),
-                at: v4(5),
-            },
-        ]);
-        let mut bytes = vec![7, 0x02, 0x01];
-        bytes.extend([0; 14]);
-        bytes.extend(key(7).to_bytes());
-        bytes.push(3);
-        bytes.extend([0, 4, 10, 0, 0, 1, 0x04, 0x03]);
-        bytes.extend([1, 6]);
-        bytes.extend(Ipv6Addr::LOCALHOST.octets());
-        bytes.extend([0x0b, 0x0a]);
-        bytes.push(2);
-        bytes.extend(key(9).to_bytes());
-        bytes.extend([4, 10, 0, 0, 1, 5, 0]);
-        assert_eq!(away.encoded_len(), bytes.len());
-        assert_eq!(encode_away(&away), bytes);
+    fn the_head() {
+        let mut head = head(Time::Frame(Path::Live), Form::Raw, 0x0102);
+        head.series = 0x0304;
+        let mut bytes = vec![7, 0, 0, 0x02, 0x01, 0, 0, 0x04, 0x03, 0, 0];
+        assert_eq!(encode_head(head), bytes);
+        head.time = Time::Frame(Path::Backfill);
+        head.form = Form::Encoded;
+        bytes[1..3].copy_from_slice(&[1, 1]);
+        assert_eq!(encode_head(head), bytes);
+        let node = Head {
+            time: Time::Node,
+            form: Form::Raw,
+            count: 1,
+            series: 3,
+        };
+        assert_eq!(encode_head(node), [7, 2, 0, 1, 0, 0, 0, 3, 0, 0, 0]);
     }
 
     #[test]
@@ -334,93 +309,127 @@ mod open {
     }
 }
 
-mod away {
+mod head {
     use super::*;
+
+    fn bytes(time: u8, form: u8, count: u32, series: u32) -> Vec<u8> {
+        let mut bytes = vec![7, time, form];
+        bytes.extend(count.to_le_bytes());
+        bytes.extend(series.to_le_bytes());
+        bytes
+    }
 
     #[test]
     fn refuses_each_other_kind() {
-        let mut bytes = away_with(0, &[]);
         for kind in (0..=u8::MAX).filter(|&kind| kind != 7) {
-            bytes[0] = kind;
-            assert_eq!(Away::decode(&bytes), Err(Error::Kind { kind }));
+            assert_eq!(
+                Head::decode(&zeros(kind, Head::LEN)),
+                Err(Error::Kind { kind })
+            );
         }
     }
 
     #[test]
     fn refuses_an_empty_message() {
-        assert_eq!(Away::decode(&[]), Err(Error::Empty));
+        assert_eq!(Head::decode(&[]), Err(Error::Empty));
     }
 
     #[test]
-    fn refuses_a_key_of_small_order() {
-        let mut bytes = away_with(1, &[9]);
-        bytes[17..49].copy_from_slice(&[0; 32]);
-        assert_eq!(Away::decode(&bytes), Err(Error::SmallOrder));
+    fn refuses_each_wrong_length() {
+        for len in (1..=Head::LEN + 1).filter(|&len| len != Head::LEN) {
+            assert_eq!(Head::decode(&zeros(7, len)), Err(Error::Length { len }));
+        }
     }
 
     #[test]
-    fn takes_addresses_at_the_cap_and_refuses_more() {
-        let at = away(vec![Address::Udp(v4(1)); ADDRESSES_MAX]);
-        assert_eq!(Away::decode(&encode_away(&at)), Ok(at));
+    fn refuses_a_time_that_no_time_has() {
+        for time in 3..=u8::MAX {
+            assert_eq!(
+                Head::decode(&bytes(time, 0, 1, 1)),
+                Err(Error::Time { time })
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_a_form_that_no_form_has() {
+        for form in 2..=u8::MAX {
+            assert_eq!(
+                Head::decode(&bytes(0, form, 1, 1)),
+                Err(Error::Form { form })
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_no_samples_and_no_series() {
+        assert_eq!(Head::decode(&bytes(0, 0, 0, 1)), Err(Error::Count));
+        assert_eq!(Head::decode(&bytes(0, 0, 1, 0)), Err(Error::Series));
+    }
+
+    #[test]
+    fn refuses_a_node_head_that_is_encoded_or_holds_more_than_one_sample() {
         assert_eq!(
-            Away::decode(&away_with(33, &[9])),
-            Err(Error::Addresses {
-                count: 33,
-                cap: ADDRESSES_MAX
+            Head::decode(&bytes(2, 1, 1, 1)),
+            Err(Error::Untimed {
+                form: Form::Encoded,
+                count: 1
             })
+        );
+        assert_eq!(
+            Head::decode(&bytes(2, 0, 2, 1)),
+            Err(Error::Untimed {
+                form: Form::Raw,
+                count: 2
+            })
+        );
+        assert_eq!(
+            Head::decode(&bytes(2, 0, 1, 1)),
+            Ok(head(Time::Node, Form::Raw, 1)).map(|head| Head { series: 1, ..head })
         );
     }
 
     #[test]
-    fn refuses_an_address_kind_that_no_address_has() {
-        for kind in 3..=u8::MAX {
-            assert_eq!(
-                Away::decode(&away_with(1, &[kind, 4, 10, 0, 0, 1, 0, 0])),
-                Err(Error::Address { kind })
-            );
-        }
+    fn gives_the_first_defect_in_the_order_of_the_bytes() {
+        assert_eq!(
+            Head::decode(&bytes(3, 2, 0, 0)),
+            Err(Error::Time { time: 3 })
+        );
+        assert_eq!(
+            Head::decode(&bytes(2, 2, 0, 0)),
+            Err(Error::Form { form: 2 })
+        );
+        assert_eq!(Head::decode(&bytes(2, 1, 0, 0)), Err(Error::Count));
+        assert_eq!(Head::decode(&bytes(2, 1, 2, 0)), Err(Error::Series));
     }
 
     #[test]
-    fn refuses_a_relay_key_of_small_order() {
-        let mut rest = vec![2];
-        rest.extend([0; 32]);
-        rest.extend([4, 10, 0, 0, 1, 0, 0]);
-        assert_eq!(Away::decode(&away_with(1, &rest)), Err(Error::SmallOrder));
+    #[should_panic(expected = "a head has 0 samples of 2 series, not at least 1 of 1")]
+    fn panics_on_an_encode_with_no_samples() {
+        encode_head(head(Time::Frame(Path::Live), Form::Raw, 0));
     }
 
     #[test]
-    fn refuses_a_family_that_is_neither_4_nor_6() {
-        for family in (0..=u8::MAX).filter(|family| ![4, 6].contains(family)) {
-            assert_eq!(
-                Away::decode(&away_with(1, &[1, family, 10, 0, 0, 1, 0, 0])),
-                Err(Error::Family { family })
-            );
-        }
+    #[should_panic(expected = "a head has 1 samples of 0 series, not at least 1 of 1")]
+    fn panics_on_an_encode_with_no_series() {
+        let head = head(Time::Frame(Path::Live), Form::Raw, 1);
+        encode_head(Head { series: 0, ..head });
     }
 
     #[test]
-    fn refuses_an_away_that_ends_inside_an_address_or_after_the_last() {
-        let short = away_with(1, &[0, 4, 10, 0, 0, 1, 0]);
-        assert_eq!(Away::decode(&short), Err(Error::Length { len: 57 }));
-        let missing = away_with(2, &[0, 4, 10, 0, 0, 1, 0, 0]);
-        assert_eq!(Away::decode(&missing), Err(Error::Length { len: 58 }));
-        let long = away_with(1, &[0, 4, 10, 0, 0, 1, 0, 0, 9]);
-        assert_eq!(Away::decode(&long), Err(Error::Length { len: 59 }));
-        assert_eq!(Away::decode(&[7]), Err(Error::Length { len: 1 }));
+    #[should_panic(
+        expected = "a head that the node stamps has 1 samples in the Encoded form"
+    )]
+    fn panics_on_an_encode_of_an_encoded_node_head() {
+        encode_head(head(Time::Node, Form::Encoded, 1));
     }
 
     #[test]
-    #[should_panic(expected = "33 addresses are over the cap of 32")]
-    fn panics_on_an_encode_over_the_cap() {
-        encode_away(&away(vec![Address::Udp(v4(1)); 33]));
-    }
-
-    #[test]
-    #[should_panic(expected = "has flow info or a scope")]
-    fn panics_on_an_encode_of_a_scoped_address() {
-        let scoped = SocketAddrV6::new(Ipv6Addr::LOCALHOST, 1, 0, 2);
-        encode_away(&away(vec![Address::Tcp(SocketAddr::V6(scoped))]));
+    #[should_panic(
+        expected = "a head that the node stamps has 2 samples in the Raw form"
+    )]
+    fn panics_on_an_encode_of_a_node_head_of_two_samples() {
+        encode_head(head(Time::Node, Form::Raw, 2));
     }
 }
 
@@ -503,11 +512,11 @@ mod opening {
             .collect()
     }
 
-    /// The `(key, sample type, slot)` of each entry of `opened`'s key set, and its
+    /// The `(key, sample type, slot)` of each entry of `start`'s key set, and its
     /// places.
-    fn home(opened: Option<Opened>) -> (Vec<Place>, Vec<(channel::Key, String, u32)>) {
-        let Some(Opened::Home { places, set }) = opened else {
-            panic!("the write did not open at the home: {opened:?}");
+    fn home(start: Option<Start>) -> (Vec<Place>, Vec<(channel::Key, String, u32)>) {
+        let Some(Start { places, set }) = start else {
+            panic!("the write gave no start");
         };
         let entries = set
             .entries()
@@ -539,29 +548,6 @@ mod opening {
                 (channel::Key::from_u128(3), "u8".to_owned(), 2),
             ]
         );
-    }
-
-    #[test]
-    fn gives_the_away_of_a_first_message_of_kind_7() {
-        let away = away(vec![Address::Tcp(v4(9))]);
-        let mut opening = Opening::default();
-        let Ok(Some(Opened::Away(given))) = opening.decode(Some(&encode_away(&away)))
-        else {
-            panic!("the away gave no away");
-        };
-        assert_eq!(given, away);
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "a write stream is decoded after the decoder gave its start"
-    )]
-    fn panics_on_a_decode_after_the_away() {
-        let mut opening = Opening::default();
-        opening
-            .decode(Some(&encode_away(&away(Vec::new()))))
-            .unwrap();
-        drop(opening.decode(None));
     }
 
     #[test]
@@ -601,7 +587,11 @@ mod opening {
             Err(Error::Kind { kind: 5 })
         ));
         assert!(matches!(
-            opening.decode(Some(&[7])),
+            opening.decode(Some(&zeros(7, Places::LEN))),
+            Err(Error::Kind { kind: 7 })
+        ));
+        assert!(matches!(
+            opening.decode(Some(&[6])),
             Err(Error::Length { len: 1 })
         ));
         assert!(matches!(opening.decode(Some(&[])), Err(Error::Empty)));
@@ -636,26 +626,29 @@ fn name() -> impl Strategy<Value = Name> {
     "[a-z][a-z0-9_]{0,6}(\\.[a-z0-9_]{1,6}){0,2}".prop_map(|text| text.parse().unwrap())
 }
 
-fn socket() -> impl Strategy<Value = SocketAddr> {
+fn head_strategy() -> impl Strategy<Value = Head> {
+    let time = prop_oneof![
+        Just(Time::Frame(Path::Live)),
+        Just(Time::Frame(Path::Backfill)),
+    ];
+    let form = prop_oneof![Just(Form::Raw), Just(Form::Encoded)];
     prop_oneof![
-        (any::<[u8; 4]>(), any::<u16>())
-            .prop_map(|(ip, port)| SocketAddr::from((ip, port))),
-        (any::<[u8; 16]>(), any::<u16>())
-            .prop_map(|(ip, port)| SocketAddr::from((ip, port))),
-    ]
-}
-
-fn address() -> impl Strategy<Value = Address> {
-    prop_oneof![
-        socket().prop_map(Address::Udp),
-        socket().prop_map(Address::Tcp),
-        (any::<[u8; 32]>(), socket()).prop_filter_map(
-            "the key is of small order",
-            |(node, at)| Some(Address::Relay {
-                node: PublicKey::new(node).ok()?,
-                at,
-            })
+        (time, form, 1..=u32::MAX, 1..=u32::MAX).prop_map(
+            |(time, form, count, series)| {
+                Head {
+                    time,
+                    form,
+                    count,
+                    series,
+                }
+            }
         ),
+        (1..=u32::MAX).prop_map(|series| Head {
+            time: Time::Node,
+            form: Form::Raw,
+            count: 1,
+            series,
+        }),
     ]
 }
 
@@ -697,29 +690,12 @@ proptest! {
     }
 
     #[test]
-    fn round_trips_an_away(
-        node: u128,
-        key in any::<[u8; 32]>().prop_filter_map("small order", |key| PublicKey::new(key).ok()),
-        addresses in proptest::collection::vec(address(), 0..=ADDRESSES_MAX),
-    ) {
-        let away = Away {
-            node: node::Key::from_u128(node),
-            public_key: key,
-            addresses,
-        };
-        prop_assert_eq!(Away::decode(&encode_away(&away)), Ok(away));
+    fn round_trips_a_head(head in head_strategy()) {
+        prop_assert_eq!(Head::decode(&encode_head(head)), Ok(head));
     }
 
     #[test]
     fn round_trips_a_reply(reply in reply()) {
         prop_assert_eq!(Reply::decode(&encode_reply(reply)), Ok(reply));
-    }
-
-    #[test]
-    fn refuses_each_address_count_over_the_cap(count in 33..=u8::MAX) {
-        prop_assert_eq!(
-            Away::decode(&away_with(count, &[])),
-            Err(Error::Addresses { count: usize::from(count), cap: ADDRESSES_MAX })
-        );
     }
 }

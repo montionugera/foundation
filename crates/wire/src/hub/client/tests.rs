@@ -645,7 +645,7 @@ fn names_each_error() {
         ),
         (
             Error::SmallOrder,
-            "a key of the hello or the away is a point of small order",
+            "the key of the hello is a point of small order",
         ),
         (
             Error::Trailing,
@@ -729,16 +729,30 @@ fn names_each_error() {
         ),
         (Error::Unnamed, "the open of the write names no channel"),
         (
-            Error::Addresses { count: 33, cap: 32 },
-            "the away has 33 addresses, over the cap of 32",
+            Error::Time { time: 3 },
+            "the head names time 3, which no time has",
         ),
         (
-            Error::Address { kind: 3 },
-            "an address of the away has kind 3, which no address has",
+            Error::Form { form: 2 },
+            "the head names form 2, which no form has",
+        ),
+        (Error::Count, "the head holds no samples"),
+        (Error::Series, "the head names no series"),
+        (
+            Error::Untimed {
+                form: Form::Encoded,
+                count: 1,
+            },
+            "the head that the node stamps holds 1 samples in the encoded form, not 1 \
+             raw sample",
         ),
         (
-            Error::Family { family: 5 },
-            "an address of the away has family 5, not 4 or 6",
+            Error::Untimed {
+                form: Form::Raw,
+                count: 2,
+            },
+            "the head that the node stamps holds 2 samples in the raw form, not 1 raw \
+             sample",
         ),
         (
             Error::Refused { code: 8 },

@@ -13,9 +13,10 @@
 //!   [`super::Reader`] of the replies.
 //! - A write stream carries one writer session. The program sends a [`write::Write`]
 //!   and then its [`write::Open`] as a body. The node sends [`Places`] and the run of
-//!   its [`place`]s, and then a [`write::Reply`] for each frame and each commit. A
-//!   node that is not the home of the open's index sends a [`write::Away`] in place of
-//!   the places, and finishes the stream.
+//!   its [`place`]s. The program decodes them with [`write::Opening`]. Then the
+//!   program sends each frame as a [`write::Head`], the run of its
+//!   [`ends`](super::ends), and its body, and the node sends a [`write::Reply`] for
+//!   each frame and each commit.
 //!
 //! A body goes as a run of stream messages back to back, with no prefix, each at most
 //! the peer's `message_bytes_max` and none empty. It holds exactly the length of its
@@ -49,10 +50,9 @@
 //! - [`write::Open`]: the authority (`u8`), the lease (`u8`, none 0, a lease 1, then
 //!   the lease as `i64` nanoseconds), then each channel's name: its length (`u8`) and
 //!   the name.
-//! - [`write::Away`]: kind 7, the home's key (`u128`), its public key (32), the count
-//!   of addresses (`u8`), then each address: its kind (`u8`, UDP 0, TCP 1, relay 2),
-//!   the relay's public key (32) for a relay, the family (`u8`, 4 or 6), the IP (4 or
-//!   16), and the port (`u16`).
+//! - [`write::Head`]: kind 7, the time (`u8`, live 0, backfill 1, node 2), the form
+//!   (`u8`, raw 0, encoded 1), the samples of each series (`u32`), and the count of
+//!   series (`u32`).
 //! - [`write::Reply`]: taken 1 or lost 2, then the seq (`u64`) and the count (`u32`);
 //!   refused 3, then the code (`u8`, waiting 1, reserved 2, expired 3, order 4, codec
 //!   5, full 6, large 7); stored 4, then the last seq on disk (`u64`).
@@ -62,6 +62,7 @@ use std::fmt;
 use types::channel;
 use types::connection;
 use types::ed25519::PublicKey;
+use types::frame::Form;
 use types::hello::Hello;
 use types::name::{self, Name};
 use types::node;
@@ -229,7 +230,7 @@ pub enum Error {
     },
     /// The subject of a hello is not a name.
     Subject(text::Error<Box<name::Error>>),
-    /// The key of a hello, or a key of an away, is a point of small order.
+    /// The key of a hello is a point of small order.
     SmallOrder,
     /// A message comes after the body of a request, a response, or a read.
     Trailing,
@@ -308,22 +309,26 @@ pub enum Error {
     Channel(text::Error<Box<name::Error>>),
     /// The open of a write names no channel.
     Unnamed,
-    /// An away has more addresses than [`write::ADDRESSES_MAX`].
-    Addresses {
-        /// The count of addresses.
-        count: usize,
-        /// The cap.
-        cap: usize,
+    /// A head of a write names a time that no [`write::Time`] has.
+    Time {
+        /// The time byte.
+        time: u8,
     },
-    /// An address of an away has a kind that no address has.
-    Address {
-        /// The kind byte.
-        kind: u8,
+    /// A head of a write names a form that no [`Form`] has.
+    Form {
+        /// The form byte.
+        form: u8,
     },
-    /// An address of an away has a family that is neither 4 nor 6.
-    Family {
-        /// The family byte.
-        family: u8,
+    /// A head of a write holds no samples.
+    Count,
+    /// A head of a write names no series.
+    Series,
+    /// A head of [`write::Time::Node`] is encoded or holds more than one sample.
+    Untimed {
+        /// The form of the head.
+        form: Form,
+        /// The samples of each series.
+        count: u32,
     },
     /// A refused frame of a write has a code that no refusal has.
     Refused {
@@ -349,7 +354,7 @@ impl fmt::Display for Error {
                 write!(f, "the subject of the hello is not a name: {cause}")
             }
             Self::SmallOrder => {
-                f.write_str("a key of the hello or the away is a point of small order")
+                f.write_str("the key of the hello is a point of small order")
             }
             Self::Trailing => {
                 f.write_str("a hub message came after the body of the stream")
@@ -408,15 +413,24 @@ impl fmt::Display for Error {
                 "a channel name of the open of the write does not read: {cause}"
             ),
             Self::Unnamed => f.write_str("the open of the write names no channel"),
-            Self::Addresses { count, cap } => {
-                write!(f, "the away has {count} addresses, over the cap of {cap}")
+            Self::Time { time } => {
+                write!(f, "the head names time {time}, which no time has")
             }
-            Self::Address { kind } => write!(
-                f,
-                "an address of the away has kind {kind}, which no address has"
-            ),
-            Self::Family { family } => {
-                write!(f, "an address of the away has family {family}, not 4 or 6")
+            Self::Form { form } => {
+                write!(f, "the head names form {form}, which no form has")
+            }
+            Self::Count => f.write_str("the head holds no samples"),
+            Self::Series => f.write_str("the head names no series"),
+            Self::Untimed { form, count } => {
+                let form = match form {
+                    Form::Raw => "raw",
+                    Form::Encoded => "encoded",
+                };
+                write!(
+                    f,
+                    "the head that the node stamps holds {count} samples in the {form} \
+                     form, not 1 raw sample"
+                )
             }
             Self::Refused { code } => {
                 write!(f, "the refused frame has code {code}, which no refusal has")
