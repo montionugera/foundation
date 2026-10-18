@@ -28,7 +28,7 @@ attacker can use is a GitHub issue with the `security` label and a failing test.
 | Relay | Drop or delay what it carries | Read or change it: it sees only ciphertext |
 | Unknown client | Open a TLS session with no certificate (`Peer::Client`) | Sign a hello for a subject in the spec |
 | Subject | Sign hellos and session opens with a key in the spec | Go past its `access` allows |
-| Member node | Act as itself and as the connectors placed on it; read and change the traffic of subjects connected through it; use their open sessions until the hello expires; drop or delay what it forwards | Hold another node's key; change the spec |
+| Member node | Act as itself and as the connectors placed on it; read and change the traffic of subjects connected through it; use their open sessions until the hello expires; drop or delay what it forwards; put chunks on each node until its store is at the free floor, after which the node's own puts of new chunks give `Error::Floor` (until #1233) | Hold another node's key; change the spec |
 | Home of an index | Write any data into the index, run its gate, lie to its readers | Act outside its placement |
 | Voter | Vote and stall its region; break `raft` safety (Node to node); until #1273, commit a home that is not a member, so that each node that opens an unnamed reader of its index aborts; until #3179, hold back the card of a member, a minute at a time, with a forged or old card | Forge a spec change, not built (#1213), or move a home outside placement, not built (#2287) |
 | Time source | Shift the clocks that follow it, within what the estimator accepts | |
@@ -136,7 +136,9 @@ state on `main`.
   client's to the hub too, which admits the client by its hello against the access rules
   of the root region of the spec in use, and of each later spec; `node` answers each
   request that the hub verified with `ops::serve`. With no region, it rejects a
-  client's. `node` stops and resets each other stream until its protocol has a server.
+  client's. It gives a node's `Blob` stream to `blob::peer::serve` on the store of its
+  mesh only when a member of its region has the peer's public key, once, at the header,
+  and rejects a client's. `node` stops and resets each other stream until its protocol has a server.
   It reads no datagram yet (#1661). It admits each member of the region to a session,
   and gives other peers at most 256 places by default (`node::Settings::places_max`,
   NODE PORT): one for each session of a program, and one for the key of a node. At the
@@ -278,8 +280,8 @@ state on `main`.
   taken, and the node's own puts of new chunks then give `Error::Floor` too. `serve`
   holds at most one chunk in memory for each stream. `transport` copies each part of a
   chunk and holds no block of it, so a peer that delays its acks pins only copies inside
-  `window_bytes`. `node` routes a blob stream only from a member node of its region,
-  and rejects each other one (#1232). So only a member can fill the disk this way.
+  `window_bytes`. `node` routes a blob stream only from a node that is a member of its
+  region at the header, and rejects each other one (#1232).
 - `blob::peer::get` trusts the peer no more than `serve` does: a head of the oldest open
   digest over the largest block of its pool stops the stream with `TOO_LARGE`, and bytes
   that do not hash to the digest stop it with `MISMATCH` and are not stored. So a binary
