@@ -705,3 +705,45 @@ fn browse_gives_the_points_of_the_server_with_their_values() {
     });
     assert_eq!(*temperature, expected);
 }
+
+/// `import --match` of the OPC UA connector adds a channel for each point that matches,
+/// and after `plan` and `apply`, InfluxDB holds samples of each. The match holds only
+/// the Doubles `Temperature` and `Speed`, as InfluxDB of the test holds only floats.
+#[test]
+fn import_of_a_match_adds_channels_whose_samples_reach_influxdb() {
+    let hcl = plant().replacen("\"plant.*\"", "\"plc.*\"", 1);
+    assert_ne!(hcl, plant(), "the quickstart config selects `plant.*`");
+    let plant = create_plant(&hcl);
+    let args = [
+        "import",
+        "plc",
+        "plant.hcl",
+        "--start",
+        "Plant/Line",
+        "--match",
+        "*pe*e*",
+    ];
+    let output = plant.rig.run(&args, b"");
+    let expected = "The import added 2 channels to plant.hcl.\n\
+                    plc.Temperature Plant/Line/Temperature f64\n\
+                    plc.Speed Plant/Line/Speed f64\n";
+    assert_eq!(
+        (
+            output.status.code(),
+            text(&output.stdout),
+            text(&output.stderr)
+        ),
+        (Some(0), expected, "")
+    );
+    let output = plant
+        .rig
+        .run(&["plan", "plant.hcl", "--out", "plant.plan"], b"");
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let output = plant.rig.run(&["apply", "plant.plan"], b"");
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let imported = [
+        ("ns=1;s=Plant.Line.Temperature", "plc.Temperature"),
+        ("ns=1;s=Plant.Line.Speed", "plc.Speed"),
+    ];
+    first_stored(&plant, &imported);
+}
