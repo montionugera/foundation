@@ -19,6 +19,8 @@ exclude_re = [
   'crates/connector-opcua/src/server\.rs:.*replace \| with \^ in doubles$',
   # The body of `Unformatted::format_fields` is `Ok(())`, which the mutant gives.
   'crates/node/src/log\.rs:.*replace <impl FormatFields<.w> for Unformatted>::format_fields',
+  # The default body of `Kind::tag` is `None`, which the mutant gives.
+  'crates/connector/src/kind\.rs:.*replace Kind::tag -> Option<String> with None$',
   # Benchmarks ship in no binary; the run itself checks them.
   '^bench/',
   # `main` reads the arguments and calls a task. Each task has its own tests.
