@@ -200,11 +200,14 @@
   answer. Such a transmit changes no state of the socket (`laptop.architect-2`,
   2026-10-08 21:15 UTC,
   https://github.com/synnaxlabs/foundation/issues/1972#issuecomment-6069193130).
-  Amended (2026-10-18, #3185): supersedes "`sim` gives `Io { code: 99 }`" of
-  https://github.com/synnaxlabs/foundation/issues/1972#issuecomment-6069193130.
   Decided by `laptop.architect-2` (2026-10-08 18:56 and 19:02 UTC, #1965,
   https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6066909518,
   https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6067014743).
+  Amended (2026-10-18, #3185): supersedes code 99 for each bad source of
+  https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6066909518 and of
+  item 2 of https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6067014743
+  (`laptop.architect-2`,
+  https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6250115373).
   Supersedes "or the errno" of item 2 of
   https://github.com/synnaxlabs/foundation/issues/119#issuecomment-6066429541: a
   failure is not stored. One exception: `os` gives `Io { code: 22 }` for each IPv6
