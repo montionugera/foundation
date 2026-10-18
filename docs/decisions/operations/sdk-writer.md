@@ -5,9 +5,12 @@
   opens a `program::Writer` in a task of its own, which serves the calls of its writer
   until the writer closes or drops, or the client ends. Each call copies its samples
   into a frame that the writer keeps, sends it to the task on a channel of 1, and
-  blocks on a `std` channel of 1 for the outcome and the frame. So a warm write takes no
-  allocation, and no draft is held across calls. `Writer` is `Send` and holds no borrow
-  of `Client`. The plan
+  blocks on a `std` channel of 1 for the outcome and the frame. So a warm write makes
+  no allocation on the caller's thread (`crates/node/tests/warm.rs`, with
+  `counting::Local`), and no draft is held across calls. The client's thread makes the
+  ACK of each frame in `record_sent_frame` of noq, about 1.1 to 1.2 allocations a write
+  (a `program::Writer` alone makes about 1.04), until #3281; `sdk` makes no other.
+  `Writer` is `Send` and holds no borrow of `Client`. The plan
   (https://github.com/synnaxlabs/foundation/issues/3266#issuecomment-6255057555) was
   approved by `laptop.architect-2` at 2026-10-18T21:04:06Z
   (https://github.com/synnaxlabs/foundation/issues/3266#issuecomment-6255123001), with
@@ -23,8 +26,7 @@
   4. A place past the places gives `Stream(Layout(OutOfRange))`, so `Error::Value {
      place, scalar, data_type }` means only a value whose type is not the type of its
      place.
-  5. `Writer::places` gives the places in key order, and the index is a place also when
-     `Config::channels` does not name it.
+  5. Superseded by the place order below.
   6. One request channel into the client's thread, which `Client` holds next to the
      `Mutex` of its thread. Each send is a `try_send` or an unbounded send, so no send
      blocks or panics in an async context.
@@ -32,3 +34,41 @@
   `Ok(Outcome::Refused(Refusal::Codec))`, and the writer goes on. Lost: a borrowed
   `Writer<'_>` of `Client`, because a PyO3 class holds no borrow, so a Python close
   could not end a session with a live writer.
+  Place order: place `n` of `write` and `write_series` is `Config::channels[n]`, and
+  the index is at its own place when `channels` names it, else at place
+  `channels.len()`. `Writer::places` gives the places in that order, and
+  `Writer::index` gives the place of the index. Lost: the stamp as an argument of each
+  call (a caller who names the index gets a new error at the open, and each call of the
+  common case carries a `None`). Decided by `laptop.architect-2` on
+  2026-10-18T22:10:54Z
+  (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6255774922, items 1
+  and 2) and held on 2026-10-18T22:20:44Z
+  (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6255869839, item
+  2). It supersedes item 5.
+  A panic of the client's thread: a build where panics unwind can have one (the
+  `wheel` profile of `sdk-python`). `Client` sets a shared flag at its close or drop,
+  before its thread ends. A call of a writer whose task is lost gives `Closed` when the
+  flag is set, else `Panicked`. Term 1 holds. Decided by `laptop.architect-2` on
+  2026-10-18T22:20:44Z
+  (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6255869839, item
+  3). `Error::Stream` states the errors that leave the writer going (`Layout`,
+  `Unsent`, and `Pool`, as `program` leaves it going) and those that end it and come
+  again at each call (item 5 of that comment, and
+  https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6255939595).
+  `program::Refusal` is the stop code that `program::Error::Refused` holds, at the root
+  of `program`, as `Place` is; `program::write::Refusal` is the outcome of one frame.
+  No `sdk::Refusal` until PR 7 of #2177. Decided by `laptop.architect` on
+  2026-10-18T22:40:21Z
+  (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6256055880, item
+  2).
+  The node stamps a frame with no index value at mesh time now, or 1 ns after the last
+  stamp that it gave the writer. So after a stamp of the caller ahead of now, a frame
+  that the node stamps can get `Refusal::Order` (#3282). Each writer holds a stream of
+  the session, and the node bounds the streams of a session (64 by default, one of
+  them the hello): past that bound, an open waits until another writer closes or drops.
+  `crates/node/benches/sdk.rs` gives the p50 and p99 of each round of
+  `sdk::Writer::write` and of `program::Writer` with 2 values, and of each leg between
+  the caller and the writer task, with the task parked before each call. Decided by
+  `laptop.architect-2` on 2026-10-18T22:28:03Z
+  (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6255939595). The
+  merge waits for its rerun on a quiet host by `laptop.monitor`.
