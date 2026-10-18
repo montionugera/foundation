@@ -186,6 +186,14 @@ jobs:
               - --skip open62541::tests::each_thread_of_the_committed_copy_draws_from_its_own_random_state_or_aborts # #3041
               - --skip open62541::tests::run_refuses_a_file_of_omitted_that_the_library_does_not_compile # #3041
               - --skip open62541::tests::check_builds_against_the_headers_of_the_crypto # #3041
+              - --skip open62541::tests::check_finds_a_read_of_the_committed_copy_that_gives_aws_lc_no_callback # #3041
+              - --skip open62541::tests::check_fails_a_read_of_the_copy_with_no_declaration # #3041
+              - --skip open62541::tests::check_fails_a_read_of_aws_lc_with_no_declaration # #3041
+              - --skip open62541::tests::check_finds_a_read_of_the_copy_with_its_own_declaration # #3041
+              - --skip open62541::tests::check_finds_a_read_under_a_macro_of_pem_h # #3041
+              - --skip open62541::tests::check_finds_a_read_past_a_pem_h_of_the_copy # #3041
+              - --skip pem::each_read_refuses_an_encrypted_pem_with_no_prompt # #3070
+              - --skip child::a_detached_child_that_reads_no_stdin_gives_its_output # #3070
           - name: windows
             runner: windows-2025
             crates:
@@ -228,6 +236,17 @@ jobs:
         uses: actions/checkout@v4
       - if: env.RUST != 'false'
         uses: Swatinem/rust-cache@v2
+      # The tests of `sdk-python` embed CPython 3.11 or later, which needs its shared
+      # library, and start the node at `FOUNDATION_NODE`, which `Test` builds for the
+      # tests of `node`. Windows builds no node (#2968, #682, #2955, #2956, #477, #2957).
+      - if: env.RUST != 'false' && runner.os != 'Windows'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - if: env.RUST != 'false' && runner.os != 'Windows'
+        run: |
+          echo "PYO3_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
+          echo "FOUNDATION_NODE=$PWD/target/debug/foundation" >> "$GITHUB_ENV"
       - name: Format
         if: env.RUST != 'false' && runner.os == 'Linux'
         run: |
@@ -476,22 +495,39 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants@27.1.0
+      # As in `check`. cargo-mutants runs only the tests of the mutated crate, so only a
+      # shard with a mutant in `sdk/python` builds the node.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Node
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          git diff origin/main...HEAD > "$RUNNER_TEMP/diff.patch"
+          echo "PYO3_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
+          echo "FOUNDATION_NODE=$PWD/target/debug/foundation" >> "$GITHUB_ENV"
+          mutants=$(cargo mutants --in-diff "$RUNNER_TEMP/diff.patch" --list \
+            --shard "$SHARD/8" --sharding round-robin)
+          if printf '%s\n' "$mutants" | grep -q '^sdk/python/'; then
+            cargo build -p node --bin foundation
+          fi
       - name: Mutants in the diff
         env:
           TMPDIR: ${{ runner.temp }}
           SHARD: ${{ matrix.shard }}
         run: |
-          git diff origin/main...HEAD > "$RUNNER_TEMP/diff.patch"
           # A mutant can allocate in a loop. The cap leaves 3 GiB of the VM to the
           # runner agent, so the kernel kills the test, and the job reports the mutant.
           # The default OOMPolicy=stop would also stop cargo-mutants at that kill. A
           # hang waits 3 times the test time of the baseline, not the default 5: 4 jobs
-          # on 4 cores can run slower than the baseline, so not lower.
+          # on 4 cores can run slower than the baseline, so not lower. sudo drops
+          # LD_LIBRARY_PATH, which the embedded CPython needs.
           cap=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) - 3145728 ))K
           status=0
           sudo -E systemd-run --quiet --scope -p MemoryMax="$cap" -p MemorySwapMax=0 \
             -p OOMPolicy=continue --uid="$(id -u)" --gid="$(id -g)" -- \
-            env "PATH=$PATH" \
+            env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" \
             cargo mutants --in-diff "$RUNNER_TEMP/diff.patch" --jobs 4 \
             --shard "$SHARD/8" --sharding round-robin --timeout-multiplier 3 ||
             status=$?
