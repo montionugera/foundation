@@ -3,6 +3,7 @@
 //! `connector` and of the kinds.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::future::poll_fn;
 use std::path::Path;
@@ -12,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 use document::Document;
+use document::diagnostic::Diagnostic;
 use env::clock::Clock;
 use env::files::{self, Files};
 use env::net::Net;
@@ -50,6 +52,8 @@ pub struct Rig {
     clock: Clock,
     tasks: Tasks,
     definitions: RefCell<Vec<(Name, Definition)>>,
+    /// The counts of each connector whose status channels the rig defined.
+    counts: RefCell<BTreeMap<Name, Vec<Name>>>,
     /// The first key of the status channels of the next connector.
     next: Cell<u128>,
 }
@@ -82,6 +86,36 @@ impl Rig {
             roots,
             ..create_config(env, net, kinds).await
         };
+        Self::new(config)
+    }
+
+    /// Opens a rig as [`Self::open`] does, on a hub whose mesh time starts `delay`
+    /// after the call, so the node has no mesh time until then.
+    ///
+    /// # Panics
+    ///
+    /// As [`hub::testing::open_unsynced`].
+    pub async fn unsynced(
+        env: hub::testing::Env,
+        net: Net,
+        kinds: Table,
+        delay: Span,
+    ) -> Self {
+        let files = env.files.clone();
+        let config = supervisor::Config {
+            kinds: Arc::new(kinds),
+            clock: env.clock.clone(),
+            entropy: env.entropy.clone(),
+            net,
+            roots: Roots::default(),
+            tasks: env.tasks.clone(),
+            hub: hub::testing::open_unsynced(env, delay).await,
+            secrets: create_secrets(files),
+        };
+        Self::new(config)
+    }
+
+    fn new(config: supervisor::Config) -> Self {
         Self {
             hub: config.hub.clone(),
             kinds: Arc::clone(&config.kinds),
@@ -89,6 +123,7 @@ impl Rig {
             tasks: config.tasks.clone(),
             supervisor: Supervisor::new(config),
             definitions: RefCell::default(),
+            counts: RefCell::default(),
             next: Cell::new(STATUS),
         }
     }
@@ -102,10 +137,7 @@ impl Rig {
         &self.hub
     }
 
-    /// The supervisor of the rig's connectors, for a browse, or for an open of a
-    /// connector whose status channels the test defines. Define them with
-    /// [`Self::define`], never with [`Hub::set_definitions`], so that a later
-    /// [`Self::define`] or [`Self::remove`] keeps them on the hub.
+    /// The supervisor of the rig's connectors, for a browse.
     #[must_use]
     pub fn supervisor(&self) -> &Supervisor {
         &self.supervisor
@@ -165,19 +197,19 @@ impl Rig {
     }
 
     /// Starts the connector `name` of `kind` with `config` in a task of the rig's
-    /// shard: defines its status channels from the counts of the kind's check, then
-    /// opens and runs it as [`Supervisor::open`] and [`supervisor::Opened::run`] do.
-    /// When the check fails, it defines nothing and the run ends at once with
+    /// shard: defines its status channels as [`Self::define_status`] does, then opens
+    /// and runs it as [`Supervisor::open`] and [`supervisor::Opened::run`] do. When the
+    /// check fails, it defines nothing and the run ends at once with
     /// [`Error::Config`].
     ///
     /// # Panics
     ///
-    /// As [`kind::Table::check`](Table::check) and [`Self::define`], such as a second
-    /// connector of one name, and when the status reader does not open.
+    /// As [`Self::define_status`] but at a failed check, and when the status reader
+    /// does not open.
     pub async fn supervise(&self, kind: &str, name: Name, config: Document) -> Run {
-        let reader = match self.define_status(kind, &name, &config) {
-            Some(select) => Some(self.status(select).await),
-            None => None,
+        let reader = match self.status_of(kind, &name, &config) {
+            Ok(names) => Some(self.status(&names).await),
+            Err(_) => None,
         };
         let (cancel, ended, end) =
             (Token::new(), Token::new(), Rc::new(Cell::new(None)));
@@ -197,15 +229,14 @@ impl Rig {
         }
     }
 
-    /// Defines the status channels of the connector `name` of `kind` from the counts of
-    /// the kind's check, and opens it as [`Supervisor::open`] does, for a test that
-    /// polls [`supervisor::Opened::run`] in its own task. When the check fails, it
-    /// defines nothing, and the run ends at once with [`Error::Config`].
+    /// Defines the status channels of the connector `name` of `kind` as
+    /// [`Self::define_status`] does, and opens it as [`Supervisor::open`] does, for a
+    /// test that polls [`supervisor::Opened::run`] in its own task. When the check
+    /// fails, it defines nothing, and the run ends at once with [`Error::Config`].
     ///
     /// # Panics
     ///
-    /// As [`kind::Table::check`](Table::check) and [`Self::define`], such as a second
-    /// connector of one name.
+    /// As [`Self::define_status`] but at a failed check.
     pub async fn open_connector<'a>(
         &'a self,
         kind: &'a str,
@@ -213,33 +244,70 @@ impl Rig {
         config: &'a Document,
         cancel: &'a Token,
     ) -> supervisor::Opened<'a> {
-        self.define_status(kind, &name, config);
+        drop(self.status_of(kind, &name, config));
         self.supervisor.open(kind, name, config, cancel).await
     }
 
     /// Defines the status channels of the connector `name` of `kind` from the counts
-    /// of the kind's check, with the rig's next keys, and gives a selector of them.
-    /// Gives `None`, and defines nothing, when the check fails.
-    fn define_status(
+    /// of the kind's check, with the rig's next keys, and gives their names, the
+    /// index first. When the rig holds them for `name`, it defines nothing and gives
+    /// the same names, so a reader of them goes on. [`Self::supervise`] and
+    /// [`Self::open_connector`] call it; call it first to open a reader of the status
+    /// before the connector starts.
+    ///
+    /// # Panics
+    ///
+    /// When the kind's check fails, when the rig holds the status channels of `name`
+    /// for other counts, and as [`Self::define`].
+    pub fn define_status(
         &self,
         kind: &str,
         name: &Name,
         config: &Document,
-    ) -> Option<Selector> {
-        let counts = self.kinds.check(kind, None, config).ok()?.counts;
+    ) -> Vec<Name> {
+        let names = self.status_of(kind, name, config);
+        names.unwrap_or_else(|diagnostics| {
+            panic!("the check of {kind} fails: {diagnostics:?}")
+        })
+    }
+
+    /// As [`Self::define_status`], with the diagnostics of a failed check, and nothing
+    /// defined.
+    fn status_of(
+        &self,
+        kind: &str,
+        name: &Name,
+        config: &Document,
+    ) -> Result<Vec<Name>, Vec<Diagnostic>> {
+        let counts = self.kinds.check(kind, None, config)?.counts;
+        if let Some(held) = self.counts.borrow().get(name) {
+            assert!(
+                *held == counts,
+                "the rig holds the status of {name} with the counts [{}], and the \
+                 check of {kind} gives [{}]",
+                join(held),
+                join(&counts),
+            );
+            let (time, channels) =
+                status::channels(name, &counts).expect("invariant: names it defined");
+            let channels = channels.into_iter().map(|(name, _)| name);
+            return Ok(std::iter::once(time).chain(channels).collect());
+        }
         let first = channel::Key::from_u128(self.next.get());
         let status = create_status(name, &counts, first);
         let used = u128::try_from(status.len()).expect("invariant: a few channels");
         self.next.set(self.next.get() + used);
-        let select = Selector::new(status.iter().map(|(name, _)| name.as_str()));
+        let names = status.iter().map(|(name, _)| name.clone()).collect();
         self.define(status);
-        Some(select.expect("invariant: names select"))
+        self.counts.borrow_mut().insert(name.clone(), counts);
+        Ok(names)
     }
 
-    /// Opens a reader of the status channels of `select`.
-    async fn status(&self, select: Selector) -> Reader {
+    /// Opens a reader of the status channels `names`.
+    async fn status(&self, names: &[Name]) -> Reader {
+        let select = Selector::new(names.iter().map(Name::as_str));
         let config = hub::reader::Config {
-            select,
+            select: select.expect("invariant: names select"),
             mode: Mode::Complete,
             subject: "rig".parse().expect("invariant: a valid name"),
             name: None,
@@ -272,6 +340,13 @@ impl fmt::Debug for Run {
 }
 
 impl Run {
+    /// Whether the run ended, so that [`Self::stop`] gives the end of the run and not
+    /// the end of a cancel.
+    #[must_use]
+    pub fn ended(&self) -> bool {
+        self.ended.cancelled()
+    }
+
     /// Waits for the next status frame of the connector. The reader stays open after
     /// the run ends, so bound a wait that can outlive the run with [`Self::until`].
     ///
@@ -339,6 +414,12 @@ impl Drop for Run {
     fn drop(&mut self) {
         self.cancel.cancel();
     }
+}
+
+/// `names` with `, ` between them.
+fn join(names: &[Name]) -> String {
+    let names: Vec<_> = names.iter().map(Name::as_str).collect();
+    names.join(", ")
 }
 
 /// The directory of the files that holds the secrets of [`create_secrets`].
