@@ -86,6 +86,15 @@ pub(crate) fn check(
 /// `config.long-name` at its label when a status name that it has with no kind is
 /// longer than [`Name::MAX_BYTES`].
 pub fn find(documents: &[Document], name: &Name) -> Result<Connector, Vec<Diagnostic>> {
+    block(documents, name).map(|(_, connector)| connector)
+}
+
+/// The `connector` block with the label `name` in `documents`, and its connector, as
+/// [`find`] gives it.
+pub(crate) fn block<'a>(
+    documents: &'a [Document],
+    name: &Name,
+) -> Result<(&'a Block, Connector), Vec<Diagnostic>> {
     let alarms = private_key::alarms(documents);
     if !alarms.is_empty() {
         return Err(alarms);
@@ -130,7 +139,7 @@ pub fn find(documents: &[Document], name: &Name) -> Result<Connector, Vec<Diagno
         (Ok(kind), Ok(node), Ok(config)) => {
             let at = block.labels.first().and_then(|label| label.span);
             writes(name, Channels::default(), at).map_err(|problem| vec![problem])?;
-            Ok(Connector::new(kind, node, config))
+            Ok((block, Connector::new(kind, node, config)))
         }
         (kind, node, config) => {
             let mut problems: Vec<_> = [kind.err(), node.err(), config.err()]
