@@ -49,8 +49,12 @@ impl Log {
         }
     }
 
-    /// Writes the count of each window that dropped lines and has ended.
+    /// Writes the count of each window that dropped lines and has ended. It reads the
+    /// clock only when a window dropped lines.
     pub(crate) fn ended(&self) {
+        if self.warn.dropped.get() == 0 && self.error.dropped.get() == 0 {
+            return;
+        }
         let now = self.clock.now();
         self.ended_at(false, now);
         self.ended_at(true, now);
