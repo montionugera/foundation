@@ -51,42 +51,29 @@ impl Paths {
     /// The same files, where a call reaches a file only when each step of the walk of
     /// its path passes the limits of this call and of `self`, in order. The walk takes
     /// the path name by name, as [`Paths::resolve`] does, also through each symbolic
-    /// link target. Its steps are the root, each name that it reaches, at its resolved
-    /// path, and the step where the path ends. The first step that fails gives its
-    /// error, and the call reaches no file:
+    /// link target. The first step that fails gives its error:
     ///
-    /// - [`Error::Outside`]: no folder of `folders` holds the step. A folder holds a
-    ///   step when it is the file at the step or a directory on the way to it, by the
-    ///   file and not by its name: a name in other case on a file system that ignores
-    ///   case, and a bind mount, reach the same folder. The step where the path ends
-    ///   must be held. Another step is checked only when a `..` takes the walk above
-    ///   it, nothing is there, or a hidden folder holds it, and then it also passes as
-    ///   a directory on the way to a folder that is there.
-    /// - [`Error::Replaced`]: in place of `Outside`, when the file at the resolved path
-    ///   of a folder is not the one that was there at this call, so that folder holds
-    ///   nothing, and the step is under that folder, by the path that it resolved to at
-    ///   this call or by the one that it resolves to now, or in the directory that it
-    ///   was, or a step short of the end is on the way to the path that it resolved
-    ///   to. A program that renames, replaces, or removes a folder does this, unless
-    ///   the host gives the new folder the key of the old one, as ext4 can. A write
-    ///   replaces a folder that is a file, also through this handle.
+    /// - [`Error::Outside`]: no folder of `folders` holds the step, by its file and not
+    ///   by its name. The step where the path ends must be held. Another step is
+    ///   checked only when a `..` takes the walk above it, nothing is there, or a
+    ///   hidden folder holds it, and then a directory on the way to a folder also
+    ///   passes.
+    /// - [`Error::Replaced`]: in place of `Outside`, when the file at a folder is not
+    ///   the one that was there at this call, and the step is under that folder by its
+    ///   path then or now. A program that renames, replaces, or removes a folder does
+    ///   this.
     /// - [`Error::Hidden`]: the step passes the folders and a hidden folder holds it.
-    ///   Each call walks each path of `hidden` again, so a hidden file that a write
-    ///   replaces, and a hidden folder made after this call, are hidden. A directory
-    ///   on the way that was at a hidden path at this call hides too, so a hidden
-    ///   folder that a program renames away stays hidden, but not its own listing.
-    ///   When the host refuses the walk of a hidden path at a call, other than with
-    ///   [`Error::NotFound`] or the error of [`Driver::looped`], or at a name after a
-    ///   step that is a file, each step that passes the folders is hidden at that
-    ///   call, since another name of the file there can reach it.
+    ///   Each call walks each path of `hidden` again, and a directory that was at a
+    ///   hidden path at this call hides too. When the host refuses that walk, other
+    ///   than for a name that is not there, a step that is a file, or a loop, each step
+    ///   that passes the folders is hidden.
     /// - [`Error::Vacant`]: while nothing is at a hidden path, a write or a `make_dir`
-    ///   whose path ends at a new name in the deepest directory on the way to that
-    ///   path. A read there finds nothing, and fails with [`Error::NotFound`].
+    ///   of a new name in the deepest directory on the way to it.
     ///
-    /// A folder whose file a call cannot take holds nothing at that call. When the
-    /// steps pass and the walk fails, the call gives the error of the walk. The check
-    /// and the call are two steps: a process that can write a symbolic link in a
-    /// folder between them can lead the call to a path that the check refused (#3094).
+    /// When the steps pass and the walk fails, the call gives the error of the walk.
+    /// The check and the call are two steps: a process that can write a symbolic link
+    /// in a folder between them can lead the call to a path that the check refused
+    /// (#3094).
     ///
     /// # Errors
     ///
