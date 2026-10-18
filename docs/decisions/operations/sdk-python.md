@@ -8,9 +8,32 @@
   accepted at 2026-10-17T21:32:06Z
   (https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241427370).
   `connect(address, *, node, public_key, subject, private_key)` takes the node key as a
-  `uuid.UUID`, and a value of another type raises `TypeError`. `sdk::Error::Thread`
-  raises `RuntimeError`, `Bind` raises `OSError`, `Session` raises `ConnectionError`,
-  and `Panicked` raises `PanicException` (`laptop.architect-2`, 2026-10-17T18:44:19Z,
+  `uuid.UUID`, and a value of another type raises `TypeError`. `connect(address=None,
+  *, node=None, public_key=None, subject=None, private_key=None, data=None)` replaces
+  it (#3212 PR 1b). Each of the address and the pairs (`node`, `public_key`) and
+  (`subject`, `private_key`) comes from the arguments, else from `sdk::Node::local` on
+  the data directory `data` (a `str` or an `os.PathLike`, by default
+  `foundation-data`), with the node's first admin as the subject. With an address, the
+  data directory counts only when its node is at that address. A pair given in half
+  raises `ValueError`. With every value given, `connect` reads no file. `NotRunning`
+  is no source; `Version` and `Files` raise `ConnectionError`. When no source gives a
+  value, `ConnectionError` says what to pass, and names the node that the data
+  directory holds at another address; the text of the node's keys wins over that of
+  the subject. A data directory with no `admin.key` that a node wrote raises its own
+  text only when the subject must come from it. `Client.address` is the address that
+  `connect` dialed. The rules are in Rust, not Python, and a profile of PR 2 goes
+  between the arguments and the data directory (`laptop.architect-2`,
+  2026-10-18T16:46:56Z,
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252485660,
+  2026-10-18T17:28:39Z,
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252920038,
+  2026-10-18T17:34:06Z,
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252975559, and
+  2026-10-18T20:05:17Z,
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6254526787).
+  `sdk::Error::Thread` raises `RuntimeError`, `Bind` raises `OSError`, `Session` and
+  `Local` raise `ConnectionError`, and `Panicked` raises `PanicException`
+  (`laptop.architect-2`, 2026-10-17T18:44:19Z,
   https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6238826510).
   No Python test reaches `Bind`, so the Rust table test of the map, with a real `Bind`,
   is its only test (`laptop.architect-2`, 2026-10-18T15:00:03Z,
