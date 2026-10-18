@@ -113,17 +113,23 @@
   https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6103881921.
   `client::Places::decode` and `client::place::decode` are public, beside the public
   encode of each, so that the fuzz target `wire_hub_client` checks that each message
-  encodes to its bytes. `client::Reader` alone checks the run and builds the key set
+  encodes to its bytes. One decoder checks the run and builds the key set
   (`laptop.architect`, 2026-10-16T06:57:29Z,
-  https://github.com/synnaxlabs/foundation/issues/2808#issuecomment-6209940652).
+  https://github.com/synnaxlabs/foundation/issues/2808#issuecomment-6209940652):
+  `client::write::Opening`, which `client::Reader` holds (`laptop.architect`,
+  2026-10-18T03:22:04Z,
+  https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245142760).
   Supersedes
   https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6104390669. The
   program sends no credit: the stream's flow control bounds the frames in flight. The
   program knows the kind of each stream that it opens; the node knows the kind of the
   hello stream only, and decodes the first message of each later stream with
-  `client::First::decode`, which gives a `Request`, a `Read`, or a `Write` and refuses
-  each other kind with `Error::Kind`. The lost reason above, that each caller checks the
-  kind again, does not apply: each variant comes, and the node handles each.
+  `client::First::decode`, which gives a `Request`, a `Read`, or a `Write` (`Write`:
+  `laptop.architect`, 2026-10-18T02:34:55Z,
+  https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244779011) and
+  refuses each other kind with `Error::Kind`. The lost reason above, that each caller
+  checks the kind again, does not apply: each variant comes, and the node handles each.
+  Until it serves the write stream, the node stops a `Write` as `MALFORMED`.
   Supersedes, for the node, the rule that each side knows the kind of each stream, of
   https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6063499704.
   `client::Refusal` gains `UNKNOWN` 16 (a selector that matches no channel), `NOT_HOME`
@@ -141,14 +147,17 @@
   https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6104388686). The
   errors of the client wire are `wire::hub::client::Error`, and `text` is
   `wire::hub::client::text`. `wire::hub::Error` holds the errors of the home wire
-  only, holds no `Box`, and is `Copy`, with a check at compile time. A variant that
-  decoders of both wires give (`Empty`, `Kind`, `Length`, `Body`, `Unfinished`) is in
-  each type, with the same fields and message. `Run` keeps one message, and the doc of
-  each names its own items. `wire::hub::client::Error::Finished` is "the node finished
-  the read stream before its last place", which `wire::hub::client::Reader::decode`
-  gives at the end of the stream; `hub::Error::Finished` stays the home's. No variant
-  of `wire::hub::client::Error` holds a `hub::Error`: the program gets the errors of the
-  replies from the `hub::Reader` that `wire::hub::client::Reader` gives.
+  and of the replies of a write stream (`laptop.architect`, 2026-10-18T03:22:04Z,
+  https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245142760), holds no
+  `Box`, and is `Copy`, with a check at compile time. A variant that decoders of both
+  wires give (`Empty`, `Kind`, `Length`, `Body`, `Unfinished`) is in each type, with the
+  same fields and message. `Run` keeps one message, and the doc of each names its own
+  items. `wire::hub::client::Error::Finished` is "the node finished the stream before
+  its last place", which `wire::hub::client::Reader::decode` and
+  `wire::hub::client::write::Opening::decode` give at the end of the stream;
+  `hub::Error::Finished` stays the home's. No variant of `wire::hub::client::Error`
+  holds a `hub::Error`: the program gets the errors of the replies from the
+  `hub::Reader` that `wire::hub::client::Reader` gives.
   `program::Error::Message` (the name, `laptop.architect`, 2026-10-15T18:23:47Z,
   https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6199257488) holds a
   `wire::hub::client::Error`; `hub::serve::Error::Client` holds one, code `MALFORMED`,
