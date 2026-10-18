@@ -2352,6 +2352,67 @@ fn an_err_in_place_of_the_activate_answer_ends_the_connect_with_its_status() {
     assert_eq!(out, (Some(Status::BAD_SESSION_CLOSED), 2));
 }
 
+/// An `ERR` always closes the channel, so one with a code that is not Bad, in place of
+/// a read answer, ends the read with `BadDecodingError`.
+#[test]
+fn a_read_whose_answer_is_an_err_of_a_code_that_is_not_bad_gives_bad_decoding_error() {
+    let reads: Vec<_> = NOT_BAD.into_iter().map(read_after_err).collect();
+    let want = vec![Err(Fault::status(Status::BAD_DECODING_ERROR)); NOT_BAD.len()];
+    assert_eq!(reads, want);
+}
+
+/// An `ERR` with a code that is not Bad, in place of the answer to `ActivateSession`,
+/// ends the connect with `BadDecodingError`.
+#[test]
+fn an_err_of_a_code_that_is_not_bad_ends_the_connect_with_bad_decoding_error() {
+    let ends: Vec<_> = NOT_BAD.into_iter().map(activate_err).collect();
+    let want = vec![(Some(Status::BAD_DECODING_ERROR), 2); NOT_BAD.len()];
+    assert_eq!(ends, want);
+}
+
+/// Good, a Good code with a subcode (`GoodCallAgain`), and Uncertain.
+const NOT_BAD: [Status; 3] = [Status(0), Status(0x00A9_0000), Status(0x4000_0000)];
+
+/// Gives the read of `VALUE` whose answer is an `ERR` of `status`.
+fn read_after_err(status: Status) -> Result<Value, Fault> {
+    let (read, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let bad = Cell::new(false);
+            let mut to = to_server(&node);
+            let rewrite = |message: &mut Vec<u8>| {
+                to(message);
+                if bad.get() && is(message, READ_RESPONSE) {
+                    *message = err(status);
+                }
+            };
+            relayed(&node, &control, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                bad.set(true);
+                client.read_one(&VALUE).await
+            })
+            .await
+        })
+        .await
+    });
+    read
+}
+
+/// Gives the end of a connect whose answer to `ActivateSession` is an `ERR` of
+/// `status`, as `relayed_connect` does.
+fn activate_err(status: Status) -> (Option<Status>, usize) {
+    relayed_connect(move |node| {
+        let mut to = to_server(node);
+        move |_: &Relay, message: &mut Vec<u8>| {
+            to(message);
+            if is(message, ACTIVATE_RESPONSE) {
+                *message = err(status);
+            }
+        }
+    })
+}
+
 /// The type of an `ActivateSession` answer.
 const ACTIVATE_RESPONSE: [u8; 4] = [0x01, 0x00, 0xD6, 0x01];
 
