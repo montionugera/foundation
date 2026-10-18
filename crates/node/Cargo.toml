@@ -65,6 +65,7 @@ sim = { path = "../sim" }
 # Under `--cfg loom`, Tokio has no `net`.
 [target.'cfg(not(loom))'.dev-dependencies]
 sdk = { path = "../../sdk/rust" }
+tokio = { workspace = true, features = ["sync"] }
 
 [[test]]
 name = "erase"
@@ -81,6 +82,11 @@ test = true
 
 [[bench]]
 name = "log"
+harness = false
+test = true
+
+[[bench]]
+name = "sdk"
 harness = false
 test = true
 
