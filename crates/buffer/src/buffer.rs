@@ -1090,7 +1090,7 @@ async fn walk(
                 let largest = pool.largest();
                 let carry =
                     recover(body, offset, largest, slots, &mut logs, &mut newest)?;
-                if trimmed && carry > 0 {
+                if trimmed {
                     cursor.reserve(offset, body.len, carry);
                 }
             }
