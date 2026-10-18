@@ -182,7 +182,9 @@
   it, the reply is `ops.large-reply`, or `ops.large-browse` for `browse` (below)
   (`laptop.architect-2`, 2026-10-17T23:33:12Z,
   https://github.com/synnaxlabs/foundation/pull/3079#issuecomment-6243126104), or
-  `ops.large-status` for `status`. `ops.large-status`, status 1: ``the reply of the
+  `ops.large-status` for `status`. `ops.large-status`, status 1, takes the place of
+  `ops.large-reply` for a reply of a status, its output, or an error whose first problem
+  does not fit: ``the reply of the
   status has more than <n> bytes, the most that a reply holds``, fix `Read the status
   channels of each connector with a client of the node`, since a `status` request cannot
   ask for less (`laptop.architect-2`, 2026-10-18T00:09:33Z,
