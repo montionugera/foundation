@@ -56,7 +56,8 @@ impl Client {
     /// says.
     #[must_use]
     pub fn new(clock: Clock, rng: &mut Rng, timers: usize) -> Self {
-        let events = Loop::new(event::Time::monotonic(clock), rng);
+        let events =
+            Loop::new(event::Time::monotonic(clock), tracing::Span::none(), rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let client =
             unsafe { ffi::shim_client_new(events.raw(), crate::connection::CHUNKS) };

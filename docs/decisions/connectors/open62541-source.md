@@ -497,16 +497,17 @@
   Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6130241056,
   2026-10-12 18:31 UTC).
-  The logger of the loop writes each message of level warning and up to fd 2, and
-  drops the lower levels: it formats the line into a stack buffer of 512 bytes with
-  `mp_vsnprintf` and sends it in one `write`, so a line allocates nothing, takes no
-  `stdio` lock, and does not mix with a line of another thread. On Windows it sends it
-  with `WriteFile`, as `write` there adds a CR before each LF. The line of a refused
-  call and the line before an abort take the same path (approved by
-  `laptop.architect-2` at `124a85613`,
-  https://github.com/synnaxlabs/foundation/pull/2594#issuecomment-6153806001,
-  2026-10-13 19:46 UTC). A longer line is cut, not dropped. Trigger: when `node` has a
-  log, the loop takes its sink from its caller. Decided by `laptop.architect-2`
+  The logger of the loop gives each message of level warning and up to the log of the
+  node, and drops the lower levels: it formats the line into a stack buffer of 512
+  bytes with `mp_vsnprintf` and gives it to `connector_opcua_put_line` in `src/log.rs`,
+  which writes one event with the span of the run of the connector as its parent (LOG
+  OUTPUT (11)). A longer line is cut, not dropped. The line of a refused call and the
+  line before an abort go to `connector_opcua_die`, which panics with it, so the panic
+  hook writes it before the abort: an event in the queue of the log is lost at an
+  abort. `shim.c` names no `write` and no Win32 function (#2612; `laptop.architect-2`,
+  2026-10-18T02:16:27Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6244633633).
+  Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068103327,
   2026-10-08 20:07 UTC;
   https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068349707,

@@ -158,7 +158,11 @@ fn call_policy(name: &str) -> ! {
 fn call_member(name: &str) -> ! {
     let mut sim = sim::Sim::new(sim::Config::default());
     let clock = sim.node(sim::node::Config::default()).clock();
-    let events = Loop::new(event::Time::monotonic(clock), &mut Rng::from_seed(0));
+    let events = Loop::new(
+        event::Time::monotonic(clock),
+        tracing::Span::none(),
+        &mut Rng::from_seed(0),
+    );
     let (members, raw, none) = (events.members(), events.raw(), std::ptr::null_mut());
     let status = match name {
         "UA_EventLoop.stop" => {
@@ -182,11 +186,12 @@ fn call_member(name: &str) -> ! {
 }
 
 #[test]
-fn each_refused_call_prints_its_name_and_aborts() {
+fn each_refused_call_panics_once_with_its_name_and_aborts() {
     for name in REFUSED.iter().chain(FILE_STORES) {
-        let line =
-            format!("connector-opcua: open62541 called {name}, which is not built\n");
-        crate::child::aborted_in_c("link::call_refused", &[(CHILD, name)], &line);
+        assert_eq!(
+            crate::child::panicked("link::call_refused", &[(CHILD, name)]),
+            [format!("open62541 called {name}, which is not built")]
+        );
     }
 }
 
@@ -418,7 +423,7 @@ fn the_copy_links_the_timer() {
 /// that they may name in glibc, other than [`PLUGINS`]: on x86-64 with GCC or Clang at
 /// each optimization level, and on 64-bit Arm with Clang at `-O2` and
 /// `-moutline-atomics`.
-const OUTSIDE: [&str; 41] = [
+const OUTSIDE: [&str; 42] = [
     "_GLOBAL_OFFSET_TABLE_",
     "__ctype_b_loc",
     "__errno_location",
@@ -436,8 +441,10 @@ const OUTSIDE: [&str; 41] = [
     "access",
     "bcmp",
     "connector_opcua_calloc",
+    "connector_opcua_die",
     "connector_opcua_free",
     "connector_opcua_malloc",
+    "connector_opcua_put_line",
     "connector_opcua_realloc",
     "fflush",
     "fprintf",
@@ -459,7 +466,6 @@ const OUTSIDE: [&str; 41] = [
     "strtod",
     "strtok_r",
     "syslog",
-    "write",
 ];
 
 /// The symbols from outside the copy that only one file of it may name, by that file:

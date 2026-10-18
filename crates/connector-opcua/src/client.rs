@@ -150,9 +150,9 @@ struct Slots {
 }
 
 impl Client {
-    /// Makes a client on its own manager over `time`, `net`, and `rng`, and connects
-    /// it to the server at the endpoint `url` with the security mode `None` and an
-    /// anonymous session. It gives the client once the session is active and it has
+    /// Makes a client on its own manager over `time`, `span`, `net`, and `rng`, as
+    /// [`Manager::new`] does, and connects it to the server at the endpoint `url` with
+    /// the security mode `None` and an anonymous session. It gives the client once the session is active and it has
     /// read the `MaxNodesPerRead` of the server, or `None` when `until` ends first.
     /// After an error, or when `until` ends first, it closes the session that the
     /// connect made, as [`Client::close`] does, so it ends within [`GRACE`] of either.
@@ -172,12 +172,13 @@ impl Client {
     /// client, as [`alloc::exhausted`] says.
     pub(crate) async fn connect(
         time: Time,
+        span: tracing::Span,
         net: Net,
         rng: &mut Rng,
         url: &CStr,
         until: impl Future<Output = ()>,
     ) -> Result<Option<Self>, Status> {
-        let mut client = Self::new(time, net, rng);
+        let mut client = Self::new(time, span, net, rng);
         let opened = {
             let (mut until, mut open) = (pin!(until), pin!(client.open(url)));
             // The first poll of `open` starts the loop, which the close drives.
@@ -202,15 +203,15 @@ impl Client {
         }
     }
 
-    /// Makes a client on its own manager over `time`, `net`, and `rng`, with no
+    /// Makes a client on its own manager over `time`, `span`, `net`, and `rng`, with no
     /// connection.
     ///
     /// # Aborts
     ///
     /// As [`Client::connect`].
-    fn new(time: Time, net: Net, rng: &mut Rng) -> Self {
+    fn new(time: Time, span: tracing::Span, net: Net, rng: &mut Rng) -> Self {
         let clock = Clock::clone(&time.clock);
-        let connections = Manager::new(time, net, rng);
+        let connections = Manager::new(time, span, net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
         let Some(raw) = NonNull::new(raw) else {

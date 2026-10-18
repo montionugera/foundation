@@ -45,6 +45,15 @@ impl Fixture {
     }
 
     fn with(node: sim::node::Config) -> Self {
+        Self::make(node, tracing::Span::none())
+    }
+
+    /// A fixture whose loop logs with the parent `span`.
+    fn logged(span: tracing::Span) -> Self {
+        Self::make(sim::node::Config::default(), span)
+    }
+
+    fn make(node: sim::node::Config, span: tracing::Span) -> Self {
         let mut sim = Sim::new(sim::Config::default());
         let node = sim.node(node);
         let clock = node.clock();
@@ -54,7 +63,7 @@ impl Fixture {
             clock: env::clock::Clock::clone(&clock),
             wall: Box::new(move || read.get()),
         };
-        let events = Loop::new(time, &mut Rng::from_seed(0));
+        let events = Loop::new(time, span, &mut Rng::from_seed(0));
         let probe = Box::new(Probe {
             ran: RefCell::new(Vec::new()),
             raw: events.raw(),
@@ -296,7 +305,11 @@ fn the_monotonic_wall_of_a_test_loop_gives_the_last_stamp_past_it() {
             ..sim::node::Config::default()
         })
         .clock();
-    let events = Loop::new(Time::monotonic(clock), &mut Rng::from_seed(0));
+    let events = Loop::new(
+        Time::monotonic(clock),
+        tracing::Span::none(),
+        &mut Rng::from_seed(0),
+    );
     // SAFETY: the member takes its own loop.
     let now = unsafe { (events.members().now)(events.raw()) };
     assert_eq!(now, i64::MAX / 100 + UNIX_EPOCH_TICKS);
@@ -306,7 +319,11 @@ fn the_monotonic_wall_of_a_test_loop_gives_the_last_stamp_past_it() {
 fn draws(seed: u64) -> [u32; 4] {
     let mut sim = Sim::new(sim::Config::default());
     let clock = sim.node(sim::node::Config::default()).clock();
-    let _events = Loop::new(Time::monotonic(clock), &mut Rng::from_seed(seed));
+    let _events = Loop::new(
+        Time::monotonic(clock),
+        tracing::Span::none(),
+        &mut Rng::from_seed(seed),
+    );
     // SAFETY: it draws from the generator of this thread.
     std::array::from_fn(|_| unsafe { ffi::test::UA_UInt32_random() })
 }
@@ -848,10 +865,11 @@ fn drop_65_passes() {
 }
 
 #[test]
-fn the_drop_aborts_after_64_passes() {
-    let line = "connector-opcua: open62541 queued delayed callbacks for 64 passes of a loop \
-                free\n";
-    child::aborted_in_c("event::tests::drop_65_passes", &[], line);
+fn the_drop_panics_once_and_aborts_after_64_passes() {
+    assert_eq!(
+        child::panicked("event::tests::drop_65_passes", &[]),
+        ["open62541 queued delayed callbacks for 64 passes of a loop free"]
+    );
 }
 
 #[test]
@@ -938,13 +956,21 @@ fn ms(n: i64) -> Span {
     Span::from_nanos(n * Span::MILLISECOND.nanos())
 }
 
-/// Connects a client to `url`, which is not valid, when `child::running()`. The copy
-/// then logs a warning and an info message.
-fn connect(url: &CStr) {
-    if !child::running() {
-        return;
-    }
-    let f = Fixture::new();
+/// The lines of target `open62541` that `run` writes on a fixture whose loop has the
+/// span `connector` of the connector `press` of kind `opcua`.
+fn logged(run: impl FnOnce(&Fixture)) -> Vec<String> {
+    let (capture, log) = connector::testing::Capture::new("open62541");
+    tracing::dispatcher::with_default(&log, || {
+        let span =
+            tracing::error_span!("connector", connector = "press", kind = "opcua");
+        run(&Fixture::logged(span));
+    });
+    capture.lines()
+}
+
+/// Connects a client of `f` to `url`, which is not valid. The copy then logs a warning
+/// and an info message.
+fn connect(f: &Fixture, url: &CStr) {
     // SAFETY: the loop lives until the client is deleted.
     let client =
         unsafe { ffi::shim_client_new(f.events.raw(), crate::connection::CHUNKS) };
@@ -956,29 +982,13 @@ fn connect(url: &CStr) {
     unsafe { ffi::UA_Client_delete(client) };
 }
 
-#[test]
-fn connect_to_a_bad_url() {
-    connect(c"bad:url");
+/// The line of a connect to `url` with the text `text`.
+fn invalid(text: &str) -> String {
+    format!(r#"WARN {text} connector="press" kind="opcua" category="network""#)
 }
 
-/// A URL of 600 bytes.
-fn long() -> CString {
-    CString::new(format!("bad:{}", "x".repeat(596))).unwrap()
-}
-
-#[test]
-fn connect_to_a_long_url() {
-    connect(&long());
-}
-
-/// Sends a request on a client with no channel, when `child::running()`. The copy then
-/// logs an error.
-#[test]
-fn send_with_no_channel() {
-    if !child::running() {
-        return;
-    }
-    let f = Fixture::new();
+/// Sends a request on a client of `f` with no channel. The copy then logs an error.
+fn send_with_no_channel(f: &Fixture) {
     // SAFETY: the loop lives until the client is deleted.
     let client =
         unsafe { ffi::shim_client_new(f.events.raw(), crate::connection::CHUNKS) };
@@ -1001,36 +1011,42 @@ fn send_with_no_channel() {
 }
 
 #[test]
-fn an_error_goes_to_stderr() {
-    let output = child::output("event::tests::send_with_no_channel", &[]);
-    assert!(output.status.success());
+fn an_error_goes_to_the_log_with_the_span_of_the_loop() {
     assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "connector-opcua: open62541 error: SecureChannel must be connected to send \
-         request\n"
+        logged(send_with_no_channel),
+        [concat!(
+            r#"ERROR SecureChannel must be connected to send request connector="press" "#,
+            r#"kind="opcua" category="client""#
+        )]
     );
 }
 
 #[test]
-fn a_warning_goes_to_stderr_and_an_info_message_does_not() {
-    let output = child::output("event::tests::connect_to_a_bad_url", &[]);
-    assert!(output.status.success());
+fn a_warning_goes_to_the_log_and_an_info_message_does_not() {
     assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "connector-opcua: open62541 warning: Endpoint URL is invalid: bad:url\n"
+        logged(|f| connect(f, c"bad:url")),
+        [invalid("Endpoint URL is invalid: bad:url")]
     );
 }
 
 #[test]
-fn a_long_line_is_cut_to_512_bytes_with_its_newline() {
-    let output = child::output("event::tests::connect_to_a_long_url", &[]);
-    assert!(output.status.success());
-    let line = format!(
-        "connector-opcua: open62541 warning: Endpoint URL is invalid: {}",
-        long().to_str().unwrap()
-    );
+fn a_long_line_is_cut_to_511_bytes() {
+    let url = format!("bad:{}", "x".repeat(596));
+    let text = format!("Endpoint URL is invalid: {url}");
     assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        format!("{}\n", &line[..511])
+        logged(|f| connect(f, &CString::new(url).unwrap())),
+        [invalid(&text[..511])]
+    );
+}
+
+#[test]
+fn a_cut_in_a_character_ends_the_line_with_a_replacement_character() {
+    // The text before the URL has 25 bytes, so `é` takes bytes 510 and 511.
+    let url = format!("bad:{}é{}", "x".repeat(481), "x".repeat(100));
+    let text = format!("Endpoint URL is invalid: {url}");
+    assert!(!text.is_char_boundary(511));
+    assert_eq!(
+        logged(|f| connect(f, &CString::new(url).unwrap())),
+        [invalid(&format!("{}\u{FFFD}", &text[..510]))]
     );
 }

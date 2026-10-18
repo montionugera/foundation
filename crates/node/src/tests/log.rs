@@ -1965,6 +1965,103 @@ fn a_connector_gives_its_name_and_kind_to_an_error_line() {
     );
 }
 
+/// The definitions of `plant.a`, of `f64` samples, and its index `plant.time`.
+fn plant_a() -> Vec<(types::name::Name, spec::definition::Definition)> {
+    use spec::channel::{Channel, Data, Kind};
+    use spec::definition::Definition;
+    use types::sample::{Scalar, Type};
+
+    let key = types::channel::Key::from_u128;
+    let index = Kind::Index {
+        error: None,
+        control: None,
+    };
+    let sample = spec::data_type::DataType::Sample(Type::Scalar(Scalar::F64));
+    let data = Data::new(key(1), None, sample, None).expect("no unit");
+    let channel = |key, kind| Definition::Channel(Channel { key, kind });
+    vec![
+        (
+            "plant.time".parse().expect("a name"),
+            channel(key(1), index),
+        ),
+        (
+            "plant.a".parse().expect("a name"),
+            channel(key(2), Kind::Data(data)),
+        ),
+    ]
+}
+
+/// The lines of `connector_opcua::connection` and `open62541` of the `opcua` connector
+/// `plant.opcua`, over 3 s, to a peer with no listener. Each has no stamp and no mesh
+/// time.
+fn opcua_lines() -> Vec<String> {
+    let (mut sim, host) = host(1);
+    let peer = sim.node(sim::node::Config::default());
+    let lines = Lines::default();
+    let log = opened_at(&host, false, tracing::Level::INFO, Box::new(lines.clone()));
+    let config = env::shards::Config {
+        name: "connector".into(),
+        core: None,
+    };
+    let node = host.clone();
+    let address = format!("opc.tcp://{}:4840", peer.addresses()[0]);
+    let shards = host.shards().logged(log.dispatch.clone());
+    let start = shards.start(config, move |tasks| async move {
+        let env = hub::testing::Env {
+            files: node.files(),
+            clock: node.clock(),
+            wall: node.wall(),
+            entropy: node.entropy(),
+            tasks,
+        };
+        let kinds = connector::kind::Table::new()
+            .with("opcua", connector_opcua::Kind::default());
+        let rig = connector::testing::Rig::open(env, node.net(), kinds).await;
+        rig.define(plant_a());
+        let text = format!(
+            "address = \"{address}\"\nrate = \"10Hz\"\n\
+             read \"plant.a\" {{ node_id = \"ns=3;s=A\" }}\n"
+        );
+        let config = config_hcl::read(document::Source(0), &text).expect("HCL");
+        let name = "plant.opcua".parse().expect("a name");
+        let run = rig.supervise("opcua", name, config).await;
+        node.clock().sleep(Span::from_nanos(3_000_000_000)).await;
+        drop(run.stop().await);
+    });
+    drop(start.expect("a shard with no core starts"));
+    assert_eq!(sim.run(), Ok(()));
+    assert!(log.resume(), "the thread log starts");
+    assert_eq!(sim.run(), Ok(()));
+    (lines.read().iter())
+        .filter_map(|line| {
+            let (_, rest) = line.split_once(' ')?;
+            let target = rest.split_once(": ")?.0.rsplit(' ').next()?;
+            ["connector_opcua::connection", "open62541"]
+                .contains(&target)
+                .then(|| rest.strip_suffix(" mesh_time=none").expect("no mesh time"))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Each of the 3 runs in 3 s writes the warning of the manager and the error of
+/// open62541, both with the fields of the span of the connector.
+#[test]
+fn an_opcua_connector_logs_a_refused_connect_with_its_name_and_kind() {
+    let at = "connector=plant.opcua kind=opcua";
+    let run = [
+        format!(
+            "WARN connector_opcua::connection: connection 1: the connect failed: \
+             10.0.0.2:4840 refused the connection {at}"
+        ),
+        format!(
+            "ERROR open62541: Could not open a TCP connection to the Endpoint at \
+             opc.tcp://10.0.0.2:4840 {at} category=client"
+        ),
+    ];
+    assert_eq!(opcua_lines(), [run.clone(), run.clone(), run].concat());
+}
+
 /// A config error of [`Flaky`].
 fn refused() -> KindError {
     let code = document::diagnostic::Code::new("test.refused");

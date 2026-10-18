@@ -55,28 +55,39 @@ pub(crate) struct Loop {
     raw: NonNull<ffi::EventLoop>,
     /// The C loop reads it until `drop` frees the loop.
     time: NonNull<Time>,
+    /// The parent of each line of the logger of the loop, which each client's config
+    /// also points at. The C loop reads it until `drop` frees the loop.
+    span: NonNull<tracing::Span>,
 }
 
 impl Loop {
-    /// Makes a loop that reads `time`. It sets the random values of open62541 on this
-    /// thread from `rng`, so a run on a simulated clock replays. Each loop on this
-    /// thread then uses them, so give each loop on a thread an `rng` whose next value
-    /// differs.
+    /// Makes a loop that reads `time`, whose logger writes each line as an event with
+    /// the parent `span`. It sets the random values of open62541 on this thread from
+    /// `rng`, so a run on a simulated clock replays. Each loop on this thread then uses
+    /// them, so give each loop on a thread an `rng` whose next value differs.
     ///
     /// # Aborts
     ///
     /// When the C allocation of the loop fails, as [`alloc::exhausted`] says.
-    pub(crate) fn new(time: Time, rng: &mut Rng) -> Self {
+    pub(crate) fn new(time: Time, span: tracing::Span, rng: &mut Rng) -> Self {
         // SAFETY: it writes only the generator of this thread.
         unsafe { ffi::UA_random_seed_deterministic(rng.next_u64()) };
         let time = NonNull::from(Box::leak(Box::new(time)));
-        // SAFETY: `now` and `wall_now` read the `Time` at `time`, which lives until
-        // `drop`.
-        let raw = unsafe { ffi::shim_loop_new(now, wall_now, time.as_ptr().cast()) };
+        let span = NonNull::from(Box::leak(Box::new(span)));
+        // SAFETY: `now` and `wall_now` read the `Time` at `time`, and the logger the
+        // span at `span`, which live until `drop`.
+        let raw = unsafe {
+            ffi::shim_loop_new(
+                now,
+                wall_now,
+                time.as_ptr().cast(),
+                span.as_ptr().cast(),
+            )
+        };
         let Some(raw) = NonNull::new(raw) else {
             alloc::exhausted()
         };
-        Self { raw, time }
+        Self { raw, time, span }
     }
 
     /// Gives the loop for a client or server config with `externalEventLoop`. Delete
@@ -135,6 +146,9 @@ impl Drop for Loop {
         unsafe { ffi::shim_loop_free(self.raw.as_ptr()) };
         // SAFETY: `new` leaked the box, and the loop that read it is gone.
         drop(unsafe { Box::from_raw(self.time.as_ptr()) });
+        // SAFETY: as above. Each client and server, whose configs point at the logger
+        // of the loop and can log at a stop or a delete, is gone before the loop.
+        drop(unsafe { Box::from_raw(self.span.as_ptr()) });
     }
 }
 

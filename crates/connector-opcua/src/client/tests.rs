@@ -112,7 +112,8 @@ impl Peer<'_> {
     async fn receiving(&mut self, receive: u32) -> Client {
         let clock = Clock::clone(&self.clock);
         let time = event::Time::monotonic(Clock::clone(&clock));
-        let connections = Manager::new(time, self.net.clone(), &mut self.rng);
+        let connections =
+            Manager::new(time, tracing::Span::none(), self.net.clone(), &mut self.rng);
         // SAFETY: the loop outlives the client, which the drop of the client deletes
         // first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
@@ -134,7 +135,14 @@ async fn open(
     rng: &mut Rng,
     url: &CStr,
 ) -> Result<Client, Status> {
-    let connect = Client::connect(time, net, rng, url, future::pending());
+    let connect = Client::connect(
+        time,
+        tracing::Span::none(),
+        net,
+        rng,
+        url,
+        future::pending(),
+    );
     Ok(connect.await?.expect("a pending wait never ends"))
 }
 
@@ -1164,7 +1172,15 @@ fn a_connect_whose_wait_has_ended_gives_none() {
             let time = event::Time::monotonic(Clock::clone(&peer.clock));
             let net = Net::clone(&peer.net);
             let ended = future::ready(());
-            let connect = Client::connect(time, net, &mut peer.rng, &url, ended).await;
+            let connect = Client::connect(
+                time,
+                tracing::Span::none(),
+                net,
+                &mut peer.rng,
+                &url,
+                ended,
+            )
+            .await;
             connect.map(|client| client.is_none())
         })
         .await

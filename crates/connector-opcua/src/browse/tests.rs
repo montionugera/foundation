@@ -532,8 +532,14 @@ fn on_server_of<T: Send + 'static>(
         let mut out = None;
         let until = async {
             let (time, mut rng) = (Time::monotonic(node.clock()), node.entropy().rng());
-            let connect =
-                Client::connect(time, node.net(), &mut rng, &url, future::pending());
+            let connect = Client::connect(
+                time,
+                tracing::Span::none(),
+                node.net(),
+                &mut rng,
+                &url,
+                future::pending(),
+            );
             let mut client = connect.await.expect("a connect").expect("a client");
             out = Some(body(&mut Server::new(&mut client)).await);
             client.close().await;

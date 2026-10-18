@@ -224,3 +224,19 @@
   at the close still calls the write once more, so the writer checks the close before
   the lines,
   https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6241254217).
+  (11) A kind gets the span of (10) of its run from `connector::kind::Context::span`
+  and gives it as the explicit parent of each of its events. A task that it spawns
+  through `Context::tasks` takes a clone. No poll enters it, as in (10). A test of each
+  kind that writes an event asserts that an event of its run names its connector and
+  kind (the condition of `laptop.monitor`, 2026-10-18T02:21:43Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6244674365). In
+  `connector-opcua`, the logger of each loop gives each message of open62541 at warning
+  and up as one event of target `open62541`: WARN for a warning, ERROR for an error or
+  a fatal message, with the field `category` (`network`, `client`, and the others of
+  `UA_LogCategory`). Its text is cut at 511 bytes, and each sequence that is not UTF-8
+  becomes U+FFFD. A message below warning drops at each `--log-level` (#3106). The
+  warnings of the connection manager keep the target `connector_opcua::connection` and
+  get no `category`. An abort in C panics with its line inside `catch_unwind`, then
+  aborts, so the panic hook writes one `panicked` line in each build before the abort.
+  By `laptop.architect-2` (items 1 to 4 of 2026-10-18T02:16:27Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6244633633).

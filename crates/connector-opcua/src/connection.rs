@@ -71,19 +71,24 @@ pub(crate) struct Manager {
 }
 
 impl Manager {
-    /// Makes a loop on `time` and `rng`, as [`Loop::new`] does, and a manager
+    /// Makes a loop on `time`, `span`, and `rng`, as [`Loop::new`] does, and a manager
     /// that connects through `net`, linked first into the event sources of the loop,
-    /// where a client finds it.
+    /// where a client finds it. Each warning of the manager has the parent `span`.
     ///
     /// # Aborts
     ///
     /// When a C allocation fails, as [`alloc::exhausted`] says.
-    pub(crate) fn new(time: Time, net: Net, rng: &mut Rng) -> Self {
-        Self::make(time, net, None, rng)
+    pub(crate) fn new(
+        time: Time,
+        span: tracing::Span,
+        net: Net,
+        rng: &mut Rng,
+    ) -> Self {
+        Self::make(time, span, net, None, rng)
     }
 
-    /// As [`Manager::new`], and the manager also accepts on a listener that it binds on
-    /// `local`, with a queue of `backlog` streams, where a server finds it.
+    /// As [`Manager::new`] with no span, and the manager also accepts on a listener that
+    /// it binds on `local`, with a queue of `backlog` streams, where a server finds it.
     ///
     /// # Errors
     ///
@@ -126,13 +131,20 @@ impl Manager {
         listener: Listener,
         rng: &mut Rng,
     ) -> Self {
-        Self::make(time, net, Some(listener), rng)
+        Self::make(time, tracing::Span::none(), net, Some(listener), rng)
     }
 
-    fn make(time: Time, net: Net, listener: Option<Listener>, rng: &mut Rng) -> Self {
+    fn make(
+        time: Time,
+        span: tracing::Span,
+        net: Net,
+        listener: Option<Listener>,
+        rng: &mut Rng,
+    ) -> Self {
         let clock = Clock::clone(&time.clock);
-        let events = Loop::new(time, rng);
+        let events = Loop::new(time, span.clone(), rng);
         let state = NonNull::from(Box::leak(Box::new(State {
+            span,
             net,
             listener: Cell::new(listener),
             clock,
@@ -323,6 +335,8 @@ impl Drop for Manager {
 /// What the manager and its hooks share. No borrow of a `RefCell` but `read` spans a
 /// call into C, since C may call a hook again.
 struct State {
+    /// The parent of each warning.
+    span: tracing::Span,
     net: Net,
     /// The listener until a listen open takes it.
     listener: Cell<Option<Listener>>,
@@ -419,11 +433,9 @@ impl State {
         }
     }
 
-    /// Logs `what` of connection `id` as a warning through the logger of the loop.
+    /// Writes `what` of connection `id` as a warning.
     fn warn(&self, id: usize, what: fmt::Arguments<'_>) {
-        let message = format!("connection {id}: {what}");
-        // SAFETY: the loop lives, and the call reads the bytes only during it.
-        unsafe { ffi::shim_log_warning(self.events, message.as_ptr(), message.len()) };
+        tracing::warn!(parent: &self.span, "connection {id}: {what}");
     }
 
     /// Starts the close of the stream of `id`, and queues its `CLOSING` once.
