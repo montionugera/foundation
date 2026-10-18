@@ -526,7 +526,7 @@ fn holds_no_places_once_a_read_opens() {
         agent.session.close(Code(0));
         node.clock().sleep(Span::MILLISECOND).await;
     };
-    sessions::run_program(5, home, program);
+    sessions::run_program(4, home, program);
     let (long, short) = measured
         .lock()
         .expect("not poisoned")
