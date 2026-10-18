@@ -403,9 +403,8 @@ impl Mesh {
     ///   that write ends.
     /// - [`Error::Raft`] with [`raft::Error::NotLeader`] when this node does not
     ///   lead, or when a new leader replaces the entry before a write holds it.
-    /// - [`Error::Soon`] for a `Card` change of a member whose `Card` change at
-    ///   another version this node proposed less than a minute before, while it
-    ///   leads.
+    /// - [`Error::Soon`] for a `Card` change of a member when this node proposed
+    ///   another card of that member less than a minute before, while it leads.
     /// - [`Error::NotMember`] for a `Card` change of a node that is not a member of
     ///   the applied state, while this node leads.
     ///
@@ -504,8 +503,8 @@ impl Mesh {
     /// Proposes the `change` that `peer` forwarded, and gives the answer for the
     /// reply half of its stream: the position once the entry is on disk here, or
     /// "not the leader". A change that `peer` forwards again applies again, other
-    /// than a `Card` change that this node proposed in this term, which gets the
-    /// position of its first entry.
+    /// than a `Card` change that this node proposed in this term less than a minute
+    /// before, which gets the position of its first entry.
     ///
     /// # Errors
     ///
@@ -515,10 +514,10 @@ impl Mesh {
     /// - [`Error::PeerNotVoter`] when `peer` is the key of no voter of this node's
     ///   configuration. The group does not see the change.
     /// - [`Error::NotMember`] when `change` is a `Card` change of a node that is not
-    ///   a member. The group does not see the change.
-    /// - [`Error::Soon`] when `change` is a `Card` change of a member whose card at
-    ///   another version this node proposed less than a minute before. The group
-    ///   does not see the change.
+    ///   a member, while this node leads. The group does not see the change.
+    /// - [`Error::Soon`] when `change` is a `Card` change of a member, and this node
+    ///   leads and proposed another card of that member less than a minute before.
+    ///   The group does not see the change.
     pub(crate) async fn answer(
         &self,
         peer: PublicKey,

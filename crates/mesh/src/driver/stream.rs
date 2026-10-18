@@ -28,9 +28,10 @@ impl Mesh {
     ///   [`Error::PeerNotVoter`], [`Error::Claim`], and [`Error::Raft`] when the group
     ///   refuses a message.
     /// - [`Error::NotMember`] when the proposal is a `Card` change of a node that is
-    ///   not a member. The stream stops with code 16.
-    /// - [`Error::Soon`] when the proposal is a `Card` change of a member whose card
-    ///   at another version the leader proposed less than a minute before.
+    ///   not a member, while this node leads. The stream stops with code 16.
+    /// - [`Error::Soon`] when the proposal is a `Card` change of a member, and this
+    ///   node leads and proposed another card of that member less than a minute
+    ///   before.
     /// - [`Error::Pool`] when the pool has no block: while the group waits to write its
     ///   log, which refuses the message, or for the answer to a proposal, which the
     ///   peer then does not get, and the group can hold the entry of the proposal. A
