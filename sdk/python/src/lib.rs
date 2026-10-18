@@ -34,12 +34,13 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
 ///
 /// `node` is the `uuid.UUID` key of the node, `public_key` the 32 bytes of the key
 /// that the node proves, and `private_key` the 32 bytes of a key that the spec lists
-/// for `subject`. Each of the pairs (`node`, `public_key`) and (`subject`,
-/// `private_key`) comes from the arguments, else from the node that runs on the data
-/// directory `data` (a `str` or an `os.PathLike`: `--data` of `foundation start`, by
-/// default `foundation-data`), as its first admin. With no `address`, that node gives it too. With an `address`,
-/// the data directory counts only when its node is at that address: `127.0.0.1:p`
-/// matches a node bound on `0.0.0.0:p`. Other Python threads run while it waits.
+/// for `subject`. Each of `address`, the pair (`node`, `public_key`), and the pair
+/// (`subject`, `private_key`) comes from the arguments, else from the node that runs on
+/// the data directory `data`: that node gives its address and keys, and its first admin
+/// gives the subject. `data` is a `str` or an `os.PathLike`, the `--data` of
+/// `foundation start`, by default `foundation-data`. With an `address`, the data
+/// directory counts only when its node is at that address: `127.0.0.1:p` matches a node
+/// bound on `0.0.0.0:p`. Other Python threads run while it waits.
 ///
 /// Raises `TypeError` for an argument of a wrong type, `ValueError` for an argument
 /// that does not parse or a pair given in half, `RuntimeError` when a thread of the

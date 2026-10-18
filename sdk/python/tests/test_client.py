@@ -498,6 +498,29 @@ class ArgumentTest(unittest.TestCase):
             "node's host",
         )
 
+    def test_each_argument_parses_before_the_data_directory_is_read(self) -> None:
+        data = self.directory()
+        os.chmod(os.path.join(data, "data"), 0)
+        self.addCleanup(os.chmod, os.path.join(data, "data"), 0o700)
+        for arguments, text in [
+            (
+                {"address": "localhost:1"},
+                "the address \"localhost:1\" is not ip:port: invalid socket address "
+                "syntax",
+            ),
+            (
+                {"node": uuid.UUID(int=1), "public_key": bytes(31)},
+                "public_key is 31 bytes, not 32",
+            ),
+            (
+                {"subject": "", "private_key": bytes(32)},
+                "subject: a name or pattern is empty",
+            ),
+        ]:
+            with self.assertRaises(ValueError) as raised:
+                foundation.connect(data=data, **arguments)
+            self.assertEqual(str(raised.exception), text)
+
     def test_a_data_directory_that_cannot_be_read_is_refused(self) -> None:
         data = self.directory()
         os.chmod(os.path.join(data, "data"), 0)
