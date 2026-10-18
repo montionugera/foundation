@@ -1,4 +1,4 @@
-//! Kinds whose device is a tree in memory, for the tests of `browse`.
+//! Kinds whose device is a tree in memory, for the tests of `browse` and `import`.
 
 use std::collections::BTreeMap;
 
@@ -6,9 +6,10 @@ use connector::browse::{
     self, Access, Child, Cursor, Device, Entry, Facts, Found, Page, Query, Shape,
 };
 use connector::kind::{self, Channels, Context};
-use document::Document;
 use document::diagnostic::{Code, Diagnostic, Note};
-use document::value::Kind;
+use document::value::{self, Kind};
+use document::{Attribute, Block, Document, Label, Map};
+use types::name::Name;
 use types::sample::{Scalar, Type, Value};
 use types::time::{Span, Stamp};
 
@@ -16,7 +17,9 @@ use types::time::{Span, Stamp};
 pub(crate) const ADDRESS: Code = Code::new("tree.address");
 
 /// A kind whose device is a tree in memory. Its cursor is the offset of the next
-/// entry. It gives [`ADDRESS`] for a connector with the `address` `"bad"`.
+/// entry. It gives [`ADDRESS`] for a connector with the `address` `"bad"`. It writes
+/// the channel of each `read` block. Its import gives `write "<channel>" { tag =
+/// "<tag>" }` for a point of `Access::Write`, else a `read` block.
 pub(crate) struct Tree {
     /// The entries of each folder, by the tag of the folder. The tag of the root is
     /// empty.
@@ -262,6 +265,31 @@ fn address(config: &Document) -> Option<Diagnostic> {
     Some(diagnostic)
 }
 
+/// The block `<keyword> "<channel>" { tag = "<tag>" }`.
+fn block(keyword: &str, tag: &str, channel: &Name) -> Block {
+    let tag = Attribute {
+        key: "tag".into(),
+        key_span: None,
+        value: value::Value {
+            kind: Kind::String(tag.into()),
+            span: None,
+        },
+    };
+    Block {
+        keyword: keyword.into(),
+        keyword_span: None,
+        labels: vec![Label {
+            text: channel.as_str().into(),
+            span: None,
+        }],
+        body: Document {
+            attributes: Map::new(vec![tag]).expect("invariant: one key"),
+            blocks: Vec::new(),
+        },
+        span: None,
+    }
+}
+
 /// One browse of a [`Tree`].
 struct Session<'a>(&'a Tree);
 
@@ -283,18 +311,53 @@ impl Device for Session<'_> {
 }
 
 impl kind::Kind for Tree {
-    type Config = ();
+    type Config = Vec<Name>;
 
-    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
-        Ok(())
+    fn parse(&self, config: &Document) -> Result<Vec<Name>, Vec<Diagnostic>> {
+        let reads = config
+            .blocks
+            .iter()
+            .filter(|block| &*block.keyword == "read");
+        Ok(reads
+            .map(|block| block.labels[0].text.parse().expect("a channel name"))
+            .collect())
     }
 
-    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
-        Ok(Channels::default())
+    fn check(&self, reads: &Vec<Name>) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels {
+            writes: reads.clone(),
+            ..Channels::default()
+        })
     }
 
-    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), kind::Error>> {
+    fn run(
+        &self,
+        _: Context<Vec<Name>>,
+    ) -> impl Future<Output = Result<(), kind::Error>> {
         std::future::ready(Ok(()))
+    }
+
+    fn block(
+        &self,
+        tag: &str,
+        facts: &Facts,
+        channel: &Name,
+    ) -> Result<Vec<Block>, Vec<Diagnostic>> {
+        let keyword = match facts.access {
+            Some(Access::Write) => "write",
+            _ => "read",
+        };
+        Ok(vec![block(keyword, tag, channel)])
+    }
+
+    fn tag(&self, block: &Block) -> Option<String> {
+        if !matches!(&*block.keyword, "read" | "write") {
+            return None;
+        }
+        match &block.body.attributes.get("tag")?.value.kind {
+            Kind::String(tag) => Some(tag.to_string()),
+            _ => None,
+        }
     }
 
     async fn browse(

@@ -54,6 +54,18 @@ impl FrontEnds {
         self
     }
 
+    /// The front end of the file at `path`, by its extension.
+    fn of(&self, path: &str) -> Option<&FrontEnd> {
+        Path::new(path)
+            .file_name()
+            .map(|name| {
+                name.to_str()
+                    .expect("invariant: a part of a UTF-8 path is UTF-8")
+            })
+            .and_then(|name| name.rsplit_once('.'))
+            .and_then(|(_, extension)| self.0.get(extension))
+    }
+
     /// Each extension, in order.
     pub(crate) fn extensions(&self) -> impl Iterator<Item = &'static str> {
         self.0.keys().copied()
@@ -105,15 +117,7 @@ pub(crate) fn read(
             diagnostics.push(not_utf8(&file.path));
             continue;
         };
-        let front_end = Path::new(path)
-            .file_name()
-            .map(|name| {
-                name.to_str()
-                    .expect("invariant: a part of a UTF-8 path is UTF-8")
-            })
-            .and_then(|name| name.rsplit_once('.'))
-            .and_then(|(_, extension)| front_ends.0.get(extension));
-        let Some(front_end) = front_end else {
+        let Some(front_end) = front_ends.of(path) else {
             diagnostics.push(unknown(Source(source), front_ends));
             continue;
         };
@@ -133,6 +137,30 @@ pub(crate) fn read(
     } else {
         Err(diagnostics)
     }
+}
+
+/// The text of `file`, the file `source` that [`read`] read, with `document` written
+/// into it by its front end.
+///
+/// # Errors
+///
+/// Each problem that the front end gives.
+///
+/// # Panics
+///
+/// When the path of `file` is not UTF-8 or has no front end in `front_ends`.
+pub(crate) fn update(
+    file: &File,
+    source: Source,
+    document: &Checked,
+    front_ends: &FrontEnds,
+) -> Result<String, Vec<Diagnostic>> {
+    let front_end = file
+        .path
+        .to_str()
+        .and_then(|path| front_ends.of(path))
+        .expect("invariant: `read` read the file with a front end");
+    (front_end.update)(source, &file.text, document)
 }
 
 /// The `ops.path-not-utf8` diagnostic of `path`.

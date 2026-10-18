@@ -16,6 +16,7 @@ mod browse;
 mod common;
 mod error;
 mod front_end;
+mod import;
 mod mcp;
 mod node;
 mod operation;

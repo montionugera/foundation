@@ -675,6 +675,28 @@ fn every() -> Vec<Error> {
             text: String::new(),
             cause: Malformed::Escape,
         },
+        Error::NoPick,
+        Error::ImportLimit { picked: None },
+        Error::BadPoint {
+            text: String::new(),
+            cause: Malformed::Empty,
+        },
+        Error::DuplicatePick {
+            paths: vec!["Line/Pump".to_owned()],
+        },
+        Error::BadName {
+            path: String::new(),
+            text: String::new(),
+            cause: types::name::Error::Empty,
+        },
+        Error::UnreadablePoint {
+            points: vec![("Line/Pump".to_owned(), "no access".to_owned())],
+        },
+        Error::ImportBudget { matched: true },
+        Error::LargeImport,
+        Error::FileChanged {
+            path: PathBuf::new(),
+        },
     ]
 }
 
@@ -717,6 +739,15 @@ fn error_codes_and_fixes_match_the_golden_file() {
             | Error::BrowseNode { .. }
             | Error::BadStart { .. }
             | Error::BadPattern { .. }
+            | Error::NoPick
+            | Error::ImportLimit { .. }
+            | Error::BadPoint { .. }
+            | Error::DuplicatePick { .. }
+            | Error::BadName { .. }
+            | Error::UnreadablePoint { .. }
+            | Error::ImportBudget { .. }
+            | Error::LargeImport
+            | Error::FileChanged { .. }
             | Error::Config(_)
             | Error::Node(_)
             | Error::Remote { .. } => {}
