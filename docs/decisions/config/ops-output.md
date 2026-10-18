@@ -392,15 +392,15 @@
   with `isError` and the text `{"errors": [...]}`, while an unknown tool and a malformed
   request or argument stay a JSON-RPC error. Each operation of `foundation --help` but
   `start` and `mcp` is a tool, with the output schema of its `--json`. `version`,
-  `docs`, `status`, and `browse` have `readOnlyHint`; `plan`, `apply`, and `import` (IMPORT OP) have
-  `destructiveHint`, since the `out` of `plan` replaces a file that is there, so a
-  client that asks the person before a destructive tool asks for `plan` too. `foundation
-  mcp` reaches its node at the first tool call that needs it, keeps that session, and
-  reaches again only at the call after a failure of a reach or a request. `node` reads
-  standard input on an I/O thread of `os` and gives `ops::cli` an async source of lines,
-  so the shard that serves runs while it waits for a line, and a kept session sends its
-  keep-alive. Decided by the person, "Yeah that's fine" (2026-10-16T04:45:05Z, relayed
-  by `laptop.monitor`,
+  `docs`, `status`, and `browse` have `readOnlyHint`; `plan`, `apply`, and `import`
+  (IMPORT OP) have `destructiveHint`, since the `out` of `plan` replaces a file that is
+  there, so a client that asks the person before a destructive tool asks for `plan` too.
+  `foundation mcp` reaches its node at the first tool call that needs it, keeps that
+  session, and reaches again only at the call after a failure of a reach or a request.
+  `node` reads standard input on an I/O thread of `os` and gives `ops::cli` an async
+  source of lines, so the shard that serves runs while it waits for a line, and a kept
+  session sends its keep-alive. Decided by the person, "Yeah that's fine"
+  (2026-10-16T04:45:05Z, relayed by `laptop.monitor`,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208278565;
   the tools and their hints by `laptop.architect-2`, 2026-10-16T04:46:50Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208295673; the
