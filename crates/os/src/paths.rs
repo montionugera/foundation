@@ -144,26 +144,37 @@ impl env::paths::dir::Driver for Dir {
         Ok(Box::new(up))
     }
 
-    #[cfg(target_os = "linux")]
     fn path(&self) -> Option<PathBuf> {
-        use std::os::fd::AsRawFd;
-        let fd = self.fd.as_ref()?.as_raw_fd();
-        let link = format!("/proc/self/fd/{fd}");
-        let path = rustix::fs::readlinkat(CWD, link, Vec::new())
-            .ok()?
-            .into_bytes();
-        // A removed directory keeps its last path with this end.
-        let path = PathBuf::from(OsString::from_vec(path));
-        let gone = path.as_os_str().as_bytes().ends_with(b" (deleted)");
-        (path.is_absolute() && !gone).then_some(path)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn path(&self) -> Option<PathBuf> {
-        let path = rustix::fs::getpath(self.fd.as_ref()?).ok()?.into_bytes();
+        let fd = self.fd.as_ref()?.as_fd();
+        #[cfg(target_os = "linux")]
+        let path = proc_path(fd)?;
+        #[cfg(target_os = "macos")]
+        let path = getpath(fd)?;
         let path = PathBuf::from(OsString::from_vec(path));
         path.is_absolute().then_some(path)
     }
+}
+
+/// The path that Linux gives for `fd`, or `None` at an error or for a removed
+/// directory.
+#[cfg(target_os = "linux")]
+fn proc_path(fd: BorrowedFd<'_>) -> Option<Vec<u8>> {
+    use std::os::fd::AsRawFd;
+    let link = format!("/proc/self/fd/{}", fd.as_raw_fd());
+    let path = rustix::fs::readlinkat(CWD, link, Vec::new())
+        .ok()?
+        .into_bytes();
+    // A removed directory keeps its last path with this end.
+    (!path.ends_with(b" (deleted)")).then_some(path)
+}
+
+/// The path that macOS gives for `fd`, or `None` at an error. A removed directory
+/// keeps its last path.
+#[cfg(target_os = "macos")]
+fn getpath(fd: BorrowedFd<'_>) -> Option<Vec<u8>> {
+    rustix::fs::getpath(fd)
+        .ok()
+        .map(std::ffi::CString::into_bytes)
 }
 
 /// The key of the file of `stat`.
