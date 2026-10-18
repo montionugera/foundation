@@ -537,7 +537,8 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 No target yet, because the decoder is private, not built, not reached from a file, or
 not reached from the corpus: `transport::message` (#2139), the QUIC hello
 (`transport::quic::hello::Hello::decode`), the file `founding` of the mesh directory
-(`mesh::region::Founding::decode`, with `mesh::Member::decode` in it, #2311), the join
+(`mesh::region::Founding::decode`, with `mesh::Member::decode` in it, #2311), the file
+`card` of the mesh directory (`mesh::driver::version::read`, #2311), the join
 answer (`mesh::Member::decode` from a peer, #336 adds its target),
 each connector's protocol parser, the `node_id`
 text of the `opcua` kind
