@@ -41,7 +41,7 @@
   on a new stream. A reply that does not answer the oldest open digest gives
   `Error::Unexpected`, and an end of the peer's half with digests open gives
   `Error::Unanswered`; both stop with `MALFORMED`. A store error is the failure of the
-  requester, so the stream ends with code 0. `peer::put(&Store, &Session, &[Digest])`
+  requester, so the stream ends with code 0 (the batch limit, the head of the oldest open digest, and this code: `laptop.architect`, 2026-10-18T16:45:46Z: https://github.com/synnaxlabs/foundation/pull/3220#issuecomment-6252474303). `peer::put(&Store, &Session, &[Digest])`
   sends each chunk of the store, one at a time, as `serve` sends a get, and waits for
   its `Stored`. A stop or reset with a code that is not 0 is the peer's refusal
   (`Error::Refused`), and code 0 a failed stream. A drop of either future ends the
