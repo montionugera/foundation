@@ -705,7 +705,7 @@ async fn send_one(
     write(&mut writer, first, &[(1.0, 2.0)]);
     plant.clock.sleep(Span::from_nanos(20_000_000_000)).await;
     let end = run.end().await;
-    // The status readers take the last status after the home applied it.
+    // The record takes the last status after the home applied it.
     plant.clock.sleep(Span::SECOND).await;
     let auth = plant.auth.borrow().clone();
     (auth, plant.errors(), end)
@@ -2246,7 +2246,7 @@ fn shows_a_write_that_fails_until_the_run_ends() {
         write(&mut writer, first, &[(1.0, 2.0)]);
         plant.clock.sleep(Span::from_nanos(3_000_000_000)).await;
         run.stop().await.expect("ok after a cancel");
-        // The status readers take the last status after the home applied it.
+        // The record takes the last status after the home applied it.
         plant.clock.sleep(Span::SECOND).await;
         plant.errors()
     });

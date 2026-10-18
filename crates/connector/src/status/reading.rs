@@ -13,7 +13,7 @@ use super::{Class, State, TIME, segment};
 #[cfg(not(loom))]
 mod tests;
 
-/// The values of one frame of a connector's status channels.
+/// The values of one sample time of a connector's status channels.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reading {
     /// What the connector's run does.
