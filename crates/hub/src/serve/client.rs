@@ -375,6 +375,10 @@ pub(crate) async fn later(
                 .await
                 .map(|()| Served::Ended)
         }
+        // This node serves no write stream yet.
+        Ok(Some((_, First::Write(_)))) => {
+            Err(Error::Client(wire::hub::client::Error::Kind { kind: 7 }))
+        }
         Err(error) => Err(error),
     };
     if let Err(error) = &served {
