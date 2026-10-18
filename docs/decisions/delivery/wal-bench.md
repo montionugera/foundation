@@ -9,7 +9,7 @@
   for each commit (`trimmed`, `release`), with the cost of a trim divided over the
   commits between trims, 8 the cost for each record (`append`, `synced`). Each ring has
   4 blocks more than its bench ID (68 and 4100 blocks), so that the rings keep their
-  areas, on which the tests of `bench` pin the most commits between trims: 19 on the
+  areas, on which the tests of `bench` pin the most commits between trims: 18 on the
   ring of 64 and 64 on the ring of 4096 (#2943). One `#[doc(hidden)] pub const PHASE` of
   `bench` holds the 4 blocks, and the bench and a test of `bench` read it. The test
   checks 10 laps of each ring after the warm-up. Both benches use the same rings.

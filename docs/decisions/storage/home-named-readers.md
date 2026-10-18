@@ -71,7 +71,10 @@
   commit, the open opens, and its reader ends with the error of the commit. Another
   entry that finds no room or no block stays due for the next tick, so a restart before
   it resumes at an older position: a repeat, not a loss. A trim keeps the newest entry
-  of each part of each index (STORE TRIM, #406). A named complete open that adds a
+  of each part of each index (STORE TRIM; `laptop.architect`, #406,
+  2026-10-14T01:56:45Z:
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6159164617).
+  A named complete open that adds a
   record that no part has room
   for gives `Unopened::Full`, with a `limit` of 257,728 bytes (64 parts of 4027 bytes of
   records), and `hub` gives `reader::Error::Full`. A reopen or a takeover never gives
