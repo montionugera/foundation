@@ -114,7 +114,8 @@ async fn fetch(
 ) -> Result<Option<Miss>, Error> {
     header(store, sender).await?;
     let decoder = Requester::new(store.pool.largest());
-    // A get comes from the pool of the store.
+    // A get comes from the pool of the store. The header takes a block first, so
+    // `room` is at least 64 and `batch` at least 1.
     let room = sender.bytes_max().min(store.pool.largest());
     let batch = (room - get::encoded_len(0)) / size_of::<Digest>();
     while !open.is_empty() {
