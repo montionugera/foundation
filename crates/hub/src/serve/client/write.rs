@@ -141,9 +141,10 @@ async fn start(
 
 /// Writes each frame of the program with `writer` and sends its outcome, until the
 /// program finishes the stream. Then drops `writer`, so that control ends, and gives
-/// the commits that are due. The blocks of the outcome of a frame and of the next
-/// `Stored` come before its draft, so a pool with no block for them stops the stream
-/// before the home takes the frame.
+/// the commits that are due. The block of each outcome comes before the draft of its
+/// frame, so a pool with no block for it stops the stream before the home takes the
+/// frame. The block of the next `Stored` comes next, and a frame that finds none is
+/// refused as `Full`, as a frame whose draft finds none is.
 async fn relay(
     state: &RefCell<State>,
     mut writer: Writer,
@@ -184,8 +185,9 @@ async fn relay(
             }
             Due::Draft { layout, form } => {
                 let block = alloc(state, Outcome::LEN_MAX)?;
-                stored.reserve(state)?;
-                let drafted = layout.draft(state.borrow().home.pool(), form);
+                let drafted = stored
+                    .reserve(state)
+                    .and_then(|()| layout.draft(state.borrow().home.pool(), form));
                 match drafted {
                     Ok(draft) => {
                         reply = Some(block);
@@ -319,11 +321,11 @@ struct Stored {
 
 impl Stored {
     /// Takes the block of the next `Stored` from the home's pool when the stream holds
-    /// none. Call it before each draft, so each taken frame has the block of its
-    /// `Stored`.
-    fn reserve(&mut self, state: &RefCell<State>) -> Result<(), Error> {
+    /// none. Call it before each draft, and refuse the frame when it fails, so each
+    /// taken frame has the block of its `Stored`.
+    fn reserve(&mut self, state: &RefCell<State>) -> Result<(), block::Error> {
         if self.next.is_none() {
-            self.next = Some(alloc(state, STORED_BYTES)?);
+            self.next = Some(state.borrow().alloc(STORED_BYTES)?);
         }
         Ok(())
     }

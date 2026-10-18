@@ -674,33 +674,31 @@ fn stops_a_write_whose_outcome_finds_no_block_after_its_draft_as_busy() {
     assert_eq!(home.served[1..], [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
-/// A frame whose outcome finds a block but whose `Stored` finds none stops the stream
-/// as `BUSY` before the home takes it: the next write takes its first frame at seq 0.
+/// A frame whose `Stored` finds no block is refused as `Full`, and the stream goes on:
+/// it takes the next frame once the pool has room, and that `Stored` counts the
+/// refused frame.
 #[test]
-fn stops_a_write_whose_stored_finds_no_block_as_busy() {
-    let ready = spare_for_a_while(vec![Outcome::LEN_MAX]);
-    let home = read_session(442, ready, |mut agent| async move {
+fn refuses_a_frame_whose_stored_finds_no_block_as_full() {
+    let stamps: Vec<i64> = (2..=33).collect();
+    // The blocks of the outcome and of the draft of 32 samples, 560 bytes.
+    let ready = spare_for_a_while(vec![Outcome::LEN_MAX, 560]);
+    let home = read_session(442, ready, move |mut agent| async move {
         agent.admit().await;
         let mut stream = write(&agent).await;
-        agent.sleep(Span::from_nanos(START.nanos() * 3 / 2)).await;
         send(&mut stream, &[1], &[10]).await;
-        assert_eq!(stream.recv().await, reset_with(BUSY));
-        agent.sleep(START).await;
-        let mut stream = write(&agent).await;
-        send(&mut stream, &[2], &[20]).await;
         assert_eq!(stream.reply().await, taken(0, 1));
-        assert_eq!(end(&mut stream).await, [stored(1)]);
+        assert_eq!(stream.reply().await, stored(1));
+        agent.sleep(Span::from_nanos(START.nanos() * 3 / 2)).await;
+        send(&mut stream, &stamps, &stamps).await;
+        let full = refused(wire::hub::write::Refusal::Full);
+        assert_eq!(stream.reply().await, full);
+        agent.sleep(START).await;
+        send(&mut stream, &[100], &[100]).await;
+        assert_eq!(stream.reply().await, taken(1, 1));
+        assert_eq!(end(&mut stream).await, [stored(3)]);
         finish(&mut agent).await;
     });
-    let [
-        Err(serve::Error::Pool(block::Error::Exhausted { requested, .. })),
-        ..,
-    ] = home.served[..]
-    else {
-        panic!("{:?}", home.served);
-    };
-    assert_eq!(requested, Reply::Stored { frames: 0 }.encoded_len());
-    assert_eq!(home.served[1..], [Ok(Got::Ended), Ok(Got::Ended)]);
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
 /// A backfill frame whose entry finds no block at the home is refused as `Full`, and
