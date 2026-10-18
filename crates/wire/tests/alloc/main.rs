@@ -1,8 +1,8 @@
 //! The hub messages on a frame's path, the frames of a warm reader session, the head,
 //! the frames, and the replies of a program's write, the blob heads, and the body
 //! counters of client requests and blob chunks, make no heap allocation, and the place
-//! messages of a read make a known count. This binary has no test harness: the count covers each
-//! thread, and a harness allocates on its own thread at any time.
+//! messages of a read make a known count. This binary has no test harness: the count
+//! covers each thread, and a harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -275,9 +275,10 @@ fn write_frames() {
             ),
             "the head and ends did not decode: {steps:?}"
         );
-        if round == 1 {
-            assert_eq!(allocations, 0, "the head and ends of a write allocated");
-        }
+        assert_eq!(
+            allocations, 0,
+            "the head and ends of write frame {round} allocated"
+        );
         let Ok(write::Due::Draft { layout, form }) = frames.due() else {
             panic!("a draft is due");
         };

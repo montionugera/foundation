@@ -504,7 +504,8 @@ pub mod ends {
     }
 }
 
-/// A message of a reader session, or a reply of a write stream, that is not valid.
+/// A message of a reader session or of a write stream that is not valid, or a write
+/// stream that ends inside a frame.
 /// The decoders of [`client`] give [`client::Error`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -655,7 +656,8 @@ impl fmt::Display for Error {
             ),
             Self::Path { byte } => write!(
                 f,
-                "the frame head names path {byte}, which this node does not know"
+                "the frame head names path or time {byte}, which this node does not \
+                 know"
             ),
             Self::Reopen { kind } => write!(
                 f,
@@ -710,8 +712,8 @@ impl fmt::Display for Error {
             }
             Self::Stamp { count, form } => write!(
                 f,
-                "the frame head that the node stamps has {count} samples in the {form:?} \
-                 form, not 1 in the raw form"
+                "the frame head that the node stamps has {count} samples in the \
+                 {form:?} form, not 1 in the raw form"
             ),
             Self::Cut {
                 received,
@@ -1379,7 +1381,7 @@ mod tests {
             ),
             (
                 Error::Path { byte: 2 },
-                "the frame head names path 2, which this node does not know",
+                "the frame head names path or time 2, which this node does not know",
             ),
             (
                 Error::Reopen { kind: 1 },

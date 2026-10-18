@@ -334,8 +334,8 @@ fn encode_a_write_head(bencher: Bencher<'_, '_>) {
 }
 
 /// Decodes a program's frame of `series` series of one 8 byte sample at the node with
-/// [`write::Frames`]: its head, a run of one message, a draft from a pool, and a body of
-/// one message received in place. Gives the frame's first body byte.
+/// [`write::Frames`]: its head, a run of one message, a draft from a pool, and a body
+/// of one message received in place. Gives the frame's first body byte.
 #[divan::bench(args = SERIES)]
 fn decode_a_write_frame(bencher: Bencher<'_, '_>, series: u32) {
     let channels = (1..=u128::from(series)).map(|key| {
