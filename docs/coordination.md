@@ -71,6 +71,25 @@ Never run `--workspace`, `cargo xtask miri`, `loom`, or `shuttle` on the laptop;
 runs them. On 2026-10-05 the person said: "You agents need to be careful about how they
 use memory" (RAM).
 
+## Memory on a box
+
+Each session on a box has a share of its memory. `docs/claude/testing.md` (mutation
+testing) caps each mutants run and each test run of a mutant by it. The share is the
+group cap less 5 GiB for the Claude processes and the system, divided by the sessions
+of the box, rounded down (#803). So the sum of the capped runs stays under the group
+cap, also while the group cap is not set. `laptop.monitor` keeps this table and the
+group caps current
+(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256405286):
+
+| Box | RAM | Group cap | Sessions | Share |
+| --- | --- | --- | --- | --- |
+| box1 | 61 GiB | 54 GiB | 3 | 16G |
+| box2 | 61 GiB | 54 GiB | 4 | 12G |
+
+The group cap is the `MemoryMax` of `user-1000.slice`. It is a runtime setting, so a
+`factory-up` drops it. On 2026-10-18 it was not set, and `laptop.monitor` sets it when
+the person allows it.
+
 ## Issues
 
 Every task is a GitHub issue. An issue states its goal, the crates it changes, the tests

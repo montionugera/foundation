@@ -54,17 +54,19 @@ https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155299486).
 Benchmarks run on a dedicated machine. Mutation testing (`cargo mutants --in-diff`)
 checks on each PR that agent-written tests catch real changes. A missed mutant fails CI.
 A mutant that makes a test hang (a timeout) counts as caught. Each run on a box runs in
-a cgroup with a memory cap of 16G and no swap: `systemd-run --user --scope -p
-MemoryMax=16G -p MemorySwapMax=0 -p OOMPolicy=continue env -u CARGO_TARGET_DIR cargo
-mutants --jobs 4 ...`. So does each test run on a box of a mutant made by hand, and each
-test run on a box that a review agent starts (`.claude/agents/reviewer.md`,
-`.claude/agents/breaker.md`), with `cargo test` in place of `cargo mutants`. The person
-approved a cap of these runs, with 32 GB as an example (2026-10-17T16:07:01Z,
-`laptop.monitor`'s record:
-https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246411064). After
-that OK, `laptop.monitor` chose 16G for each run on box1 (123 GiB) and box2 (61 GiB).
-The cap bounds one run, not the sum of the runs: four runs at the cap (64 GiB) fill
-box2. A session runs one mutants run at a time (`laptop.monitor`,
+a cgroup with a memory cap and no swap: `systemd-run --user --scope -p MemoryMax=<cap>
+-p MemorySwapMax=0 -p OOMPolicy=continue env -u CARGO_TARGET_DIR cargo mutants --jobs 4
+...`. So does each test run on a box of a mutant made by hand, and each test run on a
+box that a review agent starts (`.claude/agents/reviewer.md`,
+`.claude/agents/breaker.md`), with `cargo test` in place of `cargo mutants`. The cap of
+a run is the share of its session (`docs/coordination.md`, "Memory on a box"), divided
+by the runs that the session has at once. A review agent takes half the share, because
+round 1 of `/review` runs `reviewer` and `breaker` at once. The person approved a cap of
+these runs, with 32 GB as an example (2026-10-17T16:07:01Z, `laptop.monitor`'s record:
+https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246411064), and
+`laptop.monitor` gave the bound
+(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256405286). A session
+runs one mutants run at a time (`laptop.monitor`,
 https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6043431001,
 2026-10-07T17:40:51Z). A mutant that allocates in a loop then dies alone, its test
 fails, and the run counts it as caught. With no cap, the mutant fills the box and the
