@@ -1181,6 +1181,7 @@ mod tests {
             ("<Rig as Case>::Out", "<Rig as Case>::Out"),
             ("dyn A + Send", "dyn A+Send"),
             (r#"Arr<"a  b\" c">"#, r#"Arr<"a  b\" c">"#),
+            (r#"Arr<"a", B>"#, r#"Arr<"a", B>"#),
         ] {
             let parsed: syn::Type = syn::parse_str(ty).unwrap();
             assert_eq!(spelled(&parsed), expected, "{ty}");

@@ -226,6 +226,15 @@ mod tests {
     }
 
     #[test]
+    fn lines_reads_the_text_of_a_block_in_a_sequence_from_one_column_past_its_dash() {
+        for text in ["a:\n- |\n x\nc: d\n", "a:\n- - |\n   x\nc: d\n"] {
+            let codes: Vec<_> =
+                lines(text).unwrap().into_iter().map(|l| l.code).collect();
+            assert_eq!(codes[2..], [None, Some("c: d")], "{text:?}");
+        }
+    }
+
+    #[test]
     fn lines_reads_a_plain_scalar_that_ends_in_a_bar_as_code() {
         let text = "a: b - |\nc: d |\n";
         assert_eq!(texts(text), ["a: b - |", "c: d |"]);
