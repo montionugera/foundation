@@ -1,6 +1,9 @@
 //! Tests of the change of the card of a member: the bound of one proposal of each
 //! member each minute, and `Mesh::set_addresses`.
 
+use std::future::pending;
+use std::net::Ipv6Addr;
+
 use card::addresses::Addresses;
 
 use super::home::{Leader, run};
@@ -396,4 +399,68 @@ fn two_calls_at_once_write_the_file_in_turn() {
             assert_eq!(done, [Ok(()), Err(Error::Soon)], "seed {seed}");
         });
     }
+}
+
+// A power cut at any point of a call leaves a mesh that opens and sets its addresses
+// again, at a version above the held one.
+#[test]
+fn a_power_cut_in_a_call_leaves_a_mesh_that_sets_again() {
+    for step in 0..96_i64 {
+        let mut sim = Sim::new(common::simulation(u64::try_from(step).unwrap()));
+        let node = sim.node(sim::node::Config::default());
+        let shard = env::shards::Config {
+            name: "call".into(),
+            core: None,
+        };
+        let own = node.clone();
+        let started = node.shards().start(shard, move |tasks| async move {
+            let mesh = open(&own, &tasks, 1, &[1], &[1]).await.unwrap();
+            lead(&mesh, &own.clock(), home_to(1)).await;
+            mesh.set_addresses(moved(1, 9)).await.unwrap();
+            pending::<()>().await;
+        });
+        drop(started.unwrap());
+        sim.run_for(Span::from_nanos(step.saturating_mul(50_000_000)))
+            .unwrap();
+        sim.crash(&node, Crash::Power);
+        sim.run_on(&node, move |node, tasks| async move {
+            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+            let before = card_of(&mesh, 1);
+            lead(&mesh, &node.clock(), home_to(1)).await;
+            assert_eq!(
+                mesh.set_addresses(moved(1, 10)).await,
+                Ok(()),
+                "step {step}"
+            );
+            let after = card_of(&mesh, 1);
+            assert_eq!(after.addresses, moved(1, 10), "step {step}");
+            assert!(after.version > before.version, "step {step}");
+        })
+        .unwrap();
+    }
+}
+
+// The largest card, of the most relay addresses of IPv6, goes through a forward.
+#[test]
+fn a_follower_sets_the_largest_card() {
+    let (mut cluster, _, follower, _) = Cluster::led(0);
+    let relay = |port| Address::Relay {
+        node: public(9),
+        at: SocketAddr::new(Ipv6Addr::new(0xfd00, 1, 2, 3, 4, 5, 6, 7).into(), port),
+    };
+    let count = u16::from(card::addresses::MAX);
+    let largest = Addresses::new((0..count).map(relay).collect()).unwrap();
+    cluster
+        .board
+        .lock()
+        .unwrap()
+        .addresses
+        .insert(follower, largest.clone());
+    cluster.run(seconds(5));
+    let card = card::Card {
+        addresses: largest,
+        version: 2,
+        ..create_voter(follower).card.card().clone()
+    };
+    assert_eq!(cluster.board().moved, [(follower, Ok(()), card)]);
 }
