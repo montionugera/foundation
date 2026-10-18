@@ -184,8 +184,6 @@ jobs:
               - --skip open62541::tests::check_finds_a_read_of_the_copy_with_its_own_declaration # #3041
               - --skip open62541::tests::check_finds_a_read_under_a_macro_of_pem_h # #3041
               - --skip open62541::tests::check_finds_a_read_past_a_pem_h_of_the_copy # #3041
-              - --skip pem::each_read_refuses_an_encrypted_pem_with_no_prompt # #3070
-              - --skip child::a_detached_child_that_reads_no_stdin_gives_its_output # #3070
           - name: windows
             runner: windows-2025
             crates:
