@@ -186,7 +186,12 @@
   open of a name while a run of it that `Rig::supervise` started goes on panics, also
   after a drop of its `Run`, since a reader of the new run would read the status of
   the old one (`laptop.architect-2`, 2026-10-18T18:46:17Z:
-  https://github.com/synnaxlabs/foundation/pull/3236#issuecomment-6253716161). The
+  https://github.com/synnaxlabs/foundation/pull/3236#issuecomment-6253716161).
+  `Run::next` gives each status of a frame, oldest first, so `until` and the hold
+  check of scenario 2 see each change. `Rig::record` reads each status of a connector
+  across its runs, for a fixture that keeps them (`laptop.architect-2`,
+  2026-10-18T20:28:42Z:
+  https://github.com/synnaxlabs/foundation/issues/3039#issuecomment-6254767524). The
   unit tests of `connector` build it with the crate-private `testing::create_config`,
   which `Rig` also calls, and which opens the hub through `hub::testing::open`, other
   than the tests of the wait for mesh time (below) and one test with no status
