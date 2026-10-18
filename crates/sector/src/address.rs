@@ -60,6 +60,7 @@ pub fn encode(address: &Address) -> [u8; LEN] {
 }
 
 /// The address in `bytes`, or `None` for bytes that [`encode`] does not write.
+#[cfg(any(test, feature = "sim"))]
 #[must_use]
 pub fn decode(bytes: &[u8; LEN]) -> Option<Address> {
     if crate::written(bytes, TAG) {

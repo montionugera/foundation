@@ -254,7 +254,10 @@
   https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252780856 at
   2026-10-18T17:15:38Z; the wrapped variant in
   https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252975559 at
-  2026-10-18T17:34:06Z).
+  2026-10-18T17:34:06Z; the names `found` and `expected`, over `held` and `read` of
+  6252630274, in item 1 of
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6253217340 at
+  2026-10-18T17:57:52Z).
   `node.socket` covers a socket of the program that broke, with the message `the
   socket of this program failed: <the transport error>` (`laptop.architect-2`,
   2026-10-13T02:10:54Z, item 4 of

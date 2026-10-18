@@ -19,7 +19,10 @@
   https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252780856 at
   2026-10-18T17:15:38Z; the set of versions and `sector::local` in
   https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252975559 at
-  2026-10-18T17:34:06Z).
+  2026-10-18T17:34:06Z; the names `found` and `expected`, over `held` and `read` of
+  6252630274, in item 1 of
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6253217340 at
+  2026-10-18T17:57:52Z).
   Lost: a version in the decimal digits after the prefix. A key byte follows each tag
   of version 1 and is an ASCII digit 10 times in 256, so a valid file of version 1
   reads as another version, and `foundation/admin/1` is the prefix of
