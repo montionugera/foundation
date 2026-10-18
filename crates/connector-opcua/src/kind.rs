@@ -142,8 +142,10 @@ impl kind::Kind for Kind {
     /// 0, no value, or a value that is not a `UInt16`), and releases the point that it
     /// used least lately, of those at a count of at most 100 000, for a new one. The
     /// browse keeps at most 16 MiB of the tags and names of the references before its
-    /// pages. Then it closes the session, as `run` does. The header of each request
-    /// holds the mesh time of the node, which it reads before the connect.
+    /// pages, and past it releases the point that it used least lately, of those at a
+    /// count of at most 100 000. Then it closes the session, as `run` does. The
+    /// header of each request holds the mesh time of the node, which it reads before
+    /// the connect.
     ///
     /// # Errors
     ///
@@ -151,10 +153,10 @@ impl kind::Kind for Kind {
     /// `opcua.bad-cursor` for a cursor that is not a count, or that skips more than
     /// 100 000 references. [`Error::Retry`] when the node has no mesh time, as
     /// [`browse::Context::time`] gives it. [`Error::Device`] when the connect, a
-    /// Browse, a `BrowseNext`, or a Read fails, when the tags and names that the browse
-    /// keeps pass 16 MiB, and when a browse for a cursor of an earlier browse reads
-    /// past [`browse::VISITS`] pages of the server with no references. The errors of
-    /// [`browse::walk`].
+    /// Browse, a `BrowseNext`, or a Read fails, when the tags and names of a page and
+    /// of the points that the browse cannot release pass 16 MiB, and when a browse for
+    /// a cursor of an earlier browse reads past [`browse::VISITS`] pages of the server
+    /// with no references. The errors of [`browse::walk`].
     fn browse(
         &self,
         ctx: &browse::Context<'_>,

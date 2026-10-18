@@ -1260,8 +1260,8 @@ mod picks {
         );
     }
 
-    /// Through `walk_within`: Line2 gives Oven, a folder, and Line1 gives Temp1 at the
-    /// last visit.
+    /// Line2 gives Oven, a folder, and the budget ends in the points of Line1 before
+    /// Temp2.
     #[test]
     fn refuses_no_path_that_the_device_decides_at_the_budget() {
         let mut line1: Vec<Node> =
