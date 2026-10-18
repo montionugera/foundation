@@ -1111,15 +1111,31 @@ fn inside(path: &Path) -> bool {
     })
 }
 
-/// The line and the file of `line` when it is a line marker of `cc -E` (`# 1 "a.c" 2`),
-/// which sets them for the line after it. It undoes the escapes that GCC writes for
-/// `\\`, `"`, and a newline in the name.
-fn marker(line: &str) -> Option<(usize, Cow<'_, str>)> {
+/// A line marker of `cc -E` (`# 1 "a.c" 1`), which sets the line and the file of the
+/// line after it.
+struct Marker<'a> {
+    line: usize,
+    /// The name, with the escapes that GCC writes for `\\`, `"`, and a newline undone.
+    file: Cow<'a, str>,
+    /// Whether the marker has the flag `1`: the unit enters `file`, which GCC opened.
+    entered: bool,
+}
+
+/// The marker of `line`, when it is one.
+fn marker(line: &str) -> Option<Marker<'_>> {
     let (number, name) = line.strip_prefix("# ")?.split_once(" \"")?;
-    let name = name.rsplit_once('"').map_or(name, |(name, _)| name);
-    let number = number.parse().ok()?;
+    let (name, flags) = name.rsplit_once('"').unwrap_or((name, ""));
+    let line = number.parse().ok()?;
+    let entered = flags.split_whitespace().next() == Some("1");
+    let marker = |file| {
+        Some(Marker {
+            line,
+            file,
+            entered,
+        })
+    };
     if !name.contains('\\') {
-        return Some((number, Cow::Borrowed(name)));
+        return marker(Cow::Borrowed(name));
     }
     let mut text = String::with_capacity(name.len());
     let mut chars = name.chars();
@@ -1136,7 +1152,7 @@ fn marker(line: &str) -> Option<(usize, Cow<'_, str>)> {
             _ => text.push(c),
         }
     }
-    Some((number, Cow::Owned(text)))
+    marker(Cow::Owned(text))
 }
 
 /// An error for each `#include_next`, and each `#include` or `#import` in a file of
@@ -1158,8 +1174,8 @@ fn includes(
     let mut problems = Vec::new();
     let mut file = PathBuf::new();
     for line in preprocessed.lines() {
-        if let Some((_, name)) = marker(line) {
-            file = PathBuf::from(&*name);
+        if let Some(marker) = marker(line) {
+            file = PathBuf::from(&*marker.file);
             continue;
         }
         let Some((keyword, directive)) = line.split_once(' ') else {
@@ -1208,9 +1224,10 @@ fn includes(
 
 /// An error for each header that the unit enters, by any name and from any file,
 /// under `openssl/` of a directory of `dirs` other than the directories `crypto`, as
-/// the line markers of `preprocessed` (the output of `cc -E` in `copy`) show it. It
-/// compares real paths, since GCC writes the real path of a header only when it is
-/// shorter.
+/// the line markers of `preprocessed` (the output of `cc -E` in `copy`) show it, and
+/// for each file that the unit enters and that does not resolve, such as a path that
+/// is not UTF-8. It compares real paths, since GCC writes the real path of a header
+/// only when it is shorter.
 fn foreign(
     preprocessed: &str,
     copy: &Path,
@@ -1224,26 +1241,30 @@ fn foreign(
     };
     let (dirs, crypto) = (real(dirs), real(crypto));
     let mut problems = Vec::new();
-    for (_, name) in preprocessed.lines().filter_map(marker) {
-        // `<built-in>` and the name of a `#line` directive name no file.
-        let Ok(file) = std::fs::canonicalize(copy.join(&*name)) else {
-            continue;
+    let entered = preprocessed
+        .lines()
+        .filter_map(marker)
+        .filter(|m| m.entered);
+    for Marker { file: name, .. } in entered {
+        let problem = match std::fs::canonicalize(copy.join(&*name)) {
+            Err(e) => format!("enters {name}, which names no file: {e}"),
+            Ok(file)
+                if dirs.iter().any(|dir| {
+                    file.strip_prefix(dir)
+                        .is_ok_and(|rest| rest.starts_with("openssl"))
+                }) && !crypto.iter().any(|dir| file.starts_with(dir)) =>
+            {
+                format!("includes {name}, a header of OpenSSL outside the crypto")
+            }
+            Ok(_) => continue,
         };
-        let system = dirs.iter().any(|dir| {
-            file.strip_prefix(dir)
-                .is_ok_and(|rest| rest.starts_with("openssl"))
-        });
-        let problem =
-            format!("includes {name}, a header of OpenSSL outside the crypto");
-        if system
-            && !crypto.iter().any(|dir| file.starts_with(dir))
-            && !problems.contains(&problem)
-        {
+        if !problems.contains(&problem) {
             problems.push(problem);
         }
     }
     problems
 }
+
 /// The callbacks that a call in the copy may give a function of aws-lc that takes a
 /// `pem_password_cb`. Each gives aws-lc only a password that its caller gives, so no
 /// read waits on the console.
@@ -1265,7 +1286,7 @@ fn tokens(preprocessed: &str) -> Vec<Token<'_>> {
     let (mut file, mut line) = (Cow::Borrowed(""), 0);
     for text in preprocessed.lines() {
         if let Some(marker) = marker(text) {
-            (line, file) = marker;
+            (line, file) = (marker.line, marker.file);
             continue;
         }
         let mut rest = text;
@@ -2419,13 +2440,16 @@ Disassembly of section .text.stamp:
     }
 
     #[test]
-    fn marker_undoes_the_escapes_of_gcc() {
-        assert_eq!(marker(r#"# 1 "a.c""#), Some((1, Cow::Borrowed("a.c"))));
+    fn marker_undoes_the_escapes_of_gcc_and_reads_the_enter_flag() {
+        let read =
+            |line| marker(line).map(|m| (m.line, m.file.into_owned(), m.entered));
+        assert_eq!(read(r#"# 1 "a.c""#), Some((1, "a.c".to_owned(), false)));
+        assert_eq!(read(r#"# 9 "a.c" 2"#), Some((9, "a.c".to_owned(), false)));
         assert_eq!(
-            marker(r#"# 12 "/s\\x/q\"y/n\nl/\t.h" 1 3 4"#),
-            Some((12, Cow::Owned("/s\\x/q\"y/n\nl/\\t.h".to_owned())))
+            read(r#"# 12 "/s\\x/q\"y/n\nl/\t.h" 1 3 4"#),
+            Some((12, "/s\\x/q\"y/n\nl/\\t.h".to_owned(), true))
         );
-        assert_eq!(marker(r#"#line 1 "a.c""#), None);
+        assert_eq!(read(r#"#line 1 "a.c""#), None);
     }
 
     /// `cc -E` output of headers of aws-lc with three functions that take a
@@ -3807,14 +3831,11 @@ int UA_free(void) { return BIO_free(); }
 void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
 ";
 
-    /// A header of the [`Crypto`] is outside the copy, and the check reads it as a
-    /// system header, as the build of `connector-opcua` does. The readers come from
-    /// the first header of each name under `openssl/` of the crypto, and each other
-    /// system header under `openssl/` is refused, also through a link shorter than its
-    /// target, whose path GCC keeps, and through a directory whose name GCC escapes.
-    #[test]
-    fn check_builds_against_the_headers_of_the_crypto() {
-        let dir = temp("crypto");
+    /// Creates in `dir` the copy, the crypto directories, and the system directories of
+    /// [`check_builds_against_the_headers_of_the_crypto`], and gives a `cc` that adds
+    /// the system directories: one through a link shorter than its target, one whose
+    /// name GCC escapes, and one whose name is not UTF-8.
+    fn create_crypto(dir: &Path) -> PathBuf {
         let read = "#define PEM_read_bio_X509 fixture_PEM_read_bio_X509\n\
                     typedef int pem_password_cb(char *, int, int, void *);\n";
         let first =
@@ -3822,7 +3843,7 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
         let second =
             format!("{read}void *PEM_read_bio_X509(pem_password_cb *, int, int);\n");
         create_files(
-            &dir,
+            dir,
             &[
                 ("copy/sources.txt", "a.c\n"),
                 ("copy/flags.txt", "-fno-dollars-in-identifiers\n"),
@@ -3841,18 +3862,37 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
                 ("system/openssl/x.h", "struct x;\n"),
                 (
                     "system/wrap.h",
-                    "#include <openssl/x.h>\n#include <openssl/y.h>\n",
+                    "#include <openssl/x.h>\n#include <openssl/y.h>\n\
+                     #include <openssl/z.h>\n",
                 ),
                 ("q\\\"x/openssl/y.h", "struct y;\n"),
             ],
         );
         std::os::unix::fs::symlink(dir.join("system"), dir.join("s")).unwrap();
+        let odd: &std::ffi::OsStr = std::os::unix::ffi::OsStrExt::from_bytes(b"\xff");
+        let odd = dir.join(odd).join("openssl");
+        std::fs::create_dir_all(&odd).unwrap();
+        std::fs::write(odd.join("z.h"), "struct z;\n").unwrap();
         let script = format!(
-            "#!/bin/sh\nexec cc \"$@\" -isystem '{}' -isystem '{}'\n",
+            "#!/bin/sh\nexec cc \"$@\" -isystem '{}' -isystem '{}' \
+             -isystem \"$(printf '%s/\\377' '{}')\"\n",
             dir.join("s").display(),
-            dir.join("q\\\"x").display()
+            dir.join("q\\\"x").display(),
+            dir.display()
         );
-        let cc = create_cc(&dir, &script);
+        create_cc(dir, &script)
+    }
+
+    /// A header of the [`Crypto`] is outside the copy, and the check reads it as a
+    /// system header, as the build of `connector-opcua` does. The readers come from
+    /// the first header of each name under `openssl/` of the crypto, and each other
+    /// system header under `openssl/` is refused, also through a link shorter than its
+    /// target, whose path GCC keeps, and through a directory whose name GCC escapes or
+    /// is not UTF-8.
+    #[test]
+    fn check_builds_against_the_headers_of_the_crypto() {
+        let dir = temp("crypto");
+        let cc = create_crypto(&dir);
         let inspect = |include: &[&str]| {
             let crypto = Crypto {
                 include: include.iter().map(|name| dir.join(name)).collect(),
@@ -3870,6 +3910,11 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
             outside("s/./openssl/kdf.h"),
             outside("s/openssl/x.h"),
             outside("q\\\"x/openssl/y.h"),
+            format!(
+                "a.c: enters {}/\u{fffd}/openssl/z.h, which names no file: No such \
+                 file or directory (os error 2)",
+                dir.display()
+            ),
             gives("a.c", "a.c:8", "0", PREFIX),
         ];
         problems.extend(Uses::default().mismatches());
