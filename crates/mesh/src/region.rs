@@ -134,6 +134,9 @@ pub(crate) struct State {
     names: BTreeMap<String, node::Key>,
     // Each status channel key that a member holds.
     status: BTreeSet<channel::Key>,
+    // The member that holds each public key, by its bytes. A `Card` change keeps the
+    // public key, and no change removes a member, so only `insert` writes this.
+    holders: BTreeMap<[u8; 32], node::Key>,
 }
 
 impl State {
@@ -164,6 +167,7 @@ impl State {
             },
             names: BTreeMap::new(),
             status: BTreeSet::new(),
+            holders: BTreeMap::new(),
         };
         for member in members {
             let names = state.fits(&member.card, &member.status)?;
@@ -192,10 +196,7 @@ impl State {
 
     /// The key of the member whose card holds `public_key`, or `None` when none does.
     pub(crate) fn holder(&self, public_key: PublicKey) -> Option<node::Key> {
-        let mut members = self.members.iter();
-        let (&key, _) =
-            members.find(|(_, member)| member.public_key() == public_key)?;
-        Some(key)
+        self.holders.get(&public_key.to_bytes()).copied()
     }
 
     /// The record of the ticket with `public_key`, or `None` when none is recorded.
@@ -379,6 +380,7 @@ impl State {
         let key = member.card.key();
         self.names.extend(names.into_iter().map(|name| (name, key)));
         self.status.extend(member.status.as_map().values());
+        self.holders.insert(member.public_key().to_bytes(), key);
         self.members.insert(key, member);
     }
 
@@ -1784,9 +1786,14 @@ mod tests {
             prop::sample::select(vec!["plant.edge.a", "plant.edge.b", "plant.edger"]),
             any::<bool>(),
             any::<bool>(),
+            prop::option::of(1..7_u8),
         )
-            .prop_map(|(ticket_id, id, name, late, forged)| {
+            .prop_map(|(ticket_id, id, name, late, forged, holder)| {
                 let mut join = join(ticket_id, id, name);
+                if let Some(holder) = holder {
+                    let card = holding(id, holder, name);
+                    join = join_with(&card, ticket_id, join.at, join.status.clone());
+                }
                 if late {
                     join.at = EXPIRY;
                 }
@@ -1889,6 +1896,24 @@ mod tests {
                     prop_assert_eq!(checked, state.apply(step).map(drop));
                 } else {
                     let _applied = state.apply(step);
+                }
+            }
+        }
+
+        // After each change, `holder` gives the member that a scan finds.
+        #[test]
+        fn holder_gives_what_a_scan_of_the_members_gives(
+            steps in prop::collection::vec(steps(), 0..16),
+        ) {
+            let mut state =
+                create_state(name("plant").into(), create_members(&[1, 2])).unwrap();
+            for step in steps {
+                let _applied = state.apply(step);
+                for id in 1..7 {
+                    let public_key = public(id);
+                    let mut members = state.members.iter();
+                    let scan = members.find(|(_, m)| m.public_key() == public_key);
+                    prop_assert_eq!(state.holder(public_key), scan.map(|(&k, _)| k));
                 }
             }
         }
