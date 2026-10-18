@@ -158,7 +158,9 @@ impl Rig {
 
     /// Removes `names` from the definitions that the rig holds, and sets the rest on
     /// the hub, so the hub drops the channels of `names`. A name that the rig does not
-    /// hold is not an error.
+    /// hold is not an error. The rig keeps the status names of each connector name
+    /// after a remove, so a later open of that name panics when a status channel is
+    /// gone.
     ///
     /// # Panics
     ///
@@ -256,8 +258,9 @@ impl Rig {
     /// of the kind's check, with the rig's next keys, and gives their names, the
     /// index first. When the rig holds them for `name`, it defines nothing and gives
     /// the same names, so a reader of them goes on. [`Self::supervise`] and
-    /// [`Self::open_connector`] call it; call it first to open a reader of the status
-    /// before the connector starts.
+    /// [`Self::open_connector`] define the same channels, and define nothing when
+    /// the check fails. Call it first to open a reader of the status before the
+    /// connector starts.
     ///
     /// # Panics
     ///
