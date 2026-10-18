@@ -74,9 +74,10 @@ unsafe extern "C" fn connector_opcua_die(line: *const c_char, length: usize) -> 
     std::process::abort()
 }
 
-/// Calls a function that the copy of open62541 does not build, as a refused call or an
-/// abort of open62541 does in a run: the process panics with `open62541 called
-/// UA_EventLoop_new_POSIX, which is not built`, so the panic hook runs, and aborts.
+/// Aborts the process as open62541 does at a refused call: it calls
+/// `UA_EventLoop_new_POSIX`, which the copy does not build, so the process panics with
+/// `open62541 called UA_EventLoop_new_POSIX, which is not built`, the panic hook runs,
+/// and the process aborts.
 #[cfg(feature = "sim")]
 pub fn call_refused() -> ! {
     // SAFETY: it aborts before it reads its argument.
