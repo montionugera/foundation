@@ -41,7 +41,7 @@
   caller. The fix of a given name that `add` refuses, "Give another name, or leave it
   out for `<default>`", needs no other item: `config::import::add` calls `names` again
   with the refused names as `None`, on the failure path only. A given name that does not
-  parse is refused by `serve` before the walk (IMPORT OP), with `ops.bad-name`: each
+  parse is refused by `serve` before the walk (IMPORT OP; `laptop.architect-2`, 2026-10-18T06:19:04Z: https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6246489783), with `ops.bad-name`: each
   such name at once, with its path, its text, and the cause, and the fix "Give another
   name, or leave it out for the default name". Lost: an item of `config::import` that
   gives the defaults before the walk, so that this fix names the default, which adds a
@@ -170,7 +170,7 @@
   paths, `ops.bad-point` with each path that does not parse, `ops.duplicate-pick` with
   each path picked twice, `ops.bad-name` with each given name that does not parse, and
   `ops.bad-pattern`. Each of the three holds a list, with one problem for each, so one
-  run reports each bad text, and none does device I/O. Then it walks with
+  run reports each bad text of the first of them that fails, and none does device I/O. Then it walks with
   `Scope::Points` or `Scope::Match`. A walk that ends `Budget` gives `ops.import-budget`
   and one that ends `Limit` gives `ops.import-limit`, so no import adds part of a match
   in silence. The fix of `ops.import-limit` is "Narrow the match, or pick at
@@ -199,7 +199,7 @@
   `TABLE` holds `import` with `read_only: false` and `destructive: false`. Each code has
   one fix. The `instructions` of the MCP `initialize` result is the agent guide:
   `browse`, `import`, a value for each `fill`, `plan` shown to the person, and `apply`
-  only when the person agrees, and `status`. It leaves out `discover`, which is not in
+  only when the person agrees, and `status`. The steps: `laptop.architect-2`, 2026-10-18T07:08:05Z (https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6246968079). It leaves out `discover`, which is not in
   C1, so no step names a tool that the server does not have. Deferred: picks by tag.
   Trigger: a user who has a list of tags and no paths. Deferred: the added blocks in the
   JSON (B of decision 4). Trigger: the person asks. The person's words of decision 4,

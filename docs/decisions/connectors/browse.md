@@ -73,7 +73,7 @@
   counts as one (a server may give a continuation point with no references), then ends
   `Budget`. With `Limit`, `import` gives `ops.import-limit`, "more than `<limit>` points
   match, the most for one import", with the fix "Narrow the match, or pick at most
-  `<limit>` points", not a count (IMPORT OP), which supersedes "narrow the pattern, or
+  `<limit>` points", not a count (IMPORT OP; `laptop.architect-2`, 2026-10-18T06:19:04Z: https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6246489783), which supersedes "narrow the pattern, or
   import in parts".
   It browses no folder whose tag and pattern state are those of a
   folder that it holds open, so a loop in a graph such as an OPC UA address space ends,
