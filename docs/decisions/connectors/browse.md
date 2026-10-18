@@ -45,16 +45,21 @@
   order of the paths, in one session to the device. Each path is from the root, as an
   `Entry` gives it, and under the start, so one point has one path whatever the start.
   The walk finds the start first, with `connector.no-folder` as for the other scopes.
-  It reads each folder that a path is under to its end, once, before the next, so an
-  import of 500 points opens no 500 sessions. A path at a folder, at no entry, or not
+  It reads each folder that a path is under at most once, before the next, and stops a
+  folder when it has seen each name that a path takes in it, so an import of 500 points
+  opens no 500 sessions. A path at a folder, at no entry, or not
   under the start gives `connector.no-point` ("the device has no point at "<path>"",
   or "the path "<path>" is not under the start "<start>""), with the fix "Give the
   path of a point that `browse` gives", one diagnostic for each path, all in one
   `Error::Config`. Each entry of each level that it reads counts toward `VISITS`. At
   the budget it ends `Budget` with the entries that it found, and refuses only the
-  paths not under the start (laptop.integrator-2, plan 8a:
+  paths not under the start (`laptop.integrator-2`, 2026-10-18T01:55:19Z, plan 8a:
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244465986;
   `laptop.architect-2`, 2026-10-18T02:10:56Z, item 1:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074).
+  Lost: picks by tag (the node ID): `Device` finds an entry only by its path, and the
+  default name needs the path. Trigger: a user who has a list of tags and no paths
+  (`laptop.architect-2`, 2026-10-18T02:10:56Z, item 11:
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074).
   Values are read only when the `Query` asks, in one call for the points that it gives.
   A new filter is a new field of `Query`. The walk lives once in `connector`
