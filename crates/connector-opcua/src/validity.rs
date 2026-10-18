@@ -143,18 +143,14 @@ fn an_issuer_past_its_window_on_the_loop_is_refused() {
 }
 
 /// The constructor of a memory group refuses a group with no loop, which has no time,
-/// also for a certificate that the check would refuse before its window.
+/// so no group exists that refuses only at its first check.
 #[test]
 fn a_group_with_no_loop_is_refused() {
-    for trusted in [LEAF, CA] {
-        // SAFETY: both point at live bytes, which the call only reads.
-        let status = unsafe {
-            ffi::test::shim_verify_certificate(
-                &bytes(LEAF),
-                &bytes(trusted),
-                std::ptr::null_mut(),
-            )
-        };
-        assert_eq!(Status(status).name(), "BadInternalError");
-    }
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let clock = sim.node(sim::node::Config::default()).clock();
+    let events = Loop::new(event::Time::monotonic(clock), &mut Rng::from_seed(0));
+    // SAFETY: the loop lives past the call, and the call takes a null loop.
+    let created = |el| Status(unsafe { ffi::test::shim_memory_group(el) }).name();
+    assert_eq!(created(events.raw()), "Good");
+    assert_eq!(created(std::ptr::null_mut()), "BadInternalError");
 }
