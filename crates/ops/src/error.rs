@@ -599,11 +599,11 @@ impl Error {
             ),
             Self::ImportLimit { .. } => (
                 IMPORT_LIMIT,
-                format!("Import at most {LIMIT} points at a time"),
+                format!("Narrow the match, or pick at most {LIMIT} points"),
             ),
             Self::ImportBudget { .. } => (
                 IMPORT_BUDGET,
-                "Narrow the start, or import fewer points at a time".to_owned(),
+                "Narrow the start or the match, or pick fewer points".to_owned(),
             ),
             Self::LargeImport => (
                 LARGE_IMPORT,

@@ -91,7 +91,7 @@ fn checks_access_the_picks_and_the_paths_in_order() {
         let (reply, _) = imported(&node, &json!({ "points": many })).await;
         let message = "the import picks 501 points, more than 500, the most for one \
                        import";
-        let fix = "Import at most 500 points at a time";
+        let fix = "Narrow the match, or pick at most 500 points";
         assert_eq!(reply, refusal("ops.import-limit", 2, message, fix));
         let most = vec![json!({ "path": "a//b" }); 500];
         let (reply, _) = imported(&node, &json!({ "points": most })).await;
@@ -335,10 +335,10 @@ fn a_match_past_the_limit_and_a_walk_past_the_budget_add_nothing() {
         let (reply, _) =
             imported(&node, &json!({ "start": "Many", "match": "*" })).await;
         let message = "more than 500 points match, the most for one import";
-        let fix = "Import at most 500 points at a time";
+        let fix = "Narrow the match, or pick at most 500 points";
         assert_eq!(reply, refusal("ops.import-limit", 2, message, fix));
 
-        let fix = "Narrow the start, or import fewer points at a time";
+        let fix = "Narrow the start or the match, or pick fewer points";
         let (reply, _) =
             imported(&node, &json!({ "start": "Huge", "match": "x" })).await;
         let message =

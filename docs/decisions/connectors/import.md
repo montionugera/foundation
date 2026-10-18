@@ -173,7 +173,10 @@
   run reports each bad text, and none does device I/O. Then it walks with
   `Scope::Points` or `Scope::Match`. A walk that ends `Budget` gives `ops.import-budget`
   and one that ends `Limit` gives `ops.import-limit`, so no import adds part of a match
-  in silence. A picked point that the kind cannot read or write gives
+  in silence. The fix of `ops.import-limit` is "Narrow the match, or pick at
+  most 500 points", and of `ops.import-budget` "Narrow the start or the match, or pick
+  fewer points", since a walk of points and a match both give each.
+  A picked point that the kind cannot read or write gives
   `ops.unreadable-point`, one diagnostic for each, with its reason; a match leaves each
   out and counts it. Then `config::import::add`, then the new text by `FrontEnd::update`
   of the file. The reply is the JSON line of the output, then the new text, and a reply

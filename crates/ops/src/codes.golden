@@ -30,12 +30,12 @@ ops.browse-node	Run it with `--data` of node `edge`
 ops.bad-start	Give folder names joined by `/`, with a `\` before each `/`, `*`, or `\` in a name
 ops.bad-pattern	Give names joined by `/`, at most 64 other than `**` and at most 256 `*`, with a `\` before each `/`, `*`, or `\` in a name
 ops.no-pick	Give the points to import, or `--match <pattern>`
-ops.import-limit	Import at most 500 points at a time
+ops.import-limit	Narrow the match, or pick at most 500 points
 ops.bad-point	Give the names of the path joined by `/`, with a `\` before each `/`, `*`, or `\` in a name
 ops.duplicate-pick	Pick each point once
 ops.bad-name	Give another name, or leave it out for the default name
 ops.unreadable-point	Leave the point out of the import
-ops.import-budget	Narrow the start, or import fewer points at a time
+ops.import-budget	Narrow the start or the match, or pick fewer points
 ops.large-import	Import fewer points at a time
 ops.file-changed	Run the import again on the file as it is now
 ops.more-problems	Fix the problems above, then run it again
