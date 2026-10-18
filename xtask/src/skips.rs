@@ -1147,6 +1147,7 @@ mod tests {
     #[test]
     fn refuses_each_gate_that_no_list_or_doc_gives_and_each_unused_list_item() {
         let lib = "crates/g/src/lib.rs";
+        let shown = native(lib);
         let free = "crates/g/tests/free.rs";
         let mut expected = vec![
             gated(&format!("{lib} refused"), "Windows"),
@@ -1184,8 +1185,8 @@ mod tests {
             gated(&format!("{lib} unbuilt"), "Linux"),
             gated(&format!("{lib} unbuilt"), "macOS"),
             gated(&format!("{lib} unbuilt"), "Windows"),
-            format!("`{lib}`: ``: unexpected token, expected `]`"),
-            format!("`{lib}`: ``: an `if` of a `cfg_if` with no one `cfg`"),
+            format!("`{shown}`: ``: unexpected token, expected `]`"),
+            format!("`{shown}`: ``: an `if` of a `cfg_if` with no one `cfg`"),
             gated("crates/g/src/module.rs inner", "Linux"),
             gated("crates/g/src/module.rs inner", "macOS"),
             gated("crates/g/src/twins.rs attributed", "Windows"),
@@ -1247,7 +1248,7 @@ mod tests {
             "flow",
             "`ci.yaml`: a `gates` list that is no block: `gates: [a]`".into(),
         );
-        let absent = gates.join("absent/.github/workflows/ci.yaml");
+        let absent = gates.join("absent").join(".github/workflows/ci.yaml");
         refused("absent", format!("{}: {NO_FOLDER}", absent.display()));
     }
 
