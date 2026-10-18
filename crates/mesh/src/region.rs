@@ -368,9 +368,8 @@ impl State {
                 held: held.version,
             });
         }
-        member.card = card
-            .check()
-            .expect("invariant: the card holds the key of its member, which signed it");
+        // The card holds the key of its member, which signed it, so this holds.
+        member.card = card.check().map_err(Refused::Forged)?;
         Ok(())
     }
 
