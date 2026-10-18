@@ -163,6 +163,12 @@ exclude_re = [
   'crates/os/src/paths\.rs:.*guard names_directory\(path\) with false in read$',
   # The open flags share no bit, so `|` and `^` give the same flags.
   'crates/os/src/paths\.rs:.*replace \| with \^ in Dir::open$',
+  # `&` binds first, so a mutant drops only `O_NOFOLLOW` and `O_DIRECTORY`, or
+  # `O_DIRECTORY` and `O_CLOEXEC`. The walk opens a name only after its stat gives a
+  # directory, so only a swap between the stat and the open, or an exec, sees it. A
+  # mutant that drops `O_PATH` fails
+  # `within_reads_through_a_directory_that_this_user_can_search_and_not_read`.
+  'crates/os/src/paths\.rs:88:(47|67): replace \| with & in Dir::open$',
   # macOS only, as above. In the `macos` check,
   # `paths::within_lists_a_directory_that_this_user_can_read_and_not_search` catches
   # it.
