@@ -1288,38 +1288,40 @@
   or of a directory above it, is not that directory, also when it names it: after a
   rename of `work` to `real` and a link `work` to `real`, a read of `work/a.hcl` gives
   `Replaced`. Each call takes the state of each folder once, and walks each hidden
-  folder from the path that the caller gave, so the deepest directory on its way comes
-  from that call and is never a file (#3077). The cost, for each call, is one `entry`
-  for each name of the walk, and on a handle of `within` also one `entry` for each
-  folder and for each directory above it, and one walk of each hidden folder; a step
-  that fails the folders also walks each folder, to tell `Replaced` from `Outside`.
-  `absolute` refuses a path of PATH_MAX bytes or more as given, so the free handle and a
-  handle of `within` give the same `Io` (36 on Linux and `sim`, 63 on macOS) at once,
-  and the walk takes no name of it. Each name goes to the host by its resolved path, so
-  a name whose resolved path is longer than the host takes fails with `Io`, also where
-  the free handle reaches it by a relative path, and a hidden folder with such a path
-  fails `within`. When the host refuses the last name of the path to the walk, such as
-  for a resolved path longer than the host takes, the limits check that name at its
-  place as a new name, and the call gives the result of the host. When the host refuses
-  the walk of a hidden path at a call, other than with `NotFound` or the error of
-  `Driver::looped`, or at a name after a step that is a file, each step that passes the
-  folders is hidden at that call, since another name of the file there can reach it.
-  `NotFound`, a step that is a file, and a loop stay as they are: the host reaches no
-  file by that path. On `os` (Linux, Xeon Platinum 8488C, debug), a read 1900 names deep
-  takes 150 ms and a read of a 4000-byte path of `..` takes 5 ms; two tests pin each
-  under 560 ms. A walk takes at most the names of 42 paths of PATH_MAX: the path, the
-  working directory, and `LINKS` link targets. It keeps each step as its name and the
-  index of its directory, so its memory grows with the names and not with the length of
-  each resolved path. Links that a writer of the host puts in a folder can still make a
-  walk slow, since each name goes to the host by its full resolved path: a read through
-  40 links of `s/../` from a directory 1900 names deep takes 5.2 s, and the run peaks at
-  56 MB, where the free handle takes 3 ms. With a full path in each step, it took 5.5 s
-  and peaked at 257 MB. That writer is the attacker of #3094, and a walk by handles
-  makes each name one call. The `within` doc states the gap between the check and the
-  call: "The check and the call are two steps: a process that can write a symbolic link
-  in a folder between them can lead the call to a path that the check refused (#3094)."
-  The gap is a containment escape, its issue is #3094, and #3018 files no other issue
-  for it. Supersedes `Driver::link` and `Driver::working` of
+  folder from the path that the caller gave, a relative one started at `within` on the
+  resolved working directory, less one name for each `..` at its start, so the deepest
+  directory on its way comes from that call and is never a file (#3077). The cost, for
+  each call, is one `entry` for each name of the walk, and on a handle of `within` also
+  one `entry` for each folder and for each directory above it, and one walk of each
+  hidden folder; a step that fails the folders also walks each folder, to tell
+  `Replaced` from `Outside`. `absolute` refuses a path of PATH_MAX bytes or more as
+  given, so the free handle and a handle of `within` give the same `Io` (36 on Linux and
+  `sim`, 63 on macOS) at once, and the walk takes no name of it. Each name goes to the
+  host by its resolved path, so a name whose resolved path is longer than the host takes
+  fails with `Io`, also where the free handle reaches it by a relative path, and a
+  hidden folder with such a path fails `within`. When the host refuses the last name of
+  the path to the walk, such as for a resolved path longer than the host takes, the
+  limits check that name at its place as a new name, and the call gives the result of
+  the host. When the host refuses the walk of a hidden path at a call, other than with
+  `NotFound` or the error of `Driver::looped`, or at a name after a step that is a file,
+  each step that passes the folders is hidden at that call, since another name of the
+  file there can reach it. `NotFound`, a step that is a file, and a loop stay as they
+  are: the host reaches no file by that path. On `os` (Linux, Xeon Platinum 8488C,
+  debug), a read 1900 names deep takes 150 ms and a read of a 4000-byte path of `..`
+  takes 5 ms; two tests pin each under 560 ms. A walk takes at most the names of 42
+  paths of PATH_MAX: the path, the working directory, and `LINKS` link targets. It keeps
+  each step as its name and the index of its directory, so its memory grows with the
+  names and not with the length of each resolved path. Links that a writer of the host
+  puts in a folder can still make a walk slow, since each name goes to the host by its
+  full resolved path: a read through 40 links of `s/../` from a directory 1900 names
+  deep takes 5.2 s, and the run peaks at 56 MB, where the free handle takes 3 ms. With a
+  full path in each step, it took 5.5 s and peaked at 257 MB. That writer is the
+  attacker of #3094, and a walk by handles makes each name one call. The `within` doc
+  states the gap between the check and the call: "The check and the call are two steps:
+  a process that can write a symbolic link in a folder between them can lead the call to
+  a path that the check refused (#3094)." The gap is a containment escape, its issue is
+  #3094, and #3018 files no other issue for it. Supersedes `Driver::link` and
+  `Driver::working` of
   https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6231386142; "A
   prefix resolves as `resolve` does, and the walk stops at the first prefix that does
   not resolve", "never a prefix of their join, since a join can be longer than the host
@@ -1350,7 +1352,12 @@
   `make_dir`, which makes the directory and then fails with the error of the first walk;
   D2, a key that follows links for hidden paths, which adds back a `Driver` item that
   #3018 removes and a second walk by the host that can disagree with the walk, and still
-  hides nothing for `Io` 13. Decided by `laptop.architect-2` (the shape,
+  hides nothing for `Io` 13; for a relative hidden path after the working directory
+  goes, the path as `Driver::absolute` gives it at `within`, whose walk takes the
+  removed directory before the `..` and so ends `NotFound` and hides nothing, as the
+  host names nothing there, and an `absolute` that fails as `Refused`, which hides each
+  path while the working directory is gone and keeps a hidden path that moves with a
+  later change of the working directory. Decided by `laptop.architect-2` (the shape,
   2026-10-17T07:49:05Z,
   https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6231386142; the two
   conditions of `laptop.monitor` for the plan, 2026-10-17T07:49:57Z,
@@ -1362,7 +1369,9 @@
   findings of round 1, 2026-10-18T01:25:34Z,
   https://github.com/synnaxlabs/foundation/pull/3098#issuecomment-6244199067; the
   boundary of D1, 2026-10-18T02:17:50Z,
-  https://github.com/synnaxlabs/foundation/pull/3098#issuecomment-6244644441, from the
+  https://github.com/synnaxlabs/foundation/pull/3098#issuecomment-6244644441; a relative
+  hidden path, 2026-10-18T02:26:32Z,
+  https://github.com/synnaxlabs/foundation/pull/3098#issuecomment-6244712574, from the
   plan, https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6243618446,
   and https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6238302038,
   https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6238398268, and
