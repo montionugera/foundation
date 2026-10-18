@@ -841,8 +841,8 @@ fn ends_the_run_with_a_device_error_for_another_exception() {
         record.errors(),
         [(
             Class::Device,
-            "the device refused the read of the holding registers from address 4 with \
-             exception 11 (gateway target device failed to respond)"
+            "10.0.0.1:502 refused the read of the holding registers from address 4 \
+             with exception 11 (gateway target device failed to respond)"
                 .to_owned()
         )]
     );
@@ -883,8 +883,8 @@ fn ends_the_run_with_a_device_error_when_a_reply_is_late() {
         record.errors(),
         [(
             Class::Device,
-            "the read of the holding registers from address 0 failed: no whole reply \
-             came before the timeout"
+            "the read of the holding registers from address 0 of 10.0.0.1:502 failed: \
+             no whole reply came before the timeout"
                 .to_owned()
         )]
     );
@@ -921,7 +921,10 @@ fn reads_again_in_order_after_the_device_resets_or_closes_its_stream() {
         assert_eq!(result, Ok(&()), "seed {seed}");
         let cut = (
             Class::Device,
-            format!("the read of the holding registers from address 0 failed: {ended}"),
+            format!(
+                "the read of the holding registers from address 0 of 10.0.0.1:502 \
+                 failed: {ended}"
+            ),
         );
         let refused = (
             Class::Device,
@@ -1040,8 +1043,8 @@ fn ends_the_run_with_a_device_error_for_exception_8() {
         record.errors(),
         [(
             Class::Device,
-            "the device refused the read of the holding registers from address 0 with \
-             exception 8 (memory parity error)"
+            "10.0.0.1:502 refused the read of the holding registers from address 0 \
+             with exception 8 (memory parity error)"
                 .to_owned()
         )]
     );
@@ -1078,8 +1081,8 @@ fn ends_the_run_with_a_device_error_for_a_reply_just_past_the_timeout_of_1_s() {
         record.errors(),
         [(
             Class::Device,
-            "the read of the holding registers from address 0 failed: no whole reply \
-             came before the timeout"
+            "the read of the holding registers from address 0 of 10.0.0.1:502 failed: \
+             no whole reply came before the timeout"
                 .to_owned()
         )]
     );
