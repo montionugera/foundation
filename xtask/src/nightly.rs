@@ -76,7 +76,7 @@ fn parse_host(output: &Output) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::{EXITED, create_stable_root, output};
+    use crate::common::{EXITED, NO_FILE, create_stable_root, output};
     use crate::fixture;
 
     #[test]
@@ -94,7 +94,7 @@ mod tests {
         assert_eq!(
             Toolchain::read(&root).err(),
             Some(format!(
-                "{}: No such file or directory (os error 2)",
+                "{}: {NO_FILE}",
                 root.join("rust-toolchain-nightly").display()
             ))
         );

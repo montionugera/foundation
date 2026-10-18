@@ -216,6 +216,25 @@ mod common {
     #[cfg(windows)]
     pub(crate) const EXITED: &str = "exit code";
 
+    /// The text of the error of a missing file in a folder that exists.
+    #[cfg(unix)]
+    pub(crate) const NO_FILE: &str = "No such file or directory (os error 2)";
+    #[cfg(windows)]
+    pub(crate) const NO_FILE: &str =
+        "The system cannot find the file specified. (os error 2)";
+
+    /// The text of the error of a missing folder, or of a path in one.
+    #[cfg(unix)]
+    pub(crate) const NO_FOLDER: &str = "No such file or directory (os error 2)";
+    #[cfg(windows)]
+    pub(crate) const NO_FOLDER: &str =
+        "The system cannot find the path specified. (os error 3)";
+
+    /// `path`, written with `/`, with the separator of the OS.
+    pub(crate) fn native(path: &str) -> String {
+        path.replace('/', std::path::MAIN_SEPARATOR_STR)
+    }
+
     /// An output of a process that exits with `code`.
     pub(crate) fn output(code: i32, stdout: &str, stderr: &str) -> Output {
         #[cfg(unix)]
