@@ -417,11 +417,13 @@ fn the_copy_links_the_timer() {
 /// Each symbol outside the copy, `shim.c`, `server.c`, and the libcrypto ([`PREFIX`])
 /// that they may name in the libc of the target, other than [`PLUGINS`]. In glibc: on
 /// x86-64 with GCC or Clang at each optimization level, and on 64-bit Arm with Clang
-/// at `-O2` and `-moutline-atomics`. In the libc of macOS: on 64-bit Arm with Apple
-/// Clang at `-O0`, the level of the workspace crates in the tests. Empty on another
-/// OS, so the tests fail on each name until it has its list.
+/// at `-O2` and `-moutline-atomics`. In the libc of macOS: on 64-bit Arm and x86-64
+/// with Apple Clang at each optimization level. Empty on another OS, so the tests fail
+/// on each name until it has its list.
 const OUTSIDE: &[&str] = if cfg!(target_os = "macos") {
     &[
+        "___chkstk_darwin",
+        "__bzero",
         "__chkstk_darwin",
         "__error",
         "__memcpy_chk",
@@ -447,11 +449,15 @@ const OUTSIDE: &[&str] = if cfg!(target_os = "macos") {
         "isdigit",
         "memcmp",
         "memcpy",
+        "memmove",
         "memset",
         "printf",
+        "puts",
+        "sprintf",
         "strcmp",
         "strlen",
         "strncmp",
+        "strncpy",
         "strtod",
         "strtok_r",
         "write",
