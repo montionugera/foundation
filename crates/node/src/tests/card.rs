@@ -317,3 +317,33 @@ fn a_member_that_is_not_a_voter_warns_that_its_card_keeps_its_addresses() {
         }
     );
 }
+
+/// The one voter of its mesh counts its cards in memory, so each start that changes its
+/// port proposes its card at once, also within a minute of the last one. A start on the
+/// port of the last start proposes none.
+#[test]
+fn each_start_that_changes_the_port_of_the_one_voter_proposes_its_card() {
+    for (ports, versions) in [
+        (vec![PORT, PORT + 1, PORT], vec![1, 2, 3]),
+        (vec![PORT, PORT + 1, PORT + 1, PORT], vec![1, 2, 2, 3]),
+    ] {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = keyed(&mut sim, 2);
+        let ip = host.addresses()[0];
+        let clock = host.clock();
+        let begun = clock.now();
+        let started: Vec<_> = ports
+            .into_iter()
+            .map(|port| started(&mut sim, &host, SocketAddr::new(ip, port)))
+            .collect();
+        assert!(clock.now() < begun + Span::MINUTE, "{:?}", clock.now());
+        assert_eq!(
+            started
+                .iter()
+                .map(|started| started.version)
+                .collect::<Vec<_>>(),
+            versions
+        );
+        assert!(started.iter().all(|started| started.lines.is_empty()));
+    }
+}
