@@ -144,9 +144,8 @@ Outside the binary: the Rust SDK `sdk` (`sdk/rust`, layer 4) builds on `program`
 entropy, network, the disk of a data directory (`os::stored`), and its shards from `os`
 (#2923, #3212). The Python SDK `sdk-python` (`sdk/python`, layer 4, last) wraps `sdk`
 with PyO3, parses keys and names with `types`, and maps the errors of `sector::local`
-to its texts. It is
-the module `foundation._native` of the wheel `synnax-foundation` (`laptop.architect`,
-2026-10-17T18:41:45Z,
+to its texts. It is the module `foundation._native` of the wheel `synnax-foundation`
+(`laptop.architect`, 2026-10-17T18:41:45Z,
 https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6238783320). The data
 path of Python is `sdk` (C6, SDK DATA PATH; the crate, `laptop.architect`,
 2026-10-15T17:56:55Z,
