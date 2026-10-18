@@ -110,7 +110,7 @@ impl Network {
                         path => Bytes::from(path.to_owned()),
                     })
                 };
-                let scheme = Scheme::Https(certificate);
+                let scheme = Scheme::Tls(certificate);
                 let serve = sim::serve(v6, tasks.clone(), Token::new(), scheme, answer);
                 tasks.spawn(async move { drop(serve.await) });
                 let serve = sim::serve(v4, tasks, Token::new(), scheme, answer);
@@ -505,7 +505,7 @@ fn fails_the_handshake_with_a_server_that_does_not_speak_tls() {
     let mut network = Network::new(10, Certificate::Valid, JUNE_2026);
     network.listen(8087, |listener, tasks| async move {
         let answer = |_: Request<Bytes>| Response::new(Bytes::new());
-        drop(sim::serve(listener, tasks, Token::new(), Scheme::Http, answer).await);
+        drop(sim::serve(listener, tasks, Token::new(), Scheme::Plain, answer).await);
     });
     assert_eq!(
         failed(network.send(sim::ca(), "https://server:8087/ping")),
@@ -942,7 +942,7 @@ fn cancelled(
             listener,
             tasks,
             stop,
-            Scheme::Https(Certificate::Valid),
+            Scheme::Tls(Certificate::Valid),
             answer,
         );
         served.await.expect("the listener works");
@@ -1012,7 +1012,7 @@ fn a_cancel_closes_a_tls_stream_with_bytes_that_arrive_in_the_same_poll() {
             listener,
             tasks,
             stop,
-            Scheme::Https(Certificate::Valid),
+            Scheme::Tls(Certificate::Valid),
             answer,
         );
         served.await.expect("the listener works");

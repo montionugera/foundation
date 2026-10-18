@@ -28,7 +28,7 @@ use super::stream::Stream;
 use super::tls::At;
 use crate::cancel::Token;
 
-/// A certificate of [`Scheme::Https`]. The test CA of [`ca`] signs each one
+/// A certificate of [`Scheme::Tls`]. The test CA of [`ca`] signs each one
 /// other than [`Certificate::OtherCa`]. Each is valid from 2026-01-01 to 2027-01-01
 /// UTC, other than [`Certificate::Expired`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,9 +49,9 @@ pub enum Certificate {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scheme {
     /// Plain HTTP/1.1.
-    Http,
+    Plain,
     /// HTTP/1.1 under TLS 1.2 or 1.3, with this certificate.
-    Https(Certificate),
+    Tls(Certificate),
 }
 
 /// The PEM text of the test CA of [`ca`].
@@ -102,8 +102,8 @@ pub async fn serve(
     answer: impl Fn(Request<Bytes>) -> Response<Bytes> + 'static,
 ) -> Result<(), net::Error> {
     let tls = match scheme {
-        Scheme::Http => None,
-        Scheme::Https(certificate) => Some(server(certificate)),
+        Scheme::Plain => None,
+        Scheme::Tls(certificate) => Some(server(certificate)),
     };
     run(listener, tasks, until, tls, answer).await
 }

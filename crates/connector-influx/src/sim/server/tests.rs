@@ -47,7 +47,7 @@ struct Network {
 
 impl Network {
     fn new() -> Self {
-        Self::serving(Scheme::Http, None)
+        Self::serving(Scheme::Plain, None)
     }
 
     /// A network whose server serves with `scheme`, and takes only `token`, when
@@ -153,8 +153,8 @@ impl Network {
 
     fn scheme_name(&self) -> &'static str {
         match self.scheme {
-            Scheme::Http => "http",
-            Scheme::Https(_) => "https",
+            Scheme::Plain => "http",
+            Scheme::Tls(_) => "https",
         }
     }
 
@@ -195,7 +195,7 @@ fn stores_a_body_on_each_write_path() {
 
 #[test]
 fn stores_a_body_under_tls() {
-    let mut network = Network::serving(Scheme::Https(Certificate::Ip), None);
+    let mut network = Network::serving(Scheme::Tls(Certificate::Ip), None);
     let request = network.post("/write?db=edge", "m v=1 1");
     assert_eq!(
         network.send(vec![vec![request]]),
@@ -438,7 +438,7 @@ fn authorized(mut request: Request<Bytes>, value: &'static str) -> Request<Bytes
 
 #[test]
 fn stores_a_write_with_its_token_and_answers_401_to_any_other() {
-    let mut network = Network::serving(Scheme::Http, Some("t0ken"));
+    let mut network = Network::serving(Scheme::Plain, Some("t0ken"));
     let v2 = "/api/v2/write?org=o&bucket=edge";
     let requests = vec![
         authorized(network.post("/write?db=edge", "m v=1 1"), "Token t0ken"),
@@ -468,7 +468,7 @@ fn stores_a_write_with_its_token_and_answers_401_to_any_other() {
 
 #[test]
 fn checks_the_token_after_the_method_and_before_the_content_encoding() {
-    let mut network = Network::serving(Scheme::Http, Some("t0ken"));
+    let mut network = Network::serving(Scheme::Plain, Some("t0ken"));
     let mut get = network.post("/write?db=edge", "m v=1 1");
     *get.method_mut() = Method::GET;
     let mut gzip = network.post("/write", "m v=2 2");
@@ -540,7 +540,7 @@ fn stopped(
 
 #[test]
 fn serve_returns_at_a_cancel_once_each_stream_ended() {
-    for scheme in [Scheme::Http, Scheme::Https(Certificate::Valid)] {
+    for scheme in [Scheme::Plain, Scheme::Tls(Certificate::Valid)] {
         let ended = stopped(scheme, |_, until, _| until.cancel());
         assert_eq!(ended, Some((Ok(()), 0)), "{scheme:?}");
     }
@@ -548,7 +548,7 @@ fn serve_returns_at_a_cancel_once_each_stream_ended() {
 
 #[test]
 fn serve_gives_the_error_of_a_failed_listener() {
-    for scheme in [Scheme::Http, Scheme::Https(Certificate::Valid)] {
+    for scheme in [Scheme::Plain, Scheme::Tls(Certificate::Valid)] {
         let ended = stopped(scheme, |server, _, local| server.fail_listener(local));
         assert_eq!(
             ended,

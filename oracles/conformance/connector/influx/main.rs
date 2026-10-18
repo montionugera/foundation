@@ -132,7 +132,7 @@ async fn simulate(inputs: Serve) {
     let store = Arc::new(Mutex::new(Store::default()));
     let (tasks, until) = (inputs.tasks, inputs.until);
     let database = "plant".into();
-    let served = serve(listener, tasks, until, Scheme::Http, store, database, None);
+    let served = serve(listener, tasks, until, Scheme::Plain, store, database, None);
     served.await.expect("the listener holds");
 }
 

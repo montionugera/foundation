@@ -137,7 +137,7 @@ impl Plant {
 
     /// A plant whose InfluxDB refuses each connection until [`Plant::serve`].
     async fn unserved(node: ::sim::node::Node, tasks: Tasks) -> Self {
-        Self::with(node, tasks, Scheme::Http, Roots::default()).await
+        Self::with(node, tasks, Scheme::Plain, Roots::default()).await
     }
 
     /// A plant whose InfluxDB serves TLS with `certificate` from the start, at the
@@ -148,7 +148,7 @@ impl Plant {
         certificate: Certificate,
         roots: Roots,
     ) -> Self {
-        let plant = Self::with(node, tasks, Scheme::Https(certificate), roots).await;
+        let plant = Self::with(node, tasks, Scheme::Tls(certificate), roots).await;
         plant.serve();
         plant
     }
@@ -299,8 +299,8 @@ impl Plant {
 /// `scheme`.
 fn config_at(address: SocketAddr, scheme: Scheme) -> Document {
     match scheme {
-        Scheme::Https(_) => config(string(&format!("https://server:{PORT}"))),
-        Scheme::Http => config(string(&format!("http://{address}"))),
+        Scheme::Tls(_) => config(string(&format!("https://server:{PORT}"))),
+        Scheme::Plain => config(string(&format!("http://{address}"))),
     }
 }
 
@@ -2607,7 +2607,7 @@ fn after_a_close_in_the_handshake(ca: bool) -> (usize, Vec<u64>) {
             connector::http::sim::ca()
         };
         let plant =
-            Plant::with(node, tasks, Scheme::Https(Certificate::Valid), roots).await;
+            Plant::with(node, tasks, Scheme::Tls(Certificate::Valid), roots).await;
         let listen = tcp::Listen {
             local: plant.address,
             backlog: 4,
@@ -2722,7 +2722,7 @@ fn retries_a_refused_connect_in_the_run_with_a_ca() {
         let plant = Plant::with(
             node,
             tasks,
-            Scheme::Https(Certificate::Valid),
+            Scheme::Tls(Certificate::Valid),
             Roots::default(),
         )
         .await;

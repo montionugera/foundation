@@ -7603,7 +7603,7 @@ pub(crate) mod port {
                         listener,
                         tasks,
                         connector::cancel::Token::new(),
-                        connector::http::sim::Scheme::Https(certificate),
+                        connector::http::sim::Scheme::Tls(certificate),
                         into,
                         "plant".into(),
                         None,
