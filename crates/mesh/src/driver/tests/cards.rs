@@ -235,3 +235,38 @@ fn a_follower_sets_its_addresses_through_the_leader_once_a_minute() {
     let card = card(moved(follower, 10), 4);
     assert_eq!(board.moved, [(follower, Ok(()), card)]);
 }
+
+/// Two calls at once write the file of the last signed version in turn, so neither
+/// finds it busy. The second card goes over the bound.
+#[test]
+fn two_calls_at_once_write_the_file_in_turn() {
+    for seed in 0..32 {
+        solo_at(seed, move |node, tasks| async move {
+            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+            lead(&mesh, &node.clock(), home_to(1)).await;
+            let mut calls = [
+                Box::pin(mesh.set_addresses(moved(1, 9))),
+                Box::pin(mesh.set_addresses(moved(1, 10))),
+            ];
+            let mut done: [Option<Result<(), Error>>; 2] = [None, None];
+            poll_fn(|cx| {
+                for (call, out) in calls.iter_mut().zip(done.iter_mut()) {
+                    if out.is_none()
+                        && let Poll::Ready(result) = call.as_mut().poll(cx)
+                    {
+                        *out = Some(result);
+                    }
+                }
+                if done.iter().all(Option::is_some) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+            let mut done = done.map(Option::unwrap);
+            done.sort_by_key(Result::is_err);
+            assert_eq!(done, [Ok(()), Err(Error::Soon)], "seed {seed}");
+        });
+    }
+}

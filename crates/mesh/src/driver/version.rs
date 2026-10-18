@@ -6,7 +6,11 @@
 //! bytes, the format version, and the card version. A write goes to the slot that does
 //! not hold the newest version, so a torn write keeps the newest.
 
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::task::{Context, Poll, Waker};
 
 use env::files::{self, Files, Mode};
 use types::ed25519::PrivateKey;
@@ -25,7 +29,8 @@ const SLOT: usize = files::SECTOR;
 // The bytes of the frame of a slot.
 const FRAME: usize = CHECK + 2 + 8;
 
-/// Signs the cards of this node, each at a version that the file holds first.
+/// Signs the cards of this node, each at a version that the file holds first. One
+/// call at a time writes the file, in the order of the calls.
 #[derive(Debug)]
 pub(super) struct Cards {
     key: node::Key,
@@ -34,6 +39,11 @@ pub(super) struct Cards {
     // The mesh directory.
     dir: PathBuf,
     blocks: Blocks,
+    // Each call that waits or writes, by its key, with the waker of a call that
+    // waits. The first holds the turn.
+    calls: RefCell<BTreeMap<u64, Option<Waker>>>,
+    // The key of the next call.
+    next: Cell<u64>,
 }
 
 impl Cards {
@@ -46,6 +56,8 @@ impl Cards {
             files: config.files.clone(),
             dir: config.dir.clone(),
             blocks,
+            calls: RefCell::default(),
+            next: Cell::new(0),
         }
     }
 
@@ -59,6 +71,8 @@ impl Cards {
         held: &Card,
         addresses: Addresses,
     ) -> Result<Signed, Error> {
+        let mut turn = self.turn();
+        (&mut turn).await;
         let version = next(&self.files, &self.dir, &self.blocks, held.version).await?;
         let card = Card {
             addresses,
@@ -66,6 +80,56 @@ impl Cards {
             ..held.clone()
         };
         Ok(Signed::sign(self.key, card, &self.private_key))
+    }
+
+    fn turn(&self) -> Turn<'_> {
+        let key = self.next.get();
+        self.next.set(
+            key.checked_add(1)
+                .expect("invariant: 2^64 calls do not happen"),
+        );
+        self.calls.borrow_mut().insert(key, None);
+        Turn { cards: self, key }
+    }
+}
+
+// A call in the order of `Cards`. It is ready when the call holds the turn, and its
+// drop gives the turn to the next call.
+struct Turn<'a> {
+    cards: &'a Cards,
+    key: u64,
+}
+
+impl Future for Turn<'_> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let mut calls = self.cards.calls.borrow_mut();
+        if calls.first_key_value().map(|(&key, _)| key) == Some(self.key) {
+            return Poll::Ready(());
+        }
+        let replaced = calls.insert(self.key, Some(cx.waker().clone()));
+        // The last drop of a waker can drop a task that uses the cards.
+        drop(calls);
+        drop(replaced);
+        Poll::Pending
+    }
+}
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        let mut calls = self.cards.calls.borrow_mut();
+        let removed = calls.remove(&self.key);
+        // The call that holds the turn keeps no waker, so this wakes a call only
+        // when the dropped one held the turn.
+        let next = calls
+            .first_entry()
+            .and_then(|mut next| next.get_mut().take());
+        drop(calls);
+        drop(removed);
+        if let Some(next) = next {
+            next.wake();
+        }
     }
 }
 
