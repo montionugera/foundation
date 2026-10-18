@@ -215,7 +215,8 @@
   Amended (#2718 PR 2): the node serves a write stream at the home of its index. The
   open holds its `length` in the hub's body budget until it decodes. Then the stream
   holds 16 bytes for each channel of the open and one for its index until the stream
-  ends, and ends that do not fit stop with `BUSY` before the writer opens (MEMORY
+  ends, and its decoded names, 16 bytes and the length of each, until it sends its
+  places. Ends or names that do not fit stop with `BUSY` before the writer opens (MEMORY
   BOUNDS). A write whose channels are on more than one index stops with `MALFORMED`
   before the node waits for a home, so a refused open takes no control at the gate. A
   frame of `Time::Node` gets mesh time, or 1 ns after the last stamp that the node gave

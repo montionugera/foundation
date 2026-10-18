@@ -45,12 +45,13 @@ pub(super) async fn serve(
     let ends = Frames::bytes(open.channels.len() + 1);
     let ends = u64::try_from(ends).expect("invariant: a u64 holds a usize");
     let _reserved = Reserved::new(state, subject.clone(), ends)?;
-    let names = open.channels.clone();
-    let Some(writer) = here(state, subject, open, receiver).await? else {
+    let decoded = Reserved::new(state, subject.clone(), held(&open.channels))?;
+    let Some((writer, names)) = here(state, subject, open, receiver).await? else {
         sender.finish()?;
         return Ok(());
     };
     start(state, sender, &writer, names).await?;
+    drop(decoded);
     let stored = relay(state, writer, receiver, sender).await?;
     stored.finish(state, &session.transport, sender).await
 }
@@ -68,15 +69,25 @@ async fn open(
     Ok(Open::decode(&bytes)?)
 }
 
-/// Opens the writer of `open` at this node, the home of its index, or gives `None`
-/// when the program finishes first. A writer on more than one index gives
-/// [`Error::ManyIndexes`] before it waits for a home, so it takes no control.
+/// The bytes that `names` hold once decoded: 16 for each name, and its length.
+fn held(names: &[Name]) -> u64 {
+    let bytes: usize = names
+        .iter()
+        .map(|name| size_of::<Name>() + name.as_str().len())
+        .sum();
+    u64::try_from(bytes).expect("invariant: a u64 holds a usize")
+}
+
+/// Opens the writer of `open` at this node, the home of its index, and gives it with
+/// the channels of `open`, or gives `None` when the program finishes first. A writer
+/// on more than one index gives [`Error::ManyIndexes`] before it waits for a home, so
+/// it takes no control.
 async fn here(
     state: &Rc<RefCell<State>>,
     subject: Name,
     open: Open,
     receiver: &mut Receiver,
-) -> Result<Option<Writer>, Error> {
+) -> Result<Option<(Writer, Vec<Name>)>, Error> {
     let refused = |error| Error::Writer(Box::new(error));
     let config = writer::Config {
         subject,

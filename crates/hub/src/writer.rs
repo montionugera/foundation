@@ -173,6 +173,7 @@ pub(crate) struct Homed {
     lease: Option<Span>,
     keys: Vec<channel::Key>,
     groups: Vec<Indexed>,
+    channels: Vec<Name>,
 }
 
 impl Homed {
@@ -236,12 +237,14 @@ impl Homed {
             lease,
             keys,
             groups,
+            channels,
         }))
     }
 
-    /// Opens the writer at the home. Call it with no wait after [`Homed::new`] or
-    /// [`Homed::one`], so that the channels and their homes are as it found them.
-    pub(crate) fn open(self) -> Result<Writer, Error> {
+    /// Opens the writer at the home, and gives it with the channels of its config.
+    /// Call it with no wait after [`Homed::new`] or [`Homed::one`], so that the
+    /// channels and their homes are as it found them.
+    pub(crate) fn open(self) -> Result<(Writer, Vec<Name>), Error> {
         let Self {
             state,
             subject,
@@ -249,6 +252,7 @@ impl Homed {
             lease,
             mut keys,
             groups,
+            channels,
         } = self;
         let mut borrowed = state.borrow_mut();
         let borrowed = &mut *borrowed;
@@ -274,14 +278,15 @@ impl Homed {
         borrowed.gate.wake();
         keys.extend(groups.iter().map(|group| group.index));
         let ending = borrowed.writers.add(key, keys);
-        Ok(Writer {
+        let writer = Writer {
             state: Rc::clone(&state),
             key,
             ending,
             set,
             entries,
             outcomes: Vec::new(),
-        })
+        };
+        Ok((writer, channels))
     }
 }
 

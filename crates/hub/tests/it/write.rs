@@ -966,10 +966,43 @@ fn stops_a_write_whose_ends_pass_the_share_as_busy() {
     assert_eq!(home.served[0], Err(share.clone()));
     assert_eq!(
         share.to_string(),
-        "32 bytes of a body or of the ends of a write do not fit under the share of \
-         16777216 bytes of subject ops.agent: its open requests, reads, and writes \
-         hold 16777185 bytes"
+        "32 bytes of a body or of the ends or names of a write do not fit under the \
+         share of 16777216 bytes of subject ops.agent: its open requests, reads, and \
+         writes hold 16777185 bytes"
     );
+}
+
+/// A write holds its decoded names in the share of its subject, 16 bytes and the
+/// length of each, until it sends its places. The ends of `value` are 32 bytes and its
+/// names 21, so its ends fit where its names do not.
+#[test]
+fn stops_a_write_whose_names_pass_the_share_as_busy() {
+    let home = read_session(
+        417,
+        async |_| {},
+        |mut agent| async move {
+            agent.admit().await;
+            let held = agent.unfinished(BODY_BYTES_MAX - 52, &[]).await;
+            agent.sleep(Span::MILLISECOND).await;
+            let mut busy = agent.write(&["value"]).await;
+            assert_eq!(busy.recv().await, reset_with(BUSY));
+            drop(held);
+            agent.sleep(Span::MILLISECOND).await;
+            let held = agent.unfinished(BODY_BYTES_MAX - 53, &[]).await;
+            agent.sleep(Span::MILLISECOND).await;
+            let mut stream = write(&agent).await;
+            send(&mut stream, &[1], &[10]).await;
+            assert_eq!(stream.reply().await, taken(0, 1));
+            drop(held);
+            finish(&mut agent).await;
+        },
+    );
+    let share = serve::Error::Share {
+        subject: name(SUBJECT),
+        length: 21,
+        held: BODY_BYTES_MAX - 20,
+    };
+    assert_eq!(home.served[0], Err(share));
 }
 
 #[test]

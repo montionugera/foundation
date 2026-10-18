@@ -37,10 +37,11 @@ pub use client::{Reply, Request};
 /// [`Reply`], the open of a read until it decodes after the wait for the home of its
 /// index, the open of a write until it decodes, and the ends of each write stream, 16
 /// bytes for each channel of its open and one for its index, from the decode of the
-/// open until the stream ends. A body that does not fit stops with `BUSY` before the
-/// hub reads a byte of it, and ends that do not fit stop with `BUSY` before the writer
-/// opens. The bodies of one subject hold at most [`BODY_BYTES_MAX`] of it
-/// ([`Error::Share`]).
+/// open until the stream ends, and its decoded names, 16 bytes and the length of each,
+/// from that decode until it sends its places. A body that does not fit stops with
+/// `BUSY` before the hub reads a byte of it, and ends or names that do not fit stop
+/// with `BUSY` before the writer opens. The bodies of one subject hold at most
+/// [`BODY_BYTES_MAX`] of it ([`Error::Share`]).
 pub const BODIES_BYTES_MAX: u64 = 2 * BODY_BYTES_MAX;
 
 /// Why [`Link::serve`](crate::Link::serve) ended a stream.
@@ -101,8 +102,8 @@ pub enum Error {
     /// [`BODIES_BYTES_MAX`]. Code `BUSY`. The ends of a write are released only when
     /// its stream ends. A retry can succeed once enough of them are released.
     Bodies {
-        /// The bytes of the refused request, read, or write: a body, or the ends of a
-        /// write.
+        /// The bytes of the refused request, read, or write: a body, or the ends or
+        /// names of a write.
         length: u64,
         /// The body bytes that the open requests, reads, and writes of the hub held.
         held: u64,
@@ -115,8 +116,8 @@ pub enum Error {
     Share {
         /// The subject of the link's admitted hello.
         subject: Name,
-        /// The bytes of the refused request, read, or write: a body, or the ends of a
-        /// write.
+        /// The bytes of the refused request, read, or write: a body, or the ends or
+        /// names of a write.
         length: u64,
         /// The body bytes that the open requests, reads, and writes of `subject` held.
         held: u64,
@@ -233,9 +234,9 @@ impl fmt::Display for Error {
             ),
             Self::Bodies { length, held } => write!(
                 f,
-                "{length} bytes of a body or of the ends of a write do not fit under \
-                 the cap of {BODIES_BYTES_MAX} bytes: the open requests, reads, and \
-                 writes of the hub hold {held} bytes"
+                "{length} bytes of a body or of the ends or names of a write do not \
+                 fit under the cap of {BODIES_BYTES_MAX} bytes: the open requests, \
+                 reads, and writes of the hub hold {held} bytes"
             ),
             Self::Share {
                 subject,
@@ -243,9 +244,9 @@ impl fmt::Display for Error {
                 held,
             } => write!(
                 f,
-                "{length} bytes of a body or of the ends of a write do not fit under \
-                 the share of {BODY_BYTES_MAX} bytes of subject {subject}: its open \
-                 requests, reads, and writes hold {held} bytes"
+                "{length} bytes of a body or of the ends or names of a write do not \
+                 fit under the share of {BODY_BYTES_MAX} bytes of subject {subject}: \
+                 its open requests, reads, and writes hold {held} bytes"
             ),
             Self::Reader(error) => {
                 write!(f, "the reader of a read did not open: {error}")

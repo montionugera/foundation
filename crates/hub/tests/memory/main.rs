@@ -62,6 +62,7 @@ fn main() {
     holds_no_more_for_a_read_of_one_channel_whose_open_is_at_the_cap();
     holds_no_places_once_a_read_opens();
     holds_no_names_once_a_write_opens();
+    holds_the_names_of_a_write_once_while_it_waits_for_its_home();
     holds_each_channel_name_once();
     defines_no_channel_again_at_an_open_of_the_spec_applied();
     defines_no_channel_again_at_the_first_poll_of_the_spec_task();
@@ -615,6 +616,84 @@ fn holds_no_names_once_a_write_opens() {
         long.abs_diff(short) < differ / 10,
         "a write of {NAMED} channels with long names holds {long} bytes, and one with \
          short names holds {short}: their names differ by {differ} bytes"
+    );
+}
+
+/// The mesh names no home of `time`, so each write waits for it. While it waits, a
+/// write holds the names of its open once: a write of [`NAMED`] long names holds at
+/// most 1.5 bytes more than a write of [`NAMED`] short names for each byte by which
+/// their names differ.
+fn holds_the_names_of_a_write_once_while_it_waits_for_its_home() {
+    let long = "x".repeat(240);
+    let longs = (0..NAMED).map(|n| name(&format!("l.{long}.{n}")));
+    let shorts = (0..NAMED).map(|n| name(&format!("s.{n}")));
+    let more: Vec<_> = longs.chain(shorts).collect();
+    let (longs, shorts) = more.split_at(NAMED);
+    let differ: usize = longs
+        .iter()
+        .zip(shorts)
+        .map(|(long, short)| long.as_str().len() - short.as_str().len())
+        .sum();
+    let [longs, shorts] = [longs, shorts]
+        .map(|names| names.iter().map(ToString::to_string).collect::<Vec<_>>());
+    let measured = Arc::new(Mutex::new(None));
+    let kept = Arc::clone(&measured);
+    let home = |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
+        let transport =
+            net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
+        let transport = Rc::new(transport);
+        let region = region::open(
+            &node,
+            &tasks,
+            Rc::clone(&transport),
+            Vec::new(),
+            common::definitions(&more),
+        )
+        .await;
+        let hub = common::hub_in(&node, tasks.clone(), region).await;
+        hub.set_rules(rules());
+        let session = transport.accept().await.expect("a session");
+        let link = hub.link(session.clone());
+        let (served, accepted) = (Arc::default(), Rc::new(Cell::new(0)));
+        let clock = node.clock();
+        tasks.spawn(serve_each(
+            &session, &link, &tasks, &clock, &served, &accepted,
+        ));
+        drop(session.closed().await);
+    };
+    let program = move |node: sim::node::Node, tasks, at| async move {
+        let mut agent = Agent::dial(&node, tasks, at, name(SUBJECT)).await;
+        agent.admit().await;
+        let open = async |names: &[String]| {
+            let channels: Vec<&str> = names.iter().map(String::as_str).collect();
+            agent.write(&channels).await
+        };
+        // A write of each set grows the pools first.
+        let _first = open(&longs).await;
+        let _second = open(&shorts).await;
+        agent.sleep(common::SETTLE).await;
+        let before = ALLOCATOR.held();
+        let _long = open(&longs).await;
+        agent.sleep(common::SETTLE).await;
+        let long = ALLOCATOR.held();
+        let _short = open(&shorts).await;
+        agent.sleep(common::SETTLE).await;
+        let short = ALLOCATOR.held();
+        *kept.lock().expect("not poisoned") = Some((long - before, short - long));
+        agent.session.close(Code(0));
+        node.clock().sleep(Span::MILLISECOND).await;
+    };
+    sessions::run_program(6, home, program);
+    let (long, short) = measured
+        .lock()
+        .expect("not poisoned")
+        .take()
+        .expect("the program measured");
+    assert!(
+        long.abs_diff(short) < differ * 3 / 2,
+        "a write of {NAMED} channels with long names holds {long} bytes while it \
+         waits, and one with short names holds {short}: their names differ by {differ} \
+         bytes"
     );
 }
 
