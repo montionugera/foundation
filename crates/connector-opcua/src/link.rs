@@ -214,15 +214,13 @@ fn shim_compiler() -> cc::Tool {
         .get_compiler()
 }
 
-/// Gives each pragma of `file` of `src/` after the preprocessor, which joins split
+/// Gives each pragma of the C file at `path` after the preprocessor, which joins split
 /// lines and expands `_Pragma`.
-fn shim_pragmas(file: &str) -> Vec<String> {
-    // Not `src()`, whose `\\?\` prefix on Windows GCC does not open.
-    let path = std::path::Path::new(ROOT).join("src").join(file);
+fn shim_pragmas(path: &std::path::Path) -> Vec<String> {
     let output = shim_compiler()
         .to_command()
         .arg("-E")
-        .arg(&path)
+        .arg(path)
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
@@ -288,23 +286,25 @@ fn the_pragma_check_reads_a_file_whose_path_is_not_ascii() {
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("pragma.c");
     std::fs::write(&file, "#pragma GCC diagnostic push\nint x;\n").unwrap();
-    assert_eq!(
-        shim_pragmas(file.to_str().unwrap()),
-        ["#pragma GCC diagnostic push"]
-    );
+    assert_eq!(shim_pragmas(&file), ["#pragma GCC diagnostic push"]);
 }
+
+/// The test of the pragmas of the shim, which the tests of its compiler run in a child.
+const PRAGMAS: &str =
+    "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
 
 #[test]
 fn the_shim_ignores_only_the_unused_parameters_of_the_headers() {
     // `cc` reads C flags from the environment, and `-w` there hides each warning.
     if !crate::child::running() {
-        let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
-        crate::child::run(name, &[]);
+        crate::child::run(PRAGMAS, &[]);
         return;
     }
     for file in ["shim.c", "server.c"] {
+        // Not `src()`, whose `\\?\` prefix on Windows GCC does not open.
+        let path = std::path::Path::new(ROOT).join("src").join(file);
         assert_eq!(
-            shim_pragmas(file),
+            shim_pragmas(&path),
             [
                 "#pragma GCC diagnostic push",
                 "#pragma GCC diagnostic ignored \"-Wunused-parameter\"",
@@ -343,9 +343,8 @@ fn the_shim_ignores_only_the_unused_parameters_of_the_headers() {
 
 #[test]
 fn the_shim_check_ignores_the_environment_of_cc() {
-    let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
     let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", name])
+        .args(["--exact", PRAGMAS])
         .env("CC", "cc -w")
         .env("CFLAGS", "-w")
         .env("CRATE_CC_NO_DEFAULTS", "1")
@@ -361,37 +360,38 @@ fn the_shim_check_ignores_the_environment_of_cc() {
 #[test]
 #[cfg(unix)]
 fn the_shim_check_finds_a_cc_relative_to_the_crate() {
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::Path;
-    let cc = Path::new(env!("OUT_DIR")).join("relative-cc");
-    std::fs::write(&cc, "#!/bin/sh\nexec cc \"$@\"\n").unwrap();
-    std::fs::set_permissions(&cc, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let cc = script_cc("relative-cc", "exec cc \"$@\"\n");
     let (root, cc) = (root(), cc.canonicalize().unwrap());
     let common = root.ancestors().find(|dir| cc.starts_with(dir)).unwrap();
     let up = "../".repeat(root.strip_prefix(common).unwrap().components().count());
     let relative = format!("{up}{}", cc.strip_prefix(common).unwrap().display());
-    let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
-    crate::child::run(name, &[("CC", &relative)]);
+    crate::child::run(PRAGMAS, &[("CC", &relative)]);
 }
 
 #[test]
 #[cfg(unix)]
 fn the_shim_check_writes_no_file() {
     // Tests that run at the same time would share the file, and GCC writes it in place.
+    let script = "for arg; do\n  [ \"$last\" = -o ] && [ \"$arg\" != - ] && exit 1\n  \
+                  last=$arg\ndone\nexec cc \"$@\"\n";
+    let cc = script_cc("stdout-cc", script);
+    crate::child::run(PRAGMAS, &[("CC", cc.to_str().unwrap())]);
+}
+
+/// Writes the shell script `body` as the program `name` of `OUT_DIR`, a CC for the
+/// tests of the shim check, and gives its path.
+#[cfg(unix)]
+fn script_cc(name: &str, body: &str) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
-    let cc = std::path::Path::new(env!("OUT_DIR")).join("stdout-cc");
-    let script = "#!/bin/sh\nfor arg; do\n  [ \"$last\" = -o ] && [ \"$arg\" != - ] && \
-                  exit 1\n  last=$arg\ndone\nexec cc \"$@\"\n";
-    std::fs::write(&cc, script).unwrap();
+    let cc = std::path::Path::new(env!("OUT_DIR")).join(name);
+    std::fs::write(&cc, format!("#!/bin/sh\n{body}")).unwrap();
     std::fs::set_permissions(&cc, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
-    crate::child::run(name, &[("CC", cc.to_str().unwrap())]);
+    cc
 }
 
 #[test]
 fn the_shim_check_uses_the_compiler_of_cc() {
-    let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
-    let output = crate::child::output(name, &[("CC", "/missing/gcc")]);
+    let output = crate::child::output(PRAGMAS, &[("CC", "/missing/gcc")]);
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("kind: NotFound"), "{stdout}");
 }
