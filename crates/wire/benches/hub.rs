@@ -335,9 +335,21 @@ fn encode_a_write_head(bencher: Bencher<'_, '_>) {
 
 /// Decodes a program's frame of `series` series of one 8 byte sample at the node with
 /// [`write::Frames`]: its head, a run of one message, a draft from a pool, and a body
-/// of one message received in place. Gives the frame's first body byte.
+/// of one message received in place.
 #[divan::bench(args = SERIES)]
 fn decode_a_write_frame(bencher: Bencher<'_, '_>, series: u32) {
+    decode_write(bencher, series, true);
+}
+
+/// [`decode_a_write_frame`], with the body message copied by [`write::Frames::decode`].
+#[divan::bench(args = SERIES)]
+fn decode_a_copied_write_frame(bencher: Bencher<'_, '_>, series: u32) {
+    decode_write(bencher, series, false);
+}
+
+/// Decodes write frames as [`decode_a_write_frame`] says, with the body received
+/// `in_place` or copied. Each frame gives its first body byte.
+fn decode_write(bencher: Bencher<'_, '_>, series: u32, in_place: bool) {
     let channels = (1..=u128::from(series)).map(|key| {
         let data = if key == 1 { Scalar::Stamp } else { Scalar::I64 };
         (channel::Key::from_u128(key), Type::Scalar(data))
@@ -362,14 +374,14 @@ fn decode_a_write_frame(bencher: Bencher<'_, '_>, series: u32) {
         let mut messages = [&head[..], &run[..], &body[..]].into_iter();
         loop {
             let step = match frames.due().expect("the layout holds") {
-                write::Due::Message => {
-                    let message = messages.next().expect("a message");
-                    frames.decode(divan::black_box(message))
-                }
-                write::Due::Body(rest) => {
+                write::Due::Body(rest) if in_place => {
                     let message = divan::black_box(messages.next().expect("a message"));
                     rest[..message.len()].copy_from_slice(message);
                     frames.received(message.len())
+                }
+                write::Due::Message | write::Due::Body(_) => {
+                    let message = messages.next().expect("a message");
+                    frames.decode(divan::black_box(message))
                 }
                 write::Due::Draft { layout, form } => {
                     let draft = layout.draft(&pool, form).expect("a block");
