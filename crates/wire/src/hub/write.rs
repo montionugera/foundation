@@ -250,20 +250,29 @@ impl Reply {
     pub fn encode(&self, out: &mut [u8]) {
         let mut out = Writer::new(out, self.encoded_len());
         match *self {
-            Self::Outcome { frame, outcome } => {
-                let kind = match outcome {
-                    Outcome::Taken { .. } => TAKEN,
-                    Outcome::Lost { .. } => LOST,
-                    Outcome::Refused(_) => REFUSED,
-                };
-                out.put(&[kind]);
+            Self::Outcome {
+                frame,
+                outcome: Outcome::Taken { range },
+            } => {
+                out.put(&[TAKEN]);
                 out.put(&frame.to_le_bytes());
-                match outcome {
-                    Outcome::Taken { range } | Outcome::Lost { range } => {
-                        put_range(&mut out, range);
-                    }
-                    Outcome::Refused(refusal) => out.put(&[refusal.code()]),
-                }
+                put_range(&mut out, range);
+            }
+            Self::Outcome {
+                frame,
+                outcome: Outcome::Lost { range },
+            } => {
+                out.put(&[LOST]);
+                out.put(&frame.to_le_bytes());
+                put_range(&mut out, range);
+            }
+            Self::Outcome {
+                frame,
+                outcome: Outcome::Refused(refusal),
+            } => {
+                out.put(&[REFUSED]);
+                out.put(&frame.to_le_bytes());
+                out.put(&[refusal.code()]);
             }
             Self::Stored { frames } => {
                 out.put(&[STORED]);
