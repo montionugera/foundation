@@ -5,9 +5,10 @@
   compilation but full 3 platform support", the person, relayed by `laptop.monitor`,
   2026-10-16:
   https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6226448657).
-  The Windows wheels of the gate (#2923) wait on the clock (#682) and the network
-  (#2955) of `os` on Windows. The term that `sdk` does not depend on `os` was a proposal
-  of `laptop.monitor`, not the person's words, and is withdrawn (the same link). The
+  The Windows wheels of the gate (#2923) wait on the clock (#682), the network
+  (#2955), and the disk (#2956) of `os` on Windows. The term that `sdk` does not
+  depend on `os` was a proposal of `laptop.monitor`, not the person's words, and is
+  withdrawn (the same link). The
   person decided on 2026-10-15 at 17:40 UTC ("Ok, let's
   do A", relayed by `laptop.monitor`, quoted at
   https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198508264), with

@@ -22,7 +22,8 @@
   https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6238447555). This
   replaces the env of its own on `Instant`, `getrandom`, and `socket2`, so #2932 closes:
   `os::clock` counts time while the host sleeps. `sdk` is on the Windows lists of
-  `ci.yaml` until #682 and #2955 give `os::clock` and `os::net` there.
+  `ci.yaml` until #682, #2955, and #2956 give `os::clock`, `os::net`, and
+  `os::stored` there.
   `Client::connect(&Node, Subject)` takes the node (its UDP addresses, its key, and its
   public key) apart from the subject (its name and private key): one node serves many
   subjects, and a node can listen on more than one address. `laptop.architect-2` decided

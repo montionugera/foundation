@@ -106,4 +106,7 @@
   accepted both, key choices of kinds (a) and (g), at 2026-10-17T18:40:34Z
   (https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6240907801). The
   Windows wheels wait for #682 and #2955 (option (A),
-  https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6238826510).
+  https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6238826510), and
+  for the disk of a data directory (#2956), with no `cfg` gate on `data=`
+  (`laptop.monitor`, 2026-10-18, a key choice of kind (a),
+  https://github.com/synnaxlabs/foundation/pull/3255#issuecomment-6254870021).
