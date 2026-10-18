@@ -133,8 +133,8 @@ impl Peer<'_> {
         }
         let url = CString::new(url).expect("the URL holds no NUL");
         // SAFETY: `raw` is a new client of the loop of `connections`.
-        let mut client = unsafe { Client::of(clock, connections, raw) };
-        client.open(&url).await.expect("the client connects");
+        let mut client = unsafe { Client::of(clock, connections, raw, url) };
+        client.open().await.expect("the client connects");
         client
     }
 }
@@ -256,6 +256,28 @@ fn a_read_of_an_unknown_node_fails_with_its_status() {
         .await
     });
     assert_eq!(read, Err(Fault::status(Status::BAD_NODE_ID_UNKNOWN)));
+}
+
+/// Calls the private `Client::new`, as no caller holds a client before its open:
+/// `Client::connect` opens it at once.
+#[test]
+fn a_client_gives_its_url_before_and_after_its_open() {
+    let (urls, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let url = CString::new(peer.url.clone()).expect("the URL holds no NUL");
+            let time = event::Time::monotonic(Clock::clone(&peer.clock));
+            let net = Net::clone(&peer.net);
+            let mut client = Client::new(time, net, &mut peer.rng, url.clone());
+            let before = client.url().to_owned();
+            client.open().await.expect("the client connects");
+            let after = client.url().to_owned();
+            client.close().await;
+            (url, before, after)
+        })
+        .await
+    });
+    let (url, before, after) = urls;
+    assert_eq!((before, after), (url.clone(), url));
 }
 
 /// The name `node` must reach the server whole: it holds a `;`, an `=`, and a byte

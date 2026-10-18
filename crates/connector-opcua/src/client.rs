@@ -4,7 +4,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::ffi::{CStr, c_void};
+use std::ffi::{CStr, CString, c_void};
 use std::future;
 use std::mem;
 use std::num::NonZeroUsize;
@@ -104,8 +104,8 @@ pub(crate) struct Client {
     /// The bounds of the server on a Browse and a Translate, once
     /// [`Client::describe`] reads them.
     bounds: Option<browse::Bounds>,
-    /// The endpoint of the last [`Client::open`], which each failed server call names.
-    address: String,
+    /// The endpoint that [`Client::open`] connects to, which each failure names.
+    url: CString,
     /// Drops after `raw` is deleted, as it holds the loop of the client.
     connections: Manager,
 }
@@ -177,9 +177,9 @@ impl Client {
         url: &CStr,
         until: impl Future<Output = ()>,
     ) -> Result<Option<Self>, Status> {
-        let mut client = Self::new(time, net, rng);
+        let mut client = Self::new(time, net, rng, url.to_owned());
         let opened = {
-            let (mut until, mut open) = (pin!(until), pin!(client.open(url)));
+            let (mut until, mut open) = (pin!(until), pin!(client.open()));
             // The first poll of `open` starts the loop, which the close drives.
             future::poll_fn(|cx| {
                 if let Poll::Ready(opened) = open.as_mut().poll(cx) {
@@ -202,13 +202,13 @@ impl Client {
         }
     }
 
-    /// Makes a client on its own manager over `time`, `net`, and `rng`, with no
-    /// connection.
+    /// Makes a client of `url` on its own manager over `time`, `net`, and `rng`, with
+    /// no connection.
     ///
     /// # Aborts
     ///
     /// As [`Client::connect`].
-    fn new(time: Time, net: Net, rng: &mut Rng) -> Self {
+    fn new(time: Time, net: Net, rng: &mut Rng, url: CString) -> Self {
         let clock = Clock::clone(&time.clock);
         let connections = Manager::new(time, net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
@@ -217,7 +217,7 @@ impl Client {
             alloc::exhausted()
         };
         // SAFETY: `raw` is a new client of the loop of `connections`.
-        unsafe { Self::of(clock, connections, raw) }
+        unsafe { Self::of(clock, connections, raw, url) }
     }
 
     /// The client of `raw`, as [`Client::new`] gives it.
@@ -230,6 +230,7 @@ impl Client {
         clock: Clock,
         connections: Manager,
         raw: NonNull<ffi::Client>,
+        url: CString,
     ) -> Self {
         // SAFETY: the client lives.
         let timeout_ms = unsafe { ffi::shim_client_timeout(raw.as_ptr()) };
@@ -247,25 +248,24 @@ impl Client {
             key: Rc::default(),
             supertypes: BTreeMap::new(),
             bounds: None,
-            address: String::new(),
+            url,
             connections,
         }
     }
 
-    /// The endpoint that the client connected to.
-    pub(crate) fn address(&self) -> &str {
-        &self.address
+    /// The endpoint that the client connects to.
+    pub(crate) fn url(&self) -> &CStr {
+        &self.url
     }
 
-    /// Connects the new client to `url`, as [`Client::connect`] does. The client holds
-    /// the state of the connect, so the future can drop at any point, and
+    /// Connects the new client to its URL, as [`Client::connect`] does. The client
+    /// holds the state of the connect, so the future can drop at any point, and
     /// [`Client::close`] then closes the session that it made.
-    async fn open(&mut self, url: &CStr) -> Result<(), Status> {
-        self.address = url.to_string_lossy().into_owned();
+    async fn open(&mut self) -> Result<(), Status> {
         let deadline = self.clock.now() + self.timeout;
         // SAFETY: the client lives, and copies the URL. The drive reads the status that
         // it gives from the state of the client.
-        unsafe { ffi::UA_Client_connectAsync(self.raw.as_ptr(), url.as_ptr()) };
+        unsafe { ffi::UA_Client_connectAsync(self.raw.as_ptr(), self.url.as_ptr()) };
         let connected = self
             .connections
             .drive_until(Some(deadline), |_| {
