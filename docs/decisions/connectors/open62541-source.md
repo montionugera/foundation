@@ -1045,11 +1045,11 @@
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256155598; and for
   the last, with the DER test, 2026-10-18 22:58 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256221476). A block
-  that holds two certificates gives `BadInternalError`, since the reader of
-  `TRUSTED CERTIFICATE` reads the bytes after the first as trust settings. A
-  certificate whose trust settings reject any extended key use is dropped, as
-  `openssl verify` refuses it, so a trust file that distrusts a certificate never makes
-  the client trust it (the `architecture` run after round 3 of review of #3271).
+  with any byte after its certificate gives `BadInternalError`: a block of two
+  certificates, and a `TRUSTED CERTIFICATE` with trust settings, which the verify of
+  the group does not apply. So a trust file that limits or rejects a certificate never
+  makes the client trust it (the two `architecture` runs after round 3 of review of
+  #3271; ruling of `laptop.architect-2` owed).
   `laptop.monitor` accepted that the readers of aws-lc read the trust, and our own PEM
   parser lost (message 20c8b048 to `box1.builder-3`,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256452096). An

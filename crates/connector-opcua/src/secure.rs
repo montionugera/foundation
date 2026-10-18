@@ -2,8 +2,8 @@
 //!
 //! The fixtures in `secure/` are self-signed RSA 2048 certificates with SHA-256 and
 //! their PKCS #1 keys, in DER from Python `cryptography` 41.0.7, each valid from
-//! [`START`] to [`END`], PEM copies of them, and one P-256 certificate and its key. They
-//! are test keys only.
+//! [`START`] to [`END`], PEM copies of them, and one P-256 certificate and its key.
+//! They are test keys only.
 
 use std::ffi::CStr;
 
@@ -90,9 +90,18 @@ pub(crate) const LINE_TRUST: &[u8] = include_bytes!("secure/line-trust.der");
 /// [`SERVER`], then the first 300 bytes of [`OTHER`], in PEM.
 pub(crate) const BROKEN_TRUST: &[u8] = include_bytes!("secure/broken-trust.pem");
 
-/// [`SERVER`] as a `TRUSTED CERTIFICATE` that rejects any extended key use, as
-/// `openssl x509 -addreject anyExtendedKeyUsage -trustout` writes it.
+/// [`SERVER`] as a `TRUSTED CERTIFICATE` that rejects server authentication, as
+/// `openssl x509 -addreject serverAuth -trustout` writes it.
 pub(crate) const REJECTED_SERVER: &[u8] = include_bytes!("secure/server-rejected.pem");
+
+/// [`SERVER`] as a `TRUSTED CERTIFICATE` that trusts it only for client
+/// authentication, as `openssl x509 -addtrust clientAuth -trustout` writes it.
+pub(crate) const CLIENT_ONLY_SERVER: &[u8] =
+    include_bytes!("secure/server-for-clients.pem");
+
+/// The DER of [`SERVER`] and one zero byte, in the base64 of one PEM block.
+pub(crate) const LONG_BLOCK_TRUST: &[u8] =
+    include_bytes!("secure/long-block-trust.pem");
 
 /// The DER of [`OTHER`], then of [`SERVER`], in the base64 of one PEM block.
 pub(crate) const ONE_BLOCK_TRUST: &[u8] = include_bytes!("secure/one-block-trust.pem");
