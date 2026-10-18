@@ -375,6 +375,15 @@ fn leaves_out_a_point_that_an_earlier_pick_has_and_adds_no_index_for_none() {
 }
 
 #[test]
+fn adds_a_point_whose_earlier_pick_has_no_name() {
+    let wants = [want(&vec!["a"; 130].join("/"), "t8"), want("B/x", "t8")];
+    let added = added(&[PLANT], &wants).expect("it adds");
+    assert_eq!(added.picks, vec![Outcome::Unnamed, outcome("plc.B.x")]);
+    let text = updated(PLANT, &added);
+    assert_eq!(text.matches(r#"tag = "t8""#).count(), 1);
+}
+
+#[test]
 fn names_each_given_name_then_the_index_then_the_defaults() {
     let wants = [
         want("time", "t1"),

@@ -1,16 +1,16 @@
 //! What an import writes into the files: the blocks of each pick, and the `channel`
 //! blocks, so that a kind never writes one.
 //!
-//! [`add`] takes the file of the connector block and only adds to it. A pick is
-//! present when a block of the connector body, or an earlier pick, has its tag as
-//! [`Table::tag`] gives it, so the kind compares tags, not text. A present pick takes
-//! no name. The other picks take their names in this order: each given name, then the
-//! index, then the defaults of [`::connector::import::names`]. The index is that of the
-//! first channel that the connector writes whose `channel` block names one. Else it is
-//! the new index `<connector>.time`, or the first free of `_2`, `_3`, and on, which the
-//! import adds only when a pick adds a channel. The blocks that [`Table::block`] gives
-//! go after the last item of the connector body, in the order of the picks. Then the
-//! new index and the `channel` block of each pick go at the end of the file.
+//! [`add`] takes the file of the connector block and only adds to it. A pick is present
+//! when a block of the connector body, or an earlier pick that adds a channel, has its
+//! tag as [`Table::tag`] gives it, so the kind compares tags, not text. A present pick
+//! takes no name. The other picks take their names in this order: each given name, then
+//! the index, then the defaults of [`::connector::import::names`]. The index is that of
+//! the first channel that the connector writes whose `channel` block names one. Else it
+//! is the new index `<connector>.time`, or the first free of `_2`, `_3`, and on, which
+//! the import adds only when a pick adds a channel. The blocks that [`Table::block`]
+//! gives go after the last item of the connector body, in the order of the picks. Then
+//! the new index and the `channel` block of each pick go at the end of the file.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -115,17 +115,27 @@ pub fn add(
     for item in &body.blocks {
         tags.extend(kinds.tag(kind, item)?);
     }
-    // The place of each pick that is not present.
-    let open: Vec<usize> = (0..picks.len())
-        .filter(|&at| tags.insert(picks[at].tag.to_owned()))
-        .collect();
-    let open_picks: Vec<&Pick<'_>> = open.iter().map(|&at| &picks[at]).collect();
     let blocks = crate::blocks(documents);
     let mut taken = taken(&blocks, connector, kinds);
     taken.extend(writes.implied_names().cloned());
     taken.extend(writes.channels().cloned());
     let existing =
         index_of(&blocks, writes.channels()).map_err(|problem| vec![problem])?;
+    // A pick that ends `Unnamed` makes no later pick of its tag present, and opening
+    // such a pick can leave another `Unnamed`, so name until no pick changes.
+    let mut unnamed = BTreeSet::new();
+    let (open, index, names) = loop {
+        let open = open(picks, &tags, &unnamed);
+        let given = open.iter().map(|&at| (picks[at].path, picks[at].name));
+        let (index, names) = name(connector, start, given, &taken, existing.clone());
+        let dropped = open.iter().zip(&names).filter(|(_, name)| name.is_none());
+        let before = unnamed.len();
+        unnamed.extend(dropped.map(|(&at, _)| at));
+        if unnamed.len() == before {
+            break (open, index, names);
+        }
+    };
+    let open_picks: Vec<&Pick<'_>> = open.iter().map(|&at| &picks[at]).collect();
     let refused = refused(&open_picks, &taken);
     if !refused.is_empty() {
         let kept = open_picks.iter().enumerate().map(|(at, pick)| {
@@ -135,8 +145,6 @@ pub fn add(
         let (_, names) = name(connector, start, kept, &taken, existing);
         return Err(fixed(refused, &names));
     }
-    let given = open_picks.iter().map(|pick| (pick.path, pick.name));
-    let (index, names) = name(connector, start, given, &taken, existing.clone());
     let written = written(kinds, kind, &open_picks, names, &index)?;
     let (source, at, item) = place(documents, block);
     let mut document = documents[at].clone();
@@ -156,6 +164,28 @@ pub fn add(
         index,
         picks: outcomes,
     })
+}
+
+/// The place of each pick that is not present: no block of the connector body, with
+/// the tags `tags`, and no earlier open pick that is not in `unnamed` has its tag.
+fn open(
+    picks: &[Pick<'_>],
+    tags: &BTreeSet<String>,
+    unnamed: &BTreeSet<usize>,
+) -> Vec<usize> {
+    let mut added = BTreeSet::new();
+    (0..picks.len())
+        .filter(|&at| {
+            let tag = picks[at].tag;
+            if tags.contains(tag) || added.contains(tag) {
+                return false;
+            }
+            if !unnamed.contains(&at) {
+                added.insert(tag);
+            }
+            true
+        })
+        .collect()
 }
 
 /// `refused` with the fix of each, where `names` holds the default of each pick.
