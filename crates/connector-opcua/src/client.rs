@@ -73,16 +73,21 @@ const _: () = assert!(
     "the other half of the sends of a connection is for the requests of open62541"
 );
 
-/// Gives a client of open62541 on the loop `el` with no connection, or null when out
-/// of memory. It takes at most [`CHUNKS`] chunks in a message and queues at most
-/// [`QUEUED`] intermediate chunks.
+/// Gives a client of open62541 on the loop `el` with no connection. It takes at most
+/// [`CHUNKS`] chunks in a message and queues at most [`QUEUED`] intermediate chunks.
 ///
 /// # Safety
 ///
 /// `el` is a live loop that outlives the client.
-pub(crate) unsafe fn raw(el: *mut ffi::EventLoop) -> *mut ffi::Client {
+///
+/// # Aborts
+///
+/// When open62541 cannot allocate the client: the process stops as the Rust allocator
+/// does when it has no memory.
+pub(crate) unsafe fn unconnected(el: *mut ffi::EventLoop) -> NonNull<ffi::Client> {
     // SAFETY: as the caller ensures.
-    unsafe { ffi::shim_client_new(el, CHUNKS, QUEUED) }
+    let client = unsafe { ffi::shim_client_new(el, CHUNKS, QUEUED) };
+    NonNull::new(client).unwrap_or_else(|| alloc::exhausted())
 }
 
 /// A client of open62541 with an active session, on its own loop and connection
@@ -229,10 +234,7 @@ impl Client {
         let clock = Clock::clone(&time.clock);
         let connections = Manager::new(time, net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
-        let raw = unsafe { raw(connections.events().raw()) };
-        let Some(raw) = NonNull::new(raw) else {
-            alloc::exhausted()
-        };
+        let raw = unsafe { unconnected(connections.events().raw()) };
         // SAFETY: `raw` is a new client of the loop of `connections`.
         unsafe { Self::of(clock, connections, raw) }
     }
@@ -241,7 +243,7 @@ impl Client {
     ///
     /// # Safety
     ///
-    /// `raw` comes from [`raw`] on the loop of `connections`, has not
+    /// `raw` comes from [`unconnected`] on the loop of `connections`, has not
     /// connected, and nothing else owns it: the client frees it.
     unsafe fn of(
         clock: Clock,

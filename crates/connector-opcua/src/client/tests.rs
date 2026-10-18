@@ -6,7 +6,6 @@ use std::mem;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::pin::pin;
-use std::ptr::NonNull;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 
@@ -121,8 +120,7 @@ impl Peer<'_> {
         let connections = Manager::new(time, self.net.clone(), &mut self.rng);
         // SAFETY: the loop outlives the client, which the drop of the client deletes
         // first.
-        let raw = unsafe { crate::client::raw(connections.events().raw()) };
-        let raw = NonNull::new(raw).expect("open62541 refused the client");
+        let raw = unsafe { crate::client::unconnected(connections.events().raw()) };
         if let Some(size) = receive {
             // SAFETY: the client lives and has not connected.
             unsafe { ffi::test::shim_client_receive(raw.as_ptr(), size) };

@@ -25,7 +25,6 @@ use env::net::Net;
 use env::rng::Rng;
 use types::time::{Monotonic, Span};
 
-use crate::alloc;
 use crate::client::Nodes;
 use crate::connection;
 use crate::event::{self, Loop};
@@ -58,10 +57,7 @@ impl Client {
     pub fn new(clock: Clock, rng: &mut Rng, timers: usize) -> Self {
         let events = Loop::new(event::Time::monotonic(clock), rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
-        let client = unsafe { crate::client::raw(events.raw()) };
-        let Some(raw) = NonNull::new(client) else {
-            alloc::exhausted()
-        };
+        let raw = unsafe { crate::client::unconnected(events.raw()) };
         let mut client = Self { raw, events };
         client.run();
         let events = &client.events;
@@ -220,10 +216,7 @@ impl Manager {
         let clients = (0..=idle)
             .map(|_| {
                 // SAFETY: the loop outlives the client, which `close` deletes.
-                let client = unsafe { crate::client::raw(events.raw()) };
-                let Some(client) = NonNull::new(client) else {
-                    alloc::exhausted()
-                };
+                let client = unsafe { crate::client::unconnected(events.raw()) };
                 // SAFETY: the client lives, and copies the URL.
                 let status = Status(unsafe {
                     ffi::UA_Client_connectAsync(client.as_ptr(), url.as_ptr())
