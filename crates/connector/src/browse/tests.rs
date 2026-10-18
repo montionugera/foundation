@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
@@ -586,6 +585,17 @@ fn unique(nodes: Vec<Node>) -> Vec<Node> {
         .collect()
 }
 
+/// The path of each point of `nodes` under `at`.
+fn points(at: &Path, nodes: &[Node], out: &mut Vec<Path>) {
+    for node in nodes {
+        let path = at.child(node.name());
+        match node {
+            Node::Folder(_, children) => points(&path, children, out),
+            Node::Point(_) | Node::Unreadable(_) => out.push(path),
+        }
+    }
+}
+
 mod walk {
     use super::*;
 
@@ -1017,17 +1027,6 @@ mod walk {
         }
     }
 
-    /// The path of each point of `nodes` under `at`.
-    fn points(at: &Path, nodes: &[Node], out: &mut Vec<Path>) {
-        for node in nodes {
-            let path = at.child(node.name());
-            match node {
-                Node::Folder(_, children) => points(&path, children, out),
-                Node::Point(_) | Node::Unreadable(_) => out.push(path),
-            }
-        }
-    }
-
     proptest! {
         #[test]
         fn matches_the_text_of_a_path_to_that_path_alone(nodes in nodes()) {
@@ -1084,6 +1083,168 @@ mod level {
     }
 }
 
+mod picks {
+    use super::*;
+
+    fn picks(start: &str, paths: &[&str]) -> Query {
+        query(start, Scope::Points(paths.iter().map(|p| path(p)).collect()))
+    }
+
+    /// The diagnostic of no point at `path`.
+    fn no_point(message: String) -> Diagnostic {
+        Diagnostic::new(
+            Code::new("connector.no-point"),
+            None,
+            message,
+            "Give the path of a point that `browse` gives".into(),
+        )
+    }
+
+    #[test]
+    fn gives_the_entry_at_each_path_in_the_order_of_the_paths() {
+        let mut tree = Tree::new(&plant(), 2);
+        let query = picks(
+            "",
+            &["Clock", "Line2/Oven/Temp", "Line1/Temp2", "Line2/Oven/Map"],
+        );
+        let found = now(walk(&mut tree, &query)).expect("found");
+        assert_eq!(
+            paths(&found),
+            ["Clock", "Line2/Oven/Temp", "Line1/Temp2", "Line2/Oven/Map"]
+        );
+        assert_eq!(found.entries[1].tag, "Line2/Oven/Temp");
+        assert_eq!(found.entries[3].shape, Shape::Unreadable("an array".into()));
+        assert_eq!(found.end, End::Done);
+        assert!(found.values.is_empty());
+        let browsed = ["", "", "Line2", "Line2/Oven", "Line1", "Line1"];
+        assert_eq!(tree.browsed, browsed.map(path));
+    }
+
+    #[test]
+    fn browses_no_folder_that_no_path_is_under() {
+        let mut tree = Tree::new(&plant(), 10);
+        let found = now(walk(&mut tree, &picks("", &["Line1/Temp1"])));
+        assert_eq!(paths(&found.expect("found")), ["Line1/Temp1"]);
+        assert_eq!(tree.browsed, [path(""), path("Line1")]);
+    }
+
+    #[test]
+    fn gives_a_path_that_repeats_once() {
+        let mut tree = Tree::new(&plant(), 10);
+        let query = picks("", &["Clock", "Line1/Temp1", "Clock"]);
+        let found = now(walk(&mut tree, &query)).expect("found");
+        assert_eq!(paths(&found), ["Clock", "Line1/Temp1"]);
+    }
+
+    #[test]
+    fn gives_nothing_for_no_paths() {
+        let mut tree = Tree::new(&plant(), 10);
+        let found = now(walk(&mut tree, &picks("", &[]))).expect("found");
+        assert_eq!(found.entries, []);
+        assert_eq!(found.end, End::Done);
+        assert_eq!(tree.browsed, []);
+    }
+
+    #[test]
+    fn takes_each_path_from_its_start() {
+        let mut tree = Tree::new(&plant(), 10);
+        let query = picks("Line2", &["Oven/Temp", "Speed"]);
+        let found = now(walk(&mut tree, &query)).expect("found");
+        assert_eq!(paths(&found), ["Line2/Oven/Temp", "Line2/Speed"]);
+        let found = now(walk(&mut tree, &picks("Line2", &["Temp1"])));
+        assert_eq!(
+            diagnostic(found),
+            no_point(r#"the device has no point at "Line2/Temp1""#.into()),
+        );
+    }
+
+    #[test]
+    fn refuses_each_path_at_a_folder_or_at_no_entry_in_one_error() {
+        let mut tree = Tree::new(&plant(), 2);
+        let query = picks(
+            "",
+            &["Line2/Oven", "Line9/Temp", "Clock", "Clock/x", "Line1/Nope", ""],
+        );
+        let found = now(walk(&mut tree, &query));
+        let Err(Error::Config(diagnostics)) = found else {
+            panic!("a config error: {found:?}");
+        };
+        assert_eq!(
+            diagnostics,
+            [
+                no_point(r#"the entry at "Line2/Oven" is a folder"#.into()),
+                no_point(r#"the device has no point at "Line9/Temp""#.into()),
+                no_point(r#"the device has no point at "Clock/x""#.into()),
+                no_point(r#"the device has no point at "Line1/Nope""#.into()),
+                no_point(r#"the device has no point at """#.into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn refuses_a_path_at_a_folder_that_a_path_is_under() {
+        let mut tree = Tree::new(&plant(), 10);
+        let query = picks("", &["Line2/Oven/Temp", "Line2/Oven"]);
+        let found = now(walk(&mut tree, &query));
+        assert_eq!(
+            diagnostic(found),
+            no_point(r#"the entry at "Line2/Oven" is a folder"#.into()),
+        );
+    }
+
+    /// Through `walk_within`: a budget as small as the tree.
+    #[test]
+    fn ends_at_the_budget_with_the_entries_that_it_found() {
+        // The root gives Line1, Line2, and Clock, and Line1 its three points.
+        for (visits, found, end) in [
+            (2, &[][..], End::Budget),
+            (3, &["Clock"], End::Budget),
+            (5, &["Clock", "Line1/Temp1"], End::Budget),
+            (6, &["Clock", "Line1/Temp1"], End::Done),
+        ] {
+            let mut tree = Tree::new(&plant(), 10);
+            let query = picks("", &["Clock", "Line1/Temp1"]);
+            let walked = now(walk_within(&mut tree, &query, LIMIT, visits));
+            let walked = walked.expect("found");
+            assert_eq!(paths(&walked), found, "{visits}");
+            assert_eq!(walked.end, end, "{visits}");
+        }
+        let mut tree = Tree::new(&plant(), 10);
+        let query = picks("", &["Line2/Oven/Nope"]);
+        let walked = now(walk_within(&mut tree, &query, LIMIT, 4)).expect("found");
+        assert_eq!(walked.entries, []);
+        assert_eq!(walked.end, End::Budget);
+    }
+
+    proptest! {
+        #[test]
+        fn gives_each_point_once_and_browses_each_folder_once(
+            nodes in nodes(),
+            picked in prop::collection::vec(any::<prop::sample::Index>(), 0..6),
+        ) {
+            let mut all = Vec::new();
+            points(&Path::root(), &nodes, &mut all);
+            prop_assume!(!all.is_empty());
+            let picked: Vec<Path> =
+                picked.iter().map(|i| all[i.index(all.len())].clone()).collect();
+            let mut expected: Vec<String> = Vec::new();
+            for pick in &picked {
+                if !expected.contains(&pick.to_string()) {
+                    expected.push(pick.to_string());
+                }
+            }
+            let mut tree = Tree::new(&nodes, LIMIT);
+            let found = now(walk(&mut tree, &query("", Scope::Points(picked))))
+                .expect("found");
+            prop_assert_eq!(paths(&found), expected);
+            prop_assert_eq!(found.end, End::Done);
+            for (i, browsed) in tree.browsed.iter().enumerate() {
+                prop_assert!(!tree.browsed[..i].contains(browsed), "{browsed:?}");
+            }
+        }
+    }
+}
+
 mod values {
     use super::*;
 
@@ -1122,6 +1283,16 @@ mod values {
         let found = now(walk(&mut tree, &query)).expect("found");
         assert_eq!(found.values, [None]);
         assert_eq!(tree.reads, Vec::<Vec<String>>::new());
+    }
+
+    #[test]
+    fn reads_the_points_at_paths() {
+        let mut tree = Tree::new(&plant(), 10);
+        tree.values.insert("Line2/Speed".into(), Value::F64(1.5));
+        let paths = vec![path("Line2/Speed"), path("Line2/Oven/Map")];
+        let found = now(walk(&mut tree, &read("", Scope::Points(paths))));
+        assert_eq!(found.expect("found").values, [Some(Value::F64(1.5)), None]);
+        assert_eq!(tree.reads, [vec!["Line2/Speed".to_owned()]]);
     }
 
     #[test]

@@ -458,6 +458,25 @@ fn a_walk_holds_no_more_points_than_the_server_holds_for_a_session() {
     }
 }
 
+/// A walk of paths makes one Browse request for each of Objects, `root`, `a`, `b`,
+/// `c`, and `e`, and none for `d`, which no path is under. It reads each folder to its
+/// end before the next, so it holds the point of Objects and one more.
+#[test]
+fn a_walk_of_paths_gives_the_entry_at_each_in_one_browse_of_each_folder() {
+    let paths = ["a/e/y", "b/x", "a/c/x"].map(|p| p.parse().expect("a path"));
+    let query = Query {
+        start: "root".parse().expect("a path"),
+        scope: Scope::Points(paths.to_vec()),
+        values: Values::Skipped,
+    };
+    let (found, points, browses) = held(nested, query, 0);
+    let found = found.expect("found");
+    let paths: Vec<String> = found.entries.iter().map(|e| e.path.to_string()).collect();
+    assert_eq!(paths, ["root/a/e/y", "root/b/x", "root/a/c/x"]);
+    assert_eq!(found.end, End::Done);
+    assert_eq!((points, browses), (2, 6));
+}
+
 /// Gives each server message to `rewrite`, and makes the result of the Browse
 /// response of the count `nth` from 1 `BadNoContinuationPoints`.
 fn refusing(nth: usize) -> impl FnMut(&mut Vec<u8>) + Send + 'static {
