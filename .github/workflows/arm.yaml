@@ -72,5 +72,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+      # As in `check` of `ci.yaml`.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          echo "PYO3_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
+          echo "FOUNDATION_NODE=$PWD/target/debug/foundation" >> "$GITHUB_ENV"
       - name: Test
         run: cargo test --workspace
