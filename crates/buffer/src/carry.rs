@@ -116,6 +116,14 @@ pub(crate) const fn body_len(tails: usize, entries: usize, bytes: usize) -> usiz
     .expect("invariant: a carry body fits in memory")
 }
 
+/// The bytes that a copy of an entry of `bytes` bytes takes in a carry body: its
+/// header and its bytes.
+pub(crate) const fn copy_len(bytes: usize) -> usize {
+    entry::HEADER_LEN
+        .checked_add(bytes)
+        .expect("invariant: a copy fits in memory")
+}
+
 /// Writes the body that holds `tails` and `entries`, each header with its bytes, at
 /// the front of `into` and returns its size, as [`body_len`] gives it.
 ///
@@ -123,50 +131,54 @@ pub(crate) const fn body_len(tails: usize, entries: usize, bytes: usize) -> usiz
 ///
 /// When there are over [`TAILS_MAX`] tails or [`ENTRIES_MAX`] entries, an entry's
 /// header names another size than its bytes, or `into` is shorter than the body.
-pub(crate) fn write(
+pub(crate) fn write<'a>(
     tails: &[Tail],
-    entries: &[(Header, &[u8])],
+    entries: impl ExactSizeIterator<Item = (Header, &'a [u8])>,
     into: &mut [u8],
 ) -> usize {
-    let bytes = entries.iter().map(|(_, bytes)| bytes.len()).sum::<usize>();
-    let len = body_len(tails.len(), entries.len(), bytes);
-    let Some((body, _)) = into.split_at_mut_checked(len) else {
+    let count = entries.len();
+    let len = body_len(tails.len(), count, 0);
+    let given = into.len();
+    let short = |needed: usize| -> ! {
         panic!(
-            "invariant: the body of {} tails and {} entries takes {len} bytes, given {}",
-            tails.len(),
-            entries.len(),
-            into.len()
-        );
+            "invariant: the body of {} tails and {count} entries takes at least \
+             {needed} bytes, given {given}",
+            tails.len()
+        )
+    };
+    let Some((head, mut data)) = into.split_at_mut_checked(len) else {
+        short(len);
     };
     let counted = |count: usize| {
         u16::try_from(count).expect("invariant: a count of at most 1023 fits a u16")
     };
-    let (slot, mut rest) = body.split_at_mut(COUNTS);
+    let (slot, mut rest) = head.split_at_mut(COUNTS);
     let (first, second) = slot.split_at_mut(2);
     first.copy_from_slice(&counted(tails.len()).to_le_bytes());
-    second.copy_from_slice(&counted(entries.len()).to_le_bytes());
+    second.copy_from_slice(&counted(count).to_le_bytes());
     for tail in tails {
         let (slot, after) = rest.split_at_mut(LEN);
         slot.copy_from_slice(&tail.encode());
         rest = after;
     }
-    for (header, bytes) in entries {
+    for (header, held) in entries {
         assert!(
-            usize::try_from(header.bytes).ok() == Some(bytes.len()),
+            usize::try_from(header.bytes).ok() == Some(held.len()),
             "invariant: the header of {} bytes has {} bytes",
             header.bytes,
-            bytes.len()
+            held.len()
         );
         let (slot, after) = rest.split_at_mut(entry::HEADER_LEN);
         slot.copy_from_slice(&header.encode());
         rest = after;
+        let at = given.saturating_sub(data.len());
+        let Some((slot, after)) = data.split_at_mut_checked(held.len()) else {
+            short(at.saturating_add(held.len()));
+        };
+        slot.copy_from_slice(held);
+        data = after;
     }
-    for (_, bytes) in entries {
-        let (slot, after) = rest.split_at_mut(bytes.len());
-        slot.copy_from_slice(bytes);
-        rest = after;
-    }
-    len
+    given.saturating_sub(data.len())
 }
 
 /// The tails and the entries of a whole carry body, each in order.
@@ -312,7 +324,7 @@ mod tests {
         let bytes = entries.iter().map(|(_, bytes)| bytes.len()).sum();
         let mut body = vec![0; body_len(tails.len(), entries.len(), bytes)];
         assert_eq!(
-            write(tails, entries, &mut body),
+            write(tails, entries.iter().copied(), &mut body),
             body.len(),
             "the tails and the entries fill the body"
         );
@@ -420,6 +432,16 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(
+        expected = "invariant: the body of 0 tails and 1 entries takes at least 57 \
+                    bytes, given 56"
+    )]
+    fn write_panics_on_a_body_longer_than_into() {
+        let mut body = vec![0; 56];
+        write(&[], [(header(1, 2), &[1, 2][..])].into_iter(), &mut body);
+    }
+
+    #[test]
     fn lays_out_the_entries_after_the_tails() {
         let body = with_entries(
             &[tail(1, None)],
@@ -495,6 +517,56 @@ mod tests {
             })
     }
 
+    fn any_entry() -> impl Strategy<Value = (Header, Vec<u8>)> {
+        (
+            any::<u128>(),
+            prop::bool::ANY,
+            any::<u64>(),
+            any::<i64>(),
+            1..=u64::MAX,
+            1..=u8::MAX,
+            prop::collection::vec(any::<u8>(), 0..256),
+        )
+            .prop_map(
+                |(index, backfill, first, stored_at, given, tag, bytes)| {
+                    let header = Header {
+                        index: channel::Key::from_u128(index),
+                        path: if backfill { Path::Backfill } else { Path::Live },
+                        first,
+                        stored_at: Stamp::from_nanos(stored_at),
+                        kind: Kind::Record(NonZeroU64::new(given).expect("from 1")),
+                        tag,
+                        bytes: u32::try_from(bytes.len()).expect("under 256"),
+                    };
+                    (header, bytes)
+                },
+            )
+    }
+
+    #[test]
+    fn gives_back_the_most_tails_and_entries() {
+        let most = u64::try_from(TAILS_MAX).expect("fits");
+        let tails: Vec<_> = (0..most).map(|at| tail(at, Some(1))).collect();
+        let entries: Vec<_> = (0..ENTRIES_MAX)
+            .map(|at| {
+                let bytes = vec![u8::try_from(at % 251).expect("under 251"); at % 7];
+                let len = u32::try_from(bytes.len()).expect("under 7");
+                (
+                    header(u8::try_from(at % 255 + 1).expect("from 1"), len),
+                    bytes,
+                )
+            })
+            .collect();
+        let given: Vec<_> = entries
+            .iter()
+            .map(|(header, bytes)| (*header, &bytes[..]))
+            .collect();
+        let body = with_entries(&tails, &given);
+        let bytes = entries.iter().map(|(_, bytes)| bytes.len()).sum();
+        assert_eq!(body.len(), body_len(TAILS_MAX, ENTRIES_MAX, bytes));
+        assert_eq!(whole(&body), Ok((tails, entries)));
+    }
+
     proptest! {
         #[test]
         fn gives_back_the_tails_it_wrote(
@@ -505,19 +577,9 @@ mod tests {
 
         #[test]
         fn gives_back_the_tails_and_the_entries_it_wrote(
-            tails in prop::collection::vec(any_tail(), 0..8),
-            entries in prop::collection::vec(
-                (1..=u8::MAX, prop::collection::vec(any::<u8>(), 0..64)),
-                0..8,
-            ),
+            tails in prop::collection::vec(any_tail(), 0..64),
+            entries in prop::collection::vec(any_entry(), 0..64),
         ) {
-            let entries: Vec<_> = entries
-                .into_iter()
-                .map(|(tag, bytes)| {
-                    let len = u32::try_from(bytes.len()).expect("fits");
-                    (header(tag, len), bytes)
-                })
-                .collect();
             let given: Vec<_> = entries
                 .iter()
                 .map(|(header, bytes)| (*header, &bytes[..]))

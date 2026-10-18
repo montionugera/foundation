@@ -17,17 +17,17 @@
   `no-browse` and `no-discover` do: a default that cannot fail adds a channel that
   nothing reads, and one that panics stops the node on the defect of a kind.
   `Table::block` finds the kind by name, as `Table::discover` does, and gives
-  `connector.unknown-kind` for a name that it does not have.
-  `Kind::tag(block) -> Option<String>` gives the tag of the point that a block of the
-  body of a connector block reads or writes, in the form that a browse of the kind
-  gives it, or `None` when it names no point. The default gives `None`, and
-  `Table::tag` finds the kind as `Table::block` does. So an import finds a pick that is
-  present by the kind's compare of node IDs, not by text: the OPC UA kind gives
-  `i=2258` for a written `ns=0;i=2258` (`laptop.architect-2`, 2026-10-18T02:10:56Z,
-  item 2: https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074).
-  Each kind that gives blocks has a property test that `tag` of each block that
-  `block(t, ..)` gives is `Some(t)` (`laptop.architect-2`, 2026-10-18T02:44:21Z, finding
-  4: https://github.com/synnaxlabs/foundation/pull/3102#issuecomment-6244852270).
+  `connector.unknown-kind` for a name that it does not have. `Kind::tag(block) ->
+  Option<String>` gives the tag of the point that a block of the body of a connector
+  block reads or writes, in the form that a browse of the kind gives it, or `None` when
+  it names no point. The default gives `None`, and `Table::tag` finds the kind as
+  `Table::block` does. So an import finds a pick that is present by the kind's compare
+  of node IDs, not by text: the OPC UA kind gives `i=2258` for a written `ns=0;i=2258`
+  (`laptop.architect-2`, 2026-10-18T02:10:56Z, item 2:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074). Each
+  kind that gives blocks has a property test that `tag` of each block that `block(t,
+  ..)` gives is `Some(t)` (`laptop.architect-2`, 2026-10-18T02:44:21Z, finding 4:
+  https://github.com/synnaxlabs/foundation/pull/3102#issuecomment-6244852270).
   `import::names(connector, start, picks, taken)` gives the channel name of each pick,
   in pick order: each given name as it is, then the default `<connector>.<path>` of each
   other pick. Each name of the path below `start` is one segment, with `_` in place of
@@ -39,19 +39,19 @@
   channels of a connector. The path of a pick with no given name that is not below
   `start` panics: the walk gives each path below its start, so it is a defect of the
   caller. The fix of a refused given name, "Give another name, or leave it out for
-  `<default>`", needs no other item: `ops` calls `names` again with the refused names as
-  `None`, on the failure path only. No name of a path is empty: `walk` refuses an entry
-  that a kind gives with an empty name (BROWSE), and `Path::from_str` refuses an empty
-  name. `names` takes the characters of a segment from `Name::segment_char` (A3), so its
-  `expect` checks an invariant that holds. Lost: a namer with state (`give`, then
-  `next`), where nothing makes the caller give each given name before the first default;
-  a `Document` from `Kind::block`, where an attribute of one pick merges into the one
-  connector body and collides on a second pick; and the run error `Error`, which has
-  variants that a hook with no I/O cannot give. The person's words of decision 5,
-  through `laptop.monitor`, 2026-10-15 17:28 UTC: "Yeah, that's fine"
-  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198090285); given
-  names first, and one set of name rules in `config`: `laptop.architect-2`, on that
-  decision. `Kind::block` by tag and facts, the default `connector.no-import`,
+  `<default>`", needs no other item: `config::import::add` calls `names` again with the
+  refused names as `None`, on the failure path only. No name of a path is empty: `walk`
+  refuses an entry that a kind gives with an empty name (BROWSE), and `Path::from_str`
+  refuses an empty name. `names` takes the characters of a segment from
+  `Name::segment_char` (A3), so its `expect` checks an invariant that holds. Lost: a
+  namer with state (`give`, then `next`), where nothing makes the caller give each given
+  name before the first default; a `Document` from `Kind::block`, where an attribute of
+  one pick merges into the one connector body and collides on a second pick; and the run
+  error `Error`, which has variants that a hook with no I/O cannot give. The person's
+  words of decision 5, through `laptop.monitor`, 2026-10-15 17:28 UTC: "Yeah, that's
+  fine" (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198090285);
+  given names first, and one set of name rules in `config`: `laptop.architect-2`, on
+  that decision. `Kind::block` by tag and facts, the default `connector.no-import`,
   `Table::block`, `fill` in `connector::import`, `names` with `start`, and the fix text
   by a second call: `laptop.architect-2`, 2026-10-16 10:06 UTC, on the plan of
   `box1.builder-3`
@@ -62,10 +62,10 @@
   place of a `Document`, diagnostics in place of `Error`, the facts that `config`
   writes, the block for each access, and #2868: `laptop.architect-2`, 2026-10-16 14:31
   UTC, on the round 1 architecture review of #2859
-  (https://github.com/synnaxlabs/foundation/pull/2859#issuecomment-6217747802).
-  `fill` is a reserved call. `config::check` reads each value at any depth, also in the
-  config of a kind, and each call `fill` gives only a problem of `fill` at its span,
-  after `config.private-key`, with the fix "Write the value in place of `fill`".
+  (https://github.com/synnaxlabs/foundation/pull/2859#issuecomment-6217747802). `fill`
+  is a reserved call. `config::check` reads each value at any depth, also in the config
+  of a kind, and each call `fill` gives only a problem of `fill` at its span, after
+  `config.private-key`, with the fix "Write the value in place of `fill`".
   `fill("<what>")` gives `config.unfilled`, "the import found no value for <what>". A
   call `fill` of other arguments gives `config.bad-fill`, "`fill` takes one string". A
   call `fill` inside a call `fill` gives no problem of its own. `config::plan::check`
@@ -97,11 +97,58 @@
   `import::FILL`, `config.bad-fill`, and the `fill` of a code that does not read:
   `laptop.architect-2`, 2026-10-16 15:55 UTC, on the round 1 architecture review of
   #2883 (https://github.com/synnaxlabs/foundation/pull/2883#issuecomment-6219336388).
-  `import::Fill` in place of a public `import::FILL`, and no problem for a `fill`
-  inside a `fill`: `laptop.architect-2`, 2026-10-16 16:06 UTC, on the round 2 review
-  of #2883 (https://github.com/synnaxlabs/foundation/pull/2883#issuecomment-6219539273).
+  `import::Fill` in place of a public `import::FILL`, and no problem for a `fill` inside
+  a `fill`: `laptop.architect-2`, 2026-10-16 16:06 UTC, on the round 2 review of #2883
+  (https://github.com/synnaxlabs/foundation/pull/2883#issuecomment-6219539273).
   Supersedes https://github.com/synnaxlabs/foundation/pull/2883#issuecomment-6219336388,
-  item 3: a public `import::FILL`.
-  `config::plan::check` refuses a `fill` in a connector config: `laptop.architect-2`,
-  2026-10-16 16:27 UTC, on the round 3 fix of #2883
+  item 3: a public `import::FILL`. `config::plan::check` refuses a `fill` in a connector
+  config: `laptop.architect-2`, 2026-10-16 16:27 UTC, on the round 3 fix of #2883
   (https://github.com/synnaxlabs/foundation/pull/2883#issuecomment-6219969435).
+  `config::import::add(documents, connector, start, picks, kinds)` gives the document of
+  the file of the connector block with the blocks of each `Pick` added, and an `Outcome`
+  for each pick: `Added { name, fills }`, `Unnamed`, or `Present`. A pick is present
+  when a block of the connector body or an earlier pick that adds a channel has its tag
+  as `Table::tag` gives it, and takes no name (`laptop.architect-2`,
+  2026-10-18T03:34:05Z, ruling A on round 1 finding 4 of #3109:
+  https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245234973, on item 3
+  of https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245080635). A pick
+  that ends `Unnamed` makes no later pick of its tag present, so `add` names until no
+  pick changes. Lost: one pass that names each pick that the body does not have, then
+  marks the later picks of its tag `Present`, as it spends a suffix on, and checks the
+  given name of, a pick that ends `Present`. The other picks take names in this order:
+  each given name, then the index, then the defaults of `import::names`. The index is
+  that of the first channel that the connector writes whose block names one, else the
+  new `<connector>.time`, or the first free of `_2`, `_3`, and on, with case folded,
+  added only when a pick adds a channel. The blocks of `Table::block` go after the last
+  item of the connector body; the new index and the `channel` blocks go at the end of
+  the file. A given name that is reserved, that the files define or imply or that a
+  connector writes, in any ASCII case, or that two picks get, fails the call before the
+  write, with each diagnostic at once: `config.reserved-name`, or
+  `config.duplicate-name` with the path and the name, or one `config.duplicate-name`
+  that names both paths. Each has the fix "Give another name, or leave it out for
+  `<default>`", with the default of the run with each refused name left out, or "Give
+  another name" when that run gives none, refuses a name, or has a pick that is not
+  present, with no name, whose path is not under `start`. `add` gives no problem of a
+  block outside the connector block other than `config.private-key`. An `index` that is
+  not a name, in the `channel` block of the first channel that the connector writes that
+  has one, gives its diagnostic. The implied names of the other connectors with their
+  counts, the diagnostic of a bad `index`, "or that the connector writes", and "other
+  than `config.private-key`": `laptop.architect-2`, 2026-10-18T03:14:04Z, items 2 and 4
+  (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245080635), and
+  2026-10-18T03:34:05Z
+  (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245234973). "or that
+  a connector writes", with the channels that the other connectors write, the fix
+  default of the run with each refused name left out, the panic of a bad `fill`, and the
+  one-pass shape that lost: `laptop.architect-2`, 2026-10-18T04:22:50Z
+  (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245610148); "or
+  refuses a name": `laptop.architect-2`, 2026-10-18T04:32:21Z
+  (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245680650); "or has
+  a pick that is not present, with no name, whose path is not under `start`", and the
+  panic without "or a refused one": `laptop.architect-2`, 2026-10-18T04:54:49Z
+  (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245847948).
+  `Outcome`, `Pick`, `add`, the errors, and the name order: `laptop.architect-2`,
+  2026-10-18T02:10:56Z, items 2, 3, 4, 5, and 11
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074).
+  Supersedes
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6213124219, item 5:
+  the second call of `names` by `ops`.

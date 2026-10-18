@@ -1,7 +1,7 @@
 use types::frame::{Path, Range};
 
+use super::part::Next;
 use super::{Error, HEAD, Head, Mode, OPENED, Open, Reply, ends};
-use crate::common::{body, rest_of_run};
 
 /// The decoder of the replies of a reader session, at the reader's node and at the
 /// program, which gets it from [`client::Reader`](crate::hub::client::Reader). It
@@ -11,18 +11,18 @@ use crate::common::{body, rest_of_run};
 pub struct Reader {
     places: u32,
     latest: bool,
-    next: Next,
+    state: State,
     /// The seq plus the count of the last head, or the open position of the session.
     end: u64,
 }
 
-/// The message the session expects next.
+/// Where a [`Reader`] is in its session.
 #[derive(Clone, Copy, Debug)]
-enum Next {
-    Opened,
-    Head,
-    Ends { remain: u32 },
-    Body(body::Count),
+enum State {
+    /// Before `Opened`.
+    Unopened,
+    /// After `Opened`, with the part of a frame that comes next.
+    Open(Next),
 }
 
 /// A message from the home, decoded.
@@ -76,7 +76,7 @@ impl Reader {
         Self {
             places,
             latest,
-            next: Next::Opened,
+            state: State::Unopened,
             end: 0,
         }
     }
@@ -127,29 +127,18 @@ impl Reader {
     /// [`Reader::decode`] of a message, apart so that each caller inlines only the
     /// check of the end of the stream.
     fn message<'m>(&mut self, message: &'m [u8]) -> Result<FromHome<'m>, Error> {
-        let (event, next) = match self.next {
-            Next::Opened | Next::Head => self.reply(message)?,
-            Next::Ends { remain } => {
-                let ends = ends::decode(message)?;
-                let remain = rest_of_run(remain, ends.len())?;
-                let next = match (remain, ends.last_end()) {
-                    (0, Some(0)) => Next::Head,
-                    (0, Some(end)) => Next::Body(body::Count::new(body_len(end))),
-                    _ => Next::Ends { remain },
-                };
-                let last = remain == 0;
-                (FromHome::Ends { ends, last }, next)
+        // Three arms, so that the body arm is a compare, not a jump table.
+        match &mut self.state {
+            State::Open(next @ Next::Body(_)) => Ok(FromHome::Body {
+                bytes: message,
+                last: next.take(message.len())?,
+            }),
+            State::Open(next @ Next::Ends { .. }) => {
+                let (ends, last) = next.ends(message)?;
+                Ok(FromHome::Ends { ends, last })
             }
-            Next::Body(body) => {
-                let last = self.take(body, message.len())?;
-                return Ok(FromHome::Body {
-                    bytes: message,
-                    last,
-                });
-            }
-        };
-        self.next = next;
-        Ok(event)
+            State::Unopened | State::Open(Next::Head) => self.reply(message),
+        }
     }
 
     /// Takes a body message of `len` bytes that the caller has in place, as
@@ -165,21 +154,10 @@ impl Reader {
     /// body.
     #[inline]
     pub(in crate::hub) fn received(&mut self, len: usize) -> Result<bool, Error> {
-        let Next::Body(body) = self.next else {
-            panic!("a body is due, not {:?}", self.next)
-        };
-        let remain = body.remain();
-        assert!(
-            len <= remain,
-            "a body message of {len} bytes is over the {remain} bytes left of its body"
-        );
-        self.take(body, len)
-    }
-
-    fn take(&mut self, mut body: body::Count, len: usize) -> Result<bool, Error> {
-        let last = body.take(len)?;
-        self.next = if last { Next::Head } else { Next::Body(body) };
-        Ok(last)
+        match &mut self.state {
+            State::Open(next) => next.received(len),
+            State::Unopened => panic!("a body is due, not an opened"),
+        }
     }
 
     /// Where in the body the next message starts, when the next message is body
@@ -187,35 +165,41 @@ impl Reader {
     #[must_use]
     #[inline]
     pub fn body(&self) -> Option<usize> {
-        match self.next {
-            Next::Body(body) => Some(body.at()),
-            Next::Opened | Next::Head | Next::Ends { .. } => None,
+        match self.state {
+            State::Open(next) => next.body(),
+            State::Unopened => None,
         }
     }
 
-    /// Whether the reader has decoded no `Opened` yet.
-    pub(in crate::hub) fn unopened(&self) -> bool {
-        matches!(self.next, Next::Opened)
+    /// Whether the reader has decoded an `Opened`.
+    pub(in crate::hub) fn opened(&self) -> bool {
+        matches!(self.state, State::Open(_))
     }
 
     /// The error of a stream that the home finished here: [`Error::Unfinished`] inside
     /// a body, else [`Error::Finished`].
     fn finished(&self) -> Error {
-        match self.next {
-            Next::Body(body) => Error::Unfinished {
-                remain: body.remain(),
-            },
-            Next::Opened | Next::Head | Next::Ends { .. } => Error::Finished,
+        let unfinished = match self.state {
+            State::Open(next) => next.unfinished(),
+            State::Unopened => None,
+        };
+        match unfinished {
+            Some(remain) => Error::Unfinished { remain },
+            None => Error::Finished,
         }
     }
 
-    fn reply<'m>(&mut self, message: &[u8]) -> Result<(FromHome<'m>, Next), Error> {
-        match (Reply::decode(message)?, self.next) {
-            (Reply::Opened { live }, Next::Opened) => {
+    /// The reply that is due: `Opened` first, then a head.
+    // Out of line, so that the body arm of `message` saves no register.
+    #[inline(never)]
+    fn reply<'m>(&mut self, message: &[u8]) -> Result<FromHome<'m>, Error> {
+        match (Reply::decode(message)?, self.state) {
+            (Reply::Opened { live }, State::Unopened) => {
+                self.state = State::Open(Next::Head);
                 self.end = live;
-                Ok((FromHome::Opened { live }, Next::Head))
+                Ok(FromHome::Opened { live })
             }
-            (Reply::Head(_), Next::Opened) => Err(Error::Unopened { kind: HEAD }),
+            (Reply::Head(_), State::Unopened) => Err(Error::Unopened { kind: HEAD }),
             (Reply::Opened { .. }, _) => Err(Error::Reopen { kind: OPENED }),
             (Reply::Head(head), _) if head.series > self.places => Err(Error::Places {
                 series: head.series,
@@ -223,12 +207,10 @@ impl Reader {
             }),
             (Reply::Head(head), _) => {
                 self.end = self.end_of(head)?;
-                Ok((
-                    FromHome::Head(head),
-                    Next::Ends {
-                        remain: head.series,
-                    },
-                ))
+                self.state = State::Open(Next::Ends {
+                    remain: head.series,
+                });
+                Ok(FromHome::Head(head))
             }
         }
     }
@@ -256,10 +238,6 @@ fn past_max(range: Range) -> ! {
         "invariant: a decoded head's range ends past u64::MAX: {} samples from seq {}",
         range.count, range.seq
     )
-}
-
-fn body_len(end: u32) -> usize {
-    usize::try_from(end).expect("invariant: a usize holds a u32")
 }
 
 #[cfg(test)]

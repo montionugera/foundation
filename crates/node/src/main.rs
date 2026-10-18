@@ -777,13 +777,13 @@ mod tests {
     }
 
     /// The failure of a disk budget `disk`, which comes `from` there, that holds no
-    /// ring on each of `cores` shards, which each need 4132KiB.
+    /// ring on each of `cores` shards, which each need 4212KiB.
     fn disk(disk: Size, cores: usize, from: Origin) -> Failure {
         let count = u64::try_from(cores).expect("a core count fits a u64");
         let error = node::Error::Disk {
             disk,
             cores,
-            min: Size::from_bytes(4_231_168 * count),
+            min: Size::from_bytes(4_313_088 * count),
         };
         let budget = Budget {
             pool: Size::GIBIBYTE,
@@ -867,7 +867,7 @@ mod tests {
                 code: DISK,
                 message: "the disk budget 1MiB, which foundation-data keeps from its \
                           first start, holds no ring on each of 16 shards; it needs at \
-                          least 66112KiB"
+                          least 67392KiB"
                     .to_owned(),
                 fix: "Remove the file `budget` in foundation-data, and the next start \
                       computes the budgets again from the free memory and disk"
@@ -884,7 +884,7 @@ mod tests {
                 code: DISK,
                 message: "the disk budget 8GiB, the most that a first start gives, \
                           holds no ring on each of 2048 shards; it needs at least \
-                          8264MiB"
+                          8424MiB"
                     .to_owned(),
                 fix: FEWER.to_owned(),
             }
@@ -899,7 +899,7 @@ mod tests {
                 code: DISK,
                 message: "the disk budget 1MiB, a quarter of the free disk of \
                           foundation-data, holds no ring on each of 16 shards; it \
-                          needs at least 66112KiB"
+                          needs at least 67392KiB"
                     .to_owned(),
                 fix: "Free space on that disk, or give a data directory on another \
                       disk with `--data`"

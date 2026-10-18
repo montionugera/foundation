@@ -278,6 +278,44 @@ mod tests {
         assert_eq!(inputs["spec_holders_out_of_order"], bytes);
     }
 
+    #[test]
+    fn each_card_change_input_is_what_its_name_says() {
+        let inputs =
+            inputs!("mesh_change": "card", "card_forged", "card_short", "kind_6");
+        let encoded = |change: &Change| {
+            let mut bytes = Vec::new();
+            change.encode(&mut bytes);
+            bytes
+        };
+        let mut card =
+            crate::common::unchecked(&crate::common::signed(3, "plant.edge.a"));
+        let change = Change::Card(Box::new(card.clone()));
+        assert_eq!(inputs["card"], encoded(&change));
+        card.signature[0] ^= 1;
+        let forged = Change::Card(Box::new(card));
+        assert_eq!(inputs["card_forged"], encoded(&forged));
+        for (name, change) in [("card", change), ("card_forged", forged)] {
+            let bytes = inputs[name];
+            assert_eq!(Change::decode(bytes), Ok(change), "{name}");
+            assert_eq!(round_trip_change(bytes), Some(bytes.to_vec()), "{name}");
+        }
+        // The cut is inside the name of the card, after the kind and the node key.
+        let short = &inputs["card"][..21];
+        assert_eq!(inputs["card_short"], short);
+        let body = Malformed::Body(Undecoded {
+            kind: 5,
+            length: 21,
+        });
+        assert_eq!(Change::decode(short), Err(body));
+        let home = include_bytes!("../../../oracles/fuzz/mesh_change/home");
+        let mut other = home.to_vec();
+        other[0] = 6;
+        assert_eq!(inputs["kind_6"], other);
+        let unknown = change::Unknown::Kind { kind: 6 };
+        assert_eq!(Change::decode(&other), Err(unknown.into()));
+        assert_eq!(round_trip_change(&other), None);
+    }
+
     // Each decodes as its input before the homes does with the count added, which
     // `each_spec_change_input_is_what_its_name_says` and
     // `each_holder_bound_input_is_what_its_name_says` check.

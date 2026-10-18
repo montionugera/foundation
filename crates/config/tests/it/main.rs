@@ -5,6 +5,7 @@
 #![cfg(test)]
 
 mod connector;
+mod import;
 mod plan;
 mod private_key;
 mod subject;

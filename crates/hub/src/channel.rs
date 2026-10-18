@@ -38,6 +38,9 @@ pub(crate) struct Table {
     /// The key of each channel in `defined`, by name.
     names: hash::Map<Name, channel::Key>,
     defined: hash::Map<channel::Key, Channel>,
+    /// The name of each index in `defined`, by key: a second copy of the names of the
+    /// indexes only.
+    indexes: hash::Map<channel::Key, Name>,
 }
 
 /// What a [`Table::set`] removed.
@@ -77,6 +80,7 @@ impl Table {
         indexes.sort_unstable();
         self.names.retain(|_, key| !removed.contains(key));
         self.defined.retain(|key, _| !removed.contains(key));
+        self.indexes.retain(|key, _| !removed.contains(key));
         let mut new: Vec<_> = channels
             .iter()
             .filter(|&(name, _)| !self.names.contains_key(*name))
@@ -85,6 +89,9 @@ impl Table {
         for (&name, &channel) in new {
             self.names.insert(name.clone(), channel.key);
             self.defined.insert(channel.key, Channel(channel.clone()));
+            if let Some(key) = index(channel) {
+                self.indexes.insert(key, name.clone());
+            }
         }
         Removed {
             channels: removed,
@@ -103,6 +110,18 @@ impl Table {
         self.names
             .iter()
             .map(|(name, &key)| (name, self.known(key)))
+    }
+
+    /// The index `key` and its name.
+    ///
+    /// # Panics
+    ///
+    /// When `key` is not a defined index: each caller holds the index of a defined
+    /// channel.
+    pub(crate) fn index(&self, key: channel::Key) -> (&Name, &Channel) {
+        let name = self.indexes.get(&key);
+        let name = name.unwrap_or_else(|| panic!("invariant: index {key} is defined"));
+        (name, self.known(key))
     }
 
     /// The channel `key`, if it is defined.

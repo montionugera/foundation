@@ -1,59 +1,28 @@
-use std::cell::{Cell, RefCell};
-use std::mem;
+use std::cell::Cell;
 
+use super::common::{body, coded, rebuilt, reorder, too_large, with_id};
 use super::{
     CHUNK, FITS, RELAY, Relay, VALUE, Values, drop_read, drop_reads, mistyped, relayed,
     run, serve,
 };
+use crate::client::READS;
 use crate::ffi::Status;
 use crate::node::{Key, Node};
 use crate::value::{Fault, Value};
 
-/// The abort chunk of the final MSG chunk `chunk`: its message, security, and sequence
-/// headers, then `body` (Part 6, 6.7.3).
-fn of(chunk: &[u8], body: &[u8]) -> Vec<u8> {
-    // The policy None adds nothing past the 24 bytes of headers.
-    let mut abort = chunk[..24].to_vec();
-    abort[3] = b'A';
-    abort.extend_from_slice(body);
-    let size = u32::try_from(abort.len()).expect("fits");
-    abort[4..8].copy_from_slice(&size.to_le_bytes());
-    abort
-}
-
-/// An abort of `chunk` with the Error `code` and a null Reason.
-fn coded(chunk: &[u8], code: u32) -> Vec<u8> {
-    let mut body = code.to_le_bytes().to_vec();
-    body.extend_from_slice(&[0xFF; 4]);
-    of(chunk, &body)
-}
-
-fn too_large(chunk: &[u8]) -> Vec<u8> {
-    coded(chunk, 0x80B9_0000)
-}
-
 fn empty(chunk: &[u8]) -> Vec<u8> {
-    of(chunk, &[])
+    rebuilt(chunk, b'A', &[])
 }
 
 /// An abort of `chunk` with the request id `u32::MAX`, which no request has.
 fn unknown(chunk: &[u8]) -> Vec<u8> {
-    let mut abort = too_large(chunk);
-    abort[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
-    abort
+    with_id(too_large(chunk), u32::MAX)
 }
 
 /// The answer of `chunk` as an intermediate chunk of request id 0, which no request has.
 fn orphan(chunk: &[u8]) -> Vec<u8> {
-    let mut orphan = chunk.to_vec();
-    orphan[3] = b'C';
-    orphan[20..24].copy_from_slice(&0u32.to_le_bytes());
-    orphan
+    with_id(rebuilt(chunk, b'C', body(chunk)), 0)
 }
-
-/// The largest message that the client of [`reads`] takes, 10 [`CHUNK`]: an answer of
-/// [`FITS`] fits, but not with the 7 intermediate chunks of another.
-const MESSAGE: u32 = 10 << 16;
 
 /// A rewrite of the relay that sends `abort` of the next `left` final chunks in their
 /// place.
@@ -68,8 +37,7 @@ fn aborting(left: &Cell<u16>, abort: fn(&[u8]) -> Vec<u8>) -> impl FnMut(&mut Ve
 
 /// After `dropped` dropped reads, the answers of `aborted` reads of `target` and of two
 /// more reads of it, and the value of the server. The relay sends `abort` of the
-/// answers of the dropped reads and of the `aborted` reads in their place. The client
-/// takes messages of up to [`MESSAGE`] bytes.
+/// answers of the dropped reads and of the `aborted` reads in their place.
 fn reads(
     target: &'static Node,
     dropped: u16,
@@ -83,8 +51,9 @@ fn reads(
             let left = Cell::new(0u16);
             let reads =
                 relayed(&node, &Relay::default(), aborting(&left, abort), async {
-                    let mut client = peer.limited(&url, None, Some(MESSAGE)).await;
-                    // open62541 reads the namespace array after the connect.
+                    let mut client =
+                        peer.connect(&url).await.expect("the client connects");
+                    // The connect is done before the relay arms.
                     assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
                     left.set(dropped + aborted);
                     drop_reads(&mut client, dropped).await;
@@ -106,14 +75,15 @@ fn reads(
     .0
 }
 
-/// An abort chunk answers its read with its Error, so after 16 of them the client
-/// holds no read and a later read that the server answers in full gives the value.
+/// An abort chunk answers its read with its Error, so after [`READS`] of them the
+/// client holds no read and a later read that the server answers in full gives the
+/// value.
 #[test]
-fn a_read_after_16_aborted_answers_gives_the_value() {
-    let (aborted, [after, again], value) = reads(&VALUE, 0, 16, too_large);
+fn a_read_after_an_aborted_answer_of_each_read_in_flight_gives_the_value() {
+    let (aborted, [after, again], value) = reads(&VALUE, 0, READS, too_large);
     assert_eq!(
         aborted,
-        vec![Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE)); 16]
+        vec![Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE)); usize::from(READS)]
     );
     assert_eq!((after, again), (Ok(value), Ok(value)));
 }
@@ -182,14 +152,18 @@ fn an_abort_with_an_unknown_id_ends_no_read() {
 }
 
 /// An abort after the 7 intermediate chunks of an answer of [`FITS`] deletes them, so
-/// its read gives the Error of the abort, and frees their place in the count and the
-/// length of chunks, so each next answer of 8 chunks arrives.
+/// its read gives the Error of the abort, and frees their place in the queue of the
+/// channel, so after [`READS`] + 1 such aborts, more chunks than the queue holds, each
+/// next answer of 8 chunks arrives.
 #[test]
 fn an_abort_after_intermediate_chunks_ends_its_read_and_frees_their_place() {
-    let (aborted, [after, again], _) = reads(&FITS, 0, 1, too_large);
+    let (aborted, [after, again], _) = reads(&FITS, 0, READS + 1, too_large);
     assert_eq!(
         aborted,
-        vec![Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE))]
+        vec![
+            Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE));
+            usize::from(READS) + 1
+        ]
     );
     assert_eq!(
         (after, again),
@@ -203,52 +177,33 @@ const TWO: Node = Node {
     ..FITS
 };
 
-fn sequence(chunk: &[u8]) -> [u8; 4] {
-    chunk[16..20].try_into().expect("4 bytes")
-}
-
-/// 16 rounds of a dropped read D, then a read R of [`FITS`] (8 chunks). The relay holds
-/// the answer of D and sends its abort after the first chunk of R when `inside`, else
-/// before it. Gives the reads of R, a read of [`VALUE`] after them, and the value. An
-/// abort that does not end its D leaves no slot for the 17th read.
+/// [`READS`] + 1 rounds of a dropped read D, then a read R of [`FITS`] (8 chunks). The
+/// relay holds the answer of D and sends its abort after the first chunk of R when
+/// `inside`, else before it. Gives the reads of R, a read of [`VALUE`] after them, and
+/// the value. An abort that does not end its D leaves no slot for the last read.
 fn interleaved(inside: bool) -> (Values, Result<Value, Fault>, Value) {
     run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             peer.server.add_bytes(&FITS, 7 * CHUNK);
             let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
             let armed = Cell::new(false);
-            let held = RefCell::new(None::<Vec<u8>>);
-            let rewrite = |chunk: &mut Vec<u8>| {
-                if !armed.get() || !chunk.starts_with(b"MSG") {
-                    return;
-                }
-                let Some(dropped) = held.borrow_mut().take() else {
-                    assert_eq!(chunk[3], b'F', "the answer of D is one chunk");
-                    *held.borrow_mut() = Some(mem::take(chunk));
-                    return;
-                };
-                assert_eq!(chunk[3], b'C', "the first chunk of R");
-                let mut first = mem::take(chunk);
-                let mut abort = too_large(&dropped);
-                // The relay sends the two chunks in a new order, so each gets the
-                // sequence number of the place it takes.
-                let (early, late) = (sequence(&dropped), sequence(&first));
-                let (a, b) = if inside {
-                    (&mut first, &mut abort)
+            let order = |held: Vec<Vec<u8>>| {
+                let [dropped, first] = <[_; 2]>::try_from(held).expect("2 chunks");
+                assert_eq!(dropped[3], b'F', "the answer of D is one chunk");
+                assert_eq!(first[3], b'C', "the first chunk of R");
+                let abort = too_large(&dropped);
+                if inside {
+                    vec![first, abort]
                 } else {
-                    (&mut abort, &mut first)
-                };
-                a[16..20].copy_from_slice(&early);
-                b[16..20].copy_from_slice(&late);
-                chunk.extend_from_slice(a);
-                chunk.extend_from_slice(b);
-                armed.set(false);
+                    vec![abort, first]
+                }
             };
+            let rewrite = reorder(&armed, 2, order);
             let reads = relayed(&node, &Relay::default(), rewrite, async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
                 let mut reads = Vec::new();
-                for _ in 0..16 {
+                for _ in 0..=READS {
                     armed.set(true);
                     drop_reads(&mut client, 1).await;
                     reads.push(client.read_one(&FITS).await);
@@ -271,7 +226,7 @@ fn interleaved(inside: bool) -> (Values, Result<Value, Fault>, Value) {
 #[test]
 fn an_abort_before_the_chunks_of_another_read_leaves_its_answer() {
     let (reads, after, value) = interleaved(false);
-    assert_eq!(reads, vec![mistyped("ByteString"); 16]);
+    assert_eq!(reads, vec![mistyped("ByteString"); usize::from(READS) + 1]);
     assert_eq!(after, Ok(value));
 }
 
@@ -281,7 +236,7 @@ fn an_abort_before_the_chunks_of_another_read_leaves_its_answer() {
 #[test]
 fn an_abort_between_the_chunks_of_another_read_leaves_its_answer() {
     let (reads, after, value) = interleaved(true);
-    assert_eq!(reads, vec![mistyped("ByteString"); 16]);
+    assert_eq!(reads, vec![mistyped("ByteString"); usize::from(READS) + 1]);
     assert_eq!(after, Ok(value));
 }
 
@@ -297,20 +252,7 @@ fn an_abort_behind_a_chunk_of_another_read_ends_its_read_with_its_error() {
             peer.server.add_bytes(&TWO, CHUNK);
             let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
             let armed = Cell::new(false);
-            let held = RefCell::new(Vec::<Vec<u8>>::new());
-            let rewrite = |chunk: &mut Vec<u8>| {
-                if !armed.get() || !chunk.starts_with(b"MSG") {
-                    return;
-                }
-                let mut held = held.borrow_mut();
-                held.push(mem::take(chunk));
-                if held.len() < 10 {
-                    return;
-                }
-                let mut r = mem::take(&mut *held);
-                // The relay sends the chunks in a new order, so each gets the sequence
-                // number of the place it takes.
-                let places: Vec<_> = r.iter().map(|c| sequence(c)).collect();
+            let order = |mut r: Vec<Vec<u8>>| {
                 let last = r.pop().expect("the final chunk of D");
                 let first = r.pop().expect("the first chunk of D");
                 let kinds: Vec<_> =
@@ -319,12 +261,9 @@ fn an_abort_behind_a_chunk_of_another_read_ends_its_read_with_its_error() {
                 let rest = r.split_off(1);
                 r.extend([first, too_large(&last)]);
                 r.extend(rest);
-                for (mut sent, place) in r.into_iter().zip(places) {
-                    sent[16..20].copy_from_slice(&place);
-                    chunk.extend_from_slice(&sent);
-                }
-                armed.set(false);
+                r
             };
+            let rewrite = reorder(&armed, 10, order);
             let reads = relayed(&node, &Relay::default(), rewrite, async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));

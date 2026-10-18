@@ -63,7 +63,9 @@ pub(crate) fn mesh(error: &mesh::Error) -> Option<&files::Error> {
         | mesh::Error::Voters { .. }
         | mesh::Error::Limit { .. }
         | mesh::Error::Founding { .. }
-        | mesh::Error::Unfounded { .. } => None,
+        | mesh::Error::Unfounded { .. }
+        | mesh::Error::CardFile { .. }
+        | mesh::Error::Soon => None,
     }
 }
 

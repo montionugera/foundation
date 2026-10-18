@@ -9,7 +9,7 @@ use types::time::{Monotonic, Span, Stamp};
 
 use crate::log::Waker;
 use crate::state::lock;
-use crate::{drivers, net, shard};
+use crate::{PATH_MAX, drivers, net, shard};
 
 /// One simulated node: the `env` handles that its code gets. Clones refer to the same
 /// node.
@@ -344,9 +344,12 @@ impl Node {
     /// # Panics
     ///
     /// When `path` is relative or `/`, has a `..` segment, goes through a file, a link
-    /// to nothing, or more than 40 links, or a file, a link, or a directory is at it.
+    /// to nothing, or more than 40 links, or a file, a link, or a directory is at it,
+    /// or when `target` has 4096 bytes or more, which Linux refuses.
     pub fn link_path(&self, path: &Path, target: &Path) {
         assert!(path.is_absolute(), "{} is relative", path.display());
+        let long = target.as_os_str().len() >= PATH_MAX;
+        assert!(!long, "the target of {} is too long", path.display());
         let parent = path.components().any(|part| part == Component::ParentDir);
         assert!(!parent, "{} has a `..` segment", path.display());
         lock(&self.0.shared).paths().link(self.0.node, path, target);

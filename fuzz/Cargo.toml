@@ -334,6 +334,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "wire_hub_write"
+path = "fuzz_targets/wire_hub_write.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "wire_hub_reader"
 path = "fuzz_targets/wire_hub_reader.rs"
 test = false

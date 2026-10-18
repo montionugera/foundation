@@ -9,6 +9,7 @@ use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
 
+use crate::carry;
 use crate::entry::{self, Entry, Header, Kind, Samples};
 use crate::group;
 use crate::log::Carried;
@@ -74,7 +75,7 @@ impl Ring {
         for _ in 0..records {
             let len = LENS[self.next % LENS.len()];
             self.next += 1;
-            let plan = self.writer.append(len).expect("the ring has room");
+            let plan = self.writer.append(len, 0).expect("the ring has room");
             let wrap = plan.wrap.map(|_| {
                 self.chain = self.chain.wrapping_add(1);
                 Position::new(plan.offset, self.chain).expect("aligned")
@@ -220,7 +221,13 @@ pub struct Logs {
     headers: Vec<(Slot, Header)>,
     offset: u64,
     commits: u32,
+    /// The most body of a carry record: the tails, and the copies of tagged logs,
+    /// of each index, at most the body of [`carry::TAILS_MAX`] tails.
+    room: usize,
     carried: Carried,
+    /// The carry body that [`carry`](Self::carry) writes, empty when no entry has a
+    /// tag.
+    body: Vec<u8>,
 }
 
 impl Logs {
@@ -240,14 +247,35 @@ impl Logs {
                 };
                 (Slot::new(n), header)
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let room = carry::body_len(headers.len().min(carry::TAILS_MAX), 0, 0);
         Self {
             inner: crate::log::Logs::new(AREA),
             headers,
             offset: BLOCK,
             commits: 0,
+            room,
             carried: Carried::with_capacity(usize::try_from(indexes).expect("fits")),
+            body: Vec::new(),
         }
+    }
+
+    /// As [`new`](Self::new), with each entry of tag 1, whose 8 bytes each sync
+    /// copies and [`carry`](Self::carry) writes into its body.
+    #[must_use]
+    pub fn tagged(indexes: u32) -> Self {
+        let mut logs = Self::new(indexes);
+        for (_, header) in &mut logs.headers {
+            header.tag = 1;
+        }
+        let count = logs.headers.len().min(carry::TAILS_MAX);
+        logs.room = carry::body_len(count, count, 8 * count).min(carry::body_len(
+            carry::TAILS_MAX,
+            0,
+            0,
+        ));
+        logs.body = vec![0; logs.room];
+        logs
     }
 
     /// One commit of one record that holds `entries` data entries of each index. It
@@ -266,24 +294,40 @@ impl Logs {
         self.offset += BLOCK;
     }
 
-    /// One commit as `commit(1)`, with an append of each entry, then a carry record
-    /// in the next record, as a commit that carries: it takes the idle tails before
-    /// the record and makes the record their holder, so the hide of the next commit
-    /// drops the run of each index.
+    /// One commit as `commit(1)`, with an append of each entry, in records of at
+    /// most [`carry::TAILS_MAX`] entries, as a group holds them. Then carry records
+    /// in the next records, as commits that carry: each takes the idle tails of the
+    /// records before it, at most [`carry::TAILS_MAX`], and is their holder, so the
+    /// hide of the next commit drops the run of each index. Of
+    /// [`tagged`](Self::tagged) logs, each sync also copies the entry, and each carry
+    /// record holds the copies and writes its body.
     pub fn carry(&mut self) {
         self.keep_up();
-        for (slot, header) in &mut self.headers {
-            header.kind = append(&mut self.inner, *slot, header);
-            self.inner
-                .sync(*slot, header, self.offset)
-                .expect("entries in order");
-            header.first += 1;
+        for record in self.headers.chunks_mut(carry::TAILS_MAX) {
+            for (slot, header) in record {
+                header.kind = append(&mut self.inner, *slot, header);
+                self.inner
+                    .sync(*slot, header, self.offset)
+                    .expect("entries in order");
+                if header.tag != 0 {
+                    self.inner.copy(*slot, header, self.offset, &[&[7; 8][..]]);
+                }
+                header.first += 1;
+            }
+            self.offset += BLOCK;
         }
-        self.offset += BLOCK;
-        self.inner
-            .carry(self.offset, self.headers.len(), &mut self.carried);
-        self.inner.hold(&self.carried, self.offset);
-        self.offset += BLOCK;
+        let reach = self.offset;
+        loop {
+            self.inner.carry(reach, self.room, &mut self.carried);
+            if !self.body.is_empty() {
+                hint::black_box(self.inner.write(&self.carried, &mut self.body));
+            }
+            self.inner.hold(&self.carried, self.offset);
+            self.offset += BLOCK;
+            if self.carried.tails().len() < carry::TAILS_MAX {
+                break;
+            }
+        }
     }
 
     /// Moves the appended tail of each index past one data entry, with no sync.
@@ -327,8 +371,7 @@ impl Logs {
             header.first += 1;
         }
         let reach = self.offset.saturating_sub(behind * BLOCK);
-        self.inner
-            .carry(reach, self.headers.len(), &mut self.carried);
+        self.inner.carry(reach, self.room, &mut self.carried);
         let kept = self.inner.kept().expect("a path has a synced entry");
         let read = self.offset.saturating_sub(held * BLOCK).max(BLOCK);
         self.inner.hide(kept.min(read));
@@ -351,8 +394,7 @@ impl Logs {
                 .expect("entries in order");
         }
         self.offset += BLOCK;
-        self.inner
-            .carry(self.offset, self.headers.len(), &mut self.carried);
+        self.inner.carry(self.offset, self.room, &mut self.carried);
         let tails = self.carried.tails();
         assert_eq!(tails.len(), self.headers.len(), "a tail of each index");
         for (tail, (_, header)) in tails.iter().zip(&self.headers) {
@@ -458,17 +500,17 @@ mod tests {
     use super::*;
 
     /// The restart record and records of 1, 1, 2, 1, 3, 1, and 1 blocks fill 11 of
-    /// 15 blocks, and leave the three blocks that stay free.
+    /// 19 blocks, and leave the spare of 7 blocks and one more.
     #[test]
-    fn a_ring_of_15_blocks_takes_a_commit_of_7_records() {
-        Ring::new(15).commit(7);
+    fn a_ring_of_19_blocks_takes_a_commit_of_7_records() {
+        Ring::new(19).commit(7);
     }
 
-    /// The 8th record, of 2 blocks, does not fit with those three blocks.
+    /// The 8th record, of 2 blocks, does not fit in that one block.
     #[test]
     #[should_panic(expected = "the ring has room")]
-    fn a_ring_of_15_blocks_refuses_a_commit_of_8_records() {
-        Ring::new(15).commit(8);
+    fn a_ring_of_19_blocks_refuses_a_commit_of_8_records() {
+        Ring::new(19).commit(8);
     }
 
     /// After the warm-up of the `wal` bench, the commits of 1 and of 8 records trim
@@ -477,7 +519,7 @@ mod tests {
     #[test]
     fn each_sample_of_commits_trims_on_the_rings_of_the_bench() {
         for (records, id, most) in
-            [(1, 64, 19), (1, 4096, 64), (8, 64, 2), (8, 4096, 9)]
+            [(1, 64, 18), (1, 4096, 64), (8, 64, 2), (8, 4096, 9)]
         {
             let mut ring = Ring::new(id + PHASE);
             for _ in 0..2 * id {
@@ -496,7 +538,7 @@ mod tests {
     /// private writer: `commit` gives nothing back.
     #[test]
     fn each_sample_of_group_commits_trims_on_the_ring_of_the_bench() {
-        for (entries, most) in [(1, 29), (32, 15)] {
+        for (entries, most) in [(1, 27), (32, 14)] {
             let mut ring = Group::new(64 + PHASE);
             for _ in 0..2 * 64 {
                 ring.commit(entries);
@@ -514,7 +556,7 @@ mod tests {
     /// logs: `queue` gives nothing back.
     #[test]
     fn each_queue_trims_and_appends_each_entry() {
-        for (entries, most) in [(1, 29), (32, 15)] {
+        for (entries, most) in [(1, 27), (32, 14)] {
             let mut ring = Group::new(64 + PHASE);
             for _ in 0..2 * 64 {
                 ring.queue(entries);
@@ -679,5 +721,28 @@ mod tests {
             let stamp = logs.inner.durable(Slot::new(n), Path::Live).stamp;
             assert_eq!(stamp, None, "index {n}");
         }
+    }
+
+    /// Each carry of tagged logs holds the tail and the copy of each index. It
+    /// reads the private `carried`: `carry` gives nothing.
+    #[test]
+    fn a_tagged_carry_holds_a_tail_and_a_copy_of_each_index() {
+        for indexes in [1, 64, 256] {
+            let mut logs = Logs::tagged(indexes);
+            let count = usize::try_from(indexes).expect("fits");
+            for _ in 0..4 {
+                logs.carry();
+                let len = carry::body_len(count, count, 8 * count);
+                assert_eq!(logs.carried.len(), len, "{indexes} indexes");
+            }
+        }
+    }
+
+    /// The tagged logs of the most tails carry at most the body of one carry record
+    /// of any layout. It reads the private `room`: `carry` gives nothing.
+    #[test]
+    fn tagged_logs_of_the_most_tails_carry_at_most_one_carry_body() {
+        let logs = Logs::tagged(u32::try_from(carry::TAILS_MAX).expect("fits"));
+        assert_eq!(logs.room, carry::body_len(carry::TAILS_MAX, 0, 0));
     }
 }

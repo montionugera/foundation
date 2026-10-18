@@ -88,11 +88,52 @@ impl Server {
     /// If `manager` has no listener that a listen open did not take, or open62541
     /// refuses the server or its start.
     pub(crate) unsafe fn start(manager: &Manager, host: &CStr, sessions: u16) -> Self {
+        // SAFETY: as the caller ensures.
+        unsafe { Self::started(manager, host, sessions, std::ptr::null()) }
+    }
+
+    /// Makes and starts the test server as [`Server::start`] does, which also has each
+    /// of the three policies in `Sign` and in `SignAndEncrypt` on the certificate and
+    /// key of `security`, and whose channels trust only the certificate that
+    /// `security` trusts.
+    ///
+    /// # Safety
+    ///
+    /// As [`Server::start`].
+    ///
+    /// # Panics
+    ///
+    /// As [`Server::start`].
+    #[cfg(test)]
+    pub(crate) unsafe fn start_secure(
+        manager: &Manager,
+        host: &CStr,
+        sessions: u16,
+        security: &crate::secure::Security,
+    ) -> Self {
+        let security = security.raw();
+        // SAFETY: as the caller ensures, and the server copies `security`.
+        unsafe { Self::started(manager, host, sessions, &raw const security) }
+    }
+
+    /// [`Server::start`], with the policies of `security` when it is not null.
+    ///
+    /// # Safety
+    ///
+    /// As [`Server::start`], and `security` is null or points at a live
+    /// `shim_security`.
+    unsafe fn started(
+        manager: &Manager,
+        host: &CStr,
+        sessions: u16,
+        security: *const ffi::test::Security,
+    ) -> Self {
         let port = manager
             .port()
             .expect("a server starts on a manager with a listener that no server took");
         let events = manager.events().raw();
-        // SAFETY: the loop outlives the server, as the caller ensures.
+        // SAFETY: the loop outlives the server, as the caller ensures, and `security`
+        // is null or live.
         let raw = unsafe {
             ffi::test::shim_server_new(
                 events,
@@ -100,6 +141,7 @@ impl Server {
                 host.as_ptr(),
                 sessions,
                 crate::connection::CHUNKS,
+                security,
             )
         };
         let raw = NonNull::new(raw).expect("open62541 refused the server");
@@ -298,7 +340,6 @@ impl Server {
     ///
     /// If open62541 refuses the node, `size` is past `i32::MAX`, or the key of `node`
     /// is the number 0.
-    #[cfg(test)]
     pub(crate) fn add_bytes(&self, node: &Node, size: usize) {
         let length =
             i32::try_from(size).expect("a ByteString of at most i32::MAX bytes");

@@ -304,9 +304,9 @@ pub(crate) fn unchecked(card: &card::Signed) -> card::Unchecked {
     }
 }
 
-/// The largest change of each kind: a home, a join, a ticket, and a spec at each
-/// bound.
-pub(crate) fn create_largest() -> [Change; 4] {
+/// The largest change of each kind: a home, a join, a ticket, a spec at each bound,
+/// and a card.
+pub(crate) fn create_largest() -> [Change; 5] {
     // A name of the most bytes that ends in `at`.
     let long = |at: usize| {
         let end = format!("b{at}");
@@ -327,6 +327,7 @@ pub(crate) fn create_largest() -> [Change; 4] {
     let statuses = (0..usize::from(status::MAX)).map(|at| (long(at), index(9)));
     let status = Status::new(statuses.collect()).unwrap();
     let join = join_with(&card, 7, BEFORE_EXPIRY, status);
+    let card = Change::Card(Box::new(unchecked(&card)));
     let mut options = options("a", true);
     options.prefix = long(0);
     let chunks = (0..CHUNKS_MAX).map(|at| {
@@ -351,6 +352,7 @@ pub(crate) fn create_largest() -> [Change; 4] {
         Change::Join(Box::new(join)),
         ticket_change(7, options),
         spec,
+        card,
     ]
 }
 

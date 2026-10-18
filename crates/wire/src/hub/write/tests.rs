@@ -91,7 +91,7 @@ mod pins {
             let refused = Reply::Outcome(Outcome::Refused(refusal));
             assert_eq!(encode_reply(refused), [3, code]);
         }
-        let stored = Reply::Stored { through: 0x0506 };
+        let stored = Reply::Stored { frames: 0x0506 };
         assert_eq!(encode_reply(stored), [4, 0x06, 0x05, 0, 0, 0, 0, 0, 0]);
     }
 }
@@ -213,6 +213,29 @@ mod reply {
     }
 
     #[test]
+    fn outcome_len_max_is_the_len_of_the_longest_outcome() {
+        let range = frame::Range { seq: 0, count: 1 };
+        let mut outcomes = Vec::new();
+        // A new outcome does not compile here until the list holds it.
+        for outcome in [
+            Outcome::Taken { range },
+            Outcome::Lost { range },
+            Outcome::Refused(Refusal::Waiting),
+        ] {
+            match outcome {
+                Outcome::Taken { .. } | Outcome::Lost { .. } => outcomes.push(outcome),
+                Outcome::Refused(_) => {
+                    outcomes.extend(Refusal::ALL.map(Outcome::Refused));
+                }
+            }
+        }
+        let lens = outcomes
+            .into_iter()
+            .map(|outcome| Reply::Outcome(outcome).encoded_len());
+        assert_eq!(lens.max(), Some(Outcome::LEN_MAX));
+    }
+
+    #[test]
     #[should_panic(
         expected = "a reply's range of 0 samples from seq 4 holds none or ends past \
                     the highest seq"
@@ -247,7 +270,7 @@ fn reply() -> impl Strategy<Value = Reply> {
         range.prop_map(|range| Reply::Outcome(Outcome::Lost { range })),
         (0..REFUSALS.len())
             .prop_map(|at| Reply::Outcome(Outcome::Refused(REFUSALS[at].0))),
-        any::<u64>().prop_map(|through| Reply::Stored { through }),
+        any::<u64>().prop_map(|frames| Reply::Stored { frames }),
     ]
 }
 

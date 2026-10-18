@@ -170,7 +170,6 @@ deleteChunks(UA_SecureChannel *channel) {
         UA_Chunk_delete(chunk);
     }
     channel->chunksCount = 0;
-    channel->chunksLength = 0;
 }
 
 void
@@ -956,7 +955,6 @@ UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
             if(pchunk->requestId != chunk.requestId)
                 continue;
             channel->chunksCount--;
-            channel->chunksLength -= pchunk->bytes.length;
             TAILQ_REMOVE(&channel->chunks, pchunk, pointers);
             UA_Chunk_delete(pchunk);
         }
@@ -971,11 +969,10 @@ UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
         goto extract_chunk;
 
     case UA_CHUNKTYPE_INTERMEDIATE:
-        /* Validate the resource limits */
-        if((channel->config.localMaxChunkCount != 0 &&
-            channel->chunksCount >= channel->config.localMaxChunkCount) ||
-           (channel->config.localMaxMessageSize != 0 &&
-            channel->chunksLength + chunk.bytes.length > channel->config.localMaxMessageSize)) {
+        /* Answers can interleave, so the limits of one message hold only at the
+         * final chunk */
+        if(channel->config.localMaxQueuedChunks != 0 &&
+           channel->chunksCount >= channel->config.localMaxQueuedChunks) {
             if(chunk.copied)
                 UA_ByteString_clear(&chunk.bytes);
             return UA_STATUSCODE_BADTCPMESSAGETOOLARGE;
@@ -991,7 +988,6 @@ UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
         *pchunk = chunk;
         TAILQ_INSERT_TAIL(&channel->chunks, pchunk, pointers);
         channel->chunksCount++;
-        channel->chunksLength += pchunk->bytes.length;
         goto extract_chunk;
 
     case UA_CHUNKTYPE_FINAL:
@@ -1054,7 +1050,6 @@ UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
         pchunk = TAILQ_NEXT(first, pointers);
         first->copied = false;
         channel->chunksCount--;
-        channel->chunksLength -= first->bytes.length;
         TAILQ_REMOVE(&channel->chunks, first, pointers);
         UA_Chunk_delete(first);
 
@@ -1067,7 +1062,6 @@ UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
             memcpy(message.data + message.length, pchunk->bytes.data, pchunk->bytes.length);
             message.length += pchunk->bytes.length;
             channel->chunksCount--;
-            channel->chunksLength -= pchunk->bytes.length;
             TAILQ_REMOVE(&channel->chunks, pchunk, pointers);
             UA_Chunk_delete(pchunk);
         }
