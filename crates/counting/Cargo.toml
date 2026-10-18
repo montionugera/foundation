@@ -7,9 +7,6 @@ publish.workspace = true
 
 [dependencies]
 
-[target.'cfg(loom)'.dev-dependencies]
-loom = { workspace = true }
-
 [[test]]
 name = "global"
 harness = false

@@ -510,7 +510,7 @@ fn a_first_pool_budget_that_the_system_cannot_reserve_fails() {
     // The size of the reserve depends on the free memory of the host.
     let (message, fix) = errors.split_once('\n').expect("two lines");
     let size = (message.strip_prefix(
-        "error[node.failed]: no memory for a pool of shard-0: a reserve of ",
+        "error[node.failed]: no memory for the pool of shard-0: a reserve of ",
     ))
     .and_then(|rest| {
         rest.strip_suffix(

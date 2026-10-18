@@ -20,14 +20,6 @@ delivery = { path = "../delivery" }
 env = { path = "../env" }
 types = { path = "../types" }
 
-[dev-dependencies]
-counting = { path = "../counting" }
-divan = { workspace = true }
-# Turns on `sim`, since the bench host runs no features.
-home = { path = ".", features = ["sim"] }
-proptest = { workspace = true }
-sim = { path = "../sim" }
-
 [[bench]]
 name = "split"
 harness = false

@@ -12,12 +12,6 @@ ring = { path = "../ring" }
 types = { path = "../types" }
 wire = { path = "../wire" }
 
-[dev-dependencies]
-counting = { path = "../counting" }
-divan = { workspace = true }
-proptest = { workspace = true }
-sim = { path = "../sim" }
-
 [[bench]]
 name = "reader"
 harness = false

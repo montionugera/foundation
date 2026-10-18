@@ -11,11 +11,6 @@ sim = []
 [dependencies]
 zeroize = { workspace = true }
 
-[dev-dependencies]
-counting = { path = "../counting" }
-divan = { workspace = true }
-proptest = { workspace = true }
-
 [target.'cfg(loom)'.dependencies]
 loom = { workspace = true }
 

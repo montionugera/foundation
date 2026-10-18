@@ -17,8 +17,5 @@ tracing = { workspace = true }
 transport = { path = "../../crates/transport" }
 types = { path = "../../crates/types" }
 
-[dev-dependencies]
-tokio = { workspace = true, features = ["rt"] }
-
 [lints]
 workspace = true

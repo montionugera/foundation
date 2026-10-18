@@ -9,9 +9,5 @@ publish.workspace = true
 spec = { path = "../spec" }
 types = { path = "../types" }
 
-[dev-dependencies]
-document = { path = "../document" }
-proptest.workspace = true
-
 [lints]
 workspace = true

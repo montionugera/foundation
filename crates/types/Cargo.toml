@@ -14,11 +14,6 @@ rustc-hash.workspace = true
 [lints]
 workspace = true
 
-[dev-dependencies]
-counting = { path = "../counting" }
-divan = { workspace = true }
-proptest = { workspace = true }
-
 [[bench]]
 name = "frame"
 harness = false
