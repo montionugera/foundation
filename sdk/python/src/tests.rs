@@ -11,20 +11,20 @@ import io, sys, unittest
 sys.modules['foundation._native'] = native
 sys.path.insert(0, str(package))
 stream = io.StringIO()
-suite = unittest.defaultTestLoader.discover(tests, pattern)
+suite = unittest.TestLoader().discover(start, pattern, top)
 result = unittest.TextTestRunner(stream, verbosity=2).run(suite)
 passed = result.wasSuccessful() and result.testsRun > 0
 report = stream.getvalue()
 ";
 
-/// The files of `sdk/python/tests`. `test_sim.py` runs only with the feature `sim`.
-const FILES: [&str; 2] = ["test_client.py", "test_sim.py"];
+/// The files of `sdk/python/tests`, each with whether it runs only with the feature
+/// `sim`.
+const FILES: [(&str, bool); 2] = [("test_client.py", false), ("test_sim.py", true)];
 
 /// Runs each file of the Python suite `sdk/python/tests` on its own in this process,
 /// with this build as `foundation._native`. `FOUNDATION_NODE` is the path of the
-/// `foundation` binary that the suite starts. Panics with the report when a Python
-/// test fails or a file runs none, when the `test_*` files of the directory are
-/// not `FILES`, and when `FOUNDATION_NODE` is not set.
+/// `foundation` binary that the suite starts. Panics with the report as [`run`] says,
+/// and when `FOUNDATION_NODE` is not set.
 #[test]
 fn the_python_suite_passes() {
     #[expect(clippy::disallowed_methods, reason = "the suite reads the node's path")]
@@ -34,45 +34,106 @@ fn the_python_suite_passes() {
         "FOUNDATION_NODE is not set: give it the path of the foundation binary"
     );
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    let mut found: Vec<_> = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|n| n.starts_with("test_"))
-        .collect();
-    found.sort();
-    assert_eq!(
-        found, FILES,
-        "change `FILES` to the test files of the suite"
-    );
-    let files = if cfg!(feature = "sim") {
-        &FILES[..]
-    } else {
-        &FILES[..1]
-    };
-    for file in files {
-        let (passed, report) = suite(file);
-        assert!(passed, "{file}: {report}");
+    if let Err(problem) = run(&dir, &FILES, cfg!(feature = "sim")) {
+        panic!("{problem}");
     }
 }
 
 #[test]
-fn a_pattern_that_matches_no_file_fails() {
-    let (passed, report) = suite("test_none_*.py");
-    assert!(!passed, "{report}");
-    assert!(report.contains("Ran 0 tests"), "{report}");
+fn a_file_that_runs_no_test_fails() {
+    let files = [
+        ("more/test_more.py", false),
+        ("test_some.py", false),
+        ("test_none.py", false),
+    ];
+    let problem = run(&fixture(), &files, false).unwrap_err();
+    assert!(problem.starts_with("test_none.py: "), "{problem}");
+    assert!(problem.contains("Ran 0 tests"), "{problem}");
 }
 
-/// Runs each test of `sdk/python/tests` whose file matches `pattern`, and gives
-/// whether one ran and each passed, and the report.
-fn suite(pattern: &str) -> (bool, String) {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+#[test]
+fn a_file_of_the_sim_feature_runs_only_with_it() {
+    let files = [
+        ("more/test_more.py", false),
+        ("test_none.py", true),
+        ("test_some.py", false),
+    ];
+    assert_eq!(run(&fixture(), &files, false), Ok(()));
+}
+
+#[test]
+fn an_unlisted_file_fails() {
+    let files = [("test_none.py", false), ("test_some.py", false)];
+    assert_eq!(
+        run(&fixture(), &files, false),
+        Err(
+            "the test files of the suite are [\"more/test_more.py\", \"test_none.py\", \
+             \"test_some.py\"]: change `FILES` to them"
+                .to_owned()
+        )
+    );
+}
+
+/// The directory of the fixture suite.
+fn fixture() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("fixture")
+}
+
+/// Runs each of `files`, the `test_*.py` files under `dir` with whether each runs only
+/// with the feature `sim`, on its own, in their order. `sim` is whether the feature is
+/// on. Returns the report of the first file that fails or runs no test, and an error
+/// when `files` are not the `test_*.py` files under `dir`.
+fn run(dir: &Path, files: &[(&str, bool)], sim: bool) -> Result<(), String> {
+    let mut found = Vec::new();
+    tests(dir, "", &mut found);
+    found.sort();
+    let mut listed: Vec<_> = files.iter().map(|&(file, _)| file).collect();
+    listed.sort_unstable();
+    if found != listed {
+        return Err(format!(
+            "the test files of the suite are {found:?}: change `FILES` to them"
+        ));
+    }
+    for &(file, only) in files {
+        if sim || !only {
+            let (passed, report) = suite(dir, file);
+            if !passed {
+                return Err(format!("{file}: {report}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Adds to `found` the path of each `test_*.py` file under `dir`, with `/` between its
+/// parts, after `prefix`.
+fn tests(dir: &Path, prefix: &str, found: &mut Vec<String>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy();
+        if path.is_dir() {
+            tests(&path, &format!("{prefix}{name}/"), found);
+        } else if name.starts_with("test_")
+            && path.extension().is_some_and(|e| e == "py")
+        {
+            found.push(format!("{prefix}{name}"));
+        }
+    }
+}
+
+/// Runs each test of `file`, a path under `dir`, and gives whether one ran and each
+/// passed, and the report.
+fn suite(dir: &Path, file: &str) -> (bool, String) {
+    let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("python");
+    let path = dir.join(file);
     Python::initialize();
     Python::attach(|py| -> PyResult<(bool, String)> {
         let globals = PyDict::new(py);
         globals.set_item("native", wrap_pymodule!(super::_native)(py))?;
-        globals.set_item("package", root.join("python"))?;
-        globals.set_item("tests", root.join("tests"))?;
-        globals.set_item("pattern", pattern)?;
+        globals.set_item("package", package)?;
+        globals.set_item("start", path.parent())?;
+        globals.set_item("pattern", path.file_name())?;
+        globals.set_item("top", dir)?;
         py.run(SUITE, Some(&globals), None)?;
         Ok((
             globals.as_any().get_item("passed")?.extract()?,
