@@ -49,7 +49,8 @@ const BROWSE_NODE: Code = Code::new("ops.browse-node");
 const BAD_START: Code = Code::new("ops.bad-start");
 const BAD_PATTERN: Code = Code::new("ops.bad-pattern");
 const NO_PICK: Code = Code::new("ops.no-pick");
-const IMPORT_LIMIT: Code = Code::new("ops.import-limit");
+const PICK_LIMIT: Code = Code::new("ops.pick-limit");
+const MATCH_LIMIT: Code = Code::new("ops.match-limit");
 const BAD_POINT: Code = Code::new("ops.bad-point");
 const BAD_POINT_FIX: &str = "Give the names of the path joined by `/`, with a `\\` \
                              before each `/`, `*`, or `\\` in a name";
@@ -57,7 +58,8 @@ const DUPLICATE_PICK: Code = Code::new("ops.duplicate-pick");
 const BAD_NAME: Code = Code::new("ops.bad-name");
 const BAD_NAME_FIX: &str = "Give another name, or leave it out for the default name";
 const UNREADABLE_POINT: Code = Code::new("ops.unreadable-point");
-const IMPORT_BUDGET: Code = Code::new("ops.import-budget");
+const PICK_BUDGET: Code = Code::new("ops.pick-budget");
+const MATCH_BUDGET: Code = Code::new("ops.match-budget");
 const LARGE_IMPORT: Code = Code::new("ops.large-import");
 const FILE_CHANGED: Code = Code::new("ops.file-changed");
 const MORE_PROBLEMS: Code = Code::new("ops.more-problems");
@@ -186,9 +188,10 @@ pub(crate) enum Error {
     },
     /// An import that picks no point and gives no match.
     NoPick,
-    /// An import that picks `picked` points, or with `None` a match of more points,
-    /// than [`LIMIT`].
-    ImportLimit { picked: Option<usize> },
+    /// An import that picks `picked` points, more than [`LIMIT`].
+    PickLimit { picked: usize },
+    /// A match of an import of more points than [`LIMIT`].
+    MatchLimit,
     /// Each path of a point of an import that is no path, as given, with the cause,
     /// in the order of the picks.
     BadPoint {
@@ -204,9 +207,11 @@ pub(crate) enum Error {
     /// Each picked point that a connector of the kind cannot read or write, by path,
     /// with the reason.
     UnreadablePoint { points: Vec<(String, String)> },
-    /// The walk of an import stopped at its budget: of a match when `matched`, else
-    /// before it found each picked point.
-    ImportBudget { matched: bool },
+    /// The walk of the picks of an import stopped at its budget before it found each
+    /// point.
+    PickBudget,
+    /// The walk of a match of an import stopped at its budget.
+    MatchBudget,
     /// The reply of an import has more bytes than one reply holds.
     LargeImport,
     /// The config file at `path` changed after an import read it.
@@ -369,7 +374,8 @@ impl Error {
             | Self::NoData { .. }
             | Self::FolderChanged { .. }
             | Self::Browse { .. }
-            | Self::ImportBudget { .. }
+            | Self::PickBudget
+            | Self::MatchBudget
             | Self::LargeImport
             | Self::FileChanged { .. }
             | Self::Reply { .. } => 1,
@@ -387,7 +393,8 @@ impl Error {
             | Self::BadStart { .. }
             | Self::BadPattern { .. }
             | Self::NoPick
-            | Self::ImportLimit { .. }
+            | Self::PickLimit { .. }
+            | Self::MatchLimit
             | Self::BadPoint { .. }
             | Self::DuplicatePick { .. }
             | Self::BadName { .. }
@@ -597,14 +604,17 @@ impl Error {
                 NO_PICK,
                 "Give the points to import, or `--match <pattern>`".to_owned(),
             ),
-            Self::ImportLimit { .. } => (
-                IMPORT_LIMIT,
-                format!("Narrow the match, or pick at most {LIMIT} points"),
+            Self::PickLimit { .. } => (
+                PICK_LIMIT,
+                format!("Pick at most {LIMIT} points, and import the others in another run"),
             ),
-            Self::ImportBudget { .. } => (
-                IMPORT_BUDGET,
-                "Narrow the start or the match, or pick fewer points".to_owned(),
+            Self::MatchLimit => (MATCH_LIMIT, "Narrow the start or the match".to_owned()),
+            Self::PickBudget => (
+                PICK_BUDGET,
+                "Pick the points of fewer folders, and import the others in another run"
+                    .to_owned(),
             ),
+            Self::MatchBudget => (MATCH_BUDGET, "Narrow the start or the match".to_owned()),
             Self::LargeImport => (
                 LARGE_IMPORT,
                 "Import fewer points at a time, or move other blocks out of the file \
@@ -1008,21 +1018,19 @@ impl fmt::Display for Error {
                 write!(f, "the match `{text}` is not a pattern: {cause}")
             }
             Self::NoPick => f.write_str("the import picks no point and gives no match"),
-            Self::ImportLimit {
-                picked: Some(picked),
-            } => write!(
+            Self::PickLimit { picked } => write!(
                 f,
                 "the import picks {picked} points, more than {LIMIT}, the most for one \
                  import"
             ),
-            Self::ImportLimit { picked: None } => {
+            Self::MatchLimit => {
                 write!(f, "more than {LIMIT} points match, the most for one import")
             }
-            Self::ImportBudget { matched: true } => write!(
+            Self::MatchBudget => write!(
                 f,
                 "the import stopped after {VISITS} entries, so more points can match"
             ),
-            Self::ImportBudget { matched: false } => write!(
+            Self::PickBudget => write!(
                 f,
                 "the import stopped after {VISITS} entries before it found each point"
             ),

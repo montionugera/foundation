@@ -696,7 +696,8 @@ fn every() -> Vec<Error> {
             cause: Malformed::Escape,
         },
         Error::NoPick,
-        Error::ImportLimit { picked: None },
+        Error::PickLimit { picked: 501 },
+        Error::MatchLimit,
         Error::BadPoint {
             points: vec![(String::new(), Malformed::Empty)],
         },
@@ -709,7 +710,8 @@ fn every() -> Vec<Error> {
         Error::UnreadablePoint {
             points: vec![("Line/Pump".to_owned(), "no access".to_owned())],
         },
-        Error::ImportBudget { matched: true },
+        Error::PickBudget,
+        Error::MatchBudget,
         Error::LargeImport,
         Error::FileChanged {
             path: PathBuf::new(),
@@ -755,12 +757,14 @@ fn listed(error: &Error) {
         | Error::BadStart { .. }
         | Error::BadPattern { .. }
         | Error::NoPick
-        | Error::ImportLimit { .. }
+        | Error::PickLimit { .. }
+        | Error::MatchLimit
         | Error::BadPoint { .. }
         | Error::DuplicatePick { .. }
         | Error::BadName { .. }
         | Error::UnreadablePoint { .. }
-        | Error::ImportBudget { .. }
+        | Error::PickBudget
+        | Error::MatchBudget
         | Error::LargeImport
         | Error::FileChanged { .. }
         | Error::Config(_)

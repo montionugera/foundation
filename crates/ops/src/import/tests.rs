@@ -91,8 +91,8 @@ fn checks_access_the_picks_and_the_paths_in_order() {
         let (reply, _) = imported(&node, &json!({ "points": many })).await;
         let message = "the import picks 501 points, more than 500, the most for one \
                        import";
-        let fix = "Narrow the match, or pick at most 500 points";
-        assert_eq!(reply, refusal("ops.import-limit", 2, message, fix));
+        let fix = "Pick at most 500 points, and import the others in another run";
+        assert_eq!(reply, refusal("ops.pick-limit", 2, message, fix));
         let most = vec![json!({ "path": "a//b" }); 500];
         let (reply, _) = imported(&node, &json!({ "points": most })).await;
         assert_eq!(
@@ -349,21 +349,22 @@ fn a_match_past_the_limit_and_a_walk_past_the_budget_add_nothing() {
         let (reply, _) =
             imported(&node, &json!({ "start": "Many", "match": "*" })).await;
         let message = "more than 500 points match, the most for one import";
-        let fix = "Narrow the match, or pick at most 500 points";
-        assert_eq!(reply, refusal("ops.import-limit", 2, message, fix));
+        let fix = "Narrow the start or the match";
+        assert_eq!(reply, refusal("ops.match-limit", 2, message, fix));
 
-        let fix = "Narrow the start or the match, or pick fewer points";
         let (reply, _) =
             imported(&node, &json!({ "start": "Huge", "match": "x" })).await;
         let message =
             "the import stopped after 10000 entries, so more points can match";
-        assert_eq!(reply, refusal("ops.import-budget", 1, message, fix));
+        assert_eq!(reply, refusal("ops.match-budget", 1, message, fix));
 
         let picks = points(&["Huge/p10000"]);
         let (reply, _) = imported(&node, &json!({ "points": picks })).await;
         let message =
             "the import stopped after 10000 entries before it found each point";
-        assert_eq!(reply, refusal("ops.import-budget", 1, message, fix));
+        let fix =
+            "Pick the points of fewer folders, and import the others in another run";
+        assert_eq!(reply, refusal("ops.pick-budget", 1, message, fix));
     });
 }
 

@@ -1018,14 +1018,14 @@ fn picked(
 ///
 /// # Errors
 ///
-/// [`Error::ImportBudget`] or [`Error::ImportLimit`] when the walk stopped early.
+/// [`Error::MatchBudget`] or [`Error::MatchLimit`] when the walk stopped early.
 fn matched(
     found: &browse::Found,
 ) -> Result<(Vec<config::import::Pick<'_>>, usize), Error> {
     match found.end {
         browse::End::Done => {}
-        browse::End::Budget => return Err(Error::ImportBudget { matched: true }),
-        browse::End::Limit => return Err(Error::ImportLimit { picked: None }),
+        browse::End::Budget => return Err(Error::MatchBudget),
+        browse::End::Limit => return Err(Error::MatchLimit),
         browse::End::Next(_) => unreachable!("invariant: only a level gives a cursor"),
     }
     let mut unreadable = 0;
@@ -1047,7 +1047,7 @@ fn matched(
 ///
 /// # Errors
 ///
-/// - [`Error::ImportBudget`] when the walk stopped at its budget.
+/// - [`Error::PickBudget`] when the walk stopped at its budget.
 /// - [`Error::UnreadablePoint`] with each point that the connector cannot read or
 ///   write.
 ///
@@ -1060,7 +1060,7 @@ fn pointed<'a>(
 ) -> Result<Vec<config::import::Pick<'a>>, Error> {
     match found.end {
         browse::End::Done => {}
-        browse::End::Budget => return Err(Error::ImportBudget { matched: false }),
+        browse::End::Budget => return Err(Error::PickBudget),
         browse::End::Limit | browse::End::Next(_) => {
             unreachable!("invariant: a walk of points gives each path and no cursor")
         }
@@ -1112,14 +1112,14 @@ fn pick<'a>(
 ///
 /// # Errors
 ///
-/// - [`Error::ImportLimit`] for more than [`browse::LIMIT`] points.
+/// - [`Error::PickLimit`] for more than [`browse::LIMIT`] points.
 /// - [`Error::BadPoint`] with each path that does not parse.
 /// - [`Error::DuplicatePick`] with each path that is there more than once.
 /// - [`Error::BadName`] with each given name that does not parse.
 fn points(points: Vec<Point>) -> Result<(Vec<browse::Path>, Given), Error> {
     if points.len() > browse::LIMIT {
-        return Err(Error::ImportLimit {
-            picked: Some(points.len()),
+        return Err(Error::PickLimit {
+            picked: points.len(),
         });
     }
     let mut paths = Vec::with_capacity(points.len());
