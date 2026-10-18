@@ -933,7 +933,6 @@ async fn import(node: &Node, subject: &Name, request: Import) -> Result<Ran, Err
     )
     .await?;
     let (scope, names) = picked(request.points, request.pattern)?;
-    let matched = matches!(scope, browse::Scope::Match(_));
     let query = browse::Query {
         start,
         scope,
@@ -945,22 +944,7 @@ async fn import(node: &Node, subject: &Name, request: Import) -> Result<Ran, Err
         .browse(kind.as_str(), connector.config().document(), &query)
         .await
         .map_err(|cause| Error::browse(&name, kind, cause, files.sources()))?;
-    let unreadable = unreadable(&found, (!matched).then_some(names.len()))?;
-    let picks: Vec<config::import::Pick<'_>> = found
-        .entries
-        .iter()
-        .filter_map(|entry| match &entry.shape {
-            browse::Shape::Point(facts) => Some((entry, facts)),
-            browse::Shape::Unreadable(_) | browse::Shape::Folder => None,
-        })
-        .enumerate()
-        .map(|(i, (entry, facts))| config::import::Pick {
-            path: &entry.path,
-            tag: &entry.tag,
-            facts,
-            name: names.get(i).and_then(Option::as_ref),
-        })
-        .collect();
+    let (picks, unreadable) = picks(&found, names.as_deref())?;
     let added = files.import(&name, &query.start, &picks, node.supervisor.kinds())?;
     let file = &request.files
         [usize::try_from(added.source.0).expect("invariant: a source fits a usize")];
@@ -975,8 +959,11 @@ async fn import(node: &Node, subject: &Name, request: Import) -> Result<Ran, Err
     Ok(Ran::Import(output, text))
 }
 
+/// The given name of each path of a walk of points, in their order.
+type Given = Vec<Option<Name>>;
+
 /// The scope of an import of `points` or of the match `pattern`, and the given name
-/// of each point.
+/// of each point, or `None` for a match.
 ///
 /// # Errors
 ///
@@ -986,24 +973,23 @@ async fn import(node: &Node, subject: &Name, request: Import) -> Result<Ran, Err
 fn picked(
     points: Vec<Point>,
     pattern: Option<String>,
-) -> Result<(browse::Scope, Vec<Option<Name>>), Error> {
+) -> Result<(browse::Scope, Option<Given>), Error> {
     match (points.is_empty(), pattern) {
         (false, Some(_)) => Err(Error::Argument {
             message: "an import takes `points` or `match`, not both".to_owned(),
         }),
         (true, None) => Err(Error::NoPick),
-        (true, Some(text)) => {
-            Ok((browse::Scope::Match(self::pattern(text)?), Vec::new()))
-        }
+        (true, Some(text)) => Ok((browse::Scope::Match(self::pattern(text)?), None)),
         (false, None) => {
             let (paths, names) = self::points(points)?;
-            Ok((browse::Scope::Points(paths), names))
+            Ok((browse::Scope::Points(paths), Some(names)))
         }
     }
 }
 
-/// The count of points of `found` that the connector cannot read or write. `points`
-/// is the count of paths of a walk of points, or `None` for a match.
+/// The picks of `found`, and the count of points of a match that the connector cannot
+/// read or write, which it leaves out. `names` is the given name of each path of a
+/// walk of points, in their order, or `None` for a match.
 ///
 /// # Errors
 ///
@@ -1012,37 +998,64 @@ fn picked(
 ///
 /// # Panics
 ///
-/// When a walk of points gives other than one entry for each path.
-fn unreadable(found: &browse::Found, points: Option<usize>) -> Result<usize, Error> {
-    let matched = points.is_none();
+/// When a walk of points gives other than one point or unreadable entry for each path.
+fn picks<'a>(
+    found: &'a browse::Found,
+    names: Option<&'a [Option<Name>]>,
+) -> Result<(Vec<config::import::Pick<'a>>, usize), Error> {
     match found.end {
         browse::End::Done => {}
-        browse::End::Budget => return Err(Error::ImportBudget { matched }),
+        browse::End::Budget => {
+            let matched = names.is_none();
+            return Err(Error::ImportBudget { matched });
+        }
         browse::End::Limit => return Err(Error::ImportLimit { picked: None }),
         browse::End::Next(_) => unreachable!("invariant: only a level gives a cursor"),
     }
-    let unreadable: Vec<(String, String)> = found
-        .entries
-        .iter()
-        .filter_map(|entry| match &entry.shape {
-            browse::Shape::Unreadable(reason) => {
-                Some((entry.path.to_string(), reason.clone()))
-            }
-            browse::Shape::Point(_) | browse::Shape::Folder => None,
-        })
-        .collect();
-    let Some(points) = points else {
-        return Ok(unreadable.len());
+    let pick = |entry: &'a browse::Entry, facts, name| config::import::Pick {
+        path: &entry.path,
+        tag: &entry.tag,
+        facts,
+        name,
     };
+    let Some(names) = names else {
+        let mut unreadable = 0;
+        let picks = (found.entries.iter())
+            .filter_map(|entry| match &entry.shape {
+                browse::Shape::Point(facts) => Some(pick(entry, facts, None)),
+                browse::Shape::Unreadable(_) => {
+                    unreadable += 1;
+                    None
+                }
+                browse::Shape::Folder => None,
+            })
+            .collect();
+        return Ok((picks, unreadable));
+    };
+    assert_eq!(
+        found.entries.len(),
+        names.len(),
+        "invariant: a walk of points gives one entry for each path"
+    );
+    let mut picks = Vec::with_capacity(names.len());
+    let mut unreadable = Vec::new();
+    for (entry, name) in found.entries.iter().zip(names) {
+        match &entry.shape {
+            browse::Shape::Point(facts) => {
+                picks.push(pick(entry, facts, name.as_ref()));
+            }
+            browse::Shape::Unreadable(reason) => {
+                unreadable.push((entry.path.to_string(), reason.clone()));
+            }
+            browse::Shape::Folder => {
+                unreachable!("invariant: a walk of points gives no folder")
+            }
+        }
+    }
     if !unreadable.is_empty() {
         return Err(Error::UnreadablePoint { points: unreadable });
     }
-    assert_eq!(
-        found.entries.len(),
-        points,
-        "invariant: a walk of points gives one entry for each path"
-    );
-    Ok(0)
+    Ok((picks, 0))
 }
 
 /// The paths and the given names of `points`.
