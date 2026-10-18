@@ -281,7 +281,10 @@ state on `main`.
   holds at most one chunk in memory for each stream. `transport` copies each part of a
   chunk and holds no block of it, so a peer that delays its acks pins only copies inside
   `window_bytes`. `node` routes a blob stream only from a node that is a member of its
-  region at the header, and rejects each other one (#1232).
+  region at the header, and rejects each other one (#1232). The store takes its
+  blocks from its own pool, cut from the budget of shard 0. So a member that sends put
+  heads and no bodies holds only that pool: blob streams then fail, and the transport
+  and the mesh go on.
 - `blob::peer::get` trusts the peer no more than `serve` does: a head of the oldest open
   digest over the largest block of its pool stops the stream with `TOO_LARGE`, and bytes
   that do not hash to the digest stop it with `MISMATCH` and are not stored. So a binary
