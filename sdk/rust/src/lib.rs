@@ -2,9 +2,11 @@
 
 use std::fmt;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Mutex, mpsc};
 
+use env::files::Files;
 use env::tasks::{Group, Tasks};
 use env::thread::Handle;
 use tokio::sync::oneshot;
@@ -33,6 +35,89 @@ pub struct Node {
     pub key: types::node::Key,
     /// The public key that the node proves in the handshake.
     pub public_key: PublicKey,
+}
+
+impl Node {
+    /// The node that runs on the data directory `dir` (`--data` of `foundation
+    /// start`), and its first admin as the subject, or `None` when `dir` holds no
+    /// `admin.key` that a node wrote. Blocks until the read ends.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Local`] with the cause: `NotRunning` also when `dir` or `dir/data` is
+    /// not there or is not a directory. [`Error::Thread`] when a thread that reads the
+    /// directory cannot start, and [`Error::Panicked`].
+    #[expect(
+        clippy::missing_panics_doc,
+        clippy::unwrap_in_result,
+        reason = "a shard that did not panic sent its read"
+    )]
+    pub fn local(dir: &Path) -> Result<(Self, Option<Subject>), Error> {
+        let thread = |e: &dyn fmt::Display| Error::Thread {
+            reason: e.to_string(),
+        };
+        let threads = os::threads().map_err(|e| thread(&e))?;
+        let (disk, files) = os::stored(dir, &threads, "foundation-sdk-files")
+            .map_err(|error| opened(dir, error))?;
+        let shards = os::shards().map_err(|e| thread(&e))?;
+        let (sender, read) = mpsc::channel();
+        let config = env::shards::Config {
+            name: "foundation-sdk".into(),
+            core: None,
+        };
+        let shard = shards.start(config, move |_| async move {
+            let local = sector::local::read(&Files::new(disk)).await;
+            sender
+                .send(local)
+                .expect("invariant: `local` keeps the receiver");
+        });
+        let shard = shard.map_err(|e| thread(&e))?;
+        let joined = shard.join().and(files.join());
+        joined.map_err(|_panicked| Error::Panicked)?;
+        let local = read
+            .try_recv()
+            .expect("invariant: a shard that did not panic sent its read")
+            .map_err(Error::Local)?;
+        let node = Self {
+            addresses: vec![local.address],
+            key: local.key,
+            public_key: local.public_key,
+        };
+        let subject = local.admin.map(|private_key| Subject {
+            name: spec::founding::admin(),
+            private_key,
+        });
+        Ok((node, subject))
+    }
+}
+
+/// The error of [`Node::local`] whose `os::stored` of the data directory `dir` failed.
+fn opened(dir: &Path, error: os::Error) -> Error {
+    match error {
+        os::Error::Dir(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Error::Local(sector::local::Error::NotRunning)
+        }
+        os::Error::Dir(error) => {
+            Error::Local(sector::local::Error::Files(env::files::Error::Io {
+                path: dir.join("data"),
+                operation: env::files::Operation::Open,
+                code: error
+                    .raw_os_error()
+                    .expect("invariant: `os` gives each `Dir` error of an OS call"),
+            }))
+        }
+        error @ (os::Error::Thread(_)
+        | os::Error::Cores(_)
+        | os::Error::Memory(_)
+        | os::Error::Wall(_)) => Error::Thread {
+            reason: error.to_string(),
+        },
+    }
 }
 
 /// What a program acts as on a node.
@@ -155,8 +240,8 @@ impl Thread {
     }
 }
 
-/// Why [`Client::connect`] gave no client, or why the session ended before
-/// [`Client::close`].
+/// Why [`Node::local`] gave no node, [`Client::connect`] gave no client, or the
+/// session ended before [`Client::close`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The client's thread or its runtime cannot start.
@@ -169,6 +254,8 @@ pub enum Error {
     /// The session failed before the node admitted the hello, or ended before the
     /// close.
     Session(program::Error),
+    /// The data directory of [`Node::local`] names no node to reach, as the cause says.
+    Local(sector::local::Error),
     /// The client's thread panicked, and the panic hook of the process got its
     /// message. Only a build where panics unwind gives it: with `panic = "abort"`, the
     /// panic ends the process.
@@ -183,6 +270,7 @@ impl fmt::Display for Error {
             }
             Self::Bind(error) => write!(f, "cannot bind the local UDP socket: {error}"),
             Self::Session(error) => write!(f, "{error}"),
+            Self::Local(error) => write!(f, "{error}"),
             Self::Panicked => write!(f, "the client thread panicked"),
         }
     }

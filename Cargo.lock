@@ -1914,6 +1914,8 @@ dependencies = [
  "env",
  "os",
  "program",
+ "sector",
+ "spec",
  "tokio",
  "tracing",
  "transport",
