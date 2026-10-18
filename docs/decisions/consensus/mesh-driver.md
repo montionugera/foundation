@@ -112,13 +112,14 @@
   2026-10-07T10:38:49Z:
   https://github.com/synnaxlabs/foundation/pull/1263#issuecomment-6036181809); a
   member that is not a voter proposes with join (#336). The leader does not check the
-  home of a forwarded change: `Error::NotMember` checks only the argument of a local
-  caller, and the check of a home at apply on each node is #1273. A forwarded change
-  applies at least one time: a member that got no answer forwards it again, and the
-  leader then appends a second entry. A try of `set_home` that gives up resets its
-  stream. A proposal that the network delivers late, before the reset, can still apply
-  after a later call returned and set the older home, until #1273 refuses it (ruled by
-  the architect, 2026-10-07T20:58:20Z:
+  home of a forwarded change: `Error::NotMember` checks the argument of a local caller
+  and the member of a `Card` change, and the check of a home at apply on each node is
+  #1273. A forwarded change applies at least one time: a member that got no answer
+  forwards it again, and the leader then appends a second entry, other than for a
+  `Card` change that it proposed in the same term. A try of `set_home` that gives up
+  resets its stream. A proposal that the network delivers late, before the reset, can
+  still apply after a later call returned and set the older home, until #1273 refuses
+  it (ruled by the architect, 2026-10-07T20:58:20Z:
   https://github.com/synnaxlabs/foundation/pull/1607#issuecomment-6046723849).
   Supersedes the sentence that a repeat of `Change::Home` gives the state of a call
   that took effect last:
@@ -441,9 +442,9 @@
   start the applied state can lag a card that commits after it, so the call signs
   above that version and proposes (option (a) of item 1, `laptop.architect`,
   2026-10-18T07:48:16Z:
-  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247302177). A
-  file with no valid slot that a torn
-  write explains gives `Error::CardFile` (`laptop.architect`, 2026-10-18T07:33:59Z:
+  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247302177). A file
+  with no valid slot that a torn write explains gives `Error::CardFile`
+  (`laptop.architect`, 2026-10-18T07:33:59Z:
   https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247185547). A node
   proposes at most one `Change::Card` of each member each minute, by `Config::clock`,
   for a forwarded change and for a local call. It counts a card when it proposes it, in
@@ -452,11 +453,14 @@
   `laptop.monitor`, 2026-10-18T03:32:43Z:
   https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245224489).
   The bound applies only while the node leads, so a node that lost its lead gives
-  `NotLeader` and the call forwards the card. It counts only the cards of members: the
-  leader refuses a card of a node that is not a member before the log, with
-  `Error::NotMember`. A repeat of the card that it proposed, the same version of the
-  same member, gets no new entry. It gets the answer of that card when it applies. A
-  repeat in a later term than the entry proposes again, as the entry can be gone from
-  the log (`laptop.architect`, 2026-10-18T07:48:16Z and 2026-10-18T07:48:57Z:
+  `NotLeader` and the call forwards the card. A repeat of the card that it proposed,
+  the same version of the same member, gets no new entry. It waits for the write of
+  that entry and gets its position, as the first call does (`laptop.architect`,
+  2026-10-18T07:48:16Z and 2026-10-18T07:48:57Z:
   https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247302177 and
-  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247307620).
+  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247307620). It
+  counts only the cards of members: the leader refuses a card of a node that is not a
+  member before the log, with `Error::NotMember`. A repeat in a later term than the
+  entry proposes again, as the entry can be gone from the log (`laptop.architect`,
+  2026-10-18T08:28:03Z:
+  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247634446).
