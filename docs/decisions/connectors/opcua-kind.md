@@ -187,6 +187,10 @@
   Read each tick, which the server answers with `BadNothingToDo`). `modbus` keeps
   `modbus.no-read`, as it has no browse (`laptop.architect-2`, 2026-10-18T21:32:25Z:
   https://github.com/synnaxlabs/foundation/issues/3269#issuecomment-6255402516; key
-  choices 3 and 7 sent to `laptop.monitor`; the oracle change approved by the person,
-  2026-10-18T21:35Z:
+  choice 3 accepted by `laptop.monitor`; key choice 7 approved by the person,
+  2026-10-18T22:10Z:
+  https://github.com/synnaxlabs/foundation/pull/3272#issuecomment-6255686369; the
+  removed refused case approved by the person, 2026-10-18T21:33Z:
+  https://github.com/synnaxlabs/foundation/issues/3269#issuecomment-6255400141, and
+  the new check case at 21:35Z:
   https://github.com/synnaxlabs/foundation/issues/3269#issuecomment-6255436768).
