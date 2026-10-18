@@ -22,8 +22,8 @@ use crate::{deadline, secret, supervisor};
 pub const LIMIT: usize = 500;
 
 /// The most entries that one browse looks at: the entries that find its start, and
-/// for a pattern each entry that it walks, where a page with no entries counts as
-/// one.
+/// for a pattern or a list of paths each entry of each level that it reads, where a
+/// page with no entries counts as one.
 pub const VISITS: usize = 10_000;
 
 /// The most that [`Context::time`] waits for the node's first mesh time.
@@ -156,7 +156,8 @@ pub trait Device {
 /// [`Error::Config`] with `connector.no-folder` when no folder is at a name of the
 /// start, or at a folder that the device gave and then did not have, with
 /// `connector.no-point` for each path of [`Scope::Points`] at a folder, at no entry,
-/// or not under the start, and with `connector.broken-browse` when `device` breaks a
+/// or not under the start, other than a path at a folder or at no entry when the walk
+/// ends at [`End::Budget`], and with `connector.broken-browse` when `device` breaks a
 /// rule of [`Device`] that its doc says [`walk`] checks.
 /// The errors of `device`.
 pub async fn walk(device: &mut impl Device, query: &Query) -> Result<Found, Error> {
@@ -210,36 +211,84 @@ struct Level {
     next: Option<Cursor>,
 }
 
-/// The names after a start of a list of paths, as a tree: the slot of the entry at a
-/// node, and the names under it.
-#[derive(Default)]
+/// The names after a start of a list of paths, as a tree whose nodes are in one
+/// `Vec`, so that no build or drop recurses on a deep path.
 struct Names<'a> {
+    paths: &'a [Path],
+    start: Path,
+    /// The first is the start.
+    nodes: Vec<Node<'a>>,
+    /// The slot of each path, in order: `None` for a path not under the start, one
+    /// slot for equal paths.
+    slots: Vec<Option<usize>>,
+    count: usize,
+}
+
+/// A name of [`Names`]: the slot of the entry at it, and the node of each name under
+/// it.
+#[derive(Default)]
+struct Node<'a> {
     at: Option<usize>,
-    under: BTreeMap<&'a str, Names<'a>>,
+    under: BTreeMap<&'a str, usize>,
 }
 
 impl<'a> Names<'a> {
-    /// The names of each of `paths` that is under `start`, the slot of each path in
-    /// order (`None` for a path not under `start`, one slot for equal paths), and the
-    /// count of slots.
-    fn new(paths: &'a [Path], start: &Path) -> (Self, Vec<Option<usize>>, usize) {
-        let start: Vec<&str> = start.names().collect();
-        let mut names = Self::default();
-        let mut slots = Vec::with_capacity(paths.len());
-        let mut count = 0;
+    /// The names of each of `paths` that is under `start`.
+    fn new(paths: &'a [Path], start: Path) -> Self {
+        let mut names = Self {
+            paths,
+            start,
+            nodes: vec![Node::default()],
+            slots: Vec::with_capacity(paths.len()),
+            count: 0,
+        };
         for path in paths {
             let mut rest = path.names();
-            if !start.iter().all(|name| rest.next() == Some(name)) {
-                slots.push(None);
+            if !names.start.names().all(|name| rest.next() == Some(name)) {
+                names.slots.push(None);
                 continue;
             }
-            let node =
-                rest.fold(&mut names, |node, name| node.under.entry(name).or_default());
-            let at = *node.at.get_or_insert(count);
-            count = count.max(at + 1);
-            slots.push(Some(at));
+            let mut node = 0;
+            for name in rest {
+                let next = names.nodes.len();
+                node = *names.nodes[node].under.entry(name).or_insert(next);
+                if node == next {
+                    names.nodes.push(Node::default());
+                }
+            }
+            let at = *names.nodes[node].at.get_or_insert(names.count);
+            names.count = names.count.max(at + 1);
+            names.slots.push(Some(at));
         }
-        (names, slots, count)
+        names
+    }
+
+    /// The entry in `seen` at the slot of each path, which is a point or an unreadable
+    /// entry. A walk that ended at the budget gives what it found, and refuses only a
+    /// path not under the start.
+    fn found(&self, seen: &[Option<Entry>], budget: bool) -> Result<Vec<Entry>, Error> {
+        let mut found = Vec::new();
+        let mut problems = Vec::new();
+        for (slot, path) in self.slots.iter().zip(self.paths) {
+            match slot.map(|at| &seen[at]) {
+                Some(Some(entry)) if entry.shape != Shape::Folder => {
+                    found.push(entry.clone());
+                }
+                Some(_) if budget => {}
+                Some(_) => problems.push(no_point(&format_args!(
+                    "the device has no point at \"{path}\""
+                ))),
+                None => problems.push(no_point(&format_args!(
+                    "the path \"{path}\" is not under the start \"{}\"",
+                    self.start
+                ))),
+            }
+        }
+        if problems.is_empty() {
+            Ok(found)
+        } else {
+            Err(Error::Config(problems))
+        }
     }
 }
 
@@ -412,21 +461,25 @@ impl<D: Device> Walker<'_, D> {
         Ok((found, End::Done))
     }
 
-    /// The entry at each of `paths` under `folder`, in the order of the paths.
+    /// The entry at each of `paths` under `folder`, in the order of the paths. It
+    /// stops a folder when it has seen each name that a path takes in it.
     async fn points(
         &mut self,
         folder: Option<Entry>,
         paths: &[Path],
     ) -> Result<(Vec<Entry>, End), Error> {
         let start = folder.as_ref().map_or_else(Path::root, |f| f.path.clone());
-        let (names, slots, count) = Names::new(paths, &start);
-        let mut seen: Vec<Option<Entry>> = vec![None; count];
+        let names = Names::new(paths, start);
+        let mut seen: Vec<Option<Entry>> = vec![None; names.count];
+        let mut met = vec![false; names.nodes.len()];
         let mut stack = Vec::new();
-        if !names.under.is_empty() {
-            stack.push((folder, &names));
+        if !names.nodes[0].under.is_empty() {
+            stack.push((folder, 0));
         }
         let budget = 'walk: {
             'folders: while let Some((folder, node)) = stack.pop() {
+                let under = &names.nodes[node].under;
+                let mut left = under.len();
                 let mut cursor = None;
                 loop {
                     let ControlFlow::Continue(page) =
@@ -440,16 +493,21 @@ impl<D: Device> Walker<'_, D> {
                         }
                         let link = entry.path.0.as_ref();
                         let link = link.expect("invariant: an entry has a name");
-                        let Some(under) = node.under.get(&*link.name) else {
+                        let Some(&at) = under.get(&*link.name) else {
                             continue;
                         };
-                        if entry.shape == Shape::Folder && !under.under.is_empty() {
-                            if let Some(at) = under.at {
-                                seen[at] = Some(entry.clone());
-                            }
-                            stack.push((Some(entry), under));
-                        } else if let Some(at) = under.at {
-                            seen[at] = Some(entry);
+                        if std::mem::replace(&mut met[at], true) {
+                            continue;
+                        }
+                        let child = &names.nodes[at];
+                        if entry.shape == Shape::Folder && !child.under.is_empty() {
+                            stack.push((Some(entry), at));
+                        } else if let Some(slot) = child.at {
+                            seen[slot] = Some(entry);
+                        }
+                        left -= 1;
+                        if left == 0 {
+                            continue 'folders;
                         }
                     }
                     cursor = page.next;
@@ -460,7 +518,7 @@ impl<D: Device> Walker<'_, D> {
             }
             false
         };
-        let entries = entries(&seen, &slots, paths, &start, budget)?;
+        let entries = names.found(&seen, budget)?;
         Ok((entries, if budget { End::Budget } else { End::Done }))
     }
 
@@ -490,39 +548,6 @@ fn no_folder(path: &Path) -> Error {
         &format_args!("the device has no folder at \"{path}\""),
         "Browse the folder above it to see the names in it",
     )
-}
-
-/// The entry that a walk saw at the slot of each of `paths` under `start`, which is a
-/// point or an unreadable entry. A walk that ended at the budget gives what it found,
-/// and refuses only a path not under `start`.
-fn entries(
-    seen: &[Option<Entry>],
-    slots: &[Option<usize>],
-    paths: &[Path],
-    start: &Path,
-    budget: bool,
-) -> Result<Vec<Entry>, Error> {
-    let mut found = Vec::new();
-    let mut problems = Vec::new();
-    for (slot, path) in slots.iter().zip(paths) {
-        match slot.map(|at| &seen[at]) {
-            Some(Some(entry)) if entry.shape != Shape::Folder => {
-                found.push(entry.clone());
-            }
-            Some(_) if budget => {}
-            Some(_) => problems.push(no_point(&format_args!(
-                "the device has no point at \"{path}\""
-            ))),
-            None => problems.push(no_point(&format_args!(
-                "the path \"{path}\" is not under the start \"{start}\""
-            ))),
-        }
-    }
-    if problems.is_empty() {
-        Ok(found)
-    } else {
-        Err(Error::Config(problems))
-    }
 }
 
 /// The problem of a path of [`Scope::Points`].
@@ -1107,7 +1132,7 @@ pub enum Scope {
     Match(Pattern),
     /// The entry at each path, in the order of the paths: a point or an unreadable
     /// entry. Each path is from the root, as an [`Entry`] gives it, and under the
-    /// start. The walk reads each folder at most once.
+    /// start. The walk reads the folder at each path at most once.
     Points(Vec<Path>),
 }
 
