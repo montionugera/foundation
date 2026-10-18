@@ -46,9 +46,9 @@ mod founding;
 mod home;
 mod propose;
 mod send;
-mod signed;
 mod stream;
 pub(crate) mod used;
+mod version;
 
 /// The time of one `raft` tick.
 const TICK: Span = Span::from_nanos(100 * Span::MILLISECOND.nanos());
@@ -132,7 +132,7 @@ pub struct Mesh {
     pool: Rc<Pool>,
     store: Rc<blob::Store>,
     clock: Clock,
-    cards: Rc<signed::Cards>,
+    cards: Rc<version::Cards>,
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "the join answer of #336 is the first user")
@@ -248,7 +248,7 @@ impl Mesh {
         let logged = stored != log::Stored::default();
         let blocks = log.blocks();
         founding::keep(files, &config.dir, blocks, &config.founding, logged).await?;
-        let cards = signed::Cards::new(&config, blocks.clone());
+        let cards = version::Cards::new(&config, blocks.clone());
         let used = used::open(Opening {
             files,
             dir: &config.dir,
@@ -2933,7 +2933,7 @@ mod tests {
     mod in_use;
     mod send;
     mod serve;
-    mod signed;
+    mod version;
 
     /// The entries in the log of `node`, which had a power cut.
     fn stored(sim: &mut Sim, node: &sim::node::Node) -> Vec<Entry> {
