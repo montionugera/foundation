@@ -457,9 +457,10 @@
   The bound applies only while the node leads, so a node that lost its lead gives
   `NotLeader` and the call forwards the card. A repeat of the card that it proposed,
   the same encoded change, gets no new entry. Another card of the member, also one
-  at the same version, gets `Error::Soon`. A repeat waits for the write of that entry
-  and gets its position, as the first call does (`laptop.architect`,
-  2026-10-18T07:48:16Z and 2026-10-18T07:48:57Z:
+  at the same version, gets `Error::Soon` (`laptop.architect`, 2026-10-18T10:28:03Z:
+  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6248754140). A
+  repeat waits for the write of that entry and gets its position, as the first call
+  does (`laptop.architect`, 2026-10-18T07:48:16Z and 2026-10-18T07:48:57Z:
   https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247302177 and
   https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247307620). It
   counts only the cards of members: the leader refuses a card of a node that is not a
