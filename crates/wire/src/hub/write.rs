@@ -1,5 +1,14 @@
 //! The frames of a program's write stream after its places, and the replies of the
 //! node. The messages before them are in [`client::write`](super::client::write).
+//!
+//! Fields are little-endian.
+//!
+//! - [`Head`]: kind 7, the time (`u8`, live 0, backfill 1, node 2), the form (`u8`, raw
+//!   0, encoded 1), the samples of each series (`u32`), and the count of series
+//!   (`u32`).
+//! - [`Reply`]: taken 1 or lost 2, then the seq (`u64`) and the count (`u32`); refused
+//!   3, then the code (`u8`, waiting 1, reserved 2, expired 3, order 4, codec 5, full
+//!   6, large 7); stored 4, then the last seq on disk (`u64`).
 
 use types::frame::{self, Form, Path};
 
