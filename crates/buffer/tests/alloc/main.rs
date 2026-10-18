@@ -169,7 +169,8 @@ fn logs_take_no_allocation() {
 
 /// After the warm-up, a deadline of 32 tagged entries copies each into the bytes
 /// of the copy it replaces, so it allocates no more than one of untagged entries.
-/// Nor does a carry of the copy of an index that appends once each 64 deadlines.
+/// Nor does a carry of the copy of an index that appends once each 64 deadlines,
+/// nor a record of entries of 60 bytes, whose carry body takes a block past it.
 fn tagged_deadlines_take_no_allocation() {
     let count = |mut deadline: buffer::bench::Deadline, period| {
         for _ in 0..4 * 64 {
@@ -184,11 +185,14 @@ fn tagged_deadlines_take_no_allocation() {
     let untagged = count(buffer::bench::Deadline::new(32, blocks), 1);
     let tagged = count(buffer::bench::Deadline::tagged(32, blocks), 1);
     let carried = count(buffer::bench::Deadline::tagged(32, blocks), 64);
+    let mut excess = buffer::bench::Deadline::tagged(32, blocks);
+    excess.resize(60);
+    let excess = count(excess, 1);
     assert_eq!(
-        (untagged, tagged, carried),
-        (0, 0, 0),
-        "allocations in 1024 deadlines of 32 entries: untagged, tagged, and tagged \
-         with an index that appends once each 64"
+        (untagged, tagged, carried, excess),
+        (0, 0, 0, 0),
+        "allocations in 1024 deadlines of 32 entries: untagged, tagged, tagged \
+         with an index that appends once each 64, and tagged of 60 bytes"
     );
 }
 
