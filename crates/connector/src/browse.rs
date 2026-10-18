@@ -218,6 +218,25 @@ struct Names<'a> {
     under: BTreeMap<&'a str, Names<'a>>,
 }
 
+impl<'a> Names<'a> {
+    /// The names of `paths`, and the path from `start` of each that the names end at,
+    /// once for each path.
+    fn new(paths: &'a [Path], start: &Path) -> (Self, Vec<Path>) {
+        let mut names = Self::default();
+        let mut wanted = Vec::new();
+        for path in paths {
+            let node = path
+                .names()
+                .fold(&mut names, |node, name| node.under.entry(name).or_default());
+            if node.at.is_none() {
+                node.at = Some(wanted.len());
+                wanted.push(path.names().fold(start.clone(), |at, n| at.child(n)));
+            }
+        }
+        (names, wanted)
+    }
+}
+
 /// One folder of a walk whose entries are not all seen.
 struct Frame {
     folder: Option<Entry>,
@@ -395,17 +414,7 @@ impl<D: Device> Walker<'_, D> {
         paths: &[Path],
     ) -> Result<(Vec<Entry>, End), Error> {
         let start = folder.as_ref().map_or_else(Path::root, |f| f.path.clone());
-        let mut names = Names::default();
-        let mut wanted = Vec::new();
-        for path in paths {
-            let node = path
-                .names()
-                .fold(&mut names, |node, name| node.under.entry(name).or_default());
-            if node.at.is_none() {
-                node.at = Some(wanted.len());
-                wanted.push(path.names().fold(start.clone(), |at, n| at.child(n)));
-            }
-        }
+        let (names, wanted) = Names::new(paths, &start);
         let mut seen: Vec<Option<Entry>> = vec![None; wanted.len()];
         let mut stack = Vec::new();
         if !names.under.is_empty() {
@@ -451,24 +460,7 @@ impl<D: Device> Walker<'_, D> {
             let found = found.filter(|entry| entry.shape != Shape::Folder);
             return Ok((found.collect(), End::Budget));
         }
-        let mut found = Vec::new();
-        let mut missing = Vec::new();
-        for (entry, path) in seen.into_iter().zip(&wanted) {
-            match entry {
-                Some(entry) if entry.shape != Shape::Folder => found.push(entry),
-                Some(_) => missing.push(no_point(
-                    &format_args!("the entry at \"{path}\" is a folder"),
-                )),
-                None => missing.push(no_point(
-                    &format_args!("the device has no point at \"{path}\""),
-                )),
-            }
-        }
-        if missing.is_empty() {
-            Ok((found, End::Done))
-        } else {
-            Err(Error::Config(missing))
-        }
+        Ok((entries(seen, &wanted)?, End::Done))
     }
 
     /// The frame of the first page of `folder`.
@@ -497,6 +489,29 @@ fn no_folder(path: &Path) -> Error {
         &format_args!("the device has no folder at \"{path}\""),
         "Browse the folder above it to see the names in it",
     )
+}
+
+/// The entry that a walk saw at each of `wanted`, which is a point or an unreadable
+/// entry.
+fn entries(seen: Vec<Option<Entry>>, wanted: &[Path]) -> Result<Vec<Entry>, Error> {
+    let mut found = Vec::new();
+    let mut missing = Vec::new();
+    for (entry, path) in seen.into_iter().zip(wanted) {
+        match entry {
+            Some(entry) if entry.shape != Shape::Folder => found.push(entry),
+            Some(_) => missing.push(no_point(&format_args!(
+                "the entry at \"{path}\" is a folder"
+            ))),
+            None => missing.push(no_point(&format_args!(
+                "the device has no point at \"{path}\""
+            ))),
+        }
+    }
+    if missing.is_empty() {
+        Ok(found)
+    } else {
+        Err(Error::Config(missing))
+    }
 }
 
 /// The problem of a path of [`Scope::Points`].

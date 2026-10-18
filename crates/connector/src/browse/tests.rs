@@ -1087,7 +1087,10 @@ mod picks {
     use super::*;
 
     fn picks(start: &str, paths: &[&str]) -> Query {
-        query(start, Scope::Points(paths.iter().map(|p| path(p)).collect()))
+        query(
+            start,
+            Scope::Points(paths.iter().map(|p| path(p)).collect()),
+        )
     }
 
     /// The diagnostic of no point at `path`.
@@ -1163,7 +1166,14 @@ mod picks {
         let mut tree = Tree::new(&plant(), 2);
         let query = picks(
             "",
-            &["Line2/Oven", "Line9/Temp", "Clock", "Clock/x", "Line1/Nope", ""],
+            &[
+                "Line2/Oven",
+                "Line9/Temp",
+                "Clock",
+                "Clock/x",
+                "Line1/Nope",
+                "",
+            ],
         );
         let found = now(walk(&mut tree, &query));
         let Err(Error::Config(diagnostics)) = found else {
