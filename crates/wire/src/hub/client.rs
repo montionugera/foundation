@@ -119,8 +119,8 @@ pub enum Refusal {
     /// [`FAILED`]: the reader of a read failed, or the writer of a write failed or
     /// could not store a frame.
     Failed,
-    /// [`BUSY`]: the node had no memory for a response, a request body, a read, or
-    /// the open or the ends of a write.
+    /// [`BUSY`]: the node had no memory for a response, a request body, a read, the
+    /// open or the ends of a write, or a reply of a write.
     Busy,
     /// [`REFUSED`].
     Refused,
@@ -181,15 +181,19 @@ impl fmt::Display for Refusal {
         f.write_str(match self {
             Self::Malformed => "a message of the program broke the client wire",
             Self::Unknown => {
-                "the selector matches no channel, or a channel of the read was removed"
+                "the selector matches no channel, or a channel of the read or write is \
+                 unknown or was removed"
             }
-            Self::NotHome => "the home of the index of the read is another node",
+            Self::NotHome => {
+                "the home of the index of the read or write is another node"
+            }
             Self::Failed => {
-                "the reader failed: the buffer or the mesh of the home of the index \
-                 stopped, or the path from the node to that home failed"
+                "the reader or writer failed: the buffer or the mesh of the home of the \
+                 index stopped, or the path from the node to that home failed"
             }
             Self::Busy => {
-                "the node had no memory for a response, a request body, or a read"
+                "the node had no memory for a response, a request body, a read, or a \
+                 write"
             }
             Self::Refused => {
                 "the spec has no such subject, does not list the key for it, or the \
