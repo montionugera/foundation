@@ -955,3 +955,12 @@
   PEM sentences before the `-Werror` sentence: approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6238447456,
   2026-10-17 18:18 UTC).
+  The split of #2934 PR 1c into 1c, the clock of the validity check with its tests at
+  the certificate group, and 1d, the secure client and sim server, the test of each
+  policy in each mode, and the replay test of TLS RANDOMNESS: OK of
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6246201281,
+  2026-10-18 05:41 UTC). Both merge before PR 2, and 1d merges after 1c. The plan of 1d,
+  with the sites of the shim that set the loop of each group, goes on #2934 before its
+  code. The test of `leaf.der` at `notAfter` is the test of item 1 of 6230838999 that
+  moves the clock past `notAfter`.
