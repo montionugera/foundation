@@ -111,15 +111,19 @@
   `Outcome` for each pick: `Added { name, fills }`, `Unnamed`, or `Present`. A pick is
   present when a block of the connector body or an earlier pick that adds a channel has
   its tag as `Table::tag` gives it, and takes no name (`laptop.architect-2`, ruling A on
-  round 1 finding 4, item 3 of
-  https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245080635). The other
+  round 1 finding 4,
+  https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245234973). A pick
+  that ends `Unnamed` makes no later pick of its tag present, so `add` names until no
+  pick changes. Lost: one pass that names each pick that the body does not have, then
+  marks the later picks of its tag `Present`, as it spends a suffix and checks a given
+  name of a pick that ends `Present`. The other
   picks take names in this order: each given name, then the index, then the defaults of
   `import::names`. The index is that of the first channel that the connector writes
   whose block names one, else the new `<connector>.time`, or the first free of `_2`,
   `_3`, and on, with case folded, added only when a pick adds a channel. The blocks of
   `Table::block` go after the last item of the connector body; the new index and the
   `channel` blocks go at the end of the file. A given name that is reserved, that the
-  files define or imply or that the connector writes, in any ASCII case, or that two
+  files define or imply or that a connector writes, in any ASCII case, or that two
   picks get, fails the call before the write, with each diagnostic at once:
   `config.reserved-name`, or `config.duplicate-name` with the path and the name, or one
   `config.duplicate-name` that names both paths. Each has the fix "Give another name, or
