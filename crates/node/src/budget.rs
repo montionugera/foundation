@@ -45,7 +45,7 @@ pub async fn budget(files: &Files) -> Result<Option<Budget>, Error> {
     match held.map_err(Error::Directory)? {
         Held::Nothing => Ok(None),
         Held::Written(bytes) => Ok(Some(decode(&bytes))),
-        Held::Version(_) | Held::Foreign => Err(Error::Budget),
+        Held::Version { .. } | Held::Foreign => Err(Error::Budget),
     }
 }
 

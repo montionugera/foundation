@@ -155,7 +155,7 @@ fn decode(held: &Held<[u8; LEN]>) -> Result<Option<Name>, Error> {
     let bytes = match held {
         Held::Nothing => return Ok(None),
         Held::Written(bytes) => bytes,
-        Held::Version(_) | Held::Foreign => return Err(Error::Name),
+        Held::Version { .. } | Held::Foreign => return Err(Error::Name),
     };
     let len = usize::from(bytes[TAG.len()]);
     let name = &bytes[TAG.len() + 1..][..len];

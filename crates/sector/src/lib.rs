@@ -31,10 +31,15 @@ pub enum Held<T> {
     Nothing,
     /// The value that a node wrote, with the tag and a checksum that matches.
     Written(T),
-    /// A file of any length that holds the prefix of the tag and the version in the
-    /// byte after it, which is not the version of the tag: a node of another version
-    /// wrote it.
-    Version(u8),
+    /// A file of any length that holds the prefix of the tag and, in the byte after
+    /// it, a version of the set that is not the version of the tag: a node of another
+    /// version wrote it.
+    Version {
+        /// The version byte that the file holds: `1` to `9` or `a` to `z`.
+        found: u8,
+        /// The version byte of the tag, which this program reads.
+        expected: u8,
+    },
     /// A file that no node wrote: shorter than the tag, another prefix, or the tag
     /// with another length or checksum.
     Foreign,
@@ -46,7 +51,7 @@ impl<T> Held<T> {
         match self {
             Self::Nothing => Held::Nothing,
             Self::Written(value) => f(value).map_or(Held::Foreign, Held::Written),
-            Self::Version(found) => Held::Version(found),
+            Self::Version { found, expected } => Held::Version { found, expected },
             Self::Foreign => Held::Foreign,
         }
     }
@@ -88,16 +93,21 @@ pub async fn read<const N: usize>(
     Ok(other(&head(&file, tag.len()).await?, tag))
 }
 
-/// [`Held::Version`] when `bytes` hold the prefix of `tag` and another version byte
-/// after it, else [`Held::Foreign`].
+/// [`Held::Version`] when `bytes` hold the prefix of `tag` and another version of the
+/// set after it, else [`Held::Foreign`].
 fn other<T>(bytes: &[u8], tag: &[u8]) -> Held<T> {
     let (prefix, version) = tag.split_at(tag.len() - 1);
+    let expected = version[0];
     match bytes
         .get(..tag.len())
         .map(|head| head.split_at(prefix.len()))
     {
-        Some((held, [found])) if held == prefix && found != &version[0] => {
-            Held::Version(*found)
+        Some((held, &[found]))
+            if held == prefix
+                && found != expected
+                && matches!(found, b'1'..=b'9' | b'a'..=b'z') =>
+        {
+            Held::Version { found, expected }
         }
         _ => Held::Foreign,
     }

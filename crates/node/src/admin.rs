@@ -34,6 +34,6 @@ pub(crate) async fn load(
             Ok(private_key)
         }
         Held::Written(private_key) => Ok(private_key),
-        Held::Version(_) | Held::Foreign => Err(Error::Admin),
+        Held::Version { .. } | Held::Foreign => Err(Error::Admin),
     }
 }

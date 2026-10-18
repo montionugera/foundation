@@ -112,7 +112,16 @@ mod tests {
         bytes[TAG.len() - 1] = b'2';
         crate::checksum(&mut bytes);
         let held = read_over(bytes.to_vec());
-        assert!(matches!(held, Held::Version(b'2')), "{held:?}");
+        assert!(
+            matches!(
+                held,
+                Held::Version {
+                    found: b'2',
+                    expected: b'1'
+                }
+            ),
+            "{held:?}"
+        );
     }
 
     #[test]

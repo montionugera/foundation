@@ -187,10 +187,11 @@
   opens `dir/data` of a directory that is there and makes nothing. A file `address`
   with no address of a node is `Error::Local(local::Error::NotRunning)`, which also
   covers a node that still writes it; an `admin.key` that no node wrote is
-  `Error::Key`. A file of another version is `Error::Local(local::Error::Version)`,
-  before `NotRunning` and `Key`, and a failed file call is
-  `Error::Local(local::Error::Files)` (the wrapped variant, `laptop.architect-2`,
-  2026-10-18T17:34:06Z,
+  `Error::Key`. A file of another version that a read gives is
+  `Error::Local(local::Error::Version)`, before a failed file call, `NotRunning`, and
+  `Key`. A failed file call is `Error::Local(local::Error::Files)`, before
+  `NotRunning`, since it can hide an `admin.key` of another version (the wrapped
+  variant, `laptop.architect-2`, 2026-10-18T17:34:06Z,
   https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252975559).
   `sector::local::read` gives `Local.admin` as `None` for an `admin.key` that is not
   there or that no node wrote, as on a node that joined, and `reach` maps `None` to

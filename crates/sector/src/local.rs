@@ -34,7 +34,7 @@ pub enum Error {
     Version {
         /// The name of the file.
         file: &'static str,
-        /// The version byte that the file holds, which can be any byte.
+        /// The version byte that the file holds: `1` to `9` or `a` to `z`.
         found: u8,
         /// The version byte of the format that this program reads.
         expected: u8,
@@ -67,33 +67,40 @@ impl fmt::Display for Error {
 ///
 /// # Errors
 ///
-/// [`Error::Version`] when a file holds the format of another version, else
-/// [`Error::NotRunning`] when `address` holds no address of a node, and
-/// [`Error::Files`] for a file call that fails, other than
-/// [`env::files::Error::NotFound`].
+/// In this order: [`Error::Version`] when a file that it reads holds the format of
+/// another version, [`Error::Files`] for a file call that fails, other than
+/// [`env::files::Error::NotFound`], and [`Error::NotRunning`] when `address` holds no
+/// address of a node.
 pub async fn read(files: &Files) -> Result<Local, Error> {
-    let address = address::read(files).await.map_err(Error::Files)?;
-    let admin = admin::read(files).await.map_err(Error::Files)?;
-    let address = known(address, address::FILE, address::TAG)?;
-    let admin = known(admin, admin::FILE, admin::TAG)?;
-    let address = address.ok_or(Error::NotRunning)?;
-    Ok(Local {
-        key: address.key,
-        public_key: address.public_key,
-        address: dialed(address.bound),
-        admin,
-    })
+    let address = address::read(files).await;
+    let admin = admin::read(files).await;
+    match (
+        address.map(|held| known(held, address::FILE)),
+        admin.map(|held| known(held, admin::FILE)),
+    ) {
+        (Ok(Err(version)), _) | (_, Ok(Err(version))) => Err(version),
+        (Err(error), _) | (_, Err(error)) => Err(Error::Files(error)),
+        (Ok(Ok(address)), Ok(Ok(admin))) => {
+            let address = address.ok_or(Error::NotRunning)?;
+            Ok(Local {
+                key: address.key,
+                public_key: address.public_key,
+                address: dialed(address.bound),
+                admin,
+            })
+        }
+    }
 }
 
-/// The value that a node wrote to the file `file`, whose tag is `tag`, from what
-/// `held` says it holds, or `None` for no file or a foreign one.
-fn known<T>(held: Held<T>, file: &'static str, tag: &[u8]) -> Result<Option<T>, Error> {
+/// The value that a node wrote to the file `file`, from what `held` says it holds, or
+/// `None` for no file or a foreign one.
+fn known<T>(held: Held<T>, file: &'static str) -> Result<Option<T>, Error> {
     match held {
         Held::Written(value) => Ok(Some(value)),
-        Held::Version(found) => Err(Error::Version {
+        Held::Version { found, expected } => Err(Error::Version {
             file,
             found,
-            expected: tag[tag.len() - 1],
+            expected,
         }),
         Held::Nothing | Held::Foreign => Ok(None),
     }
@@ -155,8 +162,8 @@ mod tests {
             "address holds format version 2, and this program reads version 1"
         );
         assert_eq!(
-            version(0xff).to_string(),
-            "address holds format version \\xff, and this program reads version 1"
+            version(b'z').to_string(),
+            "address holds format version z, and this program reads version 1"
         );
     }
 
@@ -383,5 +390,89 @@ mod tests {
             read.map(|read| read.map(drop)),
             Ok(Err(Error::Files(error)))
         );
+    }
+
+    /// A newer node can give `admin.key` a form that this program cannot open, such
+    /// as a directory. Its `address` of another version still names the cause.
+    #[test]
+    fn read_on_an_address_of_another_version_and_an_admin_key_directory_gives_version()
+    {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = sim.node(sim::node::Config::default());
+        let read = sim.run_on(&host, |host, _| async move {
+            let directory = host.files();
+            let bytes = sealed(&padded(b"foundation/address/2", 140));
+            let len = bytes.len() as u64;
+            let file = directory
+                .open(Path::new(address::FILE), Mode::Create { len })
+                .await
+                .expect("makes the file");
+            let pool = block::Pool::heap(crate::POOL);
+            let block = pool.copy(&bytes).expect("a block");
+            file.write_at(0, &[block]).await.expect("writes");
+            directory
+                .create_dir(Path::new(admin::FILE))
+                .await
+                .expect("makes the directory");
+            read(&directory).await.map(drop)
+        });
+        assert_eq!(read, Ok(Err(version_2("address"))));
+    }
+
+    #[test]
+    fn read_on_an_address_of_another_version_and_a_failed_admin_read_gives_version() {
+        let read = local_over_with(
+            vec![
+                (address::FILE, sealed(&padded(b"foundation/address/2", 140))),
+                (admin::FILE, admin::encode(&PrivateKey([3; 32])).to_vec()),
+            ],
+            vec![(admin::FILE, env::files::Operation::ReadAt)],
+        );
+        assert_eq!(
+            read.map(|read| read.map(drop)),
+            Ok(Err(version_2("address")))
+        );
+    }
+
+    /// The failed read can hide an `admin.key` of another version, which
+    /// [`Error::Version`] names over [`Error::NotRunning`].
+    #[test]
+    fn read_on_no_address_and_a_failed_read_of_the_admin_key_gives_files() {
+        let read = local_over_with(
+            vec![(admin::FILE, admin::encode(&PrivateKey([3; 32])).to_vec())],
+            vec![(admin::FILE, env::files::Operation::ReadAt)],
+        );
+        let error = env::files::Error::Io {
+            path: PathBuf::from(admin::FILE),
+            operation: env::files::Operation::ReadAt,
+            code: 5,
+        };
+        assert_eq!(
+            read.map(|read| read.map(drop)),
+            Ok(Err(Error::Files(error)))
+        );
+    }
+
+    #[test]
+    fn read_on_an_address_of_a_version_byte_outside_the_set_gives_not_running() {
+        for version in [b'0', b'A', b'/', 0xff] {
+            let mut tag = b"foundation/address/".to_vec();
+            tag.push(version);
+            let bytes = sealed(&padded(&tag, 140));
+            assert_eq!(local_over_address(bytes), Ok(Err(Error::NotRunning)));
+            let bytes = padded(&tag, address::LEN);
+            assert_eq!(local_over_address(bytes), Ok(Err(Error::NotRunning)));
+        }
+    }
+
+    #[test]
+    fn read_on_an_address_of_version_z_gives_version() {
+        let bytes = sealed(&padded(b"foundation/address/z", 140));
+        let version = Error::Version {
+            file: "address",
+            found: b'z',
+            expected: b'1',
+        };
+        assert_eq!(local_over_address(bytes), Ok(Err(version)));
     }
 }

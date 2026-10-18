@@ -2,9 +2,10 @@
   version of its format, one byte of lowercase ASCII, `1` to `9`, then `a` to `z`, so
   35 versions, and the bytes before it are the tag's prefix. Version 1 is `1`. A new
   format takes another version, so no tag is the prefix of another. `sector::read`
-  gives `Held::Version(found)` for a file of any length that holds the prefix and
-  another byte after it. A file shorter than the tag, with another prefix, or with
-  this version's tag and another length or checksum, is `Held::Foreign`.
+  gives `Held::Version { found, expected }` for a file of any length that holds the
+  prefix and another version of the set after it. A file shorter than the tag, with
+  another prefix, with a byte outside the set after it, or with this version's tag
+  and another length or checksum, is `Held::Foreign`.
   `sector::local::read` gives `local::Error::Version { file, found, expected }` for
   `address` or `admin.key` of another version, with the text `<file> holds format
   version <found>, and this program reads version <expected>`, each byte as an escaped
