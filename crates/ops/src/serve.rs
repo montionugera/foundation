@@ -967,7 +967,10 @@ async fn import(node: &Node, subject: &Name, request: Import) -> Result<Ran, Err
         .browse(kind.as_str(), connector.config().document(), &query)
         .await
         .map_err(|cause| Error::browse(&name, kind, cause, files.sources()))?;
-    let (picks, unreadable) = picks(&found, names.as_deref())?;
+    let (picks, unreadable) = match &names {
+        Some(names) => (pointed(&found, names)?, 0),
+        None => matched(&found)?,
+    };
     let added = files.import(&name, &query.start, &picks, node.supervisor.kinds())?;
     let file = &request.files
         [usize::try_from(added.source.0).expect("invariant: a source fits a usize")];
@@ -982,7 +985,7 @@ async fn import(node: &Node, subject: &Name, request: Import) -> Result<Ran, Err
     Ok(Ran::Import(output, text))
 }
 
-/// The given name of each path of a walk of points, in their order.
+/// The given name of each point of a walk of points, in the order of the paths.
 type Given = Vec<Option<Name>>;
 
 /// The scope of an import of `points` or of the match `pattern`, and the given name
@@ -1010,51 +1013,58 @@ fn picked(
     }
 }
 
-/// The picks of `found`, and the count of points of a match that the connector cannot
-/// read or write, which it leaves out. `names` is the given name of each path of a
-/// walk of points, in their order, or `None` for a match.
+/// The picks of the walk of a match, and the count of points that the connector
+/// cannot read or write, which it leaves out.
 ///
 /// # Errors
 ///
-/// - [`Error::ImportBudget`] or [`Error::ImportLimit`] when the walk stopped early.
-/// - [`Error::UnreadablePoint`] for a walk of points with such a point.
-///
-/// # Panics
-///
-/// When a walk of points gives other than one point or unreadable entry for each path.
-fn picks<'a>(
-    found: &'a browse::Found,
-    names: Option<&'a [Option<Name>]>,
-) -> Result<(Vec<config::import::Pick<'a>>, usize), Error> {
+/// [`Error::ImportBudget`] or [`Error::ImportLimit`] when the walk stopped early.
+fn matched(
+    found: &browse::Found,
+) -> Result<(Vec<config::import::Pick<'_>>, usize), Error> {
     match found.end {
         browse::End::Done => {}
-        browse::End::Budget => {
-            let matched = names.is_none();
-            return Err(Error::ImportBudget { matched });
-        }
+        browse::End::Budget => return Err(Error::ImportBudget { matched: true }),
         browse::End::Limit => return Err(Error::ImportLimit { picked: None }),
         browse::End::Next(_) => unreachable!("invariant: only a level gives a cursor"),
     }
-    let pick = |entry: &'a browse::Entry, facts, name| config::import::Pick {
-        path: &entry.path,
-        tag: &entry.tag,
-        facts,
-        name,
-    };
-    let Some(names) = names else {
-        let mut unreadable = 0;
-        let picks = (found.entries.iter())
-            .filter_map(|entry| match &entry.shape {
-                browse::Shape::Point(facts) => Some(pick(entry, facts, None)),
-                browse::Shape::Unreadable(_) => {
-                    unreadable += 1;
-                    None
-                }
-                browse::Shape::Folder => None,
-            })
-            .collect();
-        return Ok((picks, unreadable));
-    };
+    let mut unreadable = 0;
+    let picks = (found.entries.iter())
+        .filter_map(|entry| match &entry.shape {
+            browse::Shape::Point(facts) => Some(pick(entry, facts, None)),
+            browse::Shape::Unreadable(_) => {
+                unreadable += 1;
+                None
+            }
+            browse::Shape::Folder => None,
+        })
+        .collect();
+    Ok((picks, unreadable))
+}
+
+/// The picks of the walk of points, each with its name in `names`, in the order of
+/// the paths.
+///
+/// # Errors
+///
+/// - [`Error::ImportBudget`] when the walk stopped at its budget.
+/// - [`Error::UnreadablePoint`] with each point that the connector cannot read or
+///   write.
+///
+/// # Panics
+///
+/// When the walk gives other than one point or unreadable entry for each name.
+fn pointed<'a>(
+    found: &'a browse::Found,
+    names: &'a [Option<Name>],
+) -> Result<Vec<config::import::Pick<'a>>, Error> {
+    match found.end {
+        browse::End::Done => {}
+        browse::End::Budget => return Err(Error::ImportBudget { matched: false }),
+        browse::End::Limit | browse::End::Next(_) => {
+            unreachable!("invariant: a walk of points gives each path and no cursor")
+        }
+    }
     assert_eq!(
         found.entries.len(),
         names.len(),
@@ -1071,14 +1081,31 @@ fn picks<'a>(
                 unreadable.push((entry.path.to_string(), reason.clone()));
             }
             browse::Shape::Folder => {
-                unreachable!("invariant: a walk of points gives no folder")
+                unreachable!(
+                    "invariant: a walk of points gives no folder, but gave one at `{}`",
+                    entry.path
+                )
             }
         }
     }
     if !unreadable.is_empty() {
         return Err(Error::UnreadablePoint { points: unreadable });
     }
-    Ok((picks, 0))
+    Ok(picks)
+}
+
+/// The pick of the point `entry`, with its `facts` and given `name`.
+fn pick<'a>(
+    entry: &'a browse::Entry,
+    facts: &'a browse::Facts,
+    name: Option<&'a Name>,
+) -> config::import::Pick<'a> {
+    config::import::Pick {
+        path: &entry.path,
+        tag: &entry.tag,
+        facts,
+        name,
+    }
 }
 
 /// The paths and the given names of `points`.
@@ -1089,7 +1116,7 @@ fn picks<'a>(
 /// - [`Error::BadPoint`] with each path that does not parse.
 /// - [`Error::DuplicatePick`] with each path that is there more than once.
 /// - [`Error::BadName`] with each given name that does not parse.
-fn points(points: Vec<Point>) -> Result<(Vec<browse::Path>, Vec<Option<Name>>), Error> {
+fn points(points: Vec<Point>) -> Result<(Vec<browse::Path>, Given), Error> {
     if points.len() > browse::LIMIT {
         return Err(Error::ImportLimit {
             picked: Some(points.len()),
