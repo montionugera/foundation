@@ -16,7 +16,7 @@ use std::time::Instant;
 use env::clock::{Clock, Driver, Sleep, Timer};
 use env::net::{self, Tcp, tcp};
 use sim::{Sim, node};
-use tracing::instrument::WithSubscriber;
+use tracing::Dispatch;
 use types::time::{Monotonic, Span};
 
 use super::{CLOSES, LINGER, Manager, OPTIONS, READ_BYTES, SENDS};
@@ -437,23 +437,36 @@ impl Network {
         Self { sim, local, peer }
     }
 
-    /// Runs `body` on the local node as `Sim::run_on` does, with the default dispatch
-    /// of the caller in each poll: a thread of the sim has its own.
+    /// Runs `body` on the local node as `Sim::run_on` does, on a shard that logs to
+    /// `log`.
     ///
     /// # Panics
     ///
     /// When the run does not end.
-    fn run<T, F>(&mut self, body: impl FnOnce(node::Node) -> F + Send + 'static) -> T
+    fn run<T, F>(
+        &mut self,
+        log: Dispatch,
+        body: impl FnOnce(node::Node) -> F + Send + 'static,
+    ) -> T
     where
         T: Send + 'static,
         F: Future<Output = T> + 'static,
     {
-        let log = tracing::dispatcher::get_default(tracing::Dispatch::clone);
-        self.sim
-            .run_on(&self.local.clone(), move |node, _| {
-                body(node).with_subscriber(log)
-            })
-            .expect("the run ends")
+        let out = Arc::new(Mutex::new(None));
+        let (slot, node) = (Arc::clone(&out), self.local.clone());
+        let config = env::shards::Config {
+            name: "run".into(),
+            core: None,
+        };
+        let shards = self.local.shards().logged(log);
+        let start = shards.start(config, move |_| async move {
+            let value = body(node).await;
+            *slot.lock().expect("no panic under the lock") = Some(value);
+        });
+        drop(start.expect("a shard with no core starts"));
+        self.sim.run().expect("the run ends");
+        let value = out.lock().expect("no panic under the lock").take();
+        value.expect("the run ends after its body")
     }
 
     fn remote(&self) -> SocketAddr {
@@ -769,10 +782,10 @@ fn the_peer_reads_each_byte_of_sends_that_the_stream_takes_in_parts() {
 }
 
 /// Connects with no listener.
-fn refused() {
+fn refused(log: Dispatch) {
     let mut network = Network::new();
     let remote = network.remote();
-    let calls = network.run(move |node| async move {
+    let calls = network.run(log, move |node| async move {
         let side = Side::new(&node);
         assert_eq!(side.connect(remote), Status::GOOD);
         side.drive(Span::SECOND).await;
@@ -796,9 +809,9 @@ fn a_connect_with_no_listener_gives_closing_a_warning_and_no_established() {
 }
 
 /// Connects to a host that `env` refuses.
-fn not_a_host() {
+fn not_a_host(log: Dispatch) {
     let mut network = Network::new();
-    let calls = network.run(move |node| async move {
+    let calls = network.run(log, move |node| async move {
         let side = Side::new(&node);
         let open = side.open(&[
             ("address", Value::String("127.1")),
@@ -1730,7 +1743,7 @@ fn a_close_writes_each_send_to_a_peer_that_writes_as_it_reads() {
 }
 
 /// The peer reads nothing until 12 s, and the stream closes at 1 s and 6 s.
-fn lingers() {
+fn lingers(log: Dispatch) {
     let mut network = Network::new();
     let reads = Arc::new(Mutex::new(Reads::default()));
     let slot = Arc::clone(&reads);
@@ -1739,7 +1752,7 @@ fn lingers() {
         read_all(&mut stream, &clock, &slot, Span::ZERO).await;
     });
     let remote = network.remote();
-    let states = network.run(move |node| async move {
+    let states = network.run(log, move |node| async move {
         let side = Side::new(&node);
         assert_eq!(side.connect(remote), Status::GOOD);
         side.drive(Span::SECOND).await;
@@ -1841,12 +1854,12 @@ fn a_send_after_a_drive_that_panics_wakes_its_task() {
     assert_eq!(woken, 1);
 }
 
-/// Runs `test`, with its run through [`Network::run`], under a capture of the warnings
-/// of the manager, and gives their lines.
-fn warnings(test: fn()) -> Vec<String> {
+/// Runs `test` with a capture of the warnings of the manager, which it gives to
+/// [`Network::run`], and gives their lines.
+fn warnings(test: fn(Dispatch)) -> Vec<String> {
     let (capture, log) =
         connector::testing::Capture::new("connector_opcua::connection");
-    tracing::dispatcher::with_default(&log, test);
+    test(log);
     capture.lines()
 }
 
@@ -1854,7 +1867,7 @@ fn warnings(test: fn()) -> Vec<String> {
 const DROPS: &str = "more than 100 streams close, so it drops the oldest";
 
 /// The warnings of `test` that a close past [`CLOSES`] gives.
-fn dropped(test: fn()) -> Vec<String> {
+fn dropped(test: fn(Dispatch)) -> Vec<String> {
     let mut lines = warnings(test);
     lines.retain(|line| line.contains(DROPS));
     lines
@@ -1866,11 +1879,11 @@ fn warning(text: &str) -> String {
 }
 
 /// The peer resets the stream as it accepts it.
-fn reset_as_open() {
+fn reset_as_open(log: Dispatch) {
     let mut network = Network::new();
     network.accept(|stream, _| async move { drop(stream) });
     let remote = network.remote();
-    let states = network.run(move |node| async move {
+    let states = network.run(log, move |node| async move {
         let side = Side::new(&node);
         assert_eq!(side.connect(remote), Status::GOOD);
         side.drive(Span::SECOND).await;
@@ -1892,14 +1905,14 @@ fn a_reset_gives_closing_and_a_warning() {
 }
 
 /// The peer resets the stream 100 ms after it accepts it, and reads nothing.
-fn reset_as_closing() {
+fn reset_as_closing(log: Dispatch) {
     let mut network = Network::new();
     network.accept(|stream, clock| async move {
         clock.sleep(Span::from_nanos(100_000_000)).await;
         drop(stream);
     });
     let remote = network.remote();
-    let states = network.run(move |node| async move {
+    let states = network.run(log, move |node| async move {
         let side = Side::new(&node);
         assert_eq!(side.connect(remote), Status::GOOD);
         side.drive(Span::from_nanos(10_000_000)).await;
@@ -1925,13 +1938,13 @@ fn a_reset_of_a_closed_connection_drops_it_before_it_lingers() {
 }
 
 /// Sends one more than [`SENDS`] with no poll between.
-fn send_past_the_bound() {
+fn send_past_the_bound(log: Dispatch) {
     let mut network = Network::new();
     let reads = network.serve(None);
     let remote = network.remote();
     let sends = sends(SENDS, 100);
     let written = sends.clone();
-    let states = network.run(move |node| async move {
+    let states = network.run(log, move |node| async move {
         let side = Side::new(&node);
         assert_eq!(side.connect(remote), Status::GOOD);
         side.drive(Span::SECOND).await;
@@ -1959,7 +1972,7 @@ fn a_send_past_the_bound_closes_the_connection_with_a_warning() {
 
 /// The peer closes its side at 50 ms and drops the stream at 150 ms, and reads
 /// nothing, while the stream closes with sends that wait.
-fn reset_as_writing() {
+fn reset_as_writing(log: Dispatch) {
     let mut network = Network::new();
     network.accept(|mut stream, clock| async move {
         clock.sleep(Span::from_nanos(50_000_000)).await;
@@ -1970,7 +1983,7 @@ fn reset_as_writing() {
         drop(stream);
     });
     let remote = network.remote();
-    let states = network.run(move |node| async move {
+    let states = network.run(log, move |node| async move {
         let side = Side::new(&node);
         assert_eq!(side.connect(remote), Status::GOOD);
         side.drive(Span::from_nanos(10_000_000)).await;
@@ -2445,11 +2458,11 @@ fn a_send_on_the_listen_connection_is_refused() {
 }
 
 /// Fails the listener once it accepted one stream.
-fn failed_listener() {
+fn failed_listener(log: Dispatch) {
     let mut network = Network::new();
     let first = network.dial(Span::ZERO, b"a");
     let at = network.listening();
-    let calls = network.run(move |node| async move {
+    let calls = network.run(log, move |node| async move {
         let side = listening(&node);
         assert_eq!(side.listen(PORT), Status::GOOD);
         side.drive(Span::from_nanos(10_000_000)).await;
@@ -3334,7 +3347,7 @@ fn bound(mut network: Network, peers: Vec<Arc<Mutex<Held>>>) -> (usize, usize, u
 /// One more peer than the server holds channels and [`CLOSES`] closing streams
 /// together, each of which reads until its stream ends and never closes. The server
 /// purges the oldest channel at each accept past 100.
-fn closes_past_the_bound() {
+fn closes_past_the_bound(log: Dispatch) {
     let mut network = Network::new();
     let peers: Vec<_> = (0..=100 + CLOSES)
         .map(|i| {
@@ -3343,7 +3356,7 @@ fn closes_past_the_bound() {
             network.probe(delay, Span::from_nanos(500_000_000))
         })
         .collect();
-    let held = network.run(|node| async move {
+    let held = network.run(log, |node| async move {
         let side = Side::listening(&node, local(&node));
         // SAFETY: the server is deleted before `side` drops.
         let server = unsafe { Server::start(&side.manager, c"", 100) };
@@ -3408,13 +3421,13 @@ fn a_stream_that_a_close_past_the_bound_drops_leaves_in_the_same_drive() {
 }
 
 /// Closes 102 down to 2 at one instant.
-fn closes_at_one_instant() {
+fn closes_at_one_instant(log: Dispatch) {
     let mut network = Network::new();
     for i in 0..=CLOSES {
         let i = i64::try_from(i).expect("a small count");
         network.hold(Span::from_nanos((i + 1) * 1_000_000));
     }
-    network.run(|node| async move {
+    network.run(log, |node| async move {
         let side = Side::listening(&node, local(&node));
         assert_eq!(side.listen(PORT), Status::GOOD);
         side.drive(Span::SECOND).await;
