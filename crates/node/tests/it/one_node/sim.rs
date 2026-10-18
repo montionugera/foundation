@@ -185,10 +185,10 @@ impl Influx {
                 listener,
                 tasks,
                 token,
+                connector::http::sim::Scheme::Http,
                 store,
                 "plant".into(),
                 taken,
-                None,
             );
             if let Err(error) = serve.await {
                 panic!("the simulated InfluxDB stopped: {error}");

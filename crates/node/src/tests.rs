@@ -7603,10 +7603,10 @@ pub(crate) mod port {
                         listener,
                         tasks,
                         connector::cancel::Token::new(),
+                        connector::http::sim::Scheme::Https(certificate),
                         into,
                         "plant".into(),
                         None,
-                        Some(certificate),
                     );
                     panic!("the listener failed: {:?}", served.await);
                 })

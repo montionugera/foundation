@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use connector::cancel::Token;
-use connector::http::sim::Certificate;
+use connector::http::sim::Scheme;
 use env::net::{self, Listener};
 use env::tasks::Tasks;
 use http::header::{AUTHORIZATION, CONTENT_ENCODING};
@@ -12,8 +12,9 @@ use http::{Method, Request, Response, StatusCode};
 
 use super::Store;
 
-/// Answers InfluxDB write requests on each stream that `listener` accepts, and writes
-/// each body to `store`, with the rules of [`connector::http::sim::serve`].
+/// Answers InfluxDB write requests on each stream that `listener` accepts, as `scheme`
+/// says, and writes each body to `store`, with the rules of
+/// [`connector::http::sim::serve`].
 ///
 /// `POST /write?db=<db>` (InfluxDB 1) and `POST /api/v2/write?bucket=<bucket>`
 /// (InfluxDB 2 and 3) give 204 when the store takes each line, and 400 with the text
@@ -30,8 +31,7 @@ use super::Store;
 /// the path, then the method, then the token, then the `content-encoding`, then the
 /// query, and gives the answer of the first check that fails.
 ///
-/// `tls`, when given, is the certificate that it serves under TLS. It runs and returns
-/// as [`connector::http::sim::serve`] does.
+/// It runs and returns as [`connector::http::sim::serve`] does.
 ///
 /// # Errors
 ///
@@ -40,13 +40,13 @@ pub async fn serve(
     listener: Listener,
     tasks: Tasks,
     until: Token,
+    scheme: Scheme,
     store: Arc<Mutex<Store>>,
     database: String,
     token: Option<String>,
-    tls: Option<Certificate>,
 ) -> Result<(), net::Error> {
     let answer = answer(store, database, token);
-    connector::http::sim::serve(listener, tasks, until, tls, answer).await
+    connector::http::sim::serve(listener, tasks, until, scheme, answer).await
 }
 
 fn answer(

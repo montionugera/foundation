@@ -27,7 +27,7 @@ use super::super::stream::Stream;
 use super::super::tests::stream_error;
 use super::{Pem, Roots};
 use crate::cancel::Token;
-use crate::http::sim::{self, Certificate};
+use crate::http::sim::{self, Certificate, Scheme};
 use crate::http::{Client, Config, Error, Tls};
 
 const PORT: u16 = 8086;
@@ -110,10 +110,10 @@ impl Network {
                         path => Bytes::from(path.to_owned()),
                     })
                 };
-                let tls = Some(certificate);
-                let serve = sim::serve(v6, tasks.clone(), Token::new(), tls, answer);
+                let scheme = Scheme::Https(certificate);
+                let serve = sim::serve(v6, tasks.clone(), Token::new(), scheme, answer);
                 tasks.spawn(async move { drop(serve.await) });
-                let serve = sim::serve(v4, tasks, Token::new(), tls, answer);
+                let serve = sim::serve(v4, tasks, Token::new(), scheme, answer);
                 drop(stop.race(serve).await);
                 // The streams it accepted end when this shard ends.
                 std::future::pending::<()>().await;
@@ -505,7 +505,7 @@ fn fails_the_handshake_with_a_server_that_does_not_speak_tls() {
     let mut network = Network::new(10, Certificate::Valid, JUNE_2026);
     network.listen(8087, |listener, tasks| async move {
         let answer = |_: Request<Bytes>| Response::new(Bytes::new());
-        drop(sim::serve(listener, tasks, Token::new(), None, answer).await);
+        drop(sim::serve(listener, tasks, Token::new(), Scheme::Http, answer).await);
     });
     assert_eq!(
         failed(network.send(sim::ca(), "https://server:8087/ping")),
@@ -938,8 +938,13 @@ fn cancelled(
     let (stop, flag) = (until.clone(), Arc::clone(&returned));
     network.listen(8087, move |listener, tasks| async move {
         let answer = |_: Request<Bytes>| Response::new(Bytes::from(vec![b'x'; LARGE]));
-        let served =
-            sim::serve(listener, tasks, stop, Some(Certificate::Valid), answer);
+        let served = sim::serve(
+            listener,
+            tasks,
+            stop,
+            Scheme::Https(Certificate::Valid),
+            answer,
+        );
         served.await.expect("the listener works");
         *flag.lock().expect("no panic") = true;
     });
@@ -1003,8 +1008,13 @@ fn a_cancel_closes_a_tls_stream_with_bytes_that_arrive_in_the_same_poll() {
     let stop = until.clone();
     network.listen(8087, move |listener, tasks| async move {
         let answer = |_: Request<Bytes>| Response::new(Bytes::from_static(b"ok"));
-        let served =
-            sim::serve(listener, tasks, stop, Some(Certificate::Valid), answer);
+        let served = sim::serve(
+            listener,
+            tasks,
+            stop,
+            Scheme::Https(Certificate::Valid),
+            answer,
+        );
         served.await.expect("the listener works");
     });
     let remote = SocketAddr::new(network.server.addresses()[0], 8087);
