@@ -168,7 +168,7 @@ exclude_re = [
   # directory, so only a swap between the stat and the open, or an exec, sees it. A
   # mutant that drops `O_PATH` fails
   # `within_reads_through_a_directory_that_this_user_can_search_and_not_read`.
-  'crates/os/src/paths\.rs:88:(47|67): replace \| with & in Dir::open$',
+  'crates/os/src/paths\.rs:[0-9]+:(47|67): replace \| with & in Dir::open$',
   # macOS only, as above. In the `macos` check,
   # `paths::within_lists_a_directory_that_this_user_can_read_and_not_search` catches
   # it.
