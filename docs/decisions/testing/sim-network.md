@@ -71,3 +71,12 @@
   (https://github.com/synnaxlabs/foundation/issues/1532#issuecomment-6043854311).
   Supersedes the connect sentence of
   https://github.com/synnaxlabs/foundation/pull/1473#issuecomment-6042821949.
+  Amended (2026-10-18, #2283 PR C): as on Linux, each node has one link-local address,
+  `fe80::` plus its host, on interface 2 (`Node::link_local`). Only a bind of it keeps
+  its scope: scope 0 gives code 22 (`EINVAL`), another index gives code 19 (`ENODEV`),
+  and the link-local address of another node gives code 99. Each other IPv6 bind drops
+  its scope, and no IPv6 bind keeps flow info. A datagram from the link-local address
+  leaves from it, but no packet reaches it: the first test that sends to one adds it
+  to the addresses of the node and a check of the scope of a send. Decided by
+  `laptop.architect-2` at 2026-10-18T09:56:35Z
+  (https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248485617).

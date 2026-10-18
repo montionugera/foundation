@@ -174,19 +174,19 @@
   admin; and no home. The card filter: approved by `laptop.architect`
   (2026-10-10T23:18:37Z,
   https://github.com/synnaxlabs/foundation/pull/2310#issuecomment-6103243825), and
-  amended (2026-10-18, #2283 PR C) to drop an unspecified address. At each start with a
-  region, the node calls `Mesh::set_addresses` with those addresses. The start does
-  not wait for the call, and the stop of the node ends it. When the addresses are
-  empty, the call first logs the warning "no peer can dial this node: give `--listen`
-  an address of this host", with the bound address. After `mesh::Error::Soon`, it logs
-  a warning and calls again a minute later. After another error but
-  `mesh::Error::Stopped`, it logs a warning, and the card keeps its addresses. Key
-  choices 2 and 9, accepted:
-  https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6245123301. In
-  `sim`, as on Linux, each node has one link-local address, `fe80::` plus its host, on
-  one interface. Only a bind of it keeps its scope, which must be the index of that
-  interface, and no packet reaches it (`laptop.architect-2`, 2026-10-18T09:56:35Z,
-  https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248485617). The
+  amended to drop an unspecified address (`laptop.architect`, 2026-10-18T05:08:35Z,
+  https://github.com/synnaxlabs/foundation/pull/3137#issuecomment-6245953983). At each
+  start with a region, the node calls `Mesh::set_addresses` with those addresses. The
+  start does not wait for the call, and the stop of the node ends it. When the addresses
+  are empty, the call first logs the warning "no peer can dial this node: give
+  `--listen` an address of this host", with the bound address. After
+  `mesh::Error::Soon`, it logs a warning and calls again a minute later (ruling item 3
+  of `laptop.architect`,
+  https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245224489). After
+  another error but `mesh::Error::Stopped`, it logs a warning, and the card keeps its
+  addresses. Key choices 8 and 9, accepted:
+  https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6245123301. A test
+  binds the node to the link-local address of the sim host, as SIM NETWORK gives. The
   first admin's private key is in the file `admin.key` of the data
   directory: 54 bytes, the tag `foundation/admin/1`, the Ed25519 private key, and the
   CRC32C of those 50 bytes (little-endian), in one sector. Shard 0 reads it, or makes it
