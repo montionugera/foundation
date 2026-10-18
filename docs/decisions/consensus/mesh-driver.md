@@ -137,9 +137,10 @@
   2026-10-18T03:29:11Z:
   https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245196820).
   Supersedes "the first change that replaces a card" of
-  https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6098763970. So does
-  the change that lets a node join a running mesh (#1157), because a node that joins
-  opens its mesh before it is a member (`laptop.architect`, 2026-10-10T15:07:08Z,
+  https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6098763970. The
+  change that lets a node join a running mesh (#1157) also makes `node::runs` read the
+  name again, because a node that joins opens its mesh before it is a member
+  (`laptop.architect`, 2026-10-10T15:07:08Z,
   https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6098894431). A later
   `Change` kind that is not safe to repeat needs a ruling before a member forwards it
   (decided by the architect, 2026-10-07T08:15:18Z:

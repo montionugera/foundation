@@ -1802,8 +1802,9 @@ mod tests {
                         let held = before.member(card.key).unwrap().card.card();
                         prop_assert!(card.card.version > held.version);
                         // Only a compare of the whole state shows that the change
-                        // changes nothing else, and no public call builds a state
-                        // with a given card, so this sets the private field.
+                        // changes nothing else, and `State::new` takes no ticket
+                        // and starts the pointer at version 0, so it cannot build
+                        // `before`. So this sets the private field.
                         let mut expected = before.clone();
                         let member = expected.members.get_mut(&card.key).unwrap();
                         member.card = card.check().unwrap();
