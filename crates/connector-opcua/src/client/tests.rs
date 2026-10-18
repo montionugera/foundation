@@ -108,8 +108,14 @@ impl Peer<'_> {
         self.connect(&url).await.expect("the client connects")
     }
 
-    /// Connects a client whose receive buffer is `receive` bytes.
-    async fn receiving(&mut self, receive: u32) -> Client {
+    /// Connects a client to `url` whose receive buffer is `receive` bytes and whose
+    /// largest message is `message` bytes, each `None` for the default of open62541.
+    async fn limited(
+        &mut self,
+        url: &str,
+        receive: Option<u32>,
+        message: Option<u32>,
+    ) -> Client {
         let clock = Clock::clone(&self.clock);
         let time = event::Time::monotonic(Clock::clone(&clock));
         let connections = Manager::new(time, self.net.clone(), &mut self.rng);
@@ -117,9 +123,15 @@ impl Peer<'_> {
         // first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
         let raw = NonNull::new(raw).expect("open62541 refused the client");
-        // SAFETY: the client lives and has not connected.
-        unsafe { ffi::test::shim_client_receive(raw.as_ptr(), receive) };
-        let url = CString::new(self.url.clone()).expect("the URL holds no NUL");
+        if let Some(size) = receive {
+            // SAFETY: the client lives and has not connected.
+            unsafe { ffi::test::shim_client_receive(raw.as_ptr(), size) };
+        }
+        if let Some(size) = message {
+            // SAFETY: the client lives and has not connected.
+            unsafe { ffi::test::shim_client_message(raw.as_ptr(), size) };
+        }
+        let url = CString::new(url).expect("the URL holds no NUL");
         // SAFETY: `raw` is a new client of the loop of `connections`.
         let mut client = unsafe { Client::of(clock, connections, raw) };
         client.open(&url).await.expect("the client connects");
@@ -1502,7 +1514,8 @@ fn a_read_takes_the_buffers_and_chunks_of_the_server() {
 fn a_request_and_an_answer_each_take_the_buffer_of_their_side() {
     let (reads, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
-            let mut client = peer.receiving(8192).await;
+            let url = peer.url.clone();
+            let mut client = peer.limited(&url, Some(8192), None).await;
             let length = fitting(&client, &[], 1 << 20);
             let request = client.nodes(&[long(length + 1)]).large().to_vec();
             let nodes = fits(client.nodes(&vec![VALUE; 1920]));

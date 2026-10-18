@@ -42,6 +42,18 @@ fn unknown(chunk: &[u8]) -> Vec<u8> {
     abort
 }
 
+/// The answer of `chunk` as an intermediate chunk of request id 0, which no request has.
+fn orphan(chunk: &[u8]) -> Vec<u8> {
+    let mut orphan = chunk.to_vec();
+    orphan[3] = b'C';
+    orphan[20..24].copy_from_slice(&0u32.to_le_bytes());
+    orphan
+}
+
+/// The largest message that the client of [`reads`] takes, 10 [`CHUNK`]: an answer of
+/// [`FITS`] fits, but not with the 7 intermediate chunks of another.
+const MESSAGE: u32 = 10 << 16;
+
 /// A rewrite of the relay that sends `abort` of the next `left` final chunks in their
 /// place.
 fn aborting(left: &Cell<u16>, abort: fn(&[u8]) -> Vec<u8>) -> impl FnMut(&mut Vec<u8>) {
@@ -55,7 +67,8 @@ fn aborting(left: &Cell<u16>, abort: fn(&[u8]) -> Vec<u8>) -> impl FnMut(&mut Ve
 
 /// After `dropped` dropped reads, the answers of `aborted` reads of `target` and of two
 /// more reads of it, and the value of the server. The relay sends `abort` of the
-/// answers of the dropped reads and of the `aborted` reads in their place.
+/// answers of the dropped reads and of the `aborted` reads in their place. The client
+/// takes messages of up to [`MESSAGE`] bytes.
 fn reads(
     target: &'static Node,
     dropped: u16,
@@ -69,8 +82,7 @@ fn reads(
             let left = Cell::new(0u16);
             let reads =
                 relayed(&node, &Relay::default(), aborting(&left, abort), async {
-                    let mut client =
-                        peer.connect(&url).await.expect("the client connects");
+                    let mut client = peer.limited(&url, None, Some(MESSAGE)).await;
                     // open62541 reads the namespace array after the connect.
                     assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
                     left.set(dropped + aborted);
@@ -150,6 +162,15 @@ fn the_abort_of_a_dropped_read_leaves_the_next_read_its_value() {
     assert_eq!((after, again), (Ok(value), Ok(value)));
 }
 
+/// A call that finds no complete chunk ends as in the release, so an intermediate chunk
+/// of request id 0 stays queued, and the next read gives the value.
+#[test]
+fn a_queued_chunk_of_request_id_0_leaves_the_next_read_its_value() {
+    let (aborted, [after, again], value) = reads(&VALUE, 1, 0, orphan);
+    assert_eq!(aborted, Vec::new());
+    assert_eq!((after, again), (Ok(value), Ok(value)));
+}
+
 /// An abort with an id that no request has ends no read, so its read times out, and
 /// the client reads on.
 #[test]
@@ -160,8 +181,8 @@ fn an_abort_with_an_unknown_id_ends_no_read() {
 }
 
 /// An abort after the 7 intermediate chunks of an answer of [`FITS`] deletes them, so
-/// its read gives the Error of the abort, and frees their place in the count of
-/// chunks, so each next answer of 8 chunks arrives.
+/// its read gives the Error of the abort, and frees their place in the count and the
+/// length of chunks, so each next answer of 8 chunks arrives.
 #[test]
 fn an_abort_after_intermediate_chunks_ends_its_read_and_frees_their_place() {
     let (aborted, [after, again], _) = reads(&FITS, 0, 1, too_large);

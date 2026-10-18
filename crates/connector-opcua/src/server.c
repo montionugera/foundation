@@ -143,6 +143,11 @@ void shim_client_receive(UA_Client *client, UA_UInt32 size) {
     UA_Client_getConfig(client)->localConnectionConfig.recvBufferSize = size;
 }
 
+/* Sets the MaxMessageSize that `client` gives in its next HEL and takes. */
+void shim_client_message(UA_Client *client, UA_UInt32 size) {
+    UA_Client_getConfig(client)->localConnectionConfig.localMaxMessageSize = size;
+}
+
 /* The node context of a variable of `shim_server_add_source`, as the first field of
  * the context that Rust holds. */
 typedef struct shim_source shim_source;
