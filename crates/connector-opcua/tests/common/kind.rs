@@ -13,9 +13,9 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 use connector::cancel::Token;
-use connector::kind::{self, Channels, Context, Error, Kind as _, Table};
-use connector::status::{self, Reading};
-use connector::testing::{self, Rig};
+use connector::kind::{self, Channels, Context, Error, Table};
+use connector::status::Reading;
+use connector::testing::Rig;
 use connector_opcua::Config;
 use connector_opcua::sim::{Served, Variables, serve};
 use document::Document;
@@ -156,9 +156,7 @@ pub(crate) fn run(
             clock.sleep(Span::from_nanos(PERIOD.nanos() * ticks)).await;
             canceller.cancel();
         });
-        let open = rig
-            .supervisor()
-            .open("opcua", name("plant.plc"), &config, &token);
+        let open = rig.open_connector("opcua", name("plant.plc"), &config, &token);
         let result = open.await.run().await;
         stop.cancel();
         serving.ended().await;
@@ -204,7 +202,9 @@ pub(crate) fn writes(
     let node = sim.node(sim::node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
         let rig = rig(&node, &tasks, kind, nodes, scalars).await;
-        let mut status = status(rig.hub()).await;
+        let config = config("opc.tcp://plc:4840", nodes);
+        let names = rig.define_status("opcua", &name("plant.plc"), &config);
+        let mut status = status(rig.hub(), &names).await;
         let readings = Rc::new(RefCell::new(Vec::new()));
         let into = Rc::clone(&readings);
         tasks.spawn(async move {
@@ -213,11 +213,8 @@ pub(crate) fn writes(
                 into.borrow_mut().push(reading);
             }
         });
-        let config = config("opc.tcp://plc:4840", nodes);
         let token = Token::new();
-        let open = rig
-            .supervisor()
-            .open("opcua", name("plant.plc"), &config, &token);
+        let open = rig.open_connector("opcua", name("plant.plc"), &config, &token);
         let result = open.await.run().await;
         node.clock().sleep(Span::SECOND).await;
         (result, readings.take())
@@ -228,20 +225,9 @@ pub(crate) fn writes(
     (measures.clone(), readings)
 }
 
-/// The counts of the `opcua` kind, as its check gives them.
-fn counts() -> Vec<Name> {
-    let kind = connector_opcua::Kind::default();
-    let config = kind.parse(&config("opc.tcp://plc:4840", 1));
-    let config = config.expect("the config parses");
-    kind.check(&config).expect("the config checks").counts
-}
-
-/// A reader of the status channels of `plant.plc`.
-async fn status(hub: &hub::Hub) -> hub::reader::Reader {
-    let names = status::channels(&name("plant.plc"), &counts());
-    let (time, channels) = names.expect("the status names are names");
-    let channels = channels.iter().map(|(name, _)| name.as_str());
-    let select = Selector::new(std::iter::once(time.as_str()).chain(channels));
+/// A reader of the status channels `names`.
+async fn status(hub: &hub::Hub, names: &[Name]) -> hub::reader::Reader {
+    let select = Selector::new(names.iter().map(Name::as_str));
     let config = hub::reader::Config {
         select: select.expect("the status names select"),
         mode: Mode::Complete,
@@ -253,9 +239,9 @@ async fn status(hub: &hub::Hub) -> hub::reader::Reader {
 }
 
 /// A rig on `node` with `kind` as `opcua`, which defines the channels of
-/// `plant.plc`, a connector that reads `nodes` nodes: its status, the index
-/// `plant.time` of key 1, and a channel of key 2 on for each read, of the types of
-/// `scalars` in turn.
+/// `plant.plc`, a connector that reads `nodes` nodes: the index `plant.time` of
+/// key 1, and a channel of key 2 on for each read, of the types of `scalars` in
+/// turn.
 async fn rig(
     node: &sim::node::Node,
     tasks: &env::tasks::Tasks,
@@ -272,10 +258,7 @@ async fn rig(
     };
     let kinds = Table::new().with("opcua", kind);
     let rig = Rig::open(env, node.net(), kinds).await;
-    let counts = counts();
-    let first = channel::Key::from_u128(1_000_000);
-    let mut definitions = testing::create_status(&name("plant.plc"), &counts, first);
-    definitions.push((name("plant.time"), index(1)));
+    let mut definitions = vec![(name("plant.time"), index(1))];
     let reads = (2..).zip(scalars.iter().cycle()).take(nodes);
     let reads = reads.map(|(key, &scalar)| (name(&read(key).0), data(key, scalar)));
     definitions.extend(reads);

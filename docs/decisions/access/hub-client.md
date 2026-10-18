@@ -294,15 +294,36 @@
   with a reset of `MALFORMED`. Decided by `laptop.architect` at 2026-10-18T14:44:41Z
   (https://github.com/synnaxlabs/foundation/pull/3201#issuecomment-6251244519).
   Amended (#2718 PR 3, round 2): `Writer::draft` gives the error that ended the writer
-  before it takes a block. `Writer::write` takes each reply that came before the call
-  before it sends, so an extra outcome that came before it ends the writer with
-  `Unasked` and is never the outcome of its frame. An extra outcome that comes while
-  the frame is sent is the outcome of that frame: the program cannot tell it from the
-  real one. `wire::hub::Error::Stored` holds `frames` and `bound`, the last `Stored`
-  when `frames` is below it, else the frames that got an outcome, so `Error` stays 24
-  bytes and the node's decoders do not grow. Decided by `laptop.architect` at
-  2026-10-18T15:49:57Z
+  before it takes a block. `wire::hub::Error::Stored` holds `frames` and `bound`, the
+  last `Stored` when `frames` is below it, else the frames that got an outcome, so
+  `Error` stays 24 bytes and the node's decoders do not grow. Decided by
+  `laptop.architect` at 2026-10-18T15:49:57Z
   (https://github.com/synnaxlabs/foundation/pull/3201#issuecomment-6251902903).
+  Amended (#3217): each outcome holds `frame` (`u64`) after its kind: the count of
+  frames of the stream through the frame that it answers, from 1, in the unit of
+  `Stored { frames }`. Taken and lost encode to 21 bytes, refused to 10.
+  `Replies::decode` takes only an outcome of the next frame. Frame 0, or a frame past
+  those sent, gives `wire::hub::Error::Unasked { frame, sent }`. Another frame that
+  the program sent gives `wire::hub::Error::Order { frame, next }`. So an outcome of
+  another frame ends the writer with a reset of `MALFORMED` at any time of its
+  arrival. An outcome that names the next frame is its outcome, also when the node
+  states it wrong: no field of the wire can tell. The node takes `frame` from its
+  count of frame heads, not of outcomes. So an extra outcome that it sends after the
+  outcome of a frame and before the next head names a frame that has one. One that it
+  sends after a head and before the outcome of that frame names that frame, and the
+  program takes it as its outcome. `Writer::write` takes no reply before it sends.
+  Key choice (f) went to `laptop.monitor`, with no objection (2026-10-18T18:16:02Z,
+  https://github.com/synnaxlabs/foundation/issues/3217#issuecomment-6253408518).
+  Decided by `laptop.architect` at 2026-10-18T18:17:20Z
+  (https://github.com/synnaxlabs/foundation/issues/3217#issuecomment-6253421664),
+  with the surface and frame 0 as `Unasked` at 2026-10-18T18:18:41Z
+  (https://github.com/synnaxlabs/foundation/issues/3217#issuecomment-6253435782),
+  the limit of an outcome that names the next frame at 2026-10-18T18:43:23Z
+  (https://github.com/synnaxlabs/foundation/pull/3240#issuecomment-6253686852), and
+  the count of frame heads at 2026-10-18T18:59:25Z
+  (https://github.com/synnaxlabs/foundation/pull/3240#issuecomment-6253848770), with
+  its text of both cases approved at 2026-10-18T19:56:18Z
+  (https://github.com/synnaxlabs/foundation/pull/3240#issuecomment-6254436267).
   Amended (#3207): each frame takes the block of the next `Stored` right before the
   home takes it, and a frame that finds none gets `Refused(Full)`, not a stop with
   `BUSY`, which would drop the `Stored` of each frame taken before it. Supersedes item 2

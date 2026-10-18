@@ -10,7 +10,7 @@ use transport::Address;
 use types::name::Prefix;
 
 use super::*;
-use crate::admin::{FILE, LEN};
+use sector::admin::{FILE, LEN};
 
 /// The file that `sector::publish` renames to [`FILE`].
 const NEW: &str = "admin.key.new";
@@ -212,7 +212,7 @@ fn a_first_start_founds_with_the_admin_key_of_the_corpus() {
         include_bytes!("../../../../oracles/fuzz/node_identity/admin-valid");
     let body =
         include_bytes!("../../../../oracles/fuzz/node_identity/admin-valid-body");
-    assert_eq!(crate::sector::summed(body).as_ref(), Some(valid));
+    assert_eq!(sector::summed(body).as_ref(), Some(valid));
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
     write(&mut sim, &host, FILE, valid.to_vec());
@@ -305,7 +305,7 @@ fn an_admin_key_that_is_not_valid_stops_the_node() {
     let tags = edits.map(|(i, byte)| {
         let mut tag = valid;
         tag[i] = byte;
-        crate::sector::checksum(&mut tag);
+        sector::checksum(&mut tag);
         tag.to_vec()
     });
     let mut changed = valid;
@@ -786,7 +786,7 @@ fn the_name_file_comes_before_the_card_name() {
     body[..17].copy_from_slice(b"foundation/name/1");
     body[17] = 5;
     body[18..23].copy_from_slice(b"other");
-    let file: [u8; crate::name::LEN] = crate::sector::summed(&body).expect("a body");
+    let file: [u8; crate::name::LEN] = sector::summed(&body).expect("a body");
     write(&mut sim, &host, crate::name::FILE, file.to_vec());
     assert_eq!(named(&mut sim, &host), Ok("other".parse().unwrap()));
 }
@@ -818,7 +818,7 @@ fn start_as(
 fn another_key(own: &[u8]) -> Vec<u8> {
     let mut another: [u8; identity::LEN] = own.try_into().unwrap();
     another[31] ^= 1;
-    crate::sector::checksum(&mut another);
+    sector::checksum(&mut another);
     another.to_vec()
 }
 

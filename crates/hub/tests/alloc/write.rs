@@ -123,12 +123,13 @@ async fn outcome(stream: &mut Stream, n: i64) {
     loop {
         match stream.reply().await {
             Reply::Stored { .. } => {}
-            Reply::Outcome(outcome) => {
+            Reply::Outcome { frame, outcome } => {
                 let seq = u64::try_from(n).expect("a seq");
                 let taken = wire::hub::write::Outcome::Taken {
                     range: types::frame::Range { seq, count: 1 },
                 };
                 assert_eq!(outcome, taken, "the outcome of frame {n}");
+                assert_eq!(frame, seq + 1, "the frame of outcome {n}");
                 return;
             }
         }

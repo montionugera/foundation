@@ -319,16 +319,18 @@ async fn program(
             let mut outcomes = 0;
             while outcomes < FRAMES {
                 match stream.reply().await {
-                    Reply::Outcome(Outcome::Taken { .. }) => outcomes += 1,
-                    Reply::Outcome(Outcome::Refused(Refusal::Waiting))
-                        if case.waiting =>
-                    {
-                        outcomes += 1;
-                    }
+                    Reply::Outcome {
+                        outcome: Outcome::Taken { .. },
+                        ..
+                    } => outcomes += 1,
+                    Reply::Outcome {
+                        outcome: Outcome::Refused(Refusal::Waiting),
+                        ..
+                    } if case.waiting => outcomes += 1,
                     Reply::Stored { .. } => {
                         progress.stored.fetch_add(1, Ordering::Relaxed);
                     }
-                    other @ Reply::Outcome(_) => panic!("not taken: {other:?}"),
+                    other @ Reply::Outcome { .. } => panic!("not taken: {other:?}"),
                 }
             }
             progress.frames.fetch_add(FRAMES, Ordering::Relaxed);
@@ -339,7 +341,7 @@ async fn program(
                 Reply::Stored { .. } => {
                     progress.stored.fetch_add(1, Ordering::Relaxed);
                 }
-                other @ Reply::Outcome(_) => panic!("not stored: {other:?}"),
+                other @ Reply::Outcome { .. } => panic!("not stored: {other:?}"),
             }
         }
     }
