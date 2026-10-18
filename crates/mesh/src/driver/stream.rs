@@ -4,7 +4,7 @@ use transport::Code;
 use transport::stream::{Incoming, Receiver, Sender};
 use types::ed25519::PublicKey;
 
-use super::{Mesh, REFUSED, REMOVED};
+use super::{Mesh, REFUSED, REMOVED, SOON};
 use crate::error::Error;
 use crate::message::Message;
 
@@ -130,6 +130,7 @@ fn code(error: &Error) -> Option<Code> {
         Error::Stream(_) => None,
         Error::Malformed => Some(MALFORMED),
         Error::Removed { .. } => Some(REMOVED),
+        Error::Soon => Some(SOON),
         Error::Log(_)
         | Error::Raft(_)
         | Error::Spoofed { .. }
