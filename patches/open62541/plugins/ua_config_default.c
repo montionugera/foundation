@@ -1435,7 +1435,8 @@ UA_ServerConfig_setDefaultWithSecurityPolicies(UA_ServerConfig *conf,
             UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
         retval = UA_CertificateGroup_Memorystore(&conf->secureChannelPKI,
                                                  &defaultApplicationGroup, &list,
-                                                 conf->logging, &paramsMap);
+                                                 conf->logging, conf->eventLoop,
+                                                 &paramsMap);
         if(retval != UA_STATUSCODE_GOOD) {
             UA_TrustListDataType_clear(&list);
             return retval;
@@ -1445,7 +1446,8 @@ UA_ServerConfig_setDefaultWithSecurityPolicies(UA_ServerConfig *conf,
             UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP);
         retval = UA_CertificateGroup_Memorystore(&conf->sessionPKI,
                                                  &defaultUserTokenGroup, &list,
-                                                 conf->logging, &paramsMap);
+                                                 conf->logging, conf->eventLoop,
+                                                 &paramsMap);
         UA_TrustListDataType_clear(&list);
         if(retval != UA_STATUSCODE_GOOD)
             return retval;
@@ -1544,7 +1546,8 @@ UA_ServerConfig_setDefaultWithSecureSecurityPolicies(UA_ServerConfig *conf,
         UA_NodeId defaultApplicationGroup =
             UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
         retval = UA_CertificateGroup_Memorystore(&conf->secureChannelPKI, &defaultApplicationGroup,
-                                                 &list, conf->logging, &paramsMap);
+                                                 &list, conf->logging, conf->eventLoop,
+                                                 &paramsMap);
         if(retval != UA_STATUSCODE_GOOD) {
             UA_TrustListDataType_clear(&list);
             return retval;
@@ -1553,7 +1556,8 @@ UA_ServerConfig_setDefaultWithSecureSecurityPolicies(UA_ServerConfig *conf,
         UA_NodeId defaultUserTokenGroup =
             UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP);
         retval = UA_CertificateGroup_Memorystore(&conf->sessionPKI, &defaultUserTokenGroup,
-                                                 &list, conf->logging, &paramsMap);
+                                                 &list, conf->logging, conf->eventLoop,
+                                                 &paramsMap);
         if(retval != UA_STATUSCODE_GOOD) {
             UA_TrustListDataType_clear(&list);
             return retval;
@@ -2303,7 +2307,8 @@ UA_ClientConfig_setDefaultEncryption(UA_ClientConfig *config,
             UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
         retval = UA_CertificateGroup_Memorystore(&config->certificateVerification,
                                                  &defaultApplicationGroup, &list,
-                                                 config->logging, &paramsMap);
+                                                 config->logging, config->eventLoop,
+                                                 &paramsMap);
         UA_TrustListDataType_clear(&list);
         if(retval != UA_STATUSCODE_GOOD)
             return retval;

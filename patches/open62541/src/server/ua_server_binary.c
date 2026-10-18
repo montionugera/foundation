@@ -660,6 +660,7 @@ createServerSecureChannel(UA_BinaryProtocolManager *bpm, UA_ConnectionManager *c
         connConfig.localMaxChunkCount = 1 << 14; /* 16384 */
     if(connConfig.remoteMaxChunkCount == 0)
         connConfig.remoteMaxChunkCount = 1 << 14; /* 16384 */
+    connConfig.localMaxQueuedChunks = connConfig.localMaxChunkCount;
 
     /* Set up the new SecureChannel */
     UA_SecureChannel_init(channel);

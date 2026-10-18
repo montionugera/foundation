@@ -9,6 +9,7 @@
 
 #include <open62541/util.h>
 #include <open62541/plugin/certificategroup_default.h>
+#include <open62541/plugin/eventloop.h>
 
 #if defined(UA_ENABLE_ENCRYPTION_OPENSSL) || defined(UA_ENABLE_ENCRYPTION_LIBRESSL)
 #include <openssl/x509.h>
@@ -52,6 +53,8 @@ struct MemoryCertStore {
     STACK_OF(X509) *trustedCertificates;
     STACK_OF(X509) *issuerCertificates;
     STACK_OF(X509_CRL) *crls;
+
+    UA_EventLoop *eventLoop;
 };
 
 static UA_Boolean
@@ -595,7 +598,12 @@ openSSL_verifyChain(UA_CertificateGroup *cg, MemoryCertStore *ctx, STACK_OF(X509
         /* Verification Step: Validity Period */
         ASN1_TIME *notBefore = X509_get_notBefore(cert);
         ASN1_TIME *notAfter = X509_get_notAfter(cert);
-        if(X509_cmp_current_time(notBefore) != -1 || X509_cmp_current_time(notAfter) != 1)
+        UA_EventLoop *el = ctx->eventLoop;
+        UA_DateTime since = el->dateTime_now(el) - UA_DATETIME_UNIX_EPOCH;
+        /* The second that holds the time, also before the epoch */
+        int64_t now = since / UA_DATETIME_SEC - (since % UA_DATETIME_SEC < 0);
+        if(X509_cmp_time_posix(notBefore, now) != -1 ||
+           X509_cmp_time_posix(notAfter, now) != 1)
             return (depth == 0) ? UA_STATUSCODE_BADCERTIFICATETIMEINVALID :
                 UA_STATUSCODE_BADCERTIFICATEISSUERTIMEINVALID;
     }
@@ -674,9 +682,10 @@ UA_CertificateGroup_Memorystore(UA_CertificateGroup *certGroup,
                                 UA_NodeId *certificateGroupId,
                                 const UA_TrustListDataType *trustList,
                                 const UA_Logger *logger,
+                                UA_EventLoop *eventLoop,
                                 const UA_KeyValueMap *params) {
 
-    if(certGroup == NULL || certificateGroupId == NULL) {
+    if(certGroup == NULL || certificateGroupId == NULL || eventLoop == NULL) {
         return UA_STATUSCODE_BADINTERNALERROR;
     }
 
@@ -705,6 +714,7 @@ UA_CertificateGroup_Memorystore(UA_CertificateGroup *certGroup,
         goto cleanup;
     }
     certGroup->context = context;
+    context->eventLoop = eventLoop;
     /* Default values */
     context->maxTrustListSize = 65535;
     context->maxRejectedListSize = 100;

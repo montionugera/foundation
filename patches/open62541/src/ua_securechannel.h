@@ -202,7 +202,6 @@ struct UA_SecureChannel {
     /* (Decrypted) chunks waiting to be processed */
     UA_ChunkQueue chunks;
     size_t chunksCount;
-    size_t chunksLength;
 
     /* Received buffer from which no chunks have been extracted so far */
     UA_ByteString unprocessed;
