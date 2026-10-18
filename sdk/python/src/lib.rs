@@ -36,8 +36,8 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
 /// that the node proves, and `private_key` the 32 bytes of a key that the spec lists
 /// for `subject`. Each of the pairs (`node`, `public_key`) and (`subject`,
 /// `private_key`) comes from the arguments, else from the node that runs on the data
-/// directory `data` (`--data` of `foundation start`, by default `foundation-data`),
-/// as its first admin. With no `address`, that node gives it too. With an `address`,
+/// directory `data` (a `str` or an `os.PathLike`: `--data` of `foundation start`, by
+/// default `foundation-data`), as its first admin. With no `address`, that node gives it too. With an `address`,
 /// the data directory counts only when its node is at that address: `127.0.0.1:p`
 /// matches a node bound on `0.0.0.0:p`. Other Python threads run while it waits.
 ///
@@ -116,10 +116,16 @@ impl Given {
         data: &Path,
         local: Option<(sdk::Node, Option<sdk::Subject>)>,
     ) -> PyResult<(SocketAddr, Keys, sdk::Subject)> {
-        let local = local.filter(|(node, _)| {
-            self.address
-                .is_none_or(|address| node.addresses.contains(&address))
-        });
+        let (local, other) = match local {
+            Some((node, _))
+                if self
+                    .address
+                    .is_some_and(|address| !node.addresses.contains(&address)) =>
+            {
+                (None, node.addresses.first().copied())
+            }
+            local => (local, None),
+        };
         let at = self.address.or_else(|| {
             let (node, _) = local.as_ref()?;
             node.addresses.first().copied()
@@ -131,16 +137,25 @@ impl Given {
                 data.display()
             )));
         };
+        let unsourced = |what: &str, pass: &str| {
+            PyConnectionError::new_err(match other {
+                Some(other) => format!(
+                    "no source gives {what} at {address}: {} holds the node at \
+                     {other}; pass {pass}, or connect to {other}",
+                    data.display()
+                ),
+                None => format!(
+                    "no source gives {what} at {address}: pass {pass}, or data= with \
+                     the --data of foundation start on the node's host"
+                ),
+            })
+        };
         let (node, admin) = local.unzip();
         let keys = self
             .keys
             .or_else(|| node.map(|node| (node.key, node.public_key)))
             .ok_or_else(|| {
-                PyConnectionError::new_err(format!(
-                    "no source gives the keys of the node at {address}: pass node= and \
-                     public_key=, or data= with the --data of foundation start on the \
-                     node's host"
-                ))
+                unsourced("the keys of the node", "node= and public_key=")
             })?;
         let subject = match (self.subject, admin) {
             (Some(subject), _) | (None, Some(Some(subject))) => subject,
@@ -151,11 +166,10 @@ impl Given {
                 )));
             }
             (None, None) => {
-                return Err(PyConnectionError::new_err(format!(
-                    "no source gives the subject for the node at {address}: pass \
-                     subject= and private_key=, or data= with the --data of foundation \
-                     start on the node's host"
-                )));
+                return Err(unsourced(
+                    "the subject for the node",
+                    "subject= and private_key=",
+                ));
             }
         };
         Ok((address, keys, subject))
@@ -176,9 +190,9 @@ fn local(
             found,
             expected,
         })) => Err(PyConnectionError::new_err(format!(
-            "{}/{file} holds format version {}, and this package reads version {}: \
-             install the package of the node's version",
-            data.display(),
+            "{} holds format version {}, and this package reads version {}: install \
+             the package of the node's version",
+            data.join("data").join(file).display(),
             char::from(found).escape_default(),
             char::from(expected).escape_default(),
         ))),

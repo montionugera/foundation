@@ -106,9 +106,9 @@ fn opened(dir: &Path, error: os::Error) -> Error {
             Error::Local(sector::local::Error::Files(env::files::Error::Io {
                 path: dir.join("data"),
                 operation: env::files::Operation::Open,
-                code: error
-                    .raw_os_error()
-                    .expect("invariant: `os` gives each `Dir` error of an OS call"),
+                code: error.raw_os_error().expect(
+                    "invariant: each `Dir` of `os::stored` holds the code of the OS",
+                ),
             }))
         }
         error @ (os::Error::Thread(_)

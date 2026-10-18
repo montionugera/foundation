@@ -5,6 +5,7 @@
 
 import gc
 import os
+import pathlib
 import shutil
 import signal
 import socket
@@ -314,15 +315,29 @@ class ClientTest(unittest.TestCase):
         )
 
     def test_the_address_keyword_wins_over_the_data_directory(self) -> None:
-        port = self.node.address.rsplit(":", 1)[1]
+        at = f"[::1]:{self.node.address.rsplit(':', 1)[1]}"
         with self.assertRaises(ConnectionError) as raised:
-            foundation.connect(f"[::1]:{port}", data=self.node.data)
+            foundation.connect(at, data=self.node.data)
         self.assertEqual(
             str(raised.exception),
-            f"no source gives the keys of the node at [::1]:{port}: pass node= and "
-            "public_key=, or data= with the --data of foundation start on the node's "
-            "host",
+            f"no source gives the keys of the node at {at}: {self.node.data} holds "
+            f"the node at {self.node.address}; pass node= and public_key=, or connect "
+            f"to {self.node.address}",
         )
+        with self.assertRaises(ConnectionError) as raised:
+            foundation.connect(
+                at, node=uuid.UUID(int=1), public_key=WRONG, data=self.node.data
+            )
+        self.assertEqual(
+            str(raised.exception),
+            f"no source gives the subject for the node at {at}: {self.node.data} "
+            f"holds the node at {self.node.address}; pass subject= and private_key=, "
+            f"or connect to {self.node.address}",
+        )
+
+    def test_the_data_directory_can_be_a_path(self) -> None:
+        with foundation.connect(data=pathlib.Path(self.node.data)) as client:
+            self.assertEqual(client.address, self.node.address)
 
     def test_a_data_directory_with_no_admin_key_gives_no_subject(self) -> None:
         copy = tempfile.TemporaryDirectory(prefix="foundation-python-")
@@ -502,8 +517,8 @@ class ArgumentTest(unittest.TestCase):
             foundation.connect("127.0.0.1:1", data=data)
         self.assertEqual(
             str(raised.exception),
-            f"{data}/address holds format version 2, and this package reads version "
-            "1: install the package of the node's version",
+            f"{data}/data/address holds format version 2, and this package reads "
+            "version 1: install the package of the node's version",
         )
 
     def test_an_address_that_is_not_ip_and_port_is_refused(self) -> None:
