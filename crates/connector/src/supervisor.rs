@@ -5816,15 +5816,20 @@ mod tests {
 
     #[test]
     fn a_clone_counts_the_browses_of_its_supervisor() {
-        let found = run_on(|node, tasks| async move {
+        let (past, freed) = run_on(|node, tasks| async move {
             let supervisor = create_slow(&node, tasks).await;
+            let clone = supervisor.clone();
             let (config, query) = (config(), level());
-            let _held = start_held(&supervisor, &config, &query).await;
-            supervisor.clone().browse("slow", &config, &query).await
+            let held = start_held(&supervisor, &config, &query).await;
+            let past = clone.browse("slow", &config, &query).await;
+            drop(held);
+            let freed = clone.browse("slow", &config, &query).await;
+            (past, freed)
         });
-        let Err(Error::Retry(error)) = found else {
-            panic!("not a retry: {found:?}");
+        let Err(Error::Retry(error)) = past else {
+            panic!("not a retry: {past:?}");
         };
         assert_eq!(error.to_string(), "2 browses run, the most at once");
+        assert_eq!(freed.expect("found").end, browse::End::Done);
     }
 }
