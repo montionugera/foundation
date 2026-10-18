@@ -2424,15 +2424,33 @@ fn a_reset_while_a_session_request_waits_ends_the_connect_with_no_dial() {
 }
 
 /// A reset of the streams of an active session ends it: each later read fails, and
-/// the client does not dial again.
+/// the client does not dial again, also after a switch of the URL.
 #[test]
 fn a_read_after_a_reset_of_an_active_session_fails_with_no_dial() {
-    let (out, _) = run(0, async |node| {
+    let reads = (
+        Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
+        Err(Fault::status(Status::BAD_SERVER_NOT_CONNECTED)),
+    );
+    let ends = [false, true].map(reset_of_an_active_session);
+    assert_eq!(ends, [(reads.clone(), 1), (reads, 2)]);
+}
+
+/// Connects through a relay, with a switch of the URL when `switched`, and resets the
+/// streams of the active session. Gives the two reads after the reset, and the accepts
+/// 10 ms after them.
+fn reset_of_an_active_session(switched: bool) -> (Reads, usize) {
+    let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let control = Relay::default();
             let url = relay_url(&node);
             let clock = Clock::clone(&peer.clock);
-            let reads = relayed(&node, &control, |_| {}, async {
+            let mut to = to_server(&node);
+            let rewrite = |message: &mut Vec<u8>| {
+                if switched {
+                    to(message);
+                }
+            };
+            let reads = relayed(&node, &control, rewrite, async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 control.cut.set(true);
                 let reads =
@@ -2446,12 +2464,11 @@ fn a_read_after_a_reset_of_an_active_session_fails_with_no_dial() {
         })
         .await
     });
-    let reads = (
-        Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
-        Err(Fault::status(Status::BAD_SERVER_NOT_CONNECTED)),
-    );
-    assert_eq!(out, (reads, 1));
+    out
 }
+
+/// The results of two reads of `VALUE`.
+type Reads = (Result<Value, Fault>, Result<Value, Fault>);
 
 /// One direction of a relay.
 #[derive(Default)]

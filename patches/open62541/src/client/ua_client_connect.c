@@ -2164,13 +2164,12 @@ __Client_networkCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
         UA_StatusCode cancel = client->connectStatus != UA_STATUSCODE_GOOD ?
             client->connectStatus : UA_STATUSCODE_BADSECURECHANNELCLOSED;
 
-        /* Only a switch of the endpoint dials again. A close by the peer (each
-         * close of the client is CLOSING) or by the client with a good status
-         * ends the connect: the caller paces the next one. Set the status
-         * before the requests end, so that their status does not replace it. */
+        /* Only a switch of the endpoint dials again. Each other close with a
+         * good status ends the connect: the caller paces the next one. Set the
+         * status before the requests end, so that their status does not
+         * replace it. */
         if(client->connectStatus == UA_STATUSCODE_GOOD &&
-           oldState != UA_SECURECHANNELSTATE_CONNECTING &&
-           (oldState != UA_SECURECHANNELSTATE_CLOSING || !client->reconnecting))
+           oldState != UA_SECURECHANNELSTATE_CONNECTING && !client->reconnecting)
             client->connectStatus = UA_STATUSCODE_BADCONNECTIONCLOSED;
 
         /* Delete outstanding async services - the RequestId is no longer valid. Do
