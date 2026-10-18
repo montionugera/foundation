@@ -393,8 +393,8 @@
   request or argument stay a JSON-RPC error. Each operation of `foundation --help` but
   `start` and `mcp` is a tool, with the output schema of its `--json`. `version`,
   `docs`, `status`, and `browse` have `readOnlyHint`; `plan`, `apply`, and `import`
-  (IMPORT OP) have `destructiveHint`, since the `out` of `plan` replaces a file that is
-  there, so a client that asks the person before a destructive tool asks for `plan` too.
+  (IMPORT OP) have `destructiveHint`, since the `out` of `plan` and the write of `import` (IMPORT OP) replace a file that is there, so a client that asks the person before a destructive tool asks for each (`laptop.architect-2`, 2026-10-18T07:39:38Z:
+  https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247231298).
   `foundation mcp` reaches its node at the first tool call that needs it, keeps that
   session, and reaches again only at the call after a failure of a reach or a request.
   `node` reads standard input on an I/O thread of `os` and gives `ops::cli` an async

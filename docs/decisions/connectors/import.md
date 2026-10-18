@@ -169,18 +169,19 @@
   `match`, and `start`) add the config of points to the file of the connector block.
   `--name` also picks its point, after each `--point`. The node makes the change:
   `serve` runs the checks of `browse` before the device, then, in order, `ops.no-pick`
-  for no pick, an argument error for both forms, `ops.import-limit` for more than 500
+  for no pick, an argument error for both forms, `ops.pick-limit` for more than 500
   paths, `ops.bad-point` with each path that does not parse, `ops.duplicate-pick` with
   each path picked twice, `ops.bad-name` with each given name that does not parse, and
   `ops.bad-pattern`. Each of the three holds a list, with one problem for each, so one
   run reports each bad text of the first of them that fails, and none does device I/O.
-  Then it walks with `Scope::Points` or `Scope::Match`. A walk that ends `Budget` gives
-  `ops.import-budget` and one that ends `Limit` gives `ops.import-limit`, so no import
-  adds part of a match in silence. The fix of `ops.import-limit` is "Narrow the match,
-  or pick at most 500 points", and of `ops.import-budget` "Narrow the start or the
-  match, or pick fewer points" (`laptop.architect-2`, 2026-10-18T07:24:23Z:
-  https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247107080), since a
-  walk of points and a match both give each. A picked point that the kind cannot read or
+  Then it walks with `Scope::Points` or `Scope::Match`. A walk of the picks that ends
+  `Budget` gives `ops.pick-budget`, and a match that ends `Budget` gives
+  `ops.match-budget` and one that ends `Limit` gives `ops.match-limit`, so no import
+  adds part of a match in silence. The fix of `ops.pick-limit` is "Pick at most 500
+  points, and import the others in another run", of `ops.pick-budget` "Pick the points
+  of fewer folders, and import the others in another run", and of `ops.match-limit` and
+  `ops.match-budget` "Narrow the start or the match". Each form has its own code for the limit and the budget, so each code has one cause and one fix (`laptop.architect-2`, 2026-10-18T07:39:38Z: https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247231298), which supersedes `ops.import-limit` and `ops.import-budget` and their fixes of
+  https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247107080. A picked point that the kind cannot read or
   write gives `ops.unreadable-point`, one diagnostic for each, with its reason; a match
   leaves each out and counts it. Then `config::import::add`, then the new text by
   `FrontEnd::update` of the file. The reply is the JSON line of the output, then the new
