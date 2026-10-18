@@ -16,18 +16,24 @@ mod read {
     /// Makes one bench for each scalar, with the scalar in the body of its own closure.
     /// One closure that captured the scalar would `match` on it in each read.
     macro_rules! reads {
-        ($($name:ident = $scalar:ident,)*) => {$(
-            #[divan::bench]
-            fn $name(bencher: Bencher<'_, '_>) {
-                const SCALAR: Scalar = Scalar::$scalar;
-                let series = vec![1_u8; SAMPLES * SCALAR.width()];
-                bencher.bench_local(|| {
-                    for sample in black_box(&series).chunks_exact(SCALAR.width()) {
-                        black_box(Value::read(SCALAR, sample));
-                    }
-                });
-            }
-        )*};
+        ($($name:ident = $scalar:ident,)*) => {
+            // A scalar with no bench fails this match.
+            const _: fn(Scalar) = |scalar| match scalar {
+                $(Scalar::$scalar)|* => {}
+            };
+            $(
+                #[divan::bench]
+                fn $name(bencher: Bencher<'_, '_>) {
+                    const SCALAR: Scalar = Scalar::$scalar;
+                    let series = vec![1_u8; SAMPLES * SCALAR.width()];
+                    bencher.bench_local(|| {
+                        for sample in black_box(&series).chunks_exact(SCALAR.width()) {
+                            black_box(Value::read(SCALAR, sample));
+                        }
+                    });
+                }
+            )*
+        };
     }
 
     reads! {
