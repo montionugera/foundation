@@ -14,7 +14,7 @@ use super::{Error, FromHome, Gaps, Head, Reader};
 pub struct Frames {
     reader: Reader,
     head: Option<Head>,
-    assembly: Assembly,
+    assembly: Assembly<false>,
     /// Also in a latest session, for [`Frames::live`].
     gaps: Gaps,
 }

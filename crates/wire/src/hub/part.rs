@@ -114,9 +114,10 @@ impl Next {
 }
 
 /// The ends and the draft of the frame that arrives, from its run of ends to the last
-/// byte of its body.
+/// byte of its body. `SKIP` is whether it can skip a frame: with `false`, as the read
+/// has it, no code of the skipped stage is built.
 #[derive(Debug)]
-pub(super) struct Assembly {
+pub(super) struct Assembly<const SKIP: bool> {
     set: Arc<KeySet>,
     /// The entry and end of each series.
     ends: Vec<(usize, usize)>,
@@ -138,7 +139,7 @@ enum Stage {
     Skipped,
 }
 
-impl Assembly {
+impl<const SKIP: bool> Assembly<SKIP> {
     /// The ends grow to those of the widest frame.
     pub(super) fn new(set: Arc<KeySet>) -> Self {
         Self {
@@ -216,7 +217,7 @@ impl Assembly {
             Stage::Body(draft) => {
                 prefix(rest(draft, start), bytes.len()).copy_from_slice(bytes);
             }
-            Stage::Skipped => {}
+            Stage::Skipped if SKIP => {}
             stage => {
                 unreachable!("invariant: body bytes come after a draft, not {stage:?}")
             }
@@ -255,6 +256,7 @@ impl Assembly {
     /// When no draft is due.
     #[inline]
     pub(super) fn skip(&mut self) {
+        const { assert!(SKIP, "an assembly that skips no frame takes no skip") };
         self.check_drafting();
         self.stage = Stage::Skipped;
     }
@@ -268,7 +270,7 @@ impl Assembly {
     pub(super) fn take(&mut self) -> Option<Draft> {
         match std::mem::replace(&mut self.stage, Stage::Run) {
             Stage::Body(draft) => Some(draft),
-            Stage::Skipped => None,
+            Stage::Skipped if SKIP => None,
             stage => {
                 unreachable!("invariant: a frame ends after a draft, not {stage:?}")
             }
