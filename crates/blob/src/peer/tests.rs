@@ -799,6 +799,7 @@ fn a_put_whose_bytes_hash_to_another_digest_stops_with_mismatch() {
             let mismatch = crate::Error::Mismatch { digest, found };
             assert_eq!(served, Err(Error::Store(mismatch)));
             assert!(store.get(digest).await.unwrap().is_none());
+            assert_eq!(store.status().corruptions, 0);
             let left: Vec<PathBuf> = Vec::new();
             assert_eq!(node.files().list(Path::new(DIR)).await.unwrap(), left);
         },

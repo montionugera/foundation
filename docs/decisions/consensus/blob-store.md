@@ -91,3 +91,9 @@
   `blob` bytes whose count grows with the data makes the two a hot path, and its PR adds
   the benchmark. Ruled by `laptop.architect` (2026-10-11T11:49:10Z,
   https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108706010).
+  Amended (`laptop.architect`, 2026-10-18T20:10:11Z,
+  https://github.com/synnaxlabs/foundation/issues/3251#issuecomment-6254577124): a put
+  of `blob::peer::serve` writes its bytes as they come and checks them at its end (BLOB
+  PEER). Until then its digest is in flight, as for `Store::put`: a get and a put of the
+  digest wait for it. A put of `serve` that does not end removes its file, other than a
+  drop, which is a dropped put.

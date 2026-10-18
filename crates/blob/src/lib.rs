@@ -6,7 +6,7 @@
 pub mod peer;
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -16,10 +16,10 @@ use std::task::{Poll, Waker};
 use block::{Block, Pool};
 use env::files::{self, File, Files, Mode};
 use types::digest::{Digest, Hasher};
-use types::wait;
 
 /// The puts of [`peer::serve`] that one store holds a file for at one time. A head
-/// over it waits, with no block and no file, until one ends.
+/// over it waits, with no block and no file, until one ends. Heads go in the order
+/// they come.
 const PUTS_MAX: usize = 8;
 
 /// What a [`Store`] is given at open.
@@ -171,8 +171,9 @@ pub struct Store {
     waiters: Cell<u64>,
     /// The receipts that are open.
     receipts: Cell<usize>,
-    /// The heads that wait for a receipt, while [`PUTS_MAX`] are open.
-    heads: RefCell<wait::Set>,
+    /// The heads that wait for a receipt, first come first. Only the first can take
+    /// a slot.
+    heads: RefCell<VecDeque<(u64, Waker)>>,
 }
 
 impl Store {
@@ -215,7 +216,7 @@ impl Store {
             flights: Cell::new(1),
             waiters: Cell::new(0),
             receipts: Cell::new(0),
-            heads: RefCell::new(wait::Set::new()),
+            heads: RefCell::new(VecDeque::new()),
         })
     }
 
@@ -326,11 +327,27 @@ impl Store {
         self.counted(received.await)
     }
 
-    /// Ends when fewer than [`PUTS_MAX`] receipts are open, and gives a slot of one.
+    /// Ends when fewer than [`PUTS_MAX`] receipts are open and no head that came
+    /// before waits, and gives a slot of one.
     fn slot(&self) -> Admit<'_> {
         let key = self.waiters.get();
         self.waiters.set(key + 1);
-        Admit { store: self, key }
+        Admit {
+            store: self,
+            key,
+            queued: false,
+        }
+    }
+
+    /// Wakes the first head that waits, when a slot is free for it.
+    fn admit_next(&self) {
+        if self.receipts.get() == PUTS_MAX {
+            return;
+        }
+        let next = self.heads.borrow().front().map(|(_, waker)| waker.clone());
+        if let Some(next) = next {
+            next.wake();
+        }
     }
 
     /// What this store counted after its open.
@@ -487,44 +504,84 @@ impl Drop for Waiter<'_> {
     }
 }
 
-/// A slot of the receipts of a store. Its drop wakes each head that waits for one.
+/// A slot of the receipts of a store. Its drop wakes the first head that waits.
 struct Slot<'a>(&'a Store);
 
 impl Drop for Slot<'_> {
     fn drop(&mut self) {
         let store = self.0;
         store.receipts.set(store.receipts.get() - 1);
-        let mut woken = Vec::new();
-        store.heads.borrow_mut().drain(&mut woken);
-        woken.into_iter().for_each(Waker::wake);
+        store.admit_next();
     }
 }
 
-/// A head that waits for a [`Slot`]. Its drop takes its waker back.
+/// A head that waits for a [`Slot`]. Its drop takes its place in the line out.
 struct Admit<'a> {
     store: &'a Store,
     key: u64,
+    /// Whether the head is in [`Store::heads`].
+    queued: bool,
 }
 
 impl<'a> Future for Admit<'a> {
     type Output = Slot<'a>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Slot<'a>> {
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Slot<'a>> {
         let store = self.store;
-        if store.receipts.get() < PUTS_MAX {
+        let mut heads = store.heads.borrow_mut();
+        let first = heads.front().is_none_or(|(key, _)| *key == self.key);
+        if first && store.receipts.get() < PUTS_MAX {
+            if self.queued {
+                // The waker drops after the borrow: its last drop can drop a task.
+                let taken = heads.pop_front();
+                drop(heads);
+                drop(taken);
+                self.queued = false;
+            } else {
+                drop(heads);
+            }
             store.receipts.set(store.receipts.get() + 1);
+            store.admit_next();
             return Poll::Ready(Slot(store));
         }
-        let replaced = store.heads.borrow_mut().insert(self.key, cx.waker());
+        let replaced = if self.queued {
+            let (_, held) = heads
+                .iter_mut()
+                .find(|(key, _)| *key == self.key)
+                .expect("invariant: a queued head is in the line");
+            (!held.will_wake(cx.waker()))
+                .then(|| std::mem::replace(held, cx.waker().clone()))
+        } else {
+            heads.push_back((self.key, cx.waker().clone()));
+            None
+        };
+        drop(heads);
         drop(replaced);
+        self.queued = true;
         Poll::Pending
     }
 }
 
 impl Drop for Admit<'_> {
     fn drop(&mut self) {
-        let removed = self.store.heads.borrow_mut().remove(self.key);
+        if !self.queued {
+            return;
+        }
+        let store = self.store;
+        let mut heads = store.heads.borrow_mut();
+        let at = heads
+            .iter()
+            .position(|(key, _)| *key == self.key)
+            .expect("invariant: a queued head is in the line");
+        let removed = heads.remove(at);
+        drop(heads);
         drop(removed);
+        if at == 0 {
+            store.admit_next();
+        }
     }
 }
 
@@ -2601,7 +2658,7 @@ mod tests {
 
         /// A waker that counts its wakes.
         #[derive(Default)]
-        struct Count(AtomicU64);
+        pub(super) struct Count(AtomicU64);
 
         impl std::task::Wake for Count {
             fn wake(self: Arc<Self>) {
@@ -2610,7 +2667,7 @@ mod tests {
         }
 
         /// Polls `future` once with a waker of `count`.
-        fn poll_with<F: Future>(
+        pub(super) fn poll_with<F: Future>(
             future: Pin<&mut F>,
             count: &Arc<Count>,
         ) -> Poll<F::Output> {
@@ -2618,7 +2675,7 @@ mod tests {
             future.poll(&mut std::task::Context::from_waker(&waker))
         }
 
-        fn wakes(count: &Count) -> u64 {
+        pub(super) fn wakes(count: &Count) -> u64 {
             count.0.load(Ordering::Relaxed)
         }
 
@@ -2795,6 +2852,175 @@ mod tests {
                 })
                 .unwrap();
             }
+        }
+    }
+
+    mod receive {
+        use super::dropped::{Count, poll_with, wakes};
+        use super::*;
+
+        /// Opens [`PUTS_MAX`] receipts of chunks of 100 bytes, one digest each.
+        async fn receipts(store: &Store) -> Vec<Receipt<'_>> {
+            let mut open = Vec::new();
+            for byte in 1..=PUTS_MAX {
+                let (digest, _) = chunk(u8::try_from(byte).unwrap(), 100);
+                open.push(store.receive(digest, 100).await.unwrap());
+            }
+            open
+        }
+
+        /// Writes `block` to `receipt` and ends it.
+        async fn end(mut receipt: Receipt<'_>, block: &Block) -> Result<(), Error> {
+            receipt.write(block.clone()).await?;
+            receipt.end().await
+        }
+
+        #[test]
+        fn over_puts_max_waits_and_heads_go_in_the_order_they_come() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let mut open = receipts(&store).await;
+                let (first, _) = chunk(101, 100);
+                let (later, _) = chunk(102, 100);
+                let mut first = pin!(store.receive(first, 100));
+                assert!(poll_once(&mut first).await.is_pending());
+                let mut later = pin!(store.receive(later, 100));
+                assert!(poll_once(&mut later).await.is_pending());
+                open.pop().unwrap().discard().await;
+                assert!(poll_once(&mut later).await.is_pending());
+                let _first = first.await.unwrap();
+                assert!(poll_once(&mut later).await.is_pending());
+                drop(open.pop());
+                later.await.unwrap();
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn a_first_head_dropped_after_its_wake_wakes_the_next() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let mut open = receipts(&store).await;
+                let (first, _) = chunk(101, 100);
+                let (later, _) = chunk(102, 100);
+                let dropped = Arc::new(Count::default());
+                let mut first = Box::pin(store.receive(first, 100));
+                assert!(poll_with(first.as_mut(), &dropped).is_pending());
+                let kept = Arc::new(Count::default());
+                let mut later = pin!(store.receive(later, 100));
+                assert!(poll_with(later.as_mut(), &kept).is_pending());
+                drop(open.pop());
+                assert_eq!((wakes(&dropped), wakes(&kept)), (1, 0));
+                drop(first);
+                assert_eq!(wakes(&kept), 1);
+                assert_eq!(Arc::strong_count(&dropped), 1);
+                later.await.unwrap();
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn of_a_held_chunk_makes_no_file_call_and_checks_the_parts() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let (digest, block) = chunk(7, 3000);
+                store.put(digest, &block).await.unwrap();
+                node.fail_file(&path(digest), Operation::Open);
+                node.fail_file(Path::new(DIR), Operation::SyncDir);
+                let receipt = store.receive(digest, 3000).await.unwrap();
+                assert_eq!(end(receipt, &block).await, Ok(()));
+                let (found, other) = chunk(8, 3000);
+                let receipt = store.receive(digest, 3000).await.unwrap();
+                let mismatch = Error::Mismatch { digest, found };
+                assert_eq!(end(receipt, &other).await, Err(mismatch));
+                assert_no_open(&node, &path(digest)).await;
+                assert_no_sync_dir(&node).await;
+                assert_eq!(&store.get(digest).await.unwrap().unwrap()[..], &block[..]);
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn whose_parts_hash_to_another_digest_removes_the_file_and_counts_nothing() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let (digest, _) = chunk(7, 3000);
+                let (found, other) = chunk(8, 3000);
+                let receipt = store.receive(digest, 3000).await.unwrap();
+                let mismatch = Error::Mismatch { digest, found };
+                assert_eq!(end(receipt, &other).await, Err(mismatch));
+                let listed = node.files().list(Path::new(DIR)).await.unwrap();
+                assert_eq!(listed, Vec::<PathBuf>::new());
+                assert_absent(&store, digest).await;
+                let counted = Status {
+                    corruptions: 0,
+                    failures: 0,
+                };
+                assert_eq!(store.status(), counted);
+            })
+            .unwrap();
+        }
+
+        // The accepted wait: a local put of a digest whose receipt waits for its
+        // parts goes on once the receipt ends.
+        #[test]
+        fn a_put_of_its_digest_waits_for_its_end() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let (digest, block) = chunk(7, 3000);
+                let receipt = store.receive(digest, 3000).await.unwrap();
+                let mut put = pin!(store.put(digest, &block));
+                for _ in 0..100 {
+                    assert_eq!(poll_once(&mut put).await, Poll::Pending);
+                    node.clock().sleep(Span::from_nanos(10_000)).await;
+                }
+                receipt.discard().await;
+                put.await.unwrap();
+                assert_bytes(&node, digest, &block).await;
+                assert_no_failure(&store);
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn dropped_in_its_parts_leaves_a_chunk_that_the_next_put_writes() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let (digest, block) = chunk(7, 3000);
+                let mut receipt = store.receive(digest, 3000).await.unwrap();
+                let (_, part) = chunk(7, 1000);
+                receipt.write(part).await.unwrap();
+                drop(receipt);
+                assert_absent(&store, digest).await;
+                store.put(digest, &block).await.unwrap();
+                assert_bytes(&node, digest, &block).await;
+                assert_eq!(store.status().corruptions, 0);
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn over_the_largest_block_gives_pool_and_takes_no_slot() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let _open = receipts(&store).await;
+                let (digest, _) = chunk(7, 100);
+                let largest = store.pool.largest();
+                let refused = store.receive(digest, largest + 1).await.err();
+                let too_large = block::Error::TooLarge {
+                    requested: largest + 1,
+                    largest,
+                };
+                assert_eq!(refused, Some(Error::Pool(too_large)));
+            })
+            .unwrap();
         }
     }
 }
