@@ -605,12 +605,7 @@ impl Server {
     pub(crate) async fn close(self, manager: &Manager) {
         let events = self.stop(manager);
         let mut runs = 0;
-        manager
-            .drive(|_| {
-                runs += 1;
-                drained(events, runs)
-            })
-            .await;
+        manager.drive(|_| drained(events, &mut runs)).await;
         self.delete();
     }
 
@@ -626,8 +621,7 @@ impl Server {
         let mut runs = 0;
         loop {
             events.run();
-            runs += 1;
-            if drained(events, runs).is_ready() {
+            if drained(events, &mut runs).is_ready() {
                 break;
             }
         }
@@ -667,20 +661,21 @@ impl Server {
     }
 }
 
-/// Gives `Ready` once no delayed callback waits on `events` after run `runs` of a
-/// close.
+/// Counts a run of the loop of a close in `runs`, and gives `Ready` once no delayed
+/// callback waits on `events`.
 ///
 /// # Panics
 ///
 /// If one still waits after run 64.
-fn drained(events: &event::Loop, runs: c_int) -> Poll<()> {
+fn drained(events: &event::Loop, runs: &mut c_int) -> Poll<()> {
+    *runs += 1;
     if !events.delayed() {
         return Poll::Ready(());
     }
     // SAFETY: a constant of `shim.c`.
     let passes = unsafe { ffi::shim_free_passes };
     assert!(
-        runs < passes,
+        *runs < passes,
         "open62541 queued delayed callbacks for {passes} runs of a server close"
     );
     Poll::Pending

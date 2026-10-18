@@ -1,6 +1,6 @@
 use std::future::{pending, poll_fn};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::task::Poll;
 
 use ::sim::{Crash, Sim, node};
@@ -122,6 +122,46 @@ fn a_crash_while_a_stream_is_open_frees_the_server() {
     assert_eq!(Arc::strong_count(&held), 2, "the server holds its source");
     sim.crash(&device, Crash::Power);
     assert_eq!(Arc::strong_count(&held), 1, "the crash frees the source");
+}
+
+/// The close at the end of a serve closes each stream, so the peer reads the end of
+/// the stream and no reset.
+#[test]
+fn the_end_of_a_serve_closes_each_open_stream() {
+    let mut sim = Sim::new(::sim::Config::default());
+    let (device, peer) = (
+        sim.node(node::Config::default()),
+        sim.node(node::Config::default()),
+    );
+    let local = SocketAddr::new(device.addresses()[0], 4840);
+    let node = device.clone();
+    let started = device.shards().start(shard("serve"), move |_| async move {
+        let manager = Manager::listening(
+            event::Time::monotonic(node.clock()),
+            node.net(),
+            local,
+            4,
+            &mut node.entropy().rng(),
+        )
+        .expect("the port is free");
+        Server::serve(manager, 1, |_| {}, node.clock().sleep(Span::SECOND)).await;
+    });
+    drop(started.expect("the shard starts"));
+    let (net, (send, read)) = (peer.net(), mpsc::channel());
+    let config = tcp::Config {
+        remote: local,
+        options: OPTIONS,
+    };
+    let started = peer.shards().start(shard("dial"), move |_| async move {
+        let mut stream = net.connect(&config).await.expect("the connect works");
+        let mut buffer = [0; 64];
+        let read = poll_fn(|cx| stream.poll_read(cx, &mut buffer)).await;
+        send.send(read).expect("the test waits");
+    });
+    drop(started.expect("the shard starts"));
+    sim.run_for(Span::from_nanos(2 * Span::SECOND.nanos()))
+        .expect("the run goes on");
+    assert_eq!(read.try_recv().expect("the read ends"), Ok(0));
 }
 
 fn shard(name: &str) -> env::shards::Config {
