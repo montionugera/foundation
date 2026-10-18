@@ -52,6 +52,10 @@ fn each_error_names_its_cause() {
         Error::Panicked,
         value,
         Error::Closed,
+        Error::Decode {
+            place: 3,
+            cause: codec::Error::Tag { vector: 1, tag: 9 },
+        },
     ];
     assert_eq!(
         errors.map(|e| e.to_string()),
@@ -64,6 +68,8 @@ fn each_error_names_its_cause() {
             "the client thread panicked",
             "place 2 holds i64, not f64",
             "the client is closed",
+            "the series of place 3 does not decode: vector 1 has tag 9, which this sample \
+             type does not use",
         ]
     );
 }

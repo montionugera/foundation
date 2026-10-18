@@ -1913,6 +1913,7 @@ name = "sdk"
 version = "0.0.0"
 dependencies = [
  "block",
+ "codec",
  "env",
  "os",
  "program",

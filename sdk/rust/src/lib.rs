@@ -18,6 +18,7 @@ use types::ed25519::{PrivateKey, PublicKey};
 use types::name::Name;
 use types::sample::{Scalar, Type};
 
+pub mod read;
 pub mod write;
 
 /// The budget of the pool of the transport and the session. Its largest block holds a
@@ -159,7 +160,7 @@ pub struct Subject {
 #[derive(Debug)]
 pub struct Client {
     thread: Mutex<Thread>,
-    requests: tokio::sync::mpsc::UnboundedSender<write::Open>,
+    requests: tokio::sync::mpsc::UnboundedSender<Open>,
     /// Set at the close or drop of the client, before its thread ends.
     closed: Arc<AtomicBool>,
 }
@@ -275,6 +276,22 @@ impl Client {
         write::Writer::open(&self.requests, &self.closed, config)
     }
 
+    /// Opens a reader on `config.channels` at the client's node, and blocks until the
+    /// node opened it: one read stream for each index of the channels.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Closed`] when the client's session ended at a close or a drop, and
+    /// [`Error::Panicked`] when the client's thread panicked. [`Error::Session`] with
+    /// the error that ended the session when it failed. Else [`Error::Stream`] with
+    /// each error of `program::Session::reader`, such as `Refused(Refusal::Unknown)`
+    /// for a name of no channel and `Refused(Refusal::NotHome)` when the node is not
+    /// the home of an index, each a `program::Refusal`, and `Unnamed` when
+    /// `config.channels` is empty, with nothing sent.
+    pub fn open_reader(&self, config: read::Config) -> Result<read::Reader, Error> {
+        read::Reader::open(&self.requests, &self.closed, config)
+    }
+
     /// Closes the session, and blocks until the close goes out, the transport drains
     /// each close (such as that of a dial that lost the stagger to another address,
     /// up to 3 s), and the client's thread ends.
@@ -321,17 +338,17 @@ pub enum Error {
     /// The session failed before the node admitted the hello, or ended before the
     /// close.
     Session(program::Error),
-    /// The node refused the open of a stream, or a call of a writer failed. The
-    /// session goes on. After `Layout`, `Unsent`, and `Pool`, nothing was sent and the
-    /// writer goes on. Each other error ended the writer, and each later call of the
-    /// writer gives it again.
+    /// The node refused the open of a stream, or a call of a writer or a reader
+    /// failed. The session goes on. After `Layout`, `Unsent`, and `Pool`, nothing was
+    /// sent and the writer goes on. Each other error ended the writer or the reader,
+    /// and each later call of it gives it again.
     Stream(program::Error),
     /// The data directory of [`Node::local`] names no node to reach, as the cause says.
     Local(sector::local::Error),
     /// The client's thread panicked, and the panic hook of the process got its
     /// message. Only a build where panics unwind gives it: with `panic = "abort"`, the
-    /// panic ends the process. Each call of a writer of the client gives it after the
-    /// panic, until the client closes or drops.
+    /// panic ends the process. Each call of a writer or a reader of the client gives it
+    /// after the panic, until the client closes or drops.
     Panicked,
     /// A value of a write is not of the type of its place. The write sent nothing.
     Value {
@@ -344,6 +361,13 @@ pub enum Error {
     },
     /// The client's session ended at [`Client::close`] or a drop of the client.
     Closed,
+    /// A series of a read does not decode. The reader ended.
+    Decode {
+        /// The place of the series.
+        place: usize,
+        /// Why it does not decode.
+        cause: codec::Error,
+    },
 }
 
 impl fmt::Display for Error {
@@ -365,6 +389,9 @@ impl fmt::Display for Error {
                 write!(f, "place {place} holds {data_type}, not {scalar}")
             }
             Self::Closed => write!(f, "the client is closed"),
+            Self::Decode { place, cause } => {
+                write!(f, "the series of place {place} does not decode: {cause}")
+            }
         }
     }
 }
@@ -372,7 +399,47 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// The requests of the calls of a client, which its thread serves.
-type Requests = tokio::sync::mpsc::UnboundedReceiver<write::Open>;
+type Requests = tokio::sync::mpsc::UnboundedReceiver<Open>;
+
+/// The open of a stream, which the client's thread serves in a task of its own.
+#[derive(Debug)]
+enum Open {
+    Write(write::Open),
+    Read(read::Open),
+}
+
+impl From<write::Open> for Open {
+    fn from(open: write::Open) -> Self {
+        Self::Write(open)
+    }
+}
+
+impl From<read::Open> for Open {
+    fn from(open: read::Open) -> Self {
+        Self::Read(open)
+    }
+}
+
+/// Blocks for the answer of the client's thread, or the error of [`lost`] when the
+/// thread dropped its sender.
+fn wait<T>(answers: &mpsc::Receiver<T>, closed: &AtomicBool) -> Result<T, Error> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a call of a stream blocks its caller, which may run a Tokio runtime"
+    )]
+    let answer = answers.recv();
+    answer.map_err(|_ended| lost(closed))
+}
+
+/// The error of a call whose task ended: [`Error::Closed`] when the client closed or
+/// dropped (`closed`), else [`Error::Panicked`], as only a panic ends the task first.
+fn lost(closed: &AtomicBool) -> Error {
+    if closed.load(Ordering::Acquire) {
+        Error::Closed
+    } else {
+        Error::Panicked
+    }
+}
 
 /// The main function of the client's thread: connects, sends the outcome, and holds
 /// the session and serves each of `requests` until `ended` completes. It then ends
@@ -419,7 +486,11 @@ async fn served(
     })
     .await
     {
-        tasks.spawn(write::serve(session.clone(), open, closed.clone()));
+        let (session, closed) = (session.clone(), closed.clone());
+        match open {
+            Open::Write(open) => tasks.spawn(write::serve(session, open, closed)),
+            Open::Read(open) => tasks.spawn(read::serve(session, open, closed)),
+        }
     }
 }
 

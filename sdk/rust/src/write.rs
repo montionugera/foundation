@@ -4,7 +4,7 @@ use std::future::poll_fn;
 use std::mem;
 use std::pin::pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::task::Poll;
 
@@ -18,7 +18,7 @@ use types::name::Name;
 use types::sample::{Scalar, Type, Value};
 use types::time::Span;
 
-use crate::Error;
+use crate::{Error, lost, wait};
 use program::write::Time;
 
 /// What [`Client::open_writer`](crate::Client::open_writer) opens.
@@ -73,8 +73,8 @@ pub struct Writer {
 impl Writer {
     /// Sends the open of `config` on `opens`, and blocks until the client's thread
     /// opened it. `closed` is set when the client closed or dropped.
-    pub(crate) fn open(
-        opens: &mpsc::UnboundedSender<Open>,
+    pub(crate) fn open<O: From<Open>>(
+        opens: &mpsc::UnboundedSender<O>,
         closed: &Arc<AtomicBool>,
         config: Config,
     ) -> Result<Self, Error> {
@@ -92,7 +92,7 @@ impl Writer {
             calls: received,
             written: answer,
         };
-        opens.send(open).map_err(|_ended| lost(closed))?;
+        opens.send(open.into()).map_err(|_ended| lost(closed))?;
         let (node, index) = wait(&opened, closed)??;
         let (places, nodes, index) = ordered(&names, &node, index);
         Ok(Self {
@@ -261,27 +261,6 @@ fn ordered(
     });
     let places = nodes.iter().map(|&n| node[n].clone()).collect();
     (places, nodes, at)
-}
-
-/// Blocks for the answer of the client's thread, or the error of [`lost`] when the
-/// thread dropped its sender.
-fn wait<T>(answers: &Receiver<T>, closed: &AtomicBool) -> Result<T, Error> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "a call of a writer blocks its caller, which may run a Tokio runtime"
-    )]
-    let answer = answers.recv();
-    answer.map_err(|_ended| lost(closed))
-}
-
-/// The error of a call whose task ended: [`Error::Closed`] when the client closed or
-/// dropped (`closed`), else [`Error::Panicked`], as only a panic ends the task first.
-fn lost(closed: &AtomicBool) -> Error {
-    if closed.load(Ordering::Acquire) {
-        Error::Closed
-    } else {
-        Error::Panicked
-    }
 }
 
 /// The open of a writer, which the client's thread serves in a task of its own.

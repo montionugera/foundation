@@ -377,7 +377,9 @@ fn a_close_whose_task_ended_before_its_answer_gives_closed_after_a_close() {
 fn client(after: impl FnOnce(mpsc::Receiver<Call>) + Send + 'static) -> crate::Client {
     let started = crate::Client::start(|_, outcome, ended, mut opens| async move {
         outcome.send(Ok(())).unwrap();
-        let open = opens.recv().await.unwrap();
+        let crate::Open::Write(open) = opens.recv().await.unwrap() else {
+            panic!("the client opens a writer");
+        };
         open.opened.send(Ok((places(), 0))).unwrap();
         after(open.calls);
         drop(ended.await);
