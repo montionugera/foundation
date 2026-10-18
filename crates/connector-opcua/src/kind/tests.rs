@@ -11,8 +11,7 @@ use std::sync::{Arc, Mutex};
 use ::sim::{Sim, node};
 use connector::cancel::Token;
 use connector::kind::Table;
-use connector::supervisor::Supervisor;
-use connector::testing;
+use connector::testing::{self, Rig};
 use document::value::{self, Value};
 use document::{Attribute, Map};
 use env::net::{Listener, tcp};
@@ -342,13 +341,12 @@ fn listen(node: &node::Node) -> Listener {
     node.net().listen(&listen).expect("the port is free")
 }
 
-/// One node with a hub, a server of [`Setup::nodes`] on its port 4840, and a
-/// supervisor of the `opcua` kind.
+/// One node with a rig of the `opcua` kind and a server of [`Setup::nodes`] on its
+/// port 4840.
 struct Scene {
     node: node::Node,
     tasks: Tasks,
-    hub: hub::Hub,
-    supervisor: Supervisor,
+    rig: Rig,
     variables: Variables,
     /// The gate of each server that runs.
     gate: Gate,
@@ -396,7 +394,8 @@ impl Scene {
             canceller.cancel();
         });
         let open = self
-            .supervisor
+            .rig
+            .supervisor()
             .open("opcua", name(PLC), &self.config, &token);
         open.await.run().await
     }
@@ -459,8 +458,8 @@ where
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("opcua", Kind::default());
-        let inputs = testing::create_config(env, node.net(), kinds).await;
-        let hub = inputs.hub.clone();
+        let rig = Rig::open(env, node.net(), kinds).await;
+        let hub = rig.hub();
         let counts = COUNTS.map(name);
         let status = testing::create_status(
             &name(PLC),
@@ -471,8 +470,7 @@ where
         let channels: Vec<_> = channels
             .map(|(text, def)| (name(text), def.clone()))
             .collect();
-        let definitions = status.iter().chain(&channels);
-        hub.set_definitions(definitions.map(|(name, def)| (name, def)));
+        rig.define(status.iter().chain(&channels).cloned().collect());
         let mut groups = BTreeMap::<u128, Vec<Name>>::new();
         for (name, definition) in &channels {
             groups
@@ -482,20 +480,19 @@ where
         }
         let mut indexes = BTreeMap::new();
         for (index, names) in groups {
-            indexes.insert(index, record(&hub, &names, &tasks).await);
+            indexes.insert(index, record(hub, &names, &tasks).await);
         }
         let names: Vec<_> = status.iter().map(|(name, _)| name.clone()).collect();
-        let statuses = record(&hub, &names, &tasks).await;
+        let statuses = record(hub, &names, &tasks).await;
         let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
         let scene = Rc::new(Scene {
             config: config(&address, rate, &setup.reads),
             variables: setup.variables(),
-            supervisor: Supervisor::new(inputs),
+            rig,
             server: RefCell::new(None),
             gate: Gate::default(),
             node: node.clone(),
             tasks,
-            hub,
         });
         scene.serve();
         let result = script(Rc::clone(&scene)).await;
@@ -878,7 +875,7 @@ fn counts_the_samples_of_each_run_after_a_restart() {
 #[test]
 fn adds_the_missed_ticks_and_lost_samples_of_each_run_to_those_before() {
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = write_ahead(&scene.hub, DATA, &[(1, Span::ZERO)]).await;
+        let rival = write_ahead(scene.rig.hub(), DATA, &[(1, Span::ZERO)]).await;
         scene.after(ms(1_050), move |scene| async move {
             drop(rival);
             scene.node.pause(Span::SECOND);
@@ -886,7 +883,7 @@ fn adds_the_missed_ticks_and_lost_samples_of_each_run_to_those_before() {
         scene.after(ms(2_550), |scene| async move { scene.stop().await });
         scene.after(ms(4_050), |scene| async move { scene.serve() });
         scene.after(ms(5_550), |scene| async move {
-            let rival = open_rival(&scene.hub, Authority(1), DATA).await;
+            let rival = open_rival(scene.rig.hub(), Authority(1), DATA).await;
             let held = fill(&rival);
             scene.node.clock().sleep(Span::SECOND).await;
             drop(held);
@@ -1023,7 +1020,7 @@ fn writes_no_stamp_in_the_first_group_with_no_value_left() {
 fn writes_a_frame_refused_as_backwards_again_after_the_stamp_of_the_refusal() {
     let lead = ms(500);
     let outcome = run(Setup::three(), move |scene| async move {
-        drop(write_ahead(&scene.hub, DATA, &[(1, lead)]).await);
+        drop(write_ahead(scene.rig.hub(), DATA, &[(1, lead)]).await);
         scene.supervise(ms(1_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
@@ -1185,7 +1182,7 @@ fn write_after_a_full_frame(kind: Count) {
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("opcua", kind);
-        let rig = testing::Rig::open(env, node.net(), kinds).await;
+        let rig = Rig::open(env, node.net(), kinds).await;
         let setup = Setup::three();
         let channels = setup.channels.iter();
         let channels = channels.map(|(text, def)| (name(text), def.clone()));
@@ -1495,7 +1492,7 @@ fn refuses_a_node_whose_read_alone_is_past_one_message_of_the_server() {
 #[test]
 fn counts_the_samples_of_a_frame_refused_while_another_writer_holds_control() {
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = write_ahead(&scene.hub, DATA, &[(1, Span::ZERO)]).await;
+        let rival = write_ahead(scene.rig.hub(), DATA, &[(1, Span::ZERO)]).await;
         scene.after(ms(1_050), move |_| async move { drop(rival) });
         scene.supervise(ms(2_050)).await
     });
@@ -1508,7 +1505,7 @@ fn counts_the_samples_of_a_frame_refused_while_another_writer_holds_control() {
 #[test]
 fn counts_the_samples_of_a_frame_for_which_the_pool_has_no_room() {
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = open_rival(&scene.hub, Authority(1), DATA).await;
+        let rival = open_rival(scene.rig.hub(), Authority(1), DATA).await;
         scene.after(ms(550), move |scene| async move {
             let held = fill(&rival);
             scene.node.clock().sleep(Span::SECOND).await;
@@ -1625,7 +1622,7 @@ fn writes_groups_refused_as_backwards_again_after_the_latest_stamp() {
         setup.channels[3] = ("plant.c", data(4, 10, F64));
         let outcome = run(setup, move |scene| async move {
             let leads = [(1, ms(one)), (10, ms(ten))];
-            drop(write_ahead(&scene.hub, DATA, &leads).await);
+            drop(write_ahead(scene.rig.hub(), DATA, &leads).await);
             scene.supervise(ms(1_050)).await
         });
         assert!(outcome.result.is_ok(), "{:?}", outcome.result);
@@ -1644,7 +1641,7 @@ fn writes_only_the_refused_second_group_again() {
     setup.channels.push(("plant.other", index(10)));
     setup.channels[3] = ("plant.c", data(4, 10, F64));
     let outcome = run(setup, move |scene| async move {
-        drop(write_ahead(&scene.hub, &["plant.c"], &[(10, ms(600))]).await);
+        drop(write_ahead(scene.rig.hub(), &["plant.c"], &[(10, ms(600))]).await);
         scene.supervise(ms(1_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
@@ -1662,7 +1659,7 @@ fn writes_only_the_refused_second_group_again() {
 #[test]
 fn counts_the_samples_of_a_frame_that_the_home_loses() {
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = open_rival(&scene.hub, Authority(1), DATA).await;
+        let rival = open_rival(scene.rig.hub(), Authority(1), DATA).await;
         scene.after(ms(550), move |scene| async move {
             let mut held = fill(&rival);
             drop(held.pop());
@@ -1686,7 +1683,7 @@ fn stamps_each_frame_within_its_read() {
     let offset = Arc::new(AtomicI64::new(0));
     let mesh = Arc::clone(&offset);
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = open_rival(&scene.hub, Authority(1), DATA).await;
+        let rival = open_rival(scene.rig.hub(), Authority(1), DATA).await;
         let monotonic = i64::try_from(scene.node.clock().now().0).expect("small");
         mesh.store(rival.now().nanos() - monotonic, Ordering::Relaxed);
         drop(rival);

@@ -5,9 +5,10 @@ use std::sync::Arc;
 
 use ::sim::{Sim, node};
 use connector::browse::{Device, End, Found, Query, Scope, Values};
+use connector::http;
 use connector::kind::Table;
 use connector::supervisor::{self, Supervisor};
-use connector::{http, testing};
+use connector::testing::{self, Rig};
 use document::value::{self, Value};
 use document::{Attribute, Document, Map};
 use env::net::tcp;
@@ -59,14 +60,13 @@ fn browse_each(
             tasks,
         };
         let kinds = Table::new().with("opcua", Kind::default());
-        let supervisor =
-            Supervisor::new(testing::create_config(env, node.net(), kinds).await);
+        let rig = Rig::open(env, node.net(), kinds).await;
         let local = SocketAddr::new(node.addresses()[0], 4840);
         let config = config(&format!("opc.tcp://{local}"));
         let mut found = Vec::new();
         let browse = async {
             for query in &queries {
-                found.push(supervisor.browse("opcua", &config, query).await);
+                found.push(rig.supervisor().browse("opcua", &config, query).await);
             }
         };
         if !served {

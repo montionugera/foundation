@@ -27,6 +27,7 @@ use types::name::{Name, Selector};
 use types::time::Span;
 
 use crate::cancel::Token;
+use crate::http::Roots;
 use crate::kind::{Error, Table};
 use crate::status::{self, Reading};
 use crate::supervisor::{self, Supervisor};
@@ -61,7 +62,25 @@ impl Rig {
     ///
     /// As [`hub::testing::open`].
     pub async fn open(env: hub::testing::Env, net: Net, kinds: Table) -> Self {
-        let config = create_config(env, net, kinds).await;
+        Self::trusting(env, net, kinds, Roots::default()).await
+    }
+
+    /// Opens a rig as [`Self::open`] does, whose connectors trust `roots` for an
+    /// `https` connect.
+    ///
+    /// # Panics
+    ///
+    /// As [`hub::testing::open`].
+    pub async fn trusting(
+        env: hub::testing::Env,
+        net: Net,
+        kinds: Table,
+        roots: Roots,
+    ) -> Self {
+        let config = supervisor::Config {
+            roots,
+            ..create_config(env, net, kinds).await
+        };
         Self {
             hub: config.hub.clone(),
             kinds: Arc::clone(&config.kinds),
@@ -80,6 +99,13 @@ impl Rig {
     #[must_use]
     pub fn hub(&self) -> &Hub {
         &self.hub
+    }
+
+    /// The supervisor of the rig's connectors, for a browse, or for an open of a
+    /// connector whose status channels the test defines.
+    #[must_use]
+    pub fn supervisor(&self) -> &Supervisor {
+        &self.supervisor
     }
 
     /// Adds `definitions` to each definition that the rig holds, and sets all of
@@ -315,14 +341,14 @@ impl Drop for Run {
 /// The directory of the files that holds the secrets of [`create_secrets`].
 const SECRETS: &str = "secrets";
 
-/// A supervisor's inputs for the tests of `connector` and the kinds: `kinds`, the
+/// A supervisor's inputs for the rig and the unit tests of `connector`: `kinds`, the
 /// seams of `env` and `net`, a hub on a new shard in `env`, the store of
 /// [`create_secrets`] on `env.files`, and no roots.
 ///
 /// # Panics
 ///
 /// As [`hub::testing::open`].
-pub async fn create_config(
+pub(crate) async fn create_config(
     env: hub::testing::Env,
     net: Net,
     kinds: Table,
@@ -336,7 +362,7 @@ pub async fn create_config(
         clock,
         entropy,
         net,
-        roots: crate::http::Roots::default(),
+        roots: Roots::default(),
         tasks,
         hub,
         secrets: create_secrets(files),
