@@ -198,13 +198,13 @@ const PORT: u16 = 9000;
 /// The span of each run of the sim between two asks of the plant.
 const STEP: Span = Span::from_nanos(100_000_000);
 /// How soon a connector of a device that serves is Running with progress.
-const START: Span = Span::from_nanos(10_000_000_000);
+pub(crate) const START: Span = Span::from_nanos(10_000_000_000);
 /// How soon a connector of an absent device shows its backoff form.
 const ABSENT: Span = Span::MINUTE;
 /// How long a connector of [`Backoff::Run`] holds its backoff status.
 const HOLD: Span = Span::from_nanos(10_000_000_000);
 /// How soon a connector shows an error once its device is lost.
-const LOST: Span = Span::from_nanos(30_000_000_000);
+pub(crate) const LOST: Span = Span::from_nanos(30_000_000_000);
 /// How soon a connector heals: the backoff cap of 1 min, plus 10 s.
 const HEAL: Span = Span::from_nanos(70_000_000_000);
 /// The longest plant time of a scenario. The ring of the rig's home fills after about

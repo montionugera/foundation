@@ -20,7 +20,6 @@ use spec::definition::Definition;
 use types::channel;
 use types::name::Name;
 use types::sample::{Scalar, Type};
-use types::time::Span;
 
 #[path = "../scenarios.rs"]
 mod scenarios;
@@ -33,9 +32,9 @@ const NODES: [&str; 3] = ["ns=3;s=SpikeData", "ns=3;i=7", "ns=2;s=Dip"];
 /// The data channels, on `plant.time`.
 const CHANNELS: [&str; 3] = ["plant.a", "plant.b", "plant.c"];
 /// The note of a run with no `read` block.
-const NO_READ: &str = "the connector has no `read` block, so it reads nothing. `browse` \
-                       lists the points of the server, and `import` adds a `read` block \
-                       for each.";
+const NO_READ: &str = "the connector has no `read` block, so it reads nothing. \
+                       `browse` lists the points of the server, and `import` adds a \
+                       `read` block for each.";
 
 const SUITE: Suite = Suite {
     kinds,
@@ -178,13 +177,13 @@ fn runs_a_config_with_no_read() {
         let served = scene.serve();
         let mut run = scene.supervise(config).await;
         let noted = |reading: &Reading| reading.note.as_deref() == Some(NO_READ);
-        let reading = run.until(Span::from_nanos(10_000_000_000), noted).await;
+        let reading = run.until(scenarios::START, noted).await;
         let shown = (reading.state, reading.restarts, &reading.error);
         assert_eq!(shown, (State::Running, 0, &None), "{reading:?}");
         assert_eq!(reading.counts.get(&name("in")), Some(&0), "{reading:?}");
         scene.stop(served).await;
         let lost = |reading: &Reading| reading.error.is_some();
-        let reading = run.until(Span::from_nanos(30_000_000_000), lost).await;
+        let reading = run.until(scenarios::LOST, lost).await;
         let class = reading.error.as_ref().map(|(class, _)| *class);
         assert_eq!(class, Some(Class::Device), "{reading:?}");
         scene.named(&reading);
