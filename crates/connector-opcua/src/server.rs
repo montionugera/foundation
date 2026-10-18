@@ -93,8 +93,9 @@ impl Server {
     }
 
     /// Makes and starts the test server as [`Server::start`] does, which also has each
-    /// of the three policies in `Sign` and in `SignAndEncrypt` on the identity of
-    /// `security`, and trusts only the certificate that `security` trusts.
+    /// of the three policies in `Sign` and in `SignAndEncrypt` on the certificate and
+    /// key of `security`, and whose channels trust only the certificate that
+    /// `security` trusts.
     ///
     /// # Safety
     ///

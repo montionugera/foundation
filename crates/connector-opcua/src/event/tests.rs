@@ -314,6 +314,15 @@ fn the_wall_of_a_test_loop_starts_at_its_start_and_moves_with_its_clock() {
 }
 
 #[test]
+fn the_wall_of_a_test_loop_stays_at_the_last_stamp_when_it_moves_past_it() {
+    let mut sim = Sim::new(sim::Config::default());
+    let clock = sim.node(sim::node::Config::default()).clock();
+    let time = Time::since(clock, Stamp::from_nanos(i64::MAX - 1_000_000_000));
+    sim.run_for(Span::from_nanos(2_000_000_000)).unwrap();
+    assert_eq!((time.wall)(), Stamp::from_nanos(i64::MAX));
+}
+
+#[test]
 fn the_monotonic_wall_stays_at_the_last_stamp_when_its_clock_runs_past_it() {
     let mut sim = Sim::new(sim::Config::default());
     let clock = sim
