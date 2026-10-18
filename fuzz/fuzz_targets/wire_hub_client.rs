@@ -437,10 +437,16 @@ fn replies(bytes: &[u8]) {
                     Ok(reply)
                 }
                 Ok(Reply::Stored { frames }) if frames < stored => {
-                    Err(hub::Error::Stored { frames, bound: stored })
+                    Err(hub::Error::Stored {
+                        frames,
+                        bound: stored,
+                    })
                 }
                 Ok(Reply::Stored { frames }) if frames > answered => {
-                    Err(hub::Error::Stored { frames, bound: answered })
+                    Err(hub::Error::Stored {
+                        frames,
+                        bound: answered,
+                    })
                 }
                 Ok(reply @ Reply::Stored { frames }) => {
                     stored = frames;
