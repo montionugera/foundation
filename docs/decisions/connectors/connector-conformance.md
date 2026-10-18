@@ -46,7 +46,7 @@
   deferral OK of `laptop.architect`, 2026-10-17T21:54:10Z:
   https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241806249. The checks
   that the third forms skip, one named span past the fill, and a bound on plant time
-  come in #3100 (`laptop.architect-2`, 2026-10-18T02:25:49Z,
+  come in #3100 (`laptop.architect-2`, 2026-10-18T02:26:31Z,
   https://github.com/synnaxlabs/foundation/pull/3050#issuecomment-6244712313).
 
   1. **Starts.** Within 10 s: Running, no error, 0 restarts, and progress above 0.

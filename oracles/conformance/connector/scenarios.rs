@@ -710,8 +710,9 @@ pub(crate) fn shows_a_loss_after_two_minutes(suite: &'static Suite) {
     });
 }
 
-/// With no simulator for 90 s after the backoff form shows, then the simulator
-/// starts: the connector heals.
+/// With no simulator for 90 s after the check of the backoff form ends (for `Run`,
+/// 100 s after the backoff form shows), then the simulator starts: the connector
+/// heals.
 pub(crate) fn heals_after_an_absence_of_90_s(suite: &'static Suite) {
     run(suite, direct, move |scene| async move {
         let config = scene.setup().await;
