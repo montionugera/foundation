@@ -97,8 +97,11 @@
   serves with `scheme`, plain or under TLS (`laptop.architect-2`,
   2026-10-17T16:58:24Z:
   https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6237139250, item
-  3). It stops at `until`
-  as HTTP SIM SERVER stops (`laptop.architect-2`, 2026-10-17T16:05:31Z:
+  3, amended for `scheme` and its place by `laptop.architect-2`,
+  2026-10-18T23:07:37Z:
+  https://github.com/synnaxlabs/foundation/pull/3286#issuecomment-6256311087). It
+  stops at `until` as HTTP SIM SERVER stops (`laptop.architect-2`,
+  2026-10-17T16:05:31Z:
   https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6236306639, item
   1). `POST /write?db=` (InfluxDB 1) and
   `POST /api/v2/write?bucket=` (InfluxDB 2 and 3) give 204 when the store takes each

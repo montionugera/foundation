@@ -62,11 +62,12 @@
   (`laptop.architect-2`, 2026-10-17T16:58:24Z:
   https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6237139250, item
   3). The enum, not an `Option<Certificate>`, because each caller passes it as a
-  literal (`docs/claude/rust.md` r16 6; round 1 of #3286:
+  literal (`docs/claude/rust.md` r16 6; `laptop.architect-2`, 2026-10-18T23:07:37Z:
+  https://github.com/synnaxlabs/foundation/pull/3286#issuecomment-6256311087, on
+  round 1 of #3286:
   https://github.com/synnaxlabs/foundation/pull/3286#issuecomment-6256302557). Its
   variants are `Plain` and `Tls`, not `Http` and `Https`, which repeat the namespace
-  (`laptop.architect-2`, 2026-10-18T23:07:37Z:
-  https://github.com/synnaxlabs/foundation/pull/3286#issuecomment-6256311087).
+  (6256311087).
   Supersedes the `serve_tls` of
   https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210550936 and of
   item 2 of https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044.
