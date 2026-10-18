@@ -78,10 +78,11 @@
   its scope, and no IPv6 bind keeps flow info. A datagram from the link-local address
   leaves from it, and the peer sees it with scope 2, the index of its own interface, but
   no packet reaches it: the first test that sends to one adds it to the addresses of the
-  node, a check of the scope of a send, and code 22 for a socket with no interface that
-  names the link-local address as the source. As with `IPV6_PKTINFO` on Linux, a socket
-  on the link-local address that names the routable IPv6 address of its node as the
-  source sends from that address. Decided by `laptop.architect-2` at
+  node, and a check of the scope of a send. As with `IPV6_PKTINFO` on Linux, a socket on
+  the link-local address that names the routable IPv6 address of its node as the source
+  sends from that address. A send that names another IPv6 source gives code 22
+  (`EINVAL`), as on Linux: the link-local address from a socket that is not on it, or an
+  address of another node. Decided by `laptop.architect-2` at
   2026-10-18T09:56:35Z
   (https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248485617), at
   2026-10-18T10:40:06Z for interface 2 and code 99
