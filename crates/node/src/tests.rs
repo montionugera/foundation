@@ -2732,6 +2732,7 @@ mod pool {
 
     use ::hub::writer::Writer;
     use block::testing::{Scarce, Switch};
+    use proptest::prelude::{prop_assert_eq, proptest};
     use types::frame::{self, Form};
     use types::time::Monotonic;
 
@@ -2739,6 +2740,27 @@ mod pool {
     use super::*;
 
     const SECOND_NS: i64 = Span::SECOND.nanos();
+
+    proptest! {
+        /// The pools of the shards and the pool of the chunk store add up to the pool
+        /// budget, and only shard 0 of a node with a region has a store pool, with an
+        /// eighth of its part.
+        #[test]
+        fn the_pools_add_up_to_the_budget(
+            budget: u64,
+            cores in 1..=256_usize,
+            regional: bool,
+        ) {
+            let mut total = 0_u128;
+            for (core, shard) in (0..cores).zip(0_u32..) {
+                let part = crate::part(budget, cores, core);
+                let (pool, store) = crate::pools(part, shard, regional);
+                total += u128::from(pool) + u128::from(store.unwrap_or(0));
+                prop_assert_eq!(store, (shard == 0 && regional).then_some(part / 8));
+            }
+            prop_assert_eq!(total, u128::from(budget));
+        }
+    }
 
     /// A shard gives the pages of a block size back to the system 10 to 20 s after
     /// the last block of that size returned. The last return falls at the open of
@@ -4872,7 +4894,7 @@ pub(crate) mod port {
 
         /// The least pool budget that each buffer takes also holds an append of the
         /// largest record, so `Budget::pool` names no refusal of the mesh. Shard 0
-        /// gives a quarter of its part to the store, so its part is a third more.
+        /// gives an eighth of its part to the store, so its part is a seventh more.
         #[test]
         fn the_least_pool_budget_of_the_buffers_opens_the_mesh() {
             let start = |budget| {
@@ -4894,15 +4916,15 @@ pub(crate) mod port {
             else {
                 panic!("a pool budget of 1 byte opens no buffer");
             };
-            let part = (4 * u64::try_from(min).unwrap()).div_ceil(3);
+            let part = (8 * u64::try_from(min).unwrap()).div_ceil(7);
             assert_eq!(start(Size::from_bytes(2 * part)), Ok(()));
         }
 
         /// A node with a region reserves the pool of its chunk store just after the
-        /// pool of shard 0, with a quarter of shard 0's part, and a refused reservation
+        /// pool of shard 0, with an eighth of shard 0's part, and a refused reservation
         /// of it stops the node with the error of core 0.
         #[test]
-        fn the_store_pool_takes_a_quarter_of_the_part_of_shard_0() {
+        fn the_store_pool_takes_an_eighth_of_the_part_of_shard_0() {
             let mut sim = sim::Sim::new(sim::Config::default());
             let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
             let lens = Arc::new(Mutex::new(Vec::new()));
@@ -4925,7 +4947,7 @@ pub(crate) mod port {
             let error = refused;
             assert_eq!(node.join(), Err(Error::Memory { core: 0, error }));
             let reserved = |len| block::Config::new(len).unwrap().reservation();
-            let parts = [reserved(384 << 10), reserved(128 << 10)];
+            let parts = [reserved(448 << 10), reserved(64 << 10)];
             assert_eq!(*lens.lock().unwrap(), parts);
         }
 

@@ -205,7 +205,7 @@ const PURGE: Span = Span::from_nanos(10_000_000_000);
 /// A node with a region gives 1 / `STORE_PART` of shard 0's part of the pool budget to
 /// a pool of the chunk store's own, so a put that waits for its body holds only that
 /// pool.
-const STORE_PART: u64 = 4;
+const STORE_PART: u64 = 8;
 /// The stamps each home accepts, a patch until they are settings (#1285).
 const LIMITS: home::order::Limits = home::order::Limits {
     earliest: Stamp::from_nanos(946_684_800_000_000_000),
@@ -253,7 +253,7 @@ impl Node {
     /// [`Node::join`] gives the first one (its `# Errors`).
     ///
     /// On a node with a region, the chunk store takes its blocks from a pool of its
-    /// own, with a quarter of shard 0's part, so a put that waits for its body holds no
+    /// own, with an eighth of shard 0's part, so a put that waits for its body holds no
     /// block of shard 0's pool. Shard 0 gives the pages of that pool back as it does
     /// those of its own.
     ///
@@ -699,12 +699,12 @@ fn plan<M>(config: &Config<M>) -> Result<Vec<Part>, Error> {
     let parts = parts
         .into_iter()
         .zip(0..count)
-        .map(|((pool, layout), shard)| {
-            let regional = shard == 0 && !matches!(config.region, Region::Absent);
-            let store = regional.then_some(pool / STORE_PART);
+        .map(|((part, layout), shard)| {
+            let regional = !matches!(config.region, Region::Absent);
+            let (pool, store) = pools(part, shard, regional);
             Ok(Part {
                 shard,
-                pool: block::Config::new(pool - store.unwrap_or(0))?,
+                pool: block::Config::new(pool)?,
                 store: store.map(block::Config::new).transpose()?,
                 layout,
             })
@@ -743,6 +743,13 @@ fn parts(
             Ok((part(budget.bytes(), cores, core), layout))
         })
         .collect()
+}
+
+/// The bytes of the pool of shard `shard`, from its `part` of the pool budget, and of
+/// the pool of the chunk store, which shard 0 of a `regional` node cuts from its part.
+fn pools(part: u64, shard: u32, regional: bool) -> (u64, Option<u64>) {
+    let store = (shard == 0 && regional).then_some(part / STORE_PART);
+    (part - store.unwrap_or(0), store)
 }
 
 /// The part of `total` of the shard on `core` of `cores`: an even part, and the
