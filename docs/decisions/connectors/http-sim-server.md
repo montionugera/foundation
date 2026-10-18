@@ -1,5 +1,5 @@
 - **HTTP SIM SERVER (#1151)** `connector::http::sim::serve(listener, tasks, until,
-  answer)`, behind the `connector` cargo feature `sim`, off by default, is the one
+  tls, answer)`, behind the `connector` cargo feature `sim`, off by default, is the one
   HTTP/1.1 server of the protocol simulators of HTTP connectors. It runs `hyper`'s
   server on each stream, on its own task, with keep-alive, and gives `answer` each
   request with its whole body. A client that closes its write side after a whole request
@@ -55,10 +55,13 @@
   6042958763),
   https://github.com/synnaxlabs/foundation/pull/1473#issuecomment-6042291321 (the doc
   of finding 1, by 6042446508 item 1 and 6042839816).
-  `connector::http::sim::serve_tls(listener, tasks, until, certificate, answer)` is
-  the same server under TLS 1.2 or 1.3, with one of the fixed test certificates of
-  `crates/connector/src/http/sim/tls/`, whose README gives the commands and each
-  validity window. Each certificate is for the host `server` or its IP address, so no
+  With `tls: Some(certificate)`, it is the same server under TLS 1.2 or 1.3, with
+  one of the fixed test certificates of `crates/connector/src/http/sim/tls/`, whose
+  README gives the commands and each validity window; with `None`, it serves plain
+  HTTP. One `serve` replaces a `serve` and `serve_tls` pair (`laptop.architect-2`,
+  2026-10-17T16:58:24Z:
+  https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6237139250, item
+  3). Each certificate is for the host `server` or its IP address, so no
   kind is named (`laptop.architect-2`, 2026-10-16T07:51:33Z:
   https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044, item 2).
   `sim::ca()` gives roots that hold the test CA. A stream whose handshake fails ends

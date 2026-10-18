@@ -130,7 +130,7 @@ async fn simulate(inputs: Serve) {
     let listener = inputs.node.net().listen(&listen).expect("the port is free");
     let store = Arc::new(Mutex::new(Store::default()));
     let (tasks, until) = (inputs.tasks, inputs.until);
-    let served = serve(listener, tasks, until, store, "plant".into(), None).await;
+    let served = serve(listener, tasks, until, store, "plant".into(), None, None).await;
     served.expect("the listener holds");
 }
 

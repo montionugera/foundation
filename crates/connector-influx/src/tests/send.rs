@@ -83,11 +83,11 @@ const TOKEN_FILE: &str = "/run/secrets/influx";
 const RETRY: Option<Class> = Some(Class::Retry);
 /// The file of the CA of `file(CA_FILE)`.
 const CA_FILE: &str = "/etc/influx/ca.pem";
-/// The PEM of the CA that signs each certificate of `serve_tls` but `OtherCa`.
+/// The PEM of the CA that signs each certificate of `serve` but `OtherCa`.
 const CA: &[u8] = connector::http::sim::CA.as_bytes();
 /// The PEM of the CA that signs `Certificate::OtherCa`.
 const OTHER_CA: &[u8] = connector::http::sim::OTHER_CA.as_bytes();
-/// 2026-06-01T00:00:00Z, inside the validity of each certificate of `serve_tls` but
+/// 2026-06-01T00:00:00Z, inside the validity of each certificate of `serve` but
 /// `Expired`.
 const JUNE_2026: Stamp = Stamp::from_nanos(1_780_272_000_000_000_000);
 /// The key of the first of the 64 `u8` channels of [`wide_names`].
@@ -238,25 +238,12 @@ impl Plant {
             response
         };
         let tasks = self.tasks.clone();
-        let certificate = self.certificate;
+        let tls = self.certificate;
         self.tasks.spawn(async move {
             let until = cancel::Token::new();
-            let served = match certificate {
-                Some(certificate) => {
-                    connector::http::sim::serve_tls(
-                        listener,
-                        tasks,
-                        until,
-                        certificate,
-                        answer,
-                    )
-                    .await
-                }
-                None => {
-                    connector::http::sim::serve(listener, tasks, until, answer).await
-                }
-            };
-            panic!("the listener failed: {served:?}");
+            let serve =
+                connector::http::sim::serve(listener, tasks, until, tls, answer);
+            panic!("the listener failed: {:?}", serve.await);
         });
     }
 

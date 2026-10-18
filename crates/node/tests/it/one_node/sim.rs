@@ -188,6 +188,7 @@ impl Influx {
                 store,
                 "plant".into(),
                 taken,
+                None,
             );
             if let Err(error) = serve.await {
                 panic!("the simulated InfluxDB stopped: {error}");

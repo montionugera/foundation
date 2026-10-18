@@ -13,7 +13,7 @@ use http::{HeaderValue, Method, Request, StatusCode};
 use sim::{Sim, node};
 use types::time::Span;
 
-use super::{serve, serve_tls};
+use super::serve;
 use crate::sim::Store;
 
 const PORT: u16 = 8086;
@@ -69,7 +69,8 @@ impl Network {
             .shards()
             .start(shard("server"), move |tasks| async move {
                 let until = Token::new();
-                let end = serve(listener, tasks, until, held, "edge".into(), token);
+                let end =
+                    serve(listener, tasks, until, held, "edge".into(), token, None);
                 panic!("the listener failed: {:?}", end.await);
             })
             .expect("the shard starts");
@@ -448,11 +449,10 @@ fn checks_the_token_after_the_method_and_before_the_content_encoding() {
     assert_eq!(network.times("m"), [0_i64; 0]);
 }
 
-/// Runs `serve`, or `serve_tls` when `tls`, with one idle stream of a client, and
-/// runs `stop` at 1 s. Gives what it returned, and the count of the streams of the
-/// server node then.
+/// Runs `serve` under `tls` with one idle stream of a client, and runs `stop` at 1 s.
+/// Gives what it returned, and the count of the streams of the server node then.
 fn stopped(
-    tls: bool,
+    tls: Option<Certificate>,
     stop: fn(&node::Node, &Token, SocketAddr),
 ) -> Option<(Result<(), net::Error>, usize)> {
     let mut sim = Sim::new(sim::Config::default());
@@ -472,15 +472,8 @@ fn stopped(
     let _server = server
         .shards()
         .start(shard("server"), move |tasks| async move {
-            let (store, database) = (Arc::default(), "edge");
-            let end = if tls {
-                let certificate = Certificate::Valid;
-                let database = database.into();
-                serve_tls(listener, tasks, cancel, store, database, None, certificate)
-                    .await
-            } else {
-                serve(listener, tasks, cancel, store, database.into(), None).await
-            };
+            let (store, database) = (Arc::default(), "edge".into());
+            let end = serve(listener, tasks, cancel, store, database, None, tls).await;
             *slot.lock().expect("no panic under the lock") =
                 Some((end, node.streams()));
         })
@@ -505,21 +498,21 @@ fn stopped(
 }
 
 #[test]
-fn serve_and_serve_tls_return_at_a_cancel_once_each_stream_ended() {
-    for tls in [false, true] {
+fn serve_returns_at_a_cancel_once_each_stream_ended() {
+    for tls in [None, Some(Certificate::Valid)] {
         let ended = stopped(tls, |_, until, _| until.cancel());
-        assert_eq!(ended, Some((Ok(()), 0)), "tls: {tls}");
+        assert_eq!(ended, Some((Ok(()), 0)), "tls: {tls:?}");
     }
 }
 
 #[test]
-fn serve_and_serve_tls_give_the_error_of_a_failed_listener() {
-    for tls in [false, true] {
+fn serve_gives_the_error_of_a_failed_listener() {
+    for tls in [None, Some(Certificate::Valid)] {
         let ended = stopped(tls, |server, _, local| server.fail_listener(local));
         assert_eq!(
             ended,
             Some((Err(net::Error::Io { code: 5 }), 0)),
-            "tls: {tls}"
+            "tls: {tls:?}"
         );
     }
 }

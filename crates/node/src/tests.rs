@@ -7599,14 +7599,14 @@ pub(crate) mod port {
                 .shards()
                 .start(shard, move |tasks| async move {
                     let certificate = connector::http::sim::Certificate::Valid;
-                    let served = connector_influx::sim::serve_tls(
+                    let served = connector_influx::sim::serve(
                         listener,
                         tasks,
                         connector::cancel::Token::new(),
                         into,
                         "plant".into(),
                         None,
-                        certificate,
+                        Some(certificate),
                     );
                     panic!("the listener failed: {:?}", served.await);
                 })

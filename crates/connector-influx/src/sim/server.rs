@@ -30,7 +30,8 @@ use super::Store;
 /// the path, then the method, then the token, then the `content-encoding`, then the
 /// query, and gives the answer of the first check that fails.
 ///
-/// It runs and returns as [`connector::http::sim::serve`] does.
+/// `tls`, when given, is the certificate that it serves under TLS. It runs and returns
+/// as [`connector::http::sim::serve`] does.
 ///
 /// # Errors
 ///
@@ -42,28 +43,10 @@ pub async fn serve(
     store: Arc<Mutex<Store>>,
     database: String,
     token: Option<String>,
+    tls: Option<Certificate>,
 ) -> Result<(), net::Error> {
     let answer = answer(store, database, token);
-    connector::http::sim::serve(listener, tasks, until, answer).await
-}
-
-/// As [`serve`], under TLS with `certificate`, as [`connector::http::sim::serve_tls`]
-/// serves.
-///
-/// # Errors
-///
-/// As [`serve`].
-pub async fn serve_tls(
-    listener: Listener,
-    tasks: Tasks,
-    until: Token,
-    store: Arc<Mutex<Store>>,
-    database: String,
-    token: Option<String>,
-    certificate: Certificate,
-) -> Result<(), net::Error> {
-    let answer = answer(store, database, token);
-    connector::http::sim::serve_tls(listener, tasks, until, certificate, answer).await
+    connector::http::sim::serve(listener, tasks, until, tls, answer).await
 }
 
 fn answer(

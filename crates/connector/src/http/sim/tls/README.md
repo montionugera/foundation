@@ -1,7 +1,7 @@
 # Test certificates
 
-The TLS mode of the simulated HTTP server (`serve_tls`) uses these files. They are
-test files: no node trusts them outside a test.
+The TLS mode of the simulated HTTP server (`serve` with a `Certificate`) uses these
+files. They are test files: no node trusts them outside a test.
 
 Make them again with OpenSSL 3, in this folder:
 
