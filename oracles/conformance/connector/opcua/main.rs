@@ -115,7 +115,8 @@ async fn simulate(inputs: Serve) {
     served.await.expect("the listener holds");
 }
 
-/// Configs with a missing scheme, no `read` block, and a node id that does not parse.
+/// Configs with a missing scheme, two `read` blocks of one channel, and a node id that
+/// does not parse.
 fn refused() -> Vec<(Document, Vec<Diagnostic>)> {
     let device = SocketAddr::from(([10, 0, 0, 2], 9000));
     let read = vec![("plant.a", NODES[0])];
@@ -129,12 +130,15 @@ fn refused() -> Vec<(Document, Vec<Diagnostic>)> {
             )],
         ),
         (
-            config("opc.tcp://plc:4840", "10Hz", Vec::new()),
+            config(
+                "opc.tcp://plc:4840",
+                "10Hz",
+                vec![("plant.a", NODES[0]), ("plant.a", NODES[1])],
+            ),
             vec![diagnostic(
-                "opcua.no-read",
-                "the connector has no `read` block",
-                "Add a `read` block for each channel, such as \
-                 `read \"plant.spike\" { node_id = \"ns=3;s=SpikeData\" }`",
+                "opcua.repeated-channel",
+                "the connector reads `plant.a` in another `read` block",
+                "Remove one of the two `read` blocks",
             )],
         ),
         (
