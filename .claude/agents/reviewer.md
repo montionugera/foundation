@@ -40,9 +40,10 @@ fix), with Write or Edit, never with a heredoc, `sed -i`, `perl -pi`, or another
 place in Bash: auto mode blocks some of those, and three blocks in a row stop the
 session.
 
-On a box (Linux), run each `cargo test` in the memory cap that your task gives
-(`docs/claude/testing.md`, mutation testing): `systemd-run --user --scope -p
-MemoryMax=<cap> -p MemorySwapMax=0 -p OOMPolicy=continue cargo test ...`.
+On a box (Linux), run each `cargo test` in the memory cap that your task gives, with
+four build jobs (`docs/claude/testing.md`, mutation testing): `systemd-run --user
+--scope -p MemoryMax=<cap> -p MemorySwapMax=0 -p OOMPolicy=continue env
+CARGO_BUILD_JOBS=4 cargo test ...`.
 
 Read `docs/claude/testing.md` and the records of `docs/decisions/` the PR builds. Then
 read the diff (`gh pr diff <n>`) and every file it touches. In each round, each item,

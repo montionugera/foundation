@@ -28,9 +28,10 @@ and three blocks in a row stop the session. Run each Bash command alone, with no
 chain and no shell variable. The permission check refuses a command when it cannot prove
 that the command stays inside the worktree.
 
-On a box (Linux), run each `cargo test` in the memory cap that your task gives
-(`docs/claude/testing.md`, mutation testing): `systemd-run --user --scope -p
-MemoryMax=<cap> -p MemorySwapMax=0 -p OOMPolicy=continue cargo test ...`.
+On a box (Linux), run each `cargo test` in the memory cap that your task gives, with
+four build jobs (`docs/claude/testing.md`, mutation testing): `systemd-run --user
+--scope -p MemoryMax=<cap> -p MemorySwapMax=0 -p OOMPolicy=continue env
+CARGO_BUILD_JOBS=4 cargo test ...`.
 
 Find an input, an order of events, or a fault under which the code does the wrong thing:
 an edge value, an overflow, a duplicate, a reorder, a crash midway, a full buffer, a

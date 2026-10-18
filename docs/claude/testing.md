@@ -62,8 +62,11 @@ box that a review agent starts (`.claude/agents/reviewer.md`,
 a run is the share of its session (`docs/coordination.md`, "Memory on a box"), divided
 by the capped runs that the session has at once. A review agent runs in the cap that its
 task gives: the share divided by the agents of its round that run `cargo test`
-(`/review`). The person approved a cap of these runs, with 32 GB as an example
-(2026-10-17T16:07:01Z, `laptop.monitor`'s record:
+(`/review`), with `CARGO_BUILD_JOBS=4`, because a build with a job for each CPU of a box
+does not fit in such a cap
+(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256490273). The person
+approved a cap of these runs, with 32 GB as an example (2026-10-17T16:07:01Z,
+`laptop.monitor`'s record:
 https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246411064), and
 `laptop.monitor` gave the bound
 (https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256405286). A session
