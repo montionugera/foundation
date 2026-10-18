@@ -66,6 +66,15 @@ fn a_leader_proposes_one_card_of_each_member_each_minute() {
     });
 }
 
+#[test]
+fn a_card_change_holds_back_another_for_one_minute() {
+    let at = Monotonic(5);
+    assert!(recent(at, at));
+    assert!(recent(at, Monotonic(60_000_000_004)));
+    assert!(!recent(at, Monotonic(60_000_000_005)));
+    assert!(recent(Monotonic(u64::MAX), Monotonic(u64::MAX)));
+}
+
 /// A proposal that the group does not take does not count.
 #[test]
 fn a_card_that_a_follower_does_not_propose_does_not_count() {

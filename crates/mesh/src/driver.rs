@@ -74,6 +74,11 @@ const SOON: Code = Code(18);
 /// The least time between two proposals of a `Card` change of one member.
 const CARDS: Span = Span::MINUTE;
 
+/// Whether a `Card` change proposed at `at` holds back another of its member at `now`.
+fn recent(at: Monotonic, now: Monotonic) -> bool {
+    at.checked_add(CARDS).is_none_or(|end| now < end)
+}
+
 /// What a [`Mesh`] is built from.
 #[derive(Debug)]
 pub struct Config {
@@ -417,9 +422,7 @@ impl Mesh {
         };
         let now = self.clock.now();
         self.proposed(|group| {
-            group
-                .cards
-                .retain(|_, &mut at| at.checked_add(CARDS).is_none_or(|end| now < end));
+            group.cards.retain(|_, &mut at| recent(at, now));
             if group.cards.contains_key(&card) {
                 return Err(Error::Soon);
             }
