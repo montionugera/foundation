@@ -301,8 +301,8 @@ impl Paths {
                 let hidden = match seen {
                     Seen::There(key) => has(*key),
                     Seen::Vacant(deepest) => {
-                        let up = steps[index].up.and_then(|up| steps[up].own);
-                        vacant |= own.is_none() && up == *deepest;
+                        vacant |=
+                            own.is_none() && walk::holder(steps, index) == *deepest;
                         false
                     }
                     Seen::Refused => true,
@@ -367,16 +367,11 @@ impl Paths {
         });
         let hidden = limit.hidden.iter().map(|Hidden { given, .. }| {
             let walk = Walk::on_root(&*self.driver, given);
-            let deepest = |step: &Step| {
-                let up = &walk.steps[step.up?];
-                up.directory.then_some(up.own).flatten()
-            };
             match (&walk.end, walk.steps.last()) {
                 (Ok(Ok(())), Some(Step { own: Some(key), .. })) => Seen::There(*key),
-                (
-                    Ok(Ok(())) | Err(Error::NotFound),
-                    Some(step @ Step { own: None, .. }),
-                ) => Seen::Vacant(deepest(step)),
+                (Ok(Ok(())) | Err(Error::NotFound), Some(Step { own: None, .. })) => {
+                    Seen::Vacant(walk::holder(&walk.steps, walk.steps.len() - 1))
+                }
                 (Ok(Err(error)) | Err(error), _)
                     if !walk.in_file && *error != self.driver.looped() =>
                 {

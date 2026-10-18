@@ -106,6 +106,13 @@ pub(super) fn path(steps: &[Step], index: usize) -> PathBuf {
     names.into_iter().rev().collect()
 }
 
+/// The key of the directory that holds step `index` of `steps`, or `None` for a root
+/// or a step in a file.
+pub(super) fn holder(steps: &[Step], index: usize) -> Option<Key> {
+    let up = &steps[steps[index].up?];
+    up.directory.then_some(up.own).flatten()
+}
+
 /// What the directories above each step of a walk hold, found in one pass for each
 /// key asked, so that a check of each step costs the keys, not the depth.
 pub(super) struct Above<'a> {
