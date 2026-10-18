@@ -264,6 +264,7 @@ fn a_name_with_a_nul_starts_and_panicked_keeps_the_whole_name() {
     assert_eq!(*seen.lock().unwrap(), Some("shard".to_owned()));
 }
 
+/// Only Linux: only Linux pins a shard.
 #[cfg(target_os = "linux")]
 mod linux {
     use env::shards::Config;
@@ -292,6 +293,7 @@ mod linux {
     }
 }
 
+/// Only macOS and Windows: only Linux pins a shard.
 #[cfg(not(target_os = "linux"))]
 mod other {
     use super::*;

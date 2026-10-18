@@ -4529,7 +4529,7 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
         remove(&root).and_then(|()| remove(&repo)).unwrap();
     }
 
-    /// On aarch64, `nm` hides each symbol whose name starts with `$x.` or `$d.`, as
+    /// Only aarch64: `nm` hides each symbol whose name starts with `$x.` or `$d.`, as
     /// it hides a mapping symbol.
     #[test]
     #[cfg(target_arch = "aarch64")]

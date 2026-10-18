@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 cfg-expr = "0.20"
 comrak.workspace = true
+quote = { version = "1.0.47", default-features = false }
 semver = "1"
 serde_json = "1"
 syn.workspace = true

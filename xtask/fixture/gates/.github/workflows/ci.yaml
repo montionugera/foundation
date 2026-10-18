@@ -1,0 +1,27 @@
+jobs:
+  check:
+    strategy:
+      matrix:
+        include:
+          - name: check
+            gates:
+              - crates/g/src/twins.rs a # #1
+          - name: macos
+            gates:
+              - crates/g/src/twins.rs a # #1
+          - name: windows
+            gates:
+              - crates/g/src/lib.rs listed # #1
+              - crates/g/src/twins.rs a # #1
+              - crates/g/tests/common/shared.rs a # #1
+              - crates/g/src/lib.rs both # #1
+              - crates/g/src/lib.rs stale # #1
+              - crates/g/src/lib.rs second # #1
+            tests:
+              - --skip a # #1
+    steps:
+      - run: |
+          [ "$A" = b ] && echo "a#b"
+  next:
+    gates:
+      - crates/g/src/lib.rs refused # #1
