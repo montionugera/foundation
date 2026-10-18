@@ -2573,123 +2573,25 @@ fn unknown(chunk: &[u8]) -> Vec<u8> {
     abort
 }
 
-/// Forwards the bytes of one stream from `listener` to `server`. While `aborts` is
-/// above 0, it sends `abort` of the next final MSG chunk from the server in its place.
-async fn abort_proxy(
-    net: Net,
-    listener: &mut env::net::Listener,
-    server: SocketAddr,
-    aborts: &Cell<u16>,
-    abort: fn(&[u8]) -> Vec<u8>,
-) {
-    let mut down = poll_fn(|cx| listener.poll_accept(cx))
-        .await
-        .expect("the accept works");
-    let options = tcp::Options {
-        send_buffer_bytes: 1 << 16,
-        recv_buffer_bytes: 1 << 16,
-        unsent_bytes_max: NonZeroUsize::new(1 << 14).expect("not 0"),
-        delayed: false,
-    };
-    let mut up = net
-        .connect(&tcp::Config {
-            remote: server,
-            options,
-        })
-        .await
-        .expect("the server accepts");
-    let (mut to_server, mut from_server, mut to_client) =
-        (Vec::new(), Vec::new(), Vec::new());
-    let mut buffer = vec![0u8; 1 << 16];
-    poll_fn(|cx| {
-        loop {
-            let mut moved = false;
-            match down.poll_read(cx, &mut buffer) {
-                Poll::Ready(Ok(n)) if n > 0 => {
-                    to_server.extend_from_slice(&buffer[..n]);
-                    moved = true;
-                }
-                Poll::Ready(_) => return Poll::Ready(()),
-                Poll::Pending => {}
-            }
-            match up.poll_read(cx, &mut buffer) {
-                Poll::Ready(Ok(n)) if n > 0 => {
-                    from_server.extend_from_slice(&buffer[..n]);
-                    moved = true;
-                }
-                Poll::Ready(_) => return Poll::Ready(()),
-                Poll::Pending => {}
-            }
-            while from_server.len() >= 8 {
-                let size = u32::from_le_bytes(from_server[4..8].try_into().expect("4"));
-                let size = usize::try_from(size).expect("fits");
-                if from_server.len() < size {
-                    break;
-                }
-                let chunk: Vec<u8> = from_server.drain(..size).collect();
-                if &chunk[..4] == b"MSGF" && aborts.get() > 0 {
-                    to_client.extend_from_slice(&abort(&chunk));
-                    aborts.set(aborts.get() - 1);
-                } else {
-                    to_client.extend_from_slice(&chunk);
-                }
-            }
-            if !to_server.is_empty()
-                && let Poll::Ready(Ok(n)) =
-                    up.poll_write(cx, &[std::io::IoSlice::new(&to_server)])
-            {
-                to_server.drain(..n);
-                moved = true;
-            }
-            if !to_client.is_empty()
-                && let Poll::Ready(Ok(n)) =
-                    down.poll_write(cx, &[std::io::IoSlice::new(&to_client)])
-            {
-                to_client.drain(..n);
-                moved = true;
-            }
-            if !moved {
-                return Poll::Pending;
-            }
-        }
-    })
-    .await;
-}
-
-/// After `dropped` dropped reads, the answers of `aborted` reads, then of two more
-/// reads, and the value of the server. The proxy sends `abort` of the answers of the
-/// dropped reads and of the `aborted` reads in their place.
+/// After `dropped` dropped reads, the answers of `aborted` reads and of two more reads,
+/// and the value of the server. The relay sends `abort` of the answers of the dropped
+/// reads and of the `aborted` reads in their place.
 fn read_aborted(
     dropped: u16,
     aborted: u16,
     abort: fn(&[u8]) -> Vec<u8>,
-) -> (
-    Vec<Result<Value, Fault>>,
-    Result<Value, Fault>,
-    Result<Value, Fault>,
-    Value,
-) {
+) -> (Values, [Result<Value, Fault>; 2], Value) {
     run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
-            let local = SocketAddr::new(node.addresses()[0], PORT + 1);
-            let listen = tcp::Listen {
-                local,
-                backlog: 4,
-                options: tcp::Options {
-                    send_buffer_bytes: 1 << 16,
-                    recv_buffer_bytes: 1 << 16,
-                    unsent_bytes_max: NonZeroUsize::new(1 << 14).expect("not 0"),
-                    delayed: false,
-                },
-            };
-            let mut listener = node.net().listen(&listen).expect("the port is free");
-            let server = SocketAddr::new(node.addresses()[0], PORT);
+            let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
             let left = Cell::new(0u16);
-            let mut proxy =
-                pin!(abort_proxy(node.net(), &mut listener, server, &left, abort));
-            let url = format!("opc.tcp://{local}");
-            let value = peer.value;
-            let mut reads = pin!(async {
+            let rewrite = |chunk: &mut Vec<u8>| {
+                if chunk.starts_with(b"MSGF") && left.get() > 0 {
+                    *chunk = abort(chunk);
+                    left.set(left.get() - 1);
+                }
+            };
+            let reads = relayed(&node, &Relay::default(), rewrite, async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 // open62541 reads the namespace array after the connect.
                 assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
@@ -2703,17 +2605,10 @@ fn read_aborted(
                 assert_eq!(left.get(), 0, "the server answered each read");
                 let again = client.read_one(&VALUE).await;
                 client.close().await;
-                (answers, after, again)
-            });
-            let mut ended = false;
-            let (answers, after, again) = poll_fn(|cx| {
-                if !ended {
-                    ended = proxy.as_mut().poll(cx).is_ready();
-                }
-                reads.as_mut().poll(cx)
+                (answers, [after, again])
             })
             .await;
-            (answers, after, again, value)
+            (reads.0, reads.1, peer.value)
         })
         .await
     })
@@ -2724,7 +2619,7 @@ fn read_aborted(
 /// holds no read and a later read that the server answers in full gives the value.
 #[test]
 fn a_read_after_16_aborted_answers_gives_the_value() {
-    let (aborted, after, again, value) = read_aborted(0, 16, too_large);
+    let (aborted, [after, again], value) = read_aborted(0, 16, too_large);
     assert_eq!(
         aborted,
         vec![Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE)); 16]
@@ -2735,7 +2630,7 @@ fn a_read_after_16_aborted_answers_gives_the_value() {
 /// An abort chunk with no Error ends its read with `BadDecodingError`.
 #[test]
 fn an_abort_with_no_error_ends_its_read_with_bad_decoding_error() {
-    let (aborted, after, again, value) = read_aborted(0, 1, empty);
+    let (aborted, [after, again], value) = read_aborted(0, 1, empty);
     assert_eq!(
         aborted,
         vec![Err(Fault::status(Status::BAD_DECODING_ERROR))]
@@ -2747,7 +2642,7 @@ fn an_abort_with_no_error_ends_its_read_with_bad_decoding_error() {
 /// answer of a dropped read leaves the read after it in flight.
 #[test]
 fn the_abort_of_a_dropped_read_leaves_the_next_read_its_value() {
-    let (aborted, after, again, value) = read_aborted(1, 0, too_large);
+    let (aborted, [after, again], value) = read_aborted(1, 0, too_large);
     assert_eq!(aborted, Vec::new());
     assert_eq!((after, again), (Ok(value), Ok(value)));
 }
@@ -2756,7 +2651,7 @@ fn the_abort_of_a_dropped_read_leaves_the_next_read_its_value() {
 /// the client reads on.
 #[test]
 fn an_abort_with_an_unknown_id_ends_no_read() {
-    let (aborted, after, again, value) = read_aborted(0, 1, unknown);
+    let (aborted, [after, again], value) = read_aborted(0, 1, unknown);
     assert_eq!(aborted, vec![Err(Fault::status(Status::BAD_TIMEOUT))]);
     assert_eq!((after, again), (Ok(value), Ok(value)));
 }
