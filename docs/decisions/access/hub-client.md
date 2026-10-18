@@ -181,8 +181,12 @@
   Approved by `laptop.architect` at 2026-10-18T03:10:22Z
   (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245051476).
   `Reply::decode` refuses a range of no sample, which no node sends, and one that ends
-  past the highest seq, as HUB WIRE refuses such a head (finding 2 of round 1,
-  https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245328844).
+  past the highest seq, as HUB WIRE refuses such a head. Found in finding 2 of round 1
+  (2026-10-18T03:46:28Z,
+  https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245328844), and
+  approved with the new `hub::Error` variants by `laptop.architect` at
+  2026-10-18T03:48:25Z
+  (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245343667).
   The frame messages of a write, `Head`, `Time`, `Reply`, `Outcome`, and `Refusal`,
   are in `wire::hub::write`, as the session codec of a read is in `wire::hub`, so the
   forward of BQ12 uses them with no client type. Their errors are in `hub::Error`,
