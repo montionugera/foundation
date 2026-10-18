@@ -499,8 +499,9 @@
   (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6130241056,
   2026-10-12 18:31 UTC).
   The logger of the loop gives each message of level warning and up to the log of the
-  node, and drops the lower levels: it formats the line into a stack buffer of 512 bytes
-  with `mp_vsnprintf` and gives it to `connector_opcua_put_line` in `src/log.rs`, which
+  node, and drops the lower levels: when `connector_opcua_admit` in `src/log.rs` finds
+  room under the bound of LOG OUTPUT (11), it formats the line into a stack buffer of 512 bytes
+  with `mp_vsnprintf` and gives it to `connector_opcua_put_line`, which
   writes one event with the span of its loop as its parent: the span of the run for the
   loop of a run (LOG OUTPUT (11)), and no span for a browse (#3108), the test server,
   and the loops of `bench::Client` and `bench::client::Client`; `bench::Log` takes the
