@@ -65,13 +65,13 @@
   for each such part, so a restart after that restores none of them. A named complete
   open that adds a record, opens a held one, or takes over an open session with a new
   hold appends its parts before it opens, and its reader takes no frame until the commit
-  that holds them. A takeover with the same hold of a session that waits for that commit
-  waits for it too. The `delivery` session holds the wait, as its one commit gate: after
+  that holds them. The `delivery` session holds the wait, as its one commit gate: after
   the commit, a reader below the released end reads from disk, and a reader at the live
   tail takes live frames. A named complete open that appends nothing, such as a
   takeover with the same hold, also waits until each entry appended before it is
   durable: at most the end of a commit in flight and one more commit. An unnamed open
-  waits for no commit. The gate in the session: decided by `laptop.architect` (2026-10-17T00:38:21Z:
+  waits for no commit. The gate in the session: decided by `laptop.architect`
+  (2026-10-17T00:38:21Z:
   https://github.com/synnaxlabs/foundation/issues/2833#issuecomment-6227439506; the
   form: 2026-10-18T09:41:10Z:
   https://github.com/synnaxlabs/foundation/issues/2978#issuecomment-6248353319). When
