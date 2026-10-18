@@ -139,10 +139,8 @@ fn line3() -> Vec<Child> {
 impl Tree {
     /// The tree of the kind `tree`, with pages of 4 entries. The root holds the
     /// folders `Line3` (of [`line3`], with the unreadable point `Cell/Matrix`),
-    /// `Types`,
-    /// `Many`, and `Huge`. `Types` holds a
-    /// point of each value of [`typed`], then a point with no value. `Many` holds 501
-    /// points and `Huge` 10,001.
+    /// `Types`, `Many`, and `Huge`. `Types` holds a point of each value of [`typed`],
+    /// then a point with no value. `Many` holds 501 points and `Huge` 10,001.
     pub(crate) fn create() -> Self {
         let mut folders = BTreeMap::new();
         folders.insert(

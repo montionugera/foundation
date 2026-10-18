@@ -186,25 +186,24 @@
   text they give `ops.file-changed` and write nothing. On `os`, an import that writes
   a regular file makes it anew, with mode 0600 and nothing of the old file, so a file
   that the user opened to a group or to other users is closed to them again after each
-  import. A symbolic link, a device, or a pipe at the path takes the new text in
-  place, with its mode kept, and a crash can leave part of it (ENV SEAMS). Lost: the
-  permission bits of the old file kept on the new one, which open the
-  file to a user that the old file did not when its group changes or when an access
-  control list applies. `--json` and the MCP result are `{file, channels: [{name, path,
-  type}], index, fills: [{name, what}], unnamed: [{path, fix}], present, unreadable}`,
-  with no added blocks: `index` is the added index or `null`, `type` is `null` where the
-  import wrote a `fill`, and `fills` holds each channel with a `fill` in any of its
-  blocks. The text output is one line for the file and the count, one for each channel
-  as `<name> <path> <type>`, then one line for the index, each fill, each unnamed point,
-  and each count that is not 0. `TABLE` holds `import` with `read_only: false` and
-  `destructive: false`. Each code has one fix. The `instructions` of the MCP
-  `initialize` result is the agent guide: `browse`, `import`, a value for each `fill`,
-  `plan` shown to the person, and `apply` only when the person agrees, and `status`. It
-  leaves out `discover`, which is not in C1, so no step names a tool that the server
-  does not have. Deferred: picks by tag. Trigger: a user who has a list of tags and no
-  paths. Deferred: the added blocks in the JSON (B of decision 4). Trigger: the person
-  asks. The person's words of decision 4, through `laptop.monitor`, 2026-10-15 17:25
-  UTC: "I think A is fine for now"
+  import. A symbolic link, a device, or a pipe at the path takes the new text in place,
+  with its mode kept, and a crash can leave part of it (ENV SEAMS). Lost: the permission
+  bits of the old file kept on the new one, which open the file to a user that the old
+  file did not when its group changes or when an access control list applies. `--json`
+  and the MCP result are `{file, channels: [{name, path, type}], index, fills: [{name,
+  what}], unnamed: [{path, fix}], present, unreadable}`, with no added blocks: `index`
+  is the added index or `null`, `type` is `null` where the import wrote a `fill`, and
+  `fills` holds each channel with a `fill` in any of its blocks. The text output is one
+  line for the file and the count, one for each channel as `<name> <path> <type>`, then
+  one line for the index, each fill, each unnamed point, and each count that is not 0.
+  `TABLE` holds `import` with `read_only: false` and `destructive: false`. Each code has
+  one fix. The `instructions` of the MCP `initialize` result is the agent guide:
+  `browse`, `import`, a value for each `fill`, `plan` shown to the person, and `apply`
+  only when the person agrees, and `status`. It leaves out `discover`, which is not in
+  C1, so no step names a tool that the server does not have. Deferred: picks by tag.
+  Trigger: a user who has a list of tags and no paths. Deferred: the added blocks in the
+  JSON (B of decision 4). Trigger: the person asks. The person's words of decision 4,
+  through `laptop.monitor`, 2026-10-15 17:25 UTC: "I think A is fine for now"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198070930); of
   decision 6, 2026-10-15 17:33 UTC: "Ok this is good"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198173531); of

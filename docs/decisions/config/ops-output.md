@@ -152,10 +152,9 @@
   `laptop.architect-2` (2026-10-12T18:47:07Z,
   https://github.com/synnaxlabs/foundation/pull/2466#issuecomment-6130500446).
   A remote program runs `plan`, `apply`, `status` (STATUS OPERATION), `browse`, and
-  `import` (IMPORT OP) on
-  a node through `ops::serve`. The request form is private to `ops`: one line of JSON
-  with one operation and its input, a newline, then the bytes of a plan file as they
-  are. `plan` sends the path and the text of each file:
+  `import` (IMPORT OP) on a node through `ops::serve`. The request form is private to
+  `ops`: one line of JSON with one operation and its input, a newline, then the bytes of
+  a plan file as they are. `plan` sends the path and the text of each file:
   `{"plan":{"files":[{"path":"site.hcl","text":"..."}]}}`, with no byte after the
   newline. `apply` sends `{"apply":{}}` and then only the plan. The command line checks
   the path and fills `Applied::file`, so the node sees no path and gives the apply
@@ -169,9 +168,8 @@
   https://github.com/synnaxlabs/foundation/issues/3084#issuecomment-6243561471), and the
   fix ``Use a `foundation` program of the same version as the node``. So is each
   operation other than `plan`, `apply`, `status`, `browse`, and `import`, with the cause
-  ``the
-  operation `<name>` does not run on a node``. A subject with no grant gets `ops.denied`
-  (SERVE ACCESS). An output of more than
+  ``the operation `<name>` does not run on a node``. A subject with no grant gets
+  `ops.denied` (SERVE ACCESS). An output of more than
   `wire::hub::client::BODY_BYTES_MAX` bytes is `ops.large-reply`, with the bound in the
   message and the fix `Plan and apply the change in smaller steps`, since
   `hub::serve::Reply::send` panics on such a body (`laptop.architect`,
@@ -185,12 +183,11 @@
   (`laptop.architect-2`, 2026-10-17T23:33:12Z,
   https://github.com/synnaxlabs/foundation/pull/3079#issuecomment-6243126104),
   `ops.large-status` for `status`, or `ops.large-import` for `import` (IMPORT OP).
-  `ops.large-status`, status 1, takes the place of
-  `ops.large-reply` for a reply of a status, its output, or an error whose first problem
-  does not fit: ``the reply of the status has more than <n> bytes, the most that a reply
-  holds``, fix `Read the status channels of each connector with a client of the node`,
-  since a `status` request cannot ask for less (`laptop.architect-2`,
-  2026-10-18T00:09:33Z,
+  `ops.large-status`, status 1, takes the place of `ops.large-reply` for a reply of a
+  status, its output, or an error whose first problem does not fit: ``the reply of the
+  status has more than <n> bytes, the most that a reply holds``, fix `Read the status
+  channels of each connector with a client of the node`, since a `status` request cannot
+  ask for less (`laptop.architect-2`, 2026-10-18T00:09:33Z,
   https://github.com/synnaxlabs/foundation/issues/3084#issuecomment-6243561471;
   `laptop.architect-2`, 2026-10-18T00:32:33Z,
   https://github.com/synnaxlabs/foundation/pull/3096#issuecomment-6243760762). `serve`
@@ -217,22 +214,21 @@
   plan file as a list of numbers, which is four times the bytes.
   `plan`, `apply`, `status` (STATUS OPERATION), `browse`, and `import` (IMPORT OP) run
   on the node of `foundation-data`, which `node::client::reach` reaches. The command
-  line gives four
-  codes of its own. `ops.read`: `no file is at <path>`, `<path> is a directory, not a
-  file`, or `the text of <path> is not UTF-8`, status 2, and `the read of <path> failed
-  with OS error <code>`, status 1, each with the fix `Fix the cause in the message, then
-  run the command again`. `ops.large-request`: `the request has more than <n> bytes, the
-  most that a request holds`, for config files whose bytes together pass that bound at
-  their read, or for the encoded request, status 2, fix `Make the config files smaller`;
-  the check comes before the reach. `ops.write`: `the directory of the plan file <path>
-  is not there` or `the write of the plan file <path> failed with OS error <code>`,
-  status 1, fix ``Give `--out`, or `out` of the MCP tool, a path in a directory that can
-  be written``. `ops.bad-reply`:
-  `the reply of the node is no reply: <why>`, status 1, fix ``Use a `foundation` program
-  of the same version as the node``. A failure to reach the node, or of its request, has
-  status 1 and one of the codes `node.not-running`, `node.unreadable`, `node.admin-key`,
-  `node.socket`, `node.unanswered`, `node.session`, `node.refused`, and `node.no-reply`,
-  with the message and fix of decision 3 of plan revision 4 (`laptop.architect-2`,
+  line gives four codes of its own. `ops.read`: `no file is at <path>`, `<path> is a
+  directory, not a file`, or `the text of <path> is not UTF-8`, status 2, and `the read
+  of <path> failed with OS error <code>`, status 1, each with the fix `Fix the cause in
+  the message, then run the command again`. `ops.large-request`: `the request has more
+  than <n> bytes, the most that a request holds`, for config files whose bytes together
+  pass that bound at their read, or for the encoded request, status 2, fix `Make the
+  config files smaller`; the check comes before the reach. `ops.write`: `the directory
+  of the plan file <path> is not there` or `the write of the plan file <path> failed
+  with OS error <code>`, status 1, fix ``Give `--out`, or `out` of the MCP tool, a path
+  in a directory that can be written``. `ops.bad-reply`: `the reply of the node is no
+  reply: <why>`, status 1, fix ``Use a `foundation` program of the same version as the
+  node``. A failure to reach the node, or of its request, has status 1 and one of the
+  codes `node.not-running`, `node.unreadable`, `node.admin-key`, `node.socket`,
+  `node.unanswered`, `node.session`, `node.refused`, and `node.no-reply`, with the
+  message and fix of decision 3 of plan revision 4 (`laptop.architect-2`,
   2026-10-11T07:10:55Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913). The
   fix of `node.not-running` is ``Start one with `foundation start --name <name>` ``,
@@ -264,14 +260,13 @@
   messages, statuses, and fixes of the four `ops` codes (2026-10-13T03:48:32Z, item 4 of
   https://github.com/synnaxlabs/foundation/pull/2533#issuecomment-6137791971).
   `plan`, `apply`, `status`, `browse`, and `import` (IMPORT OP) take `--data <dir>`, the
-  data directory of
-  the node, by default `foundation-data`, as `start` does (#2526). This supersedes "run
-  on the node of `foundation-data`" above and in the doc of `cli` of
-  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. In each
-  command of a fix below, `{dir}` follows `--data=` as one word of a POSIX shell: in
-  single quotes, with each `'` as `'"'"'`, when it is empty or holds a character other
-  than `[A-Za-z0-9_./:@%+,-]`. A `{dir}` that is not UTF-8, or that the escape of a fix
-  text changes (a `\`, a control character, or another character that
+  data directory of the node, by default `foundation-data`, as `start` does (#2526).
+  This supersedes "run on the node of `foundation-data`" above and in the doc of `cli`
+  of https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. In
+  each command of a fix below, `{dir}` follows `--data=` as one word of a POSIX shell:
+  in single quotes, with each `'` as `'"'"'`, when it is empty or holds a character
+  other than `[A-Za-z0-9_./:@%+,-]`. A `{dir}` that is not UTF-8, or that the escape of
+  a fix text changes (a `\`, a control character, or another character that
   `char::escape_debug` escapes), is named in no command: the fix says to set `--data` to
   that directory. In a message, `{dir}` is the path as it is. The fix of
   `node.not-running` is ``Run `foundation start --data={dir}`, with `--name <name>` on
@@ -394,19 +389,18 @@
   Amended (2026-10-16T04:45:05Z, #2526): one MCP server talks to one node, picked at
   start with `foundation mcp --data <dir>`, and a tool call cannot pick another. A
   failed `plan`, `apply`, `status`, `browse`, or `import` (IMPORT OP) is a tool result
-  with `isError` and the
-  text `{"errors": [...]}`, while an unknown tool and a malformed request or argument
-  stay a JSON-RPC error. Each operation of `foundation --help` but `start` and `mcp` is
-  a tool, with the output schema of its `--json`. `version`, `docs`, `status`, and
-  `browse` have `readOnlyHint`; `plan` and `apply` have `destructiveHint`, since the
-  `out` of `plan` replaces a file that is there, so a client that asks the person before
-  a destructive tool asks for `plan` too. `foundation mcp` reaches its node at the first
-  tool call that needs it, keeps that session, and reaches again only at the call after
-  a failure of a reach or a request. `node` reads standard input on an I/O thread of
-  `os` and gives `ops::cli` an async source of lines, so the shard that serves runs
-  while it waits for a line, and a kept session sends its keep-alive.
-  Decided by the person, "Yeah that's fine" (2026-10-16T04:45:05Z, relayed by
-  `laptop.monitor`,
+  with `isError` and the text `{"errors": [...]}`, while an unknown tool and a malformed
+  request or argument stay a JSON-RPC error. Each operation of `foundation --help` but
+  `start` and `mcp` is a tool, with the output schema of its `--json`. `version`,
+  `docs`, `status`, and `browse` have `readOnlyHint`; `plan` and `apply` have
+  `destructiveHint`, since the `out` of `plan` replaces a file that is there, so a
+  client that asks the person before a destructive tool asks for `plan` too. `foundation
+  mcp` reaches its node at the first tool call that needs it, keeps that session, and
+  reaches again only at the call after a failure of a reach or a request. `node` reads
+  standard input on an I/O thread of `os` and gives `ops::cli` an async source of lines,
+  so the shard that serves runs while it waits for a line, and a kept session sends its
+  keep-alive. Decided by the person, "Yeah that's fine" (2026-10-16T04:45:05Z, relayed
+  by `laptop.monitor`,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208278565;
   the tools and their hints by `laptop.architect-2`, 2026-10-16T04:46:50Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208295673; the
