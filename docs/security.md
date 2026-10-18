@@ -396,8 +396,8 @@ state on `main`.
 - The random generator of the open62541 copy is PCG32, which a peer can predict. The
   copy takes the nonces of the security policy None and the session token of its server
   from it. OPEN62541 SOURCE bars it for each nonce, key, and session token of Foundation
-  code, and states what a security policy that encrypts, or an OPC UA server of
-  Foundation, changes first. Neither is built.
+  code. The three policies that encrypt take each nonce and key from aws-lc (TLS
+  RANDOMNESS). An OPC UA server of Foundation is not built.
 - A certificate that a server sends is untrusted input, and so is a key or a
   certificate that the node loads. No PEM read of the open62541 copy waits on the
   console or sets a signal handler: each refuses an encrypted PEM that it has no
@@ -543,7 +543,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `connector_modbus_rtu` | `connector_modbus::rtu::decode_request`, `decode_reply`, `pdu::Request::decode`, `Request::decode_reply` | A request reads back unchanged; a reply has the asked count |
 | `connector_modbus_tcp` | `connector_modbus::tcp::decode`, `pdu::Request::decode`, `decode_reply`, `read::groups`, `read::Group::values` | A request reads back unchanged; a reply has the asked count; reads of each register type that tile a read request group into that request, and give the values of its reply in address order, in each register order |
 | `connector_opcua_decode` | `connector_opcua::fuzz::decode`: `UA_decodeBinary` of open62541, as each type of `UA_TYPES` | No memory fault or leak; a decoded value encodes to its `UA_calcSizeBinary` length, and that encoding decodes, reads exactly its length, and encodes to the same bytes. A decoded `DataValue` gives the same read of its value (`Value::of` of the kind), or the same fault, from both decodes. Until #435 is fixed, the encoding decodes with as many zeros after it as its length. |
-| `connector_opcua_certificate` | `connector_opcua::fuzz::certificate`: the certificate that a server sends, DER or PEM, as the client of the copy reads it: `verifyCertificate` of a memory group that trusts nothing, `newChannelContext` of each of the three policies, `compareCertificate` with the certificate of a channel, and `UA_CertificateUtils_getApplicationUri` (feature `sim`) | No memory fault or leak, and no read of the console; the check never gives `Good`. Not reached: a certificate that a trust list holds, which a fuzzed input cannot be |
+| `connector_opcua_certificate` | `connector_opcua::fuzz::certificate`: the certificate that a server sends, DER or PEM, as the client of the copy reads it: `verifyCertificate` of a memory group that trusts nothing, `newChannelContext` of each of the three policies, `compareCertificate` with the certificate of a channel; and `UA_CertificateUtils_getApplicationUri`, which the client reads only from its own certificate (feature `sim`) | No memory fault or leak, and no read of the console; the check never gives `Good`. Not reached: a certificate that a trust list holds, which a fuzzed input cannot be |
 | `ops_mcp` | `foundation mcp`, through `ops::cli` | No error, and at most one reply for each line |
 | `types_name` | `Name` | Prints as the text it was read from |
 | `types_selector` | `Pattern`, `Selector` | Agree with a second matcher |
