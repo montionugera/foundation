@@ -163,12 +163,11 @@
   Supersedes
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6213124219, item 5:
   the second call of `names` by `ops`.
-- **IMPORT OP (C1, #2705)** `foundation import <CONNECTOR> <FILES>...
-  (--point <PATH>... | --match <PATTERN>) [--start <PATH>] [--name <NAME>=<PATH>]...`,
-  each of `<FILES>` a config file or a directory of config files,
-  and the MCP tool `import` (`connector`, `files`, `points` of `{path, name}` with
-  `name` optional, or `match`, and `start`) add the config of points to the file of the
-  connector block.
+- **IMPORT OP (C1, #2705)** `foundation import <CONNECTOR> <FILES>... (--point <PATH>...
+  | --match <PATTERN>) [--start <PATH>] [--name <NAME>=<PATH>]...`, each of `<FILES>` a
+  config file or a directory of config files, and the MCP tool `import` (`connector`,
+  `files`, `points` of `{path, name}` with `name` optional, or `match`, and `start`) add
+  the config of points to the file of the connector block.
   `--name` also picks its point, after each `--point`. The node makes the change:
   `serve` runs the checks of `browse` before the device, then, in order, `ops.no-pick`
   for no pick, an argument error for both forms, `ops.pick-limit` for more than 500
