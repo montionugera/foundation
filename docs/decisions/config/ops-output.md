@@ -242,14 +242,19 @@
   `node.version`: `<dir>/data/<file> holds format version <found>, and this
   foundation reads version <expected>`, with each version byte as an escaped ASCII
   char, fix ``Use a `foundation` program of the same version as the node``, when
-  `address` or `admin.key` holds a format of another version (`laptop.architect-2`,
-  2026-10-18, item 7 of
-  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252508020,
-  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252530569, and
-  the code and its fields in
-  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252630274; the
-  fix text, that of `ops.bad-reply`, in
-  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252780856).
+  `address` or `admin.key` holds a format of another version, which `reach` gives as
+  `node::client::Error::Local(sector::local::Error::Version { .. })`
+  (`laptop.architect-2`: item 7 of
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252508020 at
+  2026-10-18T16:49:11Z;
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252530569 at
+  2026-10-18T16:51:27Z; the code and its fields in
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252630274 at
+  2026-10-18T17:01:02Z; the fix text, that of `ops.bad-reply`, in
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252780856 at
+  2026-10-18T17:15:38Z; the wrapped variant in
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252975559 at
+  2026-10-18T17:34:06Z).
   `node.socket` covers a socket of the program that broke, with the message `the
   socket of this program failed: <the transport error>` (`laptop.architect-2`,
   2026-10-13T02:10:54Z, item 4 of
