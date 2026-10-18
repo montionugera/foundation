@@ -678,16 +678,13 @@ fn every() -> Vec<Error> {
         Error::NoPick,
         Error::ImportLimit { picked: None },
         Error::BadPoint {
-            text: String::new(),
-            cause: Malformed::Empty,
+            points: vec![(String::new(), Malformed::Empty)],
         },
         Error::DuplicatePick {
             paths: vec!["Line/Pump".to_owned()],
         },
         Error::BadName {
-            path: String::new(),
-            text: String::new(),
-            cause: types::name::Error::Empty,
+            names: vec![(String::new(), String::new(), types::name::Error::Empty)],
         },
         Error::UnreadablePoint {
             points: vec![("Line/Pump".to_owned(), "no access".to_owned())],

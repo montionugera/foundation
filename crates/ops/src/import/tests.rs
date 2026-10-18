@@ -64,7 +64,11 @@ fn points(paths: &[&str]) -> Value {
 fn checks_access_the_picks_the_paths_the_names_and_the_match_in_order() {
     solo(|fixture, mesh| async move {
         let node = create_browsing_node(&fixture, mesh);
-        let bad = json!([{ "path": "a//b" }, { "path": "x", "name": "a b" }]);
+        let bad = json!([
+            { "path": "a//b" },
+            { "path": "x", "name": "a b" },
+            { "path": "c\\" },
+        ]);
         let all = json!({ "points": bad, "match": "a\\" });
         let (reply, _) = served(&node, "eve", &body(&site(""), &all)).await;
         let message = "no access policy gives `eve` the action `apply` on `plant`";
@@ -89,11 +93,25 @@ fn checks_access_the_picks_the_paths_the_names_and_the_match_in_order() {
         let fix = "Import at most 500 points at a time";
         assert_eq!(reply, refusal("ops.import-limit", 2, message, fix));
 
-        let (reply, _) = imported(&node, &json!({ "points": bad })).await;
-        let message = "the point `a//b` is not a path: a name in it is empty";
-        let fix = "Give the names of the path joined by `/`, with a `\\` before each \
-                   `/`, `*`, or `\\` in a name";
-        assert_eq!(reply, refusal("ops.bad-point", 2, message, fix));
+        let (reply, text) = imported(&node, &json!({ "points": bad })).await;
+        let problem = |message: &str| {
+            json!({
+                "code": "ops.bad-point",
+                "message": message,
+                "fix": "Give the names of the path joined by `/`, with a `\\` before \
+                        each `/`, `*`, or `\\` in a name",
+                "notes": [],
+            })
+        };
+        let errors = [
+            problem("the point `a//b` is not a path: a name in it is empty"),
+            problem(
+                "the point `c\\` is not a path: it ends in a `\\` that takes no \
+                 character",
+            ),
+        ];
+        assert_eq!(reply, json!({ "errors": errors, "status": 2 }));
+        assert_eq!(text, "");
 
         let twice = json!([
             { "path": "x", "name": "a b" },
@@ -114,12 +132,26 @@ fn checks_access_the_picks_the_paths_the_names_and_the_match_in_order() {
         let expected = json!({ "errors": [problem("x"), problem("y")], "status": 2 });
         assert_eq!(reply, expected);
 
-        let named = json!([{ "path": "x" }, { "path": "y", "name": "a b" }]);
-        let (reply, _) = imported(&node, &json!({ "points": named })).await;
-        let cause = "a b".parse::<Name>().expect_err("no name");
-        let message = format!("the name `a b` of the point `y` is not a name: {cause}");
-        let fix = "Give another name, or leave it out for the default name";
-        assert_eq!(reply, refusal("ops.bad-name", 2, &message, fix));
+        let named = json!([
+            { "path": "x", "name": "a b" },
+            { "path": "y" },
+            { "path": "z", "name": "" },
+        ]);
+        let (reply, text) = imported(&node, &json!({ "points": named })).await;
+        let problem = |path: &str, text: &str| {
+            let cause = text.parse::<Name>().expect_err("no name");
+            json!({
+                "code": "ops.bad-name",
+                "message": format!(
+                    "the name `{text}` of the point `{path}` is not a name: {cause}"
+                ),
+                "fix": "Give another name, or leave it out for the default name",
+                "notes": [],
+            })
+        };
+        let errors = [problem("x", "a b"), problem("z", "")];
+        assert_eq!(reply, json!({ "errors": errors, "status": 2 }));
+        assert_eq!(text, "");
 
         let (reply, _) = imported(&node, &json!({ "match": "a\\" })).await;
         let message = "the match `a\\` is not a pattern: it ends in a `\\` that takes \

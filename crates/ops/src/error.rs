@@ -51,8 +51,11 @@ const BAD_PATTERN: Code = Code::new("ops.bad-pattern");
 const NO_PICK: Code = Code::new("ops.no-pick");
 const IMPORT_LIMIT: Code = Code::new("ops.import-limit");
 const BAD_POINT: Code = Code::new("ops.bad-point");
+const BAD_POINT_FIX: &str = "Give the names of the path joined by `/`, with a `\\` before each `/`, `*`, or \
+     `\\` in a name";
 const DUPLICATE_PICK: Code = Code::new("ops.duplicate-pick");
 const BAD_NAME: Code = Code::new("ops.bad-name");
+const BAD_NAME_FIX: &str = "Give another name, or leave it out for the default name";
 const UNREADABLE_POINT: Code = Code::new("ops.unreadable-point");
 const IMPORT_BUDGET: Code = Code::new("ops.import-budget");
 const LARGE_IMPORT: Code = Code::new("ops.large-import");
@@ -186,18 +189,17 @@ pub(crate) enum Error {
     /// An import that picks `picked` points, or with `None` a match of more points,
     /// than [`LIMIT`].
     ImportLimit { picked: Option<usize> },
-    /// The path `text` of a point of an import is no path.
+    /// Each path of a point of an import that is no path, as given, with the cause,
+    /// in the order of the picks.
     BadPoint {
-        text: String,
-        cause: connector::browse::Malformed,
+        points: Vec<(String, connector::browse::Malformed)>,
     },
     /// Each path that an import picks more than once, in the order of the picks.
     DuplicatePick { paths: Vec<String> },
-    /// The given name `text` of the point at `path` is no name.
+    /// Each given name of an import that is no name: the path of its point, the name
+    /// as given, and the cause, in the order of the picks.
     BadName {
-        path: String,
-        text: String,
-        cause: types::name::Error,
+        names: Vec<(String, String, types::name::Error)>,
     },
     /// Each picked point that a connector of the kind cannot read or write, by path,
     /// with the reason.
@@ -394,8 +396,9 @@ impl Error {
         }
     }
 
-    /// Each problem: for each error but `Config`, `Remote`, `Browse`,
-    /// `DuplicatePick`, and `UnreadablePoint`, one with no place and no note.
+    /// Each problem: for each error but `Config`, `Remote`, `Browse`, `BadPoint`,
+    /// `DuplicatePick`, `BadName`, and `UnreadablePoint`, one with no place and no
+    /// note.
     #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     pub(crate) fn problems(&self) -> Cow<'_, [Problem]> {
         let (code, fix) = match self {
@@ -403,6 +406,21 @@ impl Error {
             | Self::Remote { problems, .. }
             | Self::Browse { problems, .. } => {
                 return Cow::Borrowed(problems);
+            }
+            Self::BadPoint { points } => {
+                let problems = points.iter().map(|(text, cause)| {
+                    let message = format!("the point `{text}` is not a path: {cause}");
+                    (BAD_POINT, message, BAD_POINT_FIX)
+                });
+                return Cow::Owned(problems.map(Problem::plain).collect());
+            }
+            Self::BadName { names } => {
+                let problems = names.iter().map(|(path, text, cause)| {
+                    let message =
+                        format!("the name `{text}` of the point `{path}` is not a name: {cause}");
+                    (BAD_NAME, message, BAD_NAME_FIX)
+                });
+                return Cow::Owned(problems.map(Problem::plain).collect());
             }
             Self::DuplicatePick { paths } => {
                 let problems = paths.iter().map(|path| {
@@ -581,16 +599,6 @@ impl Error {
             Self::ImportLimit { .. } => (
                 IMPORT_LIMIT,
                 format!("Import at most {LIMIT} points at a time"),
-            ),
-            Self::BadPoint { .. } => (
-                BAD_POINT,
-                "Give the names of the path joined by `/`, with a `\\` before each \
-                 `/`, `*`, or `\\` in a name"
-                    .to_owned(),
-            ),
-            Self::BadName { .. } => (
-                BAD_NAME,
-                "Give another name, or leave it out for the default name".to_owned(),
             ),
             Self::ImportBudget { .. } => (
                 IMPORT_BUDGET,
@@ -1007,13 +1015,6 @@ impl fmt::Display for Error {
             Self::ImportLimit { picked: None } => {
                 write!(f, "more than {LIMIT} points match, the most for one import")
             }
-            Self::BadPoint { text, cause } => {
-                write!(f, "the point `{text}` is not a path: {cause}")
-            }
-            Self::BadName { path, text, cause } => write!(
-                f,
-                "the name `{text}` of the point `{path}` is not a name: {cause}"
-            ),
             Self::ImportBudget { matched: true } => write!(
                 f,
                 "the import stopped after {VISITS} entries, so more points can match"
@@ -1033,7 +1034,10 @@ impl fmt::Display for Error {
                  nothing",
                 path.display()
             ),
-            Self::DuplicatePick { .. } | Self::UnreadablePoint { .. } => {
+            Self::BadPoint { .. }
+            | Self::DuplicatePick { .. }
+            | Self::BadName { .. }
+            | Self::UnreadablePoint { .. } => {
                 unreachable!("invariant: `problems` gives the message of each")
             }
         }

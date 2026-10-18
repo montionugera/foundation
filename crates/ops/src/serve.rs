@@ -1050,9 +1050,9 @@ fn unreadable(found: &browse::Found, points: Option<usize>) -> Result<usize, Err
 /// # Errors
 ///
 /// - [`Error::ImportLimit`] for more than [`browse::LIMIT`] points.
-/// - [`Error::BadPoint`] for the first path that does not parse.
+/// - [`Error::BadPoint`] with each path that does not parse.
 /// - [`Error::DuplicatePick`] with each path that is there more than once.
-/// - [`Error::BadName`] for the first given name that does not parse.
+/// - [`Error::BadName`] with each given name that does not parse.
 fn points(points: Vec<Point>) -> Result<(Vec<browse::Path>, Vec<Option<Name>>), Error> {
     if points.len() > browse::LIMIT {
         return Err(Error::ImportLimit {
@@ -1061,12 +1061,16 @@ fn points(points: Vec<Point>) -> Result<(Vec<browse::Path>, Vec<Option<Name>>), 
     }
     let mut paths = Vec::with_capacity(points.len());
     let mut given = Vec::with_capacity(points.len());
+    let mut bad = Vec::new();
     for Point { path: text, name } in points {
-        let path: browse::Path = text
-            .parse()
-            .map_err(|cause| Error::BadPoint { text, cause })?;
-        paths.push(path);
+        match text.parse::<browse::Path>() {
+            Ok(path) => paths.push(path),
+            Err(cause) => bad.push((text, cause)),
+        }
         given.push(name);
+    }
+    if !bad.is_empty() {
+        return Err(Error::BadPoint { points: bad });
     }
     let mut seen = BTreeMap::new();
     let mut twice = Vec::new();
@@ -1081,19 +1085,20 @@ fn points(points: Vec<Point>) -> Result<(Vec<browse::Path>, Vec<Option<Name>>), 
     if !twice.is_empty() {
         return Err(Error::DuplicatePick { paths: twice });
     }
-    let names = paths
-        .iter()
-        .zip(given)
-        .map(|(path, name)| {
-            name.map(|text| {
-                text.parse().map_err(|cause| Error::BadName {
-                    path: path.to_string(),
-                    text,
-                    cause,
-                })
-            })
-            .transpose()
-        })
-        .collect::<Result<_, _>>()?;
+    let mut names = Vec::with_capacity(given.len());
+    let mut bad = Vec::new();
+    for (path, name) in paths.iter().zip(given) {
+        let Some(text) = name else {
+            names.push(None);
+            continue;
+        };
+        match text.parse::<Name>() {
+            Ok(name) => names.push(Some(name)),
+            Err(cause) => bad.push((path.to_string(), text, cause)),
+        }
+    }
+    if !bad.is_empty() {
+        return Err(Error::BadName { names: bad });
+    }
     Ok((paths, names))
 }
