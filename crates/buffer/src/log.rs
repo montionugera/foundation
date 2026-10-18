@@ -1527,7 +1527,7 @@ struct Items {
     /// The offset of each record with an item, and the number after its last item.
     records: VecDeque<(u64, u64)>,
     /// The holder of each item.
-    places: VecDeque<Holder>,
+    holders: VecDeque<Holder>,
     /// The number of the front item.
     base: u64,
 }
@@ -1541,7 +1541,7 @@ impl Items {
             Some((last, end)) if *last == offset => *end = next,
             _ => self.records.push_back((offset, next)),
         }
-        self.places.push_back(holder);
+        self.holders.push_back(holder);
     }
 
     /// The number of the next item that `push` adds.
@@ -1557,7 +1557,7 @@ impl Items {
         self.records.pop_front();
         let count = self.index(end);
         self.base = end;
-        Some((offset, self.places.drain(..count)))
+        Some((offset, self.holders.drain(..count)))
     }
 
     /// Each item from the number `from`, or from the front item when it is past, with
@@ -1572,11 +1572,11 @@ impl Items {
             numbers.map(move |number| (number, offset))
         });
         numbers
-            .zip(self.places.range(skip..))
+            .zip(self.holders.range(skip..))
             .map(|((number, offset), &holder)| (number, offset, holder))
     }
 
-    /// The index in `places` of the item numbered `number`, at or after the front.
+    /// The index in `holders` of the item numbered `number`, at or after the front.
     fn index(&self, number: u64) -> usize {
         number
             .checked_sub(self.base)
@@ -2807,7 +2807,7 @@ mod tests {
         logs.recover(slot(5), &carried_of(5, 5, 0), 8192)
             .expect("a new path takes any tail");
         assert_eq!(logs.items.records, [(4096, 3), (8192, 5)]);
-        assert_eq!(logs.items.places.len(), 5);
+        assert_eq!(logs.items.holders.len(), 5);
     }
 
     #[test]
@@ -3471,7 +3471,7 @@ mod tests {
             .iter()
             .map(|log| log.runs.capacity() * size_of::<Run>())
             .sum();
-        let items = logs.items.places.capacity() * size_of::<Holder>()
+        let items = logs.items.holders.capacity() * size_of::<Holder>()
             + logs.items.records.capacity() * size_of::<(u64, u64)>();
         (runs, items)
     }
