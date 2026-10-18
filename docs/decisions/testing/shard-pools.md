@@ -2,7 +2,7 @@
   moves it into the shard, which drops it (M4). Each of `n` shards gets `budget / n`,
   and shard 0 also gets the remainder, so the parts add up to the node's budget (MEMORY
   BOUNDS). The memory comes from `node::Config::memory`, a closure that `node` calls
-  once per shard, in order of core: production passes `os::memory::Memory::new`, and
+  once per pool, in order of core: production passes `os::memory::Memory::new`, and
   `sim` tests pass `block::Heap`. A shard with no memory is a start failure: later
   shards do not start, the node stops, and `join` gives `Error::Memory` with the core
   and the `os::memory::Error`. Lost: making the pool on the shard's thread, which needs
@@ -51,4 +51,15 @@
   https://github.com/synnaxlabs/foundation/pull/2438#issuecomment-6113549763) and
   `laptop.architect` (2026-10-11T20:45:21Z:
   https://github.com/synnaxlabs/foundation/pull/2438#issuecomment-6113562774), which
-  supersede "after the port binds" of the first link.
+  supersede "after the port binds" of the first link. On a node with a region, shard 0
+  also cuts an eighth of its part, rounded down, for the pool of the chunk store, so
+  the parts still add up to the budget. `node` calls `Config::memory` for it just after
+  the call of shard 0 and moves it into shard 0 with its pool, and the purge task of
+  shard 0 purges both. A store pool with no memory is `Error::Memory` with core 0
+  (`laptop.architect`, 2026-10-18T19:07:27Z:
+  https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6253931889;
+  `laptop.architect-2`, 2026-10-18T19:12:02Z:
+  https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6253982711, and
+  2026-10-18T19:19:06Z:
+  https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6254066588, which
+  limits it to a node with a region).
