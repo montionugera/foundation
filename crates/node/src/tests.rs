@@ -2623,7 +2623,7 @@ mod hub {
             let files = host.files();
             open.keep(
                 host.files(),
-                std::rc::Rc::new(pool),
+                (std::rc::Rc::new(pool), None),
                 tasks,
                 stop.guard(),
                 hold,
@@ -4552,7 +4552,7 @@ pub(crate) mod port {
             let opened = endpoint.open(
                 identity,
                 host.files(),
-                super::pool(),
+                (super::pool(), Some(super::pool())),
                 &time,
                 tasks.clone(),
             );
@@ -4871,7 +4871,8 @@ pub(crate) mod port {
         }
 
         /// The least pool budget that each buffer takes also holds an append of the
-        /// largest record, so `Budget::pool` names no refusal of the mesh.
+        /// largest record, so `Budget::pool` names no refusal of the mesh. Shard 0
+        /// gives a quarter of its part to the store, so its part is a third more.
         #[test]
         fn the_least_pool_budget_of_the_buffers_opens_the_mesh() {
             let start = |budget| {
@@ -4893,10 +4894,39 @@ pub(crate) mod port {
             else {
                 panic!("a pool budget of 1 byte opens no buffer");
             };
-            assert_eq!(
-                start(Size::from_bytes(2 * u64::try_from(min).unwrap())),
-                Ok(())
-            );
+            let part = (4 * u64::try_from(min).unwrap()).div_ceil(3);
+            assert_eq!(start(Size::from_bytes(2 * part)), Ok(()));
+        }
+
+        /// A node with a region reserves the pool of its chunk store just after the
+        /// pool of shard 0, with a quarter of shard 0's part, and a refused reservation
+        /// of it stops the node with the error of core 0.
+        #[test]
+        fn the_store_pool_takes_a_quarter_of_the_part_of_shard_0() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let lens = Arc::new(Mutex::new(Vec::new()));
+            let asked = Arc::clone(&lens);
+            let refused = os::memory::Error::Refused;
+            let memory: Memory = Box::new(move |len| {
+                let mut asked = asked.lock().unwrap();
+                asked.push(len);
+                if asked.len() == 2 {
+                    Err(refused)
+                } else {
+                    heap(len)
+                }
+            });
+            let node = Node::start(Config {
+                region: Region::Given(region(&pair(&hosts))),
+                ..config(&hosts[0], Size::MEBIBYTE, memory)
+            });
+            assert_eq!(sim.run(), Ok(()));
+            let error = refused;
+            assert_eq!(node.join(), Err(Error::Memory { core: 0, error }));
+            let reserved = |len| block::Config::new(len).unwrap().reservation();
+            let parts = [reserved(384 << 10), reserved(128 << 10)];
+            assert_eq!(*lens.lock().unwrap(), parts);
         }
 
         /// A node of the least message limit that its transport takes, 1472 bytes,
@@ -5066,6 +5096,61 @@ pub(crate) mod port {
             assert_eq!(node.join(), Ok(()));
             let seen = out.lock().unwrap().take();
             assert_eq!(seen, Some((Ok(()), Ok(vec![]), Some(b"chunk".to_vec()))));
+        }
+
+        /// A member that sends put heads and no bodies holds only the store's pool, so
+        /// a hub stream of the member still goes to the hub, which stops an open of a
+        /// channel that the node does not know with `UNKNOWN`.
+        #[test]
+        fn put_heads_with_no_body_leave_a_hub_stream_served() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let peer = sim.node(sim::node::Config::default());
+            let at = [Address::Udp(listen(&hosts[0]))];
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&peer, move |own, tasks| async move {
+                let (transport, pool) = transport(&own, tasks, OTHER.1);
+                let session =
+                    transport.dial(KEY.public(), &at).await.expect("a session");
+                let message = |bytes: &[u8]| pool.copy(bytes).unwrap();
+                let mut streams = Vec::new();
+                // Heads of shorter bodies take the room that longer ones leave.
+                let shorter = (7..=14).rev().flat_map(|shift| [1 << shift; 2]);
+                let lens = [32 << 10; 16].into_iter().chain(shorter);
+                for (byte, len) in (0..).zip(lens) {
+                    let (mut sender, receiver) =
+                        session.open(Class::Complete).await.expect("a stream");
+                    let header = wire::header::encode(wire::Protocol::Blob);
+                    let put = wire::blob::Put {
+                        digest: types::digest::Digest::of(&[byte]),
+                        len,
+                    };
+                    let mut head = [0; wire::blob::Put::LEN];
+                    put.encode(&mut head);
+                    for bytes in [&header[..], &head] {
+                        drop(sender.send(message(bytes)).await);
+                    }
+                    streams.push((sender, receiver));
+                }
+                own.clock().sleep(Span::MINUTE).await;
+                let (mut sender, mut receiver) =
+                    session.open(Class::Complete).await.expect("a stream");
+                for bytes in super::open_unknown() {
+                    drop(sender.send(message(&bytes)).await);
+                }
+                let read = receiver.recv().await.map(|m| m.map(|b| b.to_vec()));
+                *seen.lock().unwrap() = Some(read);
+                drop((streams, sender, session, transport));
+            });
+            assert_eq!(sim.run_for(Span::HOUR), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let code = Code(wire::hub::UNKNOWN);
+            let read = out.lock().unwrap().take();
+            assert_eq!(read, Some(Err(transport::Error::Reset { code })));
         }
 
         /// The node stops a blob stream of a node that is not a member, and resets its

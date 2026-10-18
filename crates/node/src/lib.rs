@@ -74,9 +74,10 @@ pub struct Config<M> {
     /// that is there stays as it is, also when it holds other budgets. Get the kept
     /// ones with [`budget`] before the start.
     pub budget: Budget,
-    /// Reserves `len` bytes of address space for one shard's pool. `node` calls it in
-    /// order of core, once for each shard, until a shard gets no memory or does not
-    /// start.
+    /// Reserves `len` bytes of address space for one pool. `node` calls it in order of
+    /// core, once for each shard's pool and, on a node with a region, once more for the
+    /// pool of the chunk store just after shard 0's, until a shard gets no memory or
+    /// does not start.
     pub memory: Box<dyn FnMut(usize) -> Result<M, os::memory::Error>>,
     /// Makes the files of one shard. `node` calls it on the thread that calls
     /// [`Node::start`], in order of core, once for each shard that gets its memory,
@@ -201,6 +202,10 @@ const BODY_MAX: usize = 1 << 20;
 const COMMIT: Span = Span::from_nanos(2_000_000);
 /// The interval of each shard's purge timer.
 const PURGE: Span = Span::from_nanos(10_000_000_000);
+/// A node with a region gives 1 / `STORE_PART` of shard 0's part of the pool budget to
+/// a pool of the chunk store's own, so a put that waits for its body holds only that
+/// pool.
+const STORE_PART: u64 = 4;
 /// The stamps each home accepts, a patch until they are settings (#1285).
 const LIMITS: home::order::Limits = home::order::Limits {
     earliest: Stamp::from_nanos(946_684_800_000_000_000),
@@ -247,6 +252,11 @@ impl Node {
     /// no buffer opens ([`Error::Port`]). Any failure stops the node, and
     /// [`Node::join`] gives the first one (its `# Errors`).
     ///
+    /// On a node with a region, the chunk store takes its blocks from a pool of its
+    /// own, with a quarter of shard 0's part, so a put that waits for its body holds no
+    /// block of shard 0's pool. Shard 0 gives the pages of that pool back as it does
+    /// those of its own.
+    ///
     /// # Panics
     ///
     /// If the disk budget holds a ring on each of more than `u32::MAX` cores.
@@ -283,7 +293,7 @@ impl Node {
     )]
     fn launch<M: block::Memory + 'static>(
         config: Config<M>,
-        parts: Vec<(u32, block::Config, buffer::Layout)>,
+        parts: Vec<Part>,
         (mesh, clock): (clock::Clock, clock::Reader),
         regional: bool,
     ) -> Self {
@@ -322,11 +332,19 @@ impl Node {
         let roles = Role::all(mesh, wall, first, bind, serve, cores);
         let mut started = Vec::new();
         let mut error = None;
-        for (core, (((number, config, layout), role), (take, give))) in
+        for (core, ((part, role), (take, give))) in
             parts.into_iter().zip(roles).zip(links).enumerate()
         {
-            let pool = match memory(config.reservation()) {
-                Ok(m) => block::Pool::new(config, m),
+            let pools = memory(part.pool.reservation()).and_then(|m| {
+                let pool = block::Pool::new(part.pool, m);
+                let store = part.store.map(|config| {
+                    let m = memory(config.reservation())?;
+                    Ok(block::Pool::new(config, m))
+                });
+                Ok((pool, store.transpose()?))
+            });
+            let (pool, store) = match pools {
+                Ok(pools) => pools,
                 Err(e) => {
                     error = Some(Error::Memory { core, error: e });
                     stop.set();
@@ -340,20 +358,20 @@ impl Node {
             let guard = stop.guard();
             let failed = Arc::new(OnceLock::new());
             let open = Open {
-                shard: number,
+                shard: part.shard,
                 take,
                 give,
                 monotonic: monotonic.clone(),
                 clock: clock.clone(),
                 entropy: entropy.clone(),
-                layout,
+                layout: part.layout,
                 failed: Arc::clone(&failed),
                 stop: stop.clone(),
             };
             let make = files();
             let hold = Arc::clone(&hold);
             let main = move |tasks| {
-                let main = open.main(role, make(), pool, tasks, guard);
+                let main = open.main(role, make(), (pool, store), tasks, guard);
                 async move {
                     main.await;
                     drop(hold);
@@ -651,9 +669,7 @@ fn unreachable(ip: IpAddr) -> bool {
 /// # Panics
 ///
 /// If the disk budget holds a ring on each of more than `u32::MAX` cores.
-fn plan<M>(
-    config: &Config<M>,
-) -> Result<Vec<(u32, block::Config, buffer::Layout)>, Error> {
+fn plan<M>(config: &Config<M>) -> Result<Vec<Part>, Error> {
     let cores = config.shards.cores().get();
     if config.name.reserved() {
         let name = config.name.clone();
@@ -683,13 +699,34 @@ fn plan<M>(
     let parts = parts
         .into_iter()
         .zip(0..count)
-        .map(|((pool, layout), shard)| Ok((shard, block::Config::new(pool)?, layout)))
+        .map(|((pool, layout), shard)| {
+            let regional = shard == 0 && !matches!(config.region, Region::Absent);
+            let store = regional.then_some(pool / STORE_PART);
+            Ok(Part {
+                shard,
+                pool: block::Config::new(pool - store.unwrap_or(0))?,
+                store: store.map(block::Config::new).transpose()?,
+                layout,
+            })
+        })
         .collect::<Result<Vec<_>, block::Unfit>>();
     let Ok(parts) = parts else {
         let pool = config.budget.pool;
         return Err(Error::Pool { pool, cores });
     };
     Ok(parts)
+}
+
+/// What one shard starts with.
+struct Part {
+    /// The number of the shard.
+    shard: u32,
+    /// The settings of its pool.
+    pool: block::Config,
+    /// The settings of the pool of the chunk store, on shard 0 of a node with a region.
+    store: Option<block::Config>,
+    /// The layout of its ring.
+    layout: buffer::Layout,
 }
 
 /// The part of `budget` of each shard, and the layout of its ring from its part of
@@ -716,14 +753,15 @@ fn part(total: u64, cores: usize, core: usize) -> u64 {
 }
 
 impl Open {
-    /// Runs the shard to its end in its `role`. Shard 0 holds the lock until each
-    /// shard's ring has closed and the transport has freed the port, so a node that
-    /// takes the lock finds no ring open and the port free.
+    /// Runs the shard to its end in its `role`, with its pool and the pool of the chunk
+    /// store, which only shard 0 of a node with a region has. Shard 0 holds the lock
+    /// until each shard's ring has closed and the transport has freed the port, so a
+    /// node that takes the lock finds no ring open and the port free.
     async fn main(
         self,
         role: Role,
         files: env::files::Files,
-        pool: block::Pool,
+        (pool, store): (block::Pool, Option<block::Pool>),
         tasks: env::tasks::Tasks,
         guard: Guard,
     ) {
@@ -743,15 +781,16 @@ impl Open {
                 let Some((lock, endpoint)) = claimed else {
                     return;
                 };
-                let (shard, pool) = (tasks.clone(), Rc::new(pool));
-                let (own, mesh_files) = (Rc::clone(&pool), files.clone());
+                let (shard, pools) =
+                    (tasks.clone(), (Rc::new(pool), store.map(Rc::new)));
+                let (own, mesh_files) = (pools.clone(), files.clone());
                 let failed = Arc::clone(&self.failed);
                 let hold = async move |home, guard| {
                     serve
                         .run(endpoint, home, mesh_files, own, shard, guard, &failed)
                         .await;
                 };
-                self.keep(files, pool, tasks, guard, hold).await;
+                self.keep(files, pools, tasks, guard, hold).await;
                 for shard in closed {
                     shard.await;
                 }
@@ -762,20 +801,21 @@ impl Open {
                     guard.await;
                     drop(home);
                 };
-                self.keep(files, Rc::new(pool), tasks, guard, hold).await;
+                self.keep(files, (Rc::new(pool), None), tasks, guard, hold)
+                    .await;
                 drop(ended);
             }
         }
     }
 
-    /// Starts the pool's purge timer, which ends with the shard, then opens the shard's
-    /// buffer and gives its home and `guard` to `hold`, which drops the home once
-    /// `guard` completes, then returns once its ring has closed. A failed open drops
-    /// `guard`, which stops the node.
+    /// Starts the purge timer of the pool and the store's pool, which ends with the
+    /// shard, then opens the shard's buffer on the pool and gives its home and `guard`
+    /// to `hold`, which drops the home once `guard` completes, then returns once its
+    /// ring has closed. A failed open drops `guard`, which stops the node.
     async fn keep(
         self,
         files: env::files::Files,
-        pool: Rc<block::Pool>,
+        (pool, store): (Rc<block::Pool>, Option<Rc<block::Pool>>),
         tasks: env::tasks::Tasks,
         guard: Guard,
         hold: impl AsyncFnOnce(home::Shard, Guard),
@@ -785,6 +825,9 @@ impl Open {
             loop {
                 clock.sleep(PURGE).await;
                 own.purge();
+                if let Some(store) = &store {
+                    store.purge();
+                }
             }
         });
         let Some(home) = self.run(files, pool, tasks.clone()).await else {
@@ -1063,7 +1106,8 @@ impl Endpoint {
     /// and the mesh of that region over both, in directory [`directory::mesh`]. Gives
     /// the transport, also with the mesh and its store, or the error of a founding, a
     /// store, or a mesh that did not open. A new root region takes the keys of its
-    /// status at the mesh time of `time`.
+    /// status at the mesh time of `time`. The store takes its blocks from `store`,
+    /// which a node with a region has.
     ///
     /// # Errors
     ///
@@ -1072,7 +1116,7 @@ impl Endpoint {
         self,
         identity: identity::Identity,
         files: env::files::Files,
-        pool: Rc<block::Pool>,
+        (pool, store): (Rc<block::Pool>, Option<Rc<block::Pool>>),
         time: &clock::Reader,
         tasks: env::tasks::Tasks,
     ) -> Result<(Rc<transport::Transport>, Result<Option<Joined>, Error>), Error> {
@@ -1105,7 +1149,7 @@ impl Endpoint {
         let store = blob::Store::open(blob::Config {
             files: files.clone(),
             dir: directory::blob(),
-            pool: Rc::clone(&pool),
+            pool: store.expect("invariant: a node with a region has a store pool"),
             floor_bytes: self.settings.floor_bytes,
         });
         let store = match store.await {
@@ -1170,7 +1214,7 @@ impl Serve {
         endpoint: Endpoint,
         home: home::Shard,
         files: env::files::Files,
-        pool: Rc<block::Pool>,
+        pools: (Rc<block::Pool>, Option<Rc<block::Pool>>),
         tasks: env::tasks::Tasks,
         guard: Guard,
         failed: &OnceLock<Error>,
@@ -1197,7 +1241,7 @@ impl Serve {
         let roots = self.roots;
         let shards = self.shards;
         let opened =
-            endpoint.open(identity, files.clone(), pool, &self.time, tasks.clone());
+            endpoint.open(identity, files.clone(), pools, &self.time, tasks.clone());
         let Ok((transport, mesh)) = opened.await.map_err(&fail) else {
             return;
         };
