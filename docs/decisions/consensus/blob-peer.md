@@ -5,26 +5,24 @@
   `wire::blob::Server` at the limit `Pool::largest` of the store. A get gives
   `Reply::Chunk` and the body as messages of at most the 1452 bytes that `transport`
   copies, each a range of the block, so `transport` holds no block of a chunk, or
-  `Reply::Absent`. A put copies its body into one
-  block of the chunk's length and calls `Store::put`, so a put holds one chunk in
-  memory, and `Reply::Stored` goes only once the chunk is durable. A get holds the chunk
-  that it sends, and its reply head at once. A pool that cannot hold both gives that
-  get `Error::Pool`, as a pool under load does, and `serve` ends the stream with code 0
-  (`laptop.architect`, 2026-10-18T16:05:19Z:
-  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6252058410, item
-  1). Lost: a head sent before the read (`transport` still holds the head's block when
-  the read takes the chunk's), and a chunk limit that leaves room for one head (the
-  store would know the head of its caller).
-  So a get holds one chunk, and the bytes that noq keeps are
-  copies inside `window_bytes` (`laptop.architect`, 2026-10-18T17:25:28Z:
+  `Reply::Absent`. A put copies its body into one block of the chunk's length and calls
+  `Store::put`, so a put holds one chunk in memory, and `Reply::Stored` goes only once
+  the chunk is durable. A get holds the chunk that it sends, and its reply head at once.
+  A pool that cannot hold both gives that get `Error::Pool`, as a pool under load does,
+  and `serve` ends the stream with code 0 (`laptop.architect`, 2026-10-18T16:05:19Z:
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6252058410, item 1).
+  Lost: a head sent before the read (`transport` still holds the head's block when the
+  read takes the chunk's), and a chunk limit that leaves room for one head (the store
+  would know the head of its caller). So a get holds one chunk, and the bytes that noq
+  keeps are copies inside `window_bytes` (`laptop.architect`, 2026-10-18T17:25:28Z:
   https://github.com/synnaxlabs/foundation/pull/3220#issuecomment-6252885788). Lost:
   messages of up to `Sender::bytes_max` with no copy. Then `transport` holds each sent
-  chunk until its ack, so a pool needs up to `window_bytes / 1453` blocks of the
-  largest class for each session, a peer that delays its acks pins them, and a get or
-  put of two chunks on a pool of one fails (#3232). A
-  refusal stops the stream with its code: `wire::blob::Error::code` for a decode error,
-  `MALFORMED` for a one-way stream (`peer::Error::OneWay`), `MISMATCH` for bytes that do
-  not hash to the digest, and `FULL` for `Error::Floor` and a full disk. Each other
+  chunk until its ack, so a pool needs up to `window_bytes / 1453` blocks of the largest
+  class for each session, a peer that delays its acks pins them, and a get or put of two
+  chunks on a pool of one fails (#3232). A refusal stops the stream with its code:
+  `wire::blob::Error::code` for a decode error, `MALFORMED` for a one-way stream
+  (`peer::Error::OneWay`), `MISMATCH` for bytes that do not hash to the digest, and
+  `FULL` for `Error::Floor` and a full disk. Each other
   store error is the failure of the server, not of the peer: both halves end with code
   0, which the requester reads as a dropped stream. `peer::get(&Store, &Session,
   &[Digest])` gets each digest and puts each chunk in the store, and gives each digest

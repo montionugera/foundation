@@ -276,11 +276,10 @@ state on `main`.
   directory; then each put of a chunk with no file of its length at its name stops with
   `FULL`, also the empty chunk. No code removes a chunk (#1233), so that room stays
   taken, and the node's own puts of new chunks then give `Error::Floor` too. `serve`
-  holds at most one chunk in memory for each stream. `transport` copies each part of
-  a chunk and holds no block of it, so a peer that delays its acks pins only copies
-  inside `window_bytes`. Who may open a blob stream is
-  not built: `node` rejects each one until it routes them from member nodes only
-  (#1232).
+  holds at most one chunk in memory for each stream. `transport` copies each part of a
+  chunk and holds no block of it, so a peer that delays its acks pins only copies inside
+  `window_bytes`. Who may open a blob stream is not built: `node` rejects each one until
+  it routes them from member nodes only (#1232).
 - `blob::peer::get` trusts the peer no more than `serve` does: a head of the oldest open
   digest over the largest block of its pool stops the stream with `TOO_LARGE`, and bytes
   that do not hash to the digest stop it with `MISMATCH` and are not stored. So a binary
