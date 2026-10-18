@@ -2,7 +2,7 @@
 
 use std::fmt::Debug;
 use std::iter;
-use std::path::{Path, PathBuf, is_separator};
+use std::path::{Component, Path, PathBuf, is_separator};
 use std::rc::Rc;
 
 use walk::{Step, Walk};
@@ -64,7 +64,10 @@ impl Paths {
     ///   this.
     /// - [`Error::Hidden`]: the step passes the folders and a hidden folder holds it.
     ///   Each call walks each path of `hidden` again, and a directory that was at a
-    ///   hidden path at this call hides too. When the host refuses that walk, other
+    ///   hidden path at this call hides too. A relative path of `hidden` starts at the
+    ///   working directory of this call: its resolved path, less one name for each
+    ///   `..` at the start of the path. So a later change or removal of the working
+    ///   directory moves no hidden path. When the host refuses that walk, other
     ///   than for a name that is not there, a step that is a file, or a loop, each step
     ///   that passes the folders is hidden.
     /// - [`Error::Vacant`]: while nothing is at a hidden path, a write or a `make_dir`
@@ -105,9 +108,10 @@ impl Paths {
                 .push((end.path, end.own.ok_or(Error::NotFound)?));
         }
         for given in hidden {
-            let end = self.walk(given).into_end()?;
+            let given = self.on_working(given)?;
+            let end = self.walk(&given).into_end()?;
             limit.hidden.push(Hidden {
-                given: given.clone(),
+                given,
                 was: end.own,
             });
         }
@@ -371,8 +375,7 @@ impl Paths {
                     Some(step @ Step { own: None, .. }),
                 ) => Seen::Vacant(deepest(step)),
                 (Ok(Err(error)) | Err(error), _)
-                    if !walk.in_file
-                        && ![Error::NotFound, self.driver.looped()].contains(error) =>
+                    if !walk.in_file && *error != self.driver.looped() =>
                 {
                     Seen::Refused
                 }
@@ -383,6 +386,29 @@ impl Paths {
             folders: folders.collect(),
             hidden: hidden.collect(),
         }
+    }
+
+    /// `path` on the resolved working directory when it is relative, less one name for
+    /// each `..` at its start: the directory has no link on it, so the host takes each
+    /// such `..` by text.
+    fn on_working(&self, path: &Path) -> Result<PathBuf, Error> {
+        if path.is_absolute() || path.as_os_str().is_empty() {
+            return Ok(path.to_owned());
+        }
+        let mut at = self.resolve(Path::new("."))?;
+        let mut parts = path.components().peekable();
+        while let Some(part) = parts
+            .next_if(|part| matches!(part, Component::CurDir | Component::ParentDir))
+        {
+            if part == Component::ParentDir {
+                at.pop();
+            }
+        }
+        at.extend(parts);
+        if names_directory(path) {
+            at.push("");
+        }
+        Ok(at)
     }
 
     fn walk(&self, path: &Path) -> Walk {
@@ -415,7 +441,8 @@ enum Ask {
 /// A hidden folder of one call of [`Paths::within`].
 #[derive(Clone, Debug)]
 struct Hidden {
-    /// The path that the caller gave, which each call walks again.
+    /// The path that the caller gave, on the working directory of `within` when it is
+    /// relative, which each call walks again.
     given: PathBuf,
     /// The key of what was there at `within`.
     was: Option<Key>,

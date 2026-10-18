@@ -184,6 +184,64 @@ fn a_relative_path_is_under_the_working_directory_that_a_node_sets() {
     assert_eq!(paths.read(Path::new("work/plant.hcl"), 1), file);
 }
 
+/// A relative hidden path starts at the working directory of `within`, so it stays
+/// when that directory goes or changes, and hides nothing at the new one.
+#[test]
+fn a_relative_hidden_path_stays_where_the_working_directory_of_within_was() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    for dir in ["/w/sub", "/x/sub"] {
+        node.make_dir(Path::new(dir));
+    }
+    for file in ["/w/secret", "/x/secret"] {
+        paths.write(Path::new(file), b"x").unwrap();
+    }
+    node.set_working_dir(Path::new("/w/sub"));
+    let folders = [PathBuf::from("/w"), PathBuf::from("/x")];
+    let within = paths
+        .within(&folders, &[PathBuf::from("../secret")])
+        .unwrap();
+    node.move_path(Path::new("/w/sub"), Path::new("/gone"));
+    let gone = within.read(Path::new("/w/secret"), 1);
+    node.set_working_dir(Path::new("/x/sub"));
+    let moved = within.read(Path::new("/w/secret"), 1);
+    let other = within.read(Path::new("/x/secret"), 1);
+    assert_eq!(
+        (gone, moved, other),
+        (
+            Err(Error::Hidden),
+            Err(Error::Hidden),
+            Ok(Found::File(b"x".to_vec()))
+        )
+    );
+}
+
+/// Each call walks a relative hidden path from the working directory of `within`, so
+/// a link on it that a program changes after `within` hides its new target.
+#[test]
+fn a_relative_hidden_path_hides_the_new_target_of_a_link_on_it() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    for dir in ["/w/sub", "/w/a", "/w/b"] {
+        node.make_dir(Path::new(dir));
+    }
+    for file in ["/w/a/secret", "/w/b/secret"] {
+        paths.write(Path::new(file), b"x").unwrap();
+    }
+    node.link_path(Path::new("/w/sub/link"), Path::new("/w/a"));
+    node.set_working_dir(Path::new("/w"));
+    let hidden = [PathBuf::from("sub/link/secret")];
+    let within = paths.within(&[PathBuf::from("/w")], &hidden).unwrap();
+    node.move_path(Path::new("/w/sub/link"), Path::new("/old"));
+    node.link_path(Path::new("/w/sub/link"), Path::new("/w/b"));
+    let old = within.read(Path::new("/w/a/secret"), 1);
+    let new = within.read(Path::new("/w/b/secret"), 1);
+    assert_eq!(
+        (old, new),
+        (Ok(Found::File(b"x".to_vec())), Err(Error::Hidden))
+    );
+}
+
 #[test]
 fn within_checks_a_relative_path_that_does_not_resolve_from_the_working_directory() {
     let node = Sim::new(Config::default()).node(node::Config::default());
