@@ -1279,6 +1279,31 @@ fn a_socket_on_the_unspecified_v6_address_cannot_send_from_its_link_local_addres
     sent(|_| any(), make, Err(Net::Io { code: 22 }));
 }
 
+/// As on Linux, a send to an IPv6 address that names an IPv4 source gets code 22
+/// (`EINVAL`), also when the source is the node's own.
+#[test]
+fn a_send_to_a_v6_address_from_a_v4_source_fails() {
+    let make = |a: &node::Node, b: &node::Node| Transmit {
+        source: Some(a.addresses()[0]),
+        ..transmit(v6(b), b"v4")
+    };
+    sent(|_| any(), make, Err(Net::Io { code: 22 }));
+}
+
+#[test]
+fn a_send_to_a_v6_address_from_a_mapped_v4_source_fails() {
+    let make = |a: &node::Node, b: &node::Node| {
+        let IpAddr::V4(v4) = a.addresses()[0] else {
+            panic!("the first address is IPv4");
+        };
+        Transmit {
+            source: Some(IpAddr::V6(v4.to_ipv6_mapped())),
+            ..transmit(v6(b), b"v4")
+        }
+    };
+    sent(|_| any(), make, Err(Net::Io { code: 22 }));
+}
+
 /// As with `IPV6_PKTINFO` on Linux, a socket on the link-local address sends from the
 /// routable IPv6 address of its node when the transmit names it.
 #[test]

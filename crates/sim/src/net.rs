@@ -31,8 +31,8 @@ const BROADCAST: u32 = 0x00ff_ffff;
 const EPHEMERAL: u16 = 49_152;
 /// The Linux code for an address that is not on the node (`EADDRNOTAVAIL`).
 const NOT_AVAILABLE: i32 = 99;
-/// The Linux code for a link-local bind with no scope, or a send from an IPv6 address
-/// that is not on the node (`EINVAL`).
+/// The Linux code for a link-local bind with no scope, or a send to or from an IPv6
+/// address with a source that is not on the node (`EINVAL`).
 const INVALID: i32 = 22;
 /// The Linux code for a scope that names no interface (`ENODEV`).
 const NO_DEVICE: i32 = 19;

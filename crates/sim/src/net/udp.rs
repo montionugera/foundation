@@ -369,8 +369,8 @@ impl<'a> Udp<'a> {
 ///
 /// [`Error::Unreachable`] when the socket's family cannot reach the destination, and
 /// [`Error::Io`] when `transmit` names a source that is neither the link-local `local`
-/// nor the address of `node` of the destination's family: code 22 (`EINVAL`) for an
-/// IPv6 source, as on Linux, and code 99 for an IPv4 source.
+/// nor the address of `node` of the destination's family: code 99 for an IPv4 source
+/// to an IPv4 destination, and code 22 (`EINVAL`) for each other source, as on Linux.
 fn route(
     node: usize,
     local: SocketAddr,
@@ -398,7 +398,8 @@ fn route(
     };
     let ip = ip.or(link_local).unwrap_or(routable);
     if ip != routable && Some(ip) != link_local {
-        let code = if ip.is_ipv4() { NOT_AVAILABLE } else { INVALID };
+        let v4 = ip.is_ipv4() && destination.is_ipv4();
+        let code = if v4 { NOT_AVAILABLE } else { INVALID };
         return Err(Error::Io { code });
     }
     // A link-local `local` keeps scope 2, the one interface of each node, which is
