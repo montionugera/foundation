@@ -270,10 +270,10 @@ fn a_plan_error_over_the_bound_counts_the_rest_after_each_problem() {
                 plan::Documents::read(&files, &node.front_ends).expect("documents");
             let error = documents
                 .names(node.supervisor.kinds())
-                .err()
-                .expect("an error");
-            let problems = error.problems();
-            reply_of(&[problems[0].clone(), problems[1].clone(), Problem::more(9)])
+                .expect_err("an error");
+            let mut kept = error.problems()[..2].to_vec();
+            kept.push(Problem::more(9));
+            reply_of(&kept)
         };
         let short = kept("a.hcl").len();
         let path = format!("{}.hcl", "a".repeat(1 + max - short));
