@@ -852,13 +852,17 @@ fn keeps_the_stored_block_of_a_frame_whose_body_comes_after_a_commit() {
             agent.sleep(START).await;
             stream.send(&body).await;
             let replies = end(&mut stream).await;
-            let outcomes: Vec<Reply> = replies
-                .iter()
-                .copied()
-                .filter(|reply| matches!(reply, Reply::Outcome(_)))
-                .collect();
-            assert_eq!(outcomes, [taken(0, 1), taken(1, 1), taken(2, 1)]);
-            assert_eq!(replies.last(), Some(&stored(3)));
+            assert_eq!(
+                replies,
+                [
+                    taken(0, 1),
+                    taken(1, 1),
+                    stored(1),
+                    stored(2),
+                    taken(2, 1),
+                    stored(3)
+                ]
+            );
             finish(&mut agent).await;
         },
     );
