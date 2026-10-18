@@ -12,6 +12,8 @@ jobs:
               - crates/g/src/lib.rs listed # #1
               - crates/g/src/lib.rs both # #1
               - crates/g/src/lib.rs stale # #1
+            tests:
+              - --skip a # #1
   next:
     gates:
       - crates/g/src/lib.rs refused # #1

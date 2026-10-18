@@ -40,6 +40,9 @@ fn featured() {}
 
 #[cfg(target_os = "macos")]
 m! {
+    let a = [0];
     #[test]
     fn generated() {}
+    #[inline]
+    fn helper() {}
 }

@@ -890,7 +890,10 @@ mod tests {
             gated("crates/g/src/module.rs inner", "macOS"),
             gated("crates/g/tests/free.rs case", "Windows"),
             gated("crates/g/tests/filed.rs", "Windows"),
-            unlisted(&format!("{lib} stale"), "Windows"),
+            gated("crates/g/benches/timed.rs case", "Windows"),
+            "`ci.yaml`: the item `crates/g/src/lib.rs stale` of the `gates` list of \
+             Windows names no `cfg` that leaves a test out of Windows. Fix: remove it."
+                .into(),
         ];
         expected.sort();
         assert_eq!(check(&crate::fixture().join("gates")), Err(expected));
