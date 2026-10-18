@@ -11,17 +11,22 @@
 //!   and then the replies of a reader session, from `Opened`. The program sends no
 //!   credit. It decodes the places and the run with [`Reader`], which then gives the
 //!   [`super::Reader`] of the replies.
+//! - A write stream carries one writer session. The program sends a [`write::Write`]
+//!   and then its [`write::Open`] as a body. The node sends [`Places`] and the run of
+//!   its [`place`]s, and then a [`write::Reply`] for each frame and each commit. A
+//!   node that is not the home of the open's index sends a [`write::Away`] in place of
+//!   the places, and finishes the stream.
 //!
 //! A body goes as a run of stream messages back to back, with no prefix, each at most
 //! the peer's `message_bytes_max` and none empty. It holds exactly the length of its
-//! request, response, or read, so the receiver counts it to find where it ends. No
-//! message follows a body.
+//! request, response, read, or write, so the receiver counts it to find where it
+//! ends. Only the frames of a write follow a body.
 //!
 //! The program knows the kind of each stream, so it calls the `decode` of the message
 //! that it expects, or of its [`Reader`] on a read stream. The node knows the kind of
 //! the hello stream only: it decodes the first message of each later stream with
 //! [`First::decode`]. Each side counts a body with the [`Body`] of its request,
-//! response, or read.
+//! response, read, or write.
 //!
 //! Fields are little-endian.
 //!
@@ -40,6 +45,17 @@
 //!   (`u32`).
 //! - [`place`]: each place's key (`u128`), its sample type as text (length `u8`, then
 //!   the text), and its name (length `u8`, then the name).
+//! - [`write::Write`]: kind 7, the open's length (`u64`), and the signature (64).
+//! - [`write::Open`]: the authority (`u8`), the lease (`u8`, none 0, a lease 1, then
+//!   the lease as `i64` nanoseconds), then each channel's name: its length (`u8`) and
+//!   the name.
+//! - [`write::Away`]: kind 7, the home's key (`u128`), its public key (32), the count
+//!   of addresses (`u8`), then each address: its kind (`u8`, UDP 0, TCP 1, relay 2),
+//!   the relay's public key (32) for a relay, the family (`u8`, 4 or 6), the IP (4 or
+//!   16), and the port (`u16`).
+//! - [`write::Reply`]: taken 1 or lost 2, then the seq (`u64`) and the count (`u32`);
+//!   refused 3, then the code (`u8`, waiting 1, reserved 2, expired 3, order 4, codec
+//!   5, full 6, large 7); stored 4, then the last seq on disk (`u64`).
 
 use std::fmt;
 
@@ -58,6 +74,7 @@ use crate::header::MALFORMED;
 
 mod read;
 pub mod text;
+pub mod write;
 
 pub use read::{
     Mode, OPEN_BYTES_MAX, Open, PLACES_MAX, Place, Places, Read, Reader, Start, place,
@@ -66,6 +83,7 @@ pub use read::{
 const HELLO: u8 = 4;
 const REQUEST: u8 = 5;
 const READ: u8 = 6;
+const WRITE: u8 = 7;
 
 /// Stop code: the hello, request, or read failed the access check. The spec has no such
 /// subject, does not list the key for it, or the signature is not valid. The node's
@@ -210,12 +228,12 @@ pub enum Error {
     },
     /// The subject of a hello is not a name.
     Subject(text::Error<Box<name::Error>>),
-    /// The key of a hello is a point of small order.
+    /// The key of a hello, or a key of an away, is a point of small order.
     SmallOrder,
     /// A message comes after the body of a request, a response, or a read.
     Trailing,
-    /// A request or a response has a body over [`BODY_BYTES_MAX`], or a read has an
-    /// open over [`OPEN_BYTES_MAX`].
+    /// A request or a response has a body over [`BODY_BYTES_MAX`], or a read or a
+    /// write has an open over [`OPEN_BYTES_MAX`].
     Oversize {
         /// The bytes of the body.
         length: u64,
@@ -280,6 +298,37 @@ pub enum Error {
     /// The node finished a read stream before its last place: [`Reader::decode`] got
     /// `None`.
     Finished,
+    /// The open of a write marks its lease with a byte that is neither 0 nor 1.
+    Lease {
+        /// The lease byte.
+        byte: u8,
+    },
+    /// A channel name of the open of a write does not read.
+    Channel(text::Error<Box<name::Error>>),
+    /// The open of a write names no channel.
+    Unnamed,
+    /// An away has more addresses than [`write::ADDRESSES_MAX`].
+    Addresses {
+        /// The count of addresses.
+        count: usize,
+        /// The cap.
+        cap: usize,
+    },
+    /// An address of an away has a kind that no address has.
+    Address {
+        /// The kind byte.
+        kind: u8,
+    },
+    /// An address of an away has a family that is neither 4 nor 6.
+    Family {
+        /// The family byte.
+        family: u8,
+    },
+    /// A refused frame of a write has a code that no refusal has.
+    Refused {
+        /// The code.
+        code: u8,
+    },
 }
 
 impl fmt::Display for Error {
@@ -299,7 +348,7 @@ impl fmt::Display for Error {
                 write!(f, "the subject of the hello is not a name: {cause}")
             }
             Self::SmallOrder => {
-                f.write_str("the key of the hello is a point of small order")
+                f.write_str("a key of the hello or the away is a point of small order")
             }
             Self::Trailing => {
                 f.write_str("a hub message came after the body of the stream")
@@ -355,6 +404,28 @@ impl fmt::Display for Error {
             Self::Finished => {
                 f.write_str("the node finished the read stream before its last place")
             }
+            Self::Lease { byte } => write!(
+                f,
+                "the open of the write marks its lease with {byte}, not 0 or 1"
+            ),
+            Self::Channel(cause) => write!(
+                f,
+                "a channel name of the open of the write does not read: {cause}"
+            ),
+            Self::Unnamed => f.write_str("the open of the write names no channel"),
+            Self::Addresses { count, cap } => {
+                write!(f, "the away has {count} addresses, over the cap of {cap}")
+            }
+            Self::Address { kind } => write!(
+                f,
+                "an address of the away has kind {kind}, which no address has"
+            ),
+            Self::Family { family } => {
+                write!(f, "an address of the away has family {family}, not 4 or 6")
+            }
+            Self::Refused { code } => {
+                write!(f, "the refused frame has code {code}, which no refusal has")
+            }
         }
     }
 }
@@ -362,9 +433,10 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Subject(cause) | Self::Selector(cause) | Self::Name(cause) => {
-                Some(cause)
-            }
+            Self::Subject(cause)
+            | Self::Selector(cause)
+            | Self::Name(cause)
+            | Self::Channel(cause) => Some(cause),
             Self::Sample(cause) => Some(cause),
             _ => None,
         }
@@ -568,6 +640,8 @@ pub enum First {
     Request(Request),
     /// A read stream.
     Read(Read),
+    /// A write stream.
+    Write(write::Write),
 }
 
 impl First {
@@ -575,11 +649,13 @@ impl First {
     ///
     /// # Errors
     ///
-    /// [`Error::Empty`], [`Error::Kind`] for a message that is neither kind 5 nor 6,
-    /// and the errors of [`Request::decode`] and [`Read::decode`].
+    /// [`Error::Empty`], [`Error::Kind`] for a message that is not kind 5, 6, or 7,
+    /// and the errors of [`Request::decode`], [`Read::decode`], and
+    /// [`write::Write::decode`].
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         match message.first() {
             Some(&READ) => Read::decode(message).map(Self::Read),
+            Some(&WRITE) => write::Write::decode(message).map(Self::Write),
             _ => Request::decode(message).map(Self::Request),
         }
     }
@@ -634,7 +710,7 @@ impl Response {
     }
 }
 
-/// The rest of the body of one request, response, or read.
+/// The rest of the body of one request, response, read, or write.
 #[derive(Debug)]
 pub struct Body(body::Count);
 

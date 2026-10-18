@@ -153,7 +153,7 @@ mod first {
 
     #[test]
     fn refuses_each_other_kind() {
-        for kind in (0..=u8::MAX).filter(|kind| ![5, 6].contains(kind)) {
+        for kind in (0..=u8::MAX).filter(|kind| ![5, 6, 7].contains(kind)) {
             assert_eq!(
                 First::decode(&zeros(kind, Read::LEN)),
                 Err(Error::Kind { kind })

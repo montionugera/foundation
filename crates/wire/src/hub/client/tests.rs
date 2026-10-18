@@ -645,7 +645,7 @@ fn names_each_error() {
         ),
         (
             Error::SmallOrder,
-            "the key of the hello is a point of small order",
+            "a key of the hello or the away is a point of small order",
         ),
         (
             Error::Trailing,
@@ -719,6 +719,32 @@ fn names_each_error() {
              more than once",
         ),
         (
+            Error::Lease { byte: 2 },
+            "the open of the write marks its lease with 2, not 0 or 1",
+        ),
+        (
+            Error::Channel(not_utf8(&[0xff])),
+            "a channel name of the open of the write does not read: invalid utf-8 \
+             sequence of 1 bytes from index 0",
+        ),
+        (Error::Unnamed, "the open of the write names no channel"),
+        (
+            Error::Addresses { count: 33, cap: 32 },
+            "the away has 33 addresses, over the cap of 32",
+        ),
+        (
+            Error::Address { kind: 3 },
+            "an address of the away has kind 3, which no address has",
+        ),
+        (
+            Error::Family { family: 5 },
+            "an address of the away has family 5, not 4 or 6",
+        ),
+        (
+            Error::Refused { code: 8 },
+            "the refused frame has code 8, which no refusal has",
+        ),
+        (
             Error::Finished,
             "the node finished the read stream before its last place",
         ),
@@ -737,6 +763,7 @@ fn gives_the_cause_of_a_text_that_does_not_read() {
         (Error::Subject(name.clone()), name.to_string()),
         (Error::Selector(name.clone()), name.to_string()),
         (Error::Name(name.clone()), name.to_string()),
+        (Error::Channel(name.clone()), name.to_string()),
         (Error::Sample(sample.clone()), sample.to_string()),
     ];
     for (error, cause) in errors {
