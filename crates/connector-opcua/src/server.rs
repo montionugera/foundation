@@ -96,8 +96,8 @@ impl Server {
 
     /// Makes and starts the test server as [`Server::start`] does, which also has each
     /// of the three policies in `Sign` and in `SignAndEncrypt` on the certificate and
-    /// key of `security`, and whose channels trust only the certificate that
-    /// `security` trusts.
+    /// key of `security`, and whose channels trust only the certificates of
+    /// `security`. It reads no mode of `security`.
     ///
     /// # Safety
     ///
@@ -111,11 +111,10 @@ impl Server {
         manager: &Manager,
         host: &CStr,
         sessions: u16,
-        security: &crate::secure::Security,
+        security: &crate::client::Security<'_>,
     ) -> Self {
-        let security = security.raw();
-        // SAFETY: as the caller ensures, and the server copies `security`.
-        unsafe { Self::started(manager, host, sessions, &raw const security) }
+        // SAFETY: as the caller ensures, and the server copies `raw`.
+        security.raw(|raw| unsafe { Self::started(manager, host, sessions, raw) })
     }
 
     /// [`Server::start`], with the policies of `security` when it is not null.
@@ -128,7 +127,7 @@ impl Server {
         manager: &Manager,
         host: &CStr,
         sessions: u16,
-        security: *const ffi::test::Security,
+        security: *const ffi::Security,
     ) -> Self {
         let port = manager
             .port()

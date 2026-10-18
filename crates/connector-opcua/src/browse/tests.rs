@@ -539,6 +539,7 @@ fn on_server_of<T: Send + 'static>(
                 node.net(),
                 &mut rng,
                 &url,
+                None,
                 future::pending(),
             );
             let mut client = connect.await.expect("a connect").expect("a client");

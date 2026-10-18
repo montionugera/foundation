@@ -91,6 +91,43 @@ pub(crate) unsafe fn unconnected(el: *mut ffi::EventLoop) -> NonNull<ffi::Client
     NonNull::new(client).unwrap_or_else(|| alloc::exhausted())
 }
 
+/// The certificate and private key of a client, each DER or PEM, the certificates
+/// that it trusts, and the mode of its channel: [`ffi::Mode::SIGN`] or
+/// [`ffi::Mode::SIGN_AND_ENCRYPT`]. The client offers each of the three policies of the
+/// copy, and open62541 takes the endpoint in `mode` of the highest security level that
+/// the server offers. The application URI of the client is the URI of `certificate`.
+///
+/// # Errors
+///
+/// [`Client::connect`] gives `BadCertificateInvalid` when `certificate` does not parse
+/// or holds no RSA key, `BadInvalidArgument` when `key` does not parse,
+/// `BadSecurityChecksFailed` when they do not match, and `BadCertificateUriInvalid`
+/// when `certificate` holds no URI.
+pub(crate) struct Security<'a> {
+    pub(crate) certificate: &'a [u8],
+    pub(crate) key: &'a [u8],
+    pub(crate) trust: &'a [&'a [u8]],
+    pub(crate) mode: ffi::Mode,
+}
+
+impl Security<'_> {
+    /// Gives `f` the `shim_security` of the certificate, the key, and the trust, which
+    /// lives only for the call.
+    pub(crate) fn raw<T>(&self, f: impl FnOnce(&ffi::Security) -> T) -> T {
+        let trusted: Vec<ffi::Bytes> = self
+            .trust
+            .iter()
+            .map(|certificate| ffi::Bytes::of(certificate))
+            .collect();
+        f(&ffi::Security {
+            certificate: ffi::Bytes::of(self.certificate),
+            key: ffi::Bytes::of(self.key),
+            trusted: trusted.as_ptr(),
+            trusted_size: trusted.len(),
+        })
+    }
+}
+
 /// A client of open62541 with an active session, on its own loop and connection
 /// manager, on the thread that made it. Its loop runs only in its calls, so a client
 /// that waits outside [`Client::idle`] for longer than the channel lifetime (often 10
@@ -175,15 +212,16 @@ struct Slots {
 impl Client {
     /// Makes a client on its own manager over `time`, `span`, `net`, and `rng`, as
     /// [`Manager::new`] does, and connects it to the server at the endpoint `url` with
-    /// the security mode `None` and an anonymous session. It gives the client once the
-    /// session is active and it has read the `MaxNodesPerRead` of the server, or `None`
-    /// when `until` ends first.
+    /// `security`, or the security mode `None` when it is `None`, and an anonymous
+    /// session. It gives the client once the session is active and it has read the
+    /// `MaxNodesPerRead` of the server, or `None` when `until` ends first.
     /// After an error, or when `until` ends first, it closes the session that the
     /// connect made, as [`Client::close`] does, so it ends within [`GRACE`] of either.
     /// A drop of the future drops the client.
     ///
     /// # Errors
     ///
+    /// Before it dials, the error of [`Security`] when open62541 refuses `security`.
     /// `BadTimeout` when the session is not active after the request timeout of the
     /// client (5 s), `BadConnectionClosed` when the server closes or resets an open
     /// stream before the session is active, with no new dial after that close, else the
@@ -200,9 +238,21 @@ impl Client {
         net: Net,
         rng: &mut Rng,
         url: &CStr,
+        security: Option<&Security<'_>>,
         until: impl Future<Output = ()>,
     ) -> Result<Option<Self>, Status> {
         let mut client = Self::new(time, span, net, rng, url.to_owned());
+        if let Some(security) = security {
+            let status = security.raw(|raw| {
+                // SAFETY: the client lives and has not connected, and it copies `raw`.
+                Status(unsafe {
+                    ffi::shim_client_secure(client.raw.as_ptr(), security.mode, raw)
+                })
+            });
+            if status != Status::GOOD {
+                return Err(status);
+            }
+        }
         let opened = {
             let (mut until, mut open) = (pin!(until), pin!(client.open()));
             // The first poll of `open` starts the loop, which the close drives.

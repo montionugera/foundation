@@ -1,27 +1,30 @@
-use env::rng::Rng;
-use sim::Sim;
+use std::ffi::CString;
+use std::future;
+use std::net::SocketAddr;
+
 use types::time::{Span, Stamp};
 
-use super::{Client, VALUE, fits, fitting, long, run, serve_on};
-use crate::child;
+use super::{Client, PORT, VALUE, fits, fitting, long, run, serve_on};
 use crate::client::Large;
-use crate::event::{self, Loop};
-use crate::ffi::test::Mode;
-use crate::ffi::{self, Status};
-use crate::secure::{CLIENT, END, OTHER, Policy, SERVER, START, Security};
+use crate::event;
+use crate::ffi::{self, Mode, Status};
+use crate::secure::{
+    ANONYMOUS, CLIENT, EMPTY_URI, END, Identity, OTHER, Policy, SERVER, START,
+    Security, TWO_URIS, UNNAMED,
+};
 use crate::server::Limits;
 use crate::value::{Fault, Value};
 
 /// The test server, which trusts [`CLIENT`].
 const SERVED: Security = Security {
     own: SERVER,
-    trusted: CLIENT.certificate,
+    trusted: &[CLIENT.certificate],
 };
 
 /// The test client, which trusts [`SERVER`].
 const CLIENT_SIDE: Security = Security {
     own: CLIENT,
-    trusted: SERVER.certificate,
+    trusted: &[SERVER.certificate],
 };
 
 const MODES: [Mode; 2] = [Mode::SIGN, Mode::SIGN_AND_ENCRYPT];
@@ -35,21 +38,6 @@ struct Read {
     answer: Result<Value, Fault>,
     /// The policy URI and the mode of the channel.
     channel: (String, Mode),
-}
-
-/// The URI of `policy`.
-fn uri(policy: Policy) -> &'static str {
-    match policy {
-        Policy::Basic256Sha256 => {
-            "http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256"
-        }
-        Policy::Aes128Sha256RsaOaep => {
-            "http://opcfoundation.org/UA/SecurityPolicy#Aes128_Sha256_RsaOaep"
-        }
-        Policy::Aes256Sha256RsaPss => {
-            "http://opcfoundation.org/UA/SecurityPolicy#Aes256_Sha256_RsaPss"
-        }
-    }
 }
 
 /// The policy URI and the mode of the channel of `client`, read from C: no call of
@@ -68,12 +56,13 @@ fn channel(client: &Client) -> (String, Mode) {
 
 /// The connect of a client whose loop starts at `client_wall` with `client`, and its
 /// read of [`VALUE`], to a server whose loop starts at `server_wall` with `server`,
-/// with `policy` in `mode`, in a run of `seed`, and the digest of the run.
+/// with `policy` (or the choice of open62541 with none) in `mode`, in a run of `seed`,
+/// and the digest of the run.
 fn connect(
     seed: u64,
     (server, server_wall): (Security, Stamp),
     (client, client_wall): (Security, Stamp),
-    policy: Policy,
+    policy: Option<Policy>,
     mode: Mode,
 ) -> (Result<Read, Status>, u64) {
     run(seed, async move |node| {
@@ -93,7 +82,7 @@ fn connect(
 }
 
 /// A read with `policy` in `mode` at [`START`], in a run of `seed`.
-fn read(seed: u64, policy: Policy, mode: Mode) -> (Result<Read, Status>, u64) {
+fn read(seed: u64, policy: Option<Policy>, mode: Mode) -> (Result<Read, Status>, u64) {
     connect(seed, (SERVED, START), (CLIENT_SIDE, START), policy, mode)
 }
 
@@ -101,17 +90,164 @@ fn read(seed: u64, policy: Policy, mode: Mode) -> (Result<Read, Status>, u64) {
 fn a_client_reads_with_each_policy_in_each_mode() {
     for policy in Policy::ALL {
         for mode in MODES {
-            let (read, _) = read(0, policy, mode);
+            let (read, _) = read(0, Some(policy), mode);
             let read = read.expect("the client connects");
             assert_eq!(read.answer, Ok(read.value), "{policy:?} in {mode:?}");
-            assert_eq!(read.channel, (uri(policy).to_owned(), mode));
+            assert_eq!(read.channel, (uri(policy), mode));
         }
     }
 }
 
+/// The URI of `policy`.
+fn uri(policy: Policy) -> String {
+    policy.uri().to_str().expect("the URI is UTF-8").to_owned()
+}
+
+#[test]
+fn a_client_with_no_policy_takes_the_policy_of_the_highest_level() {
+    for mode in MODES {
+        let (read, _) = read(0, None, mode);
+        let read = read.expect("the client connects");
+        assert_eq!(read.answer, Ok(read.value), "{mode:?}");
+        assert_eq!(read.channel, (uri(Policy::Aes256Sha256RsaPss), mode));
+    }
+}
+
+/// The connect of a client with `own` that trusts `trusted`, in `Sign`.
+fn connect_as(
+    own: Identity,
+    trusted: &'static [&'static [u8]],
+) -> Result<Read, Status> {
+    let client = Security { own, trusted };
+    let (read, _) = connect(0, (SERVED, START), (client, START), None, Mode::SIGN);
+    read
+}
+
+#[test]
+fn a_client_that_trusts_two_certificates_reads() {
+    let read = connect_as(CLIENT, &[OTHER.certificate, SERVER.certificate])
+        .expect("the client connects");
+    assert_eq!(read.answer, Ok(read.value));
+}
+
+#[test]
+fn a_client_that_trusts_no_certificate_ends_the_connect() {
+    let read = connect_as(CLIENT, &[]);
+    assert_eq!(read, Err(Status::BAD_CERTIFICATE_UNTRUSTED));
+}
+
+/// The connect of a client with `own` that trusts [`SERVER`], in `Sign`, to a port
+/// where no server listens, so that a refusal before the dial is the only error that
+/// is not one of the dial.
+fn refused(own: Identity) -> Result<(), Status> {
+    let (connect, _) = run(0, async move |node| {
+        let client = Security {
+            own,
+            trusted: &[SERVER.certificate],
+        }
+        .client(Mode::SIGN);
+        let mut rng = node.entropy().rng();
+        let url = format!("opc.tcp://{}", SocketAddr::new(node.addresses()[0], PORT));
+        let url = CString::new(url).expect("the URL holds no NUL");
+        let connect = Client::connect(
+            event::Time::since(node.clock(), START),
+            tracing::Span::none(),
+            node.net(),
+            &mut rng,
+            &url,
+            Some(&client),
+            future::pending(),
+        );
+        connect.await.map(|_| ())
+    });
+    connect
+}
+
+#[test]
+fn a_certificate_that_does_not_parse_ends_the_connect_before_the_dial() {
+    let own = Identity {
+        certificate: b"no certificate",
+        ..CLIENT
+    };
+    assert_eq!(refused(own), Err(Status::BAD_CERTIFICATE_INVALID));
+}
+
+#[test]
+fn a_key_that_does_not_parse_ends_the_connect_before_the_dial() {
+    let own = Identity {
+        key: b"no key",
+        ..CLIENT
+    };
+    assert_eq!(refused(own), Err(Status::BAD_INVALID_ARGUMENT));
+}
+
+#[test]
+fn a_key_of_another_certificate_ends_the_connect_before_the_dial() {
+    let own = Identity {
+        key: OTHER.key,
+        ..CLIENT
+    };
+    assert_eq!(refused(own), Err(Status::BAD_SECURITY_CHECKS_FAILED));
+}
+
+#[test]
+fn a_certificate_with_no_application_uri_ends_the_connect_before_the_dial() {
+    assert_eq!(refused(ANONYMOUS), Err(Status::BAD_CERTIFICATE_URI_INVALID));
+}
+
+#[test]
+fn a_certificate_with_no_alternative_name_ends_the_connect_before_the_dial() {
+    assert_eq!(refused(UNNAMED), Err(Status::BAD_CERTIFICATE_URI_INVALID));
+}
+
+#[test]
+fn a_certificate_whose_first_uri_is_empty_ends_the_connect_before_the_dial() {
+    assert_eq!(refused(EMPTY_URI), Err(Status::BAD_CERTIFICATE_URI_INVALID));
+}
+
+#[test]
+fn a_client_sends_the_first_uri_of_its_certificate() {
+    let server = Security {
+        own: SERVER,
+        trusted: &[TWO_URIS.certificate],
+    };
+    let client = Security {
+        own: TWO_URIS,
+        trusted: &[SERVER.certificate],
+    };
+    let (uri, _) = run(0, async move |node| {
+        let time = event::Time::since(node.clock(), START);
+        serve_on(&node, 4, time, Some(&server), async |mut peer| {
+            let connected = peer.secure(None, Mode::SIGN, &client, START).await;
+            let connected = connected.expect("the client connects");
+            // SAFETY: the client lives.
+            let uri = unsafe { ffi::test::shim_client_uri(connected.raw.as_ptr()) };
+            // SAFETY: open62541 gives a live string of the config of the client.
+            let uri = unsafe { uri.as_ref() }.expect("the config holds a URI");
+            // SAFETY: as above.
+            let uri = unsafe { uri.lossy() };
+            connected.close().await;
+            uri
+        })
+        .await
+    });
+    assert_eq!(uri, "urn:foundation:test:client");
+}
+
+#[test]
+fn a_client_with_a_valid_certificate_dials() {
+    assert_eq!(refused(CLIENT), Err(Status::BAD_CONNECTION_REJECTED));
+}
+
 #[test]
 fn a_read_in_sign_and_encrypt_replays() {
-    let spike = |seed| read(seed, Policy::Aes256Sha256RsaPss, Mode::SIGN_AND_ENCRYPT);
+    let spike = |seed| {
+        read(
+            seed,
+            Some(Policy::Aes256Sha256RsaPss),
+            Mode::SIGN_AND_ENCRYPT,
+        )
+    };
     let (first, digest) = spike(7);
     let first = first.expect("the client connects");
     let value = first.value;
@@ -129,13 +265,7 @@ fn a_server_certificate_that_the_client_does_not_trust_ends_the_connect() {
         own: OTHER,
         ..SERVED
     };
-    let (read, _) = connect(
-        0,
-        (other, START),
-        (CLIENT_SIDE, START),
-        Policy::Basic256Sha256,
-        Mode::SIGN,
-    );
+    let (read, _) = connect(0, (other, START), (CLIENT_SIDE, START), None, Mode::SIGN);
     assert_eq!(read, Err(Status::BAD_CERTIFICATE_UNTRUSTED));
 }
 
@@ -145,7 +275,7 @@ fn a_client_past_the_end_of_the_server_certificate_ends_the_connect() {
         0,
         (SERVED, START),
         (CLIENT_SIDE, END + Span::SECOND),
-        Policy::Basic256Sha256,
+        None,
         Mode::SIGN,
     );
     assert_eq!(read, Err(Status::BAD_CERTIFICATE_TIME_INVALID));
@@ -157,7 +287,7 @@ fn a_client_one_second_before_the_end_of_the_server_certificate_reads() {
         0,
         (SERVED, START),
         (CLIENT_SIDE, END - Span::SECOND),
-        Policy::Basic256Sha256,
+        None,
         Mode::SIGN,
     );
     let read = read.expect("the client connects");
@@ -170,7 +300,7 @@ fn a_client_one_second_before_the_start_of_the_server_certificate_ends_the_conne
         0,
         (SERVED, START),
         (CLIENT_SIDE, START - Span::SECOND),
-        Policy::Basic256Sha256,
+        None,
         Mode::SIGN,
     );
     assert_eq!(read, Err(Status::BAD_CERTIFICATE_TIME_INVALID));
@@ -182,7 +312,7 @@ fn a_server_past_the_end_of_the_client_certificate_refuses_the_channel() {
         0,
         (SERVED, END + Span::SECOND),
         (CLIENT_SIDE, START),
-        Policy::Basic256Sha256,
+        None,
         Mode::SIGN,
     );
     // The server sends the status of its check in the ERR message.
@@ -212,7 +342,7 @@ fn largest_request(policy: Policy, mode: Mode, buffer: u32) -> Largest {
                 ..Limits::default()
             });
             let mut client = peer
-                .secure(policy, mode, &CLIENT_SIDE, START)
+                .secure(Some(policy), mode, &CLIENT_SIDE, START)
                 .await
                 .expect("the client connects");
             let length = fitting(&client, &[], 1 << 20);
@@ -297,7 +427,7 @@ fn an_answer_takes_the_chunks_of_the_server_in_each_mode() {
                     ..Limits::default()
                 });
                 let mut client = peer
-                    .secure(Policy::Basic256Sha256, mode, &CLIENT_SIDE, START)
+                    .secure(Some(Policy::Basic256Sha256), mode, &CLIENT_SIDE, START)
                     .await
                     .expect("the client connects");
                 let nodes = fits(client.nodes(&vec![VALUE; 956]));
@@ -329,7 +459,7 @@ fn an_answer_takes_the_payload_of_open62541_when_it_is_the_smaller() {
                 });
                 let mut client = peer
                     .secure(
-                        Policy::Basic256Sha256,
+                        Some(Policy::Basic256Sha256),
                         Mode::SIGN_AND_ENCRYPT,
                         &CLIENT_SIDE,
                         START,
@@ -373,7 +503,7 @@ fn a_received_chunk_holds_the_smaller_of_two_payloads() {
                     ..Limits::default()
                 });
                 let client = peer
-                    .secure(Policy::Basic256Sha256, mode, &CLIENT_SIDE, START)
+                    .secure(Some(Policy::Basic256Sha256), mode, &CLIENT_SIDE, START)
                     .await
                     .expect("the client connects");
                 let mut limits = [0; 5];
@@ -388,37 +518,4 @@ fn a_received_chunk_holds_the_smaller_of_two_payloads() {
         });
         assert_eq!(limits, (Status::GOOD, payloads), "{mode:?} {buffer}");
     }
-}
-
-/// Asks for the policy of index 3, past the last one, when `child::running()`.
-#[test]
-fn ask_past_the_last_policy() {
-    if !child::running() {
-        return;
-    }
-    let mut sim = Sim::new(sim::Config::default());
-    let clock = sim.node(sim::node::Config::default()).clock();
-    let events = Loop::new(
-        event::Time::monotonic(clock),
-        tracing::Span::none(),
-        &mut Rng::from_seed(0),
-    );
-    // SAFETY: the loop outlives the client, which leaks when the process aborts.
-    let client = unsafe { crate::client::unconnected(events.raw()) }.as_ptr();
-    let security = CLIENT_SIDE.raw();
-    // SAFETY: the client lives and has not connected, and it copies `security`.
-    let status = unsafe {
-        ffi::test::shim_client_secure(
-            client,
-            Mode::SIGN,
-            Policy::ALL.len(),
-            &raw const security,
-        )
-    };
-    panic!("the client gave {:?}", Status(status))
-}
-
-#[test]
-fn a_policy_index_past_the_last_aborts() {
-    child::aborted_in_c("client::tests::secure::ask_past_the_last_policy", &[], "");
 }

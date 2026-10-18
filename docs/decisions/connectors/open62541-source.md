@@ -1009,3 +1009,8 @@
   2026-10-18 09:33 UTC). The first PR whose code reads an X509 user token, or has a
   client check the server URI, sets the session group or the URI in the sim server, with
   a test that fails without it.
+  PR 2a of #2934 moves the client part into `shim.c`. The client sends the first URI of
+  the subject alternative name of its certificate, from
+  `UA_CertificateUtils_getApplicationUri`, a change to the copy ("Local patches" in
+  `docs/dependencies.md`). A test that needs one policy sets the policy URI on the
+  client after `shim_client_secure`, so the index and its abort go.

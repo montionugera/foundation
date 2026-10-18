@@ -47,4 +47,32 @@ static inline UA_NodeId shim_node_id(shim_node node) {
     return id;
 }
 
+/* The certificate and private key (DER or PEM) of a peer, and the `trusted_size`
+ * certificates of its trust list. */
+typedef struct {
+    UA_ByteString certificate;
+    UA_ByteString key;
+    const UA_ByteString *trusted;
+    size_t trusted_size;
+} shim_security;
+
+struct UA_SecurityPolicy;
+struct UA_CertificateGroup;
+struct UA_EventLoop;
+struct UA_Logger;
+
+/* Adds the three policies of the copy on the certificate and key of `security` after
+ * the `*size` policies of `*policies`. On a failure, `*size` counts the policies that
+ * it added. */
+UA_StatusCode shim_add_policies(struct UA_SecurityPolicy **policies, size_t *size,
+                                const shim_security *security,
+                                const struct UA_Logger *logger);
+
+/* Makes `group`, which holds no group, a memory group of the default application
+ * group whose trust list holds the `size` certificates of `trusted`, and which reads
+ * the time of `el`. */
+UA_StatusCode shim_trust(struct UA_CertificateGroup *group,
+                         const UA_ByteString *trusted, size_t size,
+                         const struct UA_Logger *logger, struct UA_EventLoop *el);
+
 #endif

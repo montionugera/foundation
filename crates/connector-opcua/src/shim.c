@@ -769,6 +769,91 @@ UA_Client *shim_client_new(UA_EventLoop *el, UA_UInt32 chunks, UA_UInt32 queued)
     return UA_Client_newWithConfig(&config);
 }
 
+typedef UA_StatusCode (*policy_of)(UA_SecurityPolicy *policy,
+                                   const UA_ByteString certificate,
+                                   const UA_ByteString key, const UA_Logger *logger);
+
+static const policy_of POLICIES[] = {UA_SecurityPolicy_Basic256Sha256,
+                                     UA_SecurityPolicy_Aes128Sha256RsaOaep,
+                                     UA_SecurityPolicy_Aes256Sha256RsaPss};
+
+#define POLICY_COUNT (sizeof(POLICIES) / sizeof(POLICIES[0]))
+
+UA_StatusCode shim_add_policies(UA_SecurityPolicy **policies, size_t *size,
+                                const shim_security *security,
+                                const UA_Logger *logger) {
+    UA_SecurityPolicy *grown = (UA_SecurityPolicy *)UA_realloc(
+        *policies, sizeof(UA_SecurityPolicy) * (*size + POLICY_COUNT));
+    if(!grown)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    *policies = grown;
+    for(size_t i = 0; i < POLICY_COUNT; i++) {
+        UA_StatusCode status =
+            POLICIES[i](&grown[*size], security->certificate, security->key, logger);
+        if(status != UA_STATUSCODE_GOOD)
+            return status;
+        (*size)++;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
+UA_StatusCode shim_trust(UA_CertificateGroup *group, const UA_ByteString *trusted,
+                         size_t size, const UA_Logger *logger, UA_EventLoop *el) {
+    static const UA_NodeId APPLICATION_GROUP = {
+        0, UA_NODEIDTYPE_NUMERIC,
+        {UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP}};
+    memset(group, 0, sizeof(*group));
+    UA_TrustListDataType list;
+    UA_TrustListDataType_init(&list);
+    if(size > 0) {
+        list.specifiedLists = UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES;
+        list.trustedCertificates = (UA_ByteString *)(uintptr_t)trusted;
+        list.trustedCertificatesSize = size;
+    }
+    UA_NodeId id = APPLICATION_GROUP;
+    return UA_CertificateGroup_Memorystore(group, &id, &list, logger, el, NULL);
+}
+
+/* `Security` and `Mode` of `ffi.rs` hold the same layout and values. */
+_Static_assert(sizeof(shim_security) ==
+                   2 * sizeof(UA_ByteString) + sizeof(void *) + sizeof(size_t),
+               "shim_security changed");
+_Static_assert(sizeof(UA_MessageSecurityMode) == sizeof(int) &&
+                   UA_MESSAGESECURITYMODE_SIGN == 2 &&
+                   UA_MESSAGESECURITYMODE_SIGNANDENCRYPT == 3,
+               "UA_MessageSecurityMode changed");
+
+/* Makes `client`, which has not connected, ask for `mode` with the three policies on
+ * the certificate and key of `security`, with the application URI of the certificate,
+ * and trust only the certificates of `security`. With no policy URI, open62541 takes
+ * the endpoint of the highest security level that the server offers in `mode`.
+ * Gives `BadCertificateInvalid` when the certificate does not parse or holds no RSA
+ * key, `BadInvalidArgument` when the key does not parse, `BadSecurityChecksFailed`
+ * when they do not match, and `BadCertificateUriInvalid` when the certificate holds
+ * no URI. */
+UA_StatusCode shim_client_secure(UA_Client *client, UA_MessageSecurityMode mode,
+                                 const shim_security *security) {
+    UA_ClientConfig *config = UA_Client_getConfig(client);
+    UA_StatusCode status = shim_add_policies(&config->securityPolicies,
+                                             &config->securityPoliciesSize, security,
+                                             config->logging);
+    if(status == UA_STATUSCODE_GOOD)
+        status = UA_CertificateUtils_checkKeyPair(&security->certificate,
+                                                  &security->key);
+    UA_String uri = UA_STRING_NULL;
+    if(status == UA_STATUSCODE_GOOD)
+        status = UA_CertificateUtils_getApplicationUri(&security->certificate, &uri);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    config->securityMode = mode;
+    UA_String_clear(&config->clientDescription.applicationUri);
+    config->clientDescription.applicationUri = uri;
+    /* `UA_ClientConfig_setDefault` gives the group the accept-all group. */
+    config->certificateVerification.clear(&config->certificateVerification);
+    return shim_trust(&config->certificateVerification, security->trusted,
+                      security->trusted_size, config->logging, config->eventLoop);
+}
+
 /* Gives the timeout of the requests of `client`, in ms. */
 UA_UInt32 shim_client_timeout(UA_Client *client) {
     return UA_Client_getConfig(client)->timeout;

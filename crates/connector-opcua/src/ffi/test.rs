@@ -9,25 +9,6 @@ use super::{
 #[repr(C)]
 pub(crate) struct Server([u8; 0]);
 
-/// `shim_security` of `server.c`.
-#[repr(C)]
-pub(crate) struct Security {
-    pub(crate) certificate: Bytes,
-    pub(crate) key: Bytes,
-    pub(crate) trusted: Bytes,
-    pub(crate) uri: *const std::ffi::c_char,
-}
-
-/// `UA_MessageSecurityMode`, the modes of a channel that signs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(transparent)]
-pub(crate) struct Mode(pub(crate) c_int);
-
-impl Mode {
-    pub(crate) const SIGN: Self = Self(2);
-    pub(crate) const SIGN_AND_ENCRYPT: Self = Self(3);
-}
-
 /// `shim_counts` of `server.c`.
 #[repr(C)]
 pub(crate) struct Counts {
@@ -292,17 +273,16 @@ unsafe extern "C" {
         host: *const std::ffi::c_char,
         sessions: u16,
         chunks: u32,
-        security: *const Security,
+        security: *const super::Security,
     ) -> *mut Server;
-    pub(crate) fn shim_client_secure(
+    pub(crate) fn shim_client_policy(
         client: *mut super::Client,
-        mode: Mode,
-        policy: usize,
-        security: *const Security,
+        uri: *const std::ffi::c_char,
     ) -> u32;
+    pub(crate) fn shim_client_uri(client: *mut super::Client) -> *const Bytes;
     pub(crate) fn shim_client_channel(
         client: *mut super::Client,
-        mode: *mut Mode,
+        mode: *mut super::Mode,
     ) -> *const Bytes;
     pub(crate) fn UA_Server_run_startup(server: *mut Server) -> u32;
     pub(crate) fn shim_memory_group(el: *mut EventLoop) -> u32;

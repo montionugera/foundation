@@ -1645,20 +1645,15 @@ fn stub(line: &str) -> Option<&str> {
 }
 
 /// Checks the reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
-/// open62541`: the default config of a client has only the policy `None`, and the
-/// production code names no security policy, no certificate group, no certificate
-/// function, and no function that adds one, other than at the stubs of `shim.c` that
-/// abort.
+/// open62541`: the production code names no ECC policy, and no function or field that
+/// adds policies of its own choice, other than at the stubs of `shim.c` that abort.
 #[test]
-fn the_production_code_gives_a_client_no_security_policy() {
+fn the_production_code_names_no_ecc_policy() {
     let policy = |name: &str| {
-        name.starts_with("UA_SecurityPolicy_")
-            || name.starts_with("UA_CertificateGroup_")
-            || name.starts_with("UA_CertificateUtils_")
+        name.starts_with("UA_SecurityPolicy_Ecc")
             || [
                 "UA_ClientConfig_setDefaultEncryption",
                 "UA_ClientConfig_setAuthenticationCert",
-                "securityPolicies",
                 "authSecurityPolicies",
             ]
             .contains(&name)
@@ -1671,11 +1666,7 @@ fn the_production_code_gives_a_client_no_security_policy() {
         .collect();
     let names: std::collections::BTreeSet<_> = stubs.iter().map(|(_, n)| *n).collect();
     let refused = REFUSED.iter().filter(|name| policy(name));
-    let mut expected: std::collections::BTreeSet<_> = refused.copied().collect();
-    expected.extend([
-        "UA_CertificateGroup_Filestore",
-        "UA_SecurityPolicy_Filestore",
-    ]);
+    let expected: std::collections::BTreeSet<_> = refused.copied().collect();
     assert_eq!(names, expected);
     let at_stubs: Vec<_> = stubs
         .iter()

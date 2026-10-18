@@ -24,7 +24,7 @@ use super::{
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::event;
-use crate::ffi::test::Mode;
+use crate::ffi::Mode;
 use crate::ffi::{self, Status};
 use crate::gate::Gate;
 use crate::node::{Key, Name, Node};
@@ -135,28 +135,42 @@ impl Peer<'_> {
     }
 
     /// Connects a client that asks for `policy` in `mode` on `security`, on a loop
-    /// whose wall time starts at `wall`.
+    /// whose wall time starts at `wall`. With no `policy`, it connects through
+    /// [`Client::connect`].
     async fn secure(
         &mut self,
-        policy: Policy,
+        policy: Option<Policy>,
         mode: Mode,
         security: &Security,
         wall: Stamp,
     ) -> Result<Client, Status> {
         let time = event::Time::since(Clock::clone(&self.clock), wall);
-        let security = security.raw();
+        let security = security.client(mode);
+        let Some(policy) = policy else {
+            let url = CString::new(self.url.clone()).expect("the URL holds no NUL");
+            let connect = Client::connect(
+                time,
+                tracing::Span::none(),
+                self.net.clone(),
+                &mut self.rng,
+                &url,
+                Some(&security),
+                future::pending(),
+            );
+            return Ok(connect.await?.expect("a pending wait never ends"));
+        };
         let setup = |raw: NonNull<ffi::Client>| {
-            // SAFETY: the client lives and has not connected, and it copies
-            // `security`.
-            let status = Status(unsafe {
-                ffi::test::shim_client_secure(
-                    raw.as_ptr(),
-                    mode,
-                    policy as usize,
-                    &raw const security,
-                )
+            let status = security.raw(|security| {
+                // SAFETY: the client lives and has not connected, and it copies
+                // `security`.
+                Status(unsafe { ffi::shim_client_secure(raw.as_ptr(), mode, security) })
             });
             assert_eq!(status, Status::GOOD, "open62541 refused the policies");
+            // SAFETY: the client lives and has not connected, and it copies the URI.
+            let status = Status(unsafe {
+                ffi::test::shim_client_policy(raw.as_ptr(), policy.uri().as_ptr())
+            });
+            assert_eq!(status, Status::GOOD, "open62541 refused the policy");
         };
         let url = self.url.clone();
         self.client(&url, time, setup).await
@@ -203,6 +217,7 @@ async fn open(
         net,
         rng,
         url,
+        None,
         future::pending(),
     );
     Ok(connect.await?.expect("a pending wait never ends"))
@@ -253,7 +268,12 @@ async fn serve_on<T>(
     let mut server = match security {
         // SAFETY: the close below deletes the server before the manager drops.
         Some(security) => unsafe {
-            Server::start_secure(&manager, c"", sessions, security)
+            Server::start_secure(
+                &manager,
+                c"",
+                sessions,
+                &security.client(Mode::SIGN_AND_ENCRYPT),
+            )
         },
         // SAFETY: as above.
         None => unsafe { Server::start(&manager, c"", sessions) },
@@ -1286,6 +1306,7 @@ fn a_connect_whose_wait_has_ended_gives_none() {
                 net,
                 &mut peer.rng,
                 &url,
+                None,
                 ended,
             )
             .await;
