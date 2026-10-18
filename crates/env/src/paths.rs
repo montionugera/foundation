@@ -339,7 +339,12 @@ impl Paths {
                 keys.contains(was)
                     || step.path.starts_with(dir)
                     || !matches!(ask, Ask::Hold(_)) && dir.starts_with(&step.path)
-                    || self.resolve(dir).is_ok_and(|to| step.path.starts_with(to))
+                    || self.walk(dir).into_end().is_ok_and(|to| {
+                        // A host that ignores case reaches the folder by a name
+                        // in other case, which only the key tells.
+                        step.path.starts_with(&to.path)
+                            || to.own.is_some_and(|key| keys.contains(&key))
+                    })
             });
             return Err(if replaced {
                 Error::Replaced
@@ -916,6 +921,14 @@ mod tests {
         free.write(Path::new("/work/a"), b"x").unwrap();
         assert_eq!(reached(&paths, "/work/swap/a"), Err(Error::Replaced));
         assert_eq!(reached(&paths, "/work/swapx/a"), Err(Error::Replaced));
+    }
+
+    #[test]
+    fn a_folder_that_is_replaced_is_replaced_by_a_name_in_other_case() {
+        let free = Paths::new(One::default());
+        let paths = free.within(&["/work/swapx".into()], &[]).unwrap();
+        free.write(Path::new("/work/a"), b"x").unwrap();
+        assert_eq!(reached(&paths, "/work/SWAPX/a"), Err(Error::Replaced));
     }
 
     #[test]
