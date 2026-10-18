@@ -943,7 +943,10 @@ impl Group {
     fn apply_change(&mut self, change: Change) -> Result<bool, Refused> {
         let listed = match &change {
             Change::Spec { chunks, .. } => Some(chunks.clone()),
-            Change::Home { .. } | Change::Join(_) | Change::Ticket { .. } => None,
+            Change::Home { .. }
+            | Change::Join(_)
+            | Change::Ticket { .. }
+            | Change::Card(_) => None,
         };
         let applied = self.state.apply(change)?;
         if let Some(listed) = listed {
@@ -2335,7 +2338,7 @@ mod tests {
     fn voters_of_the_least_limit_commit_the_largest_change_of_each_kind() {
         let largest = common::create_largest();
         let lengths = largest.each_ref().map(|change| encoded(change).len());
-        assert_eq!(lengths, [33, 19_601, 307, crate::change::BYTES_MAX]);
+        assert_eq!(lengths, [33, 19_601, 307, crate::change::BYTES_MAX, 2_081]);
         let board = behind(&largest);
         let homes = |id| (id, board.homes[&id].last().copied().flatten());
         assert_eq!(IDS.map(homes), IDS.map(|id| (id, Some(key(2)))));

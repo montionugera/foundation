@@ -44,6 +44,19 @@ impl Addresses {
         Ok(Self(list))
     }
 
+    /// The addresses of `bound` that a peer can dial, in order: each but an
+    /// unspecified address and an IPv6 address with flow info or a scope, at most 32.
+    #[must_use]
+    pub fn dialable(mut bound: Vec<Address>) -> Self {
+        // Linux gives `[::ffff:0.0.0.0]` for a dual-stack socket bound there.
+        bound.retain(|&address| {
+            let ip = socket(address).ip().to_canonical();
+            !ip.is_unspecified() && flow_and_scope(address) == (0, 0)
+        });
+        bound.truncate(usize::from(MAX));
+        Self(bound)
+    }
+
     /// The addresses, in order.
     #[must_use]
     pub fn as_slice(&self) -> &[Address] {
@@ -105,10 +118,14 @@ impl fmt::Display for Invalid {
     }
 }
 
+const fn socket(address: Address) -> SocketAddr {
+    let (Address::Udp(at) | Address::Tcp(at) | Address::Relay { at, .. }) = address;
+    at
+}
+
 // The flow info and scope of an IPv6 address; 0 and 0 for IPv4.
 fn flow_and_scope(address: Address) -> (u32, u32) {
-    let (Address::Udp(at) | Address::Tcp(at) | Address::Relay { at, .. }) = address;
-    match at {
+    match socket(address) {
         SocketAddr::V4(_) => (0, 0),
         SocketAddr::V6(at) => (at.flowinfo(), at.scope_id()),
     }
@@ -185,6 +202,8 @@ fn take_socket(bytes: &mut &[u8]) -> Option<SocketAddr> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::IpAddr;
+
     use proptest::prelude::*;
 
     use super::*;
@@ -221,6 +240,77 @@ mod tests {
                 prop_assert_eq!(Addresses::new(list), Ok(addresses));
             }
         }
+    }
+
+    fn bound() -> impl Strategy<Value = Address> {
+        let ip = prop_oneof![
+            Just(IpAddr::from([0, 0, 0, 0])),
+            Just(IpAddr::from([0_u16; 8])),
+            Just(IpAddr::from([0, 0, 0, 0, 0, 0xffff, 0, 0])),
+            any::<[u8; 4]>().prop_map(IpAddr::from),
+            any::<[u8; 16]>().prop_map(IpAddr::from),
+        ];
+        let at = (ip, any::<u16>(), 0..2_u32, 0..3_u32).prop_map(
+            |(ip, port, flowinfo, scope_id)| match ip {
+                IpAddr::V4(ip) => SocketAddr::from((ip, port)),
+                IpAddr::V6(ip) => {
+                    SocketAddr::V6(SocketAddrV6::new(ip, port, flowinfo, scope_id))
+                }
+            },
+        );
+        (0..3_u8, at).prop_map(|(kind, at)| match kind {
+            UDP => Address::Udp(at),
+            TCP => Address::Tcp(at),
+            _ => Address::Relay {
+                node: public(2),
+                at,
+            },
+        })
+    }
+
+    proptest! {
+        // Each address alone is dialable when `new` takes it and its IP is not
+        // unspecified.
+        #[test]
+        fn dialable_keeps_the_first_32_that_a_peer_can_dial(
+            list in prop::collection::vec(bound(), 0..48),
+        ) {
+            let kept: Vec<_> = list
+                .iter()
+                .copied()
+                .filter(|&address| {
+                    let ip = socket(address).ip().to_canonical();
+                    Addresses::new(vec![address]).is_ok() && !ip.is_unspecified()
+                })
+                .take(usize::from(MAX))
+                .collect();
+            prop_assert_eq!(Addresses::dialable(list), Addresses::new(kept).unwrap());
+        }
+    }
+
+    #[test]
+    fn dialable_drops_an_unspecified_or_scoped_address() {
+        let v4 = Address::Udp("10.0.0.1:4100".parse().unwrap());
+        let v6 = Address::Udp("[2001:db8::1]:4100".parse().unwrap());
+        let bound = vec![
+            Address::Udp("0.0.0.0:4100".parse().unwrap()),
+            v4,
+            Address::Tcp("[::]:4100".parse().unwrap()),
+            Address::Udp("[fe80::1%3]:4100".parse().unwrap()),
+            v6,
+        ];
+        assert_eq!(Addresses::dialable(bound).as_slice(), [v4, v6]);
+        let udp = |port| Address::Udp(SocketAddr::from(([10, 0, 0, 1], port)));
+        let many: Vec<_> = (0..40).map(udp).collect();
+        let first: Vec<_> = (0..32).map(udp).collect();
+        assert_eq!(Addresses::dialable(many).as_slice(), first);
+    }
+
+    #[test]
+    fn dialable_drops_an_ipv4_mapped_unspecified_address() {
+        let mapped: SocketAddr = "[::ffff:0.0.0.0]:4100".parse().unwrap();
+        let bound = vec![Address::Udp(mapped), Address::Tcp(mapped)];
+        assert_eq!(Addresses::dialable(bound).as_slice(), []);
     }
 
     #[test]
