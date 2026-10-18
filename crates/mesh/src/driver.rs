@@ -872,8 +872,8 @@ impl Group {
     }
 
     // Proposes `data`, a `Card` change of `member`, under the bound of a leader at
-    // `now`. A repeat that this node proposed in this term gets the proposal of the
-    // first.
+    // `now`. A repeat that this node proposed in this term less than a minute before
+    // gets the proposal of the first.
     fn propose_card(
         &mut self,
         member: node::Key,
