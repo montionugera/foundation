@@ -193,6 +193,45 @@ mod tests {
         assert_eq!(decode(&[0; LEN]), None);
     }
 
+    /// What [`read`] gives on a host whose data directory holds `bytes` in the file.
+    fn read_over(bytes: Vec<u8>) -> Held<Address> {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = sim.node(sim::node::Config::default());
+        let run = sim.run_on(&host, |host, _| async move {
+            let files = host.files();
+            let len = bytes.len() as u64;
+            let mode = env::files::Mode::Create { len };
+            let file = files.open(Path::new(FILE), mode).await?;
+            let pool = block::Pool::heap(crate::POOL);
+            let block = pool.copy(&bytes).expect("a block");
+            file.write_at(0, &[block]).await?;
+            read(&files).await
+        });
+        run.expect("the run ends").expect("reads")
+    }
+
+    #[test]
+    fn read_gives_the_written_address_foreign_or_version() {
+        let address = Address {
+            key: types::node::Key::from_u128(3),
+            public_key: PrivateKey([7; 32]).public(),
+            bound: SocketAddr::from((Ipv4Addr::LOCALHOST, 7400)),
+        };
+        assert_eq!(read_over(encode(&address).to_vec()), Held::Written(address));
+        let mut bytes = encode(&address);
+        bytes[68] = 5;
+        crate::checksum(&mut bytes);
+        assert_eq!(read_over(bytes.to_vec()), Held::Foreign);
+        let mut bytes = encode(&address);
+        bytes[TAG.len() - 1] = b'2';
+        crate::checksum(&mut bytes);
+        let version = Held::Version {
+            found: b'2',
+            expected: b'1',
+        };
+        assert_eq!(read_over(bytes.to_vec()), version);
+    }
+
     /// The input `address-valid-v6` of the fuzz corpus holds an IPv6 address with a
     /// flow info and a scope.
     #[test]

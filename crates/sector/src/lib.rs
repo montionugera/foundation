@@ -40,8 +40,9 @@ pub enum Held<T> {
         /// The version byte of the tag, which this program reads.
         expected: u8,
     },
-    /// A file that no node wrote: shorter than the tag, another prefix, or the tag
-    /// with another length or checksum.
+    /// A file that no node wrote: shorter than the tag, another prefix, a byte
+    /// outside the set of versions after it, the tag with another length or checksum,
+    /// or bytes with the tag and checksum that do not decode to `T`.
     Foreign,
 }
 
