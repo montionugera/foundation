@@ -16,6 +16,15 @@ crc32c = { workspace = true }
 env = { path = "../env" }
 types = { path = "../types" }
 
+[dev-dependencies]
+# Turns on `sim` for the bench, since the bench host runs no features.
+buffer = { path = ".", features = ["sim"] }
+counting = { path = "../counting" }
+divan = { workspace = true }
+proptest = { workspace = true }
+sim = { path = "../sim" }
+waker = { path = "../waker" }
+
 [[test]]
 name = "alloc"
 harness = false

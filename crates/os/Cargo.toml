@@ -33,6 +33,15 @@ rustix = { workspace = true, features = ["thread"] }
 # The Mach calls that give the free pages of the host.
 mach2 = { workspace = true }
 
+[dev-dependencies]
+counting = { path = "../counting" }
+divan = { workspace = true }
+# Turns `net` and `sim` on for the tests and benches of this crate.
+os = { path = ".", features = ["net", "sim"] }
+proptest = { workspace = true }
+rustix = { workspace = true, features = ["process"] }
+tokio = { workspace = true, features = ["net", "rt", "time"] }
+
 [[test]]
 name = "alloc"
 harness = false

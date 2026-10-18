@@ -20,5 +20,9 @@ sdk = { path = "../rust" }
 sector = { path = "../../crates/sector" }
 types = { path = "../../crates/types" }
 
+[dev-dependencies]
+program = { path = "../../crates/program" }
+transport = { path = "../../crates/transport" }
+
 [lints]
 workspace = true

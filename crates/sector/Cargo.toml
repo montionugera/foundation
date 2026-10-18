@@ -16,5 +16,9 @@ crc32c = { workspace = true }
 env = { path = "../env" }
 types = { path = "../types" }
 
+[dev-dependencies]
+proptest = { workspace = true }
+sim = { path = "../sim" }
+
 [lints]
 workspace = true

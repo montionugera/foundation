@@ -8,6 +8,11 @@ publish.workspace = true
 [dependencies]
 types = { path = "../types" }
 
+[dev-dependencies]
+counting = { path = "../counting" }
+divan = { workspace = true }
+proptest = { workspace = true }
+
 [[bench]]
 name = "slew"
 harness = false

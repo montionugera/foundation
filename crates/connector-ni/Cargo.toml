@@ -9,5 +9,8 @@ publish.workspace = true
 libloading.workspace = true
 types = { path = "../types" }
 
+[dev-dependencies]
+daqmx-stub = { path = "../daqmx-stub" }
+
 [lints]
 workspace = true

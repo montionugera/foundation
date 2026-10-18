@@ -7,5 +7,22 @@ publish.workspace = true
 
 [dependencies]
 
+[dev-dependencies]
+block = { path = "../block" }
+codec = { path = "../codec" }
+connector-influx = { path = "../connector-influx", features = ["sim"] }
+env = { path = "../env" }
+hub = { path = "../hub" }
+mesh = { path = "../mesh" }
+node = { path = "../node", features = ["sim"] }
+ops = { path = "../ops" }
+os = { path = "../os" }
+proptest.workspace = true
+serde_json.workspace = true
+sim = { path = "../sim" }
+spec = { path = "../spec" }
+transport = { path = "../transport" }
+types = { path = "../types" }
+
 [lints]
 workspace = true

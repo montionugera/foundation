@@ -11,5 +11,8 @@ env = { path = "../env" }
 tracing = { workspace = true }
 types = { path = "../types" }
 
+[dev-dependencies]
+proptest = { workspace = true }
+
 [lints]
 workspace = true
