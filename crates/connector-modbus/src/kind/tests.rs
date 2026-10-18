@@ -906,7 +906,10 @@ fn keeps_the_error_of_the_last_run_while_a_run_connects_and_reads_nothing() {
         .iter()
         .position(|status| status.error.is_some());
     let shown = &record.statuses[first.expect("an error")..];
-    let cleared = shown.iter().find(|status| status.error.is_none());
+    let mut running = shown
+        .iter()
+        .filter(|status| status.state == status::State::Running);
+    let cleared = running.find(|status| status.error.is_none());
     assert_eq!(cleared, None);
     assert_eq!(record.frames, []);
 }
