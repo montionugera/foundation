@@ -90,6 +90,10 @@
      a cut link are `Error::Device`, so the supervisor connects again with backoff. On
      a write, each exception reply is `refused` (#2711,
      https://github.com/synnaxlabs/foundation/issues/2711#issuecomment-6204912305).
+     The first tick whose reads all succeed clears the error of the last run, since a
+     connect is no answer of the device: a device that takes the stream and does not
+     answer keeps it (`laptop.architect-2`, 2026-10-18T02:39:55Z:
+     https://github.com/synnaxlabs/foundation/pull/3101#issuecomment-6244817834).
   8. **Samples.** The decode writes each value through `types::sample::Value`.
 
   Codes of `parse`: `modbus.bad-address`, `modbus.bad-unit`, `modbus.bad-order`,
