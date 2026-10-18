@@ -1,6 +1,7 @@
 //! Reads config files into Documents through the front end of each syntax.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -58,18 +59,28 @@ impl FrontEnds {
     fn of(&self, path: &str) -> Option<&FrontEnd> {
         Path::new(path)
             .file_name()
-            .map(|name| {
-                name.to_str()
-                    .expect("invariant: a part of a UTF-8 path is UTF-8")
-            })
-            .and_then(|name| name.rsplit_once('.'))
-            .and_then(|(_, extension)| self.0.get(extension))
+            .and_then(extension)
+            .and_then(|extension| self.0.get(extension))
     }
 
     /// Each extension, in order.
     pub(crate) fn extensions(&self) -> impl Iterator<Item = &'static str> {
         self.0.keys().copied()
     }
+
+    /// Whether the table reads the entry `name` of a directory: a front end has its
+    /// extension, and it does not start with `.`.
+    pub(crate) fn reads(&self, name: &OsStr) -> bool {
+        !name.as_encoded_bytes().starts_with(b".")
+            && extension(name).is_some_and(|extension| self.0.contains_key(extension))
+    }
+}
+
+/// The text after the last `.` of the file name `name`, when it is UTF-8.
+fn extension(name: &OsStr) -> Option<&str> {
+    let name = name.as_encoded_bytes();
+    let dot = name.iter().rposition(|&byte| byte == b'.')?;
+    str::from_utf8(&name[dot + 1..]).ok()
 }
 
 impl fmt::Debug for FrontEnd {
@@ -176,18 +187,28 @@ pub(crate) fn not_utf8(path: &Path) -> Diagnostic {
     )
 }
 
-/// The `ops.unknown-extension` diagnostic, at the empty span at the start of `source`.
-pub(crate) fn unknown(source: Source, front_ends: &FrontEnds) -> Diagnostic {
-    let extensions: Vec<String> = front_ends
-        .extensions()
+/// Each of `extensions` with its dot, as one choice: "`.a`, `.b`, or `.c`".
+///
+/// # Panics
+///
+/// When `extensions` is empty.
+pub(crate) fn named(extensions: &[&str]) -> String {
+    let extensions: Vec<String> = extensions
+        .iter()
         .map(|extension| format!("`.{extension}`"))
         .collect();
-    let extensions = match extensions.as_slice() {
+    match extensions.as_slice() {
         [one] => one.clone(),
         [first, second] => format!("{first} or {second}"),
         [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
         [] => unreachable!("invariant: `FrontEnds` holds a front end"),
-    };
+    }
+}
+
+/// The `ops.unknown-extension` diagnostic, at the empty span at the start of `source`.
+pub(crate) fn unknown(source: Source, front_ends: &FrontEnds) -> Diagnostic {
+    let extensions: Vec<_> = front_ends.extensions().collect();
+    let extensions = named(&extensions);
     let start = Position {
         offset: 0,
         line: 0,

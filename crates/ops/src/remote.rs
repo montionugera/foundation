@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use crate::Failure;
 use crate::apply::Applied;
 use crate::error::{self, Error, Unread};
-use crate::front_end::{self, File};
+use crate::front_end;
 use crate::plan::Output;
-use crate::scope::{Scope, most};
+use crate::scope::{Scope, utf8};
 use crate::{browse, import, operation, serve, status};
 
 #[cfg(test)]
@@ -49,12 +49,16 @@ where
 }
 
 /// Plans on the node of `link` the change from the config files at `files`, read
-/// through `scope`, and writes the plan file to `out` when it is given.
+/// through `scope`, and writes the plan file to `out` when it is given. A directory of
+/// `files` gives its config files ([`Scope::config`]).
 ///
 /// # Errors
 ///
-/// - [`Error::Config`] with `ops.path-not-utf8` for each path that is not UTF-8.
-/// - [`Error::Read`] for the first file that does not read as UTF-8 text.
+/// - [`Error::Config`] with `ops.path-not-utf8` for each path that is not UTF-8, or
+///   each such file of the first directory with one.
+/// - [`Error::Read`] for the first file that does not read as UTF-8 text, or a
+///   directory whose entries pass the bytes of one read.
+/// - [`Error::NoConfig`] for the first directory that gives no file.
 /// - [`Error::LargeRequest`] when the files do not fit one request.
 /// - [`Error::Node`] with the failure of the reach or of the request.
 /// - Each error of [`serve::plan_reply`].
@@ -77,55 +81,13 @@ where
     if let Some(out) = out {
         scope.out(out)?;
     }
-    let read = read(files, scope)?;
+    let read = scope.config(files)?;
     let reply = request(&serve::plan_request(&read)?, link).await?;
     let (output, plan) = serve::plan_reply(&reply)?;
     if let Some(out) = out {
         scope.write(out, plan)?;
     }
     Ok(output)
-}
-
-/// `Config` with `ops.path-not-utf8` for each of `files` whose path is not UTF-8.
-fn utf8(files: &[PathBuf]) -> Result<(), Error> {
-    let not_utf8: Vec<_> = files
-        .iter()
-        .filter(|path| path.to_str().is_none())
-        .map(|path| front_end::not_utf8(path))
-        .collect();
-    if not_utf8.is_empty() {
-        Ok(())
-    } else {
-        Err(Error::config(not_utf8, &error::Sources::default()))
-    }
-}
-
-/// The path and text of each of `files`, read through `scope`.
-///
-/// # Errors
-///
-/// - [`Error::Read`] for the first file that does not read as UTF-8 text.
-/// - [`Error::LargeRequest`] once the files that it read pass the most of a request.
-/// - The errors of [`Scope::read`].
-fn read(files: &[PathBuf], scope: &Scope) -> Result<Vec<File>, Error> {
-    let mut total = 0;
-    let mut read = Vec::with_capacity(files.len());
-    for path in files {
-        let bytes = scope.read(path)?;
-        total += bytes.len();
-        if total > most() {
-            return Err(Error::LargeRequest);
-        }
-        let text = String::from_utf8(bytes).map_err(|_not_utf8| Error::Read {
-            path: path.clone(),
-            cause: Unread::NotUtf8,
-        })?;
-        read.push(File {
-            path: path.clone(),
-            text,
-        });
-    }
-    Ok(read)
 }
 
 /// Applies on the node of `link` the plan file at `plan`, read through `scope`.
@@ -200,7 +162,7 @@ where
     utf8(&input.files)?;
     let asked = serve::Browse {
         connector: input.connector,
-        files: read(&input.files, scope)?,
+        files: scope.config(&input.files)?,
         start: input.start,
         pattern: input.pattern,
         cursor: input.cursor,
@@ -236,7 +198,7 @@ where
     utf8(&input.files)?;
     let asked = serve::Import {
         connector: input.connector,
-        files: read(&input.files, scope)?,
+        files: scope.config(&input.files)?,
         start: input.start,
         points: input.points,
         pattern: input.pattern,
