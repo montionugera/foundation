@@ -92,11 +92,12 @@
   https://github.com/synnaxlabs/foundation/issues/2796#issuecomment-6210474938, with
   the text approved (2026-10-16T07:45:51Z):
   https://github.com/synnaxlabs/foundation/issues/2796#issuecomment-6210673885.
-  `bench` also has `Deadline { new, commit, trimming }` over the private `State` of a
-  buffer, from the child module `buffer::bench`, for the cases `deadline` of 1 and 32
-  indexes and `deadline_carry` of `benches/wal.rs` on the ring of ID 64, and
-  `deadline_trim` of 1 and 32 indexes on the ring of ID 4096. `commit` appends one entry
-  of 100 bytes of each index but the last, which appends one each `period` deadlines.
+  `bench` also has `Deadline { new, resident, tagged, resize, commit, trimming }` over
+  the private `State` of a buffer, from the child module `buffer::bench`, for the cases
+  `deadline` and `deadline_tagged` of 1 and 32 indexes and `deadline_carry` of
+  `benches/wal.rs` on the ring of ID 64, and `deadline_trim` of 1 and 32 indexes on the
+  ring of ID 4096. `commit` appends one entry of 100 bytes of each index but the last,
+  which appends one each `period` deadlines.
   Then it does the work of the append, the fit and take of the group, and then the work
   of the commit task at a deadline with `trimmed`, in the order of `run`:
   `State::deadline` (the take, the checkpoint, the carry record, and the seal of the
@@ -106,14 +107,26 @@
   finds from the period between two trims. `trimming` takes a nonzero count of indexes.
   So a time holds the mean cost of a deadline of a buffer that trims in steps,
   `deadline_trim` the cost of the deadline that trims a step, and `deadline_carry` that
-  of a carry record of 32 tails. `benches/logs.rs` also
-  gets the case `lap_shrink` of 10000 paths, which times only the commit of `lap_end`
-  that ends the lap of 2756 paths, each with a shrink, while the other paths wait. Lost:
-  a sim `Buffer` over a sim file, timed from `append` to the end of the commit, whose
-  file, executor, and clock step cost more than the code under test, while the `wal`
-  benches already time the file write. Lost: a `pub(crate)` `State`, which widens
-  `State` and each method that the bench calls, for one bench. Decided by
-  `laptop.architect`: the surface of `Deadline` (#2909,
+  of a carry record of 32 tails. `Deadline::resident` is `new` with each page of the
+  pool committed, and `deadline_carry` uses it. After #3172, a pool on `Heap` writes
+  zero over a page at its first commit, once a page in its life. `deadline_carry`
+  makes a new `Deadline` for each sample, so with `new` its timed deadline pays that
+  write for each page that its carry takes. Lost: the commit in `new`, which moved
+  the median of `deadline_trim/1` +72 ns (slower in 10 of 10 pairs) and of `/32`
+  +161 ns (9 of 10) on box2, so the `deadline_trim` lines no longer compare with
+  their earlier runs. The commit before the timed deadline of `deadline_carry` is
+  decided by `laptop.architect` (#3227, 2026-10-18T19:43:43Z):
+  https://github.com/synnaxlabs/foundation/issues/3227#issuecomment-6254312922.
+  `resident` and its lost commit in `new` are approved by `laptop.architect` (#3254,
+  2026-10-18T21:00:27Z):
+  https://github.com/synnaxlabs/foundation/pull/3254#issuecomment-6255086067.
+  `benches/logs.rs` also gets the case `lap_shrink` of 10000 paths, which times only the
+  commit of `lap_end` that ends the lap of 2756 paths, each with a shrink, while the
+  other paths wait. Lost: a sim `Buffer` over a sim file, timed from `append` to the end
+  of the commit, whose file, executor, and clock step cost more than the code under
+  test, while the `wal` benches already time the file write. Lost: a `pub(crate)`
+  `State`, which widens `State` and each method that the bench calls, for one bench.
+  Decided by `laptop.architect`: the surface of `Deadline` (#2909,
   2026-10-16T19:32:27Z):
   https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6223169251, with the
   refusal of more than 54 indexes and the seal of the records in `State::deadline`
