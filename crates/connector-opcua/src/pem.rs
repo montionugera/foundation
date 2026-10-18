@@ -20,8 +20,6 @@ unsafe extern "C" {
         password: Bytes,
         out: *mut Bytes,
     ) -> u32;
-    #[cfg(feature = "sim")]
-    fn shim_verify_certificate(certificate: *const Bytes) -> u32;
 }
 
 /// A self-signed P-256 CA certificate (`CN=breaker`).
@@ -90,8 +88,19 @@ fn read() {
         }),
         #[cfg(feature = "sim")]
         "remote certificate" => {
-            // SAFETY: as above.
-            Status(unsafe { shim_verify_certificate(&bytes(ENCRYPTED_CERTIFICATE)) })
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let clock = sim.node(sim::node::Config::default()).clock();
+            let time = crate::event::Time::monotonic(clock);
+            let events =
+                crate::event::Loop::new(time, &mut env::rng::Rng::from_seed(0));
+            // SAFETY: as above, and the loop lives past the call.
+            Status(unsafe {
+                ffi::test::shim_verify_certificate(
+                    &bytes(ENCRYPTED_CERTIFICATE),
+                    std::ptr::null(),
+                    events.raw(),
+                )
+            })
         }
         _ => panic!("no read is named {name}"),
     };

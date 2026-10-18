@@ -9,6 +9,7 @@
 
 #include <open62541/util.h>
 #include <open62541/plugin/certificategroup_default.h>
+#include <open62541/plugin/eventloop.h>
 
 #if defined(UA_ENABLE_ENCRYPTION_OPENSSL) || defined(UA_ENABLE_ENCRYPTION_LIBRESSL)
 #include <openssl/x509.h>
@@ -595,7 +596,10 @@ openSSL_verifyChain(UA_CertificateGroup *cg, MemoryCertStore *ctx, STACK_OF(X509
         /* Verification Step: Validity Period */
         ASN1_TIME *notBefore = X509_get_notBefore(cert);
         ASN1_TIME *notAfter = X509_get_notAfter(cert);
-        if(X509_cmp_current_time(notBefore) != -1 || X509_cmp_current_time(notAfter) != 1)
+        UA_EventLoop *el = cg->eventLoop;
+        int64_t now = UA_DateTime_toUnixTime(el->dateTime_now(el));
+        if(X509_cmp_time_posix(notBefore, now) != -1 ||
+           X509_cmp_time_posix(notAfter, now) != 1)
             return (depth == 0) ? UA_STATUSCODE_BADCERTIFICATETIMEINVALID :
                 UA_STATUSCODE_BADCERTIFICATEISSUERTIMEINVALID;
     }
@@ -608,7 +612,8 @@ openSSL_verifyChain(UA_CertificateGroup *cg, MemoryCertStore *ctx, STACK_OF(X509
 static UA_StatusCode
 verifyCertificate(UA_CertificateGroup *certGroup, const UA_ByteString *certificate) {
     /* Check parameter */
-    if(certGroup == NULL || certGroup->context == NULL)
+    if(certGroup == NULL || certGroup->context == NULL ||
+       certGroup->eventLoop == NULL)
         return UA_STATUSCODE_BADINTERNALERROR;
 
     UA_StatusCode ret = UA_STATUSCODE_GOOD;

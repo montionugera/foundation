@@ -275,6 +275,11 @@ unsafe extern "C" {
         chunks: u32,
     ) -> *mut Server;
     pub(crate) fn UA_Server_run_startup(server: *mut Server) -> u32;
+    pub(crate) fn shim_verify_certificate(
+        certificate: *const Bytes,
+        trusted: *const Bytes,
+        el: *mut EventLoop,
+    ) -> u32;
     pub(crate) fn shim_server_limits(
         server: *mut Server,
         buffer: u32,

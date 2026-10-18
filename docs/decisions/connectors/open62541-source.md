@@ -862,9 +862,11 @@
   any file each function of aws-lc in `AWS_LC`, which reads no clock, file, network,
   randomness, or process state, by its name after the prefix. `AWS_LC_KEYS` keys each
   other call of aws-lc by its file and function, with its reason: each call that draws
-  (TLS RANDOMNESS), and each call that reads the clock. `AWS_LC_INPUTS`
-  lists the functions of aws-lc that read the clock, and a test fails when no test of
-  `connector-opcua` names the function of each of their keys. With no password callback,
+  (TLS RANDOMNESS). No key reads the clock: the validity check of a certificate reads
+  the event loop of its group (a local patch), so the check refuses
+  `X509_cmp_current_time`. `AWS_LC_INPUTS` lists the functions of aws-lc that read the
+  clock, and a test fails when no test of `connector-opcua` names the function of each
+  of their keys. With no password callback,
   a PEM reader of aws-lc reads a password from the console: it opens `/dev/tty`, or
   prints a prompt on stderr and reads stdin, and sets signal handlers. So each PEM read
   of the copy gives a callback of `PASSWORDS`: `UA_OpenSSL_refusePassword`, which
