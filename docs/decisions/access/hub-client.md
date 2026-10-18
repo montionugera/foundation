@@ -28,22 +28,22 @@
   wait: `TooLarge` never succeeds, so it gives `Error::Pool` at once, which means that
   no block of `pool` can hold a message that the session sends. Lost: a bound of two
   windows from the stream credit, which ack loss can exceed; a `Bytes` body with no
-  copy; a wait in `block::Pool` that wakes at each free. Four callers poll a pool now:
-  three in a program (the transport's reads, the session's sends on `pool`, and the
-  frames of a read on `frames`), and the wait of a node for the block of the last
-  `Stored` of a client write. The trigger fired with the third (#2802;
-  `laptop.architect`, 2026-10-16T03:39:42Z,
+  copy; a wait in `block::Pool` that wakes at each free. Five callers poll a pool now:
+  four in a program (the transport's reads, the session's sends on `pool`, the frames
+  of a read on `frames`, and the drafts of a writer on `frames`), and the wait of a
+  node for the block of the last `Stored` of a client write. The trigger fired with the
+  third (#2802; `laptop.architect`, 2026-10-16T03:39:42Z,
   https://github.com/synnaxlabs/foundation/pull/2802#issuecomment-6207544466): #2811
   adds the wait that a free wakes to `block`.
   `Session` is `Clone`, and a clone is the same session. When the last clone and the
-  last `Reader` drop, it closes the session with `Code(0)`. A node's stop and close with
-  a code are one error: `Error::Refused(wire::hub::client::Refusal)`, a closed set in
-  `wire` with `from_code` and `code`, of each code that a node stops a client stream or
-  closes a client session with (`MALFORMED`, `BUSY`, and `REFUSED` to `CHANGED`). Each
-  meaning of a code is stated once, in `wire`, and its `Display` gives the cause. A
-  close with 0 or a code outside the set stays `Error::Transport`. Lost: one dial for
-  each request (a handshake for each request, and a read stream of HUB LINK needs a
-  session that lives; `laptop.architect`, 2026-10-13T02:42:31Z,
+  last `Reader` or `Writer` drop, it closes the session with `Code(0)`. A node's stop
+  and close with a code are one error: `Error::Refused(wire::hub::client::Refusal)`, a
+  closed set in `wire` with `from_code` and `code`, of each code that a node stops a
+  client stream or closes a client session with (`MALFORMED`, `BUSY`, and `REFUSED` to
+  `CHANGED`). Each meaning of a code is stated once, in `wire`, and its `Display` gives
+  the cause. A close with 0 or a code outside the set stays `Error::Transport`. Lost:
+  one dial for each request (a handshake for each request, and a read stream of HUB LINK
+  needs a session that lives; `laptop.architect`, 2026-10-13T02:42:31Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724); `&mut
   self` with the renewal inside `request` (an idle program loses its session at the
   expiry); a queue in a task that owns the session; a lock of a library
@@ -251,3 +251,51 @@
   last seq of each path, decided by `laptop.architect` at 2026-10-18T10:09:56Z
   (https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6248601265), who sent
   it to `laptop.monitor` as a key choice.
+  Amended (#2718 PR 3): `program::Session::writer` opens a `program::Writer` from a
+  `program::write::Config { authority, lease, channels }`, and waits for the places.
+  `program::write` re-exports `Outcome`, `Refusal`, and `Time` of `wire::hub::write`.
+  The writer holds its one draft: `Writer::draft` gives `&mut Draft`, and
+  `Writer::write(time)` sends it and waits for its outcome, so a draft of another
+  writer, whose key set has the same key, reaches it only through a swap of two
+  `&mut Draft`. A write with no draft panics. The panic was approved by
+  `laptop.architect` at 2026-10-18T14:13:30Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6250930232). When
+  `sdk` wraps `Writer` (#2177), its write with no draft gives an error, not this panic.
+  `Error::Unnamed` refuses a config of no channel, and `Error::Unsent { count, form }` a
+  frame of no sample or a frame of `Time::Node` that is encoded or holds more than one
+  sample; each sends nothing. `Session::writer` gives `Error::Pool` when no block of
+  `Config::pool` holds the head and an end of each place, so a write waits for a block
+  and never gives `Pool`. A `write` dropped after its sends loses only its outcome; one
+  dropped inside its sends ends the writer with a reset of `Code(0)`, and each later
+  call gives that error, so no head lands in a cut body. A dropped `stored` loses
+  nothing. The plan
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6250678711) was
+  approved, with the draft held by the writer, `Pool` at the open, and the doc of a
+  dropped `stored`, by `laptop.architect` at 2026-10-18T13:53:31Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6250729056). Lost:
+  a `write::Draft` with the number of its writer and an `Error::Foreign`, which adds a
+  type of pass-through methods and an error for a case that the held draft makes
+  impossible. The same ruling moves the `os` bench of the node cost to PR 4 of #2718, in
+  place of condition 2 of
+  https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6248331209.
+  Amended (#2718 PR 3, round 1): `Writer::draft(form, count, series)` is async. It sets
+  the count of group 0, and it waits for a block of a full pool of frames, as a read
+  does. It gives `Error::Layout` when the series break a rule of the frame layout:
+  nothing was taken, and the writer goes on. `Writer::finish(self)` drops a held draft
+  and finishes the stream, so control ends. It gives `Ok` once the last `Stored` covers
+  each taken frame and the node finished. Dropping the call drops the writer.
+  `wire::hub::write::Replies` checks the order of the replies of a write: an outcome
+  with no frame sent for it gives `wire::hub::Error::Unasked`, and a `Stored` below the
+  last one or past the outcomes gives `wire::hub::Error::Stored`. Each ends the writer
+  with a reset of `MALFORMED`. Decided by `laptop.architect` at 2026-10-18T14:44:41Z
+  (https://github.com/synnaxlabs/foundation/pull/3201#issuecomment-6251244519).
+  Amended (#2718 PR 3, round 2): `Writer::draft` gives the error that ended the writer
+  before it takes a block. `Writer::write` takes each reply that came before the call
+  before it sends, so an extra outcome that came before it ends the writer with
+  `Unasked` and is never the outcome of its frame. An extra outcome that comes while
+  the frame is sent is the outcome of that frame: the program cannot tell it from the
+  real one. `wire::hub::Error::Stored` holds `frames` and `bound`, the last `Stored`
+  when `frames` is below it, else the frames that got an outcome, so `Error` stays 24
+  bytes and the node's decoders do not grow. Decided by `laptop.architect` at
+  2026-10-18T15:49:57Z
+  (https://github.com/synnaxlabs/foundation/pull/3201#issuecomment-6251902903).
