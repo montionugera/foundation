@@ -8441,3 +8441,23 @@ mod budget {
         }
     }
 }
+
+/// The `Cargo.toml` of the crate of each kind of [`crate::kinds`], by kind name.
+const MANIFESTS: [(&str, &str); 3] = [
+    ("influx", include_str!("../../connector-influx/Cargo.toml")),
+    ("modbus", include_str!("../../connector-modbus/Cargo.toml")),
+    ("opcua", include_str!("../../connector-opcua/Cargo.toml")),
+];
+
+#[test]
+fn each_kind_runs_its_conformance_suite() {
+    let names: Vec<_> = MANIFESTS.iter().map(|&(name, _)| name).collect();
+    assert_eq!(crate::kinds().names().collect::<Vec<_>>(), names);
+    for (name, manifest) in MANIFESTS {
+        let entry = format!(
+            "[[test]]\nname = \"conformance\"\n\
+             path = \"../../oracles/conformance/connector/{name}/main.rs\"\n"
+        );
+        assert!(manifest.contains(&entry), "{name} runs no suite");
+    }
+}
