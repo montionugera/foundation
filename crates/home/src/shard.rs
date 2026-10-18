@@ -381,7 +381,8 @@ impl Shard {
     /// reader for each part that holds a named record of the index. With no mesh time,
     /// a restart restores the holds. When a part finds no block or no room, a restart
     /// restores the holds of that part and the parts after it. A later
-    /// [`carry`](Self::carry) in the same run does not. Its frames stay in the buffer,
+    /// [`carry`](Self::carry) in the same run does not, and at mesh time it appends an
+    /// entry with no named reader for each such part. Its frames stay in the buffer,
     /// so a later carry of `slot` continues each path from its tail in the buffer: the
     /// last entry appended, on disk or not. The shard also keeps the control gate for
     /// that carry when the gate holds a restored holder or a handoff that waits, so a
@@ -403,8 +404,9 @@ impl Shard {
             "a writer is open on the index at {slot:?}"
         );
         let head = self.now().map(|mesh| self.head(place, mesh));
-        self.readers
-            .shed(place, head.map(|head| (&self.buffer, head)));
+        let buffer = &self.buffer;
+        let target = head.map(|head| state::Target { buffer, head });
+        self.readers.shed(place, target);
         let last = self.indexes.len() - 1;
         self.places.remove(&slot);
         let gate = self.indexes.swap_remove(place).gate;
@@ -760,7 +762,10 @@ impl Shard {
             hold,
             limit_bytes,
             charge,
-            (&self.buffer, head),
+            state::Target {
+                buffer: &self.buffer,
+                head,
+            },
         )?;
         self.record_named(place, monotonic, Some(now));
         Ok(reader::Opened {
@@ -971,7 +976,11 @@ impl Shard {
     ) {
         if let Some(mesh) = mesh {
             let head = self.head(place, mesh);
-            self.readers.record(place, &self.buffer, head);
+            let target = state::Target {
+                buffer: &self.buffer,
+                head,
+            };
+            self.readers.record(place, target);
         }
         self.arm(place, monotonic, mesh);
     }
@@ -6415,6 +6424,41 @@ mod tests {
                 }
 
                 #[test]
+                fn restores_no_hold_at_a_carry_after_a_shed_with_no_mesh_time() {
+                    let (mut sim, node) = create_node(197);
+                    sim.run_on(&node, |node, tasks| async move {
+                        let test = Test::new(node, tasks);
+                        let set = two_indexes();
+                        let mut shard = test.shard(AREA).await;
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        acked(&test, &mut shard, w).await;
+                        tick(&test, &mut shard).await;
+                        shard.committed().await.expect("the commit ends");
+                    })
+                    .expect("the first run ends");
+                    sim.crash(&node, sim::Crash::Power);
+                    sim.run_on(&node, |node, tasks| async move {
+                        let test = Test::new(node, tasks);
+                        let buffer = test.create_buffer(AREA, BODY_MAX, 4).await;
+                        let (clock, reader) = clock::Clock::new(test.clock.clone());
+                        let mut shard = Test::with(0, buffer, reader);
+                        assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
+                        shard.shed(Slot::new(0));
+                        let wall = test.node.wall();
+                        test.tasks.spawn(async move { clock.run(wall).await });
+                        while shard.now().is_none() {
+                            test.clock.sleep(Span::from_nanos(1)).await;
+                        }
+                        assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
+                        let a = open(&mut shard, "a");
+                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(caught_up(&mut shard, a, 0).await, [], "live tail");
+                    })
+                    .expect("the run after the cut ends");
+                }
+
+                #[test]
                 fn ticks_each_second_while_another_index_holds() {
                     let (mut sim, node) = create_node(232);
                     sim.run_on(&node, move |node, tasks| async move {
@@ -6943,7 +6987,8 @@ mod tests {
                 /// of the index at slot 0 in the buffer of `shard`.
                 fn records_of(shard: &Shard, reader: &named::Key) -> usize {
                     let newest = crate::named::Parts::newest(&shard.buffer);
-                    let records = newest.get(&Slot::new(0)).map(|(_, records)| records);
+                    let records =
+                        newest.get(&Slot::new(0)).map(crate::named::Parts::records);
                     let records = records.into_iter().flatten();
                     records.filter(|record| record.reader == *reader).count()
                 }
@@ -7211,6 +7256,41 @@ mod tests {
                     });
                 }
 
+                /// A shed whose entry found no block keeps 448 records of the longest
+                /// names in parts. The later carry drops them from the buffer, so
+                /// their room is free, and a restart restores none of them.
+                #[test]
+                fn frees_the_room_of_the_holds_of_a_shed_whose_entry_found_no_block() {
+                    run(211, |test| async move {
+                        let mut shard = test.shard(1 << 22).await;
+                        for n in 0..448 {
+                            let held = shard.open_named_complete(
+                                Slot::new(0),
+                                longest(n),
+                                LONG,
+                                CREDIT,
+                                Charge::Whole,
+                            );
+                            shard.committed().await.expect("the commit ends");
+                            close(
+                                &mut shard,
+                                held.expect("a part has room").key.into(),
+                            );
+                        }
+                        let full = open_longest(&mut shard, longest(448));
+                        assert_eq!(full.err(), Some(Unopened::Full), "448 holds");
+                        let blocks = test.fill();
+                        shard.shed(Slot::new(0));
+                        drop(blocks);
+                        assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
+                        shard.committed().await.expect("the commit ends");
+                        let newest = crate::named::Parts::newest(&shard.buffer);
+                        assert_eq!(newest[&Slot::new(0)].records(), []);
+                        open_longest(&mut shard, longest(448))
+                            .expect("a part has room");
+                    });
+                }
+
                 #[test]
                 fn drops_a_record_whose_hold_ends_while_another_index_ticks() {
                     run(210, |test| async move {
@@ -7229,7 +7309,11 @@ mod tests {
                         }
                         shard.committed().await.expect("the commit ends");
                         let newest = crate::named::Parts::newest(&shard.buffer);
-                        assert_eq!(newest[&Slot::new(2)].1, [], "the hold ended");
+                        assert_eq!(
+                            newest[&Slot::new(2)].records(),
+                            [],
+                            "the hold ended"
+                        );
                     });
                 }
 
