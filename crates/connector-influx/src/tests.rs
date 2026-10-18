@@ -391,7 +391,7 @@ fn each_config_of_a_target_holds_what_the_body_requires() {
         let holds = |key: &str| config.attributes.get(key).is_some();
         for attribute in BODY.attributes {
             let parsed = Kind.parse(&without(config.clone(), attribute.name));
-            let required = attribute.presence.needed(holds);
+            let required = attribute.presence.needed(&config.attributes);
             if required {
                 assert!(holds(attribute.name), "{}", attribute.name);
                 let codes: Vec<_> = parsed

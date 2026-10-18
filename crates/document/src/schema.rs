@@ -1,6 +1,8 @@
 //! What the body of each kind of block takes: the one list of keys that its check
 //! reads, and the text that the docs give.
 
+use crate::Map;
+
 /// What the body of one kind of block takes. Its check refuses each attribute and
 /// block that it does not state, other than those that it gives to another check,
 /// such as the kind of a `connector`, and `foundation docs` states it.
@@ -58,13 +60,16 @@ pub enum Presence {
 }
 
 impl Presence {
-    /// Whether a body needs the attribute, where `held` gives whether the body holds
-    /// a key.
+    /// Whether a body whose attributes are `attributes` must hold the attribute:
+    /// always for `Required`, for `Unless` when a key that it names is not in
+    /// `attributes`, and never for `Default` or `Optional`.
     #[must_use]
-    pub fn needed(self, held: impl Fn(&str) -> bool) -> bool {
+    pub fn needed(self, attributes: &Map) -> bool {
         match self {
             Self::Required => true,
-            Self::Unless(others) => !others.iter().all(|other| held(other)),
+            Self::Unless(others) => {
+                !others.iter().all(|other| attributes.get(other).is_some())
+            }
             Self::Default(_) | Self::Optional => false,
         }
     }
@@ -73,6 +78,20 @@ impl Presence {
 #[cfg(test)]
 mod tests {
     use super::Presence;
+    use crate::value::{Kind, Value};
+    use crate::{Attribute, Map};
+
+    fn map(keys: &[&str]) -> Map {
+        let attributes = keys.iter().map(|key| Attribute {
+            key: (*key).into(),
+            key_span: None,
+            value: Value {
+                kind: Kind::Bool(true),
+                span: None,
+            },
+        });
+        Map::new(attributes.collect()).expect("the keys are unique")
+    }
 
     #[test]
     fn needs_an_attribute_unless_the_body_holds_each_one_in_its_place() {
@@ -84,10 +103,10 @@ mod tests {
             (&["bucket", "org"], false),
         ];
         for (keys, needed) in cases {
-            assert_eq!(unless.needed(|key| keys.contains(&key)), needed, "{keys:?}");
+            assert_eq!(unless.needed(&map(keys)), needed, "{keys:?}");
         }
-        assert!(Presence::Required.needed(|_| true));
-        assert!(!Presence::Default("1").needed(|_| false));
-        assert!(!Presence::Optional.needed(|_| false));
+        assert!(Presence::Required.needed(&map(&["bucket"])));
+        assert!(!Presence::Default("1").needed(&map(&[])));
+        assert!(!Presence::Optional.needed(&map(&[])));
     }
 }

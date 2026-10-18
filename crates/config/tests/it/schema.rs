@@ -101,7 +101,7 @@ fn without(document: Document, path: &[usize], key: &str) -> Option<Document> {
 /// Whether `block` of `body` needs `key`: its absence gives no value, or gives a
 /// diagnostic.
 fn needs(body: &Body, key: &str, block: &Block) -> bool {
-    presence(body, key).needed(|other| block.body.attributes.get(other).is_some())
+    presence(body, key).needed(&block.body.attributes)
 }
 
 fn presence(body: &Body, key: &str) -> Presence {
@@ -187,6 +187,7 @@ fn each_name_of_an_unless_is_an_attribute_of_its_body() {
                     let Presence::Unless(others) = attribute.presence else {
                         continue;
                     };
+                    assert!(!others.is_empty(), "{}", attribute.name);
                     for other in others {
                         let stated =
                             body.attributes.iter().any(|key| key.name == *other);
