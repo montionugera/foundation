@@ -144,12 +144,11 @@ pub(crate) fn write<'a>(
     let counted = |count: usize| {
         u16::try_from(count).expect("invariant: a count of at most 1023 fits a u16")
     };
-    let (slot, rest) = body.split_at_mut(COUNTS);
+    let (head, mut data) = body.split_at_mut(body_len(tails.len(), count, 0));
+    let (slot, mut rest) = head.split_at_mut(COUNTS);
     let (first, second) = slot.split_at_mut(2);
     first.copy_from_slice(&counted(tails.len()).to_le_bytes());
     second.copy_from_slice(&counted(count).to_le_bytes());
-    let (mut rest, mut data) =
-        rest.split_at_mut(LEN * tails.len() + entry::HEADER_LEN * count);
     for tail in tails {
         let (slot, after) = rest.split_at_mut(LEN);
         slot.copy_from_slice(&tail.encode());
