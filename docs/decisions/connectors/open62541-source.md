@@ -1062,10 +1062,7 @@
   refused, and `openssl x509` writes it again without them. The person approved this
   form (`laptop.monitor`, 2026-10-18 23:41 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256621478): "Yeah
-  fine". It replaces the approval of a check by role at 23:39 UTC
-  (https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256601061), which
-  rested on a verify of aws-lc that the copy does not have
-  (https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256609921).
+  fine".
   `laptop.monitor` accepted that the readers of aws-lc read the trust, and our own PEM
   parser lost (message 20c8b048 to `box1.builder-3`,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256452096). An
