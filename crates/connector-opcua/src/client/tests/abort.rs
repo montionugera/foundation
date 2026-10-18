@@ -179,19 +179,19 @@ fn sequence(chunk: &[u8]) -> [u8; 4] {
     chunk[16..20].try_into().expect("4 bytes")
 }
 
-/// A dropped read D, then a read R of [`FITS`] (8 chunks). The relay holds the answer
-/// of D and sends its abort after the first chunk of R when `inside`, else before it.
-/// Gives the read of R, a read of [`VALUE`] after it, and the value.
-fn interleaved(inside: bool) -> (Result<Value, Fault>, Result<Value, Fault>, Value) {
+/// 16 rounds of a dropped read D, then a read R of [`FITS`] (8 chunks). The relay holds
+/// the answer of D and sends its abort after the first chunk of R when `inside`, else
+/// before it. Gives the reads of R, a read of [`VALUE`] after them, and the value. An
+/// abort that does not end its D leaves no slot for the 17th read.
+fn interleaved(inside: bool) -> (Values, Result<Value, Fault>, Value) {
     run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             peer.server.add_bytes(&FITS, 7 * CHUNK);
             let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
             let armed = Cell::new(false);
             let held = RefCell::new(None::<Vec<u8>>);
-            let done = Cell::new(false);
             let rewrite = |chunk: &mut Vec<u8>| {
-                if !armed.get() || done.get() || !chunk.starts_with(b"MSG") {
+                if !armed.get() || !chunk.starts_with(b"MSG") {
                     return;
                 }
                 let Some(dropped) = held.borrow_mut().take() else {
@@ -214,18 +214,21 @@ fn interleaved(inside: bool) -> (Result<Value, Fault>, Result<Value, Fault>, Val
                 b[16..20].copy_from_slice(&late);
                 chunk.extend_from_slice(a);
                 chunk.extend_from_slice(b);
-                done.set(true);
+                armed.set(false);
             };
             let reads = relayed(&node, &Relay::default(), rewrite, async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
-                armed.set(true);
-                drop_reads(&mut client, 1).await;
-                let read = client.read_one(&FITS).await;
-                assert!(done.get(), "the relay sent the abort");
+                let mut reads = Vec::new();
+                for _ in 0..16 {
+                    armed.set(true);
+                    drop_reads(&mut client, 1).await;
+                    reads.push(client.read_one(&FITS).await);
+                    assert!(!armed.get(), "the relay sent the abort");
+                }
                 let after = client.read_one(&VALUE).await;
                 client.close().await;
-                (read, after)
+                (reads, after)
             })
             .await;
             (reads.0, reads.1, peer.value)
@@ -235,18 +238,21 @@ fn interleaved(inside: bool) -> (Result<Value, Fault>, Result<Value, Fault>, Val
     .0
 }
 
-/// The abort of a dropped read before the chunks of another read leaves that read its
-/// answer.
+/// The abort of a dropped read before the chunks of another read ends the dropped read
+/// and leaves the other read its answer.
 #[test]
 fn an_abort_before_the_chunks_of_another_read_leaves_its_answer() {
-    let (read, after, value) = interleaved(false);
-    assert_eq!((read, after), (mistyped("ByteString"), Ok(value)));
+    let (reads, after, value) = interleaved(false);
+    assert_eq!(reads, vec![mistyped("ByteString"); 16]);
+    assert_eq!(after, Ok(value));
 }
 
 /// An abort deletes only the chunks of its own request, so the abort of a dropped read
-/// between the chunks of another read leaves that read its answer.
+/// between the chunks of another read ends the dropped read and leaves the other read
+/// its answer.
 #[test]
 fn an_abort_between_the_chunks_of_another_read_leaves_its_answer() {
-    let (read, after, value) = interleaved(true);
-    assert_eq!((read, after), (mistyped("ByteString"), Ok(value)));
+    let (reads, after, value) = interleaved(true);
+    assert_eq!(reads, vec![mistyped("ByteString"); 16]);
+    assert_eq!(after, Ok(value));
 }
