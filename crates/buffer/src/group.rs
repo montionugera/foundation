@@ -138,7 +138,8 @@ pub(crate) struct Group {
     wrap: Option<Unique>,
 }
 
-// A group moves by value at each commit. Past 128 bytes, a move is a call of memcpy.
+// A group moves by value at each commit. On x86-64 with no AVX, LLVM makes a move past
+// 128 bytes a call of memcpy.
 const _: () = assert!(size_of::<Group>() <= 128, "a group moves inline");
 
 /// Why a group did not take a batch. Nothing changed.
