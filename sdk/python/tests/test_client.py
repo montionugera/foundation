@@ -48,6 +48,12 @@ def budget(pool: int, disk: int) -> bytes:
 def fork(call) -> int:
     """Calls `call` in a forked child, and gives the exit code of the child: 0 when
     `call` gives `None`. Kills the child after `PATIENCE` s."""
+    return exit_code(spawn(call))
+
+
+def spawn(call) -> int:
+    """Calls `call` in a forked child, and gives the pid of the child. The child exits
+    with 0 when `call` gives `None`, else with 1."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         pid = os.fork()
@@ -57,6 +63,12 @@ def fork(call) -> int:
             code = 0 if call() is None else 1
         finally:
             os._exit(code)
+    return pid
+
+
+def exit_code(pid: int) -> int:
+    """Waits for the child `pid`, and gives its exit code. Kills it after `PATIENCE`
+    s."""
     deadline = time.monotonic() + PATIENCE
     while True:
         done, status = os.waitpid(pid, os.WNOHANG)
@@ -67,6 +79,12 @@ def fork(call) -> int:
             os.waitpid(pid, 0)
             raise AssertionError(f"the child {pid} did not exit")
         time.sleep(0.01)
+
+
+def close(client: foundation.Client, entered: threading.Event) -> None:
+    """Sets `entered`, then closes `client`."""
+    entered.set()
+    client.close()
 
 
 class Node:
@@ -148,9 +166,13 @@ class Node:
 
     def pause(self) -> None:
         """Stops the node with SIGSTOP, and returns once it stopped: on macOS, it can
-        run on after `kill` returns. `stop` continues it."""
+        run on after `kill` returns. `resume` and `stop` continue it."""
         self.process.send_signal(signal.SIGSTOP)
         os.waitpid(self.process.pid, os.WUNTRACED)
+
+    def resume(self) -> None:
+        """Continues the node after `pause`."""
+        self.process.send_signal(signal.SIGCONT)
 
     def stop(self) -> None:
         """Stops the node with SIGTERM, and waits until it exits."""
@@ -221,15 +243,27 @@ class ClientTest(unittest.TestCase):
         self.assertGreater(count, 20)
 
     def test_a_child_forked_during_a_close_gives_none(self) -> None:
-        client = self.node.connect()
-        self.node.pause()
-        closing = threading.Thread(target=client.close, daemon=True)
-        closing.start()
-        time.sleep(0.02)
-        self.assertTrue(closing.is_alive())
-        self.assertEqual(fork(client.close), 0)
-        closing.join(PATIENCE)
-        self.assertFalse(closing.is_alive())
+        deadline = time.monotonic() + PATIENCE
+        while True:
+            client = self.node.connect()
+            self.node.pause()
+            entered = threading.Event()
+            closing = threading.Thread(
+                target=close, args=(client, entered), daemon=True
+            )
+            closing.start()
+            self.assertTrue(entered.wait(PATIENCE))
+            child = spawn(client.close)
+            during = closing.is_alive()
+            self.assertEqual(exit_code(child), 0)
+            closing.join(PATIENCE)
+            self.assertFalse(closing.is_alive())
+            if during:
+                return
+            # The close of a paused node takes about 0.1 s, so on a slow runner the
+            # fork can come after it. Such a try proves nothing.
+            self.assertLess(time.monotonic(), deadline, "each fork came after a close")
+            self.node.resume()
 
     def test_a_child_forked_with_an_open_client_does_not_end_the_session(self) -> None:
         clients = [self.node.connect()]
