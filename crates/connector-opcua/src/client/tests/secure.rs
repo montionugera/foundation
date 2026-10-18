@@ -313,6 +313,46 @@ fn an_answer_takes_the_chunks_of_the_server_in_each_mode() {
     }
 }
 
+/// In `SignAndEncrypt`, open62541 gives a chunk of 8135 bytes from a buffer of 8193, 1
+/// less than Part 6, and one of 8199 from 8264, 1 less than Part 6 too. An answer of 4
+/// chunks then holds 955 and 962 Doubles.
+#[test]
+fn an_answer_takes_the_payload_of_open62541_when_it_is_the_smaller() {
+    for (buffer, split) in [(8193, [955, 45]), (8264, [962, 38])] {
+        let (reads, _) = run(0, async move |node| {
+            let time = event::Time::since(node.clock(), START);
+            serve_on(&node, 4, time, Some(&SERVED), async |mut peer| {
+                peer.server.set_limits(Limits {
+                    buffer,
+                    chunks: 4,
+                    ..Limits::default()
+                });
+                let mut client = peer
+                    .secure(
+                        Policy::Basic256Sha256,
+                        Mode::SIGN_AND_ENCRYPT,
+                        &CLIENT_SIDE,
+                        START,
+                    )
+                    .await
+                    .expect("the client connects");
+                let nodes = fits(client.nodes(&vec![VALUE; 1000]));
+                let values = client.read(&nodes).await.map(<[_]>::to_vec);
+                client.close().await;
+                (nodes.counts(), values, peer.value)
+            })
+            .await
+        });
+        let (counts, values, value) = reads;
+        let read = (counts, values);
+        assert_eq!(
+            read,
+            (split.to_vec(), Ok(vec![Ok(value); 1000])),
+            "{buffer}"
+        );
+    }
+}
+
 /// A received chunk holds the smaller of the payload of a sent one and the
 /// `MaxBodySize` of Part 6. In `SignAndEncrypt`, the second is 508 blocks of 16 bytes
 /// less 8 in a chunk of 8192 bytes, and 509 blocks less 8 in one of 8200, 1 byte past
