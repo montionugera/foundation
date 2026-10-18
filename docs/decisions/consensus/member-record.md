@@ -131,8 +131,8 @@
   `Expired` text is "ticket {public_key} expired at {expiry}, and the join is at {at}".
   The text and the admit order approved by `laptop.architect` (2026-10-07T11:03:29Z):
   https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6036571225; the use
-  moved after the fit of the member
-  (https://github.com/synnaxlabs/foundation/pull/3280#issuecomment-6256084322). The
+  moved after the fit of the member (`laptop.architect`, 2026-10-18T22:43:22Z,
+  https://github.com/synnaxlabs/foundation/pull/3280#issuecomment-6256084322). The
   ephemeral expiry of a `Member` comes from its ticket, because the admin decides what a
   ticket admits (BQ11a) and the joining node is outside input. Lost: a bearer secret in
   the `Join`, which every member could replay and which binds to no card. Decided by
@@ -172,13 +172,16 @@
   (2026-10-07T11:11:49Z):
   https://github.com/synnaxlabs/foundation/pull/1328#issuecomment-6036702954. A refused
   change changes no region state, with one exception: a refused `Join` binds its node
-  key to its public key when no join bound it before (MESH DRIVER). So a forged card in
-  the log cannot stop a node. A `Join` holds a `card::Unchecked`, not a `card::Signed`:
-  it has the byte form of a signed card, decode keeps a join whose signature does not
-  hold, and apply refuses it as `Forged`. Each number in a change is little endian; a
-  `Ticket` is the public key, the prefix behind a length byte, a reusable byte (0 or 1),
-  the expiry (8 bytes), and the ephemeral span behind a presence byte. Decided by
-  `laptop.architect` (2026-10-07T09:27:39Z):
+  key to its public key when no join bound it before (MESH DRIVER; `laptop.architect`,
+  2026-10-18T23:23:43Z,
+  https://github.com/synnaxlabs/foundation/pull/3280#issuecomment-6256460268, item 1,
+  which supersedes "a no-op on every node"). So a forged card in the log cannot stop a
+  node. A `Join` holds a `card::Unchecked`, not a `card::Signed`: it has the byte form
+  of a signed card, decode keeps a join whose signature does not hold, and apply
+  refuses it as `Forged`. Each number in a change is little endian; a `Ticket` is the
+  public key, the prefix behind a length byte, a reusable byte (0 or 1), the expiry (8
+  bytes), and the ephemeral span behind a presence byte. Decided by `laptop.architect`
+  (2026-10-07T09:27:39Z):
   https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6035046918. The
   reserved name check is region state, not a ticket check, because "no member name is
   reserved" holds for every member, like "no key twice". Decided by `laptop.architect`

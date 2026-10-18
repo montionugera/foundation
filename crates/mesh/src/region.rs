@@ -1328,6 +1328,8 @@ mod tests {
         state.apply(Change::Join(Box::new(join)))
     }
 
+    // Only a compare of the whole state shows that a refused join changes nothing but
+    // its binding, and `State::new` takes no join, so this sets the private field.
     // `state` with node key `key` bound to the public key of node `public_key`.
     fn bound(mut state: State, key: u8, public_key: u8) -> State {
         state.joined.insert(node(key), public(public_key));
