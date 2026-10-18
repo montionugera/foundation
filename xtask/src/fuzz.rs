@@ -469,7 +469,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::common::output;
+    use crate::common::{EXITED, output};
 
     const PATCHED: &str = "path+file:///w/patches/noq-proto#noq-proto@1.3.0";
     const TYPES: &str = "path+file:///w/crates/types#0.0.0";
@@ -1345,8 +1345,9 @@ mod tests {
         let Err(error) = Cargo::new(&crate::fixture()) else {
             panic!("the pin of the fixture is not installed");
         };
-        let command = "`rustup run nightly-2000-01-01 rustc -vV`: exit status: 1: ";
-        assert!(error.starts_with(command), "{error}");
+        let command =
+            format!("`rustup run nightly-2000-01-01 rustc -vV`: {EXITED}: 1: ");
+        assert!(error.starts_with(&command), "{error}");
     }
 
     #[test]

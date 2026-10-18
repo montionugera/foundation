@@ -189,9 +189,8 @@ fn fixture() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod common {
-    use std::os::unix::process::ExitStatusExt;
     use std::path::{Path, PathBuf};
-    use std::process::{ExitStatus, Output};
+    use std::process::Output;
 
     /// A new folder named `name` in the temp folder whose `rust-toolchain-nightly`
     /// pins the installed toolchain of `rust-toolchain.toml`. The caller removes it.
@@ -211,10 +210,21 @@ mod common {
         root
     }
 
+    /// The text that an `ExitStatus` of an exit code prints before the code.
+    #[cfg(unix)]
+    pub(crate) const EXITED: &str = "exit status";
+    #[cfg(windows)]
+    pub(crate) const EXITED: &str = "exit code";
+
     /// An output of a process that exits with `code`.
     pub(crate) fn output(code: i32, stdout: &str, stderr: &str) -> Output {
+        #[cfg(unix)]
+        let status = std::os::unix::process::ExitStatusExt::from_raw(code << 8);
+        #[cfg(windows)]
+        let status =
+            std::os::windows::process::ExitStatusExt::from_raw(code.cast_unsigned());
         Output {
-            status: ExitStatus::from_raw(code << 8),
+            status,
             stdout: stdout.into(),
             stderr: stderr.into(),
         }
