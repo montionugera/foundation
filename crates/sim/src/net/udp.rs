@@ -397,5 +397,12 @@ fn route(
             code: NOT_AVAILABLE,
         });
     }
-    Ok((SocketAddr::new(ip, local.port()), destination))
+    // A link-local `local` keeps scope 2, the one interface of each node, which is
+    // the scope that the peer sees on the source.
+    let source = if ip == local.ip() {
+        local
+    } else {
+        SocketAddr::new(ip, local.port())
+    };
+    Ok((source, destination))
 }

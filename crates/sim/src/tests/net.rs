@@ -1159,7 +1159,8 @@ fn a_v6_bind_that_is_not_link_local_drops_its_scope() {
 }
 
 /// A datagram from a socket on the link-local address leaves from that address, as on
-/// Linux, not from the routable IPv6 address.
+/// Linux, not from the routable IPv6 address, and the peer sees it with the scope of
+/// its own interface.
 #[test]
 fn a_link_local_socket_sends_from_its_own_address() {
     let (mut sim, a, b) = pair(0, link::Config::default());
@@ -1181,7 +1182,7 @@ fn a_link_local_socket_sends_from_its_own_address() {
         .iter()
         .map(|(_, meta, _)| meta.source)
         .collect();
-    assert_eq!(sources, [SocketAddr::new(IpAddr::V6(ip), 4433)]);
+    assert_eq!(sources, [local]);
 }
 
 #[test]
