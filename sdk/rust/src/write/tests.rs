@@ -79,14 +79,10 @@ fn writer(outcome: Outcome) -> (Writer, JoinHandle<Sent>) {
     (Writer::open(&opens, config).unwrap(), served)
 }
 
-/// The bytes of each series of `frame`, in place order.
+/// The bytes of each series of `frame`, a sorted frame.
 fn series(frame: &Frame) -> Vec<(usize, Vec<u8>)> {
-    let mut parts = frame.parts.clone();
-    parts.sort_unstable();
-    parts
-        .into_iter()
-        .map(|(place, start, len)| (place, frame.bytes[start..start + len].to_vec()))
-        .collect()
+    let each = frame.each().map(|(place, bytes)| (place, bytes.to_vec()));
+    each.collect()
 }
 
 #[test]

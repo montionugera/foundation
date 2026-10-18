@@ -250,6 +250,13 @@ impl Frame {
         self.parts.push((place, start, len));
     }
 
+    /// The place and bytes of each series, in the order of the pushes, or in place
+    /// order after [`Frame::sort`].
+    fn each(&self) -> impl Iterator<Item = (usize, &[u8])> {
+        let bytes = |&(place, start, len): &_| (place, &self.bytes[start..start + len]);
+        self.parts.iter().map(bytes)
+    }
+
     /// Puts the series in place order.
     fn sort(&mut self) {
         self.parts.sort_unstable_by_key(|&(place, _, _)| place);
@@ -319,11 +326,11 @@ async fn sent(
     time: Time,
 ) -> Result<Outcome, program::Error> {
     let draft = writer.draft(Form::Raw, frame.count, &frame.series).await?;
-    for &(place, start, len) in &frame.parts {
+    for (place, bytes) in frame.each() {
         draft
             .series_mut(place)
             .expect("invariant: the layout holds each series of the frame")
-            .copy_from_slice(&frame.bytes[start..start + len]);
+            .copy_from_slice(bytes);
     }
     writer.write(time).await
 }
