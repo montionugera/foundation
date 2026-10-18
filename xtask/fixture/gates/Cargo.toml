@@ -1,0 +1,5 @@
+# A workspace for the tests of the gates of the skips check: each file holds its
+# cases.
+[workspace]
+members = ["crates/*"]
+resolver = "3"

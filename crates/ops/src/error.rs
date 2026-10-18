@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use std::path::PathBuf;
 
-use connector::browse::{DEPTH, STARS};
+use connector::browse::{DEPTH, LIMIT, STARS, VISITS};
 use document::Span;
 use document::diagnostic::{Code, Diagnostic};
 use mesh::used::{Behind, Cause};
@@ -48,6 +48,20 @@ const BROWSE: Code = Code::new("ops.browse");
 const BROWSE_NODE: Code = Code::new("ops.browse-node");
 const BAD_START: Code = Code::new("ops.bad-start");
 const BAD_PATTERN: Code = Code::new("ops.bad-pattern");
+const NO_PICK: Code = Code::new("ops.no-pick");
+const PICK_LIMIT: Code = Code::new("ops.pick-limit");
+const MATCH_LIMIT: Code = Code::new("ops.match-limit");
+const BAD_POINT: Code = Code::new("ops.bad-point");
+const BAD_POINT_FIX: &str = "Give the names of the path joined by `/`, with a `\\` \
+                             before each `/`, `*`, or `\\` in a name";
+const DUPLICATE_PICK: Code = Code::new("ops.duplicate-pick");
+const BAD_NAME: Code = Code::new("ops.bad-name");
+const BAD_NAME_FIX: &str = "Give another name, or leave it out for the default name";
+const UNREADABLE_POINT: Code = Code::new("ops.unreadable-point");
+const PICK_BUDGET: Code = Code::new("ops.pick-budget");
+const MATCH_BUDGET: Code = Code::new("ops.match-budget");
+const LARGE_IMPORT: Code = Code::new("ops.large-import");
+const FILE_CHANGED: Code = Code::new("ops.file-changed");
 const MORE_PROBLEMS: Code = Code::new("ops.more-problems");
 /// The fix of [`ARGUMENT`].
 const HELP: &str =
@@ -172,6 +186,36 @@ pub(crate) enum Error {
         text: String,
         cause: connector::browse::Malformed,
     },
+    /// An import that picks no point and gives no match.
+    NoPick,
+    /// An import that picks `picked` points, more than [`LIMIT`].
+    PickLimit { picked: usize },
+    /// A match of an import of more points than [`LIMIT`].
+    MatchLimit,
+    /// Each path of a point of an import that is no path, as given, with the cause,
+    /// in the order of the picks.
+    BadPoint {
+        points: Vec<(String, connector::browse::Malformed)>,
+    },
+    /// Each path that an import picks more than once, in the order of the picks.
+    DuplicatePick { paths: Vec<String> },
+    /// Each given name of an import that is no name: the path of its point, the name
+    /// as given, and the cause, in the order of the picks.
+    BadName {
+        names: Vec<(String, String, types::name::Error)>,
+    },
+    /// Each picked point that a connector of the kind cannot read or write, by path,
+    /// with the reason.
+    UnreadablePoint { points: Vec<(String, String)> },
+    /// The walk of the picks of an import stopped at its budget before it found each
+    /// point.
+    PickBudget,
+    /// The walk of a match of an import stopped at its budget.
+    MatchBudget,
+    /// The reply of an import has more bytes than one reply holds.
+    LargeImport,
+    /// The config file at `path` changed after an import read it.
+    FileChanged { path: PathBuf },
 }
 
 /// Why a command line did not read a file.
@@ -330,6 +374,10 @@ impl Error {
             | Self::NoData { .. }
             | Self::FolderChanged { .. }
             | Self::Browse { .. }
+            | Self::PickBudget
+            | Self::MatchBudget
+            | Self::LargeImport
+            | Self::FileChanged { .. }
             | Self::Reply { .. } => 1,
             Self::Argument { .. }
             | Self::Unknown { .. }
@@ -344,12 +392,20 @@ impl Error {
             | Self::BrowseNode { .. }
             | Self::BadStart { .. }
             | Self::BadPattern { .. }
+            | Self::NoPick
+            | Self::PickLimit { .. }
+            | Self::MatchLimit
+            | Self::BadPoint { .. }
+            | Self::DuplicatePick { .. }
+            | Self::BadName { .. }
+            | Self::UnreadablePoint { .. }
             | Self::Folder { .. } => 2,
         }
     }
 
-    /// Each problem: for each error but `Config`, `Remote`, and `Browse`, one with no
-    /// place and no note.
+    /// Each problem: for each error but `Config`, `Remote`, `Browse`, `BadPoint`,
+    /// `DuplicatePick`, `BadName`, and `UnreadablePoint`, one with no place and no
+    /// note.
     #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     pub(crate) fn problems(&self) -> Cow<'_, [Problem]> {
         let (code, fix) = match self {
@@ -357,6 +413,39 @@ impl Error {
             | Self::Remote { problems, .. }
             | Self::Browse { problems, .. } => {
                 return Cow::Borrowed(problems);
+            }
+            Self::BadPoint { points } => {
+                let problems = points.iter().map(|(text, cause)| {
+                    let message = format!("the point `{text}` is not a path: {cause}");
+                    (BAD_POINT, message, BAD_POINT_FIX)
+                });
+                return Cow::Owned(problems.map(Problem::plain).collect());
+            }
+            Self::BadName { names } => {
+                let problems = names.iter().map(|(path, text, cause)| {
+                    let message = format!(
+                        "the name `{text}` of the point `{path}` is not a name: {cause}"
+                    );
+                    (BAD_NAME, message, BAD_NAME_FIX)
+                });
+                return Cow::Owned(problems.map(Problem::plain).collect());
+            }
+            Self::DuplicatePick { paths } => {
+                let problems = paths.iter().map(|path| {
+                    let message = format!("the import picks the point `{path}` twice");
+                    (DUPLICATE_PICK, message, "Pick each point once")
+                });
+                return Cow::Owned(problems.map(Problem::plain).collect());
+            }
+            Self::UnreadablePoint { points } => {
+                let problems = points.iter().map(|(path, reason)| {
+                    let message = format!(
+                        "a connector of the kind cannot read or write the point \
+                         `{path}`: {reason}"
+                    );
+                    (UNREADABLE_POINT, message, "Leave the point out of the import")
+                });
+                return Cow::Owned(problems.map(Problem::plain).collect());
             }
             Self::Node(failure) => (failure.code, failure.fix.clone()),
             Self::Argument { .. } => (ARGUMENT, HELP.to_owned()),
@@ -511,14 +600,33 @@ impl Error {
                      name"
                 ),
             ),
+            Self::NoPick => (
+                NO_PICK,
+                "Give the points to import, or `--match <pattern>`".to_owned(),
+            ),
+            Self::PickLimit { .. } => (
+                PICK_LIMIT,
+                format!("Pick at most {LIMIT} points, and import the others in another run"),
+            ),
+            Self::MatchLimit => (MATCH_LIMIT, "Narrow the start or the match".to_owned()),
+            Self::PickBudget => (
+                PICK_BUDGET,
+                "Pick the points of fewer folders, and import the others in another run"
+                    .to_owned(),
+            ),
+            Self::MatchBudget => (MATCH_BUDGET, "Narrow the start or the match".to_owned()),
+            Self::LargeImport => (
+                LARGE_IMPORT,
+                "Import fewer points at a time, or move other blocks out of the file \
+                 of the connector block"
+                    .to_owned(),
+            ),
+            Self::FileChanged { .. } => (
+                FILE_CHANGED,
+                "Run the import again on the file as it is now".to_owned(),
+            ),
         };
-        Cow::Owned(vec![Problem {
-            code: code.as_str().to_owned(),
-            message: self.to_string(),
-            fix,
-            place: None,
-            notes: Vec::new(),
-        }])
+        Cow::Owned(vec![Problem::plain((code, self.to_string(), &fix))])
     }
 
     /// `{"errors": [...]}`, with each problem.
@@ -577,6 +685,17 @@ pub(crate) struct Problem {
 }
 
 impl Problem {
+    /// The problem of `code` with `message` and `fix`, with no place and no note.
+    fn plain((code, message, fix): (Code, String, &str)) -> Self {
+        Self {
+            code: code.as_str().to_owned(),
+            message,
+            fix: fix.to_owned(),
+            place: None,
+            notes: Vec::new(),
+        }
+    }
+
     /// `ops.more-problems`: `count` more problems do not fit in one reply.
     /// `serve::fitting` takes its encoded length to change only with the digits of
     /// `count`.
@@ -898,6 +1017,41 @@ impl fmt::Display for Error {
             Self::BadPattern { text, cause } => {
                 write!(f, "the match `{text}` is not a pattern: {cause}")
             }
+            Self::NoPick => f.write_str("the import picks no point and gives no match"),
+            Self::PickLimit { picked } => write!(
+                f,
+                "the import picks {picked} points, more than {LIMIT}, the most for one \
+                 import"
+            ),
+            Self::MatchLimit => {
+                write!(f, "more than {LIMIT} points match, the most for one import")
+            }
+            Self::MatchBudget => write!(
+                f,
+                "the import stopped after {VISITS} entries, so more points can match"
+            ),
+            Self::PickBudget => write!(
+                f,
+                "the import stopped after {VISITS} entries before it found each point"
+            ),
+            Self::LargeImport => write!(
+                f,
+                "the reply of the import has more than {BODY_BYTES_MAX} bytes, the \
+                 most that a reply holds"
+            ),
+            Self::FileChanged { path } => write!(
+                f,
+                "the file {} changed after the import read it, so the import wrote \
+                 nothing",
+                path.display()
+            ),
+            Self::BadPoint { .. }
+            | Self::DuplicatePick { .. }
+            | Self::BadName { .. }
+            | Self::UnreadablePoint { .. } => match &*self.problems() {
+                [one] => f.write_str(&one.message),
+                problems => write!(f, "the import has {} problems", problems.len()),
+            },
         }
     }
 }

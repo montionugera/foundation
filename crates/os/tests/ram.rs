@@ -1,3 +1,5 @@
+//! Only macOS: the root tests check this on Linux.
+//!
 //! The drop of `free` on a RAM disk of its own, on macOS. Each test starts `hdiutil`
 //! and `diskutil`. The root tests check this on Linux, on a filesystem of their own.
 

@@ -1,8 +1,9 @@
 //! The session of a program: it dials one node as a program, keeps its hello
-//! admitted, and sends signed requests and reads.
+//! admitted, and sends signed requests, reads, and writes.
 
 mod read;
 mod turn;
+pub mod write;
 
 use std::cell::RefCell;
 use std::fmt;
@@ -15,6 +16,7 @@ use transport::stream::{Receiver, Sender};
 use transport::{Address, Class, Code};
 use types::connection;
 use types::ed25519::{Pair, PrivateKey, PublicKey};
+use types::frame::Form;
 use types::hello::Hello;
 use types::name::{Name, Selector};
 use types::time::{Monotonic, Span, Stamp};
@@ -26,6 +28,7 @@ use wire::hub::client::{
 
 pub use read::Reader;
 use turn::{Taken, Turn};
+pub use write::Writer;
 
 /// How long each hello of a [`Session`] lives. The session renews it at half its life.
 pub const LIFE: Span = Span::from_nanos(10 * Span::MINUTE.nanos());
@@ -60,22 +63,23 @@ pub struct Config {
     /// waits for a block, so a small pool makes the session slower, not fail. The wait
     /// ends when the session closes.
     pub pool: Rc<block::Pool>,
-    /// The pool that the frames of each reader take their blocks from. A frame holds
-    /// its block until it drops, and a frame that finds the pool full makes
-    /// `Reader::next` wait. Give a pool apart from `pool` and from the transport's:
-    /// frames that the program holds there stop the renewal of the hello.
+    /// The pool that the frames of each reader and the drafts of each writer take their
+    /// blocks from. A frame or a draft holds its block until it drops, and a frame that
+    /// finds the pool full makes `Reader::next` or `Writer::draft` wait. Give a pool
+    /// apart from `pool` and from the transport's: frames and drafts that the program
+    /// holds there stop the renewal of the hello.
     pub frames: Rc<block::Pool>,
 }
 
 /// A program's session with one node, as one subject. It keeps the subject's hello
-/// admitted, sends one request at a time, and opens reads beside them. It stays on
-/// the thread that made it. A clone is the same session. When the last clone and the
-/// last [`Reader`] drop, it closes the session with `Code(0)`.
+/// admitted, sends one request at a time, and opens reads and writes beside them. It
+/// stays on the thread that made it. A clone is the same session. When the last clone
+/// and the last [`Reader`] or [`Writer`] drop, it closes the session with `Code(0)`.
 #[derive(Clone, Debug)]
 pub struct Session(Rc<Handle>);
 
-/// Closes the session when the last clone of a [`Session`] and the last [`Reader`]
-/// drop. The renewal task holds only the [`Shared`] part.
+/// Closes the session when the last clone of a [`Session`] and the last [`Reader`] or
+/// [`Writer`] drop. The renewal task holds only the [`Shared`] part.
 #[derive(Debug)]
 struct Handle(Rc<Shared>);
 
@@ -218,6 +222,47 @@ impl Session {
             .await
             .map_err(|error| shared.ended.borrow().clone().unwrap_or(error))
     }
+
+    /// Opens a writer on `config.channels` as the session's subject, and waits until
+    /// the node opened it. The node must be the home of their index. A write takes no
+    /// turn: it runs beside the requests and the reads.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Unnamed`] when `config.channels` is empty, and [`Error::Open`] when the
+    /// open is over `OPEN_BYTES_MAX`, each with nothing sent. The error that ended the
+    /// renewal, when it ended before or during the open. Else [`Error::Refused`] when
+    /// the node stopped the write (`UNKNOWN` for a name of no channel, `FAILED` when
+    /// the home cannot open the write, `MALFORMED` for channels of more than one index
+    /// or a lease that the home refuses, `NOT_HOME` when the node is not the home of
+    /// the index, `REFUSED` for a signature that the node refuses, `BUSY` when the node
+    /// has no room for the open), [`Error::Transport`], [`Error::Message`] for places
+    /// that `wire` refuses or a stream that ends before the last place, and
+    /// [`Error::Pool`] when no block of [`Config::pool`] holds the open, or the head
+    /// and an end of each place of a frame, which stops the stream.
+    pub async fn writer(&self, config: write::Config) -> Result<Writer, Error> {
+        let shared = &self.0.0;
+        let write::Config {
+            authority,
+            lease,
+            channels,
+        } = config;
+        if channels.is_empty() {
+            return Err(Error::Unnamed);
+        }
+        let open = wire::hub::client::write::Open {
+            authority,
+            lease,
+            channels,
+        };
+        let length = open.encoded_len();
+        if u64::try_from(length).map_or(true, |bytes| bytes > OPEN_BYTES_MAX) {
+            return Err(Error::Open { length });
+        }
+        Writer::open(Rc::clone(&self.0), &open)
+            .await
+            .map_err(|error| shared.ended.borrow().clone().unwrap_or(error))
+    }
 }
 
 impl Shared {
@@ -283,6 +328,29 @@ impl Shared {
                 Err(error @ block::Error::TooLarge { .. }) => return Err(error.into()),
             }
         }
+    }
+
+    /// Sends the header, then the first message of a signed stream, which `first`
+    /// writes from the length of `body` and the signature of `kind` over it, then
+    /// `body`, whose length the caller capped at `OPEN_BYTES_MAX`.
+    async fn open<const LEN: usize>(
+        &self,
+        sender: &mut Sender,
+        kind: access::proof::Kind,
+        body: &[u8],
+        first: impl FnOnce(u64, [u8; 64], &mut [u8; LEN]),
+    ) -> Result<(), Error> {
+        let signature =
+            self.pair
+                .sign(&access::proof::signed(kind, self.connection, body));
+        let length =
+            u64::try_from(body.len()).expect("invariant: the caller capped it");
+        let mut message = [0; LEN];
+        first(length, signature, &mut message);
+        self.send(sender, &wire::header::encode(Protocol::Hub))
+            .await?;
+        self.send(sender, &message).await?;
+        self.send_chunks(sender, body).await
     }
 
     /// A block of `len` bytes, as [`Shared::retry`] takes it.
@@ -396,6 +464,15 @@ async fn renew(
     shared.session.close(Code(code));
 }
 
+/// Ends `stream` after `error`: stops it as `MALFORMED` when the node broke a rule of
+/// the wire, else drops it.
+fn end((sender, receiver): (Sender, Receiver), error: &Error) {
+    if matches!(error, Error::Message(_) | Error::Reply(_) | Error::Frame(_)) {
+        sender.reset(Code(MALFORMED));
+        receiver.stop(Code(MALFORMED));
+    }
+}
+
 /// A request, which keeps the turn until the node frees it.
 struct Open<'a> {
     /// `Some` until the drop.
@@ -440,19 +517,34 @@ pub enum Error {
     /// The node finished a stream with no answer: a request with no response, or the
     /// hello stream with no challenge.
     Unanswered,
-    /// No block of [`Config::pool`] can hold a message that the session sends, or no
-    /// block of [`Config::frames`] can hold a frame of a read.
+    /// No block of [`Config::pool`] can hold a message that the session sends, or
+    /// the head and an end of each place of a writer, or no block of
+    /// [`Config::frames`] can hold a frame of a read or a draft of a writer.
     Pool(block::Error),
-    /// The open of a read is over `OPEN_BYTES_MAX`. Nothing was sent.
+    /// The open of a read or a write is over `OPEN_BYTES_MAX`. Nothing was sent.
     Open {
         /// The bytes of the open.
         length: usize,
     },
-    /// The node sent a reply of a read that `wire` refuses, or finished the stream
-    /// where a reply must come.
+    /// The node sent a reply of a read or a write that `wire` refuses, or finished
+    /// the stream where a reply must come.
     Reply(wire::hub::Error),
     /// The ends of a frame of a read break a rule of the frame layout.
     Frame(types::frame::Error),
+    /// The series of [`Writer::draft`] break a rule of the frame layout. Nothing was
+    /// taken, and the writer goes on.
+    Layout(types::frame::Error),
+    /// The config of a writer names no channel. Nothing was sent.
+    Unnamed,
+    /// [`Writer::write`] cannot send a frame: it holds no sample, or it is of
+    /// [`write::Time::Node`] and is encoded or holds more than one sample. Nothing was
+    /// sent, and the writer goes on.
+    Unsent {
+        /// The samples of each series of the frame.
+        count: u32,
+        /// The form of the frame.
+        form: Form,
+    },
 }
 
 impl fmt::Display for Error {
@@ -479,8 +571,8 @@ impl fmt::Display for Error {
             }
             Self::Open { length } => write!(
                 f,
-                "the open of the read has {length} bytes, over the {OPEN_BYTES_MAX} \
-                 that a read holds"
+                "the open has {length} bytes, over the {OPEN_BYTES_MAX} that an open \
+                 holds"
             ),
             Self::Reply(error) => {
                 write!(f, "the node sent a reply that is not valid: {error}")
@@ -488,6 +580,18 @@ impl fmt::Display for Error {
             Self::Frame(error) => {
                 write!(f, "the node sent a frame that is not valid: {error}")
             }
+            Self::Layout(error) => {
+                write!(f, "the series of the draft are not valid: {error}")
+            }
+            Self::Unnamed => f.write_str("the writer names no channel"),
+            Self::Unsent { count: 0, .. } => {
+                f.write_str("the frame holds no sample, so it was not sent")
+            }
+            Self::Unsent { count, form } => write!(
+                f,
+                "a frame that the node stamps holds 1 sample in the raw form, not \
+                 {count} in the {form:?} form, so it was not sent"
+            ),
         }
     }
 }

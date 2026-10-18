@@ -8,7 +8,7 @@ use document::diagnostic::Code;
 use env::paths::{self, Found, Paths};
 use serde_json::{Value, json};
 
-use super::{Link, apply, browse, most, plan, status};
+use super::{Link, apply, browse, import, most, plan, status};
 use crate::apply::Applied;
 use crate::common::{self, create_browsing_node, create_node, name, placed_site, solo};
 use crate::error::{Error, Problem, Unread, Unusable, Unwritten};
@@ -17,6 +17,8 @@ use crate::operation::{self, DATA, Response};
 use crate::plan::Output;
 use crate::scope::{Limits, Scope};
 use crate::{Failure, Node, Run, serve};
+
+mod imports;
 
 /// A failure of `reach`, or of a request.
 fn lost() -> Failure {
@@ -38,6 +40,9 @@ fn with_site(host: &sim::node::Node) -> Paths {
     paths
 }
 
+/// The text that [`Mode::Changes`] writes in most tests.
+const CHANGED: &str = "# changed\n";
+
 /// The working directory of the host of [`with_site`].
 const WORK: &str = "/work";
 
@@ -45,6 +50,14 @@ const WORK: &str = "/work";
 enum Mode {
     /// Serves each request on the node as `@admin`.
     Serve,
+    /// Serves each request as `Serve` does, then writes these bytes to `plant.hcl`.
+    Changes(Paths, Vec<u8>),
+    /// Serves each request as `Serve` does, then moves `/work/plant.hcl` of this host
+    /// to `/work/old.hcl`, and makes a directory at its path when the flag is set.
+    Moves(sim::node::Node, bool),
+    /// Serves each request as `Serve` does, then makes the next read of `plant.hcl`
+    /// on this host fail with OS error 5.
+    Fails(sim::node::Node),
     /// Gives this reply to each request.
     Reply(Vec<u8>),
     /// Fails with [`lost`].
@@ -83,6 +96,25 @@ impl Remote {
         self.requests.set(self.requests.get() + 1);
         match &self.mode {
             Mode::Serve => Ok(serve::serve(&self.node, &name("@admin"), body).await),
+            Mode::Changes(paths, bytes) => {
+                let reply = serve::serve(&self.node, &name("@admin"), body).await;
+                paths.write(Path::new("plant.hcl"), bytes).expect("a write");
+                Ok(reply)
+            }
+            Mode::Moves(host, dir) => {
+                let reply = serve::serve(&self.node, &name("@admin"), body).await;
+                let plant = Path::new("/work/plant.hcl");
+                host.move_path(plant, Path::new("/work/old.hcl"));
+                if *dir {
+                    host.make_dir(plant);
+                }
+                Ok(reply)
+            }
+            Mode::Fails(host) => {
+                let reply = serve::serve(&self.node, &name("@admin"), body).await;
+                host.fail_path(Path::new("plant.hcl"), 5);
+                Ok(reply)
+            }
             Mode::Reply(reply) => Ok(reply.clone()),
             Mode::Unreached | Mode::Unsent => Err(lost()),
         }
@@ -92,7 +124,12 @@ impl Remote {
         self.reaches.set(self.reaches.get() + 1);
         match self.mode {
             Mode::Unreached => Err(lost()),
-            Mode::Serve | Mode::Reply(_) | Mode::Unsent => Ok(()),
+            Mode::Serve
+            | Mode::Changes(..)
+            | Mode::Moves(..)
+            | Mode::Fails(_)
+            | Mode::Reply(_)
+            | Mode::Unsent => Ok(()),
         }
     }
 
@@ -136,6 +173,18 @@ impl Remote {
             values: false,
         };
         browse(input, &Scope::free(paths), &mut Link::new(reach)).await
+    }
+
+    async fn import(
+        &self,
+        paths: &Paths,
+        input: operation::Import,
+    ) -> Result<crate::import::Output, Error> {
+        let reach = async || {
+            self.reached()?;
+            Ok(async |body: &[u8]| self.send(body).await)
+        };
+        import(input, &Scope::free(paths), &mut Link::new(reach)).await
     }
 
     async fn status(&self) -> Result<crate::status::Output, Error> {

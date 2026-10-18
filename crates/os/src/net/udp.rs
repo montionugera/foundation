@@ -676,6 +676,7 @@ mod tests {
             assert_eq!(recorded.sends, [(b"abc".to_vec(), None)]);
         }
 
+        /// Only Linux: only Linux sends a batch in one call, with GSO.
         #[test]
         #[cfg(target_os = "linux")]
         fn sends_a_batch_in_one_call() {
@@ -685,6 +686,7 @@ mod tests {
             assert_eq!(recorded.sends, [(b"abcde".to_vec(), Some(2))]);
         }
 
+        /// Only Linux: only Linux sends a batch in one call, with GSO.
         #[test]
         #[cfg(target_os = "linux")]
         fn gives_a_failure_of_a_batch_that_leaves_gso_on() {
@@ -696,6 +698,7 @@ mod tests {
             assert_eq!(recorded.sends.len(), 1);
         }
 
+        /// Only Linux: only Linux sends a batch in one call, with GSO.
         #[test]
         #[cfg(target_os = "linux")]
         fn a_refused_transmit_in_segments_of_0_bytes_leaves_gso_on() {
@@ -713,6 +716,7 @@ mod tests {
             assert!(bound.state.max_gso_segments().get() > 1);
         }
 
+        /// Only Linux: only Linux sends a batch in one call, with GSO.
         #[test]
         #[cfg(target_os = "linux")]
         fn sends_each_datagram_alone_after_the_os_refused_a_batch() {
@@ -725,6 +729,7 @@ mod tests {
             assert_eq!(recorded.sends, [alone(b"ab"), alone(b"c")]);
         }
 
+        /// Only Linux: only Linux sends a batch in one call, with GSO.
         #[test]
         #[cfg(target_os = "linux")]
         fn gives_another_failure_of_a_batch() {
