@@ -83,12 +83,12 @@
   https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6159574954, and the
   OPC UA type of an array or a String at 2026-10-15T19:32:35Z:
   https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6200602125).
-  The client checks the queued chunks of each request id against `CHUNKS` and its
-  largest message, as a server can interleave the chunks of answers (OPC UA Part 6).
-  It holds at most `READS` times (`CHUNKS` - 1) queued chunks in all (63, about 4 MiB),
-  the intermediate chunks of each answer that it can have in flight, so an interleave
-  of its answers never closes the channel, and the chunks of request ids that it did
-  not send stop at that bound. A chunk past one of these bounds closes the channel,
+  The client checks each answer against `CHUNKS` and its largest message at its final
+  chunk, as a server can interleave the chunks of answers (OPC UA Part 6). It holds
+  at most `READS` times (`CHUNKS` - 1) queued chunks in all (63, about 4 MiB), the
+  intermediate chunks of each answer that it can have in flight, so an interleave of
+  its answers never closes the channel, and the chunks of request ids that it did not
+  send stop at that bound. A chunk past one of these bounds closes the channel,
   and the read gives `BadSecureChannelClosed`. With `READS` 9, a read of 10 to 16
   requests takes 2 round trips in place of 1 (`laptop.monitor`, 2026-10-18 03:47 UTC,
   and `laptop.architect-2`, 2026-10-18T03:48:17Z,
@@ -99,9 +99,10 @@
   stays in flight until its answer); the bound of one message on the queue of all ids
   (an interleave of two answers that each fit closes the channel); the bound of
   `CHUNKS` squared (an interleave of more than 9 answers that each fit closes the
-  channel) (#3097). The per-id checks:
-  `laptop.architect-2`, 2026-10-18T03:44:48Z,
-  https://github.com/synnaxlabs/foundation/pull/3121#issuecomment-6245316650. The
+  channel) (#3097); a check of the request id of each intermediate chunk (a walk of
+  up to 62 queued chunks at each chunk, past the cost limit of P1, where an answer
+  past a bound now closes the channel at its final chunk or at the queue bound). The
+  check at the final chunk alone: RULING. The
   person, through `laptop.monitor` (kind (a)/(d)), 2026-10-18T03:47:06Z,
   https://github.com/synnaxlabs/foundation/pull/3121#issuecomment-6245333593: "A
   server that follows the rules must never lose its channel through our client. The
