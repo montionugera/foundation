@@ -313,6 +313,22 @@ fn the_wall_of_a_test_loop_starts_at_its_start_and_moves_with_its_clock() {
     assert_eq!((time.wall)(), start + Span::from_nanos(2_000_000_000));
 }
 
+#[test]
+fn the_monotonic_wall_stays_at_the_last_stamp_when_its_clock_runs_past_it() {
+    let mut sim = Sim::new(sim::Config::default());
+    let clock = sim
+        .node(sim::node::Config {
+            monotonic: Monotonic(0),
+            wall: Stamp::from_nanos(i64::MIN),
+            ..sim::node::Config::default()
+        })
+        .clock();
+    let time = Time::monotonic(clock);
+    sim.run_for(Span::from_nanos(i64::MAX)).unwrap();
+    sim.run_for(Span::from_nanos(1000)).unwrap();
+    assert_eq!((time.wall)(), Stamp::from_nanos(i64::MAX));
+}
+
 /// Four values of open62541's generator after a loop with `rng` of `seed`.
 fn draws(seed: u64) -> [u32; 4] {
     let mut sim = Sim::new(sim::Config::default());

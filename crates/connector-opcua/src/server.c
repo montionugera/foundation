@@ -20,7 +20,8 @@
 #include "shim.h"
 
 /* The certificate and private key (DER) of a test peer, the application URI in its
- * certificate, and the one certificate that its trust list holds. */
+ * certificate, which only a client reads, and the one certificate that its trust list
+ * holds. */
 typedef struct {
     UA_ByteString certificate;
     UA_ByteString key;

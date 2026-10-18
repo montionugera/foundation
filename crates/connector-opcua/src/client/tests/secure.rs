@@ -76,7 +76,8 @@ fn connect(
     mode: Mode,
 ) -> (Result<Read, Status>, u64) {
     run(seed, async move |node| {
-        serve_on(&node, 4, server_wall, Some(&server), async |mut peer| {
+        let time = event::Time::since(node.clock(), server_wall);
+        serve_on(&node, 4, time, Some(&server), async |mut peer| {
             let mut connected = peer.secure(policy, mode, &client, client_wall).await?;
             let read = Read {
                 value: peer.value,

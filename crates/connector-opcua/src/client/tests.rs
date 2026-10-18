@@ -226,28 +226,23 @@ async fn serve<T>(
     sessions: u16,
     body: impl AsyncFnOnce(Peer<'_>) -> T,
 ) -> T {
-    serve_on(node, sessions, Stamp::EPOCH, None, body).await
+    let time = event::Time::monotonic(node.clock());
+    serve_on(node, sessions, time, None, body).await
 }
 
-/// [`serve`], on a loop whose wall time starts at `wall`, with the policies of
-/// `security` when it is given.
+/// [`serve`], on a loop that reads `time`, with the policies of `security` when it is
+/// given.
 async fn serve_on<T>(
     node: &node::Node,
     sessions: u16,
-    wall: Stamp,
+    time: event::Time,
     security: Option<&Security>,
     body: impl AsyncFnOnce(Peer<'_>) -> T,
 ) -> T {
     let mut rng = node.entropy().rng();
     let local = SocketAddr::new(node.addresses()[0], PORT);
-    let manager = Manager::listening(
-        event::Time::since(node.clock(), wall),
-        node.net(),
-        local,
-        4,
-        &mut rng,
-    )
-    .expect("the port is free");
+    let manager = Manager::listening(time, node.net(), local, 4, &mut rng)
+        .expect("the port is free");
     let mut server = match security {
         // SAFETY: the close below deletes the server before the manager drops.
         Some(security) => unsafe {

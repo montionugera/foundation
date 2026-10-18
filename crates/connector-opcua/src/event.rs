@@ -53,9 +53,8 @@ impl Time {
         let read = Clock::clone(&clock);
         let origin = read.now();
         let wall = Box::new(move || {
-            Stamp::from_nanos(
-                start.nanos().saturating_add((read.now() - origin).nanos()),
-            )
+            let nanos = i64::try_from(read.now().0 - origin.0).unwrap_or(i64::MAX);
+            Stamp::from_nanos(start.nanos().saturating_add(nanos))
         });
         Self { clock, wall }
     }

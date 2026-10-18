@@ -986,4 +986,8 @@
   of the certificate, which no client config reaches in 1.5.9: OK of
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247943704,
-  2026-10-18 08:56 UTC).
+  2026-10-18 08:56 UTC). The session group of the sim server stays the accept-all
+  group, and the sim server sets no application URI: 1d opens only anonymous sessions,
+  and no check that a test reaches reads the URI. So a 1d connection checks two groups,
+  not the three of item 1 of 6247742342: OK of `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3167#issuecomment-6248291820).
