@@ -410,6 +410,22 @@ fn refuses_each_bad_given_name_with_its_path_and_its_default() {
 }
 
 #[test]
+fn refuses_a_given_name_that_another_connector_implies() {
+    let other = "connector \"mqtt\" {\n  kind = \"points\"\n  node = \"edge\"\n}\n";
+    let wants = [named("x", "t1", "mqtt.status.time")];
+    let problems = problems(added(&[PLANT, other], &wants).expect_err("in use"));
+    assert_eq!(
+        problems,
+        vec![problem(
+            "config.duplicate-name",
+            "the name \"mqtt.status.time\" of the point at \"x\" is in use in the \
+             files",
+            "Give another name, or leave it out for \"plc.x\"",
+        )]
+    );
+}
+
+#[test]
 fn refuses_a_bad_given_name_with_no_default_with_a_fix_to_give_another() {
     let long = vec!["a"; 130].join("/");
     let wants = [named(&long, "t1", "plc.@x")];
