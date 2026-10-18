@@ -1166,6 +1166,24 @@ fn the_count_goes_out_at_the_first_run_after_the_window() {
 }
 
 #[test]
+fn the_count_of_errors_goes_out_at_the_first_run_after_the_window() {
+    let lines = logged(|f| {
+        assert_eq!(f.start(), Status::GOOD);
+        for _ in 0..101 {
+            fatal(f, c"gone");
+        }
+        f.advance(ms(1000));
+        f.events.run();
+        warn(f, 1);
+    });
+    let gone = r#"ERROR gone connector="press" kind="opcua" category="client""#;
+    let mut want = vec![gone.to_owned(); 100];
+    want.push(dropped("ERROR", 1));
+    want.extend(warned(1));
+    assert_eq!(lines, want);
+}
+
+#[test]
 fn the_count_goes_out_at_the_drop_of_the_loop_when_no_run_comes() {
     let lines = logged(|f| warn(f, 101));
     let mut want = warned(100);
