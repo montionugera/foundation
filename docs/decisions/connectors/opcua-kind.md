@@ -150,7 +150,11 @@
   the browse releases its points one at a time, the one that it used least lately first,
   of those at a count of at most 100 000, and gives `Error::Device` when no point is
   left to release (round 2 finding 1 of #3102, 2026-10-18T03:25:25Z:
-  https://github.com/synnaxlabs/foundation/pull/3102#issuecomment-6245168498). The bound
+  https://github.com/synnaxlabs/foundation/pull/3102#issuecomment-6245168498, approved
+  by `laptop.architect-2`, 2026-10-18T03:34:04Z:
+  https://github.com/synnaxlabs/foundation/pull/3102#issuecomment-6245234798).
+  Supersedes the `Error::Device` at the bound of
+  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229428004. The bound
   of browses at once is #2981. The browse holds at most as many points at a count of at
   most 100 000 as the server holds for a session (`MaxBrowseContinuationPoints`, or
   `DEPTH` when the server gives 0, no value, or a value that is not a `UInt16`). Before
