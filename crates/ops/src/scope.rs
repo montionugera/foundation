@@ -7,6 +7,7 @@ use wire::hub::client::BODY_BYTES_MAX;
 
 use crate::error::{self, Error, Unread, Unusable, Unwritten};
 use crate::front_end::{self, File, FrontEnds};
+use crate::serve;
 
 /// The files that a run reaches: each one for a command line, and for `foundation mcp`
 /// only those under its folders, with its data directory hidden. The front ends pick
@@ -183,26 +184,34 @@ impl Scope {
     ///   directory in a directory, or a directory whose entries pass the bytes of one
     ///   read.
     /// - [`Error::NoConfig`] for the first directory that gives no file.
-    /// - [`Error::LargeRequest`] once the files that it read pass the most of a
-    ///   request.
+    /// - [`Error::LargeRequest`] once the JSON of the files that it read passes the
+    ///   most of a request.
     /// - The other errors of [`Scope::read`].
     pub(crate) fn config(&self, files: &[PathBuf]) -> Result<Vec<File>, Error> {
         utf8(files)?;
         let mut read = Vec::with_capacity(files.len());
         let mut total = 0;
-        let mut add = |path: &Path, bytes: Vec<u8>| {
-            total += bytes.len();
+        let large = |total| {
             if total > most() {
-                return Err(Error::LargeRequest);
+                Err(Error::LargeRequest)
+            } else {
+                Ok(total)
             }
+        };
+        let mut add = |path: &Path, bytes: Vec<u8>| {
+            // A file whose bytes pass the most gives `ops.large-request` before the
+            // check of its text.
+            large(total + bytes.len())?;
             let text = String::from_utf8(bytes).map_err(|_not_utf8| Error::Read {
                 path: path.to_owned(),
                 cause: Unread::NotUtf8,
             })?;
-            read.push(File {
+            let file = File {
                 path: path.to_owned(),
                 text,
-            });
+            };
+            total = large(total + serve::encoded(&file))?;
+            read.push(file);
             Ok(())
         };
         for path in files {
