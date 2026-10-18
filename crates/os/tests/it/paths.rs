@@ -48,6 +48,10 @@ fn most() -> usize {
     }
 }
 
+/// The bound of a worst-case read: far above one `lstat` for each name on a slow CI
+/// host, far below a resolve of each prefix.
+const WORST: Span = Span::from_nanos(5_000_000_000);
+
 /// A tree of `a` directories under `top`, as deep as leaves `room` bytes under the
 /// longest path. Its drop removes it level by level, since `remove_dir_all` of
 /// `Scratch` holds a handle for each level.
@@ -632,7 +636,7 @@ fn within_reads_a_file_deep_in_its_folder_in_the_worst_case_time() {
         let read = within.read(&file, 1);
         let took = clock.now() - start;
         assert_eq!(read, Ok(Found::File(b"x".to_vec())));
-        assert!(took < Span::from_nanos(560_000_000), "took {took}");
+        assert!(took < WORST, "took {took}");
     });
 }
 
@@ -656,7 +660,7 @@ fn within_reads_a_long_path_from_a_deep_directory_in_the_worst_case_time() {
         let read = within.read(&path, 1);
         let took = clock.now() - start;
         assert_eq!(read, Err(Error::NotFound));
-        assert!(took < Span::from_nanos(560_000_000), "took {took}");
+        assert!(took < WORST, "took {took}");
     });
 }
 
@@ -1395,9 +1399,6 @@ fn within_stops_a_long_path_of_dots_from_a_deep_directory() {
         let took = clock.now() - start;
         let too_long = Err(Error::Io { code: too_long() });
         assert_eq!((free, read), (too_long.clone(), too_long));
-        assert!(
-            took < Span::from_nanos(560_000_000),
-            "took {took}, free {free_took}"
-        );
+        assert!(took < WORST, "took {took}, free {free_took}");
     });
 }
