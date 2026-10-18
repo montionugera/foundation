@@ -27,7 +27,7 @@ use wire::hub::client::{Mode, OPEN_BYTES_MAX, Place, Refusal};
 use wire::hub::write::Reply;
 
 use crate::agent::{AGENT, name};
-use crate::connect::{ample, connect, connect_with};
+use crate::connect::{ample, connect, connect_receiving, connect_with};
 use crate::hand::{accept_stream, by_hand, send, start};
 use crate::net::own_pool;
 use crate::node::env;
@@ -1418,8 +1418,9 @@ async fn reset_in_frame(write: &mut Incoming) -> Code {
     }
 }
 
-/// An extra outcome that the transport of the program holds back while its pool has no
-/// block is read after the next frame is sent, and ends the writer with `Order`.
+/// An extra outcome that the transport of the program holds back while its receive
+/// pool has no block is read after the next frame is sent, and ends the writer with
+/// `Order`.
 #[test]
 fn ends_the_writer_at_an_extra_outcome_held_back_by_a_full_pool() {
     raw(
@@ -1436,14 +1437,15 @@ fn ends_the_writer_at_an_extra_outcome_held_back_by_a_full_pool() {
         },
         |node, tasks, at| async move {
             let clock = node.clock();
-            let pool = own_pool();
-            let session = connect_with(
+            let received = own_pool();
+            let session = connect_receiving(
                 &node,
                 tasks.clone(),
                 at,
                 AGENT,
-                Rc::clone(&pool),
                 ample(),
+                ample(),
+                Rc::clone(&received),
             )
             .await
             .expect("connects");
@@ -1451,8 +1453,8 @@ fn ends_the_writer_at_an_extra_outcome_held_back_by_a_full_pool() {
                 session.writer(config(&["value"], 1)).await.expect("opens");
             frame(&mut writer, 1, 0, &[(2, 1)]).await;
             assert_eq!(writer.write(Time::Node).await, Ok(taken(0, 1)));
+            let held = fill(&received);
             frame(&mut writer, 1, 0, &[(2, 2)]).await;
-            let held = fill(&pool);
             clock.sleep(Span::from_nanos(QUIET.nanos() * 3 / 2)).await;
             let free = clock.clone();
             tasks.spawn(async move {
