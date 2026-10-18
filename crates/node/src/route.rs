@@ -25,6 +25,17 @@ pub(crate) struct Region {
     pub(crate) store: Rc<blob::Store>,
 }
 
+impl Region {
+    /// Whether `peer` is a member: a node whose key a member holds in the view of the
+    /// mesh.
+    fn admits(&self, peer: Peer) -> bool {
+        match peer {
+            Peer::Node(key) => self.ops.mesh().holder(key).is_some(),
+            Peer::Client => false,
+        }
+    }
+}
+
 /// Serves each session of `transport` in its own future on `tasks`, until the transport
 /// stops, and gives the error that stopped it. Admits each session of a member of the
 /// mesh of `region`. Gives each session of another peer a place, of at most
@@ -47,7 +58,9 @@ pub(crate) async fn accept(
             Ok(session) => session,
             Err(error) => return error,
         };
-        let held = places.take(&session, |peer| member(peer, region.as_ref()));
+        let held = places.take(&session, |peer| {
+            region.as_ref().is_some_and(|region| region.admits(peer))
+        });
         let link = hub.link(session.clone());
         let serve = serve(
             session,
@@ -212,7 +225,7 @@ async fn route(
             }
             (Peer::Client, _) | (_, None) => reject(incoming),
         },
-        Protocol::Hub if member(peer, region.as_ref()) => {
+        Protocol::Hub if region.as_ref().is_some_and(|region| region.admits(peer)) => {
             // `serve` stops the stream with the code of its error.
             drop(link.serve(incoming).await);
         }
@@ -221,7 +234,7 @@ async fn route(
             (Peer::Client, None) | (Peer::Node(_), _) => reject(incoming),
         },
         Protocol::Blob => match region {
-            Some(region) if member(peer, Some(&region)) => {
+            Some(region) if region.admits(peer) => {
                 // `serve` stops the stream with the code of its error, and with code 0
                 // after a store failure, which only the log shows.
                 let served = blob::peer::serve(&region.store, incoming).await;
@@ -247,15 +260,6 @@ async fn answer(link: &Link, incoming: Incoming, ops: &ops::Node) {
     // `send` stops the stream with the code of its error. `ops::serve` keeps the reply
     // within the bound of a body, so `send` does not panic.
     drop(request.reply.send(&reply).await);
-}
-
-/// Whether `peer` is a member of `region`: a node whose key a member holds in the view
-/// of its mesh.
-fn member(peer: Peer, region: Option<&Region>) -> bool {
-    match (peer, region) {
-        (Peer::Node(key), Some(region)) => region.ops.mesh().holder(key).is_some(),
-        (Peer::Node(_), None) | (Peer::Client, _) => false,
-    }
 }
 
 /// The protocol that `message` names when it is a whole header, with no byte after it.

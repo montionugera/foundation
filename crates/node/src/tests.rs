@@ -395,7 +395,7 @@ fn a_shard_with_no_memory_stops_the_node_before_later_shards_start() {
         );
         assert_eq!(
             e.to_string(),
-            "no memory for the pool of shard-1: the OS refused memory for the first \
+            "no memory for a pool of shard-1: the OS refused memory for the first \
              page of a reserve; free memory or raise the commit limit of the system"
         );
     }
@@ -2623,7 +2623,10 @@ mod hub {
             let files = host.files();
             open.keep(
                 host.files(),
-                (std::rc::Rc::new(pool), None),
+                crate::Pools {
+                    shard: std::rc::Rc::new(pool),
+                    store: None,
+                },
                 tasks,
                 stop.guard(),
                 hold,
@@ -4574,7 +4577,10 @@ pub(crate) mod port {
             let opened = endpoint.open(
                 identity,
                 host.files(),
-                (super::pool(), Some(super::pool())),
+                crate::Pools {
+                    shard: super::pool(),
+                    store: Some(super::pool()),
+                },
                 &time,
                 tasks.clone(),
             );
