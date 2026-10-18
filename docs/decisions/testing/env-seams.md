@@ -668,6 +668,9 @@
   there, which keeps each of them and gives up the whole write. The cost: an operator
   that opens a file to a group opens it again after each write, as after the first. Look
   again when a caller writes a file that the user made, as a formatter of config files.
+  `import` is such a caller, and the look kept this shape (IMPORT;
+  `laptop.architect-2`, 2026-10-18T06:03:37Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6246366941).
   The hidden file has a name of 21 bytes, and a write gives `Io` where the OS refuses
   its path as too long. Lost: the open and the rename through a handle of the directory,
   which needs read access to the directory, or an open flag that Linux and macOS do not
