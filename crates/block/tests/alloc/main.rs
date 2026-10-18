@@ -10,7 +10,8 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use block::{Config, Heap, Pool};
 
-/// Counts the allocations, the zeroed allocations, and the frees of the process.
+/// Counts the allocations, the bytes of zeroed allocations, and the frees of the
+/// process.
 struct Counting {
     count: AtomicU64,
     zeroed: AtomicU64,
@@ -27,7 +28,7 @@ unsafe impl GlobalAlloc for Counting {
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         self.count.fetch_add(1, Relaxed);
-        self.zeroed.fetch_add(1, Relaxed);
+        self.zeroed.fetch_add(layout.size() as u64, Relaxed);
         // SAFETY: the caller keeps the contract of `GlobalAlloc::alloc_zeroed`.
         unsafe { System.alloc_zeroed(layout) }
     }
@@ -128,23 +129,31 @@ fn heap() {
         2,
         "a heap frees both"
     );
-    assert_eq!(
-        ALLOCATOR.zeroed.load(Relaxed) - zeroed,
-        0,
+    // A release build may get the page bits zeroed from the allocator.
+    let bits = (1 << 20) / 4096 / 8;
+    assert!(
+        ALLOCATOR.zeroed.load(Relaxed) - zeroed <= bits,
         "a heap writes zero only over the pages that it commits"
     );
-    if cfg!(all(target_os = "linux", not(miri))) {
-        let before = resident();
-        let heap = Heap::new(1 << 28);
-        assert!(
-            resident().saturating_sub(before) < 1024,
-            "a heap touches only the pages that it commits"
-        );
-        drop(heap);
-    }
+    #[cfg(all(target_os = "linux", not(miri)))]
+    untouched();
+}
+
+/// A new heap adds no page to the process in memory.
+// needs /proc/self/statm
+#[cfg(all(target_os = "linux", not(miri)))]
+fn untouched() {
+    let before = resident();
+    let heap = Heap::new(1 << 28);
+    assert!(
+        resident().saturating_sub(before) < 1024,
+        "a heap touches only the pages that it commits"
+    );
+    drop(heap);
 }
 
 /// The pages of the process in memory, from Linux.
+#[cfg(all(target_os = "linux", not(miri)))]
 fn resident() -> u64 {
     let statm = std::fs::read_to_string("/proc/self/statm").expect("Linux gives statm");
     let pages = statm
