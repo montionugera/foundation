@@ -33,19 +33,20 @@
   https://github.com/synnaxlabs/foundation/issues/2756#issuecomment-6202718051, and of
   `laptop.architect-2` for `sim` (2026-10-15T21:32:24Z):
   https://github.com/synnaxlabs/foundation/issues/2756#issuecomment-6202725115.
-  Amended (#3135): Miri runs on eight hosted runners, `miri shard <k>`, each with
-  `cargo xtask miri <k>/8`, and the required check `miri` passes when each shard
-  passed. For each set of `MIRIFLAGS`, `cargo miri nextest` runs the lib tests of the
-  partition `hash:<k+1>/8`, and fails when it runs none. `cargo miri test` runs the
-  doc tests of each crate that has one and each other test target whole, and fails
-  when a target with a harness runs none. These units go in order of target, then of
-  flags, and shard `k` takes each eighth unit from unit `k`. Ruling of
+  Amended (#3135): Miri runs on eight hosted runners, `miri shard <k>`, each with `cargo
+  xtask miri <k>/8`, and the required check `miri` passes when each shard passed. For
+  each set of `MIRIFLAGS`, `cargo miri nextest` runs the lib tests of the partition
+  `hash:<k+1>/8`, and fails when it runs none. `cargo miri test` runs the doc tests of
+  each crate that has a doc test that Miri runs and each other test target whole, and
+  fails when a run of the doc tests or of a target with a harness runs none. A crate
+  that names `unsafe_code` and runs no test under Miri fails. These units go in order of
+  target, then of flags, and shard `k` takes each eighth unit from unit `k`. Ruling of
   `laptop.director` (nextest in place of our own runner), 2026-10-18T07:07:27Z:
   https://github.com/synnaxlabs/foundation/pull/3151#issuecomment-6246962539. OK of
-  `laptop.director` that only the lib tests go to nextest:
-  https://github.com/synnaxlabs/foundation/pull/3151#issuecomment-6247629164. Trigger
-  to send the other targets with a harness to nextest: a Miri crate gets a slow
-  target that has a harness. The one job took 35 min (run 39096947760). In run
-  39109178137 the Miri step of the slowest shard took 415 s with `hash`, 700 s with
-  `count`, and 709 s with `slice`. OK of the person for cargo-nextest: owed. Approval
-  of `ci.yaml` by the person: owed.
+  `laptop.director` that only the lib tests go to nextest, 2026-10-18T08:27:25Z:
+  https://github.com/synnaxlabs/foundation/pull/3151#issuecomment-6247629164. Trigger to
+  send the other targets with a harness to nextest: a Miri crate gets a slow target that
+  has a harness. The one job took 35 min (run 39096947760). In run 39109178137 the Miri
+  step of the slowest shard took 415 s with `hash`, 700 s with `count`, and 709 s with
+  `slice`. OK of the person for cargo-nextest: owed. Approval of `ci.yaml` by the
+  person: owed.

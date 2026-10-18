@@ -25,10 +25,11 @@ exclude_re = [
   '^bench/',
   # `main` reads the arguments and calls a task. Each task has its own tests.
   'xtask/src/main\.rs:.*(replace main ->| in main$)',
-  # These five need the pinned nightly and cargo-nextest, which only the miri shard CI
-  # jobs install. Each choice of the run is in a `pub(crate)` function of `miri` with
-  # its own test; these only start the commands. A test that panics under Miri, planted
-  # in a lib, a doc test, or another target, fails the shard job that runs it.
+  # These five need the pinned nightly, and `run`, `list`, and `nextest` also need
+  # cargo-nextest, which only the miri shard CI jobs install. Each choice of the plan is
+  # in a `pub(crate)` function of `miri` with its own test; these start the commands and
+  # compose the results. A test that panics under Miri, planted in a lib, a doc test, or
+  # another target, fails the shard job that runs it.
   'xtask/src/miri\.rs:.*(replace run ->| in run$)',
   'xtask/src/miri\.rs:.*(replace doc_tests ->| in doc_tests$)',
   'xtask/src/miri\.rs:.*(replace list ->| in list$)',

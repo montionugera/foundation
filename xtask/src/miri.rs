@@ -27,8 +27,7 @@ const PARTITION: &str = "hash";
 /// `connector-opcua`.
 pub(crate) const SKIPPED: [&str; 2] = ["os", crate::sanitizers::CRATE];
 
-/// The workspace crates whose source names `unsafe_code`, the lint that each `unsafe`
-/// use must expect, except those in [`SKIPPED`]. The CI checks of `main` read them.
+/// The package of each crate of [`crates`], for the tests of `main.rs`.
 #[cfg(test)]
 pub(crate) fn packages(metadata: &Value) -> Result<Vec<select::Package>, String> {
     Ok((crates(metadata)?.into_iter())
@@ -122,7 +121,7 @@ impl fmt::Display for Part {
 /// A part of one pass: its `MIRIFLAGS`, its crate, and the part.
 pub(crate) type Unit<'a> = (&'a str, &'a select::Package, &'a Part);
 
-/// A crate of [`packages`], with the parts of its tests that `cargo miri test` runs.
+/// A crate of [`crates`], with the parts of its tests that `cargo miri test` runs.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Crate {
     pub(crate) package: select::Package,
@@ -187,7 +186,8 @@ impl Crate {
     }
 }
 
-/// Each crate of [`packages`], in the order of `metadata`.
+/// Each workspace crate whose source names `unsafe_code`, the lint that each `unsafe`
+/// use must expect, except those in [`SKIPPED`], in the order of `metadata`.
 pub(crate) fn crates(metadata: &Value) -> Result<Vec<Crate>, String> {
     let objects = select::objects(metadata, |s| select::has_word(s, "unsafe_code"))?;
     let mut crates = (objects.into_iter())
@@ -275,7 +275,7 @@ pub(crate) fn problem(
 }
 
 /// Runs the Miri tests of `shard`, of each pass in [`PASSES`] and each crate of
-/// [`packages`]. `cargo miri nextest` runs the lib tests of the partition of `shard`,
+/// [`crates`]. `cargo miri nextest` runs the lib tests of the partition of `shard`,
 /// one process for each test, and fails when the partition has none. `cargo miri test`
 /// runs the doc tests of a crate, or another test target, whole, one at a time on each
 /// core. It uses rustup, the nightly in `rust-toolchain-nightly`, and the
