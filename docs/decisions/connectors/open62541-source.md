@@ -1012,5 +1012,10 @@
   PR 2a of #2934 moves the client part into `shim.c`. The client sends the first URI of
   the subject alternative name of its certificate, from
   `UA_CertificateUtils_getApplicationUri`, a change to the copy ("Local patches" in
-  `docs/dependencies.md`). A test that needs one policy sets the policy URI on the
-  client after `shim_client_secure`, so the index and its abort go.
+  `docs/dependencies.md`), so no second read of the name exists. Lost: our C on the
+  `libcrypto` of aws-lc in `shim.c`, which only the OpenSSL plugins of the copy
+  include; our own DER parser; and a Rust X.509 crate, a second parse of the
+  certificate (`laptop.architect-2`, 2026-10-18 20:53 UTC,
+  https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6255016583). A
+  test that needs one policy sets the policy URI on the client after
+  `shim_client_secure`, so the index and its abort go.
