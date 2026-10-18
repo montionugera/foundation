@@ -11,10 +11,11 @@
 # so a new run or a rerun replaces the old one. A canceled run counts only on a
 # required check: the Review workflow cancels its own `gate` runs, and the `review`
 # status, not `gate`, is the required check.
-# A failed check stops it only when it is required, a commit status, or the `gate` job
-# of the Review workflow: a failed `gate` can leave the required `review` status
-# pending, so the PR never merges. A failed job that is not required, such as a known
-# flake, does not hold the merge queue.
+# A failed check stops it only when it is required or is the `gate` job of the Review
+# workflow: a failed `gate` can leave the required `review` status pending, so the PR
+# never merges. A failed job that is not required, such as a known flake, does not
+# stop it. When a required job needs that job, as `mutants` needs each
+# `mutants shard`, it stops when the required job fails.
 # For a short time after the queue merges a PR, GitHub gives it as open and out of the
 # queue, with a last removal of reason `merged`. It waits for the next read.
 set -u
@@ -30,8 +31,8 @@ q='query($n:Int!){repository(owner:"synnaxlabs",name:"foundation"){
     __typename
     ... on CheckRun{name databaseId conclusion isRequired(pullRequestNumber:$n)
       checkSuite{workflowRun{databaseId workflow{name}}}}
-    ... on StatusContext{state}}}}}}}}}}'
-jq='def stops: .isRequired or .status
+    ... on StatusContext{state isRequired(pullRequestNumber:$n)}}}}}}}}}}'
+jq='def stops: .isRequired
     or (.name == "gate" and .checkSuite.workflowRun.workflow.name == "Review");
   .data.repository.pullRequest |
   (.commits.nodes[0].commit.statusCheckRollup.contexts.nodes // []) as $nodes |
@@ -43,7 +44,7 @@ jq='def stops: .isRequired or .status
       | group_by(.name) | map(max_by(.databaseId)))
     | add // [])
   + [$nodes[] | select(.__typename == "StatusContext")
-    | {conclusion: .state, status: true}])
+    | {conclusion: .state, isRequired}])
   as $checks |
   if .state == "MERGED" then "merged"
   elif .state != "OPEN" then "closed"

@@ -132,8 +132,10 @@ job() {
     "isRequired":%s,"checkSuite":{"workflowRun":{"databaseId":%s,
     "workflow":{"name":"%s"}}}}' "$3" "$4" "$5" "$6" "$2" "$1"
 }
+# status <state> [<required>]: a commit status, required unless <required> is false.
 status() {
-  printf '{"__typename":"StatusContext","state":"%s"}' "$1"
+  printf '{"__typename":"StatusContext","state":"%s","isRequired":%s}' "$1" \
+    "${2-true}"
 }
 review=$(status SUCCESS)
 merged=$(pr MERGED)
@@ -158,7 +160,8 @@ for c in FAILURE TIMED_OUT STARTUP_FAILURE ACTION_REQUIRED; do
 done
 run "failed gate of Review" 1 "#7 has a failed check" 1 \
   "$(pr OPEN "$(job Review 1 gate 3 '"FAILURE"' false)" "$review")"
-for j in "CI macos" "SDK gate (macos-15, test_client.py)" "SDK gate"; do
+for j in "CI macos" "SDK gate (macos-15, test_client.py)" "SDK gate" "Review lint"
+do
   run "failed $j that is not required waits" 0 "#7 merged" 2 \
     "$(pr OPEN "$(job "${j%% *}" 1 "${j#* }" 3 '"FAILURE"' false)" "$review")" \
     "$merged"
@@ -166,6 +169,8 @@ done
 for c in FAILURE ERROR; do
   run "$c status" 1 "#7 has a failed check" 1 "$(pr OPEN "$(status $c)")"
 done
+run "failed status that is not required waits" 0 "#7 merged" 2 \
+  "$(pr OPEN "$(status FAILURE false)" "$review")" "$merged"
 run "rerun passed" 0 "#7 merged" 2 \
   "$(pr OPEN "$(job CI 1 test 3 '"FAILURE"' true)" \
     "$(job CI 1 test 4 '"SUCCESS"' true)" "$review")" \
@@ -291,13 +296,14 @@ fields=$(jq '.data.repository.pullRequest | . as $pr
     . as $f | $pr | has($f))
   and (.timelineItems.nodes[0].reason | type) == "string"
   and (.commits.nodes[0].commit.statusCheckRollup.contexts.nodes
-  | any(.[]; .__typename == "CheckRun")
+  | any(.[]; .__typename == "CheckRun") and any(.[]; .__typename == "StatusContext")
   and all(.[]; .__typename != "CheckRun" or ((.name | type) == "string"
     and has("conclusion") and (.databaseId | type) == "number"
     and (.checkSuite.workflowRun.databaseId | type) == "number"
     and (.checkSuite.workflowRun.workflow.name | type) == "string"
     and (.isRequired | type) == "boolean"))
-  and all(.[]; .__typename != "StatusContext" or (.state | type) == "string"))' \
+  and all(.[]; .__typename != "StatusContext" or ((.state | type) == "string"
+    and (.isRequired | type) == "boolean")))' \
   "$tmp/live/1428.json")
 check "API on #1428 gives each field" 0 "$fields" 1 0 true 1
 # The queue removed #2216 for a failed check, then because it merged.
