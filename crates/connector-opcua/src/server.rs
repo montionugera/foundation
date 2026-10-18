@@ -2,15 +2,17 @@
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
-use std::ffi::CStr;
+use std::ffi::{CStr, c_int};
 use std::future::poll_fn;
 use std::mem::ManuallyDrop;
 use std::panic::{self, AssertUnwindSafe};
 use std::pin::pin;
 use std::ptr::NonNull;
 use std::task::Poll;
+use std::thread;
 
 use crate::connection::Manager;
+use crate::event;
 use crate::ffi::{self, Status};
 use crate::node::{Key, Node, ns0};
 use crate::value::Value;
@@ -552,7 +554,8 @@ impl Server {
     ///
     /// As [`Server::start`] and [`Server::close`] do. A panic of `add` closes the
     /// server and drops `manager` before it goes on. Another panic leaks the server and
-    /// `manager`.
+    /// `manager`. A drop of the future while it waits, as in a crash of its node,
+    /// closes the server and drops `manager` in the drop, with no wait.
     pub(crate) async fn serve<T>(
         manager: Manager,
         sessions: u16,
@@ -560,16 +563,22 @@ impl Server {
         until: impl Future<Output = T>,
     ) -> T {
         let manager = ManuallyDrop::new(manager);
-        // SAFETY: each close below deletes the server before the manager drops. A
-        // panic out of `start` leaks the manager, and the server if open62541 made
-        // it. A panic out of the drive, `until`, or a close, and a drop of this future
-        // while it waits, leak both.
-        let mut server = unsafe { Self::start(&manager, c"", sessions) };
-        if let Err(panic) = panic::catch_unwind(AssertUnwindSafe(|| add(&mut server))) {
-            server.close(&manager).await;
-            drop(ManuallyDrop::into_inner(manager));
+        // SAFETY: each close deletes the server before the manager drops. A panic out
+        // of `start` leaks the manager, and the server if open62541 made it.
+        let server = unsafe { Self::start(&manager, c"", sessions) };
+        let mut serving = Serving {
+            server: Some(server),
+            manager,
+        };
+        let added = panic::catch_unwind(AssertUnwindSafe(|| {
+            add(serving.server.as_mut().expect("invariant: not closed yet"));
+        }));
+        if let Err(panic) = added {
+            serving.close().await;
+            drop(serving);
             panic::resume_unwind(panic);
         }
+        let manager = &serving.manager;
         let out = {
             let mut drive = pin!(manager.drive(|_| Poll::<()>::Pending));
             let mut until = pin!(until);
@@ -579,8 +588,7 @@ impl Server {
             })
             .await
         };
-        server.close(&manager).await;
-        drop(ManuallyDrop::into_inner(manager));
+        serving.close().await;
         out
     }
 
@@ -595,6 +603,39 @@ impl Server {
     /// defect. Each panic but the refused delete comes before the delete, so the
     /// server still lives after it.
     pub(crate) async fn close(self, manager: &Manager) {
+        let events = self.stop(manager);
+        let mut runs = 0;
+        manager
+            .drive(|_| {
+                runs += 1;
+                drained(events, runs)
+            })
+            .await;
+        self.delete();
+    }
+
+    /// Closes the server as [`Server::close`] does, but only runs the loop: no
+    /// connection reads, writes, or sleeps, so it can run in a drop where no I/O can.
+    /// Each connection closes with what waits on it unsent.
+    ///
+    /// # Panics
+    ///
+    /// As [`Server::close`].
+    fn close_now(self, manager: &Manager) {
+        let events = self.stop(manager);
+        let mut runs = 0;
+        loop {
+            events.run();
+            runs += 1;
+            if drained(events, runs).is_ready() {
+                break;
+            }
+        }
+        self.delete();
+    }
+
+    /// Stops the server, and gives the loop of `manager`.
+    fn stop<'m>(&self, manager: &'m Manager) -> &'m event::Loop {
         let events = manager.events();
         assert!(
             events.raw() == self.events,
@@ -603,23 +644,11 @@ impl Server {
         // SAFETY: the server lives.
         let status = Status(unsafe { ffi::test::UA_Server_run_shutdown(self.raw()) });
         assert_eq!(status, Status::GOOD, "open62541 refused the server stop");
-        // SAFETY: a constant of `shim.c`.
-        let passes = unsafe { ffi::shim_free_passes };
-        let mut runs = 0;
-        manager
-            .drive(|_| {
-                runs += 1;
-                if !events.delayed() {
-                    return Poll::Ready(());
-                }
-                assert!(
-                    runs < passes,
-                    "open62541 queued delayed callbacks for {passes} runs of a server \
-                     close"
-                );
-                Poll::Pending
-            })
-            .await;
+        events
+    }
+
+    /// Deletes the stopped server, and frees the context of each source.
+    fn delete(self) {
         // SAFETY: the server lives.
         let state = unsafe { ffi::test::UA_Server_getLifecycleState(self.raw()) };
         assert_eq!(
@@ -635,6 +664,55 @@ impl Server {
             // SAFETY: the server that read it is deleted, and nothing else holds it.
             drop(unsafe { Box::from_raw(source.as_ptr()) });
         }
+    }
+}
+
+/// Gives `Ready` once no delayed callback waits on `events` after run `runs` of a
+/// close.
+///
+/// # Panics
+///
+/// If one still waits after run 64.
+fn drained(events: &event::Loop, runs: c_int) -> Poll<()> {
+    if !events.delayed() {
+        return Poll::Ready(());
+    }
+    // SAFETY: a constant of `shim.c`.
+    let passes = unsafe { ffi::shim_free_passes };
+    assert!(
+        runs < passes,
+        "open62541 queued delayed callbacks for {passes} runs of a server close"
+    );
+    Poll::Pending
+}
+
+/// A server of [`Server::serve`] and its manager. A drop that is not in a panic
+/// closes the server, if it still lives, as [`Server::close_now`] does, and drops the
+/// manager. A drop in a panic leaks both, as the server may be in a call that
+/// panicked.
+struct Serving {
+    server: Option<Server>,
+    manager: ManuallyDrop<Manager>,
+}
+
+impl Serving {
+    /// Closes the server as [`Server::close`] does.
+    async fn close(&mut self) {
+        let server = self.server.take().expect("invariant: one close");
+        server.close(&self.manager).await;
+    }
+}
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            return;
+        }
+        if let Some(server) = self.server.take() {
+            server.close_now(&self.manager);
+        }
+        // SAFETY: the server is deleted, and nothing drops the manager again.
+        unsafe { ManuallyDrop::drop(&mut self.manager) };
     }
 }
 

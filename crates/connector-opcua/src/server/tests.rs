@@ -1,9 +1,14 @@
+use std::future::{pending, poll_fn};
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::task::Poll;
 
-use ::sim::{Sim, node};
+use ::sim::{Crash, Sim, node};
+use env::net::tcp;
+use types::time::Span;
 
 use super::{READ, Server, Variable};
-use crate::connection::Manager;
+use crate::connection::{Manager, OPTIONS};
 use crate::event;
 use crate::node::{Node, ns0};
 use crate::unwind::caught;
@@ -43,6 +48,87 @@ fn an_add_of_a_node_of_the_number_0_panics_and_frees_the_port() {
         .expect("the serve frees the port");
     })
     .expect("the run ends");
+}
+
+#[test]
+fn a_drop_of_a_serve_that_waits_closes_the_server_and_frees_the_port() {
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    sim.run_on(&node, move |node, _| async move {
+        let mut rng = node.entropy().rng();
+        let local = SocketAddr::new(node.addresses()[0], 4840);
+        let listen = |rng: &mut _| {
+            Manager::listening(
+                event::Time::monotonic(node.clock()),
+                node.net(),
+                local,
+                4,
+                rng,
+            )
+        };
+        let manager = listen(&mut rng).expect("the port is free");
+        let mut serve = Box::pin(Server::serve(manager, 1, |_| {}, pending::<()>()));
+        let waits = poll_fn(|cx| Poll::Ready(serve.as_mut().poll(cx).is_pending()));
+        assert!(waits.await, "the serve waits on its end");
+        drop(serve);
+        listen(&mut rng).expect("the drop frees the port");
+    })
+    .expect("the run ends");
+}
+
+/// A crash drops the future of the serve where no I/O or sleep can run, while a
+/// stream is open on the server.
+#[cfg(feature = "sim")]
+#[test]
+fn a_crash_while_a_stream_is_open_frees_the_server() {
+    let mut sim = Sim::new(::sim::Config::default());
+    let (device, peer) = (
+        sim.node(node::Config::default()),
+        sim.node(node::Config::default()),
+    );
+    let local = SocketAddr::new(device.addresses()[0], 4840);
+    let held = Arc::new(());
+    let (served, node) = (Arc::clone(&held), device.clone());
+    let started = device.shards().start(shard("serve"), move |_| async move {
+        let manager = Manager::listening(
+            event::Time::monotonic(node.clock()),
+            node.net(),
+            local,
+            4,
+            &mut node.entropy().rng(),
+        )
+        .expect("the port is free");
+        let source: Node = "ns=1;i=7".parse().expect("a node");
+        let add = |server: &mut Server| {
+            server.add_source(&source, move || {
+                let () = *served;
+                (Value::I32(1), types::quality::Quality::GOOD)
+            });
+        };
+        Server::serve(manager, 1, add, pending::<()>()).await;
+    });
+    drop(started.expect("the shard starts"));
+    let net = peer.net();
+    let config = tcp::Config {
+        remote: local,
+        options: OPTIONS,
+    };
+    let started = peer.shards().start(shard("dial"), move |_| async move {
+        let _stream = net.connect(&config).await.expect("the connect works");
+        pending::<()>().await;
+    });
+    drop(started.expect("the shard starts"));
+    sim.run_for(Span::SECOND).expect("the run goes on");
+    assert_eq!(Arc::strong_count(&held), 2, "the server holds its source");
+    sim.crash(&device, Crash::Power);
+    assert_eq!(Arc::strong_count(&held), 1, "the crash frees the source");
+}
+
+fn shard(name: &str) -> env::shards::Config {
+    env::shards::Config {
+        name: name.into(),
+        core: None,
+    }
 }
 
 /// A value whose mask names no built-in type (63), or that ends before its Double,
