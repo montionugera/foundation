@@ -1,6 +1,6 @@
 //! `foundation start`: a node on a data directory until SIGTERM.
 
-use crate::quickstart::shown;
+use crate::quickstart::blocks;
 use crate::rig::{self, Rig};
 use crate::{after_stamp, logged, text};
 
@@ -100,17 +100,38 @@ fn a_node_with_json_logs_json() {
     assert_eq!(messages, ["started", "stopped"]);
 }
 
-/// What `foundation start --name edge` prints on a first start: the start block of the
-/// quickstart page.
+/// What `foundation start --name edge` prints to standard output on a first start.
 fn runs() -> &'static str {
-    shown("node ")
+    started().1
+}
+
+/// The start block of the quickstart page: the log of a first start on stderr, then
+/// its standard output.
+fn started() -> (&'static str, &'static str) {
+    let shown: Vec<_> = blocks("text")
+        .filter(|block| block.contains(" INFO node: started "))
+        .collect();
+    let [block] = shown[..] else {
+        panic!("the page has {} start blocks, not one", shown.len());
+    };
+    logged(block.as_bytes())
+}
+
+/// Each word of the first line of `log` after its stamp, with no value after a `=`.
+fn shape(log: &str) -> Vec<&str> {
+    (unstamped(log)[0].split(' '))
+        .map(|word| word.split_once('=').map_or(word, |(key, _)| key))
+        .collect()
 }
 
 #[test]
 fn a_node_prints_that_it_runs_and_exits_0_at_sigterm() {
     let mut rig = Rig::new();
     rig.start();
-    assert_eq!(ended(&rig.stop()), (Some(0), runs(), ""));
+    let output = rig.stop();
+    let (log, stdout) = started();
+    assert_eq!(ended(&output), (Some(0), stdout, ""));
+    assert_eq!(shape(logged(&output.stderr).0), shape(log));
 }
 
 #[test]
