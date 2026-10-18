@@ -872,7 +872,7 @@ fn the_drop_panics_once_and_aborts_after_64_passes() {
     );
 }
 
-/// Logs a warning at level 700, when `child::running()`.
+/// Logs a message at level 700, which open62541 does not name, when `child::running()`.
 #[test]
 fn log_at_level_700() {
     if child::running() {

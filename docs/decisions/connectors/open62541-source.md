@@ -911,8 +911,8 @@
   and each policy file other than `Basic256Sha256`, `Aes128_Sha256_RsaOaep`,
   `Aes256_Sha256_RsaPss`, and their common code. So the copy compiles only the three
   current policies and `None`, and the production code adds no other. `shim.c` defines
-  each symbol that the rest of the copy names from a left-out file to print its name and
-  abort, and a test calls each one. A test fails on another policy file in
+  each symbol that the rest of the copy names from a left-out file to panic with its
+  name and abort, and a test calls each one. A test fails on another policy file in
   `sources.txt`. A test fails when the production code names a policy or a certificate
   group, or a function `UA_CertificateUtils_*`, other than at its stub in `shim.c`, and
   a test fails when the objects of `shim.c` or `server.c` name aws-lc or a symbol of
