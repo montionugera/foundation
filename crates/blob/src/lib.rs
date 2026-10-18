@@ -3390,6 +3390,25 @@ mod tests {
         }
 
         #[test]
+        fn of_a_listed_chunk_under_the_floor_with_a_local_put_fails_neither() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let (digest, block) = chunk(7, 3000);
+                create_file(&node, &path(digest), &block).await;
+                let free_bytes = node.files().free().await.unwrap();
+                let store = open_leaving(&node, free_bytes + 1).await;
+                let received = async {
+                    let receipt = store.receive(digest, 3000).await?;
+                    end(receipt, &block).await
+                };
+                let got = Box::pin(join(received, store.put(digest, &block))).await;
+                assert_eq!(got, (Ok(()), Ok(())));
+                assert_eq!(store.status().failures, 0);
+            })
+            .unwrap();
+        }
+
+        #[test]
         fn of_a_listed_chunk_whose_first_directory_sync_fails_gives_io_and_keeps_it() {
             let (mut sim, node) = create_default_node(0);
             sim.run_on(&node, |node, _| async move {
