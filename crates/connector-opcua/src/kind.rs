@@ -175,6 +175,7 @@ async fn walk(
     let time = event::Time::mesh(ctx.clock().clone(), ctx.time().await?);
     let found = session(
         time,
+        tracing::Span::none(),
         ctx.net().clone(),
         &mut ctx.rng(),
         &address,
@@ -190,6 +191,7 @@ async fn run(ctx: Context<Config>) -> Result<(), Error> {
     let time = event::Time::mesh(ctx.clock().clone(), frames.writer.time());
     let ran = session(
         time,
+        ctx.span().clone(),
         ctx.net().clone(),
         &mut ctx.rng(),
         &ctx.config().address,
@@ -200,27 +202,25 @@ async fn run(ctx: Context<Config>) -> Result<(), Error> {
     ran.unwrap_or(Ok(()))
 }
 
-/// Connects to `address` with `time`, `net`, and `rng`, gives the client to `work`,
-/// and then closes the session. `None` when `until` ends before the connect.
+/// Connects to `address` with `time`, `span`, `net`, and `rng`, as [`Client::connect`]
+/// does, gives the client to `work`, and then closes the session. `None` when `until`
+/// ends before the connect.
 ///
 /// # Errors
 ///
 /// [`Error::Device`] with the address when the connect fails.
 async fn session<T>(
     time: event::Time,
+    span: tracing::Span,
     net: Net,
     rng: &mut Rng,
     address: &CStr,
     until: impl Future<Output = ()>,
     work: impl AsyncFnOnce(&mut Client) -> T,
 ) -> Result<Option<T>, Error> {
-    let connected = Client::connect(time, net, rng, address, until).await;
-    let connected = connected.map_err(|status| {
-        device(Failure::Connect {
-            address: address.to_string_lossy().into_owned(),
-            status,
-        })
-    })?;
+    let connected = Client::connect(time, span, net, rng, address, until).await;
+    let connected =
+        connected.map_err(|status| failed(address, Call::Connect, status))?;
     let Some(mut client) = connected else {
         return Ok(None);
     };
@@ -246,12 +246,8 @@ async fn read(
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
     loop {
         let idle = client.idle(timer.tick(ctx.cancel())).await;
-        let Some(tick) = idle.map_err(|status| {
-            device(Failure::Check {
-                address: client.address().to_owned(),
-                status,
-            })
-        })?
+        let Some(tick) =
+            idle.map_err(|status| failed(client.url(), Call::Check, status))?
         else {
             break;
         };
@@ -265,12 +261,7 @@ async fn read(
         };
         let values = match read {
             Ok(values) => values,
-            Err(status) => {
-                return Err(device(Failure::Read {
-                    address: client.address().to_owned(),
-                    status,
-                }));
-            }
+            Err(status) => return Err(failed(client.url(), Call::Read, status)),
         };
         frames.write(values, stamp)?;
     }
@@ -527,23 +518,22 @@ fn large_read(reads: &[Read], &Large { index, bytes, most }: &Large) -> Error {
     )])
 }
 
+/// A call to the server that a [`Failure::Client`] names.
+#[derive(Debug)]
+pub(crate) enum Call {
+    Connect,
+    Read,
+    Check,
+    Browse,
+}
+
 /// Why a run ended with [`Error::Device`].
 #[derive(Debug)]
 pub(crate) enum Failure {
-    Connect {
+    /// `call` to the server at `address` failed with `status`.
+    Client {
         address: String,
-        status: Status,
-    },
-    Read {
-        address: String,
-        status: Status,
-    },
-    Check {
-        address: String,
-        status: Status,
-    },
-    Browse {
-        address: String,
+        call: Call,
         status: Status,
     },
     /// The tags and names before the pages of a browse pass [`crate::browse::BYTES`].
@@ -556,19 +546,18 @@ pub(crate) enum Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Connect { address, status } => {
-                write!(f, "the connect to {address} failed with {}", status.name())
-            }
-            Self::Read { address, status } => {
-                write!(f, "the read from {address} failed with {}", status.name())
-            }
-            Self::Check { address, status } => write!(
-                f,
-                "the connectivity check of {address} failed with {}",
-                status.name()
-            ),
-            Self::Browse { address, status } => {
-                write!(f, "the browse of {address} failed with {}", status.name())
+            Self::Client {
+                address,
+                call,
+                status,
+            } => {
+                let call = match call {
+                    Call::Connect => "the connect to",
+                    Call::Read => "the read from",
+                    Call::Check => "the connectivity check of",
+                    Call::Browse => "the browse of",
+                };
+                write!(f, "{call} {address} failed with {}", status.name())
             }
             Self::Names => write!(
                 f,
@@ -588,4 +577,14 @@ impl std::error::Error for Failure {}
 
 pub(crate) fn device(failure: Failure) -> Error {
     Error::Device(Box::new(failure))
+}
+
+/// The [`Error::Device`] of `call` to the server at `address` that failed with
+/// `status`.
+pub(crate) fn failed(address: &CStr, call: Call, status: Status) -> Error {
+    device(Failure::Client {
+        address: address.to_string_lossy().into_owned(),
+        call,
+        status,
+    })
 }

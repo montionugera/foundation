@@ -87,16 +87,16 @@ fn names(workspace: &Path, exe: &Path, name: &str) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::native;
 
     #[test]
     fn runs_each_target_that_names_the_cfg() {
+        let (a, model) = (native("crates/a"), native("crates/model"));
         assert_eq!(
             test(&crate::fixture(), "loom"),
             Err(vec![
-                "the tests of `conformance` in `crates/a` failed with `--cfg loom`"
-                    .to_string(),
-                "the tests of `model` in `crates/model` failed with `--cfg loom`"
-                    .to_string(),
+                format!("the tests of `conformance` in `{a}` failed with `--cfg loom`"),
+                format!("the tests of `model` in `{model}` failed with `--cfg loom`"),
             ])
         );
     }

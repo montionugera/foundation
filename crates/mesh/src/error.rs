@@ -57,6 +57,10 @@ pub enum Error {
     /// This node is not a voter of its configuration, and only a voter proposes a
     /// change. Call it on a voter.
     NoVote,
+    /// This node, or the leader that it forwarded to, refused this card before the
+    /// log. That node proposed a card of the same member after its own start and less
+    /// than a minute before. Call again after a minute.
+    Soon,
     /// The region cannot hold a member record of the config.
     Member(Unfit),
     /// This node's private key is not the key of its member.
@@ -157,6 +161,12 @@ pub enum Error {
         /// The path of the founding file.
         path: PathBuf,
     },
+    /// The file of the last card version that this node signed holds no valid slot that
+    /// a torn write explains.
+    CardFile {
+        /// The path of the file.
+        path: PathBuf,
+    },
 }
 
 impl fmt::Display for Error {
@@ -188,6 +198,10 @@ impl fmt::Display for Error {
             }
             Self::NoVote => f.write_str(
                 "this node is not a voter, and only a voter proposes a change",
+            ),
+            Self::Soon => f.write_str(
+                "a card of the same member was proposed less than a minute ago; call \
+                 again after a minute",
             ),
             Self::Member(refused) => refused.fmt(f),
             Self::WrongKey => {
@@ -253,6 +267,11 @@ impl fmt::Display for Error {
                 f,
                 "{} does not read back whole, or is not there while the log of the mesh \
                  directory holds a record",
+                path.display()
+            ),
+            Self::CardFile { path } => write!(
+                f,
+                "the file {} holds no valid card version that this node signed",
                 path.display()
             ),
         }

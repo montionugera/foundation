@@ -39,9 +39,6 @@ const RECORD_MAX: usize = FIXED + 2 * Name::MAX_BYTES;
 const PART_MAX: usize = Layout::ENTRY_MAX_MIN;
 const _: () = assert!(HEAD + 7 * RECORD_MAX <= PART_MAX, "7 records fit one part");
 
-/// The most bytes of the records of the named readers of one index.
-pub(crate) const LIMIT: usize = PARTS as usize * (PART_MAX - HEAD);
-
 /// The bytes of the record of `reader` in a body.
 fn record_len(reader: &delivery::named::Key) -> usize {
     FIXED + reader.subject.as_str().len() + reader.name.as_str().len()
@@ -109,28 +106,24 @@ impl From<&Record> for Fields {
 
 impl Parts {
     /// The parts that the newest durable named entries of each index in `buffer` hold,
-    /// with the records of each, by the index's slot. An index with no named entry is
-    /// absent. It reads the tags of the parts from part 0 up, to the first tag that no
-    /// index has an entry of.
+    /// by the index's slot. An index with no named entry is absent. It reads the tags
+    /// of the parts from part 0 up, to the first tag that no index has an entry of.
     ///
     /// # Panics
     ///
     /// When a named entry does not decode, as [`read`] says, or a key is in two parts.
-    pub(crate) fn newest(buffer: &Buffer) -> hash::Map<Slot, (Self, Vec<Record>)> {
-        let mut found: hash::Map<Slot, (Self, Vec<Record>)> = hash::Map::default();
+    pub(crate) fn newest(buffer: &Buffer) -> hash::Map<Slot, Self> {
+        let mut found: hash::Map<Slot, Self> = hash::Map::default();
         for part in 0..PARTS {
             let newest = buffer.newest(Path::Live, tag(part));
             if newest.is_empty() {
                 break;
             }
             for (slot, bytes) in newest {
-                let (parts, records) = found.entry(slot).or_default();
+                let parts = found.entry(slot).or_default();
                 for record in read(&bytes) {
                     let state = Kept::Held(Fields::from(&record));
-                    parts
-                        .keys
-                        .push((record.reader.clone(), Placed { part, state }));
-                    records.push(record);
+                    parts.keys.push((record.reader, Placed { part, state }));
                 }
                 parts.sort();
             }
@@ -138,11 +131,27 @@ impl Parts {
         found
     }
 
+    /// The record of each key that the last entry of its part holds, by key.
+    pub(crate) fn records(&self) -> Vec<Record> {
+        let held = self
+            .keys
+            .iter()
+            .filter_map(|(reader, placed)| match placed.state {
+                Kept::Held(fields) => Some(Record {
+                    reader: reader.clone(),
+                    position: fields.position,
+                    hold: fields.hold,
+                    closed: fields.closed,
+                }),
+                Kept::Added => None,
+            });
+        held.collect()
+    }
+
     /// Appends the parts that `records` change, as [`append`](Self::append) does,
-    /// for a named open of `reader`, whose record `records` hold. Returns the count of
-    /// [`Buffer::commits`] at which the entry that holds its record is durable, or
-    /// `None` when the part of its record, or a part before it, found no block or no
-    /// room.
+    /// for a named open of `reader`, whose record `records` hold. Returns whether it
+    /// appended the part of its record and each part before it: `false` when one found
+    /// no block or no room.
     ///
     /// # Errors
     ///
@@ -154,18 +163,16 @@ impl Parts {
     /// If `records` hold a key twice.
     pub(crate) fn open(
         &mut self,
-        buffer: &Buffer,
+        target: state::Target<'_>,
         records: &[Record],
         reader: &delivery::named::Key,
-        head: state::Head,
-    ) -> Result<Option<u64>, Full> {
-        let appended = self.write(buffer, records, head)?;
-        let recorded = self.recorded(reader, appended);
-        Ok(recorded.then(|| buffer.durable_at()))
+    ) -> Result<bool, Full> {
+        let appended = self.write(target, records)?;
+        Ok(self.recorded(reader, appended))
     }
 
     /// Appends each part whose records differ from the ones that its last entry holds,
-    /// so that the parts hold `records` and no other record, with `head`. Each part
+    /// so that the parts hold `records` and no other record, in `target`. Each part
     /// goes alone, in part order, and the append stops at the first part that finds no
     /// block or no room. A record keeps its part. A removed record keeps its room until
     /// the entry of its part that drops it appends, and goes back in its part when it
@@ -178,11 +185,10 @@ impl Parts {
     /// [`open`](Self::open) adds one.
     pub(crate) fn append(
         &mut self,
-        buffer: &Buffer,
+        target: state::Target<'_>,
         records: &[Record],
-        head: state::Head,
     ) -> bool {
-        let appended = self.write(buffer, records, head);
+        let appended = self.write(target, records);
         let appended = appended.expect("invariant: only an open adds a record");
         appended.until == PARTS
     }
@@ -195,14 +201,13 @@ impl Parts {
     /// [`Full`] when no part has room for a new record. It then appends nothing.
     fn write(
         &mut self,
-        buffer: &Buffer,
+        target: state::Target<'_>,
         records: &[Record],
-        head: state::Head,
     ) -> Result<Appended, Full> {
         self.place(records)?;
         let listed = Listed::new(records);
-        for (part, body) in self.changed(records, &listed) {
-            if !state::append(buffer, tag(part), Some(&body), head) {
+        for (part, body) in self.changed(&listed) {
+            if !state::append(target.buffer, tag(part), Some(&body), target.head) {
                 self.keys.retain(|(_, placed)| placed.state != Kept::Added);
                 return Ok(Appended { until: part });
             }
@@ -260,9 +265,9 @@ impl Parts {
     }
 
     /// The body of each part, in part order, whose records differ from the ones that
-    /// its last entry holds, when the parts hold `records`, which
-    /// [`place`](Self::place) placed. `listed` holds `records` by key.
-    fn changed(&self, records: &[Record], listed: &Listed<'_>) -> Vec<(u8, Vec<u8>)> {
+    /// its last entry holds, when the parts hold the records of `listed`, which
+    /// [`place`](Self::place) placed.
+    fn changed(&self, listed: &Listed<'_>) -> Vec<(u8, Vec<u8>)> {
         let mut changed = [false; PARTS as usize];
         for (key, placed) in &self.keys {
             let now = listed
@@ -272,9 +277,10 @@ impl Parts {
                 changed[usize::from(placed.part)] = true;
             }
         }
-        let mut sorted: Vec<(u8, &Record)> = records
+        let mut sorted: Vec<(u8, &Record)> = listed
+            .0
             .iter()
-            .map(|record| (self.part(&record.reader), record))
+            .map(|&record| (self.part(&record.reader), record))
             .filter(|&(part, _)| changed[usize::from(part)])
             .collect();
         sorted.sort_unstable_by(|a, b| (a.0, &a.1.reader).cmp(&(b.0, &b.1.reader)));
@@ -338,6 +344,14 @@ impl Parts {
         let placed = self.placed(key);
         placed.expect("invariant: each record has a part").part
     }
+}
+
+/// Parts that hold `records`, as appends of each part make them, with no buffer.
+#[cfg(test)]
+pub(crate) fn create_parts(records: &[Record]) -> Parts {
+    let mut parts = Parts::default();
+    tests::append(&mut parts, records);
+    parts
 }
 
 /// Records sorted by key, for a lookup by binary search.
@@ -546,7 +560,7 @@ mod tests {
             let records = [record(&longest, &longest, Some(1), Some(1))];
 
             assert_eq!(encoded(&records).len(), HEAD + RECORD_MAX);
-            assert_eq!((RECORD_MAX, len(&records), LIMIT), (546, 551, 257_728));
+            assert_eq!((RECORD_MAX, len(&records)), (546, 551));
         }
     }
 
@@ -561,14 +575,9 @@ mod tests {
         parts.part(&record.reader)
     }
 
-    /// The records of `records` by key.
-    fn listed(records: &[Record]) -> Listed<'_> {
-        Listed::new(records)
-    }
-
     /// The bodies of the parts that `records` change.
     fn changed(parts: &Parts, records: &[Record]) -> Vec<(u8, Vec<u8>)> {
-        parts.changed(records, &listed(records))
+        parts.changed(&Listed::new(records))
     }
 
     /// The bytes of the records that each part keeps room for, with the head.
@@ -581,10 +590,10 @@ mod tests {
     }
 
     /// Places `records`, and appends each part that changes.
-    fn append(parts: &mut Parts, records: &[Record]) {
+    pub(super) fn append(parts: &mut Parts, records: &[Record]) {
         parts.place(records).expect("room");
         for (part, _) in changed(parts, records) {
-            parts.appended(part, &listed(records));
+            parts.appended(part, &Listed::new(records));
         }
     }
 
@@ -593,7 +602,7 @@ mod tests {
     /// a shard test cannot set up cheaply. The `shard` tests of `records` pin each
     /// state through `open` and `append`. Only these tests pin the room that `place`
     /// counts for a second record that one call adds, as a shard call adds at most
-    /// one. `shard` checks `held` through its own map, as only memory shows it.
+    /// one. `shard` checks `held` through `reader::Set`, as only memory shows it.
     mod parts {
         use super::*;
 
@@ -672,7 +681,7 @@ mod tests {
             let parts_of: Vec<_> = changed_now.iter().map(|(part, _)| *part).collect();
             assert_eq!(parts_of, [0, 1]);
             for (part, _) in changed_now {
-                parts.appended(part, &listed(&records));
+                parts.appended(part, &Listed::new(&records));
             }
             records[8].position.live = 9;
 

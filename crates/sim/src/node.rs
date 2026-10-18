@@ -1,7 +1,7 @@
 //! One simulated node and its settings.
 
 use std::fmt;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 
@@ -9,7 +9,7 @@ use types::time::{Monotonic, Span, Stamp};
 
 use crate::log::Waker;
 use crate::state::lock;
-use crate::{drivers, net, shard};
+use crate::{PATH_MAX, drivers, net, shard};
 
 /// One simulated node: the `env` handles that its code gets. Clones refer to the same
 /// node.
@@ -91,9 +91,14 @@ impl Node {
 
     /// The node's network, on its [`Node::addresses`].
     ///
-    /// - A bind, a listen, or a send from an address that is not the node's gives
-    ///   `Error::Io` with code 99 (`EADDRNOTAVAIL`). Port 0 binds the lowest free
-    ///   port from 49152.
+    /// - A bind or a listen on a link-local address gives `Error::Io` with code 22
+    ///   (`EINVAL`) with scope 0, and with code 19 (`ENODEV`) with a scope other than
+    ///   that of [`Node::link_local`]. Else one on an address that is not the node's
+    ///   gives `Error::Io` with code 99 (`EADDRNOTAVAIL`). A send from a source that
+    ///   the socket cannot send from gives `Error::Io` with code 22 (`EINVAL`) when the
+    ///   source or the destination is IPv6 or the source is not unicast, and with code
+    ///   99 for a unicast IPv4 source to an IPv4 destination. Port 0 binds the lowest
+    ///   free port from 49152.
     /// - A socket on IPv6 takes `::ffff:a.b.c.d` as `a.b.c.d`, in the destination and
     ///   the source of a send. A send to the other family than the socket's gives
     ///   `Error::Unreachable` with the destination as given.
@@ -344,9 +349,12 @@ impl Node {
     /// # Panics
     ///
     /// When `path` is relative or `/`, has a `..` segment, goes through a file, a link
-    /// to nothing, or more than 40 links, or a file, a link, or a directory is at it.
+    /// to nothing, or more than 40 links, or a file, a link, or a directory is at it,
+    /// or when `target` has 4096 bytes or more, which Linux refuses.
     pub fn link_path(&self, path: &Path, target: &Path) {
         assert!(path.is_absolute(), "{} is relative", path.display());
+        let long = target.as_os_str().len() >= PATH_MAX;
+        assert!(!long, "the target of {} is too long", path.display());
         let parent = path.components().any(|part| part == Component::ParentDir);
         assert!(!parent, "{} has a `..` segment", path.display());
         lock(&self.0.shared).paths().link(self.0.node, path, target);
@@ -425,6 +433,18 @@ impl Node {
     #[must_use]
     pub fn addresses(&self) -> [IpAddr; 2] {
         net::addresses(self.0.node)
+    }
+
+    /// The node's link-local IPv6 address, `fe80::` plus `k + 1`, and the index of the
+    /// one interface that holds it. A bind of it takes that index as its scope. No
+    /// packet reaches it.
+    ///
+    /// # Panics
+    ///
+    /// As [`Node::addresses`].
+    #[must_use]
+    pub fn link_local(&self) -> (Ipv6Addr, u32) {
+        (net::link_local(self.0.node), net::INTERFACE)
     }
 
     /// Steps the wall clock by `span`, forward or back, as when NTP or an operator

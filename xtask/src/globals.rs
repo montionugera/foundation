@@ -58,8 +58,11 @@ fn problems(root: &Path) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::native;
 
+    /// The problem of a lift at `at`, written with `/`.
     fn refused(at: &str) -> String {
+        let at = native(at);
         format!(
             "`{at}` lifts `clippy::disallowed_macros` outside a test or benchmark \
              target. Fix: remove the lift. Only a test or benchmark binary may hold a \

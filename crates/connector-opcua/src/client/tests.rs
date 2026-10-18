@@ -15,7 +15,7 @@ use env::net::{Net, Tcp, tcp};
 use env::rng::Rng;
 use sim::{Sim, node};
 use types::quality::Quality;
-use types::time::Span;
+use types::time::{Span, Stamp};
 
 use super::{
     Calls, Client, Flight, GRACE, Large, Nodes, READS, Request, SPLIT, STATE, Slots,
@@ -24,9 +24,11 @@ use super::{
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::event;
+use crate::ffi::test::Mode;
 use crate::ffi::{self, Status};
 use crate::gate::Gate;
 use crate::node::{Key, Name, Node};
+use crate::secure::{Policy, Security};
 use crate::server::{Limits, Server};
 use crate::unwind::caught;
 use crate::value::{self, Fault, Value};
@@ -116,26 +118,75 @@ impl Peer<'_> {
         receive: Option<u32>,
         message: Option<u32>,
     ) -> Client {
-        let clock = Clock::clone(&self.clock);
-        let time = event::Time::monotonic(Clock::clone(&clock));
-        let connections = Manager::new(time, self.net.clone(), &mut self.rng);
+        let time = event::Time::monotonic(Clock::clone(&self.clock));
+        let setup = |raw: NonNull<ffi::Client>| {
+            if let Some(size) = receive {
+                // SAFETY: the client lives and has not connected.
+                unsafe { ffi::test::shim_client_receive(raw.as_ptr(), size) };
+            }
+            if let Some(size) = message {
+                // SAFETY: the client lives and has not connected.
+                unsafe { ffi::test::shim_client_message(raw.as_ptr(), size) };
+            }
+        };
+        self.client(url, time, setup)
+            .await
+            .expect("the client connects")
+    }
+
+    /// Connects a client that asks for `policy` in `mode` on `security`, on a loop
+    /// whose wall time starts at `wall`.
+    async fn secure(
+        &mut self,
+        policy: Policy,
+        mode: Mode,
+        security: &Security,
+        wall: Stamp,
+    ) -> Result<Client, Status> {
+        let time = event::Time::since(Clock::clone(&self.clock), wall);
+        let security = security.raw();
+        let setup = |raw: NonNull<ffi::Client>| {
+            // SAFETY: the client lives and has not connected, and it copies
+            // `security`.
+            let status = Status(unsafe {
+                ffi::test::shim_client_secure(
+                    raw.as_ptr(),
+                    mode,
+                    policy as usize,
+                    &raw const security,
+                )
+            });
+            assert_eq!(status, Status::GOOD, "open62541 refused the policies");
+        };
+        let url = self.url.clone();
+        self.client(&url, time, setup).await
+    }
+
+    /// Connects a client to `url` on a loop that reads `time`, after `setup` sets the
+    /// config of the client, and closes a client that does not connect.
+    async fn client(
+        &mut self,
+        url: &str,
+        time: event::Time,
+        setup: impl FnOnce(NonNull<ffi::Client>),
+    ) -> Result<Client, Status> {
+        let connections =
+            Manager::new(time, tracing::Span::none(), self.net.clone(), &mut self.rng);
         // SAFETY: the loop outlives the client, which the drop of the client deletes
         // first.
-        let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
-        let raw = NonNull::new(raw).expect("open62541 refused the client");
-        if let Some(size) = receive {
-            // SAFETY: the client lives and has not connected.
-            unsafe { ffi::test::shim_client_receive(raw.as_ptr(), size) };
-        }
-        if let Some(size) = message {
-            // SAFETY: the client lives and has not connected.
-            unsafe { ffi::test::shim_client_message(raw.as_ptr(), size) };
-        }
+        let raw = unsafe { crate::client::unconnected(connections.events().raw()) };
+        setup(raw);
         let url = CString::new(url).expect("the URL holds no NUL");
         // SAFETY: `raw` is a new client of the loop of `connections`.
-        let mut client = unsafe { Client::of(clock, connections, raw) };
-        client.open(&url).await.expect("the client connects");
-        client
+        let mut client =
+            unsafe { Client::of(Clock::clone(&self.clock), connections, raw, url) };
+        match client.open().await {
+            Ok(()) => Ok(client),
+            Err(status) => {
+                client.close().await;
+                Err(status)
+            }
+        }
     }
 }
 
@@ -146,7 +197,14 @@ async fn open(
     rng: &mut Rng,
     url: &CStr,
 ) -> Result<Client, Status> {
-    let connect = Client::connect(time, net, rng, url, future::pending());
+    let connect = Client::connect(
+        time,
+        tracing::Span::none(),
+        net,
+        rng,
+        url,
+        future::pending(),
+    );
     Ok(connect.await?.expect("a pending wait never ends"))
 }
 
@@ -175,18 +233,31 @@ async fn serve<T>(
     sessions: u16,
     body: impl AsyncFnOnce(Peer<'_>) -> T,
 ) -> T {
+    let time = event::Time::monotonic(node.clock());
+    serve_on(node, sessions, time, None, body).await
+}
+
+/// [`serve`], on a loop that reads `time`, with the policies of `security` when it is
+/// given.
+async fn serve_on<T>(
+    node: &node::Node,
+    sessions: u16,
+    time: event::Time,
+    security: Option<&Security>,
+    body: impl AsyncFnOnce(Peer<'_>) -> T,
+) -> T {
     let mut rng = node.entropy().rng();
     let local = SocketAddr::new(node.addresses()[0], PORT);
-    let manager = Manager::listening(
-        event::Time::monotonic(node.clock()),
-        node.net(),
-        local,
-        4,
-        &mut rng,
-    )
-    .expect("the port is free");
-    // SAFETY: the close below deletes the server before the manager drops.
-    let mut server = unsafe { Server::start(&manager, c"", sessions) };
+    let manager = Manager::listening(time, node.net(), local, 4, &mut rng)
+        .expect("the port is free");
+    let mut server = match security {
+        // SAFETY: the close below deletes the server before the manager drops.
+        Some(security) => unsafe {
+            Server::start_secure(&manager, c"", sessions, security)
+        },
+        // SAFETY: as above.
+        None => unsafe { Server::start(&manager, c"", sessions) },
+    };
     let value = Value::F64(f64::from(u32::try_from(rng.below(1 << 20)).expect("fits")));
     server.add_scalar(&VALUE, value);
     let states = Rc::new(Cell::new(0));
@@ -256,6 +327,34 @@ fn a_read_of_an_unknown_node_fails_with_its_status() {
         .await
     });
     assert_eq!(read, Err(Fault::status(Status::BAD_NODE_ID_UNKNOWN)));
+}
+
+/// Calls the private `Client::new`, as no caller holds a client before its open:
+/// `Client::connect` opens it at once.
+#[test]
+fn a_client_gives_its_url_before_and_after_its_open() {
+    let (urls, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let url = CString::new(peer.url.clone()).expect("the URL holds no NUL");
+            let time = event::Time::monotonic(Clock::clone(&peer.clock));
+            let net = Net::clone(&peer.net);
+            let mut client = Client::new(
+                time,
+                tracing::Span::none(),
+                net,
+                &mut peer.rng,
+                url.clone(),
+            );
+            let before = client.url().to_owned();
+            client.open().await.expect("the client connects");
+            let after = client.url().to_owned();
+            client.close().await;
+            (url, before, after)
+        })
+        .await
+    });
+    let (url, before, after) = urls;
+    assert_eq!((before, after), (url.clone(), url));
 }
 
 /// The name `node` must reach the server whole: it holds a `;`, an `=`, and a byte
@@ -501,7 +600,7 @@ fn read_after_late_answer(
 
 #[test]
 fn the_late_answer_of_a_read_does_not_change_the_next_read() {
-    for dropped in [0, 15] {
+    for dropped in [0, READS - 1] {
         let (values, value) = read_after_late_answer(dropped);
         assert_eq!(values, Ok(vec![Ok(value)]), "{dropped} dropped");
     }
@@ -680,8 +779,8 @@ fn read_after(dropped: u16) -> (Result<Value, Fault>, Span) {
 /// reads stay in flight, so it fails at the end of its wait and sends nothing.
 #[test]
 fn a_read_at_the_bound_fails_when_no_read_ends() {
-    let (below, below_took) = read_after(15);
-    let (at, at_took) = read_after(16);
+    let (below, below_took) = read_after(READS - 1);
+    let (at, at_took) = read_after(READS);
     assert_eq!(
         (below, at),
         (
@@ -729,7 +828,7 @@ fn the_timeout_of_a_read_counts_its_wait() {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
             peer.gate.close();
-            drop_reads(&mut client, 16).await;
+            drop_reads(&mut client, READS).await;
             let out =
                 read_with_pass(&mut client, &peer, Span::from_nanos(3_000_000_000))
                     .await;
@@ -744,14 +843,14 @@ fn the_timeout_of_a_read_counts_its_wait() {
     assert!(timeout.contains(&took), "{took:?}");
 }
 
-/// The answers of 16 dropped reads end them all, so a read after one more dropped read
-/// sends its request at once and gets its answer in one pass of the server.
+/// The answers of [`READS`] dropped reads end them all, so a read after one more dropped
+/// read sends its request at once and gets its answer in one pass of the server.
 #[test]
 fn the_answers_of_dropped_reads_end_them() {
     let ((read, value), _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            drop_reads(&mut client, 16).await;
+            drop_reads(&mut client, READS).await;
             peer.clock.sleep(Span::from_nanos(1_000_000_000)).await;
             peer.gate.close();
             drop_reads(&mut client, 1).await;
@@ -815,7 +914,7 @@ fn read_large(chunks: u32) -> (Result<Value, Fault>, Result<Value, Fault>) {
 /// The answer of [`FITS`] arrives and is not a Double. The answer of [`PAST`] needs
 /// more than [`CHUNKS`] chunks. The test server refuses to send it, and sends an
 /// error that closes the channel. A server that sends it makes the client close the
-/// channel at the chunk past the bound.
+/// channel at its final chunk.
 #[test]
 fn an_answer_of_more_chunks_than_the_bound_fails() {
     let large = (
@@ -1181,7 +1280,15 @@ fn a_connect_whose_wait_has_ended_gives_none() {
             let time = event::Time::monotonic(Clock::clone(&peer.clock));
             let net = Net::clone(&peer.net);
             let ended = future::ready(());
-            let connect = Client::connect(time, net, &mut peer.rng, &url, ended).await;
+            let connect = Client::connect(
+                time,
+                tracing::Span::none(),
+                net,
+                &mut peer.rng,
+                &url,
+                ended,
+            )
+            .await;
             connect.map(|client| client.is_none())
         })
         .await
@@ -1846,14 +1953,33 @@ const CLOSE_SESSION: [u8; 4] = [0x01, 0x00, 0xD9, 0x01];
 /// The binary encoding of a Browse request, a `NodeId` of 4 bytes.
 const BROWSE: [u8; 4] = [0x01, 0x00, 0x0F, 0x02];
 
-/// Runs `body` while [`relay`] runs on `node` with `control` and `rewrite`.
+/// Runs `body` while [`relay`] runs on `node` with `control`, and gives each message
+/// of the server to `rewrite`.
 pub(crate) async fn relayed<T>(
     node: &node::Node,
     control: &Relay,
     rewrite: impl FnMut(&mut Vec<u8>),
     body: impl Future<Output = T>,
 ) -> T {
-    let mut relay = pin!(relay(node, control, rewrite));
+    beside(relay(node, control, |_| {}, rewrite), body).await
+}
+
+/// Runs `body` while [`relay`] runs on `node`, and gives each message of the client to
+/// `up`.
+pub(crate) async fn relayed_up<T>(
+    node: &node::Node,
+    up: impl FnMut(&mut Vec<u8>),
+    body: impl Future<Output = T>,
+) -> T {
+    beside(relay(node, &Relay::default(), up, |_| {}), body).await
+}
+
+/// Runs `body` while `relay` runs.
+async fn beside<T>(
+    relay: impl Future<Output = ()>,
+    body: impl Future<Output = T>,
+) -> T {
+    let mut relay = pin!(relay);
     let mut body = pin!(body);
     poll_fn(|cx| {
         assert!(relay.as_mut().poll(cx).is_pending(), "it never ends");
@@ -1881,13 +2007,15 @@ pub(crate) struct Relay {
 }
 
 /// Moves the bytes of each stream to [`RELAY`], one at a time, to the test server and
-/// back, and gives each message of the server to `rewrite` before the client gets it.
-/// A relay ends when the client ends its side or `control` cuts it.
+/// back. It gives each message of the client to `up` before the server gets it, and
+/// each message of the server to `down` before the client gets it. A relay ends when
+/// the client ends its side or `control` cuts it.
 #[expect(clippy::infinite_loop, reason = "it runs until its test ends")]
 async fn relay(
     node: &node::Node,
     control: &Relay,
-    mut rewrite: impl FnMut(&mut Vec<u8>),
+    mut up: impl FnMut(&mut Vec<u8>),
+    mut down: impl FnMut(&mut Vec<u8>),
 ) {
     let address = node.addresses()[0];
     let listen = tcp::Listen {
@@ -1916,12 +2044,12 @@ async fn relay(
             .connect(&config)
             .await
             .expect("the server listens");
-        let (mut up, mut down) = (Pipe::default(), Pipe::default());
+        let (mut to_server, mut to_client) = (Pipe::default(), Pipe::default());
         poll_fn(|cx| {
             if control.cut.take() {
                 return Poll::Ready(());
             }
-            let ended = up.pump(cx, &mut client, &mut server, |message| {
+            let ended = to_server.pump(cx, &mut client, &mut server, |message| {
                 let close =
                     message.starts_with(b"MSG") && message[24..28] == CLOSE_SESSION;
                 control
@@ -1932,8 +2060,9 @@ async fn relay(
                     let time = message[47..55].try_into().expect("8 bytes");
                     control.browses.borrow_mut().push(i64::from_le_bytes(time));
                 }
+                up(message);
             });
-            down.pump(cx, &mut server, &mut client, &mut rewrite);
+            to_client.pump(cx, &mut server, &mut client, &mut down);
             if ended {
                 Poll::Ready(())
             } else {
@@ -2560,4 +2689,8 @@ fn a_connect_whose_read_of_the_max_nodes_per_read_fails_closes_its_session() {
 
 mod abort;
 mod browse;
+mod chunks;
+mod common;
+mod flood;
+mod secure;
 mod walk;

@@ -25,9 +25,16 @@ exclude_re = [
   '^bench/',
   # `main` reads the arguments and calls a task. Each task has its own tests.
   'xtask/src/main\.rs:.*(replace main ->| in main$)',
-  # Miri needs the pinned nightly, which only the miri CI job installs. A deliberate
-  # break in that job shows that it fails.
+  # These five need the pinned nightly, and `run`, `list`, and `nextest` also need
+  # cargo-nextest, which only the miri shard CI jobs install. Each choice of the plan is
+  # in a `pub(crate)` function of `miri` with its own test; these start the commands and
+  # compose the results. A test that panics under Miri, planted in a lib, a doc test, or
+  # another target, fails the shard job that runs it.
   'xtask/src/miri\.rs:.*(replace run ->| in run$)',
+  'xtask/src/miri\.rs:.*(replace doc_tests ->| in doc_tests$)',
+  'xtask/src/miri\.rs:.*(replace list ->| in list$)',
+  'xtask/src/miri\.rs:.*(replace nextest ->| in nextest$)',
+  'xtask/src/miri\.rs:.*(replace worker ->| in worker$)',
   # The run needs the pinned nightly, which the mutants job does not install. A planted
   # overflow in the shim fails the sanitizers job.
   'xtask/src/sanitizers\.rs:.*(replace run ->| in run$)',
@@ -109,7 +116,7 @@ exclude_re = [
   # No caller sees the bytes that `file` gives: `identity` panics only when a `check`
   # does. The unit test `a_file_is_its_bytes_or_its_body_with_the_checksum` reads them.
   'crates/node/src/fuzz\.rs:.*replace file -> ',
-  # Only Miri sees the stub task that a skipped clear leaks, and the miri job runs
+  # Only Miri sees the stub task that a skipped clear leaks, and the miri shard jobs run
   # those tests.
   'crates/connector-ni/src/daqmx\.rs:.*replace <impl Drop for Task>::drop with \(\)',
   # A fence changes the order of memory operations around a counter read, and no
@@ -151,6 +158,9 @@ exclude_re = [
   # `a_write_waits_at_the_unsent_bound_not_the_send_buffer`, and
   # `a_full_send_buffer_below_the_bound_makes_a_write_wait`.
   'crates/os/src/net/unsent\.rs:.*Bound::send',
+  # macOS 15 only: Linux refuses the path at the stat. In the `macos` check,
+  # `paths::within_agrees_with_free_on_a_file_with_a_slash_or_a_dot` catches it.
+  'crates/os/src/paths\.rs:.*guard names_directory\(path\) with false in read$',
   # No input makes `getaddrinfo` give `EAI_AGAIN` or `EAI_MEMORY` on demand. The test of
   # the map, through a private call, kills each.
   'crates/os/src/net/resolve\.rs:.*delete match arm \(libc::EAI_(AGAIN|MEMORY), _\)',
@@ -225,4 +235,10 @@ exclude_re = [
   'crates/codec/src/alp\.rs:.*replace (< with <=|> with >=) in Stats::of_f64$',
   # A stub that panics until PR B2 of #432 fills it; B2 removes this line.
   'crates/connector-modbus/src/kind\.rs:.*replace <impl kind::Kind for Kind>::run ->',
+  # `Holder::copy` asserts that `at` fits in 31 bits, so bit 31 is clear and `^`
+  # gives the same bits as `|`.
+  'crates/buffer/src/log\.rs:.*replace \| with \^ in Holder::copy$',
+  # A read's assembly (`SKIP` false) never reaches `Skipped`: its `skip` fails to
+  # build. So the arm under a true guard is never taken.
+  'crates/wire/src/hub/part\.rs:.*replace match guard SKIP with true in Assembly<SKIP>::(body|take)$',
 ]

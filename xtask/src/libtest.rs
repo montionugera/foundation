@@ -9,6 +9,9 @@ pub(crate) enum Run {
     Failed,
     /// The command passed, and no test passed: none exists, or each is ignored.
     Empty,
+    /// The command passed and printed no libtest report, as a target with no harness
+    /// does.
+    Silent,
     /// The command passed, and at least one test passed.
     Passed,
 }
@@ -24,6 +27,8 @@ pub(crate) fn run(command: &mut Command) -> Result<Run, String> {
     eprint!("{stdout}");
     Ok(if !output.status.success() {
         Run::Failed
+    } else if !stdout.lines().any(|line| line.starts_with("test result: ")) {
+        Run::Silent
     } else if tests_passed(&stdout) == 0 {
         Run::Empty
     } else {
@@ -43,6 +48,7 @@ fn tests_passed(output: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::NO_FOLDER;
 
     fn sh(script: &str) -> Result<Run, String> {
         run(Command::new("sh").args(["-c", script]))
@@ -55,6 +61,7 @@ mod tests {
         assert_eq!(sh("echo 'test result: ok. 0 passed'"), Ok(Run::Empty));
         assert_eq!(sh(&format!("{passed}; exit 101")), Ok(Run::Failed));
         assert_eq!(sh("exit 101"), Ok(Run::Failed));
+        assert_eq!(sh("echo 'checked'"), Ok(Run::Silent));
     }
 
     #[test]
@@ -69,7 +76,7 @@ mod tests {
     fn names_a_program_that_cannot_start() {
         assert_eq!(
             run(&mut Command::new("/missing/cargo")),
-            Err("/missing/cargo: No such file or directory (os error 2)".to_string())
+            Err(format!("/missing/cargo: {NO_FOLDER}"))
         );
     }
 

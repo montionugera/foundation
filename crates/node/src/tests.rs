@@ -16,6 +16,7 @@ use crate::identity::{self, Identity};
 use crate::{Budget, Config, Error, Node, Region};
 
 mod address;
+mod card;
 mod log;
 mod region;
 
@@ -928,8 +929,8 @@ mod buffer {
     #[test]
     fn a_disk_budget_that_holds_no_ring_on_each_shard_starts_no_shard() {
         let smallest = ::buffer::Layout::fit(0, crate::BODY_MAX).unwrap_err().min;
-        let min = Size::from_bytes(8_462_336);
-        let cases = [(smallest, "4132KiB"), (2 * smallest - 1, "8462335B")];
+        let min = Size::from_bytes(8_626_176);
+        let cases = [(smallest, "4212KiB"), (2 * smallest - 1, "8626175B")];
         for (bytes, shown) in cases {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = host(&mut sim, 2);
@@ -958,7 +959,7 @@ mod buffer {
                 e.to_string(),
                 format!(
                     "the disk budget {shown} holds no ring on each of 2 shards; it \
-                     needs at least 8264KiB"
+                     needs at least 8424KiB"
                 )
             );
         }
@@ -3241,7 +3242,7 @@ pub(crate) mod port {
             ..config(&host, Size::MEBIBYTE, Box::new(heap))
         });
         assert_eq!(sim.run(), Ok(()));
-        let min = Size::from_bytes(8_462_336);
+        let min = Size::from_bytes(8_626_176);
         assert_eq!(
             node.join(),
             Err(Error::Disk {
@@ -4448,7 +4449,7 @@ pub(crate) mod port {
         const OPEN: Span = Span::from_nanos(10_000_000);
         /// The time after [`OPEN`], in nanoseconds, at which the failed write of
         /// [`fail_write_at_open`] stops the group in the sim.
-        const WRITE: i64 = 43_081;
+        const WRITE: i64 = 79_055;
 
         /// Why the group stops when a write of [`LOG`] fails.
         fn write_failed() -> ::mesh::Stopped {
@@ -5932,7 +5933,7 @@ pub(crate) mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], six idle tasks that wake at that
+        /// `join` gives the panic. At [`WRITE`], nine idle tasks that wake at that
         /// instant make the sim run the group's stop, then this task, before the node
         /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
@@ -5943,7 +5944,7 @@ pub(crate) mod port {
             fail_write_at_open(&node, &host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
-            for _ in 0..6 {
+            for _ in 0..9 {
                 let own = host.clone();
                 node.spawn(move |_| async move {
                     own.clock().sleep_until(at).await;
@@ -6316,7 +6317,7 @@ pub(crate) mod port {
         #[test]
         fn the_log_of_the_mesh_is_free_once_the_lock_is() {
             let (mut held, mut logged, mut ordered) = (false, false, false);
-            // The probe finds the lock free and the log made at about 4.08 ms only.
+            // The probe finds the lock free and the log made at about 4 ms only.
             let mut freed = false;
             // Three orders of the last closes of the log, `shard-1/ring`, and
             // `address` that the stops in a write give at seed 0: the log first, the
@@ -6331,7 +6332,7 @@ pub(crate) mod port {
             let starts = (0..200).map(|step| step * 13_000);
             let opens = starts.chain((0..42).map(|step| 2_626_000 + step * 52_000));
             let opens = opens.map(|after| (after, false));
-            let writes = (0..13).map(|step| (1_700_526_000 + step * 7_000, true));
+            let writes = (0..13).map(|step| (1_700_834_000 + step * 7_000, true));
             for (after, write) in opens.chain(writes) {
                 let mut sim = sim::Sim::new(sim::Config::default());
                 let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
@@ -7205,7 +7206,7 @@ pub(crate) mod port {
             });
             node.operate(|_| async {});
             assert_eq!(sim.run(), Ok(()));
-            let min = Size::from_bytes(8_462_336);
+            let min = Size::from_bytes(8_626_176);
             assert_eq!(
                 node.join(),
                 Err(Error::Disk {
@@ -8359,7 +8360,7 @@ mod budget {
         let disk = Error::Disk {
             disk: Size::from_bytes(1),
             cores: 2,
-            min: Size::from_bytes(8_462_336),
+            min: Size::from_bytes(8_626_176),
         };
         let small = [
             (budget(512 << 10, DISK.bytes()), 16, buffer),

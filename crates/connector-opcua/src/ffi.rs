@@ -133,6 +133,10 @@ impl Status {
     pub(crate) const BAD_SECURITY_MODE_REJECTED: Self = Self(0x8054_0000);
     #[cfg(test)]
     pub(crate) const BAD_DECODING_ERROR: Self = Self(0x8007_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_CERTIFICATE_TIME_INVALID: Self = Self(0x8014_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_CERTIFICATE_UNTRUSTED: Self = Self(0x801A_0000);
 
     /// Whether the code is of the severity Uncertain.
     pub(crate) fn uncertain(self) -> bool {
@@ -163,6 +167,16 @@ pub(crate) struct Bytes {
 }
 
 impl Bytes {
+    /// Gives a `UA_ByteString` that borrows `bytes`, which C must not free or keep
+    /// past the borrow.
+    #[cfg(test)]
+    pub(crate) fn of(bytes: &[u8]) -> Self {
+        Self {
+            length: bytes.len(),
+            data: bytes.as_ptr().cast_mut(),
+        }
+    }
+
     /// Gives the bytes as text, with each sequence that is not UTF-8 as U+FFFD.
     ///
     /// # Safety
@@ -654,17 +668,17 @@ unsafe extern "C" {
         now: Now,
         wall: Now,
         time: *mut c_void,
+        log: *mut c_void,
     ) -> *mut EventLoop;
     pub(crate) fn shim_loop_free(el: *mut EventLoop);
     pub(crate) fn shim_loop_delayed(el: *mut EventLoop) -> bool;
     pub(crate) static shim_free_passes: c_int;
-    pub(crate) fn shim_log_warning(
-        el: *mut EventLoop,
-        message: *const u8,
-        length: usize,
-    );
 
-    pub(crate) fn shim_client_new(el: *mut EventLoop, chunks: u32) -> *mut Client;
+    pub(crate) fn shim_client_new(
+        el: *mut EventLoop,
+        chunks: u32,
+        queued: u32,
+    ) -> *mut Client;
     pub(crate) fn UA_Client_run_iterate(client: *mut Client, timeout_ms: u32) -> u32;
     pub(crate) fn UA_Client_delete(client: *mut Client);
     pub(crate) fn shim_client_free(client: *mut Client);

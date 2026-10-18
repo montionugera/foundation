@@ -34,10 +34,15 @@ mod kind;
 #[cfg(feature = "open62541")]
 mod link;
 #[cfg(feature = "open62541")]
+mod log;
+#[cfg(feature = "open62541")]
 mod node;
 #[cfg(test)]
 #[cfg(feature = "open62541")]
 mod pem;
+#[cfg(test)]
+#[cfg(feature = "open62541")]
+mod secure;
 #[cfg(feature = "open62541")]
 #[cfg(any(test, feature = "sim"))]
 mod server;
@@ -46,6 +51,9 @@ pub mod sim;
 #[cfg(feature = "open62541")]
 #[cfg(any(test, feature = "sim"))]
 mod unwind;
+#[cfg(test)]
+#[cfg(feature = "sim")]
+mod validity;
 #[cfg(feature = "open62541")]
 mod value;
 

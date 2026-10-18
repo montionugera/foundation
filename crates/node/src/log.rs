@@ -20,6 +20,7 @@ use tracing_subscriber::registry::{LookupSpan, Scope};
 use types::time::Stamp;
 
 pub use self::queue::Flush;
+#[cfg(any(test, feature = "sim"))]
 pub(crate) use self::queue::Hold;
 use self::queue::Pipe;
 

@@ -403,6 +403,16 @@ impl<C> Context<C> {
     pub fn tasks(&self) -> &Tasks {
         &self.tasks
     }
+
+    /// The span `connector` of this run, with the fields `connector` and `kind`. Give
+    /// it as the parent of each event of the kind
+    /// (`tracing::warn!(parent: ctx.span(), ..)`), so its line names the connector. No
+    /// poll enters it. A task spawned through [`Context::tasks`] that writes an event
+    /// takes a clone of it.
+    #[must_use]
+    pub fn span(&self) -> &tracing::Span {
+        self.status.span()
+    }
 }
 
 /// The value of `source` from `secrets`, with the errors of [`Context::secret`].
@@ -531,15 +541,14 @@ impl Table {
         Ok(self.get(kind, None)?.tag(block))
     }
 
-    /// Browses with `kind` as `query` asks.
-    pub(crate) async fn browse(
-        &self,
+    /// Starts a browse with `kind` as `query` asks.
+    pub(crate) fn browse<'a>(
+        &'a self,
         kind: &str,
-        ctx: &browse::Context<'_>,
-        query: &browse::Query,
-    ) -> Result<browse::Found, Error> {
-        let kind = self.get(kind, None).map_err(Error::Config)?;
-        kind.browse(ctx, query).await
+        ctx: &'a browse::Context<'a>,
+        query: &'a browse::Query,
+    ) -> Result<Browse<'a>, Vec<Diagnostic>> {
+        Ok(self.get(kind, None)?.browse(ctx, query))
     }
 
     /// Parses `config` and starts one run of `kind` with `ctx`.
@@ -641,7 +650,7 @@ pub(crate) fn reader_error(error: hub::reader::Error) -> Error {
     let (code, fix) = match error {
         Hub::Empty => (NO_CHANNEL, "Select a channel that the spec defines"),
         Hub::ManyIndexes { .. } => (MANY_INDEXES, "Select channels of one index"),
-        Hub::Full { .. } => return Error::Retry(Box::new(Full(error))),
+        Hub::Full => return Error::Retry(Box::new(Full(error))),
         Hub::Remote { .. } | Hub::Mesh(_) | Hub::Unrecorded => {
             return Error::Retry(Box::new(error));
         }
@@ -777,7 +786,8 @@ pub(crate) fn config_error(code: Code, error: &dyn fmt::Display, fix: &str) -> E
 pub(crate) type Run<'a> = Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>;
 
 /// One browse of a kind.
-type Browse<'a> = Pin<Box<dyn Future<Output = Result<browse::Found, Error>> + 'a>>;
+pub(crate) type Browse<'a> =
+    Pin<Box<dyn Future<Output = Result<browse::Found, Error>> + 'a>>;
 
 /// A [`Kind`] with its config type erased, so one table holds every kind.
 trait Erased: Send + Sync {
@@ -1230,7 +1240,7 @@ mod tests {
                 3,
                 token.clone(),
                 tasks.clone(),
-                status::Status::new(Vec::new()),
+                status::Status::new(Vec::new(), tracing::Span::none()),
                 None,
                 inputs,
             );
@@ -1259,7 +1269,7 @@ mod tests {
         let (a, b) = run_on(|node, tasks| async move {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
-            let status = status::Status::new(Vec::new());
+            let status = status::Status::new(Vec::new(), tracing::Span::none());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             (ctx.rng().next_u64(), ctx.rng().next_u64())
@@ -1272,7 +1282,7 @@ mod tests {
         let (missing, read, changed) = run_on(|node, tasks| async move {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
-            let status = status::Status::new(Vec::new());
+            let status = status::Status::new(Vec::new(), tracing::Span::none());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             let token = name("plant.influx_token");
@@ -1314,7 +1324,7 @@ mod tests {
         let missing = run_on(|node, tasks| async move {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
-            let status = status::Status::new(Vec::new());
+            let status = status::Status::new(Vec::new(), tracing::Span::none());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             let source = secret::Source::Env("INFLUX_TOKEN".into());
@@ -1335,7 +1345,7 @@ mod tests {
         let bad = run_on(|node, tasks| async move {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
-            let status = status::Status::new(Vec::new());
+            let status = status::Status::new(Vec::new(), tracing::Span::none());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             let source = secret::Source::Secret(name("plant.Token"));
@@ -1406,13 +1416,12 @@ mod tests {
     /// frees the ring (#406).
     #[test]
     fn retries_when_the_named_readers_fill_an_entry() {
-        let full = reader_error(hub::reader::Error::Full { limit: 257_728 });
+        let full = reader_error(hub::reader::Error::Full);
         assert!(matches!(full, Error::Retry(_)), "{full:?}");
         assert_eq!(
             full.to_string(),
             "an attempt failed: no part of the named records of the index has room for \
-             the reader: the records of an index hold at most 257728 bytes: read the \
-             index from fewer connectors in complete mode, \
+             the reader: read the index from fewer connectors in complete mode, \
              set `mode = \"latest\"` on one, or wait for the hold of a removed reader \
              to end"
         );

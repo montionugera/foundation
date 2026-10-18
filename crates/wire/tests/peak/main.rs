@@ -1,13 +1,17 @@
 //! The peak heap of a `Start` at `PLACES_MAX` with names of 255 bytes, which CLIENT
-//! HELLO bounds at 26 MB at the program, for each split of the run. This binary has no
-//! test harness: the count covers each thread, and a harness allocates on its own
-//! thread at any time.
+//! HELLO bounds at 26 MB at the program, for each split of the run, and of the
+//! `write::Frames` of a write stream at `PLACES_MAX`. This binary has no test harness:
+//! the count covers each thread, and a harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
+use std::sync::Arc;
+
 use types::channel;
+use types::frame::key_set::KeySet;
 use types::sample::{Scalar, Type};
 use wire::hub::client::{Mode, PLACES_MAX, Place, Places, Reader, place};
+use wire::hub::write;
 
 #[global_allocator]
 static ALLOCATOR: counting::Bytes = counting::Bytes::new();
@@ -35,6 +39,8 @@ fn main() {
         let bytes = peak(&places, &split);
         assert!(bytes <= BOUND, "{name}: the start takes {bytes} bytes");
     }
+    let bytes = write_frames(&places);
+    assert_eq!(bytes, 16 * count, "16 bytes for each place of a write");
 }
 
 /// The places at the cap, each name 255 bytes, the index at place 0.
@@ -47,6 +53,21 @@ fn places() -> Vec<Place> {
             name: format!("c{n:0>254}").parse().expect("a name"),
         })
         .collect()
+}
+
+/// The peak heap of [`write::Frames::new`] over the key set of `places`, built outside
+/// the count.
+fn write_frames(places: &[Place]) -> usize {
+    let set =
+        KeySet::ordered(places.iter().map(|place| (place.key, place.data_type)), 0)
+            .expect("no key repeats");
+    let set = Arc::new(set);
+    let before = ALLOCATOR.held();
+    ALLOCATOR.reset_peak();
+    let frames = write::Frames::new(set);
+    let bytes = ALLOCATOR.peak() - before;
+    drop(frames);
+    bytes
 }
 
 /// The peak heap of the decoder over the run of `places`, with `split[i]` places in

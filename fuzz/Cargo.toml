@@ -14,6 +14,7 @@ cargo-fuzz = true
 [patch.crates-io]
 noq-proto = { path = "../patches/noq-proto" }
 noq-udp = { path = "../patches/noq-udp" }
+tracing-core = { path = "../patches/tracing-core" }
 
 [dependencies]
 block = { path = "../crates/block" }
@@ -329,6 +330,13 @@ bench = false
 [[bin]]
 name = "wire_hub_frames"
 path = "fuzz_targets/wire_hub_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_hub_write"
+path = "fuzz_targets/wire_hub_write.rs"
 test = false
 doc = false
 bench = false

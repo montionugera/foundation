@@ -91,8 +91,8 @@
   https://github.com/synnaxlabs/foundation/issues/1859#issuecomment-6057975061.
   Until snapshots (#253), a region whose founders all left cannot admit a node. `secret`
   finds no key itself: `ops` and `node` read the member and pass its seal key. A
-  rotation, a new card, and `Remove` wait for a caller; a rotation that only the node
-  signs lets a stolen key lock the node out. Lost: a record that only the admitting
+  rotation and `Remove` wait for a caller; a rotation that only the node signs lets a
+  stolen key lock the node out. Lost: a record that only the admitting
   voter checks (a voter that lies admits any key, against BQ12). A `card::Signed` holds
   the `node::Key` that its signature covers
   (`Signed::key`): the key cannot come from the public key, which can rotate, so the
@@ -178,3 +178,12 @@
   `Join`, so a presence byte adds no check and changes the byte form of each member.
   Decided by `laptop.architect` (2026-10-10T03:33:06Z:
   https://github.com/synnaxlabs/foundation/issues/2225#issuecomment-6093336972).
+  A `Card` change (kind 5) makes a card the card of its member, so a node can change
+  its addresses. It holds a `card::Unchecked` in the byte form of a `Join` card: the
+  node key, the card, and its signature. Apply refuses, in this order, a card whose key
+  is not a member (`Refused::Stranger`), whose signature does not hold with the
+  member's public key (`Forged`), that changes more than the addresses and the version
+  (`Changed`), and whose version is not above the held version (`Behind`). So a repeat
+  and a late older proposal are no-ops, and the name and the keys of a member never
+  change. Approved by `laptop.architect` (2026-10-18T03:29:11Z:
+  https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245196820).
