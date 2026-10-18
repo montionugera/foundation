@@ -258,6 +258,208 @@ mod reply {
     }
 }
 
+mod replies {
+    use super::*;
+
+    fn lost() -> Reply {
+        Reply::Outcome(Outcome::Lost {
+            range: frame::Range { seq: 0, count: 1 },
+        })
+    }
+
+    fn refused() -> Reply {
+        Reply::Outcome(Outcome::Refused(Refusal::Full))
+    }
+
+    fn stored(frames: u64) -> Reply {
+        Reply::Stored { frames }
+    }
+
+    /// `replies` after it takes each of `taken`.
+    fn after(mut replies: Replies, taken: &[Reply]) -> Replies {
+        for &reply in taken {
+            assert_eq!(replies.decode(&encode_reply(reply)), Ok(reply));
+        }
+        replies
+    }
+
+    fn sent(frames: u64) -> Replies {
+        let mut replies = Replies::new();
+        for _ in 0..frames {
+            replies.sent();
+        }
+        replies
+    }
+
+    #[test]
+    fn refuses_an_outcome_before_a_frame() {
+        let mut replies = Replies::new();
+        let error = replies.decode(&encode_reply(taken(0, 1)));
+        assert_eq!(error, Err(Error::Unasked { frames: 0 }));
+        assert_eq!(
+            error.expect_err("unasked").to_string(),
+            "the outcome answers no frame: each of the 0 frames sent has one"
+        );
+        assert_eq!(replies, Replies::new());
+    }
+
+    #[test]
+    fn refuses_an_outcome_after_the_outcome_of_each_frame() {
+        let mut replies = after(sent(2), &[taken(0, 1), refused()]);
+        let before = replies;
+        let error = replies.decode(&encode_reply(lost()));
+        assert_eq!(error, Err(Error::Unasked { frames: 2 }));
+        assert_eq!(replies, before);
+    }
+
+    #[test]
+    fn refuses_a_stored_past_the_outcomes() {
+        let mut replies = after(sent(2), &[taken(0, 1)]);
+        let before = replies;
+        let error = replies.decode(&encode_reply(stored(2)));
+        let want = Error::Stored {
+            frames: 2,
+            stored: 0,
+            answered: 1,
+        };
+        assert_eq!(error, Err(want));
+        assert_eq!(
+            want.to_string(),
+            "the stored reply covers 2 frames, outside the 0 of the last stored reply to \
+             the 1 that got an outcome"
+        );
+        assert_eq!(replies, before);
+    }
+
+    #[test]
+    fn refuses_a_stored_below_the_last() {
+        let mut replies = after(sent(2), &[taken(0, 1), taken(1, 1), stored(2)]);
+        let before = replies;
+        let error = replies.decode(&encode_reply(stored(1)));
+        let want = Error::Stored {
+            frames: 1,
+            stored: 2,
+            answered: 2,
+        };
+        assert_eq!(error, Err(want));
+        assert_eq!(replies, before);
+    }
+
+    #[test]
+    fn takes_a_stored_of_the_last_count_again() {
+        let replies = after(sent(1), &[taken(0, 1), stored(1), stored(1)]);
+        assert!(replies.stored());
+    }
+
+    #[test]
+    fn takes_a_stored_of_no_frame() {
+        assert!(after(Replies::new(), &[stored(0)]).stored());
+    }
+
+    #[test]
+    fn gives_the_error_of_the_decode_and_changes_no_count() {
+        let mut replies = sent(1);
+        assert_eq!(replies.decode(&[]), Err(Error::Empty));
+        assert_eq!(replies.decode(&[9]), Err(Error::Kind { kind: 9 }));
+        assert_eq!(replies, sent(1));
+    }
+
+    #[test]
+    fn is_answered_once_each_frame_sent_has_an_outcome() {
+        let replies = sent(2);
+        assert!(!replies.answered());
+        let replies = after(replies, &[lost()]);
+        assert!(!replies.answered());
+        let replies = after(replies, &[refused()]);
+        assert!(replies.answered());
+        assert!(replies.stored(), "no frame was taken");
+    }
+
+    #[test]
+    fn is_stored_once_a_stored_covers_the_last_taken_frame() {
+        let replies = after(sent(3), &[taken(0, 1), lost(), refused()]);
+        assert!(replies.answered());
+        assert!(!replies.stored());
+        let mut replies = after(replies, &[stored(1)]);
+        assert!(
+            replies.stored(),
+            "the frames after the last taken one need none"
+        );
+        replies.sent();
+        assert!(!replies.stored(), "a frame waits for its outcome");
+    }
+
+    #[test]
+    fn is_not_stored_while_a_stored_covers_only_an_earlier_taken_frame() {
+        let replies = after(sent(2), &[taken(0, 1), taken(1, 1), stored(1)]);
+        assert!(!replies.stored());
+        assert!(after(replies, &[stored(2)]).stored());
+    }
+
+    /// A step of a write stream at the program.
+    #[derive(Clone, Debug)]
+    enum Step {
+        Sent,
+        Reply(Reply),
+    }
+
+    fn steps() -> impl Strategy<Value = Vec<Step>> {
+        let step = prop_oneof![
+            Just(Step::Sent),
+            Just(Step::Reply(taken(0, 1))),
+            Just(Step::Reply(lost())),
+            Just(Step::Reply(refused())),
+            (0..8_u64).prop_map(|frames| Step::Reply(stored(frames))),
+        ];
+        prop::collection::vec(step, 0..64)
+    }
+
+    proptest! {
+        #[test]
+        fn keeps_the_order_of_the_replies(steps in steps()) {
+            let mut replies = Replies::new();
+            let (mut sent, mut answered, mut taken, mut last) = (0_u64, 0, 0, 0);
+            for step in steps {
+                let reply = match step {
+                    Step::Sent => {
+                        replies.sent();
+                        sent = sent.strict_add(1);
+                        continue;
+                    }
+                    Step::Reply(reply) => reply,
+                };
+                let before = replies;
+                let got = replies.decode(&encode_reply(reply));
+                let want = match reply {
+                    Reply::Outcome(_) if answered == sent => {
+                        Err(Error::Unasked { frames: sent })
+                    }
+                    Reply::Outcome(outcome) => {
+                        answered = answered.strict_add(1);
+                        if let Outcome::Taken { .. } = outcome {
+                            taken = answered;
+                        }
+                        Ok(reply)
+                    }
+                    Reply::Stored { frames } if frames < last || frames > answered => {
+                        Err(Error::Stored { frames, stored: last, answered })
+                    }
+                    Reply::Stored { frames } => {
+                        last = frames;
+                        Ok(reply)
+                    }
+                };
+                prop_assert_eq!(got, want);
+                if got.is_err() {
+                    prop_assert_eq!(replies, before);
+                }
+                prop_assert_eq!(replies.answered(), answered == sent);
+                prop_assert_eq!(replies.stored(), answered == sent && last >= taken);
+            }
+        }
+    }
+}
+
 fn reply() -> impl Strategy<Value = Reply> {
     let range = (1..=u32::MAX).prop_flat_map(|count| {
         (0..=u64::MAX.saturating_sub(u64::from(count)))

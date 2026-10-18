@@ -290,6 +290,77 @@ impl Reply {
     }
 }
 
+/// The order of the replies of a write stream at the program: an outcome answers the
+/// oldest frame sent whole with no outcome, and [`Reply::Stored`] never passes the
+/// outcomes given nor goes back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Replies {
+    sent: u64,
+    answered: u64,
+    /// The count of frames up to the last that the home took.
+    taken: u64,
+    stored: u64,
+}
+
+impl Replies {
+    /// The replies of a stream that sent no frame.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Counts a frame that the program sent whole.
+    pub fn sent(&mut self) {
+        self.sent = self.sent.strict_add(1);
+    }
+
+    /// Decodes `message`, the next reply, and checks its order.
+    ///
+    /// # Errors
+    ///
+    /// As [`Reply::decode`], [`Error::Unasked`] for an outcome with no frame waiting
+    /// for one, and [`Error::Stored`] for a [`Reply::Stored`] past the outcomes given
+    /// or below the last [`Reply::Stored`]. A reply that it refuses changes no count.
+    pub fn decode(&mut self, message: &[u8]) -> Result<Reply, Error> {
+        let reply = Reply::decode(message)?;
+        match reply {
+            Reply::Outcome(_) if self.answered == self.sent => {
+                return Err(Error::Unasked { frames: self.sent });
+            }
+            Reply::Outcome(outcome) => {
+                self.answered = self.answered.strict_add(1);
+                if let Outcome::Taken { .. } = outcome {
+                    self.taken = self.answered;
+                }
+            }
+            Reply::Stored { frames }
+                if frames < self.stored || frames > self.answered =>
+            {
+                return Err(Error::Stored {
+                    frames,
+                    stored: self.stored,
+                    answered: self.answered,
+                });
+            }
+            Reply::Stored { frames } => self.stored = frames,
+        }
+        Ok(reply)
+    }
+
+    /// Whether each frame sent got its outcome.
+    #[must_use]
+    pub fn answered(&self) -> bool {
+        self.answered == self.sent
+    }
+
+    /// Whether each frame sent got its outcome, and the last [`Reply::Stored`] covers
+    /// each frame that the home took.
+    #[must_use]
+    pub fn stored(&self) -> bool {
+        self.answered() && self.stored >= self.taken
+    }
+}
+
 fn put_range(out: &mut Writer<'_>, kind: u8, range: frame::Range) {
     assert!(
         range.count > 0 && range.end().is_some(),
