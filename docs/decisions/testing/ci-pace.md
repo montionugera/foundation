@@ -48,5 +48,7 @@
   send the other targets with a harness to nextest: a Miri crate gets a slow target that
   has a harness. The one job took 35 min (run 39096947760). In run 39109178137 the Miri
   step of the slowest shard took 415 s with `hash`, 700 s with `count`, and 709 s with
-  `slice`. OK of the person for cargo-nextest: owed. Approval of `ci.yaml` by the
-  person: owed.
+  `slice`. OK of the person for cargo-nextest, 2026-10-18T14:39Z, through
+  `laptop.monitor`:
+  https://github.com/synnaxlabs/foundation/pull/3151#issuecomment-6251116435. The person
+  approved `ci.yaml` on GitHub at `1697708a8`.
