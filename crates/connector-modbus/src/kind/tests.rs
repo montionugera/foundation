@@ -891,6 +891,26 @@ fn ends_the_run_with_a_device_error_when_a_reply_is_late() {
     assert_eq!(record.frames, []);
 }
 
+#[test]
+fn keeps_the_error_of_the_last_run_while_a_run_connects_and_reads_nothing() {
+    const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 0)];
+    let record = run(
+        device(&ONE, Order::Big),
+        &ONE,
+        connector("plc", &ONE, &[]),
+        ms(10_050),
+        |scene| async move { scene.hold() },
+    );
+    let first = record
+        .statuses
+        .iter()
+        .position(|status| status.error.is_some());
+    let shown = &record.statuses[first.expect("an error")..];
+    let cleared = shown.iter().find(|status| status.error.is_none());
+    assert_eq!(cleared, None);
+    assert_eq!(record.frames, []);
+}
+
 /// The supervisor waits a random backoff before each new run, so each seed takes
 /// another time to read again.
 #[test]

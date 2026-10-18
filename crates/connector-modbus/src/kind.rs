@@ -62,7 +62,8 @@ impl kind::Kind for Kind {
     /// Connects to the device and reads each `read` once per tick until the cancel,
     /// in one request for the reads of one table that touch or overlap, and writes
     /// one frame per tick, stamped at the midpoint of the mesh times of the requests.
-    /// Each connect and each exchange gives up after 1 s.
+    /// Each connect and each exchange gives up after 1 s. The first tick whose reads
+    /// all succeed clears the error of the last run.
     ///
     /// # Errors
     ///
@@ -83,10 +84,10 @@ impl kind::Kind for Kind {
             return Ok(());
         };
         let (mut client, remote) = client?;
-        ctx.clear_error();
         let mut values = read::Values::new(config.reads.len());
         let missed = ctx.count("missed");
         let mut timer = pace::Timer::new(ctx.clock(), config.rate);
+        let mut cleared = false;
         while let Some(tick) = timer.tick(ctx.cancel()).await {
             missed.add(tick.missed);
             let scan = scan(config, &mut client, remote, &groups, &mut values);
@@ -95,6 +96,10 @@ impl kind::Kind for Kind {
                 break;
             };
             done?;
+            if !cleared {
+                ctx.clear_error();
+                cleared = true;
+            }
             writer.write(values.take().map(Some), stamp)?;
         }
         Ok(())
