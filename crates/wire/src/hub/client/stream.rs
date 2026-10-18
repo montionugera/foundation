@@ -6,11 +6,10 @@ use std::sync::Arc;
 use types::channel;
 use types::frame::key_set::KeySet;
 use types::name::Name;
-use types::sample::Type;
+use types::sample::{Scalar, Type};
 
-use super::run::Run;
 use super::{Body, Error, READ, fields};
-use crate::common::Writer;
+use crate::common::{Writer, rest_of_run};
 
 /// The most bytes of the open of a read or a write: 64 KiB.
 pub const OPEN_BYTES_MAX: u64 = 1 << 16;
@@ -73,8 +72,7 @@ fn check(length: u64) {
     );
 }
 
-/// A decoder of the start of a read or a write stream at the program: the places and
-/// their run.
+/// A decoder of the start of a write stream at the program: the places and their run.
 #[derive(Debug, Default)]
 pub struct Opening(Next);
 
@@ -138,6 +136,72 @@ impl Opening {
                     places,
                     set: Arc::new(set),
                 }))
+            }
+        }
+    }
+}
+
+/// The run of a [`Places`], with the places that arrived.
+#[derive(Debug)]
+struct Run {
+    places: Places,
+    remain: u32,
+    arrived: Vec<Place>,
+}
+
+impl Run {
+    fn new(places: Places) -> Self {
+        Self {
+            places,
+            remain: places.count,
+            arrived: Vec::new(),
+        }
+    }
+
+    /// Decodes the next message of the run. Gives the places and their key set, from
+    /// [`KeySet::ordered`], with the last message, else `None`. Gives the errors of a
+    /// message of the run that [`Opening::decode`] states, and a refused message
+    /// leaves the run as it was.
+    fn decode(
+        &mut self,
+        message: &[u8],
+    ) -> Result<Option<(Vec<Place>, KeySet)>, Error> {
+        let Self {
+            places,
+            remain,
+            arrived: all,
+        } = self;
+        let run = place::decode(message)?;
+        let rest = rest_of_run(*remain, run.len())?;
+        let first = places.count.checked_sub(*remain).unwrap_or_else(|| {
+            panic!(
+                "invariant: remain {remain} is at most count {}",
+                places.count
+            )
+        });
+        let index = (places.index.checked_sub(first))
+            .and_then(|at| run.get(usize::try_from(at).ok()?));
+        if let Some(index) = index
+            && index.data_type != Type::Scalar(Scalar::Stamp)
+        {
+            return Err(Error::Unstamped {
+                sample: index.data_type,
+            });
+        }
+        // Once for the whole run, so `all` never doubles past the cap, and the last
+        // message moves into it before the key set is built.
+        all.reserve_exact(to_usize(*remain));
+        all.extend(run);
+        if rest > 0 {
+            *remain = rest;
+            return Ok(None);
+        }
+        let channels = all.iter().map(|place| (place.key, place.data_type));
+        match KeySet::ordered(channels, to_usize(places.index)) {
+            Ok(set) => Ok(Some((std::mem::take(all), set))),
+            Err(repeated) => {
+                all.truncate(to_usize(first));
+                Err(Error::Repeated { key: repeated.key })
             }
         }
     }
@@ -340,4 +404,8 @@ pub mod place {
         }
         Ok(places)
     }
+}
+
+fn to_usize(n: u32) -> usize {
+    usize::try_from(n).expect("invariant: a usize holds a u32")
 }

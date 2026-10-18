@@ -70,7 +70,6 @@ use crate::common::{Fields, Length, Run, Writer, body};
 use crate::header::MALFORMED;
 
 mod read;
-mod run;
 mod stream;
 pub mod text;
 pub mod write;
