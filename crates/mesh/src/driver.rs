@@ -1465,6 +1465,9 @@ mod tests {
         homes: BTreeMap<channel::Key, node::Key>,
     }
 
+    /// What one try of a settle gave.
+    type Settled = Result<Option<Result<(), Refused>>, Error>;
+
     /// What the voters of a cluster did and what they do next.
     #[derive(Default)]
     struct Board {
@@ -1503,7 +1506,7 @@ mod tests {
         /// The join that each node settles next.
         joins: BTreeMap<u8, Change>,
         /// Each settle of `joins` that returned, in order: its node and what it gave.
-        settled: Vec<(u8, Result<Option<Result<(), Refused>>, Error>)>,
+        settled: Vec<(u8, Settled)>,
         /// The members that are not founding voters.
         learners: BTreeSet<u8>,
         /// The home that each node sets next.
