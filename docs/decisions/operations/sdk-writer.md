@@ -30,10 +30,8 @@
   6. One request channel into the client's thread, which `Client` holds next to the
      `Mutex` of its thread. Each send is a `try_send` or an unbounded send, so no send
      blocks or panics in an async context.
-  A series whose bytes are not `count` samples of the type of its place gives
-  `Ok(Outcome::Refused(Refusal::Codec))`, and the writer goes on. Lost: a borrowed
-  `Writer<'_>` of `Client`, because a PyO3 class holds no borrow, so a Python close
-  could not end a session with a live writer.
+  Lost: a borrowed `Writer<'_>` of `Client`, because a PyO3 class holds no borrow, so a
+  Python close could not end a session with a live writer.
   Place order: place `n` of `write` and `write_series` is `Config::channels[n]`, and
   the index is at its own place when `channels` names it, else at place
   `channels.len()`. `Writer::places` gives the places in that order, and
