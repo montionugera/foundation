@@ -66,3 +66,29 @@ fn a_run_reads_the_roots_and_the_mesh_time_of_its_supervisor() {
     assert_eq!(roots, "Roots { count: 1 }");
     assert!(now >= first.nanos(), "{now} is before {first:?}");
 }
+
+#[test]
+fn a_run_of_an_opened_rig_trusts_no_roots() {
+    let got = Arc::new(Mutex::new(None));
+    let into = Arc::clone(&got);
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    let result = sim.run_on(&node, move |node, tasks| async move {
+        let env = hub::testing::Env {
+            files: node.files(),
+            clock: node.clock(),
+            wall: node.wall(),
+            entropy: node.entropy(),
+            tasks: tasks.clone(),
+        };
+        let kinds = Table::new().with("inputs", Inputs(into));
+        let rig = Rig::open(env, node.net(), kinds).await;
+        let connector: Name = "plant.inputs".parse().unwrap();
+        let (token, document) = (cancel::Token::new(), Document::default());
+        let opened = rig.open_connector("inputs", connector, &document, &token);
+        opened.await.run().await
+    });
+    result.expect("the sim runs").expect("the run ends");
+    let (roots, _) = got.lock().unwrap().clone().expect("the run recorded");
+    assert_eq!(roots, "Roots { count: 0 }");
+}
