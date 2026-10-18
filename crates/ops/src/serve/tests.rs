@@ -240,7 +240,11 @@ fn a_plan_error_whose_first_problem_does_not_fit_gives_large_reply() {
         let max = usize::try_from(BODY_BYTES_MAX).expect("a usize");
         let path = format!("{}.hcl", "x".repeat(max - 200));
         let body = plan_body(&[(&path, "nope \"a\" {}\n")]);
-        assert!(body.len() <= max, "{}", body.len());
+        assert!(
+            body.len() <= max,
+            "the request of {} bytes passes the bound of {max} bytes",
+            body.len()
+        );
         let reply = serve(&node, &admin(), &body).await;
         assert_eq!(split(&reply), (large(), &b""[..]));
     });
@@ -280,7 +284,11 @@ fn a_plan_error_over_the_bound_counts_the_rest_after_each_problem() {
         let expected = kept(&path);
         assert_eq!(expected.len(), max);
         let body = plan_body(&[(&path, block), ("b.hcl", &rest)]);
-        assert!(body.len() <= max, "{}", body.len());
+        assert!(
+            body.len() <= max,
+            "the request of {} bytes passes the bound of {max} bytes",
+            body.len()
+        );
         assert_eq!(serve(&node, &admin(), &body).await, expected);
     });
 }
