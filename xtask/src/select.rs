@@ -30,29 +30,29 @@ impl Package {
     }
 }
 
-/// The packages in `metadata` with a `.rs` file whose text `matches`. It reads each
-/// file in the directory of each target's root, so it also reads oracles under
-/// `oracles/`. It never picks `xtask`, whose tests hold sample source.
+/// The [`Package`] of each package of [`matching`].
 ///
 /// # Errors
 ///
-/// A missing metadata field, or a file that cannot be read.
+/// An error of [`matching`].
 pub(crate) fn packages(
     metadata: &Value,
     matches: impl Fn(&str) -> bool,
 ) -> Result<Vec<Package>, String> {
-    objects(metadata, matches)?
+    matching(metadata, matches)?
         .into_iter()
         .map(Package::read)
         .collect()
 }
 
-/// The package objects of [`packages`].
+/// The package objects in `metadata` with a `.rs` file whose text `matches`. It reads
+/// each file in the directory of each target's root, so it also reads oracles under
+/// `oracles/`. It never picks `xtask`, whose tests hold sample source.
 ///
 /// # Errors
 ///
 /// A missing metadata field, or a file that cannot be read.
-pub(crate) fn objects(
+pub(crate) fn matching(
     metadata: &Value,
     matches: impl Fn(&str) -> bool,
 ) -> Result<Vec<&Value>, String> {

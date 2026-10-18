@@ -917,7 +917,9 @@ mod tests {
         let packages = [
             by_cfg("loom").unwrap(),
             by_cfg("shuttle").unwrap(),
-            miri::packages(&metadata).unwrap(),
+            (miri::crates(&metadata).unwrap().into_iter())
+                .map(|found| found.package)
+                .collect(),
         ];
         pin_jobs(&jobs);
         for (task, packages) in ["loom", "shuttle", "miri"].into_iter().zip(packages) {
@@ -1071,9 +1073,9 @@ mod tests {
         let models = models(&ci);
         let workspace = metadata["packages"].as_array().unwrap();
         // Each entry is a crate whose code Miri runs, and the crate that Miri tests.
-        let mut open: Vec<(String, String)> = (miri::packages(&metadata).unwrap())
+        let mut open: Vec<(String, String)> = (miri::crates(&metadata).unwrap())
             .into_iter()
-            .map(|select::Package { name, .. }| (name.clone(), name))
+            .map(|found| (found.package.name.clone(), found.package.name))
             .collect();
         let mut seen = BTreeSet::new();
         while let Some((name, tested)) = open.pop() {
@@ -1107,14 +1109,14 @@ mod tests {
     fn miri_skips_only_crates_that_name_unsafe_code() {
         let metadata = metadata(&fixture().join("../..")).unwrap();
         let named = select::packages(&metadata, |s| select::has_word(s, "unsafe_code"));
-        let (named, checked) = (named.unwrap(), miri::packages(&metadata).unwrap());
+        let (named, checked) = (named.unwrap(), miri::crates(&metadata).unwrap());
         for name in miri::SKIPPED {
             assert!(
                 named.iter().any(|package| package.name == name),
                 "`{name}` names no `unsafe_code`"
             );
             assert!(
-                !checked.iter().any(|package| package.name == name),
+                !checked.iter().any(|found| found.package.name == name),
                 "Miri checks `{name}`"
             );
         }
