@@ -144,3 +144,32 @@
   `lost` of the entry of `tc1`, built only when the caller reads it, and logs one
   WARNING for each gap on its own logger with no setup. It installs no `tracing`
   subscriber (the person and `laptop.architect`, the same comments).
+  Amended (#2718): a program writes on a write stream that it opens at its node. Its
+  first message is `client::write::Write` (kind 7: the length of the open and the
+  signature of a write proof). The open is `write::Open { authority, lease, channels
+  }`. The node replies the `Places` and their run, as for a read, and
+  `write::Opening` decodes them and checks the run as `client::Reader` does: both use
+  one private run. Then the program sends each frame as a `write::Head { time, form,
+  count, series }`, the run of its ends (`wire::hub::ends`), and its body. A `Head` of
+  `write::Time::Node` holds one raw sample of each series, and the node writes a stamp
+  over its 8-byte index sample. The node replies `write::Reply`: an `Outcome` for each
+  frame (`Taken` or `Lost` with its `frame::Range`, or `Refused` with a
+  `write::Refusal`), and `Stored { through }`. A frame that finds the pool full gets
+  `Refused(Full)` and the stream stays open. An untimed frame behind a later stamp of
+  another writer gets `Refused(Order)`. `write` is a public module with no re-export,
+  as its `Open` and `Refusal` collide with those of the read. Until the forward of
+  BQ12 (#3104), a write at a node that is not the home stops with `NOT_HOME`. The plan
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244711745) was
+  approved by `laptop.architect` at 2026-10-18T02:34:55Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244779011), and
+  the `Head` at 2026-10-18T02:42:50Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244840425). The
+  person objected to its design 1, an `Away` that sends the program to the home, at
+  2026-10-18T02:39:23Z: "No, I disagree. What does cockroachdb do?" (relayed by
+  `laptop.monitor`,
+  https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244819528).
+  So BQ12 holds: the program reaches only its node, and the node forwards the signed
+  hello and open to the home (`laptop.architect`, 2026-10-18T02:46:04Z,
+  https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244865133). Lost:
+  the `Away` with typed addresses, and a `label` and an `untimed` flag in the `Head`,
+  which let a `Resend` or an untimed backfill frame be sent.

@@ -121,10 +121,10 @@
   program sends no credit: the stream's flow control bounds the frames in flight. The
   program knows the kind of each stream that it opens; the node knows the kind of the
   hello stream only, and decodes the first message of each later stream with
-  `client::First::decode`, which gives a `Request` or a `Read` and refuses each other
-  kind with `Error::Kind`. The lost reason above, that each caller checks the kind
-  again, does not apply: both variants come, and the node handles each. Supersedes, for
-  the node, the rule that each side knows the kind of each stream, of
+  `client::First::decode`, which gives a `Request`, a `Read`, or a `Write` and refuses
+  each other kind with `Error::Kind`. The lost reason above, that each caller checks the
+  kind again, does not apply: each variant comes, and the node handles each.
+  Supersedes, for the node, the rule that each side knows the kind of each stream, of
   https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6063499704.
   `client::Refusal` gains `UNKNOWN` 16 (a selector that matches no channel), `NOT_HOME`
   17, and `FAILED` 18. Lost: a role byte in `Request`, a change of a form that each SDK
