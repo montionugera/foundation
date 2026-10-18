@@ -242,8 +242,8 @@ fn a_stop_during_the_minute_of_a_card_ends_the_node() {
 
 /// A mesh whose log write fails during the call of a card a minute later fails the
 /// node with that error, and logs nothing more of the card. The seed gives the order
-/// of the end of the call and the stop of the group, both ready at one instant: of
-/// the 28 seeds in which the call waits, 18 end the call first.
+/// of the end of the call and the stop of the group, both ready at one instant, so
+/// the seeds cover both orders.
 #[test]
 fn a_mesh_that_stops_during_the_call_of_a_card_logs_no_more_of_it() {
     let soon = "WARN node::card: the card of this node keeps its addresses, and the \

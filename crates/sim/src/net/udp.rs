@@ -368,7 +368,8 @@ impl<'a> Udp<'a> {
 /// # Errors
 ///
 /// [`Error::Unreachable`] when the socket's family cannot reach the destination, and
-/// [`Error::Io`] when the source is not an address of the socket.
+/// [`Error::Io`] with code 99 when `transmit` names a source that is neither the
+/// link-local `local` nor the address of `node` of the destination's family.
 fn route(
     node: usize,
     local: SocketAddr,
