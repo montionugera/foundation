@@ -318,7 +318,9 @@ impl Store {
         let received = async {
             let slot = self.receipts.take().await;
             let path = self.dir.join(format!("{digest}.{}", slot.key()));
-            self.room(len, &self.path(digest)).await?;
+            // A write open of the digest's name, outside its flight, would be busy
+            // while a put or another receipt of the digest holds the file.
+            self.room(len, &self.path(digest), Mode::Read).await?;
             let bytes =
                 u64::try_from(len).expect("invariant: a length fits in 64 bits");
             let file = self.files.open(&path, Mode::Create { len: bytes }).await?;
@@ -335,17 +337,17 @@ impl Store {
     }
 
     /// Gives `Ok` when `len` bytes of new room leave the floor free, or when a file of
-    /// `len` bytes is at `path`.
+    /// `len` bytes is at `path`, which it opens with `mode`.
     ///
     /// # Errors
     ///
     /// [`Error::Floor`] when neither holds, and [`Error::Files`] when a file call
     /// fails.
-    async fn room(&self, len: usize, path: &Path) -> Result<(), Error> {
+    async fn room(&self, len: usize, path: &Path, mode: Mode) -> Result<(), Error> {
         let bytes = u64::try_from(len).expect("invariant: a length fits in 64 bits");
         let free_bytes = self.files.free().await?;
         if free_bytes.saturating_sub(bytes) < self.floor_bytes
-            && self.len(path).await? != Some(bytes)
+            && self.len(path, mode).await? != Some(bytes)
         {
             return Err(Error::Floor {
                 len,
@@ -356,9 +358,10 @@ impl Store {
         Ok(())
     }
 
-    /// The length of the file at `path`, or `None` when no file is there.
-    async fn len(&self, path: &Path) -> Result<Option<u64>, Error> {
-        match self.files.open(path, Mode::Write).await {
+    /// The length of the file at `path`, opened with `mode`, or `None` when no file is
+    /// there.
+    async fn len(&self, path: &Path, mode: Mode) -> Result<Option<u64>, Error> {
+        match self.files.open(path, mode).await {
             Ok(file) => {
                 let len = file.len();
                 file.close().await;
@@ -697,7 +700,7 @@ impl<'a> Flight<'a> {
         let store = self.store;
         let path = store.path(self.digest);
         let bytes = u64::try_from(len).expect("invariant: a length fits in 64 bits");
-        store.room(len, &path).await?;
+        store.room(len, &path, Mode::Write).await?;
         let mode = Mode::Create { len: bytes };
         self.after = Some(State::Listed(self.serial));
         let file = match store.files.open(&path, mode).await {
@@ -3363,6 +3366,25 @@ mod tests {
                 assert_eq!(listed, vec![PathBuf::from(digest.to_string())]);
                 assert_eq!(store.status().failures, 1);
                 assert_eq!(seen(&node, &store, digest, &block).await, Seen::Listed);
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn of_a_listed_chunk_under_the_floor_while_its_file_is_held_for_write_opens() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let (digest, block) = chunk(7, 3000);
+                node.files().create_dir(Path::new(DIR)).await.unwrap();
+                create_file(&node, &path(digest), &block).await;
+                let free_bytes = node.files().free().await.unwrap();
+                let store = open_leaving(&node, free_bytes + 1).await;
+                let held = node.files().open(&path(digest), Mode::Write).await.unwrap();
+                let receipt = store.receive(digest, 3000).await.unwrap();
+                held.close().await;
+                end(receipt, &block).await.unwrap();
+                assert_eq!(store.status().failures, 0);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Held);
             })
             .unwrap();
         }
