@@ -8,8 +8,13 @@ use program::write::{Config, Outcome, Time};
 use sdk::Client;
 use types::authority::Authority;
 use types::frame::Form;
-use types::name::Name;
+use types::name::{Name, Selector};
 use types::sample::Value;
+use wire::hub::client::Mode;
+
+/// The mode of each reader. A complete reader gets each frame after its commit, one
+/// record of the ring for each read, and the node never trims the ring (#160).
+const MODE: Mode = Mode::Latest;
 
 /// Calls before the timed rounds.
 const WARMUP: usize = 500;
@@ -23,26 +28,8 @@ pub(crate) fn run() {
     let benched = std::env::args().any(|arg| arg == "--bench");
     let (rounds, calls) = if benched { (5, 2_000) } else { (1, 100) };
     let legs = legs(rounds, calls);
-    let (mut rig, node, subject) = crate::plant::planted();
-    let program = program(&node, &subject, rounds, calls);
-    let client = Client::connect(&node, subject).expect("the client connects");
-    let config = sdk::write::Config::new(names());
-    let mut writer = client.open_writer(config).expect("the writer opens");
-    let values = [(0, Value::I64(1)), (1, Value::I64(2))];
-    let sdk = rounded(rounds, calls, || {
-        spin();
-        let start = Instant::now();
-        let written = writer.write(&values);
-        let span = start.elapsed();
-        assert!(
-            matches!(written, Ok(sdk::write::Outcome::Taken { .. })),
-            "{written:?}"
-        );
-        span
-    });
-    assert_eq!(writer.close(), Ok(()), "the writer closes");
-    assert_eq!(client.close(), Ok(()), "the client closes");
-    rig.stop();
+    let (program, sdk) = lines(rounds, calls, false);
+    let (program_read, sdk_read) = lines(rounds, calls, true);
     println!(
         "{:<14} {:>6} {:>9} {:>9}",
         "line", "round", "p50 µs", "p99 µs"
@@ -52,6 +39,8 @@ pub(crate) fn run() {
         ("leg to caller", legs.1),
         ("sdk", sdk),
         ("program", program),
+        ("sdk read", sdk_read),
+        ("program read", program_read),
     ] {
         for (round, mut spans) in spans.into_iter().enumerate() {
             spans.sort_unstable();
@@ -59,6 +48,47 @@ pub(crate) fn run() {
             println!("{name:<14} {round:>6} {:>9.1} {:>9.1}", at(50), at(99));
         }
     }
+}
+
+/// The spans of the `program` and the `sdk` line of `rounds` rounds of `calls` writes,
+/// each with the read of its frame when `read`, against a node of their own.
+fn lines(
+    rounds: usize,
+    calls: usize,
+    read: bool,
+) -> (Vec<Vec<Duration>>, Vec<Vec<Duration>>) {
+    let (mut rig, node, subject) = crate::plant::planted();
+    let program = program(&node, &subject, rounds, calls, read);
+    let client = Client::connect(&node, subject).expect("the client connects");
+    let config = sdk::write::Config::new(names());
+    let mut writer = client.open_writer(config).expect("the writer opens");
+    let config = sdk::read::Config {
+        channels: names(),
+        mode: MODE,
+    };
+    let mut reader =
+        read.then(|| client.open_reader(config).expect("the reader opens"));
+    let values = [(0, Value::I64(1)), (1, Value::I64(2))];
+    let sdk = rounded(rounds, calls, || {
+        spin();
+        let start = Instant::now();
+        let written = writer.write(&values);
+        if let Some(reader) = &mut reader {
+            let frame = reader.next().expect("the reader reads");
+            assert_eq!(frame.count(), 1, "the frame of the write");
+        }
+        let span = start.elapsed();
+        assert!(
+            matches!(written, Ok(sdk::write::Outcome::Taken { .. })),
+            "{written:?}"
+        );
+        span
+    });
+    drop(reader);
+    assert_eq!(writer.close(), Ok(()), "the writer closes");
+    assert_eq!(client.close(), Ok(()), "the client closes");
+    rig.stop();
+    (program, sdk)
 }
 
 /// The spans of each of `rounds` rounds of `calls` calls of `call`, after
@@ -109,12 +139,14 @@ fn legs(rounds: usize, calls: usize) -> (Vec<Vec<Duration>>, Vec<Vec<Duration>>)
 }
 
 /// The spans of each of `rounds` rounds of `calls` writes of 2 values through a
-/// `program::Writer` at `node`, on an `os` shard of its own.
+/// `program::Writer` at `node`, on an `os` shard of its own, each with the read of its
+/// frame through a `program::Reader` of the same session when `read`.
 fn program(
     node: &sdk::Node,
     subject: &sdk::Subject,
     rounds: usize,
     calls: usize,
+    read: bool,
 ) -> Vec<Vec<Duration>> {
     let (node, subject) = (node.clone(), subject.clone());
     let (sender, spans) = mpsc::channel();
@@ -127,25 +159,22 @@ fn program(
             channels: names(),
         };
         let mut writer = session.writer(config).await.expect("the writer opens");
-        let index = writer.index();
-        let layout: Vec<_> = (0..writer.places().len()).map(|p| (p, 8)).collect();
+        let mut reader = None;
+        if read {
+            let select = Selector::new(["plant.a", "plant.b"]).expect("a selector");
+            let opened = session.reader(select, MODE).await;
+            reader = Some(opened.expect("the reader opens"));
+        }
         let mut all = Vec::with_capacity(WARMUP + rounds * calls);
         for _ in 0..WARMUP + rounds * calls {
             let start = Instant::now();
-            let draft = writer
-                .draft(Form::Raw, 1, &layout)
-                .await
-                .expect("the frame fits the pool");
-            for (place, _) in layout.iter().filter(|(place, _)| *place != index) {
-                draft
-                    .series_mut(*place)
-                    .expect("the layout holds it")
-                    .fill(1);
+            write(&mut writer).await;
+            if let Some(reader) = &mut reader {
+                reader.next().await.expect("the reader reads");
             }
-            let written = writer.write(Time::Node).await;
             all.push(start.elapsed());
-            assert!(matches!(written, Ok(Outcome::Taken { .. })), "{written:?}");
         }
+        drop(reader);
         writer.finish().await.expect("the writer finishes");
         drop(session);
         group.ended().await;
@@ -155,6 +184,24 @@ fn program(
     let all = spans.recv().expect("the program thread sends its spans");
     handle.join().expect("the program thread ends");
     all[WARMUP..].chunks(calls).map(<[_]>::to_vec).collect()
+}
+
+/// Writes a frame of 1 sample of each channel of `writer`, with the node's stamp.
+async fn write(writer: &mut program::Writer) {
+    let index = writer.index();
+    let layout: Vec<_> = (0..writer.places().len()).map(|p| (p, 8)).collect();
+    let draft = writer
+        .draft(Form::Raw, 1, &layout)
+        .await
+        .expect("the frame fits the pool");
+    for (place, _) in layout.iter().filter(|(place, _)| *place != index) {
+        draft
+            .series_mut(*place)
+            .expect("the layout holds it")
+            .fill(1);
+    }
+    let written = writer.write(Time::Node).await;
+    assert!(matches!(written, Ok(Outcome::Taken { .. })), "{written:?}");
 }
 
 /// The channels that each writer writes.

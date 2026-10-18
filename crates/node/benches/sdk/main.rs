@@ -1,6 +1,6 @@
 //! The time of a write of 2 values through `sdk` and through `program`, against a node
-//! process on loopback, and of the two legs that `sdk` adds between the caller and the
-//! client's thread. Run with `cargo bench -p node --bench sdk`.
+//! process on loopback, of the two legs that `sdk` adds between the caller and the
+//! client's thread, and of a write and the read of its frame. Run with `cargo bench -p node --bench sdk`.
 //!
 //! Each line gives the p50 and p99 of the calls of each round, in µs:
 //!
@@ -12,14 +12,18 @@
 //! - `sdk`: `sdk::Writer::write` of 2 values with the node's stamp.
 //! - `program`: `program::Writer::draft` and `write` of the same frame, on an `os`
 //!   shard of its own, as `served` writes it.
+//! - `sdk read`: an `sdk` write, then `sdk::Reader::next` of its frame, with a latest
+//!   reader of the same client.
+//! - `program read`: a `program` write, then `program::Reader::next` of its frame, as
+//!   the task of `sdk/rust/src/read.rs` reads it.
 //!
 //! The channels are those of `Writer::open`, and each shard is one of `Client::start`
-//! in `sdk/rust/src/lib.rs`: `os`, with the caller's log. Before each call of the
-//! first three lines, the caller spins for [`GAP`], so that the task parks before each
-//! send, as it does between the writes of a program.
+//! in `sdk/rust/src/lib.rs`: `os`, with the caller's log. Before each call of the legs
+//! and of the `sdk` lines, the caller spins for [`GAP`], so that the task parks before
+//! each send, as it does between the calls of a program.
 //!
 //! Each write must give `Taken`: the rig's disk budget holds about 40,000 frames, and a
-//! frame past it is `Lost`. Judge `sdk` against `program` from one run, and each leg
+//! frame past it is `Lost`. So the two read lines run on a node of their own. Judge `sdk` against `program` from one run, and each leg
 //! against its p50: a p99 far over it is a wait for a wake.
 //!
 //! Only Unix: the rig stops its node with SIGTERM.
