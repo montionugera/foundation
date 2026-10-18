@@ -24,10 +24,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 /* The global clocks give a fixed time, so no OS clock enters through the C code.
  * `cargo xtask open62541` lists each call site. */
@@ -35,41 +31,34 @@ UA_DateTime UA_DateTime_now(void) { return 0; }
 UA_DateTime UA_DateTime_nowMonotonic(void) { return 0; }
 UA_Int64 UA_DateTime_localTimeUtcOffset(void) { return 0; }
 
-/* The bytes of a line to stderr, with its newline. */
+/* The bytes of a line, with its NUL. */
 #define LINE_BYTES 512
 
-/* Writes `connector-opcua: open62541 `, then `level` and `: ` when `level` is not NULL,
- * then `format` with `args`, to stderr as one line of at most `LINE_BYTES` bytes, in
- * one call, with the same bytes on each OS. So a line takes no `stdio` lock and does
- * not mix with a line of another thread. */
-static void put_line(const char *level, const char *format, va_list args) {
-    char line[LINE_BYTES];
-    /* `mp_vsnprintf`, not `vsnprintf`: open62541 formats `%S` and `%N`. */
-    int length = mp_snprintf(line, sizeof(line), "connector-opcua: open62541 %s%s",
-                             level ? level : "", level ? ": " : "");
-    length += mp_vsnprintf(line + length, sizeof(line) - (size_t)length, format, args);
-    if(length > LINE_BYTES - 1)
-        length = LINE_BYTES - 1;
-    line[length] = '\n';
-    /* A failed write of a line to stderr has nowhere to go. */
-#ifdef _WIN32
-    /* `write` puts a CR before each LF of fd 2, which is in text mode. */
-    DWORD written;
-    HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
-    WriteFile(err, line, (DWORD)length + 1, &written, NULL);
-#else
-    ssize_t written = write(STDERR_FILENO, line, (size_t)length + 1);
-#endif
-    (void)written;
+/* The functions of `src/log.rs`. Each takes the `length` bytes of a line at `line`,
+ * and `connector_opcua_die` does not return. `connector_opcua_admit` gives whether
+ * the log writes the next line of its level, before the line is formatted. */
+bool connector_opcua_admit(void *log, bool severe);
+void connector_opcua_put_line(void *log, bool severe, const char *category,
+                              const char *line, size_t length);
+__attribute__((noreturn)) void connector_opcua_die(const char *line, size_t length);
+
+/* Formats `format` with `args` into `line`, cut to `LINE_BYTES - 1` bytes, and gives
+ * the length. `mp_vsnprintf`, not `vsnprintf`: open62541 formats `%S` and `%N`. */
+static size_t format_line(char line[LINE_BYTES], const char *format, va_list args) {
+    int length = mp_vsnprintf(line, LINE_BYTES, format, args);
+    return length < LINE_BYTES ? (size_t)length : LINE_BYTES - 1;
 }
 
-/* Writes `format` with its arguments to stderr with `put_line`, and aborts. */
-static void die(const char *format, ...) {
+/* Formats `format` with its arguments, as `format_line` does, and gives the line to
+ * `connector_opcua_die`, which panics with it and aborts. The panic hook of the binary
+ * puts the line in its log before the abort. */
+__attribute__((noreturn)) static void die(const char *format, ...) {
+    char line[LINE_BYTES];
     va_list args;
     va_start(args, format);
-    put_line(NULL, format, args);
+    size_t length = format_line(line, format, args);
     va_end(args);
-    abort();
+    connector_opcua_die(line, length);
 }
 
 /* The library calls the constructors of the POSIX loop only when a config has no event
@@ -454,29 +443,60 @@ static void el_remove_delayed(UA_EventLoop *el, UA_DelayedCallback *dc) {
     }
 }
 
-static const char *const LEVELS[] = {"trace", "debug", "info", "warning", "error",
-                                     "fatal"};
+/* The name of `category`, or NULL for a value that `UA_LogCategory` does not name.
+ * The switch has no default, so a category that the copy adds fails the build. */
+static const char *category_name(UA_LogCategory category) {
+    switch(category) {
+    case UA_LOGCATEGORY_NETWORK: return "network";
+    case UA_LOGCATEGORY_SECURECHANNEL: return "securechannel";
+    case UA_LOGCATEGORY_SESSION: return "session";
+    case UA_LOGCATEGORY_SERVER: return "server";
+    case UA_LOGCATEGORY_CLIENT: return "client";
+    case UA_LOGCATEGORY_APPLICATION: return "application";
+    case UA_LOGCATEGORY_SECURITY: return "security";
+    case UA_LOGCATEGORY_EVENTLOOP: return "eventloop";
+    case UA_LOGCATEGORY_PUBSUB: return "pubsub";
+    case UA_LOGCATEGORY_DISCOVERY: return "discovery";
+    }
+    return NULL;
+}
 
-/* Writes each message of level warning and up to stderr. It allocates nothing. */
+/* Gives the message to `connector_opcua_put_line` with `context`, when
+ * `connector_opcua_admit` admits it. Out of line, so that the 512 B of `line` are on
+ * no stack of a message below warning. */
+__attribute__((noinline)) static void put_line(void *context, bool severe,
+                                               const char *category, const char *msg,
+                                               va_list args) {
+    if(!connector_opcua_admit(context, severe))
+        return;
+    char line[LINE_BYTES];
+    size_t length = format_line(line, msg, args);
+    connector_opcua_put_line(context, severe, category, line, length);
+}
+
+/* Gives each message of level warning and up to `connector_opcua_put_line` with
+ * `context`, the `Log` of the loop: severe for an error or a fatal message. It
+ * allocates nothing. The switch has no default, as in `category_name`. */
 static void log_message(void *context, UA_LogLevel level, UA_LogCategory category,
                         const char *msg, va_list args) {
-    (void)context;
-    (void)category;
-    if(level < UA_LOGLEVEL_WARNING)
-        return;
-    put_line(LEVELS[level / 100 - 1], msg, args);
+    const char *name = category_name(category);
+    if(!name)
+        die("logged in category %d", (int)category);
+    switch(level) {
+    case UA_LOGLEVEL_TRACE:
+    case UA_LOGLEVEL_DEBUG:
+    case UA_LOGLEVEL_INFO: return;
+    case UA_LOGLEVEL_WARNING: put_line(context, false, name, msg, args); return;
+    case UA_LOGLEVEL_ERROR:
+    case UA_LOGLEVEL_FATAL: put_line(context, true, name, msg, args); return;
+    }
+    die("logged at level %d", (int)level);
 }
 
-/* Logs the `length` bytes at `message` as a warning through the logger of `el`.
- * `length` is above 0: mp_printf reads a precision of 0 as none, and reads to a NUL. */
-void shim_log_warning(UA_EventLoop *el, const char *message, size_t length) {
-    int bytes = length < LINE_BYTES ? (int)length : LINE_BYTES;
-    UA_LOG_WARNING(el->logger, UA_LOGCATEGORY_NETWORK, "%.*s", bytes, message);
-}
-
-/* Gives a fresh loop whose monotonic time is `now(time)` and whose wall time is
- * `wall(time)`, or NULL when out of memory. */
-UA_EventLoop *shim_loop_new(shim_now now, shim_now wall, void *time) {
+/* Gives a fresh loop whose monotonic time is `now(time)`, whose wall time is
+ * `wall(time)`, and whose logger gives each line with `log`, or NULL when out of
+ * memory. */
+UA_EventLoop *shim_loop_new(shim_now now, shim_now wall, void *time, void *log) {
     struct shim_loop *loop = (struct shim_loop *)UA_calloc(1, sizeof(*loop));
     if(!loop)
         return NULL;
@@ -486,6 +506,7 @@ UA_EventLoop *shim_loop_new(shim_now now, shim_now wall, void *time) {
     loop->time = time;
     loop->tail = &loop->queued;
     loop->logger.log = log_message;
+    loop->logger.context = log;
     UA_EventLoop *el = &loop->el;
     el->logger = &loop->logger;
     el->start = el_start;

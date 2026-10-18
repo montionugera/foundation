@@ -105,7 +105,8 @@ fn a_crash_while_a_stream_is_open_frees_the_server() {
                 (Value::I32(1), types::quality::Quality::GOOD)
             });
         };
-        Server::serve(manager, 1, add, pending::<()>()).await;
+        let served = Server::serve(manager, 1, add, pending::<()>());
+        served.await.expect("the listener does not fail");
     });
     drop(started.expect("the shard starts"));
     let net = peer.net();
@@ -144,7 +145,9 @@ fn the_end_of_a_serve_closes_each_open_stream() {
             &mut node.entropy().rng(),
         )
         .expect("the port is free");
-        Server::serve(manager, 1, |_| {}, node.clock().sleep(Span::SECOND)).await;
+        let served =
+            Server::serve(manager, 1, |_| {}, node.clock().sleep(Span::SECOND));
+        served.await.expect("the listener does not fail");
     });
     drop(started.expect("the shard starts"));
     let (net, (send, read)) = (peer.net(), mpsc::channel());
@@ -239,7 +242,8 @@ fn a_source_is_a_variable_of_the_data_type_base_data_type() {
                 .add_source(&source, || (Value::I32(1), types::quality::Quality::GOOD));
             assert_eq!(server.data_type(&source), ns0::BASE_DATA_TYPE);
         };
-        Server::serve(manager, 1, add, async {}).await;
+        let served = Server::serve(manager, 1, add, async {});
+        served.await.expect("the listener does not fail");
     })
     .expect("the run ends");
 }

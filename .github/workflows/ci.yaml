@@ -226,7 +226,6 @@ jobs:
               - --exclude connector-opcua # #2968
               - --exclude node # #2968, #682, #2955, #2956, #477, #2957
               - --exclude acceptance # #2968, #682, #2955, #2956, #477, #2957
-              - --exclude xtask # #2238
               - --exclude ops # #2971
               - --exclude sdk # #682, #2955
               - --exclude sdk-python # #682, #2955
@@ -250,6 +249,38 @@ jobs:
               - --skip log::tests::refuses_a_write_after_a_failed_or_dropped_one # #2973
               - --skip daqmx::tests::names_a_library_that_does_not_load # #3033
               - --skip daqmx::tests::names_a_function_the_library_lacks # #3033
+              - --skip tests::each_exception_of_an_os_names_the_issue_that_removes_it # #3165
+              - --skip tests::models_filter_names_each_crate_that_a_model_task_selects # #3165
+              - --skip tests::models_filter_names_each_workspace_crate_that_miri_runs # #3165
+              - --skip tests::the_check_of_each_os_runs_on_each_event_so_that_it_reports_its_name # #3165
+              - --skip tests::the_feature_check_of_each_os_leaves_out_the_crates_of_its_check # #3165
+              - --skip open62541::tests::check_fails_on_a_c_identifier_that_holds_a_dollar # #3166
+              - --skip open62541::tests::check_finds_a_builtin_and_an_asm_statement_that_read_a_clock # #3166
+              - --skip open62541::tests::check_finds_a_clock_call_added_to_the_copy # #3166
+              - --skip open62541::tests::check_finds_a_clock_call_that_a_listed_function_inlines # #3166
+              - --skip open62541::tests::check_finds_a_listed_symbol_at_a_place_that_the_list_does_not_name # #3166
+              - --skip open62541::tests::check_finds_a_listed_symbol_in_a_nested_function_of_a_new_function # #3166
+              - --skip open62541::tests::check_finds_a_read_of_errno_that_no_call_of_the_copy_set # #3166
+              - --skip open62541::tests::check_finds_a_read_of_the_table_of_the_linker_that_the_c_makes # #3166
+              - --skip open62541::tests::check_finds_an_os_call_through_a_header_that_includes_its_own # #3166
+              - --skip open62541::tests::check_finds_an_os_call_whose_name_another_file_defines_as_static # #3166
+              - --skip open62541::tests::check_finds_the_address_of_a_listed_symbol_in_its_function # #3166
+              - --skip open62541::tests::check_passes_an_undefined_symbol_that_no_relocation_names # #3166
+              - --skip open62541::tests::check_reads_each_name_to_its_end # #3166
+              - --skip open62541::tests::check_reads_the_symbols_that_a_build_with_the_flags_of_the_copy_gives # #3166
+              - --skip open62541::tests::check_refuses_a_line_directive_in_the_copy # #3166
+              - --skip open62541::tests::flags_keeps_each_define_include_and_standard # #3166
+              - --skip open62541::tests::run_copies_a_source_whose_name_starts_with_a_dash # #3166
+              - --skip open62541::tests::run_copies_each_compiled_source_and_its_headers # #3166
+              - --skip open62541::tests::run_keeps_the_copy_when_a_file_is_missing # #3166
+              - --skip open62541::tests::run_names_a_clock_call_in_a_source_whose_name_starts_with_an_at_sign # #3166
+              - --skip open62541::tests::run_names_a_static_helper_that_calls_a_clock # #3166
+              - --skip open62541::tests::run_refuses_a_file_of_extra_that_the_library_holds # #3166
+              - --skip open62541::tests::run_refuses_a_file_of_omitted_that_the_library_does_not_compile # #3166
+              - --skip open62541::tests::run_refuses_a_flag_in_no_list # #3166
+              - --skip open62541::tests::run_refuses_a_release_with_no_file_of_extra # #3166
+              - --skip open62541::tests::run_refuses_a_source_with_other_flags # #3166
+              - --skip open62541::tests::run_refuses_each_problem_of_the_staged_copy # #3166
             gates:
               - crates/block/tests/alloc/main.rs resident # #3196
               - crates/block/tests/alloc/main.rs untouched # #3196
@@ -319,6 +350,7 @@ jobs:
               - crates/waker/src/tests.rs a_last_drop_on_another_thread_aborts_before_the_value_drops # #3130
               - crates/waker/src/tests.rs a_wake_by_reference_on_another_thread_aborts # #3130
               - crates/waker/src/tests.rs a_wake_on_another_thread_aborts # #3130
+              - xtask/src/open62541.rs tests::check_builds_against_the_headers_of_the_crypto # #2238
               - xtask/src/open62541.rs tests::check_fails_a_read_of_aws_lc_with_no_declaration # #2238
               - xtask/src/open62541.rs tests::check_fails_a_read_of_the_copy_with_no_declaration # #2238
               - xtask/src/open62541.rs tests::check_finds_a_read_of_the_committed_copy_that_gives_aws_lc_no_callback # #2238
@@ -329,10 +361,6 @@ jobs:
               - xtask/src/open62541.rs tests::check_refuses_a_cc_that_is_not_gcc # #2238
               - xtask/src/open62541.rs tests::check_runs_each_tool_in_the_c_locale # #2238
               - xtask/src/open62541.rs tests::each_thread_of_the_committed_copy_draws_from_its_own_random_state_or_aborts # #2238
-              - xtask/src/review/history/tests.rs a_conflict_in_a_code_path_that_is_not_utf8_counts # #2238
-              - xtask/src/review/history/tests.rs names_a_path_that_is_not_utf8 # #2238
-              - xtask/src/review/history/tests.rs reads_a_link_that_a_file_replaces_as_code # #2238
-              - xtask/src/review/history/tests.rs reads_a_merge_whose_messages_are_not_utf8 # #2238
     runs-on: ${{ matrix.runner }}
     env:
       RUST: ${{ needs.changes.outputs.rust }}
@@ -413,7 +441,6 @@ jobs:
               - --exclude connector-opcua # #2968
               - --exclude node # #2968, #682, #2955, #2956, #477, #2957
               - --exclude acceptance # #2968, #682, #2955, #2956, #477, #2957
-              - --exclude xtask # #2238
               - --exclude ops # #2971
               - --exclude sdk # #682, #2955
               - --exclude sdk-python # #682, #2955

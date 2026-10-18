@@ -343,7 +343,7 @@ const EXTRA: [&str; 2] = [
 ];
 
 /// The sources of the library that the copy leaves out. `shim.c` defines each symbol
-/// of them that the copy references, to print its name and abort, so a call fails
+/// of them that the copy references, to panic with its name and abort, so a call fails
 /// loudly. A node keeps its certificates in its config, not in files of the copy.
 const OMITTED: [&str; 14] = [
     // The file stores of certificates, which read and write files and watch them with
@@ -420,7 +420,7 @@ const SYMBOLS: [&str; 30] = [
     "strncmp",
     "strncpy",
     "strtok_r",
-    // `shim.c` defines each to print its name and abort.
+    // `shim.c` defines each to panic with its name and abort.
     "UA_CertificateGroup_Filestore",
     "UA_ConnectionManager_new_POSIX_Ethernet",
     "UA_ConnectionManager_new_POSIX_TCP",
@@ -2040,7 +2040,10 @@ fn wait((name, child): (String, Child)) -> Result<(String, String), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::MAIN_SEPARATOR;
+
     use super::*;
+    use crate::common::{NO_FOLDER, NOT_FOLDER, native};
 
     /// A reference of `function` from `section`.
     fn labeled(
@@ -2422,7 +2425,10 @@ Disassembly of section .text.stamp:
             includes(&preprocessed, &root.join("copy"), flags, &dirs),
             [
                 "includes <local.h>, which no include directory holds".to_owned(),
-                "includes src/../../out.h, which is outside the copy".to_owned(),
+                format!(
+                    "includes {}, which is outside the copy",
+                    Path::new("src").join("../../out.h").display()
+                ),
                 "includes UA_X, which is not a file name".to_owned(),
                 "includes <none.h>, which no include directory holds".to_owned(),
                 "uses #include_next <stdio.h>, which the check cannot follow"
@@ -2573,12 +2579,14 @@ n = read_x(b, 0, 0, 0);
     }
 
     /// The text of `file` of the committed copy.
+    #[cfg(unix)]
     fn committed(file: &str) -> String {
         std::fs::read_to_string(workspace().join(DEST).join(file)).unwrap()
     }
 
     /// The result of [`check`] on a copy of the committed copy with each (path, text)
     /// of `files`, and the symbol prefix of the aws-lc of `Cargo.lock`.
+    #[cfg(unix)]
     fn check_edited(
         name: &str,
         files: &[(&str, &str)],
@@ -2601,6 +2609,7 @@ n = read_x(b, 0, 0, 0);
 
     /// [`check_edited`] with `text` after the end of `src/util/ua_util.c` and each
     /// (path, text) of `files`, with the number of the first line of `text`.
+    #[cfg(unix)]
     fn check_with_util(
         name: &str,
         files: &[(&str, &str)],
@@ -2616,6 +2625,7 @@ n = read_x(b, 0, 0, 0);
 
     /// The error of [`check`] for a call at `place` of `unit` that gives
     /// `PEM_read_bio_X509` with the symbol prefix `prefix` the callback `callback`.
+    #[cfg(unix)]
     fn gives(unit: &str, place: &str, callback: &str, prefix: &str) -> String {
         format!(
             "{unit}: {place}: gives `{prefix}PEM_read_bio_X509` the callback \
@@ -2623,8 +2633,10 @@ n = read_x(b, 0, 0, 0);
         )
     }
 
+    #[cfg(unix)]
     const UTIL: &str = "src/util/ua_util.c";
 
+    #[cfg(unix)]
     fn workspace() -> &'static Path {
         Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
     }
@@ -2758,8 +2770,9 @@ n = read_x(b, 0, 0, 0);
         std::fs::write(copy.join("src/e.c"), b"/* Andr\xe9 */\n#line 2\n").unwrap();
         let held = |at: &str| {
             format!(
-                "{at}: holds a line directive, which moves the file that the include \
-                 check reads"
+                "{}: holds a line directive, which moves the file that the include \
+                 check reads",
+                native(at)
             )
         };
         assert_eq!(
@@ -2783,7 +2796,7 @@ n = read_x(b, 0, 0, 0);
         assert_eq!(
             line_directives(&missing, Path::new("")),
             Err(format!(
-                "{}/: No such file or directory (os error 2)",
+                "{}{MAIN_SEPARATOR}: {NO_FOLDER}",
                 missing.display()
             ))
         );
@@ -2933,6 +2946,7 @@ n = read_x(b, 0, 0, 0);
     }
 
     /// Writes the shell script `script` as `cc` in `dir`, and gives its path.
+    #[cfg(unix)]
     fn create_cc(dir: &Path, script: &str) -> PathBuf {
         let cc = dir.join("cc");
         // A child writes it: while this process holds it open for writing, a process
@@ -3031,7 +3045,10 @@ End of search list.
         );
         assert_eq!(
             trees.relative(Path::new("/w/build/other.h")),
-            Err("/w/build/other.h is outside the clone".to_owned())
+            Err(format!(
+                "{} is outside the clone",
+                native("/w/build/other.h")
+            ))
         );
     }
 
@@ -3109,10 +3126,10 @@ End of search list.
         };
         assert_eq!(
             collect(&trees).map(|found| found.flags),
-            Err(
-                "src/ua_types.c: `-fplugin=x` is in neither CODE_FLAGS nor LEFT_OUT"
-                    .to_owned()
-            )
+            Err(format!(
+                "{}: `-fplugin=x` is in neither CODE_FLAGS nor LEFT_OUT",
+                native("src/ua_types.c")
+            ))
         );
         remove(&dir).unwrap();
     }
@@ -3815,6 +3832,7 @@ End of search list.
 
     /// A file of a copy that includes headers of the crypto, of the copy, and of a
     /// system directory under `openssl/`, and calls a reader.
+    #[cfg(unix)]
     const CRYPTO_UNIT: &str = "#include <openssl/fixture.h>
 #include <openssl/x/read.h>
 #include <./openssl/kdf.h>
@@ -3829,6 +3847,7 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
     /// [`check_builds_against_the_headers_of_the_crypto`], and gives a `cc` that adds
     /// the system directories: one through a link shorter than its target, one whose
     /// name GCC escapes, and one whose name is not UTF-8.
+    #[cfg(unix)]
     fn create_crypto(dir: &Path) -> PathBuf {
         let read = "#define PEM_read_bio_X509 fixture_PEM_read_bio_X509\n\
                     typedef int pem_password_cb(char *, int, int, void *);\n";
@@ -3883,6 +3902,7 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
     /// system header under `openssl/` is refused, also through a link shorter than its
     /// target, whose path GCC keeps, and through a directory whose name GCC escapes or
     /// is not UTF-8.
+    #[cfg(unix)]
     #[test]
     fn check_builds_against_the_headers_of_the_crypto() {
         let dir = temp("crypto");
@@ -4733,12 +4753,12 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
     #[test]
     fn remove_fails_on_an_error_other_than_a_missing_directory() {
         let dir = temp("remove");
-        std::fs::write(dir.join("file"), "").unwrap();
-        let path = dir.join("file/child");
+        let path = dir.join("file");
+        std::fs::write(&path, "").unwrap();
         assert_eq!(remove(&dir.join("missing")), Ok(()));
         assert_eq!(
             remove(&path),
-            Err(format!("{}: Not a directory (os error 20)", path.display()))
+            Err(format!("{}: {NOT_FOLDER}", path.display()))
         );
         remove(&dir).unwrap();
     }

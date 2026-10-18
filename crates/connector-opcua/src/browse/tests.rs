@@ -19,7 +19,7 @@ use crate::client::browse::Foreign;
 use crate::client::tests::{RELAY, Relay, relayed};
 use crate::event::Time;
 use crate::kind::Kind;
-use crate::sim::{Variables, serve, tree};
+use crate::sim::{Variables, during, serve, tree};
 
 /// The sim tree of `sim::serve` from its folder `Plant`.
 const PLANT: &str = "Plant";
@@ -175,7 +175,8 @@ async fn serving_of(
     let wall = move || wall.now().time;
     let mut rng = node.entropy().rng();
     let (clock, net) = (node.clock(), node.net());
-    serve(clock, wall, net, listener, &mut rng, variables, until).await;
+    let serving = |stop| serve(clock, wall, net, listener, &mut rng, variables, stop);
+    during(serving, until).await;
 }
 
 /// What one browse of `query` gives on a sim server.
@@ -532,8 +533,14 @@ fn on_server_of<T: Send + 'static>(
         let mut out = None;
         let until = async {
             let (time, mut rng) = (Time::monotonic(node.clock()), node.entropy().rng());
-            let connect =
-                Client::connect(time, node.net(), &mut rng, &url, future::pending());
+            let connect = Client::connect(
+                time,
+                tracing::Span::none(),
+                node.net(),
+                &mut rng,
+                &url,
+                future::pending(),
+            );
             let mut client = connect.await.expect("a connect").expect("a client");
             out = Some(body(&mut Server::new(&mut client)).await);
             client.close().await;
