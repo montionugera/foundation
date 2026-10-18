@@ -15,6 +15,11 @@ use wire::header::MALFORMED;
 
 use crate::Store;
 
+/// The longest message that `transport` copies when its carrier takes it, so that it
+/// holds no block of the message until the ack
+/// ([`transport::Config::window_bytes`]).
+const COPIED_MAX: usize = 1452;
+
 /// Serves `incoming`, a blob stream whose header the caller read, from `store`: it
 /// answers each get and stores each put, in order, until the peer's half ends. A put
 /// gets its reply only once the chunk is durable. A drop of the future ends both
@@ -114,9 +119,10 @@ async fn fetch(
 ) -> Result<Option<Miss>, Error> {
     header(store, sender).await?;
     let decoder = Requester::new(store.pool.largest());
-    // A get comes from the pool of the store. The header takes a block first, so
-    // `room` is at least 64 and `batch` at least 1.
-    let room = sender.bytes_max().min(store.pool.largest());
+    // A get comes from the pool of the store, and must free its block before a late
+    // ack, for a reply to take. A peer takes 1472 bytes or more. The header takes a
+    // block first, so `room` is at least 64 and `batch` at least 1.
+    let room = COPIED_MAX.min(store.pool.largest());
     let batch = (room - get::encoded_len(0)) / size_of::<Digest>();
     while !open.is_empty() {
         let digests = &open[..open.len().min(batch)];

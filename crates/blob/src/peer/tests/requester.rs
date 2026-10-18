@@ -4,8 +4,9 @@
 use super::*;
 use crate::peer;
 
-/// The digests of a get message: as many as fit in the server's message limit.
-const BATCH: usize = (SERVER_MESSAGE - 1) / 32;
+/// The digests of a get message: a 1-byte head and 32 bytes for each digest, in the
+/// 1452 bytes that `transport` copies.
+const BATCH: usize = (1452 - 1) / 32;
 
 /// Serves each stream of `session` from `store` until the session ends, and gives
 /// what each `serve` gave.
@@ -142,7 +143,7 @@ fn a_get_of_more_digests_than_one_message_holds_gives_each() {
 }
 
 #[test]
-fn a_get_asks_for_as_many_digests_as_one_message_of_the_peer_holds() {
+fn a_get_asks_for_as_many_digests_as_transport_copies() {
     let digests: Vec<Digest> = (0..=BATCH)
         .map(|at| Digest::of(&at.to_le_bytes()))
         .collect();
@@ -170,8 +171,8 @@ fn a_get_asks_for_as_many_digests_as_one_message_of_the_peer_holds() {
 
 #[test]
 fn a_get_asks_for_as_many_digests_as_the_largest_block_of_the_store_holds() {
-    let create_tight_pool = || create_pool_of(64 + 4096 + 128);
-    assert_eq!(create_tight_pool().largest(), 4096);
+    let create_tight_pool = || create_pool_of(64 + 1024 + 128);
+    assert_eq!(create_tight_pool().largest(), 1024);
     let digests: Vec<Digest> = (0..200_usize)
         .map(|at| Digest::of(&at.to_le_bytes()))
         .collect();
@@ -199,10 +200,9 @@ fn a_get_asks_for_as_many_digests_as_the_largest_block_of_the_store_holds() {
 
 #[test]
 fn a_get_batch_is_the_digests_that_the_largest_block_holds() {
-    let create_tight_pool = || create_pool_of(64 + 4096 + 128);
-    // A get message is a 1-byte head and 32 bytes for each digest.
-    let batch = (4096 - 1) / 32;
-    let digests: Vec<Digest> = (0..200_usize)
+    let create_tight_pool = || create_pool_of(64 + 1024 + 128);
+    let batch: usize = (1024 - 1) / 32;
+    let digests: Vec<Digest> = (0..=batch)
         .map(|at| Digest::of(&at.to_le_bytes()))
         .collect();
     let asked = digests.clone();
@@ -222,7 +222,7 @@ fn a_get_batch_is_the_digests_that_the_largest_block_holds() {
         move |peer| async move {
             let store = open_on(&peer.node, create_tight_pool(), 0).await;
             let got = get(&store, &peer.session, &digests).await.unwrap();
-            assert_eq!(got.len(), 200);
+            assert_eq!(got.len(), batch + 1);
         },
     );
 }
@@ -787,6 +787,46 @@ fn a_get_frees_the_head_of_a_chunk_before_it_takes_the_block_of_the_chunk() {
             let store = open_on(&peer.node, Rc::clone(&peer.pool), 0).await;
             assert_eq!(get(&store, &peer.session, &[a]).await, Ok(vec![]));
             assert_eq!(held(&store, a).await, Some(bytes));
+        },
+    );
+}
+
+#[test]
+fn a_get_frees_its_get_message_before_a_reordered_ack() {
+    // Room for one chunk of the largest class and the head blocks.
+    fn create_tight_pool() -> Rc<Pool> {
+        create_pool_of(64 + 4096 + 128)
+    }
+    let (c, bytes) = chunk(1, 4000);
+    let stored = bytes.clone();
+    let mut digests: Vec<Digest> = (0..126_usize)
+        .map(|at| Digest::of(&at.to_le_bytes()))
+        .collect();
+    digests.insert(0, c);
+    let absent = digests.len() - 1;
+    // The jitter brings the server's ack of the get after its reply.
+    let sim = sim::Config {
+        seed: 2,
+        link: sim::link::Config {
+            jitter: Span::from_nanos(500 * Span::MICROSECOND.nanos()),
+            ..sim::link::Config::default()
+        },
+        ..sim::Config::default()
+    };
+    run_session_on(
+        sim,
+        DISK,
+        create_pool,
+        move |node, session| async move {
+            let store = open(&node, 0).await;
+            put(&store, c, &stored).await;
+            assert_eq!(serve_each(&store, &session).await, vec![Ok(())]);
+        },
+        move |peer| async move {
+            let store = open_on(&peer.node, create_tight_pool(), 0).await;
+            let got = get(&store, &peer.session, &digests).await;
+            assert_eq!(got.map(|misses| misses.len()), Ok(absent));
+            assert_eq!(held(&store, c).await, Some(bytes));
         },
     );
 }
