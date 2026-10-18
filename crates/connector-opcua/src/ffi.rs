@@ -133,6 +133,10 @@ impl Status {
     pub(crate) const BAD_SECURITY_MODE_REJECTED: Self = Self(0x8054_0000);
     #[cfg(test)]
     pub(crate) const BAD_DECODING_ERROR: Self = Self(0x8007_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_CERTIFICATE_TIME_INVALID: Self = Self(0x8014_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_CERTIFICATE_UNTRUSTED: Self = Self(0x801A_0000);
 
     /// Whether the code is of the severity Uncertain.
     pub(crate) fn uncertain(self) -> bool {

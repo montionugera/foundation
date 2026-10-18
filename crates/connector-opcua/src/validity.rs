@@ -11,7 +11,8 @@ use env::rng::Rng;
 use types::time::{Span, Stamp};
 
 use crate::event::{self, Loop};
-use crate::ffi::{self, Bytes, Status};
+use crate::ffi::{self, Status};
+use crate::secure::{END, START, bytes, from_secs};
 
 /// Self-signed, not a CA, valid from [`START`] to [`END`].
 const LEAF: &[u8] = include_bytes!("validity/leaf.der");
@@ -29,12 +30,6 @@ const LONG: &[u8] = include_bytes!("validity/long.der");
 /// Self-signed, not a CA, valid from the Unix epoch to one hour after it.
 const EPOCH: &[u8] = include_bytes!("validity/epoch.der");
 
-/// 2001-01-01.
-const START: Stamp = from_secs(978_307_200);
-
-/// 2002-01-01.
-const END: Stamp = from_secs(1_009_843_200);
-
 /// 2001-07-01.
 const CA_END: Stamp = from_secs(993_945_600);
 
@@ -46,17 +41,6 @@ const MARCH: Stamp = from_secs(983_404_800);
 
 /// 2001-08-01.
 const AUGUST: Stamp = from_secs(996_624_000);
-
-const fn from_secs(secs: i64) -> Stamp {
-    Stamp::from_nanos(secs * Span::SECOND.nanos())
-}
-
-fn bytes(der: &[u8]) -> Bytes {
-    Bytes {
-        length: der.len(),
-        data: der.as_ptr().cast_mut(),
-    }
-}
 
 /// Gives the status of the check of `certificate` by a memory group that trusts
 /// `trusted`, or nothing when it is `None`, on a loop whose wall time is `wall`.

@@ -15,7 +15,7 @@ use env::net::{Net, Tcp, tcp};
 use env::rng::Rng;
 use sim::{Sim, node};
 use types::quality::Quality;
-use types::time::Span;
+use types::time::{Span, Stamp};
 
 use super::{
     Calls, Client, Flight, GRACE, Large, Nodes, READS, Request, SPLIT, STATE, Slots,
@@ -24,9 +24,11 @@ use super::{
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::event;
+use crate::ffi::test::Mode;
 use crate::ffi::{self, Status};
 use crate::gate::Gate;
 use crate::node::{Key, Name, Node};
+use crate::secure::{Policy, Security};
 use crate::server::{Limits, Server};
 use crate::unwind::caught;
 use crate::value::{self, Fault, Value};
@@ -137,6 +139,45 @@ impl Peer<'_> {
         client.open().await.expect("the client connects");
         client
     }
+
+    /// Connects a client that asks for `policy` in `mode` on `security`, on a loop
+    /// whose wall time starts at `wall`.
+    async fn secure(
+        &mut self,
+        policy: Policy,
+        mode: Mode,
+        security: &Security,
+        wall: Stamp,
+    ) -> Result<Client, Status> {
+        let clock = Clock::clone(&self.clock);
+        let time = event::Time::since(Clock::clone(&clock), wall);
+        let connections = Manager::new(time, self.net.clone(), &mut self.rng);
+        // SAFETY: the loop outlives the client, which the drop of the client deletes
+        // first.
+        let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
+        let raw = NonNull::new(raw).expect("open62541 refused the client");
+        let security = security.raw();
+        // SAFETY: the client lives and has not connected, and it copies `security`.
+        let status = Status(unsafe {
+            ffi::test::shim_client_secure(
+                raw.as_ptr(),
+                mode,
+                policy as usize,
+                &raw const security,
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the policies");
+        let url = CString::new(self.url.as_str()).expect("the URL holds no NUL");
+        // SAFETY: `raw` is a new client of the loop of `connections`.
+        let mut client = unsafe { Client::of(clock, connections, raw, url) };
+        match client.open().await {
+            Ok(()) => Ok(client),
+            Err(status) => {
+                client.close().await;
+                Err(status)
+            }
+        }
+    }
 }
 
 /// Connects a new client to `url`, with no wait that ends it.
@@ -175,18 +216,47 @@ async fn serve<T>(
     sessions: u16,
     body: impl AsyncFnOnce(Peer<'_>) -> T,
 ) -> T {
+    serve_on(node, sessions, None, body).await
+}
+
+/// Runs `body` as [`serve`] does, on a server that also has the policies of
+/// `security`, on a loop whose wall time starts at `wall`.
+async fn serve_secure<T>(
+    node: &node::Node,
+    security: &Security,
+    wall: Stamp,
+    body: impl AsyncFnOnce(Peer<'_>) -> T,
+) -> T {
+    serve_on(node, 4, Some((security, wall)), body).await
+}
+
+/// [`serve`], with the policies of a security and the start of the wall time of the
+/// server when `secure` holds them.
+async fn serve_on<T>(
+    node: &node::Node,
+    sessions: u16,
+    secure: Option<(&Security, Stamp)>,
+    body: impl AsyncFnOnce(Peer<'_>) -> T,
+) -> T {
     let mut rng = node.entropy().rng();
     let local = SocketAddr::new(node.addresses()[0], PORT);
+    let wall = secure.map_or(Stamp::from_nanos(0), |(_, wall)| wall);
     let manager = Manager::listening(
-        event::Time::monotonic(node.clock()),
+        event::Time::since(node.clock(), wall),
         node.net(),
         local,
         4,
         &mut rng,
     )
     .expect("the port is free");
-    // SAFETY: the close below deletes the server before the manager drops.
-    let mut server = unsafe { Server::start(&manager, c"", sessions) };
+    let mut server = match secure {
+        // SAFETY: the close below deletes the server before the manager drops.
+        Some((security, _)) => unsafe {
+            Server::start_secure(&manager, c"", sessions, security)
+        },
+        // SAFETY: as above.
+        None => unsafe { Server::start(&manager, c"", sessions) },
+    };
     let value = Value::F64(f64::from(u32::try_from(rng.below(1 << 20)).expect("fits")));
     server.add_scalar(&VALUE, value);
     let states = Rc::new(Cell::new(0));
@@ -2582,4 +2652,5 @@ fn a_connect_whose_read_of_the_max_nodes_per_read_fails_closes_its_session() {
 
 mod abort;
 mod browse;
+mod secure;
 mod walk;
