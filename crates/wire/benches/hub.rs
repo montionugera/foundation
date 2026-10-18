@@ -1,6 +1,6 @@
 //! The cost of the hub messages on a frame's path: a head, its ends, its body, and a
-//! credit, and of building a frame from them with `Frames`; and of the head and the
-//! replies of a program's write.
+//! credit, and of building a frame from them with `Frames`; and of the head, the
+//! frames, and the replies of a program's write.
 
 use std::sync::Arc;
 
