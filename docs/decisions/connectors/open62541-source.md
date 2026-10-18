@@ -865,11 +865,13 @@
   `openssl/securitypolicy_common.h`. The readers come from aws-lc alone, and the check
   reads the calls of the unit that compiles. When a header of the copy hides one of
   aws-lc, a call of a reader keeps the name of the reader, or it has no prefix, so
-  `FUNCTION_SYMBOLS` must list it. For a header under `openssl/`, this replaces "So
-  the check refuses no system header" of the decision of 2026-10-08 above. In
-  aws-lc-sys 0.45.0, the readers are the PEM readers of `openssl/pem.h` and
-  `SSL_CTX_set_default_passwd_cb` of `openssl/ssl.h`, which is in neither `AWS_LC` nor
-  `AWS_LC_KEYS`, so the check refuses each call of it. It compiles each file with
+  `FUNCTION_SYMBOLS` must list it. For a header under `openssl/`, this supersedes "So
+  the check refuses no system header" of
+  https://github.com/synnaxlabs/foundation/issues/1884#issuecomment-6060989375. In
+  aws-lc-sys 0.45.0, the readers are the functions of `openssl/pem.h` that take one, and
+  `SSL_CTX_set_default_passwd_cb`, `PEM_read_SSL_SESSION`, and
+  `PEM_read_bio_SSL_SESSION` of `openssl/ssl.h`, which are in neither `AWS_LC` nor
+  `AWS_LC_KEYS`, so the check refuses each call of them. It compiles each file with
   `-Werror=implicit-function-declaration`, as GCC 14 does by default, and with
   `-ftrack-macro-expansion=0`, so a call with no declaration fails the build on each
   GCC, also of a name of aws-lc, which is a macro of a system header. `AWS_LC` holds the
@@ -894,10 +896,10 @@
   2026-10-17 22:22 UTC). The `openssl/` rules of round 1: decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244284643,
-  2026-10-18 01:34 UTC). They supersede the two `openssl/` header sentences of
-  6242174637.
-  `OMITTED` in `cargo xtask open62541` is the closed list of the release files that the
-  library compiles and the copy leaves out, each with its reason: the file stores,
+  2026-10-18 01:34 UTC). Supersedes the two `openssl/` header sentences of
+  https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6242174637. `OMITTED`
+  in `cargo xtask open62541` is the closed list of the release files that the library
+  compiles and the copy leaves out, each with its reason: the file stores,
   `create_certificate.c`, and each policy file other than `Basic256Sha256`,
   `Aes128_Sha256_RsaOaep`, `Aes256_Sha256_RsaPss`, and their common code. So the copy
   compiles only the three current policies and `None`, and the production code adds no
