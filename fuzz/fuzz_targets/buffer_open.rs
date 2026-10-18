@@ -8,11 +8,11 @@
 //! tail past its entries, with a stamp that no entry gives: a read then gives the
 //! seqs up to the tail as a gap with no entry.
 //!
-//! Input: batches that the production path writes, then edits on the file bytes.
-//! A batch makes a record of one to four blocks, with a table of up to four.
-//! Two edits seal a CRC: a header block and a record. One edit writes a tail and
-//! its chain value in the first header block: a block of the area, on one of the
-//! first 128 laps or the last 128 that hold the block.
+//! Input: batches that the production path writes from a block of the area on lap
+//! 0, then edits on the file bytes. A batch makes a record of one to four blocks,
+//! with a table of up to four. Two edits seal a CRC: a header block and a record.
+//! One edit writes a tail and its chain value in the first header block: a block of
+//! the area, on one of the first 128 laps or the last 128 that hold the block.
 //!
 //! The target follows the offsets of the ring ([`Room`]) while no edit other than a
 //! move of the tail changed it. Each append, open, and reopen must then fit, or give
@@ -27,8 +27,8 @@
 //! it edits, the target walks the build's ring from the tail. Each record must have
 //! a kind and seal as written, the records must end where the room of the build
 //! ends, and a seal of each record and a write of the tail where it is must change
-//! nothing. So when a format moves, the target panics. `WRAP` is restated and not
-//! checked: the build never wraps.
+//! nothing. So when a format moves, the target panics. A build that starts after
+//! the first block can wrap, and the walk then checks `WRAP` too.
 
 #![no_main]
 #![expect(clippy::disallowed_methods, reason = "fuzz_target! calls File::create")]
@@ -327,12 +327,13 @@ impl Offsets {
 struct Room(Option<Offsets>);
 
 impl Room {
-    /// A new ring: its restart record at offset 0.
-    fn new() -> Self {
+    /// A new ring whose tail is `tail`: its restart record there.
+    fn new(tail: u64) -> Self {
+        let tail = u128::from(tail);
         Self(Some(Offsets {
-            tail: 0,
-            data: 0,
-            end: BLOCK as u128,
+            tail,
+            data: tail,
+            end: tail + BLOCK as u128,
         }))
     }
 
@@ -514,6 +515,8 @@ struct Input {
     edits: Vec<Edit>,
     /// Bytes of each entry the check commits.
     check_part: usize,
+    /// The block of the area on lap 0 where the build starts.
+    start: usize,
 }
 
 /// FNV-1a of 64 bits. Its definition is fixed, so a stored input keeps its run.
@@ -580,6 +583,8 @@ impl<'a> Arbitrary<'a> for Input {
             batches,
             edits,
             check_part: u.int_in_range(CHECK_PART..=CHECK_PART_MAX)?,
+            // Last, so a stored input that ends before it starts at the first block.
+            start: u.int_in_range(blocks)?,
         })
     }
 }
@@ -737,8 +742,19 @@ struct Built {
 /// Writes the batches to a new ring. An append refuses a batch exactly when `limit`
 /// does, or else as the room says, and the build goes on after it.
 async fn build(shard: &Shard, input: &Input) -> Built {
-    let (buffer, slots) = shard.open().await.expect("a new ring opens");
-    let mut room = Room::new();
+    let opened = shard.open().await.expect("a new ring opens");
+    let tail = offset(input.start, 0);
+    let (buffer, slots) = if tail == 0 {
+        opened
+    } else {
+        drop(opened);
+        start(shard, tail).await;
+        shard
+            .open()
+            .await
+            .expect("a ring with no record at its tail opens")
+    };
+    let mut room = Room::new(tail);
     let mut next = vec![[0u64; 2]; INDEXES];
     let mut tags = (BUILD_TAG..CHECK_TAG).cycle();
     let mut written: Vec<[Vec<Given>; 2]> =
@@ -810,6 +826,28 @@ async fn build(shard: &Shard, input: &Input) -> Built {
         written: written.into_iter().flatten().collect(),
         room,
     }
+}
+
+/// Moves the tail of a new ring to `tail`, where it has no record, so that an
+/// open puts its restart record there.
+async fn start(shard: &Shard, tail: u64) {
+    let file = shard
+        .node
+        .files()
+        .open(Path::new(RING), Mode::Write)
+        .await
+        .expect("the ring is there");
+    let into = shard.pool.alloc(BLOCK).expect("the pool has a block");
+    let mut image = file
+        .read_at(0, into)
+        .await
+        .expect("the ring reads")
+        .to_vec();
+    let chain = header::chain(&image);
+    header::put_tail(&mut image, tail, chain);
+    let block = shard.pool.copy(&image).expect("the pool has a block");
+    file.write_at(0, &[block]).await.expect("the ring writes");
+    file.sync().await.expect("the ring syncs");
 }
 
 const COUNT_MAX: usize = 1023;

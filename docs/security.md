@@ -370,7 +370,12 @@ state on `main`.
   samples after a count of `u64::MAX` at its seq. The `body_over_max` input holds a data
   record that follows the chain with a body over `body_max`. In `carry_limit`, the
   carry record of the holders of a batch of tagged entries passes the carry limit,
-  and the append refuses it as `Limit::Carry`.
+  and the append refuses it as `Limit::Carry`. The build of `offsets_past_tail_25`
+  and `offsets_walk_25` starts at a late block of the area, and each moves the tail
+  to its last lap: the record at the tail, or the one after it, passes the last
+  offset, and the open refuses it. `open_full_tail_25` moves the tail to the last lap
+  of a block with no room for the restart record of the open, and the build of
+  `wrap_start` wraps.
 
 ### Device to connector
 
