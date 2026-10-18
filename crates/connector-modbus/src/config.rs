@@ -5,6 +5,7 @@ use std::collections::btree_map::Entry;
 
 use connector::kind;
 use document::diagnostic::{Code, Diagnostic, Note};
+use document::schema::{self, Attribute, Body, Presence};
 use document::value::{Kind as Of, Value};
 use document::{Block, Document, read};
 use env::net::host::{self, Host};
@@ -38,6 +39,64 @@ const TABLES: [(&str, Table); 4] = [
 
 /// The word of each order.
 const ORDERS: [(&str, Order); 2] = [("big", Order::Big), ("little", Order::Little)];
+
+/// The body of the config.
+const BODY: Body = Body {
+    summary: "Polls the registers and coils of a Modbus TCP device at a rate.",
+    attributes: &[
+        Attribute {
+            name: "address",
+            value: "a host and an optional port, such as \"plc:502\"",
+            presence: Presence::Required,
+            summary: "The endpoint of the device. Port 502 when it has none.",
+        },
+        Attribute {
+            name: "order",
+            value: "\"big\" or \"little\"",
+            presence: Presence::Default("\"big\""),
+            summary: "The word order of a value that spans registers.",
+        },
+        Attribute {
+            name: "rate",
+            value: "a rate, such as \"10Hz\"",
+            presence: Presence::Required,
+            summary: "The reads per second.",
+        },
+        Attribute {
+            name: "unit",
+            value: "an integer, 0 to 255",
+            presence: Presence::Default("1"),
+            summary: "The unit of the device.",
+        },
+    ],
+    blocks: &[schema::Block {
+        keyword: "read",
+        label: Some("the channel"),
+        forms: &[READ],
+    }],
+    examples: &[],
+};
+
+/// The body of a `read` block.
+const READ: Body = Body {
+    summary: "Where the value of one channel is in the device. One or more.",
+    attributes: &[
+        Attribute {
+            name: "address",
+            value: "an integer, 0 to 65535",
+            presence: Presence::Required,
+            summary: "The address of the value in its table, from 0.",
+        },
+        Attribute {
+            name: "table",
+            value: "\"coil\", \"discrete\", \"holding\", or \"input\"",
+            presence: Presence::Required,
+            summary: "The table of the value.",
+        },
+    ],
+    blocks: &[],
+    examples: &[],
+};
 
 /// One modbus connector's config: the endpoint and unit of the device, the rate, the
 /// word order, and the read of each channel. Only
@@ -91,12 +150,7 @@ pub(crate) fn parse(config: &Document) -> Result<Config, Vec<Diagnostic>> {
     let unit = unit.map_err(|error| diagnostics.push(error));
     let order = order.map_err(|error| diagnostics.push(error));
     let reads = reads(config, &mut diagnostics);
-    diagnostics.extend(read::unknown(
-        config,
-        kind::NOUN,
-        &["address", "order", "rate", "unit"],
-        &["read"],
-    ));
+    diagnostics.extend(read::unknown(config, kind::NOUN, &BODY));
     match (endpoint, rate, unit, order) {
         (Ok((host, port)), Ok(rate), Ok(unit), Ok(order)) if diagnostics.is_empty() => {
             Ok(Config {
@@ -301,7 +355,7 @@ fn reads(config: &Document, diagnostics: &mut Vec<Diagnostic>) -> Vec<Read> {
                 .into(),
         );
         let address = address.map_err(|error| diagnostics.push(error));
-        diagnostics.extend(read::unknown(&block.body, OF, &["address", "table"], &[]));
+        diagnostics.extend(read::unknown(&block.body, OF, &READ));
         let Ok(channel) = channel else { continue };
         match channels.entry(channel) {
             Entry::Occupied(first) => {
