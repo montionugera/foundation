@@ -512,7 +512,7 @@ fn plan_of_a_directory_with_no_config_file_gives_no_config() {
             error,
             Error::NoConfig {
                 path: PathBuf::from("d"),
-                extensions: vec!["hcl"],
+                extensions: "`.hcl`".to_owned(),
             }
         );
         assert_eq!(

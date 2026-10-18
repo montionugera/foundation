@@ -64,8 +64,24 @@ impl FrontEnds {
     }
 
     /// Each extension, in order.
-    pub(crate) fn extensions(&self) -> impl Iterator<Item = &'static str> {
+    fn extensions(&self) -> impl Iterator<Item = &'static str> {
         self.0.keys().copied()
+    }
+
+    /// Each extension with its dot, as one choice: "`.a`, `.b`, or `.c`".
+    pub(crate) fn named(&self) -> String {
+        let mut extensions: Vec<_> = self
+            .extensions()
+            .map(|extension| format!("`.{extension}`"))
+            .collect();
+        let last = extensions
+            .pop()
+            .expect("invariant: the table holds a front end");
+        match extensions.as_slice() {
+            [] => last,
+            [first] => format!("{first} or {last}"),
+            rest => format!("{}, or {last}", rest.join(", ")),
+        }
     }
 
     /// Whether the table reads the entry `name` of a directory: a front end has its
@@ -187,28 +203,9 @@ pub(crate) fn not_utf8(path: &Path) -> Diagnostic {
     )
 }
 
-/// Each of `extensions` with its dot, as one choice: "`.a`, `.b`, or `.c`".
-///
-/// # Panics
-///
-/// When `extensions` is empty.
-pub(crate) fn named(extensions: &[&str]) -> String {
-    let extensions: Vec<String> = extensions
-        .iter()
-        .map(|extension| format!("`.{extension}`"))
-        .collect();
-    match extensions.as_slice() {
-        [one] => one.clone(),
-        [first, second] => format!("{first} or {second}"),
-        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
-        [] => unreachable!("invariant: `FrontEnds` holds a front end"),
-    }
-}
-
 /// The `ops.unknown-extension` diagnostic, at the empty span at the start of `source`.
 pub(crate) fn unknown(source: Source, front_ends: &FrontEnds) -> Diagnostic {
-    let extensions: Vec<_> = front_ends.extensions().collect();
-    let extensions = named(&extensions);
+    let extensions = front_ends.named();
     let start = Position {
         offset: 0,
         line: 0,

@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use types::name::Name;
 use wire::hub::client::BODY_BYTES_MAX;
 
-use crate::front_end::{self, File};
+use crate::front_end::File;
 use crate::scope::Limits;
 
 const ARGUMENT: Code = Code::new("ops.argument");
@@ -129,11 +129,9 @@ pub(crate) enum Error {
     ChannelRead { connector: Name, message: String },
     /// A command line did not read the file at `path`.
     Read { path: PathBuf, cause: Unread },
-    /// The directory `path` of a command line gives no file with one of `extensions`.
-    NoConfig {
-        path: PathBuf,
-        extensions: Vec<&'static str>,
-    },
+    /// The directory `path` of a command line gives no file with one of
+    /// `extensions`, as [`FrontEnds::named`](crate::FrontEnds::named) gives them.
+    NoConfig { path: PathBuf, extensions: String },
     /// A command line did not write the plan file at `path`.
     Write { path: PathBuf, cause: Unwritten },
     /// The request of a command line has more bytes than one request holds.
@@ -533,9 +531,9 @@ impl Error {
             Self::NoConfig { path, extensions } => (
                 NO_CONFIG,
                 format!(
-                    "Add a file whose name ends in {} and does not start with `.` to {}, \
-                     or give another path",
-                    front_end::named(extensions),
+                    "Add a file whose name ends in {} and does not start with `.` \
+                     to {}, or give another path",
+                    extensions,
                     path.display()
                 ),
             ),

@@ -177,15 +177,17 @@ impl Scope {
     ///
     /// # Errors
     ///
-    /// - [`Error::Config`] with `ops.path-not-utf8` for each such file of the first
-    ///   directory that has one whose path is not UTF-8.
-    /// - [`Error::Read`] for the first file that does not read as UTF-8 text, or a
-    ///   directory whose entries pass the bytes of one read.
+    /// - [`Error::Config`] with `ops.path-not-utf8` for each of `files` whose path is
+    ///   not UTF-8, or each such file of the first directory that has one.
+    /// - [`Error::Read`] for the first file that does not read as UTF-8 text or is a
+    ///   directory in a directory, or a directory whose entries pass the bytes of one
+    ///   read.
     /// - [`Error::NoConfig`] for the first directory that gives no file.
     /// - [`Error::LargeRequest`] once the files that it read pass the most of a
     ///   request.
     /// - The other errors of [`Scope::read`].
     pub(crate) fn config(&self, files: &[PathBuf]) -> Result<Vec<File>, Error> {
+        utf8(files)?;
         let mut read = Vec::with_capacity(files.len());
         let mut total = 0;
         let mut add = |path: &Path, bytes: Vec<u8>| {
@@ -205,8 +207,6 @@ impl Scope {
         };
         for path in files {
             match self.found(path)? {
-                Found::File(bytes) => add(path, bytes)?,
-                Found::Large(Kind::File) => return Err(Error::LargeRequest),
                 Found::Large(Kind::Directory) => {
                     return Err(Error::Read {
                         path: path.clone(),
@@ -225,7 +225,7 @@ impl Scope {
                     if listed.is_empty() {
                         return Err(Error::NoConfig {
                             path: path.clone(),
-                            extensions: self.front_ends.extensions().collect(),
+                            extensions: self.front_ends.named(),
                         });
                     }
                     utf8(&listed)?;
@@ -233,6 +233,7 @@ impl Scope {
                         add(&entry, self.read(&entry)?)?;
                     }
                 }
+                found => add(path, file(path, found)?)?,
             }
         }
         Ok(read)
@@ -247,14 +248,7 @@ impl Scope {
     /// - [`Error::Outside`], [`Error::Hidden`], or [`Error::FolderChanged`] when the
     ///   limits refuse it.
     pub(crate) fn read(&self, path: &Path) -> Result<Vec<u8>, Error> {
-        match self.found(path)? {
-            Found::File(bytes) => Ok(bytes),
-            Found::Large(Kind::File) => Err(Error::LargeRequest),
-            Found::Directory(_) | Found::Large(Kind::Directory) => Err(Error::Read {
-                path: path.to_owned(),
-                cause: Unread::Directory,
-            }),
-        }
+        file(path, self.found(path)?)
     }
 
     /// What is at `path`: the bytes of a file, or the path of each entry of a
@@ -304,8 +298,25 @@ pub(crate) fn most() -> usize {
         .expect("invariant: the bound of a body fits a usize")
 }
 
+/// The bytes of `found`, the file at `path`.
+///
+/// # Errors
+///
+/// - [`Error::LargeRequest`] when it has more than the bytes of one request.
+/// - [`Error::Read`] when `path` is a directory.
+fn file(path: &Path, found: Found) -> Result<Vec<u8>, Error> {
+    match found {
+        Found::File(bytes) => Ok(bytes),
+        Found::Large(Kind::File) => Err(Error::LargeRequest),
+        Found::Directory(_) | Found::Large(Kind::Directory) => Err(Error::Read {
+            path: path.to_owned(),
+            cause: Unread::Directory,
+        }),
+    }
+}
+
 /// `Config` with `ops.path-not-utf8` for each of `files` whose path is not UTF-8.
-pub(crate) fn utf8(files: &[PathBuf]) -> Result<(), Error> {
+fn utf8(files: &[PathBuf]) -> Result<(), Error> {
     let not_utf8: Vec<_> = files
         .iter()
         .filter(|path| path.to_str().is_none())

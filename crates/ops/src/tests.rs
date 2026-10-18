@@ -636,7 +636,7 @@ fn every() -> Vec<Error> {
         },
         Error::NoConfig {
             path: PathBuf::from("d"),
-            extensions: vec!["hcl"],
+            extensions: "`.hcl`".to_owned(),
         },
         Error::Write {
             path: PathBuf::new(),

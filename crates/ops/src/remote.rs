@@ -8,7 +8,7 @@ use crate::apply::Applied;
 use crate::error::{self, Error, Unread};
 use crate::front_end;
 use crate::plan::Output;
-use crate::scope::{Scope, utf8};
+use crate::scope::Scope;
 use crate::{browse, import, operation, serve, status};
 
 #[cfg(test)]
@@ -54,11 +54,7 @@ where
 ///
 /// # Errors
 ///
-/// - [`Error::Config`] with `ops.path-not-utf8` for each path that is not UTF-8, or
-///   each such file of the first directory with one.
-/// - [`Error::Read`] for the first file that does not read as UTF-8 text, or a
-///   directory whose entries pass the bytes of one read.
-/// - [`Error::NoConfig`] for the first directory that gives no file.
+/// - Each error of [`Scope::config`], after the check of `out`.
 /// - [`Error::LargeRequest`] when the files do not fit one request.
 /// - [`Error::Node`] with the failure of the reach or of the request.
 /// - Each error of [`serve::plan_reply`].
@@ -77,7 +73,6 @@ where
     R: AsyncFnMut() -> Result<C, Failure>,
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
 {
-    utf8(files)?;
     if let Some(out) = out {
         scope.out(out)?;
     }
@@ -143,11 +138,8 @@ where
 ///
 /// # Errors
 ///
-/// - [`Error::Config`] with `ops.path-not-utf8` for each path that is not UTF-8.
-/// - [`Error::Read`] for the first file that does not read as UTF-8 text.
+/// - Each error of [`Scope::config`].
 /// - [`Error::LargeRequest`] when the files do not fit one request.
-/// - [`Error::Outside`], [`Error::Hidden`], [`Error::NoData`], or
-///   [`Error::FolderChanged`] for the first path past the limits of `scope`.
 /// - [`Error::Node`] with the failure of the reach or of the request.
 /// - Each error of [`serve::reply`].
 pub(crate) async fn browse<R, C>(
@@ -159,7 +151,6 @@ where
     R: AsyncFnMut() -> Result<C, Failure>,
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
 {
-    utf8(&input.files)?;
     let asked = serve::Browse {
         connector: input.connector,
         files: scope.config(&input.files)?,
@@ -195,7 +186,6 @@ where
     R: AsyncFnMut() -> Result<C, Failure>,
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
 {
-    utf8(&input.files)?;
     let asked = serve::Import {
         connector: input.connector,
         files: scope.config(&input.files)?,
