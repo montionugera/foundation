@@ -12,6 +12,7 @@ use types::time::{Monotonic, Stamp};
 
 use crate::alloc;
 use crate::ffi;
+use crate::log::Log;
 
 /// The wall time of a loop, which open62541 puts in each request header and compares
 /// with the time of each channel token. The loop calls it inside each call of its
@@ -42,9 +43,22 @@ impl Time {
     /// last stamp, the wall time stays at the last stamp.
     #[cfg(any(test, feature = "sim"))]
     pub(crate) fn monotonic(clock: Clock) -> Self {
+        let now = i64::try_from(clock.now().0).unwrap_or(i64::MAX);
+        Self::since(clock, Stamp::from_nanos(now))
+    }
+
+    /// Gives the monotonic time of `clock`, and a wall time that is `start` now and
+    /// moves with `clock`. Past the last stamp, the wall time stays at the last stamp.
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) fn since(clock: Clock, start: Stamp) -> Self {
         let read = Clock::clone(&clock);
+        let origin = read.now();
         let wall = Box::new(move || {
-            Stamp::from_nanos(i64::try_from(read.now().0).unwrap_or(i64::MAX))
+            Stamp::from_nanos(
+                start
+                    .nanos()
+                    .saturating_add_unsigned(read.now().0 - origin.0),
+            )
         });
         Self { clock, wall }
     }
@@ -55,28 +69,36 @@ pub(crate) struct Loop {
     raw: NonNull<ffi::EventLoop>,
     /// The C loop reads it until `drop` frees the loop.
     time: NonNull<Time>,
+    /// The logger of the loop, which each client's config also points at. The C loop
+    /// reads it until `drop` frees the loop.
+    log: NonNull<Log>,
 }
 
 impl Loop {
-    /// Makes a loop that reads `time`. It sets the random values of open62541 on this
-    /// thread from `rng`, so a run on a simulated clock replays. Each loop on this
-    /// thread then uses them, so give each loop on a thread an `rng` whose next value
-    /// differs.
+    /// Makes a loop that reads `time`, whose logger writes each line as an event with
+    /// the parent `span`, as [`Log`] bounds them. It sets the random values of
+    /// open62541 on this thread from `rng`, so a run on a simulated clock replays. Each
+    /// loop on this thread then uses them, so give each loop on a thread an `rng` whose
+    /// next value differs.
     ///
     /// # Aborts
     ///
     /// When the C allocation of the loop fails, as [`alloc::exhausted`] says.
-    pub(crate) fn new(time: Time, rng: &mut Rng) -> Self {
+    pub(crate) fn new(time: Time, span: tracing::Span, rng: &mut Rng) -> Self {
         // SAFETY: it writes only the generator of this thread.
         unsafe { ffi::UA_random_seed_deterministic(rng.next_u64()) };
+        let log = Log::new(span, Clock::clone(&time.clock));
         let time = NonNull::from(Box::leak(Box::new(time)));
-        // SAFETY: `now` and `wall_now` read the `Time` at `time`, which lives until
-        // `drop`.
-        let raw = unsafe { ffi::shim_loop_new(now, wall_now, time.as_ptr().cast()) };
+        let log = NonNull::from(Box::leak(Box::new(log)));
+        // SAFETY: `now` and `wall_now` read the `Time` at `time`, and the logger the
+        // `Log` at `log`, which live until `drop`.
+        let raw = unsafe {
+            ffi::shim_loop_new(now, wall_now, time.as_ptr().cast(), log.as_ptr().cast())
+        };
         let Some(raw) = NonNull::new(raw) else {
             alloc::exhausted()
         };
-        Self { raw, time }
+        Self { raw, time, log }
     }
 
     /// Gives the loop for a client or server config with `externalEventLoop`. Delete
@@ -103,7 +125,8 @@ impl Loop {
         ticks.max(0).unsigned_abs().checked_mul(100).map(Monotonic)
     }
 
-    /// Runs the timers and the delayed callbacks that are due, with no wait.
+    /// Runs the timers and the delayed callbacks that are due, with no wait. Then it
+    /// writes the count of each window of the logger that dropped lines and has ended.
     ///
     /// # Panics
     ///
@@ -112,6 +135,8 @@ impl Loop {
         // SAFETY: the member takes its own loop.
         let status = ffi::Status(unsafe { (self.members().run)(self.raw(), 0) });
         assert_eq!(status, ffi::Status::GOOD, "open62541 failed a run");
+        // SAFETY: `new` leaked the box, and the C call that read it has returned.
+        unsafe { self.log.as_ref() }.flush();
     }
 
     /// Gives whether a delayed callback waits for the next run.
@@ -127,14 +152,18 @@ impl Loop {
 
 impl Drop for Loop {
     /// Runs the queued delayed callbacks, which free what they hold, and those that
-    /// they queue, and frees the loop. Aborts the process when callbacks still wait
-    /// after 64 passes.
+    /// they queue, frees the loop, and writes the count of each window of the logger
+    /// that dropped lines. Aborts the process when callbacks still wait after 64
+    /// passes.
     fn drop(&mut self) {
         // SAFETY: the loop lives, and `raw` tells the caller to delete each client
         // and server on it first.
         unsafe { ffi::shim_loop_free(self.raw.as_ptr()) };
         // SAFETY: `new` leaked the box, and the loop that read it is gone.
         drop(unsafe { Box::from_raw(self.time.as_ptr()) });
+        // SAFETY: as above. Each client and server, whose configs point at the logger
+        // of the loop and can log at a stop or a delete, is gone before the loop.
+        drop(unsafe { Box::from_raw(self.log.as_ptr()) });
     }
 }
 

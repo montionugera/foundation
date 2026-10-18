@@ -7,9 +7,10 @@
 //! a depth it reached before. An open of a reader of many channels makes no
 //! allocation for each channel. The names of a reader make no allocation at a change
 //! to a key set no larger than one before. A client read makes as many allocations for
-//! each frame it relays as a HUB WIRE session. A complete reader that catches up from
-//! disk allocates only at each read. This binary has no test harness: the count covers
-//! each thread, and a harness allocates on its own thread at any time.
+//! each frame it relays as a HUB WIRE session, and a client write makes none. A
+//! complete reader that catches up from disk allocates only at each read. This binary
+//! has no test harness: the count covers each thread, and a harness allocates on its
+//! own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -33,6 +34,7 @@ mod serving;
 mod sessions;
 #[path = "../common/woken.rs"]
 mod woken;
+mod write;
 
 use std::hint::black_box;
 use std::pin::pin;
@@ -481,12 +483,20 @@ fn main() {
     for mode in [client::Mode::Latest, client::Mode::Complete] {
         relay::relays_a_frame_with_the_allocations_of_a_wire_session(mode);
     }
+    write::relays_a_frame_with_no_allocation();
     catch_up_from_disk();
     woken_of_a_reader_that_takes_each_frame();
     woken_of_a_reader_that_falls_behind_again();
     woken_of_a_reader_whose_frame_waits_for_credit();
     open_of_a_reader_of_many_channels();
     next_at_each_change_of_key_set();
+    write_and_next();
+}
+
+/// A write and `next` of a complete reader, when frames wait for it and when it
+/// waits for them, and of latest readers that the write wakes: none allocates once
+/// warm.
+fn write_and_next() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     sim.run_on(&node, |node, tasks| async move {

@@ -299,10 +299,11 @@
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6065760073,
   2026-10-08 17:47 UTC). This change and its driver test ship in a PR of their own,
   apart from the connector code (same comment).
-  The feature `open62541` of `connector-opcua` compiles the copy and `src/shim.c`
-  with `cc`. `shim.c` defines the 8 symbols that the copy leaves undefined: the 3
-  clock functions give 0, and the 5 POSIX constructors print their name and abort,
-  since our config always has an event loop. Decided by `laptop.architect-2`
+  The feature `open62541` of `connector-opcua` compiles the copy and `src/shim.c` with
+  `cc`. `shim.c` defines the 8 symbols that the copy leaves undefined: the 3 clock
+  functions give 0, and the 5 POSIX constructors panic with their name through
+  `connector_opcua_die` and abort, since our config always has an event loop. Decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6050922367,
   2026-10-08 02:27 UTC). The test server is in `src/server.c`, which only the feature
   `sim` compiles, and a test fails when the Rust outside tests or another `.c` or `.h`
@@ -497,16 +498,25 @@
   Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6130241056,
   2026-10-12 18:31 UTC).
-  The logger of the loop writes each message of level warning and up to fd 2, and
-  drops the lower levels: it formats the line into a stack buffer of 512 bytes with
-  `mp_vsnprintf` and sends it in one `write`, so a line allocates nothing, takes no
-  `stdio` lock, and does not mix with a line of another thread. On Windows it sends it
-  with `WriteFile`, as `write` there adds a CR before each LF. The line of a refused
-  call and the line before an abort take the same path (approved by
-  `laptop.architect-2` at `124a85613`,
-  https://github.com/synnaxlabs/foundation/pull/2594#issuecomment-6153806001,
-  2026-10-13 19:46 UTC). A longer line is cut, not dropped. Trigger: when `node` has a
-  log, the loop takes its sink from its caller. Decided by `laptop.architect-2`
+  The logger of the loop gives each message of level warning and up to the log of the
+  node, and drops the lower levels: when `connector_opcua_admit` in `src/log.rs` finds
+  room under the bound of LOG OUTPUT (11), it formats the line into a stack buffer of
+  512 bytes with `mp_vsnprintf` and gives it to `connector_opcua_put_line`, which writes
+  one event with the span of its loop as its parent: the span of the run for the loop of
+  a run (LOG OUTPUT (11)), and no span for a browse (#3108), the test server, and the
+  loops of `bench::Client` and `bench::client::Client`; `bench::Log` takes the span that
+  its caller gives. A longer line is cut, not dropped. The line of a refused call and
+  the line before an abort of `shim.c` go to `connector_opcua_die`, which panics with
+  it, so the panic hook writes it before the abort: an event in the queue of the log is
+  lost at an abort.
+  `shim.c` names no `write` and no Win32 function (#2612; `laptop.architect-2`,
+  2026-10-18T02:16:27Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6244633633).
+  Supersedes the write to fd 2 of
+  https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068103327 (item 1)
+  and the Windows path of
+  https://github.com/synnaxlabs/foundation/pull/2594#issuecomment-6153806001.
+  Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068103327,
   2026-10-08 20:07 UTC;
   https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068349707,
@@ -741,7 +751,7 @@
   connection itself (OPCUA KIND): it reads the server state when 10 s pass from the
   start of the last read, so the gap between two requests while it waits is 10 s
   plus at most the request timeout. A check goes through `Client::read`, so it shares
-  the bound of 16 requests in flight, and a check that a wait leaves when it ends stays
+  the bound of 9 requests in flight, and a check that a wait leaves when it ends stays
   in flight until its answer. Between two checks, `idle` reads the state of the client
   after each run of the loop, and ends at once when the channel is not open or the
   session is not active. Lost: the check of open62541, which drops each status
@@ -803,19 +813,20 @@
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2397#issuecomment-6110582857,
   2026-10-11 15:26 UTC).
-  A client keeps at most 16 reads in flight. Only reads whose futures dropped or that
-  timed out make more than one, and a read past the 16 first waits until one of them
+  A client keeps at most 9 reads in flight (`READS`, 16 before #3097, which bounds the
+  queue of a channel by it: OPCUA READ). Only reads whose futures dropped or that
+  timed out make more than one, and a read past the 9 first waits until one of them
   ends. A read sends the timeout hint 0, so neither open62541 (2^32 - 1 ms, 49.7 days)
   nor the server ends it, and it stays in flight until the server answers it or the
   channel closes. An open62541 timeout ends a request on the client only, so the count
   would not have the requests that the server still holds. The read gives `BadTimeout`
   at the request timeout of the client, its wait included. When no read ends in that
-  wait, it gives `BadTooManyOperations`: the server holds 16 requests, and the client
+  wait, it gives `BadTooManyOperations`: the server holds 9 requests, and the client
   sends no read until it answers one. The kind closes a client that gives it and
   connects again. The bound is a constant from the sends of a connection, not from the
   rate of reads, as only a server that holds requests fills it. A client sends and takes
   at most 8 chunks in a message, and the test server sends at most 8, so the reads in
-  flight times the chunks of a message stay at 128, half of the 256 sends of a
+  flight times the chunks of a message stay at 72, below half of the 256 sends of a
   connection. The other half is for the requests of open62541 itself. open62541 checks
   the chunks of a message that it sends against its own count, not against the count of
   the peer (`src/ua_securechannel.c`, line 392). Lost: a read whose future drops cancels
@@ -940,16 +951,16 @@
   `Aes128_Sha256_RsaOaep`, `Aes256_Sha256_RsaPss`, and their common code. So the copy
   compiles only the three current policies and `None`, and the production code adds no
   other. `shim.c` defines each symbol that the rest of the copy names from a left-out
-  file to print its name and abort, and a test calls each one. A test fails on another
-  policy file in `sources.txt`. A test fails when the production code names a policy or
-  a certificate group, or a function `UA_CertificateUtils_*`, other than at its stub in
-  `shim.c`, and a test fails when the objects of `shim.c` or `server.c` name aws-lc or a
-  symbol of `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps no state:
-  the copy removes its `static` flag, which it wrote with no lock and which guarded only
-  the calls for OpenSSL before 1.1, and the build fails when `OPENSSL_API_COMPAT` is
-  defined. Lost: the about 35 file and clock calls of the left-out files, each keyed in
-  `FUNCTION_SYMBOLS`; and a copy of each deprecated and ECC policy file. Decided by
-  `laptop.architect-2`
+  file to panic with its name and abort, and a test calls each one. A test fails on
+  another policy file in `sources.txt`. A test fails when the production code names a
+  policy or a certificate group, or a function `UA_CertificateUtils_*`, other than at
+  its stub in `shim.c`, and a test fails when the objects of `shim.c` or `server.c` name
+  aws-lc or a symbol of `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps
+  no state: the copy removes its `static` flag, which it wrote with no lock and which
+  guarded only the calls for OpenSSL before 1.1, and the build fails when
+  `OPENSSL_API_COMPAT` is defined. Lost: the about 35 file and clock calls of the
+  left-out files, each keyed in `FUNCTION_SYMBOLS`; and a copy of each deprecated and
+  ECC policy file. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6230888200,
   2026-10-17 06:51 UTC). The `UA_Openssl_Init` sentences: decided by
   `laptop.architect-2`
@@ -972,3 +983,29 @@
   (https://github.com/synnaxlabs/foundation/pull/3144#issuecomment-6246301508,
   2026-10-18 05:55 UTC). The test of `leaf.der` at `notAfter` is the test of item 1 of
   6230838999 that moves the clock past `notAfter`.
+  The client part of 1d is in `server.c`, which only a `sim` build compiles, so no
+  production build has a policy; PR 2 moves it into `shim.c`. The test helper takes an
+  enum of the three policies, and `shim_client_secure` aborts on an index past them.
+  1d meets the certificate part of #1992: each loop of a secure test connection runs on
+  the wall time that its test gives, and a test moves each side past the `notAfter` of
+  the certificate of the other side (the plan,
+  https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247720334).
+  Approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247742342,
+  2026-10-18 08:40 UTC). A server refuses an expired client certificate with
+  `BadCertificateTimeInvalid`, the status that it sends, and 1d has no test of a switch
+  of the certificate, which no client config reaches in 1.5.9: OK of
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247943704,
+  2026-10-18 08:56 UTC). The session group of the sim server stays the accept-all
+  group, and the sim server sets no application URI: 1d opens only anonymous sessions,
+  and no check that a test reaches refuses on the URI: at each start of a secure
+  server, `verifyServerApplicationUri` logs one warning for each of the three
+  policies, because the default URI of the minimal config does not match the URI of
+  `server.der`. So a 1d
+  connection checks two groups, not the three of item 1 of 6247742342: OK of
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3167#issuecomment-6248291820,
+  2026-10-18 09:33 UTC). The first PR whose code reads an X509 user token, or has a
+  client check the server URI, sets the session group or the URI in the sim server, with
+  a test that fails without it.

@@ -36,8 +36,9 @@ use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use connector::cancel::Token;
 use env::clock::Clock;
-use env::net::{Listener, Net};
+use env::net::{self, Listener, Net};
 use env::rng::Rng;
 use types::quality::Quality;
 #[cfg(test)]
@@ -46,6 +47,7 @@ use types::time::{Monotonic, Stamp};
 
 use crate::connection::Manager;
 use crate::event;
+pub use crate::log::call_refused;
 use crate::node::Node;
 use crate::server::Server;
 use crate::value::Value;
@@ -285,15 +287,26 @@ pub struct Served {
     pub quality: Quality,
 }
 
-/// Serves `variables` on `listener` with room for 4 sessions until `until` completes,
-/// then closes the server. It adds each namespace from 2 to the highest of
-/// `variables`. Each stream of the server has the options of `listener`. `wall` gives
-/// the wall time of the server, which a client compares with the time of each channel
-/// token: give the wall time of the client's node. Call it on a thread that `env`
-/// started. A drop of the future while it waits closes the server with no wait,
-/// leaves what waits on each stream unsent, and frees the port of `listener`. A drop
-/// while the thread panics leaks the server. It also serves the tree of the module
-/// doc.
+/// Serves `variables` on `listener` with room for 4 sessions until `until` is
+/// cancelled or the listener fails, then closes the server. It adds each namespace
+/// from 2 to the highest of `variables`. Each stream of the server has the options of
+/// `listener`. `wall` gives the wall time of the server, which a client compares with
+/// the time of each channel token: give the wall time of the client's node. Call it on
+/// a thread that `env` started. It also serves the tree of the module doc.
+///
+/// The close stops the server and drives each stream while the delayed callbacks of
+/// open62541 drain: each stream sends what it can in that time, then a FIN. An answer
+/// in flight can be cut. The close waits on no peer: a stream that still has bytes to
+/// send at its end drops, which resets it. On each return, each stream that it
+/// accepted has ended, and the port of `listener` is free. A drop of the future while
+/// it waits closes the server with no wait, drops each stream with what waits on it
+/// unsent, which resets it, and frees the port. A drop while the thread panics leaks
+/// the server.
+///
+/// # Errors
+///
+/// The error of the first accept that fails, also when `until` is cancelled in the
+/// same step.
 ///
 /// # Panics
 ///
@@ -313,8 +326,8 @@ pub async fn serve(
     listener: Listener,
     rng: &mut Rng,
     variables: &Variables,
-    until: impl Future<Output = ()>,
-) {
+    until: Token,
+) -> Result<(), net::Error> {
     let time = event::Time {
         clock: Clock::clone(&clock),
         wall: Box::new(wall),
@@ -366,7 +379,33 @@ pub async fn serve(
             server.add_source(node, move || variables.read(index, clock.now()));
         }
     };
-    Server::serve(manager, SESSIONS, add, until).await;
+    Server::serve(manager, SESSIONS, add, until.wait()).await
+}
+
+/// Runs the [`serve`] that `serve` gives for a new token until `work` ends, then
+/// cancels the token, waits for the serve, and gives the output of `work`.
+///
+/// # Panics
+///
+/// When the serve ends before `work`, or fails.
+#[cfg(test)]
+pub(crate) async fn during<F: Future<Output = Result<(), net::Error>>, T>(
+    serve: impl FnOnce(Token) -> F,
+    work: impl Future<Output = T>,
+) -> T {
+    let until = Token::new();
+    let serve = serve(until.clone());
+    let (mut serve, mut work) = (std::pin::pin!(serve), std::pin::pin!(work));
+    let out = std::future::poll_fn(|cx| {
+        if let std::task::Poll::Ready(end) = serve.as_mut().poll(cx) {
+            panic!("the serve ended before its work: {end:?}");
+        }
+        work.as_mut().poll(cx)
+    })
+    .await;
+    until.cancel();
+    serve.await.expect("the listener does not fail");
+    out
 }
 
 /// The state of a server, whose reads a test server answers with `Running`, with the

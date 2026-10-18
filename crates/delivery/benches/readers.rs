@@ -39,7 +39,7 @@ fn opened_as(
     let keys = (0..sessions)
         .map(|n| {
             readers
-                .open(reader(n), start, limit_bytes, Charge::Whole)
+                .open(reader(n), start, limit_bytes, Charge::Whole, None)
                 .key
         })
         .collect();
@@ -103,7 +103,35 @@ fn release(bencher: Bencher<'_, '_>, sessions: usize) {
     bencher.bench_local(|| {
         readers.queue(&frame, &set, seq..seq + 1);
         seq += 1;
-        divan::black_box(readers.release(seq));
+        divan::black_box(readers.release(seq, 0));
+        for &key in &keys {
+            divan::black_box(readers.take(key.into()));
+        }
+    });
+}
+
+/// [`release`] with one more session that waits for a commit that never comes, so
+/// each release also walks the complete sessions.
+#[divan::bench(args = [1, 16, 256])]
+fn release_gated(bencher: Bencher<'_, '_>, sessions: usize) {
+    let (mut readers, keys) = opened(sessions, u64::MAX);
+    let start = Start::At(Position {
+        live: 0,
+        backfill: Some(0),
+    });
+    readers.open(
+        Reader::Unnamed,
+        start,
+        u64::MAX,
+        Charge::Whole,
+        Some(u64::MAX),
+    );
+    let (frame, set) = frame();
+    let mut seq = 0;
+    bencher.bench_local(|| {
+        readers.queue(&frame, &set, seq..seq + 1);
+        seq += 1;
+        divan::black_box(readers.release(seq, seq));
         for &key in &keys {
             divan::black_box(readers.take(key.into()));
         }
@@ -128,7 +156,7 @@ fn release_waiting(bencher: Bencher<'_, '_>, sessions: usize) {
             readers.queue(&frame, &set, seq..seq + 1);
             seq += 1;
         }
-        divan::black_box(readers.release(seq));
+        divan::black_box(readers.release(seq, 0));
         for (&key, spent) in keys.iter().zip(&mut spent) {
             while let Next::Frame(frame) = readers.take(key.into()) {
                 *spent += frame.charge();
@@ -156,7 +184,7 @@ fn fill(bencher: Bencher<'_, '_>) {
                 backfill: None,
             });
             let key = readers
-                .open(Reader::Unnamed, start, u64::MAX, Charge::Whole)
+                .open(Reader::Unnamed, start, u64::MAX, Charge::Whole, None)
                 .key;
             readers.queue(&frame, &set, BURST..BURST + 1);
             let read: Vec<_> = (0..BURST).map(|_| frame.clone()).collect();
@@ -247,13 +275,14 @@ fn release_places_first(bencher: Bencher<'_, '_>) {
                     start,
                     u64::MAX,
                     Charge::Places(slots.clone()),
+                    None,
                 )
                 .key;
             readers.queue(&frame, &set, 0..1);
             (readers, key)
         })
         .bench_local_values(|(mut readers, key)| {
-            divan::black_box(readers.release(1));
+            divan::black_box(readers.release(1, 0));
             divan::black_box(readers.take(key.into()));
             readers
         });
@@ -272,13 +301,19 @@ fn release_through(
         backfill: Some(0),
     });
     let key = readers
-        .open(Reader::Unnamed, start, u64::MAX, Charge::Places(slots))
+        .open(
+            Reader::Unnamed,
+            start,
+            u64::MAX,
+            Charge::Places(slots),
+            None,
+        )
         .key;
     let mut seq = 0;
     bencher.bench_local(|| {
         readers.queue(&frame, &set, seq..seq + 1);
         seq += 1;
-        divan::black_box(readers.release(seq));
+        divan::black_box(readers.release(seq, 0));
         divan::black_box(readers.take(key.into()));
     });
 }
@@ -329,6 +364,7 @@ fn release_places_alternating(bencher: Bencher<'_, '_>, channels: usize) {
             start,
             u64::MAX,
             Charge::Places([slot].into()),
+            None,
         )
         .key;
     let mut seq = 0;
@@ -336,7 +372,7 @@ fn release_places_alternating(bencher: Bencher<'_, '_>, channels: usize) {
         readers.queue(&fa, &a, seq..seq + 1);
         readers.queue(&fb, &b, seq + 1..seq + 2);
         seq += 2;
-        divan::black_box(readers.release(seq));
+        divan::black_box(readers.release(seq, 0));
         divan::black_box(readers.take(key.into()));
         divan::black_box(readers.take(key.into()));
     });

@@ -48,6 +48,7 @@ mod remote;
 mod serve;
 #[path = "../common/sessions.rs"]
 mod sessions;
+mod write;
 
 use agent::name;
 use net::NODE;

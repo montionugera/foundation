@@ -189,9 +189,8 @@ fn fixture() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod common {
-    use std::os::unix::process::ExitStatusExt;
     use std::path::{Path, PathBuf};
-    use std::process::{ExitStatus, Output};
+    use std::process::Output;
 
     /// A new folder named `name` in the temp folder whose `rust-toolchain-nightly`
     /// pins the installed toolchain of `rust-toolchain.toml`. The caller removes it.
@@ -211,10 +210,46 @@ mod common {
         root
     }
 
+    /// The text that an `ExitStatus` of an exit code prints before the code.
+    #[cfg(unix)]
+    pub(crate) const EXITED: &str = "exit status";
+    #[cfg(windows)]
+    pub(crate) const EXITED: &str = "exit code";
+
+    /// The text of the error of a missing file in a folder that exists.
+    #[cfg(unix)]
+    pub(crate) const NO_FILE: &str = "No such file or directory (os error 2)";
+    #[cfg(windows)]
+    pub(crate) const NO_FILE: &str =
+        "The system cannot find the file specified. (os error 2)";
+
+    /// The text of the error of a missing folder, or of a path in one.
+    #[cfg(unix)]
+    pub(crate) const NO_FOLDER: &str = "No such file or directory (os error 2)";
+    #[cfg(windows)]
+    pub(crate) const NO_FOLDER: &str =
+        "The system cannot find the path specified. (os error 3)";
+
+    /// The text of the error of a removal of a folder at a file.
+    #[cfg(unix)]
+    pub(crate) const NOT_FOLDER: &str = "Not a directory (os error 20)";
+    #[cfg(windows)]
+    pub(crate) const NOT_FOLDER: &str = "The directory name is invalid. (os error 267)";
+
+    /// `path`, written with `/`, with the separator of the OS.
+    pub(crate) fn native(path: &str) -> String {
+        path.replace('/', std::path::MAIN_SEPARATOR_STR)
+    }
+
     /// An output of a process that exits with `code`.
     pub(crate) fn output(code: i32, stdout: &str, stderr: &str) -> Output {
+        #[cfg(unix)]
+        let status = std::os::unix::process::ExitStatusExt::from_raw(code << 8);
+        #[cfg(windows)]
+        let status =
+            std::os::windows::process::ExitStatusExt::from_raw(code.cast_unsigned());
         Output {
-            status: ExitStatus::from_raw(code << 8),
+            status,
             stdout: stdout.into(),
             stderr: stderr.into(),
         }

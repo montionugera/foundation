@@ -1,5 +1,5 @@
-//! What the files of a mesh directory share: the check of their bytes, and the read
-//! and write of a file in blocks of a pool.
+//! What the files of a mesh directory share: the check and the frame of their bytes,
+//! and the read and write of a file in blocks of a pool.
 
 use std::rc::Rc;
 
@@ -27,9 +27,27 @@ pub(crate) fn check(bytes: &[u8]) -> [u8; CHECK] {
         .expect("invariant: a digest has 32 bytes")
 }
 
+/// `body` as a file of a mesh directory holds it: the check of the rest, `format`,
+/// then `body`.
+pub(crate) fn frame(format: u16, body: &[u8]) -> Vec<u8> {
+    let mut rest = format.to_le_bytes().to_vec();
+    rest.extend(body);
+    let mut bytes = check(&rest).to_vec();
+    bytes.extend(rest);
+    bytes
+}
+
+/// The format and the body of `bytes`, as [`frame`] gives them, or `None` when
+/// `bytes` is shorter than a frame or its check fails.
+pub(crate) fn unframe(bytes: &[u8]) -> Option<(u16, &[u8])> {
+    let (claimed, rest) = bytes.split_first_chunk::<CHECK>()?;
+    let (format, body) = rest.split_first_chunk::<2>()?;
+    (*claimed == check(rest)).then(|| (u16::from_le_bytes(*format), body))
+}
+
 /// A pool whose largest block is one sector or more, and the reads and writes of a
 /// file in its blocks.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Blocks {
     pool: Rc<Pool>,
     // The most bytes in one block: [`CHUNK`], or the most whole sectors in the
@@ -104,4 +122,41 @@ pub(crate) fn wide(len: usize) -> u64 {
 /// fits.
 pub(crate) fn narrow(offset: u64) -> usize {
     usize::try_from(offset).expect("invariant: a file offset fits in memory")
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn a_frame_round_trips(
+            format: u16,
+            body in prop::collection::vec(any::<u8>(), 0..64),
+        ) {
+            let bytes = frame(format, &body);
+            prop_assert_eq!(unframe(&bytes), Some((format, &body[..])));
+        }
+
+        // A changed byte, and each prefix shorter than the check and the format, give
+        // no frame.
+        #[test]
+        fn a_changed_or_short_frame_does_not_unframe(
+            format: u16,
+            body in prop::collection::vec(any::<u8>(), 0..64),
+            at in any::<prop::sample::Index>(),
+        ) {
+            let mut bytes = frame(format, &body);
+            for len in 0..CHECK + 2 {
+                prop_assert_eq!(unframe(&bytes[..len]), None);
+            }
+            let at = at.index(bytes.len());
+            if let Some(byte) = bytes.get_mut(at) {
+                *byte ^= 1;
+            }
+            prop_assert_eq!(unframe(&bytes), None);
+        }
+    }
 }

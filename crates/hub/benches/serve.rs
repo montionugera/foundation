@@ -39,6 +39,7 @@ mod agent;
 #[expect(dead_code, reason = "the bench uses only some of the helpers")]
 #[path = "../tests/common/mod.rs"]
 mod common;
+mod fixture;
 #[path = "../tests/common/net.rs"]
 mod net;
 #[path = "../tests/common/node.rs"]
@@ -53,30 +54,23 @@ mod sessions;
 mod table;
 
 use std::ops::RangeInclusive;
-use std::path::PathBuf;
 use std::pin::pin;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use agent::Agent;
-use block::{Heap, Pool};
 use common::name;
 use env::tasks::Tasks;
+use fixture::{channel_name, create_hub};
 use hub::writer::{self, Writer};
 use hub::{Hub, Link, Served};
-use spec::channel::{Channel, Data, Kind};
-use spec::data_type::DataType;
-use spec::definition::Definition;
 use table::Line;
 use transport::stream::Receiver;
 use transport::{Address, Transport};
 use types::authority::Authority;
-use types::channel;
-use types::frame::key_set::Interner;
 use types::frame::{Draft, Form};
 use types::sample::{Scalar, Type};
-use types::time::{Span, Stamp};
+use types::time::Span;
 use wire::hub::{Mode, client};
 
 #[global_allocator]
@@ -90,14 +84,6 @@ const ROUNDS: usize = 50;
 const RUN: usize = (WARMUP + ROUNDS) * FRAMES;
 /// Samples per series of a `wide` frame.
 const SAMPLES: usize = 256;
-/// A ring that holds each frame of the run, as nothing frees a ring until #160: 64
-/// times the ring of `home::testing::shard`.
-const AREA: u64 = 1 << 28;
-/// A pool of 4 times the budget of `home::testing::shard`. A size class keeps its
-/// range while one of its blocks is in use, so the lines before `two sets 1472` hold
-/// most of 8 MiB. In some orders of the tasks, 8 MiB then has no room for a frame of
-/// `two sets 1472` or of `wide 64k`.
-const BUDGET: u64 = 1 << 25;
 /// How long the bench waits between two checks of what the peer read.
 const STEP: Span = Span::MILLISECOND;
 
@@ -337,7 +323,7 @@ async fn bench(
     progress: Arc<Progress>,
 ) -> (Line, Vec<Line>) {
     let transport = net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
-    let (hub, mut stamp) = create_hub(&node, tasks.clone()).await;
+    let (hub, mut stamp) = create_hub(&node, tasks.clone(), indexes()).await;
     hub.set_rules(sessions::rules());
     let mut timer = Line::new("timer", FRAMES);
     let mut lines = Vec::new();
@@ -531,22 +517,9 @@ async fn take(
     }
 }
 
-/// A hub on a new shard whose ring holds the run, with the channels of each shape
-/// defined, and the node's mesh time now.
-async fn create_hub(node: &sim::node::Node, tasks: Tasks) -> (Hub, i64) {
-    let (home, interner, now, time) = create_shard(node, tasks.clone()).await;
-    let hub = Hub::new(hub::Config {
-        home,
-        interner,
-        tasks,
-        node: net::NODE,
-        time,
-        entropy: node.entropy(),
-        region: None,
-    });
-    let i64 = DataType::Sample(Type::Scalar(Scalar::I64));
-    let mut definitions = Vec::new();
-    let groups = PEERS.iter().enumerate().flat_map(|(turn, (_, cases))| {
+/// The index of each shape of each line, and its data channels.
+fn indexes() -> impl Iterator<Item = (u128, RangeInclusive<u128>)> {
+    PEERS.iter().enumerate().flat_map(|(turn, (_, cases))| {
         (0..cases.len()).flat_map(move |at| {
             let base = base(turn, at);
             [
@@ -554,41 +527,7 @@ async fn create_hub(node: &sim::node::Node, tasks: Tasks) -> (Hub, i64) {
                 (base + WIDE, base + WIDE_DATA..=base + WIDE_DATA),
             ]
         })
-    });
-    for (index, data) in groups {
-        let key = channel::Key::from_u128(index);
-        let kind = Kind::Index {
-            error: None,
-            control: None,
-        };
-        definitions.push((index, Channel { key, kind }));
-        for data in data {
-            let data_key = channel::Key::from_u128(data);
-            let kind =
-                Kind::Data(Data::new(key, None, i64.clone(), None).expect("no unit"));
-            definitions.push((
-                data,
-                Channel {
-                    key: data_key,
-                    kind,
-                },
-            ));
-        }
-    }
-    let definitions: Vec<_> = definitions
-        .into_iter()
-        .map(|(key, channel)| (channel_name(key), Definition::Channel(channel)))
-        .collect();
-    hub.set_definitions(
-        definitions
-            .iter()
-            .map(|(name, definition)| (name, definition)),
-    );
-    (hub, now)
-}
-
-fn channel_name(key: u128) -> types::name::Name {
-    name(&format!("c{key}"))
+    })
 }
 
 /// The writers of `shape` from `base`. Two writers on one index cannot both hold its
@@ -634,52 +573,4 @@ fn draft(writer: &Writer, samples: usize, stamp: &mut i64) -> Draft {
     }
     draft.set_count(entries[0].group, u32::try_from(samples).expect("few"));
     draft
-}
-
-/// `home::testing::shard` on a ring of `AREA` and a pool of `BUDGET`, its interner,
-/// the mesh time once the clock has one, and the reader of that time. #160 removes it.
-async fn create_shard(
-    node: &sim::node::Node,
-    tasks: Tasks,
-) -> (home::Shard, Interner, i64, clock::Reader) {
-    let config = block::Config::new(BUDGET).expect("the budget fits");
-    let pool = Rc::new(Pool::new(config.clone(), Heap::new(config.reservation())));
-    let (clock, mesh) = clock::Clock::new(node.clock());
-    let wall = node.wall();
-    tasks.spawn(async move { clock.run(wall).await });
-    let mut interner = Interner::new();
-    let config = buffer::Config {
-        files: node.files(),
-        dir: PathBuf::from("shard-0"),
-        pool,
-        clock: node.clock(),
-        tasks,
-        entropy: node.entropy(),
-        layout: buffer::Layout::new(AREA, 1 << 16).expect("a ring"),
-        commit: Span::from_nanos(10_000_000),
-        trimmed: false,
-    };
-    let buffer = buffer::Buffer::open(config, interner.slots())
-        .await
-        .expect("opens");
-    let shard = home::Shard::open(home::Config {
-        shard: 0,
-        buffer,
-        clock: mesh.clone(),
-        limits: home::order::Limits {
-            earliest: Stamp::from_nanos(1),
-            ahead: Span::from_nanos(1_000_000_000),
-        },
-    });
-    loop {
-        if let Some(now) = mesh.now().mesh {
-            return (
-                shard,
-                interner,
-                now.earliest.nanos().midpoint(now.latest.nanos()),
-                mesh,
-            );
-        }
-        node.clock().sleep(Span::from_nanos(1)).await;
-    }
 }

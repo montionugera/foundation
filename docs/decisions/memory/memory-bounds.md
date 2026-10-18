@@ -87,4 +87,21 @@
   https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6202690738, item 1;
   this text: `laptop.architect`, 2026-10-15T21:51:47Z:
   https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6203034272, item 2,
-  which supersedes the text of 6202866145 item 2).
+  which supersedes the text of 6202866145 item 2). Outside the pool budget,
+  the request bodies, read opens, write opens, and ends of write streams of a hub
+  count in its body budget, `BODIES_BYTES_MAX` (32 MiB), and those of one subject in
+  `BODY_BYTES_MAX` (16 MiB) (HUB CLIENT). The ends of a write stream are 16 bytes for
+  each channel of its open and one for its index, from the decode of its open until
+  the stream ends. Its decoded names, 16 bytes and the length of each, count from that
+  decode until the stream sends its places. A write open is at most `OPEN_BYTES_MAX`
+  (64 KiB), with at least 2 bytes for each channel, so its ends are at most 512 KiB,
+  and the budget bounds the places of all write streams of a node at 2,097,152. The
+  cost: the writers of a subject hold their ends in its share until their streams end,
+  so wide writers can make the requests and read opens of that subject stop with
+  `BUSY`. Limits: the budget counts only the ends and the names. Other memory of a
+  write stream that grows with its channels (its key set and the home's writer) is not
+  counted (`laptop.architect`,
+  2026-10-18T07:45:01Z:
+  https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6247275705, item
+  5, which closes the deferral of
+  https://github.com/synnaxlabs/foundation/pull/3148#issuecomment-6246759669, item 3).

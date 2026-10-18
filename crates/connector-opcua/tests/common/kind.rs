@@ -145,8 +145,8 @@ pub(crate) fn run(
         let (answers, until) = (variables.clone(), stop.clone());
         let mut rng = node.entropy().rng();
         serving.tasks().spawn(async move {
-            let until = until.wait();
-            serve(clock, wall, net, listener, &mut rng, &answers, until).await;
+            let served = serve(clock, wall, net, listener, &mut rng, &answers, until);
+            served.await.expect("the listener does not fail");
         });
         let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
         let config = config(&address, nodes);

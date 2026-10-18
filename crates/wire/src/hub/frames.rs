@@ -4,6 +4,7 @@ use std::sync::Arc;
 use types::frame::key_set::KeySet;
 use types::frame::{Draft, Frame, Layout};
 
+use super::part::Assembly;
 use super::{Error, FromHome, Gaps, Head, Reader};
 
 /// The frames of a reader session, built from its replies from `Opened` on, at the
@@ -12,13 +13,8 @@ use super::{Error, FromHome, Gaps, Head, Reader};
 #[derive(Debug)]
 pub struct Frames {
     reader: Reader,
-    set: Arc<KeySet>,
     head: Option<Head>,
-    /// The entry and end of each series of the frame that arrives.
-    ends: Vec<(usize, usize)>,
-    /// The ends are whole and the draft is not given.
-    drafting: bool,
-    draft: Option<Draft>,
+    assembly: Assembly<false>,
     /// Also in a latest session, for [`Frames::live`].
     gaps: Gaps,
 }
@@ -67,15 +63,12 @@ impl Frames {
         message: Option<&[u8]>,
     ) -> Result<Self, Error> {
         assert_eq!(set.groups().len(), 1, "a session is on one index");
-        assert!(reader.unopened(), "`reader` is past `Opened`: {reader:?}");
+        assert!(!reader.opened(), "`reader` is past `Opened`: {reader:?}");
         match reader.decode(message)? {
             FromHome::Opened { live } => Ok(Self {
                 reader,
-                set,
                 head: None,
-                ends: Vec::new(),
-                drafting: false,
-                draft: None,
+                assembly: Assembly::new(set),
                 gaps: Gaps::new(live),
             }),
             other => unreachable!("invariant: a reader before opened gave {other:?}"),
@@ -85,7 +78,7 @@ impl Frames {
     /// The key set of each frame.
     #[must_use]
     pub fn set(&self) -> &Arc<KeySet> {
-        &self.set
+        self.assembly.set()
     }
 
     /// The seqs of the index lost just before the last frame that
@@ -118,14 +111,13 @@ impl Frames {
     /// caller then stops the stream as `MALFORMED`.
     #[inline]
     pub fn due(&mut self) -> Result<Due<'_>, types::frame::Error> {
-        if self.drafting {
-            return Layout::from_ends(&self.set, &self.ends).map(Due::Draft);
+        if self.assembly.drafting() {
+            return self.assembly.layout().map(Due::Draft);
         }
-        Ok(match (self.reader.body(), self.draft.as_mut()) {
-            (Some(start), Some(draft)) => Due::Body(rest(draft, start)),
-            (None, _) => Due::Message,
-            (Some(_), None) => unreachable!("invariant: a body has a draft"),
-        })
+        Ok(self
+            .assembly
+            .rest(self.reader.body())
+            .map_or(Due::Message, Due::Body))
     }
 
     /// Takes the next message, whole, or the end of the stream when `None`. A body
@@ -142,18 +134,16 @@ impl Frames {
     /// When [`Frames::due`] gives [`Due::Draft`].
     #[inline]
     pub fn decode(&mut self, message: Option<&[u8]>) -> Result<Step, Error> {
-        assert!(!self.drafting, "a draft is due before the next message");
+        self.assembly.check_undrafted("the next message");
         let start = self.reader.body();
         match self.reader.decode(message)? {
             FromHome::Head(head) => {
                 self.head = Some(head);
-                self.ends.clear();
+                self.assembly.head();
                 Ok(Step::Head(head))
             }
             FromHome::Ends { ends, last } => {
-                self.ends
-                    .extend(ends.map(|(place, end)| (to_usize(place), to_usize(end))));
-                self.drafting = last;
+                self.assembly.ends(ends, last);
                 Ok(Step::More)
             }
             FromHome::Opened { .. } => {
@@ -161,8 +151,7 @@ impl Frames {
             }
             FromHome::Body { bytes, last } => {
                 let start = start.expect("invariant: body bytes come inside a body");
-                let draft = self.draft.as_mut().expect("invariant: a body has a draft");
-                prefix(rest(draft, start), bytes.len()).copy_from_slice(bytes);
+                self.assembly.body(start, bytes);
                 Ok(self.received_body(last))
             }
         }
@@ -181,7 +170,7 @@ impl Frames {
     /// When [`Frames::due`] does not give [`Due::Body`], or `len` is over its slice.
     #[inline]
     pub fn received(&mut self, len: usize) -> Result<Step, Error> {
-        assert!(!self.drafting, "a body is due");
+        self.assembly.check_body();
         let last = self.reader.received(len)?;
         Ok(self.received_body(last))
     }
@@ -194,9 +183,7 @@ impl Frames {
     /// When [`Frames::due`] does not give [`Due::Draft`].
     #[inline]
     pub fn draft(&mut self, draft: Draft) -> Step {
-        assert!(self.drafting, "no draft is due");
-        self.drafting = false;
-        self.draft = Some(draft);
+        self.assembly.draft(draft);
         match self.reader.body() {
             Some(_) => Step::More,
             None => Step::Frame(self.freeze()),
@@ -215,37 +202,15 @@ impl Frames {
     /// The frame of the head and the draft that arrived.
     fn freeze(&mut self) -> Frame {
         let head = self.head.take().expect("invariant: a frame has a head");
-        let mut draft = self.draft.take().expect("invariant: a frame has a draft");
+        let mut draft = self
+            .assembly
+            .take()
+            .expect("invariant: a frame has a draft");
         self.gaps.pass(head.range);
         draft.set_count(0, head.range.count);
         draft.set_seq(0, head.range.seq);
         draft.freeze(head.path)
     }
-}
-
-/// The body of `draft` from `start` on.
-fn rest(draft: &mut Draft, start: usize) -> &mut [u8] {
-    let body = draft.body_mut();
-    let len = body.len();
-    body.get_mut(start..).unwrap_or_else(|| {
-        panic!(
-            "invariant: a body that starts at {start} is inside its {len} byte draft"
-        )
-    })
-}
-
-/// The first `len` bytes of `rest`.
-fn prefix(rest: &mut [u8], len: usize) -> &mut [u8] {
-    let room = rest.len();
-    rest.get_mut(..len).unwrap_or_else(|| {
-        panic!(
-            "a body message of {len} bytes is over the {room} bytes left of its body"
-        )
-    })
-}
-
-fn to_usize(n: u32) -> usize {
-    usize::try_from(n).expect("invariant: a usize holds a u32")
 }
 
 #[cfg(test)]
@@ -567,6 +532,24 @@ mod tests {
         let twice = layout.draft(&pool, Form::Encoded).expect("a block");
         draft(&mut frames, &pool);
         frames.draft(twice);
+    }
+
+    #[test]
+    #[should_panic(expected = "no draft is due")]
+    fn panics_at_a_draft_after_a_layout_error() {
+        let (pool, mut other) = (create_pool(), opened(false));
+        ends(&mut other);
+        let Ok(Due::Draft(layout)) = other.due() else {
+            panic!("a draft is due");
+        };
+        let draft = layout.draft(&pool, Form::Encoded).expect("a block");
+        let mut frames = opened(false);
+        frames.decode(Some(&head(4, 2, 2))).expect("a head");
+        frames
+            .decode(Some(&encode_ends(&[(0, 16), (1, 8)])))
+            .expect("ends");
+        assert!(frames.due().is_err(), "the layout is not valid");
+        frames.draft(draft);
     }
 
     #[test]

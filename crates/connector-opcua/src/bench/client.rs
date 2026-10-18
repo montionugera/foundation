@@ -26,6 +26,11 @@ const VALUE: Node = Node {
     namespace: 1,
     key: Key::Number(1000),
 };
+/// A `ByteString` of 7 chunks of 64 KiB, an answer of 8 chunks.
+const BYTES: Node = Node {
+    namespace: 1,
+    key: Key::Number(1002),
+};
 /// The name of the Double variable of a [`Server`] that has a name key.
 const NAME: &str = "SpikeData";
 /// The value of each variable.
@@ -42,10 +47,12 @@ pub enum Variable {
     Number,
     /// `ns=1;s=SpikeData`.
     Name,
+    /// `ns=1;i=1002`, a `ByteString` whose answer takes 8 chunks.
+    Bytes,
 }
 
 /// A test server of open62541 on its own connection manager over `env::net`, with a
-/// Double variable of each [`Variable`] and a `MaxNodesPerRead` of [`PER_READ`], for
+/// variable of each [`Variable`] and a `MaxNodesPerRead` of [`PER_READ`], for
 /// the clients of [`Server::connect`].
 pub struct Server {
     clock: Clock,
@@ -64,10 +71,11 @@ impl Server {
     ///
     /// # Panics
     ///
-    /// If the port is taken, or if open62541 refuses the server, a Double, a run of its
-    /// loop, or a step of its close. A panic of its start, a run of its loop, or its
-    /// close leaks the manager and the server that it made by then, and a panic of the
-    /// close replaces a panic of a Double or of `body`.
+    /// If the port is taken, if the accept of its listener fails, or if open62541
+    /// refuses the server, a Double, a run of its loop, or a step of its close. A panic
+    /// of its start, a run of its loop, or its close leaks the manager and the server
+    /// that it made by then, and a panic of the close replaces a panic of a Double or
+    /// of `body`.
     ///
     /// # Aborts
     ///
@@ -111,9 +119,11 @@ impl Server {
             server.add_scalar(&VALUE, Value::F64(double));
             server.add_scalar(&named(), Value::F64(double));
             server.set_per_read(PER_READ);
+            server.add_bytes(&BYTES, 7 << 16);
         };
         let body = caught(async { body(&this).await });
         let value = crate::server::Server::serve(manager, SESSIONS, add, body).await;
+        let value = value.expect("the listener of a bench does not fail");
         value.unwrap_or_else(|panic| panic::resume_unwind(panic))
     }
 
@@ -136,6 +146,7 @@ impl Server {
         let net = Net::clone(&self.net);
         let connect = crate::client::Client::connect(
             time,
+            tracing::Span::none(),
             net,
             rng,
             &self.url,
@@ -152,10 +163,12 @@ impl Server {
             nodes
         };
         let (number, name) = (nodes(VALUE), nodes(named()));
+        let bytes = session.nodes(&[BYTES]);
         Client {
             session,
             number,
             name,
+            bytes,
         }
     }
 }
@@ -181,10 +194,12 @@ pub struct Client {
     session: crate::client::Client,
     number: Nodes,
     name: Nodes,
+    bytes: Nodes,
 }
 
 impl Client {
-    /// Reads the Double of each copy of `variable`.
+    /// Reads the Double of each copy of `variable`, or the `ByteString` of
+    /// [`Variable::Bytes`], which gives the fault of a value that is not a sample.
     ///
     /// # Panics
     ///
@@ -193,6 +208,11 @@ impl Client {
         let nodes = match variable {
             Variable::Number => &self.number,
             Variable::Name => &self.name,
+            Variable::Bytes => {
+                let values = self.session.read(&self.bytes).await;
+                assert!(matches!(values, Ok([Err(_)])), "read {values:?}");
+                return;
+            }
         };
         let values = match self.session.read(nodes).await {
             Ok(values) => values,
@@ -242,6 +262,7 @@ impl std::fmt::Debug for Client {
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
+    use std::num::NonZeroU64;
 
     use env::rng::Rng;
     use sim::node::Node;
@@ -355,6 +376,37 @@ mod tests {
         let held = panicked("a connect failed: BadTooManySessions");
         assert_eq!(fifth(minutes(19)), held);
         assert_eq!(fifth(minutes(21)), Ok(()));
+    }
+
+    /// The answer of [`Variable::Bytes`] carries 7 chunks of 64 KiB and less than 8,
+    /// so its read takes that much time on a link of 1 MB/s.
+    #[test]
+    fn a_read_of_the_bytes_carries_seven_chunks_of_64_kib() {
+        let link = sim::link::Config {
+            rate: NonZeroU64::new(1_000_000),
+            ..sim::link::Config::default()
+        };
+        let mut sim = Sim::new(sim::Config {
+            link,
+            ..sim::Config::default()
+        });
+        let node = sim.node(node::Config::default());
+        let took = sim
+            .run_on(&node, move |node, _| async move {
+                let clock = node.clock();
+                scope(&node, async |server: &Server| {
+                    let mut client = server.connect(1).await;
+                    let start = clock.now();
+                    client.read(Variable::Bytes).await;
+                    let took = clock.now() - start;
+                    client.close().await;
+                    took
+                })
+                .await
+            })
+            .expect("the run ends");
+        let at_rate = |chunks: i64| Span::from_nanos(chunks * 65_536 * 1_000);
+        assert!(at_rate(7) <= took && took < at_rate(8), "took {took:?}");
     }
 
     /// The server closes a channel idle for 10 minutes.

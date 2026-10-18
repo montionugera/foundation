@@ -34,7 +34,17 @@ pub(crate) mod tests;
 use service::{Bytes, Item, Request, Sizes};
 
 /// The most requests of a client in flight. A request past it waits until one ends.
-const READS: u16 = 16;
+const READS: u16 = 9;
+
+/// The most intermediate chunks that a client queues across its answers: each of
+/// [`READS`] answers waits for its final chunk with at most [`CHUNKS`] - 1 chunks. A
+/// chunk past it closes the channel.
+const QUEUED: u32 = READS as u32 * (CHUNKS - 1);
+
+const _: () = assert!(
+    QUEUED <= 63,
+    "OPCUA READ bounds the queue of a channel at 63 chunks of 64 KiB, about 4 MiB"
+);
 
 /// The most time with no read that [`Client::idle`] waits before it checks the
 /// connection.
@@ -67,6 +77,23 @@ const _: () = assert!(
     READS as usize * CHUNKS as usize <= SENDS / 2,
     "the other half of the sends of a connection is for the requests of open62541"
 );
+
+/// Gives a client of open62541 on the loop `el` with no connection. It takes at most
+/// [`CHUNKS`] chunks in a message and queues at most [`QUEUED`] intermediate chunks.
+///
+/// # Safety
+///
+/// `el` is a live loop that outlives the client.
+///
+/// # Aborts
+///
+/// When open62541 cannot allocate the client: the process stops as the Rust allocator
+/// does when it has no memory.
+pub(crate) unsafe fn unconnected(el: *mut ffi::EventLoop) -> NonNull<ffi::Client> {
+    // SAFETY: as the caller ensures.
+    let client = unsafe { ffi::shim_client_new(el, CHUNKS, QUEUED) };
+    NonNull::new(client).unwrap_or_else(|| alloc::exhausted())
+}
 
 /// A client of open62541 with an active session, on its own loop and connection
 /// manager, on the thread that made it. Its loop runs only in its calls, so a client
@@ -150,10 +177,11 @@ struct Slots {
 }
 
 impl Client {
-    /// Makes a client on its own manager over `time`, `net`, and `rng`, and connects
-    /// it to the server at the endpoint `url` with the security mode `None` and an
-    /// anonymous session. It gives the client once the session is active and it has
-    /// read the `MaxNodesPerRead` of the server, or `None` when `until` ends first.
+    /// Makes a client on its own manager over `time`, `span`, `net`, and `rng`, as
+    /// [`Manager::new`] does, and connects it to the server at the endpoint `url` with
+    /// the security mode `None` and an anonymous session. It gives the client once the
+    /// session is active and it has read the `MaxNodesPerRead` of the server, or `None`
+    /// when `until` ends first.
     /// After an error, or when `until` ends first, it closes the session that the
     /// connect made, as [`Client::close`] does, so it ends within [`GRACE`] of either.
     /// A drop of the future drops the client.
@@ -172,12 +200,13 @@ impl Client {
     /// client, as [`alloc::exhausted`] says.
     pub(crate) async fn connect(
         time: Time,
+        span: tracing::Span,
         net: Net,
         rng: &mut Rng,
         url: &CStr,
         until: impl Future<Output = ()>,
     ) -> Result<Option<Self>, Status> {
-        let mut client = Self::new(time, net, rng, url.to_owned());
+        let mut client = Self::new(time, span, net, rng, url.to_owned());
         let opened = {
             let (mut until, mut open) = (pin!(until), pin!(client.open()));
             // The first poll of `open` starts the loop, which the close drives.
@@ -202,20 +231,23 @@ impl Client {
         }
     }
 
-    /// Makes a client of `url` on its own manager over `time`, `net`, and `rng`, with
-    /// no connection.
+    /// Makes a client of `url` on its own manager over `time`, `span`, `net`, and
+    /// `rng`, with no connection.
     ///
     /// # Aborts
     ///
     /// As [`Client::connect`].
-    fn new(time: Time, net: Net, rng: &mut Rng, url: CString) -> Self {
+    fn new(
+        time: Time,
+        span: tracing::Span,
+        net: Net,
+        rng: &mut Rng,
+        url: CString,
+    ) -> Self {
         let clock = Clock::clone(&time.clock);
-        let connections = Manager::new(time, net, rng);
+        let connections = Manager::new(time, span, net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
-        let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
-        let Some(raw) = NonNull::new(raw) else {
-            alloc::exhausted()
-        };
+        let raw = unsafe { unconnected(connections.events().raw()) };
         // SAFETY: `raw` is a new client of the loop of `connections`.
         unsafe { Self::of(clock, connections, raw, url) }
     }
@@ -224,7 +256,7 @@ impl Client {
     ///
     /// # Safety
     ///
-    /// `raw` comes from `shim_client_new` on the loop of `connections`, has not
+    /// `raw` comes from [`unconnected`] on the loop of `connections`, has not
     /// connected, and nothing else owns it: the client frees it.
     unsafe fn of(
         clock: Clock,

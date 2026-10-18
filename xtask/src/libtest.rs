@@ -43,6 +43,7 @@ fn tests_passed(output: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::NO_FOLDER;
 
     fn sh(script: &str) -> Result<Run, String> {
         run(Command::new("sh").args(["-c", script]))
@@ -69,7 +70,7 @@ mod tests {
     fn names_a_program_that_cannot_start() {
         assert_eq!(
             run(&mut Command::new("/missing/cargo")),
-            Err("/missing/cargo: No such file or directory (os error 2)".to_string())
+            Err(format!("/missing/cargo: {NO_FOLDER}"))
         );
     }
 
