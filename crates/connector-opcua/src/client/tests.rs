@@ -1844,14 +1844,33 @@ const CLOSE_SESSION: [u8; 4] = [0x01, 0x00, 0xD9, 0x01];
 /// The binary encoding of a Browse request, a `NodeId` of 4 bytes.
 const BROWSE: [u8; 4] = [0x01, 0x00, 0x0F, 0x02];
 
-/// Runs `body` while [`relay`] runs on `node` with `control` and `rewrite`.
+/// Runs `body` while [`relay`] runs on `node` with `control`, and gives each message
+/// of the server to `rewrite`.
 pub(crate) async fn relayed<T>(
     node: &node::Node,
     control: &Relay,
     rewrite: impl FnMut(&mut Vec<u8>),
     body: impl Future<Output = T>,
 ) -> T {
-    let mut relay = pin!(relay(node, control, rewrite));
+    beside(relay(node, control, |_| {}, rewrite), body).await
+}
+
+/// Runs `body` while [`relay`] runs on `node`, and gives each message of the client to
+/// `up`.
+pub(crate) async fn relayed_up<T>(
+    node: &node::Node,
+    up: impl FnMut(&mut Vec<u8>),
+    body: impl Future<Output = T>,
+) -> T {
+    beside(relay(node, &Relay::default(), up, |_| {}), body).await
+}
+
+/// Runs `body` while `relay` runs.
+async fn beside<T>(
+    relay: impl Future<Output = ()>,
+    body: impl Future<Output = T>,
+) -> T {
+    let mut relay = pin!(relay);
     let mut body = pin!(body);
     poll_fn(|cx| {
         assert!(relay.as_mut().poll(cx).is_pending(), "it never ends");
@@ -1879,13 +1898,15 @@ pub(crate) struct Relay {
 }
 
 /// Moves the bytes of each stream to [`RELAY`], one at a time, to the test server and
-/// back, and gives each message of the server to `rewrite` before the client gets it.
-/// A relay ends when the client ends its side or `control` cuts it.
+/// back. It gives each message of the client to `up` before the server gets it, and
+/// each message of the server to `down` before the client gets it. A relay ends when
+/// the client ends its side or `control` cuts it.
 #[expect(clippy::infinite_loop, reason = "it runs until its test ends")]
 async fn relay(
     node: &node::Node,
     control: &Relay,
-    mut rewrite: impl FnMut(&mut Vec<u8>),
+    mut up: impl FnMut(&mut Vec<u8>),
+    mut down: impl FnMut(&mut Vec<u8>),
 ) {
     let address = node.addresses()[0];
     let listen = tcp::Listen {
@@ -1914,12 +1935,12 @@ async fn relay(
             .connect(&config)
             .await
             .expect("the server listens");
-        let (mut up, mut down) = (Pipe::default(), Pipe::default());
+        let (mut to_server, mut to_client) = (Pipe::default(), Pipe::default());
         poll_fn(|cx| {
             if control.cut.take() {
                 return Poll::Ready(());
             }
-            let ended = up.pump(cx, &mut client, &mut server, |message| {
+            let ended = to_server.pump(cx, &mut client, &mut server, |message| {
                 let close =
                     message.starts_with(b"MSG") && message[24..28] == CLOSE_SESSION;
                 control
@@ -1930,8 +1951,9 @@ async fn relay(
                     let time = message[47..55].try_into().expect("8 bytes");
                     control.browses.borrow_mut().push(i64::from_le_bytes(time));
                 }
+                up(message);
             });
-            down.pump(cx, &mut server, &mut client, &mut rewrite);
+            to_client.pump(cx, &mut server, &mut client, &mut down);
             if ended {
                 Poll::Ready(())
             } else {

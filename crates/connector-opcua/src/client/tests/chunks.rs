@@ -2,12 +2,13 @@ use std::cell::Cell;
 
 use super::common::{rebuilt, reorder, too_large, with_id};
 use super::{
-    FITS, Peer, RELAY, Relay, VALUE, drop_read, fits, mistyped, numbered, relayed, run,
-    serve,
+    FITS, Peer, RELAY, Relay, VALUE, drop_read, fits, mistyped, numbered, relayed,
+    relayed_up, run, serve,
 };
 use crate::client::{Client, READS};
 use crate::connection::CHUNKS;
 use crate::ffi::Status;
+use crate::server::Limits;
 use crate::value::{Fault, Value};
 
 /// The largest message of a client of open62541 by default, in bytes.
@@ -185,15 +186,29 @@ fn answer(
     }
 }
 
-/// The answers of two reads of [`VALUE`], and the value of the server. Before the
-/// answer of the first, the relay sends the chunks that `forge` makes from its first
-/// chunk. The client takes messages of up to `message` bytes.
+/// The side that gets the forged chunks of [`after_forged`].
+#[derive(Clone, Copy, Debug)]
+enum Side {
+    /// The client, before the answer of the first read.
+    Client,
+    /// A server with the limits of open62541 by default, before the request of the
+    /// first read.
+    Server,
+}
+
+/// The answers of two reads of [`VALUE`], and the value of the server. The relay
+/// sends `to` the chunks that `forge` makes from the first chunk of the first read.
+/// The client takes messages of up to `message` bytes.
 fn after_forged(
+    to: Side,
     forge: impl Fn(&[u8]) -> Vec<Vec<u8>> + Send + 'static,
     message: u32,
 ) -> (Result<Value, Fault>, Result<Value, Fault>, Value) {
     run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
+            if let Side::Server = to {
+                peer.server.set_limits(Limits::default());
+            }
             let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
             let armed = Cell::new(false);
             let order = |held: Vec<Vec<u8>>| {
@@ -211,7 +226,10 @@ fn after_forged(
                 (read, after)
             };
             let rewrite = reorder(&armed, 1, order);
-            let reads = relayed(&node, &Relay::default(), rewrite, body).await;
+            let reads = match to {
+                Side::Client => relayed(&node, &Relay::default(), rewrite, body).await,
+                Side::Server => relayed_up(&node, rewrite, body).await,
+            };
             (reads.0, reads.1, peer.value)
         })
         .await
@@ -234,11 +252,14 @@ fn closed() -> (Result<Value, Fault>, Result<Value, Fault>) {
 fn the_intermediate_chunks_of_one_request_id_stop_only_at_the_queue_bound() {
     let queued = usize::from(READS) * (to_usize(CHUNKS) - 1);
     let message = u32::try_from(3 * BODY).expect("fits");
-    let (read, after, value) = after_forged(intermediates(&[4], BODY), message);
+    let (read, after, value) =
+        after_forged(Side::Client, intermediates(&[4], BODY), message);
     assert_eq!((read, after), (Ok(value), Ok(value)));
-    let (read, after, _) = after_forged(intermediates(&[queued], 1), MESSAGE);
+    let (read, after, _) =
+        after_forged(Side::Client, intermediates(&[queued], 1), MESSAGE);
     assert_eq!((read, after), (Ok(value), Ok(value)));
-    let (read, after, _) = after_forged(intermediates(&[queued + 1], 1), MESSAGE);
+    let (read, after, _) =
+        after_forged(Side::Client, intermediates(&[queued + 1], 1), MESSAGE);
     assert_eq!((read, after), closed());
 }
 
@@ -247,9 +268,10 @@ fn the_intermediate_chunks_of_one_request_id_stop_only_at_the_queue_bound() {
 #[test]
 fn an_answer_past_the_bound_of_chunks_closes_the_channel_at_its_final_chunk() {
     let chunks = to_usize(CHUNKS);
-    let (read, after, value) = after_forged(answer(chunks - 1, 1), MESSAGE);
+    let (read, after, value) =
+        after_forged(Side::Client, answer(chunks - 1, 1), MESSAGE);
     assert_eq!((read, after), (Ok(value), Ok(value)));
-    let (read, after, _) = after_forged(answer(chunks, 1), MESSAGE);
+    let (read, after, _) = after_forged(Side::Client, answer(chunks, 1), MESSAGE);
     assert_eq!((read, after), closed());
 }
 
@@ -258,9 +280,9 @@ fn an_answer_past_the_bound_of_chunks_closes_the_channel_at_its_final_chunk() {
 #[test]
 fn an_answer_past_the_largest_message_closes_the_channel_at_its_final_chunk() {
     let message = u32::try_from(3 * BODY).expect("fits");
-    let (read, after, value) = after_forged(answer(2, BODY), message);
+    let (read, after, value) = after_forged(Side::Client, answer(2, BODY), message);
     assert_eq!((read, after), (Ok(value), Ok(value)));
-    let (read, after, _) = after_forged(answer(3, BODY), message);
+    let (read, after, _) = after_forged(Side::Client, answer(3, BODY), message);
     assert_eq!((read, after), closed());
 }
 
@@ -273,11 +295,26 @@ fn the_queue_of_a_channel_stops_at_the_chunks_of_the_answers_in_flight() {
     let queued = usize::from(READS) * (chunks - 1);
     let mut full = vec![chunks; queued / chunks];
     full.push(queued % chunks);
-    let (read, after, value) = after_forged(intermediates(&full, 1), MESSAGE);
+    let (read, after, value) =
+        after_forged(Side::Client, intermediates(&full, 1), MESSAGE);
     assert_eq!((read, after), (Ok(value), Ok(value)));
     let mut past = full;
     past.push(1);
-    let (read, after, _) = after_forged(intermediates(&past, 1), MESSAGE);
+    let (read, after, _) = after_forged(Side::Client, intermediates(&past, 1), MESSAGE);
+    assert_eq!((read, after), closed());
+}
+
+/// A server with the `MaxChunkCount` of open62541 by default, 16384, queues that many
+/// intermediate chunks of a request id that no request has, and closes the channel at
+/// one more.
+#[test]
+fn a_server_with_the_default_bound_of_chunks_bounds_its_queue() {
+    let bound = 1 << 14;
+    let (read, after, value) =
+        after_forged(Side::Server, intermediates(&[bound], 1), MESSAGE);
+    assert_eq!((read, after), (Ok(value), Ok(value)));
+    let (read, after, _) =
+        after_forged(Side::Server, intermediates(&[bound + 1], 1), MESSAGE);
     assert_eq!((read, after), closed());
 }
 
