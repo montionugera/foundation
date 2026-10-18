@@ -189,15 +189,21 @@ fn a_server_past_the_end_of_the_client_certificate_refuses_the_channel() {
     assert_eq!(read, Err(Status::BAD_CERTIFICATE_TIME_INVALID));
 }
 
-/// What a client with `policy` in `mode` gives for the largest request after
-/// [`VALUE`] that it puts in one message, to a server with a buffer of `buffer` bytes
-/// (0 for the default): the read of it, the [`Large`] of a node 1 byte longer, and the
-/// value of [`VALUE`].
-fn largest_request(
-    policy: Policy,
-    mode: Mode,
-    buffer: u32,
-) -> (Result<Vec<Result<Value, Fault>>, Status>, Vec<Large>, Value) {
+/// What a read of the largest request after [`VALUE`] in one message gives.
+#[derive(Debug)]
+struct Largest {
+    /// The answer of the read.
+    read: Result<Vec<Result<Value, Fault>>, Status>,
+    /// The [`Large`] of a request whose last node is 1 byte longer.
+    past: Vec<Large>,
+    /// The value of [`VALUE`] on the server.
+    value: Value,
+}
+
+/// The read of the largest request after [`VALUE`] that a client with `policy` in
+/// `mode` puts in one message, to a server with a buffer of `buffer` bytes (0 for the
+/// default).
+fn largest_request(policy: Policy, mode: Mode, buffer: u32) -> Largest {
     let (reads, _) = run(0, async move |node| {
         let time = event::Time::since(node.clock(), START);
         serve_on(&node, 4, time, Some(&SERVED), async |mut peer| {
@@ -215,7 +221,11 @@ fn largest_request(
             let read = client.read(&fit).await.map(<[_]>::to_vec);
             let past = client.nodes(&[VALUE, long(length + 1)]).large().to_vec();
             client.close().await;
-            (read, past, peer.value)
+            Largest {
+                read,
+                past,
+                value: peer.value,
+            }
         })
         .await
     });
@@ -224,34 +234,35 @@ fn largest_request(
 
 #[test]
 fn a_request_that_fits_by_the_client_reads_in_sign() {
-    let (read, _, value) = largest_request(Policy::Basic256Sha256, Mode::SIGN, 0);
+    let Largest { read, value, .. } =
+        largest_request(Policy::Basic256Sha256, Mode::SIGN, 0);
     assert_eq!(read, Ok(vec![Ok(value), Ok(Value::F64(2.5))]));
 }
 
 #[test]
 fn a_request_that_fits_by_the_client_reads_in_sign_and_encrypt() {
-    let (read, _, value) =
+    let Largest { read, value, .. } =
         largest_request(Policy::Aes256Sha256RsaPss, Mode::SIGN_AND_ENCRYPT, 0);
     assert_eq!(read, Ok(vec![Ok(value), Ok(Value::F64(2.5))]));
 }
 
 /// A chunk of 65536 bytes holds 24 bytes of headers and a signature of 32 bytes, and in
-/// SignAndEncrypt 1 byte of padding, for each policy.
+/// `SignAndEncrypt` 1 byte of padding, for each policy.
 #[test]
 fn a_request_takes_the_chunks_of_one_message_with_each_policy_in_each_mode() {
     for policy in Policy::ALL {
         for (mode, payload) in [(Mode::SIGN, 65_480), (Mode::SIGN_AND_ENCRYPT, 65_479)]
         {
-            let (read, large, value) = largest_request(policy, mode, 0);
+            let Largest { read, past, value } = largest_request(policy, mode, 0);
             let case = format!("{policy:?} in {mode:?}");
             assert_eq!(read, Ok(vec![Ok(value), Ok(Value::F64(2.5))]), "{case}");
             let most = 8 * payload - 7 * 7;
-            let past = Large {
+            let large = Large {
                 index: 1,
                 bytes: most + 1,
                 most,
             };
-            assert_eq!(large, [past], "{case}");
+            assert_eq!(past, [large], "{case}");
         }
     }
 }
@@ -259,21 +270,21 @@ fn a_request_takes_the_chunks_of_one_message_with_each_policy_in_each_mode() {
 /// A chunk of 8200 bytes, 8 past a block of 16 bytes, also leaves those 8 bytes empty.
 #[test]
 fn a_chunk_leaves_its_bytes_past_a_block_empty() {
-    let (read, large, value) =
+    let Largest { read, past, value } =
         largest_request(Policy::Basic256Sha256, Mode::SIGN, 8200);
     assert_eq!(read, Ok(vec![Ok(value), Ok(Value::F64(2.5))]));
     let most = 8 * (8200 - 24 - 32 - 8) - 7 * 7;
-    let past = Large {
+    let large = Large {
         index: 1,
         bytes: most + 1,
         most,
     };
-    assert_eq!(large, [past]);
+    assert_eq!(past, [large]);
 }
 
 /// A server with a buffer of 8192 bytes and 4 chunks sends an answer of at most 4
-/// chunks of 8136 bytes less 21 in Sign, and of 8135 in SignAndEncrypt: 955 Doubles of
-/// 34 bytes after 36, and not 956.
+/// chunks of 8136 bytes less 21 in `Sign`, and of 8135 in `SignAndEncrypt`: 955
+/// Doubles of 34 bytes after 36, and not 956.
 #[test]
 fn an_answer_takes_the_chunks_of_the_server_in_each_mode() {
     for mode in MODES {
