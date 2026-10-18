@@ -949,8 +949,9 @@ UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
     /* Process the chunk */
     switch(chunk.chunkType) {
     case UA_CHUNKTYPE_ABORT:
-        /* Remove the queued chunks of the abort's request id. Then continue
-         * extracting chunks. */
+        /* Remove the queued chunks of the abort's request id. With `aborted`,
+         * return the abort as a message; else drop it and extract the next
+         * chunk. */
         TAILQ_FOREACH_SAFE(pchunk, &channel->chunks, pointers, next) {
             if(pchunk->requestId != chunk.requestId)
                 continue;
