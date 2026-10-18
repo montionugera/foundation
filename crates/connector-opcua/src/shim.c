@@ -36,7 +36,7 @@ UA_Int64 UA_DateTime_localTimeUtcOffset(void) { return 0; }
 
 /* The functions of `src/log.rs`. Each takes the `length` bytes of a line at `line`,
  * and `connector_opcua_die` does not return. */
-void connector_opcua_put_line(void *span, bool severe, const char *category,
+void connector_opcua_put_line(void *log, bool severe, const char *category,
                               const char *line, size_t length);
 void connector_opcua_die(const char *line, size_t length);
 
@@ -460,7 +460,7 @@ static const char *category_name(UA_LogCategory category) {
 }
 
 /* Gives each message of level warning and up to `connector_opcua_put_line` with
- * `context`, the span of the loop: severe for an error or a fatal message. It
+ * `context`, the `Log` of the loop: severe for an error or a fatal message. It
  * allocates nothing. */
 static void log_message(void *context, UA_LogLevel level, UA_LogCategory category,
                         const char *msg, va_list args) {
@@ -475,9 +475,9 @@ static void log_message(void *context, UA_LogLevel level, UA_LogCategory categor
 }
 
 /* Gives a fresh loop whose monotonic time is `now(time)`, whose wall time is
- * `wall(time)`, and whose logger gives each line with `span`, or NULL when out of
+ * `wall(time)`, and whose logger gives each line with `log`, or NULL when out of
  * memory. */
-UA_EventLoop *shim_loop_new(shim_now now, shim_now wall, void *time, void *span) {
+UA_EventLoop *shim_loop_new(shim_now now, shim_now wall, void *time, void *log) {
     struct shim_loop *loop = (struct shim_loop *)UA_calloc(1, sizeof(*loop));
     if(!loop)
         return NULL;
@@ -487,7 +487,7 @@ UA_EventLoop *shim_loop_new(shim_now now, shim_now wall, void *time, void *span)
     loop->time = time;
     loop->tail = &loop->queued;
     loop->logger.log = log_message;
-    loop->logger.context = span;
+    loop->logger.context = log;
     UA_EventLoop *el = &loop->el;
     el->logger = &loop->logger;
     el->start = el_start;

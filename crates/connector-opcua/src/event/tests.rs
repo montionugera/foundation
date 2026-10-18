@@ -958,12 +958,12 @@ fn ms(n: i64) -> Span {
 
 /// The lines of target `open62541` that `run` writes on a fixture whose loop has the
 /// span `connector` of the connector `press` of kind `opcua`.
-fn logged(run: impl FnOnce(&Fixture)) -> Vec<String> {
+fn logged(run: impl FnOnce(&mut Fixture)) -> Vec<String> {
     let (capture, log) = connector::testing::Capture::new("open62541");
     tracing::dispatcher::with_default(&log, || {
         let span =
             tracing::error_span!("connector", connector = "press", kind = "opcua");
-        run(&Fixture::logged(span));
+        run(&mut Fixture::logged(span));
     });
     capture.lines()
 }
@@ -1013,7 +1013,7 @@ fn send_with_no_channel(f: &Fixture) {
 #[test]
 fn an_error_goes_to_the_log_with_the_span_of_the_loop() {
     assert_eq!(
-        logged(send_with_no_channel),
+        logged(|f| send_with_no_channel(f)),
         [concat!(
             "ERROR SecureChannel must be connected to send request ",
             r#"connector="press" kind="opcua" category="client""#
@@ -1061,4 +1061,116 @@ fn a_cut_in_a_character_ends_the_line_with_a_replacement_character() {
         logged(|f| connect(f, &CString::new(url).unwrap())),
         [invalid(&format!("{}\u{FFFD}", &text[..510]))]
     );
+}
+
+/// Logs `count` warnings `w0`, `w1`, and on through the logger of `f`.
+fn warn(f: &Fixture, count: usize) {
+    for n in 0..count {
+        let text = CString::new(format!("w{n}")).unwrap();
+        // SAFETY: the loop lives, and the text ends with a NUL.
+        unsafe { ffi::test::shim_log_warning(f.events.raw(), text.as_ptr()) };
+    }
+}
+
+/// Logs the fatal message `text` through the logger of `f`.
+fn fatal(f: &Fixture, text: &CStr) {
+    // SAFETY: the loop lives, and the text ends with a NUL.
+    unsafe { ffi::test::shim_log_fatal(f.events.raw(), text.as_ptr()) };
+}
+
+/// The lines of the warnings `w0` to `w<count - 1>`.
+fn warned(count: usize) -> Vec<String> {
+    (0..count)
+        .map(|n| {
+            format!(r#"WARN w{n} connector="press" kind="opcua" category="client""#)
+        })
+        .collect()
+}
+
+fn dropped(level: &str, lines: u64) -> String {
+    format!(r#"{level} dropped connector="press" kind="opcua" lines={lines}"#)
+}
+
+#[test]
+fn a_flood_of_warnings_drops_past_100_lines_and_counts_them_before_the_next_window() {
+    let lines = logged(|f| {
+        warn(f, 150);
+        f.advance(ms(1000));
+        warn(f, 1);
+    });
+    let mut want = warned(100);
+    want.push(dropped("WARN", 50));
+    want.extend(warned(1));
+    assert_eq!(lines, want);
+}
+
+#[test]
+fn an_error_in_a_flood_of_warnings_goes_to_the_log() {
+    let lines = logged(|f| {
+        warn(f, 150);
+        send_with_no_channel(f);
+    });
+    assert_eq!(lines.len(), 102, "{lines:?}");
+    assert_eq!(lines[..100], warned(100));
+    assert!(lines[100].starts_with("ERROR "), "{}", lines[100]);
+    assert_eq!(lines[101], dropped("WARN", 50));
+}
+
+#[test]
+fn a_flood_of_errors_drops_past_100_lines_and_counts_them_at_its_level() {
+    let lines = logged(|f| {
+        for _ in 0..101 {
+            fatal(f, c"gone");
+        }
+    });
+    let gone = r#"ERROR gone connector="press" kind="opcua" category="client""#;
+    let mut want = vec![gone.to_owned(); 100];
+    want.push(dropped("ERROR", 1));
+    assert_eq!(lines, want);
+}
+
+#[test]
+fn the_count_goes_out_at_the_first_run_after_the_window() {
+    let lines = logged(|f| {
+        assert_eq!(f.start(), Status::GOOD);
+        warn(f, 101);
+        f.advance(ms(999));
+        f.events.run();
+        fatal(f, c"mark");
+        f.advance(ms(1));
+        f.events.run();
+        fatal(f, c"after");
+    });
+    let mut want = warned(100);
+    want.push(
+        r#"ERROR mark connector="press" kind="opcua" category="client""#.to_owned(),
+    );
+    want.push(dropped("WARN", 1));
+    want.push(
+        r#"ERROR after connector="press" kind="opcua" category="client""#.to_owned(),
+    );
+    assert_eq!(lines, want);
+}
+
+#[test]
+fn the_count_goes_out_at_the_drop_of_the_loop_when_no_run_comes() {
+    let lines = logged(|f| warn(f, 101));
+    let mut want = warned(100);
+    want.push(dropped("WARN", 1));
+    assert_eq!(lines, want);
+}
+
+#[test]
+fn a_window_starts_at_the_first_line_after_the_last_window_ends() {
+    let lines = logged(|f| {
+        warn(f, 100);
+        f.advance(ms(1500));
+        warn(f, 100);
+        f.advance(ms(900));
+        warn(f, 1);
+    });
+    let mut want = warned(100);
+    want.extend(warned(100));
+    want.push(dropped("WARN", 1));
+    assert_eq!(lines, want);
 }

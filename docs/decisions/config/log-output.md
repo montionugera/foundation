@@ -239,6 +239,15 @@
   get no `category`. An abort of `shim.c` panics with its line inside `catch_unwind`,
   then aborts, so the panic hook writes one `panicked` line in each build before the
   abort. The abort of `UA_rng_require` in the copy still writes its line to stderr with
-  `fprintf`, past the log (#2597).
+  `fprintf`, past the log (#2597). Each loop writes at most 100 lines of each level in
+  each window of 1 s of its monotonic clock, so a device does not set the rate of the
+  log, and a flood of warnings never drops an error. A window starts at the first line
+  of its level after the last window ends. The lines past the budget drop, and their
+  count goes out as one line `dropped` at that level, with the parent span of the loop
+  and the field `lines`, at the first of these: before the next line of that level, at
+  the first run of the loop after the window, or at the drop of the loop. A level or a
+  category that the copy does not have still aborts, before the budget.
   By `laptop.architect-2` (items 1 to 4 of 2026-10-18T02:16:27Z,
-  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6244633633).
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6244633633; the
+  bound of 2026-10-18T03:37:32Z,
+  https://github.com/synnaxlabs/foundation/pull/3114#issuecomment-6245261431).

@@ -144,6 +144,11 @@ void shim_log_fatal(UA_EventLoop *el, const char *text) {
     UA_LOG_FATAL(el->logger, UA_LOGCATEGORY_CLIENT, "%s", text);
 }
 
+/* Logs `text` at level warning in category `client` through the logger of `el`. */
+void shim_log_warning(UA_EventLoop *el, const char *text) {
+    UA_LOG_WARNING(el->logger, UA_LOGCATEGORY_CLIENT, "%s", text);
+}
+
 /* Sets the receive buffer size that `client` gives in its next HEL. */
 void shim_client_receive(UA_Client *client, UA_UInt32 size) {
     UA_Client_getConfig(client)->localConnectionConfig.recvBufferSize = size;

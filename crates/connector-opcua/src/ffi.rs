@@ -652,7 +652,7 @@ unsafe extern "C" {
         now: Now,
         wall: Now,
         time: *mut c_void,
-        span: *mut c_void,
+        log: *mut c_void,
     ) -> *mut EventLoop;
     pub(crate) fn shim_loop_free(el: *mut EventLoop);
     pub(crate) fn shim_loop_delayed(el: *mut EventLoop) -> bool;

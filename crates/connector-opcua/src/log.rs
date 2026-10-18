@@ -4,26 +4,132 @@
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_void};
 
+use env::clock::Clock;
+use types::time::{Monotonic, Span};
+
+/// The lines of each level that a loop writes in a window.
+const LINES: u32 = 100;
+/// The length of a window.
+const WINDOW: Span = Span::SECOND;
+
+/// The logger of a loop: it writes each line with the span of the loop as the parent,
+/// and at most 100 lines of each level in each window of 1 s of its clock, so the rate
+/// that a device sets is not the rate of the log. A window starts at the first line of
+/// its level after the last window ends. The count of the lines that a window drops
+/// goes out as one line `dropped` at that level, with the field `lines`, at the first
+/// of the next line of that level, the first [`Log::ended`] after the window, and the
+/// drop.
+pub(crate) struct Log {
+    span: tracing::Span,
+    clock: Clock,
+    warn: Budget,
+    error: Budget,
+}
+
+#[derive(Default)]
+struct Budget {
+    /// The start of the window, or `None` before its first line.
+    start: Cell<Option<Monotonic>>,
+    written: Cell<u32>,
+    dropped: Cell<u64>,
+}
+
+impl Log {
+    /// Makes a logger whose lines have the parent `span`, and whose windows read
+    /// `clock`.
+    pub(crate) fn new(span: tracing::Span, clock: Clock) -> Self {
+        Self {
+            span,
+            clock,
+            warn: Budget::default(),
+            error: Budget::default(),
+        }
+    }
+
+    /// Writes the count of each window that dropped lines and has ended.
+    pub(crate) fn ended(&self) {
+        let now = self.clock.now();
+        self.ended_at(false, now);
+        self.ended_at(true, now);
+    }
+
+    fn put(&self, severe: bool, category: &str, text: &str) {
+        let now = self.clock.now();
+        self.ended_at(severe, now);
+        let budget = self.budget(severe);
+        if budget.start.get().is_none() {
+            budget.start.set(Some(now));
+            budget.written.set(0);
+        }
+        if budget.written.get() == LINES {
+            budget.dropped.set(budget.dropped.get() + 1);
+            return;
+        }
+        budget.written.set(budget.written.get() + 1);
+        let span = &self.span;
+        if severe {
+            tracing::error!(target: "open62541", parent: span, category, "{text}");
+        } else {
+            tracing::warn!(target: "open62541", parent: span, category, "{text}");
+        }
+    }
+
+    fn ended_at(&self, severe: bool, now: Monotonic) {
+        let start = self.budget(severe).start.get();
+        if start.is_some_and(|start| now - start >= WINDOW) {
+            self.end(severe);
+        }
+    }
+
+    /// Ends the window of the level, and writes its count when it dropped lines.
+    fn end(&self, severe: bool) {
+        let budget = self.budget(severe);
+        budget.start.set(None);
+        let lines = budget.dropped.replace(0);
+        if lines == 0 {
+            return;
+        }
+        let span = &self.span;
+        if severe {
+            tracing::error!(target: "open62541", parent: span, lines, "dropped");
+        } else {
+            tracing::warn!(target: "open62541", parent: span, lines, "dropped");
+        }
+    }
+
+    fn budget(&self, severe: bool) -> &Budget {
+        if severe { &self.error } else { &self.warn }
+    }
+}
+
+impl Drop for Log {
+    fn drop(&mut self) {
+        self.end(false);
+        self.end(true);
+    }
+}
+
 /// Writes the `length` bytes at `line`, a message of the logger of a loop in
-/// `category`, as one event of target `open62541` whose parent is `span`: ERROR when
-/// `severe`, else WARN. Each byte sequence that is not UTF-8 becomes U+FFFD.
+/// `category`, through the [`Log`] at `log`: at ERROR when `severe`, else at WARN.
+/// Each byte sequence that is not UTF-8 becomes U+FFFD.
 ///
 /// # Safety
 ///
-/// `span` points at a live `tracing::Span`, `category` at a NUL-terminated name in
-/// ASCII, and `line` at `length` bytes.
+/// `log` points at a live `Log` that no `&mut` borrows, `category` at a NUL-terminated
+/// name in ASCII, and `line` at `length` bytes.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn connector_opcua_put_line(
-    span: *const c_void,
+    log: *const c_void,
     severe: bool,
     category: *const c_char,
     line: *const c_char,
     length: usize,
 ) {
-    // SAFETY: the caller keeps the span live.
-    let span = unsafe { &*span.cast::<tracing::Span>() };
+    // SAFETY: the caller keeps the log live.
+    let log = unsafe { &*log.cast::<Log>() };
     // SAFETY: the caller gives a NUL-terminated name.
     let category = unsafe { CStr::from_ptr(category) };
     let category = category
@@ -31,11 +137,7 @@ unsafe extern "C" fn connector_opcua_put_line(
         .expect("the shim names a category in ASCII");
     // SAFETY: the caller gives `length` bytes at `line`.
     let text = unsafe { text(line, length) };
-    if severe {
-        tracing::error!(target: "open62541", parent: span, category, "{text}");
-    } else {
-        tracing::warn!(target: "open62541", parent: span, category, "{text}");
-    }
+    log.put(severe, category, &text);
 }
 
 /// Panics with `open62541 ` and the `length` bytes at `line`, as [`text`] reads them,
