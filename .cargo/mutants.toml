@@ -25,11 +25,6 @@ exclude_re = [
   '^bench/',
   # `main` reads the arguments and calls a task. Each task has its own tests.
   'xtask/src/main\.rs:.*(replace main ->| in main$)',
-  # `run` needs a workspace on the pinned nightly and cargo-nextest, which only the miri
-  # shard CI jobs have. A test planted to panic under Miri in a doc test or a lib fails
-  # its shard job, which kills a run that loses the loop over the doc tests or over
-  # `PASSES`.
-  'xtask/src/miri\.rs:.*(replace run ->| in run$)',
   # The run needs the pinned nightly, which the mutants job does not install. A planted
   # overflow in the shim fails the sanitizers job.
   'xtask/src/sanitizers\.rs:.*(replace run ->| in run$)',

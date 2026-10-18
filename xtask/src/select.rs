@@ -34,7 +34,7 @@ impl Package {
 ///
 /// # Errors
 ///
-/// An error of [`matching`].
+/// An error of [`matching`], or a package object with no `id`.
 pub(crate) fn packages(
     metadata: &Value,
     matches: impl Fn(&str) -> bool,
