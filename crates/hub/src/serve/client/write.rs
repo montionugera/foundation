@@ -202,7 +202,8 @@ async fn relay(
                             | block::Error::Refused { .. } => Refusal::Full,
                         };
                         let outcome = Outcome::Refused(refusal);
-                        replies.outcome(state, sender, pending, outcome).await?;
+                        let (block, reply) = replies.outcome(state, pending, outcome);
+                        send(sender, block, reply).await?;
                         Step::More
                     }
                 }
@@ -215,7 +216,8 @@ async fn relay(
             .take()
             .expect("invariant: a draft comes with its block");
         let outcome = write(&mut writer, draft, time, &mut stamped)?;
-        replies.outcome(state, sender, pending, outcome).await?;
+        let (block, reply) = replies.outcome(state, pending, outcome);
+        send(sender, block, reply).await?;
     }
 }
 
@@ -336,20 +338,20 @@ impl Replies {
         })
     }
 
-    /// Sends `outcome` in the block of `pending`, labeled with its frame.
-    async fn outcome(
+    /// Gives the block of `pending` and the reply of `outcome`, labeled with its frame.
+    /// Sync, so the relay's future holds no nested one.
+    fn outcome(
         &mut self,
         state: &RefCell<State>,
-        sender: &mut Sender,
         pending: Pending,
         outcome: Outcome,
-    ) -> Result<(), Error> {
+    ) -> (Unique, Reply) {
         let Pending { frame, block } = pending;
         if let Outcome::Taken { .. } = outcome {
             self.taken = Some(frame);
             self.call(state);
         }
-        send(sender, block, Reply::Outcome { frame, outcome }).await
+        (block, Reply::Outcome { frame, outcome })
     }
 
     /// Calls a commit for the taken frames when none is due.
