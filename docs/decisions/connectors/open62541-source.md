@@ -829,11 +829,14 @@
   (https://github.com/synnaxlabs/foundation/pull/2450#issuecomment-6128818932,
   2026-10-12 16:59 UTC).
   An abort chunk (Part 6, 6.7.3) is an answer: a local change of the copy ends its
-  request with the Error of the abort, or with `BadDecodingError` when it holds no
-  Error. The release drops the abort and never ends the request. Decided by
+  request with the Error of the abort, or with `BadDecodingError` when the abort holds
+  no Bad code. The release drops the abort and never ends the request. Decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2505#issuecomment-6134670336,
-  2026-10-12 23:35 UTC). Lost: a finite open62541 timeout for a read again, which also
+  2026-10-12 23:35 UTC). "No Bad code" in place of "no Error", so that an abort always
+  ends its request with a Bad code: approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3093#issuecomment-6243883839,
+  2026-10-18 00:47 UTC). Lost: a finite open62541 timeout for a read again, which also
   ends the requests that the server still holds, so the count leaves them out; a close
   of the channel on an abort, which fails each other read and the session for one
   answer; and a count in Rust or in the shim, where no seam sees chunks.
