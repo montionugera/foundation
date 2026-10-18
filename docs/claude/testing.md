@@ -64,7 +64,9 @@ each test run on a box that a review agent starts (`.claude/agents/reviewer.md`,
 agent runs in the cap that its task gives: the share divided by the agents of its round
 that run `cargo test` (`/review`), with `CARGO_BUILD_JOBS=4`, because a build with a job
 for each CPU of a box does not fit in such a cap
-(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256490273). The person
+(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256490273). With four
+jobs, `cargo test -p node --no-run` in a fresh worktree on box2 peaks at 3.30 GiB
+(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256609639). The person
 approved a cap of these runs, with 32 GB as an example (2026-10-17T16:07:01Z,
 `laptop.monitor`'s record:
 https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246411064), and
