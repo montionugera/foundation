@@ -172,10 +172,18 @@
   (`laptop.architect-2`, 2026-10-18T16:10:06Z:
   https://github.com/synnaxlabs/foundation/pull/3214#issuecomment-6252107337). The
   rig keeps those names after `Rig::remove`, so a later open panics when a status
-  channel is gone. `Rig::unsynced` is a constructor and not a `delay` input, since
-  no test needs a delay and roots at once (`laptop.architect-2`,
-  2026-10-18T18:05:59Z:
-  https://github.com/synnaxlabs/foundation/issues/3039#issuecomment-6253304602). The
+  channel is gone, unless its cancel is cancelled. `Rig::unsynced` is a constructor
+  and not a `delay` input, since no test needs a delay and roots at once
+  (`laptop.architect-2`, 2026-10-18T18:05:59Z:
+  https://github.com/synnaxlabs/foundation/issues/3039#issuecomment-6253304602).
+  `Rig::define_status` gives the names and keys, and a reuse gives the same keys, so
+  a test takes its status keys from the result and depends only on the order of
+  `status::channels`. `Run::end` gives the result of a run only when the run ended
+  before the call (`laptop.architect-2`, 2026-10-18T18:33:24Z:
+  https://github.com/synnaxlabs/foundation/pull/3236#issuecomment-6253583744). An
+  open of a name while a run of it that `Rig::supervise` started goes on panics, also
+  after a drop of its `Run`, since a reader of the new run would read the status of
+  the old one. The
   unit tests of `connector` build it with the crate-private `testing::create_config`,
   which `Rig` also calls, and which opens the hub through `hub::testing::open`, other
   than the tests of the wait for mesh time (below) and one test with no status
