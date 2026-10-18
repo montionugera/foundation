@@ -68,7 +68,9 @@
   that holds them. A takeover with the same hold of a session that waits for that commit
   waits for it too. The `delivery` session holds the wait, as its one commit gate: after
   the commit, a reader below the released end reads from disk, and a reader at the live
-  tail takes live frames. Each other complete open waits for no commit. The gate in the
+  tail takes live frames. A named complete open that appends nothing, such as a
+  takeover with the same hold, also waits while an entry appended before it is not
+  durable: up to one commit. An unnamed open waits for no commit. The gate in the
   session: decided by `laptop.architect` (2026-10-17T00:38:21Z:
   https://github.com/synnaxlabs/foundation/issues/2833#issuecomment-6227439506; the
   form: 2026-10-18T09:41:10Z:

@@ -725,9 +725,10 @@ impl Shard {
     /// [`open_complete`](Self::open_complete) says. The shard appends the record of
     /// each named reader of the index, open or held, in parts of one entry each, which
     /// a restart restores; an ack moves the recorded position at the next tick
-    /// ([`advance`](Self::advance)). An open that appends its record takes no frame
-    /// until the commit that holds it, which [`woken`](Self::woken) names, and nor
-    /// does a takeover with the same hold of a session that waits.
+    /// ([`advance`](Self::advance)). Its reader takes no frame until each entry
+    /// appended before the open is durable, also when the open appends nothing, as a
+    /// takeover with the same hold does. At that commit, [`woken`](Self::woken) names
+    /// it when it reads from disk or takes a frame.
     ///
     /// # Errors
     ///
@@ -6729,7 +6730,7 @@ mod tests {
                         let a = open(&mut shard, "a");
                         assert_eq!(
                             shard.buffer.durable_at(),
-                            shard.buffer.commits() + 2,
+                            Some(shard.buffer.commits() + 2),
                             "a sync runs, and the entry waits for the next commit"
                         );
                         first.await.expect("the first commit ends");
@@ -6886,6 +6887,76 @@ mod tests {
                         assert_eq!(taken(&mut shard, replaced.into(), 0), []);
                         let a = open_held(&mut shard);
                         assert_eq!(commit(&mut shard).await, [a.into()]);
+                    });
+                }
+
+                #[test]
+                fn waits_at_a_takeover_with_its_hold_for_a_write_before_it() {
+                    run(707, |test| async move {
+                        let set = two_indexes();
+                        let mut shard = test.shard(AREA).await;
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        let a = open_held(&mut shard);
+                        committed(&test, &mut shard, w, &[10, 20]).await;
+                        assert_eq!(
+                            taken(&mut shard, a.into(), 0),
+                            [seq(0, 1), seq(1, 1)]
+                        );
+                        shard.ack(a, live(1)).expect("forward");
+                        write(&test, &mut shard, w, &[30]);
+                        let a = open_held(&mut shard);
+                        assert_eq!(caught_up(&mut shard, a, 0).await, []);
+                        assert_eq!(commit(&mut shard).await, [a.into()]);
+                        assert_eq!(
+                            caught_up(&mut shard, a, 0).await,
+                            [seq(1, 1), seq(2, 1)]
+                        );
+                    });
+                }
+
+                #[test]
+                fn reopens_below_frames_written_with_no_reader_and_reads_each_after_their_commit()
+                 {
+                    run(708, |test| async move {
+                        let set = two_indexes();
+                        let mut shard = test.shard(AREA).await;
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        let a = open_held(&mut shard);
+                        committed(&test, &mut shard, w, &[10, 20]).await;
+                        assert_eq!(
+                            taken(&mut shard, a.into(), 0),
+                            [seq(0, 1), seq(1, 1)]
+                        );
+                        shard.ack(a, live(2)).expect("forward");
+                        shard.close_reader(a.into());
+                        shard.committed().await.expect("the commit ends");
+                        write(&test, &mut shard, w, &[30, 40]);
+                        let a = open_held(&mut shard);
+                        assert_eq!(caught_up(&mut shard, a, 0).await, []);
+                        assert_eq!(commit(&mut shard).await, [a.into()]);
+                        assert_eq!(caught_up(&mut shard, a, 0).await, [seq(2, 2)]);
+                        assert_eq!(caught_up(&mut shard, a, 0).await, []);
+                    });
+                }
+
+                #[test]
+                fn reads_at_once_after_a_takeover_with_no_entry_that_waits() {
+                    run(706, |test| async move {
+                        let set = two_indexes();
+                        let mut shard = test.shard(AREA).await;
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        let a = open_held(&mut shard);
+                        committed(&test, &mut shard, w, &[10, 20]).await;
+                        assert_eq!(
+                            taken(&mut shard, a.into(), 0),
+                            [seq(0, 1), seq(1, 1)]
+                        );
+                        shard.ack(a, live(1)).expect("forward");
+                        let a = open_held(&mut shard);
+                        assert_eq!(caught_up(&mut shard, a, 0).await, [seq(1, 1)]);
                     });
                 }
 
