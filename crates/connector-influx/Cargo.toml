@@ -61,5 +61,9 @@ test = true
 name = "memory"
 harness = false
 
+[[test]]
+name = "conformance"
+path = "../../oracles/conformance/connector/influx/main.rs"
+
 [lints]
 workspace = true
