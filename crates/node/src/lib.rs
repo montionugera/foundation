@@ -1131,7 +1131,8 @@ impl Serve {
     /// over `home` that takes its definitions from the region's mesh
     /// ([`hub::Config::region`]) and its access rules from each spec in use
     /// ([`follow`]), runs each connector that the spec in use places on this node
-    /// ([`connectors::Runs`]), and serves the node's port, until `guard` completes, the
+    /// ([`connectors::Runs`]), sets the addresses of the card of this node
+    /// ([`card::set`]), and serves the node's port, until `guard` completes, the
     /// transport stops, or the mesh's group stops, by the rank of [`end`], with the
     /// address in the file `address` of `files` while it serves ([`address::hold`]). A
     /// transport or a group that ends it goes into `failed` before it drops the tasks
@@ -1139,14 +1140,15 @@ impl Serve {
     /// before the tasks given drop uncalled. An `address` that was not written empty
     /// goes into `failed` after the tasks drop, unless an error is there. Before it
     /// returns, it drops the tasks, the hub, `home`, `guard`, the runs of the
-    /// connectors, each session and stream future, the operations on the mesh, the
-    /// mesh, and the transport, and waits for each task of the mesh to end, with a
-    /// mesh, and for the transport to free the port. Unless the socket broke, the port
-    /// is freed only after the hub lets go of the region, as [`hub::Hub::new`] states,
-    /// and after each task that a connector's run spawned has ended. Runs no task or
-    /// connector and takes no session when a shard did not open, or when the budgets
-    /// were not kept, the identity did not load, the transport refused the settings,
-    /// the mesh did not open, or `address` was not written, which goes into `failed`.
+    /// connectors, each session and stream future, the operations on the mesh and the
+    /// card, the mesh, and the transport, and waits for each task of the mesh to end,
+    /// with a mesh, and for the transport to free the port. Unless the socket broke,
+    /// the port is freed only after the hub lets go of the region, as [`hub::Hub::new`]
+    /// states, and after each task that a connector's run spawned has ended. Runs no
+    /// task or connector and takes no session when a shard did not open, or when the
+    /// budgets were not kept, the identity did not load, the transport refused the
+    /// settings, the mesh did not open, or `address` was not written, which goes into
+    /// `failed`.
     #[expect(
         clippy::too_many_arguments,
         reason = "shard 0's parts, which its claim and its open give in turn"

@@ -132,8 +132,8 @@ fn a_start_on_a_scoped_address_keeps_it_off_the_card() {
             version: 1,
             addresses: Vec::new(),
             lines: vec![
-                "2026-01-01T00:00:00.004956Z WARN node::card: no peer can dial this node: give `--listen` an \
-                 address of this host bound=[fe80::1%2]:7000"
+                "2026-01-01T00:00:00.004956Z WARN node::card: no peer can dial this \
+                 node: give `--listen` an address of this host bound=[fe80::1%2]:7000"
                     .into()
             ],
         }
@@ -191,9 +191,9 @@ fn a_start_after_a_card_change_of_less_than_a_minute_sets_the_card_a_minute_late
     assert_eq!(
         warned,
         [
-            "2026-01-01T00:00:02.006291Z WARN node::card: the card of this node keeps its \
-          addresses, and the node tries again in a minute error=\"a card of the same \
-          member was proposed less than a minute ago; call again after a minute\""
+            "2026-01-01T00:00:02.006291Z WARN node::card: the card of this node keeps \
+          its addresses, and the node tries again in a minute error=\"a card of the \
+          same member was proposed less than a minute ago; call again after a minute\""
         ]
     );
 }
@@ -248,9 +248,9 @@ fn a_member_that_is_not_a_voter_warns_that_its_card_keeps_its_addresses() {
             version: 1,
             addresses: vec![Address::Udp(listen(&hosts[0]))],
             lines: vec![
-                "2026-01-01T00:00:00.004201Z WARN node::card: the card of this node keeps \
-                 its addresses error=\"this node is not a voter, and only a voter \
-                 proposes a change\""
+                "2026-01-01T00:00:00.004201Z WARN node::card: the card of this node \
+                 keeps its addresses error=\"this node is not a voter, and only a \
+                 voter proposes a change\""
                     .into()
             ],
         }
