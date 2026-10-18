@@ -15,11 +15,9 @@ use block::Pool;
 use env::files::Operation;
 use env::tasks::Tasks;
 use sim::Crash;
-use transport::{Address, Class, Port, Session, Transport};
+use transport::{Address, Port, Transport};
 use types::ed25519::PrivateKey;
 use types::time::Span;
-use wire::Protocol;
-use wire::blob::{Requester, TOO_LARGE};
 
 use super::*;
 use crate::Config;
@@ -27,13 +25,17 @@ use crate::Config;
 const PORT: u16 = 7000;
 const SERVER: PrivateKey = PrivateKey([1; 32]);
 const REQUESTER: PrivateKey = PrivateKey([2; 32]);
-/// The requester's message limit: the least that `transport` takes, so the server
-/// sends a chunk of more bytes in parts.
+/// The requester's message limit: the least that `transport` takes.
 const MESSAGE: usize = 1472;
+/// The longest message that `transport` copies, and so the longest part of a chunk.
+const COPIED: usize = 1452;
 /// The directory of the server's store.
 const DIR: &str = "blob";
 /// The pool budget of each store and transport.
 const BUDGET: u64 = 1 << 20;
+
+/// The server's message limit.
+const SERVER_MESSAGE: usize = 1 << 16;
 
 /// The window of each transport.
 const WINDOW: usize = 1 << 20;
@@ -95,6 +97,7 @@ fn transport(
     tasks: &Tasks,
     key: PrivateKey,
     message: usize,
+    pool: Rc<Pool>,
 ) -> Transport {
     let at = SocketAddr::new(node.addresses()[0], PORT);
     let mut parts = Port::bind(&node.net(), at)
@@ -109,13 +112,14 @@ fn transport(
         clock: node.clock(),
         entropy: node.entropy(),
         tasks: tasks.clone(),
-        pool: create_pool(),
+        pool,
     };
     Transport::new(config, parts.pop().expect("one part")).expect("a transport")
 }
 
 /// The requester's node and its session to the server.
 struct Peer {
+    node: sim::node::Node,
     clock: env::clock::Clock,
     pool: Rc<Pool>,
     session: Session,
@@ -191,8 +195,7 @@ fn reset(code: u32) -> transport::Error {
 
 /// Runs one session from the requester's node to the server's node, whose disk has
 /// `disk_bytes`. The server's node accepts one stream, reads its header, and gives
-/// the stream to `server`; the requester's node gives its session to `requester`.
-/// Panics unless both return. Gives the run and the server's node, for a crash.
+/// the stream to `server`. As [`run_session`] for the rest.
 fn run<S, R>(
     seed: u64,
     disk_bytes: u64,
@@ -203,10 +206,49 @@ where
     S: Future<Output = ()> + 'static,
     R: Future<Output = ()> + 'static,
 {
-    let mut sim = sim::Sim::new(sim::Config {
+    let server = |node, session: Session| async move {
+        let incoming = accept(&session).await.expect("a stream");
+        server(node, incoming).await;
+    };
+    run_session(seed, disk_bytes, server, requester)
+}
+
+/// As [`run_session_on`], with a pool of [`BUDGET`] for the requester.
+fn run_session<S, R>(
+    seed: u64,
+    disk_bytes: u64,
+    server: impl FnOnce(sim::node::Node, Session) -> S + Send + 'static,
+    requester: impl FnOnce(Peer) -> R + Send + 'static,
+) -> (sim::Sim, sim::node::Node)
+where
+    S: Future<Output = ()> + 'static,
+    R: Future<Output = ()> + 'static,
+{
+    let sim = sim::Config {
         seed,
         ..sim::Config::default()
-    });
+    };
+    run_session_on(sim, disk_bytes, create_pool, server, requester)
+}
+
+/// Runs one session in a sim of `sim`, from the requester's node to the server's
+/// node, whose disk has `disk_bytes`. The server's node gives its session to
+/// `server`, and the requester's node gives its session to `requester`, which closes
+/// a millisecond after `requester` returns. The requester's transport and
+/// [`Peer::pool`] share the pool of `create_requester_pool`, as in `node`.
+/// Panics unless both return. Gives the run and the server's node, for a crash.
+fn run_session_on<S, R>(
+    sim: sim::Config,
+    disk_bytes: u64,
+    create_requester_pool: fn() -> Rc<Pool>,
+    server: impl FnOnce(sim::node::Node, Session) -> S + Send + 'static,
+    requester: impl FnOnce(Peer) -> R + Send + 'static,
+) -> (sim::Sim, sim::node::Node)
+where
+    S: Future<Output = ()> + 'static,
+    R: Future<Output = ()> + 'static,
+{
+    let mut sim = sim::Sim::new(sim);
     let server_node = sim.node(sim::node::Config {
         disk_bytes,
         ..sim::node::Config::default()
@@ -222,14 +264,9 @@ where
     let node = server_node.clone();
     let done = Arc::clone(&server_ended);
     let main = move |tasks: Tasks| async move {
-        let transport = transport(&node, &tasks, SERVER, 1 << 16);
+        let transport = transport(&node, &tasks, SERVER, SERVER_MESSAGE, create_pool());
         let session = transport.accept().await.expect("a session");
-        let mut incoming = session.accept().await.expect("a stream");
-        let header = incoming.receiver.recv().await.expect("a header");
-        let header = header.expect("the header comes before the finish");
-        assert_eq!(wire::header::decode(&header), Ok((Protocol::Blob, &[][..])));
-        drop(header);
-        server(node, incoming).await;
+        server(node, session.clone()).await;
         done.store(true, Ordering::Relaxed);
         drop(session.closed().await);
     };
@@ -242,15 +279,19 @@ where
     let node = requester_node.clone();
     let done = Arc::clone(&requester_ended);
     let main = move |tasks: Tasks| async move {
-        let transport = transport(&node, &tasks, REQUESTER, MESSAGE);
+        let pool = create_requester_pool();
+        let transport = transport(&node, &tasks, REQUESTER, MESSAGE, Rc::clone(&pool));
         let session = transport.dial(SERVER.public(), &[at]).await.expect("dials");
         let peer = Peer {
+            node: node.clone(),
             clock: node.clock(),
-            pool: create_pool(),
+            pool,
             session: session.clone(),
         };
         requester(peer).await;
         done.store(true, Ordering::Relaxed);
+        // A close drops what the session did not send yet, such as a last stop.
+        node.clock().sleep(Span::MILLISECOND).await;
         session.close(Code(0));
         node.clock().sleep(Span::MILLISECOND).await;
     };
@@ -267,6 +308,16 @@ where
         "the requester returns"
     );
     (sim, server_node)
+}
+
+/// The next stream of `session`, once it read the blob header, or the error that
+/// ended the session.
+async fn accept(session: &Session) -> Result<Incoming, transport::Error> {
+    let mut incoming = session.accept().await?;
+    let header = incoming.receiver.recv().await.expect("a header");
+    let header = header.expect("the header comes before the finish");
+    assert_eq!(wire::header::decode(&header), Ok((Protocol::Blob, &[][..])));
+    Ok(incoming)
 }
 
 /// The disk of the server's node.
@@ -306,8 +357,8 @@ fn a_get_gives_each_chunk_and_absent_in_order() {
 }
 
 #[test]
-fn a_chunk_over_the_message_limit_comes_in_parts_that_join_to_it() {
-    let len = 2 * MESSAGE + 56;
+fn a_chunk_comes_in_parts_that_transport_copies_and_that_join_to_it() {
+    let len = 2 * COPIED + 56;
     let (digest, bytes) = chunk(7, len);
     let stored = bytes.clone();
     run(
@@ -324,7 +375,7 @@ fn a_chunk_over_the_message_limit_comes_in_parts_that_join_to_it() {
             let len = u32::try_from(len).unwrap();
             assert_eq!(stream.reply().await, Reply::Chunk { digest, len });
             let mut joined = Vec::new();
-            for expected in [MESSAGE, MESSAGE, 56] {
+            for expected in [COPIED, COPIED, 56] {
                 let part = stream.recv().await.unwrap().unwrap();
                 assert_eq!(part.len(), expected);
                 joined.extend_from_slice(&part);
@@ -335,21 +386,17 @@ fn a_chunk_over_the_message_limit_comes_in_parts_that_join_to_it() {
     );
 }
 
-/// `serve` holds the chunk that it sends. With acknowledgments in order, `transport`
-/// holds each chunk with a byte in flight: the chunks that fill the window, and one
-/// that the peer acknowledged in part. The pool has room for these and their reply
-/// heads, and the get asks for more than twice that, so a server that reads ahead
-/// ends the stream with a pool error.
+/// `transport` copies each part of a chunk, so `serve` holds one chunk at a time. The
+/// pool has room for one chunk and its reply head, so a server that reads ahead, or
+/// a transport that holds a sent chunk, ends the stream with a pool error.
 #[test]
-fn a_get_of_many_chunks_holds_the_window_and_two_chunks() {
+fn a_get_of_many_chunks_holds_one_chunk_at_a_time() {
     const LEN: usize = 64 << 10;
-    const HELD: usize = WINDOW / LEN + 2;
-    const COUNT: usize = 2 * HELD + 1;
+    const COUNT: usize = 4;
     let len = u32::try_from(LEN).unwrap();
     let digest = Digest::of(b"");
     let head = Reply::Chunk { digest, len }.encoded_len();
-    let budget = HELD * (block::footprint(LEN) + block::footprint(head));
-    assert_eq!(budget, 1_183_104);
+    let budget = block::footprint(LEN) + block::footprint(head);
     let chunks: Vec<(Digest, Vec<u8>)> = (0..COUNT)
         .map(|at| chunk(u8::try_from(at).unwrap(), LEN))
         .collect();
@@ -398,7 +445,7 @@ fn a_stop_in_the_body_of_a_get_ends_the_stream() {
             stream.get(&[digest]).await;
             let chunk = Reply::Chunk { digest, len: 3000 };
             assert_eq!(stream.reply().await, chunk);
-            assert_eq!(stream.recv().await.unwrap().unwrap().len(), MESSAGE);
+            assert_eq!(stream.recv().await.unwrap().unwrap().len(), COPIED);
             let Stream {
                 pool,
                 mut sender,
@@ -440,7 +487,7 @@ fn a_stop_in_the_body_of_a_get_reads_no_later_chunk() {
             stream.get(&[a, b]).await;
             let len = u32::try_from(LEN).unwrap();
             assert_eq!(stream.reply().await, Reply::Chunk { digest: a, len });
-            assert_eq!(stream.recv().await.unwrap().unwrap().len(), MESSAGE);
+            assert_eq!(stream.recv().await.unwrap().unwrap().len(), COPIED);
             let Stream {
                 sender, receiver, ..
             } = stream;
@@ -503,6 +550,65 @@ fn a_put_of_the_largest_chunk_of_a_pool_of_one_block_gives_stored() {
             stream.put(digest, u32::try_from(max).unwrap()).await;
             stream.send(&bytes).await;
             assert_eq!(stream.reply().await, Reply::Stored { digest });
+            stream.finish().await;
+        },
+    );
+}
+
+/// A get of the largest chunk of a pool of one block: the reply head finds no block.
+#[test]
+fn a_get_of_the_largest_chunk_of_a_pool_of_one_block_ends_with_pool() {
+    let create_tight_pool = || create_pool_of(64 + 4096);
+    let max = create_tight_pool().largest();
+    assert_eq!(max, 4096);
+    let (digest, bytes) = chunk(7, max);
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            let store = open_on(&node, create_tight_pool(), 0).await;
+            put(&store, digest, &bytes).await;
+            let exhausted = block::Error::Exhausted {
+                requested: 37,
+                available: 0,
+            };
+            let served = serve(&store, incoming).await;
+            assert_eq!(served, Err(Error::Store(crate::Error::Pool(exhausted))));
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.get(&[digest]).await;
+            assert_eq!(stream.reset().await, reset(0));
+        },
+    );
+}
+
+#[test]
+fn a_get_of_the_largest_chunk_of_a_pool_of_one_block_and_one_head_gives_it() {
+    // One block of the largest size, and one of the smallest for the 37-byte head.
+    let create_tight_pool = || create_pool_of(64 + 4096 + 128);
+    let max = create_tight_pool().largest();
+    assert_eq!(max, 4096);
+    let (digest, bytes) = chunk(7, max);
+    let expected = bytes.clone();
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            let store = open_on(&node, create_tight_pool(), 0).await;
+            put(&store, digest, &bytes).await;
+            assert_eq!(serve(&store, incoming).await, Ok(()));
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.get(&[digest]).await;
+            let len = u32::try_from(max).unwrap();
+            assert_eq!(stream.reply().await, Reply::Chunk { digest, len });
+            let mut got = Vec::new();
+            while got.len() < max {
+                got.extend(stream.recv().await.unwrap().unwrap());
+            }
+            assert!(got == expected, "the bytes of the chunk");
             stream.finish().await;
         },
     );
@@ -738,7 +844,7 @@ fn a_put_on_a_full_disk_stops_with_full() {
         move |peer| async move {
             let mut stream = peer.open().await;
             stream.put(digest, 128 << 10).await;
-            for part in bytes.chunks(1 << 16) {
+            for part in bytes.chunks(SERVER_MESSAGE) {
                 stream.send(part).await;
             }
             assert_eq!(stream.reset().await, reset(FULL));
@@ -911,4 +1017,25 @@ fn an_error_displays_its_cause() {
         Error::Stream(stream.clone()).to_string(),
         format!("the blob stream failed: {stream}")
     );
+    let digest = Digest::of(b"a");
+    assert_eq!(
+        Error::Absent { digest }.to_string(),
+        format!("the store does not hold {digest}")
+    );
+    let code = Code(FULL);
+    assert_eq!(
+        Error::Refused { digest, code }.to_string(),
+        format!("the peer refused the put of {digest} with code 18")
+    );
+    let reply = Reply::Stored { digest };
+    assert_eq!(
+        Error::Unexpected { reply }.to_string(),
+        format!("the reply {reply:?} does not answer the oldest request")
+    );
+    assert_eq!(
+        Error::Unanswered.to_string(),
+        "the peer ended its half with requests open"
+    );
 }
+
+mod requester;
