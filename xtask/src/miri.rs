@@ -18,8 +18,9 @@ const PASSES: [&str; 2] = [
     "-Zmiri-strict-provenance -Zmiri-tree-borrows",
 ];
 
-/// The kind of nextest `--partition` that splits the lib tests between shards.
-const PARTITION: &str = "slice";
+/// The kind of nextest `--partition` that splits the lib tests between shards: of the
+/// three kinds, `hash` gave the most even shards in CI.
+const PARTITION: &str = "hash";
 
 /// Crates whose `unsafe` code only calls the OS or C, which Miri cannot run. Tests on
 /// the real OS check `os` (BLOCK MEMORY), and `cargo xtask sanitizers` checks
@@ -675,9 +676,9 @@ mod tests {
     #[test]
     fn a_shard_gives_its_nextest_partition_from_1() {
         let shard = Shard { index: 7, count: 8 };
-        assert_eq!(shard.partition(), "slice:8/8");
+        assert_eq!(shard.partition(), "hash:8/8");
         assert_eq!(shard.to_string(), "7/8");
-        assert_eq!(Shard::ALL.partition(), "slice:1/1");
+        assert_eq!(Shard::ALL.partition(), "hash:1/1");
     }
 
     #[test]
