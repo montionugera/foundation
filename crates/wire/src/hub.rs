@@ -43,7 +43,7 @@ pub use frames::{Due, Frames, Step};
 pub use gaps::Gaps;
 pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
-use types::frame::{Path, Range};
+use types::frame::{Form, Path, Range};
 
 use crate::common::{Fields, Length, Run, Writer, body};
 
@@ -602,6 +602,21 @@ pub enum Error {
         /// The code.
         code: u8,
     },
+    /// A write's head holds no sample.
+    Samples,
+    /// A write's head names no form.
+    Form {
+        /// The form byte.
+        byte: u8,
+    },
+    /// A write's head of [`write::Time::Node`] has a count other than 1 or the encoded
+    /// form.
+    Stamp {
+        /// The samples of each series.
+        count: u32,
+        /// The form.
+        form: Form,
+    },
 }
 
 // Frame decoders give it for each message: it stays `Copy`, with no drop glue.
@@ -611,6 +626,7 @@ const _: fn() = || {
 };
 
 impl fmt::Display for Error {
+    #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str("the hub message is empty"),
@@ -680,6 +696,15 @@ impl fmt::Display for Error {
             Self::Refusal { code } => {
                 write!(f, "the refused frame has code {code}, which no refusal has")
             }
+            Self::Samples => f.write_str("the frame head holds no sample"),
+            Self::Form { byte } => {
+                write!(f, "the frame head names form {byte}, which no frame has")
+            }
+            Self::Stamp { count, form } => write!(
+                f,
+                "the frame head that the node stamps has {count} samples in the {form:?} \
+                 form, not 1 in the raw form"
+            ),
         }
     }
 }

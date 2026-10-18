@@ -14,6 +14,10 @@ use types::frame::{self, Form, Path};
 
 use super::{Error, Fields, Writer};
 
+mod frames;
+
+pub use frames::{Due, Frames, Step};
+
 const HEAD: u8 = 7;
 
 const LIVE: u8 = 0;
@@ -89,6 +93,45 @@ impl Head {
         out.put(&[HEAD, time, form]);
         out.put(&self.count.to_le_bytes());
         out.put(&self.series.to_le_bytes());
+    }
+
+    /// Decodes a head, and refuses each head that [`Head::encode`] panics on.
+    fn decode(message: &[u8]) -> Result<Self, Error> {
+        let mut fields = Fields::new(message);
+        match fields.kind().ok_or(Error::Empty)? {
+            HEAD => {}
+            kind => return Err(Error::Kind { kind }),
+        }
+        let [time, form] = *fields.take()?;
+        let count = u32::from_le_bytes(*fields.take()?);
+        let series = u32::from_le_bytes(*fields.take()?);
+        fields.end()?;
+        let time = match time {
+            LIVE => Time::Frame(Path::Live),
+            BACKFILL => Time::Frame(Path::Backfill),
+            NODE => Time::Node,
+            byte => return Err(Error::Path { byte }),
+        };
+        let form = match form {
+            RAW => Form::Raw,
+            ENCODED => Form::Encoded,
+            byte => return Err(Error::Form { byte }),
+        };
+        if count == 0 {
+            return Err(Error::Samples);
+        }
+        if series == 0 {
+            return Err(Error::Series);
+        }
+        if time == Time::Node && (form != Form::Raw || count != 1) {
+            return Err(Error::Stamp { count, form });
+        }
+        Ok(Self {
+            time,
+            form,
+            count,
+            series,
+        })
     }
 }
 
