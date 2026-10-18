@@ -74,7 +74,7 @@ const INTERVAL: Span = Span::from_nanos(1_000_000_000);
 /// #         clock: node.clock(),
 /// #         tasks,
 /// #         entropy: node.entropy(),
-/// #         layout: Layout::new(1 << 18, 4087).expect("a ring"),
+/// #         layout: Layout::new(1 << 18, 8183).expect("a ring"),
 /// #         commit: Span::from_nanos(10_000_000),
 /// #         trimmed: false,
 /// #     };
@@ -1207,8 +1207,8 @@ mod tests {
     const BLOCK: usize = 4096;
     /// A ring with room for each test but the full ring.
     const AREA: u64 = 1 << 18;
-    /// A body that keeps a record in one block.
-    const BODY_MAX: usize = 4087;
+    /// The least body.
+    const BODY_MAX: usize = 8183;
     const POOL: usize = 1 << 21;
     const COMMIT: Span = Span::from_nanos(10_000_000);
     const LEASE: Span = Span::from_nanos(1_000_000);
@@ -1585,10 +1585,10 @@ mod tests {
         frame(&create_pool(4 * POOL), set, &series)
     }
 
-    /// A frame that no record of `BODY_MAX` holds: entry 0 with 600 stamps from `first`
-    /// and entry 1 with as many scattered values, which do not compress.
+    /// A frame that no record of `BODY_MAX` holds: entry 0 with 1200 stamps from
+    /// `first` and entry 1 with as many scattered values, which do not compress.
     fn over_record(pool: &Pool, set: &KeySet, first: i64) -> Draft {
-        let len = 600;
+        let len = 1200;
         let stamps: Vec<i64> = (first..).take(len).collect();
         frame(pool, set, &[(0, &stamps), (1, &scattered(len))])
     }
@@ -2386,7 +2386,7 @@ mod tests {
             let set = two_indexes();
             let mut shard = test.shard(AREA).await;
             let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
-            for (label, stamp) in [(LIVE, 700), (BACKFILL, 5)] {
+            for (label, stamp) in [(LIVE, 1300), (BACKFILL, 5)] {
                 let over_record = over_record(&test.pool, &set, 10);
                 assert_eq!(shard.write(a, label, over_record), Err(Error::Large));
                 let small = frame(&test.pool, &set, &[(0, &[stamp]), (1, &[1])]);
@@ -2458,11 +2458,11 @@ mod tests {
             assert!(shard.indexes[0].handoff().is_some(), "no room at the open");
             // The handoff is appended before the bodies, so the size is never checked.
             let written = shard.write(b, LIVE, over_record(&test.pool, &set, 10));
-            assert_eq!(written, Ok(&[lost(0, 0, 600)][..]));
-            let over_block = over_block(&set, 1000, &[(2, &[stamp])]);
+            assert_eq!(written, Ok(&[lost(0, 0, 1200)][..]));
+            let over_block = over_block(&set, 1300, &[(2, &[stamp])]);
             assert_eq!(
                 shard.write(b, LIVE, over_block),
-                Ok(&[lost(0, 600, 240_000), lost(2, 13, 1)][..])
+                Ok(&[lost(0, 1200, 240_000), lost(2, 11, 1)][..])
             );
         });
     }
@@ -3781,6 +3781,71 @@ mod tests {
         );
     }
 
+    /// Frames of a record each, which lap a ring of `AREA` bytes three times.
+    const LAPPED: u64 = 3 * AREA / 4096;
+
+    /// Writer `a` takes control, and its frames lap a ring that trims, so a trim
+    /// passes the record of the handoff and only carried copies of it stay. After a
+    /// power cut, the gate has the holder for the grace.
+    #[test]
+    fn restores_the_holder_after_its_handoff_record_is_trimmed() {
+        let (mut sim, node) = create_node(182);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test {
+                trimmed: true,
+                ..Test::new(node, tasks)
+            };
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let marked = test.now();
+            let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+            for seq in 0..LAPPED {
+                test.clock.sleep(Span::from_nanos(1)).await;
+                let stamp = i64::try_from(seq).expect("fits") + 10;
+                let next =
+                    frame(&test.pool, &set, &[(0, &[stamp]), (1, &[1]), (2, &[stamp])]);
+                assert_eq!(
+                    shard.write(a, LIVE, next),
+                    Ok(&[applied(0, seq, 1), applied(2, seq, 1)][..])
+                );
+                shard.committed().await.expect("the commit ends");
+            }
+            let tags: Vec<_> = headers(&test.ring().await, marked)
+                .into_iter()
+                .map(|(.., tag)| tag)
+                .collect();
+            assert!(
+                !tags.is_empty() && !tags.contains(&0),
+                "only carried copies of the handoff are stamped {marked:?}: {tags:?}"
+            );
+        })
+        .expect("the first run ends");
+        sim.crash(&node, sim::Crash::Power);
+        sim.run_on(&node, |node, tasks| async move {
+            let test = Test {
+                trimmed: true,
+                ..Test::new(node, tasks)
+            };
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let b = shard.open_writer(writer("b", 1, &set)).expect("synced");
+            let next =
+                frame(&test.pool, &set, &[(0, &[1000]), (1, &[2]), (2, &[1000])]);
+            assert_eq!(
+                shard.write(b, LIVE, next),
+                Ok(&[refused(0, Refusal::Reserved), refused(2, Refusal::Reserved)][..])
+            );
+            test.clock.sleep(GRACE).await;
+            let next =
+                frame(&test.pool, &set, &[(0, &[1001]), (1, &[3]), (2, &[1001])]);
+            assert_eq!(
+                shard.write(b, LIVE, next),
+                Ok(&[applied(0, LAPPED, 1), applied(2, LAPPED, 1)][..])
+            );
+        })
+        .expect("the run after the cut ends");
+    }
+
     #[test]
     fn reserves_control_until_the_grace_ends_after_a_power_cut() {
         let (mut sim, node) = cut_after(180, false);
@@ -4054,7 +4119,7 @@ mod tests {
     #[test]
     fn records_the_largest_handoff_in_the_smallest_ring() {
         run(42, |test| async move {
-            let buffer = test.create_buffer(AREA, 4087, 1).await;
+            let buffer = test.create_buffer(AREA, 8183, 1).await;
             let mut shard = test.over(buffer).await;
             assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
             let set = intern(&[Group {
@@ -6281,14 +6346,15 @@ mod tests {
                     shard.ack(a, live(1)).expect("forward");
                 }
 
-                /// Fills the pool, then frees the smallest block that holds the body of
-                /// a part, so that one part can append. Returns the blocks it keeps.
+                /// The most bytes of the body of a part.
+                const PART: usize = buffer::Layout::ENTRY_MAX_MIN;
+
+                /// Fills the pool but for one block of the body of a part, so that one
+                /// part can append. Returns the blocks it keeps.
                 fn fill_but_one(test: &Test) -> Vec<block::Unique> {
-                    let mut blocks = test.fill();
-                    let part = blocks.iter().enumerate();
-                    let part = part.filter(|(_, block)| block.len() >= 4032);
-                    let part = part.min_by_key(|(_, block)| block.len());
-                    drop(blocks.swap_remove(part.expect("a block").0));
+                    let part = test.pool.alloc(PART).expect("a block");
+                    let blocks = test.fill();
+                    drop(part);
                     blocks
                 }
 
@@ -7131,6 +7197,48 @@ mod tests {
                         newest.get(&Slot::new(0)).map(crate::named::Parts::records);
                     let records = records.into_iter().flatten();
                     records.filter(|record| record.reader == *reader).count()
+                }
+
+                /// Eight readers fill part 0 and part 1, then frames lap a ring that
+                /// trims, so a trim passes the record of each part. After a power
+                /// cut, each part still has its readers.
+                #[test]
+                fn keeps_each_part_past_a_trim_of_its_record() {
+                    let (mut sim, node) = create_node(216);
+                    sim.run_on(&node, |node, tasks| async move {
+                        let test = Test {
+                            trimmed: true,
+                            ..Test::new(node, tasks)
+                        };
+                        let set = two_indexes();
+                        let mut shard = test.shard(AREA).await;
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        for n in 0..8 {
+                            open_longest(&mut shard, longest(n)).expect("opens");
+                        }
+                        for seq in 0..LAPPED {
+                            let stamp = i64::try_from(seq).expect("fits") + 10;
+                            committed(&test, &mut shard, w, &[stamp]).await;
+                        }
+                    })
+                    .expect("the first run ends");
+                    sim.crash(&node, sim::Crash::Power);
+                    sim.run_on(&node, |node, tasks| async move {
+                        let test = Test {
+                            trimmed: true,
+                            ..Test::new(node, tasks)
+                        };
+                        let shard = test.shard(AREA).await;
+                        for n in 0..8 {
+                            assert_eq!(
+                                records_of(&shard, &longest(n)),
+                                1,
+                                "reader {n}"
+                            );
+                        }
+                    })
+                    .expect("the run after the cut ends");
                 }
 
                 #[test]

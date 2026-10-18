@@ -228,4 +228,10 @@ exclude_re = [
   'crates/codec/src/alp\.rs:.*replace (< with <=|> with >=) in Stats::of_f64$',
   # A stub that panics until PR B2 of #432 fills it; B2 removes this line.
   'crates/connector-modbus/src/kind\.rs:.*replace <impl kind::Kind for Kind>::run ->',
+  # `Holder::copy` asserts that `at` fits in 31 bits, so bit 31 is clear and `^`
+  # gives the same bits as `|`.
+  'crates/buffer/src/log\.rs:.*replace \| with \^ in Holder::copy$',
+  # A read's assembly (`SKIP` false) never reaches `Skipped`: its `skip` fails to
+  # build. So the arm under a true guard is never taken.
+  'crates/wire/src/hub/part\.rs:.*replace match guard SKIP with true in Assembly<SKIP>::(body|take)$',
 ]
