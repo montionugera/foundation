@@ -897,10 +897,10 @@
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244284643,
   2026-10-18 01:34 UTC). Supersedes the two `openssl/` header sentences of
-  https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6242174637. Their
-  text: approved by `laptop.architect`
-  (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244488818,
-  2026-10-18 01:58 UTC) and `laptop.architect-2`
+  https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6242174637. The text
+  of the rules of round 1: approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244707524,
+  2026-10-18 02:25 UTC) and `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244603644,
   2026-10-18 02:12 UTC). `OMITTED`
   in `cargo xtask open62541` is the closed list of the release files that the library
