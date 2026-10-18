@@ -308,16 +308,18 @@ impl Store {
                 digest,
                 hasher: Hasher::default(),
                 write: None,
+                listed: false,
                 at: 0,
                 _slot: slot,
             };
-            loop {
+            receipt.listed = loop {
                 match self.peek(digest) {
-                    Peek::Absent | Peek::Listed(_) => break,
+                    Peek::Absent => break false,
+                    Peek::Listed(_) => break true,
                     Peek::Held(_) => return Ok(receipt),
                     Peek::Writing => self.wait(digest).await,
                 }
-            }
+            };
             let mut flight = Flight::new(self, digest);
             let file = flight.create(len).await;
             flight.after = file.is_ok().then_some(State::Listed(flight.serial));
@@ -595,6 +597,9 @@ struct Receipt<'a> {
     /// The file of the chunk and its flight, or `None` when a put stored the digest
     /// since the open, so the receipt only hashes. The file drops before the flight.
     write: Option<(File, Flight<'a>)>,
+    /// Whether the digest was listed when the receipt took it. Its file can then hold
+    /// whole bytes of an earlier put, so a put that fails keeps it.
+    listed: bool,
     /// The bytes written.
     at: u64,
     _slot: Slot<'a>,
@@ -606,7 +611,7 @@ impl Receipt<'_> {
     ///
     /// # Errors
     ///
-    /// [`Error::Files`] when the write fails; the chunk then reads as absent.
+    /// [`Error::Files`] when the write fails.
     async fn write(&mut self, part: Block) -> Result<(), Error> {
         self.hasher.update(&part);
         let Some((file, flight)) = &mut self.write else {
@@ -616,9 +621,6 @@ impl Receipt<'_> {
         self.at +=
             u64::try_from(part.len()).expect("invariant: a length fits in 64 bits");
         let written = file.write_at(at, std::slice::from_ref(&part)).await;
-        if written.is_err() {
-            flight.after = None;
-        }
         flight.store.counted(written.map_err(Error::from))
     }
 
@@ -627,14 +629,15 @@ impl Receipt<'_> {
     ///
     /// # Errors
     ///
-    /// [`Error::Mismatch`] when the parts hash to another digest, which removes the
-    /// file, and [`Error::Files`] when a file call fails. The chunk then reads as
-    /// absent.
+    /// [`Error::Mismatch`] when the parts hash to another digest, and [`Error::Files`]
+    /// when a file call fails. The chunk then reads as absent. A mismatch removes the
+    /// file, as [`Receipt::discard`] does.
     async fn end(self) -> Result<(), Error> {
         let Self {
             digest,
             hasher,
             write,
+            listed,
             ..
         } = self;
         let found = hasher.finish();
@@ -642,31 +645,49 @@ impl Receipt<'_> {
         let Some((file, mut flight)) = write else {
             return mismatch.map_or(Ok(()), Err);
         };
-        let ended = match mismatch {
-            Some(mismatch) => {
-                flight
-                    .store
-                    .counted(file.remove().await.map_err(Error::from))?;
-                Err(mismatch)
-            }
-            None => flight.seal(file, Ok(())).await,
-        };
-        flight.after = ended.is_ok().then_some(State::Held(flight.serial));
-        flight.store.counted(ended)
+        if let Some(mismatch) = mismatch {
+            remove(file, &mut flight, listed).await?;
+            return Err(mismatch);
+        }
+        let sealed = flight.seal(file, Ok(())).await;
+        flight.after = sealed.is_ok().then_some(State::Held(flight.serial));
+        flight.store.counted(sealed)
     }
 
-    /// Ends the put with no chunk, when its parts do not come whole: it removes the
-    /// file, so a peer that stops in its bodies leaves no file to fill the disk. The
-    /// chunk reads as absent, and a remove that fails counts in
-    /// [`Status::failures`].
+    /// Ends the put with no chunk, when its parts do not come whole. It removes a file
+    /// that the receipt created, so a peer that stops in its bodies leaves no file to
+    /// fill the disk, and keeps the file of a listed digest. A remove that fails
+    /// counts in [`Status::failures`].
     async fn discard(self) {
-        let Some((file, mut flight)) = self.write else {
-            return;
-        };
-        flight.after = None;
-        let removed = file.remove().await.map_err(Error::from);
-        drop(flight.store.counted(removed));
+        if let Some((file, mut flight)) = self.write {
+            drop(remove(file, &mut flight, self.listed).await);
+        }
     }
+}
+
+/// Removes `file` of a receipt that failed, unless its digest was `listed`, which
+/// keeps the file and its state. The digest stays in flight until the remove returns,
+/// so a put that waits for it opens no file that the remove takes. It then reads as
+/// absent, or as `Listed` when the remove fails.
+///
+/// # Errors
+///
+/// [`Error::Files`] when the remove fails.
+async fn remove(
+    file: File,
+    flight: &mut Flight<'_>,
+    listed: bool,
+) -> Result<(), Error> {
+    if listed {
+        file.close().await;
+        return Ok(());
+    }
+    let removed = file.remove().await;
+    flight.after = match removed {
+        Ok(()) => None,
+        Err(_) => Some(State::Listed(flight.serial)),
+    };
+    flight.store.counted(removed.map_err(Error::from))
 }
 
 /// A put in flight. It holds [`State::Writing`] for its digest, and its drop sets the
@@ -3001,6 +3022,100 @@ mod tests {
                 store.put(digest, &block).await.unwrap();
                 assert_bytes(&node, digest, &block).await;
                 assert_eq!(store.status().corruptions, 0);
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn a_head_polled_with_new_wakers_keeps_the_last_one() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let mut open = receipts(&store).await;
+                let (digest, _) = chunk(101, 100);
+                let mut head = pin!(store.receive(digest, 100));
+                let (old, new) =
+                    (Arc::new(Count::default()), Arc::new(Count::default()));
+                assert!(poll_with(head.as_mut(), &old).is_pending());
+                assert!(poll_with(head.as_mut(), &new).is_pending());
+                assert_eq!((Arc::strong_count(&old), Arc::strong_count(&new)), (1, 2));
+                drop(open.pop());
+                assert_eq!((wakes(&old), wakes(&new)), (0, 1));
+                head.await.unwrap();
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn whose_parts_hash_to_another_digest_keeps_a_listed_file() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let (digest, block) = chunk(7, 3000);
+                open(&node)
+                    .await
+                    .unwrap()
+                    .put(digest, &block)
+                    .await
+                    .unwrap();
+                let store = open(&node).await.unwrap();
+                let (found, other) = chunk(8, 3000);
+                let receipt = store.receive(digest, 3000).await.unwrap();
+                let mismatch = Error::Mismatch { digest, found };
+                assert_eq!(end(receipt, &other).await, Err(mismatch));
+                assert_bytes(&node, digest, &other).await;
+                assert_absent(&store, digest).await;
+                assert_eq!(store.status().corruptions, 0);
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn discarded_holds_its_digest_in_flight_until_the_remove_returns() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let (digest, block) = chunk(7, 3000);
+                let receipt = store.receive(digest, 3000).await.unwrap();
+                let mut discard = pin!(receipt.discard());
+                assert_eq!(poll_once(&mut discard).await, Poll::Pending);
+                assert_eq!(store.peek(digest), Peek::Writing);
+                discard.await;
+                assert_eq!(store.peek(digest), Peek::Absent);
+                store.put(digest, &block).await.unwrap();
+                assert_bytes(&node, digest, &block).await;
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn discarded_with_a_failed_remove_leaves_its_digest_listed() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let (digest, _) = chunk(7, 3000);
+                let receipt = store.receive(digest, 3000).await.unwrap();
+                node.fail_file(&path(digest), Operation::Remove);
+                receipt.discard().await;
+                assert!(matches!(store.peek(digest), Peek::Listed(_)));
+                assert_eq!(store.status().failures, 1);
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn whose_write_fails_and_is_discarded_leaves_no_file() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let (digest, block) = chunk(7, 3000);
+                let mut receipt = store.receive(digest, 3000).await.unwrap();
+                node.fail_file(&path(digest), Operation::WriteAt);
+                let written = receipt.write(block).await;
+                assert_eq!(written, Err(io(&path(digest), Operation::WriteAt)));
+                receipt.discard().await;
+                assert_eq!(store.peek(digest), Peek::Absent);
+                let listed = node.files().list(Path::new(DIR)).await.unwrap();
+                assert_eq!(listed, Vec::<PathBuf>::new());
             })
             .unwrap();
         }

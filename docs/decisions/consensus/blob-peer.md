@@ -126,23 +126,24 @@
   comes. The end checks the digest, syncs the file and the directory, and `serve` sends
   `Stored`. A digest that a put stored since the open opens no file: the receipt only
   hashes, so a body that does not match still stops with `MISMATCH`. A body that does
-  not match, and a stream that ends or resets in the body, remove the file, so a peer
-  leaves no part of a chunk to fill the disk, and the digest reads as absent. A drop of
-  `serve` in the body is a dropped put (BLOB STORE). At most `PUTS_MAX` (8) receipts of
-  one store are open at one time. A head over it waits, with no block and no file, until
-  a receipt drops. Heads go in the order they come, so a head that comes again cannot
-  pass one that waits. The bytes of its body wait in the window of the stream, which
-  `transport` bounds. A local `Store::put` and each get take no slot. The bound also
-  bounds the overshoot of the floor by the puts of peers: at most `PUTS_MAX` chunks. A
-  local put of a digest whose receipt is open waits for its end, so a member that sends
-  a head and no body stalls it. Trigger: the first caller of `peer::get` outside tests,
-  because it calls `Store::put` for digests that a member can name. The fix then: a
-  local put takes the file from the receipt after the receipt's file call in flight
-  ends, and the receipt's next call fails. Lost: `blake3` as a dependency of `blob` (a
-  second crate that names the hash; `types::digest::Hasher` does it); one write of the
-  body at its end (it holds each message in `transport`'s blocks until the end); a stop
-  with a new code at the bound (a new code in `wire::blob` and a retry in each caller,
-  and an honest peer cannot put in either case while a member holds each slot).
-  Supersedes "A put copies its body into one block of the chunk's length and calls
-  `Store::put`, so a put holds one chunk in memory" of
+  not match, and a stream that ends or resets in the body, remove a file that the
+  receipt created, so a peer leaves no part of a chunk to fill the disk, and keep the
+  file of a listed digest (BLOB STORE). A drop of `serve` in the body is a dropped put
+  (BLOB STORE). At most `PUTS_MAX` (8) receipts of one store are open at one time. A
+  head over it waits, with no block and no file, until a receipt drops. Heads go in the
+  order they come, so a head that comes again cannot pass one that waits. The bytes of
+  its body wait in the window of the stream, which `transport` bounds. A local
+  `Store::put` and each get take no slot. The bound also bounds the overshoot of the
+  floor by the puts of peers: at most `PUTS_MAX` chunks. A local put of a digest whose
+  receipt is open waits for its end, so a member that sends a head and no body stalls
+  it. Trigger: the first caller of `peer::get` outside tests, because it calls
+  `Store::put` for digests that a member can name. The fix then: a local put takes the
+  file from the receipt after the receipt's file call in flight ends, and the receipt's
+  next call fails. Lost: `blake3` as a dependency of `blob` (a second crate that names
+  the hash; `types::digest::Hasher` does it); one write of the body at its end (it holds
+  each message in `transport`'s blocks until the end); a stop with a new code at the
+  bound (a new code in `wire::blob` and a retry in each caller, and an honest peer
+  cannot put in either case while a member holds each slot). Supersedes "A put copies
+  its body into one block of the chunk's length and calls `Store::put`, so a put holds
+  one chunk in memory" of
   https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6073693777.

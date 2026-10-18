@@ -766,6 +766,40 @@ fn a_reset_in_a_body_ends_the_stream_and_stores_nothing() {
     );
 }
 
+/// A put of a chunk listed at the open keeps its file when its stream resets: the
+/// bytes written are the chunk's own, so the file still holds it.
+#[test]
+fn a_reset_in_a_body_of_a_listed_chunk_keeps_it() {
+    let (digest, bytes) = chunk(7, 3000);
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            put(&open(&node, 0).await, digest, &bytes).await;
+            let store = open(&node, 0).await;
+            let served = serve(&store, incoming).await;
+            assert_eq!(served, Err(Error::Stream(reset(5))));
+            let got = store.get(digest).await.unwrap().expect("the file is kept");
+            assert_eq!(&got[..], &bytes[..]);
+        },
+        move |peer| async move {
+            let (_, bytes) = chunk(7, 3000);
+            let mut stream = peer.open().await;
+            stream.put(digest, 3000).await;
+            stream.send(&bytes[..1000]).await;
+            // The server reads the head and the part before the reset.
+            peer.clock.sleep(Span::SECOND).await;
+            let Stream {
+                sender,
+                mut receiver,
+                ..
+            } = stream;
+            sender.reset(Code(5));
+            assert_eq!(receiver.recv().await.err(), Some(reset(0)));
+        },
+    );
+}
+
 #[test]
 fn a_put_of_the_empty_chunk_has_no_body() {
     let (digest, _) = chunk(0, 0);

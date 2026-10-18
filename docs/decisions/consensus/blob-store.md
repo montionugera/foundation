@@ -92,8 +92,15 @@
   the benchmark. Ruled by `laptop.architect` (2026-10-11T11:49:10Z,
   https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108706010).
   Amended (`laptop.architect`, 2026-10-18T20:10:11Z,
-  https://github.com/synnaxlabs/foundation/issues/3251#issuecomment-6254577124): a put
+  https://github.com/synnaxlabs/foundation/issues/3251#issuecomment-6254577124, and
+  2026-10-18T20:24:48Z,
+  https://github.com/synnaxlabs/foundation/issues/3251#issuecomment-6254727641): a put
   of `blob::peer::serve` writes its bytes as they come and checks them at its end (BLOB
   PEER). Until then its digest is in flight, as for `Store::put`: a get and a put of the
-  digest wait for it. A put of `serve` that does not end removes its file, other than a
-  drop, which is a dropped put.
+  digest wait for it. A put of `serve` that fails other than by a drop removes the file
+  only when it created it: its digest was absent when it took it. A digest that was
+  listed keeps its file and stays `Listed`, because `Mode::Create` keeps a file of the
+  same length, so the file can hold whole bytes of an earlier put, and a get checks
+  them. The digest stays in flight until the remove returns, so a put that waits for it
+  opens no file that the remove takes. A remove that fails leaves the digest `Listed`
+  and counts in `Status::failures`. A drop is a dropped put.
