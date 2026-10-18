@@ -297,11 +297,12 @@ impl Readers {
     /// tail: a restart or a shed can lose those seqs, and the reader then gets the new
     /// frames at them. With `until`, the count of commits at which each entry that the
     /// caller appended before the open is durable, the session takes no frame until a
-    /// [`Readers::release`] at that count or later. Pass it while that commit has not
-    /// ended, and for each open that can start below a frame given to
-    /// [`Readers::queue`] that is not on disk yet: else [`Readers::reached`] panics. A
-    /// session that starts below a live frame that memory no longer holds reads from
-    /// disk, after that commit: [`Readers::take`] gives [`Next::Disk`].
+    /// [`Readers::release`] at that count or later. Pass it only while that commit has
+    /// not ended: else the session waits for the next [`Readers::release`]. Pass it for
+    /// each open that can start below a frame given to [`Readers::queue`] that is not
+    /// on disk yet: else [`Readers::reached`] panics. A session that starts below a
+    /// live frame that memory no longer holds reads from disk, after that commit:
+    /// [`Readers::take`] gives [`Next::Disk`].
     ///
     /// # Panics
     ///
