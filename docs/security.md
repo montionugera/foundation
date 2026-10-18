@@ -375,7 +375,10 @@ state on `main`.
   to its last lap: the record at the tail, or the one after it, passes the last
   offset, and the open refuses it. `open_full_tail_25` moves the tail to the last lap
   of a block with no room for the restart record of the open, and the build of
-  `wrap_start` wraps.
+  `wrap_start` wraps. In `wrap_full_25`, the commit fits only without the end of the
+  area that it skips, and the append refuses it as `Full`. `holders_over_carry` sets
+  the `body_max` of both headers between the body of a record of three tagged entries
+  and the carry body of its holders, and the open refuses it.
 
 ### Device to connector
 
