@@ -344,9 +344,45 @@ fn stamps_an_untimed_frame_after_a_lost_untimed_frame() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
+/// A frame of `Time::Node` that the home refuses spends no stamp: the next one at the
+/// same mesh time gets 1 ns after the stamp of the frame before the refused one.
+#[test]
+fn spends_no_stamp_on_a_refused_untimed_frame() {
+    let home = read_session(
+        434,
+        async |_| {},
+        |mut agent| async move {
+            agent.admit().await;
+            let (mut reading, mut reader) = read(&agent).await;
+            let mut stream = write(&agent).await;
+            send_untimed(&mut stream, 10).await;
+            let (ends, body) = frame(&[(0, &[0]), (1, &[20, 20])]);
+            stream.frame(untimed(2), &ends, &body).await;
+            send_untimed(&mut stream, 30).await;
+            assert_eq!(stream.reply().await, taken(0, 1));
+            assert_eq!(
+                stream.reply().await,
+                refused(wire::hub::write::Refusal::Codec)
+            );
+            assert_eq!(stream.reply().await, taken(1, 1));
+            let (value, first) = next(&mut reading, &mut reader).await;
+            assert_eq!(value, 10);
+            assert_eq!(next(&mut reading, &mut reader).await, (30, first + 1));
+            end(&mut stream).await;
+            reading.sender.finish().expect("finishes");
+            assert_eq!(reading.recv().await, Ok(None));
+            finish(&mut agent).await;
+        },
+    );
+    assert_eq!(
+        home.served,
+        [Ok(Got::Ended), Ok(Got::Ended), Ok(Got::Ended)]
+    );
+}
+
 /// A frame whose series do not hold its count is refused as `Codec`: one of
-/// `Time::Node` whose index is not one stamp, before the node stamps it, and a timed
-/// one at the home. The stream takes the next frame.
+/// `Time::Node` whose index is not one stamp, which the node does not stamp, and a
+/// timed one. The stream takes the next frame.
 #[test]
 fn refuses_a_frame_whose_series_do_not_hold_its_count_as_codec() {
     let home = read_session(
@@ -373,7 +409,8 @@ fn refuses_a_frame_whose_series_do_not_hold_its_count_as_codec() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
-/// A write whose index another writer controls is refused at each frame as `Waiting`.
+/// A write whose index another writer controls is refused at each frame as `Waiting`,
+/// also a frame of `Time::Node` whose index is not one stamp.
 #[test]
 fn refuses_a_frame_while_another_writer_holds_control() {
     let ready = async |test: &Test| {
@@ -390,10 +427,11 @@ fn refuses_a_frame_while_another_writer_holds_control() {
         agent.admit().await;
         let mut stream = write(&agent).await;
         send(&mut stream, &[1], &[10]).await;
-        assert_eq!(
-            stream.reply().await,
-            refused(wire::hub::write::Refusal::Waiting)
-        );
+        let waiting = refused(wire::hub::write::Refusal::Waiting);
+        assert_eq!(stream.reply().await, waiting);
+        let (ends, body) = frame(&[(0, &[]), (1, &[10])]);
+        stream.frame(untimed(2), &ends, &body).await;
+        assert_eq!(stream.reply().await, waiting);
         assert_eq!(end(&mut stream).await, []);
         finish(&mut agent).await;
     });

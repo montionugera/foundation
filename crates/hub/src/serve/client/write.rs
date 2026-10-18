@@ -222,10 +222,8 @@ fn write(
         Time::Frame(path) => (Label::Path(path), None),
         Time::Node => {
             let stamp = next(writer.now(), *stamped);
-            if !stamp_index(&mut draft, writer.set().groups()[0], stamp) {
-                return Ok(Outcome::Refused(Refusal::Codec));
-            }
-            (Label::Path(Path::Live), Some(stamp))
+            let stamp = stamp_index(&mut draft, writer.set().groups()[0], stamp);
+            (Label::Path(Path::Live), stamp)
         }
     };
     let outcome = outcome(writer.write(label, draft))?;
@@ -246,17 +244,16 @@ fn next(now: Stamp, stamped: Option<Stamp>) -> Stamp {
     }
 }
 
-/// Writes `stamp` over the one sample of entry `index` of `draft`, or gives `false`
-/// when that series is not one stamp, a frame that the home refuses as `Codec`.
-fn stamp_index(draft: &mut Draft, index: usize, stamp: Stamp) -> bool {
+/// Writes `stamp` over the one sample of entry `index` of `draft`, and gives it. Gives
+/// `None` and writes nothing when that series is not one stamp, a frame of one sample
+/// that the home refuses as `Codec` after its check of control.
+fn stamp_index(draft: &mut Draft, index: usize, stamp: Stamp) -> Option<Stamp> {
     let series = draft
         .series_mut(index)
         .expect("invariant: a frame of a write holds its index");
-    let Ok(sample) = <&mut [u8; 8]>::try_from(series) else {
-        return false;
-    };
+    let sample = <&mut [u8; 8]>::try_from(series).ok()?;
     *sample = stamp.nanos().to_le_bytes();
-    true
+    Some(stamp)
 }
 
 /// The outcome of a frame from what the write gave, or the error that stops the
