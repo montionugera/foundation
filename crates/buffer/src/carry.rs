@@ -136,7 +136,8 @@ pub(crate) fn write<'a>(
     let len = body_len(tails.len(), count, bytes);
     let Some((body, _)) = into.split_at_mut_checked(len) else {
         panic!(
-            "invariant: the body of {} tails and {count} entries takes {len} bytes, given {}",
+            "invariant: the body of {} tails and {count} entries takes {len} bytes, \
+             given {}",
             tails.len(),
             into.len()
         );

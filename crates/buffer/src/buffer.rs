@@ -188,11 +188,12 @@ pub enum Rejected {
     /// limit is the first one it is over, in the order of [`Limit`].
     Large(Limit),
     /// The ring has no room for the batch, after the trim of the last commit when
-    /// [`Config::trimmed`] is set. Each record leaves free the room of the restart
-    /// record of the next open, of a carry record of the holders of any one record,
-    /// and of the restart record of a later open. Room returns only when records
-    /// leave the ring at its tail, and never when the offsets left before their end
-    /// are under `needed`.
+    /// [`Config::trimmed`] is set. Each data record leaves free two restart
+    /// records, one carry record of the largest carry body, and the blocks less one
+    /// of that record that a wrap skips. With [`Config::trimmed`], it also leaves
+    /// free the bytes by which the carry record of its holders is larger than it,
+    /// until a trim passes it. Room returns only when records leave the ring at its
+    /// tail, and never when the offsets left before their end are under `needed`.
     /// Without [`Config::trimmed`], nothing moves records out of the ring.
     Full {
         /// Bytes of the area that the batch's record needs, with the rest of the
@@ -2713,9 +2714,10 @@ mod tests {
             *next.lock().expect("no panic held the lock")
         }
 
-        /// The body bytes that a carry record planned now holds, the tail, the head, and
-        /// the oldest record that a path holds. Through [`Buffer`], a carry record
-        /// or a trim shows only as room for later appends, so the tests read it here.
+        /// The body bytes that a carry record planned now holds, the tail, the head,
+        /// and the oldest record that a path holds. Through [`Buffer`], a carry
+        /// record or a trim shows only as room for later appends, so the tests read
+        /// it here.
         type Room = (usize, u64, u64, Option<u64>);
 
         /// The [`Room`] of `buffer`.

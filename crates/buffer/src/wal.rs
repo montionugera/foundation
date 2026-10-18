@@ -420,8 +420,8 @@ impl fmt::Display for Limit {
             ),
             Self::Carry { len, max } => write!(
                 f,
-                "the entries of the batch need a carry body of {len} bytes, and a carry \
-                 record of this buffer holds at most {max}"
+                "the entries of the batch need a carry body of {len} bytes, and a \
+                 carry record of this buffer holds at most {max}"
             ),
         }
     }
@@ -1870,8 +1870,9 @@ mod tests {
         proptest! {
             /// The smallest area is four times the largest record and the spare: two
             /// blocks, a carry record as large as the largest record, at these bodies,
-            /// and its blocks less one. A ring of that area that holds only its restart record takes
-            /// its largest record, wherever the restart record is.
+            /// and its blocks less one. A ring of that area that holds only its
+            /// restart record takes its largest record, wherever the restart record
+            /// is.
             #[test]
             fn takes_the_largest_record_after_the_restart_record_at_any_tail(
                 body_max in BODY_MIN..=3 * ALIGN - HEADER_LEN,

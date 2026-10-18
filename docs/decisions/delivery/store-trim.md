@@ -27,6 +27,15 @@
   2026-10-14T01:42:08Z; text of
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6196998191,
   2026-10-15T16:27:31Z).
+  Amended (2026-10-18T00:33:50Z, #406): each data record leaves free the spare of
+  S4 in place of the three blocks: two restart records, a carry record of the largest
+  carry body, and the blocks less one of that record that a wrap skips. With trims, it
+  also leaves free its excess until a trim passes it, and a carry moves whole records
+  (`laptop.architect`,
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6242940372 and
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6243771938).
+  `Layout::new` refuses an area under four of the largest record and the spare. This
+  supersedes each "three blocks" of this record.
   `set_floor` and `usage` wait for their first effect, the B1 warning (#1080). Lost: a
   `trim` call from the home (it needs the commit rate, a late trim gives a second gap,
   and the edge cases of the ring move up into `home`). Decided by the architect (#160,
