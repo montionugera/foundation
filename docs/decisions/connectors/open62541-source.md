@@ -864,16 +864,16 @@
   other call of aws-lc by its file and function, with its reason: each call that draws
   (TLS RANDOMNESS), and `ASN1_TIME_to_tm`, which reads the clock only on a NULL time,
   which the copy never gives. The validity check of a certificate reads the event loop
-  of its group (a local patch), so no key calls `X509_cmp_current_time`
-  (`laptop.architect-2`, 2026-10-17 06:46 UTC,
+  of its group (a local patch), so no key admits `X509_cmp_current_time`, and `cargo
+  xtask open62541` fails on a call of it (`laptop.architect-2`, 2026-10-17 06:46 UTC,
   https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6230838999, item 1;
   the loop as an input of the constructor, 2026-10-18 05:55 UTC,
   https://github.com/synnaxlabs/foundation/pull/3144#issuecomment-6246301508).
   `AWS_LC_INPUTS` lists the functions of aws-lc that read the clock, so the error of a
   new call of one asks for its reason, and a test fails when no test of
-  `connector-opcua` names the function of each of their keys. With no password
-  callback, a PEM reader of aws-lc reads a password from the console: it opens
-  `/dev/tty`, or prints a prompt on stderr and reads stdin, and sets signal handlers. So each PEM read
+  `connector-opcua` names the function of each of their keys. With no password callback,
+  a PEM reader of aws-lc reads a password from the console: it opens `/dev/tty`, or
+  prints a prompt on stderr and reads stdin, and sets signal handlers. So each PEM read
   of the copy gives a callback of `PASSWORDS`: `UA_OpenSSL_refusePassword`, which
   refuses each encrypted PEM, or `privateKeyPasswordCallback`, which gives the password
   of its caller and refuses one that does not fit in the buffer of aws-lc. Each refusal

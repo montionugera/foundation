@@ -23,8 +23,9 @@ UA_CertificateGroup_AcceptAll(UA_CertificateGroup *certGroup);
 /*
  * Initialises and configures a certificate group with an in-memory backend.
  * The trustList parameter allows for the pre-configuration of the group with certificate files.
- * The eventLoop gives the time of the validity check through its dateTime_now. A
- * NULL eventLoop gives BadInternalError.
+ * The eventLoop gives the time of the validity check through its dateTime_now. The
+ * group keeps it and reads it at each check, so the loop must outlive the checks of
+ * the group. A NULL eventLoop gives BadInternalError.
  *
  * **Configuration parameters for the Certificate Memorystore backend**
  *
