@@ -900,6 +900,7 @@ case "$*" in
 esac
 "#;
 
+    /// Only Unix: the test runs a shell script as `cargo`.
     #[cfg(unix)]
     #[test]
     fn run_runs_each_part_of_each_pass_and_the_lib_tests() {
