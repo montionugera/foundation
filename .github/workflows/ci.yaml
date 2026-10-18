@@ -199,7 +199,6 @@ jobs:
               - --exclude connector-opcua # #2968
               - --exclude node # #2968, #682, #2955, #2956, #477, #2957
               - --exclude acceptance # #2968, #682, #2955, #2956, #477, #2957
-              - --exclude xtask # #2238
               - --exclude ops # #2971
               - --exclude sdk # #682, #2955
               - --exclude sdk-python # #682, #2955
@@ -303,7 +302,6 @@ jobs:
               - --exclude connector-opcua # #2968
               - --exclude node # #2968, #682, #2955, #2956, #477, #2957
               - --exclude acceptance # #2968, #682, #2955, #2956, #477, #2957
-              - --exclude xtask # #2238
               - --exclude ops # #2971
               - --exclude sdk # #682, #2955
               - --exclude sdk-python # #682, #2955
