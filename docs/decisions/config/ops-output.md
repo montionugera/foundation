@@ -226,9 +226,9 @@
   in a directory that can be written``. `ops.bad-reply`: `the reply of the node is no
   reply: <why>`, status 1, fix ``Use a `foundation` program of the same version as the
   node``. A failure to reach the node, or of its request, has status 1 and one of the
-  codes `node.not-running`, `node.unreadable`, `node.admin-key`, `node.socket`,
-  `node.unanswered`, `node.session`, `node.refused`, and `node.no-reply`, with the
-  message and fix of decision 3 of plan revision 4 (`laptop.architect-2`,
+  codes `node.not-running`, `node.unreadable`, `node.admin-key`, `node.version`,
+  `node.socket`, `node.unanswered`, `node.session`, `node.refused`, and `node.no-reply`,
+  with the message and fix of decision 3 of plan revision 4 (`laptop.architect-2`,
   2026-10-11T07:10:55Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913). The
   fix of `node.not-running` is ``Start one with `foundation start --name <name>` ``,
@@ -238,6 +238,29 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136677419).
   `node.session` is by `laptop.architect-2` (2026-10-13T01:44:19Z,
   https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936).
+  `node.version`: `<dir>/data/<file> holds format version <found>, and this
+  foundation reads version <expected>`, with each version byte as its ASCII char, a
+  version of the set of SECTOR VERSIONS, fix ``Use a `foundation` program of the
+  same version as the node``, when `address` or `admin.key` holds a format of another
+  version, which `reach` gives as
+  `node::client::Error::Local(sector::local::Error::Version { .. })`
+  (`laptop.architect-2`: item 7 of
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252508020 at
+  2026-10-18T16:49:11Z;
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252530569 at
+  2026-10-18T16:51:27Z; the code and its fields in
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252630274 at
+  2026-10-18T17:01:02Z; the fix text, that of `ops.bad-reply`, in
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252780856 at
+  2026-10-18T17:15:38Z; the wrapped variant in
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252975559 at
+  2026-10-18T17:34:06Z; the names `found` and `expected`, over `held` and `read` of
+  6252630274, in item 1 of
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6253217340 at
+  2026-10-18T17:57:52Z; the byte as its char, over the escaped byte of 6252630274,
+  in item B of
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6253248771 at
+  2026-10-18T18:00:53Z).
   `node.socket` covers a socket of the program that broke, with the message `the
   socket of this program failed: <the transport error>` (`laptop.architect-2`,
   2026-10-13T02:10:54Z, item 4 of

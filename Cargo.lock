@@ -1248,6 +1248,7 @@ dependencies = [
  "proptest",
  "sdk",
  "secret",
+ "sector",
  "serde",
  "serde_json",
  "sim",
@@ -1943,6 +1944,18 @@ dependencies = [
  "sim",
  "types",
  "zeroize",
+]
+
+[[package]]
+name = "sector"
+version = "0.0.0"
+dependencies = [
+ "block",
+ "crc32c",
+ "env",
+ "proptest",
+ "sim",
+ "types",
 ]
 
 [[package]]

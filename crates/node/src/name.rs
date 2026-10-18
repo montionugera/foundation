@@ -4,7 +4,7 @@
 //!
 //! The file is 277 bytes: the tag, the length of the name in one byte, the name with
 //! zero bytes after it up to [`Name::MAX_BYTES`], and the CRC32C of those 273 bytes
-//! (little-endian), in one sector ([`crate::sector`]).
+//! (little-endian), in one sector ([`sector`]).
 
 use std::path::Path;
 use std::rc::Rc;
@@ -13,8 +13,8 @@ use env::files::Files;
 use mesh::region::Founding;
 use types::name::Name;
 
-use crate::sector::{self, Held};
 use crate::{Error, directory, identity, status};
+use sector::Held;
 
 /// The name of the file.
 pub(crate) const FILE: &str = "name";
@@ -151,11 +151,11 @@ fn encode(name: &Name) -> [u8; LEN] {
 
 /// The name that `held` holds, `None` for nothing, or [`Error::Name`] for bytes that
 /// [`encode`] does not give.
-fn decode(held: &Held<LEN>) -> Result<Option<Name>, Error> {
+fn decode(held: &Held<[u8; LEN]>) -> Result<Option<Name>, Error> {
     let bytes = match held {
         Held::Nothing => return Ok(None),
         Held::Written(bytes) => bytes,
-        Held::Foreign => return Err(Error::Name),
+        Held::Version { .. } | Held::Foreign => return Err(Error::Name),
     };
     let len = usize::from(bytes[TAG.len()]);
     let name = &bytes[TAG.len() + 1..][..len];
