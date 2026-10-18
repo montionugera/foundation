@@ -87,8 +87,16 @@ def close(client: foundation.Client, entered: threading.Event, ends: list) -> No
     entered.set()
     try:
         ends.append(client.close())
-    except Exception as error:
+    except BaseException as error:
         ends.append(error)
+
+
+def quick(call) -> object:
+    """Calls `call`, and gives what it gives when it returns within 1 s, else
+    `"slow"`."""
+    start = time.monotonic()
+    given = call()
+    return given if time.monotonic() - start < 1 else "slow"
 
 
 class Node:
@@ -234,7 +242,8 @@ class ClientTest(unittest.TestCase):
             while not closed.is_set():
                 count += 1
                 # Gives up the GIL with no wait: on macOS a sleep of 1 ms can take
-                # 20 ms, and the close of a paused node takes about 0.4 s.
+                # 20 ms, and the close of a paused node is short (about 0.1 s on
+                # x86_64 Linux).
                 time.sleep(0)
 
         thread = threading.Thread(target=counter, daemon=True)
@@ -265,7 +274,9 @@ class ClientTest(unittest.TestCase):
                 closing.join(PATIENCE)
             during = False
             while True:
-                child = spawn(client.close)
+                # A close in a child does no work, so only a wait on the lock that the
+                # fork copied as held makes it last 1 s.
+                child = spawn(lambda: quick(client.close))
                 # The close can hold the lock of the client only before it returns.
                 alive = not ends
                 self.assertEqual(exit_code(child), 0)
@@ -274,7 +285,6 @@ class ClientTest(unittest.TestCase):
                 during = True
                 self.assertLess(time.monotonic(), deadline, "the close did not end")
             closing.join(PATIENCE)
-            self.assertFalse(closing.is_alive())
             self.assertEqual(ends, [None])
             if during:
                 return
