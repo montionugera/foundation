@@ -44,6 +44,11 @@
   the `BadTypeMismatch` of the server, the note of the latest tick, and the name of
   the type at 2026-10-15T22:16:48Z:
   https://github.com/synnaxlabs/foundation/pull/2766#issuecomment-6203414079).
+  A connect calls `Context::clear_error`: until then, the status shows the error of
+  the last run (scenario 3 of CONNECTOR CONFORMANCE found it, 2026-10-17T21:08:01Z:
+  https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6241104680; text
+  of `laptop.architect-2`, 2026-10-17T21:10:51Z:
+  https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6241157217).
   Close: after a cancel or an error, the run closes its session. It sends
   CloseSession, waits at most 1 s for the answer, then closes the connection, so a run
   ends within 1 s of a cancel. The connect races the cancel, and the close does not.
@@ -62,16 +67,16 @@
   the channel and the session (`laptop.architect-2`, 2026-10-16T05:10:17Z,
   https://github.com/synnaxlabs/foundation/pull/2809#issuecomment-6208565249). The
   first failed check ends the run with `Error::Device` and the text "the connectivity
-  check failed with <status>", so the supervisor connects again with its backoff. A
-  channel or a session that the client loses between two checks ends the run at once
-  with the same text, from the state of the client: the status of the connect, else
-  `BadConnectionClosed` or `BadSessionClosed`. The check is in Rust: open62541 calls its
-  inactivity callback only for `BadTimeout` and drops each other status of its own
-  check, such as the `BadSessionIdInvalid` of a lost session, so
-  `connectivityCheckInterval` stays 0. The retry of a failed read stays. Approved by the
-  person (2026-10-16T03:44:54Z, "Yes, approved", on "Keep the 10-second keep-alive, and
-  add one rule: if a keep-alive fails, reconnect right away instead of waiting for the
-  next read":
+  check of <address> failed with <status>", where <address> is the `address` of the
+  connector, so the supervisor connects again with its backoff. A channel or a session
+  that the client loses between two checks ends the run at once with the same text, from
+  the state of the client: the status of the connect, else `BadConnectionClosed` or
+  `BadSessionClosed`. The check is in Rust: open62541 calls its inactivity callback only
+  for `BadTimeout` and drops each other status of its own check, such as the
+  `BadSessionIdInvalid` of a lost session, so `connectivityCheckInterval` stays 0. The
+  retry of a failed read stays. Approved by the person (2026-10-16T03:44:54Z, "Yes,
+  approved", on "Keep the 10-second keep-alive, and add one rule: if a keep-alive fails,
+  reconnect right away instead of waiting for the next read":
   https://github.com/synnaxlabs/foundation/pull/2809#issuecomment-6207602232). The count
   of one failed check, what fails a check, the check in Rust, the text, and the tests:
   decided by `laptop.architect-2` (2026-10-16T03:46:32Z,

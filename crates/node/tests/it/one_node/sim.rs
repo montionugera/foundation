@@ -453,7 +453,10 @@ fn a_served_opcua_answers_on_its_address_with_no_http() {
     let mut opcua = Opcua::default();
     let address = opcua.serve();
     let written = write(address, "m f=1 1");
-    assert_eq!(written, "the exchange failed: invalid HTTP version parsed");
+    assert_eq!(
+        written,
+        format!("the exchange with {address} failed: invalid HTTP version parsed")
+    );
 }
 
 #[test]

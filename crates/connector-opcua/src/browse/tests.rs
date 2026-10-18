@@ -147,6 +147,15 @@ fn a_browse_on_a_node_with_no_mesh_time_gives_a_retry() {
 
 /// Serves the sim tree on port 4840 of `node` until `until` ends.
 async fn serving(node: &node::Node, until: impl Future<Output = ()>) {
+    serving_of(node, &Variables::new(&[]), until).await;
+}
+
+/// Serves `variables` at port 4840 of `node` until `until` ends.
+async fn serving_of(
+    node: &node::Node,
+    variables: &Variables,
+    until: impl Future<Output = ()>,
+) {
     let listen = tcp::Listen {
         local: SocketAddr::new(node.addresses()[0], 4840),
         backlog: 4,
@@ -165,9 +174,8 @@ async fn serving(node: &node::Node, until: impl Future<Output = ()>) {
     )]
     let wall = move || wall.now().time;
     let mut rng = node.entropy().rng();
-    let variables = Variables::new(&[]);
     let (clock, net) = (node.clock(), node.net());
-    serve(clock, wall, net, listener, &mut rng, &variables, until).await;
+    serve(clock, wall, net, listener, &mut rng, variables, until).await;
 }
 
 /// What one browse of `query` gives on a sim server.
@@ -508,6 +516,14 @@ fn fails_when_the_server_does_not_answer() {
 fn on_server<T: Send + 'static>(
     body: impl AsyncFnOnce(&mut Server<'_>) -> T + Send + 'static,
 ) -> T {
+    on_server_of(Variables::new(&[]), body)
+}
+
+/// As [`on_server`], with a sim server of `variables`.
+fn on_server_of<T: Send + 'static>(
+    variables: Variables,
+    body: impl AsyncFnOnce(&mut Server<'_>) -> T + Send + 'static,
+) -> T {
     let mut sim = Sim::new(::sim::Config::default());
     let node = sim.node(node::Config::default());
     let run = sim.run_on(&node, move |node, _| async move {
@@ -522,7 +538,7 @@ fn on_server<T: Send + 'static>(
             out = Some(body(&mut Server::new(&mut client)).await);
             client.close().await;
         };
-        serving(&node, until).await;
+        serving_of(&node, &variables, until).await;
         out.expect("the body ends")
     });
     run.expect("the run ends")
@@ -537,6 +553,23 @@ fn gives_no_value_for_each_node_whose_read_alone_does_not_fit_a_message() {
     });
     let values = values.expect("values");
     assert_eq!(values, [None, Some(sample::Value::F64(2.5)), None]);
+}
+
+#[test]
+fn names_the_endpoint_when_a_read_of_values_fails() {
+    let variables = Variables::new(&[]);
+    variables.refuse_reads_past(1);
+    let values = on_server_of(variables, async |server| {
+        let level = "ns=1;s=Plant.Odd.Level";
+        server.values(&[level, level]).await
+    });
+    let Err(Error::Device(source)) = values else {
+        panic!("not a device error: {values:?}");
+    };
+    assert_eq!(
+        source.to_string(),
+        "the read from opc.tcp://10.0.0.1:4840 failed with BadTooManyOperations"
+    );
 }
 
 /// The open62541 server frees the oldest of the 32 points that a session holds when a

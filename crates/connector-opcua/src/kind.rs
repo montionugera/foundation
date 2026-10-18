@@ -81,7 +81,8 @@ impl kind::Kind for Kind {
     /// reads the state of the server to check the connection. After a cancel or an
     /// error, the run closes its session: it sends `CloseSession`, waits at most 1 s
     /// for the answer, then closes the connection. So a run ends within 1 s of a
-    /// cancel.
+    /// cancel. Call [`Context::clear_error`] once the run reaches the device: until
+    /// then, the status shows the error of the last run.
     ///
     /// # Errors
     ///
@@ -225,6 +226,7 @@ async fn read(
     client: &mut Client,
     frames: &mut Frames<'_>,
 ) -> Result<(), Error> {
+    ctx.clear_error();
     let reads = &ctx.config().reads;
     let nodes: Vec<Node> = reads.iter().map(|read| read.node.clone()).collect();
     let nodes = client.nodes(&nodes);
@@ -235,7 +237,13 @@ async fn read(
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
     loop {
         let idle = client.idle(timer.tick(ctx.cancel())).await;
-        let Some(tick) = idle.map_err(|status| device(Failure::Check(status)))? else {
+        let Some(tick) = idle.map_err(|status| {
+            device(Failure::Check {
+                address: client.address().to_owned(),
+                status,
+            })
+        })?
+        else {
             break;
         };
         missed.add(tick.missed);
@@ -246,7 +254,15 @@ async fn read(
         else {
             break;
         };
-        let values = read.map_err(|status| device(Failure::Read(status)))?;
+        let values = match read {
+            Ok(values) => values,
+            Err(status) => {
+                return Err(device(Failure::Read {
+                    address: client.address().to_owned(),
+                    status,
+                }));
+            }
+        };
         frames.write(values, stamp)?;
     }
     Ok(())
@@ -509,9 +525,18 @@ pub(crate) enum Failure {
         address: String,
         status: Status,
     },
-    Read(Status),
-    Check(Status),
-    Browse(Status),
+    Read {
+        address: String,
+        status: Status,
+    },
+    Check {
+        address: String,
+        status: Status,
+    },
+    Browse {
+        address: String,
+        status: Status,
+    },
     /// The tags and names before the pages of a browse pass [`crate::browse::BYTES`].
     Names,
     /// A browse for a cursor of an earlier browse reads past
@@ -525,12 +550,16 @@ impl fmt::Display for Failure {
             Self::Connect { address, status } => {
                 write!(f, "the connect to {address} failed with {}", status.name())
             }
-            Self::Read(status) => write!(f, "the read failed with {}", status.name()),
-            Self::Check(status) => {
-                write!(f, "the connectivity check failed with {}", status.name())
+            Self::Read { address, status } => {
+                write!(f, "the read from {address} failed with {}", status.name())
             }
-            Self::Browse(status) => {
-                write!(f, "the browse failed with {}", status.name())
+            Self::Check { address, status } => write!(
+                f,
+                "the connectivity check of {address} failed with {}",
+                status.name()
+            ),
+            Self::Browse { address, status } => {
+                write!(f, "the browse of {address} failed with {}", status.name())
             }
             Self::Names => write!(
                 f,

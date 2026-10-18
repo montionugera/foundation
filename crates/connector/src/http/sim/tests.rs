@@ -169,7 +169,32 @@ impl Network {
     /// Writes `request` on a new stream, closes the write side when `half_closed`,
     /// and reads until the server ends the stream.
     fn exchange(&mut self, request: &'static [u8], half_closed: bool) -> End {
-        let (net, remote) = (self.client.net(), self.remote);
+        let out = self.client(move |client, config| async move {
+            let mut tcp = connect(&client, &config).await;
+            write(&mut tcp, request).await.expect("the write works");
+            if half_closed {
+                poll_fn(|cx| tcp.poll_close(cx))
+                    .await
+                    .expect("the close works");
+            }
+            read(&mut tcp).await
+        });
+        self.sim.run_for(Span::MINUTE).expect("the run ends");
+        take(&out).expect("the exchange ends")
+    }
+
+    /// Runs `main` on a new client shard with the client node and the config of a
+    /// stream to the server. Gives the slot that holds what `main` gives, once it
+    /// ends.
+    fn client<T, F>(
+        &mut self,
+        main: impl FnOnce(node::Node, tcp::Config) -> F + Send + 'static,
+    ) -> Arc<Mutex<Option<T>>>
+    where
+        T: Send + 'static,
+        F: Future<Output = T> + 'static,
+    {
+        let (client, remote) = (self.client.clone(), self.remote);
         let out = Arc::new(Mutex::new(None));
         let slot = Arc::clone(&out);
         let handle = self
@@ -180,23 +205,17 @@ impl Network {
                     remote,
                     options: super::super::OPTIONS,
                 };
-                let mut tcp = net.connect(&config).await.expect("the server listens");
-                write(&mut tcp, request).await;
-                if half_closed {
-                    poll_fn(|cx| tcp.poll_close(cx))
-                        .await
-                        .expect("the close works");
-                }
-                let ended = read(&mut tcp).await;
-                *slot.lock().expect("no panic under the lock") = Some(ended);
+                let end = main(client, config).await;
+                *slot.lock().expect("no panic under the lock") = Some(end);
             })
             .expect("the shard starts");
         self.handles.push(handle);
-        self.sim.run_for(Span::MINUTE).expect("the run ends");
-        out.lock()
-            .expect("no panic under the lock")
-            .take()
-            .expect("the exchange ends")
+        out
+    }
+
+    /// What `serve` gave, once it ended.
+    fn ended(&self) -> Option<Ended> {
+        take(&self.ended)
     }
 
     fn seen(&self) -> Vec<String> {
@@ -213,15 +232,30 @@ impl Network {
     }
 }
 
+fn take<T>(slot: &Mutex<Option<T>>) -> Option<T> {
+    slot.lock().expect("no panic under the lock").take()
+}
+
+async fn connect(client: &node::Node, config: &tcp::Config) -> net::Tcp {
+    client
+        .net()
+        .connect(config)
+        .await
+        .expect("the server listens")
+}
+
 /// Writes all of `bytes` on `tcp`.
-async fn write(tcp: &mut net::Tcp, bytes: &[u8]) {
+///
+/// # Errors
+///
+/// The error of the first write that fails.
+async fn write(tcp: &mut net::Tcp, bytes: &[u8]) -> Result<(), net::Error> {
     let mut rest = bytes;
     while !rest.is_empty() {
-        let n = poll_fn(|cx| tcp.poll_write(cx, &[IoSlice::new(rest)]))
-            .await
-            .expect("the write works");
+        let n = poll_fn(|cx| tcp.poll_write(cx, &[IoSlice::new(rest)])).await?;
         rest = rest.get(n..).expect("a write fits its buffer");
     }
+    Ok(())
 }
 
 /// Reads `tcp` until the server ends it.
@@ -443,37 +477,18 @@ fn stopped(
     sent: &'static [u8],
 ) -> (Option<Ended>, Option<Peer>, SocketAddr) {
     let mut network = Network::new();
-    let (net, remote) = (network.client.net(), network.remote);
-    let out = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&out);
-    let handle = network
-        .client
-        .shards()
-        .start(shard("client"), move |_| async move {
-            let config = tcp::Config {
-                remote,
-                options: super::super::OPTIONS,
-            };
-            let mut tcp = net.connect(&config).await.expect("the server listens");
-            write(&mut tcp, sent).await;
-            let ended = read(&mut tcp).await;
-            let connect = net.connect(&config).await.map(drop);
-            *slot.lock().expect("no panic under the lock") = Some((ended, connect));
-        })
-        .expect("the shard starts");
-    network.handles.push(handle);
+    let out = network.client(move |client, config| async move {
+        let mut tcp = connect(&client, &config).await;
+        write(&mut tcp, sent).await.expect("the write works");
+        let ended = read(&mut tcp).await;
+        (ended, client.net().connect(&config).await.map(drop))
+    });
     let half = Span::from_nanos(500_000_000);
     network.sim.run_for(half).expect("the run goes on");
     assert_eq!(network.server.streams(), 1);
     stop(&network);
     network.sim.run_for(Span::MINUTE).expect("the run ends");
-    let ended = network
-        .ended
-        .lock()
-        .expect("no panic under the lock")
-        .take();
-    let client = out.lock().expect("no panic under the lock").take();
-    (ended, client, remote)
+    (network.ended(), take(&out), network.remote)
 }
 
 /// How the stream of the client ended, and how a later connect ended.
@@ -512,39 +527,19 @@ fn a_listener_that_fails_and_a_cancel_in_one_step_give_the_error() {
     network.server.fail_listener(network.remote);
     network.until.cancel();
     network.sim.run_for(Span::MINUTE).expect("the run ends");
-    let ended = network
-        .ended
-        .lock()
-        .expect("no panic under the lock")
-        .take();
-    assert_eq!(ended, Some((Err(net::Error::Io { code: 5 }), 0)));
+    assert_eq!(network.ended(), Some((Err(net::Error::Io { code: 5 }), 0)));
 }
 
 #[test]
 fn a_dropped_serve_leaves_each_stream_until_the_cancel() {
     let mut network = Network::new();
-    let (client, remote) = (network.client.clone(), network.remote);
-    let out = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&out);
-    let handle = network
-        .client
-        .shards()
-        .start(shard("client"), move |_| async move {
-            let config = tcp::Config {
-                remote,
-                options: super::super::OPTIONS,
-            };
-            let mut tcp = client
-                .net()
-                .connect(&config)
-                .await
-                .expect("the server listens");
-            client.clock().sleep(Span::SECOND).await;
-            write(&mut tcp, b"GET /a HTTP/1.1\r\nhost: server\r\n\r\n").await;
-            *slot.lock().expect("no panic under the lock") = Some(read(&mut tcp).await);
-        })
-        .expect("the shard starts");
-    network.handles.push(handle);
+    let out = network.client(|client, config| async move {
+        let mut tcp = connect(&client, &config).await;
+        client.clock().sleep(Span::SECOND).await;
+        let request = b"GET /a HTTP/1.1\r\nhost: server\r\n\r\n";
+        write(&mut tcp, request).await.expect("the write works");
+        read(&mut tcp).await
+    });
     let half = Span::from_nanos(500_000_000);
     network.sim.run_for(half).expect("the run goes on");
     network.accepts.cancel();
@@ -558,76 +553,50 @@ fn a_dropped_serve_leaves_each_stream_until_the_cancel() {
     network.sim.run_for(Span::MINUTE).expect("the run ends");
     assert_eq!(network.server.streams(), 0);
     let answer = "HTTP/1.1 200 OK\r\ncontent-length: 16\r\n\r\nGET /a HTTP/1.1 ";
-    let ended = out.lock().expect("no panic under the lock").take();
-    assert_eq!(ended, Some(End::Closed(answer.into())));
-    assert_eq!(
-        network
-            .ended
-            .lock()
-            .expect("no panic under the lock")
-            .take(),
-        None
-    );
+    assert_eq!(take(&out), Some(End::Closed(answer.into())));
+    assert_eq!(network.ended(), None);
 }
 
 /// Pauses the server from 500 ms for a second, and cancels `until` in the pause. The
 /// client connects at once, or in the pause when `late`, and writes `sent` in the
-/// pause, then its FIN when `late`, so the server sees the cancel, the stream, and its
+/// pause, then its FIN when `fin`, so the server sees the cancel, the stream, and its
 /// bytes in one poll. Gives what `serve` gave and how the stream ended for the client.
-fn paused(late: bool, sent: String) -> (Option<Ended>, Option<End>) {
+fn paused(late: bool, fin: bool, sent: String) -> (Option<Ended>, Option<End>) {
     let mut network = Network::new();
-    let (client, remote) = (network.client.clone(), network.remote);
-    let out = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&out);
-    let handle = network
-        .client
-        .shards()
-        .start(shard("client"), move |_| async move {
-            let config = tcp::Config {
-                remote,
-                options: super::super::OPTIONS,
-            };
-            let in_pause = Span::from_nanos(750_000_000);
-            if late {
-                client.clock().sleep(in_pause).await;
-            }
-            let ended = match client.net().connect(&config).await {
-                Ok(mut tcp) => {
-                    if !late {
-                        client.clock().sleep(in_pause).await;
-                    }
-                    write(&mut tcp, sent.as_bytes()).await;
-                    if late {
-                        poll_fn(|cx| tcp.poll_close(cx))
-                            .await
-                            .expect("the close works");
-                    }
-                    read(&mut tcp).await
-                }
-                Err(error) => End::Failed(error.to_string()),
-            };
-            *slot.lock().expect("no panic under the lock") = Some(ended);
-        })
-        .expect("the shard starts");
-    network.handles.push(handle);
+    let out = network.client(move |client, config| async move {
+        let in_pause = Span::from_nanos(750_000_000);
+        if late {
+            client.clock().sleep(in_pause).await;
+        }
+        let mut tcp = match client.net().connect(&config).await {
+            Ok(tcp) => tcp,
+            Err(error) => return End::Failed(error.to_string()),
+        };
+        if !late {
+            client.clock().sleep(in_pause).await;
+        }
+        write(&mut tcp, sent.as_bytes())
+            .await
+            .expect("the write works");
+        if fin {
+            poll_fn(|cx| tcp.poll_close(cx))
+                .await
+                .expect("the close works");
+        }
+        read(&mut tcp).await
+    });
     let half = Span::from_nanos(500_000_000);
     network.sim.run_for(half).expect("the run goes on");
     network.server.pause(Span::SECOND);
     network.sim.run_for(half).expect("the run goes on");
     network.until.cancel();
     network.sim.run_for(Span::MINUTE).expect("the run ends");
-    let ended = network
-        .ended
-        .lock()
-        .expect("no panic under the lock")
-        .take();
-    let client = out.lock().expect("no panic under the lock").take();
-    (ended, client)
+    (network.ended(), take(&out))
 }
 
 #[test]
 fn a_cancel_closes_a_stream_that_the_listener_gives_in_the_same_poll() {
-    let (ended, client) = paused(true, String::new());
+    let (ended, client) = paused(true, true, String::new());
     assert_eq!(ended, Some((Ok(()), 0)));
     assert_eq!(client, Some(End::Closed(String::new())));
 }
@@ -637,7 +606,7 @@ fn a_cancel_closes_a_stream_with_bytes_that_arrive_in_the_same_poll() {
     // More bytes than one read of the close takes.
     let pad = "a".repeat(2000);
     let sent = format!("GET /a HTTP/1.1\r\nhost: server\r\nx-pad: {pad}\r\n\r\n");
-    let (ended, client) = paused(false, sent);
+    let (ended, client) = paused(false, false, sent);
     assert_eq!(ended, Some((Ok(()), 0)));
     assert_eq!(client, Some(End::Closed(String::new())));
 }
@@ -645,48 +614,30 @@ fn a_cancel_closes_a_stream_with_bytes_that_arrive_in_the_same_poll() {
 #[test]
 fn a_cancel_closes_a_stream_with_a_request_that_hyper_did_not_read() {
     let mut network = Network::new();
-    let (client, remote) = (network.client.clone(), network.remote);
-    let out = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&out);
-    let handle = network
-        .client
-        .shards()
-        .start(shard("client"), move |_| async move {
-            let config = tcp::Config {
-                remote,
-                options: super::super::OPTIONS,
-            };
-            let mut tcp = client
-                .net()
-                .connect(&config)
-                .await
-                .expect("the server listens");
-            let body = "a".repeat(300_000);
-            let head =
-                "POST /a HTTP/1.1\r\nhost: server\r\ncontent-length: 300000\r\n\r\n";
-            write(&mut tcp, format!("{head}{body}").as_bytes()).await;
-            client.clock().sleep(Span::SECOND).await;
-            // The answer to the first request fills the window, so hyper reads none
-            // of the second.
-            write(&mut tcp, b"GET /b HTTP/1.1\r\nhost: server\r\n\r\n").await;
-            client.clock().sleep(Span::from_nanos(1_500_000_000)).await;
-            *slot.lock().expect("no panic under the lock") = Some(read(&mut tcp).await);
-        })
-        .expect("the shard starts");
-    network.handles.push(handle);
+    let out = network.client(|client, config| async move {
+        let mut tcp = connect(&client, &config).await;
+        let body = "a".repeat(300_000);
+        let head = "POST /a HTTP/1.1\r\nhost: server\r\ncontent-length: 300000\r\n\r\n";
+        let first = format!("{head}{body}");
+        write(&mut tcp, first.as_bytes())
+            .await
+            .expect("the write works");
+        client.clock().sleep(Span::SECOND).await;
+        // The answer to the first request fills the window, so hyper reads none of
+        // the second.
+        let second = b"GET /b HTTP/1.1\r\nhost: server\r\n\r\n";
+        write(&mut tcp, second).await.expect("the write works");
+        client.clock().sleep(Span::from_nanos(1_500_000_000)).await;
+        read(&mut tcp).await
+    });
     network
         .sim
         .run_for(Span::from_nanos(2_000_000_000))
         .expect("the run goes on");
     network.until.cancel();
     network.sim.run_for(Span::MINUTE).expect("the run ends");
-    let ended = network
-        .ended
-        .lock()
-        .expect("no panic under the lock")
-        .take();
-    assert_eq!(ended, Some((Ok(()), 0)));
-    let read = out.lock().expect("no panic under the lock").take();
+    assert_eq!(network.ended(), Some((Ok(()), 0)));
+    let read = take(&out);
     let Some(End::Closed(read)) = read else {
         panic!("the server closes the stream, not {read:?}")
     };
@@ -697,100 +648,50 @@ fn a_cancel_closes_a_stream_with_a_request_that_hyper_did_not_read() {
 #[test]
 fn a_request_that_reaches_a_stream_after_its_close_resets_it() {
     let mut network = Network::new();
-    let (client, remote, until) = (
-        network.client.clone(),
-        network.remote,
-        network.until.clone(),
-    );
-    let out = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&out);
-    let handle = network
-        .client
-        .shards()
-        .start(shard("client"), move |_| async move {
-            let config = tcp::Config {
-                remote,
-                options: super::super::OPTIONS,
-            };
-            let mut tcp = client
-                .net()
-                .connect(&config)
-                .await
-                .expect("the server listens");
-            client.clock().sleep(Span::SECOND).await;
-            write(&mut tcp, b"GET /a HTTP/1.1\r\nhost: server\r\n\r\n").await;
-            until.cancel();
-            client.clock().sleep(Span::SECOND).await;
-            *slot.lock().expect("no panic under the lock") = Some(read(&mut tcp).await);
-        })
-        .expect("the shard starts");
-    network.handles.push(handle);
+    let until = network.until.clone();
+    let out = network.client(|client, config| async move {
+        let mut tcp = connect(&client, &config).await;
+        client.clock().sleep(Span::SECOND).await;
+        let request = b"GET /a HTTP/1.1\r\nhost: server\r\n\r\n";
+        write(&mut tcp, request).await.expect("the write works");
+        until.cancel();
+        client.clock().sleep(Span::SECOND).await;
+        read(&mut tcp).await
+    });
     network.sim.run_for(Span::MINUTE).expect("the run ends");
-    let ended = network
-        .ended
-        .lock()
-        .expect("no panic under the lock")
-        .take();
-    assert_eq!(ended, Some((Ok(()), 0)));
-    let read = out.lock().expect("no panic under the lock").take();
+    assert_eq!(network.ended(), Some((Ok(()), 0)));
     let reset = End::Failed("10.0.0.2:8086 reset the stream".into());
-    assert_eq!(read, Some(reset));
+    assert_eq!(take(&out), Some(reset));
 }
 
 #[test]
 fn an_upload_that_goes_on_after_the_close_resets_the_stream() {
     let mut network = Network::new();
-    let (client, remote, until) = (
-        network.client.clone(),
-        network.remote,
-        network.until.clone(),
-    );
-    let out = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&out);
-    let handle = network
-        .client
-        .shards()
-        .start(shard("client"), move |_| async move {
-            let config = tcp::Config {
-                remote,
-                options: super::super::OPTIONS,
-            };
-            let mut tcp = client
-                .net()
-                .connect(&config)
-                .await
-                .expect("the server listens");
-            let head =
-                "POST /a HTTP/1.1\r\nhost: server\r\ncontent-length: 1000000\r\n\r\n";
-            write(&mut tcp, head.as_bytes()).await;
-            let chunk = "a".repeat(100_000);
-            write(&mut tcp, chunk.as_bytes()).await;
-            until.cancel();
-            let mut rest = chunk.as_bytes();
-            let mut failed = None;
-            while !rest.is_empty() {
-                match poll_fn(|cx| tcp.poll_write(cx, &[IoSlice::new(rest)])).await {
-                    Ok(n) => rest = rest.get(n..).expect("a write fits its buffer"),
-                    Err(error) => {
-                        failed = Some(error.to_string());
-                        break;
-                    }
-                }
-            }
-            client.clock().sleep(Span::SECOND).await;
-            let read = read(&mut tcp).await;
-            *slot.lock().expect("no panic under the lock") = Some((failed, read));
-        })
-        .expect("the shard starts");
-    network.handles.push(handle);
+    let until = network.until.clone();
+    let out = network.client(|client, config| async move {
+        let mut tcp = connect(&client, &config).await;
+        let head =
+            "POST /a HTTP/1.1\r\nhost: server\r\ncontent-length: 1000000\r\n\r\n";
+        write(&mut tcp, head.as_bytes())
+            .await
+            .expect("the write works");
+        let chunk = "a".repeat(100_000);
+        write(&mut tcp, chunk.as_bytes())
+            .await
+            .expect("the write works");
+        until.cancel();
+        let failed = write(&mut tcp, chunk.as_bytes()).await;
+        client.clock().sleep(Span::SECOND).await;
+        (
+            failed.map_err(|error| error.to_string()),
+            read(&mut tcp).await,
+        )
+    });
     network.sim.run_for(Span::MINUTE).expect("the run ends");
-    let ended = network
-        .ended
-        .lock()
-        .expect("no panic under the lock")
-        .take();
-    assert_eq!(ended, Some((Ok(()), 0)));
+    assert_eq!(network.ended(), Some((Ok(()), 0)));
     let reset = "10.0.0.2:8086 reset the stream";
-    let read = out.lock().expect("no panic under the lock").take();
-    assert_eq!(read, Some((Some(reset.into()), End::Failed(reset.into()))));
+    assert_eq!(
+        take(&out),
+        Some((Err(reset.into()), End::Failed(reset.into())))
+    );
 }

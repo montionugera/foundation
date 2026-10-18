@@ -543,7 +543,7 @@ fn a_second_refusal_after_a_release_fails() {
     };
     assert_eq!(
         source.to_string(),
-        "the browse failed with BadNoContinuationPoints"
+        "the browse of opc.tcp://10.0.0.1:4841 failed with BadNoContinuationPoints"
     );
 }
 
@@ -681,7 +681,7 @@ fn internal_error(found: Result<Found, Error>) {
     };
     assert_eq!(
         source.to_string(),
-        "the browse failed with BadInternalError"
+        "the browse of opc.tcp://10.0.0.1:4841 failed with BadInternalError"
     );
 }
 
@@ -1255,7 +1255,7 @@ fn a_cursor_past_the_skip_bound_whose_point_the_server_freed_fails() {
     };
     assert_eq!(
         source.to_string(),
-        "the browse failed with BadContinuationPointInvalid"
+        "the browse of opc.tcp://10.0.0.1:4841 failed with BadContinuationPointInvalid"
     );
 }
 

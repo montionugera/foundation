@@ -197,7 +197,7 @@ async fn accept(
     let (answer, mut cancelled) = (Rc::new(answer), pin!(until.wait()));
     loop {
         let accepted = poll_fn(|cx| {
-            let cancelled = cancelled.as_mut().poll(cx).is_ready();
+            let cancelled = until.cancelled() || cancelled.as_mut().poll(cx).is_ready();
             match listener.poll_accept(cx) {
                 Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
                 Poll::Ready(Ok(tcp)) => Poll::Ready(Ok(Some(tcp))),
@@ -247,10 +247,15 @@ fn close(stream: &mut Stream, cx: &mut Context<'_>) {
         let mut read = ReadBuf::new(&mut bytes);
         match Pin::new(&mut *stream).poll_read(cx, read.unfilled()) {
             Poll::Ready(Ok(())) if !read.filled().is_empty() => {}
-            Poll::Ready(_) | Poll::Pending => break,
+            // An error: the stream has failed, its peer sees it, and `serve` has no
+            // one to tell.
+            Poll::Ready(Ok(()) | Err(_)) | Poll::Pending => break,
         }
     }
-    drop(Pin::new(stream).poll_shutdown(cx));
+    // An error, as of a read.
+    match Pin::new(stream).poll_shutdown(cx) {
+        Poll::Ready(Ok(()) | Err(_)) | Poll::Pending => {}
+    }
 }
 
 async fn respond(
