@@ -74,13 +74,16 @@ The range after round 3 holds only these:
 - each input that `docs/claude/testing.md`, "Fuzzing", asks for, in a commit that
   changes nothing else, with the arm that it reaches and how the author checked it in
   the PR body;
-- one commit that holds only the tests that kill the mutants that the required
-  `mutants` check of CI reports on code of the PR, and changes no other code, with each
-  mutant, the test that kills it, and how the author checked it in the PR body. Another
-  test of round 3 goes in only when it kills such a mutant (`laptop.director`,
+- after each run of the required `mutants` check of CI that reports a mutant on code of
+  the PR, one commit that holds only the tests that kill the mutants of that run, and
+  changes no other code, with each mutant, the test that kills it, and how the author
+  checked it in the PR body. Another test of round 3 goes in only when it kills such a
+  mutant (`laptop.director`,
   https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6238255593, and the
   person's "fine",
-  https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6238287170);
+  https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6238287170; one commit
+  for each run: `laptop.director`,
+  https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256390941);
 - the `Text fixes:` items of round 3, applied as "Second round" step 2 says;
 - each change that an approval or OK of "Done" asks for. The PR links the comment that
   asks for it.

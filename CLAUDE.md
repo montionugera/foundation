@@ -98,11 +98,12 @@ one batch of commits, then asks for the next round. After round 3, only a defect
 behavior, data loss, a crash, or an oracle weakening) gets its fix, with a test that
 fails without it, only a missing fuzz input that `docs/claude/testing.md`, "Fuzzing",
 asks for gets its input, and only a mutant that the required `mutants` check reports on
-code of the PR gets the test that kills it, in one commit that changes only tests. Each
-other finding goes to an issue, other than a missing approval, OK, or link that
-`/review`, "Done", asks for. A design flaw (`/review`, "Round cap") goes to an issue
-only with the OK of its design approver, or the PR closes for a new design. Review hunts
-deep flaws (a wrong design, wrong behavior, lost data), not style.
+code of the PR gets the test that kills it, in one commit for each run of the check that
+changes only tests. Each other finding goes to an issue, other than a missing approval,
+OK, or link that `/review`, "Done", asks for. A design flaw (`/review`, "Round cap")
+goes to an issue only with the OK of its design approver, or the PR closes for a new
+design. Review hunts deep flaws (a wrong design, wrong behavior, lost data), not
+style.
 
 ## 🚨 The repo is the memory 🚨
 
