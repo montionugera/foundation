@@ -192,7 +192,9 @@
   `Key`. A failed file call is `Error::Local(local::Error::Files)`, before
   `NotRunning`, since it can hide an `admin.key` of another version (the wrapped
   variant, `laptop.architect-2`, 2026-10-18T17:34:06Z,
-  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252975559).
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252975559; the
+  order, 2026-10-18T18:01:23Z,
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6253253942).
   `sector::local::read` gives `Local.admin` as `None` for an `admin.key` that is not
   there or that no node wrote, as on a node that joined, and `reach` maps `None` to
   `Error::Key` (`laptop.architect-2`, 2026-10-18T17:28:39Z,
