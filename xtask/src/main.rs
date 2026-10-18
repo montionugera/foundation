@@ -492,6 +492,9 @@ mod tests {
                 "          rustup toolchain install \"$(cat rust-toolchain-nightly)\" \
              --profile minimal \\",
                 "            --component miri,rust-src",
+                "      - uses: taiki-e/install-action@v2",
+                "        with:",
+                "          tool: cargo-nextest@0.9.146",
                 "      - uses: Swatinem/rust-cache@v2",
                 "      - name: Miri",
                 "        env:",

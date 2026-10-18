@@ -400,7 +400,7 @@ jobs:
       - name: Shuttle
         run: cargo xtask shuttle
 
-  # Each shard runs each eighth Miri test, one at a time on each core.
+  # Each shard runs an eighth of the Miri tests.
   miri-shard:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.models != 'false'"
@@ -416,6 +416,9 @@ jobs:
         run: |
           rustup toolchain install "$(cat rust-toolchain-nightly)" --profile minimal \
             --component miri,rust-src
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.146
       - uses: Swatinem/rust-cache@v2
       - name: Miri
         env:

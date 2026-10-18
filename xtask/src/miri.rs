@@ -18,6 +18,9 @@ const PASSES: [&str; 2] = [
     "-Zmiri-strict-provenance -Zmiri-tree-borrows",
 ];
 
+/// The kind of nextest `--partition` that splits the lib tests between shards.
+const PARTITION: &str = "slice";
+
 /// Crates whose `unsafe` code only calls the OS or C, which Miri cannot run. Tests on
 /// the real OS check `os` (BLOCK MEMORY), and `cargo xtask sanitizers` checks
 /// `connector-opcua`.
@@ -32,8 +35,7 @@ pub(crate) fn packages(metadata: &Value) -> Result<Vec<select::Package>, String>
     Ok(packages)
 }
 /// A part of the Miri tests for one CI job: of the units in order, each `count`th one
-/// from `index`.
-/// `count`th one from `index`.
+/// from `index`, and the nextest partition of the lib tests with the same numbers.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Shard {
     index: usize,
@@ -69,16 +71,26 @@ impl Shard {
             .step_by(self.count)
             .collect()
     }
+
+    /// The nextest `--partition` of this shard, whose index starts at 1.
+    fn partition(self) -> String {
+        format!("{PARTITION}:{}/{}", self.index + 1, self.count)
+    }
+}
+
+impl fmt::Display for Shard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.index, self.count)
+    }
 }
 
 /// The names of tests.
 type Tests = BTreeSet<String>;
 
-/// What one unit of a crate's tests runs.
+/// What one unit of a crate's tests runs, other than its lib tests, which nextest
+/// runs.
 #[derive(Clone, Debug, PartialEq)]
 enum Part {
-    /// A test of the lib target, by its name.
-    Test(String),
     /// The doc tests of the lib target.
     Doc,
     /// Each test of a target of `kind` (`test`, `bin`, `example`, or `bench`), by its
@@ -90,9 +102,6 @@ impl Part {
     /// The arguments of `cargo miri test` that run this part.
     fn args(&self) -> Vec<String> {
         match self {
-            Self::Test(test) => {
-                ["--lib", "--", "--exact", test].map(String::from).into()
-            }
             Self::Doc => vec!["--doc".to_string()],
             Self::Target { kind, name } => vec![format!("--{kind}"), name.clone()],
         }
@@ -111,7 +120,6 @@ impl Part {
 impl fmt::Display for Part {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Test(test) => write!(f, "the test `{test}`"),
             Self::Doc => f.write_str("the doc tests"),
             Self::Target { kind, name } => write!(f, "the {kind} target `{name}`"),
         }
@@ -167,21 +175,18 @@ impl Crate {
         Ok(read)
     }
 
-    /// The parts of its tests that Miri runs, where `list` gives the tests of the
-    /// target that its argument selects (`--lib` or `--doc`) that Miri runs.
+    /// The parts of its tests that `cargo miri test` runs, where `doc` gives the doc
+    /// tests of a package that Miri runs.
     ///
     /// # Errors
     ///
-    /// An error of `list`.
+    /// An error of `doc`.
     fn parts(
         self,
-        mut list: impl FnMut(&select::Package, &str) -> Result<Tests, String>,
+        doc: impl FnOnce(&select::Package) -> Result<Tests, String>,
     ) -> Result<(select::Package, Vec<Part>), String> {
         let mut parts = Vec::new();
-        if self.lib {
-            parts.extend(list(&self.package, "--lib")?.into_iter().map(Part::Test));
-        }
-        if self.doc && !list(&self.package, "--doc")?.is_empty() {
+        if self.doc && !doc(&self.package)?.is_empty() {
             parts.push(Part::Doc);
         }
         parts.extend(self.targets);
@@ -198,15 +203,38 @@ fn crates(metadata: &Value) -> Result<Vec<Crate>, String> {
         .collect()
 }
 
-/// The units of `shard`, and a problem for each crate of `crates` with no part. Each
-/// pass of a part comes after the one before it, so the passes of a slow test fall in
-/// different shards.
-fn plan(
-    crates: &[(select::Package, Vec<Part>)],
+/// The id of each package with a test in `list`, the JSON of `cargo nextest list`,
+/// that it does not ignore.
+///
+/// # Errors
+///
+/// A missing field.
+fn tested(list: &Value) -> Result<BTreeSet<String>, String> {
+    let suites = (list.get("rust-suites").and_then(Value::as_object))
+        .ok_or("`cargo nextest list` gave no `rust-suites`")?;
+    let mut tested = BTreeSet::new();
+    for suite in suites.values() {
+        let cases = (suite.get("testcases").and_then(Value::as_object))
+            .ok_or("a suite of `cargo nextest list` has no `testcases`")?;
+        for case in cases.values() {
+            if !field::flag(case, "ignored")? {
+                tested.insert(field::text(suite, "package-id")?.to_string());
+            }
+        }
+    }
+    Ok(tested)
+}
+
+/// The units of `shard`, and a problem for each crate of `crates` with no part whose
+/// id `tested` does not hold. Each pass of a part comes after the one before it, so
+/// the passes of a slow target fall in different shards.
+fn plan<'a>(
+    crates: &'a [(select::Package, Vec<Part>)],
+    tested: &BTreeSet<String>,
     shard: Shard,
-) -> (Vec<Unit<'_>>, Vec<String>) {
+) -> (Vec<Unit<'a>>, Vec<String>) {
     let problems = (crates.iter())
-        .filter(|(_, parts)| parts.is_empty())
+        .filter(|(package, parts)| parts.is_empty() && !tested.contains(&package.id))
         .map(|(package, _)| {
             format!(
                 "`{}` names `unsafe_code` but runs no tests under Miri. Add tests that \
@@ -228,7 +256,7 @@ fn problem(run: &Run, flags: &str, name: &str, part: &Part) -> Option<String> {
         Run::Failed => {
             Some(format!("Miri with `{flags}` failed on {part} of `{name}`"))
         }
-        // Each test that a part names is listed and not ignored.
+        // The doc tests are listed and not ignored.
         Run::Empty => Some(format!(
             "Miri with `{flags}` ran none of {part} of `{name}`"
         )),
@@ -236,12 +264,13 @@ fn problem(run: &Run, flags: &str, name: &str, part: &Part) -> Option<String> {
     }
 }
 
-/// Runs `cargo miri test` on the units of `shard`, of each pass in [`PASSES`] and each
-/// crate of [`packages`], one at a time on each core: a core takes the next unit that
-/// no core took. A unit is a test of a lib target, the doc tests, or each other test
-/// target whole. It uses rustup and the nightly in `rust-toolchain-nightly`. It fails
-/// when a test fails, when a run of a lib test or of the doc tests runs none, or when
-/// a crate has no test that Miri runs.
+/// Runs the Miri tests of `shard`, of each pass in [`PASSES`] and each crate of
+/// [`packages`]. `cargo miri nextest` runs the lib tests of the partition of `shard`,
+/// one process for each test, and fails when the partition has none. `cargo miri test`
+/// runs the doc tests of a crate, or another test target, whole, one at a time on each
+/// core. It uses rustup, the nightly in `rust-toolchain-nightly`, and the
+/// `cargo-nextest` on the `PATH`. It fails when a test fails, when a run of the doc
+/// tests runs none, or when a crate has no test that Miri runs.
 pub(crate) fn run(root: &Path, shard: Shard) -> Result<(), Vec<String>> {
     let nightly = crate::nightly::Toolchain::read(root).map_err(|e| vec![e])?;
     let metadata = crate::metadata(root).map_err(|e| vec![e])?;
@@ -250,11 +279,26 @@ pub(crate) fn run(root: &Path, shard: Shard) -> Result<(), Vec<String>> {
         eprintln!("no crate names `unsafe_code`, so Miri has nothing to check");
         return Ok(());
     }
+    let libs: Vec<_> = (crates.iter())
+        .filter(|found| found.lib)
+        .map(|found| found.package.id.clone())
+        .collect();
+    let tested = if libs.is_empty() {
+        BTreeSet::new()
+    } else {
+        tested(&list(&nightly, &libs).map_err(|e| vec![e])?).map_err(|e| vec![e])?
+    };
     let crates = (crates.into_iter())
-        .map(|found| found.parts(|package, target| listed(&nightly, package, target)))
+        .map(|found| found.parts(|package| doc_tests(&nightly, package)))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| vec![e])?;
-    let (units, mut problems) = plan(&crates, shard);
+    let (units, mut problems) = plan(&crates, &tested, shard);
+    if !libs.is_empty() {
+        for flags in PASSES {
+            problems
+                .extend(nextest(&nightly, &libs, flags, shard).map_err(|e| vec![e])?);
+        }
+    }
     let next = AtomicUsize::new(0);
     #[expect(clippy::disallowed_methods, reason = "a dev tool uses each core")]
     let workers = thread::available_parallelism().map_or(1, usize::from);
@@ -297,30 +341,60 @@ fn worker(
     while let Some(&(flags, package, part)) =
         units.get(next.fetch_add(1, Ordering::Relaxed))
     {
-        let mut command = command(nightly, package, flags);
+        let mut command = command(nightly, &package.id, flags);
         let run = part.outcome(libtest::run(command.args(part.args()))?);
         problems.extend(problem(&run, flags, &package.name, part));
     }
     Ok(problems)
 }
 
-/// The tests that Miri runs of the target of `package` that `target` selects
-/// (`--lib` or `--doc`): each that it lists and does not ignore.
-fn listed(
+/// The JSON of `cargo miri nextest list` of the lib tests of the packages `libs`.
+fn list(nightly: &crate::nightly::Toolchain, libs: &[String]) -> Result<Value, String> {
+    let mut command = nextest_command(nightly, "list", libs, PASSES[0]);
+    command.args(["--message-format", "json"]);
+    let output = (command.stderr(Stdio::inherit()).output())
+        .map_err(|e| format!("{}: {e}", command.get_program().to_string_lossy()))?;
+    if !output.status.success() {
+        return Err(
+            "`cargo miri nextest list` could not list the lib tests".to_string()
+        );
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("`cargo miri nextest list` gave no JSON: {e}"))
+}
+
+/// Runs the lib tests of the packages `libs` in the partition of `shard` with
+/// `flags`, and gives the problem when they do not pass.
+fn nextest(
+    nightly: &crate::nightly::Toolchain,
+    libs: &[String],
+    flags: &str,
+    shard: Shard,
+) -> Result<Option<String>, String> {
+    let mut command = nextest_command(nightly, "run", libs, flags);
+    command.args(["--partition", &shard.partition(), "--no-tests", "fail"]);
+    let status = (command.status())
+        .map_err(|e| format!("{}: {e}", command.get_program().to_string_lossy()))?;
+    Ok((!status.success()).then(|| {
+        format!("Miri with `{flags}` failed on the lib tests of shard {shard}")
+    }))
+}
+
+/// The doc tests of `package` that Miri runs: each that it lists and does not ignore.
+fn doc_tests(
     nightly: &crate::nightly::Toolchain,
     package: &select::Package,
-    target: &str,
 ) -> Result<Tests, String> {
     let list = |args: &[&str]| {
-        let mut command = command(nightly, package, PASSES[0]);
+        let mut command = command(nightly, &package.id, PASSES[0]);
         command
-            .args([target, "--", "--list", "--format", "terse"])
+            .args(["--doc", "--", "--list", "--format", "terse"])
             .args(args);
         let output = (command.stderr(Stdio::inherit()).output())
             .map_err(|e| format!("{}: {e}", command.get_program().to_string_lossy()))?;
         if !output.status.success() {
             return Err(format!(
-                "Miri could not list the tests of `{target}` in `{}`",
+                "Miri could not list the doc tests of `{}`",
                 package.name
             ));
         }
@@ -337,16 +411,30 @@ fn names(output: &str) -> Tests {
         .collect()
 }
 
-/// The command that runs Miri with `flags` on `package`, on the toolchain `nightly`.
-fn command(
+/// The command that runs Miri with `flags` on the package `id`, on the toolchain
+/// `nightly`.
+fn command(nightly: &crate::nightly::Toolchain, id: &str, flags: &str) -> Command {
+    let mut command = nightly.cargo();
+    command
+        .args(["miri", "test", "-p", id])
+        .env("MIRIFLAGS", flags);
+    command
+}
+
+/// The command `cargo miri nextest <action>` of the lib tests of the packages `libs`,
+/// with `flags`.
+fn nextest_command(
     nightly: &crate::nightly::Toolchain,
-    package: &select::Package,
+    action: &str,
+    libs: &[String],
     flags: &str,
 ) -> Command {
     let mut command = nightly.cargo();
-    command
-        .args(["miri", "test", "-p", &package.id])
-        .env("MIRIFLAGS", flags);
+    command.args(["miri", "nextest", action, "--lib"]);
+    for id in libs {
+        command.args(["-p", id]);
+    }
+    command.env("MIRIFLAGS", flags);
     command
 }
 
@@ -371,7 +459,7 @@ mod tests {
             name: "model".to_string(),
         };
         let nightly = crate::nightly::Toolchain::new("/w", "nightly-x");
-        let command = command(&nightly, &package, PASSES[0]);
+        let command = command(&nightly, &package.id, PASSES[0]);
         let args: Vec<_> = command.get_args().collect();
         assert_eq!(
             args,
@@ -427,10 +515,8 @@ mod tests {
     fn problem_names_each_run_that_does_not_pass_and_its_part() {
         let problem = |run, part| problem(&run, "-Zmiri-x", "model", &part);
         assert_eq!(
-            problem(Run::Failed, Part::Test("a::b".to_string())),
-            Some(
-                "Miri with `-Zmiri-x` failed on the test `a::b` of `model`".to_string()
-            )
+            problem(Run::Failed, Part::Doc),
+            Some("Miri with `-Zmiri-x` failed on the doc tests of `model`".to_string())
         );
         assert_eq!(
             problem(Run::Failed, target("test", "it")),
@@ -450,22 +536,16 @@ mod tests {
 
     #[test]
     fn a_part_gives_the_arguments_that_run_it() {
-        assert_eq!(
-            Part::Test("a::b".to_string()).args(),
-            ["--lib", "--", "--exact", "a::b"]
-        );
         assert_eq!(Part::Doc.args(), ["--doc"]);
         assert_eq!(target("bench", "fast").args(), ["--bench", "fast"]);
     }
 
     #[test]
     fn only_an_empty_run_of_a_target_passes() {
-        let test = Part::Test("a".to_string());
         assert_eq!(target("test", "it").outcome(Run::Empty), Run::Passed);
         assert_eq!(target("test", "it").outcome(Run::Failed), Run::Failed);
-        assert_eq!(test.outcome(Run::Empty), Run::Empty);
-        assert_eq!(test.outcome(Run::Passed), Run::Passed);
         assert_eq!(Part::Doc.outcome(Run::Empty), Run::Empty);
+        assert_eq!(Part::Doc.outcome(Run::Passed), Run::Passed);
     }
 
     #[test]
@@ -526,54 +606,105 @@ mod tests {
     }
 
     #[test]
-    fn a_crate_has_each_listed_test_its_doc_tests_when_listed_and_its_targets() {
-        let found = |lib, doc| Crate {
+    fn a_crate_has_its_doc_tests_when_listed_and_its_targets() {
+        let found = |doc| Crate {
             package: model(),
-            lib,
+            lib: true,
             doc,
             targets: vec![target("test", "it")],
         };
         let mut asked = Vec::new();
-        let mut list = |package: &select::Package, target: &str| {
-            asked.push((package.name.clone(), target.to_string()));
-            Ok(match target {
-                "--lib" => ["b", "a"].map(String::from).into(),
-                _ => BTreeSet::from(["src/lib.rs - c (line 3)".to_string()]),
-            })
-        };
-        let parts = vec![
-            Part::Test("a".to_string()),
-            Part::Test("b".to_string()),
-            Part::Doc,
-            target("test", "it"),
-        ];
-        assert_eq!(found(true, true).parts(&mut list), Ok((model(), parts)));
-        assert_eq!(
-            found(false, false).parts(&mut list),
-            Ok((model(), vec![target("test", "it")]))
-        );
-        let asked_for = |target: &str| ("model".to_string(), target.to_string());
-        assert_eq!(asked, [asked_for("--lib"), asked_for("--doc")]);
-        let none = found(false, true).parts(|_, _| Ok(BTreeSet::new()));
-        assert_eq!(none, Ok((model(), vec![target("test", "it")])));
-        let failed = found(true, false).parts(|_, _| Err("no list".to_string()));
+        let listed = found(true).parts(|package| {
+            asked.push(package.name.clone());
+            Ok(BTreeSet::from(["src/lib.rs - c (line 3)".to_string()]))
+        });
+        let parts = vec![Part::Doc, target("test", "it")];
+        assert_eq!(listed, Ok((model(), parts)));
+        assert_eq!(asked, ["model"]);
+        let only = Ok((model(), vec![target("test", "it")]));
+        assert_eq!(found(false).parts(|_| panic!("no doc tests to list")), only);
+        assert_eq!(found(true).parts(|_| Ok(BTreeSet::new())), only);
+        let failed = found(true).parts(|_| Err("no list".to_string()));
         assert_eq!(failed, Err("no list".to_string()));
     }
 
     #[test]
     fn a_crate_with_no_test_that_miri_runs_is_a_problem() {
-        let found = Crate {
-            package: model(),
-            lib: true,
-            doc: true,
-            targets: vec![],
-        };
-        let crates = [found.parts(|_, _| Ok(BTreeSet::new())).unwrap()];
-        let (units, problems) = plan(&crates, Shard::ALL);
+        let crates = [(model(), vec![])];
+        let (units, problems) = plan(&crates, &BTreeSet::new(), Shard::ALL);
         assert_eq!(units, []);
         let problem = "`model` names `unsafe_code` but runs no tests under Miri. Add \
                        tests that reach its unsafe code.";
         assert_eq!(problems, [problem]);
+        let tested = BTreeSet::from([model().id]);
+        let (_, problems) = plan(&crates, &tested, Shard::ALL);
+        assert_eq!(problems, Vec::<String>::new());
+    }
+
+    #[test]
+    fn tested_holds_each_package_with_a_test_that_nextest_does_not_ignore() {
+        let suite = |id: &str, ignored: &[bool]| {
+            let cases: serde_json::Map<_, _> = (ignored.iter().enumerate())
+                .map(|(i, &ignored)| (format!("t{i}"), json!({ "ignored": ignored })))
+                .collect();
+            json!({ "package-id": id, "testcases": cases })
+        };
+        let list = json!({ "rust-suites": {
+            "a": suite("a#0", &[true, false]),
+            "b": suite("b#0", &[true]),
+            "c": suite("c#0", &[]),
+        }});
+        assert_eq!(tested(&list), Ok(BTreeSet::from(["a#0".to_string()])));
+        assert_eq!(
+            tested(&json!({})),
+            Err("`cargo nextest list` gave no `rust-suites`".to_string())
+        );
+        assert_eq!(
+            tested(&json!({ "rust-suites": { "a": {} } })),
+            Err("a suite of `cargo nextest list` has no `testcases`".to_string())
+        );
+    }
+
+    #[test]
+    fn names_are_the_tests_of_a_terse_list() {
+        let output = "a::b: test\nsrc/lib.rs - c (line 3): test\nd: bench\n\n";
+        let expected = ["a::b", "src/lib.rs - c (line 3)"].map(String::from);
+        assert_eq!(names(output), BTreeSet::from(expected));
+    }
+
+    #[test]
+    fn a_shard_gives_its_nextest_partition_from_1() {
+        let shard = Shard { index: 7, count: 8 };
+        assert_eq!(shard.partition(), "slice:8/8");
+        assert_eq!(shard.to_string(), "7/8");
+        assert_eq!(Shard::ALL.partition(), "slice:1/1");
+    }
+
+    #[test]
+    fn nextest_runs_the_lib_tests_of_each_package_with_the_flags() {
+        let nightly = crate::nightly::Toolchain::new("/w", "nightly-x");
+        let libs = ["a#0", "b#0"].map(String::from);
+        let command = nextest_command(&nightly, "run", &libs, PASSES[1]);
+        let args: Vec<_> = command.get_args().collect();
+        let expected = [
+            "run",
+            "nightly-x",
+            "cargo",
+            "miri",
+            "nextest",
+            "run",
+            "--lib",
+            "-p",
+            "a#0",
+            "-p",
+            "b#0",
+        ];
+        assert_eq!(args, expected);
+        let flags = command.get_envs().find(|(key, _)| *key == "MIRIFLAGS");
+        assert_eq!(
+            flags,
+            Some(("MIRIFLAGS".as_ref(), Some(PASSES[1].as_ref())))
+        );
     }
 
     #[test]
@@ -582,12 +713,12 @@ mod tests {
             id: "path+file:///w/crates/other#0.0.0".to_string(),
             name: "other".to_string(),
         };
-        let (a, it) = (Part::Test("a".to_string()), target("test", "it"));
+        let (a, it) = (target("bin", "a"), target("test", "it"));
         let crates = [
             (model(), vec![a.clone(), Part::Doc]),
             (other(), vec![it.clone()]),
         ];
-        let (units, problems) = plan(&crates, Shard::ALL);
+        let (units, problems) = plan(&crates, &BTreeSet::new(), Shard::ALL);
         assert_eq!(problems, Vec::<String>::new());
         let [first, second] = PASSES;
         assert_eq!(
@@ -601,7 +732,7 @@ mod tests {
                 (second, &other(), &it),
             ]
         );
-        let (units, _) = plan(&crates, Shard { index: 1, count: 2 });
+        let (units, _) = plan(&crates, &BTreeSet::new(), Shard { index: 1, count: 2 });
         assert_eq!(
             units,
             [

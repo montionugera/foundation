@@ -28,8 +28,12 @@ exclude_re = [
   # Miri needs the pinned nightly, which only the miri shard CI jobs install. A
   # deliberate break in those jobs shows that they fail.
   'xtask/src/miri\.rs:.*(replace run ->| in run$)',
-  # Lists the tests of a target through Miri, with the same nightly.
-  'xtask/src/miri\.rs:.*(replace listed ->| in listed$)',
+  # Lists the doc tests through Miri, with the same nightly.
+  'xtask/src/miri\.rs:.*(replace doc_tests ->| in doc_tests$)',
+  # Lists the lib tests through nextest under Miri, with the same nightly.
+  'xtask/src/miri\.rs:.*(replace list ->| in list$)',
+  # Runs the lib tests through nextest under Miri, with the same nightly.
+  'xtask/src/miri\.rs:.*(replace nextest ->| in nextest$)',
   # Runs each unit through Miri, with the same nightly.
   'xtask/src/miri\.rs:.*(replace worker ->| in worker$)',
   # The run needs the pinned nightly, which the mutants job does not install. A planted
