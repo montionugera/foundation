@@ -105,7 +105,7 @@ fn deadline_carry(bencher: Bencher<'_, '_>) {
     bencher
         .counter(ItemsCount::new(31_usize))
         .with_inputs(|| {
-            let mut deadline = Deadline::new(32, 64 + PHASE);
+            let mut deadline = Deadline::resident(32, 64 + PHASE);
             for _ in 0..12 {
                 deadline.commit(4096);
             }
