@@ -123,7 +123,8 @@ fn udp(port: &transport::Port) -> SocketAddr {
 /// two tests seldom try the same ports. Panics as [`unpicked_from`] does.
 pub(crate) fn unpicked<T>(bind: impl FnMut(SocketAddr) -> Result<T, Error>) -> T {
     let ports = u64::from(UNPICKED.end - UNPICKED.start);
-    let start = u16::try_from(os::entropy().rng().below(ports)).expect("a port");
+    let start = u16::try_from(os::entropy().rng().below(ports))
+        .expect("a start below 31744 fits a u16");
     unpicked_from(UNPICKED.start + start, bind)
 }
 
@@ -180,19 +181,25 @@ fn first_picked() -> u16 {
 #[test]
 fn this_host_picks_no_port_of_unpicked() {
     let first = first_picked();
-    assert!(UNPICKED.end <= first, "first picked {first}");
+    assert!(
+        UNPICKED.end <= first,
+        "this host picks from port {first}, inside {UNPICKED:?}"
+    );
 }
 
 #[test]
 fn a_free_port_is_unpicked() {
     let port = free().port();
-    assert!(UNPICKED.contains(&port), "{port}");
+    assert!(
+        UNPICKED.contains(&port),
+        "port {port} is not in {UNPICKED:?}"
+    );
 }
 
 #[test]
 fn free_ports_start_at_a_random_port() {
     let ports: BTreeSet<u16> = (0..8).map(|_| free().port()).collect();
-    assert!(ports.len() > 1, "{ports:?}");
+    assert!(ports.len() > 1, "eight picks gave one port: {ports:?}");
 }
 
 #[test]

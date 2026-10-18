@@ -427,14 +427,20 @@ fn a_stopped_influx_refuses_and_serves_again_on_its_port_with_what_it_stored() {
 fn a_served_influx_is_unpicked() {
     let mut influx = Influx::default();
     let port = influx.serve().port();
-    assert!(UNPICKED.contains(&port), "{port}");
+    assert!(
+        UNPICKED.contains(&port),
+        "port {port} is not in {UNPICKED:?}"
+    );
 }
 
 #[test]
 fn a_served_opcua_is_unpicked() {
     let mut opcua = Opcua::default();
     let port = opcua.serve().port();
-    assert!(UNPICKED.contains(&port), "{port}");
+    assert!(
+        UNPICKED.contains(&port),
+        "port {port} is not in {UNPICKED:?}"
+    );
 }
 
 #[test]
