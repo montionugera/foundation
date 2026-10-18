@@ -245,7 +245,7 @@ impl Writes {
     }
 
     /// Each channel that it implies: the status index, then the data.
-    fn implied_names(&self) -> impl Iterator<Item = &Name> {
+    pub(crate) fn implied_names(&self) -> impl Iterator<Item = &Name> {
         let data = self.data.iter().map(|(name, _)| name);
         std::iter::once(&self.index).chain(data)
     }
