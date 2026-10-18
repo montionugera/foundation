@@ -108,9 +108,7 @@
   the file of the connector block with the blocks of each `Pick` added, and an `Outcome`
   for each pick: `Added { name, fills }`, `Unnamed`, or `Present`. A pick is present
   when a block of the connector body or an earlier pick that adds a channel has its tag
-  as `Table::tag` gives it, and takes no name (`laptop.architect-2`, ruling A on round 1
-  finding 4,
-  https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245234973). A pick
+  as `Table::tag` gives it, and takes no name (`laptop.architect-2`, 2026-10-18T03:34:05Z, ruling A on round 1 finding 4 of #3109: https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245234973, on item 3 of https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245080635). A pick
   that ends `Unnamed` makes no later pick of its tag present, so `add` names until no
   pick changes. Lost: one pass that names each pick that the body does not have, then
   marks the later picks of its tag `Present`, as it spends a suffix and checks a given
@@ -128,8 +126,7 @@
   `<default>`", with the default of `names` when the refused names are `None`, or "Give
   another name" when that default is `None`. `add` gives no problem of a block outside
   the connector block other than `config.private-key`. An `index` that is not a name, in
-  the `channel` block of the first channel that the connector writes that has one, gives
-  its diagnostic. `Outcome`, `Pick`, `add`, the errors, and the name order:
+  the `channel` block of the first channel that the connector writes that has one, gives its diagnostic. The implied names of the other connectors with their counts, the diagnostic of a bad `index`, "or that the connector writes", and "other than `config.private-key`": `laptop.architect-2`, 2026-10-18T03:14:04Z, items 2 and 4 (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245080635), and 2026-10-18T03:34:05Z (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245234973). `Outcome`, `Pick`, `add`, the errors, and the name order:
   `laptop.architect-2`, 2026-10-18T02:10:56Z, items 2, 3, 4, 5, and 11
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074).
   Supersedes
