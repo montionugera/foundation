@@ -909,10 +909,10 @@ impl Logs {
         );
         let mut budget = self.laps.budget();
         self.hidden = tail;
-        while let Some(group) = self.items.pop(tail) {
-            budget.trimmed(group.holders.len());
-            let offset = group.offset;
-            group.for_each(|held| {
+        while let Some(span) = self.items.pop(tail) {
+            budget.trimmed(span.holders.len());
+            let offset = span.offset;
+            span.for_each(|held| {
                 if let Held::Tail(at) = held {
                     let log = nth_mut(&mut self.paths, at);
                     if log.trim(offset, self.area) {
@@ -952,17 +952,17 @@ impl Logs {
         carried.from = self.scanned;
         let mut walk = carry::count(room).saturating_mul(FILL);
         let mut stop = None;
-        for group in self.items.records(self.scanned) {
-            if group.offset >= reach {
-                let walked = walk.checked_sub(group.holders.len());
+        for span in self.items.records(self.scanned) {
+            if span.offset >= reach {
+                let walked = walk.checked_sub(span.holders.len());
                 let Some(left) = walked.filter(|_| !carried.is_empty()) else {
-                    stop = Some(group.number);
+                    stop = Some(span.number);
                     break;
                 };
                 walk = left;
             }
-            let (number, taken) = (group.number, carried.taken());
-            if !self.take(group, room, carried) {
+            let (number, taken) = (span.number, carried.taken());
+            if !self.take(span, room, carried) {
                 carried.truncate(taken);
                 stop = Some(number);
                 break;
@@ -971,17 +971,17 @@ impl Logs {
         self.scanned = stop.unwrap_or_else(|| self.items.added());
     }
 
-    /// Adds to `carried` the holders of the items of `group` that still hold its
+    /// Adds to `carried` the holders of the items of `span` that still hold its
     /// record, and returns whether they all fit in `room` bytes, as [`Carried::tail`]
     /// and [`Carried::copy`] give it.
     fn take(
         &self,
-        group: Group<impl Iterator<Item = Holder>>,
+        span: Span<impl Iterator<Item = Holder>>,
         room: usize,
         carried: &mut Carried,
     ) -> bool {
-        let offset = group.offset;
-        group.all(|held| {
+        let offset = span.offset;
+        span.all(|held| {
             !self.holds(held, offset)
                 || match held {
                     Held::Tail(at) => carried.tail(nth(&self.paths, at), at, room),
@@ -1611,13 +1611,13 @@ impl Items {
     }
 
     /// Removes the front record when it is before `tail`, and gives its items.
-    fn pop(&mut self, tail: u64) -> Option<Group<Drain<'_, Holder>>> {
+    fn pop(&mut self, tail: u64) -> Option<Span<Drain<'_, Holder>>> {
         let &(offset, end) =
             self.records.front().filter(|&&(offset, _)| offset < tail)?;
         self.records.pop_front();
         let count = self.index(end.next());
         let number = mem::replace(&mut self.base, end.next());
-        Some(Group {
+        Some(Span {
             number,
             offset,
             copied: end.copied(),
@@ -1630,7 +1630,7 @@ impl Items {
     fn records(
         &self,
         from: u64,
-    ) -> impl Iterator<Item = Group<Copied<Iter<'_, Holder>>>> {
+    ) -> impl Iterator<Item = Span<Copied<Iter<'_, Holder>>>> {
         let mut start = from.max(self.base);
         let first = self
             .records
@@ -1639,7 +1639,7 @@ impl Items {
             let number = start;
             start = end.next();
             let holders = self.holders.range(self.index(number)..self.index(start));
-            Group {
+            Span {
                 number,
                 offset,
                 copied: end.copied(),
@@ -1651,10 +1651,10 @@ impl Items {
     /// Each item from the number `from`, or from the front item when it is past, with
     /// its number and the offset of its record, oldest first.
     fn since(&self, from: u64) -> impl Iterator<Item = (u64, u64, Held)> + '_ {
-        self.records(from).flat_map(|group| {
-            let offset = group.offset;
-            (group.number..)
-                .zip(group.holders)
+        self.records(from).flat_map(|span| {
+            let offset = span.offset;
+            (span.number..)
+                .zip(span.holders)
                 .map(move |(number, holder)| (number, offset, holder.held()))
         })
     }
@@ -1670,7 +1670,7 @@ impl Items {
 
 /// The items of a record from a number, as [`Items::records`] and [`Items::pop`]
 /// give them.
-struct Group<I> {
+struct Span<I> {
     /// The number of the first of these items.
     number: u64,
     /// The offset of the record.
@@ -1681,7 +1681,7 @@ struct Group<I> {
     holders: I,
 }
 
-impl<I: Iterator<Item = Holder>> Group<I> {
+impl<I: Iterator<Item = Holder>> Span<I> {
     /// Whether `f` is true of what each item holds, in item order. It stops at the
     /// first that is false.
     fn all(self, mut f: impl FnMut(Held) -> bool) -> bool {
@@ -1724,6 +1724,12 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     fn a_copy_takes_72_bytes() {
         assert_eq!(size_of::<Newest>(), 72);
+    }
+
+    /// A record of `Items` takes 16 bytes: its end holds the copy mark.
+    #[test]
+    fn a_record_of_the_items_takes_16_bytes() {
+        assert_eq!(size_of::<(u64, End)>(), 16);
     }
 
     proptest! {
@@ -2933,20 +2939,20 @@ mod tests {
         items.push(4096, Holder::tail(1));
         items.push(4096, Holder::copy(2));
         items.push(8192, Holder::tail(3));
-        let popped = |group: Group<Drain<'_, Holder>>| {
-            let (number, offset, copied) = (group.number, group.offset, group.copied);
+        let popped = |span: Span<Drain<'_, Holder>>| {
+            let (number, offset, copied) = (span.number, span.offset, span.copied);
             let mut held = Vec::new();
-            group.for_each(|one| held.push(one));
+            span.for_each(|one| held.push(one));
             (number, offset, copied, held)
         };
-        let group = items.pop(8192).expect("a record before the tail");
+        let span = items.pop(8192).expect("a record before the tail");
         assert_eq!(
-            popped(group),
+            popped(span),
             (0, 4096, true, vec![Held::Tail(1), Held::Copy(2)])
         );
         assert!(items.pop(8192).is_none(), "only the record at 8192 is left");
-        let group = items.pop(12288).expect("a record before the tail");
-        assert_eq!(popped(group), (2, 8192, false, vec![Held::Tail(3)]));
+        let span = items.pop(12288).expect("a record before the tail");
+        assert_eq!(popped(span), (2, 8192, false, vec![Held::Tail(3)]));
     }
 
     /// No node holds 2^63 items, so only this test tells `<` from `<=` in `End::new`.
@@ -2973,10 +2979,12 @@ mod tests {
         logs.walk(slot(1), &tagged, 4096).expect("walks");
         logs.walk(slot(2), &header(2, Path::Live, 0, 1, Some(20)), 4096)
             .expect("walks");
+        let tag = NonZeroU8::new(2).expect("not 0");
         let mut carried = Carried::default();
         logs.carry(8192, 4000, &mut carried);
-        assert_eq!((carried.tails().len(), carried.copies.len()), (2, 1));
+        assert_eq!(carried.tails().len(), 2);
         logs.hold(&carried, 8192);
+        assert_eq!(logs.holder(slot(1), Path::Live, tag), Some(8192));
         logs.hide(8192);
         assert_eq!(logs.kept(), Some(8192));
     }
@@ -2992,9 +3000,9 @@ mod tests {
         items.push(12288, Holder::tail(4));
         let records: Vec<_> = items
             .records(1)
-            .map(|group| {
-                let holders: Vec<_> = group.holders.map(Holder::held).collect();
-                (group.number, group.offset, group.copied, holders)
+            .map(|span| {
+                let holders: Vec<_> = span.holders.map(Holder::held).collect();
+                (span.number, span.offset, span.copied, holders)
             })
             .collect();
         assert_eq!(
@@ -3680,7 +3688,7 @@ mod tests {
             .map(|log| log.runs.capacity() * size_of::<Run>())
             .sum();
         let items = logs.items.holders.capacity() * size_of::<Holder>()
-            + logs.items.records.capacity() * size_of::<(u64, u64)>();
+            + logs.items.records.capacity() * size_of::<(u64, End)>();
         (runs, items)
     }
 
