@@ -1022,6 +1022,18 @@ fn an_error_goes_to_the_log_with_the_span_of_the_loop() {
 }
 
 #[test]
+fn a_fatal_message_goes_to_the_log_as_an_error() {
+    let lines = logged(|f| {
+        // SAFETY: the loop lives, and the text ends with a NUL.
+        unsafe { ffi::test::shim_log_fatal(f.events.raw(), c"gone".as_ptr()) };
+    });
+    assert_eq!(
+        lines,
+        [r#"ERROR gone connector="press" kind="opcua" category="client""#]
+    );
+}
+
+#[test]
 fn a_warning_goes_to_the_log_and_an_info_message_does_not() {
     assert_eq!(
         logged(|f| connect(f, c"bad:url")),
