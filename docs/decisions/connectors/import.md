@@ -152,3 +152,52 @@
   Supersedes
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6213124219, item 5:
   the second call of `names` by `ops`.
+- **IMPORT OP (C1, #2705)** `foundation import <CONNECTOR> <FILES>... (--point <PATH>...
+  | --match <PATTERN>) [--start <PATH>] [--name <NAME>=<PATH>]...` and the MCP tool
+  `import` (`connector`, `files`, `points` of `{path, name}` with `name` optional, or
+  `match`, and `start`) add the config of points to the file of the connector block.
+  `--name` also picks its point, after each `--point`. The node makes the change:
+  `serve` runs the checks of `browse` before the device, then, in order, `ops.no-pick`
+  for no pick, an argument error for both forms, `ops.import-limit` for more than 500
+  paths, `ops.bad-point` for a path that does not parse, `ops.duplicate-pick` with each
+  path picked twice, `ops.bad-name` for a given name that does not parse, and
+  `ops.bad-pattern`. Then it walks with `Scope::Points` or `Scope::Match`. A walk that
+  ends `Budget` gives `ops.import-budget` and one that ends `Limit` gives
+  `ops.import-limit`, so no import adds part of a match in silence. A picked point that
+  the kind cannot read or write gives `ops.unreadable-point`, one diagnostic for each,
+  with its reason; a match leaves each out and counts it. Then `config::import::add`,
+  then the new text by `FrontEnd::update` of the file. The reply is the JSON line of the
+  output, then the new text, and a reply over the bound of a body gives
+  `ops.large-import`. The CLI and the MCP server write the new text through `Scope`, so
+  the limits of `foundation mcp` hold. They write nothing when it is the text that they
+  sent, and when the file no longer holds the sent text they give `ops.file-changed` and
+  write nothing. `--json` and the MCP result are `{file, channels: [{name, path, type}],
+  index, fills: [{name, what}], unnamed: [{path, fix}], present, unreadable}`, with no
+  added blocks: `index` is the added index or `null`, `type` is `null` where the import
+  wrote a `fill`, and `fills` holds each channel with a `fill` in any of its blocks. The
+  text output is one line for the file and the count, one for each channel as `<name>
+  <path> <type>`, then one line for the index, each fill, each unnamed point, and each
+  count that is not 0. `TABLE` holds `import` with `read_only: false` and `destructive:
+  false`. Each code has one fix. The `instructions` of the MCP `initialize` result is
+  the agent guide: `browse`, `import`, a value for each `fill`, `plan` shown to the
+  person, and `apply` only when the person agrees, and `status`. It leaves out
+  `discover`, which is not in C1, so no step names a tool that the server does not have.
+  Deferred: picks by tag. Trigger: a user who has a list of tags and no paths. Deferred:
+  the added blocks in the JSON (B of decision 4). Trigger: the person asks. The person's
+  words of decision 4, through `laptop.monitor`, 2026-10-15 17:25 UTC: "I think A is
+  fine for now"
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198070930); of
+  decision 6, 2026-10-15 17:33 UTC: "Ok this is good"
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198173531); of
+  decision 8, 2026-10-15 17:39 UTC: "A is fine"
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198270136). The
+  order of the checks, the budget, the duplicate pick, the write check, `TABLE`, the
+  codes, and the trigger of picks by tag: `laptop.architect-2`, 2026-10-18T02:10:56Z,
+  items 6 to 11
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074). The
+  JSON: `laptop.architect-2`, 2026-10-18T02:36:08Z
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244788485), which
+  supersedes the words "with the added documents" of item 4 of
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198070930. The
+  guide without `discover`: parameter 5 of
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198270136.

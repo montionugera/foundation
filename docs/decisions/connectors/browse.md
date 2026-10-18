@@ -71,8 +71,9 @@
   (500) points and ends `Limit` when one more matches, and looks at most at `VISITS` (10
   000) entries, also the entries that find the start, where a page with no entries
   counts as one (a server may give a continuation point with no references), then ends
-  `Budget`. With `Limit`, `import` says "More than `<limit>` points match, the most for
-  one import; narrow the pattern, or import in parts", not a count. It browses no folder
+  `Budget`. With `Limit`, `import` gives `ops.import-limit`, "more than `<limit>` points
+  match, the most for one import", with the fix "Import at most `<limit>` points at a
+  time", not a count. It browses no folder
   whose tag and pattern state are those of a folder that it holds open, so a loop in a
   graph such as an OPC UA address space ends, and a path that a pattern names through a
   loop still matches. A pattern ends `Budget` when it holds `DEPTH` (64) folders open,
