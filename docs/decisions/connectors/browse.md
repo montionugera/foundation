@@ -111,11 +111,10 @@
   `read_secret`. A kind implements `browse::Device` on its open session, so one walk is
   one session and can use a continuation point; a `Cursor` that a front end gets holds
   no session state. A walk may never ask for the page at a `next` that it got, so a kind
-  bounds the state that it keeps for its cursors in one session.
-  `level` takes a folder as the
-  `Entry` that the device gave, never a path, and gives at most `LIMIT` entries a page;
-  `values` gives `types::sample::Value`, so there is one value model. Trigger for a text
-  value: a kind that reads a `string` channel. Lost: a count of matches up to the
+  bounds the state that it keeps for its cursors in one session. `level` takes a folder
+  as the `Entry` that the device gave, never a path, and gives at most `LIMIT` entries a
+  page; `values` gives `types::sample::Value`, so there is one value model. Trigger for
+  a text value: a kind that reads a `string` channel. Lost: a count of matches up to the
   budget; trigger: the agent test (PR 9) shows a task with two over-limit refusals one
   after the other. `import --match` uses the same walk, so the points that `browse
   --match` shows are the points that `import --match` takes.
