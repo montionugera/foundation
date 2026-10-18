@@ -304,7 +304,9 @@ mod tests {
         assert_eq!(a.path(), Some(scratch.join("b")));
         fs::remove_dir(scratch.join("b")).unwrap();
         fs::remove_dir(&scratch).unwrap();
-        // Linux gives the last path with " (deleted)" at its end.
-        assert_eq!(a.path(), None);
+        // Linux gives the last path with " (deleted)" at its end, and macOS gives it
+        // as it was.
+        let gone = cfg!(target_os = "macos").then(|| scratch.join("b"));
+        assert_eq!(a.path(), gone);
     }
 }
