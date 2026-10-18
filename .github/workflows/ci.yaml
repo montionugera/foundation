@@ -220,7 +220,7 @@ jobs:
               - --exclude node # #2968, #682, #2955, #2956, #477, #2957
               - --exclude acceptance # #2968, #682, #2955, #2956, #477, #2957
               - --exclude ops # #2971
-              - --exclude sdk # #682, #2955, #2956
+              - --exclude sdk # #682, #2955, #2956, #3294
               - --exclude sdk-python # #682, #2955, #2956
             untested:
               - --exclude sim # #2973
@@ -430,7 +430,7 @@ jobs:
               - --exclude node # #2968, #682, #2955, #2956, #477, #2957
               - --exclude acceptance # #2968, #682, #2955, #2956, #477, #2957
               - --exclude ops # #2971
-              - --exclude sdk # #682, #2955, #2956
+              - --exclude sdk # #682, #2955, #2956, #3294
               - --exclude sdk-python # #682, #2955, #2956
     runs-on: ${{ matrix.runner }}
     env:
