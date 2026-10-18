@@ -23,7 +23,7 @@
   blocks is a defect in the kind, and `read` panics (`laptop.architect-2`,
   https://github.com/synnaxlabs/foundation/pull/1782#issuecomment-6052200724, 2026-10-08
   04:25 UTC). `read(config, body)` now takes the body of the kind's config (CONFIG
-  SCHEMA), and a body that does not state `SELECT` and `READER` is the defect that
+  SCHEMA), and a body that does not state `SELECT` and `BLOCK` is the defect that
   panics. Supersedes `read(config, keys, blocks)` and its panic on a list with
   `select` or `reader` (`laptop.architect-2`, 2026-10-18T21:28:29Z,
   https://github.com/synnaxlabs/foundation/issues/3270#issuecomment-6255364169).
