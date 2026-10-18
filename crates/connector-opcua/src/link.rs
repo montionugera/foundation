@@ -419,7 +419,7 @@ fn the_copy_links_the_timer() {
 /// x86-64 with GCC or Clang at each optimization level, and on 64-bit Arm with Clang
 /// at `-O2` and `-moutline-atomics`. In the libc of macOS: on 64-bit Arm and x86-64
 /// with Apple Clang at each optimization level. Empty on another OS, so the tests fail
-/// on each name until it has its list.
+/// there until it has its list.
 const OUTSIDE: &[&str] = if cfg!(target_os = "macos") {
     &[
         "___chkstk_darwin",
@@ -513,8 +513,10 @@ const OUTSIDE: &[&str] = if cfg!(target_os = "macos") {
 /// The symbol of `stdin` in the libc of the target.
 const STDIN: &str = if cfg!(target_os = "macos") {
     "__stdinp"
-} else {
+} else if cfg!(target_os = "linux") {
     "stdin"
+} else {
+    ""
 };
 
 /// The symbols from outside the copy that only one file of it may name, by that file:
