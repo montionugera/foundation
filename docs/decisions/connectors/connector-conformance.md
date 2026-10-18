@@ -1,10 +1,9 @@
 - **CONNECTOR CONFORMANCE (#2247, #2641)** `oracles/conformance/connector/` holds the
   scenarios that each connector kind passes, the oracle of D4's conformance kit. Each
   kind crate runs them as its `conformance` test, from `<kind>/main.rs`: a `Suite` and
-  one `suite!` line, which expands to one `#[test]` for each scenario, and two that
-  check that a scenario that is not done at `RING` fails. The `[[test]]` entry of each
-  kind is part of the oracle. The scenarios use only public items: the rig of
-  `connector::testing`, `hub::testing::Env`, the sim, `env`, `document`, `types`, and
+  one `suite!` line, which expands to one `#[test]` for each scenario. The `[[test]]`
+  entry of each kind is part of the oracle. The scenarios use only public items: the rig
+  of `connector::testing`, `hub::testing::Env`, the sim, `env`, `document`, `types`, and
   the `kind`, `status`, and `cancel` modules of `connector`. Each runs two sim nodes:
   the plant (the rig and the connector) and the device (the kind's simulator). A `Suite`
   gives plain inputs: its table, a setup that defines what the connector needs and
@@ -29,21 +28,15 @@
   of the device, which scenarios 2 and 3 check
   (https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241940271).
 
-  A scenario that runs past 90 s of plant time (`RING`, the sum of the steps of its sim)
-  fails. The 4 MiB ring of `home::testing::shard` fills after about 100 s for `opcua`
-  and for `influx` (finding 7 of
-  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241787008), and then
-  can lose a status, so a check of an absence can pass. The longest scenario runs 20.2 s
-  of plant time (`influx`, the device does not answer), and scenario 2 of `influx` runs
-  19.7 s (box1, at 2026-10-17). A later suite measures its own fill. The trigger is the
-  merge of #3050, which trims the ring and adds the two tests that fail now
-  (https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6241900155). #3050
-  removes `RING`, its check in `run`, and the `suite!` tests `fails_past_the_ring` and
-  `fails_50_ms_past_the_ring`, with the person's approval, as they are in `oracles/`. OK
-  of `laptop.architect`, 2026-10-17T21:54:10Z:
-  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241806249. The form
-  of the check: `laptop.architect-2`, 2026-10-17T22:04:56Z:
-  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241915192.
+  The ring of `home::testing::shard` trims, so a scenario runs past the fill of its
+  4 MiB, at about 100 s of plant time for `opcua` and for `influx` (finding 7 of
+  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241787008). Before
+  the trim, the rig then lost each status, so a check of an absence could pass. The
+  third forms of scenarios 2 and 3 run past the fill. Both failed on a ring with no
+  trim (https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6241900155).
+  #3050 adds them and removes the bound of 90 s of plant time (`RING`) and its tests,
+  which stood until the trim. OK of `laptop.architect`, 2026-10-17T21:54:10Z:
+  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241806249.
 
   1. **Starts.** Within 10 s: Running, no error, 0 restarts, and progress above 0.
   2. **Device absent at start.** No simulator. Within 1 min, the backoff form, an
@@ -55,13 +48,16 @@
      heals. In a second form, the device does not answer: the simulator serves
      behind a link that delays each packet by 1 h, and within 1 min comes the same
      backoff form, with no heal. Ruling of `laptop.architect-2` at 2026-10-17T22:04:56Z
-     (https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241915192).
+     (https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241915192). In
+     a third form, no simulator for 90 s after the backoff form shows, then the
+     simulator starts: heals.
   3. **Device lost while running**, in two forms: the simulator stops (each
      connection closed), and the device node crashes (`Sim::crash`, no close reaches
      the plant). Within 30 s: an error of class Device or Retry whose text names the
      address of the device, in the backoff form (`Run`: Running and 0 restarts).
      Then the device comes back: heals, no count and no restart count went down, and
-     for `Restart`, the restarts grew.
+     for `Restart`, the restarts grew. In a third form, the simulator stops after 2
+     min of Running: within 30 s, an error of class Device or Retry.
   4. **Stop.** `Run::stop` gives `Ok` within 5 s while Running, in the backoff form,
      and while the plant connects over a link that delays each packet by 1 h (the
      plant holds 1 stream before the stop). After it, the plant node holds no open
