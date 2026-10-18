@@ -289,7 +289,7 @@ state on `main`.
   again on a new stream, so each refused chunk costs the peer one stream. A reply out of
   order, or an end with digests open, stops the stream with `MALFORMED`. `get` and
   `put` hold at most one chunk of their own. Nothing bounds a silent peer but a drop of
-  the future, which `mesh` owns.
+  the future, which `mesh` owns (#1231).
 
 ### Time source to `estimate`
 

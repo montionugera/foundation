@@ -33,17 +33,19 @@
   &[Digest])` gets each digest and puts each chunk in the store, and gives each digest
   that the peer did not give as a `Miss` with its `Cause` (`Absent`, `TooLarge`,
   `Mismatch`), in order. Each call opens streams with `Class::Complete`. It sends one
-  get of as many open digests as `Sender::bytes_max` holds, and reads each reply before
-  it sends the next, so neither side fills the window of the other. It reads a body as
-  `serve` reads a put. A head over `Pool::largest` of the store, or bytes that do not
-  hash to the digest, stops the stream with `TOO_LARGE` or `MISMATCH`, and the digests
-  still open go again on a new stream. A reply that does not answer the oldest open
-  digest gives `Error::Unexpected`, and an end of the peer's half with digests open
-  gives `Error::Unanswered`; both stop with `MALFORMED`. `peer::put(&Store, &Session,
-  &[Digest])` sends each chunk of the store, one at a time, as `serve` sends a get, and
-  waits for its `Stored`. A stop or reset with a code that is not 0 is the peer's
-  refusal (`Error::Refused`), and code 0 a failed stream. A drop of either future ends
-  the stream with code 0. Each holds at most one chunk of its own, and a put holds its
+  get of as many open digests as both `Sender::bytes_max` and `Pool::largest` of the
+  store hold, and reads each reply before it sends the next, so neither side fills the
+  window of the other. It reads a body as `serve` reads a put. A head of the oldest open
+  digest over `Pool::largest` of the store, or bytes that do not hash to the digest,
+  stops the stream with `TOO_LARGE` or `MISMATCH`, and the digests still open go again
+  on a new stream. A reply that does not answer the oldest open digest gives
+  `Error::Unexpected`, and an end of the peer's half with digests open gives
+  `Error::Unanswered`; both stop with `MALFORMED`. A store error is the failure of the
+  requester, so the stream ends with code 0. `peer::put(&Store, &Session, &[Digest])`
+  sends each chunk of the store, one at a time, as `serve` sends a get, and waits for
+  its `Stored`. A stop or reset with a code that is not 0 is the peer's refusal
+  (`Error::Refused`), and code 0 a failed stream. A drop of either future ends the
+  stream with code 0. Each holds at most one chunk of its own, and a put holds its
   chunk and its `Put` head at once, as `Config::pool` states (`laptop.architect`,
   2026-10-18T16:05:19Z:
   https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6252058410, items 1
