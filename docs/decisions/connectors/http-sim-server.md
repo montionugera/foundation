@@ -1,6 +1,6 @@
 - **HTTP SIM SERVER (#1151)** `connector::http::sim::serve(listener, tasks, until,
-  tls, answer)`, behind the `connector` cargo feature `sim`, off by default, is the one
-  HTTP/1.1 server of the protocol simulators of HTTP connectors. It runs `hyper`'s
+  scheme, answer)`, behind the `connector` cargo feature `sim`, off by default, is the
+  one HTTP/1.1 server of the protocol simulators of HTTP connectors. It runs `hyper`'s
   server on each stream, on its own task, with keep-alive, and gives `answer` each
   request with its whole body. A client that closes its write side after a whole request
   still gets the answer. A request that breaks HTTP gets 400, or 414 when its URI is too
@@ -55,14 +55,20 @@
   6042958763),
   https://github.com/synnaxlabs/foundation/pull/1473#issuecomment-6042291321 (the doc
   of finding 1, by 6042446508 item 1 and 6042839816).
-  With `tls: Some(certificate)`, it is the same server under TLS 1.2 or 1.3, with
-  one of the fixed test certificates of `crates/connector/src/http/sim/tls/`, whose
-  README gives the commands and each validity window; with `None`, it serves plain
-  HTTP. One `serve` replaces a `serve` and `serve_tls` pair (`laptop.architect-2`,
-  2026-10-17T16:58:24Z:
+  With `Scheme::Https(certificate)`, it is the same server under TLS 1.2 or 1.3,
+  with one of the fixed test certificates of `crates/connector/src/http/sim/tls/`,
+  whose README gives the commands and each validity window; with `Scheme::Http`, it
+  serves plain HTTP. One `serve` replaces a `serve` and `serve_tls` pair
+  (`laptop.architect-2`, 2026-10-17T16:58:24Z:
   https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6237139250, item
-  3). Each certificate is for the host `server` or its IP address, so no
-  kind is named (`laptop.architect-2`, 2026-10-16T07:51:33Z:
+  3). The enum, not an `Option<Certificate>`, because each caller passes it as a
+  literal (`docs/claude/rust.md` r16 6; round 1 of #3286:
+  https://github.com/synnaxlabs/foundation/pull/3286#issuecomment-6256302557).
+  Supersedes the `serve_tls` of
+  https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210550936 and of
+  item 2 of https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044.
+  Each certificate is for the host `server` or its IP address, so no kind is named
+  (`laptop.architect-2`, 2026-10-16T07:51:33Z:
   https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044, item 2).
   `sim::ca()` gives roots that hold the test CA. A stream whose handshake fails ends
   with no answer. The server sends no session ticket and checks no client certificate,

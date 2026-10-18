@@ -92,9 +92,9 @@
   supersedes the paired run against `77e13735` of
   https://github.com/synnaxlabs/foundation/pull/1448#issuecomment-6045453368, and
   turns on `sim` for the bench.
-  `connector_influx::sim::serve(listener, tasks, until, store, database, token, tls)`
-  is its HTTP front, on `connector::http::sim::serve` (HTTP SIM SERVER), under TLS
-  with the certificate `tls` when it is `Some` (`laptop.architect-2`,
+  `connector_influx::sim::serve(listener, tasks, until, scheme, store, database,
+  token)` is its HTTP front, on `connector::http::sim::serve` (HTTP SIM SERVER), which
+  serves with `scheme`, plain or under TLS (`laptop.architect-2`,
   2026-10-17T16:58:24Z:
   https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6237139250, item
   3). It stops at `until`
