@@ -131,7 +131,7 @@ impl<'a> Server<'a> {
                     };
                     (page, Seen::default(), before, 0)
                 }
-                Err(status) => return Err(failed(status)),
+                Err(status) => return Err(self.failed(status)),
             }
         } else {
             let Some(page) = self.first(folder).await? else {
@@ -162,7 +162,11 @@ impl<'a> Server<'a> {
             match page.next {
                 Some(point) if rest.is_empty() && past => {
                     empty += usize::from(skipped == 0);
-                    page = self.client.browse_next(point).await.map_err(failed)?;
+                    page = self
+                        .client
+                        .browse_next(point)
+                        .await
+                        .map_err(|status| self.failed(status))?;
                 }
                 // Its page would have the cursor that the browse got.
                 Some(_) if rest.is_empty() && again => {
@@ -188,6 +192,15 @@ impl<'a> Server<'a> {
         Ok(())
     }
 
+    /// The device error of a Browse, a `BrowseNext`, or a describe that failed with
+    /// `status`.
+    fn failed(&self, status: Status) -> Error {
+        device(Failure::Browse {
+            address: self.client.address().to_owned(),
+            status,
+        })
+    }
+
     /// Gives the first page of `folder`, or `None` when the server does not have it.
     /// When this browse holds as many points as the server holds for a session, or
     /// [`browse::DEPTH`] when the server gives no bound, it first releases one point,
@@ -196,7 +209,11 @@ impl<'a> Server<'a> {
     async fn first(&mut self, folder: &Node) -> Result<Option<client::Page>, Error> {
         let most = u32::try_from(browse::LIMIT).ok().and_then(NonZeroU32::new);
         let most = most.expect("invariant: `LIMIT` is a u32 that is not 0");
-        let bound = self.client.points().await.map_err(failed)?;
+        let bound = self
+            .client
+            .points()
+            .await
+            .map_err(|status| self.failed(status))?;
         let bound = bound.map_or(browse::DEPTH, NonZeroUsize::get);
         if self.points.len() >= bound {
             self.release(1).await?;
@@ -208,7 +225,7 @@ impl<'a> Server<'a> {
             }
             browsed => browsed,
         }
-        .map_err(failed)
+        .map_err(|status| self.failed(status))
     }
 
     /// Releases the `most` points that this browse used least lately of those whose
@@ -232,7 +249,10 @@ impl<'a> Server<'a> {
                 held.point
             })
             .collect();
-        self.client.release(&points).await.map_err(failed)
+        self.client
+            .release(&points)
+            .await
+            .map_err(|status| self.failed(status))
     }
 
     /// Gives the shape of each of `references`, with one `Client::describe` of its
@@ -341,11 +361,14 @@ impl browse::Device for Server<'_> {
             self.client
                 .release(&[earlier.point])
                 .await
-                .map_err(failed)?;
+                .map_err(|status| self.failed(status))?;
         }
         self.fits(&seen)?;
         let references: Vec<&Reference> = kept.iter().map(|(_, _, it)| it).collect();
-        let shapes = self.shapes(&references).await.map_err(failed)?;
+        let shapes = self
+            .shapes(&references)
+            .await
+            .map_err(|status| self.failed(status))?;
         let entries = kept.into_iter().zip(shapes);
         let entries = entries.map(|((name, tag, _), shape)| Child { name, tag, shape });
         let mut cursor = None;
@@ -393,8 +416,16 @@ impl browse::Device for Server<'_> {
             })
             .collect();
         let fit = self.client.nodes(&nodes);
-        let read = self.client.read(&fit).await;
-        let mut read = read.map_err(|status| device(Failure::Read(status)))?.iter();
+        let read = match self.client.read(&fit).await {
+            Ok(read) => read,
+            Err(status) => {
+                return Err(device(Failure::Read {
+                    address: self.client.address().to_owned(),
+                    status,
+                }));
+            }
+        };
+        let mut read = read.iter();
         let mut large = fit.large().iter().map(|large| large.index).peekable();
         let values = (0..nodes.len()).map(|index| {
             if large.next_if_eq(&index).is_some() {
@@ -478,10 +509,6 @@ fn reason(cause: Cause) -> &'static str {
         }
         Cause::Remote => "it is a node of another server, which the kind cannot read",
     }
-}
-
-fn failed(status: Status) -> Error {
-    device(Failure::Browse(status))
 }
 
 fn bad_cursor(cursor: &Cursor) -> Error {
