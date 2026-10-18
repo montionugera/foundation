@@ -498,8 +498,15 @@ fn readings(received: &Received<'_>) -> Vec<Reading> {
             gap.start, gap.end
         );
     }
-    let readings = Reading::each(received);
-    readings.expect("invariant: each status frame holds the whole status")
+    Reading::each(received).unwrap_or_else(|| {
+        let view = received.view();
+        let names: Vec<_> =
+            view.iter().map(|(entry, _)| received.name(entry)).collect();
+        panic!(
+            "a status frame of [{}] holds no whole status",
+            names.join(", ")
+        )
+    })
 }
 
 /// `names` with `, ` between them.

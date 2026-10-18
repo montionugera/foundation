@@ -17,7 +17,9 @@ use types::time::Span;
 
 use super::{Reading, Rig, create_secret, create_status};
 use crate::cancel;
-use crate::common::{Column, env, fill, open_status, run_on, write_columns};
+use crate::common::{
+    Column, env, fill, open_status, run_on, write_columns, write_status,
+};
 use crate::kind::{Channels, Context, Error, Kind, Table};
 use crate::status::State;
 
@@ -704,9 +706,8 @@ fn next_gives_each_status_of_a_frame_oldest_first() {
             run.until(TEN, |reading| reading.state == State::Stopped)
                 .await;
             clock.sleep(Span::SECOND).await;
-            let lasts = &STATUS_LASTS;
-            let mut writer = open_status(rig.hub(), "plant.ends", lasts).await;
-            write_columns(&mut writer, statuses(&[(1, 5), (0, 6)]));
+            let columns = STATUS_LASTS.into_iter().zip(statuses(&[(1, 5), (0, 6)]));
+            write_status(rig.hub(), "plant.ends", columns.collect()).await;
             let (first, second) = (run.next().await, run.next().await);
             let got = [first, second].map(|reading| (reading.state, reading.restarts));
             assert_eq!(got, [(State::Restarting, 5), (State::Running, 6)]);
@@ -737,9 +738,8 @@ fn a_record_keeps_each_status_of_a_frame_oldest_first() {
             let (config, plant) = (Document::default(), name("plant.ends"));
             let names = rig.define_status("ends", &plant, &config);
             let record = rig.record(&names).await;
-            let lasts = &STATUS_LASTS;
-            let mut writer = open_status(rig.hub(), "plant.ends", lasts).await;
-            write_columns(&mut writer, statuses(&[(1, 5), (0, 6)]));
+            let columns = STATUS_LASTS.into_iter().zip(statuses(&[(1, 5), (0, 6)]));
+            write_status(rig.hub(), "plant.ends", columns.collect()).await;
             clock.sleep(Span::SECOND).await;
             let got: Vec<_> = record
                 .readings()
@@ -752,7 +752,8 @@ fn a_record_keeps_each_status_of_a_frame_oldest_first() {
 }
 
 #[test]
-#[should_panic(expected = "invariant: each status frame holds the whole status")]
+#[should_panic(expected = "a status frame of [plant.ends.status.time, \
+    plant.ends.status.class, plant.ends.status.restarts] holds no whole status")]
 fn a_record_panics_at_a_frame_with_no_state() {
     on_rig(
         || Table::new().with("ends", Ends),
@@ -891,5 +892,28 @@ fn a_capture_takes_the_events_of_its_target_with_the_fields_of_their_parent() {
             "ERROR gone",
             "INFO alone",
         ]
+    );
+}
+
+#[test]
+#[should_panic(expected = "the status reader missed the seqs ")]
+fn a_record_panics_at_a_status_that_its_reader_missed() {
+    on_rig(
+        || Table::new().with("ends", Ends),
+        |rig, clock| async move {
+            let (config, plant) = (Document::default(), name("plant.ends"));
+            let names = rig.define_status("ends", &plant, &config);
+            let _record = rig.record(&names).await;
+            let lasts = &STATUS_LASTS;
+            let mut writer = open_status(rig.hub(), "plant.ends", lasts).await;
+            let mut held = fill(&writer);
+            drop(held.pop());
+            let lost = write_columns(&mut writer, statuses(&[(1, 5)]));
+            assert!(matches!(lost[..], [Outcome::Lost { .. }]), "{lost:?}");
+            drop(held);
+            clock.sleep(Span::SECOND).await;
+            write_columns(&mut writer, statuses(&[(0, 6)]));
+            clock.sleep(Span::SECOND).await;
+        },
     );
 }
