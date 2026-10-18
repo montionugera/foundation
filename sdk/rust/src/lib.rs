@@ -45,8 +45,9 @@ impl Node {
     /// # Errors
     ///
     /// [`Error::Local`] with the cause: `NotRunning` also when `dir` or `dir/data` is
-    /// not there or is not a directory. [`Error::Thread`] when a thread that reads the
-    /// directory cannot start, and [`Error::Panicked`].
+    /// not there or is not a directory. Each path of its `Files` cause is relative to
+    /// `dir/data`, and `.` is `dir/data` itself. [`Error::Thread`] when a thread that
+    /// reads the directory cannot start, and [`Error::Panicked`].
     #[expect(
         clippy::missing_panics_doc,
         clippy::unwrap_in_result,
@@ -54,8 +55,8 @@ impl Node {
     )]
     pub fn local(dir: &Path) -> Result<(Self, Option<Subject>), Error> {
         let threads = os::threads().map_err(|e| thread(&e))?;
-        let (disk, files) = os::stored(dir, &threads, "foundation-sdk-files")
-            .map_err(|error| opened(dir, error))?;
+        let (disk, files) =
+            os::stored(dir, &threads, "foundation-sdk-files").map_err(opened)?;
         let (sender, read) = mpsc::channel();
         let shard = shard(move |_| async move {
             let local = sector::local::read(&Files::new(disk)).await;
@@ -82,8 +83,8 @@ impl Node {
     }
 }
 
-/// The error of [`Node::local`] whose `os::stored` of the data directory `dir` failed.
-fn opened(dir: &Path, error: os::Error) -> Error {
+/// The error of [`Node::local`] whose `os::stored` failed.
+fn opened(error: os::Error) -> Error {
     match error {
         os::Error::Dir(error)
             if matches!(
@@ -95,7 +96,7 @@ fn opened(dir: &Path, error: os::Error) -> Error {
         }
         os::Error::Dir(error) => {
             Error::Local(sector::local::Error::Files(env::files::Error::Io {
-                path: dir.join("data"),
+                path: ".".into(),
                 operation: env::files::Operation::Open,
                 code: error.raw_os_error().expect(
                     "invariant: each `Dir` of `os::stored` holds the code of the OS",

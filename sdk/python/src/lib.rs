@@ -197,9 +197,12 @@ fn local(
             char::from(found).escape_default(),
             char::from(expected).escape_default(),
         ))),
-        Err(sdk::Error::Local(sector::local::Error::Files(e))) => Err(
-            PyConnectionError::new_err(format!("cannot read {}: {e}", data.display())),
-        ),
+        Err(sdk::Error::Local(sector::local::Error::Files(e))) => {
+            Err(PyConnectionError::new_err(format!(
+                "cannot read {}: {e}",
+                data.join("data").display()
+            )))
+        }
         Err(e) => Err(error(&e)),
     }
 }

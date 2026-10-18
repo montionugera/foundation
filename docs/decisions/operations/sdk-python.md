@@ -40,7 +40,10 @@
   - `ConnectionError` for `Version`: `<data>/data/<file> holds format version
     <found>, and this package reads version <expected>: install the package of the
     node's version`.
-  - `ConnectionError` for `Files`: `cannot read <data>: <cause>`.
+  - `ConnectionError` for `Files`: `cannot read <data>/data: <cause>`. Each path of
+    the cause is relative to `<data>/data`, and `.` is that directory
+    (`laptop.architect-2`, 2026-10-18T20:42:17Z, item 3 of
+    https://github.com/synnaxlabs/foundation/pull/3255#issuecomment-6254906786).
 
   (`box1.builder-1`, plan, 2026-10-18T20:01:07Z,
   https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6254483901;

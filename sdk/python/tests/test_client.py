@@ -529,7 +529,23 @@ class ArgumentTest(unittest.TestCase):
             foundation.connect(data=data)
         self.assertEqual(
             str(raised.exception),
-            f"cannot read {data}: open of {data}/data failed with OS error 13",
+            f"cannot read {data}/data: open of . failed with OS error 13",
+        )
+
+    def test_a_file_in_the_data_directory_that_cannot_be_read_is_refused(
+        self,
+    ) -> None:
+        data = self.directory()
+        address = os.path.join(data, "data", "address")
+        with open(address, "wb") as file:
+            file.write(b"foundation/address/1")
+        os.chmod(address, 0)
+        self.addCleanup(os.chmod, address, 0o600)
+        with self.assertRaises(ConnectionError) as raised:
+            foundation.connect(data=data)
+        self.assertEqual(
+            str(raised.exception),
+            f"cannot read {data}/data: open of address failed with OS error 13",
         )
 
     def test_a_file_of_another_format_version_is_refused(self) -> None:

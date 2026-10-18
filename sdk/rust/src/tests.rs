@@ -330,7 +330,7 @@ fn local_with_a_data_that_cannot_open_gives_files() {
     let error = local_error(&dir.0);
     std::fs::set_permissions(&data, Permissions::from_mode(0o700)).unwrap();
     let io = env::files::Error::Io {
-        path: data,
+        path: ".".into(),
         operation: env::files::Operation::Open,
         code: 13,
     };
