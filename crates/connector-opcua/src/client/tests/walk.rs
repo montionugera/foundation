@@ -458,6 +458,26 @@ fn a_walk_holds_no_more_points_than_the_server_holds_for_a_session() {
     }
 }
 
+/// A walk of paths makes one Browse request for each of Objects, `root`, `a`, `b`,
+/// `c`, and `e`, and none for `d`, which no path is under. It stops `b` and `c` when it
+/// has seen `x`, so it holds the points of Objects, `b`, and `c`.
+#[test]
+fn a_walk_of_paths_gives_the_entry_at_each_in_one_browse_of_each_folder() {
+    let paths =
+        ["root/a/e/y", "root/b/x", "root/a/c/x"].map(|p| p.parse().expect("a path"));
+    let query = Query {
+        start: "root".parse().expect("a path"),
+        scope: Scope::Points(paths.to_vec()),
+        values: Values::Skipped,
+    };
+    let (found, points, browses) = held(nested, query, 0);
+    let found = found.expect("found");
+    let paths: Vec<String> = found.entries.iter().map(|e| e.path.to_string()).collect();
+    assert_eq!(paths, ["root/a/e/y", "root/b/x", "root/a/c/x"]);
+    assert_eq!(found.end, End::Done);
+    assert_eq!((points, browses), (3, 6));
+}
+
 /// Gives each server message to `rewrite`, and makes the result of the Browse
 /// response of the count `nth` from 1 `BadNoContinuationPoints`.
 fn refusing(nth: usize) -> impl FnMut(&mut Vec<u8>) + Send + 'static {
@@ -1086,7 +1106,7 @@ const B: Node = Node {
 fn sized(extra: usize) -> impl FnOnce(&Server) + Send + 'static {
     // The tag of each child, such as `ns=1;i=20000`, has 12 bytes.
     let name =
-        |number: u32, extra: usize| format!("{number:0>width$}", width = 4084 + extra);
+        |number: u32, extra: usize| format!("{}{number:0>4084}", "0".repeat(extra));
     move |server: &Server| {
         server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
         server.add_folder(&A, &ROOT, ORGANIZES, c"a", c"a");
@@ -1143,9 +1163,16 @@ fn a_browse_keeps_the_tags_and_names_of_its_budget() {
     assert_eq!(budget(0, 0, 1).expect("the pages of `b`"), 4080);
 }
 
+/// Past its budget, the browse releases the point of `a`, and with it 64 KiB.
+#[test]
+fn a_browse_past_its_budget_releases_a_held_point() {
+    assert_eq!(budget(1, 0, 1).expect("the pages of `b`"), 4080);
+}
+
+/// The pages of `b` alone keep one byte past the budget.
 #[test]
 fn a_browse_that_keeps_more_than_its_budget_fails() {
-    let found = budget(1, 0, 1);
+    let found = budget(64 * 1024 + 1, 0, 1);
     let Err(Error::Device(source)) = found else {
         panic!("not a device error: {found:?}");
     };
@@ -1153,6 +1180,13 @@ fn a_browse_that_keeps_more_than_its_budget_fails() {
         source.to_string(),
         "the tags and names of the browse pass 16 MiB"
     );
+}
+
+/// The pages of `b` alone keep the budget to the byte, once the point of `a` is
+/// released.
+#[test]
+fn a_browse_that_keeps_its_budget_to_the_byte_passes() {
+    assert_eq!(budget(64 * 1024, 0, 1).expect("the pages of `b`"), 4080);
 }
 
 /// At the bound of 1, the first Browse of `b` releases the point of `a`, and with it
@@ -1163,18 +1197,11 @@ fn a_browse_frees_the_budget_of_each_point_that_it_releases() {
 }
 
 /// The second page of `a` from its start gives the cursor of the first, so the browse
-/// releases the earlier point and keeps the 64 KiB of `a` once.
+/// releases the earlier point and keeps the 64 KiB of `a` once. So past its budget,
+/// the release of the point of `a` frees all that the browse keeps for `a`.
 #[test]
 fn a_folder_open_twice_keeps_its_budget_once() {
-    assert_eq!(budget(0, 0, 2).expect("the pages of `b`"), 4080);
-    let found = budget(1, 0, 2);
-    let Err(Error::Device(source)) = found else {
-        panic!("not a device error: {found:?}");
-    };
-    assert_eq!(
-        source.to_string(),
-        "the tags and names of the browse pass 16 MiB"
-    );
+    assert_eq!(budget(1, 0, 2).expect("the pages of `b`"), 4080);
 }
 
 /// The browse holds the point of the first page of `a` (64 KiB) and of the pages of
@@ -1387,4 +1414,92 @@ fn a_walk_at_the_bound_ends_at_its_budget_past_pages_with_no_references() {
         let found = walked(setup, rewrite, everything());
         assert_eq!(found.expect("found").end, End::Budget, "bound {most}");
     }
+}
+
+const FOLDERS: u32 = 30;
+const CHILDREN: u32 = 145;
+
+/// The node of the folder `f` of [`wide`].
+fn wide_folder(f: u32) -> Node {
+    Node {
+        namespace: 1,
+        key: Key::Number(8000 + f),
+    }
+}
+
+/// [`FOLDERS`] folders of [`CHILDREN`] variables of 4096 bytes of tag and name, with
+/// 16 references in each page of the server.
+fn wide(server: &Server) {
+    server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+    server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+    for f in 0..FOLDERS {
+        let name = CString::new(format!("f{f}")).expect("no NUL");
+        server.add_folder(&wide_folder(f), &ROOT, ORGANIZES, &name, &name);
+        for c in 0..CHILDREN {
+            let number = 20_000 + f * CHILDREN + c;
+            let name = CString::new(format!("{number:0>4084}")).expect("no NUL");
+            server.add_variable(&Variable {
+                node: Node {
+                    namespace: 1,
+                    key: Key::Number(number),
+                },
+                parent: wide_folder(f),
+                reference: HAS_COMPONENT,
+                name: &name,
+                data_type: DOUBLE,
+                rank: -1,
+                access: server::READ,
+                value: None,
+            });
+        }
+    }
+    server.cap_references(16);
+}
+
+/// A walk of paths of [`wide`] picks a variable of the ninth page of each folder, so
+/// it stops each folder with 576 KiB held, 16.9 MiB in all.
+#[test]
+fn a_walk_of_paths_releases_the_points_of_stopped_folders_past_the_bytes() {
+    let (out, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            wide(peer.server);
+            let mut client = peer.connected().await;
+            let mut picks = Vec::new();
+            {
+                let mut server = Browse::new(&mut client);
+                for f in 0..FOLDERS {
+                    let at = entry(
+                        &format!("root/f{f}"),
+                        &wide_folder(f).to_string(),
+                        Shape::Folder,
+                    );
+                    let (mut names, mut cursor) = (Vec::new(), None);
+                    loop {
+                        let page = server.level(Some(&at), cursor.as_ref()).await;
+                        let page = page.expect("a page").expect("a folder");
+                        names.extend(page.entries.into_iter().map(|c| c.name));
+                        cursor = page.next;
+                        if cursor.is_none() {
+                            break;
+                        }
+                    }
+                    assert_eq!(names.len(), 145);
+                    let path = format!("root/f{f}/{}", names[143]);
+                    picks.push(path.parse::<browse::Path>().expect("a path"));
+                }
+            }
+            let query = Query {
+                start: "root".parse().expect("a path"),
+                scope: Scope::Points(picks),
+                values: Values::Skipped,
+            };
+            let found = browse::walk(&mut Browse::new(&mut client), &query).await;
+            client.close().await;
+            found
+        })
+        .await
+    });
+    let found = out.expect("found");
+    assert_eq!(found.entries.len(), 30);
+    assert_eq!(found.end, End::Done);
 }

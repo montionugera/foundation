@@ -85,7 +85,7 @@ pub enum Error {
     Access(access::proof::Error),
     /// The hello does not echo the nonce of the last challenge. Code `STALE`.
     Stale,
-    /// A request or read stream before the link admitted a hello. Code `MALFORMED`.
+    /// A later stream before the link admitted a hello. Code `MALFORMED`.
     Unadmitted,
     /// A request stream while another request of the link waits for its reply. Code
     /// `MALFORMED`.
@@ -207,7 +207,7 @@ impl fmt::Display for Error {
                 "the hello does not echo the nonce of the node's last challenge",
             ),
             Self::Unadmitted => f.write_str(
-                "the program sent a request or a read before the node admitted a hello",
+                "the program opened a stream before the node admitted a hello",
             ),
             Self::Pending => f.write_str(
                 "the program sent a request while another request waits for its reply",

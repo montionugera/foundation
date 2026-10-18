@@ -451,7 +451,43 @@ fn refuses_the_block_of_a_tag_that_is_not_a_node_id() {
     );
 }
 
+fn tag(block: &Block) -> Option<String> {
+    connector::kind::Kind::tag(&crate::Kind, block)
+}
+
+#[test]
+fn gives_the_tag_of_a_read_in_the_form_of_a_browse() {
+    assert_eq!(
+        tag(&read(0, "plant.spike", "ns=0;i=2258")),
+        Some("i=2258".into())
+    );
+    assert_eq!(
+        tag(&read(0, "plant.spike", "ns=3;s=a")),
+        Some("ns=3;s=a".into())
+    );
+}
+
+#[test]
+fn gives_no_tag_for_another_block_or_a_bad_node_id() {
+    let mut other = read(0, "plant.spike", "ns=3;i=1001");
+    other.keyword = "write".into();
+    assert_eq!(tag(&other), None);
+    assert_eq!(tag(&read(0, "plant.spike", "ns=3;g=x")), None);
+    let mut empty = read(0, "plant.spike", "ns=3;i=1001");
+    empty.body = Document::default();
+    assert_eq!(tag(&empty), None);
+}
+
 proptest! {
+    /// The tag of each block that the kind gives for a tag of a browse is that tag.
+    #[test]
+    fn gives_the_tag_of_each_block_that_it_gives(node in crate::node::tests::node()) {
+        let text = node.to_string();
+        for block in point(&text, None).expect("a block") {
+            prop_assert_eq!(tag(&block), Some(text.clone()));
+        }
+    }
+
     /// Each text of a node that `Node` reads parses as the `node_id` of a read.
     #[test]
     fn reads_each_node_id_that_node_reads(

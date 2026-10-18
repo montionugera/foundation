@@ -1,8 +1,8 @@
-//! The hub messages on a frame's path, the frames of a warm reader session, the blob
-//! heads, and the body counters of client requests and blob chunks, make no heap
-//! allocation, and the place messages of a read make a known count. This binary has no
-//! test harness: the count covers each thread, and a harness allocates on its own
-//! thread at any time.
+//! The hub messages on a frame's path, the frames of a warm reader session, the head
+//! and the replies of a program's write, the blob heads, and the body counters of
+//! client requests and blob chunks, make no heap allocation, and the place messages of
+//! a read make a known count. This binary has no test harness: the count covers each
+//! thread, and a harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -17,6 +17,7 @@ use types::{
 use wire::hub::{
     Credit, Due, Frames, FromHome, FromReader, Head, Home, Mode, Open, Reader, Reply,
     Step, ends, keys,
+    write::{self, Outcome, Refusal, Time},
 };
 
 #[global_allocator]
@@ -40,6 +41,8 @@ fn main() {
     }
     ends_by_place();
     frames();
+    write_head();
+    write_replies();
     client_body();
     blob_body();
     blob_heads();
@@ -82,6 +85,35 @@ fn head() {
     });
     assert_eq!(allocations, 0, "the head decode allocated");
     assert_eq!(decoded, head, "the head round trips");
+}
+
+fn write_head() {
+    let head = write::Head {
+        time: Time::Frame(Path::Backfill),
+        form: Form::Encoded,
+        count: 1_000,
+        series: 3,
+    };
+    let mut out = [0; write::Head::LEN];
+    let ((), allocations) = ALLOCATOR.count(|| head.encode(&mut out));
+    assert_eq!(allocations, 0, "the write head encode allocated");
+}
+
+fn write_replies() {
+    for reply in [
+        write::Reply::Outcome(Outcome::Lost {
+            range: Range { seq: 7, count: 3 },
+        }),
+        write::Reply::Outcome(Outcome::Refused(Refusal::Order)),
+        write::Reply::Stored { through: 9 },
+    ] {
+        let mut out = vec![0; reply.encoded_len()];
+        let ((), allocations) = ALLOCATOR.count(|| reply.encode(&mut out));
+        assert_eq!(allocations, 0, "the reply encode allocated: {reply:?}");
+        let (decoded, allocations) = ALLOCATOR.count(|| write::Reply::decode(&out));
+        assert_eq!(allocations, 0, "the reply decode allocated: {reply:?}");
+        assert_eq!(decoded, Ok(reply), "the reply round trips");
+    }
 }
 
 fn credit() {
