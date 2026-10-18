@@ -508,15 +508,14 @@ impl Table {
         self.get(kind, None)?.block(tag, facts, channel)
     }
 
-    /// Browses with `kind` as `query` asks.
-    pub(crate) async fn browse(
-        &self,
+    /// Starts a browse with `kind` as `query` asks.
+    pub(crate) fn browse<'a>(
+        &'a self,
         kind: &str,
-        ctx: &browse::Context<'_>,
-        query: &browse::Query,
-    ) -> Result<browse::Found, Error> {
-        let kind = self.get(kind, None).map_err(Error::Config)?;
-        kind.browse(ctx, query).await
+        ctx: &'a browse::Context<'a>,
+        query: &'a browse::Query,
+    ) -> Result<Browse<'a>, Vec<Diagnostic>> {
+        Ok(self.get(kind, None)?.browse(ctx, query))
     }
 
     /// Parses `config` and starts one run of `kind` with `ctx`.

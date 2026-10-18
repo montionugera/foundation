@@ -80,7 +80,18 @@
   `Supervisor::browse(kind, config, query)` runs `Kind::browse` apart from any run of
   the connector, with the network, clock, randomness, and secrets of the supervisor; a
   kind reads only what it needs to reach the device, so a block with only `kind`,
-  `node`, and `address` browses. A kind reads mesh time with `browse::Context::time`,
+  `node`, and `address` browses. A supervisor runs at most 2 browses at once, since each
+  holds what its device gives, up to 16 MiB for `opcua`, so browses hold at most 32 MiB.
+  One more gives `Error::Retry` with "the node runs 2 browses, the most at once" at
+  once, not a wait, and the caller browses again; an unknown kind gives
+  `connector.unknown-kind` first, as a retry of it cannot succeed. A browse holds its
+  place from the first poll of its future until it returns or drops. The message holds
+  while a node makes one `Supervisor`: a second one changes the message and this
+  sentence (`laptop.architect-2`, 2026-10-18:
+  https://github.com/synnaxlabs/foundation/issues/2981#issuecomment-6245274252). The
+  bound of 2 in place of 4 keeps the worst case of browses at 32 MiB on a Raspberry Pi
+  of 1 GB (`laptop.monitor`, 2026-10-18T03:38:41Z). A kind reads mesh time with
+  `browse::Context::time`,
   which races `Hub::time` against `WAIT` (5 s) and gives `Error::Retry` with "the node
   has no mesh time after 5s" at the bound, so a kind that reads no mesh time never
   waits (`laptop.architect-2`, 2026-10-17T03:22:56Z:
