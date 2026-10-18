@@ -1,4 +1,5 @@
-//! Gives the blocks of a point through `Table::block`, with kinds of this file.
+//! Gives the blocks of a point through `Table::block`, and the tag of a block through
+//! `Table::tag`, with kinds of this file.
 
 use connector::browse::{Access, Facts};
 use connector::kind::{Channels, Context, Error, Kind, Table};
@@ -8,7 +9,8 @@ use document::{Attribute, Block, Document, Label, Map};
 use types::name::Name;
 
 /// A kind whose block of a point is `read "<channel>" { tag = "<tag>" }`, or a `write`
-/// block in its place for a point that a connector can only write.
+/// block in its place for a point that a connector can only write. The tag of a block
+/// is its `tag`.
 struct Points;
 
 impl Kind for Points {
@@ -37,6 +39,13 @@ impl Kind for Points {
             None | Some(Access::Read | Access::ReadWrite) => "read",
         };
         Ok(vec![point(keyword, channel, tag)])
+    }
+
+    fn tag(&self, block: &Block) -> Option<String> {
+        match &block.body.attributes.get("tag")?.value.kind {
+            value::Kind::String(tag) => Some(tag.to_string()),
+            _ => None,
+        }
     }
 }
 
@@ -135,4 +144,33 @@ fn refuses_a_kind_that_the_build_does_not_have() {
         r#"Use one of ["blind", "points"]"#.into(),
     );
     assert_eq!(result, Err(vec![expected]));
+}
+
+#[test]
+fn gives_the_tag_of_each_block_that_the_kind_gives() {
+    for access in [None, Some(Access::Write)] {
+        let blocks = table().block("points", "ns=2;s=T1", &facts(access), &channel());
+        for block in blocks.expect("blocks") {
+            let tag = table().tag("points", &block);
+            assert_eq!(tag, Ok(Some("ns=2;s=T1".into())), "{access:?}");
+        }
+    }
+}
+
+#[test]
+fn gives_no_tag_from_a_kind_with_no_blocks() {
+    let block = point("read", &channel(), "ns=2;s=T1");
+    assert_eq!(table().tag("blind", &block), Ok(None));
+}
+
+#[test]
+fn refuses_the_tag_of_a_kind_that_the_build_does_not_have() {
+    let block = point("read", &channel(), "ns=2;s=T1");
+    let expected = Diagnostic::new(
+        Code::new("connector.unknown-kind"),
+        None,
+        r#"this build has no connector kind "modbus""#.into(),
+        r#"Use one of ["blind", "points"]"#.into(),
+    );
+    assert_eq!(table().tag("modbus", &block), Err(vec![expected]));
 }

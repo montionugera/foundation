@@ -41,6 +41,28 @@
   folders and points named 2 000 `a` take 3.9 s to the `Budget`, at load 5.8. A budget of compared
   bytes is open in #2948 (`laptop.architect-2`, 2026-10-16T22:37:40Z:
   https://github.com/synnaxlabs/foundation/pull/2927#issuecomment-6226011243).
+  For `import`, `Scope::Points` gives the entry at each of a list of paths, in the
+  order of the paths, in one session to the device. Each path is from the root, as an
+  `Entry` gives it, and under the start, so one point has one path whatever the start.
+  The walk finds the start first, with `connector.no-folder` as for the other scopes.
+  It reads the folder at each prefix of the paths at most once, before the next, and
+  stops a folder when it has seen each name that a path takes in it, so an import of 500
+  points opens no 500 sessions (`laptop.architect-2`, 2026-10-18T02:44:21Z, the docs of
+  round 1: https://github.com/synnaxlabs/foundation/pull/3102#issuecomment-6244852270).
+  A path at a folder, at no entry, or not under the start gives `connector.no-point`
+  ("the device has no point at "<path>"", or "the path "<path>" is not under the start
+  "<start>""), with the fix "Give the path of a point that `browse` gives", one
+  diagnostic for each path, all in one `Error::Config`. Each
+  entry of each level that it reads counts toward `VISITS`. At the budget it ends
+  `Budget` with the entries that it found, and refuses only the paths not under the
+  start (`laptop.integrator-2`, 2026-10-18T01:55:19Z, plan 8a:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244465986;
+  `laptop.architect-2`, 2026-10-18T02:10:56Z, item 1:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074). Lost:
+  picks by tag (the node ID): `Device` finds an entry only by its path, and the default
+  name needs the path. Trigger: a user who has a list of tags and no paths
+  (`laptop.architect-2`, 2026-10-18T02:10:56Z, item 11:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074).
   Values are read only when the `Query` asks, in one call for the points that it gives.
   A new filter is a new field of `Query`. The walk lives once in `connector`
   (`browse::walk`). It finds the start from the root, one name at a time; a name that is
@@ -106,13 +128,16 @@
   a third context, or a second shared input with a body of its own, as `secret` has in
   `read_secret`. A kind implements `browse::Device` on its open session, so one walk is
   one session and can use a continuation point; a `Cursor` that a front end gets holds
-  no session state. `level` takes a folder as the
-  `Entry` that the device gave, never a path, and gives at most `LIMIT` entries a page;
-  `values` gives `types::sample::Value`, so there is one value model. Trigger for a text
-  value: a kind that reads a `string` channel. Lost: a count of matches up to the
-  budget; trigger: the agent test (PR 9) shows a task with two over-limit refusals one
-  after the other. `import --match` uses the same walk, so the points that `browse
-  --match` shows are the points that `import --match` takes.
+  no session state. A walk may never ask for the page at a `next` that it got, so a kind
+  bounds the state that it keeps for its cursors in one session (`laptop.architect-2`,
+  2026-10-18T03:34:04Z, item 2 of
+  https://github.com/synnaxlabs/foundation/pull/3102#issuecomment-6245234798). `level`
+  takes a folder as the `Entry` that the device gave, never a path, and gives at most
+  `LIMIT` entries a page; `values` gives `types::sample::Value`, so there is one value
+  model. Trigger for a text value: a kind that reads a `string` channel. Lost: a count
+  of matches up to the budget; trigger: the agent test (PR 9) shows a task with two
+  over-limit refusals one after the other. `import --match` uses the same walk, so the
+  points that `browse --match` shows are the points that `import --match` takes.
   `config::connector(documents, name)` gives the `connector` block of `name` for a
   browse. It gives `config.private-key` for each private key in `documents` and then no
   other problem, as `config::check` does. It runs no check of a kind. Of the other
