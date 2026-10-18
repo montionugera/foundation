@@ -73,6 +73,20 @@ fn a_reply_of_many_changes_holds_no_more_than_the_bound() {
     serve_large(&text, "ops.large-reply");
 }
 
+/// The front ends of the node: HCL.
+fn hcl() -> FrontEnds {
+    FrontEnds::new(
+        "hcl",
+        FrontEnd {
+            read: config_hcl::read,
+            update: |source, text, document| {
+                config_hcl::update(source, text, document)
+                    .map_err(|refusal| Vec::from(&refusal))
+            },
+        },
+    )
+}
+
 /// Serves a `plan` request of `text` at a long path, whose reply passes the bound, and
 /// asserts that the heap grows by at most the bound and `STEPS_BYTES`, and that the
 /// first problem of the reply has `code`.
@@ -107,20 +121,10 @@ fn serve_large(text: &str, code: &'static str) {
             hub: hub.clone(),
             secrets,
         });
-        let front_ends = FrontEnds::new(
-            "hcl",
-            FrontEnd {
-                read: config_hcl::read,
-                update: |source, text, document| {
-                    config_hcl::update(source, text, document)
-                        .map_err(|refusal| Vec::from(&refusal))
-                },
-            },
-        );
         let node = Node::new(Config {
             mesh,
             keys: Box::new(|| Key::from_u128(1)),
-            front_ends,
+            front_ends: hcl(),
             supervisor,
             hub,
             clock: sim_node.clock(),
