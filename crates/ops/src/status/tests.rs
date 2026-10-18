@@ -18,6 +18,7 @@ use types::frame::{Form, Label, Path as Stream};
 use types::name::Name;
 use types::sample::Type;
 use types::time::Span;
+use wire::hub::client::BODY_BYTES_MAX;
 
 use super::{Class, Failure, Output, State, Status};
 use crate::common::{self, Fixture, SAM, founded, front_ends, name, solo};
@@ -1120,6 +1121,41 @@ fn fails_when_the_buffer_fails_before_a_frame_of_the_status() {
             "status": 1,
         });
         assert_eq!(head, expected);
+    });
+}
+
+/// One apply holds less than a reply, but the `address` of a config has no bound of
+/// its own, so the connectors of some applies pass the bound of a reply.
+#[test]
+fn a_status_over_the_bound_gives_its_own_code() {
+    const ADDRESS: usize = 800_000;
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let max = usize::try_from(BODY_BYTES_MAX).expect("a usize");
+        let mut text = String::new();
+        for index in 0..=max / ADDRESS {
+            let name = format!("site.c{index}");
+            let address = format!("opc.tcp://{name}:4840");
+            text += &connector(&name, "steady", "edge")
+                .replace(&address, &"a".repeat(ADDRESS));
+            applied(&fixture, &node, &text).await;
+        }
+        let (head, rest) = status(&node, "@admin").await;
+        let expected = json!({
+            "errors": [{
+                "code": "ops.large-status",
+                "message": format!(
+                    "the reply of the status has more than {BODY_BYTES_MAX} bytes, \
+                     the most that a reply holds"
+                ),
+                "fix": "Read the status channels of each connector with a client of \
+                        the node",
+                "notes": [],
+            }],
+            "status": 1,
+        });
+        assert_eq!(head, expected);
+        assert_eq!(rest, b"");
     });
 }
 

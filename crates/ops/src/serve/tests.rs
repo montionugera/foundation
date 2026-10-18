@@ -318,6 +318,40 @@ fn refuses_each_body_that_is_no_request() {
 }
 
 #[test]
+fn quotes_the_first_bytes_of_a_long_cause_for_each_path() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let mib = 1 << 20;
+        let name = "é".repeat(mib / 2);
+        let string = "a".repeat(mib);
+        let fits = "b".repeat(256 - "the operation `` does not run on a node".len());
+        let over = format!("{fits}c");
+        let cases = [
+            (
+                format!("{{\"{fits}\":{{}}}}\n"),
+                format!("the operation `{fits}` does not run on a node"),
+            ),
+            (
+                format!("{{\"{over}\":{{}}}}\n"),
+                format!("the operation `{over}` does not run on a nod..."),
+            ),
+            (
+                format!("{{\"{name}\":{{}}}}\n"),
+                format!("the operation `{}...", &name[..240]),
+            ),
+            (
+                format!("{{\"plan\":\"{string}\"}}\n"),
+                format!("invalid type: string \"{}...", &string[..234]),
+            ),
+        ];
+        for (body, message) in cases {
+            let reply = serve(&node, &admin(), body.as_bytes()).await;
+            assert_eq!(split(&reply), (bad(&message), &b""[..]));
+        }
+    });
+}
+
+#[test]
 fn refuses_an_operation_that_the_table_does_not_hold() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);

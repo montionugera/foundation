@@ -34,45 +34,51 @@ mod tests;
 /// `browse`, `ops.denied` for an action that no access policy gives `subject` and for a
 /// request that names no definition. An error reply over the bound keeps the problems
 /// that fit, then `ops.more-problems` for the rest. `ops.large-reply` takes the place
-/// of an output over the bound and of an error whose first problem does not fit, and
-/// `ops.large-browse` takes it for `browse`. `apply` also needs `apply` on the channel
-/// at each edge of each channel that the plan adds or changes, and `admin` on the key
-/// of each definition other than a channel that the plan adds, changes, or removes. It
-/// gives a home only to an index on which `subject` has `apply`, and drops each other
-/// home with no error. `status` shows only each connector on whose label and status
-/// channels `subject` has `read`. When it shows none, also when the node places none,
-/// it needs `read` on the name of the node, and gives `ops.denied` with no grant. It
-/// gives the failures of the read of the OS roots of the node only to a subject with
-/// `read` on the name of the node. It waits at most 1 s from the request. A connector
-/// is `unknown` when no status as the spec defines it comes in that time, and `status`
-/// gives `ops.channel-read` when the reader of a connector fails for another cause.
-/// `browse` needs `apply` and `admin` on the name of the connector, and browses only a
-/// connector that the files place on this node.
+/// of an output over the bound and of an error whose first problem does not fit,
+/// `ops.large-browse` takes it for `browse`, and `ops.large-status` for `status`.
+/// `apply` also needs `apply` on the channel at each edge of each channel that the plan
+/// adds or changes, and `admin` on the key of each definition other than a channel that
+/// the plan adds, changes, or removes. It gives a home only to an index on which
+/// `subject` has `apply`, and drops each other home with no error. `status` shows only
+/// each connector on whose label and status channels `subject` has `read`. When it
+/// shows none, also when the node places none, it needs `read` on the name of the node,
+/// and gives `ops.denied` with no grant. It gives the failures of the read of the OS
+/// roots of the node only to a subject with `read` on the name of the node. It waits at
+/// most 1 s from the request. A connector is `unknown` when no status as the spec
+/// defines it comes in that time, and `status` gives `ops.channel-read` when the reader
+/// of a connector fails for another cause. `browse` needs `apply` and `admin` on the
+/// name of the connector, and browses only a connector that the files place on this
+/// node.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
-    let reply = run(node, subject, body).await;
-    reply
-        .unwrap_or_else(|error| failed(&error, &Error::LargeReply))
-        .0
+    let reply = match read(body) {
+        // The cause is cut, so no reply of a body that is no request reaches
+        // `LargeReply`.
+        Err(error) => failed(&error, &Error::LargeReply),
+        Ok((request, rest)) => {
+            let large = request.large();
+            match run(node, subject, request, rest).await {
+                Ok(Ok(reply)) => reply,
+                Ok(Err(Large)) => failed(&large, &large),
+                Err(error) => failed(&error, &large),
+            }
+        }
+    };
+    reply.0
 }
 
 /// A body that would pass the bound.
 #[derive(Debug)]
 struct Large;
 
-impl From<Large> for Error {
-    fn from(Large: Large) -> Self {
-        Self::LargeReply
-    }
-}
-
 /// The bytes of a request or a reply: at most `BODY_BYTES_MAX`.
 #[derive(Default)]
 struct Body(Vec<u8>);
 
 impl Body {
-    /// The body of `head` as one line of JSON. Stops at the bound.
+    /// The body of `head` as one line of JSON. Stops at the bound. `fitting` counts
+    /// the layout of this line.
     ///
     /// # Errors
     ///
@@ -142,6 +148,17 @@ enum Request {
     Browse(Browse),
     /// An operation of another name.
     Other(String),
+}
+
+impl Request {
+    /// The error of a reply of this request that passes the bound.
+    fn large(&self) -> Error {
+        match self {
+            Self::Plan(_) | Self::Apply | Self::Other(_) => Error::LargeReply,
+            Self::Status => Error::LargeStatus,
+            Self::Browse(_) => Error::LargeBrowse,
+        }
+    }
 }
 
 /// The input of `plan`: each config file, with its path as the user gave it.
@@ -252,7 +269,7 @@ impl<'de> Deserialize<'de> for Request {
 }
 
 /// The first line of a reply: the output of an operation that ran, or its errors with
-/// the exit status of the program.
+/// the exit status of the program. `fitting` counts the layout of `Failed`.
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 enum Answer<T, E> {
@@ -465,11 +482,18 @@ fn first_line(body: &[u8]) -> Option<(&[u8], &[u8])> {
     Some((&body[..end], &body[end + 1..]))
 }
 
-/// `Request` with `message`.
+/// The most bytes of the cause that `ops.bad-request` quotes.
+const CAUSE_MAX: usize = 256;
+
+/// `Request` with the first `CAUSE_MAX` bytes of `message`, cut at a char boundary,
+/// then `...` when it cuts.
 fn bad_request(message: impl Into<String>) -> Error {
-    Error::Request {
-        message: message.into(),
+    let mut message = message.into();
+    if message.len() > CAUSE_MAX {
+        message.truncate(message.floor_char_boundary(CAUSE_MAX));
+        message.push_str("...");
     }
+    Error::Request { message }
 }
 
 /// `Reply` with `message`.
@@ -479,13 +503,28 @@ fn bad_reply(message: impl Into<String>) -> Error {
     }
 }
 
-/// The reply of the request `body` of `subject`.
-async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Body, Error> {
+/// The request of `body` and the bytes after its first line.
+///
+/// # Errors
+///
+/// [`Error::Request`] when the first line is no request.
+fn read(body: &[u8]) -> Result<(Request, &[u8]), Error> {
     let Some((head, rest)) = first_line(body) else {
         return Err(bad_request("no newline ends the first line"));
     };
     let request =
         serde_json::from_slice(head).map_err(|e| bad_request(e.to_string()))?;
+    Ok((request, rest))
+}
+
+/// The reply of `request` of `subject`, with the bytes `rest` after its first line,
+/// or `Large` when its output passes the bound.
+async fn run(
+    node: &Node,
+    subject: &Name,
+    request: Request,
+    rest: &[u8],
+) -> Result<Result<Body, Large>, Error> {
     match request {
         Request::Plan(_) if !rest.is_empty() => {
             Err(bad_request("bytes follow the first line of `plan`"))
@@ -499,9 +538,7 @@ async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Body, Error> {
         Request::Browse(_) if !rest.is_empty() => {
             Err(bad_request("bytes follow the first line of `browse`"))
         }
-        Request::Browse(request) => Ok(browse(node, subject, request)
-            .await
-            .unwrap_or_else(|error| failed(&error, &Error::LargeBrowse))),
+        Request::Browse(request) => browse(node, subject, request).await,
         Request::Other(name) => Err(bad_request(format!(
             "the operation `{name}` does not run on a node"
         ))),
@@ -561,7 +598,11 @@ impl<'a> Check<'a> {
 }
 
 /// The reply of `plan` of `files`: its output, then the plan file.
-async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Body, Error> {
+async fn plan(
+    node: &Node,
+    subject: &Name,
+    files: &[File],
+) -> Result<Result<Body, Large>, Error> {
     let files = Documents::read(files, &node.front_ends)?;
     let names = files.names(node.supervisor.kinds())?;
     let spec = used::spec(&node.mesh).await?;
@@ -584,13 +625,18 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Body, Error
     // A subject that may not open a connector learns nothing of its sources.
     let readable = |name: &Name| check.opens(name).is_ok();
     let (output, plan) = files.plan(node, base, &applied, readable).await?;
-    let mut reply = Body::done(&output)?;
-    reply.add(&plan.encode())?;
-    Ok(reply)
+    Ok(Body::done(&output).and_then(|mut reply| {
+        reply.add(&plan.encode())?;
+        Ok(reply)
+    }))
 }
 
 /// The reply of `apply` of the plan file `bytes`: its output.
-async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Body, Error> {
+async fn apply(
+    node: &Node,
+    subject: &Name,
+    bytes: &[u8],
+) -> Result<Result<Body, Large>, Error> {
     let mut plan = config::plan::Plan::decode(bytes).map_err(Error::Plan)?;
     let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject);
@@ -631,14 +677,14 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Body, Error>
     let effect =
         apply::apply(plan, spec, &node.mesh, node.supervisor.kinds(), &node.keys)
             .await?;
-    Ok(Body::done(&effect)?)
+    Ok(Body::done(&effect))
 }
 
 /// The reply of `status`: its output. It leaves out each connector unless `subject`
 /// has `read` on its label and on each of its status channels. When it leaves out each
 /// connector, or the node places none, it needs `read` on the name of the node. It
 /// gives the failures of the OS roots only with `read` on the name of the node.
-async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
+async fn status(node: &Node, subject: &Name) -> Result<Result<Body, Large>, Error> {
     let asked = node.clock.now();
     let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject);
@@ -662,14 +708,18 @@ async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
         connectors,
         roots: readable.then(|| node.roots.clone()),
     };
-    Ok(Body::done(&output)?)
+    Ok(Body::done(&output))
 }
 
 /// The reply of `browse`: its output. It checks, in this order, that the files read,
 /// that they hold the connector, that `subject` may open it ([`Check::opens`]), that it
 /// runs on this node, that the start and the match parse, and that the request gives
 /// no match with a cursor.
-async fn browse(node: &Node, subject: &Name, request: Browse) -> Result<Body, Error> {
+async fn browse(
+    node: &Node,
+    subject: &Name,
+    request: Browse,
+) -> Result<Result<Body, Large>, Error> {
     let files = Documents::read(&request.files, &node.front_ends)?;
     let name: Name = request.connector.parse().map_err(|error| Error::Argument {
         message: format!(
@@ -726,5 +776,5 @@ async fn browse(node: &Node, subject: &Name, request: Browse) -> Result<Body, Er
         .await
         .map_err(|cause| Error::browse(&name, kind, cause, files.sources()))?;
     let output = crate::browse::Output::of(found);
-    Body::done(&output).map_err(|Large| Error::LargeBrowse)
+    Ok(Body::done(&output))
 }
