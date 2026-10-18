@@ -212,6 +212,15 @@ fn named<'a>(at: &str, tag: &'a str, given: &str) -> Want<'a> {
 
 /// What `add` gives for the connector `plc` of `texts`, from the root.
 fn added(texts: &[&str], wants: &[Want<'_>]) -> Result<Added, Vec<Diagnostic>> {
+    added_from(texts, &Path::root(), wants)
+}
+
+/// What `add` gives for the connector `plc` of `texts`, from `start`.
+fn added_from(
+    texts: &[&str],
+    start: &Path,
+    wants: &[Want<'_>],
+) -> Result<Added, Vec<Diagnostic>> {
     let documents: Vec<Document> = (0..)
         .zip(texts)
         .map(|(source, text)| read(source, text))
@@ -225,7 +234,7 @@ fn added(texts: &[&str], wants: &[Want<'_>]) -> Result<Added, Vec<Diagnostic>> {
             name: want.name.as_ref(),
         })
         .collect();
-    add(&documents, &name("plc"), &Path::root(), &picks, &kinds())
+    add(&documents, &name("plc"), start, &picks, &kinds())
 }
 
 /// The text of `text`, the file of source 0, with the blocks of `added` written in.
@@ -753,6 +762,48 @@ fn gives_no_default_when_the_run_without_the_refused_names_refuses_a_name() {
         vec![problem(
             "config.duplicate-name",
             &message,
+            "Give another name"
+        )]
+    );
+}
+
+#[test]
+fn gives_no_default_when_leaving_a_name_out_opens_a_pick_outside_the_start() {
+    // The pick at "Other/x" is present by the pick of "t2", and only a pick that is not
+    // present may not be under the start without a name.
+    let space = format!("S/{} ", "a".repeat(249));
+    let under = format!("S/{}_", "a".repeat(249));
+    let wants = [
+        named(&space, "t1", "plc"),
+        want(&under, "t2"),
+        want("Other/x", "t2"),
+    ];
+    let problems =
+        problems(added_from(&[PLANT], &path("S"), &wants).expect_err("in use"));
+    let message = format!(
+        "the name \"plc\" of the point at {:?} is in use in the files",
+        path(&space).to_string()
+    );
+    assert_eq!(
+        problems,
+        vec![problem(
+            "config.duplicate-name",
+            &message,
+            "Give another name"
+        )]
+    );
+}
+
+#[test]
+fn gives_no_default_for_a_refused_name_outside_the_start() {
+    let wants = [named("Other/x", "t1", "plc")];
+    let problems =
+        problems(added_from(&[PLANT], &path("S"), &wants).expect_err("in use"));
+    assert_eq!(
+        problems,
+        vec![problem(
+            "config.duplicate-name",
+            "the name \"plc\" of the point at \"Other/x\" is in use in the files",
             "Give another name"
         )]
     );

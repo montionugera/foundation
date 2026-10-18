@@ -92,14 +92,14 @@ pub struct Added {
 /// both paths for a name that an earlier pick has. Each names the path and the name,
 /// with the fix "Give another name, or leave it out for `<default>`", with the default
 /// of the run with each refused name left out, or "Give another name" when that run
-/// gives none or refuses a name. Else the diagnostics of [`Table::block`]. Else
-/// `document.too-deep`.
+/// gives none, refuses a name, or has a pick with no name that is not under `start`.
+/// Else the diagnostics of [`Table::block`]. Else `document.too-deep`.
 ///
 /// # Panics
 ///
-/// When a pick that is not present, with no given name or a refused one, has a path
-/// that is not under `start`, as [`import::names`] does, or when a kind of `kinds`
-/// writes a call `fill` of other arguments.
+/// When a pick that is not present, with no given name, has a path that is not under
+/// `start`, as [`import::names`] does, or when a kind of `kinds` writes a call `fill`
+/// of other arguments.
 pub fn add(
     documents: &[Document],
     connector: &Name,
@@ -125,7 +125,10 @@ pub fn add(
     let existing =
         index_of(&blocks, writes.channels()).map_err(|problem| vec![problem])?;
     let (open, index, names) =
-        named(connector, start, picks, &tags, &taken, existing.as_ref());
+        named(connector, start, picks, &tags, &taken, existing.as_ref())
+            .unwrap_or_else(|path| {
+                panic!("the path {path:?} is not below the start {start:?}")
+            });
     let open_picks: Vec<&Pick<'_>> = open.iter().map(|&at| &picks[at]).collect();
     let refused: Vec<_> = refused(&open_picks, &taken)
         .into_iter()
@@ -136,14 +139,22 @@ pub fn add(
         for &(at, _) in &refused {
             left[at].name = None;
         }
-        let (open, _, mut names) =
-            named(connector, start, &left, &tags, &taken, existing.as_ref());
-        let open_left: Vec<&Pick<'_>> = open.iter().map(|&at| &left[at]).collect();
-        // The run can open a pick that was present, whose given name it refuses: then
-        // leaving the names out adds nothing, so no fix names a default.
-        if !self::refused(&open_left, &taken).is_empty() {
-            names.fill(None);
-        }
+        // The run can open a pick that was present, whose given name it refuses or whose
+        // path is not under `start`: then leaving the names out adds nothing, so no fix
+        // names a default.
+        let kept = named(connector, start, &left, &tags, &taken, existing.as_ref())
+            .ok()
+            .filter(|(open, _, _)| {
+                let open: Vec<&Pick<'_>> = open.iter().map(|&at| &left[at]).collect();
+                self::refused(&open, &taken).is_empty()
+            });
+        let (open, names) = match kept {
+            Some((open, _, names)) => (open, names),
+            None => {
+                let none = vec![None; open.len()];
+                (open, none)
+            }
+        };
         return Err(fixed(refused, &open, &names));
     }
     let written = written(kinds, kind, &open_picks, names, &index)?;
@@ -190,29 +201,42 @@ fn open(
 }
 
 /// The place of each pick of `picks` that is not present, the index, and the name of
-/// each of those picks.
-fn named(
+/// each of those picks, or the path of a pick that is not present, with no given name,
+/// that is not under `start`.
+fn named<'p>(
     connector: &Name,
     start: &Path,
-    picks: &[Pick<'_>],
+    picks: &[Pick<'p>],
     tags: &BTreeSet<String>,
     taken: &[Name],
     existing: Option<&Name>,
-) -> (Vec<usize>, Name, Vec<Option<Name>>) {
+) -> Result<(Vec<usize>, Name, Vec<Option<Name>>), &'p Path> {
     // A pick that ends `Unnamed` makes no later pick of its tag present, and opening
     // such a pick can leave another `Unnamed`, so name until no pick changes.
     let mut unnamed = BTreeSet::new();
     loop {
         let open = open(picks, tags, &unnamed);
+        let outside = open
+            .iter()
+            .find(|&&at| picks[at].name.is_none() && !below(start, picks[at].path));
+        if let Some(&at) = outside {
+            return Err(picks[at].path);
+        }
         let given = open.iter().map(|&at| (picks[at].path, picks[at].name));
         let (index, names) = name(connector, start, given, taken, existing.cloned());
         let dropped = open.iter().zip(&names).filter(|(_, name)| name.is_none());
         let before = unnamed.len();
         unnamed.extend(dropped.map(|(&at, _)| at));
         if unnamed.len() == before {
-            return (open, index, names);
+            return Ok((open, index, names));
         }
     }
+}
+
+/// Whether `path` is below `start`.
+fn below(start: &Path, path: &Path) -> bool {
+    let mut names = path.names();
+    start.names().all(|name| names.next() == Some(name)) && names.len() > 0
 }
 
 /// `refused` with the fix of each, by the place of its pick, where `names` holds the
