@@ -16,10 +16,10 @@ use types::sample::Scalar;
 
 #[test]
 fn a_run_that_writes_past_the_ring_of_its_home_returns_ok() {
-    // At 255 nodes the ring has room for a second status frame, which the pin needs;
-    // at 256 it does not.
+    // At 254 nodes the bytes after the last data frame that fits hold a second status
+    // frame, which the pin needs. At 255 and 256 they do not.
     let (writes, status) = kind::writes(
-        255,
+        254,
         &[Scalar::F64],
         8_000,
         |_| 0,
@@ -34,8 +34,8 @@ fn a_run_that_writes_past_the_ring_of_its_home_returns_ok() {
     let last = status.last().expect("the home applied a status");
     let counts = [
         ("bad", 0),
-        ("in", 96_135),
-        ("lost", 158_865),
+        ("in", 93_980),
+        ("lost", 160_020),
         ("missed", 0),
         ("mistyped", 0),
         ("uncertain", 0),
