@@ -37,6 +37,8 @@
   that closes the channel, such as `BadTcpMessageTooLarge` (`laptop.architect-2`,
   2026-10-18T20:52:27Z,
   https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6255008245).
+  Supersedes the status `BadSecureChannelClosed` of item 2 of
+  https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6138683801.
   The change that adds a GUID key also changes `SPLIT`, to 18, and `id_bytes`, whose
   match does not build until it gives the size of the new form: a test of the client
   fails to build until it gives the size of each form of a key. Decided by
@@ -70,7 +72,9 @@
   client cannot process on an open channel also ends the connect, or the session, with
   no new dial (`laptop.architect-2`, 2026-10-13T19:25:56Z:
   https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6153426912). The
-  connect, and each read in flight, gives the status of that error. A close by the
+  connect, and each read in flight, gives the status of that error. The first error
+  stays: an error that comes after it, such as the failure of a new session that the
+  client asks for after an `ERR`, does not replace it. A close by the
   client, also at the timeout of the connect, gives the reads in flight
   `BadConnectionClosed`. A close or reset of the stream by the server still gives them
   `BadSecureChannelClosed`, and the connect `BadConnectionClosed`
@@ -102,7 +106,9 @@
   answer against `CHUNKS` and its largest message, as the release does. A chunk past one
   of these bounds closes the channel, and the read gives the status of that error,
   `BadTcpMessageTooLarge` (`laptop.architect-2`, 2026-10-18T20:52:27Z,
-  https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6255008245). With
+  https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6255008245).
+  Supersedes the status `BadSecureChannelClosed` of
+  https://github.com/synnaxlabs/foundation/pull/3121#issuecomment-6245820725. With
   `READS` 9, a read of 10 to 16 requests takes 2 round trips in place of 1
   (`laptop.monitor`, 2026-10-18 03:47 UTC, and `laptop.architect-2`,
   2026-10-18T03:48:17Z,
