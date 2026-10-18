@@ -1,0 +1,4 @@
+channel "a" {
+  kind  = "stream"
+  other = "x"
+}
