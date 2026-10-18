@@ -259,6 +259,37 @@ fn the_earliest_is_a_frame_of_no_sample_then_the_earliest_stamp_then_the_first()
     }
 }
 
+proptest::proptest! {
+    /// The earliest is the first held frame that no held frame before it ties and no
+    /// held frame comes before: a frame of no sample before each stamp.
+    #[test]
+    fn the_earliest_comes_before_each_other_held_frame(
+        firsts in proptest::collection::vec(
+            proptest::option::of(proptest::option::of(-3_i64..3)),
+            0..6,
+        ),
+    ) {
+        let at = earliest(firsts.iter().copied());
+        let held: Vec<_> = (0..firsts.len()).filter(|&i| firsts[i].is_some()).collect();
+        proptest::prop_assert_eq!(at.is_none(), held.is_empty());
+        if let Some(at) = at {
+            let first = firsts[at].expect("the earliest is held");
+            for &other in &held {
+                let theirs = firsts[other].expect("held");
+                let before = match (theirs, first) {
+                    (None, Some(_)) => true,
+                    (Some(theirs), Some(first)) => theirs < first,
+                    _ => false,
+                };
+                proptest::prop_assert!(!before, "{other} comes before {at}");
+                if theirs == first {
+                    proptest::prop_assert!(at <= other, "{at} ties {other} after it");
+                }
+            }
+        }
+    }
+}
+
 /// The merge of reads of the channels of `merged`, with no read to drive.
 fn merged(merged: &mut [Merged], frame: &mut Frame) -> Poll<Result<(), Error>> {
     let mut cx = Context::from_waker(Waker::noop());

@@ -19,6 +19,7 @@ transport = { path = "../../crates/transport" }
 types = { path = "../../crates/types" }
 
 [dev-dependencies]
+proptest = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 
 [lints]

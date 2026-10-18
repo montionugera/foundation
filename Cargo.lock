@@ -1917,6 +1917,7 @@ dependencies = [
  "env",
  "os",
  "program",
+ "proptest",
  "sector",
  "spec",
  "tokio",
