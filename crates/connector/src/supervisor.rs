@@ -1,5 +1,6 @@
 //! Runs connectors and restarts them after errors.
 
+use std::cell::Cell;
 use std::fmt;
 use std::future::poll_fn;
 use std::pin::pin;
@@ -27,6 +28,10 @@ const RESTART: retry::Config = retry::Config {
 /// A run at least this long starts the waits again from the first.
 const HEALTHY: Span = Span::MINUTE;
 
+/// The most browses that one supervisor runs at once, since each holds what its device
+/// gives.
+const BROWSES: usize = 2;
+
 /// The inputs of a supervisor on one shard.
 #[derive(Debug)]
 pub struct Config {
@@ -49,28 +54,35 @@ pub struct Config {
 }
 
 /// Runs connectors of the kinds in a table, one `open` and its `run` at a time per
-/// connector. It is not `Send`: each shard makes its own. Its clones share one config.
+/// connector. It is not `Send`: each shard makes its own. Its clones share one config
+/// and one count of browses.
 #[derive(Clone, Debug)]
-pub struct Supervisor(Rc<Config>);
+pub struct Supervisor {
+    config: Rc<Config>,
+    browses: Rc<Cell<usize>>,
+}
 
 impl Supervisor {
     /// Makes a supervisor for one shard.
     #[must_use]
     pub fn new(config: Config) -> Self {
-        Self(Rc::new(config))
+        Self {
+            config: Rc::new(config),
+            browses: Rc::default(),
+        }
     }
 
     /// The kinds of the connectors that the supervisor runs.
     #[must_use]
     pub fn kinds(&self) -> &kind::Table {
-        &self.0.kinds
+        &self.config.kinds
     }
 
     /// The sources that [`kind::Context::secret`] reads for the connectors of the
     /// supervisor.
     #[must_use]
     pub fn secrets(&self) -> &secret::Resolver {
-        &self.0.secrets
+        &self.config.secrets
     }
 
     /// Browses the device of the connector block `config` of `kind` as `query`
@@ -81,16 +93,24 @@ impl Supervisor {
     ///
     /// # Errors
     ///
-    /// The errors of [`Kind::browse`](kind::Kind::browse), and [`Error::Config`] with
-    /// `connector.unknown-kind`.
+    /// The errors of [`Kind::browse`](kind::Kind::browse), [`Error::Config`] with
+    /// `connector.unknown-kind`, and [`Error::Retry`] with "2 browses run, the most at
+    /// once" when 2 browses of the supervisor run. A browse runs from the first poll of
+    /// its future until its future returns or drops.
     pub async fn browse(
         &self,
         kind: &str,
         config: &Document,
         query: &browse::Query,
     ) -> Result<browse::Found, Error> {
-        let ctx = browse::Context::new(config, &self.0);
-        self.0.kinds.browse(kind, &ctx, query).await
+        let ctx = browse::Context::new(config, &self.config);
+        let browse = self.config.kinds.browse(kind, &ctx, query);
+        let browse = browse.map_err(Error::Config)?;
+        let Some(_place) = Place::take(&self.browses) else {
+            let error = format!("{BROWSES} browses run, the most at once");
+            return Err(Error::Retry(error.into()));
+        };
+        browse.await
     }
 
     /// Opens the status channels of the connector `name` once the node has mesh
@@ -126,6 +146,26 @@ impl Supervisor {
         };
         let start = call.start().await;
         Opened { call, start }
+    }
+}
+
+/// One browse in the count of its supervisor, until it drops.
+struct Place<'a>(&'a Cell<usize>);
+
+impl<'a> Place<'a> {
+    /// `None` when [`BROWSES`] browses run.
+    fn take(browses: &'a Cell<usize>) -> Option<Self> {
+        let count = browses.get();
+        (count < BROWSES).then(|| {
+            browses.set(count + 1);
+            Self(browses)
+        })
+    }
+}
+
+impl Drop for Place<'_> {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() - 1);
     }
 }
 
@@ -255,7 +295,7 @@ impl Call<'_> {
         } = self;
         let Config {
             kinds, clock, hub, ..
-        } = &*supervisor.0;
+        } = &*supervisor.config;
         let channels = match kinds.check(kind, None, config) {
             Ok(channels) => channels,
             Err(diagnostics) => return Start::Done(Err(Error::Config(diagnostics))),
@@ -316,7 +356,11 @@ impl Call<'_> {
             name: Some(self.name.clone()),
             hold: settings.hold,
         };
-        match self.cancel.race(self.supervisor.0.hub.reader(config)).await {
+        match self
+            .cancel
+            .race(self.supervisor.config.hub.reader(config))
+            .await
+        {
             None => Opening::Cancelled,
             Some(Ok(reader)) => Opening::Opened(Some(reader)),
             Some(Err(error)) => Opening::Failed(kind::reader_error(error)),
@@ -344,7 +388,7 @@ impl Call<'_> {
             clock,
             entropy,
             ..
-        } = &*supervisor.0;
+        } = &*supervisor.config;
         let mut backoff = retry::Backoff::new(clock, entropy.rng(), RESTART);
         let mut first = Some(first);
         loop {
@@ -362,7 +406,7 @@ impl Call<'_> {
                 break;
             }
             let token = Cancels(cancel.child());
-            let group = Group::new(self.supervisor.0.tasks.clone());
+            let group = Group::new(self.supervisor.config.tasks.clone());
             let start = clock.now();
             let end = match reader {
                 Ok(reader) => {
@@ -403,7 +447,7 @@ impl Call<'_> {
         group: &Group,
         status: &status::Status,
     ) -> Context<()> {
-        let inputs = &self.supervisor.0;
+        let inputs = &self.supervisor.config;
         Context::new(
             self.name.clone(),
             (),
@@ -428,7 +472,7 @@ impl Drop for Cancels {
 #[cfg(test)]
 #[cfg(not(loom))]
 mod tests {
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::io::IoSlice;
     use std::net::SocketAddr;
@@ -451,7 +495,7 @@ mod tests {
     use crate::common::{
         STATUS, create_config, create_status, env, run_in, run_on, run_with,
     };
-    use crate::kind::{Channels, Kind, Table};
+    use crate::kind::{Browse, Channels, Kind, Table};
     use crate::testing;
     use hub::home::Refusal;
     use hub::reader::{Mode, Received};
@@ -5635,5 +5679,157 @@ mod tests {
         let (found, returned) = browse_unsynced(browse::WAIT);
         assert_eq!(found.expect("found").end, browse::End::Done);
         assert_eq!(returned, browse::WAIT);
+    }
+
+    /// A kind whose browse takes a second and gives no entries.
+    struct Slow;
+
+    impl Kind for Slow {
+        type Config = ();
+
+        fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+            Ok(())
+        }
+
+        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+            Ok(Channels::default())
+        }
+
+        fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+            std::future::ready(Ok(()))
+        }
+
+        async fn browse(
+            &self,
+            ctx: &browse::Context<'_>,
+            _: &browse::Query,
+        ) -> Result<browse::Found, Error> {
+            ctx.clock().sleep(Span::SECOND).await;
+            Ok(browse::Found {
+                entries: Vec::new(),
+                values: Vec::new(),
+                end: browse::End::Done,
+            })
+        }
+    }
+
+    /// A supervisor of [`Slow`] as `slow`.
+    async fn create_slow(node: &sim::node::Node, tasks: Tasks) -> Supervisor {
+        let kinds = Table::new().with("slow", Slow);
+        Supervisor::new(create_config(node, tasks, kinds, "a").await)
+    }
+
+    fn level() -> browse::Query {
+        browse::Query {
+            start: browse::Path::root(),
+            scope: browse::Scope::Level(None),
+            values: browse::Values::Skipped,
+        }
+    }
+
+    /// Starts [`BROWSES`] browses of `slow`, each polled once.
+    async fn start_held<'a>(
+        supervisor: &'a Supervisor,
+        config: &'a Document,
+        query: &'a browse::Query,
+    ) -> Vec<Browse<'a>> {
+        let mut held: Vec<Browse<'a>> = (0..BROWSES)
+            .map(|_| -> Browse<'a> {
+                Box::pin(supervisor.browse("slow", config, query))
+            })
+            .collect();
+        poll_fn(|cx| {
+            for browse in &mut held {
+                assert!(browse.as_mut().poll(cx).is_pending());
+            }
+            Poll::Ready(())
+        })
+        .await;
+        held
+    }
+
+    #[test]
+    fn a_browse_past_the_bound_gives_a_retry_at_once() {
+        let (found, waited) = run_on(|node, tasks| async move {
+            let supervisor = create_slow(&node, tasks).await;
+            let (config, query) = (config(), level());
+            let _held = start_held(&supervisor, &config, &query).await;
+            let start = node.clock().now();
+            let found = supervisor.browse("slow", &config, &query).await;
+            (found, node.clock().now() - start)
+        });
+        let Err(Error::Retry(error)) = found else {
+            panic!("not a retry: {found:?}");
+        };
+        assert_eq!(error.to_string(), "2 browses run, the most at once");
+        assert_eq!(waited, Span::ZERO);
+    }
+
+    #[test]
+    fn a_browse_of_an_unknown_kind_past_the_bound_gives_the_unknown_kind() {
+        let found = run_on(|node, tasks| async move {
+            let supervisor = create_slow(&node, tasks).await;
+            let (config, query) = (config(), level());
+            let _held = start_held(&supervisor, &config, &query).await;
+            supervisor.browse("none", &config, &query).await
+        });
+        let Err(Error::Config(diagnostics)) = found else {
+            panic!("not a config error: {found:?}");
+        };
+        let [diagnostic] = &diagnostics[..] else {
+            panic!("not one diagnostic: {diagnostics:?}");
+        };
+        assert_eq!(diagnostic.code, Code::new("connector.unknown-kind"));
+        assert_eq!(
+            diagnostic.message,
+            "this build has no connector kind \"none\""
+        );
+    }
+
+    #[test]
+    fn the_browses_at_the_bound_run_and_free_their_places_when_they_end() {
+        let ends = run_on(|node, tasks| async move {
+            let supervisor = create_slow(&node, tasks).await;
+            let (config, query) = (config(), level());
+            let mut ends = Vec::new();
+            for browse in start_held(&supervisor, &config, &query).await {
+                ends.push(browse.await.map(|found| found.end).ok());
+            }
+            let found = supervisor.browse("slow", &config, &query).await;
+            ends.push(found.map(|found| found.end).ok());
+            ends
+        });
+        assert_eq!(ends, vec![Some(browse::End::Done); BROWSES + 1]);
+    }
+
+    #[test]
+    fn a_dropped_browse_frees_its_place() {
+        let found = run_on(|node, tasks| async move {
+            let supervisor = create_slow(&node, tasks).await;
+            let (config, query) = (config(), level());
+            let mut held = start_held(&supervisor, &config, &query).await;
+            drop(held.pop());
+            supervisor.browse("slow", &config, &query).await
+        });
+        assert_eq!(found.expect("found").end, browse::End::Done);
+    }
+
+    #[test]
+    fn a_clone_counts_the_browses_of_its_supervisor() {
+        let (past, freed) = run_on(|node, tasks| async move {
+            let supervisor = create_slow(&node, tasks).await;
+            let clone = supervisor.clone();
+            let (config, query) = (config(), level());
+            let held = start_held(&supervisor, &config, &query).await;
+            let past = clone.browse("slow", &config, &query).await;
+            drop(held);
+            let freed = clone.browse("slow", &config, &query).await;
+            (past, freed)
+        });
+        let Err(Error::Retry(error)) = past else {
+            panic!("not a retry: {past:?}");
+        };
+        assert_eq!(error.to_string(), "2 browses run, the most at once");
+        assert_eq!(freed.expect("found").end, browse::End::Done);
     }
 }

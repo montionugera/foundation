@@ -83,3 +83,28 @@
   supersedes "The buffer gives only tag 0 a meaning" and the offsets beside the logs
   above. Decided by `laptop.architect` (#406, 2026-10-14T01:56:45Z,
   https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6159164617).
+  Amended (2026-10-18T01:33:44Z, #406, 406-2): the holders of each copy, so a trim
+  never passes the record of a copy, add to each pair. A copy takes 72 B beside its
+  bytes. On box2, with sim files and 100,000 indexes with an entry of 17 B and one of
+  73 B, the buffer holds 68.42 MB against 40.02 MB before the copy and 55.31 MB after
+  406-1: +28.40 MB, about 142 B a pair above the cost before the copy. The open peaks
+  at 78.86 MB against 51.62 MB before the copy and 80.19 MB after 406-1. At 10,000
+  indexes, it holds 7.96 MB against 4.76 MB. The person accepted about 31 MB held at
+  100,000 indexes: "Ok this is fine" (#406, 2026-10-18T00:38:09Z,
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6243808602).
+  `laptop.architect` accepted the held bytes and the peak under P1 (#406,
+  2026-10-18T01:33:44Z,
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6244272935). This
+  supersedes the 53.7 B above: a change that adds to the bytes of a pair states them
+  and needs a P1 judgment.
+  Amended (2026-10-18T06:40:21Z, #406, 406-2): a tagged entry may cost up to +13 ns
+  over the code before 406-2 on the quiet-host `deadline_tagged/32` line (+10.2 ns at
+  `c025fb18b` against `4b019d5e8`). HOME NAMED READERS holds up to 64 parts an index,
+  and a tick appends each part whose records changed: at 100,000 indexes, that is
+  1.26 ms/s with one part and about 81 ms/s with 64. The rate follows the ticks and
+  the sessions, not the data. It buys whole records at each carry, so no named position
+  is lost at a carry or an open. `laptop.architect` accepted it under P1 (#3113,
+  2026-10-18T06:40:21Z,
+  https://github.com/synnaxlabs/foundation/pull/3113#issuecomment-6246659111, item 2).
+  A cost over +13 ns a tagged entry against the code before 406-2 needs a new P1
+  judgment.

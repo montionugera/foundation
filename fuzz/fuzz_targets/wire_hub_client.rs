@@ -1,17 +1,20 @@
-//! The decoders of `wire::hub::client` never panic, each but `Open::decode` and
-//! `Reader::decode` refuses a message of another kind with `Error::Kind`,
-//! `Reader::decode` refuses a first message of another kind with it, each message that
-//! decodes encodes to its bytes, a `Places` over `PLACES_MAX` gives `Error::Places`,
-//! each body ends at its length and nowhere else, each refusal of a body is the one
-//! that its rest gives, a read stream gives with its last place the places of its run,
-//! their key set, and the decoder of a session of their count and the mode, a refused
-//! message of a read stream leaves its decoder as it was, and each valid message made
-//! from the input reads back.
+//! The decoders of `wire::hub::client` and `wire::hub::write::Reply::decode` never
+//! panic, each but the two opens, `Reader::decode`, and `Opening::decode` refuses a
+//! message of another kind with its `Kind` error, `Reader::decode` refuses a first
+//! message of another kind with it, each message that decodes encodes to its bytes, a
+//! `Places` over `PLACES_MAX` gives `Error::Places`, each body ends at its length and
+//! nowhere else, each refusal of a body is the one that its rest gives, a read stream
+//! gives with its last place the places of its run, their key set, and the decoder of
+//! a session of their count and the mode, a refused message of a read stream leaves
+//! its decoder as it was, an `Opening` gives what a `Reader` gives, and each valid
+//! message made from the input reads back. A `Reader` holds an `Opening`, so the
+//! checks of the read stream are the checks of the run of both.
 //!
 //! Input: the messages of one stream (`fuzz::messages`). Each decoder reads each
 //! message, an open among them; the body of the first message, when it is a request, a
-//! response, or a read, takes each later message; and a `client::Reader` of each mode
-//! takes each message until it gives the last place, and then the end of the stream.
+//! response, a read, or a write, takes each later message; and a `client::Reader` of
+//! each mode and a `write::Opening` take each message until they give the last place,
+//! and then the end of the stream.
 
 #![no_main]
 #![expect(clippy::disallowed_methods, reason = "fuzz_target! calls File::create")]
@@ -20,27 +23,32 @@ use libfuzzer_sys::{
     arbitrary::{self, Unstructured},
     fuzz_target,
 };
+use types::authority::Authority;
 use types::channel;
 use types::connection;
 use types::ed25519::PublicKey;
+use types::frame;
 use types::hello::Hello;
 use types::name::Selector;
 use types::node;
 use types::sample::{Scalar, Type};
-use types::time::{Interval, Stamp};
+use types::time::{Interval, Span, Stamp};
 use wire::hub;
+use wire::hub::client::write::{self, Opening};
 use wire::hub::client::{
     BODY_BYTES_MAX, Body, Challenge, Error, First, Mode, OPEN_BYTES_MAX, Open,
     PLACES_MAX, Place, Places, Read, Reader, Request, Response, Signed, place,
 };
+use wire::hub::write::{Outcome, Refusal, Reply};
 
 /// Checks one decoder of kind `kind` on `message`: a decoded message encodes to it,
-/// and a refusal is the one that its first byte gives.
+/// and a refusal is the one that its first byte gives, or one that `allowed` takes.
 fn decode<T>(
     message: &[u8],
     kind: u8,
     decode: fn(&[u8]) -> Result<T, Error>,
     encode: fn(&T) -> Vec<u8>,
+    allowed: fn(&Error) -> bool,
 ) -> Option<T> {
     match (message.first(), decode(message)) {
         (_, Ok(decoded)) => {
@@ -56,15 +64,7 @@ fn decode<T>(
         }
         (Some(_), Err(error)) => {
             assert!(
-                matches!(
-                    error,
-                    Error::Length { .. }
-                        | Error::Subject(_)
-                        | Error::SmallOrder
-                        | Error::Oversize { .. }
-                        | Error::Places { .. }
-                        | Error::Index { .. }
-                ),
+                allowed(&error),
                 "{error:?} is not a refusal of the bytes of {message:?}"
             );
             None
@@ -102,6 +102,18 @@ fn read_message(read: &Read) -> Vec<u8> {
     out
 }
 
+fn write_message(write: &write::Write) -> Vec<u8> {
+    let mut out = vec![0; write::Write::LEN];
+    write.encode(&mut out);
+    out
+}
+
+fn reply(reply: &Reply) -> Vec<u8> {
+    let mut out = vec![0; reply.encoded_len()];
+    reply.encode(&mut out);
+    out
+}
+
 fn places(places: &Places) -> Vec<u8> {
     let mut out = vec![0; Places::LEN];
     places.encode(&mut out);
@@ -118,23 +130,73 @@ fn encode_run(run: &[Place]) -> Vec<u8> {
     out
 }
 
-/// Checks the decoder of a message with no kind byte, an open: one that decodes must
-/// encode to its bytes.
+/// Checks the decoders of a message with no kind byte, the opens, and of a reply,
+/// whose first byte is one of four kinds: one that decodes must encode to its bytes.
 fn unkinded(message: &[u8]) {
     if let Ok(open) = Open::decode(message) {
         let mut out = vec![0; open.encoded_len()];
         open.encode(&mut out);
         assert_eq!(out, message, "the open changed");
     }
+    if let Ok(open) = write::Open::decode(message) {
+        let mut out = vec![0; open.encoded_len()];
+        open.encode(&mut out);
+        assert_eq!(out, message, "the open of a write changed");
+    }
+    match (message.first(), Reply::decode(message)) {
+        (_, Ok(decoded)) => assert_eq!(reply(&decoded), message, "the reply changed"),
+        (None, Err(error)) => assert_eq!(error, hub::Error::Empty),
+        (Some(&kind), Err(error)) if !(1..=4).contains(&kind) => {
+            assert_eq!(error, hub::Error::Kind { kind }, "{message:?}");
+        }
+        (Some(_), Err(error)) => assert!(
+            matches!(
+                error,
+                hub::Error::Length { .. }
+                    | hub::Error::Count { .. }
+                    | hub::Error::Range { .. }
+                    | hub::Error::Refusal { .. }
+            ),
+            "{error:?} is not a refusal of the bytes of {message:?}"
+        ),
+    }
+}
+
+/// Drives an `Opening` and a `Reader` on `bytes`: each message gives what it gives
+/// the reader, and the start gives the reader's places and key set.
+fn open(bytes: &[u8]) {
+    let mut opening = Opening::default();
+    let mut reader = Reader::new(Mode::Latest);
+    for message in fuzz::messages(bytes) {
+        let opened = opening.decode(Some(message));
+        let read = reader.decode(Some(message));
+        match (opened, read) {
+            (Ok(None), Ok(None)) => {}
+            (Ok(Some(opened)), Ok(Some(read))) => {
+                assert_eq!(opened.places, read.places, "the places differ");
+                assert_eq!(
+                    format!("{:?}", opened.set),
+                    format!("{:?}", read.set),
+                    "the set differs"
+                );
+                return;
+            }
+            (Err(opened), Err(read)) => assert_eq!(opened, read, "{message:?}"),
+            (opened, read) => {
+                panic!("{opened:?} is not what the reader gave: {read:?}")
+            }
+        }
+    }
+    assert_eq!(opening.decode(None).err(), Some(Error::Finished));
 }
 
 /// Drives a reader of `mode` on `bytes` until it gives the last place, then ends the
-/// stream. A refused message leaves the reader as it was. Each message that it takes
-/// decodes alone as places or as a run that encodes to it, a run holds no more places
-/// than remain and a stamp at the index place, and only the message with the last
-/// place gives the start: the places of the run, their key set in place order, and
-/// the decoder of a session of the count and the mode. An end before the last place
-/// gives `Error::Finished`.
+/// stream. A refused message leaves the reader as it was, and a refused first message
+/// gives the error of its places. Each message that it takes decodes alone as places or
+/// as a run that encodes to it, a run holds no more places than remain and a stamp at
+/// the index place, and only the message with the last place gives the start: the
+/// places of the run, their key set in place order, and the decoder of a session of the
+/// count and the mode. An end before the last place gives `Error::Finished`.
 fn drive(bytes: &[u8], mode: Mode) {
     let mut reader = Reader::new(mode);
     let mut run: Option<(Places, u32, Vec<Place>)> = None;
@@ -142,6 +204,14 @@ fn drive(bytes: &[u8], mode: Mode) {
         let start = match reader.decode(Some(message)) {
             Ok(start) => start,
             Err(error) => {
+                if run.is_none() {
+                    let places = Places::decode(message).err();
+                    assert_eq!(
+                        places.as_ref(),
+                        Some(&error),
+                        "not the error of the places"
+                    );
+                }
                 if let Some(repeated) = refusal(run.as_ref(), message) {
                     let expected = repeated.map(|key| Error::Repeated { key });
                     assert_eq!(Some(error), expected, "a valid message refused");
@@ -235,6 +305,7 @@ fn fixed(message: &[u8]) -> Option<(Body, u64)> {
     let first = match *message {
         [5, ..] => Request::decode(message).map(First::Request),
         [6, ..] => Read::decode(message).map(First::Read),
+        [7, ..] => write::Write::decode(message).map(First::Write),
         [kind, ..] => Err(Error::Kind { kind }),
         [] => Err(Error::Empty),
     };
@@ -245,12 +316,23 @@ fn fixed(message: &[u8]) -> Option<(Body, u64)> {
         assert_eq!(Request::decode(message), Err(Error::Empty));
         assert_eq!(Response::decode(message), Err(Error::Empty));
         assert_eq!(Read::decode(message), Err(Error::Empty));
+        assert_eq!(write::Write::decode(message), Err(Error::Empty));
         assert_eq!(Places::decode(message), Err(Error::Empty));
         return None;
     }
-    decode(message, 4, Challenge::decode, challenge);
-    decode(message, 4, Signed::decode, signed);
-    decode(message, 6, Places::decode, places);
+    decode(message, 4, Challenge::decode, challenge, length);
+    decode(message, 4, Signed::decode, signed, |error| {
+        matches!(
+            error,
+            Error::Length { .. } | Error::Subject(_) | Error::SmallOrder
+        )
+    });
+    decode(message, 6, Places::decode, places, |error| {
+        matches!(
+            error,
+            Error::Length { .. } | Error::Places { .. } | Error::Index { .. }
+        )
+    });
     if let [6, a, b, c, d, _, _, _, _] = *message {
         let count = u32::from_le_bytes([a, b, c, d]);
         if count > PLACES_MAX {
@@ -261,22 +343,34 @@ fn fixed(message: &[u8]) -> Option<(Body, u64)> {
             assert_eq!(Places::decode(message), over, "{message:?}");
         }
     }
-    let sent = decode(message, 5, Request::decode, request);
-    let answered = decode(message, 5, Response::decode, response);
-    let opened = decode(message, 6, Read::decode, read_message);
-    let (body, length, cap) = match (sent, answered, opened) {
-        (Some(sent), None, None) => (sent.body(), sent.length, BODY_BYTES_MAX),
-        (None, Some(answered), None) => {
+    let sent = decode(message, 5, Request::decode, request, oversize);
+    let answered = decode(message, 5, Response::decode, response, oversize);
+    let opened = decode(message, 6, Read::decode, read_message, oversize);
+    let wrote = decode(message, 7, write::Write::decode, write_message, oversize);
+    let (body, length, cap) = match (sent, answered, opened, wrote) {
+        (Some(sent), None, None, None) => (sent.body(), sent.length, BODY_BYTES_MAX),
+        (None, Some(answered), None, None) => {
             (answered.body(), answered.length, BODY_BYTES_MAX)
         }
-        (None, None, Some(opened)) => (opened.body(), opened.length, OPEN_BYTES_MAX),
-        (None, None, None) => return None,
-        _ => {
-            panic!("{message:?} is more than one of a request, a response, and a read")
+        (None, None, Some(opened), None) => {
+            (opened.body(), opened.length, OPEN_BYTES_MAX)
         }
+        (None, None, None, Some(wrote)) => (wrote.body(), wrote.length, OPEN_BYTES_MAX),
+        (None, None, None, None) => return None,
+        _ => panic!("{message:?} is more than one first message"),
     };
     assert!(length <= cap, "a body over the cap came");
     Some((body, length))
+}
+
+/// A refusal of a message of a fixed length.
+fn length(error: &Error) -> bool {
+    matches!(error, Error::Length { .. })
+}
+
+/// A refusal of a first message with a body: its length, or its body over the cap.
+fn oversize(error: &Error) -> bool {
+    matches!(error, Error::Length { .. } | Error::Oversize { .. })
 }
 
 /// Each decoder must read each message, and each message after the first must be
@@ -284,6 +378,7 @@ fn fixed(message: &[u8]) -> Option<(Body, u64)> {
 fn read(bytes: &[u8]) {
     drive(bytes, Mode::Latest);
     drive(bytes, Mode::Complete);
+    open(bytes);
     let mut messages = fuzz::messages(bytes);
     let Some((mut body, length)) = messages.next().and_then(fixed) else {
         for message in messages {
@@ -420,6 +515,53 @@ fn write_read(input: &mut Unstructured) -> arbitrary::Result<()> {
             "the place changed"
         );
     }
+    write_write(input)
+}
+
+/// Each valid message of a write stream made from `input` must decode to itself.
+fn write_write(input: &mut Unstructured) -> arbitrary::Result<()> {
+    let wrote = write::Write {
+        length: input.int_in_range(0..=OPEN_BYTES_MAX)?,
+        signature: input.arbitrary()?,
+    };
+    assert_eq!(
+        First::decode(&write_message(&wrote)),
+        Ok(First::Write(wrote)),
+        "the write changed"
+    );
+
+    let names: Vec<&str> = input.arbitrary()?;
+    let channels: Vec<_> = names.iter().filter_map(|name| name.parse().ok()).collect();
+    if !channels.is_empty() {
+        let lease: Option<i64> = input.arbitrary()?;
+        let open = write::Open {
+            authority: Authority(input.arbitrary()?),
+            lease: lease.map(Span::from_nanos),
+            channels,
+        };
+        let mut out = vec![0; open.encoded_len()];
+        open.encode(&mut out);
+        assert_eq!(write::Open::decode(&out), Ok(open), "the open changed");
+    }
+
+    let count = input.int_in_range(1..=u32::MAX)?;
+    let range = frame::Range {
+        seq: input.int_in_range(0..=u64::MAX - u64::from(count))?,
+        count,
+    };
+    let sent = match input.int_in_range(0..=10)? {
+        0 => Reply::Outcome(Outcome::Taken { range }),
+        1 => Reply::Outcome(Outcome::Lost { range }),
+        2 => Reply::Stored { frames: range.seq },
+        3 => Reply::Outcome(Outcome::Refused(Refusal::Waiting)),
+        4 => Reply::Outcome(Outcome::Refused(Refusal::Reserved)),
+        5 => Reply::Outcome(Outcome::Refused(Refusal::Expired)),
+        6 => Reply::Outcome(Outcome::Refused(Refusal::Order)),
+        7 => Reply::Outcome(Outcome::Refused(Refusal::Codec)),
+        8 => Reply::Outcome(Outcome::Refused(Refusal::Full)),
+        _ => Reply::Outcome(Outcome::Refused(Refusal::Large)),
+    };
+    assert_eq!(Reply::decode(&reply(&sent)), Ok(sent), "the reply changed");
     Ok(())
 }
 

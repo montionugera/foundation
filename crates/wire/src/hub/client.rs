@@ -11,17 +11,23 @@
 //!   and then the replies of a reader session, from `Opened`. The program sends no
 //!   credit. It decodes the places and the run with [`Reader`], which then gives the
 //!   [`super::Reader`] of the replies.
+//! - A write stream carries one writer session. The program sends a [`write::Write`]
+//!   and then its [`write::Open`] as a body. The node sends [`Places`] and the run of
+//!   its [`place`]s. The program decodes them with [`write::Opening`]. Then the
+//!   program sends each frame as a [`super::write::Head`], the run of its
+//!   [`ends`](super::ends), and its body, and the node sends a
+//!   [`super::write::Reply`] for each frame and each commit.
 //!
 //! A body goes as a run of stream messages back to back, with no prefix, each at most
 //! the peer's `message_bytes_max` and none empty. It holds exactly the length of its
-//! request, response, or read, so the receiver counts it to find where it ends. No
-//! message follows a body.
+//! request, response, read, or write, so the receiver counts it to find where it
+//! ends. Only the frames of a write follow a body.
 //!
 //! The program knows the kind of each stream, so it calls the `decode` of the message
 //! that it expects, or of its [`Reader`] on a read stream. The node knows the kind of
 //! the hello stream only: it decodes the first message of each later stream with
 //! [`First::decode`]. Each side counts a body with the [`Body`] of its request,
-//! response, or read.
+//! response, read, or write.
 //!
 //! Fields are little-endian.
 //!
@@ -40,6 +46,13 @@
 //!   (`u32`).
 //! - [`place`]: each place's key (`u128`), its sample type as text (length `u8`, then
 //!   the text), and its name (length `u8`, then the name).
+//! - [`write::Write`]: kind 7, the open's length (`u64`), and the signature (64).
+//! - [`write::Open`]: the authority (`u8`), the lease (`u8`, none 0, a lease 1, then
+//!   the lease as `i64` nanoseconds), then each channel's name: its length (`u8`) and
+//!   the name.
+//!
+//! The formats of a write's frames and of the node's replies are in
+//! [`super::write`].
 
 use std::fmt;
 
@@ -57,19 +70,21 @@ use crate::common::{Fields, Length, Run, Writer, body};
 use crate::header::MALFORMED;
 
 mod read;
+mod stream;
 pub mod text;
+pub mod write;
 
-pub use read::{
-    Mode, OPEN_BYTES_MAX, Open, PLACES_MAX, Place, Places, Read, Reader, Start, place,
-};
+pub use read::{Mode, Open, Read, Reader, Start};
+pub use stream::{OPEN_BYTES_MAX, PLACES_MAX, Place, Places, place};
 
 const HELLO: u8 = 4;
 const REQUEST: u8 = 5;
 const READ: u8 = 6;
+const WRITE: u8 = 7;
 
-/// Stop code: the hello, request, or read failed the access check. The spec has no such
-/// subject, does not list the key for it, or the signature is not valid. The node's
-/// log names which.
+/// Stop code: the hello, request, read, or write failed the access check. The spec has
+/// no such subject, does not list the key for it, or the signature is not valid. The
+/// node's log names which.
 pub const REFUSED: u32 = 20;
 
 /// Stop code: the node has no mesh time yet.
@@ -95,15 +110,17 @@ pub enum Refusal {
     /// [`MALFORMED`]: a message of the program does not decode, or breaks a rule of
     /// the client wire.
     Malformed,
-    /// [`UNKNOWN`]: the selector of a read matches no channel, or a channel of the
-    /// read was removed.
+    /// [`UNKNOWN`]: the selector of a read matches no channel, a channel of the read
+    /// was removed, or a channel of a write is unknown or was removed.
     Unknown,
     /// [`NOT_HOME`]: the home of the index of a read is another node, at the open or
-    /// after a move.
+    /// after a move, or the home of the index of a write is another node at the open.
     NotHome,
-    /// [`FAILED`]: the reader of a read failed.
+    /// [`FAILED`]: the reader of a read failed, or the writer of a write failed or
+    /// could not store a frame.
     Failed,
-    /// [`BUSY`]: the node had no memory for a response, a request body, or a read.
+    /// [`BUSY`]: the node had no memory for a response, a request body, a read, the
+    /// open or the ends of a write, or a reply of a write.
     Busy,
     /// [`REFUSED`].
     Refused,
@@ -164,15 +181,19 @@ impl fmt::Display for Refusal {
         f.write_str(match self {
             Self::Malformed => "a message of the program broke the client wire",
             Self::Unknown => {
-                "the selector matches no channel, or a channel of the read was removed"
+                "the selector matches no channel, or a channel of the read or write is \
+                 unknown or was removed"
             }
-            Self::NotHome => "the home of the index of the read is another node",
+            Self::NotHome => {
+                "the home of the index of the read or write is another node"
+            }
             Self::Failed => {
-                "the reader failed: the buffer or the mesh of the home of the index \
-                 stopped, or the path from the node to that home failed"
+                "the reader or writer failed: the buffer or the mesh of the home of the \
+                 index stopped, or the path from the node to that home failed"
             }
             Self::Busy => {
-                "the node had no memory for a response, a request body, or a read"
+                "the node had no memory for a response, a request body, a read, or a \
+                 write"
             }
             Self::Refused => {
                 "the spec has no such subject, does not list the key for it, or the \
@@ -214,8 +235,8 @@ pub enum Error {
     SmallOrder,
     /// A message comes after the body of a request, a response, or a read.
     Trailing,
-    /// A request or a response has a body over [`BODY_BYTES_MAX`], or a read has an
-    /// open over [`OPEN_BYTES_MAX`].
+    /// A request or a response has a body over [`BODY_BYTES_MAX`], or a read or a
+    /// write has an open over [`OPEN_BYTES_MAX`].
     Oversize {
         /// The bytes of the body.
         length: u64,
@@ -242,23 +263,23 @@ pub enum Error {
     /// The open of a read has a pattern that does not read, or none that includes
     /// names.
     Selector(text::Error<Box<name::Error>>),
-    /// The places of a read are over [`PLACES_MAX`].
+    /// The places of a read or a write are over [`PLACES_MAX`].
     Places {
         /// The count of places.
         count: u32,
         /// The cap.
         cap: u32,
     },
-    /// The places of a read name an index place that is not below their count.
+    /// The places name an index place that is not below their count.
     Index {
         /// The place of the index.
         index: u32,
         /// The count of places.
         count: u32,
     },
-    /// The sample type of a place of a read does not read.
+    /// The sample type of a place does not read.
     Sample(text::Error<sample::Error>),
-    /// The name of a place of a read does not read.
+    /// The name of a place does not read.
     Name(text::Error<Box<name::Error>>),
     /// A message of the run of places has more places than remain in the run.
     Run {
@@ -267,19 +288,28 @@ pub enum Error {
         /// The places that remain in the run.
         remain: u32,
     },
-    /// The index place of a read has a sample type that is not `Stamp`.
+    /// The index place has a sample type that is not `Stamp`.
     Unstamped {
         /// The sample type of the index place.
         sample: sample::Type,
     },
-    /// The places of a read name a channel more than once.
+    /// The places name a channel more than once.
     Repeated {
         /// The channel.
         key: channel::Key,
     },
-    /// The node finished a read stream before its last place: [`Reader::decode`] got
-    /// `None`.
+    /// The node finished a read or a write stream before its last place: the
+    /// `decode` of its [`Reader`] or [`write::Opening`] got `None`.
     Finished,
+    /// The open of a write marks its lease with a byte that is neither 0 nor 1.
+    Lease {
+        /// The lease byte.
+        byte: u8,
+    },
+    /// A channel name of the open of a write does not read.
+    Channel(text::Error<Box<name::Error>>),
+    /// The open of a write names no channel.
+    Unnamed,
 }
 
 impl fmt::Display for Error {
@@ -325,36 +355,39 @@ impl fmt::Display for Error {
                 write!(f, "the selector of the read does not read: {cause}")
             }
             Self::Places { count, cap } => {
-                write!(f, "the read has {count} places, over the cap of {cap}")
+                write!(f, "the stream has {count} places, over the cap of {cap}")
             }
-            Self::Index { index, count } => write!(
-                f,
-                "the places of the read put the index at place {index} of {count}"
-            ),
-            Self::Sample(cause) => write!(
-                f,
-                "the sample type of a place of the read does not read: {cause}"
-            ),
+            Self::Index { index, count } => {
+                write!(f, "the places put the index at place {index} of {count}")
+            }
+            Self::Sample(cause) => {
+                write!(f, "the sample type of a place does not read: {cause}")
+            }
             Self::Name(cause) => {
-                write!(f, "the name of a place of the read does not read: {cause}")
+                write!(f, "the name of a place does not read: {cause}")
             }
             Self::Run { items, remain } => write!(
                 f,
                 "the run message holds {items} items, and {remain} remain in the run"
             ),
-            Self::Unstamped { sample } => write!(
-                f,
-                "the index place of the read has sample type {sample}, not timestamp"
-            ),
+            Self::Unstamped { sample } => {
+                write!(f, "the index place has sample type {sample}, not timestamp")
+            }
             Self::Repeated { key } => {
-                write!(
-                    f,
-                    "the places of the read name channel {key} more than once"
-                )
+                write!(f, "the places name channel {key} more than once")
             }
             Self::Finished => {
-                f.write_str("the node finished the read stream before its last place")
+                f.write_str("the node finished the stream before its last place")
             }
+            Self::Lease { byte } => write!(
+                f,
+                "the open of the write marks its lease with {byte}, not 0 or 1"
+            ),
+            Self::Channel(cause) => write!(
+                f,
+                "a channel name of the open of the write does not read: {cause}"
+            ),
+            Self::Unnamed => f.write_str("the open of the write names no channel"),
         }
     }
 }
@@ -362,9 +395,10 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Subject(cause) | Self::Selector(cause) | Self::Name(cause) => {
-                Some(cause)
-            }
+            Self::Subject(cause)
+            | Self::Selector(cause)
+            | Self::Name(cause)
+            | Self::Channel(cause) => Some(cause),
             Self::Sample(cause) => Some(cause),
             _ => None,
         }
@@ -568,6 +602,8 @@ pub enum First {
     Request(Request),
     /// A read stream.
     Read(Read),
+    /// A write stream.
+    Write(write::Write),
 }
 
 impl First {
@@ -575,11 +611,13 @@ impl First {
     ///
     /// # Errors
     ///
-    /// [`Error::Empty`], [`Error::Kind`] for a message that is neither kind 5 nor 6,
-    /// and the errors of [`Request::decode`] and [`Read::decode`].
+    /// [`Error::Empty`], [`Error::Kind`] for a message that is not kind 5, 6, or 7,
+    /// and the errors of [`Request::decode`], [`Read::decode`], and
+    /// [`write::Write::decode`].
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         match message.first() {
             Some(&READ) => Read::decode(message).map(Self::Read),
+            Some(&WRITE) => write::Write::decode(message).map(Self::Write),
             _ => Request::decode(message).map(Self::Request),
         }
     }
@@ -634,7 +672,7 @@ impl Response {
     }
 }
 
-/// The rest of the body of one request, response, or read.
+/// The rest of the body of one request, response, read, or write.
 #[derive(Debug)]
 pub struct Body(body::Count);
 

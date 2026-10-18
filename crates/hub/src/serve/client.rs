@@ -13,7 +13,8 @@ use types::hash;
 use types::name::Name;
 
 use wire::hub::client::{
-    BODY_BYTES_MAX, Body, Challenge, First, Refusal, Response, Signed,
+    BODY_BYTES_MAX, Body, Challenge, First, Place, Places, Refusal, Response, Signed,
+    place,
 };
 
 use super::{BODIES_BYTES_MAX, Error, alloc, halves, stop};
@@ -21,6 +22,7 @@ use crate::State;
 use crate::link::{Served, Session};
 
 pub(super) mod read;
+pub(super) mod write;
 
 /// A request of a client, which `access` verified.
 #[derive(Debug)]
@@ -90,9 +92,10 @@ impl Gate {
     }
 }
 
-/// The body bytes that the open requests and reads of a hub reserved: in all, at most
-/// [`BODIES_BYTES_MAX`], and for each subject, at most [`BODY_BYTES_MAX`]. Shared
-/// borrows only, so the drop of a reply needs no mutable borrow of the hub's state.
+/// The body bytes that the open requests, reads, and writes of a hub reserved: in all,
+/// at most [`BODIES_BYTES_MAX`], and for each subject, at most [`BODY_BYTES_MAX`].
+/// Shared borrows only, so the drop of a reply needs no mutable borrow of the hub's
+/// state.
 #[derive(Debug, Default)]
 pub(crate) struct Bodies {
     held: Cell<u64>,
@@ -340,8 +343,8 @@ async fn expiry(session: &Session) -> Error {
     }
 }
 
-/// Serves a later stream of `session`, a request or a read, by the kind of its first
-/// message.
+/// Serves a later stream of `session`, a request, a read, or a write, by the kind of
+/// its first message.
 pub(crate) async fn later(
     session: &Rc<Session>,
     incoming: Incoming,
@@ -372,6 +375,11 @@ pub(crate) async fn later(
         }
         Ok(Some((subject, First::Read(open)))) => {
             read::serve(session, class, subject, open, &mut receiver, &mut sender)
+                .await
+                .map(|()| Served::Ended)
+        }
+        Ok(Some((subject, First::Write(open)))) => {
+            write::serve(session, subject, open, &mut receiver, &mut sender)
                 .await
                 .map(|()| Served::Ended)
         }
@@ -429,6 +437,31 @@ async fn body(receiver: &mut Receiver, mut rest: Body) -> Result<Vec<u8>, Error>
     }
     rest.end()?;
     Ok(body)
+}
+
+/// Sends the head and the run of `places` of a read or a write, whose index is place
+/// `index`.
+async fn places(
+    state: &RefCell<State>,
+    sender: &mut Sender,
+    index: usize,
+    places: &[Place],
+) -> Result<(), Error> {
+    let fit = "invariant: a read or a write holds fewer than u32::MAX places";
+    let head = Places {
+        count: u32::try_from(places.len()).expect(fit),
+        index: u32::try_from(index).expect(fit),
+    };
+    let mut block = alloc(state, Places::LEN)?;
+    head.encode(&mut block);
+    sender.send(block.freeze()).await?;
+    let most = sender.bytes_max().min(state.borrow().home.pool().largest());
+    for message in place::messages(places, most) {
+        let mut block = alloc(state, message.encoded_len())?;
+        message.encode(&mut block);
+        sender.send(block.freeze()).await?;
+    }
+    Ok(())
 }
 
 /// Verifies `signature`, of `kind`, over `bytes` with the hello that the link

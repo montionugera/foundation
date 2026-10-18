@@ -1,22 +1,25 @@
-//! The hub messages on a frame's path, the frames of a warm reader session, the blob
-//! heads, and the body counters of client requests and blob chunks, make no heap
-//! allocation, and the place messages of a read make a known count. This binary has no
-//! test harness: the count covers each thread, and a harness allocates on its own
-//! thread at any time.
+//! The hub messages on a frame's path, the frames of a warm reader session, the head,
+//! the frames, and the replies of a program's write, the blob heads, and the body
+//! counters of client requests and blob chunks, make no heap allocation, and the place
+//! messages of a read make a known count. This binary has no test harness: the count
+//! covers each thread, and a harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
+
+use std::sync::Arc;
 
 use types::{
     channel,
     frame::{
         self, Form, Path, Range,
-        key_set::{Group, Interner},
+        key_set::{Group, Interner, KeySet},
     },
     sample::{Scalar, Type},
 };
 use wire::hub::{
     Credit, Due, Frames, FromHome, FromReader, Head, Home, Mode, Open, Reader, Reply,
     Step, ends, keys,
+    write::{self, Outcome, Refusal, Time},
 };
 
 #[global_allocator]
@@ -40,6 +43,9 @@ fn main() {
     }
     ends_by_place();
     frames();
+    write_frames();
+    write_head();
+    write_replies();
     client_body();
     blob_body();
     blob_heads();
@@ -82,6 +88,35 @@ fn head() {
     });
     assert_eq!(allocations, 0, "the head decode allocated");
     assert_eq!(decoded, head, "the head round trips");
+}
+
+fn write_head() {
+    let head = write::Head {
+        time: Time::Frame(Path::Backfill),
+        form: Form::Encoded,
+        count: 1_000,
+        series: 3,
+    };
+    let mut out = [0; write::Head::LEN];
+    let ((), allocations) = ALLOCATOR.count(|| head.encode(&mut out));
+    assert_eq!(allocations, 0, "the write head encode allocated");
+}
+
+fn write_replies() {
+    for reply in [
+        write::Reply::Outcome(Outcome::Lost {
+            range: Range { seq: 7, count: 3 },
+        }),
+        write::Reply::Outcome(Outcome::Refused(Refusal::Order)),
+        write::Reply::Stored { frames: 9 },
+    ] {
+        let mut out = vec![0; reply.encoded_len()];
+        let ((), allocations) = ALLOCATOR.count(|| reply.encode(&mut out));
+        assert_eq!(allocations, 0, "the reply encode allocated: {reply:?}");
+        let (decoded, allocations) = ALLOCATOR.count(|| write::Reply::decode(&out));
+        assert_eq!(allocations, 0, "the reply decode allocated: {reply:?}");
+        assert_eq!(decoded, Ok(reply), "the reply round trips");
+    }
 }
 
 fn credit() {
@@ -196,6 +231,76 @@ fn frames() {
         let (Step::More, Ok(Step::More), Ok(Step::Frame(frame))) = step else {
             panic!("the body did not give a frame: {step:?}");
         };
+        assert_eq!(frame.series(1), Some(&body[16..]), "the body round trips");
+    }
+}
+
+/// Each input of each frame of a program's write at the node, the first frame included.
+/// The draft comes from the caller's pool outside the count.
+fn write_frames() {
+    let set = KeySet::ordered(
+        [
+            (channel::Key::from_u128(1), Type::Scalar(Scalar::Stamp)),
+            (channel::Key::from_u128(2), Type::Scalar(Scalar::I64)),
+        ],
+        0,
+    )
+    .expect("no key repeats");
+    let config = block::Config::new(1 << 16).expect("the budget fits");
+    let memory = block::Heap::new(config.reservation());
+    let pool = block::Pool::new(config, memory);
+    let mut frames = write::Frames::new(Arc::new(set));
+    let mut head = [0; write::Head::LEN];
+    write::Head {
+        time: Time::Frame(Path::Live),
+        form: Form::Raw,
+        count: 2,
+        series: 2,
+    }
+    .encode(&mut head);
+    let mut run = [0; 2 * ends::LEN];
+    ends::encode([(0, 16), (1, 32)], &mut run);
+    let body = [7; 32];
+    for round in 0..2 {
+        let (steps, allocations) = ALLOCATOR.count(|| {
+            let head = frames.decode(&head);
+            let ends = frames.decode(&run);
+            let due = matches!(frames.due(), Ok(write::Due::Draft { .. }));
+            (head, ends, due)
+        });
+        assert!(
+            matches!(
+                steps,
+                (Ok(write::Step::Head(_)), Ok(write::Step::More), true)
+            ),
+            "the head and ends did not decode: {steps:?}"
+        );
+        assert_eq!(
+            allocations, 0,
+            "the head and ends of write frame {round} allocated"
+        );
+        let Ok(write::Due::Draft { layout, form }) = frames.due() else {
+            panic!("a draft is due");
+        };
+        let draft = layout.draft(&pool, form).expect("a block");
+        let (step, allocations) = ALLOCATOR.count(|| {
+            let step = frames.draft(draft);
+            let Ok(write::Due::Body(rest)) = frames.due() else {
+                panic!("a body is due");
+            };
+            rest[..20].copy_from_slice(&body[..20]);
+            (step, frames.received(20), frames.decode(&body[20..]))
+        });
+        assert_eq!(allocations, 0, "the draft and body of a write allocated");
+        let (
+            write::Step::More,
+            Ok(write::Step::More),
+            Ok(write::Step::Frame { draft, .. }),
+        ) = step
+        else {
+            panic!("the body did not give a frame: {step:?}");
+        };
+        let frame = draft.freeze(Path::Live);
         assert_eq!(frame.series(1), Some(&body[16..]), "the body round trips");
     }
 }

@@ -928,8 +928,8 @@ mod buffer {
     #[test]
     fn a_disk_budget_that_holds_no_ring_on_each_shard_starts_no_shard() {
         let smallest = ::buffer::Layout::fit(0, crate::BODY_MAX).unwrap_err().min;
-        let min = Size::from_bytes(8_462_336);
-        let cases = [(smallest, "4132KiB"), (2 * smallest - 1, "8462335B")];
+        let min = Size::from_bytes(8_626_176);
+        let cases = [(smallest, "4212KiB"), (2 * smallest - 1, "8626175B")];
         for (bytes, shown) in cases {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = host(&mut sim, 2);
@@ -958,7 +958,7 @@ mod buffer {
                 e.to_string(),
                 format!(
                     "the disk budget {shown} holds no ring on each of 2 shards; it \
-                     needs at least 8264KiB"
+                     needs at least 8424KiB"
                 )
             );
         }
@@ -3241,7 +3241,7 @@ pub(crate) mod port {
             ..config(&host, Size::MEBIBYTE, Box::new(heap))
         });
         assert_eq!(sim.run(), Ok(()));
-        let min = Size::from_bytes(8_462_336);
+        let min = Size::from_bytes(8_626_176);
         assert_eq!(
             node.join(),
             Err(Error::Disk {
@@ -7205,7 +7205,7 @@ pub(crate) mod port {
             });
             node.operate(|_| async {});
             assert_eq!(sim.run(), Ok(()));
-            let min = Size::from_bytes(8_462_336);
+            let min = Size::from_bytes(8_626_176);
             assert_eq!(
                 node.join(),
                 Err(Error::Disk {
@@ -8359,7 +8359,7 @@ mod budget {
         let disk = Error::Disk {
             disk: Size::from_bytes(1),
             cores: 2,
-            min: Size::from_bytes(8_462_336),
+            min: Size::from_bytes(8_626_176),
         };
         let small = [
             (budget(512 << 10, DISK.bytes()), 16, buffer),
@@ -8438,6 +8438,33 @@ mod budget {
             }
             assert_eq!(start_and_stop(&mut sim, &host, first), Ok(()));
             assert_eq!(kept(&mut sim, &host), Ok(Some(first)));
+        }
+    }
+}
+
+/// The `Cargo.toml` of the crate of each kind of [`crate::kinds`], by kind name.
+const MANIFESTS: [(&str, &str); 3] = [
+    ("influx", include_str!("../../connector-influx/Cargo.toml")),
+    ("modbus", include_str!("../../connector-modbus/Cargo.toml")),
+    ("opcua", include_str!("../../connector-opcua/Cargo.toml")),
+];
+
+#[test]
+fn each_kind_runs_its_conformance_suite() {
+    let names: Vec<_> = MANIFESTS.iter().map(|&(name, _)| name).collect();
+    assert_eq!(crate::kinds().names().collect::<Vec<_>>(), names);
+    for (name, manifest) in MANIFESTS {
+        let entry = format!(
+            "[[test]]\nname = \"conformance\"\n\
+             path = \"../../oracles/conformance/connector/{name}/main.rs\"\n"
+        );
+        let Some((_, rest)) = manifest.split_once(&entry) else {
+            panic!("{name} runs no suite");
+        };
+        let keys = rest.lines().take_while(|line| !line.is_empty());
+        // Only the features that CI turns on, never `test = false`.
+        for key in keys {
+            assert!(key.starts_with("required-features = "), "{name}: {key}");
         }
     }
 }

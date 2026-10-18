@@ -1,5 +1,6 @@
 //! The cost of the hub messages on a frame's path: a head, its ends, its body, and a
-//! credit, and of building a frame from them with `Frames`.
+//! credit, and of building a frame from them with `Frames`; and of the head, the
+//! frames, and the replies of a program's write.
 
 use std::sync::Arc;
 
@@ -15,6 +16,7 @@ use types::{
 use wire::hub::{
     Credit, Due, Error, Frames, FromHome, FromReader, Head, Home, Mode, Open, Reader,
     Reply, Step, ends, keys,
+    write::{self, Outcome, Refusal, Time},
 };
 
 const SERIES: [u32; 4] = [1, 3, 1_000, 100_000];
@@ -315,6 +317,125 @@ fn decode_a_credit(bencher: Bencher<'_, '_>) {
     bencher.bench_local(|| match home.decode(divan::black_box(&credit)) {
         Ok(FromReader::Credit(credit)) => credit,
         other => panic!("the credit did not decode: {other:?}"),
+    });
+}
+
+/// Encodes the head of a program's frame of 1,000 samples.
+#[divan::bench]
+fn encode_a_write_head(bencher: Bencher<'_, '_>) {
+    let head = write::Head {
+        time: Time::Frame(Path::Live),
+        form: Form::Raw,
+        count: 1_000,
+        series: 3,
+    };
+    let mut out = [0; write::Head::LEN];
+    bencher.bench_local(|| divan::black_box(head).encode(&mut out));
+}
+
+/// Decodes a program's frame of `series` series of one 8 byte sample at the node with
+/// [`write::Frames`]: its head, a run of one message, a draft from a pool, and a body
+/// of one message received in place.
+#[divan::bench(args = SERIES)]
+fn decode_a_write_frame(bencher: Bencher<'_, '_>, series: u32) {
+    decode_write(bencher, series, true);
+}
+
+/// [`decode_a_write_frame`], with the body message copied by [`write::Frames::decode`].
+#[divan::bench(args = SERIES)]
+fn decode_a_copied_write_frame(bencher: Bencher<'_, '_>, series: u32) {
+    decode_write(bencher, series, false);
+}
+
+/// Decodes write frames as [`decode_a_write_frame`] says, with the body received
+/// `in_place` or copied. Each frame gives its first body byte.
+fn decode_write(bencher: Bencher<'_, '_>, series: u32, in_place: bool) {
+    let channels = (1..=u128::from(series)).map(|key| {
+        let data = if key == 1 { Scalar::Stamp } else { Scalar::I64 };
+        (channel::Key::from_u128(key), Type::Scalar(data))
+    });
+    let set = KeySet::ordered(channels, 0).expect("no key repeats");
+    let mut frames = write::Frames::new(Arc::new(set));
+    let bytes = (u64::from(series) * 8 + (1 << 20)).next_power_of_two();
+    let config = block::Config::new(bytes).expect("the budget fits");
+    let memory = block::Heap::new(config.reservation());
+    let pool = block::Pool::new(config, memory);
+    let mut head = [0; write::Head::LEN];
+    write::Head {
+        time: Time::Frame(Path::Live),
+        form: Form::Raw,
+        count: 1,
+        series,
+    }
+    .encode(&mut head);
+    let run = run_of(series);
+    let body = vec![7; usize::try_from(series * 8).expect("a u32 fits a usize")];
+    let mut frame = || {
+        let mut messages = [&head[..], &run[..], &body[..]].into_iter();
+        loop {
+            let step = match frames.due().expect("the layout holds") {
+                write::Due::Body(rest) if in_place => {
+                    let message = divan::black_box(messages.next().expect("a message"));
+                    rest[..message.len()].copy_from_slice(message);
+                    frames.received(message.len())
+                }
+                write::Due::Message | write::Due::Body(_) => {
+                    let message = messages.next().expect("a message");
+                    frames.decode(divan::black_box(message))
+                }
+                write::Due::Draft { layout, form } => {
+                    let draft = layout.draft(&pool, form).expect("a block");
+                    Ok(frames.draft(draft))
+                }
+            };
+            match step.expect("the frame decodes") {
+                write::Step::Head(_) | write::Step::More => {}
+                write::Step::Frame { mut draft, .. } => return draft.body_mut()[0],
+            }
+        }
+    };
+    frame();
+    bencher.bench_local(frame);
+}
+
+/// The replies of a write: a frame taken, a frame refused, and the seqs on disk.
+fn write_replies() -> [write::Reply; 3] {
+    [
+        write::Reply::Outcome(Outcome::Taken {
+            range: Range {
+                seq: 7,
+                count: 1_000,
+            },
+        }),
+        write::Reply::Outcome(Outcome::Refused(Refusal::Full)),
+        write::Reply::Stored { frames: 1_006 },
+    ]
+}
+
+/// Encodes each reply of [`write_replies`].
+#[divan::bench]
+fn encode_write_replies(bencher: Bencher<'_, '_>) {
+    let replies = write_replies();
+    let mut out = [0; 13];
+    bencher.bench_local(|| {
+        for reply in divan::black_box(&replies) {
+            reply.encode(&mut out[..reply.encoded_len()]);
+        }
+    });
+}
+
+/// Decodes each reply of [`write_replies`].
+#[divan::bench]
+fn decode_write_replies(bencher: Bencher<'_, '_>) {
+    let messages = write_replies().map(|reply| {
+        let mut out = vec![0; reply.encoded_len()];
+        reply.encode(&mut out);
+        out
+    });
+    bencher.bench_local(|| {
+        for message in divan::black_box(&messages) {
+            divan::black_box(write::Reply::decode(message).expect("the reply decodes"));
+        }
     });
 }
 

@@ -8,27 +8,29 @@
 //! tail past its entries, with a stamp that no entry gives: a read then gives the
 //! seqs up to the tail as a gap with no entry.
 //!
-//! Input: batches that the production path writes, then edits on the file bytes.
-//! A batch makes a record of one to four blocks, with a table of up to four.
-//! Two edits seal a CRC: a header block and a record. One edit writes a tail and
-//! its chain value in the first header block: a block of the area, on one of the
-//! first 128 laps or the last 128 that hold the block.
+//! Input: batches that the production path writes from a block of the area on lap
+//! 0, then edits on the file bytes. A batch makes a record of one to four blocks,
+//! with a table of up to four. Two edits seal a CRC: a header block and a record.
+//! One edit writes a tail and its chain value in the first header block: a block of
+//! the area, on one of the first 128 laps or the last 128 that hold the block.
 //!
 //! The target follows the offsets of the ring ([`Room`]) while no edit other than a
 //! move of the tail changed it. Each append, open, and reopen must then fit, or give
 //! `Full` with the bytes needed and free that the target expects. An open whose
-//! records pass the last offset must give `Invalid`. The model has no trim (#160).
+//! records pass the last offset must give `Invalid`. The model has no trim (#160),
+//! so the excess of each data record (`Rejected::Full`) stays free.
 //! The limits of 1023 entries and 1023 parts are not reached, as a batch has at most
 //! 259 entries: `checks_a_batch_against_each_limit_at_its_boundary` in `wal` and
 //! `an_append_is_large_exactly_when_the_layout_check_fails` in the `buffer` tests own
 //! them.
 //!
-//! The edits restate the formats in `header.rs` and `record.rs` of `buffer`. Before
-//! it edits, the target walks the build's ring from the tail. Each record must have
-//! a kind and seal as written, the records must end where the room of the build
-//! ends, and a seal of each record and a write of the tail where it is must change
-//! nothing. So when a format moves, the target panics. `WRAP` is restated and not
-//! checked: the build never wraps.
+//! The edits restate the formats in `header.rs` and `record.rs` of `buffer`, and the
+//! target reads the entry table of `entry.rs` for the excess. Before it edits, the
+//! target walks the build's ring from the tail. Each record must have a kind and seal
+//! as written, the records must end where the room of the build ends, and a seal of
+//! each record and a write of the tail where it is must change nothing. So when a
+//! format moves, the target panics. A build that starts after the first block can wrap,
+//! and the walk then checks `WRAP` too.
 
 #![no_main]
 #![expect(clippy::disallowed_methods, reason = "fuzz_target! calls File::create")]
@@ -55,9 +57,13 @@ use types::time::{Span, Stamp};
 const BLOCK: usize = 4096;
 /// The largest record, in blocks.
 const RECORD_BLOCKS: usize = 4;
-/// Blocks in the area: four of the largest record and the three blocks that each
-/// record leaves free, the least area of a ring.
-const BLOCKS: usize = 4 * RECORD_BLOCKS + 3;
+/// The blocks that each data record leaves free, as `buffer` gives them: two
+/// restart records, a carry record of the largest body, and the blocks less one of
+/// that record that a wrap skips.
+const SPARE_BLOCKS: usize = 2 + 2 * RECORD_BLOCKS - 1;
+/// Blocks in the area: four of the largest record and the spare, the least area of
+/// a ring.
+const BLOCKS: usize = 4 * RECORD_BLOCKS + SPARE_BLOCKS;
 const AREA: u64 = (BLOCKS * BLOCK) as u64;
 /// The first block of the area: the two header blocks come before it.
 const AREA_START: usize = 2;
@@ -71,7 +77,7 @@ const RING: &str = "shard-0/ring";
 const COMMIT: Span = Span::from_nanos(10_000_000);
 const INDEXES: usize = 3;
 /// The least and the most bytes of each entry the check commits: a record of one
-/// block, and one of the largest.
+/// block, and one of the largest. Over 2635 bytes, the carry limit refuses it.
 const CHECK_PART: usize = 512;
 const CHECK_PART_MAX: usize = 2677;
 const _: () = assert!(check_record(CHECK_PART) <= BLOCK);
@@ -256,6 +262,24 @@ mod record {
         matches!(kind(image, block), DATA | WRAP | RESTART | CARRY)
             && crc(image, block, chain) == word(image, block * BLOCK + CRC_AT)
     }
+
+    /// The entries of the data record at `block`, the entries with a nonzero tag,
+    /// and their bytes, from its entry table.
+    pub(super) fn tagged(image: &[u8], block: usize) -> (usize, usize, usize) {
+        const ENTRY: usize = 51;
+        const TAG_AT: usize = 46;
+        let table = block * BLOCK + HEAD;
+        let count = usize::try_from(word(image, table)).expect("invariant: a u32 fits");
+        let (mut tagged, mut copied) = (0, 0);
+        for at in (0..count).map(|entry| table + 4 + entry * ENTRY) {
+            if image[at + TAG_AT] != 0 {
+                tagged += 1;
+                copied += usize::try_from(word(image, at + TAG_AT + 1))
+                    .expect("invariant: a u32 fits");
+            }
+        }
+        (count, tagged, copied)
+    }
 }
 
 /// What a write of the ring must do.
@@ -292,6 +316,8 @@ struct Offsets {
     data: u128,
     /// The end of the last record: where the next record goes.
     end: u128,
+    /// The [`excess`] of the data records past the tail together.
+    reserved: u128,
 }
 
 impl Offsets {
@@ -318,17 +344,19 @@ impl Offsets {
 }
 
 /// The room of the ring as the target follows it. It has no trim, so no write
-/// frees room.
+/// frees room and no excess.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Room(Option<Offsets>);
 
 impl Room {
-    /// A new ring: its restart record at offset 0.
-    fn new() -> Self {
+    /// A new ring whose tail is `tail`: its restart record there.
+    fn new(tail: u64) -> Self {
+        let tail = u128::from(tail);
         Self(Some(Offsets {
-            tail: 0,
-            data: 0,
-            end: BLOCK as u128,
+            tail,
+            data: tail,
+            end: tail + BLOCK as u128,
+            reserved: 0,
         }))
     }
 
@@ -343,14 +371,25 @@ impl Room {
             return Self(None);
         }
         let tail = u128::from(header::tail(image));
-        let (mut data, mut end) = (tail, tail);
+        let (mut data, mut end, mut reserved) = (tail, tail, 0);
         for (block, blocks) in taken(image) {
             end += (blocks * BLOCK) as u128;
-            if matches!(record::kind(image, block), record::DATA | record::CARRY) {
+            let kind = record::kind(image, block);
+            if kind == record::DATA {
+                let (count, tagged, copied) = record::tagged(image, block);
+                reserved +=
+                    excess(record::len(image, block), holders(count, tagged, copied));
+            }
+            if matches!(kind, record::DATA | record::CARRY) {
                 data = end;
             }
         }
-        Self(Some(Offsets { tail, data, end }))
+        Self(Some(Offsets {
+            tail,
+            data,
+            end,
+            reserved,
+        }))
     }
 
     /// An open: it walks to the end of the last record, then puts its restart
@@ -371,17 +410,19 @@ impl Room {
         }
     }
 
-    /// An append of a record of `blocks` blocks after the last record. It leaves
-    /// three blocks free: for the restart record of the next open, the carry record
-    /// of the commit after it, and the restart record of a later open.
-    fn take(&mut self, blocks: usize) -> Fit {
+    /// An append of a record of `blocks` blocks after the last record, whose holders
+    /// take `excess` bytes past it in a carry record. It leaves [`SPARE_BLOCKS`] free,
+    /// and the excess of each data record, this one too.
+    fn take(&mut self, blocks: usize, excess: u128) -> Fit {
         let Some(offsets) = &mut self.0 else {
             return Fit::Unknown;
         };
-        match offsets.cost(offsets.end, (blocks * BLOCK) as u128, 3 * BLOCK as u128) {
+        let kept = (SPARE_BLOCKS * BLOCK) as u128 + offsets.reserved + excess;
+        match offsets.cost(offsets.end, (blocks * BLOCK) as u128, kept) {
             Ok(needed) => {
                 offsets.end += needed;
                 offsets.data = offsets.end;
+                offsets.reserved += excess;
                 Fit::Fits
             }
             Err(full) => full,
@@ -510,6 +551,8 @@ struct Input {
     edits: Vec<Edit>,
     /// Bytes of each entry the check commits.
     check_part: usize,
+    /// The block of the area on lap 0 where the build starts.
+    start: usize,
 }
 
 /// FNV-1a of 64 bits. Its definition is fixed, so a stored input keeps its run.
@@ -576,6 +619,8 @@ impl<'a> Arbitrary<'a> for Input {
             batches,
             edits,
             check_part: u.int_in_range(CHECK_PART..=CHECK_PART_MAX)?,
+            // Last, so a stored input that ends before it starts at the first block.
+            start: u.int_in_range(blocks)?,
         })
     }
 }
@@ -733,8 +778,19 @@ struct Built {
 /// Writes the batches to a new ring. An append refuses a batch exactly when `limit`
 /// does, or else as the room says, and the build goes on after it.
 async fn build(shard: &Shard, input: &Input) -> Built {
-    let (buffer, slots) = shard.open().await.expect("a new ring opens");
-    let mut room = Room::new();
+    let opened = shard.open().await.expect("a new ring opens");
+    let tail = offset(input.start, 0);
+    let (buffer, slots) = if tail == 0 {
+        opened
+    } else {
+        drop(opened);
+        start(shard, tail).await;
+        shard
+            .open()
+            .await
+            .expect("a ring with no record at its tail opens")
+    };
+    let mut room = Room::new(tail);
     let mut next = vec![[0u64; 2]; INDEXES];
     let mut tags = (BUILD_TAG..CHECK_TAG).cycle();
     let mut written: Vec<[Vec<Given>; 2]> =
@@ -743,7 +799,7 @@ async fn build(shard: &Shard, input: &Input) -> Built {
         let mut firsts = next.clone();
         let mut appended = Vec::new();
         let mut entries = Vec::new();
-        let (mut parts, mut bytes) = (0, 0);
+        let (mut parts, mut bytes, mut tagged, mut copied) = (0, 0, 0, 0);
         for (append, tag) in batch.iter().zip(&mut tags) {
             let path = usize::from(append.path == frame::Path::Backfill);
             let first = firsts[append.index][path] + append.skip;
@@ -771,13 +827,20 @@ async fn build(shard: &Shard, input: &Input) -> Built {
             };
             let given = Given::from(&entry);
             bytes += given.bytes.len();
+            if !large {
+                tagged += 1;
+                copied += given.bytes.len();
+            }
             appended.push((append.index, path, given));
             entries.push(entry);
         }
         let fits = limit(BODY_MAX, entries.len(), parts, bytes);
         let checked = buffer.layout().check(entries.len(), parts, bytes);
         assert_eq!(checked, fits, "the layout check is not the record limits");
-        let blocks = (record::HEAD + body(entries.len(), bytes)).div_ceil(BLOCK);
+        let fits = fits.and_then(|()| carry(BODY_MAX, entries.len(), tagged, copied));
+        let len = body(entries.len(), bytes);
+        let blocks = (record::HEAD + len).div_ceil(BLOCK);
+        let excess = excess(len, holders(entries.len(), tagged, copied));
         let taken = buffer.append(entries);
         if let Err(limit) = fits {
             assert_eq!(
@@ -787,7 +850,7 @@ async fn build(shard: &Shard, input: &Input) -> Built {
             );
             continue;
         }
-        if !took(taken, room.take(blocks)) {
+        if !took(taken, room.take(blocks, excess)) {
             continue;
         }
         next = firsts;
@@ -803,6 +866,30 @@ async fn build(shard: &Shard, input: &Input) -> Built {
     }
 }
 
+/// Moves the tail of a new ring to `tail`, where it has no record, so that an
+/// open puts its restart record there.
+async fn start(shard: &Shard, tail: u64) {
+    let file = shard
+        .node
+        .files()
+        .open(Path::new(RING), Mode::Write)
+        .await
+        .expect("the ring is there");
+    let into = shard.pool.alloc(BLOCK).expect("the pool has a block");
+    let mut image = file
+        .read_at(0, into)
+        .await
+        .expect("the ring reads")
+        .to_vec();
+    let chain = header::chain(&image);
+    header::put_tail(&mut image, tail, chain);
+    let block = shard.pool.copy(&image).expect("the pool has a block");
+    file.write_at(0, &[block]).await.expect("the ring writes");
+    file.sync().await.expect("the ring syncs");
+}
+
+const COUNT_MAX: usize = 1023;
+
 /// The first limit of one record that a batch of `entries` entries, `parts` parts,
 /// and `bytes` bytes is over: 1023 entries, 1023 parts, and a body of `body_max`.
 fn limit(
@@ -811,7 +898,6 @@ fn limit(
     parts: usize,
     bytes: usize,
 ) -> std::result::Result<(), Limit> {
-    const COUNT_MAX: usize = 1023;
     let len = body(entries, bytes);
     if entries > COUNT_MAX {
         Err(Limit::Entries { count: entries })
@@ -819,6 +905,38 @@ fn limit(
         Err(Limit::Parts { count: parts })
     } else if len > body_max {
         Err(Limit::Body { len, max: body_max })
+    } else {
+        Ok(())
+    }
+}
+
+/// The carry body of the holders of `entries` entries, of which `tagged` entries
+/// with a nonzero tag hold `copied` bytes: 4 bytes and 42 an entry, and a header of
+/// 51 and the bytes of each tagged entry.
+fn holders(entries: usize, tagged: usize, copied: usize) -> usize {
+    4 + 42 * entries + 51 * tagged + copied
+}
+
+/// The bytes by which a carry record of a body of `carry` bytes takes more blocks
+/// than a data record of a body of `len` bytes, or 0.
+fn excess(len: usize, carry: usize) -> u128 {
+    let blocks = |body: usize| (record::HEAD + body).div_ceil(BLOCK);
+    (blocks(carry).saturating_sub(blocks(len)) * BLOCK) as u128
+}
+
+/// The carry limit of a batch of `entries` entries, of which `tagged` entries with a
+/// nonzero tag hold `copied` bytes. With a tagged entry, the carry body of its
+/// holders is at most `body_max` and the body of 1023 tails.
+fn carry(
+    body_max: usize,
+    entries: usize,
+    tagged: usize,
+    copied: usize,
+) -> std::result::Result<(), Limit> {
+    let max = body_max.min(4 + 42 * COUNT_MAX);
+    let len = holders(entries, tagged, copied);
+    if tagged > 0 && len > max {
+        Err(Limit::Carry { len, max })
     } else {
         Ok(())
     }
@@ -1087,6 +1205,7 @@ async fn check(
     let fits = limit(body_max, count, count, bytes);
     let checked = buffer.layout().check(count, count, bytes);
     assert_eq!(checked, fits, "the layout check is not the record limits");
+    let fits = fits.and_then(|()| carry(body_max, count, count, bytes));
     let taken = buffer.append(entries);
     if let Err(limit) = fits {
         assert_eq!(
@@ -1097,7 +1216,8 @@ async fn check(
         return;
     }
     let blocks = check_record(input.check_part).div_ceil(BLOCK);
-    if !took(taken, room.take(blocks)) {
+    let excess = excess(body(count, bytes), holders(count, count, bytes));
+    if !took(taken, room.take(blocks, excess)) {
         return;
     }
     assert_eq!(

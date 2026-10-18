@@ -1,11 +1,14 @@
 use proptest::prelude::*;
-use types::name;
+use types::channel;
+use types::name::{self, Name};
+use types::sample::Type;
 use types::sample::{self, Scalar, Sides};
 
 use super::*;
 use crate::hub::client::First;
 use crate::hub::client::Request;
 use crate::hub::client::text;
+use crate::hub::client::{OPEN_BYTES_MAX, PLACES_MAX, Place, Places, place};
 
 fn read(length: u64) -> Read {
     Read {
@@ -153,7 +156,7 @@ mod first {
 
     #[test]
     fn refuses_each_other_kind() {
-        for kind in (0..=u8::MAX).filter(|kind| ![5, 6].contains(kind)) {
+        for kind in (0..=u8::MAX).filter(|kind| ![5, 6, 7].contains(kind)) {
             assert_eq!(
                 First::decode(&zeros(kind, Read::LEN)),
                 Err(Error::Kind { kind })
@@ -964,9 +967,7 @@ mod reader {
     }
 
     #[test]
-    #[should_panic(
-        expected = "a read stream is decoded after the decoder gave its start"
-    )]
+    #[should_panic(expected = "a stream is decoded after the decoder gave its start")]
     fn panics_on_a_decode_after_the_last_place() {
         let places = Places { count: 1, index: 0 };
         let mut reader = in_run(Mode::Complete, places);
@@ -975,9 +976,7 @@ mod reader {
     }
 
     #[test]
-    #[should_panic(
-        expected = "a read stream is decoded after the decoder gave its start"
-    )]
+    #[should_panic(expected = "a stream is decoded after the decoder gave its start")]
     fn panics_on_the_end_after_the_last_place() {
         let mut reader = in_run(Mode::Complete, Places { count: 1, index: 0 });
         last(&mut reader, &encode_run(&[stamp(1)]));
@@ -1000,7 +999,7 @@ mod reader {
         assert_eq!(error, Error::Finished);
         assert_eq!(
             error.to_string(),
-            "the node finished the read stream before its last place"
+            "the node finished the stream before its last place"
         );
         assert_eq!(
             event(&mut reader, &encode_run(&[byte(2)])),
@@ -1064,7 +1063,7 @@ mod reader {
         assert_eq!(
             error.to_string(),
             format!(
-                "the places of the read name channel {} more than once",
+                "the places name channel {} more than once",
                 channel::Key::from_u128(2)
             )
         );
@@ -1084,7 +1083,7 @@ mod reader {
         );
         assert_eq!(
             error.to_string(),
-            "the index place of the read has sample type timestamp[2], not timestamp"
+            "the index place has sample type timestamp[2], not timestamp"
         );
     }
 

@@ -164,12 +164,46 @@ pub struct Writer {
     outcomes: Vec<::home::Outcome>,
 }
 
-impl Writer {
-    /// Opens a writer on `config.channels` and their indexes.
-    pub(crate) async fn open(
+/// A writer whose channels resolved, with this node the home of each index. It opens
+/// with no wait.
+pub(crate) struct Homed {
+    state: Rc<RefCell<State>>,
+    subject: Name,
+    authority: Authority,
+    lease: Option<Span>,
+    keys: Vec<channel::Key>,
+    groups: Vec<Indexed>,
+    channels: Vec<Name>,
+}
+
+impl Homed {
+    /// Resolves `config.channels`, and waits for mesh time and for this node to be
+    /// the home of each index.
+    pub(crate) async fn new(
         state: &Rc<RefCell<State>>,
         config: Config,
     ) -> Result<Self, Error> {
+        let homed = Self::within(state, config, usize::MAX).await?;
+        Ok(homed.expect("invariant: no writer has more than usize::MAX indexes"))
+    }
+
+    /// As [`Homed::new`] for a writer on one index. Gives `None` when its channels
+    /// resolve to more than one index: before the wait for the home, or when a change
+    /// of a channel during that wait gives them a second.
+    pub(crate) async fn one(
+        state: &Rc<RefCell<State>>,
+        config: Config,
+    ) -> Result<Option<Self>, Error> {
+        Self::within(state, config, 1).await
+    }
+
+    /// As [`Homed::new`], or `None` when the channels resolve to more than `indexes`
+    /// indexes after the wait for mesh time.
+    async fn within(
+        state: &Rc<RefCell<State>>,
+        config: Config,
+        indexes: usize,
+    ) -> Result<Option<Self>, Error> {
         let Config {
             subject,
             authority,
@@ -179,16 +213,16 @@ impl Writer {
         if channels.is_empty() {
             return Err(Error::Empty);
         }
-        let indexes = |groups: &[Indexed]| -> Vec<channel::Key> {
-            groups.iter().map(|&(index, _)| index).collect()
-        };
-        // An unknown name fails before the wait. Once the node has mesh time, the wait
-        // is ready at once.
+        // An unknown name fails before the wait for mesh time.
         resolve(&mut state.borrow_mut(), &channels)?;
         crate::time::known(state).await;
-        let (mut keys, groups) = loop {
+        let (keys, groups) = loop {
             let (keys, groups) = resolve(&mut state.borrow_mut(), &channels)?;
-            let checked = indexes(&groups);
+            if groups.len() > indexes {
+                return Ok(None);
+            }
+            let checked: Vec<channel::Key> =
+                groups.iter().map(|&(index, _)| index).collect();
             let pending = Pending::new(state, keys.clone());
             // A change of a channel ends the wait at once, and the names resolve again.
             if let Ok(homed) = pending.wait(crate::homes(state, &checked)).await {
@@ -196,6 +230,30 @@ impl Writer {
                 break (keys, groups);
             }
         };
+        Ok(Some(Self {
+            state: Rc::clone(state),
+            subject,
+            authority,
+            lease,
+            keys,
+            groups,
+            channels,
+        }))
+    }
+
+    /// Opens the writer at the home, and gives it with the channels of its config.
+    /// Call it with no wait after [`Homed::new`] or [`Homed::one`], so that the
+    /// channels and their homes are as it found them.
+    pub(crate) fn open(self) -> Result<(Writer, Vec<Name>), Error> {
+        let Self {
+            state,
+            subject,
+            authority,
+            lease,
+            mut keys,
+            groups,
+            channels,
+        } = self;
         let mut borrowed = state.borrow_mut();
         let borrowed = &mut *borrowed;
         for &(index, _) in &groups {
@@ -220,16 +278,19 @@ impl Writer {
         borrowed.gate.wake();
         keys.extend(groups.iter().map(|group| group.index));
         let ending = borrowed.writers.add(key, keys);
-        Ok(Self {
-            state: Rc::clone(state),
+        let writer = Writer {
+            state: Rc::clone(&state),
             key,
             ending,
             set,
             entries,
             outcomes: Vec::new(),
-        })
+        };
+        Ok((writer, channels))
     }
+}
 
+impl Writer {
     /// The key set of every frame the writer writes.
     #[must_use]
     pub fn set(&self) -> &Arc<KeySet> {

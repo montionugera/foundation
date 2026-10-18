@@ -529,6 +529,10 @@ const EXISTS: i32 = 17;
 const DIRECTORY: i32 = 21;
 /// The Linux code for a path through too many symbolic links (`ELOOP`).
 const LOOP: i32 = 40;
+/// The Linux code for a path longer than the host takes (`ENAMETOOLONG`).
+const TOO_LONG: i32 = 36;
+/// The Linux `PATH_MAX`: the longest path that the host takes, with its end NUL.
+const PATH_MAX: usize = 4096;
 
 /// The Linux code for a failure that may pass (`EAGAIN`).
 const EAGAIN: i32 = 11;

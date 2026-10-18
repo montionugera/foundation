@@ -4,8 +4,9 @@
 mod cases;
 
 use std::path::{Path, PathBuf};
+use std::slice;
 
-use env::paths::{Error, Found};
+use env::paths::{Driver, Entry, Error, Found};
 
 use crate::{Config, Crash, Sim, node};
 use cases::Host;
@@ -58,6 +59,30 @@ fn within_checks_a_relative_link_by_its_place() {
             code: cases::EXISTS
         })
     );
+}
+
+/// The Linux `PATH_MAX` holds 4095 bytes and the end NUL.
+#[test]
+fn a_path_as_long_as_the_host_takes_reads_and_one_byte_longer_fails() {
+    run(|host| cases::a_path_as_long_as_the_host_takes(host, 4095, 36));
+}
+
+/// A hidden file that is not there, at a short path through a relative link, whose
+/// resolved path is one byte past the Linux `PATH_MAX`.
+#[test]
+fn within_refuses_a_hidden_name_whose_resolved_path_is_too_long() {
+    run(|host| {
+        cases::within_refuses_a_hidden_name_whose_resolved_path_is_too_long(
+            host, 4095, 36,
+        );
+    });
+}
+
+#[test]
+#[should_panic(expected = "the target of /link is too long")]
+fn a_link_takes_no_target_that_linux_refuses() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.link_path(Path::new("/link"), Path::new(&"a".repeat(4096)));
 }
 
 #[test]
@@ -158,6 +183,101 @@ fn a_relative_path_is_under_the_working_directory_that_a_node_sets() {
     assert_eq!(up, Ok(PathBuf::from("/b.hcl")));
     node.set_working_dir(Path::new("/"));
     assert_eq!(paths.read(Path::new("work/plant.hcl"), 1), file);
+}
+
+/// A relative hidden path starts at the working directory of `within`, so it stays
+/// when that directory goes or changes, and hides nothing at the new one.
+#[test]
+fn a_relative_hidden_path_stays_where_the_working_directory_of_within_was() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    for dir in ["/w/sub", "/x/sub"] {
+        node.make_dir(Path::new(dir));
+    }
+    for file in ["/w/secret", "/x/secret"] {
+        paths.write(Path::new(file), b"x").unwrap();
+    }
+    node.set_working_dir(Path::new("/w/sub"));
+    let folders = [PathBuf::from("/w"), PathBuf::from("/x")];
+    let within = paths
+        .within(&folders, &[PathBuf::from("../secret")])
+        .unwrap();
+    node.move_path(Path::new("/w/sub"), Path::new("/gone"));
+    let gone = within.read(Path::new("/w/secret"), 1);
+    node.set_working_dir(Path::new("/x/sub"));
+    let moved = within.read(Path::new("/w/secret"), 1);
+    let other = within.read(Path::new("/x/secret"), 1);
+    assert_eq!(
+        (gone, moved, other),
+        (
+            Err(Error::Hidden),
+            Err(Error::Hidden),
+            Ok(Found::File(b"x".to_vec()))
+        )
+    );
+}
+
+/// The host bounds a relative hidden path as given, not on the working directory.
+#[test]
+fn a_short_relative_hidden_path_from_a_deep_working_directory_hides() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    let mut deep = PathBuf::from("/w");
+    while deep.as_os_str().len() + 201 < 4090 {
+        deep.push("d".repeat(200));
+    }
+    deep.push("e".repeat(4089 - deep.as_os_str().len()));
+    node.make_dir(&deep.join("s"));
+    paths.write(&deep.join("k"), b"x").unwrap();
+    node.set_working_dir(&deep);
+    let hidden = PathBuf::from("s/../k");
+    let within = paths.within(slice::from_ref(&deep), slice::from_ref(&hidden));
+    let read = within.map(|within| within.read(&deep.join("k"), 1));
+    assert_eq!(read, Ok(Err(Error::Hidden)));
+}
+
+/// `within` refuses a relative hidden path as `resolve` does, before it takes off
+/// each `..` at its start.
+#[test]
+fn within_refuses_a_long_relative_hidden_path_as_resolve_does() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w/sub"));
+    paths.write(Path::new("/k"), b"x").unwrap();
+    node.set_working_dir(Path::new("/w/sub"));
+    let hidden = PathBuf::from(format!("{}k", "../".repeat(1400)));
+    let resolved = paths.resolve(&hidden).err();
+    let within = paths
+        .within(&[PathBuf::from("/")], slice::from_ref(&hidden))
+        .err();
+    let too_long = Some(Error::Io { code: 36 });
+    assert_eq!((resolved, within), (too_long, too_long));
+}
+
+/// Each call walks a relative hidden path from the working directory of `within`, so
+/// a link on it that a program changes after `within` hides its new target.
+#[test]
+fn a_relative_hidden_path_hides_the_new_target_of_a_link_on_it() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    for dir in ["/w/sub", "/w/a", "/w/b"] {
+        node.make_dir(Path::new(dir));
+    }
+    for file in ["/w/a/secret", "/w/b/secret"] {
+        paths.write(Path::new(file), b"x").unwrap();
+    }
+    node.link_path(Path::new("/w/sub/link"), Path::new("/w/a"));
+    node.set_working_dir(Path::new("/w"));
+    let hidden = [PathBuf::from("sub/link/secret")];
+    let within = paths.within(&[PathBuf::from("/w")], &hidden).unwrap();
+    node.move_path(Path::new("/w/sub/link"), Path::new("/old"));
+    node.link_path(Path::new("/w/sub/link"), Path::new("/w/b"));
+    let old = within.read(Path::new("/w/a/secret"), 1);
+    let new = within.read(Path::new("/w/b/secret"), 1);
+    assert_eq!(
+        (old, new),
+        (Ok(Found::File(b"x".to_vec())), Err(Error::Hidden))
+    );
 }
 
 #[test]
@@ -272,6 +392,29 @@ fn within_follows_a_link_outside_that_names_a_folder() {
     assert_eq!(within.read(path, 1), Err(Error::Outside));
 }
 
+/// A link target that ends in `/.`, with a name after the link: the end `/.` fails at a
+/// file, and that file outside gives `Outside` as a directory or nothing does.
+#[test]
+fn within_tells_no_file_outside_before_an_end_dot_of_a_link() {
+    let got = ["dir", "none", "file"].map(|kind| {
+        let node = Sim::new(Config::default()).node(node::Config::default());
+        node.make_dir(Path::new("/w"));
+        node.make_dir(Path::new("/out"));
+        let paths = node.paths();
+        match kind {
+            "dir" => node.make_dir(Path::new("/out/b")),
+            "file" => paths.write(Path::new("/out/b"), b"x").unwrap(),
+            _ => {}
+        }
+        for (link, target) in [("/w/l", "/out/b/."), ("/w/m", "/out/b/")] {
+            node.link_path(Path::new(link), Path::new(target));
+        }
+        let within = paths.within(&["/w".into()], &[]).unwrap();
+        ["/w/l/x", "/w/m/x"].map(|path| within.read(Path::new(path), 1).map(|_| ()))
+    });
+    assert_eq!(got, [[Err(Error::Outside); 2]; 3]);
+}
+
 #[test]
 fn within_tells_no_name_outside_beside_a_hidden_folder_that_is_not_there() {
     let node = Sim::new(Config::default()).node(node::Config::default());
@@ -297,25 +440,25 @@ fn within_tells_no_name_outside_beside_a_hidden_folder_that_is_not_there() {
 #[test]
 fn within_checks_a_relative_first_name_that_does_not_resolve_at_its_place() {
     let node = Sim::new(Config::default()).node(node::Config::default());
-    for dir in ["/work/data", "/out"] {
-        node.make_dir(Path::new(dir));
-        let at = Path::new(dir).join("loop");
-        node.link_path(&at, &at);
+    node.make_dir(Path::new("/out"));
+    for at in ["/work/loop", "/out/loop"].map(Path::new) {
+        node.link_path(at, at);
     }
     let within = node
         .paths()
         .within(&[PathBuf::from("/work")], &[PathBuf::from("/work/data")])
         .unwrap();
-    let got = ["/out", "/work/data"].map(|dir| {
+    let got = ["/work", "/out"].map(|dir| {
         node.set_working_dir(Path::new(dir));
         let path = Path::new("loop");
         (node.paths().read(path, 1), within.read(path, 1))
     });
+    let looped = Err(Error::Io { code: 40 });
     assert_eq!(
         got,
         [
-            (Err(Error::Io { code: 40 }), Err(Error::Outside)),
-            (Err(Error::Io { code: 40 }), Err(Error::Hidden)),
+            (looped.clone(), looped.clone()),
+            (looped, Err(Error::Outside))
         ]
     );
 }
@@ -332,14 +475,32 @@ fn the_home_is_none_until_a_node_sets_it_and_then_resolves() {
     assert_eq!(paths.home(), Some(PathBuf::from("/users/user")));
 }
 
+/// The walk never asks `entry` for a path that ends in `/`, so no `Paths` call
+/// reaches this arm.
 #[test]
-fn a_link_to_nothing_resolves_once_its_file_is_there() {
+fn an_entry_follows_a_link_before_an_end_in_a_separator_as_lstat_does() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/out"));
+    node.link_path(Path::new("/link"), Path::new("/out"));
+    let link = node.0.entry(Path::new("/link"));
+    assert!(
+        matches!(&link, Ok(Entry::Link(_, target)) if target == Path::new("/out")),
+        "{link:?}"
+    );
+    let end = node.0.entry(Path::new("/link/"));
+    assert!(matches!(end, Ok(Entry::Directory(_))), "{end:?}");
+    assert_eq!(end, node.0.entry(Path::new("/out")));
+}
+
+#[test]
+fn a_link_to_nothing_resolves_to_its_target_and_reads_once_its_file_is_there() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let paths = node.paths();
     node.link_path(Path::new("/plans/b.plan"), Path::new("../config/b.plan"));
     node.make_dir(Path::new("/config"));
     let link = Path::new("/plans/b.plan");
-    assert_eq!(paths.resolve(link), Err(Error::NotFound));
+    assert_eq!(paths.resolve(link), Ok(PathBuf::from("/config/b.plan")));
+    assert_eq!(paths.read(link, 1), Err(Error::NotFound));
     assert_eq!(paths.write(link, b"x"), Err(Error::NotFound));
     paths.write(Path::new("/config/b.plan"), b"x").unwrap();
     assert_eq!(paths.resolve(link), Ok(PathBuf::from("/config/b.plan")));

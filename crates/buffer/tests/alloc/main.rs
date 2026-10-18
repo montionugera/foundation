@@ -7,7 +7,7 @@
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
-#[path = "../it/memory.rs"]
+#[path = "../common/memory.rs"]
 #[expect(dead_code, reason = "this binary uses only the driver")]
 mod memory;
 
@@ -169,26 +169,30 @@ fn logs_take_no_allocation() {
 
 /// After the warm-up, a deadline of 32 tagged entries copies each into the bytes
 /// of the copy it replaces, so it allocates no more than one of untagged entries.
+/// Nor does a carry of the copy of an index that appends once each 64 deadlines,
+/// nor a record of entries of 60 bytes, whose carry body takes a block past it.
 fn tagged_deadlines_take_no_allocation() {
-    let count = |mut deadline: buffer::bench::Deadline| {
-        for _ in 0..2 * 64 {
-            deadline.commit(1);
+    let count = |mut deadline: buffer::bench::Deadline, period| {
+        for _ in 0..4 * 64 {
+            deadline.commit(period);
         }
-        ALLOCATOR
-            .count(|| {
-                for _ in 0..1024 {
-                    deadline.commit(1);
-                }
-            })
-            .1
+        let (tails, allocations) = ALLOCATOR
+            .count(|| (0..1024).map(|_| deadline.commit(period)).sum::<usize>());
+        assert_eq!(tails > 0, period > 1, "carried {tails} tails");
+        allocations
     };
     let blocks = 64 + buffer::bench::PHASE;
-    let untagged = count(buffer::bench::Deadline::new(32, blocks));
-    let tagged = count(buffer::bench::Deadline::tagged(32, blocks));
+    let untagged = count(buffer::bench::Deadline::new(32, blocks), 1);
+    let tagged = count(buffer::bench::Deadline::tagged(32, blocks), 1);
+    let carried = count(buffer::bench::Deadline::tagged(32, blocks), 64);
+    let mut excess = buffer::bench::Deadline::tagged(32, blocks);
+    excess.resize(60);
+    let excess = count(excess, 1);
     assert_eq!(
-        (untagged, tagged),
-        (0, 0),
-        "allocations in 1024 deadlines of 32 entries, untagged and tagged"
+        (untagged, tagged, carried, excess),
+        (0, 0, 0, 0),
+        "allocations in 1024 deadlines of 32 entries: untagged, tagged, tagged \
+         with an index that appends once each 64, and tagged of 60 bytes"
     );
 }
 

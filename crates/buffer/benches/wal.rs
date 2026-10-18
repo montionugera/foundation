@@ -97,14 +97,14 @@ fn deadline_tagged(bencher: Bencher<'_, '_>, indexes: u32) {
 }
 
 /// The last of 32 indexes appends one entry each 4096 deadlines, so the deadline
-/// after 13 carries its tail and fills the record with the tails of the other 31.
+/// after 12 carries its tail and fills the record with the tails of the other 31.
 #[divan::bench]
 fn deadline_carry(bencher: Bencher<'_, '_>) {
     bencher
         .counter(ItemsCount::new(31_usize))
         .with_inputs(|| {
             let mut deadline = Deadline::new(32, 64 + PHASE);
-            for _ in 0..13 {
+            for _ in 0..12 {
                 deadline.commit(4096);
             }
             deadline
