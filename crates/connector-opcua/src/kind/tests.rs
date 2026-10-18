@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use ::sim::{Sim, node};
 use connector::cancel::Token;
@@ -371,9 +371,8 @@ impl Scene {
         let (variables, until) = (self.variables.clone(), stop.clone());
         let (mut rng, gate) = (self.node.entropy().rng(), self.gate.clone());
         group.tasks().spawn(async move {
-            let until = until.wait();
             let serve = serve(clock, wall, net, listener, &mut rng, &variables, until);
-            gate.hold(serve).await;
+            gate.hold(serve).await.expect("the listener does not fail");
         });
         *self.server.borrow_mut() = Some((stop, group));
     }
@@ -431,6 +430,8 @@ struct Record {
     served: BTreeMap<String, Vec<Served>>,
     /// The reads of the state of the server that each server answered.
     states: u32,
+    /// The lines of target `open62541`.
+    logged: Vec<String>,
 }
 
 /// Runs `script` on a scene of `setup` at 10 Hz, as [`run_at`] does.
@@ -449,9 +450,7 @@ where
     S: FnOnce(Rc<Scene>) -> F + Send + 'static,
     F: Future<Output = Result<(), Error>> + 'static,
 {
-    let mut sim = Sim::new(::sim::Config::default());
-    let node = sim.node(node::Config::default());
-    let run = sim.run_on(&node, move |node, tasks| async move {
+    let run = logged(move |node, tasks| async move {
         let env = hub::testing::Env {
             files: node.files(),
             clock: node.clock(),
@@ -510,7 +509,7 @@ where
         let indexes: BTreeMap<u128, Vec<Frame>> = indexes.collect();
         (result, indexes, statuses.take(), scene.variables.clone())
     });
-    let (result, mut indexes, statuses, variables) = run.expect("the run ends");
+    let ((result, mut indexes, statuses, variables), logged) = run;
     Record {
         result,
         frames: indexes.remove(&1).expect("the index 1"),
@@ -518,7 +517,40 @@ where
         statuses,
         served: variables.served(),
         states: variables.states(),
+        logged,
     }
+}
+
+/// Runs `body` on a shard of a new node of a new sim, as [`Sim::run_on`] does, and
+/// gives what it returned and the lines of target `open62541`.
+fn logged<T, F>(
+    body: impl FnOnce(node::Node, Tasks) -> F + Send + 'static,
+) -> (T, Vec<String>)
+where
+    T: Send + 'static,
+    F: Future<Output = T> + 'static,
+{
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    let (capture, log) = testing::Capture::new("open62541");
+    let out = Arc::new(Mutex::new(None));
+    let (slot, own) = (Arc::clone(&out), node.clone());
+    let config = env::shards::Config {
+        name: "run".into(),
+        core: None,
+    };
+    let start = node
+        .shards()
+        .logged(log)
+        .start(config, move |tasks| async move {
+            let value = body(own, tasks).await;
+            *slot.lock().expect("no panic under the lock") = Some(value);
+        });
+    drop(start.expect("a shard with no core starts"));
+    sim.run().expect("the run ends");
+    let value = out.lock().expect("no panic under the lock").take();
+    let value = value.expect("the run ends after its shard");
+    (value, capture.lines())
 }
 
 /// The values that the server served for `node`.
@@ -650,12 +682,16 @@ fn fill(writer: &Writer) -> Vec<Draft> {
 /// channel token near its own only when its loop reads the mesh time of the node.
 #[test]
 fn the_loop_of_the_kind_reads_the_mesh_time_of_its_node() {
-    let name = "kind::tests::writes_one_stamp_in_each_index_of_a_frame";
-    let output = crate::child::output(name, &[]);
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("test result: ok. 1 passed"), "{stdout}");
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(!stderr.contains("CreatedAt"), "{stderr}");
+    let outcome = run(Setup::three(), |scene| async move {
+        scene.supervise(ms(1_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert!(!outcome.frames.is_empty());
+    let lines = &outcome.logged;
+    assert!(
+        !lines.iter().any(|line| line.contains("CreatedAt")),
+        "{lines:?}"
+    );
 }
 
 #[test]

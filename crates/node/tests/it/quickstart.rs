@@ -5,8 +5,7 @@ use crate::{Rig, text};
 #[path = "../../../ops/tests/common/quickstart.rs"]
 mod page;
 
-use page::blocks;
-pub(crate) use page::{plant, shown};
+pub(crate) use page::{blocks, plant, shown};
 
 #[test]
 fn the_binary_plans_and_applies_the_config_of_the_page_as_the_page_shows() {

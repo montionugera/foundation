@@ -228,3 +228,17 @@
   `plan` reads secrets through `Supervisor::secrets`: `laptop.architect-2`,
   2026-10-17 05:40 UTC
   (https://github.com/synnaxlabs/foundation/pull/2999#issuecomment-6230284696).
+  The operation `browse` of `ops` runs `Supervisor::browse` on the node of the
+  connector, for the command line with `--json` and for the MCP tool `browse`. Its
+  checks, its five codes, its JSON, and its text are in OPS OUTPUT. A browse needs
+  `apply`, then `admin`, on the name of the connector, the right to open a session to
+  the device with its secrets, which a remote `plan` also needs to read the sources of
+  the block. The refusal is `ops.denied` and names the right that is missing (kind (b),
+  sent to `laptop.monitor` at 2026-10-17T22:57:51Z,
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6242684265; it goes
+  ahead unless the person objects; approved by `laptop.architect-2`,
+  2026-10-17T23:06:39Z,
+  https://github.com/synnaxlabs/foundation/pull/3079#issuecomment-6242836290). The JSON
+  gives `unit` and `unit_code` as two fields, each `null` when the device cannot know
+  it, as `Facts` holds them (`laptop.architect-2`, 2026-10-17T05:14:44Z, item 2 of
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6230042870).

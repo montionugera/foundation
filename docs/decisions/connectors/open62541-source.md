@@ -299,10 +299,11 @@
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6065760073,
   2026-10-08 17:47 UTC). This change and its driver test ship in a PR of their own,
   apart from the connector code (same comment).
-  The feature `open62541` of `connector-opcua` compiles the copy and `src/shim.c`
-  with `cc`. `shim.c` defines the 8 symbols that the copy leaves undefined: the 3
-  clock functions give 0, and the 5 POSIX constructors print their name and abort,
-  since our config always has an event loop. Decided by `laptop.architect-2`
+  The feature `open62541` of `connector-opcua` compiles the copy and `src/shim.c` with
+  `cc`. `shim.c` defines the 8 symbols that the copy leaves undefined: the 3 clock
+  functions give 0, and the 5 POSIX constructors panic with their name through
+  `connector_opcua_die` and abort, since our config always has an event loop. Decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6050922367,
   2026-10-08 02:27 UTC). The test server is in `src/server.c`, which only the feature
   `sim` compiles, and a test fails when the Rust outside tests or another `.c` or `.h`
@@ -497,16 +498,25 @@
   Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6130241056,
   2026-10-12 18:31 UTC).
-  The logger of the loop writes each message of level warning and up to fd 2, and
-  drops the lower levels: it formats the line into a stack buffer of 512 bytes with
-  `mp_vsnprintf` and sends it in one `write`, so a line allocates nothing, takes no
-  `stdio` lock, and does not mix with a line of another thread. On Windows it sends it
-  with `WriteFile`, as `write` there adds a CR before each LF. The line of a refused
-  call and the line before an abort take the same path (approved by
-  `laptop.architect-2` at `124a85613`,
-  https://github.com/synnaxlabs/foundation/pull/2594#issuecomment-6153806001,
-  2026-10-13 19:46 UTC). A longer line is cut, not dropped. Trigger: when `node` has a
-  log, the loop takes its sink from its caller. Decided by `laptop.architect-2`
+  The logger of the loop gives each message of level warning and up to the log of the
+  node, and drops the lower levels: when `connector_opcua_admit` in `src/log.rs` finds
+  room under the bound of LOG OUTPUT (11), it formats the line into a stack buffer of
+  512 bytes with `mp_vsnprintf` and gives it to `connector_opcua_put_line`, which writes
+  one event with the span of its loop as its parent: the span of the run for the loop of
+  a run (LOG OUTPUT (11)), and no span for a browse (#3108), the test server, and the
+  loops of `bench::Client` and `bench::client::Client`; `bench::Log` takes the span that
+  its caller gives. A longer line is cut, not dropped. The line of a refused call and
+  the line before an abort of `shim.c` go to `connector_opcua_die`, which panics with
+  it, so the panic hook writes it before the abort: an event in the queue of the log is
+  lost at an abort.
+  `shim.c` names no `write` and no Win32 function (#2612; `laptop.architect-2`,
+  2026-10-18T02:16:27Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6244633633).
+  Supersedes the write to fd 2 of
+  https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068103327 (item 1)
+  and the Windows path of
+  https://github.com/synnaxlabs/foundation/pull/2594#issuecomment-6153806001.
+  Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068103327,
   2026-10-08 20:07 UTC;
   https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068349707,
@@ -941,16 +951,16 @@
   `Aes128_Sha256_RsaOaep`, `Aes256_Sha256_RsaPss`, and their common code. So the copy
   compiles only the three current policies and `None`, and the production code adds no
   other. `shim.c` defines each symbol that the rest of the copy names from a left-out
-  file to print its name and abort, and a test calls each one. A test fails on another
-  policy file in `sources.txt`. A test fails when the production code names a policy or
-  a certificate group, or a function `UA_CertificateUtils_*`, other than at its stub in
-  `shim.c`, and a test fails when the objects of `shim.c` or `server.c` name aws-lc or a
-  symbol of `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps no state:
-  the copy removes its `static` flag, which it wrote with no lock and which guarded only
-  the calls for OpenSSL before 1.1, and the build fails when `OPENSSL_API_COMPAT` is
-  defined. Lost: the about 35 file and clock calls of the left-out files, each keyed in
-  `FUNCTION_SYMBOLS`; and a copy of each deprecated and ECC policy file. Decided by
-  `laptop.architect-2`
+  file to panic with its name and abort, and a test calls each one. A test fails on
+  another policy file in `sources.txt`. A test fails when the production code names a
+  policy or a certificate group, or a function `UA_CertificateUtils_*`, other than at
+  its stub in `shim.c`, and a test fails when the objects of `shim.c` or `server.c` name
+  aws-lc or a symbol of `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps
+  no state: the copy removes its `static` flag, which it wrote with no lock and which
+  guarded only the calls for OpenSSL before 1.1, and the build fails when
+  `OPENSSL_API_COMPAT` is defined. Lost: the about 35 file and clock calls of the
+  left-out files, each keyed in `FUNCTION_SYMBOLS`; and a copy of each deprecated and
+  ECC policy file. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6230888200,
   2026-10-17 06:51 UTC). The `UA_Openssl_Init` sentences: decided by
   `laptop.architect-2`

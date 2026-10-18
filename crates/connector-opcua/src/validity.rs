@@ -59,7 +59,7 @@ pub(crate) fn verify(
         clock,
         wall: Box::new(move || wall),
     };
-    let events = Loop::new(time, &mut Rng::from_seed(0));
+    let events = Loop::new(time, tracing::Span::none(), &mut Rng::from_seed(0));
     let trusted = trusted.map(Bytes::of);
     // SAFETY: both point at live bytes or are null, the call only reads them, and the
     // loop lives past the call.
@@ -136,7 +136,11 @@ fn an_issuer_past_its_window_on_the_loop_is_refused() {
 fn a_group_with_no_loop_is_refused() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let clock = sim.node(sim::node::Config::default()).clock();
-    let events = Loop::new(event::Time::monotonic(clock), &mut Rng::from_seed(0));
+    let events = Loop::new(
+        event::Time::monotonic(clock),
+        tracing::Span::none(),
+        &mut Rng::from_seed(0),
+    );
     // SAFETY: the loop lives past the call, and the call takes a null loop.
     let created = |el| Status(unsafe { ffi::test::shim_memory_group(el) }).name();
     assert_eq!(created(events.raw()), "Good");

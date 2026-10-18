@@ -170,7 +170,8 @@ impl Peer<'_> {
         time: event::Time,
         setup: impl FnOnce(NonNull<ffi::Client>),
     ) -> Result<Client, Status> {
-        let connections = Manager::new(time, self.net.clone(), &mut self.rng);
+        let connections =
+            Manager::new(time, tracing::Span::none(), self.net.clone(), &mut self.rng);
         // SAFETY: the loop outlives the client, which the drop of the client deletes
         // first.
         let raw = unsafe { crate::client::unconnected(connections.events().raw()) };
@@ -196,7 +197,14 @@ async fn open(
     rng: &mut Rng,
     url: &CStr,
 ) -> Result<Client, Status> {
-    let connect = Client::connect(time, net, rng, url, future::pending());
+    let connect = Client::connect(
+        time,
+        tracing::Span::none(),
+        net,
+        rng,
+        url,
+        future::pending(),
+    );
     Ok(connect.await?.expect("a pending wait never ends"))
 }
 
@@ -330,7 +338,13 @@ fn a_client_gives_its_url_before_and_after_its_open() {
             let url = CString::new(peer.url.clone()).expect("the URL holds no NUL");
             let time = event::Time::monotonic(Clock::clone(&peer.clock));
             let net = Net::clone(&peer.net);
-            let mut client = Client::new(time, net, &mut peer.rng, url.clone());
+            let mut client = Client::new(
+                time,
+                tracing::Span::none(),
+                net,
+                &mut peer.rng,
+                url.clone(),
+            );
             let before = client.url().to_owned();
             client.open().await.expect("the client connects");
             let after = client.url().to_owned();
@@ -1266,7 +1280,15 @@ fn a_connect_whose_wait_has_ended_gives_none() {
             let time = event::Time::monotonic(Clock::clone(&peer.clock));
             let net = Net::clone(&peer.net);
             let ended = future::ready(());
-            let connect = Client::connect(time, net, &mut peer.rng, &url, ended).await;
+            let connect = Client::connect(
+                time,
+                tracing::Span::none(),
+                net,
+                &mut peer.rng,
+                &url,
+                ended,
+            )
+            .await;
             connect.map(|client| client.is_none())
         })
         .await
@@ -2669,5 +2691,6 @@ mod abort;
 mod browse;
 mod chunks;
 mod common;
+mod flood;
 mod secure;
 mod walk;

@@ -19,6 +19,13 @@ pub(crate) struct Head {
     pub(crate) stored_at: Stamp,
 }
 
+/// Where a state entry goes: `buffer`, with `head`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Target<'a> {
+    pub(crate) buffer: &'a Buffer,
+    pub(crate) head: Head,
+}
+
 /// Appends the state entry of tag `tag` with `body` in a block of the pool of
 /// `buffer`, or no part for `None`, with `head`, alone. Returns whether the entry needs
 /// no later append: the buffer took it, or a failed commit ended the buffer, so a

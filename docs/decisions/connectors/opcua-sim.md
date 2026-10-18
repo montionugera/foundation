@@ -11,10 +11,16 @@
   server answered, by the text of its node in `new`, in the order of the answers, as
   `sim::Served { time, value, quality }`, with `time` on the injected clock of the
   server. `sim::serve(clock, wall, net, listener, rng, &variables, until)` serves
-  `variables` on the bound `listener` with room for 4 sessions until `until` completes,
-  then closes the server. `wall` gives the wall time of the server, which a client
-  compares with the time of each channel token, so the caller gives the wall time of
-  the client's node (`laptop.architect-2`,
+  `variables` on the bound `listener` with room for 4 sessions until the
+  `cancel::Token` `until` is cancelled or the listener fails, then closes the server,
+  and returns the error of the listener, as HTTP SIM SERVER asks of a simulator that a
+  conformance scenario stops (`laptop.architect-2`, 2026-10-18T06:35:44Z:
+  https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6246623008).
+  This supersedes the `until` that completes of
+  https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136492404.
+  `wall` gives the wall time of the server, which a client compares with the time of
+  each channel token, so the caller gives the wall time of the client's node
+  (`laptop.architect-2`,
   https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147681882,
   2026-10-13 14:19 UTC). It adds each namespace from 2 to the highest of `variables`,
   gives each stream of the server the options of `listener`, and panics on a variable
@@ -22,7 +28,8 @@
   listener, so it knows the address before the serve, as with
   `connector_influx::sim::serve`. The stop is an input, so the close drives the streams
   while the delayed callbacks of open62541 drain, and each stream sends what it can in
-  that time. What still waits then drops with the manager. A drop of the future closes
+  that time. What still waits then drops with the manager, which resets its stream. On
+  each return, each stream that it accepted has ended. A drop of the future closes
   the server with no wait and leaves what waits on each stream unsent. A drop in a
   panic leaks the server (`laptop.architect-2`, 2026-10-18T00:25:33Z and 00:33:08Z:
   https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6243700840 and

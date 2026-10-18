@@ -367,6 +367,7 @@ dependencies = [
  "document",
  "env",
  "hub",
+ "tracing",
  "types",
 ]
 

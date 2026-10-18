@@ -1,5 +1,5 @@
-//! A raw OPC UA client for tests: it writes and reads the bytes of each message
-//! itself, with no open62541.
+//! A raw OPC UA client and device for tests: each writes and reads the bytes of each
+//! message itself, with no open62541.
 
 use std::future::poll_fn;
 use std::io::IoSlice;
@@ -101,6 +101,45 @@ pub(crate) async fn session(net: &Net, remote: SocketAddr) -> [[u8; 16]; 2] {
     [guid(session), guid(token)]
 }
 
+/// Answers the `HEL` of a client on `stream` with an `ACK`, and its `OPN` with channel
+/// 1, token 1, and no security.
+///
+/// # Panics
+///
+/// If a read or a write fails, if the client closes the stream, or if it sends other
+/// than a `HEL` and an `OPN`.
+pub(crate) async fn opened(stream: &mut Tcp) {
+    let hel = message(stream).await;
+    assert_eq!(&hel[..4], b"HELF", "{hel:?}");
+    let mut ack = Vec::new();
+    for field in [0_u32, 1 << 16, 1 << 16, 0, 0] {
+        ack.extend(field.to_le_bytes());
+    }
+    write(stream, &frame(*b"ACKF", &ack)).await;
+    let opn = message(stream).await;
+    assert_eq!(&opn[..4], b"OPNF", "{opn:?}");
+    let mut body = 1_u32.to_le_bytes().to_vec(); // channel id
+    push_string(&mut body, Some(NONE));
+    push_string(&mut body, None);
+    push_string(&mut body, None);
+    body.extend(1_u32.to_le_bytes()); // sequence number
+    body.extend(1_u32.to_le_bytes()); // request id
+    body.extend([0x01, 0, 0xC1, 0x01]); // OpenSecureChannelResponse
+    body.extend(0_i64.to_le_bytes()); // timestamp
+    body.extend(0_u32.to_le_bytes()); // request handle
+    body.extend(0_u32.to_le_bytes()); // Good
+    body.push(0); // no diagnostics
+    body.extend((-1_i32).to_le_bytes()); // no string table
+    body.extend([0, 0, 0]); // no additional header
+    body.extend(0_u32.to_le_bytes()); // server protocol version
+    body.extend(1_u32.to_le_bytes()); // token channel id
+    body.extend(1_u32.to_le_bytes()); // token id
+    body.extend(0_i64.to_le_bytes()); // created at
+    body.extend(600_000_u32.to_le_bytes()); // revised lifetime
+    push_string(&mut body, None); // nonce
+    write(stream, &frame(*b"OPNF", &body)).await;
+}
+
 /// Adds the length of `text` and its bytes to `bytes`, or -1 for a null string.
 fn push_string(bytes: &mut Vec<u8>, text: Option<&[u8]>) {
     let length = text.map_or(-1, |text| i32::try_from(text.len()).expect("short"));
@@ -120,7 +159,7 @@ fn request_header(bytes: &mut Vec<u8>) {
 }
 
 /// Gives the message of `kind` with `body`, in one final chunk.
-fn frame(kind: [u8; 4], body: &[u8]) -> Vec<u8> {
+pub(crate) fn frame(kind: [u8; 4], body: &[u8]) -> Vec<u8> {
     let length = u32::try_from(8 + body.len()).expect("a short message");
     let mut bytes = kind.to_vec();
     bytes.extend(length.to_le_bytes());
@@ -142,7 +181,7 @@ async fn read_exact(stream: &mut Tcp, mut bytes: &mut [u8]) {
     while !bytes.is_empty() {
         let read = poll_fn(|cx| stream.poll_read(cx, bytes)).await;
         let read = read.expect("the read works");
-        assert!(read > 0, "the server closed the stream");
+        assert!(read > 0, "the peer closed the stream");
         bytes = &mut bytes[read..];
     }
 }

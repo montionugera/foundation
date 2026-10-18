@@ -784,10 +784,12 @@ impl Buffer {
     }
 
     /// The count of [`commits`](Self::commits) at which every entry appended before
-    /// the call is durable: the count now when none waits.
+    /// the call is durable, or `None` when each is durable now.
     #[must_use]
-    pub fn durable_at(&self) -> u64 {
-        self.shared.state.borrow().durable_at()
+    pub fn durable_at(&self) -> Option<u64> {
+        let state = self.shared.state.borrow();
+        let at = state.durable_at();
+        (at > state.commits).then_some(at)
     }
 
     /// Queues every entry of `entries` for the next group commit, or none, and
@@ -1831,8 +1833,8 @@ mod tests {
         assert!(span >= COMMIT, "the commit came {span:?} after the append");
     }
 
-    /// `durable_at` is the count of commits now while nothing waits, and the count
-    /// that the commit of an appended entry reaches.
+    /// `durable_at` is `None` while nothing waits, and the count that the commit of an
+    /// appended entry reaches.
     #[test]
     fn gives_the_count_of_commits_at_which_appended_entries_are_durable() {
         let mut sim = sim::Sim::new(sim::Config::default());
@@ -1860,9 +1862,9 @@ mod tests {
         );
         let found = counts.lock().expect("no panic held the lock").take();
         let ((commits, idle), at, after) = found.expect("the shard gave the result");
-        assert_eq!(idle, commits, "nothing waits");
-        assert_eq!(at, commits + 1, "the next commit holds the entry");
-        assert_eq!(after, (at, at), "the commit reached the count");
+        assert_eq!(idle, None, "nothing waits");
+        assert_eq!(at, Some(commits + 1), "the next commit holds the entry");
+        assert_eq!(after, (commits + 1, None), "the commit reached the count");
     }
 
     /// A commit gives the writer the boundaries of its records. No public call

@@ -282,6 +282,32 @@ const shim_counts *shim_server_count(UA_Server *server) {
     return &counter->counts;
 }
 
+/* Logs `text` at level fatal in category `client` through the logger of `el`. No
+ * message of the copy that a test reaches is fatal. */
+void shim_log_fatal(UA_EventLoop *el, const char *text) {
+    UA_LOG_FATAL(el->logger, UA_LOGCATEGORY_CLIENT, "%s", text);
+}
+
+/* Logs `text` at level warning in category `client` through the logger of `el`. */
+void shim_log_warning(UA_EventLoop *el, const char *text) {
+    UA_LOG_WARNING(el->logger, UA_LOGCATEGORY_CLIENT, "%s", text);
+}
+
+/* Logs `format` with its arguments at `level` in `category` through `logger`. */
+static void log_at(const UA_Logger *logger, UA_LogLevel level,
+                   UA_LogCategory category, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    logger->log(logger->context, level, category, format, args);
+    va_end(args);
+}
+
+/* Logs `text` at `level` in `category` through the logger of `el`, also at a value
+ * that the enums do not name. */
+void shim_log_at(UA_EventLoop *el, int level, int category, const char *text) {
+    log_at(el->logger, (UA_LogLevel)level, (UA_LogCategory)category, "%s", text);
+}
+
 /* Sets the receive buffer size that `client` gives in its next HEL. */
 void shim_client_receive(UA_Client *client, UA_UInt32 size) {
     UA_Client_getConfig(client)->localConnectionConfig.recvBufferSize = size;
