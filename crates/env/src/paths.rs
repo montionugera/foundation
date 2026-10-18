@@ -1043,6 +1043,20 @@ mod tests {
     }
 
     #[test]
+    fn a_relative_hidden_path_starts_at_the_working_directory_of_within() {
+        let one = One::default();
+        let working = Rc::clone(&one.2);
+        *working.borrow_mut() = PathBuf::from("/work/s");
+        let hidden = ["../data".into(), "./h".into()];
+        let paths = Paths::new(one).within(&["/work".into()], &hidden).unwrap();
+        *working.borrow_mut() = PathBuf::from("/");
+        let got = ["/work/data/k", "/work/s/h/k", "/work/s/data/k", "/work/h/k"]
+            .map(|path| reached(&paths, path));
+        let hidden = Err(Error::Hidden);
+        assert_eq!(got, [hidden, hidden, Ok(()), Ok(())]);
+    }
+
+    #[test]
     fn a_dot_dot_that_stays_in_another_mount_of_a_folder_passes() {
         let one = One::default();
         let working = Rc::clone(&one.2);

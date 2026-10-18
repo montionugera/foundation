@@ -255,7 +255,8 @@ impl Walker<'_> {
             return Ok(());
         }
         let entry = self.driver.entry(&self.path.join(name));
-        self.in_file = entry.is_err() && self.is_file(self.at);
+        // A step that is a file holds no names, so the host refuses each one.
+        self.in_file = self.is_file(self.at);
         entry.map(|_| ())
     }
 
