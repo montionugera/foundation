@@ -3,6 +3,7 @@
 
 mod read;
 mod turn;
+pub mod write;
 
 use std::cell::RefCell;
 use std::fmt;
@@ -15,6 +16,7 @@ use transport::stream::{Receiver, Sender};
 use transport::{Address, Class, Code};
 use types::connection;
 use types::ed25519::{Pair, PrivateKey, PublicKey};
+use types::frame::Form;
 use types::hello::Hello;
 use types::name::{Name, Selector};
 use types::time::{Monotonic, Span, Stamp};
@@ -26,6 +28,7 @@ use wire::hub::client::{
 
 pub use read::Reader;
 use turn::{Taken, Turn};
+pub use write::Writer;
 
 /// How long each hello of a [`Session`] lives. The session renews it at half its life.
 pub const LIFE: Span = Span::from_nanos(10 * Span::MINUTE.nanos());
@@ -215,6 +218,44 @@ impl Session {
             return Err(Error::Open { length });
         }
         Reader::open(Rc::clone(&self.0), &open)
+            .await
+            .map_err(|error| shared.ended.borrow().clone().unwrap_or(error))
+    }
+    /// Opens a writer on `config.channels` as the session's subject, and waits until
+    /// the node opened it. The node must be the home of their index. A write takes no
+    /// turn: it runs beside the requests and the reads.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Unnamed`] when `config.channels` is empty, and [`Error::Open`] when
+    /// the open is over `OPEN_BYTES_MAX`, each with nothing sent. The error that ended
+    /// the renewal, when it ended before or during the open. Else [`Error::Refused`]
+    /// when the node stopped the write (`UNKNOWN` for a name of no channel,
+    /// `MALFORMED` for channels of more than one index or a lease that the home
+    /// refuses, `NOT_HOME` when the node is not the home of the index, `REFUSED` for a
+    /// signature that the node refuses, `BUSY` when the node has no room for the
+    /// open), [`Error::Transport`], [`Error::Message`] for places that `wire` refuses
+    /// or a stream that ends before the last place, and [`Error::Pool`].
+    pub async fn writer(&self, config: write::Config) -> Result<Writer, Error> {
+        let shared = &self.0.0;
+        let write::Config {
+            authority,
+            lease,
+            channels,
+        } = config;
+        if channels.is_empty() {
+            return Err(Error::Unnamed);
+        }
+        let open = wire::hub::client::write::Open {
+            authority,
+            lease,
+            channels,
+        };
+        let length = open.encoded_len();
+        if u64::try_from(length).map_or(true, |bytes| bytes > OPEN_BYTES_MAX) {
+            return Err(Error::Open { length });
+        }
+        Writer::open(Rc::clone(&self.0), &open)
             .await
             .map_err(|error| shared.ended.borrow().clone().unwrap_or(error))
     }
@@ -475,16 +516,27 @@ pub enum Error {
     /// No block of [`Config::pool`] can hold a message that the session sends, or no
     /// block of [`Config::frames`] can hold a frame of a read.
     Pool(block::Error),
-    /// The open of a read is over `OPEN_BYTES_MAX`. Nothing was sent.
+    /// The open of a read or a write is over `OPEN_BYTES_MAX`. Nothing was sent.
     Open {
         /// The bytes of the open.
         length: usize,
     },
-    /// The node sent a reply of a read that `wire` refuses, or finished the stream
-    /// where a reply must come.
+    /// The node sent a reply of a read or a write that `wire` refuses, or finished
+    /// the stream where a reply must come.
     Reply(wire::hub::Error),
     /// The ends of a frame of a read break a rule of the frame layout.
     Frame(types::frame::Error),
+    /// The config of a writer names no channel. Nothing was sent.
+    Unnamed,
+    /// [`Writer::write`] cannot send a frame: it holds no sample, or it is of
+    /// [`write::Time::Node`] and is encoded or holds more than one sample. Nothing was
+    /// sent, and the writer goes on.
+    Unsent {
+        /// The samples of each series of the frame.
+        count: u32,
+        /// The form of the frame.
+        form: Form,
+    },
 }
 
 impl fmt::Display for Error {
@@ -520,6 +572,15 @@ impl fmt::Display for Error {
             Self::Frame(error) => {
                 write!(f, "the node sent a frame that is not valid: {error}")
             }
+            Self::Unnamed => f.write_str("the writer names no channel"),
+            Self::Unsent { count: 0, .. } => {
+                f.write_str("the frame holds no sample, so it was not sent")
+            }
+            Self::Unsent { count, form } => write!(
+                f,
+                "a frame that the node stamps holds 1 sample in the raw form, not \
+                 {count} in the {form:?} form, so it was not sent"
+            ),
         }
     }
 }
