@@ -60,12 +60,12 @@
   closed at the restore, so a carry before mesh time waits for it. A shed appends, in
   part order, an entry with no record for each part that holds one. With no mesh time,
   a restart restores the holds. When a part finds no block or no room, a restart
-  restores the holds of that part and the parts after it; a later carry in the same run
-  does not. A named complete open that adds a record, opens a held one, or takes over an
-  open session with a new hold appends its parts before it opens, and its reader takes
-  no frame until the commit that holds them. A takeover with the same hold of a session
-  that waits for that commit waits for it too. When the part of its record, or a part
-  before it, finds no block or no room, it opens nothing and gives
+  restores the holds of that part and the parts after it. In both cases, a later carry
+  in the same run does not. A named complete open that adds a record, opens a held one,
+  or takes over an open session with a new hold appends its parts before it opens, and
+  its reader takes no frame until the commit that holds them. A takeover with the same
+  hold of a session that waits for that commit waits for it too. When the part of its
+  record, or a part before it, finds no block or no room, it opens nothing and gives
   `Unopened::Unrecorded`, and `hub` gives `reader::Error::Unrecorded`, so a restart
   never loses the frames of a first open, a reopen, or a takeover. After a failed
   commit, the open opens, and its reader ends with the error of the commit. Another
