@@ -31,20 +31,23 @@
   The ring of `home::testing::shard` trims, so a scenario runs past the fill of its
   4 MiB, at about 100 s of plant time for `opcua` and for `influx` while data moves
   (finding 7 of
-  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241787008). Before
-  the trim, the rig then lost each status, so a check of an absence could pass. The
-  third form of scenario 3 runs past the fill for both kinds, and the third form of
-  scenario 2 for `influx` only: with no device, `opcua` does not fill its ring. On a
-  ring with no trim, the third form of scenario 3 failed for both kinds, and that of
-  scenario 2 for `influx`
+  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241787008). On a ring
+  with no trim, the rig lost each status past the fill, so a check of an absence could
+  pass. The third form of scenario 3 runs past the fill for both kinds, and the third
+  form of scenario 2 for `influx` only: with no device, `opcua` does not fill its ring.
+  On a ring with no trim, the third form of scenario 3 failed for both kinds, and that
+  of scenario 2 for `influx`
   (https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6241900155).
-  `connector::testing::Run` panics on a status frame with a gap, so a status lost for
-  no room or to a trim fails the scenario. #3050 adds them and removes the bound of
-  90 s of plant time (`RING`) and its tests: `laptop.architect-2`,
+  `connector::testing::Run` panics on a status frame with a gap, so a status lost for no
+  room or to a trim fails the scenario. #3050 adds the third forms and the panic, and
+  removes the bound of 90 s of plant time (`RING`) and its tests: `laptop.architect-2`,
   2026-10-17T22:04:56Z, item 8 of
   https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241915192, with the
   deferral OK of `laptop.architect`, 2026-10-17T21:54:10Z:
-  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241806249.
+  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241806249. The checks
+  that the third forms skip, one named span past the fill, and a bound on plant time
+  come in #3100 (`laptop.architect-2`, 2026-10-18T02:25:49Z,
+  https://github.com/synnaxlabs/foundation/pull/3050#issuecomment-6244712313).
 
   1. **Starts.** Within 10 s: Running, no error, 0 restarts, and progress above 0.
   2. **Device absent at start.** No simulator. Within 1 min, the backoff form, an

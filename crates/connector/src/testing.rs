@@ -249,7 +249,8 @@ impl Run {
     /// # Panics
     ///
     /// When the kind's check failed, so the connector has no status, the status
-    /// reader ends, or a status frame comes after a gap, so the rig lost a status.
+    /// reader ends, or a status frame has a gap: the rig lost statuses to a trim or
+    /// for no room.
     pub async fn next(&mut self) -> Reading {
         let reader = self.reader.as_mut();
         let reader = reader.expect("a connector whose check failed has no status");
