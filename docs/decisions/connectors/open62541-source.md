@@ -988,9 +988,12 @@
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247943704,
   2026-10-18 08:56 UTC). The session group of the sim server stays the accept-all
   group, and the sim server sets no application URI: 1d opens only anonymous sessions,
-  and no check that a test reaches reads the URI. So a 1d connection checks two groups,
-  not the three of item 1 of 6247742342: OK of `laptop.architect-2`
-  (https://github.com/synnaxlabs/foundation/pull/3167#issuecomment-6248291820). The
-  first PR whose code reads an X509 user token, or has a client check the server URI,
-  sets the session group or the URI in the sim server, with a test that fails without
-  it.
+  and no check that a test reaches refuses on the URI: at each start of a secure
+  server, `verifyServerApplicationUri` logs one warning for each policy, because the
+  default URI of the minimal config does not match the URI of `server.der`. So a 1d
+  connection checks two groups, not the three of item 1 of 6247742342: OK of
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3167#issuecomment-6248291820,
+  2026-10-18 09:33 UTC). The first PR whose code reads an X509 user token, or has a
+  client check the server URI, sets the session group or the URI in the sim server, with
+  a test that fails without it.
