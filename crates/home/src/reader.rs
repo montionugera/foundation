@@ -203,10 +203,10 @@ struct Entry {
 }
 
 impl Entry {
-    /// Whether the index has named state: its records changed, wait for mesh time in
-    /// `waiting`, or are in the buffer, where the end of a hold changes them.
-    fn named(&self, waiting: &hash::Set<Slot>) -> bool {
-        self.parts.held() || self.readers.changed() || waiting.contains(&self.slot)
+    /// Whether the index has named state: its records changed, or are in the buffer,
+    /// where the end of a hold or the restore at mesh time changes them.
+    fn named(&self) -> bool {
+        self.parts.held() || self.readers.changed()
     }
 }
 
@@ -298,7 +298,7 @@ impl Set {
     /// Adds the index at `place` to [`ticked`](Self::ticked) when it has named state.
     fn note(&mut self, place: usize) {
         let entry = &mut self.entries[place];
-        if entry.named(&self.waiting) && !mem::replace(&mut entry.ticked, true) {
+        if entry.named() && !mem::replace(&mut entry.ticked, true) {
             self.ticked.push(place);
         }
     }
@@ -312,10 +312,10 @@ impl Set {
 
     /// Drops each index with no named state from [`ticked`](Self::ticked).
     pub(crate) fn prune(&mut self) {
-        let (entries, waiting) = (&mut self.entries, &self.waiting);
+        let entries = &mut self.entries;
         self.ticked.retain(|&place| {
             let entry = &mut entries[place];
-            entry.ticked = entry.named(waiting);
+            entry.ticked = entry.named();
             entry.ticked
         });
     }

@@ -961,8 +961,9 @@ impl Shard {
     }
 
     /// Appends the records of the named readers of the index at `place` when they
-    /// changed and the node has mesh time `mesh`, and marks them recorded when each
-    /// part appended, then arms the tick for the index at monotonic time `monotonic`.
+    /// changed or its parts hold records of a shed, and the node has mesh time `mesh`,
+    /// and marks them recorded when each part appended, then arms the tick for the
+    /// index at monotonic time `monotonic`.
     /// Call it after each change of the named readers of the index.
     fn record_named(
         &mut self,
@@ -6188,6 +6189,9 @@ mod tests {
                 });
             }
 
+            /// Some tests read the newest parts in the buffer or the tick of the shard:
+            /// a public call shows them only after a restart, which ends the run whose
+            /// state the test checks.
             mod records {
                 use super::*;
 
@@ -7305,9 +7309,9 @@ mod tests {
                         shard.close_writer(w);
                         let blocks = test.fill();
                         shard.shed(Slot::new(0));
-                        drop(blocks);
                         tick(test, shard).await;
                         assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
+                        drop(blocks);
                         open_longest(shard, longest(7)).expect("opens in part 1");
                     };
                     restart(209, before, async |_, shard: &mut Shard| {
