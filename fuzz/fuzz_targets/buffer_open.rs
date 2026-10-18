@@ -55,9 +55,13 @@ use types::time::{Span, Stamp};
 const BLOCK: usize = 4096;
 /// The largest record, in blocks.
 const RECORD_BLOCKS: usize = 4;
-/// Blocks in the area: four of the largest record and the three blocks that each
-/// record leaves free, the least area of a ring.
-const BLOCKS: usize = 4 * RECORD_BLOCKS + 3;
+/// The blocks that each data record leaves free, as `buffer` gives them: two
+/// restart records, a carry record of the largest body, and the blocks less one of
+/// that record that a wrap skips.
+const SPARE_BLOCKS: usize = 2 + 2 * RECORD_BLOCKS - 1;
+/// Blocks in the area: four of the largest record and the spare, the least area of
+/// a ring.
+const BLOCKS: usize = 4 * RECORD_BLOCKS + SPARE_BLOCKS;
 const AREA: u64 = (BLOCKS * BLOCK) as u64;
 /// The first block of the area: the two header blocks come before it.
 const AREA_START: usize = 2;
@@ -372,13 +376,13 @@ impl Room {
     }
 
     /// An append of a record of `blocks` blocks after the last record. It leaves
-    /// three blocks free: for the restart record of the next open, the carry record
-    /// of the commit after it, and the restart record of a later open.
+    /// [`SPARE_BLOCKS`] free, and no excess, which only a buffer that trims keeps.
     fn take(&mut self, blocks: usize) -> Fit {
         let Some(offsets) = &mut self.0 else {
             return Fit::Unknown;
         };
-        match offsets.cost(offsets.end, (blocks * BLOCK) as u128, 3 * BLOCK as u128) {
+        let kept = (SPARE_BLOCKS * BLOCK) as u128;
+        match offsets.cost(offsets.end, (blocks * BLOCK) as u128, kept) {
             Ok(needed) => {
                 offsets.end += needed;
                 offsets.data = offsets.end;
