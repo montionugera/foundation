@@ -35,7 +35,8 @@
   https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241787008), and then
   can lose a status, so a check of an absence can pass. The longest scenario runs 20.2 s
   of plant time (`influx`, the device does not answer), and scenario 2 of `influx` runs
-  19.7 s (box1, at 2026-10-17). A later suite measures its own fill. The trigger is the
+  19.7 s (box1, at 2026-10-17). A later suite measures its own fill. The longest
+  scenario of `modbus` runs 6.1 s (box1, at 2026-10-18). The trigger is the
   merge of #3050, which trims the ring and adds the two tests that fail now
   (https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6241900155). #3050
   removes `RING`, its check in `run`, and the `suite!` tests `fails_past_the_ring` and
@@ -64,10 +65,11 @@
      for `Restart`, the restarts grew.
   4. **Stop.** `Run::stop` gives `Ok` within 5 s while Running, in the backoff form,
      and while the plant connects over a link that delays each packet by 1 h (the
-     plant holds 1 stream before the stop). After it, the plant node holds no open
-     stream and no task of the run (`Run::stop` gives its result once each task of
-     the run ended). The connect form with a link that loses each packet (loss 1)
-     comes back with #3040.
+     stop comes at the first millisecond that the plant holds 1 stream, within 1 s,
+     so it falls inside a connect timeout of 1 s, as `modbus` has). After it, the
+     plant node holds no open stream and no task of the run (`Run::stop` gives its
+     result once each task of the run ended). The connect form with a link that
+     loses each packet (loss 1) comes back with #3040.
   5. **Config.** For each refused config, `Table::check` gives exactly its
      diagnostics, and `Rig::supervise` ends with the same `Error::Config`. For a kind
      whose check gives writes, a write channel that no spec defines gives
