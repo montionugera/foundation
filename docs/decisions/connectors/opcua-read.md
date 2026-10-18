@@ -83,26 +83,32 @@
   https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6159574954, and the
   OPC UA type of an array or a String at 2026-10-15T19:32:35Z:
   https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6200602125).
-  The client checks each answer against `CHUNKS` and its largest message at its final
-  chunk, as a server can interleave the chunks of answers (OPC UA Part 6). It holds
-  at most `READS` times (`CHUNKS` - 1) queued chunks in all (63, about 4 MiB), the
-  intermediate chunks of each answer that it can have in flight, so an interleave of
-  its answers never closes the channel, and the chunks of request ids that it did not
-  send stop at that bound. A chunk past one of these bounds closes the channel,
-  and the read gives `BadSecureChannelClosed`. With `READS` 9, a read of 10 to 16
-  requests takes 2 round trips in place of 1 (`laptop.monitor`, 2026-10-18 03:47 UTC,
-  and `laptop.architect-2`, 2026-10-18T03:48:17Z,
-  https://github.com/synnaxlabs/foundation/pull/3121#issuecomment-6245342591). The
-  copy of open62541 makes these checks (`docs/dependencies.md`, "Local patches").
-  Lost: a refusal of the chunks of a request id with no call in flight (each read sends
-  the timeout hint 0, so open62541 cancels it only after 2^32 - 1 ms, 49.7 days, and it
+  A server can interleave the chunks of its answers (OPC UA Part 6). The client holds at
+  most `READS` times (`CHUNKS` - 1) queued chunks in all (63, about 4 MiB), the
+  intermediate chunks of each answer that it can have in flight, so an interleave of its
+  answers never closes the channel, and the chunks of request ids that it did not send
+  stop at that bound. At the final chunk of an answer, it checks the chunks of that
+  answer against `CHUNKS` and its largest message, as the release does. A chunk past one
+  of these bounds closes the channel, and the read gives `BadSecureChannelClosed`. With
+  `READS` 9, a read of 10 to 16 requests takes 2 round trips in place of 1
+  (`laptop.monitor`, 2026-10-18 03:47 UTC, and `laptop.architect-2`,
+  2026-10-18T03:48:17Z,
+  https://github.com/synnaxlabs/foundation/pull/3121#issuecomment-6245342591). The copy
+  of open62541 makes these checks (`docs/dependencies.md`, "Local patches"). Lost: a
+  refusal of the chunks of a request id with no call in flight (each read sends the
+  timeout hint 0, so open62541 cancels it only after 2^32 - 1 ms, 49.7 days, and it
   stays in flight until its answer); the bound of one message on the queue of all ids
-  (an interleave of two answers that each fit closes the channel); the bound of
-  `CHUNKS` squared (an interleave of more than 9 answers that each fit closes the
-  channel) (#3097); a check of the request id of each intermediate chunk (a walk of
-  up to 62 queued chunks at each chunk, past the cost limit of P1, where an answer
-  past a bound now closes the channel at its final chunk or at the queue bound). The
-  check at the final chunk alone: RULING. The
+  (an interleave of two answers that each fit closes the channel); the bound of `CHUNKS`
+  squared (an interleave of more than 9 answers that each fit closes the channel)
+  (#3097); the checks of `CHUNKS` and of the largest message for each request id at each
+  intermediate chunk, which walk up to 62 queued chunks at each chunk when 9 answers
+  interleave (310 to 328 ns a chunk of 64 KiB on box2, past the P1 limit of about 193
+  ns), while such an answer still ends at its final chunk, at its abort, or at the queue
+  bound; a count and a length for each request id, which give the copy more state for a
+  check that only a server outside the rules reaches. The check at the final chunk
+  alone: `laptop.architect-2`, 2026-10-18T04:51:10Z,
+  https://github.com/synnaxlabs/foundation/pull/3121#issuecomment-6245820725, which
+  supersedes the per-id checks of 6245316650. The
   person, through `laptop.monitor` (kind (a)/(d)), 2026-10-18T03:47:06Z,
   https://github.com/synnaxlabs/foundation/pull/3121#issuecomment-6245333593: "A
   server that follows the rules must never lose its channel through our client. The
