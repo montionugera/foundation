@@ -178,7 +178,7 @@
   `ops.import-budget` and one that ends `Limit` gives `ops.import-limit`, so no import
   adds part of a match in silence. The fix of `ops.import-limit` is "Narrow the match,
   or pick at most 500 points", and of `ops.import-budget` "Narrow the start or the
-  match, or pick fewer points", since a walk of points and a match both give each. A
+  match, or pick fewer points" (`laptop.architect-2`, 2026-10-18T07:24:23Z: https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247107080), since a walk of points and a match both give each. A
   picked point that the kind cannot read or write gives `ops.unreadable-point`, one
   diagnostic for each, with its reason; a match leaves each out and counts it. Then
   `config::import::add`, then the new text by `FrontEnd::update` of the file. The reply
@@ -199,7 +199,7 @@
   holds each channel with a `fill` in any of its blocks. The text output is one line for
   the file and the count, one for each channel as `<name> <path> <type>`, then one line
   for the index, each fill, each unnamed point, and each count that is not 0. `TABLE`
-  holds `import` with `read_only: false` and `destructive: false`. Each code has one
+  holds `import` with `read_only: false` and `destructive: true`: its write replaces the file of the connector block, as the `out` of `plan` does (OPS OUTPUT), so a client that asks the person before a destructive tool asks for `import` too. Supersedes the `destructive: false` of item 11 of https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074 (`laptop.architect-2`, 2026-10-18T07:24:23Z: https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247107080). Each code has one
   fix. The `instructions` of the MCP `initialize` result is the agent guide: `browse`,
   `import`, a value for each `fill`, `plan` shown to the person, and `apply` only when
   the person agrees, and `status`. The steps: `laptop.architect-2`, 2026-10-18T07:08:05Z

@@ -392,7 +392,7 @@
   with `isError` and the text `{"errors": [...]}`, while an unknown tool and a malformed
   request or argument stay a JSON-RPC error. Each operation of `foundation --help` but
   `start` and `mcp` is a tool, with the output schema of its `--json`. `version`,
-  `docs`, `status`, and `browse` have `readOnlyHint`; `plan` and `apply` have
+  `docs`, `status`, and `browse` have `readOnlyHint`; `plan`, `apply`, and `import` (IMPORT OP) have
   `destructiveHint`, since the `out` of `plan` replaces a file that is there, so a
   client that asks the person before a destructive tool asks for `plan` too. `foundation
   mcp` reaches its node at the first tool call that needs it, keeps that session, and
