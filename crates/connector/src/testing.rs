@@ -3,7 +3,7 @@
 //! `connector` and of the kinds.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::future::poll_fn;
 use std::path::Path;
@@ -220,6 +220,7 @@ impl Rig {
             ended,
             end,
             reader,
+            pending: VecDeque::new(),
             clock: self.clock.clone(),
         }
     }
@@ -385,6 +386,8 @@ pub struct Run {
     end: Rc<Cell<Option<Result<(), Error>>>>,
     /// `None` when the kind's check failed, so the connector has no status.
     reader: Option<Reader>,
+    /// The statuses of the last frame that [`Self::next`] did not give yet.
+    pending: VecDeque<Reading>,
     clock: Clock,
 }
 
@@ -407,23 +410,32 @@ impl Run {
         ended.then_some(end)
     }
 
-    /// Waits for the next status frame of the connector. The reader stays open after
-    /// the run ends, so bound a wait that can outlive the run with [`Self::until`].
+    /// Waits for the next status of the connector, oldest first: a frame that holds
+    /// more than one status gives each in turn. The reader stays open after the run
+    /// ends, so bound a wait that can outlive the run with [`Self::until`].
     ///
     /// # Panics
     ///
     /// When the kind's check failed, so the connector has no status, or the status
     /// reader ends.
     pub async fn next(&mut self) -> Reading {
-        let reader = self.reader.as_mut();
-        let reader = reader.expect("a connector whose check failed has no status");
-        let received = reader.next().await;
-        let received = received.unwrap_or_else(|end| panic!("the status ends: {end}"));
-        let reading = Reading::of(&received);
-        reading.expect("invariant: each status frame holds the whole status")
+        loop {
+            if let Some(reading) = self.pending.pop_front() {
+                return reading;
+            }
+            let reader = self.reader.as_mut();
+            let reader = reader.expect("a connector whose check failed has no status");
+            let received = reader.next().await;
+            let received =
+                received.unwrap_or_else(|end| panic!("the status ends: {end}"));
+            let readings = Reading::each(&received);
+            self.pending = readings
+                .expect("invariant: each status frame holds the whole status")
+                .into();
+        }
     }
 
-    /// Waits for the first status frame for which `done` is true, and gives it.
+    /// Waits for the first status for which `done` is true, and gives it.
     ///
     /// # Panics
     ///

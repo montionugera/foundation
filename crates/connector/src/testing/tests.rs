@@ -11,6 +11,7 @@ use env::clock::Clock;
 use hub::reader::{Mode, Reader};
 use types::authority::Authority;
 use types::channel;
+use types::frame::{Form, Label, Path};
 use types::name::{Name, Selector};
 use types::time::Span;
 
@@ -91,6 +92,25 @@ impl Kind for Refuses {
     }
 }
 
+/// A kind whose check passes and whose run ends with `Ok` at once.
+struct Ends;
+
+impl Kind for Ends {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels::default())
+    }
+
+    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+        std::future::ready(Ok(()))
+    }
+}
+
 fn refused() -> Diagnostic {
     Diagnostic::new(REFUSED, None, "refused".into(), "Fix it".into())
 }
@@ -117,6 +137,50 @@ async fn status_of(rig: &Rig, connector: &str, mode: Mode) -> Reader {
         hold: Span::ZERO,
     };
     rig.hub().reader(config).await.expect("the reader opens")
+}
+
+/// Writes one frame to the status channels of `connector` on the hub of `rig`, with
+/// one sample time for each `(state, restarts)` of `statuses`, and no error.
+async fn write_statuses(rig: &Rig, connector: &str, statuses: &[(u64, u64)]) {
+    let channels = ["time", "state", "class", "restarts"];
+    let channels = channels.map(|last| name(&format!("{connector}.status.{last}")));
+    let mut writer = rig.writer(name("plant.test"), channels.to_vec()).await;
+    let start = u64::try_from(writer.now().nanos()).expect("a stamp after 1970");
+    let columns: [Vec<u64>; 4] = [
+        (0..)
+            .map(|i| start + i * 1_000)
+            .take(statuses.len())
+            .collect(),
+        statuses.iter().map(|&(state, _)| state).collect(),
+        vec![0; statuses.len()],
+        statuses.iter().map(|&(_, restarts)| restarts).collect(),
+    ];
+    let (entries, set) = (writer.entries().to_vec(), Arc::clone(writer.set()));
+    let bytes: Vec<(usize, Vec<u8>)> = entries
+        .iter()
+        .zip(columns)
+        .map(|(&entry, column)| {
+            let width = set.entries()[entry]
+                .data_type
+                .width()
+                .expect("a fixed width");
+            let sample = |value: u64| value.to_le_bytes()[..width].to_vec();
+            (entry, column.into_iter().flat_map(sample).collect())
+        })
+        .collect();
+    let mut series: Vec<_> =
+        bytes.iter().map(|(at, bytes)| (*at, bytes.len())).collect();
+    series.sort_unstable();
+    let mut draft = writer.draft(Form::Raw, &series).expect("a draft");
+    for (entry, bytes) in &bytes {
+        let series = draft.series_mut(*entry).expect("a series of the draft");
+        series.copy_from_slice(bytes);
+    }
+    let count = u32::try_from(statuses.len()).expect("few");
+    draft.set_count(set.entries()[entries[0]].group, count);
+    writer
+        .write(Label::Path(Path::Live), draft)
+        .expect("the write goes");
 }
 
 /// Asserts that the hub of `rig` defines no channel `channel`.
@@ -657,6 +721,24 @@ fn a_drop_of_a_run_cancels_the_connector() {
             })
             .await;
             assert!(in_time, "the connector stops within 10 s of the drop");
+        },
+    );
+}
+
+#[test]
+fn next_gives_each_status_of_a_frame_oldest_first() {
+    on_rig(
+        || Table::new().with("ends", Ends),
+        |rig, clock| async move {
+            let config = Document::default();
+            let mut run = rig.supervise("ends", name("plant.ends"), config).await;
+            run.until(TEN, |reading| reading.state == State::Stopped)
+                .await;
+            clock.sleep(Span::SECOND).await;
+            write_statuses(&rig, "plant.ends", &[(1, 5), (0, 6)]).await;
+            let (first, second) = (run.next().await, run.next().await);
+            let got = [first, second].map(|reading| (reading.state, reading.restarts));
+            assert_eq!(got, [(State::Restarting, 5), (State::Running, 6)]);
         },
     );
 }
