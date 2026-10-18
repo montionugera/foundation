@@ -661,8 +661,9 @@ mod tests {
 
     use super::*;
 
-    /// The length of a path that the fake host refuses as given, as Linux does.
-    const MOST: usize = 4096;
+    /// The length of a path that the fake host refuses as given. It is far under the
+    /// 4096 of Linux, so that the tests of the bound stay short under Miri.
+    const MOST: usize = 64;
 
     /// One file, at any path but one under `/none`, where each other name is a
     /// directory, other than a name that ends in `.hcl`, which is a file, and a path
@@ -1142,7 +1143,7 @@ mod tests {
         let calls = Rc::clone(&one.1);
         let paths = Paths::new(one).within(&["/".into()], &[]).unwrap();
         let mut path = String::from("/none/deep");
-        for _ in 0..1000 {
+        for _ in 0..25 {
             path.push_str("/a");
         }
         calls.set(0);
