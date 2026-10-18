@@ -856,16 +856,18 @@
   `pem_password_cb` in the declarations of the output of `cc -E`, and fails on each name
   of one in the copy other than in a call that gives a callback of `PASSWORDS` at its
   place (#3017, #3027). It reads the readers from the declarations of one `cc -E` pass
-  of each `openssl/*.h` of aws-lc together, with the flags of aws-lc and none of the
-  copy, so no file or header of the copy changes the set, and a pass that fails fails
-  the check. It checks the calls in a `cc -E` pass of each file with the flags of its
-  build, so it reads the unit that compiles. It refuses each header under `openssl/`
-  that a file of the copy includes from outside the include directories of aws-lc, when
-  it is a system header or aws-lc has a header of the same name, so no header hides one
-  of aws-lc. A header of the copy with a name that aws-lc does not have passes, such as
-  its own `openssl/securitypolicy_common.h`. For a header under `openssl/`, this
-  replaces "So the check refuses no system header" of the decision of 2026-10-08 above.
-  In aws-lc-sys 0.45.0, the readers are the PEM readers of `openssl/pem.h` and
+  of each header under `openssl/` of aws-lc together, with the flags of aws-lc and none
+  of the copy, so no file or header of the copy changes the set, and a pass that fails
+  fails the check. It checks the calls in a `cc -E` pass of each file with the flags of
+  its build, so it reads the unit that compiles. It refuses each header that the unit
+  enters, by any name, under `openssl/` of a system directory other than an include
+  directory of aws-lc. A header of the copy under `openssl/` passes, such as its own
+  `openssl/securitypolicy_common.h`. The readers come from aws-lc alone, and the check
+  reads the calls of the unit that compiles. When a header of the copy hides one of
+  aws-lc, a call of a reader keeps the name of the reader, or it has no prefix, so
+  `FUNCTION_SYMBOLS` must list it. For a header under `openssl/`, this replaces "So
+  the check refuses no system header" of the decision of 2026-10-08 above. In
+  aws-lc-sys 0.45.0, the readers are the PEM readers of `openssl/pem.h` and
   `SSL_CTX_set_default_passwd_cb` of `openssl/ssl.h`, which is in neither `AWS_LC` nor
   `AWS_LC_KEYS`, so the check refuses each call of it. It compiles each file with
   `-Werror=implicit-function-declaration`, as GCC 14 does by default, and with
@@ -883,12 +885,17 @@
   2026-10-17 18:26 UTC;
   https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6238944949, 2026-10-17
   18:51 UTC; https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6241016919,
-  2026-10-17 21:03 UTC). The pass of each `openssl/*.h`: OK of `laptop.architect-2`
+  2026-10-17 21:03 UTC). The pass of each header under `openssl/`: OK of
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6241360552,
   2026-10-17 21:27 UTC). The `openssl/` header sentences: approved by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6242174637,
-  2026-10-17 22:22 UTC).
+  2026-10-17 22:22 UTC). The `openssl/` rules of round 1: decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244284643,
+  2026-10-18 01:34 UTC). They supersede the two `openssl/` header sentences of
+  6242174637.
   `OMITTED` in `cargo xtask open62541` is the closed list of the release files that the
   library compiles and the copy leaves out, each with its reason: the file stores,
   `create_certificate.c`, and each policy file other than `Basic256Sha256`,
