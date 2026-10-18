@@ -52,8 +52,8 @@ pub(super) async fn serve(
     };
     start(state, sender, &writer, names).await?;
     drop(decoded);
-    let stored = relay(state, writer, receiver, sender).await?;
-    stored.finish(state, &session.transport, sender).await
+    let replies = relay(state, writer, receiver, sender).await?;
+    replies.finish(state, &session.transport, sender).await
 }
 
 /// Reads, verifies, and decodes the open, and holds its body in the budget until then.
@@ -152,23 +152,24 @@ async fn relay(
     mut writer: Writer,
     receiver: &mut Receiver,
     sender: &mut Sender,
-) -> Result<Stored, Error> {
+) -> Result<Replies, Error> {
     let mut frames = Frames::new(Arc::clone(writer.set()));
-    let mut stored = Stored::default();
+    let mut replies = Replies::default();
     let mut stamped: Option<Stamp> = None;
     let mut reply = None;
     loop {
         let step = match frames.due().map_err(Error::Frame)? {
             Due::Message => {
-                let Some(message) = stored.race(state, sender, receiver.recv()).await?
+                let Some(message) =
+                    replies.race(state, sender, receiver.recv()).await?
                 else {
                     frames.finish()?;
-                    return Ok(stored);
+                    return Ok(replies);
                 };
                 frames.decode(&message)?
             }
             Due::Body(rest) => {
-                match stored.race(state, sender, receiver.recv_into(rest)).await {
+                match replies.race(state, sender, receiver.recv_into(rest)).await {
                     Ok(Some(len)) => frames.received(len)?,
                     Ok(None) => {
                         frames.finish()?;
@@ -177,7 +178,7 @@ async fn relay(
                     // The message stays queued, and its decode gives its error.
                     Err(Error::Stream(transport::Error::TooLarge { .. })) => {
                         let message =
-                            stored.race(state, sender, receiver.recv()).await?;
+                            replies.race(state, sender, receiver.recv()).await?;
                         let message =
                             message.expect("invariant: the message is queued");
                         frames.decode(&message)?
@@ -186,11 +187,11 @@ async fn relay(
                 }
             }
             Due::Draft { layout, form } => {
-                let block = alloc(state, Outcome::LEN_MAX)?;
+                let pending = replies.head(state)?;
                 let drafted = layout.draft(state.borrow().home.pool(), form);
                 match drafted {
                     Ok(draft) => {
-                        reply = Some(block);
+                        reply = Some(pending);
                         frames.draft(draft)
                     }
                     Err(error) => {
@@ -200,9 +201,9 @@ async fn relay(
                             block::Error::Exhausted { .. }
                             | block::Error::Refused { .. } => Refusal::Full,
                         };
-                        let refused = Outcome::Refused(refusal);
-                        stored.counted(state, refused);
-                        send(sender, block, Reply::Outcome(refused)).await?;
+                        let outcome = Outcome::Refused(refusal);
+                        let (block, reply) = replies.outcome(state, pending, outcome);
+                        send(sender, block, reply).await?;
                         Step::More
                     }
                 }
@@ -211,12 +212,12 @@ async fn relay(
         let Step::Frame { draft, time } = step else {
             continue;
         };
-        let block = reply
+        let pending = reply
             .take()
             .expect("invariant: a draft comes with its block");
         let outcome = write(&mut writer, draft, time, &mut stamped)?;
-        stored.counted(state, outcome);
-        send(sender, block, Reply::Outcome(outcome)).await?;
+        let (block, reply) = replies.outcome(state, pending, outcome);
+        send(sender, block, reply).await?;
     }
 }
 
@@ -304,11 +305,12 @@ fn outcome(written: Result<&[::home::Outcome], Failure>) -> Result<Outcome, Erro
     })
 }
 
-/// The commits of the frames that a write took, and their `Stored` replies.
+/// The replies of a write: the outcome of each frame, and the `Stored` of each commit
+/// of the frames that it took.
 #[derive(Default)]
-struct Stored {
-    /// The count of frames of the stream that got an outcome.
-    counted: u64,
+struct Replies {
+    /// The count of frames of the stream whose head came.
+    heads: u64,
     /// The count of frames through the last one taken since the call of the commit in
     /// `due`.
     taken: Option<u64>,
@@ -319,14 +321,38 @@ struct Stored {
     unsent: Option<u64>,
 }
 
-impl Stored {
-    /// Counts the next frame of the stream, whose outcome is `outcome`.
-    fn counted(&mut self, state: &RefCell<State>, outcome: Outcome) {
-        self.counted += 1;
+/// The block of the outcome of a frame whose head came, and the count of that frame.
+struct Pending {
+    frame: u64,
+    block: Unique,
+}
+
+impl Replies {
+    /// Counts the frame whose head came, and gives the block for its outcome.
+    fn head(&mut self, state: &RefCell<State>) -> Result<Pending, Error> {
+        self.heads += 1;
+        let block = alloc(state, Outcome::LEN_MAX)?;
+        Ok(Pending {
+            frame: self.heads,
+            block,
+        })
+    }
+
+    /// Gives the block of `pending` and the reply of `outcome`, labeled with its frame.
+    /// A taken frame is counted for the next commit, which this calls when none is due.
+    /// Sync, so the relay's future holds no nested one.
+    fn outcome(
+        &mut self,
+        state: &RefCell<State>,
+        pending: Pending,
+        outcome: Outcome,
+    ) -> (Unique, Reply) {
+        let Pending { frame, block } = pending;
         if let Outcome::Taken { .. } = outcome {
-            self.taken = Some(self.counted);
+            self.taken = Some(frame);
             self.call(state);
         }
+        (block, Reply::Outcome { frame, outcome })
     }
 
     /// Calls a commit for the taken frames when none is due.
