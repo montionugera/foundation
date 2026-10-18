@@ -67,8 +67,14 @@
   voter runs the check of apply on its applied state at the stamp, before it gives the
   join: `region::State::check`, the one function that apply also calls, never a copy. So
   a join that its state refuses never gets into the log, which grows on every node until
-  #253, and the joining node gets the exact refusal. A voter whose state lags can refuse
-  a valid request; the node then tries again or tries another voter of its ticket.
+  #253, and the joining node gets the exact refusal. The check takes the card, then the
+  ticket and the admission, then the fit of the member. So a peer with no good admission
+  learns only that its card or its admission is forged, or that no ticket of the key
+  that it sent is recorded, never a key or a name that the region holds
+  (`laptop.architect`, 2026-10-11T08:12:48Z:
+  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6107014728). A voter
+  whose state lags can refuse a valid request; the node then tries again or tries
+  another voter of its ticket.
   Decided by `laptop.architect` (2026-10-07T13:11:29Z), ruling 3 of
   https://github.com/synnaxlabs/foundation/pull/1390#issuecomment-6038661706. After a
   stop, `stamp` gives the cause first and draws no entropy, because a stamp after a stop

@@ -322,10 +322,10 @@ impl State {
     }
 
     // The checked card of `join` and its names from `fits`, when the region admits
-    // it.
+    // it. The ticket checks come before `fits`, so a refusal names a key or a name of
+    // the region only to a peer with a good admission.
     fn admitted(&self, join: &Join) -> Result<(card::Signed, Vec<String>), Refused> {
         let card = join.card.clone().check().map_err(Refused::Forged)?;
-        let names = self.fits(&card, &join.status)?;
         let record =
             self.tickets
                 .get(&join.ticket.to_bytes())
@@ -335,6 +335,7 @@ impl State {
         record
             .check(&card, &join.admission, join.at)
             .map_err(Refused::Ticket)?;
+        let names = self.fits(&card, &join.status)?;
         Ok((card, names))
     }
 
@@ -685,9 +686,9 @@ mod tests {
 
     use super::*;
     use crate::common::{
-        EPHEMERAL, EXPIRY, create_members, digest, home, index, join, key as node,
-        member, name, options, private, public, signed, spec, status, ticket,
-        ticket_change, unchecked, with_status,
+        EPHEMERAL, EXPIRY, create_members, digest, home, index, join, join_with,
+        key as node, member, name, options, private, public, signed, spec, status,
+        ticket, ticket_change, unchecked, with_status,
     };
 
     const FOUNDING: Digest = Digest([1; 32]);
@@ -1349,19 +1350,18 @@ mod tests {
         assert_eq!(apply_join(&mut state, join(8, 3, "plant")), Ok(false));
     }
 
-    // A ticket's prefix is under the region, so only a founding member can be outside
-    // it; a join outside the region fails here before the ticket's scope.
+    // A ticket's prefix is under the region, so a join outside the region fails the
+    // ticket's scope, and only a founding member gets `Unfit::Outside`.
     #[test]
     fn a_join_outside_the_region_is_refused() {
         let mut state = state();
         let before = state.clone();
         assert_eq!(
             apply_join(&mut state, join(7, 3, "plants.edge")),
-            Err(Unfit::Outside {
+            Err(Refused::Ticket(ticket::Refused::Scope {
                 name: name("plants.edge"),
-                region: name("plant").into()
-            }
-            .into())
+                prefix: name("plant.edge"),
+            }))
         );
         assert_eq!(state, before);
     }
@@ -1534,31 +1534,64 @@ mod tests {
         );
     }
 
-    // Each join fails more than one check, and the refusal names the first.
+    // Each join fails more than one check, and the refusal names the first. Ticket 9
+    // is not recorded, so a peer with no good admission learns no key or name of the
+    // region.
     #[test]
     fn a_join_refusal_names_the_first_check_that_fails() {
-        let mut state = state();
-        let mut forged = join(7, 1, "plant.@a");
+        let mut state = open_state();
+        let mut forged = join(9, 3, "plant.node1");
         forged.card.signature[0] ^= 1;
+        let mut unsigned = join(7, 3, "plant.node2");
+        unsigned.admission[0] ^= 1;
         let mut outside = join(7, 1, "plants.edge.a");
         outside.status = status([(long_status(256 - 14), index(9))]);
-        let mut long = join(7, 1, "plant.edge.a");
+        let expired = join_with(&signed(1, "plant.edge.a"), 7, EXPIRY, status([]));
+        let mut reserved = join(8, 3, "plant.@a");
+        reserved.status = status([(long_status(256 - 9), index(9))]);
+        let mut long = join(8, 3, "plant.edge.a");
         long.status =
             status([(long_status(256 - 13), index(9)), (name("t.@a"), index(10))]);
         let cases = [
-            (forged, Refused::Forged(card::Forged { node: node(1) })),
+            (forged, Refused::Forged(card::Forged { node: node(3) })),
             (
-                join(7, 1, "plant.@a"),
-                Unfit::Reserved {
-                    name: name("plant.@a"),
-                }
-                .into(),
+                join(9, 1, "plant.node1"),
+                Refused::Unknown {
+                    public_key: public(9),
+                },
+            ),
+            (
+                join(9, 3, "plant.Node2"),
+                Refused::Unknown {
+                    public_key: public(9),
+                },
+            ),
+            (
+                unsigned,
+                Refused::Ticket(ticket::Refused::Forged {
+                    node: node(3),
+                    public_key: public(7),
+                }),
             ),
             (
                 outside,
-                Unfit::Outside {
+                Refused::Ticket(ticket::Refused::Scope {
                     name: name("plants.edge.a"),
-                    region: name("plant").into(),
+                    prefix: name("plant.edge"),
+                }),
+            ),
+            (
+                expired,
+                Refused::Ticket(ticket::Refused::Expired {
+                    public_key: public(7),
+                    expiry: EXPIRY,
+                    at: EXPIRY,
+                }),
+            ),
+            (
+                reserved,
+                Unfit::Reserved {
+                    name: name("plant.@a"),
                 }
                 .into(),
             ),
@@ -1571,11 +1604,11 @@ mod tests {
                 .into(),
             ),
             (
-                join(8, 1, "plant.edge.a"),
+                join(8, 1, "plant.node2"),
                 Unfit::Duplicate { key: node(1) }.into(),
             ),
             (
-                with_status(join(7, 3, "plant.node2"), &[("disk", 9), ("x", 9)]),
+                with_status(join(8, 3, "plant.node2"), &[("disk", 9), ("x", 9)]),
                 Unfit::Taken {
                     name: name("plant.node2"),
                     key: node(2),
@@ -1592,6 +1625,17 @@ mod tests {
             assert_eq!(apply_join(&mut state, join), Err(refused));
             assert_eq!(state, before);
         }
+        assert_eq!(
+            apply_join(&mut state, join(7, 3, "plant.edge.a")),
+            Ok(false)
+        );
+        let used = Refused::Ticket(ticket::Refused::Used {
+            public_key: public(7),
+        });
+        assert_eq!(
+            apply_join(&mut state, join(7, 1, "plant.edge.a")),
+            Err(used)
+        );
     }
 
     #[test]

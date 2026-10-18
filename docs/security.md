@@ -182,8 +182,10 @@ state on `main`.
   change at apply: the card's signature, a name and status channel names that are not
   reserved, under the region, not too long, and not held by a member, a key that is not
   yet a member, status keys that no member holds, and the ticket's admission, scope,
-  uses, and expiry. A status holds at most 64 entries, so decode refuses more, and
-  checks no signature. So a forged card or a body that does not decode in a committed
+  uses, and expiry. The ticket checks come before the member checks, so a join refusal
+  names a key or a name of the region only to a peer with a good admission (MEMBER
+  RECORD). A status holds at most 64 entries, so decode refuses more, and checks no
+  signature. So a forged card or a body that does not decode in a committed
   entry is a refused change, not a stopped group. The proposing voter and the join
   answer are not built (#336).
 - `apply` signs the plan hash, and every node checks every change record (BQ12). So
