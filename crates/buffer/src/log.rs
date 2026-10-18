@@ -1651,12 +1651,19 @@ impl Items {
     /// Each item from the number `from`, or from the front item when it is past, with
     /// its number and the offset of its record, oldest first.
     fn since(&self, from: u64) -> impl Iterator<Item = (u64, u64, Held)> + '_ {
-        self.records(from).flat_map(|group| {
-            let offset = group.offset;
-            (group.number..)
-                .zip(group.holders)
-                .map(move |(number, holder)| (number, offset, holder.held()))
-        })
+        let mut start = from.max(self.base);
+        let first = self
+            .records
+            .partition_point(|&(_, end)| end.next() <= start);
+        let skip = self.index(start);
+        let numbers = self.records.range(first..).flat_map(move |&(offset, end)| {
+            let numbers = start..end.next();
+            start = end.next();
+            numbers.map(move |number| (number, offset))
+        });
+        numbers
+            .zip(self.holders.range(skip..))
+            .map(|((number, offset), &holder)| (number, offset, holder.held()))
     }
 
     /// The index in `holders` of the item numbered `number`, at or after the front.
