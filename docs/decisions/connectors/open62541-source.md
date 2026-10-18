@@ -862,13 +862,18 @@
   any file each function of aws-lc in `AWS_LC`, which reads no clock, file, network,
   randomness, or process state, by its name after the prefix. `AWS_LC_KEYS` keys each
   other call of aws-lc by its file and function, with its reason: each call that draws
-  (TLS RANDOMNESS). No key reads the clock: the validity check of a certificate reads
-  the event loop of its group (a local patch), so the check refuses
-  `X509_cmp_current_time`. `AWS_LC_INPUTS` lists the functions of aws-lc that read the
-  clock, and a test fails when no test of `connector-opcua` names the function of each
-  of their keys. With no password callback,
-  a PEM reader of aws-lc reads a password from the console: it opens `/dev/tty`, or
-  prints a prompt on stderr and reads stdin, and sets signal handlers. So each PEM read
+  (TLS RANDOMNESS), and `ASN1_TIME_to_tm`, which reads the clock only on a NULL time,
+  which the copy never gives. The validity check of a certificate reads the event loop
+  of its group (a local patch), so no key calls `X509_cmp_current_time`
+  (`laptop.architect-2`, 2026-10-17 06:46 UTC,
+  https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6230838999, item 1;
+  the loop as an input of the constructor, 2026-10-18 05:55 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3144#issuecomment-6246301508).
+  `AWS_LC_INPUTS` lists the functions of aws-lc that read the clock, so the error of a
+  new call of one asks for its reason, and a test fails when no test of
+  `connector-opcua` names the function of each of their keys. With no password
+  callback, a PEM reader of aws-lc reads a password from the console: it opens
+  `/dev/tty`, or prints a prompt on stderr and reads stdin, and sets signal handlers. So each PEM read
   of the copy gives a callback of `PASSWORDS`: `UA_OpenSSL_refusePassword`, which
   refuses each encrypted PEM, or `privateKeyPasswordCallback`, which gives the password
   of its caller and refuses one that does not fit in the buffer of aws-lc. Each refusal
@@ -960,7 +965,10 @@
   policy in each mode, and the replay test of TLS RANDOMNESS: OK of
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6246201281,
-  2026-10-18 05:41 UTC). Both merge before PR 2, and 1d merges after 1c. The plan of 1d,
-  with the sites of the shim that set the loop of each group, goes on #2934 before its
-  code. The test of `leaf.der` at `notAfter` is the test of item 1 of 6230838999 that
-  moves the clock past `notAfter`.
+  2026-10-18 05:41 UTC). Both merge before PR 2, and 1d merges after 1c. The plan of 1d
+  goes on #2934 before its code. The loop is an input of
+  `UA_CertificateGroup_Memorystore`, which refuses NULL, not a member of
+  `UA_CertificateGroup` that its owner sets: OK of `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3144#issuecomment-6246301508,
+  2026-10-18 05:55 UTC). The test of `leaf.der` at `notAfter` is the test of item 1 of
+  6230838999 that moves the clock past `notAfter`.
