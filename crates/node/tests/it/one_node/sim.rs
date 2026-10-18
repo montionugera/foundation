@@ -119,8 +119,8 @@ impl Opcua {
             let net = os::net();
             let read = clock.clone();
             let now = move || wall(zero, read.now());
-            let until = token.wait();
-            serve(clock, now, net, listener, &mut rng, &variables, until).await;
+            let served = serve(clock, now, net, listener, &mut rng, &variables, token);
+            served.await.expect("the listener does not fail");
         });
         self.server = Some(server);
         address

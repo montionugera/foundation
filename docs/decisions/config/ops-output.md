@@ -151,10 +151,10 @@
   supersedes the order of the example in item 4. The field `key` is by
   `laptop.architect-2` (2026-10-12T18:47:07Z,
   https://github.com/synnaxlabs/foundation/pull/2466#issuecomment-6130500446).
-  A remote program runs `plan`, `apply`, and `status` (STATUS OPERATION) on a node
-  through `ops::serve`. The request form is private to `ops`: one line of JSON with one
-  operation and its input, a newline, then the bytes of a plan file as they are. `plan`
-  sends the path and the text of each file:
+  A remote program runs `plan`, `apply`, `status` (STATUS OPERATION), and `browse` on
+  a node through `ops::serve`. The request form is private to `ops`: one line of JSON
+  with one operation and its input, a newline, then the bytes of a plan file as they
+  are. `plan` sends the path and the text of each file:
   `{"plan":{"files":[{"path":"site.hcl","text":"..."}]}}`, with no byte after the
   newline. `apply` sends `{"apply":{}}` and then only the plan. The command line checks
   the path and fills `Applied::file`, so the node sees no path and gives the apply
@@ -164,16 +164,23 @@
   has (2 for a `Config` or a `Plan` error), not always 1. Three codes are new, each with
   status 1. A body that is not this form is `ops.bad-request`, with the cause in the
   message and the fix ``Use a `foundation` program of the same version as the node``. So
-  is each operation other than `plan`, `apply`, and `status`, with the cause ``the
-  operation `<name>` does not run on a node``. A subject with no grant gets `ops.denied`
-  (SERVE ACCESS). A reply of more than `wire::hub::client::BODY_BYTES_MAX` bytes is
-  `ops.large-reply`, with the bound in the message and the fix `Plan and apply the
-  change in smaller steps`, since `hub::serve::Reply::send` panics on such a body
-  (`laptop.architect`, 2026-10-08T11:24:14Z,
+  is each operation other than `plan`, `apply`, `status`, and `browse`, with the
+  cause ``the operation `<name>` does not run on a node``. A subject with no grant gets
+  `ops.denied` (SERVE ACCESS). An output of more than
+  `wire::hub::client::BODY_BYTES_MAX` bytes is `ops.large-reply`, with the bound in the
+  message and the fix `Plan and apply the change in smaller steps`, since
+  `hub::serve::Reply::send` panics on such a body (`laptop.architect`,
+  2026-10-08T11:24:14Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6058791545). The
-  bound holds for the reply of an error too. `serve` stops writing a reply at the bound.
-  The places of the problems of one file share its path (`laptop.architect`,
-  2026-10-12T20:11:00Z,
+  bound holds for the reply of an error too. An error reply over the bound keeps the
+  first problems that fit, in order, then `ops.more-problems`, ``<n> more problems do
+  not fit in one reply``, fix `Fix the problems above, then run it again`, with no place
+  and no notes, and the status of the error. When not even the first problem fits with
+  it, the reply is `ops.large-reply`, or `ops.large-browse` for `browse` (below)
+  (`laptop.architect-2`, 2026-10-17T23:33:12Z,
+  https://github.com/synnaxlabs/foundation/pull/3079#issuecomment-6243126104). `serve`
+  stops writing a reply at the bound. The places of the problems of one file share its
+  path (`laptop.architect`, 2026-10-12T20:11:00Z,
   https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6131805444;
   `laptop.architect-2`, 2026-10-12T20:14:30Z,
   https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6131856346). `serve`
@@ -193,18 +200,18 @@
   supersedes the `ops.unknown-operation` clause of the `serve` doc of that plan. STATUS
   OPERATION adds `status` to `plan` and `apply` there. Lost: one JSON value with the
   plan file as a list of numbers, which is four times the bytes.
-  `plan`, `apply`, and `status` (STATUS OPERATION) run on the node of `foundation-data`,
-  which `node::client::reach` reaches. The command line gives four codes of its own.
-  `ops.read`: `no file is at <path>`, `<path> is a directory, not a file`, or `the text
-  of <path> is not UTF-8`, status 2, and `the read of <path> failed with OS error
-  <code>`, status 1, each with the fix `Fix the cause in the message, then run the
-  command again`. `ops.large-request`: `the request has more than <n> bytes, the most
-  that a request holds`, for config files whose bytes together pass that bound at their
-  read, or for the encoded request, status 2, fix `Make the config files smaller`; the
-  check comes before the reach. `ops.write`: `the directory of the plan file <path> is
-  not there` or `the write of the plan file <path> failed with OS error <code>`, status
-  1, fix ``Give `--out`, or `out` of the MCP tool, a path in a directory that can be
-  written``. `ops.bad-reply`:
+  `plan`, `apply`, `status` (STATUS OPERATION), and `browse` run on the node of
+  `foundation-data`, which `node::client::reach` reaches. The command line gives four
+  codes of its own. `ops.read`: `no file is at <path>`, `<path> is a directory, not a
+  file`, or `the text of <path> is not UTF-8`, status 2, and `the read of <path> failed
+  with OS error <code>`, status 1, each with the fix `Fix the cause in the message, then
+  run the command again`. `ops.large-request`: `the request has more than <n> bytes, the
+  most that a request holds`, for config files whose bytes together pass that bound at
+  their read, or for the encoded request, status 2, fix `Make the config files smaller`;
+  the check comes before the reach. `ops.write`: `the directory of the plan file <path>
+  is not there` or `the write of the plan file <path> failed with OS error <code>`,
+  status 1, fix ``Give `--out`, or `out` of the MCP tool, a path in a directory that can
+  be written``. `ops.bad-reply`:
   `the reply of the node is no reply: <why>`, status 1, fix ``Use a `foundation` program
   of the same version as the node``. A failure to reach the node, or of its request, has
   status 1 and one of the codes `node.not-running`, `node.unreadable`, `node.admin-key`,
@@ -240,9 +247,9 @@
   supersedes the bound on each file of that plan. `laptop.architect-2` approved the
   messages, statuses, and fixes of the four `ops` codes (2026-10-13T03:48:32Z, item 4 of
   https://github.com/synnaxlabs/foundation/pull/2533#issuecomment-6137791971).
-  `plan`, `apply`, and `status` take `--data <dir>`, the data directory of the node, by
-  default `foundation-data`, as `start` does (#2526). This supersedes "run on the node
-  of `foundation-data`" above and in the doc of `cli` of
+  `plan`, `apply`, `status`, and `browse` take `--data <dir>`, the data directory of
+  the node, by default `foundation-data`, as `start` does (#2526). This supersedes "run
+  on the node of `foundation-data`" above and in the doc of `cli` of
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. In each
   command of a fix below, `{dir}` follows `--data=` as one word of a POSIX shell: in
   single quotes, with each `'` as `'"'"'`, when it is empty or holds a character other
@@ -369,15 +376,15 @@
   deprecates; and `ops.outside` with no folders, which shows the agent no way out.
   Amended (2026-10-16T04:45:05Z, #2526): one MCP server talks to one node, picked at
   start with `foundation mcp --data <dir>`, and a tool call cannot pick another. A
-  failed `plan`, `apply`, or `status` is a tool result with `isError` and the text
-  `{"errors": [...]}`, while an unknown tool and a malformed request or argument stay a
-  JSON-RPC error. Each operation of `foundation --help` but `start` and `mcp` is a tool,
-  with the output schema of its `--json`. `version`, `docs`, and `status` have
-  `readOnlyHint`; `plan` and `apply` have `destructiveHint`, since the `out` of `plan`
-  replaces a file that is there, so a client that asks the person before a destructive
-  tool asks for `plan` too. `foundation mcp` reaches its node at the first tool call
-  that needs it, keeps that session, and reaches again only at the call after a
-  failure of a reach or a request. `node` reads standard input on an I/O thread of
+  failed `plan`, `apply`, `status`, or `browse` is a tool result with `isError` and the
+  text `{"errors": [...]}`, while an unknown tool and a malformed request or argument
+  stay a JSON-RPC error. Each operation of `foundation --help` but `start` and `mcp` is
+  a tool, with the output schema of its `--json`. `version`, `docs`, `status`, and
+  `browse` have `readOnlyHint`; `plan` and `apply` have `destructiveHint`, since the
+  `out` of `plan` replaces a file that is there, so a client that asks the person before
+  a destructive tool asks for `plan` too. `foundation mcp` reaches its node at the first
+  tool call that needs it, keeps that session, and reaches again only at the call after
+  a failure of a reach or a request. `node` reads standard input on an I/O thread of
   `os` and gives `ops::cli` an async source of lines, so the shard that serves runs
   while it waits for a line, and a kept session sends its keep-alive.
   Decided by the person, "Yeah that's fine" (2026-10-16T04:45:05Z, relayed by
@@ -396,3 +403,69 @@
   call after a stop or a restart of the node can give `node.no-reply` with nothing sent
   to the node (the deferral, `laptop.architect-2`, 2026-10-16T22:15:00Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6225726721).
+  `browse` (BROWSE) is `foundation browse <connector> <file>... [--start <path>]
+  [--match <pattern> | --cursor <cursor>] [--values]`, and the MCP tool `browse` takes
+  `connector`, `files`, `start`, `match`, `cursor`, and `values`. The request is
+  `{"browse":{...}}` with these fields, and `files` as `plan` sends them. The node
+  checks, in this order, and stops at the first failure: the files read; the connector
+  is a name (`ops.argument`); `config::connector` finds its block; the subject has
+  `apply`, then `admin`, on the name (`ops.denied`, SERVE ACCESS; `laptop.architect-2`,
+  2026-10-17T23:06:39Z,
+  https://github.com/synnaxlabs/foundation/pull/3079#issuecomment-6242836290), the
+  access with which a remote `plan` reads the sources (SECRET SOURCES); the `node` of
+  the block is this node; the start is a path; the match is a pattern; and `match` and
+  `cursor` are not both given (`ops.argument`, ``a browse takes `match` or `cursor`, not
+  both``; the command line refuses it first, with status 2). Then it runs
+  `Supervisor::browse`. Five codes are new. `ops.browse-node`, status 2: ``the connector
+  `<c>` runs on the node `<n>`, not on this node `<this>` ``, fix ``Run it with `--data`
+  of node `<n>` ``. `ops.bad-start` and `ops.bad-pattern`, status 2: ``the start
+  `<text>` is not a path: <cause>`` and ``the match `<text>` is not a pattern:
+  <cause>``, with the cause of `connector::browse::Malformed`, and the fixes of
+  `codes.golden`. `ops.large-browse`, status 1, takes the place of `ops.large-reply` for
+  a reply of a browse, its output, or an error whose first problem does not fit: ``the
+  reply of the browse has more than <n> bytes, the most that a reply holds``, fix
+  ``Narrow the start or the match, or browse without `values` ``, since a smaller plan
+  does not make it fit. Each problem of an error of `Supervisor::browse` has status 1
+  and starts with ``the browse of the connector `<c>` of kind `<k>` failed: ``. A
+  diagnostic of `Config` keeps its code, fix, place, and notes. `Device` and `Retry`
+  give `ops.browse`, fix `Fix the cause in the message, then browse again`. The output
+  is `{"entries":[...],"end":<end>}`. An entry has `path`, `tag`, and `shape`: `folder`,
+  `point`, or `unreadable` with `reason`. A point also has `type` (as a `type` attribute
+  takes it, such as `f64`), `unit`, `unit_code`, and `access` (`read`, `write`, or
+  `read-write`), each `null` when the device cannot know it. Only with `values` a point
+  has `value`, `null` when the device gave none or gave a value that is not one scalar,
+  such as that of a `string` or an array point: a bool and each integer of 32 bits or
+  fewer are a JSON bool and number, an `i64` or `u64` its decimal text such as
+  `"9007199254740993"`, a finite float a number, a float that is not finite `"NaN"`,
+  `"Infinity"`, or `"-Infinity"`, a stamp RFC 3339 text in UTC with nine fraction
+  digits, a span its text such as `"250us"`, and a UUID its hyphenated text. The text
+  form uses the same texts. `end` is `"done"`, `{"next":"<cursor>"}`, `"limit"`, or
+  `"budget"`. The text gives one line for each entry: `<path>/` for a folder, `<path>
+  <type> <unit> <access>` and then the value with `values` for a point, and `<path>
+  unreadable: <reason>`. A fact that the device cannot know is `?`, so each line keeps
+  its columns, and the unit is its text, else its code. Then one end line: `more:
+  --cursor <cursor>`, `More than 500 points match, the most for one browse; narrow the
+  pattern or the start`, or `The browse stopped at its budget, so more may match; narrow
+  the pattern or the start`. `done` adds no line, and a browse with no entries gives
+  `The browse found no entries.` The text of `budget` names no count, since `DEPTH` and
+  a later budget of compared bytes also end a walk with it. The plan is by
+  `laptop.integrator-2` (2026-10-17T05:11:19Z,
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6230008460),
+  approved by `laptop.architect-2` (2026-10-17T05:14:44Z,
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6230042870), whose
+  items 2 and 3 replace the one `unit` field and the budget text of the plan, and whose
+  last item gives `?`. The type is the text of `types::sample::Type`, which a `type`
+  attribute takes, not the `float64` of the plan, so a browse output goes into a config
+  as it is (kind (f), sent to `laptop.monitor` with `ops.large-browse` at
+  2026-10-17T22:57:51Z,
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6242684265; it goes
+  ahead unless the person objects). Lost: one `unit` field, which drops the code when
+  the device gives a text, so an agent cannot tell which it got. `laptop.monitor`
+  accepted kinds (e) and (f) with two conditions on (e), which follow the proto3 JSON
+  mapping: an `i64` or `u64` is text, since a JSON number past 2^53 loses digits in
+  JavaScript and in many JSON tools with no error, and a float that is not finite is
+  `"NaN"`, `"Infinity"`, or `"-Infinity"`, not `"inf"` or `"-inf"`, since JavaScript
+  `Number("inf")` gives NaN (as `laptop.architect-2` records, 2026-10-17T22:24:28Z,
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6242201049). One
+  function of `ops` maps a value to JSON, so each later output with values takes this
+  rule.

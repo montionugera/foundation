@@ -149,6 +149,11 @@ impl<const SKIP: bool> Assembly<SKIP> {
         }
     }
 
+    /// The bytes that [`Assembly::reserved`] holds for the ends of `places` places.
+    pub(super) const fn bytes(places: usize) -> usize {
+        places.saturating_mul(size_of::<(usize, usize)>())
+    }
+
     /// Makes room for one end per place, so no frame allocates.
     pub(super) fn reserved(set: Arc<KeySet>) -> Self {
         Self {

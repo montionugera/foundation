@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
+use connector::browse::Malformed;
 use document::Source;
 use serde_json::{Map, Value, json};
 
-use crate::error::{Action, Among, Error, On, Unread, Unwritten};
+use crate::error::{Action, Among, Error, On, Problem, Sources, Unread, Unwritten};
 use crate::operation::{self, Response, TABLE};
 use crate::{FrontEnd, FrontEnds};
 use crate::{front_end, plan};
@@ -602,6 +603,7 @@ fn every() -> Vec<Error> {
             on: On::Spec,
         },
         Error::LargeReply,
+        Error::LargeBrowse,
         Error::ChannelRead {
             connector: "site.a".parse().expect("a name"),
             message: String::new(),
@@ -653,6 +655,25 @@ fn every() -> Vec<Error> {
             path: PathBuf::from("/work/foundation-data"),
             error: env::paths::Error::NotFound,
         },
+        Error::browse(
+            &"plant".parse().expect("a name"),
+            &"opcua".parse().expect("a name"),
+            connector::kind::Error::Device("lost".into()),
+            &Sources::default(),
+        ),
+        Error::BrowseNode {
+            connector: "plant".parse().expect("a name"),
+            node: "edge".parse().expect("a name"),
+            this: "core".parse().expect("a name"),
+        },
+        Error::BadStart {
+            text: String::new(),
+            cause: Malformed::Empty,
+        },
+        Error::BadPattern {
+            text: String::new(),
+            cause: Malformed::Escape,
+        },
     ]
 }
 
@@ -676,6 +697,7 @@ fn error_codes_and_fixes_match_the_golden_file() {
             | Error::Request { .. }
             | Error::Denied { .. }
             | Error::LargeReply
+            | Error::LargeBrowse
             | Error::ChannelRead { .. }
             | Error::Read { .. }
             | Error::Write { .. }
@@ -689,6 +711,10 @@ fn error_codes_and_fixes_match_the_golden_file() {
             | Error::WideFolder { .. }
             | Error::Folder { .. }
             | Error::Data { .. }
+            | Error::Browse { .. }
+            | Error::BrowseNode { .. }
+            | Error::BadStart { .. }
+            | Error::BadPattern { .. }
             | Error::Config(_)
             | Error::Node(_)
             | Error::Remote { .. } => {}
@@ -697,6 +723,7 @@ fn error_codes_and_fixes_match_the_golden_file() {
     let mut lines: Vec<_> = every
         .iter()
         .flat_map(|error| error.problems().into_owned())
+        .chain([Problem::more(0)])
         .map(|problem| format!("{}\t{}\n", problem.code, problem.fix))
         .collect();
     let front_ends = FrontEnds::new(

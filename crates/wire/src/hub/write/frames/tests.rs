@@ -94,6 +94,14 @@ fn check(frame: &types::frame::Frame, body: &[u8]) {
     assert_eq!(frame.series(2), None);
 }
 
+/// The bytes of the ends of each place: an entry and an end, each a `usize`.
+#[test]
+fn holds_two_usizes_for_each_place() {
+    let place = 2 * size_of::<usize>();
+    let bytes = [0, 1, 3].map(Frames::bytes);
+    assert_eq!(bytes, [0, place, 3 * place]);
+}
+
 #[test]
 fn builds_a_frame_from_a_whole_body_message() {
     let pool = create_pool();

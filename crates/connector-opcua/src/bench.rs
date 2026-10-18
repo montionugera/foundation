@@ -1,8 +1,8 @@
-//! Runs the event loop of open62541 alone, and a connection manager with a server and
-//! clients on it, for benchmarks and allocation tests. [`client`] runs a server with
-//! clients that each have their own manager. [`kind`] writes the frames of the `opcua`
-//! kind with no server. [`value`] decodes the values of a read. Not part of the
-//! contract of the crate.
+//! Runs the event loop of open62541 alone, its logger, and a connection manager with a
+//! server and clients on it, for benchmarks and allocation tests. [`client`] runs a
+//! server with clients that each have their own manager. [`kind`] writes the frames of
+//! the `opcua` kind with no server. [`value`] decodes the values of a read. Not part of
+//! the contract of the crate.
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
@@ -11,7 +11,7 @@ pub mod kind;
 pub mod value;
 
 use std::cell::Cell;
-use std::ffi::{CString, c_void};
+use std::ffi::{CStr, CString, c_void};
 use std::future::{Future as _, poll_fn};
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::net::{IpAddr, SocketAddr};
@@ -55,7 +55,8 @@ impl Client {
     /// says.
     #[must_use]
     pub fn new(clock: Clock, rng: &mut Rng, timers: usize) -> Self {
-        let events = Loop::new(event::Time::monotonic(clock), rng);
+        let events =
+            Loop::new(event::Time::monotonic(clock), tracing::Span::none(), rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let raw = unsafe { crate::client::unconnected(events.raw()) };
         let mut client = Self { raw, events };
@@ -112,6 +113,40 @@ impl Drop for Client {
     fn drop(&mut self) {
         // SAFETY: the client lives, and its loop outlives it.
         unsafe { ffi::UA_Client_delete(self.raw.as_ptr()) };
+    }
+}
+
+/// An event loop of open62541 whose logger writes each line as an event with a
+/// parent span, as the loop of a connection does.
+pub struct Log {
+    events: Loop,
+}
+
+impl Log {
+    /// Makes a loop on `clock` and `rng` whose lines have the parent `span`.
+    ///
+    /// # Aborts
+    ///
+    /// When open62541 cannot allocate the loop, as [`alloc::exhausted`] says.
+    #[must_use]
+    pub fn new(clock: Clock, rng: &mut Rng, span: tracing::Span) -> Self {
+        Self {
+            events: Loop::new(event::Time::monotonic(clock), span, rng),
+        }
+    }
+
+    /// Logs `text` as a warning of the category `client` through the logger of
+    /// open62541. Past 100 warnings in a window of 1 s of the clock, it only counts
+    /// it.
+    pub fn warn(&self, text: &CStr) {
+        // SAFETY: the loop lives, and `text` ends in a NUL.
+        unsafe { ffi::test::shim_log_warning(self.events.raw(), text.as_ptr()) };
+    }
+}
+
+impl std::fmt::Debug for Log {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Log").finish_non_exhaustive()
     }
 }
 
@@ -454,7 +489,7 @@ mod tests {
     use sim::{Sim, node};
     use types::time::Span;
 
-    use super::{Client, Manager};
+    use super::{Client, Log, Manager};
     use crate::client::Nodes;
     use crate::ffi;
     use crate::node::{Key, Node};
@@ -912,5 +947,28 @@ mod tests {
             format!("{client:?}"),
             "Client { next: Some(Monotonic(3601000000000)), .. }"
         );
+    }
+
+    #[test]
+    fn a_warning_goes_to_target_open62541_under_the_span_of_the_log() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let (capture, dispatch) = connector::testing::Capture::new("open62541");
+        tracing::dispatcher::with_default(&dispatch, || {
+            let span = tracing::error_span!("connector", connector = "press");
+            let log = Log::new(node.clock(), &mut node.entropy().rng(), span);
+            log.warn(c"hot");
+        });
+        let line = r#"WARN hot connector="press" category="client""#;
+        assert_eq!(capture.lines(), [line]);
+    }
+
+    #[test]
+    fn the_debug_of_a_log_gives_no_field() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let span = tracing::Span::none();
+        let log = Log::new(node.clock(), &mut node.entropy().rng(), span);
+        assert_eq!(format!("{log:?}"), "Log { .. }");
     }
 }
