@@ -1414,8 +1414,8 @@
   open: a `..` calls `up` on that directory, which must give the key of the step that
   the walk came from. When it does not, a program moved a directory of the path during
   the walk, and the walk starts again from its first name. Each start again follows the
-  links of the path again, with `LINKS` (40) links less one for each start, so past 40
-  starts the walk gives `Driver::looped`. A start again that fails gives its error,
+  links of the path again, with all `LINKS` (40) links, and past 40 starts the walk
+  gives `Driver::looped`. A start again that fails gives its error,
   which is no error of a step. The free handle walks the same way in `Paths::resolve`
   and `Paths::home`, so on macOS they take 40 links where the host takes 32, and a `..`
   after a move follows the walk, not the host; its `read`, `write`, and `make_dir` go to

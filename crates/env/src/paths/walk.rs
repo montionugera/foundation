@@ -11,6 +11,10 @@ use types::hash;
 use super::dir::{self, Entry};
 use super::{Driver, Error, Key, LINKS, names_directory};
 
+/// The most times that the walk of one path starts again after a program moves a
+/// directory of the path.
+pub(super) const STARTS: usize = 40;
+
 /// A name that the walk reached. Its resolved path is [`path`].
 #[derive(Clone, Debug)]
 pub(super) struct Step {
@@ -215,12 +219,8 @@ impl Walker<'_> {
                     Ok(false) => Ok(()),
                     Err(e) => Err(e),
                 },
-                // A start that fails has no step, so its error is not one of the end.
                 Name::Up => match self.up() {
-                    Ok(true) => {
-                        self.begin()?;
-                        Ok(())
-                    }
+                    Ok(true) => self.again()?,
                     Ok(false) => Ok(()),
                     Err(e) => Err(e),
                 },
@@ -353,8 +353,7 @@ impl Walker<'_> {
     }
 
     /// Takes `..`. `Ok(true)` when the host gives a directory other than the step
-    /// above: a program moved a directory of the path during the walk, so the walk
-    /// must start again, with its links less one for each start.
+    /// above: a program moved a directory of the path during the walk.
     fn up(&mut self) -> Result<bool, Error> {
         // A step that fails `..` is still one that the walk would leave.
         self.steps[self.at].back = true;
@@ -370,11 +369,20 @@ impl Walker<'_> {
             self.enter(up, Some(above));
             return Ok(false);
         }
-        self.starts += 1;
-        self.links = LINKS
-            .checked_sub(self.starts)
-            .ok_or_else(|| self.driver.looped())?;
         Ok(true)
+    }
+
+    /// Starts the walk again with [`LINKS`] links. `Ok(Err)` with the error of
+    /// [`Driver::looped`] past [`STARTS`] starts. `Err` when the start fails, which
+    /// leaves no step, so its error is not one of the end.
+    fn again(&mut self) -> Result<Result<(), Error>, Error> {
+        if self.starts == STARTS {
+            return Ok(Err(self.driver.looped()));
+        }
+        self.starts += 1;
+        self.links = LINKS;
+        self.begin()?;
+        Ok(Ok(()))
     }
 
     /// Makes step `index` the step of the walk, with `dir` open at it.

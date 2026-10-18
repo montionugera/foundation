@@ -132,9 +132,8 @@ impl Paths {
     /// # Errors
     ///
     /// [`Error::NotFound`] when `path` is empty or a directory on the way is not there,
-    /// the error of [`Driver::looped`] past [`LINKS`] symbolic links less one for each
-    /// time that a move of a directory of the path during the walk starts it again, or
-    /// past [`LINKS`] such starts, else
+    /// the error of [`Driver::looped`] past [`LINKS`] symbolic links, or past 40 times
+    /// that a move of a directory of the path during the walk starts it again, else
     /// [`Error::Io`], also for a `.`, a `..`, or an end in `/` after a file, and for a
     /// `path` longer than the host takes. Each name goes to the host as one call on
     /// the directory that holds it, so a resolved path has no bound on its length.
@@ -625,9 +624,8 @@ pub trait Driver: Debug {
     fn looped(&self) -> Error;
 }
 
-/// The most symbolic links that the walk of one path goes through, as on Linux, and
-/// the most times that it starts again after a program moves a directory of the path.
-/// A host can take fewer links.
+/// The most symbolic links that the walk of one path goes through, as on Linux. A
+/// host can take fewer.
 pub const LINKS: usize = 40;
 
 /// Whether `path` is empty or ends in a separator, `.`, or `..`. By its text, such a
@@ -1223,7 +1221,7 @@ mod tests {
         calls.set(0);
         let looped = paths.resolve(Path::new("/work/moved/.."));
         assert_eq!(looped, Err(Error::Io { code: 40 }));
-        assert_eq!(calls.get(), 4 * (LINKS + 1));
+        assert_eq!(calls.get(), 4 * (walk::STARTS + 1));
     }
 
     #[test]
@@ -1235,9 +1233,9 @@ mod tests {
     }
 
     #[test]
-    fn a_walk_that_starts_again_follows_the_links_of_its_path_again() {
+    fn a_walk_that_starts_again_follows_all_the_links_of_its_path_again() {
         let paths = Paths::new(One::default());
-        let path = Path::new("/work/c20/moved/../a");
+        let path = Path::new("/work/c40/moved/../a");
         assert_eq!(paths.resolve(path), Ok(PathBuf::from("/work/c0/a")));
         paths.write(Path::new("/a"), b"moved").unwrap();
         assert_eq!(paths.resolve(path), Ok(PathBuf::from("/work/c0/a")));
