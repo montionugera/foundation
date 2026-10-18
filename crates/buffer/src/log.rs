@@ -959,13 +959,13 @@ impl Logs {
     /// them.
     pub(crate) fn carry(&mut self, reach: u64, room: usize, carried: &mut Carried) {
         carried.clear();
+        carried.from = self.scanned;
         let mut walk = carry::count(room).saturating_mul(FILL);
         let mut stop = None;
         for record in self.items.records(self.scanned) {
-            let empty = carried.is_empty();
             if record.offset >= reach {
                 let walked = walk.checked_sub(record.holders.len());
-                let Some(left) = walked.filter(|_| !empty) else {
+                let Some(left) = walked.filter(|_| !carried.is_empty()) else {
                     stop = Some(record.number);
                     break;
                 };
@@ -976,9 +976,6 @@ impl Logs {
                 carried.truncate(taken);
                 stop = Some(number);
                 break;
-            }
-            if empty && !carried.is_empty() {
-                carried.first = number;
             }
         }
         self.scanned = stop.unwrap_or_else(|| self.items.added());
@@ -1014,7 +1011,7 @@ impl Logs {
     /// Clears `carried`.
     pub(crate) fn dropped(&mut self, carried: &mut Carried) {
         if !carried.is_empty() {
-            self.scanned = carried.first;
+            self.scanned = carried.from;
         }
         carried.clear();
     }
@@ -1436,9 +1433,8 @@ pub(crate) struct Carried {
     copies: Vec<(u32, Mark)>,
     /// The bytes of the copies.
     bytes: usize,
-    /// The number of the first item of the record of the first holder, from where
-    /// the call that filled it walked.
-    first: u64,
+    /// The number from which the call that filled it walked.
+    from: u64,
 }
 
 /// How much a [`Carried`] holds: its tails, its copies, and their bytes.
@@ -1567,6 +1563,12 @@ fn nth_mut<T>(items: &mut [T], at: u32) -> &mut T {
 /// item that holds a copy.
 const COPIED: u64 = 1 << 63;
 
+/// The end of a record: the number `next`, which is below [`COPIED`], and the
+/// [`COPIED`] bit when `copied` has it.
+fn marked(next: u64, copied: u64) -> u64 {
+    next | copied
+}
+
 /// The holder of each item, grouped by record in ring order. Items are numbered from
 /// 0 in the order that they came, and no number is used twice.
 #[derive(Clone, Debug, Default)]
@@ -1596,9 +1598,9 @@ impl Items {
         };
         match self.records.back_mut() {
             Some((last, end)) if *last == offset => {
-                *end = next | (*end & COPIED) | copied;
+                *end = marked(next, *end & COPIED | copied);
             }
-            _ => self.records.push_back((offset, next | copied)),
+            _ => self.records.push_back((offset, marked(next, copied))),
         }
         self.holders.push_back(holder);
     }
@@ -2906,6 +2908,17 @@ mod tests {
             (offset, copied, holders),
             (8192, false, vec![Held::Tail(3)])
         );
+    }
+
+    /// No node holds `COPIED` items, so only this test tells `<` from `<=` in `push`.
+    #[test]
+    #[should_panic(expected = "invariant: numbers fit")]
+    fn panics_on_an_item_numbered_at_the_copied_bit() {
+        let mut items = Items {
+            base: COPIED - 1,
+            ..Items::default()
+        };
+        items.push(4096, Holder::tail(1));
     }
 
     /// A copy marks only its own record, after or before the tails of the record.
