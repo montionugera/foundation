@@ -72,7 +72,8 @@
   000) entries, also the entries that find the start, where a page with no entries
   counts as one (a server may give a continuation point with no references), then ends
   `Budget`. With `Limit`, `import` gives `ops.match-limit`, "more than `<limit>` points
-  match, the most for one import", with the fix "Narrow the start or the match", not a count (IMPORT OP; `laptop.architect-2`, 2026-10-18T07:39:38Z:
+  match, the most for one import", with the fix "Narrow the start or the match", not a
+  count (IMPORT OP; `laptop.architect-2`, 2026-10-18T07:39:38Z:
   https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247231298), which
   supersedes "narrow the pattern, or import in parts". It browses no folder whose tag
   and pattern state are those of a folder that it holds open, so a loop in a graph such

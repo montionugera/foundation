@@ -180,31 +180,36 @@
   adds part of a match in silence. The fix of `ops.pick-limit` is "Pick at most 500
   points, and import the others in another run", of `ops.pick-budget` "Pick the points
   of fewer folders, and import the others in another run", and of `ops.match-limit` and
-  `ops.match-budget` "Narrow the start or the match". Each form has its own code for the limit and the budget, so each code has one cause and one fix (`laptop.architect-2`, 2026-10-18T07:39:38Z: https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247231298), which supersedes `ops.import-limit` and `ops.import-budget` and their fixes of
-  https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247107080. A picked point that the kind cannot read or
-  write gives `ops.unreadable-point`, one diagnostic for each, with its reason; a match
-  leaves each out and counts it. Then `config::import::add`, then the new text by
-  `FrontEnd::update` of the file. The reply is the JSON line of the output, then the new
-  text, and a reply over the bound of a body gives `ops.large-import`. The CLI and the
-  MCP server write the new text through `Scope`, so the limits of `foundation mcp` hold.
-  They write nothing when it is the text that they sent, and when the file no longer
-  holds the sent text they give `ops.file-changed` and write nothing. On `os`, an import
-  that writes a regular file makes it anew, with mode 0600 and nothing of the old file,
-  so a file that the user opened to a group or to other users is closed to them again
-  after each import. A symbolic link, a device, or a pipe at the path takes the new text
-  in place, with its mode kept, and a crash can leave part of it (ENV SEAMS). Lost: the
-  permission bits of the old file kept on the new one, which open the file to a user
-  that the old file did not when its group changes or when an access control list
-  applies. `--json` and the MCP result are `{file, channels: [{name, path, type}],
-  index, fills: [{name, what}], unnamed: [{path, fix}], present, unreadable}`, with no
-  added blocks: `index` is the added index or `null`, `type` is `null` where the import
-  wrote a `fill`, and `fills` holds each channel with a `fill` in any of its blocks. The
-  text output is one line for the file and the count, one for each channel as `<name>
-  <path> <type>`, then one line for the index, each fill, each unnamed point, and each
-  count that is not 0. `TABLE` holds `import` with `read_only: false` and `destructive:
-  true`: its write replaces the file of the connector block, as the `out` of `plan` does
-  (OPS OUTPUT), so a client that asks the person before a destructive tool asks for
-  `import` too. Supersedes the `destructive: false` of item 11 of
+  `ops.match-budget` "Narrow the start or the match". Each form has its own code for the
+  limit and the budget, so each code has one cause and one fix (`laptop.architect-2`,
+  2026-10-18T07:39:38Z:
+  https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247231298), which
+  supersedes `ops.import-limit` and `ops.import-budget` and their fixes of
+  https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247107080. A picked
+  point that the kind cannot read or write gives `ops.unreadable-point`, one diagnostic
+  for each, with its reason; a match leaves each out and counts it. Then
+  `config::import::add`, then the new text by `FrontEnd::update` of the file. The reply
+  is the JSON line of the output, then the new text, and a reply over the bound of a
+  body gives `ops.large-import`. The CLI and the MCP server write the new text through
+  `Scope`, so the limits of `foundation mcp` hold. They write nothing when it is the
+  text that they sent, and when the file no longer holds the sent text they give
+  `ops.file-changed` and write nothing. On `os`, an import that writes a regular file
+  makes it anew, with mode 0600 and nothing of the old file, so a file that the user
+  opened to a group or to other users is closed to them again after each import. A
+  symbolic link, a device, or a pipe at the path takes the new text in place, with its
+  mode kept, and a crash can leave part of it (ENV SEAMS). Lost: the permission bits of
+  the old file kept on the new one, which open the file to a user that the old file did
+  not when its group changes or when an access control list applies. `--json` and the
+  MCP result are `{file, channels: [{name, path, type}], index, fills: [{name, what}],
+  unnamed: [{path, fix}], present, unreadable}`, with no added blocks: `index` is the
+  added index or `null`, `type` is `null` where the import wrote a `fill`, and `fills`
+  holds each channel with a `fill` in any of its blocks. The text output is one line for
+  the file and the count, one for each channel as `<name> <path> <type>`, then one line
+  for the index, each fill, each unnamed point, and each count that is not 0. `TABLE`
+  holds `import` with `read_only: false` and `destructive: true`: its write replaces the
+  file of the connector block, as the `out` of `plan` does (OPS OUTPUT), so a client
+  that asks the person before a destructive tool asks for `import` too. Supersedes the
+  `destructive: false` of item 11 of
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074
   (`laptop.architect-2`, 2026-10-18T07:24:23Z:
   https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247107080). Each code
