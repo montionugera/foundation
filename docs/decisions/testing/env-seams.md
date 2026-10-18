@@ -1443,11 +1443,11 @@
   one `entry` for each name of the walk", "Each name goes to the host by its resolved
   path, so a name whose resolved path is longer than the host takes fails with `Io`,
   also where the free handle reaches it by a relative path, and a hidden folder with
-  such a path fails `within`", "When the host refuses the last name of the path to the
-  walk, such as for a resolved path longer than the host takes, the limits check that
-  name at its place as a new name, and the call gives the result of the host" (a
+  such a path fails `within`", "such as for a resolved path longer than the host takes"
+  of the sentence "When the host refuses the last name of the path to the walk" (a
   resolved path is no longer refused for its length,
-  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6253541091), "a read
+  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6253541091; a name
+  longer than the host takes still meets that rule), "a read
   1900 names deep takes 150 ms" (it takes 4.4 ms on the same host and build), the costs
   from "Links that a writer of the host puts in a folder can still make a walk slow" to
   "a walk by handles makes each name one call", and the lost design cap-std "(#3094)".
