@@ -510,7 +510,8 @@ const OUTSIDE: &[&str] = if cfg!(target_os = "macos") {
     &[]
 };
 
-/// The symbol of `stdin` in the libc of the target.
+/// The symbol of `stdin` in the libc of the target. Empty on another OS, so the tests
+/// fail there until it has its name.
 const STDIN: &str = if cfg!(target_os = "macos") {
     "__stdinp"
 } else if cfg!(target_os = "linux") {
