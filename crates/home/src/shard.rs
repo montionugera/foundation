@@ -11,7 +11,6 @@ use std::task::{Context, Poll};
 use buffer::{Buffer, Entry};
 use control::Gate;
 use control::lease::Lease;
-use delivery::Reader;
 use types::channel::{self, Slot};
 use types::frame::key_set::KeySet;
 use types::frame::{self, Draft, Frame, Label, Path};
@@ -166,10 +165,6 @@ pub struct Shard {
     /// The gate for the next carry of each index that is not carried: the one that
     /// the open restored, or the one that a shed kept.
     kept: hash::Map<Slot, Gate>,
-    /// The named records of each index in the buffer, by slot, carried or not: a shed
-    /// index whose entries found no block or no room, or that shed with no mesh time,
-    /// keeps them, so that a later carry places each record in the part that holds it.
-    named: hash::Map<Slot, named::Parts>,
     /// When [`advance`](Shard::advance) next restores records, ends holds, and appends
     /// changed records ([`Shard::arm`]).
     tick: Option<Monotonic>,
@@ -320,10 +315,7 @@ impl Shard {
             limits,
         } = config;
         let holders = handoff::newest(&buffer);
-        let (records, named) = named::Parts::newest(&buffer)
-            .into_iter()
-            .map(|(slot, (parts, held))| ((slot, held), (slot, parts)))
-            .unzip();
+        let named = named::Parts::newest(&buffer);
         let now = clock.now().monotonic;
         let grace = Lease::new(GRACE).expect("invariant: the grace is positive");
         let kept = holders
@@ -340,10 +332,9 @@ impl Shard {
             writers: hash::Map::default(),
             next: 0,
             scratch: Scratch::default(),
-            readers: reader::Set::new(records),
+            readers: reader::Set::new(named),
             decoder: stored::Decoder::default(),
             kept,
-            named,
             tick: None,
         }
     }
@@ -411,15 +402,9 @@ impl Shard {
             claims.all(|claim| claim.place != place),
             "a writer is open on the index at {slot:?}"
         );
-        self.readers.shed(place);
-        if let Some(mesh) = self.now() {
-            let head = self.head(place, mesh);
-            let parts = self.named.entry(slot).or_default();
-            parts.append(&self.buffer, &[], head);
-            if !parts.held() {
-                self.named.remove(&slot);
-            }
-        }
+        let head = self.now().map(|mesh| self.head(place, mesh));
+        self.readers
+            .shed(place, head.map(|head| (&self.buffer, head)));
         let last = self.indexes.len() - 1;
         self.places.remove(&slot);
         let gate = self.indexes.swap_remove(place).gate;
@@ -765,30 +750,18 @@ impl Shard {
         let place = self.place(slot);
         let (monotonic, now) = self.clocks().ok_or(reader::Unopened::Unsynced)?;
         self.readers.advance(place, now);
-        let live = self.indexes[place].live_tail();
         // An open that changes the records appends them before it opens, and its reader
         // takes no frame until they commit: a restart before then would lose the frames
         // that it got and did not ack.
-        let records = self.readers.opening(place, &reader, hold, live);
-        let mut recorded_at = None;
-        if let Some(records) = &records {
-            let head = self.head(place, now);
-            let parts = self.named.entry(slot).or_default();
-            let recorded = parts.open(&self.buffer, records, &reader, head);
-            let recorded = recorded.map_err(|named::Full| reader::Unopened::Full {
-                limit: named::LIMIT,
-            })?;
-            recorded_at = Some(recorded.ok_or(reader::Unopened::Unrecorded)?);
-        }
-        let named = Reader::Named { reader, hold };
+        let head = self.head(place, now);
         let opened = self.readers.open_named_complete(
             place,
-            named,
-            live,
+            reader,
+            hold,
             limit_bytes,
             charge,
-            recorded_at,
-        );
+            (&self.buffer, head),
+        )?;
         self.record_named(place, monotonic, Some(now));
         Ok(reader::Opened {
             key: reader::complete::Key {
@@ -996,15 +969,9 @@ impl Shard {
         monotonic: Monotonic,
         mesh: Option<Stamp>,
     ) {
-        if let Some(mesh) = mesh
-            && self.readers.changed(place)
-        {
-            let records = self.readers.records(place);
+        if let Some(mesh) = mesh {
             let head = self.head(place, mesh);
-            let parts = self.named.entry(head.slot).or_default();
-            if parts.append(&self.buffer, &records, head) {
-                self.readers.recorded(place, !records.is_empty());
-            }
+            self.readers.record(place, &self.buffer, head);
         }
         self.arm(place, monotonic, mesh);
     }
@@ -7283,7 +7250,7 @@ mod tests {
                         shard.close_writer(w);
                         shard.shed(Slot::new(0));
                         // The parts of a shed index show only in memory.
-                        assert!(!shard.named.contains_key(&Slot::new(0)));
+                        assert!(!shard.readers.keeps(Slot::new(0)));
                     };
                     restart(204, before, async |_, shard: &mut Shard| {
                         for n in [0, 7] {

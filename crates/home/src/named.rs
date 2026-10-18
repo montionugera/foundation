@@ -341,6 +341,18 @@ impl Parts {
     }
 }
 
+/// Parts that hold `records`, as appends of each part make them, with no buffer.
+#[cfg(test)]
+pub(crate) fn create_parts(records: &[Record]) -> Parts {
+    let mut parts = Parts::default();
+    parts.place(records).expect("room");
+    let listed = Listed::new(records);
+    for (part, _) in parts.changed(&listed) {
+        parts.appended(part, &listed);
+    }
+    parts
+}
+
 /// Records sorted by key, for a lookup by binary search.
 struct Listed<'a>(Vec<&'a Record>);
 
@@ -594,7 +606,7 @@ mod tests {
     /// a shard test cannot set up cheaply. The `shard` tests of `records` pin each
     /// state through `open` and `append`. Only these tests pin the room that `place`
     /// counts for a second record that one call adds, as a shard call adds at most
-    /// one. `shard` checks `held` through its own map, as only memory shows it.
+    /// one. `shard` checks `held` through `reader::Set`, as only memory shows it.
     mod parts {
         use super::*;
 
