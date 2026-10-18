@@ -1542,6 +1542,27 @@ mod tests {
     #[test]
     fn a_join_refusal_names_the_first_check_that_fails() {
         let mut state = open_state();
+        let before = state.clone();
+        for (join, refused) in ticket_checks().into_iter().chain(member_checks()) {
+            assert_eq!(apply_join(&mut state, join), Err(refused));
+            assert_eq!(state, before);
+        }
+        assert_eq!(
+            apply_join(&mut state, join(7, 3, "plant.edge.a")),
+            Ok(false)
+        );
+        let used = Refused::Ticket(ticket::Refused::Used {
+            public_key: public(7),
+        });
+        assert_eq!(
+            apply_join(&mut state, join(7, 1, "plant.edge.a")),
+            Err(used)
+        );
+    }
+
+    // Joins on `open_state` that fail the card or the ticket, and a check of the
+    // member too, with the refusal of the first check that each fails.
+    fn ticket_checks() -> [(Join, Refused); 6] {
         let mut forged = join(9, 3, "plant.node1");
         forged.card.signature[0] ^= 1;
         let mut unsigned = join(7, 3, "plant.node2");
@@ -1549,12 +1570,7 @@ mod tests {
         let mut outside = join(7, 1, "plants.edge.a");
         outside.status = status([(long_status(256 - 14), index(9))]);
         let expired = join_with(&signed(1, "plant.edge.a"), 7, EXPIRY, status([]));
-        let mut reserved = join(8, 3, "plant.@a");
-        reserved.status = status([(long_status(256 - 9), index(9))]);
-        let mut long = join(8, 3, "plant.edge.a");
-        long.status =
-            status([(long_status(256 - 13), index(9)), (name("t.@a"), index(10))]);
-        let cases = [
+        [
             (forged, Refused::Forged(card::Forged { node: node(3) })),
             (
                 join(9, 1, "plant.node1"),
@@ -1590,6 +1606,18 @@ mod tests {
                     at: EXPIRY,
                 }),
             ),
+        ]
+    }
+
+    // Joins on `open_state` with a good admission that fail checks of the member,
+    // with the refusal of the first check that each fails.
+    fn member_checks() -> [(Join, Refused); 5] {
+        let mut reserved = join(8, 3, "plant.@a");
+        reserved.status = status([(long_status(256 - 9), index(9))]);
+        let mut long = join(8, 3, "plant.edge.a");
+        long.status =
+            status([(long_status(256 - 13), index(9)), (name("t.@a"), index(10))]);
+        [
             (
                 reserved,
                 Unfit::Reserved {
@@ -1621,23 +1649,7 @@ mod tests {
                 with_status(join(8, 3, "plant.edge.a"), &[("disk", 9), ("x", 9)]),
                 Unfit::Reused { key: index(9) }.into(),
             ),
-        ];
-        let before = state.clone();
-        for (join, refused) in cases {
-            assert_eq!(apply_join(&mut state, join), Err(refused));
-            assert_eq!(state, before);
-        }
-        assert_eq!(
-            apply_join(&mut state, join(7, 3, "plant.edge.a")),
-            Ok(false)
-        );
-        let used = Refused::Ticket(ticket::Refused::Used {
-            public_key: public(7),
-        });
-        assert_eq!(
-            apply_join(&mut state, join(7, 1, "plant.edge.a")),
-            Err(used)
-        );
+        ]
     }
 
     #[test]
