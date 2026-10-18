@@ -42,14 +42,15 @@
     `- <file> <path in the file> # #<issue>`, or, in a case of "No `#[ignore]`", the
     first line of the doc of the item is `Only <OS>` or `Only <arch>`, or starts with
     either and `:`. `<OS>` names each OS on which the item builds, as for a reason.
-    `<arch>` is the `target_arch` value (`aarch64` or `x86_64`) of each runner of the
-    job `check` on which the item builds, and of no other. The list comes first, so a
+    `<arch>` is the `target_arch` value (`aarch64` or `x86_64`) of each runner on which
+    the item builds, that of `arm.yaml` too, and of no other. The list comes first, so a
     doc covers only each OS that no list item names, and the review checks its claim on
     each of those OSes. A gate covers a test module, a test function, a test in the body
-    of a macro call, and each function of a test or bench target with no harness. `cargo
-    xtask skips` refuses each other gate, and each list item that names no gate. A `cfg`
-    on a statement, and a test that a macro makes from tokens outside its call, are not
-    read.
+    of a macro call or in a brace group of that body, and each function of a test or
+    bench target with no harness. A branch of `cfg_if!` builds where its `cfg` holds and
+    no `cfg` before it in its chain does. `cargo xtask skips` refuses each other gate,
+    and each list item that names no gate. A `cfg` on a statement, and a test that a
+    macro makes from tokens outside its call, are not read.
   - For `/review`, CI does not run an OS for a crate or a test on the list of that OS
     (`laptop.director`,
     https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229528745).
