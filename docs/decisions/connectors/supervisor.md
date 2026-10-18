@@ -160,10 +160,19 @@
   https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6098661378;
   `laptop.architect-2`, 2026-10-10T15:29:59Z:
   https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6099110161). The
-  tests of `connector` and of each kind build that config with
-  `connector::testing::create_config`, behind `sim`, which opens the hub through
-  `hub::testing::open`. It gives no mesh time, since a task gets it from its writer
-  (#2143) (`laptop.architect-2`, 2026-10-09T13:37:08Z:
+  tests of each kind build that config through `connector::testing::Rig`, behind
+  `sim` (`Rig::open`, or `Rig::trusting` for the roots of an `https` connect).
+  `browse_relayed` of `connector-opcua`, whose hub gets its mesh time late, opens it
+  with `hub::testing::open_unsynced` and builds the config by hand, until the rig
+  takes that delay (#3039) (`laptop.architect-2`, 2026-10-18T16:20:05Z:
+  https://github.com/synnaxlabs/foundation/pull/3214#issuecomment-6252209074). The
+  unit tests of `connector` build it with the crate-private `testing::create_config`,
+  which `Rig` also calls, and which opens the hub through `hub::testing::open`, other
+  than the tests of the wait for mesh time (below) and one test with no status
+  channels, which build it by hand (`laptop.architect-2`, 2026-10-18T15:50:43Z:
+  https://github.com/synnaxlabs/foundation/issues/3039#issuecomment-6251910786). It
+  gives no mesh time, since a task gets it from its writer (#2143)
+  (`laptop.architect-2`, 2026-10-09T13:37:08Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6082035824;
   `laptop.architect`, 2026-10-08T17:50:53Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6065807610). After

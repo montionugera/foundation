@@ -9,12 +9,10 @@ use std::task::Poll;
 
 use connector::cancel;
 use connector::kind::{Channels, Context, Error, Kind, Table};
-use connector::supervisor::Supervisor;
-use connector::testing::{create_config, create_secret, create_secrets, create_status};
+use connector::testing::{Rig, create_secret, create_secrets};
 use document::Document;
 use document::diagnostic::Diagnostic;
 use secret::Source;
-use types::channel;
 use types::name::Name;
 use types::time::Span;
 
@@ -205,20 +203,15 @@ fn read_in_a_run(seed: u64) -> Vec<Vec<u8>> {
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("watch", Watch(into));
-        let config = create_config(env, node.net(), kinds).await;
+        let rig = Rig::open(env, node.net(), kinds).await;
         let connector: Name = "plant.watch".parse().unwrap();
-        let status = create_status(&connector, &[], channel::Key::from_u128(1 << 20));
-        config
-            .hub
-            .set_definitions(status.iter().map(|(name, def)| (name, def)));
         let (files, clock) = (node.files(), node.clock());
         tasks.spawn(async move {
             clock.sleep(Span::from_nanos(50_000)).await;
             create_secret(&files, &"plant.token".parse().unwrap(), b"t1").await;
         });
         let (token, document) = (cancel::Token::new(), Document::default());
-        let supervisor = Supervisor::new(config);
-        let opened = supervisor.open("watch", connector, &document, &token);
+        let opened = rig.open_connector("watch", connector, &document, &token);
         opened.await.run().await
     });
     result
