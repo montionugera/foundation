@@ -61,8 +61,8 @@ pub enum Error {
     /// log. That node proposed a card of the same member after its own start and less
     /// than a minute before. Call again after a minute.
     Soon,
-    /// The leader refused a join: a member or a join that is not applied yet holds its
-    /// node key with another public key. The node joins with a new key.
+    /// The leader refused a join: a member or an earlier join of the log holds its node
+    /// key with another public key. The node joins with a new key.
     Contested {
         /// The node key of the join.
         key: node::Key,
@@ -211,8 +211,8 @@ impl fmt::Display for Error {
             ),
             Self::Contested { key } => write!(
                 f,
-                "node key {key} has another public key in a member or in a join that is \
-                 not applied yet"
+                "node key {key} has another public key in a member or in an earlier \
+                 join"
             ),
             Self::Member(refused) => refused.fmt(f),
             Self::WrongKey => {

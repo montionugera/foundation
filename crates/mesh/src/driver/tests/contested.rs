@@ -5,12 +5,17 @@ use super::*;
 
 /// The join of node `id` whose card holds the public key of node 5, which signed it.
 fn twin(id: u8) -> Change {
+    twin_on(id, 7)
+}
+
+/// As [`twin`], on ticket `ticket`.
+fn twin_on(id: u8, ticket: u8) -> Change {
     let card = card::Card {
         public_key: public(5),
         ..common::member(id).card.card().clone()
     };
     let signed = card::Signed::sign(key(id), card, &common::private(5));
-    join_change_with(&signed, 7, Stamp::EPOCH)
+    join_change_with(&signed, ticket, Stamp::EPOCH)
 }
 
 fn contested(id: u8) -> Error {
@@ -27,8 +32,7 @@ fn a_leader_refuses_a_join_whose_key_has_another_public_key_in_its_log() {
         let refused = mesh.propose(twin(4)).await;
         assert_eq!(refused, Err(contested(4)));
         let text = format!(
-            "node key {} has another public key in a member or in a join that is not \
-             applied yet",
+            "node key {} has another public key in a member or in an earlier join",
             key(4)
         );
         assert_eq!(refused.unwrap_err().to_string(), text);
@@ -105,5 +109,61 @@ fn a_repeat_of_a_join_with_a_one_use_ticket_is_refused_as_duplicate() {
         let repeat = mesh.attempt().unwrap().settle(join).await;
         let duplicate = Refused::from(Unfit::Duplicate { key: key(4) });
         assert_eq!(repeat, Ok(Some(Err(duplicate))));
+    });
+}
+
+// Ticket 7 admits one use, which the join of node 3 takes, so apply refuses the twin
+// of node 4. Ticket 8 admits any number.
+async fn refused_twin(node: &sim::node::Node, tasks: &Tasks) -> Mesh {
+    let tickets = [
+        ticket_of(7, "plant", false, LAST),
+        ticket_of(8, "plant", true, LAST),
+    ];
+    let mesh = recorded(node, tasks, &tickets).await;
+    let admitted = mesh.attempt().unwrap().settle(join_change(3)).await;
+    assert_eq!(admitted, Ok(Some(Ok(()))));
+    let refused = mesh.attempt().unwrap().settle(twin(4)).await;
+    let used = Refused::Ticket(ticket::Refused::Used {
+        public_key: public(7),
+    });
+    assert_eq!(refused, Ok(Some(Err(used))));
+    mesh
+}
+
+fn join_of_4() -> Change {
+    join_change_with(&common::member(4).card, 8, Stamp::EPOCH)
+}
+
+#[test]
+fn a_leader_refuses_a_join_whose_key_has_another_public_key_in_a_refused_join() {
+    solo(|node, tasks| async move {
+        let mesh = refused_twin(&node, &tasks).await;
+        assert_eq!(mesh.propose(join_of_4()).await, Err(contested(4)));
+    });
+}
+
+// The replay of the log at start fills the keys of the applied joins again.
+#[test]
+fn a_reopened_leader_refuses_a_join_whose_key_has_another_public_key_in_a_refused_join()
+{
+    solo(|node, tasks| async move {
+        drop(refused_twin(&node, &tasks).await);
+        node.clock().sleep(Span::MILLISECOND).await;
+        let mesh = Mesh::open(config(&node, &tasks, 1, &[1], &[1]).await)
+            .await
+            .unwrap();
+        let mut watch = mesh.watch(INDEX);
+        lead(&mesh, &node.clock(), home_to(1)).await;
+        while watch.next().await != Ok(Some(key(1))) {}
+        assert_eq!(mesh.propose(join_of_4()).await, Err(contested(4)));
+    });
+}
+
+#[test]
+fn a_leader_passes_a_join_whose_key_has_the_public_key_of_a_refused_join() {
+    solo(|node, tasks| async move {
+        let mesh = refused_twin(&node, &tasks).await;
+        let admitted = mesh.attempt().unwrap().settle(twin_on(4, 8)).await;
+        assert_eq!(admitted, Ok(Some(Ok(()))));
     });
 }

@@ -31,7 +31,7 @@ impl Mesh {
     /// - [`Error::NotMember`] when the proposal is a `Card` change of a node that is
     ///   not a member, while this node leads. The stream stops with code 16.
     /// - [`Error::Contested`] when the proposal is a `Join` change whose node key a
-    ///   member or a join that is not applied holds with another public key, while
+    ///   member or an earlier join of the log holds with another public key, while
     ///   this node leads. The stream stops with code 19.
     /// - [`Error::Soon`] when the proposal is a `Card` change of a member, and this
     ///   node leads and proposed another card of that member less than a minute

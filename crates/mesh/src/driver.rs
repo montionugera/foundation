@@ -411,8 +411,8 @@ impl Mesh {
     /// - [`Error::NotMember`] for a `Card` change of a node that is not a member of
     ///   the applied state, while this node leads.
     /// - [`Error::Contested`] for a `Join` change whose node key a member of the
-    ///   applied state, or a join of the log that is not applied, holds with another
-    ///   public key, while this node leads.
+    ///   applied state, or an earlier join of the log, holds with another public key,
+    ///   while this node leads.
     ///
     /// A repeat of a `Card` change that this node proposed in this term, less than
     /// a minute before, gets no new entry, and returns as the first call does.
@@ -531,9 +531,8 @@ impl Mesh {
     ///   leads and proposed another card of that member less than a minute before.
     ///   The group does not see the change.
     /// - [`Error::Contested`] when `change` is a `Join` change whose node key a member
-    ///   of the applied state, or a join of the log that is not applied, holds with
-    ///   another public key, while this node leads. The group does not see the
-    ///   change.
+    ///   of the applied state, or an earlier join of the log, holds with another
+    ///   public key, while this node leads. The group does not see the change.
     pub(crate) async fn answer(
         &self,
         peer: PublicKey,
@@ -777,6 +776,8 @@ struct Group {
     // Each join and configuration entry in the log that `raft` holds and this
     // node has not applied, by index.
     unapplied: BTreeMap<u64, Written>,
+    // The public key of the first applied join of each node key, admitted or refused.
+    joined: BTreeMap<node::Key, PublicKey>,
     // The last entry whose join or configuration entry `sync` took.
     synced: Position,
     // Why the last try of a write of the log found no block, until that write ends.
@@ -811,6 +812,7 @@ impl Group {
             proposals: Vec::new(),
             slots: 0,
             unapplied,
+            joined: BTreeMap::new(),
             synced: Position::default(),
             waits: None,
             fresh: Vec::new(),
@@ -918,7 +920,7 @@ impl Group {
     }
 
     // Refuses the join of `key` under `public_key` while this node leads, when a
-    // member or a join of the log that is not applied holds `key` with another public
+    // member or a join of the log, applied or not, holds `key` with another public
     // key. So with a leader that does not lie, no log holds two such joins.
     fn check_join(&self, key: node::Key, public_key: PublicKey) -> Result<(), Error> {
         if self.raft.role() != raft::Role::Leader {
@@ -927,6 +929,7 @@ impl Group {
         let member = self.state.member(key).map(Member::public_key);
         if member
             .into_iter()
+            .chain(self.joined.get(&key).copied())
             .chain(self.joins(key, u64::MAX))
             .any(|held| held != public_key)
         {
@@ -1025,7 +1028,13 @@ impl Group {
         for Entry { at, data } in committed {
             let applied = match data {
                 Data::Bytes(bytes) => match Change::decode(&bytes) {
-                    Ok(change) => self.apply_change(change),
+                    Ok(change) => {
+                        if let Change::Join(join) = &change {
+                            let card = &join.card;
+                            self.joined.entry(card.key).or_insert(card.card.public_key);
+                        }
+                        self.apply_change(change)
+                    }
                     // Every node of this build judges a body the same way.
                     Err(Malformed::Body(undecoded)) => Err(Refused::Body(undecoded)),
                     Err(Malformed::Unknown(cause)) => {
