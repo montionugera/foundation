@@ -26,7 +26,9 @@ pub struct Config {
     pub dir: PathBuf,
     /// Blocks for the chunks a get gives, for checks of chunks on disk, and for the
     /// put bodies and the reply heads of [`peer::serve`]. Its largest block bounds a
-    /// chunk.
+    /// chunk. A get that `serve` answers holds its chunk and its reply head at once.
+    /// A pool that cannot hold both gives that get [`Error::Pool`], as a pool under
+    /// load does, and `serve` ends the stream with code 0.
     pub pool: Rc<Pool>,
     /// The bytes the store leaves free on the disk. A put that would leave fewer gives
     /// [`Error::Floor`], unless a file of the chunk's length is at its name.

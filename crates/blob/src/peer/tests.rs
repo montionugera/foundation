@@ -508,6 +508,65 @@ fn a_put_of_the_largest_chunk_of_a_pool_of_one_block_gives_stored() {
     );
 }
 
+/// A get of the largest chunk of a pool of one block: the reply head finds no block.
+#[test]
+fn a_get_of_the_largest_chunk_of_a_pool_of_one_block_ends_with_pool() {
+    let create_tight_pool = || create_pool_of(64 + 4096);
+    let max = create_tight_pool().largest();
+    assert_eq!(max, 4096);
+    let (digest, bytes) = chunk(7, max);
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            let store = open_on(&node, create_tight_pool(), 0).await;
+            put(&store, digest, &bytes).await;
+            let exhausted = block::Error::Exhausted {
+                requested: 37,
+                available: 0,
+            };
+            let served = serve(&store, incoming).await;
+            assert_eq!(served, Err(Error::Store(crate::Error::Pool(exhausted))));
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.get(&[digest]).await;
+            assert_eq!(stream.reset().await, reset(0));
+        },
+    );
+}
+
+#[test]
+fn a_get_of_the_largest_chunk_of_a_pool_of_one_block_and_one_head_gives_it() {
+    // One block of the largest size, and one of the smallest for the 37-byte head.
+    let create_tight_pool = || create_pool_of(64 + 4096 + 128);
+    let max = create_tight_pool().largest();
+    assert_eq!(max, 4096);
+    let (digest, bytes) = chunk(7, max);
+    let expected = bytes.clone();
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            let store = open_on(&node, create_tight_pool(), 0).await;
+            put(&store, digest, &bytes).await;
+            assert_eq!(serve(&store, incoming).await, Ok(()));
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.get(&[digest]).await;
+            let len = u32::try_from(max).unwrap();
+            assert_eq!(stream.reply().await, Reply::Chunk { digest, len });
+            let mut got = Vec::new();
+            while got.len() < max {
+                got.extend(stream.recv().await.unwrap().unwrap());
+            }
+            assert!(got == expected, "the bytes of the chunk");
+            stream.finish().await;
+        },
+    );
+}
+
 #[test]
 fn a_put_whose_sync_fails_ends_the_stream_with_code_0_and_no_reply() {
     let (digest, bytes) = chunk(7, 3000);

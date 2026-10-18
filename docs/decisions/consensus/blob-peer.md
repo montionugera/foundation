@@ -8,9 +8,15 @@
   of the block, so no byte is copied, or `Reply::Absent`. A put copies its body into one
   block of the chunk's length and calls `Store::put`, so a put holds one chunk in
   memory, and `Reply::Stored` goes only once the chunk is durable. A get holds the chunk
-  that it sends. `transport` also holds each chunk whole while noq keeps a sent byte of
-  it (STREAM WIRE), so a get can hold more than one chunk. The bound is `transport`'s
-  (#2361; `laptop.architect-2`, 2026-10-11T06:02:25Z,
+  that it sends, and its reply head at once. A pool that cannot hold both gives that
+  get `Error::Pool`, as a pool under load does, and `serve` ends the stream with code 0
+  (`laptop.architect`, 2026-10-18T16:05:19Z:
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6252058410, item
+  1). Lost: a head sent before the read (`transport` still holds the head's block when
+  the read takes the chunk's), and a chunk limit that leaves room for one head (the
+  store would know the head of its caller). `transport` also holds each chunk whole
+  while noq keeps a sent byte of it (STREAM WIRE), so a get can hold more than one
+  chunk. The bound is `transport`'s (#2361; `laptop.architect-2`, 2026-10-11T06:02:25Z,
   https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6106063839): a session
   holds at most `window_bytes` of sent bytes, and `transport` copies a part of at most
   1452 bytes and holds no block for it. So the chunks that `transport` holds for a
