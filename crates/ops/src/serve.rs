@@ -276,7 +276,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
 }
 
 /// A list of `T`, each only from an object.
-fn objects<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+pub(crate) fn objects<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     deserializer: D,
 ) -> Result<Vec<T>, D::Error> {
     let items = Vec::<Object<T>>::deserialize(deserializer)?;

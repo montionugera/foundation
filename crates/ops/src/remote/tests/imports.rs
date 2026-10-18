@@ -229,6 +229,31 @@ fn the_command_line_refuses_a_name_with_no_split_and_a_match_with_points() {
     });
 }
 
+/// A tool call that gives a point as a list, not an object, is a bad argument, and
+/// writes nothing.
+#[test]
+fn mcp_import_refuses_a_point_as_a_list() {
+    solo(|fixture, mesh| async move {
+        let paths = with_plant(&fixture.sim, PLANT);
+        let remote = Remote::new(create_browsing_node(&fixture, mesh));
+        let input = json!({
+            "connector": "plant",
+            "files": ["plant.hcl"],
+            "points": [["Line3/Temperature", "temp"]],
+        });
+        let (run, replies) =
+            remote.mcp(&paths, &[], &[call(1, "import", &input)]).await;
+        assert_eq!(run, Run::Exit(0));
+        let error = &replies[0]["error"];
+        assert_eq!(error["code"], -32602, "{error}");
+        assert_eq!(
+            error["message"],
+            "invalid type: sequence, expected an object"
+        );
+        assert_eq!(plant(&paths), PLANT);
+    });
+}
+
 /// `tools/list` holds `import`, neither read-only nor destructive, with its input, and
 /// a tool call gives the JSON of `foundation import --json`.
 #[test]

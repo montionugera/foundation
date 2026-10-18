@@ -14,7 +14,7 @@ use crate::apply::Applied;
 use crate::error::{Among, Error};
 use crate::remote::{self, Link};
 use crate::scope::Scope;
-use crate::serve::Point;
+use crate::serve::{self, Point};
 use crate::{Failure, Log, Start, browse, import, plan, status};
 
 /// The data directory of a command that names none.
@@ -340,7 +340,7 @@ pub(crate) struct Import {
     #[serde(default)]
     pub(crate) start: Option<String>,
     /// The points to import, in place of `match`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "serve::objects")]
     pub(crate) points: Vec<Point>,
     /// Import each point under the start whose path from it matches, as `browse`
     /// takes the pattern, in place of `points`.
