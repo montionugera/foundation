@@ -190,9 +190,10 @@ impl Client {
     ///
     /// `BadTimeout` when the session is not active after the request timeout of the
     /// client (5 s), `BadConnectionClosed` when the server closes or resets an open
-    /// stream before the session is active, with no new dial after that close, else the
-    /// status of open62541 when it refuses `url` or the connect fails, else the error
-    /// of [`Client::read`] when the read of `MaxNodesPerRead` fails.
+    /// stream before the session is active, with no new dial after that close, the
+    /// status of the error when the client cannot process a message of the server,
+    /// else the status of open62541 when it refuses `url` or the connect fails, else
+    /// the error of [`Client::read`] when the read of `MaxNodesPerRead` fails.
     ///
     /// # Aborts
     ///
@@ -481,7 +482,10 @@ impl Client {
     /// `BadTimeout` when a request has no answer after that timeout, the waits
     /// included. Else the first of: the status of open62541 when it refuses a request,
     /// the status of an answer, or `BadUnexpectedError` when an answer has a value for
-    /// more or fewer nodes than its request.
+    /// more or fewer nodes than its request. A close of the channel while a request is
+    /// in flight gives the status of the error that closed it, `BadConnectionClosed`
+    /// after a close by the client, and `BadSecureChannelClosed` after a close or
+    /// reset of the stream by the server.
     ///
     /// # Panics
     ///

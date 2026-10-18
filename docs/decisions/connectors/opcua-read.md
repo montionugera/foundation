@@ -70,10 +70,14 @@
   client cannot process on an open channel also ends the connect, or the session, with
   no new dial (`laptop.architect-2`, 2026-10-13T19:25:56Z:
   https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6153426912). The
-  connect, and each read in flight, gives the status of that error. A close by the peer
-  still gives the reads in flight `BadSecureChannelClosed`, and the connect
-  `BadConnectionClosed` (`laptop.architect-2`, 2026-10-18T20:52:27Z,
-  https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6255008245).
+  connect, and each read in flight, gives the status of that error. A close by the
+  client, also at the timeout of the connect, gives the reads in flight
+  `BadConnectionClosed`. A close or reset of the stream by the server still gives them
+  `BadSecureChannelClosed`, and the connect `BadConnectionClosed`
+  (`laptop.architect-2`, 2026-10-18T20:52:27Z,
+  https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6255008245, and
+  2026-10-18T21:11:02Z,
+  https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6255192139).
   The split and `MaxNodesPerRead` (#2623): `laptop.architect-2` at
   2026-10-14T01:37:20Z,
   https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6158936229, and a
