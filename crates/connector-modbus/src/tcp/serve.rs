@@ -26,7 +26,7 @@ use crate::pdu::Exception;
 ///
 /// # Errors
 ///
-/// The error of the listener, when it fails before `until` is cancelled.
+/// The error of the listener, when it fails before `serve` stops its accepts.
 ///
 /// # Panics
 ///
