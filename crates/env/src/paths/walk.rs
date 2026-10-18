@@ -15,7 +15,7 @@ pub(super) struct Step {
     pub(super) own: Option<Key>,
     /// The step of the directory that holds this one, `None` for a root.
     pub(super) up: Option<usize>,
-    /// A `..` takes the walk above this step.
+    /// A `..` takes the walk above this step, or an end `/` or `/.` failed at it.
     pub(super) back: bool,
     pub(super) directory: bool,
 }
@@ -99,7 +99,9 @@ impl Walker<'_> {
                     Err(e) => Err(e),
                 },
                 Name::Up => self.up(),
-                Name::Directory => self.directory("."),
+                Name::Directory => self
+                    .directory(".")
+                    .inspect_err(|_| self.steps[self.at].back = true),
             };
             match taken {
                 Ok(()) => {}

@@ -285,6 +285,29 @@ fn within_follows_a_link_outside_that_names_a_folder() {
     assert_eq!(within.read(path, 1), Err(Error::Outside));
 }
 
+/// A link target that ends in `/.`, with a name after the link: the end `/.` fails at a
+/// file, and that file outside gives `Outside` as a directory or nothing does.
+#[test]
+fn within_tells_no_file_outside_before_an_end_dot_of_a_link() {
+    let got = ["dir", "none", "file"].map(|kind| {
+        let node = Sim::new(Config::default()).node(node::Config::default());
+        node.make_dir(Path::new("/w"));
+        node.make_dir(Path::new("/out"));
+        let paths = node.paths();
+        match kind {
+            "dir" => node.make_dir(Path::new("/out/b")),
+            "file" => paths.write(Path::new("/out/b"), b"x").unwrap(),
+            _ => {}
+        }
+        for (link, target) in [("/w/l", "/out/b/."), ("/w/m", "/out/b/")] {
+            node.link_path(Path::new(link), Path::new(target));
+        }
+        let within = paths.within(&["/w".into()], &[]).unwrap();
+        ["/w/l/x", "/w/m/x"].map(|path| within.read(Path::new(path), 1).map(|_| ()))
+    });
+    assert_eq!(got, [[Err(Error::Outside); 2]; 3]);
+}
+
 #[test]
 fn within_tells_no_name_outside_beside_a_hidden_folder_that_is_not_there() {
     let node = Sim::new(Config::default()).node(node::Config::default());
