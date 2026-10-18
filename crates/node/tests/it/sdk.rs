@@ -1,15 +1,13 @@
 //! The Rust SDK against a node process.
 
 use std::collections::BTreeMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
-use std::path::Path;
-use std::rc::Rc;
+use std::net::{Ipv6Addr, SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 
 use env::tasks::{Group, Tasks};
-use sdk::write::{Config, Outcome, Refusal as Refused, Writer};
+use sdk::write::{Config, Outcome, Refusal as Refused};
 use sdk::{Client, Error, Node, Subject};
 use types::ed25519::PrivateKey;
 use types::frame::Range;
@@ -18,92 +16,8 @@ use types::sample::{Scalar, Type, Value};
 use types::time::Stamp;
 use wire::hub::client::{Mode, Refusal};
 
+use crate::plant::{admin, planted, session};
 use crate::rig::Rig;
-
-/// The bytes of the file `name` of the data directory of `rig`, once it holds `tag`.
-/// Checks the CRC32C of the file.
-fn read<const LEN: usize>(rig: &Rig, name: &str, tag: &[u8]) -> [u8; LEN] {
-    let path = rig.dir.join("foundation-data/data").join(name);
-    let bytes = rig.wait(&format!("the node writes {name}"), || held(&path, tag));
-    let body = LEN - 4;
-    assert_eq!(
-        crc32c::crc32c(&bytes[..body]).to_le_bytes(),
-        bytes[body..],
-        "the CRC32C of {name}"
-    );
-    bytes
-}
-
-/// The bytes at `path` when they are `LEN` long and start with `tag`.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the test reads a file of a node process"
-)]
-fn held<const LEN: usize>(path: &Path, tag: &[u8]) -> Result<[u8; LEN], String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    match <[u8; LEN]>::try_from(bytes) {
-        Ok(bytes) if bytes.starts_with(tag) => Ok(bytes),
-        Ok(bytes) => Err(format!("{bytes:?}")),
-        Err(bytes) => Err(format!("{} bytes", bytes.len())),
-    }
-}
-
-/// The node of `rig`, with an unspecified IP as loopback, and its admin, from the
-/// files `address` and `admin.key`.
-fn admin(rig: &Rig) -> (Node, Subject) {
-    let address: [u8; 99] = read(rig, "address", b"foundation/address/1");
-    let key: [u8; 54] = read(rig, "admin.key", b"foundation/admin/1");
-    let port = u16::from_be_bytes([address[85], address[86]]);
-    let ip = match address[68] {
-        4 => IpAddr::from(<[u8; 4]>::try_from(&address[69..73]).unwrap()),
-        6 => IpAddr::from(<[u8; 16]>::try_from(&address[69..85]).unwrap()),
-        family => panic!("the address has family {family}"),
-    };
-    let ip = match ip {
-        IpAddr::V4(ip) if ip.is_unspecified() => Ipv4Addr::LOCALHOST.into(),
-        IpAddr::V6(ip) if ip.is_unspecified() => Ipv6Addr::LOCALHOST.into(),
-        ip => ip,
-    };
-    let node = u128::from_be_bytes(address[20..36].try_into().unwrap());
-    let public_key = <[u8; 32]>::try_from(&address[36..68]).unwrap();
-    let node = Node {
-        addresses: vec![SocketAddr::new(ip, port)],
-        key: types::node::Key::from_u128(node),
-        public_key: types::ed25519::PublicKey::new(public_key).unwrap(),
-    };
-    let subject = Subject {
-        name: spec::founding::admin(),
-        private_key: PrivateKey(key[18..50].try_into().unwrap()),
-    };
-    (node, subject)
-}
-
-/// The channels of the tests of writers: the index `plant.time`, and `plant.a` and
-/// `plant.b` of `i64` on it, homed at the node `edge`.
-const CHANNELS: &str = concat!(
-    "channel \"plant.time\" { kind = \"index\" }\n",
-    "channel \"plant.a\" {\n  data_type = \"i64\"\n  index = \"plant.time\"\n}\n",
-    "channel \"plant.b\" {\n  data_type = \"i64\"\n  index = \"plant.time\"\n}\n",
-    "placement \"plant.home\" {\n  select = \"plant.*\"\n  home = \"edge\"\n}\n",
-);
-
-/// A rig whose node runs with [`CHANNELS`] applied, its node, and its admin. Waits
-/// until the hub of the node knows the channels, which it learns after the apply.
-fn planted() -> (Rig, Node, Subject) {
-    let mut rig = Rig::new();
-    rig.config(CHANNELS);
-    rig.start();
-    rig.apply();
-    let (node, subject) = admin(&rig);
-    let client = Client::connect(&node, subject.clone()).unwrap();
-    rig.wait("the hub knows the channels", || {
-        let channels = vec!["plant.a".parse().unwrap(), "plant.b".parse().unwrap()];
-        let writer = client.open_writer(Config::new(channels));
-        writer.and_then(Writer::close).map_err(|e| e.to_string())
-    });
-    assert_eq!(client.close(), Ok(()));
-    (rig, node, subject)
-}
 
 /// The samples of one frame, by channel name, each as `i64`.
 type Samples = BTreeMap<String, Vec<i64>>;
@@ -164,44 +78,14 @@ fn wait<T>(answers: &mpsc::Receiver<T>) -> T {
         .expect("the reader answers")
 }
 
-/// A session with `node` as `subject`, as the client of `sdk` makes it.
-async fn session(node: Node, subject: Subject, tasks: Tasks) -> program::Session {
-    let budget = |bytes| block::Config::new(bytes).unwrap();
-    let clock = os::clock();
-    let entropy = os::entropy();
-    let pool = Rc::new(block::Pool::heap(budget(1 << 21)));
-    let transport = transport::Client::new(transport::client::Config {
-        net: os::net(),
-        clock: clock.clone(),
-        entropy: entropy.clone(),
-        tasks: tasks.clone(),
-        pool: Rc::clone(&pool),
-    })
-    .unwrap();
-    let config = program::Config {
-        via: node.key,
-        node: node.public_key,
-        addresses: node
-            .addresses
-            .into_iter()
-            .map(transport::Address::Udp)
-            .collect(),
-        subject: subject.name,
-        key: subject.private_key,
-        clock,
-        entropy,
-        tasks,
-        pool,
-        frames: Rc::new(block::Pool::heap(budget(64 << 10))),
-    };
-    program::Session::connect(&transport, config).await.unwrap()
-}
-
-/// The place of the channel `name` of `writer`.
-fn place(writer: &Writer, name: &str) -> usize {
-    let name = name.parse().unwrap();
-    let places = writer.places();
-    places.iter().position(|place| place.name == name).unwrap()
+/// The wall time now, in ns since the Unix epoch.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test checks a stamp of a node process against the wall time"
+)]
+fn now() -> i64 {
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    i64::try_from(since.unwrap().as_nanos()).unwrap()
 }
 
 /// The outcome of a frame of `count` samples that the node took at `seq`.
@@ -394,7 +278,8 @@ fn a_client_of_an_address_that_no_node_reads_is_unreachable() {
 
 /// A writer of the defaults writes values with the node's stamp, values with their own
 /// stamp, and series with their stamps, in any order of places, and a reader gets each
-/// frame in order once the close returns.
+/// frame in order once the close returns. Its places are its channels in their order,
+/// then the index.
 #[test]
 fn a_writer_writes_values_and_series_that_a_reader_gets_in_order() {
     let (mut rig, node, subject) = planted();
@@ -404,13 +289,17 @@ fn a_writer_writes_values_and_series_that_a_reader_gets_in_order() {
     let mut writer = client.open_writer(Config::new(channels.into())).unwrap();
     let names: Vec<String> =
         writer.places().iter().map(|p| p.name.to_string()).collect();
-    assert_eq!(names, ["plant.time", "plant.a", "plant.b"]);
-    let [time, a, b] = ["plant.time", "plant.a", "plant.b"].map(|n| place(&writer, n));
+    assert_eq!(names, ["plant.b", "plant.a", "plant.time"]);
+    let (b, a, time) = (0, 1, 2);
+    assert_eq!(writer.index(), time);
     let values = [(b, Value::I64(2)), (a, Value::I64(1))];
     assert_eq!(writer.write(&values), Ok(taken(0, 1)));
     let first = wait(&read);
     let stamp = first["plant.time"][0];
-    assert_ne!(stamp, 0);
+    assert!(
+        (now() - stamp).abs() < 60_000_000_000,
+        "{stamp} is near now"
+    );
     let samples = |frame: &Samples| {
         let without = frame.iter().filter(|(name, _)| *name != "plant.time");
         without
@@ -450,7 +339,7 @@ fn a_write_of_a_value_of_another_type_sends_nothing_and_the_writer_goes_on() {
     let client = Client::connect(&node, subject).unwrap();
     let channels = vec!["plant.a".parse().unwrap()];
     let mut writer = client.open_writer(Config::new(channels)).unwrap();
-    let a = place(&writer, "plant.a");
+    let a = 0;
     let error = writer.write(&[(a, Value::F64(1.5))]).unwrap_err();
     let value = Error::Value {
         place: a,
@@ -489,7 +378,7 @@ fn a_write_of_series_whose_bytes_are_not_count_samples_is_refused() {
     let client = Client::connect(&node, subject).unwrap();
     let channels = vec!["plant.a".parse().unwrap()];
     let mut writer = client.open_writer(Config::new(channels)).unwrap();
-    let (time, a) = (place(&writer, "plant.time"), place(&writer, "plant.a"));
+    let (a, time) = (0, writer.index());
     let stamps = [1_i64, 2].map(i64::to_le_bytes).concat();
     let short = 4_i64.to_le_bytes();
     let written = writer.write_series(2, &[(time, &stamps), (a, &short)]);
@@ -508,7 +397,7 @@ fn a_close_of_a_client_with_a_live_writer_returns_and_ends_the_writer() {
     let client = Client::connect(&node, subject).unwrap();
     let channels = vec!["plant.a".parse().unwrap()];
     let mut writer = client.open_writer(Config::new(channels)).unwrap();
-    let a = place(&writer, "plant.a");
+    let a = 0;
     assert_eq!(writer.write(&[(a, Value::I64(1))]), Ok(taken(0, 1)));
     assert_eq!(client.close(), Ok(()));
     assert_eq!(writer.write(&[(a, Value::I64(2))]), Err(Error::Closed));
@@ -525,7 +414,7 @@ fn a_call_of_a_writer_after_a_drop_of_its_client_gives_closed() {
     let client = Client::connect(&node, subject).unwrap();
     let channels = vec!["plant.a".parse().unwrap()];
     let mut writer = client.open_writer(Config::new(channels)).unwrap();
-    let a = place(&writer, "plant.a");
+    let a = 0;
     drop(client);
     rig.wait("a write gives closed", || {
         match writer.write(&[(a, Value::I64(1))]) {
@@ -535,4 +424,146 @@ fn a_call_of_a_writer_after_a_drop_of_its_client_gives_closed() {
     });
     assert_eq!(writer.close(), Err(Error::Closed));
     rig.stop();
+}
+
+/// Each write of values with no stamp gets a stamp of the node after the stamp of the
+/// write before it.
+#[test]
+fn the_node_stamps_each_write_of_values_after_the_one_before_it() {
+    let (mut rig, node, subject) = planted();
+    let read = reader(&node, &subject, "plant.*", 3);
+    let client = Client::connect(&node, subject).unwrap();
+    let channels = vec!["plant.a".parse().unwrap()];
+    let mut writer = client.open_writer(Config::new(channels)).unwrap();
+    for seq in 0..3 {
+        assert_eq!(writer.write(&[(0, Value::I64(1))]), Ok(taken(seq, 1)));
+    }
+    let stamps: Vec<i64> = (0..3).map(|_| wait(&read)["plant.time"][0]).collect();
+    assert!(stamps.is_sorted_by(|a, b| a < b), "{stamps:?} increase");
+    assert!(
+        (now() - stamps[2]).abs() < 60_000_000_000,
+        "{stamps:?} are near now"
+    );
+    assert_eq!(writer.close(), Ok(()));
+    assert_eq!(client.close(), Ok(()));
+    rig.stop();
+}
+
+/// A channel given twice is at each of its places, and a write of one of them goes to
+/// the channel.
+#[test]
+fn a_writer_of_a_channel_given_twice_writes_it_at_each_place() {
+    let (mut rig, node, subject) = planted();
+    let read = reader(&node, &subject, "plant.a", 2);
+    let client = Client::connect(&node, subject).unwrap();
+    let a: types::name::Name = "plant.a".parse().unwrap();
+    let mut writer = client.open_writer(Config::new(vec![a.clone(), a])).unwrap();
+    let names: Vec<String> =
+        writer.places().iter().map(|p| p.name.to_string()).collect();
+    assert_eq!(names, ["plant.a", "plant.a", "plant.time"]);
+    assert_eq!(writer.index(), 2);
+    assert_eq!(writer.write(&[(0, Value::I64(1))]), Ok(taken(0, 1)));
+    assert_eq!(writer.write(&[(1, Value::I64(2))]), Ok(taken(1, 1)));
+    assert_eq!(wait(&read)["plant.a"], [1]);
+    assert_eq!(wait(&read)["plant.a"], [2]);
+    assert_eq!(writer.close(), Ok(()));
+    assert_eq!(client.close(), Ok(()));
+    rig.stop();
+}
+
+/// A writer that names the index gives it at its place.
+#[test]
+fn a_writer_that_names_the_index_writes_its_stamp_at_that_place() {
+    let (mut rig, node, subject) = planted();
+    let read = reader(&node, &subject, "plant.*", 1);
+    let client = Client::connect(&node, subject).unwrap();
+    let channels = ["plant.time".parse().unwrap(), "plant.a".parse().unwrap()];
+    let mut writer = client.open_writer(Config::new(channels.into())).unwrap();
+    assert_eq!(writer.index(), 0);
+    assert_eq!(writer.places().len(), 2);
+    let stamp = now();
+    let values = [
+        (1, Value::I64(4)),
+        (0, Value::Stamp(Stamp::from_nanos(stamp))),
+    ];
+    assert_eq!(writer.write(&values), Ok(taken(0, 1)));
+    let frame = wait(&read);
+    assert_eq!(
+        (&frame["plant.time"], &frame["plant.a"]),
+        (&vec![stamp], &vec![4])
+    );
+    assert_eq!(writer.close(), Ok(()));
+    assert_eq!(client.close(), Ok(()));
+    rig.stop();
+}
+
+/// A write of no values, a place past the places, and a series past the largest block
+/// of the frames each give their exact error with nothing sent, and the writer goes
+/// on.
+#[test]
+fn a_call_that_the_writer_cannot_send_gives_its_error_and_the_writer_goes_on() {
+    let (mut rig, node, subject) = planted();
+    let client = Client::connect(&node, subject).unwrap();
+    let channels = vec!["plant.a".parse().unwrap()];
+    let mut writer = client.open_writer(Config::new(channels)).unwrap();
+    let unsent = program::Error::Unsent {
+        count: 0,
+        form: types::frame::Form::Raw,
+    };
+    assert_eq!(writer.write(&[]), Err(Error::Stream(unsent)));
+    let range = types::frame::Error::OutOfRange {
+        entry: 2,
+        entries: 2,
+    };
+    let past = Err(Error::Stream(program::Error::Layout(range)));
+    assert_eq!(writer.write(&[(2, Value::I64(1))]), past);
+    assert_eq!(
+        writer.write_series(1, &[(2, 1_i64.to_le_bytes().as_slice())]),
+        past
+    );
+    let samples = 4096_u32;
+    let stamps: Vec<u8> = (1..=i64::from(samples))
+        .flat_map(i64::to_le_bytes)
+        .collect();
+    let values = vec![0; stamps.len()];
+    let large = block::Error::TooLarge {
+        requested: 65584,
+        largest: 57344,
+    };
+    assert_eq!(
+        writer.write_series(samples, &[(0, values.as_slice()), (1, stamps.as_slice())]),
+        Err(Error::Stream(program::Error::Pool(large)))
+    );
+    assert_eq!(writer.write(&[(0, Value::I64(5))]), Ok(taken(0, 1)));
+    assert_eq!(writer.close(), Ok(()));
+    assert_eq!(client.close(), Ok(()));
+    rig.stop();
+}
+
+/// Once the node ends the session, each call of a writer and of its client gives the
+/// cause. The client gets the close of the node in real time, so the test gives it
+/// 1 s on loopback.
+#[test]
+fn each_call_after_the_node_ended_the_session_gives_the_cause() {
+    let (mut rig, node, subject) = planted();
+    let client = Client::connect(&node, subject).unwrap();
+    let channels = || vec!["plant.a".parse().unwrap()];
+    let mut writer = client.open_writer(Config::new(channels())).unwrap();
+    let other = client.open_writer(Config::new(channels())).unwrap();
+    rig.stop();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the client takes the close of a node process in real time"
+    )]
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let closed = transport::Error::PeerClosed {
+        code: transport::Code(0),
+    };
+    let ended = Error::Session(program::Error::Transport(closed));
+    assert_eq!(writer.write(&[(0, Value::I64(1))]), Err(ended.clone()));
+    assert_eq!(writer.close(), Err(ended.clone()));
+    assert_eq!(other.close(), Err(ended.clone()));
+    let opened = client.open_writer(Config::new(channels())).map(drop);
+    assert_eq!(opened, Err(ended.clone()));
+    assert_eq!(client.close(), Err(ended));
 }

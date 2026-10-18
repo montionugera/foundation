@@ -8,6 +8,7 @@ mod common;
 mod log;
 mod name;
 mod one_node;
+mod plant;
 mod port;
 mod quickstart;
 mod rig;
