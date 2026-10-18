@@ -167,13 +167,16 @@ dependency:
 A builder may change anything private inside the crates of its issue without asking.
 
 A change to the public surface of a crate of the builder's issue, also the first
-surface of a crate, skips the interface issue when no crate outside the issue uses an
-item that the change removes or changes. The plan on the issue, the PR, or the crate's
-architect in a comment on either gives the exact change, and the architect decides it
-as step 2 says before the PR merges (`laptop.director`, 2026-10-17T05:58:56Z,
-https://github.com/synnaxlabs/foundation/pull/2999#issuecomment-6230437331, and the OK
+surface of a crate, skips the interface issue when, at the head that the architect
+approves, no crate outside the issue uses an item that the change removes or changes.
+The plan on the issue, the PR, or the crate's architect in a comment on either gives
+the exact change. The crate's architect, or `laptop.architect` for a contract between
+the two lists (`docs/factory.md`, "Architects"), decides it as step 2 says before the
+PR merges (`laptop.director`, 2026-10-17T05:58:56Z,
+https://github.com/synnaxlabs/foundation/pull/2999#issuecomment-6230437331, and the OKs
 of `laptop.architect`, 2026-10-17T07:53:30Z,
-https://github.com/synnaxlabs/foundation/pull/2993#issuecomment-6231424805).
+https://github.com/synnaxlabs/foundation/pull/2993#issuecomment-6231424805, and
+<time>, <link>).
 
 ## Cloud machines
 
