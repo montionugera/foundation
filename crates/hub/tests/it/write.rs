@@ -501,6 +501,38 @@ fn refuses_a_frame_while_another_writer_holds_control() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
+/// A frame after the control lease of its write ran out is refused as `Expired`.
+#[test]
+fn refuses_a_frame_after_the_lease_of_its_write_ran_out_as_expired() {
+    let home = read_session(
+        441,
+        async |_| {},
+        |mut agent| async move {
+            agent.admit().await;
+            let open = Open {
+                authority: Authority(1),
+                lease: Some(START),
+                channels: vec![name("value")],
+            };
+            let mut stream = agent.open().await;
+            stream.write(&open, Kind::Write, &AGENT).await;
+            stream.started().await;
+            send(&mut stream, &[1], &[10]).await;
+            assert_eq!(stream.reply().await, taken(0, 1));
+            assert_eq!(stream.reply().await, stored(0));
+            agent.sleep(Span::from_nanos(START.nanos() * 2)).await;
+            send(&mut stream, &[2], &[20]).await;
+            assert_eq!(
+                stream.reply().await,
+                refused(wire::hub::write::Refusal::Expired)
+            );
+            assert_eq!(end(&mut stream).await, []);
+            finish(&mut agent).await;
+        },
+    );
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
 /// Every block of `pool` from the largest down to blocks of `least` bytes, but the last
 /// one, so the pool has room for small blocks only.
 fn hold(pool: &block::Pool, least: usize) -> Vec<Unique> {
