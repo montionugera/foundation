@@ -131,6 +131,8 @@ impl Status {
     pub(crate) const BAD_SERVER_NOT_CONNECTED: Self = Self(0x800D_0000);
     #[cfg(test)]
     pub(crate) const BAD_SECURITY_MODE_REJECTED: Self = Self(0x8054_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_DECODING_ERROR: Self = Self(0x8007_0000);
 
     /// Whether the code is of the severity Uncertain.
     pub(crate) fn uncertain(self) -> bool {

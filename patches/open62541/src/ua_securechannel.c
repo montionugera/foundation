@@ -933,22 +933,39 @@ UA_StatusCode
 UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
                                     UA_MessageType *messageType, UA_UInt32 *requestId,
                                     UA_ByteString *payload, UA_Boolean *copied,
-                                    UA_DateTime nowMonotonic) {
-    UA_Chunk chunk, *pchunk;
+                                    UA_Boolean *aborted, UA_DateTime nowMonotonic) {
+    UA_Chunk chunk, *pchunk, *next;
     UA_StatusCode res = UA_STATUSCODE_GOOD;
 
  extract_chunk:
     /* Extract+decode the next chunk from the buffer */
     memset(&chunk, 0, sizeof(UA_Chunk));
     res = extractCompleteChunk(channel, &chunk, nowMonotonic);
-    if(chunk.bytes.length == 0 || res != UA_STATUSCODE_GOOD)
+    /* An abort with no Error has an empty body */
+    UA_Boolean returned = aborted && chunk.chunkType == UA_CHUNKTYPE_ABORT;
+    if((chunk.bytes.length == 0 && !returned) || res != UA_STATUSCODE_GOOD)
         return res; /* Error or no complete chunk could be extracted */
 
     /* Process the chunk */
     switch(chunk.chunkType) {
     case UA_CHUNKTYPE_ABORT:
-        /* Remove all chunks received so far. Then continue extracting chunks. */
-        deleteChunks(channel);
+        /* Remove the queued chunks of the abort's request id. With `aborted`,
+         * return the abort as a message; else drop it and extract the next
+         * chunk. */
+        TAILQ_FOREACH_SAFE(pchunk, &channel->chunks, pointers, next) {
+            if(pchunk->requestId != chunk.requestId)
+                continue;
+            channel->chunksCount--;
+            channel->chunksLength -= pchunk->bytes.length;
+            TAILQ_REMOVE(&channel->chunks, pchunk, pointers);
+            UA_Chunk_delete(pchunk);
+        }
+        if(aborted) {
+            /* No chunk of its request id is left, so the abort is a message
+             * of one chunk */
+            *aborted = true;
+            break;
+        }
         if(chunk.copied)
             UA_ByteString_clear(&chunk.bytes);
         goto extract_chunk;
@@ -1043,7 +1060,6 @@ UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
 
         /* Copy over the content from the remaining intermediate chunks.
          * And remove them right away. */
-        UA_Chunk *next;
         for(; pchunk; pchunk = next) {
             next = TAILQ_NEXT(pchunk, pointers);
             if(chunk.requestId != pchunk->requestId)

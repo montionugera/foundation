@@ -347,7 +347,7 @@ impl State {
             .get_mut(&key)
             .ok_or(Refused::Stranger { key })?;
         let held = member.card.card();
-        let card = card.check_with(held.public_key).map_err(Refused::Forged)?;
+        card.verify(held.public_key).map_err(Refused::Forged)?;
         // Each field is named, so a new field of a card is not changeable by default.
         let card::Card {
             name,
@@ -355,7 +355,7 @@ impl State {
             seal_key,
             addresses: _,
             version,
-        } = card.card();
+        } = &card.card;
         if (name, *public_key, seal_key)
             != (&held.name, held.public_key, &held.seal_key)
         {
@@ -368,7 +368,8 @@ impl State {
                 held: held.version,
             });
         }
-        member.card = card;
+        // The card holds the key of its member, which signed it, so this holds.
+        member.card = card.check().map_err(Refused::Forged)?;
         Ok(())
     }
 
@@ -680,7 +681,6 @@ impl std::error::Error for Unfit {}
 mod tests {
     use proptest::prelude::*;
     use transport::Address;
-    use types::ed25519::Pair;
     use types::node::SealKey;
 
     use super::*;
@@ -1050,13 +1050,7 @@ mod tests {
     // signed, with its signature bits flipped when `forged`. The key of `signer` need
     // not be the key of the card.
     fn card_change(key: u8, card: card::Card, signer: u8, forged: bool) -> Change {
-        let statement = card::statement(card::TAG, node(key), &card);
-        let signature = Pair::new(&private(signer)).sign(&statement);
-        let mut card = card::Unchecked {
-            key: node(key),
-            card,
-            signature,
-        };
+        let mut card = card::Unchecked::sign(node(key), card, &private(signer));
         if forged {
             card.signature[0] ^= 1;
         }
@@ -1807,8 +1801,9 @@ mod tests {
                         let held = before.member(card.key).unwrap().card.card();
                         prop_assert!(card.card.version > held.version);
                         // Only a compare of the whole state shows that the change
-                        // changes nothing else, and no public call builds a state
-                        // with a given card, so this sets the private field.
+                        // changes nothing else, and `State::new` takes no ticket
+                        // and starts the pointer at version 0, so it cannot build
+                        // `before`. So this sets the private field.
                         let mut expected = before.clone();
                         let member = expected.members.get_mut(&card.key).unwrap();
                         member.card = card.check().unwrap();

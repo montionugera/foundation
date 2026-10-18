@@ -3427,8 +3427,8 @@ fn a_reader_stops_the_stream_as_malformed_when_a_head_ends_past_the_highest_seq(
             seq: u64::MAX,
             count: 1,
         },
-        "the frame head has 1 samples from seq 18446744073709551615, which end past \
-         the highest seq",
+        "the range has 1 samples from seq 18446744073709551615, which end past the \
+         highest seq",
     );
 }
 

@@ -47,6 +47,9 @@ Rules:
    `node` may take `sdk`, so its tests run the client of a program against a real node
    (`laptop.architect`, 2026-10-16T21:33:33Z,
    https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225122027).
+   `sdk-python` may take `transport`, so its test of `error` builds a bind error
+   (`laptop.architect-2`, 2026-10-17T21:48:03Z,
+   https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241731905).
    A crate may also take itself, so its tests and benches build with its own `sim`
    feature (STORED BENCH; `laptop.architect`, 2026-10-08T01:01:28Z:
    https://github.com/synnaxlabs/foundation/pull/1568#issuecomment-6049989224). A
@@ -84,7 +87,8 @@ Order: layer 1 (`block`, `ring`, `counting`, `waker`) -> `types` -> (`env`, `doc
 `raft`, `estimate`, `control`, `delivery`) -> `codec` -> `wire` -> `spec` -> `access`;
 layer 2 `os` -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`, `program`) ->
 `mesh` -> (`home`, `replica`) -> `hub`; layer 3 `secret` -> `connector` ->
-`connector-<kind>`; layer 4 (`config-hcl`, `config`) -> `ops` -> `node` -> `sdk`.
+`connector-<kind>`; layer 4 (`config-hcl`, `config`) -> `ops` -> `node` -> `sdk` ->
+`sdk-python`.
 
 | Layer | Crate | Job (one sentence) | Allowed dependencies |
 | --- | --- | --- | --- |
@@ -115,7 +119,7 @@ layer 2 `os` -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`, `program`) -
 | 2 | `replica` | Receives an index's log from its home on a standby or copy node and stores it with `append`. | `env`, `types`, `block`, `wire`, `transport`, `buffer`, `mesh` |
 | 2 | `hub` | Is the one path for every read and write: sessions across homes, routing, live selectors, the server loop, authentication, encode and decode once, raw cursors for replicas, re-index stitching, and the layer-3 window. | `access`, `env`, `types`, `block`, `ring`, `codec`, `wire`, `spec`, `transport`, `clock`, `mesh`, `home`; `buffer` and `blob` as dev-dependencies only |
 | 3 | `secret` | Resolves the source of a secret on the node that runs a connector: a variable of the node's environment, a file, or a name in a store adapter chosen by policy; `node` hands it the sealed ciphertexts it pulls from `mesh`. Seals a value to a node's seal key, and opens it. | layer 1 |
-| 3 | `connector` | Defines the kind contract (parse, check, discover, run, browse, block), the browse walk, the channel names of an import, the thin supervisor, `ctx`, the component library, and the compositions. | layer 1, `hub`, `secret` |
+| 3 | `connector` | Defines the kind contract (parse, check, discover, run, browse, block, tag), the browse walk, the channel names of an import, the thin supervisor, `ctx`, the component library, and the compositions. | layer 1, `hub`, `secret` |
 | 3 | `connector-<kind>` | Translates one protocol, device family, store, or the calculation engine into channels. | layer 1, `hub`, `connector`; vendor libraries behind build flags, except a library loaded at run time, which links nothing |
 | 3 | `daqmx-stub` | Stands in for NI's `libnidaqmx.so` in the tests of `connector-ni`, built as a shared library and as a Rust library. A dev-dependency of `connector-ni` only. | none |
 | 4 | `config-hcl` | Reads and writes HCL files as Documents. | `types`, `document` |
@@ -124,16 +128,21 @@ layer 2 `os` -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`, `program`) -
 | 4 | `acceptance` | Runs the MVP acceptance scenarios against whole meshes built from `node`. Test-only. | all crates |
 | 4 | `node` | Is the composition root: real seams, pools and shards, all tables (kinds, front ends, time sources, secret stores), the status collector, process lifecycle, and upgrades. | all crates |
 | 4 | `sdk` | Is the Rust client of a program, outside the binary: it runs a `program::Session` on a shard of `os`, and the Python SDK wraps it. | `program`, `transport`, `os`, `env`, `types`, `block` |
+| 4 | `sdk-python` | Is the Python SDK, outside the binary: a PyO3 module that wraps `sdk::Client` for Python programs. | `sdk`, `types`; `transport` as a dev-dependency only (https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241731905) |
 
 `fuzz` holds the fuzz targets, outside the workspace. It is test-only, builds on the
 pinned nightly, may depend on any crate, and no crate depends on it (#252;
 `laptop.architect`, 2026-10-09T04:18Z,
 https://github.com/synnaxlabs/foundation/pull/2099#issuecomment-6074164278).
 
-Outside the binary: the Rust SDK `sdk` (`sdk/rust`, layer 4, last) builds on `program`,
+Outside the binary: the Rust SDK `sdk` (`sdk/rust`, layer 4) builds on `program`,
 `transport`, `env`, `types`, and `block`, and takes its clock, entropy, network, and
-the shard of its client from `os` (#2923). The Python SDK
-wraps `sdk` with PyO3 (C6, SDK DATA PATH; the crate, `laptop.architect`,
+the shard of its client from `os` (#2923). The Python SDK `sdk-python` (`sdk/python`,
+layer 4, last) wraps `sdk` with PyO3, and parses keys and names with `types`. It is
+the module `foundation._native` of the wheel `synnax-foundation` (`laptop.architect`,
+2026-10-17T18:41:45Z,
+https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6238783320). The data
+path of Python is `sdk` (C6, SDK DATA PATH; the crate, `laptop.architect`,
 2026-10-15T17:56:55Z,
 https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198730147; its name,
 `laptop.architect`, 2026-10-15T18:23:47Z,

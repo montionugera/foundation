@@ -1,4 +1,4 @@
-use ::connector::kind::Channels;
+use ::connector::kind::{Channels, Table};
 use ::connector::status;
 use document::diagnostic::{Code, Diagnostic, Note};
 use document::encoding::Checked;
@@ -86,6 +86,15 @@ pub(crate) fn check(
 /// `config.long-name` at its label when a status name that it has with no kind is
 /// longer than [`Name::MAX_BYTES`].
 pub fn find(documents: &[Document], name: &Name) -> Result<Connector, Vec<Diagnostic>> {
+    block(documents, name).map(|(_, connector)| connector)
+}
+
+/// The `connector` block with the label `name` in `documents`, and its connector, as
+/// [`find`] gives it.
+pub(crate) fn block<'a>(
+    documents: &'a [Document],
+    name: &Name,
+) -> Result<(&'a Block, Connector), Vec<Diagnostic>> {
     let alarms = private_key::alarms(documents);
     if !alarms.is_empty() {
         return Err(alarms);
@@ -130,7 +139,7 @@ pub fn find(documents: &[Document], name: &Name) -> Result<Connector, Vec<Diagno
         (Ok(kind), Ok(node), Ok(config)) => {
             let at = block.labels.first().and_then(|label| label.span);
             writes(name, Channels::default(), at).map_err(|problem| vec![problem])?;
-            Ok(Connector::new(kind, node, config))
+            Ok((block, Connector::new(kind, node, config)))
         }
         (kind, node, config) => {
             let mut problems: Vec<_> = [kind.err(), node.err(), config.err()]
@@ -236,7 +245,7 @@ impl Writes {
     }
 
     /// Each channel that it implies: the status index, then the data.
-    fn implied_names(&self) -> impl Iterator<Item = &Name> {
+    pub(crate) fn implied_names(&self) -> impl Iterator<Item = &Name> {
         let data = self.data.iter().map(|(name, _)| name);
         std::iter::once(&self.index).chain(data)
     }
@@ -298,6 +307,31 @@ pub(crate) fn writes(
         data,
         label: at,
     })
+}
+
+/// Each channel that the `connector` block `block` with the label `key` implies or
+/// writes, with the counts that its kind in `kinds` gives. With no counts and no
+/// written channels when its kind does not check its body, and none when a status name
+/// is too long, as `plan` refuses both.
+pub(crate) fn names(block: &Block, key: &Name, kinds: &Table) -> Vec<Name> {
+    let kind = block.body.attributes.get("kind");
+    let kind = kind.and_then(|kind| read::name(&kind.value).ok());
+    let config = Checked::new(config(block)).ok();
+    let channels = kind.zip(config).and_then(|(kind, config)| {
+        let at = span(block, "kind");
+        kinds.check(kind.as_str(), at, config.document()).ok()
+    });
+    let writes = writes(key, channels.unwrap_or_default(), None);
+    writes.map_or_else(
+        |_| Vec::new(),
+        |writes| {
+            writes
+                .implied_names()
+                .chain(writes.channels())
+                .cloned()
+                .collect()
+        },
+    )
 }
 
 /// Adds each channel that each connector implies to the entries, with the span of the
