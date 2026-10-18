@@ -50,7 +50,8 @@ jobs:
               - 'rust-toolchain*'
               - '.github/workflows/sdk.yaml'
 
-  # The node that each gate connects to. Windows waits on #682, #2955, and #2956.
+  # The node that each gate connects to. Windows waits on #2968, #682, #2955, #2956,
+  # #477, and #2957 (the node), and the wheels on #682, #2955, and #2956.
   node:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.code != 'false'"
