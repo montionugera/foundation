@@ -5,34 +5,38 @@ use std::task::{Context, Waker};
 
 use env::files::{Files, Mode};
 
-/// What the caller of a create does with its future.
-#[derive(Clone, Copy)]
-pub(crate) enum Create {
-    /// Awaits it, and holds the file until after the next `free`.
-    Held,
-    /// Polls it once, and drops it.
-    Dropped,
+const LEN: u64 = 8 << 20;
+
+/// Creates the file `a` of 8 MiB through `files`, holds it until after the next `free`,
+/// and asserts that the free is less by exactly its length. No other process may write
+/// the disk.
+pub(crate) async fn held(files: &Files) {
+    let before = files.free().await.unwrap();
+    let file = files.open(Path::new("a"), Mode::Create { len: LEN });
+    let file = file.await.unwrap();
+    let after = files.free().await.unwrap();
+    file.close().await;
+    assert_less_by_len(before, after);
 }
 
-/// Creates the file `a` of 8 MiB through `files`, as `create` says, and asserts that
-/// the next `free` is less by exactly its length. No other process may write the disk.
-pub(crate) async fn check(files: &Files, create: Create) {
-    const LEN: u64 = 8 << 20;
+/// Polls a create of the file `a` of 8 MiB through `files` once, while the guard that
+/// `hold` gives keeps the disk from finishing it, and drops the create, then the guard.
+/// Asserts that the next `free` is less by exactly its length. No other process may
+/// write the disk.
+pub(crate) async fn dropped<G>(files: &Files, hold: impl FnOnce() -> G) {
     let before = files.free().await.unwrap();
-    let made = files.open(Path::new("a"), Mode::Create { len: LEN });
-    let file = match create {
-        Create::Held => Some(made.await.unwrap()),
-        Create::Dropped => {
-            let mut made = Box::pin(made);
-            let mut context = Context::from_waker(Waker::noop());
-            assert!(made.as_mut().poll(&mut context).is_pending());
-            None
-        }
-    };
+    let held = hold();
+    let mut made = Box::pin(files.open(Path::new("a"), Mode::Create { len: LEN }));
+    let mut context = Context::from_waker(Waker::noop());
+    let pending = made.as_mut().poll(&mut context).is_pending();
+    drop(made);
+    drop(held);
+    assert!(pending, "the create ended before its first poll");
     let after = files.free().await.unwrap();
-    if let Some(file) = file {
-        file.close().await;
-    }
+    assert_less_by_len(before, after);
+}
+
+fn assert_less_by_len(before: u64, after: u64) {
     assert_eq!(
         before.checked_sub(after),
         Some(LEN),

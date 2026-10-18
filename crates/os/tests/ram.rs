@@ -61,21 +61,23 @@ fn stdout(command: &mut std::process::Command) -> String {
 
 #[test]
 fn free_drops_by_the_bytes_of_a_created_file() {
-    check_free_on_ram(free::Create::Held);
+    on_ram(|files| async move { free::held(&files).await });
 }
 
 #[test]
 fn a_free_waits_for_a_dropped_create() {
-    check_free_on_ram(free::Create::Dropped);
+    // No hold: a freeze needs root on macOS, so the create can finish before the
+    // first poll (#3259).
+    on_ram(|files| async move { free::dropped(&files, || ()).await });
 }
 
-/// Runs `free::check` on a `Ram` of its own.
-fn check_free_on_ram(create: free::Create) {
+/// Runs `body` with the files of a `Ram` of its own.
+fn on_ram<F: Future<Output = ()>>(body: impl FnOnce(env::files::Files) -> F) {
     let ram = Ram::new();
     let (files, thread) = files(&ram.mount, "files");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    runtime.block_on(async move { free::check(&files, create).await });
+    runtime.block_on(body(files));
     thread.join().unwrap();
 }

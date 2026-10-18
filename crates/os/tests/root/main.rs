@@ -69,6 +69,26 @@ fn remove(mount: &Path) {
     std::fs::remove_dir_all(mount.parent().unwrap()).unwrap();
 }
 
+/// A frozen mount: each write there blocks until the guard drops. A `statfs` does not.
+struct Frozen<'a>(&'a Path);
+
+impl<'a> Frozen<'a> {
+    fn new(mount: &'a Path) -> Self {
+        check(sudo("fsfreeze").arg("-f").arg(mount));
+        Self(mount)
+    }
+}
+
+impl Drop for Frozen<'_> {
+    fn drop(&mut self) {
+        // While the thread panics, a command can block and a second panic aborts the
+        // test binary.
+        if !std::thread::panicking() {
+            check(sudo("fsfreeze").arg("-u").arg(self.0));
+        }
+    }
+}
+
 fn sudo(program: &str) -> Command {
     let mut command = Command::new("sudo");
     command.args(["-n", program]);
@@ -145,12 +165,15 @@ fn files_of_a_mount_point_syncs_only_the_mount() {
 
 #[test]
 fn free_drops_by_the_bytes_of_a_created_file() {
-    run(|files, _| async move { free::check(&files, free::Create::Held).await });
+    run(|files, _| async move { free::held(&files).await });
 }
 
 #[test]
 fn a_free_waits_for_a_dropped_create() {
-    run(|files, _| async move { free::check(&files, free::Create::Dropped).await });
+    run(|files, data| async move {
+        let mount = data.parent().expect("the data directory is on the mount");
+        free::dropped(&files, || Frozen::new(mount)).await;
+    });
 }
 
 #[test]
