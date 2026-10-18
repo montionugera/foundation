@@ -12,6 +12,9 @@
   raises `RuntimeError`, `Bind` raises `OSError`, `Session` raises `ConnectionError`,
   and `Panicked` raises `PanicException` (`laptop.architect-2`, 2026-10-17T18:44:19Z,
   https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6238826510).
+  No Python test reaches `Bind`, so the Rust table test of the map, with a real `Bind`,
+  is its only test (`laptop.architect-2`, 2026-10-18T15:00:03Z,
+  https://github.com/synnaxlabs/foundation/pull/3193#issuecomment-6251395290).
   `Client.__exit__` lets the error of the block win: when the block raised, an error of
   the close is a note on it, else the error of the close raises (`laptop.architect-2`,
   2026-10-17T18:46:12Z,

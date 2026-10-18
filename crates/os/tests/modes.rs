@@ -1,3 +1,5 @@
+//! Only Unix: Windows has no umask and no modes.
+//!
 //! The modes of the files and directories that `os::files` makes under each umask.
 //! The umask is a value of the process, so this test runs in a test binary of its
 //! own, with this one test only: the harness runs the tests of a binary on threads of

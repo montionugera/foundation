@@ -5,17 +5,14 @@ use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use transport::Code;
 use transport::stream::{Receiver, Sender};
 use transport::{Class, Error as Stream};
 use types::frame::key_set::KeySet;
 use types::frame::{Form, Frame};
-use wire::Protocol;
-use wire::header::MALFORMED;
 use wire::hub::client::{self, Mode, Open, Place, Read};
 use wire::hub::{Due, Frames, Step};
 
-use crate::{Error, Handle};
+use crate::{Error, Handle, end};
 
 mod lost;
 
@@ -197,30 +194,27 @@ impl Reader {
     }
 }
 
-/// Sends the header, the read of `open`, and `open`, then takes the places and
-/// `Opened`. Gives the places and the frames of the read.
+/// Sends the read of `open` and `open`, then takes the places and `Opened`. Gives the
+/// places and the frames of the read.
 async fn start(
     session: &Handle,
     sender: &mut Sender,
     receiver: &mut Receiver,
     open: &Open,
 ) -> Result<(Vec<Place>, Frames), Error> {
-    let shared = &session.0;
     let mut body = vec![0; open.encoded_len()];
     open.encode(&mut body);
-    let signature = shared.pair.sign(&access::proof::signed(
-        access::proof::Kind::Read,
-        shared.connection,
-        &body,
-    ));
-    let length = u64::try_from(body.len()).expect("invariant: the caller capped it");
-    let mut read = [0; Read::LEN];
-    Read { length, signature }.encode(&mut read);
-    shared
-        .send(sender, &wire::header::encode(Protocol::Hub))
+    session
+        .0
+        .open(
+            sender,
+            access::proof::Kind::Read,
+            &body,
+            |length, signature, out: &mut [u8; Read::LEN]| {
+                Read { length, signature }.encode(out);
+            },
+        )
         .await?;
-    shared.send(sender, &read).await?;
-    shared.send_chunks(sender, &body).await?;
     let mut decoder = client::Reader::new(open.mode);
     let start = loop {
         let message = receiver.recv().await?;
@@ -232,13 +226,4 @@ async fn start(
     let frames = Frames::open(start.home, start.set, message.as_deref())
         .map_err(Error::Reply)?;
     Ok((start.places, frames))
-}
-
-/// Ends `stream` after `error`: stops it as `MALFORMED` when the node broke a rule of
-/// the wire, else drops it.
-fn end((sender, receiver): (Sender, Receiver), error: &Error) {
-    if matches!(error, Error::Message(_) | Error::Reply(_) | Error::Frame(_)) {
-        sender.reset(Code(MALFORMED));
-        receiver.stop(Code(MALFORMED));
-    }
 }

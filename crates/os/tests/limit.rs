@@ -1,3 +1,5 @@
+//! Only Unix: Windows has no file size limit.
+//!
 //! A write of `os::paths` that the OS refuses midway. The file size limit and what
 //! the process does at `SIGXFSZ` are values of the process, so this test runs in a
 //! test binary of its own, with this one test only: the harness runs the tests of a

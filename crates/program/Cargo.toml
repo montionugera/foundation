@@ -33,5 +33,10 @@ name = "read"
 harness = false
 test = true
 
+[[bench]]
+name = "write"
+harness = false
+test = true
+
 [lints]
 workspace = true

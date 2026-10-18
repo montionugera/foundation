@@ -139,8 +139,8 @@ fn heap() {
     untouched();
 }
 
-/// A new heap of 256 MiB adds fewer than 1024 pages to the process in memory.
-// needs /proc/self/statm
+/// A new heap of 256 MiB adds fewer than 1024 pages to the process in memory, as
+/// `/proc/self/statm` counts them.
 #[cfg(all(target_os = "linux", not(miri)))]
 fn untouched() {
     let before = resident();
@@ -152,7 +152,7 @@ fn untouched() {
     drop(heap);
 }
 
-/// The pages of the process in memory, from Linux.
+/// The pages of the process in memory, from `/proc/self/statm`.
 #[cfg(all(target_os = "linux", not(miri)))]
 fn resident() -> u64 {
     let statm = std::fs::read_to_string("/proc/self/statm").expect("Linux gives statm");

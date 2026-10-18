@@ -26,8 +26,6 @@
 
 use std::time::Instant;
 
-use connector::kind::Table;
-use connector::testing;
 use connector_influx::Target;
 use connector_influx::bench::Batch;
 use connector_influx::line::Measurement;
@@ -289,9 +287,7 @@ async fn open(
         entropy: node.entropy(),
         tasks,
     };
-    let hub = testing::create_config(env, node.net(), Table::new())
-        .await
-        .hub;
+    let (hub, _) = hub::testing::open(env).await;
     let names = define(&hub, channels, types);
     let config = hub::writer::Config {
         subject: name("bench.writer"),

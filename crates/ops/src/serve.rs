@@ -4,9 +4,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Write};
 use std::marker::PhantomData;
+use std::path::PathBuf;
 
 use access::Rules;
 use connector::browse;
+use schemars::JsonSchema;
 use serde::de::value::MapAccessDeserializer;
 use serde::de::{self, DeserializeOwned, Deserializer, IgnoredAny, MapAccess};
 use serde::{Deserialize, Serialize};
@@ -16,7 +18,7 @@ use types::name::{Name, Prefix};
 use wire::hub::client::BODY_BYTES_MAX;
 
 use crate::error::{Action, Error, On, Problem};
-use crate::front_end::File;
+use crate::front_end::{self, File};
 use crate::operation::Empty;
 use crate::plan::{Documents, Output};
 use crate::{Node, apply, status, used};
@@ -30,25 +32,27 @@ mod tests;
 ///
 /// The reply is at most `wire::hub::client::BODY_BYTES_MAX` bytes, and `serve` stops
 /// writing a reply at that bound. No `body` makes it panic. The reply holds
-/// `ops.bad-request` for a body that is no request of `plan`, `apply`, `status`, or
-/// `browse`, `ops.denied` for an action that no access policy gives `subject` and for a
-/// request that names no definition. An error reply over the bound keeps the problems
-/// that fit, then `ops.more-problems` for the rest. `ops.large-reply` takes the place
-/// of an output over the bound and of an error whose first problem does not fit,
-/// `ops.large-browse` takes it for `browse`, and `ops.large-status` for `status`.
-/// `apply` also needs `apply` on the channel at each edge of each channel that the plan
-/// adds or changes, and `admin` on the key of each definition other than a channel that
-/// the plan adds, changes, or removes. It gives a home only to an index on which
-/// `subject` has `apply`, and drops each other home with no error. `status` shows only
-/// each connector on whose label and status channels `subject` has `read`. When it
-/// shows none, also when the node places none, it needs `read` on the name of the node,
-/// and gives `ops.denied` with no grant. It gives the failures of the read of the OS
-/// roots of the node only to a subject with `read` on the name of the node. It waits at
-/// most 1 s from the request. A connector is `unknown` when no status as the spec
-/// defines it comes in that time, and `status` gives `ops.channel-read` when the reader
-/// of a connector fails for another cause. `browse` needs `apply` and `admin` on the
-/// name of the connector, and browses only a connector that the files place on this
-/// node.
+/// `ops.bad-request` for a body that is no request of `plan`, `apply`, `status`,
+/// `browse`, or `import`, `ops.denied` for an action that no access policy gives
+/// `subject` and for a request that names no definition. An error reply over the bound
+/// keeps the problems that fit, then `ops.more-problems` for the rest.
+/// `ops.large-reply` takes the place of an output over the bound and of an error whose
+/// first problem does not fit, `ops.large-browse` takes it for `browse`,
+/// `ops.large-status` for `status`, and `ops.large-import` for `import`. `apply` also
+/// needs `apply` on the channel at each edge of each channel that the plan adds or
+/// changes, and `admin` on the key of each definition other than a channel that the
+/// plan adds, changes, or removes. It gives a home only to an index on which `subject`
+/// has `apply`, and drops each other home with no error. `status` shows only each
+/// connector on whose label and status channels `subject` has `read`. When it shows
+/// none, also when the node places none, it needs `read` on the name of the node, and
+/// gives `ops.denied` with no grant. It gives the failures of the read of the OS roots
+/// of the node only to a subject with `read` on the name of the node. It waits at most
+/// 1 s from the request. A connector is `unknown` when no status as the spec defines it
+/// comes in that time, and `status` gives `ops.channel-read` when the reader of a
+/// connector fails for another cause. `browse` needs `apply` and `admin` on the name of
+/// the connector, and browses only a connector that the files place on this node.
+/// `import` needs what `browse` needs, and imports only a connector that the files
+/// place on this node.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
@@ -78,6 +82,8 @@ enum Ran {
     Apply(apply::Effect),
     Status(status::Output),
     Browse(crate::browse::Output),
+    /// The output of `import`, then the new text of its file.
+    Import(crate::import::Output, String),
 }
 
 impl Ran {
@@ -96,6 +102,11 @@ impl Ran {
             Self::Apply(effect) => Body::done(effect),
             Self::Status(output) => Body::done(output),
             Self::Browse(output) => Body::done(output),
+            Self::Import(output, text) => {
+                let mut reply = Body::done(output)?;
+                reply.add(text.as_bytes())?;
+                Ok(reply)
+            }
         }
     }
 }
@@ -174,6 +185,7 @@ enum Request {
     Apply,
     Status,
     Browse(Browse),
+    Import(Import),
     /// An operation of another name.
     Other(String),
 }
@@ -185,6 +197,7 @@ impl Request {
             Self::Plan(_) | Self::Apply | Self::Other(_) => Error::LargeReply,
             Self::Status => Error::LargeStatus,
             Self::Browse(_) => Error::LargeBrowse,
+            Self::Import(_) => Error::LargeImport,
         }
     }
 }
@@ -193,7 +206,6 @@ impl Request {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Plan {
-    #[serde(deserialize_with = "objects")]
     files: Vec<File>,
 }
 
@@ -203,7 +215,6 @@ struct Plan {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Browse {
     pub(crate) connector: String,
-    #[serde(deserialize_with = "objects")]
     pub(crate) files: Vec<File>,
     pub(crate) start: Option<String>,
     #[serde(rename = "match")]
@@ -211,6 +222,31 @@ pub(crate) struct Browse {
     pub(crate) cursor: Option<String>,
     #[serde(default)]
     pub(crate) values: bool,
+}
+
+/// The input of `import`: the name of a connector, each config file with its path as
+/// the user gave it, the start of the walk, and the points to pick or the match.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Import {
+    pub(crate) connector: String,
+    pub(crate) files: Vec<File>,
+    pub(crate) start: Option<String>,
+    #[serde(default)]
+    pub(crate) points: Vec<Point>,
+    #[serde(rename = "match")]
+    pub(crate) pattern: Option<String>,
+}
+
+/// One point that an import picks.
+#[derive(Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Point {
+    /// Its names from the root, as `browse` gives its path.
+    pub(crate) path: String,
+    /// The name of its channel. The default is `<connector>.<path from the start>`.
+    #[serde(default)]
+    pub(crate) name: Option<String>,
 }
 
 /// A `T` that takes only an object: a derived struct also takes a sequence.
@@ -239,10 +275,35 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
     }
 }
 
-/// The files of a [`Plan`], each only from an object.
-fn objects<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<File>, D::Error> {
-    let files = Vec::<Object<File>>::deserialize(deserializer)?;
-    Ok(files.into_iter().map(|Object(file)| file).collect())
+/// The fields of a [`Point`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PointFields {
+    path: String,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for Point {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let Object(PointFields { path, name }) = Object::deserialize(deserializer)?;
+        Ok(Self { path, name })
+    }
+}
+
+/// The fields of a [`File`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileFields {
+    path: PathBuf,
+    text: String,
+}
+
+impl<'de> Deserialize<'de> for File {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let Object(FileFields { path, text }) = Object::deserialize(deserializer)?;
+        Ok(Self { path, text })
+    }
 }
 
 impl<'de> Deserialize<'de> for Request {
@@ -279,6 +340,10 @@ impl<'de> Deserialize<'de> for Request {
                     "browse" => {
                         let Object(browse) = map.next_value()?;
                         Request::Browse(browse)
+                    }
+                    "import" => {
+                        let Object(import) = map.next_value()?;
+                        Request::Import(import)
                     }
                     _ => {
                         let IgnoredAny = map.next_value()?;
@@ -440,6 +505,20 @@ pub(crate) fn browse_request(browse: &Browse) -> Result<Vec<u8>, Error> {
     body.map(|body| body.0).map_err(|Large| Error::LargeRequest)
 }
 
+/// The body of a request of `import`, for [`serve`].
+///
+/// # Errors
+///
+/// [`Error::LargeRequest`] when the body passes the bound.
+///
+/// # Panics
+///
+/// When the path of a file is not UTF-8 and the body before that path fits the bound.
+pub(crate) fn import_request(import: &Import) -> Result<Vec<u8>, Error> {
+    let body = Body::line(&BTreeMap::from([("import", import)]));
+    body.map(|body| body.0).map_err(|Large| Error::LargeRequest)
+}
+
 /// The body of a request of `status`, for [`serve`].
 pub(crate) const STATUS_REQUEST: &[u8] = b"{\"status\":{}}\n";
 
@@ -457,6 +536,28 @@ pub(crate) fn plan_reply(body: &[u8]) -> Result<(Output, &[u8]), Error> {
         ));
     }
     Ok((output, plan))
+}
+
+/// The output of the reply `body` of [`serve`] to a request of `import`, and the new
+/// text of the file after its first line.
+///
+/// # Errors
+///
+/// Each error of [`answer`], and [`Error::Reply`] when no UTF-8 text follows the
+/// output.
+pub(crate) fn import_reply(
+    body: &[u8],
+) -> Result<(crate::import::Output, &str), Error> {
+    let (output, text) = answer(body)?;
+    if text.is_empty() {
+        return Err(bad_reply(
+            "no text follows the first line of the reply of `import`",
+        ));
+    }
+    let text = std::str::from_utf8(text).map_err(|_not_utf8| {
+        bad_reply("the text of the reply of `import` is not UTF-8")
+    })?;
+    Ok((output, text))
 }
 
 /// The output of the reply `body` of [`serve`] to a request of `operation`.
@@ -566,6 +667,10 @@ async fn run(
             Err(bad_request("bytes follow the first line of `browse`"))
         }
         Request::Browse(request) => browse(node, subject, request).await,
+        Request::Import(_) if !rest.is_empty() => {
+            Err(bad_request("bytes follow the first line of `import`"))
+        }
+        Request::Import(request) => import(node, subject, request).await,
         Request::Other(name) => Err(bad_request(format!(
             "the operation `{name}` does not run on a node"
         ))),
@@ -727,17 +832,29 @@ async fn status(node: &Node, subject: &Name) -> Result<Ran, Error> {
     Ok(Ran::Status(output))
 }
 
-/// `browse`. It checks, in this order, that the files read, that they hold the
+/// The connector of a `browse` or an `import`, the files that hold it, and the start
+/// of its walk.
+struct Target {
+    files: Documents,
+    name: Name,
+    connector: spec::connector::Connector,
+    start: browse::Path,
+}
+
+/// The target of the connector `connector` in `files` from `start`, the root when it is
+/// `None`. It checks, in this order, that the files read, that they hold the
 /// connector, that `subject` may open it ([`Check::opens`]), that it runs on this node,
-/// that the start and the match parse, and that the request gives no match with a
-/// cursor.
-async fn browse(node: &Node, subject: &Name, request: Browse) -> Result<Ran, Error> {
-    let files = Documents::read(&request.files, &node.front_ends)?;
-    let name: Name = request.connector.parse().map_err(|error| Error::Argument {
-        message: format!(
-            "the connector `{}` is not a name: {error}",
-            request.connector
-        ),
+/// and that the start parses.
+async fn target(
+    node: &Node,
+    subject: &Name,
+    files: &[File],
+    connector: &str,
+    start: Option<String>,
+) -> Result<Target, Error> {
+    let files = Documents::read(files, &node.front_ends)?;
+    let name: Name = connector.parse().map_err(|error| Error::Argument {
+        message: format!("the connector `{connector}` is not a name: {error}"),
     })?;
     let connector = files.connector(&name)?;
     let spec = used::spec(&node.mesh).await?;
@@ -749,19 +866,47 @@ async fn browse(node: &Node, subject: &Name, request: Browse) -> Result<Ran, Err
             this: node.name.clone(),
         });
     }
-    let start = match request.start {
+    let start = match start {
         None => browse::Path::root(),
         Some(text) => text
             .parse()
             .map_err(|cause| Error::BadStart { text, cause })?,
     };
-    let pattern = request
-        .pattern
-        .map(|text| {
-            text.parse()
-                .map_err(|cause| Error::BadPattern { text, cause })
-        })
-        .transpose()?;
+    Ok(Target {
+        files,
+        name,
+        connector,
+        start,
+    })
+}
+
+/// The pattern of the match `text`.
+///
+/// # Errors
+///
+/// [`Error::BadPattern`] when it does not parse.
+fn pattern(text: String) -> Result<browse::Pattern, Error> {
+    text.parse()
+        .map_err(|cause| Error::BadPattern { text, cause })
+}
+
+/// `browse`. It checks what [`target`] checks, then that the match parses, and that the
+/// request gives no match with a cursor.
+async fn browse(node: &Node, subject: &Name, request: Browse) -> Result<Ran, Error> {
+    let Target {
+        files,
+        name,
+        connector,
+        start,
+    } = target(
+        node,
+        subject,
+        &request.files,
+        &request.connector,
+        request.start,
+    )
+    .await?;
+    let pattern = request.pattern.map(pattern).transpose()?;
     let scope = match (pattern, request.cursor) {
         (Some(_), Some(_)) => {
             return Err(Error::Argument {
@@ -788,4 +933,235 @@ async fn browse(node: &Node, subject: &Name, request: Browse) -> Result<Ran, Err
         .await
         .map_err(|cause| Error::browse(&name, kind, cause, files.sources()))?;
     Ok(Ran::Browse(crate::browse::Output::of(found)))
+}
+
+/// `import`: its output and the new text of the file of the connector block. It checks
+/// what [`target`] checks. Then that the request gives `points` or `match` but not
+/// both, at most [`browse::LIMIT`] points, each path a path, no path twice, and each
+/// name a name. Then that the match parses. Then that the walk did not stop at its
+/// budget or at its limit, and that each point is one that the connector can read or
+/// write. It leaves out each point of a match that the connector cannot.
+async fn import(node: &Node, subject: &Name, request: Import) -> Result<Ran, Error> {
+    let Target {
+        files,
+        name,
+        connector,
+        start,
+    } = target(
+        node,
+        subject,
+        &request.files,
+        &request.connector,
+        request.start,
+    )
+    .await?;
+    let (scope, names) = picked(request.points, request.pattern)?;
+    let query = browse::Query {
+        start,
+        scope,
+        values: browse::Values::Skipped,
+    };
+    let kind = connector.kind();
+    let found = node
+        .supervisor
+        .browse(kind.as_str(), connector.config().document(), &query)
+        .await
+        .map_err(|cause| Error::browse(&name, kind, cause, files.sources()))?;
+    let (picks, unreadable) = match &names {
+        Some(names) => (pointed(&found, names)?, 0),
+        None => matched(&found)?,
+    };
+    let added = files.import(&name, &query.start, &picks, node.supervisor.kinds())?;
+    let file = &request.files
+        [usize::try_from(added.source.0).expect("invariant: a source fits a usize")];
+    let text = front_end::update(file, added.source, &added.document, &node.front_ends)
+        .map_err(|diagnostics| Error::config(diagnostics, files.sources()))?;
+    let path = file
+        .path
+        .to_str()
+        .expect("invariant: `Documents::read` read only UTF-8 paths")
+        .to_owned();
+    let output = crate::import::Output::of(path, &picks, &added, unreadable);
+    Ok(Ran::Import(output, text))
+}
+
+/// The given name of each point of a walk of points, in the order of the paths.
+type Given = Vec<Option<Name>>;
+
+/// The scope of an import of `points` or of the match `pattern`, and the given name
+/// of each point, or `None` for a match.
+///
+/// # Errors
+///
+/// - [`Error::Argument`] for both.
+/// - [`Error::NoPick`] for neither.
+/// - The errors of [`pattern`] and [`points`].
+fn picked(
+    points: Vec<Point>,
+    pattern: Option<String>,
+) -> Result<(browse::Scope, Option<Given>), Error> {
+    match (points.is_empty(), pattern) {
+        (false, Some(_)) => Err(Error::Argument {
+            message: "an import takes `points` or `match`, not both".to_owned(),
+        }),
+        (true, None) => Err(Error::NoPick),
+        (true, Some(text)) => Ok((browse::Scope::Match(self::pattern(text)?), None)),
+        (false, None) => {
+            let (paths, names) = self::points(points)?;
+            Ok((browse::Scope::Points(paths), Some(names)))
+        }
+    }
+}
+
+/// The picks of the walk of a match, and the count of points that the connector
+/// cannot read or write, which it leaves out.
+///
+/// # Errors
+///
+/// [`Error::MatchBudget`] or [`Error::MatchLimit`] when the walk stopped early.
+fn matched(
+    found: &browse::Found,
+) -> Result<(Vec<config::import::Pick<'_>>, usize), Error> {
+    match found.end {
+        browse::End::Done => {}
+        browse::End::Budget => return Err(Error::MatchBudget),
+        browse::End::Limit => return Err(Error::MatchLimit),
+        browse::End::Next(_) => unreachable!("invariant: only a level gives a cursor"),
+    }
+    let mut unreadable = 0;
+    let picks = (found.entries.iter())
+        .filter_map(|entry| match &entry.shape {
+            browse::Shape::Point(facts) => Some(pick(entry, facts, None)),
+            browse::Shape::Unreadable(_) => {
+                unreadable += 1;
+                None
+            }
+            browse::Shape::Folder => None,
+        })
+        .collect();
+    Ok((picks, unreadable))
+}
+
+/// The picks of the walk of points, each with its name in `names`, in the order of
+/// the paths.
+///
+/// # Errors
+///
+/// - [`Error::PickBudget`] when the walk stopped at its budget.
+/// - [`Error::UnreadablePoint`] with each point that the connector cannot read or
+///   write.
+///
+/// # Panics
+///
+/// When the walk gives other than one point or unreadable entry for each name.
+fn pointed<'a>(
+    found: &'a browse::Found,
+    names: &'a [Option<Name>],
+) -> Result<Vec<config::import::Pick<'a>>, Error> {
+    match found.end {
+        browse::End::Done => {}
+        browse::End::Budget => return Err(Error::PickBudget),
+        browse::End::Limit | browse::End::Next(_) => {
+            unreachable!("invariant: a walk of points gives each path and no cursor")
+        }
+    }
+    assert_eq!(
+        found.entries.len(),
+        names.len(),
+        "invariant: a walk of points gives one entry for each path"
+    );
+    let mut picks = Vec::with_capacity(names.len());
+    let mut unreadable = Vec::new();
+    for (entry, name) in found.entries.iter().zip(names) {
+        match &entry.shape {
+            browse::Shape::Point(facts) => {
+                picks.push(pick(entry, facts, name.as_ref()));
+            }
+            browse::Shape::Unreadable(reason) => {
+                unreadable.push((entry.path.to_string(), reason.clone()));
+            }
+            browse::Shape::Folder => {
+                unreachable!(
+                    "invariant: a walk of points gives no folder, but gave one at `{}`",
+                    entry.path
+                )
+            }
+        }
+    }
+    if !unreadable.is_empty() {
+        return Err(Error::UnreadablePoint { points: unreadable });
+    }
+    Ok(picks)
+}
+
+/// The pick of the point `entry`, with its `facts` and given `name`.
+fn pick<'a>(
+    entry: &'a browse::Entry,
+    facts: &'a browse::Facts,
+    name: Option<&'a Name>,
+) -> config::import::Pick<'a> {
+    config::import::Pick {
+        path: &entry.path,
+        tag: &entry.tag,
+        facts,
+        name,
+    }
+}
+
+/// The paths and the given names of `points`.
+///
+/// # Errors
+///
+/// - [`Error::PickLimit`] for more than [`browse::LIMIT`] points.
+/// - [`Error::BadPoint`] with each path that does not parse.
+/// - [`Error::DuplicatePick`] with each path that is there more than once.
+/// - [`Error::BadName`] with each given name that does not parse.
+fn points(points: Vec<Point>) -> Result<(Vec<browse::Path>, Given), Error> {
+    if points.len() > browse::LIMIT {
+        return Err(Error::PickLimit {
+            picked: points.len(),
+        });
+    }
+    let mut paths = Vec::with_capacity(points.len());
+    let mut given = Vec::with_capacity(points.len());
+    let mut bad = Vec::new();
+    for Point { path: text, name } in points {
+        match text.parse::<browse::Path>() {
+            Ok(path) => paths.push(path),
+            Err(cause) => bad.push((text, cause)),
+        }
+        given.push(name);
+    }
+    if !bad.is_empty() {
+        return Err(Error::BadPoint { points: bad });
+    }
+    let mut seen = BTreeMap::new();
+    let mut twice = Vec::new();
+    for path in &paths {
+        let text = path.to_string();
+        let count = seen.entry(text.clone()).or_insert(0_usize);
+        *count += 1;
+        if *count == 2 {
+            twice.push(text);
+        }
+    }
+    if !twice.is_empty() {
+        return Err(Error::DuplicatePick { paths: twice });
+    }
+    let mut names = Vec::with_capacity(given.len());
+    let mut bad = Vec::new();
+    for (path, name) in paths.iter().zip(given) {
+        let Some(text) = name else {
+            names.push(None);
+            continue;
+        };
+        match text.parse::<Name>() {
+            Ok(name) => names.push(Some(name)),
+            Err(cause) => bad.push((path.to_string(), text, cause)),
+        }
+    }
+    if !bad.is_empty() {
+        return Err(Error::BadName { names: bad });
+    }
+    Ok((paths, names))
 }

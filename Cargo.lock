@@ -1923,6 +1923,7 @@ dependencies = [
 name = "sdk-python"
 version = "0.0.0"
 dependencies = [
+ "program",
  "pyo3",
  "sdk",
  "transport",
@@ -2714,6 +2715,7 @@ dependencies = [
  "cfg-expr",
  "comrak",
  "proptest",
+ "quote",
  "semver",
  "serde_json",
  "syn 3.0.6",

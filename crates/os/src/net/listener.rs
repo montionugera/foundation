@@ -198,7 +198,7 @@ mod tests {
         );
     }
 
-    /// macOS refuses the second bind instead.
+    /// Only Linux: macOS refuses the second bind instead.
     #[test]
     #[cfg(target_os = "linux")]
     fn a_second_listen_on_a_bound_address_is_in_use() {

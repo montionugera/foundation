@@ -1,3 +1,5 @@
+//! Only Linux: the test refuses calls with a seccomp filter.
+//!
 //! Sockets that `os` opens while the OS refuses each call that sets the flags of a
 //! descriptor, so a socket that is closed on exec only by a second call fails to open.
 //! The filter acts on the test thread and each thread it starts, so it runs in a test

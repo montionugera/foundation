@@ -38,20 +38,31 @@
   name". `taken` holds each name that the files define or imply, such as the status
   channels of a connector. The path of a pick with no given name that is not below
   `start` panics: the walk gives each path below its start, so it is a defect of the
-  caller. The fix of a refused given name, "Give another name, or leave it out for
-  `<default>`", needs no other item: `config::import::add` calls `names` again with the
-  refused names as `None`, on the failure path only. No name of a path is empty: `walk`
-  refuses an entry that a kind gives with an empty name (BROWSE), and `Path::from_str`
-  refuses an empty name. `names` takes the characters of a segment from
-  `Name::segment_char` (A3), so its `expect` checks an invariant that holds. Lost: a
-  namer with state (`give`, then `next`), where nothing makes the caller give each given
-  name before the first default; a `Document` from `Kind::block`, where an attribute of
-  one pick merges into the one connector body and collides on a second pick; and the run
-  error `Error`, which has variants that a hook with no I/O cannot give. The person's
-  words of decision 5, through `laptop.monitor`, 2026-10-15 17:28 UTC: "Yeah, that's
-  fine" (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198090285);
-  given names first, and one set of name rules in `config`: `laptop.architect-2`, on
-  that decision. `Kind::block` by tag and facts, the default `connector.no-import`,
+  caller. The fix of a given name that `add` refuses, "Give another name, or leave it
+  out for `<default>`", needs no other item: `config::import::add` calls `names` again
+  with the refused names as `None`, on the failure path only. A given name that does not
+  parse is refused by `serve` before the walk (IMPORT OP; `laptop.architect-2`,
+  2026-10-18T06:19:04Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6246489783), with
+  `ops.bad-name`: each such name at once, with its path, its text, and the cause, and
+  the fix "Give another name, or leave it out for the default name". Lost: an item of
+  `config::import` that gives the defaults before the walk, so that this fix names the
+  default, which adds a public item for a rare error (`laptop.architect-2`,
+  2026-10-18T06:08:27Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6246405490, which
+  supersedes, for a name that does not parse only, the `<default>` in the fix of the
+  ruling on decision 5). No name of a path is empty: `walk` refuses an entry that a kind
+  gives with an empty name (BROWSE), and `Path::from_str` refuses an empty name. `names`
+  takes the characters of a segment from `Name::segment_char` (A3), so its `expect`
+  checks an invariant that holds. Lost: a namer with state (`give`, then `next`), where
+  nothing makes the caller give each given name before the first default; a `Document`
+  from `Kind::block`, where an attribute of one pick merges into the one connector body
+  and collides on a second pick; and the run error `Error`, which has variants that a
+  hook with no I/O cannot give. The person's words of decision 5, through
+  `laptop.monitor`, 2026-10-15 17:28 UTC: "Yeah, that's fine"
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198090285); given
+  names first, and one set of name rules in `config`: `laptop.architect-2`, on that
+  decision. `Kind::block` by tag and facts, the default `connector.no-import`,
   `Table::block`, `fill` in `connector::import`, `names` with `start`, and the fix text
   by a second call: `laptop.architect-2`, 2026-10-16 10:06 UTC, on the plan of
   `box1.builder-3`
@@ -152,3 +163,87 @@
   Supersedes
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6213124219, item 5:
   the second call of `names` by `ops`.
+- **IMPORT OP (C1, #2705)** `foundation import <CONNECTOR> <FILES>... (--point <PATH>...
+  | --match <PATTERN>) [--start <PATH>] [--name <NAME>=<PATH>]...` and the MCP tool
+  `import` (`connector`, `files`, `points` of `{path, name}` with `name` optional, or
+  `match`, and `start`) add the config of points to the file of the connector block.
+  `--name` also picks its point, after each `--point`. The node makes the change:
+  `serve` runs the checks of `browse` before the device, then, in order, `ops.no-pick`
+  for no pick, an argument error for both forms, `ops.pick-limit` for more than 500
+  paths, `ops.bad-point` with each path that does not parse, `ops.duplicate-pick` with
+  each path picked twice, `ops.bad-name` with each given name that does not parse, and
+  `ops.bad-pattern`. Each of the three holds a list, with one problem for each, so one
+  run reports each bad text of the first of them that fails, and none does device I/O.
+  Then it walks with `Scope::Points` or `Scope::Match`. A walk of the picks that ends
+  `Budget` gives `ops.pick-budget`, and a match that ends `Budget` gives
+  `ops.match-budget` and one that ends `Limit` gives `ops.match-limit`, so no import
+  adds part of a match in silence. The fix of `ops.pick-limit` is "Pick at most 500
+  points, and import the others in another run", of `ops.pick-budget` "Pick the points
+  of fewer folders, and import the others in another run", and of `ops.match-limit` and
+  `ops.match-budget` "Narrow the start or the match". Each form has its own code for the
+  limit and the budget, so each code has one cause and one fix (`laptop.architect-2`,
+  2026-10-18T07:39:38Z:
+  https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247231298), which
+  supersedes `ops.import-limit` and `ops.import-budget` and their fixes of
+  https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247107080. A picked
+  point that the kind cannot read or write gives `ops.unreadable-point`, one diagnostic
+  for each, with its reason; a match leaves each out and counts it. Then
+  `config::import::add`, then the new text by `FrontEnd::update` of the file. The reply
+  is the JSON line of the output, then the new text, and a reply over the bound of a
+  body gives `ops.large-import`. The CLI and the MCP server write the new text through
+  `Scope`, so the limits of `foundation mcp` hold. They write nothing when it is the
+  text that they sent, and when the file no longer holds the sent text they give
+  `ops.file-changed` and write nothing. On `os`, an import that writes a regular file
+  makes it anew, with mode 0600 and nothing of the old file, so a file that the user
+  opened to a group or to other users is closed to them again after each import. A
+  symbolic link, a device, or a pipe at the path takes the new text in place, with its
+  mode kept, and a crash can leave part of it (ENV SEAMS). Lost: the permission bits of
+  the old file kept on the new one, which open the file to a user that the old file did
+  not when its group changes or when an access control list applies. `--json` and the
+  MCP result are `{file, channels: [{name, path, type}], index, fills: [{name, what}],
+  unnamed: [{path, fix}], present, unreadable}`, with no added blocks: `index` is the
+  added index or `null`, `type` is `null` where the import wrote a `fill`, and `fills`
+  holds each channel with a `fill` in any of its blocks. The text output is one line for
+  the file and the count, one for each channel as `<name> <path> <type>`, then one line
+  for the index, each fill, each unnamed point, and each count that is not 0. `TABLE`
+  holds `import` with `read_only: false` and `destructive: true`: its write replaces the
+  file of the connector block, as the `out` of `plan` does (OPS OUTPUT), so a client
+  that asks the person before a destructive tool asks for `import` too. Supersedes the
+  `destructive: false` of item 11 of
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074
+  (`laptop.architect-2`, 2026-10-18T07:24:23Z:
+  https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247107080). Each code
+  has one fix. The `instructions` of the MCP `initialize` result is the agent guide:
+  `browse`, `import`, a value for each `fill`, `plan` shown to the person, and `apply`
+  only when the person agrees, and `status`. The steps: `laptop.architect-2`,
+  2026-10-18T07:08:05Z
+  (https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6246968079). It
+  leaves out `discover`, which is not in C1, so no step names a tool that the server
+  does not have. Deferred: picks by tag. Trigger: a user who has a list of tags and no
+  paths. Deferred: the added blocks in the JSON (B of decision 4). Trigger: the person
+  asks. The person's words of decision 4, through `laptop.monitor`, 2026-10-15 17:25
+  UTC: "I think A is fine for now"
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198070930); of
+  decision 6, 2026-10-15 17:33 UTC: "Ok this is good"
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198173531); of
+  decision 8, 2026-10-15 17:39 UTC: "A is fine"
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198270136). The
+  order of the checks, the budget, the duplicate pick, the write check, `TABLE`, the
+  codes, and the trigger of picks by tag: `laptop.architect-2`, 2026-10-18T02:10:56Z,
+  items 6 to 11
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074). The
+  JSON: `laptop.architect-2`, 2026-10-18T02:36:08Z
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244788485), which
+  supersedes the words "with the added documents" of item 4 of
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198070930. The
+  parse of each point and given name in `serve`, each in a list, and one fix for each
+  code: `laptop.architect-2`, 2026-10-18T06:19:04Z
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6246489783), which
+  supersedes the two fixes of `ops.import-budget` in item 6 of
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074. The
+  mode 0600: `laptop.architect-2`, 2026-10-18T06:03:37Z
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6246366941), which
+  supersedes the kept bits of item 8 of
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074. The
+  guide without `discover`: parameter 5 of
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198270136.
