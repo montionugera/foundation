@@ -62,7 +62,8 @@ impl kind::Kind for Kind {
     /// Connects to the device and reads each `read` once per tick until the cancel,
     /// in one request for the reads of one table that touch or overlap, and writes
     /// one frame per tick, stamped at the midpoint of the mesh times of the requests.
-    /// Each connect and each exchange gives up after 1 s.
+    /// Each connect and each exchange gives up after 1 s. The first tick whose reads
+    /// all succeed clears the error of the last run.
     ///
     /// # Errors
     ///
@@ -82,18 +83,19 @@ impl kind::Kind for Kind {
         let Some(client) = ctx.cancel().race(connect(&ctx)).await else {
             return Ok(());
         };
-        let mut client = client?;
+        let (mut client, remote) = client?;
         let mut values = read::Values::new(config.reads.len());
         let missed = ctx.count("missed");
         let mut timer = pace::Timer::new(ctx.clock(), config.rate);
         while let Some(tick) = timer.tick(ctx.cancel()).await {
             missed.add(tick.missed);
-            let scan = scan(config, &mut client, &groups, &mut values);
+            let scan = scan(config, &mut client, remote, &groups, &mut values);
             let Some((done, stamp)) = ctx.cancel().race(writer.request(scan)).await
             else {
                 break;
             };
             done?;
+            ctx.clear_error();
             writer.write(values.take().map(Some), stamp)?;
         }
         Ok(())
@@ -157,13 +159,14 @@ fn at(read: &config::Read) -> String {
     )
 }
 
-/// Connects to the first address of the host of `config` that takes the stream.
+/// Connects to the first address of the host of `config` that takes the stream, and
+/// gives that address.
 ///
 /// # Errors
 ///
 /// [`Error::Device`] when the lookup fails, or with the connect error of the first
 /// address when none takes the stream.
-async fn connect(ctx: &Context<Config>) -> Result<Client, Error> {
+async fn connect(ctx: &Context<Config>) -> Result<(Client, SocketAddr), Error> {
     let config = ctx.config();
     let host = &config.host;
     let remotes = ctx.net().resolve(host, config.port).await;
@@ -180,7 +183,7 @@ async fn connect(ctx: &Context<Config>) -> Result<Client, Error> {
             options: OPTIONS,
         };
         match Client::connect(ctx.net(), &stream, ctx.clock().clone(), TIMEOUT).await {
-            Ok(client) => return Ok(client),
+            Ok(client) => return Ok((client, remote)),
             Err(error) => {
                 first.get_or_insert((remote, error));
             }
@@ -199,8 +202,8 @@ const OPTIONS: tcp::Options = tcp::Options {
     delayed: false,
 };
 
-/// Sends the request of each of `groups` in turn, and puts the values of its reply
-/// into `values`.
+/// Sends the request of each of `groups` in turn to the device at `remote`, and puts
+/// the values of its reply into `values`.
 ///
 /// # Errors
 ///
@@ -208,22 +211,33 @@ const OPTIONS: tcp::Options = tcp::Options {
 async fn scan(
     config: &Config,
     client: &mut Client,
+    remote: SocketAddr,
     groups: &[Group],
     values: &mut read::Values,
 ) -> Result<(), Error> {
     for group in groups {
         let reply = client.exchange(config.unit, &group.request()).await;
-        let reply = reply
-            .map_err(|failure| device(Fault::Exchange(Items::of(group), failure)))?;
+        let reply = reply.map_err(|failure| {
+            device(Fault::Exchange {
+                remote,
+                items: Items::of(group),
+                failure,
+            })
+        })?;
         values
             .put(group, reply)
-            .map_err(|exception| refused(config, group, exception))?;
+            .map_err(|exception| refused(config, group, remote, exception))?;
     }
     Ok(())
 }
 
-/// The error of `group`, which the device refused with `exception`.
-fn refused(config: &Config, group: &Group, exception: Exception) -> Error {
+/// The error of `group`, which the device at `remote` refused with `exception`.
+fn refused(
+    config: &Config,
+    group: &Group,
+    remote: SocketAddr,
+    exception: Exception,
+) -> Error {
     match exception {
         Exception::IllegalFunction
         | Exception::IllegalAddress
@@ -243,7 +257,11 @@ fn refused(config: &Config, group: &Group, exception: Exception) -> Error {
                 })
                 .collect(),
         ),
-        _ => device(Fault::Exception(Items::of(group), exception)),
+        _ => device(Fault::Exception {
+            remote,
+            items: Items::of(group),
+            exception,
+        }),
     }
 }
 
@@ -258,8 +276,16 @@ enum Fault {
         remote: SocketAddr,
         error: net::Error,
     },
-    Exchange(Items, Failure),
-    Exception(Items, Exception),
+    Exchange {
+        remote: SocketAddr,
+        items: Items,
+        failure: Failure,
+    },
+    Exception {
+        remote: SocketAddr,
+        items: Items,
+        exception: Exception,
+    },
 }
 
 /// The items that one request reads: its table and its first address.
@@ -293,12 +319,18 @@ impl fmt::Display for Fault {
             Self::Connect { remote, error } => {
                 write!(f, "the connect to {remote} failed: {error}")
             }
-            Self::Exchange(items, failure) => {
-                write!(f, "the read of {items} failed: {failure}")
-            }
-            Self::Exception(items, exception) => write!(
+            Self::Exchange {
+                remote,
+                items,
+                failure,
+            } => write!(f, "the read of {items} of {remote} failed: {failure}"),
+            Self::Exception {
+                remote,
+                items,
+                exception,
+            } => write!(
                 f,
-                "the device refused the read of {items} with exception {exception}"
+                "{remote} refused the read of {items} with exception {exception}"
             ),
         }
     }

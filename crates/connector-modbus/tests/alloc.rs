@@ -13,6 +13,7 @@ use std::path::Path;
 use std::pin::pin;
 use std::sync::Mutex;
 
+use connector::cancel::Token;
 use connector_modbus::command::Write;
 use connector_modbus::device::Device;
 use connector_modbus::pdu::Table;
@@ -126,7 +127,8 @@ fn ticks() -> Vec<u64> {
         };
         tasks.spawn(async move {
             let device = Mutex::new(device);
-            serve(listener, 1, &device).await;
+            let served = serve(listener, Token::new(), 1, &device).await;
+            served.expect("the listener holds");
         });
         let config = tcp::Config { remote, options };
         let (net, clock) = (node.net(), node.clock());
