@@ -185,23 +185,45 @@ fn a_power_cut_in_next_keeps_each_version_given_before() {
     assert_ne!(kept, 0, "no cut came after the write was durable");
 }
 
-/// A call after a call that dropped waits for the calls that it left to run, and
-/// does not find the file busy.
+/// A call after a call that dropped at any point waits for the calls that it left to
+/// run, does not find the file busy, and gives the version above the one that the file
+/// then holds.
 #[test]
 fn next_after_a_dropped_call_gives_the_next_version() {
-    let (mut sim, node) = create_node();
-    let version = sim
-        .run_on(&node, |node, _| async move {
-            let blocks = Blocks::new(create_pool()).unwrap();
-            let files = node.files();
-            let mut dropped = Box::pin(next(&files, Path::new(""), &blocks, 1));
-            let mut cx = Context::from_waker(Waker::noop());
-            assert!(dropped.as_mut().poll(&mut cx).is_pending());
-            drop(dropped);
-            next(&files, Path::new(""), &blocks, 1).await.unwrap()
-        })
-        .unwrap();
-    assert!((2..=3).contains(&version), "{version}");
+    let mut seen = BTreeSet::new();
+    for seed in 0..64 {
+        let mut sim = Sim::new(common::simulation(seed));
+        let node = sim.node(sim::node::Config::default());
+        let limit =
+            Span::from_nanos(i64::try_from(seed).unwrap().saturating_mul(4_000));
+        let (given, held, version) = sim
+            .run_on(&node, move |node, _| async move {
+                let blocks = Blocks::new(create_pool()).unwrap();
+                let (files, dir) = (node.files(), Path::new(""));
+                let first = next(&files, dir, &blocks, 1);
+                let given = within(&node.clock(), limit, first).await;
+                let held = last(&files, dir, &blocks).await.unwrap();
+                (given, held, next(&files, dir, &blocks, 1).await.unwrap())
+            })
+            .unwrap();
+        let kind = match given {
+            Some(given) => {
+                assert_eq!(given, Ok(2), "seed {seed}");
+                "done"
+            }
+            None if held == 0 => "dropped before its write",
+            None => "dropped after its write",
+        };
+        assert!([0, 2].contains(&held), "seed {seed} left {held}");
+        assert_eq!(version, held.max(1) + 1, "seed {seed}");
+        seen.insert(kind);
+    }
+    let kinds = [
+        "done",
+        "dropped after its write",
+        "dropped before its write",
+    ];
+    assert_eq!(seen.into_iter().collect::<Vec<_>>(), kinds);
 }
 
 /// A first write that broke leaves the other slot unwritten, so it is torn.
