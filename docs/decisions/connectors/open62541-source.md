@@ -956,8 +956,10 @@
   policy or a certificate group, or a function `UA_CertificateUtils_*`, other than the
   three policies in `POLICIES` of `shim.c`, `UA_CertificateGroup_Memorystore`,
   `UA_CertificateUtils_checkKeyPair`, `UA_CertificateUtils_getApplicationUri`, and the
-  stubs of `shim.c`. A test fails when the objects of `shim.c` or `server.c` name
-  aws-lc or a symbol of `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps
+  stubs of `shim.c` (`laptop.architect-2`, 2026-10-18 21:39 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255470380, item 1).
+  A test fails when the objects of `shim.c` or `server.c` name aws-lc or a symbol of
+  `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps
   no state: the copy removes its `static` flag, which it wrote with no lock and which
   guarded only the calls for OpenSSL before 1.1, and the build fails when
   `OPENSSL_API_COMPAT` is defined. Lost: the about 35 file and clock calls of the
