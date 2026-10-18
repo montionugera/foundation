@@ -54,6 +54,8 @@ pub(crate) enum Change {
         /// [`HOMES_MAX`]. At the apply, an index with a home keeps it.
         homes: BTreeMap<channel::Key, node::Key>,
     },
+    /// Makes the card the card of its member. Every node checks it at apply.
+    Card(Box<card::Unchecked>),
 }
 
 /// A change that admits a node. Every node checks it at apply, so its card is not yet
@@ -95,6 +97,7 @@ const HOME: u8 = 1;
 const JOIN: u8 = 2;
 const TICKET: u8 = 3;
 const SPEC: u8 = 4;
+const CARD: u8 = 5;
 
 /// The most chunk digests that one `Spec` change lists, so that
 /// [`message::BYTES_MIN`](crate::message::BYTES_MIN) stays under 64 KiB, the default
@@ -127,6 +130,7 @@ impl Change {
     ///   chunks (2 bytes), each chunk digest in rising order, the count of holders (2
     ///   bytes), each holder's key in rising order, the count of homes (2 bytes), and
     ///   each index and its home in rising index order. A digest is its 32 bytes.
+    /// - Card: the node key, the card, and its signature, as in a join.
     ///
     /// # Panics
     ///
@@ -192,6 +196,10 @@ impl Change {
                     put_key(home, out);
                 }
             }
+            Self::Card(card) => {
+                out.push(CARD);
+                card.encode(out);
+            }
         }
     }
 
@@ -208,6 +216,7 @@ impl Change {
             JOIN => take_join,
             TICKET => take_ticket,
             SPEC => take_spec,
+            CARD => take_card,
             _ => return Err(Unknown::Kind { kind }.into()),
         };
         take_body(&mut rest)
@@ -233,6 +242,10 @@ fn take_join(bytes: &mut &[u8]) -> Option<Change> {
         admission: take(bytes)?,
         status: Status::decode(bytes)?,
     })))
+}
+
+fn take_card(bytes: &mut &[u8]) -> Option<Change> {
+    Some(Change::Card(Box::new(card::Unchecked::decode(bytes)?)))
 }
 
 fn take_ticket(bytes: &mut &[u8]) -> Option<Change> {
@@ -373,7 +386,7 @@ mod tests {
     use super::*;
     use crate::common::{
         create_largest, digest, encoded, home, index, join, key, name, options, public,
-        spec, status_bytes, ticket_change, with_status,
+        signed, spec, status_bytes, ticket_change, unchecked, with_status,
     };
 
     #[test]
@@ -400,6 +413,25 @@ mod tests {
         expected.extend(b"disk");
         expected.extend(9_u128.to_le_bytes());
         assert_eq!(encoded(&Change::Join(Box::new(join))), expected);
+    }
+
+    #[test]
+    fn a_card_change_has_a_fixed_byte_form() {
+        let card = unchecked(&signed(3, "plant.edge.a"));
+        let mut expected = vec![5];
+        expected.extend(3_u128.to_le_bytes());
+        card.card.encode(&mut expected);
+        expected.extend(card.signature);
+        assert_eq!(encoded(&Change::Card(Box::new(card))), expected);
+    }
+
+    // Apply checks the signature, so decode keeps a forged card.
+    #[test]
+    fn decode_keeps_a_card_whose_signature_does_not_hold() {
+        let mut card = unchecked(&signed(3, "plant.edge.a"));
+        card.signature[0] ^= 1;
+        let change = Change::Card(Box::new(card));
+        assert_eq!(Change::decode(&encoded(&change)), Ok(change));
     }
 
     #[test]
@@ -568,7 +600,7 @@ mod tests {
 
     #[test]
     fn a_spec_change_at_each_bound_is_bytes_max_bytes() {
-        let [.., spec] = create_largest();
+        let [.., spec, _] = create_largest();
         let Change::Spec {
             chunks,
             holders,
@@ -585,9 +617,9 @@ mod tests {
 
     #[test]
     fn the_largest_change_of_each_other_kind_is_below_bytes_max_bytes() {
-        let [home, join, ticket, _] = create_largest();
-        let lengths = [home, join, ticket].map(|change| encoded(&change).len());
-        assert_eq!(lengths, [33, 19_601, 307]);
+        let [home, join, ticket, _, card] = create_largest();
+        let lengths = [home, join, ticket, card].map(|change| encoded(&change).len());
+        assert_eq!(lengths, [33, 19_601, 307, 2_081]);
         assert!(lengths.iter().all(|&length| length < BYTES_MAX));
     }
 
@@ -650,7 +682,7 @@ mod tests {
     #[test]
     fn decode_refuses_an_unknown_kind() {
         let mut bytes = encoded(&home(1, 2));
-        for kind in std::iter::once(0).chain(SPEC + 1..=u8::MAX) {
+        for kind in std::iter::once(0).chain(CARD + 1..=u8::MAX) {
             bytes[0] = kind;
             let error = Change::decode(&bytes).unwrap_err();
             assert_eq!(error, Malformed::Unknown(Unknown::Kind { kind }));
@@ -776,7 +808,17 @@ mod tests {
                         .collect(),
                 },
             );
-        prop_oneof![homes, joins, tickets, specs]
+        let cards = (any::<u8>(), any::<u64>(), any::<bool>()).prop_map(
+            |(id, version, forged)| {
+                let mut card = unchecked(&signed(id, "plant.edge.a"));
+                card.card.version = version;
+                if forged {
+                    card.signature[0] ^= 1;
+                }
+                Change::Card(Box::new(card))
+            },
+        );
+        prop_oneof![homes, joins, tickets, specs, cards]
     }
 
     proptest! {

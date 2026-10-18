@@ -151,6 +151,9 @@ exclude_re = [
   # `a_write_waits_at_the_unsent_bound_not_the_send_buffer`, and
   # `a_full_send_buffer_below_the_bound_makes_a_write_wait`.
   'crates/os/src/net/unsent\.rs:.*Bound::send',
+  # macOS 15 only: Linux refuses the path at the stat. In the `macos` check,
+  # `paths::within_agrees_with_free_on_a_file_with_a_slash_or_a_dot` catches it.
+  'crates/os/src/paths\.rs:.*guard names_directory\(path\) with false in read$',
   # No input makes `getaddrinfo` give `EAI_AGAIN` or `EAI_MEMORY` on demand. The test of
   # the map, through a private call, kills each.
   'crates/os/src/net/resolve\.rs:.*delete match arm \(libc::EAI_(AGAIN|MEMORY), _\)',
@@ -228,4 +231,7 @@ exclude_re = [
   # `Holder::copy` asserts that `at` fits in 31 bits, so bit 31 is clear and `^`
   # gives the same bits as `|`.
   'crates/buffer/src/log\.rs:.*replace \| with \^ in Holder::copy$',
+  # A read's assembly (`SKIP` false) never reaches `Skipped`: its `skip` fails to
+  # build. So the arm under a true guard is never taken.
+  'crates/wire/src/hub/part\.rs:.*replace match guard SKIP with true in Assembly<SKIP>::(body|take)$',
 ]

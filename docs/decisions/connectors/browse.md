@@ -102,10 +102,26 @@
   `Supervisor::browse(kind, config, query)` runs `Kind::browse` apart from any run of
   the connector, with the network, clock, randomness, and secrets of the supervisor; a
   kind reads only what it needs to reach the device, so a block with only `kind`,
-  `node`, and `address` browses. A kind reads mesh time with `browse::Context::time`,
-  which races `Hub::time` against `WAIT` (5 s) and gives `Error::Retry` with "the node
-  has no mesh time after 5s" at the bound, so a kind that reads no mesh time never
-  waits (`laptop.architect-2`, 2026-10-17T03:22:56Z:
+  `node`, and `address` browses. A supervisor runs at most 2 browses at once, since each
+  holds what its device gives. One more gives `Error::Retry` with "2 browses run, the
+  most at once" at once, not a wait, and the caller browses again; an unknown kind gives
+  `connector.unknown-kind` first, as a retry of it cannot succeed. A browse holds its
+  place from the first poll of its future until it returns or drops
+  (`laptop.architect-2`, 2026-10-18T03:45:21Z:
+  https://github.com/synnaxlabs/foundation/issues/2981#issuecomment-6245320764). A place
+  has no time bound of its own; #3125 ends a walk at a deadline. The bound is 2 in place
+  of 4, as `laptop.monitor` asked (`laptop.architect-2`, 2026-10-18T03:39:44Z:
+  https://github.com/synnaxlabs/foundation/issues/2981#issuecomment-6245278357; its 32
+  MiB is withdrawn, 6245419401), and it states no bytes: a whole browse has no byte
+  bound yet (#3124). The text is of `laptop.architect-2`, 2026-10-18T03:58:18Z and
+  04:03:07Z: https://github.com/synnaxlabs/foundation/pull/3122#issuecomment-6245419401
+  and https://github.com/synnaxlabs/foundation/pull/3122#issuecomment-6245457104, the
+  call that holds (`laptop.monitor`, 2026-10-18T04:06:56Z:
+  https://github.com/synnaxlabs/foundation/pull/3122#issuecomment-6245488696). A kind
+  reads mesh time with `browse::Context::time`, which races `Hub::time` against `WAIT`
+  (5 s) and gives `Error::Retry` with "the node has no mesh time after 5s" at the bound,
+  so a kind that reads no mesh time never waits (`laptop.architect-2`,
+  2026-10-17T03:22:56Z:
   https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6228993285).
   `browse::Context` and `kind::Context` stay two types: each input that both give is a
   read of a field or one call, and `secret` is one function. Trigger to make them one:

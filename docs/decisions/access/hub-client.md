@@ -192,7 +192,22 @@
   forward of BQ12 uses them with no client type. Their errors are in `hub::Error`,
   which stays `Copy`. One private codec gives the signed first message of a read and
   of a write by kind, and one private module holds `Places`, `Place`, `place`,
-  `PLACES_MAX`, and `OPEN_BYTES_MAX`, which `client` exports. A node-side
-  `hub::write::Frames` comes in its own PR, and until then `Head` has no public
-  decode. Decided by `laptop.architect` at 2026-10-18T03:22:04Z
-  (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245142760).
+  `PLACES_MAX`, and `OPEN_BYTES_MAX`, which `client` exports. At the node,
+  `hub::write::Frames` decodes the frames of a write after the places. It refuses
+  each head that `Head::encode` panics on and each head of more series than places,
+  and `Head` has no public decode. When the program finishes its stream inside a
+  frame, `Frames::finish` gives `Error::Cut` with the bytes of the frame that came,
+  and the node stops the stream as `MALFORMED`. The home takes no part of a frame and
+  gives it no outcome. For a frame that finds the pool full, the node refuses it and
+  calls `Frames::skip`, which drops the frame's body and keeps the stream open
+  (`laptop.architect`, 2026-10-18T06:08:47Z,
+  https://github.com/synnaxlabs/foundation/pull/3148#issuecomment-6246407916). Decided
+  by `laptop.architect` at 2026-10-18T03:22:04Z
+  (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245142760), with
+  the surface of `Frames` approved at 2026-10-18T05:42:24Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6246204678). The
+  plan first dropped a cut frame with no error. `laptop.monitor` refused that silent
+  end, because a program finishes inside a frame only through a defect or a crash, and
+  a silent drop hides the defect of an SDK. `laptop.architect` gave `Error::Cut` at
+  2026-10-18T05:43:30Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6246212678).
