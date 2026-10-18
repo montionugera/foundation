@@ -20,7 +20,7 @@ const WINDOW: Span = Span::SECOND;
 /// that a device sets is not the rate of the log. A window starts at the first line of
 /// its level after the last window ends. The count of the lines that a window drops
 /// goes out as one line `dropped` at that level, with the field `lines`, at the first
-/// of the next line of that level, the first [`Log::ended`] after the window, and the
+/// of the next line of that level, the first [`Log::flush`] after the window, and the
 /// drop.
 pub(crate) struct Log {
     span: tracing::Span,
@@ -51,18 +51,18 @@ impl Log {
 
     /// Writes the count of each window that dropped lines and has ended. It reads the
     /// clock only when a window dropped lines.
-    pub(crate) fn ended(&self) {
+    pub(crate) fn flush(&self) {
         if self.warn.dropped.get() == 0 && self.error.dropped.get() == 0 {
             return;
         }
         let now = self.clock.now();
-        self.ended_at(false, now);
-        self.ended_at(true, now);
+        self.flush_at(false, now);
+        self.flush_at(true, now);
     }
 
     fn put(&self, severe: bool, category: &str, text: &str) {
         let now = self.clock.now();
-        self.ended_at(severe, now);
+        self.flush_at(severe, now);
         let budget = self.budget(severe);
         if budget.start.get().is_none() {
             budget.start.set(Some(now));
@@ -81,7 +81,7 @@ impl Log {
         }
     }
 
-    fn ended_at(&self, severe: bool, now: Monotonic) {
+    fn flush_at(&self, severe: bool, now: Monotonic) {
         let start = self.budget(severe).start.get();
         if start.is_some_and(|start| now - start >= WINDOW) {
             self.end(severe);

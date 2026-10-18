@@ -123,7 +123,7 @@ impl Loop {
         let status = ffi::Status(unsafe { (self.members().run)(self.raw(), 0) });
         assert_eq!(status, ffi::Status::GOOD, "open62541 failed a run");
         // SAFETY: `new` leaked the box, and the C call that read it has returned.
-        unsafe { self.log.as_ref() }.ended();
+        unsafe { self.log.as_ref() }.flush();
     }
 
     /// Gives whether a delayed callback waits for the next run.
