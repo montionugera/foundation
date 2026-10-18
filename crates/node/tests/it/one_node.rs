@@ -709,6 +709,7 @@ fn browse_gives_the_points_of_the_server_with_their_values() {
 /// `import --match` of the OPC UA connector adds a channel for each point that matches,
 /// and after `plan` and `apply`, InfluxDB holds samples of each. The match holds only
 /// the Doubles `Temperature` and `Speed`, as InfluxDB of the test holds only floats.
+/// The import makes the file of mode 0644 a file of mode 0600.
 #[test]
 fn import_of_a_match_adds_channels_whose_samples_reach_influxdb() {
     let hcl = plant().replacen("\"plant.*\"", "\"plc.*\"", 1);
@@ -723,6 +724,9 @@ fn import_of_a_match_adds_channels_whose_samples_reach_influxdb() {
         "--match",
         "*pe*e*",
     ];
+    let file = plant.rig.dir.join("plant.hcl");
+    std::fs::set_permissions(&file, Permissions::from_mode(0o644))
+        .expect("opens the file to others");
     let output = plant.rig.run(&args, b"");
     let expected = "The import added 2 channels to plant.hcl.\n\
                     plc.Temperature Plant/Line/Temperature f64\n\
@@ -735,6 +739,11 @@ fn import_of_a_match_adds_channels_whose_samples_reach_influxdb() {
         ),
         (Some(0), expected, "")
     );
+    let mode = std::fs::metadata(&file)
+        .expect("a file")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
     let output = plant
         .rig
         .run(&["plan", "plant.hcl", "--out", "plant.plan"], b"");

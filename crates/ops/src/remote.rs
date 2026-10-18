@@ -213,7 +213,7 @@ where
 /// Imports on the node of `link` the points of `input` into the config file of its
 /// connector, read and written through `scope`. It writes the new text only when the
 /// file still holds the text that it sent, and writes nothing when the text is the
-/// same.
+/// same. The file becomes a new file of mode 0600 (ENV SEAMS).
 ///
 /// # Errors
 ///
