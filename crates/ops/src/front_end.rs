@@ -5,6 +5,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use document::diagnostic::{Code, Diagnostic};
+use document::encoding::Checked;
 use document::{Document, Position, Source, Span};
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +21,17 @@ pub struct FrontEnd {
     ///
     /// Each problem in the text, with its span: at least one.
     pub read: fn(source: Source, text: &str) -> Result<Document, Vec<Diagnostic>>,
+    /// Writes `document` into `text`, the text of the file `source`, and keeps each
+    /// byte of `text` that keeps its value and its place.
+    ///
+    /// # Errors
+    ///
+    /// Each problem in `text`, or each part of `document` that the syntax cannot hold.
+    pub update: fn(
+        source: Source,
+        text: &str,
+        document: &Checked,
+    ) -> Result<String, Vec<Diagnostic>>,
 }
 
 /// The front end of each file extension that a node reads. It holds at least one.

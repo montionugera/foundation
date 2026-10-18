@@ -111,6 +111,10 @@ fn serve_large(text: &str, code: &'static str) {
             "hcl",
             FrontEnd {
                 read: config_hcl::read,
+                update: |source, text, document| {
+                    config_hcl::update(source, text, document)
+                        .map_err(|refusal| Vec::from(&refusal))
+                },
             },
         );
         let node = Node::new(Config {

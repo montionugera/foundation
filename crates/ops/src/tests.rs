@@ -732,6 +732,7 @@ fn error_codes_and_fixes_match_the_golden_file() {
         "hcl",
         FrontEnd {
             read: |_, _| Err(Vec::new()),
+            update: |_, _, _| Err(Vec::new()),
         },
     );
     let unknown = front_end::unknown(Source(0), &front_ends);

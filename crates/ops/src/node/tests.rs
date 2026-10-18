@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use crate::apply::{Applied, Effect};
 use crate::common::{
     ADMIN, Fixture, NODE, create_config, create_kinds, create_node,
-    create_node_reading, create_node_with, fail_sync, founded, front_ends, name,
+    create_node_reading, create_node_with, fail_sync, founded, front_ends, hcl, name,
     placed_site, plan, plant, shown, solo,
 };
 use crate::error::Error;
@@ -160,15 +160,7 @@ fn debug_names_each_front_end() {
         let expected =
             r#"Config { front_ends: FrontEnds(["hcl"]), name: Name("edge"), .. }"#;
         assert_eq!(format!("{config:?}"), expected);
-        assert_eq!(
-            format!(
-                "{:?}",
-                FrontEnd {
-                    read: config_hcl::read
-                }
-            ),
-            "FrontEnd { .. }"
-        );
+        assert_eq!(format!("{:?}", hcl()), "FrontEnd { .. }");
     });
 }
 
@@ -196,19 +188,9 @@ async fn assert_unknown(
 #[test]
 fn names_each_extension_of_the_table_in_the_fix() {
     solo(|fixture, mesh| async move {
-        let two = front_ends().with(
-            "toml",
-            FrontEnd {
-                read: config_hcl::read,
-            },
-        );
+        let two = front_ends().with("toml", hcl());
         assert_unknown(&fixture, mesh.clone(), two.clone(), "`.hcl` or `.toml`").await;
-        let three = two.with(
-            "yaml",
-            FrontEnd {
-                read: config_hcl::read,
-            },
-        );
+        let three = two.with("yaml", hcl());
         assert_unknown(&fixture, mesh, three, "`.hcl`, `.toml`, or `.yaml`").await;
     });
 }
@@ -230,13 +212,9 @@ fn reads_with_the_last_front_end_of_an_extension() {
                     "Fix it".to_owned(),
                 )])
             },
+            update: |_, _, _| Err(Vec::new()),
         };
-        let front_ends = FrontEnds::new("hcl", refuse).with(
-            "hcl",
-            FrontEnd {
-                read: config_hcl::read,
-            },
-        );
+        let front_ends = FrontEnds::new("hcl", refuse).with("hcl", hcl());
         let node = create_node_reading(&fixture, mesh.clone(), front_ends);
         let expected = crate::value(&planned(&mesh, site()).await);
         let (_, output) = node.plan(site()).await.expect("a plan");
