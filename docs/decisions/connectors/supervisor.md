@@ -171,6 +171,11 @@
   reader that starts first. `Rig::supervisor` serves a browse only
   (`laptop.architect-2`, 2026-10-18T16:10:06Z:
   https://github.com/synnaxlabs/foundation/pull/3214#issuecomment-6252107337). The
+  rig keeps those names after `Rig::remove`, so a later open panics when a status
+  channel is gone. `Rig::unsynced` is a constructor and not a `delay` input, since
+  no test needs a delay and roots at once (`laptop.architect-2`,
+  2026-10-18T18:05:59Z:
+  https://github.com/synnaxlabs/foundation/issues/3039#issuecomment-6253304602). The
   unit tests of `connector` build it with the crate-private `testing::create_config`,
   which `Rig` also calls, and which opens the hub through `hub::testing::open`, other
   than the tests of the wait for mesh time (below) and one test with no status
