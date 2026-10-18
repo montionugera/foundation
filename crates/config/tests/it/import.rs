@@ -717,6 +717,48 @@ fn gives_the_fix_the_default_of_the_run_without_the_refused_names() {
 }
 
 #[test]
+fn gives_no_default_when_the_run_without_the_refused_names_refuses_a_name() {
+    // `plc.` and 250 bytes: `<default>_2` is too long. So the default of the first pick
+    // leaves the pick of "t2" `Unnamed`, which opens the pick at "B".
+    let space = format!("{} ", "a".repeat(249));
+    let under = format!("{}_", "a".repeat(249));
+    let left = [
+        want(&space, "t1"),
+        want(&under, "t2"),
+        named("A", "t3", "n"),
+        named("B", "t2", "n"),
+    ];
+    let rerun = problems(added(&[PLANT], &left).expect_err("a name of two picks"));
+    assert_eq!(
+        rerun,
+        vec![problem(
+            "config.duplicate-name",
+            "the points at \"A\" and \"B\" have the name \"n\"",
+            "Give another name, or leave it out for \"plc.B\"",
+        )]
+    );
+    let wants = [
+        named(&space, "t1", "plc"),
+        want(&under, "t2"),
+        named("A", "t3", "n"),
+        named("B", "t2", "n"),
+    ];
+    let problems = problems(added(&[PLANT], &wants).expect_err("in use"));
+    let message = format!(
+        "the name \"plc\" of the point at {:?} is in use in the files",
+        path(&space).to_string()
+    );
+    assert_eq!(
+        problems,
+        vec![problem(
+            "config.duplicate-name",
+            &message,
+            "Give another name"
+        )]
+    );
+}
+
+#[test]
 fn gives_no_default_a_channel_that_another_connector_writes() {
     let other = "connector \"line\" {\n  kind = \"points\"\n  node = \"cloud\"\n\n  \
                  read \"plc.A.x\" {\n    tag = \"t0\"\n  }\n}\n";

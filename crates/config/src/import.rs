@@ -92,7 +92,7 @@ pub struct Added {
 /// both paths for a name that an earlier pick has. Each names the path and the name,
 /// with the fix "Give another name, or leave it out for `<default>`", with the default
 /// of the run with each refused name left out, or "Give another name" when that run
-/// gives none. Else the diagnostics of [`Table::block`]. Else `document.too-deep`.
+/// gives none or refuses a name. Else the diagnostics of [`Table::block`]. Else `document.too-deep`.
 ///
 /// # Panics
 ///
@@ -123,35 +123,26 @@ pub fn add(
     taken.extend(writes.channels().cloned());
     let existing =
         index_of(&blocks, writes.channels()).map_err(|problem| vec![problem])?;
-    let given = |at: usize| picks[at].name;
-    let (open, index, names) = named(
-        connector,
-        start,
-        picks,
-        &given,
-        &tags,
-        &taken,
-        existing.as_ref(),
-    );
+    let (open, index, names) =
+        named(connector, start, picks, &tags, &taken, existing.as_ref());
     let open_picks: Vec<&Pick<'_>> = open.iter().map(|&at| &picks[at]).collect();
     let refused: Vec<_> = refused(&open_picks, &taken)
         .into_iter()
         .map(|(at, problem)| (open[at], problem))
         .collect();
     if !refused.is_empty() {
-        let kept = |at| {
-            let refused = refused.iter().any(|(refused, _)| *refused == at);
-            picks[at].name.filter(|_| !refused)
-        };
-        let (open, _, names) = named(
-            connector,
-            start,
-            picks,
-            &kept,
-            &tags,
-            &taken,
-            existing.as_ref(),
-        );
+        let mut left = picks.to_vec();
+        for &(at, _) in &refused {
+            left[at].name = None;
+        }
+        let (open, _, mut names) =
+            named(connector, start, &left, &tags, &taken, existing.as_ref());
+        let open_left: Vec<&Pick<'_>> = open.iter().map(|&at| &left[at]).collect();
+        // The run can open a pick that was present, whose given name it refuses: then
+        // leaving the names out adds nothing, so no fix names a default.
+        if !self::refused(&open_left, &taken).is_empty() {
+            names.fill(None);
+        }
         return Err(fixed(refused, &open, &names));
     }
     let written = written(kinds, kind, &open_picks, names, &index)?;
@@ -198,12 +189,11 @@ fn open(
 }
 
 /// The place of each pick of `picks` that is not present, the index, and the name of
-/// each of those picks, where `given` gives the given name of the pick at a place.
-fn named<'a>(
+/// each of those picks.
+fn named(
     connector: &Name,
     start: &Path,
-    picks: &[Pick<'a>],
-    given: &dyn Fn(usize) -> Option<&'a Name>,
+    picks: &[Pick<'_>],
     tags: &BTreeSet<String>,
     taken: &[Name],
     existing: Option<&Name>,
@@ -213,7 +203,7 @@ fn named<'a>(
     let mut unnamed = BTreeSet::new();
     loop {
         let open = open(picks, tags, &unnamed);
-        let given = open.iter().map(|&at| (picks[at].path, given(at)));
+        let given = open.iter().map(|&at| (picks[at].path, picks[at].name));
         let (index, names) = name(connector, start, given, taken, existing.cloned());
         let dropped = open.iter().zip(&names).filter(|(_, name)| name.is_none());
         let before = unnamed.len();
