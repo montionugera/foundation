@@ -747,9 +747,7 @@ async fn send_one(
     let first = writer.now().nanos();
     write(&mut writer, first, &[(1.0, 2.0)]);
     plant.clock.sleep(Span::from_nanos(20_000_000_000)).await;
-    let ended = run.ended();
-    let end = run.stop().await;
-    let end = ended.then_some(end);
+    let end = run.end().await;
     // The status readers take the last status after the home applied it.
     plant.clock.sleep(Span::SECOND).await;
     let auth = plant.auth.borrow().clone();
@@ -1902,11 +1900,7 @@ fn one_frame(
             .all(|outcome| matches!(outcome, hub::home::Outcome::Applied { .. }));
         assert!(applied, "the frame applies: {outcomes:?}");
         plant.clock.sleep(Span::SECOND).await;
-        let end = if run.ended() {
-            Some(run.stop().await)
-        } else {
-            None
-        };
+        let end = run.end().await;
         let points = (plant.store.borrow().points("telemetry", &[]))
             .map(|point| {
                 let fields = point.fields.iter();

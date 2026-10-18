@@ -203,7 +203,8 @@ pub(crate) fn writes(
     let run = sim.run_on(&node, move |node, tasks| async move {
         let rig = rig(&node, &tasks, kind, nodes, scalars).await;
         let config = config("opc.tcp://plc:4840", nodes);
-        let names = rig.define_status("opcua", &name("plant.plc"), &config);
+        let held = rig.define_status("opcua", &name("plant.plc"), &config);
+        let names: Vec<_> = held.into_iter().map(|(name, _)| name).collect();
         let mut status = status(rig.hub(), &names).await;
         let readings = Rc::new(RefCell::new(Vec::new()));
         let into = Rc::clone(&readings);
@@ -239,8 +240,9 @@ async fn status(hub: &hub::Hub, names: &[Name]) -> hub::reader::Reader {
 }
 
 /// A rig on `node` with `kind` as `opcua`, which defines the channels of
-/// `plant.plc`, a connector that reads `nodes` nodes: the index `plant.time` of key 1, and a channel of key 2 on for each read, of the types of
-/// `scalars` in turn.
+/// `plant.plc`, a connector that reads `nodes` nodes: the index `plant.time` of
+/// key 1, and a channel of key 2 on for each read, of the types of `scalars` in
+/// turn.
 async fn rig(
     node: &sim::node::Node,
     tasks: &env::tasks::Tasks,

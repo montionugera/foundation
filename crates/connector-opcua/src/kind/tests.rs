@@ -43,20 +43,19 @@ const DATA: &[&str] = &["plant.a", "plant.b", "plant.c"];
 /// The connector of each scene.
 const PLC: &str = "plant.plc";
 
-/// The first key of the status channels of [`PLC`], the first that the rig gives:
-/// the index, then `state`, `class`, `restarts`, `backoff`, `error`, `note`, then each
-/// count of the kind.
-const STATUS: u128 = 1 << 64;
-const CLASS: u128 = STATUS + 2;
-const RESTARTS: u128 = STATUS + 3;
-const ERROR: u128 = STATUS + 5;
-const NOTE: u128 = STATUS + 6;
-const IN: u128 = STATUS + 7;
-const MISSED: u128 = STATUS + 8;
-const LOST: u128 = STATUS + 9;
-const BAD: u128 = STATUS + 10;
-const UNCERTAIN: u128 = STATUS + 11;
-const MISTYPED: u128 = STATUS + 12;
+/// The place of each status channel of [`PLC`] in [`Record::statuses`], in the order
+/// of the status: the index, then `state`, `class`, `restarts`, `backoff`, `error`,
+/// `note`, then each count of the kind.
+const CLASS: u128 = 2;
+const RESTARTS: u128 = 3;
+const ERROR: u128 = 5;
+const NOTE: u128 = 6;
+const IN: u128 = 7;
+const MISSED: u128 = 8;
+const LOST: u128 = 9;
+const BAD: u128 = 10;
+const UNCERTAIN: u128 = 11;
+const MISTYPED: u128 = 12;
 
 /// The class of a device error in the status.
 const DEVICE: u64 = 2;
@@ -102,6 +101,21 @@ fn stamp(frame: &Frame, key: u128) -> i64 {
         Some(&[bits]) => i64::from_le_bytes(bits.to_le_bytes()),
         other => panic!("one stamp of {key}: {other:?}"),
     }
+}
+
+/// Each of `frames`, keyed by the place of each key in `status`.
+fn by_place(frames: Vec<Frame>, status: &[(Name, channel::Key)]) -> Vec<Frame> {
+    let places = status.iter().zip(0..);
+    let places: BTreeMap<u128, u128> = places
+        .map(|((_, key), place)| (key.as_u128(), place))
+        .collect();
+    let frames = frames.into_iter().map(|frame| {
+        let samples = frame.into_iter();
+        samples
+            .map(|(key, samples)| (places[&key], samples))
+            .collect()
+    });
+    frames.collect()
 }
 
 /// The last sample of the status channel `key` in `statuses`, or 0 when none holds
@@ -424,7 +438,8 @@ struct Record {
     frames: Vec<Frame>,
     /// The frames of the channels of the setup on each other index, by its key.
     indexes: BTreeMap<u128, Vec<Frame>>,
-    /// The frames of the status channels.
+    /// The frames of the status channels, each keyed by its place in the order of the
+    /// status.
     statuses: Vec<Frame>,
     served: BTreeMap<String, Vec<Served>>,
     /// The reads of the state of the server that each server answered.
@@ -463,6 +478,7 @@ where
         let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
         let config = config(&address, rate, &setup.reads);
         let status = rig.define_status("opcua", &name(PLC), &config);
+        let names: Vec<_> = status.iter().map(|(name, _)| name.clone()).collect();
         let channels = setup.channels.iter();
         let channels: Vec<_> = channels
             .map(|(text, def)| (name(text), def.clone()))
@@ -479,7 +495,7 @@ where
         for (index, names) in groups {
             indexes.insert(index, record(hub, &names, &tasks).await);
         }
-        let statuses = record(hub, &status, &tasks).await;
+        let statuses = record(hub, &names, &tasks).await;
         let scene = Rc::new(Scene {
             config,
             variables: setup.variables(),
@@ -499,7 +515,8 @@ where
             .into_iter()
             .map(|(index, frames)| (index, frames.take()));
         let indexes: BTreeMap<u128, Vec<Frame>> = indexes.collect();
-        (result, indexes, statuses.take(), scene.variables.clone())
+        let statuses = by_place(statuses.take(), &status);
+        (result, indexes, statuses, scene.variables.clone())
     });
     let ((result, mut indexes, statuses, variables), logged) = run;
     Record {
