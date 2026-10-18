@@ -396,7 +396,9 @@
   (IMPORT OP) have `destructiveHint`, since the `out` of `plan` and the write of
   `import` (IMPORT OP) replace a file that is there, so a client that asks the person
   before a destructive tool asks for each (`laptop.architect-2`, 2026-10-18T07:39:38Z:
-  https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247231298). It supersedes the text of https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247188650.
+  https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247231298). It
+  supersedes the text of
+  https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247188650.
   `foundation mcp` reaches its node at the first tool call that needs it, keeps that
   session, and reaches again only at the call after a failure of a reach or a request.
   `node` reads standard input on an I/O thread of `os` and gives `ops::cli` an async
