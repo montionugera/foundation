@@ -1011,10 +1011,11 @@ fn inspect(
                  caller"
             ));
         }
-        let found = includes(&preprocessed, copy, &flags, &dirs, &crypto.include);
-        for problem in found.into_iter().chain(passwords(&preprocessed, &readers)) {
-            problems.push(format!("{source}: {problem}"));
-        }
+        let found = includes(&preprocessed, copy, &flags, &dirs)
+            .into_iter()
+            .chain(foreign(&preprocessed, &dirs, &crypto.include))
+            .chain(passwords(&preprocessed, &readers));
+        problems.extend(found.map(|problem| format!("{source}: {problem}")));
     }
     problems.extend(uses.mismatches());
     if problems.is_empty() {
@@ -1122,14 +1123,11 @@ fn marker(line: &str) -> Option<(usize, &str)> {
 /// finds a header outside both the copy and the system directories `dirs`. It finds
 /// the header as `cc` does, through the `-I` directories `flags` gives. Unlike
 /// `cc -H`, `-dI` also shows an `#include` of a header that the unit included before.
-/// Also an error for each header that the unit enters, by any name and from any file,
-/// under `openssl/` of a directory of `dirs` other than the directories `crypto`.
 fn includes(
     preprocessed: &str,
     copy: &Path,
     flags: &str,
     dirs: &[PathBuf],
-    crypto: &[PathBuf],
 ) -> Vec<String> {
     let quoted: Vec<&Path> = flags
         .lines()
@@ -1141,11 +1139,6 @@ fn includes(
     for line in preprocessed.lines() {
         if let Some((_, name)) = marker(line) {
             file = Path::new(name);
-            let problem =
-                format!("includes {name}, a header of OpenSSL outside the crypto");
-            if foreign(file, dirs, crypto) && !problems.contains(&problem) {
-                problems.push(problem);
-            }
             continue;
         }
         let Some((keyword, directive)) = line.split_once(' ') else {
@@ -1191,17 +1184,34 @@ fn includes(
     problems
 }
 
-/// Whether `file` is under `openssl/` of a directory of `dirs`, and under no
-/// directory of `crypto`.
-fn foreign(file: &Path, dirs: &[PathBuf], crypto: &[PathBuf]) -> bool {
-    let file = files::normalize(file);
-    !crypto
-        .iter()
-        .any(|dir| file.starts_with(files::normalize(dir)))
-        && dirs.iter().any(|dir| {
-            file.strip_prefix(files::normalize(dir))
+/// An error for each header that the unit enters, by any name and from any file,
+/// under `openssl/` of a directory of `dirs` other than the directories `crypto`, as
+/// the line markers of `preprocessed` (the output of `cc -E`) show it. GCC writes the
+/// real path of a system header, so a directory that does not exist holds none.
+fn foreign(preprocessed: &str, dirs: &[PathBuf], crypto: &[PathBuf]) -> Vec<String> {
+    let real = |dirs: &[PathBuf]| -> Vec<PathBuf> {
+        dirs.iter()
+            .filter_map(|dir| std::fs::canonicalize(dir).ok())
+            .collect()
+    };
+    let (dirs, crypto) = (real(dirs), real(crypto));
+    let mut problems = Vec::new();
+    for (_, name) in preprocessed.lines().filter_map(marker) {
+        let file = Path::new(name);
+        let system = dirs.iter().any(|dir| {
+            file.strip_prefix(dir)
                 .is_ok_and(|rest| rest.starts_with("openssl"))
-        })
+        });
+        let problem =
+            format!("includes {name}, a header of OpenSSL outside the crypto");
+        if system
+            && !crypto.iter().any(|dir| file.starts_with(dir))
+            && !problems.contains(&problem)
+        {
+            problems.push(problem);
+        }
+    }
+    problems
 }
 
 /// The callbacks that a call in the copy may give a function of aws-lc that takes a
@@ -2364,7 +2374,7 @@ Disassembly of section .text.stamp:
         );
         let flags = "-DX\n-Iinclude\n-Ideps\n-std=c99\n";
         assert_eq!(
-            includes(&preprocessed, &root.join("copy"), flags, &dirs, &crypto),
+            includes(&preprocessed, &root.join("copy"), flags, &dirs),
             [
                 "includes <local.h>, which no include directory holds".to_owned(),
                 "includes src/../../out.h, which is outside the copy".to_owned(),
@@ -2373,68 +2383,6 @@ Disassembly of section .text.stamp:
                 "uses #include_next <stdio.h>, which the check cannot follow"
                     .to_owned(),
                 format!("includes {}, which is outside the copy", out.display()),
-            ]
-        );
-        remove(&root).unwrap();
-    }
-
-    /// Through a private call: a new test of [`check`] needs GCC, which the macOS job
-    /// of CI lacks (#3041).
-    #[test]
-    fn includes_refuses_each_system_header_under_openssl_that_the_unit_enters() {
-        let root = temp("includes-openssl");
-        create_files(
-            &root,
-            &[
-                ("copy/src/openssl/common.h", ""),
-                ("sys/stdio.h", ""),
-                ("sys/openssl/ssl.h", ""),
-                ("sys/openssl/kdf.h", ""),
-                ("sys/openssl/x.h", ""),
-                ("crypto/openssl/evp.h", ""),
-            ],
-        );
-        let crypto = [root.join("crypto")];
-        let dirs = [crypto[0].clone(), root.join("sys")];
-        let preprocessed = format!(
-            "\
-# 1 \"src/a.c\"
-#include <openssl/ssl.h>
-# 1 \"{sys}/openssl/ssl.h\" 1 3 4
-# 2 \"src/a.c\" 2
-#include <./openssl/kdf.h>
-# 1 \"{sys}/./openssl/kdf.h\" 1 3 4
-# 3 \"src/a.c\" 2
-#include <stdio.h>
-# 1 \"{sys}/stdio.h\" 1 3 4
-#include <openssl/x.h>
-# 1 \"{sys}/openssl/x.h\" 1 3 4
-# 2 \"{sys}/stdio.h\" 2 3 4
-# 4 \"src/a.c\" 2
-#include <openssl/evp.h>
-# 1 \"{crypto}/openssl/evp.h\" 1 3 4
-# 5 \"src/a.c\" 2
-#include \"openssl/common.h\"
-# 1 \"src/openssl/common.h\" 1
-# 6 \"src/a.c\" 2
-#include <openssl/ssl.h>
-# 1 \"{sys}/openssl/ssl.h\" 1 3 4
-",
-            sys = root.join("sys").display(),
-            crypto = crypto[0].display(),
-        );
-        let outside = |name: &str| {
-            format!(
-                "includes {}, a header of OpenSSL outside the crypto",
-                root.join("sys").join(name).display()
-            )
-        };
-        assert_eq!(
-            includes(&preprocessed, &root.join("copy"), "", &dirs, &crypto),
-            [
-                outside("openssl/ssl.h"),
-                outside("./openssl/kdf.h"),
-                outside("openssl/x.h"),
             ]
         );
         remove(&root).unwrap();
@@ -2503,70 +2451,6 @@ n = read_x(b, 0, 0, 0);
         [("read_q", 2), ("read_r", 1), ("read_x", 2)]
             .map(|(name, place)| (name.to_owned(), place))
             .into()
-    }
-
-    /// Through a private call: a new test of [`check`] needs GCC, which the macOS job
-    /// of CI lacks (#3041).
-    #[test]
-    fn crypto_readers_reads_each_header_of_aws_lc() {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let locked = Crypto::locked(workspace).unwrap();
-        let readers = locked.readers(Path::new("cc")).unwrap();
-        let read = format!("{}PEM_read_bio_X509", locked.prefix);
-        assert_eq!(readers.get(&read), Some(&2));
-        // aws-lc-sys builds no libssl, so the prefix header has no name of it.
-        assert_eq!(readers.get("SSL_CTX_set_default_passwd_cb"), Some(&1));
-        assert_eq!(crypto().readers(Path::new("cc")), Ok(BTreeMap::new()));
-    }
-
-    /// Through a private call: a new test of [`check`] needs GCC, which the macOS job
-    /// of CI lacks (#3041).
-    #[test]
-    fn crypto_readers_reads_the_first_header_of_each_name_under_openssl() {
-        let dir = temp("readers");
-        create_files(
-            &dir,
-            &[
-                (
-                    "first/openssl/a.h",
-                    "int read_a(int a, pem_password_cb *cb);\n",
-                ),
-                ("second/openssl/a.h", "int read_a(pem_password_cb *cb);\n"),
-                (
-                    "second/openssl/b.h",
-                    "int read_b(int a, pem_password_cb *cb);\n",
-                ),
-                ("second/openssl/x/c.h", "int read_c(pem_password_cb *cb);\n"),
-                ("second/openssl/d.c", "int read_d(pem_password_cb *cb);\n"),
-                ("second/openssl/e.h.in", "#error e\n"),
-                ("bad/openssl/f.h", "#error f\n"),
-            ],
-        );
-        let readers = |include: &[&str]| {
-            Crypto {
-                include: include.iter().map(|name| dir.join(name)).collect(),
-                ..crypto()
-            }
-            .readers(Path::new("cc"))
-        };
-        assert_eq!(
-            readers(&["first", "second"]),
-            Ok([("read_a", 1), ("read_b", 1), ("read_c", 0)]
-                .map(|(name, place)| (name.to_owned(), place))
-                .into())
-        );
-        let error = readers(&["bad"]).unwrap_err();
-        assert!(error.starts_with("cc failed: "), "{error}");
-        let place = format!("{}:1:2: error: ", dir.join("bad/openssl/f.h").display());
-        assert!(error.contains(&place), "{error}");
-        assert_eq!(
-            readers(&["first", "none"]),
-            Err(format!(
-                "{}: No such file or directory (os error 2)",
-                dir.join("none/openssl").display()
-            ))
-        );
-        remove(&dir).unwrap();
     }
 
     #[test]
@@ -3871,37 +3755,84 @@ End of search list.
         remove(&root).and_then(|()| remove(&repo)).unwrap();
     }
 
+    /// A file of a copy that includes headers of the crypto, of the copy, and of a
+    /// system directory under `openssl/`, and calls a reader.
+    const CRYPTO_UNIT: &str = "#include <openssl/fixture.h>
+#include <openssl/x/read.h>
+#include <./openssl/kdf.h>
+#include <wrap.h>
+#include \"openssl/common.h\"
+#include <./openssl/kdf.h>
+int UA_free(void) { return BIO_free(); }
+void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
+";
+
     /// A header of the [`Crypto`] is outside the copy, and the check reads it as a
-    /// system header, as the build of `connector-opcua` does.
+    /// system header, as the build of `connector-opcua` does. The readers come from
+    /// the first header of each name under `openssl/` of the crypto, and each other
+    /// system header under `openssl/` is refused.
     #[test]
     fn check_builds_against_the_headers_of_the_crypto() {
         let dir = temp("crypto");
-        let source =
-            "#include <openssl/fixture.h>\nint UA_free(void) { return BIO_free(); }\n";
+        let read = "#define PEM_read_bio_X509 fixture_PEM_read_bio_X509\n\
+                    typedef int pem_password_cb(char *, int, int, void *);\n";
+        let first =
+            format!("{read}void *PEM_read_bio_X509(int, pem_password_cb *, int);\n");
+        let second =
+            format!("{read}void *PEM_read_bio_X509(pem_password_cb *, int, int);\n");
         create_files(
             &dir,
             &[
                 ("copy/sources.txt", "a.c\n"),
                 ("copy/flags.txt", "-fno-dollars-in-identifiers\n"),
-                ("copy/a.c", source),
+                ("copy/a.c", CRYPTO_UNIT),
+                ("copy/openssl/common.h", "struct common;\n"),
                 (
                     "crypto/openssl/fixture.h",
                     "#define BIO_free fixture_BIO_free\nint BIO_free(void);\n",
                 ),
+                ("crypto/openssl/x/read.h", &first),
+                ("crypto/openssl/e.h.in", "#error e\n"),
+                ("crypto/x/README", ""),
+                ("second/openssl/x/read.h", &second),
+                ("bad/openssl/f.h", "#error f\n"),
+                ("sys/openssl/kdf.h", "struct kdf;\n"),
+                ("sys/openssl/x.h", "struct x;\n"),
+                ("sys/wrap.h", "#include <openssl/x.h>\n"),
             ],
         );
-        let crypto = Crypto {
-            include: vec![dir.join("crypto")],
-            prefix: PREFIX.to_owned(),
+        std::os::unix::fs::symlink(dir.join("sys"), dir.join("link")).unwrap();
+        let script = format!(
+            "#!/bin/sh\nexec cc \"$@\" -isystem '{}'\n",
+            dir.join("link").display()
+        );
+        let cc = create_cc(&dir, &script);
+        let inspect = |include: &[&str]| {
+            let crypto = Crypto {
+                include: include.iter().map(|name| dir.join(name)).collect(),
+                prefix: PREFIX.to_owned(),
+            };
+            inspect(&dir.join("copy"), &dir.join("out"), &cc, &crypto)
         };
-        assert_eq!(
-            inspect(
-                &dir.join("copy"),
-                &dir.join("out"),
-                Path::new("cc"),
-                &crypto
-            ),
-            Err(Uses::default().mismatches())
+        let outside = |name: &str| {
+            format!(
+                "a.c: includes {}, a header of OpenSSL outside the crypto",
+                dir.join("sys/openssl").join(name).display()
+            )
+        };
+        let mut problems = vec![
+            outside("kdf.h"),
+            outside("x.h"),
+            gives("a.c", "a.c:8", "0", PREFIX),
+        ];
+        problems.extend(Uses::default().mismatches());
+        assert_eq!(inspect(&["crypto/x/..", "second"]), Err(problems));
+        let error = inspect(&["bad"]).unwrap_err().concat();
+        let place = format!("{}:1:2: error: ", dir.join("bad/openssl/f.h").display());
+        let failed = format!("{} failed: ", cc.display());
+        assert!(
+            error.starts_with(&failed) && error.contains(&place),
+            "{error}"
         );
         remove(&dir).unwrap();
     }
