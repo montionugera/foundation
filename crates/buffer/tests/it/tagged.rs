@@ -790,12 +790,12 @@ fn the_open_refuses_a_record_whose_holders_pass_a_carry_record() {
     });
 }
 
-/// The body of a carry record with `tails` and one copy of tag 1 of index 77, an
-/// entry with no samples at seq 0 and the bytes `old`.
-fn carry_body_with_copy(tails: &[Vec<u8>]) -> Vec<u8> {
+/// The body of a carry record with `tails` and `copies` copies of tag 1 of index
+/// 77, an entry with no samples at seq 0 and the bytes `old`.
+fn carry_body_with_copies(tails: &[Vec<u8>], copies: u16) -> Vec<u8> {
     let counts = [
         &u16::try_from(tails.len()).expect("few tails").to_le_bytes()[..],
-        &1u16.to_le_bytes(),
+        &copies.to_le_bytes(),
     ];
     let header = [
         &77u128.to_le_bytes()[..],
@@ -807,11 +807,12 @@ fn carry_body_with_copy(tails: &[Vec<u8>]) -> Vec<u8> {
         &[1],
         &3u32.to_le_bytes(),
     ];
+    let copies = usize::from(copies);
     [
         counts.concat(),
         tails.concat(),
-        header.concat(),
-        b"old".to_vec(),
+        header.concat().repeat(copies),
+        b"old".repeat(copies),
     ]
     .concat()
 }
@@ -824,17 +825,47 @@ fn the_open_refuses_a_carried_copy_of_a_path_that_no_record_holds() {
     run(411, |shard| async move {
         shard.create_two_records().await;
         let ring = layout(AREA, BODY_MAX);
-        shard.put_carry(3 * BLOCK, &carry_body_with_copy(&[])).await;
+        shard
+            .put_carry(3 * BLOCK, &carry_body_with_copies(&[], 1))
+            .await;
         shard.open_invalid(ring, 3 * BLOCK).await;
         let tail = carried(77, 0, 1, None);
         shard
-            .put_carry(3 * BLOCK, &carry_body_with_copy(&[tail]))
+            .put_carry(3 * BLOCK, &carry_body_with_copies(&[tail], 1))
             .await;
         let mut slots = Slots::new();
         let buffer = shard.open(ring, &mut slots).await.expect("opens");
         let copy = vec![(slots.index(key(77)), kept(b"old"))];
         assert_eq!(newest(&buffer, Path::Live, 1), copy);
     });
+}
+
+/// A carry record that holds the copy of tag 1 of index 77 twice gives `Invalid` at
+/// the record, both when a data record before it holds an older entry of the tag
+/// and when it holds a newer one. With one copy, the ring opens.
+#[test]
+fn the_open_refuses_a_carry_record_that_holds_a_copy_twice() {
+    for first in [0, 4] {
+        run(412, move |shard| async move {
+            let ring = layout(AREA, BODY_MAX);
+            let mut slots = Slots::new();
+            let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let slot = slots.index(key(77));
+            let batch = [tagged(77, slot, Path::Live, first, 1, shard.block(10))];
+            commit(&shard, &buffer, &batch).await;
+            drop(buffer);
+            let tails = [carried(77, first, 1, None)];
+            shard
+                .put_carry(2 * BLOCK, &carry_body_with_copies(&tails, 2))
+                .await;
+            shard.open_invalid(ring, 2 * BLOCK).await;
+            shard
+                .put_carry(2 * BLOCK, &carry_body_with_copies(&tails, 1))
+                .await;
+            let opened = shard.open(ring, &mut Slots::new()).await;
+            assert_eq!(opened.map(drop), Ok(()), "a data entry at {first}");
+        });
+    }
 }
 
 proptest! {

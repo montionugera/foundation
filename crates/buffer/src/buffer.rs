@@ -1153,6 +1153,8 @@ fn recover(
 }
 
 /// Feeds the logs the tails and the entries of a carry record body at `offset`.
+/// Fails as [`Error::Invalid`] at a body that holds an entry of a tag on a path
+/// twice, also when an older record holds a newer entry of the tag.
 fn recover_carried(
     body: &[u8],
     offset: u64,
@@ -1167,9 +1169,13 @@ fn recover_carried(
         let slot = slots.index(tail.index);
         logs.recover(slot, &tail, offset).map_err(misplaced)?;
     }
+    let mut given = hash::Set::default();
     for entry in entries {
         let (header, bytes) = entry.map_err(unread)?;
         let slot = slots.index(header.index);
+        if !given.insert((slot, header.path, header.tag)) {
+            return Err(Error::Invalid { offset });
+        }
         logs.carried(slot, &header, bytes, offset)
             .map_err(misplaced)?;
     }

@@ -55,12 +55,6 @@ pub(crate) enum Invalid {
     Repeated { index: channel::Key, path: Path },
     /// A carry record holds an entry with tag 0.
     Untagged { index: channel::Key, path: Path },
-    /// A carry record holds the entry of a tag on the path twice.
-    Twice {
-        index: channel::Key,
-        path: Path,
-        tag: NonZeroU8,
-    },
     /// An entry with no samples follows `u64::MAX` of them at its seq on its path.
     Crowded {
         index: channel::Key,
@@ -163,11 +157,6 @@ impl fmt::Display for Invalid {
                 f,
                 "a carry record holds an entry of index {index} on path {path:?} with \
                  tag 0"
-            ),
-            Self::Twice { index, path, tag } => write!(
-                f,
-                "a carry record holds the entry of tag {tag} of index {index} on path \
-                 {path:?} twice"
             ),
             Self::Crowded { index, path, seq } => write!(
                 f,
@@ -1043,9 +1032,8 @@ impl Logs {
     ///
     /// # Errors
     ///
-    /// [`Invalid::Untagged`] when the tag is 0, [`Invalid::Past`] when the entry
-    /// ends past the last seq, and [`Invalid::Twice`] when the record at `offset`
-    /// already gave the copy. Nothing changes.
+    /// [`Invalid::Untagged`] when the tag is 0, and [`Invalid::Past`] when the entry
+    /// ends past the last seq. Nothing changes.
     ///
     /// # Panics
     ///
@@ -1065,9 +1053,6 @@ impl Logs {
             len: header.len(),
         };
         let end = end(header.first, header.kind).ok_or(past.on(index, path))?;
-        if self.holder(slot, path, tag) == Some(offset) {
-            return Err(Invalid::Twice { index, path, tag });
-        }
         if let Some(copy) = self.note(slot, header, tag, end, offset) {
             fill(copy, &[bytes]);
         }
@@ -2444,7 +2429,7 @@ mod tests {
     }
 
     #[test]
-    fn refuses_a_carried_entry_with_tag_0_or_past_the_last_seq_or_twice() {
+    fn refuses_a_carried_entry_with_tag_0_or_past_the_last_seq() {
         let index = channel::Key::from_u128(1);
         let tagged = Header {
             tag: 2,
@@ -2459,11 +2444,9 @@ mod tests {
             tag: 2,
             ..header(1, Path::Live, u64::MAX, 2, None)
         };
-        let tag = NonZeroU8::new(2).expect("not 0");
         let invalid = [
             logs.carried(slot(1), &untagged, b"zero", 8192),
             logs.carried(slot(1), &past, b"past", 8192),
-            logs.carried(slot(1), &tagged, b"two", 4096),
         ];
         let expected = [
             Err(Invalid::Untagged {
@@ -2476,27 +2459,18 @@ mod tests {
                 first: u64::MAX,
                 len: 2,
             }),
-            Err(Invalid::Twice {
-                index,
-                path: Path::Live,
-                tag,
-            }),
         ];
         assert_eq!(invalid, expected);
         assert_eq!(logs, before);
-        let text: Vec<String> = [expected[0], expected[2]]
-            .iter()
-            .filter_map(|invalid| invalid.err())
-            .map(|invalid| invalid.to_string())
-            .collect();
         assert_eq!(
-            text,
-            [
+            expected[0]
+                .err()
+                .map(|invalid| invalid.to_string())
+                .as_deref(),
+            Some(
                 "a carry record holds an entry of index \
-                 00000000-0000-0000-0000-000000000001 on path Live with tag 0",
-                "a carry record holds the entry of tag 2 of index \
-                 00000000-0000-0000-0000-000000000001 on path Live twice",
-            ]
+                 00000000-0000-0000-0000-000000000001 on path Live with tag 0"
+            )
         );
     }
 
