@@ -360,7 +360,9 @@ impl<'a> Udp<'a> {
 
 /// The source and destination addresses of the datagrams of `transmit` from a
 /// socket of `node` bound to `local`. As on Linux, a socket on IPv6 takes an
-/// IPv4-mapped address as the IPv4 address.
+/// IPv4-mapped address as the IPv4 address. A datagram from a link-local `local`
+/// leaves from it, which is an address of `node` because a bind takes only the
+/// link-local address of its own node.
 ///
 /// # Errors
 ///

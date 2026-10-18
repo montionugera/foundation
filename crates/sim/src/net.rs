@@ -99,9 +99,9 @@ fn receives(node: usize, local: SocketAddr, destination: SocketAddr) -> bool {
 /// The address that a bind of `local` on `node` takes, where `bound` gives the local
 /// address of each socket of the node of the same kind. Port 0 takes the first free
 /// port from 49152. As on Linux, only the link-local address keeps the scope of
-/// `local`, and no IPv6 address keeps flow info. A datagram from the link-local
-/// address leaves from it, but no packet reaches it: the first test that sends to one
-/// adds it to [`node`] and a check of the scope of a send.
+/// `local`, and no IPv6 address keeps flow info. No packet reaches the link-local
+/// address: the first test that sends to one adds it to [`node`] and a check of the
+/// scope of a send.
 ///
 /// # Errors
 ///
