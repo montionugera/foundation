@@ -867,7 +867,8 @@ __Client_AsyncService_abort(UA_Client *client, UA_UInt32 requestId,
     }
     size_t offset = 0;
     UA_StatusCode error;
-    if(UA_UInt32_decodeBinary(body, &offset, &error) != UA_STATUSCODE_GOOD)
+    if(UA_UInt32_decodeBinary(body, &offset, &error) != UA_STATUSCODE_GOOD ||
+       !UA_StatusCode_isBad(error))
         error = UA_STATUSCODE_BADDECODINGERROR;
     LIST_REMOVE(ac, pointers);
     __Client_AsyncService_cancel(client, ac, error);
