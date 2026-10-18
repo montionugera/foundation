@@ -47,8 +47,9 @@ or a line range.
 2. **Plan.** On the issue, write the approach, the exact public surface change with the
    doc comment of each new public item, and a very different design that lost. Run
    `/eb-review` on the plan and post the revised plan. A change to another crate's
-   public surface or a new crate dependency is an `interface` issue
-   (`docs/coordination.md`).
+   public surface, a change that removes or changes a public item of a crate of your
+   issue that a crate outside the issue uses, or a new crate dependency is an
+   `interface` issue (`docs/coordination.md`, "Interface changes").
 3. **Tests first.** Write the behavior from the issue and its decisions section as
    failing tests: property tests for codecs and pure logic, simulation tests for I/O.
 4. **Implement** until they pass. Keep the PR to a few hundred lines. When a second idea
@@ -158,8 +159,7 @@ take the next issue meanwhile.
   finding of your PR, or an issue that your PR waits on) states its goal, crates, tests
   that must pass, and decisions section, with a `crate:` label for each of its crates.
   Send its link to `laptop.coordinator` when you file it, which admits it
-  (`/coordinate`, "Admit"). Claim it (step 3) only when step 2 takes it. Your next
-  state comment on your issue links each one that you file for it.
-- While `laptop.monitor` says that `laptop.coordinator` is paused, send to
-  `laptop.monitor` each link that this skill sends to `laptop.coordinator`.
+  (`/coordinate`, "Admit"; `docs/coordination.md`, "Messages", while it is paused).
+  Claim it (step 3) only when step 2 takes it. Your next state comment on your issue
+  links each one that you file for it.
 - Before you stop, comment your state on the issue: done, next step, open questions.
