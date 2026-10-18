@@ -87,7 +87,6 @@ impl kind::Kind for Kind {
         let mut values = read::Values::new(config.reads.len());
         let missed = ctx.count("missed");
         let mut timer = pace::Timer::new(ctx.clock(), config.rate);
-        let mut cleared = false;
         while let Some(tick) = timer.tick(ctx.cancel()).await {
             missed.add(tick.missed);
             let scan = scan(config, &mut client, remote, &groups, &mut values);
@@ -96,10 +95,7 @@ impl kind::Kind for Kind {
                 break;
             };
             done?;
-            if !cleared {
-                ctx.clear_error();
-                cleared = true;
-            }
+            ctx.clear_error();
             writer.write(values.take().map(Some), stamp)?;
         }
         Ok(())
