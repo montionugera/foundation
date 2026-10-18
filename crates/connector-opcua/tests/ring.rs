@@ -16,8 +16,8 @@ use types::sample::Scalar;
 
 #[test]
 fn a_run_that_writes_past_the_ring_of_its_home_returns_ok() {
-    // At 254 nodes the bytes after the last data frame that fits hold a second status
-    // frame, which the pin needs. At 255 and 256 they do not.
+    // At 254 nodes the full ring leaves room for a second status frame, which the pin
+    // needs; at 255 and 256 it does not (#3176).
     let (writes, status) = kind::writes(
         254,
         &[Scalar::F64],

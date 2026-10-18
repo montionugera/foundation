@@ -118,7 +118,8 @@ fn copies(batch: &[Entry], block_max: usize) -> Result<usize, Limit> {
     Ok(if copied { copy_len(batch) } else { 0 })
 }
 
-// Out of line, as are `held` and `Writer::hold`: a batch of tag 0 calls none of them.
+// Out of line, as are `held` and `Writer::hold`: a group with no tagged entry calls
+// none of them.
 #[cold]
 #[inline(never)]
 fn copy_len(batch: &[Entry]) -> usize {
