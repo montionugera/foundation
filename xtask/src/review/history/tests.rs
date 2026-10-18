@@ -92,14 +92,22 @@ impl Repo {
         let blob = self.git(&["hash-object", "-w", "blob"]);
         let entry =
             [mode.as_bytes(), b" ", blob.as_bytes(), b"\t", name, b"\0"].concat();
+        // Git for Windows ignores a name that NTFS refuses, with exit 0, unless
+        // `core.protectNTFS` is off.
         let mut child = self
             .command()
+            .args(["-c", "core.protectNTFS=false"])
             .args(["update-index", "-z", "--index-info"])
             .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
         child.stdin.take().unwrap().write_all(&entry).unwrap();
-        assert!(child.wait().unwrap().success());
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success() && output.stderr.is_empty(),
+            "update-index: {output:?}"
+        );
     }
 
     /// Commits a tree of `files`, each a name of any bytes and its text, with
