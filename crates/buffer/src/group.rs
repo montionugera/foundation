@@ -132,8 +132,7 @@ pub(crate) struct Group {
     /// The bytes that the copies of the entries with a nonzero tag take in a carry
     /// body, 0 when none has one.
     copy_len: usize,
-    /// The carry body of the holders of the record when [`fit`](Self::fit) was
-    /// `trimmed`, else 0.
+    /// The carry body of the holders of the record.
     carry: usize,
     meta: Option<Unique>,
     wrap: Option<Unique>,
@@ -179,8 +178,8 @@ impl Group {
     /// `block_max`. The carry body of each holder that the record can have, each
     /// entry as a tail and each entry with a nonzero tag also as a copy, is at most
     /// [`Layout::carry_max`] bytes, so one carry record moves every holder of the
-    /// record. When `trimmed`, the ring keeps free the room that body takes past
-    /// the record, as [`Writer::append`] does. When the group has no
+    /// record. The ring keeps free the room that body takes past the record, as
+    /// [`Writer::append`] does. When the group has no
     /// blocks, it takes them from `pool`. Counts the bytes of the batch in the
     /// group, so the caller then gives each entry of `batch` to
     /// [`take`](Self::take), in order.
@@ -193,7 +192,6 @@ impl Group {
         &mut self,
         pool: &Pool,
         block_max: usize,
-        trimmed: bool,
         writer: &Writer,
         batch: &[Entry],
     ) -> Result<(), Rejected> {
@@ -224,7 +222,6 @@ impl Group {
         if carry > max {
             return Err(Rejected::Record);
         }
-        let carry = if trimmed { carry } else { 0 };
         let body = self.body_len_with(count, len);
         if let Err(full) = writer.fits(body, carry) {
             return Err(if self.is_empty() {
@@ -549,7 +546,7 @@ mod tests {
         writer: &Writer,
         batch: &mut Vec<Entry>,
     ) -> Result<Range<usize>, Rejected> {
-        group.fit(pool, block_max, false, writer, batch)?;
+        group.fit(pool, block_max, writer, batch)?;
         let start = group.headers.len();
         for entry in batch.drain(..) {
             let kind = entry
@@ -741,7 +738,6 @@ mod tests {
                 .fit(
                     &self.pool,
                     self.block_max(),
-                    false,
                     &self.writer,
                     slice::from_ref(&entry),
                 )
@@ -1380,17 +1376,15 @@ mod tests {
         assert_eq!(pushed, Ok(0..2), "tag 0 and a tagged entry at the most fit");
     }
 
-    /// A batch whose carry body passes [`Layout::carry_max`] names [`Limit::Carry`],
-    /// with trims or without, a group whose record would pass it refuses the batch as
-    /// [`Rejected::Record`], and a group with no tag fits. Only a `trimmed` group
-    /// keeps its carry body for the room past the record. A cleared group counts no
-    /// copy.
+    /// A batch whose carry body passes [`Layout::carry_max`] names [`Limit::Carry`], a
+    /// group whose record would pass it refuses the batch as [`Rejected::Record`], and
+    /// a group with no tag fits. A cleared group counts no copy.
     #[test]
     fn keeps_the_carry_body_of_a_record_at_most_carry_max() {
         let mut area = Area::new();
         assert_eq!(area.layout.carry_max(), 8192);
         let block_max = area.block_max();
-        let (pool, writer) = (&area.pool, &area.writer);
+        let pool = &area.pool;
         let tagged = |key, len: usize| {
             let header = Header {
                 tag: 3,
@@ -1399,35 +1393,31 @@ mod tests {
             entry(header, parts(pool, &[&vec![7; len]]))
         };
         let plain = |key| entry(header(key, Path::Live, 0), parts(pool, &[&[7; 4000]]));
-        let fit = |group: &mut Group, batch: &[Entry], trimmed| {
-            group.fit(pool, block_max, trimmed, writer, batch)?;
+        let fit = |group: &mut Group, writer: &Writer, batch: &[Entry]| {
+            group.fit(pool, block_max, writer, batch)?;
             for entry in batch {
                 group.take(entry.clone(), Kind::Record(NonZeroU64::MIN));
             }
             Ok(())
         };
         let max = Layout::ENTRY_MAX_MIN;
-        for trimmed in [false, true] {
-            let over = [tagged(1, max), tagged(2, 3971)];
-            let limit = Limit::Carry {
-                len: 8193,
-                max: 8192,
-            };
-            let mut group = Group::default();
-            assert_eq!(fit(&mut group, &over, trimmed), Err(Rejected::Large(limit)));
-            assert!(group.is_empty());
-            assert_eq!(fit(&mut group, &[tagged(1, max)], trimmed), Ok(()));
-            assert_eq!(group.carry, if trimmed { 4129 } else { 0 });
-            assert_eq!(
-                fit(&mut group, &[tagged(2, 3971)], trimmed),
-                Err(Rejected::Record)
-            );
-            assert_eq!(fit(&mut group, &[tagged(2, 3970)], trimmed), Ok(()));
-            assert_eq!(group.carry, if trimmed { 8192 } else { 0 });
-            let mut untagged = Group::default();
-            assert_eq!(fit(&mut untagged, &[plain(4), plain(5)], trimmed), Ok(()));
-            assert_eq!(untagged.carry, 0);
-        }
+        let writer = &area.writer;
+        let over = [tagged(1, max), tagged(2, 3971)];
+        let limit = Limit::Carry {
+            len: 8193,
+            max: 8192,
+        };
+        let mut group = Group::default();
+        assert_eq!(fit(&mut group, writer, &over), Err(Rejected::Large(limit)));
+        assert!(group.is_empty());
+        assert_eq!(fit(&mut group, writer, &[tagged(1, max)]), Ok(()));
+        assert_eq!(
+            fit(&mut group, writer, &[tagged(2, 3971)]),
+            Err(Rejected::Record)
+        );
+        assert_eq!(fit(&mut group, writer, &[tagged(2, 3970)]), Ok(()));
+        let mut untagged = Group::default();
+        assert_eq!(fit(&mut untagged, writer, &[plain(4), plain(5)]), Ok(()));
         assert_eq!(
             Limit::Carry {
                 len: 8193,
@@ -1438,10 +1428,12 @@ mod tests {
              record of this buffer holds at most 8192"
         );
         let mut group = Group::default();
-        fit(&mut group, &[tagged(1, 100)], true).expect("fits");
+        fit(&mut group, &area.writer, &[tagged(1, max)]).expect("fits");
+        let next = [tagged(2, 3971)];
         let closed = group.close(&mut area.writer);
-        let group = area.commit(closed).clear();
-        assert_eq!((group.copy_len, group.carry), (0, 0));
+        let mut group = area.commit(closed).clear();
+        let fitted = group.fit(&area.pool, block_max, &area.writer, &next);
+        assert_eq!(fitted, Ok(()));
     }
 
     proptest! {

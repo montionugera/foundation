@@ -148,7 +148,7 @@ impl Group {
         self.batch.extend(iter::repeat_n(entry, entries));
         let mut group = mem::take(&mut self.spare);
         group
-            .fit(&self.pool, self.block_max, true, &self.writer, &self.batch)
+            .fit(&self.pool, self.block_max, &self.writer, &self.batch)
             .expect("the ring has room");
         for entry in self.batch.drain(..) {
             let samples = entry.samples.expect("a data entry");
@@ -175,7 +175,7 @@ impl Group {
         self.first += u64::try_from(entries).expect("fits");
         let mut group = mem::take(&mut self.spare);
         group
-            .fit(&self.pool, self.block_max, true, &self.writer, &self.batch)
+            .fit(&self.pool, self.block_max, &self.writer, &self.batch)
             .expect("the ring has room");
         crate::buffer::take(&mut group, &mut self.logs, &mut self.batch);
         self.write(group);

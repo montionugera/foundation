@@ -896,3 +896,134 @@ proptest! {
         run(seed, move |shard| live(shard, shape));
     }
 }
+
+/// A ring of 256 blocks.
+const WIDE: u64 = 256 * BLOCK;
+
+/// A run, with trims when `first_trimmed`, commits `count` tagged entries of 4000
+/// bytes, each a record of one block whose holders take two, then frames: until
+/// `Full` with no trims, one lap with trims. An open with trims then takes three laps
+/// of frames and keeps each tagged entry.
+fn reopen_with_trims(first_trimmed: bool, count: u32, seed: u64) {
+    run(seed, move |shard| async move {
+        let shard = Shard {
+            trimmed: first_trimmed,
+            ..shard
+        };
+        let ring = layout(WIDE, BODY_MAX);
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("opens");
+        for index in 1..=count {
+            let slot = slots.index(key(index));
+            let state = tagged(index, slot, Path::Live, 0, 1, shard.block(4000));
+            buffer.append([state]).expect("room");
+            buffer.committed().await.expect("commits");
+        }
+        let data = slots.index(key(9));
+        let mut seq = 0;
+        while !first_trimmed || seq < WIDE / BLOCK {
+            if first_trimmed {
+                commit(&shard, &buffer, &[frame(&shard, data, seq)]).await;
+                seq += 1;
+                continue;
+            }
+            match buffer.append([frame(&shard, data, seq)]) {
+                Ok(()) => buffer.committed().await.expect("commits"),
+                Err(Rejected::Full { .. }) => break,
+                Err(refused) => panic!("{refused}"),
+            }
+            seq += 1;
+        }
+        let shard = trimmed(shard);
+        let ending = buffer.ended();
+        drop(buffer);
+        ending.await.expect("ends");
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("reopens");
+        let data = slots.index(key(9));
+        for _ in 0..3 * WIDE / BLOCK {
+            let refused =
+                append_within(&buffer, &shard.clock, &[frame(&shard, data, seq)], 400)
+                    .await;
+            assert_eq!(refused, Ok(()), "frame at seq {seq}, {count} tagged");
+            buffer.committed().await.expect("commits");
+            seq += 1;
+        }
+        let mut expected: Vec<_> = (1..=count)
+            .map(|index| (slots.index(key(index)), kept(&shard.block(4000))))
+            .collect();
+        expected.sort_unstable();
+        let mut found = newest(&buffer, Path::Live, 1);
+        found.sort_unstable();
+        assert_eq!(found, expected);
+    });
+}
+
+/// Two batches in one commit whose holders together pass the carry record go in
+/// two records, and each open takes them.
+#[test]
+fn two_batches_past_the_carry_record_in_one_commit_reopen() {
+    for first_trimmed in [false, true] {
+        for seed in 0..8 {
+            run(seed, move |shard| async move {
+                let shard = Shard {
+                    trimmed: first_trimmed,
+                    ..shard
+                };
+                let mut slots = Slots::new();
+                let ring = layout(AREA, BODY_MAX);
+                let buffer = shard.open(ring, &mut slots).await.expect("opens");
+                let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+                let max = Layout::ENTRY_MAX_MIN;
+                buffer
+                    .append([tagged(1, a, Path::Live, 0, 1, shard.block(max))])
+                    .expect("room");
+                buffer
+                    .append([tagged(2, b, Path::Live, 0, 1, shard.block(3971))])
+                    .expect("room");
+                buffer.committed().await.expect("commits");
+                let expected =
+                    vec![(a, kept(&shard.block(max))), (b, kept(&shard.block(3971)))];
+                assert_eq!(newest(&buffer, Path::Live, 1), expected);
+                let ending = buffer.ended();
+                drop(buffer);
+                ending.await.expect("ends");
+                let mut shard = shard;
+                for reopened in [false, true, false] {
+                    shard.trimmed = reopened;
+                    let mut slots = Slots::new();
+                    let buffer = shard.open(ring, &mut slots).await.expect("reopens");
+                    let mut found = newest(&buffer, Path::Live, 1);
+                    found.sort_unstable();
+                    let mut want = vec![
+                        (slots.index(key(1)), kept(&shard.block(max))),
+                        (slots.index(key(2)), kept(&shard.block(3971))),
+                    ];
+                    want.sort_unstable();
+                    assert_eq!(found, want);
+                    let ending = buffer.ended();
+                    drop(buffer);
+                    ending.await.expect("ends");
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn a_ring_filled_with_trims_takes_frames_after_a_reopen() {
+    for seed in 0..32 {
+        reopen_with_trims(true, 4, seed);
+    }
+}
+
+/// With no trims, each data record left free the excess of its holders too, so the
+/// open with trims finds room for each carry.
+#[test]
+fn a_ring_filled_with_no_trims_takes_frames_after_an_open_with_trims() {
+    for (count, seeds) in [(2, 0..32), (4, 900..932)] {
+        for seed in seeds {
+            reopen_with_trims(false, count, seed);
+        }
+    }
+}

@@ -133,7 +133,7 @@ impl Deadline {
         let state = &mut self.state;
         state
             .open
-            .fit(&self.pool, self.block_max, true, &state.writer, &self.batch)
+            .fit(&self.pool, self.block_max, &state.writer, &self.batch)
             .expect("the ring and the pool have room for the group");
         take(&mut state.open, &mut state.logs, &mut self.batch);
         let (checkpoint, carrying) = state.deadline(&self.pool, true, &mut self.sealed);

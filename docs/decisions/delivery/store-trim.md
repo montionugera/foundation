@@ -29,8 +29,8 @@
   2026-10-15T16:27:31Z).
   Amended (2026-10-18T00:33:50Z, #406): each data record leaves free the spare of
   S4 in place of the three blocks: two restart records, a carry record of the largest
-  carry body, and the blocks less one of that record that a wrap skips. With trims, it
-  also leaves free its excess until a trim passes it, and a carry moves whole records
+  carry body, and the blocks less one of that record that a wrap skips. With trims or
+  without, it also leaves free its excess until a trim passes it, and a carry moves whole records
   (`laptop.architect`,
   https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6242940372 and
   https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6243771938).

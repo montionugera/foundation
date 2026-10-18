@@ -191,10 +191,10 @@ pub enum Rejected {
     /// The ring has no room for the batch, after the trim of the last commit when
     /// [`Config::trimmed`] is set. Each data record leaves free two restart
     /// records, one carry record of the largest carry body, and the blocks less one
-    /// of that record that a wrap skips. With [`Config::trimmed`], it also leaves
-    /// free the bytes by which the carry record of its holders is larger than it,
-    /// until a trim passes it. Room returns only when records leave the ring at its
-    /// tail, and never when the offsets left before their end are under `needed`.
+    /// of that record that a wrap skips. It also leaves free the bytes by which the
+    /// carry record of its holders is larger than it, until a trim passes it. Room
+    /// returns only when records leave the ring at its tail, and never when the
+    /// offsets left before their end are under `needed`.
     /// Without [`Config::trimmed`], nothing moves records out of the ring.
     Full {
         /// Bytes of the area that the batch's record needs, with the rest of the
@@ -698,7 +698,7 @@ impl Buffer {
             min,
         })?;
         let (file, header) = open_ring(&files, &dir, &pool, &entropy, layout).await?;
-        let (cursor, logs) = walk(&file, &pool, &header, slots, trimmed).await?;
+        let (cursor, logs) = walk(&file, &pool, &header, slots).await?;
         let mut state = State::new(cursor.writer(), logs, header, random(&entropy));
         restart(&file, &pool, &mut state, trimmed).await?;
         let shared = Rc::new(Shared {
@@ -831,16 +831,13 @@ impl Buffer {
         }
         let (pool, block_max, trimmed) =
             (&*shared.pool, shared.block_max, shared.trimmed);
-        match state
-            .open
-            .fit(pool, block_max, trimmed, &state.writer, batch)
-        {
+        match state.open.fit(pool, block_max, &state.writer, batch) {
             Ok(()) => {}
             Err(group::Rejected::Record) => {
                 state.close_open();
                 state
                     .open
-                    .fit(pool, block_max, trimmed, &state.writer, batch)
+                    .fit(pool, block_max, &state.writer, batch)
                     .map_err(rejected)?;
             }
             Err(full @ group::Rejected::Ring(_)) => {
@@ -1054,8 +1051,8 @@ async fn create_header(
 /// Recovers the tail of every path and the holder of the newest entry of each
 /// nonzero tag on each path from the records after the tail of `header`, and writes
 /// each window that holds them again, as read. Then reads each such entry that a
-/// data record holds into the logs. With `trimmed`, notes in the cursor the carry
-/// body of the holders of each data record with such an entry. Returns the cursor at
+/// data record holds into the logs. Notes in the cursor the carry body of the
+/// holders of each data record with such an entry. Returns the cursor at
 /// the end of the walk and the logs. Fails as [`Error::Invalid`] at a data record
 /// whose holders one carry record of the layout does not hold.
 ///
@@ -1066,7 +1063,6 @@ async fn walk(
     pool: &Pool,
     header: &Header,
     slots: &mut Slots,
-    trimmed: bool,
 ) -> Result<(Cursor, Logs), Error> {
     let mut cursor = Cursor::new(header.layout, header.tail, pool.largest());
     let mut logs = Logs::new(header.layout.area());
@@ -1083,9 +1079,7 @@ async fn walk(
                 if carry > header.layout.carry_max() {
                     return Err(Error::Invalid { offset });
                 }
-                if trimmed {
-                    cursor.reserve(offset, body.len, carry);
-                }
+                cursor.reserve(offset, body.len, carry);
             }
             Step::Carry(body) => recover_carried(body, offset, slots, &mut logs)?,
             Step::Moved | Step::More => {}
@@ -2117,14 +2111,14 @@ mod tests {
     }
 
     /// The carry record of the holders of a record of tagged entries takes one block
-    /// more than the record. With trims, the commit keeps that block free, and so does
-    /// the walk of a later open: the reopened ring takes one record less, for the
-    /// block of its restart record. With no trims, neither keeps it. Records of one
-    /// block fill a ring of 66 blocks, less the restart record, the tagged record, and
-    /// the spare of 5 blocks, and with trims less the carry records and the excess.
+    /// more than the record. The commit keeps that block free, with trims or without,
+    /// and so does the walk of a later open: the reopened ring takes one record less,
+    /// for the block of its restart record. Records of one block fill a ring of 66
+    /// blocks, less the restart record, the tagged record, the spare of 5 blocks, and
+    /// the excess, and with trims less the carry records.
     #[test]
-    fn an_open_reserves_the_excess_of_a_record_only_with_trims() {
-        for (trimmed, filled) in [(false, 59), (true, 55)] {
+    fn an_open_reserves_the_excess_of_a_record() {
+        for (trimmed, filled) in [(false, 58), (true, 55)] {
             let found = Arc::new(Mutex::new(Vec::new()));
             for walked in [false, true] {
                 let mut sim = sim::Sim::new(sim::Config::default());
