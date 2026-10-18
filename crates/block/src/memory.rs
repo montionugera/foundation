@@ -246,10 +246,17 @@ impl Drop for Erased {
             for start in Heap::pages(index, word.load(Relaxed)) {
                 // SAFETY: the page starts under `len`.
                 let page = unsafe { self.0.base.add(start) };
+                // Words, as a volatile erase of bytes writes one at a time.
                 // SAFETY: the allocation holds whole pages, a commit initialized the
                 // page, and nothing else holds it at the drop.
-                let bytes = unsafe { slice::from_raw_parts_mut(page.as_ptr(), PAGE) };
-                bytes.zeroize();
+                #[expect(
+                    clippy::cast_ptr_alignment,
+                    reason = "a page is aligned to ALIGN"
+                )]
+                let words = unsafe {
+                    slice::from_raw_parts_mut(page.as_ptr().cast::<u64>(), PAGE / 8)
+                };
+                words.zeroize();
             }
         }
     }
@@ -272,10 +279,10 @@ mod tests {
         heap
     }
 
-    /// The bytes of `heap` in `range`.
-    fn bytes(heap: &Heap, range: Range<usize>) -> Vec<u8> {
+    /// The bytes of `memory` in `range`.
+    fn bytes(memory: &impl Memory, range: Range<usize>) -> Vec<u8> {
         // SAFETY: the range lies in the allocation.
-        let start = unsafe { heap.base().add(range.start) };
+        let start = unsafe { memory.base().add(range.start) };
         // SAFETY: `new`, `dirty`, or a commit initialized each byte.
         unsafe { slice::from_raw_parts(start.as_ptr(), range.len()) }.to_vec()
     }
@@ -377,7 +384,7 @@ mod tests {
         // SAFETY: the bytes lie in the allocation, and no commit holds them yet.
         unsafe { page.write_bytes(0xaa, PAGE) };
         memory.commit(PAGE + 10, 1).expect("heap memory commits");
-        assert_eq!(bytes(&memory.0, PAGE..2 * PAGE), [0; PAGE]);
+        assert_eq!(bytes(&memory, PAGE..2 * PAGE), [0; PAGE]);
     }
 
     #[test]
