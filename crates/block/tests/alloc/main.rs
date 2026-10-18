@@ -5,18 +5,16 @@
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::atomic::{AtomicU64, AtomicUsize};
 
-use block::{ALIGN, Config, Heap, Pool};
+use block::{Config, Heap, Pool};
 
-/// Counts the allocations and the frees of the process, and keeps the layout of
-/// the last zeroed allocation.
+/// Counts the allocations, the zeroed allocations, and the frees of the process.
 struct Counting {
     count: AtomicU64,
+    zeroed: AtomicU64,
     freed: AtomicU64,
-    zeroed_size: AtomicUsize,
-    zeroed_align: AtomicUsize,
 }
 
 // SAFETY: every call goes to `System` unchanged.
@@ -29,8 +27,7 @@ unsafe impl GlobalAlloc for Counting {
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         self.count.fetch_add(1, Relaxed);
-        self.zeroed_size.store(layout.size(), Relaxed);
-        self.zeroed_align.store(layout.align(), Relaxed);
+        self.zeroed.fetch_add(1, Relaxed);
         // SAFETY: the caller keeps the contract of `GlobalAlloc::alloc_zeroed`.
         unsafe { System.alloc_zeroed(layout) }
     }
@@ -45,9 +42,8 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOCATOR: Counting = Counting {
     count: AtomicU64::new(0),
+    zeroed: AtomicU64::new(0),
     freed: AtomicU64::new(0),
-    zeroed_size: AtomicUsize::new(0),
-    zeroed_align: AtomicUsize::new(0),
 };
 
 /// Allocations the process makes while `f` runs.
@@ -59,23 +55,24 @@ fn count(f: impl FnOnce()) -> u64 {
 
 fn main() {
     assert_eq!(count(|| drop(Box::new(1_u8))), 1, "the allocator counts");
-    let freed = ALLOCATOR.freed.load(Relaxed);
-    drop(Heap::new(64));
+    let (freed, zeroed) = (
+        ALLOCATOR.freed.load(Relaxed),
+        ALLOCATOR.zeroed.load(Relaxed),
+    );
+    let allocations = count(|| drop(Heap::new(1 << 20)));
+    assert_eq!(
+        allocations, 2,
+        "a heap allocates its bytes and its page bits"
+    );
     assert_eq!(
         ALLOCATOR.freed.load(Relaxed) - freed,
-        1,
-        "a heap frees its bytes"
-    );
-    // At any larger alignment std writes zero over every page instead of `calloc`.
-    assert_eq!(
-        ALLOCATOR.zeroed_align.load(Relaxed),
-        1,
-        "a heap asks for calloc"
+        2,
+        "a heap frees both"
     );
     assert_eq!(
-        ALLOCATOR.zeroed_size.load(Relaxed),
-        64 + ALIGN,
-        "a heap pads"
+        ALLOCATOR.zeroed.load(Relaxed) - zeroed,
+        0,
+        "a heap writes zero only over the pages that it commits"
     );
 
     let config = Config::new(1 << 16).expect("the budget fits");
