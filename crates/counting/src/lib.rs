@@ -2,6 +2,8 @@
 //! finds freed blocks that hold given bytes, so a test can assert that code erases a
 //! secret before it frees it ([`Allocator`]). Counts the heap bytes held and given out,
 //! so a test can bound the memory of a structure and what code allocates ([`Bytes`]).
+//! Counts the allocations of one thread, so a test can assert that a caller does not
+//! allocate while other threads do ([`Local`]).
 
 #![expect(unsafe_code, reason = "the allocator implements `GlobalAlloc`")]
 
@@ -12,8 +14,12 @@ use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize};
 use std::{fmt, hint, ptr, slice};
 
 mod bytes;
+#[cfg(unix)]
+mod local;
 
 pub use bytes::Bytes;
+#[cfg(unix)]
+pub use local::Local;
 
 /// An allocator that gets its memory from [`System`] and counts the allocations. Each
 /// `alloc`, `alloc_zeroed`, and `realloc` that succeeds counts as one; a failed one and

@@ -567,6 +567,7 @@ dependencies = [
 name = "counting"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "loom",
 ]
 
