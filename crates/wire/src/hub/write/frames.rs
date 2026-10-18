@@ -10,8 +10,8 @@ use crate::hub::part::{Assembly, Next, to_usize};
 
 /// The frames of a program's write stream after the places, at the node. The node
 /// receives each message and makes each draft from the pool of the home. The entries
-/// of each frame index the key set: entry `n` is place `n`. It holds 16 bytes for each
-/// place, and allocates nothing after [`Frames::new`].
+/// of each frame index the key set: entry `n` is place `n`. It holds
+/// [`Frames::bytes`] for its places, and allocates nothing after [`Frames::new`].
 #[derive(Debug)]
 pub struct Frames {
     places: u32,
@@ -57,6 +57,12 @@ pub enum Step {
 }
 
 impl Frames {
+    /// The bytes that a `Frames` of `places` places holds for their ends.
+    #[must_use]
+    pub const fn bytes(places: usize) -> usize {
+        Assembly::<true>::bytes(places)
+    }
+
     /// The frames of a write stream whose places are the entries of `set`, in order.
     ///
     /// # Panics
