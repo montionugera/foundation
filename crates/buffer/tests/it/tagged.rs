@@ -680,6 +680,116 @@ fn lives_with_a_carry_that_skips_to_the_start() {
     run(5_519_891_853_575_910_298, move |shard| live(shard, shape));
 }
 
+/// A buffer with trims or without refuses a batch whose holders one carry record
+/// does not hold: two tagged entries of 4032 bytes at the least body, and 14 at a
+/// body of 60000 bytes, whose carry body is over 42970 bytes.
+#[test]
+fn refuses_a_batch_whose_holders_pass_a_carry_record_with_trims_or_without() {
+    for trimmed in [false, true] {
+        refuses_holders_over_a_carry_record(trimmed, 2, BODY_MAX, (8254, 8183));
+        refuses_holders_over_a_carry_record(trimmed, 14, 60_000, (57_754, 42_970));
+    }
+}
+
+/// Appends `count` tagged entries of 4032 bytes to a buffer of bodies of at most
+/// `body_max` bytes, which refuses them as [`Limit::Carry`] of `carry`.
+fn refuses_holders_over_a_carry_record(
+    trimmed: bool,
+    count: u32,
+    body_max: usize,
+    carry: (usize, usize),
+) {
+    run(409, move |shard| async move {
+        let shard = Shard { trimmed, ..shard };
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(128 * BLOCK, body_max), &mut slots)
+            .await
+            .expect("opens");
+        let batch: Vec<_> = (1..=count)
+            .map(|index| {
+                let slot = slots.index(key(index));
+                tagged(
+                    index,
+                    slot,
+                    Path::Live,
+                    0,
+                    1,
+                    shard.block(Layout::ENTRY_MAX_MIN),
+                )
+            })
+            .collect();
+        let (len, max) = carry;
+        assert_eq!(
+            buffer.append(batch),
+            Err(Rejected::Large(Limit::Carry { len, max })),
+            "trimmed: {trimmed}, body_max: {body_max}"
+        );
+    });
+}
+
+/// Two tagged entries of 3900 bytes in one record of a run with no trims, then
+/// frames over three laps after an open with trims: each frame gets room, a trim
+/// passes the first frame, and `newest` gives both entries.
+#[test]
+fn a_ring_written_with_no_trims_opens_with_trims() {
+    run(409, |shard| async move {
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+        let batch = [
+            tagged(1, a, Path::Live, 0, 1, shard.block(3900)),
+            tagged(2, b, Path::Live, 0, 1, shard.block(3900)),
+        ];
+        commit(&shard, &buffer, &batch).await;
+        let shard = trimmed(shard);
+        let (buffer, mut slots) = reopen(&shard, buffer).await;
+        let data = slots.index(key(9));
+        for seq in 0..LAPS {
+            commit(&shard, &buffer, &[frame(&shard, data, seq)]).await;
+        }
+        assert!(trimmed_past_the_start(&buffer, data).await);
+        let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+        let kept = kept(&shard.block(3900));
+        assert_eq!(
+            newest(&buffer, Path::Live, 1),
+            vec![(a, kept.clone()), (b, kept)]
+        );
+    });
+}
+
+/// A data record whose holders one carry record of the layout does not hold, as no
+/// buffer writes it, gives `Invalid` at the open, with trims or without: a record of
+/// a tagged entry of 4032 bytes and one of 4000 whose tag is made 1.
+#[test]
+fn the_open_refuses_a_record_whose_holders_pass_a_carry_record() {
+    run(409, |shard| async move {
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+        let batch = [
+            tagged(1, a, Path::Live, 0, 1, shard.block(Layout::ENTRY_MAX_MIN)),
+            tagged(2, b, Path::Live, 0, 0, shard.block(4000)),
+        ];
+        commit(&shard, &buffer, &batch).await;
+        let ending = buffer.ended();
+        drop(buffer);
+        ending.await.expect("ends");
+        let tag = 4 + 51 + 46;
+        shard.tamper_record(BLOCK, tag, &[1]).await;
+        shard.open_invalid(layout(AREA, BODY_MAX), BLOCK).await;
+        trimmed(shard)
+            .open_invalid(layout(AREA, BODY_MAX), BLOCK)
+            .await;
+    });
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 

@@ -7,7 +7,7 @@ use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
 
-use super::{State, carry_max, take};
+use super::{State, take};
 use crate::entry::{Entry, Samples};
 use crate::group::{self, Sealed};
 use crate::header::Header;
@@ -25,7 +25,6 @@ pub struct Deadline {
     state: State,
     pool: Pool,
     block_max: usize,
-    carry_max: usize,
     part: Block,
     tag: u8,
     /// The next seq of each index.
@@ -55,7 +54,6 @@ impl Deadline {
         let config = block::Config::new(1 << 21).expect("the budget fits");
         let pool = Pool::new(config.clone(), Heap::new(config.reservation()));
         let block_max = group::block_max(&pool).expect("the budget holds an entry");
-        let carry_max = carry_max(&pool, layout);
         let part = pool.alloc(PART).expect("the pool has room").freeze();
         let chain = 9;
         let state = State::new(
@@ -68,7 +66,6 @@ impl Deadline {
             state,
             pool,
             block_max,
-            carry_max,
             part,
             tag: 0,
             firsts: vec![0; count],
@@ -136,17 +133,10 @@ impl Deadline {
         let state = &mut self.state;
         state
             .open
-            .fit(
-                &self.pool,
-                self.block_max,
-                Some(self.carry_max),
-                &state.writer,
-                &self.batch,
-            )
+            .fit(&self.pool, self.block_max, true, &state.writer, &self.batch)
             .expect("the ring and the pool have room for the group");
         take(&mut state.open, &mut state.logs, &mut self.batch);
-        let (checkpoint, carrying) =
-            state.deadline(&self.pool, Some(self.carry_max), &mut self.sealed);
+        let (checkpoint, carrying) = state.deadline(&self.pool, true, &mut self.sealed);
         let tails = carrying
             .as_ref()
             .map_or(0, |carrying| carrying.carried.tails().len());

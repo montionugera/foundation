@@ -293,9 +293,8 @@ struct Shared {
     pool: Rc<Pool>,
     block_max: usize,
     layout: Layout,
-    /// With [`Config::trimmed`], the most body bytes of a carry record of `layout`
-    /// that fit the largest block of `pool`. Else `None`.
-    carry_max: Option<usize>,
+    /// [`Config::trimmed`].
+    trimmed: bool,
     state: RefCell<State>,
 }
 
@@ -485,13 +484,11 @@ impl State {
     }
 
     /// Seals the groups of a commit into `sealed`, and gives its checkpoint and its
-    /// sealed carry record of a body of at most `room` bytes, in blocks of `pool`.
-    /// Gives neither with `room` of `None`, as [`Shared::carry_max`] is without
-    /// [`Config::trimmed`].
+    /// sealed carry record, in blocks of `pool`. Gives neither when not `trimmed`.
     fn deadline(
         &mut self,
         pool: &Pool,
-        room: Option<usize>,
+        trimmed: bool,
         sealed: &mut Vec<Sealed>,
     ) -> (Option<Checkpoint>, Option<Carrying>) {
         self.starved = false;
@@ -501,9 +498,10 @@ impl State {
         if !self.queue.is_empty() {
             self.taken += 1;
         }
-        let (checkpoint, carry) = match room {
-            Some(room) => (self.checkpoint(pool), self.carry(pool, room)),
-            None => (None, None),
+        let (checkpoint, carry) = if trimmed {
+            (self.checkpoint(pool), self.carry(pool))
+        } else {
+            (None, None)
         };
         for closed in self.queue.drain(..) {
             let record = closed.seal(self.chain);
@@ -544,12 +542,12 @@ impl State {
 
     /// Plans the carry record of the holders before the reach of the next trim,
     /// filled with the oldest holders that [`Logs::carry`] finds after it, in a body
-    /// of at most the room of one record and at most `most` bytes. `None` when no
+    /// of at most the room of one record. `None` when no
     /// holder needs one, or `pool` has no blocks for it: the next deadline then scans
     /// the same holders.
-    fn carry(&mut self, pool: &Pool, most: usize) -> Option<Carry> {
+    fn carry(&mut self, pool: &Pool) -> Option<Carry> {
         let mut carried = mem::take(&mut self.carried);
-        let room = self.writer.room().min(most);
+        let room = self.writer.room();
         let reach = self.writer.reach();
         self.logs.carry(reach, room, &mut carried);
         let len = carried.len();
@@ -703,13 +701,12 @@ impl Buffer {
         let (cursor, logs) = walk(&file, &pool, &header, slots, trimmed).await?;
         let mut state = State::new(cursor.writer(), logs, header, random(&entropy));
         restart(&file, &pool, &mut state, trimmed).await?;
-        let carry_max = trimmed.then(|| carry_max(&pool, header.layout));
         let shared = Rc::new(Shared {
             file,
             pool,
             block_max,
             layout: header.layout,
-            carry_max,
+            trimmed,
             state: RefCell::new(state),
         });
         tasks.spawn(run(Rc::clone(&shared), clock, commit));
@@ -832,22 +829,22 @@ impl Buffer {
         if let Some(error) = &state.failed {
             return Err(Rejected::Files(error.clone()));
         }
-        let (pool, block_max, carry_max) =
-            (&*shared.pool, shared.block_max, shared.carry_max);
+        let (pool, block_max, trimmed) =
+            (&*shared.pool, shared.block_max, shared.trimmed);
         match state
             .open
-            .fit(pool, block_max, carry_max, &state.writer, batch)
+            .fit(pool, block_max, trimmed, &state.writer, batch)
         {
             Ok(()) => {}
             Err(group::Rejected::Record) => {
                 state.close_open();
                 state
                     .open
-                    .fit(pool, block_max, carry_max, &state.writer, batch)
+                    .fit(pool, block_max, trimmed, &state.writer, batch)
                     .map_err(rejected)?;
             }
             Err(full @ group::Rejected::Ring(_)) => {
-                if shared.carry_max.is_some() {
+                if trimmed {
                     state.starved = true;
                     drop(guard);
                     shared.unpark();
@@ -899,14 +896,6 @@ impl Buffer {
             waiter: Waiter::new(&self.shared, Event::End),
         }
     }
-}
-
-/// The most body bytes of a carry record of `layout` that fit the largest block of
-/// `pool`.
-fn carry_max(pool: &Pool, layout: Layout) -> usize {
-    pool.largest()
-        .saturating_sub(HEADER_LEN)
-        .min(layout.carry_max())
 }
 
 /// Appends each entry of `batch` to `logs`, in order, and takes it into `open` with
@@ -1067,7 +1056,8 @@ async fn create_header(
 /// each window that holds them again, as read. Then reads each such entry that a
 /// data record holds into the logs. With `trimmed`, notes in the cursor the carry
 /// body of the holders of each data record with such an entry. Returns the cursor at
-/// the end of the walk and the logs.
+/// the end of the walk and the logs. Fails as [`Error::Invalid`] at a data record
+/// whose holders one carry record of the layout does not hold.
 ///
 /// A read can see writes that a failed sync lost, from the cache. Written again,
 /// they read the same until the open's sync makes them durable.
@@ -1090,6 +1080,9 @@ async fn walk(
                 let largest = pool.largest();
                 let carry =
                     recover(body, offset, largest, slots, &mut logs, &mut newest)?;
+                if carry > header.layout.carry_max() {
+                    return Err(Error::Invalid { offset });
+                }
                 if trimmed {
                     cursor.reserve(offset, body.len, carry);
                 }
@@ -1156,11 +1149,7 @@ fn recover(
             (copies, copy_len) = (copies + 1, copy_len + requested);
         }
     }
-    Ok(if copies > 0 {
-        carry::body_len(count, copies, copy_len)
-    } else {
-        0
-    })
+    Ok(carry::holders_len(count, copies, copy_len))
 }
 
 /// Feeds the logs the tails and the entries of a carry record body at `offset`.
@@ -1315,7 +1304,7 @@ async fn run(shared: Rc<Shared>, clock: Clock, commit: Span) {
         sleep.reset(clock.now() + commit);
         let (checkpoint, carrying) = shared.state.borrow_mut().deadline(
             &shared.pool,
-            shared.carry_max,
+            shared.trimmed,
             &mut sealed,
         );
         if sealed.is_empty() && checkpoint.is_none() && carrying.is_none() {

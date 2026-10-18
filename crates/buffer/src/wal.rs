@@ -79,8 +79,8 @@ const BODY_MIN: usize = (HEADER_LEN + carry::body_len(1, 1, Layout::ENTRY_MAX_MI
     - HEADER_LEN;
 const _: () = assert!(BODY_MIN == 8183, "the docs give the least body_max");
 const _: () = assert!(
-    HEADER_LEN + BODY_MIN <= group::META_LEN,
-    "each pool that a buffer takes has a block for a carry record of BODY_MIN"
+    HEADER_LEN + carry::body_len(carry::TAILS_MAX, 0, 0) <= group::META_LEN,
+    "each pool that a buffer takes has a block for a carry record of any layout"
 );
 
 /// Bytes of the whole blocks that hold a record header and the largest entry table.
@@ -381,8 +381,8 @@ pub enum Limit {
         max: usize,
     },
     /// A batch of more than one entry, with a nonzero tag on some, whose holders
-    /// one carry record of a buffer with trims does not hold: each entry as a tail,
-    /// and each entry with a nonzero tag also as a copy of its parts.
+    /// one carry record does not hold, on any buffer: each entry as a tail, and each
+    /// entry with a nonzero tag also as a copy of its parts.
     Carry {
         /// Bytes of the carry body of the batch's entries.
         len: usize,
