@@ -748,13 +748,21 @@ fn unlisted_gives_each_name_that_no_list_admits_by_its_object() {
         ),
         ("3-shim.o", &["connector_opcua_malloc", &crypto, STDIN]),
     ]);
+    let mut expected: Vec<_> = [
+        ("2-ua_client.o", "fgets"),
+        ("2-ua_client.o", "malloc"),
+        ("2-ua_client.o", "memcpy"),
+        ("3-shim.o", "connector_opcua_malloc"),
+        ("3-shim.o", STDIN),
+    ]
+    .into_iter()
+    .filter(|(_, name)| !OUTSIDE.contains(name))
+    .map(|(object, name)| format!("{object}: {name}"))
+    .collect();
+    expected.sort();
     assert_eq!(
         unlisted(&defined, &undefined, |name| name.starts_with("__asan")),
-        [
-            "2-ua_client.o: fgets".to_owned(),
-            "2-ua_client.o: malloc".to_owned(),
-            format!("3-shim.o: {STDIN}")
-        ]
+        expected
     );
 }
 
