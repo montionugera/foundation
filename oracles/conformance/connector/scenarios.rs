@@ -638,14 +638,21 @@ pub(crate) fn stops_in_a_backoff(suite: &'static Suite) {
 }
 
 /// Stops the connector while it connects to a device whose link delays each packet
-/// by 1 h. Waits on #3040 for the form of a link that loses each packet.
+/// by 1 h, at the first millisecond that the plant holds a stream, within 1 s. Waits
+/// on #3040 for the form of a link that loses each packet.
 pub(crate) fn stops_in_a_connect(suite: &'static Suite) {
     run(suite, unanswered, |scene| async move {
         let config = scene.setup().await;
         let served = scene.serve();
         let run = scene.supervise(config).await;
-        scene.node.clock().sleep(Span::SECOND).await;
-        assert_eq!(scene.node.streams(), 1, "the plant connects");
+        let clock: Clock = scene.node.clock();
+        let connects = async {
+            while scene.node.streams() == 0 {
+                clock.sleep(Span::MILLISECOND).await;
+            }
+        };
+        scene.within(Span::SECOND, "the connect", connects).await;
+        assert_eq!(scene.node.streams(), 1, "the plant connects once");
         stopped(&scene, run).await;
         scene.stop(served).await;
     });
