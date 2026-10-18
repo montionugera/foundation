@@ -523,6 +523,11 @@ async fn fill_for_a_while(test: &Test) {
 /// its commit, and frees it [`START`] later. The run picks the order of the tasks that
 /// the commit wakes: in the runs of the tests, the reader runs before the write.
 async fn fill_at_commit(test: &Test) {
+    fill_at_commit_for(test, START).await;
+}
+
+/// As [`fill_at_commit`], but frees the pool `held` after the fill.
+async fn fill_at_commit_for(test: &Test, held: Span) {
     let names = ["value"];
     let config = super::unnamed(&names, hub::reader::Mode::Complete);
     let mut reader = test.hub.reader(config).await.expect("opens");
@@ -530,7 +535,7 @@ async fn fill_at_commit(test: &Test) {
     test.tasks.spawn(async move {
         let frame = reader.next().await.expect("a frame");
         let blocks = super::fill(&pool);
-        clock.sleep(START).await;
+        clock.sleep(held).await;
         drop((frame, blocks));
     });
 }
@@ -557,6 +562,56 @@ fn stops_a_write_whose_frame_finds_no_block_for_its_outcome_as_busy() {
         available: 64,
     });
     assert_eq!(home.served, [Err(busy), Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
+/// Fills the pool of `test` at [`START`] but for one free block of each size from 2048
+/// bytes down to 128, and frees the rest [`START`] later. The pool then has no block
+/// of 64 bytes, the smallest size, and no pages to give back: each of those sizes has
+/// a block in use, and a free block of under two pages gives back none.
+async fn spare_for_a_while(test: &Test) {
+    let (clock, pool) = (test.clock.clone(), Rc::clone(&test.pool));
+    test.tasks.spawn(async move {
+        clock.sleep(START).await;
+        let (mut held, mut spared) = (Vec::new(), Vec::new());
+        let mut len = 2048;
+        while len > 64 {
+            held.push(pool.alloc(len).expect("a block"));
+            spared.push(pool.alloc(len).expect("a block"));
+            len -= len.div_ceil(16);
+        }
+        held.extend(super::fill(&pool));
+        drop(spared);
+        clock.sleep(START).await;
+        drop(held);
+    });
+}
+
+/// A frame whose draft finds a block but whose outcome finds none stops the stream
+/// as `BUSY` before the home takes it: the next write takes its first frame at seq 0.
+#[test]
+fn stops_a_write_whose_outcome_finds_no_block_after_its_draft_as_busy() {
+    let stamps: Vec<i64> = (1..=32).collect();
+    let home = read_session(438, spare_for_a_while, move |mut agent| async move {
+        agent.admit().await;
+        let mut stream = write(&agent).await;
+        agent.sleep(Span::from_nanos(START.nanos() * 3 / 2)).await;
+        send(&mut stream, &stamps, &stamps).await;
+        assert_eq!(stream.recv().await, reset_with(BUSY));
+        agent.sleep(START).await;
+        let mut stream = write(&agent).await;
+        send(&mut stream, &[100], &[20]).await;
+        assert_eq!(stream.reply().await, taken(0, 1));
+        assert_eq!(end(&mut stream).await, [stored(0)]);
+        finish(&mut agent).await;
+    });
+    let [
+        Err(serve::Error::Pool(block::Error::Exhausted { requested: 13, .. })),
+        ..,
+    ] = home.served[..]
+    else {
+        panic!("{:?}", home.served);
+    };
+    assert_eq!(home.served[1..], [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
 /// A `Stored` that finds no block during the stream is not sent: the next `Stored`
@@ -634,10 +689,14 @@ fn ends_control_when_the_program_finishes_the_stream() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
-/// The wait for a block for the last `Stored` ends when the session closes.
+/// The wait for a block for the last `Stored` ends when the session closes, while the
+/// pool stays full: the home records each serve within a second of the close.
 #[test]
 fn ends_the_wait_for_the_last_stored_when_the_session_closes() {
-    let home = read_session(427, fill_at_commit, |mut agent| async move {
+    let full = async |test: &Test| {
+        fill_at_commit_for(test, Span::from_nanos(2 * Span::SECOND.nanos())).await
+    };
+    let home = read_session(427, full, |mut agent| async move {
         agent.admit().await;
         let mut stream = write(&agent).await;
         send(&mut stream, &[1], &[10]).await;
