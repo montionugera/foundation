@@ -265,11 +265,12 @@ impl Client {
     /// # Errors
     ///
     /// [`Error::Closed`] when the client's session ended at a close or a drop, and
-    /// [`Error::Panicked`] when the client's thread panicked. [`Error::Session`] with the error that ended the session when it failed. Else
-    /// [`Error::Stream`] with each error of `program::Session::writer`, such as
-    /// `Refused(UNKNOWN)` for a name of no channel, `Refused(NOT_HOME)` when the node
-    /// is not the home of their index, and `Refused(MALFORMED)` for channels of more
-    /// than one index.
+    /// [`Error::Panicked`] when the client's thread panicked. [`Error::Session`] with
+    /// the error that ended the session when it failed. Else [`Error::Stream`] with
+    /// each error of `program::Session::writer`, such as `Refused(Refusal::Unknown)`
+    /// for a name of no channel, `Refused(Refusal::NotHome)` when the node is not the
+    /// home of their index, and `Refused(Refusal::Malformed)` for channels of more
+    /// than one index, each a `program::Refusal`.
     pub fn open_writer(&self, config: write::Config) -> Result<write::Writer, Error> {
         write::Writer::open(&self.requests, &self.closed, config)
     }

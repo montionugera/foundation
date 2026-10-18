@@ -23,12 +23,12 @@ use types::time::{Monotonic, Span, Stamp};
 use wire::Protocol;
 use wire::header::MALFORMED;
 use wire::hub::client::{
-    BODY_BYTES_MAX, Challenge, Mode, OPEN_BYTES_MAX, Refusal, Request, Response, Signed,
+    BODY_BYTES_MAX, Challenge, Mode, OPEN_BYTES_MAX, Request, Response, Signed,
 };
 
 pub use read::Reader;
 use turn::{Taken, Turn};
-pub use wire::hub::client::Place;
+pub use wire::hub::client::{Place, Refusal};
 pub use write::Writer;
 
 /// How long each hello of a [`Session`] lives. The session renews it at half its life.

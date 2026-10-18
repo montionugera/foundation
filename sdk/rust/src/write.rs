@@ -133,10 +133,10 @@ impl Writer {
     /// [`Error::Value`] when a value is not of the type of its place, with nothing
     /// sent; the writer goes on. [`Error::Closed`] when the client's session ended at
     /// a close or a drop, and [`Error::Panicked`] when the client's thread panicked.
-    /// [`Error::Session`] when the session failed. Else [`Error::Stream`] with each error of
-    /// `program::Writer::draft` and `program::Writer::write`: `Layout` for a place
-    /// past the places, with nothing sent, or for a place given twice, and `Unsent`
-    /// for no values.
+    /// [`Error::Session`] when the session failed. Else [`Error::Stream`] with each
+    /// error of `program::Writer::draft` and `program::Writer::write`: `Layout` for a
+    /// place past the places, with nothing sent, or for a place given twice, and
+    /// `Unsent` for no values.
     pub fn write(&mut self, values: &[(usize, Value)]) -> Result<Outcome, Error> {
         self.frame.clear(1);
         let index = self.nodes[self.index];
@@ -172,11 +172,10 @@ impl Writer {
     /// # Errors
     ///
     /// [`Error::Closed`], [`Error::Panicked`], and [`Error::Session`] as
-    /// [`Writer::write`] gives them. Else
-    /// [`Error::Stream`] with each error of `program::Writer::draft` and
-    /// `program::Writer::write`: `Layout` for a place past the places, with nothing
-    /// sent, or for a place given twice, `Unsent` for a frame with no series, and
-    /// `Pool(TooLarge)` for a frame over the largest block.
+    /// [`Writer::write`] gives them. Else [`Error::Stream`] with each error of
+    /// `program::Writer::draft` and `program::Writer::write`: `Layout` for a place
+    /// past the places, with nothing sent, or for a place given twice, `Unsent` for a
+    /// frame with no series, and `Pool(TooLarge)` for a frame over the largest block.
     pub fn write_series(
         &mut self,
         count: u32,
