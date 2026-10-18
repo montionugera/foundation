@@ -102,21 +102,30 @@
   another put of its digest. Only a put of `serve` writes a part: `Store::put` writes in
   place, because its bytes are in hand and checked. The put takes no flight of its
   digest until its end, so no get and no put waits on a peer while its body comes. The
-  floor check runs before the create of the part. The end checks the digest and syncs
-  the part. Then, in the flight of the digest, it removes a listed file, renames the
+  floor check runs before the create of the part, and a file of the chunk's length at
+  the name of the digest still takes no new room (BLOB PEER), so the part and that file,
+  both on the disk until the end, can pass the floor by the chunk, within the overshoot
+  of `PUTS_MAX` chunks. The end checks the digest and syncs the part. Then, in the
+  flight of the digest, it syncs the directory when the digest is `Listed`, so the name
+  of the part is durable before the listed file goes, removes that file, renames the
   part to the digest, and syncs the directory, and `serve` sends `Stored` only after
   that sync. A digest that is `Held` at the end keeps its file: the put removes its part
-  and gives `Stored`. A put whose body fails or does not match removes its part, and a
-  listed file keeps its bytes. An error of the remove of the listed file leaves the
-  digest `Listed`. An error of the rename or later makes the digest absent, so the next
-  put writes it again. A remove of a part that fails counts in `Status::failures`, and a
-  dropped put leaves its part. The open removes each part whose digest has a file, and
-  renames each other part to its digest, which is then `Listed` as a file of an earlier
-  open (`corruptions` above). A crash that undoes that remove or rename makes the next
-  open do it again, so the open does not sync the directory. Each other name, neither a
-  digest nor a part, gives `Error::Stray`. Supersedes "A write to a second name and a
-  rename (`File::rename`, #1503) lost" of
+  and gives `Stored`. The check is only at the end, because a get can make a `Held`
+  digest absent while the body comes. A put whose body fails or does not match removes
+  its part, and a listed file keeps its bytes. An error before the rename leaves the
+  digest in its state. An error of the rename or later makes the digest absent, so the
+  next put writes it again. A remove of a part that fails counts in `Status::failures`,
+  and a dropped put leaves its part. The open removes each part whose digest has a file,
+  and renames each other part to its digest, which is then `Listed` as a file of an
+  earlier open (`corruptions` above). A crash that undoes that remove or rename makes
+  the next open do it again, so the open does not sync the directory. Each other name,
+  neither a digest nor a part, gives `Error::Stray`. Lost: a rename that replaces the
+  file at its target (FILE RENAME lost it, as no caller wanted it; here it saves only
+  the sync of the directory before the remove of a listed file, a rare case, for an
+  interface change of `env`). Supersedes "A write to a second name and a rename
+  (`File::rename`, #1503) lost" of
   https://github.com/synnaxlabs/foundation/issues/1226#issuecomment-6046560177, item 1,
-  for the puts of a peer only, because a peer must not hold the chunk's name while its
-  body comes, and both conditions of
+  and "and no rename" of the layout at the head of this record, for the puts of a peer
+  only, because a peer must not hold the chunk's name while its body comes, and both
+  conditions of
   https://github.com/synnaxlabs/foundation/issues/3251#issuecomment-6254727641.

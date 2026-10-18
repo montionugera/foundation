@@ -181,6 +181,12 @@ impl Stream {
             .expect("a reply decodes")
     }
 
+    /// Whether no message or end has come.
+    async fn idle(&mut self) -> bool {
+        let mut recv = pin!(self.receiver.recv());
+        poll_fn(|cx| Poll::Ready(recv.as_mut().poll(cx).is_pending())).await
+    }
+
     /// Finishes the requester's half and waits for the end of the server's.
     async fn finish(&mut self) {
         self.sender.finish().unwrap();
@@ -1250,8 +1256,31 @@ fn a_head_of_another_length_under_the_floor_keeps_a_listed_chunk() {
     );
 }
 
-/// Nine streams, eight of which hold a slot with no body: the ninth stores once one
-/// of the eight ends, over many orders of the ready tasks.
+#[test]
+fn a_head_of_a_listed_chunk_under_the_floor_stores_it() {
+    let (digest, bytes) = chunk(7, 3000);
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            put(&open(&node, 0).await, digest, &bytes).await;
+            let floor_bytes = node.files().free().await.unwrap() + 1;
+            let store = open(&node, floor_bytes).await;
+            assert_eq!(serve(&store, incoming).await, Ok(()));
+            let got = store.get(digest).await.unwrap();
+            assert_eq!(got.map(|block| Digest::of(&block)), Some(digest));
+        },
+        move |peer| async move {
+            let (_, bytes) = chunk(7, 3000);
+            let mut stream = peer.open().await;
+            stream.put(digest, 3000).await;
+            stream.send(&bytes).await;
+            assert_eq!(stream.reply().await, Reply::Stored { digest });
+            stream.finish().await;
+        },
+    );
+}
+
 /// Serves each of `incoming` on `store` at once, and gives each result in order.
 async fn serve_each(store: &Store, incoming: Vec<Incoming>) -> Vec<Result<(), Error>> {
     let mut served: Vec<_> = incoming
@@ -1277,6 +1306,8 @@ async fn serve_each(store: &Store, incoming: Vec<Incoming>) -> Vec<Result<(), Er
     results.into_iter().flatten().collect()
 }
 
+/// Nine streams, eight of which hold a slot with no body: the ninth waits, and stores
+/// once one of the eight ends, over many orders of the ready tasks.
 #[test]
 fn a_head_over_puts_max_stores_once_a_slot_frees() {
     for seed in 0..32 {
@@ -1315,6 +1346,7 @@ fn a_head_over_puts_max_stores_once_a_slot_frees() {
                 streams[8].put(ninth, 3000).await;
                 streams[8].send(&ninth_bytes).await;
                 peer.clock.sleep(Span::from_nanos(10_000_000)).await;
+                assert!(streams[8].idle().await, "seed {seed}: the ninth waits");
                 let (first, first_bytes) = chunk(1, 3000);
                 streams[0].send(&first_bytes).await;
                 assert_eq!(streams[0].reply().await, Reply::Stored { digest: first });

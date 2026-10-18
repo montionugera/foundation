@@ -97,7 +97,8 @@ impl fmt::Display for Error {
             ),
             Self::Stray { path } => write!(
                 f,
-                "{} is in the directory of the store, but it is not named by a digest",
+                "{} is in the directory of the store, but it is not named by a digest \
+                 or by the part of a digest",
                 path.display()
             ),
         }
@@ -306,44 +307,40 @@ impl Store {
     /// Starts a put of a chunk of `len` bytes under `digest` whose bytes come in
     /// parts. It waits while [`PUTS_MAX`] receipts are open, and then makes a part
     /// file of its own, once the floor leaves room for it. No call waits on the
-    /// receipt, and its digest keeps its state until its end. A receipt of a digest
-    /// that a put stored since the open makes no file call.
+    /// receipt, and its digest keeps its state until its end.
     ///
     /// # Errors
     ///
-    /// [`Error::Floor`] when the part would leave fewer bytes free than the floor,
-    /// and [`Error::Files`] when a file call fails.
+    /// [`Error::Floor`] when the part would leave fewer bytes free than the floor and
+    /// no file of the chunk's length is at the name of `digest`, and [`Error::Files`]
+    /// when a file call fails.
     async fn receive(&self, digest: Digest, len: usize) -> Result<Receipt<'_>, Error> {
         let received = async {
             let slot = self.receipts.take().await;
-            let mut receipt = Receipt {
-                store: self,
-                digest,
-                hasher: Hasher::default(),
-                part: None,
-                at: 0,
-                slot,
-            };
-            if matches!(self.peek(digest), Peek::Held(_)) {
-                return Ok(receipt);
-            }
-            let path = self.dir.join(format!("{digest}.{}", receipt.slot.key()));
-            self.room(len, &path).await?;
+            let path = self.dir.join(format!("{digest}.{}", slot.key()));
+            self.room(len, &self.path(digest)).await?;
             let bytes =
                 u64::try_from(len).expect("invariant: a length fits in 64 bits");
             let file = self.files.open(&path, Mode::Create { len: bytes }).await?;
-            receipt.part = Some(Part { file, path });
-            Ok(receipt)
+            Ok(Receipt {
+                store: self,
+                digest,
+                hasher: Hasher::default(),
+                part: Part { file, path },
+                at: 0,
+                _slot: slot,
+            })
         };
         self.counted(received.await)
     }
 
-    /// Gives `Ok` when a file of `len` bytes at `path` leaves the floor free. A write
-    /// over a file of that length at `path` takes no new room.
+    /// Gives `Ok` when `len` bytes of new room leave the floor free, or when a file of
+    /// `len` bytes is at `path`.
     ///
     /// # Errors
     ///
-    /// [`Error::Floor`] when it does not, and [`Error::Files`] when a file call fails.
+    /// [`Error::Floor`] when neither holds, and [`Error::Files`] when a file call
+    /// fails.
     async fn room(&self, len: usize, path: &Path) -> Result<(), Error> {
         let bytes = u64::try_from(len).expect("invariant: a length fits in 64 bits");
         let free_bytes = self.files.free().await?;
@@ -373,7 +370,8 @@ impl Store {
     }
 
     /// Makes `part`, whose bytes hash to `digest`, the durable file of `digest`. A
-    /// digest that a put stored since the open keeps its file, and the part goes.
+    /// digest that a put stored since the open, when this end comes, keeps its file,
+    /// and the part goes.
     ///
     /// # Errors
     ///
@@ -577,13 +575,11 @@ struct Receipt<'a> {
     store: &'a Store,
     digest: Digest,
     hasher: Hasher,
-    /// `None` when a put stored the digest since the open, so the receipt only
-    /// hashes.
-    part: Option<Part>,
+    part: Part,
     /// The bytes written.
     at: u64,
-    /// The slot, which names the part and frees on the drop.
-    slot: Slot<'a>,
+    /// Held only to free the slot on the drop.
+    _slot: Slot<'a>,
 }
 
 impl Receipt<'_> {
@@ -595,13 +591,14 @@ impl Receipt<'_> {
     /// [`Error::Files`] when the write fails.
     async fn write(&mut self, bytes: Block) -> Result<(), Error> {
         self.hasher.update(&bytes);
-        let Some(part) = &self.part else {
-            return Ok(());
-        };
         let at = self.at;
         self.at +=
             u64::try_from(bytes.len()).expect("invariant: a length fits in 64 bits");
-        let written = part.file.write_at(at, std::slice::from_ref(&bytes)).await;
+        let written = self
+            .part
+            .file
+            .write_at(at, std::slice::from_ref(&bytes))
+            .await;
         self.store.counted(written.map_err(Error::from))
     }
 
@@ -613,7 +610,7 @@ impl Receipt<'_> {
     /// [`Error::Mismatch`] when the parts hash to another digest, which removes the
     /// part as [`Receipt::discard`] does, and [`Error::Files`] when a file call fails.
     /// The digest then keeps the state it had, other than after an error of the
-    /// remove of its file or later, which makes it absent.
+    /// rename or later, which makes it absent.
     async fn end(self) -> Result<(), Error> {
         let Self {
             store,
@@ -623,13 +620,9 @@ impl Receipt<'_> {
             ..
         } = self;
         let found = hasher.finish();
-        let mismatch = (found != digest).then_some(Error::Mismatch { digest, found });
-        let Some(part) = part else {
-            return mismatch.map_or(Ok(()), Err);
-        };
-        if let Some(mismatch) = mismatch {
+        if found != digest {
             store.remove_part(part).await;
-            return Err(mismatch);
+            return Err(Error::Mismatch { digest, found });
         }
         store.counted(store.place(digest, part).await)
     }
@@ -637,9 +630,7 @@ impl Receipt<'_> {
     /// Ends the put with no chunk, when its parts do not come whole. It removes the
     /// part, so a peer that stops in its bodies leaves no file to fill the disk.
     async fn discard(self) {
-        if let Some(part) = self.part {
-            self.store.remove_part(part).await;
-        }
+        self.store.remove_part(self.part).await;
     }
 }
 
@@ -705,10 +696,9 @@ impl<'a> Flight<'a> {
     async fn create(&mut self, len: usize) -> Result<File, Error> {
         let store = self.store;
         let path = store.path(self.digest);
+        let bytes = u64::try_from(len).expect("invariant: a length fits in 64 bits");
         store.room(len, &path).await?;
-        let mode = Mode::Create {
-            len: u64::try_from(len).expect("invariant: a length fits in 64 bits"),
-        };
+        let mode = Mode::Create { len: bytes };
         self.after = Some(State::Listed(self.serial));
         let file = match store.files.open(&path, mode).await {
             // A file of another length at the name is not the chunk.
@@ -723,12 +713,20 @@ impl<'a> Flight<'a> {
 
     /// Renames `part`, a synced part whose bytes hash to the digest, to the file of
     /// the digest, in place of a file there, and syncs the directory. The digest is
-    /// `Held` after it. After an error of the remove of the file there, it keeps its
-    /// state and the part goes; after a later error, it is absent.
+    /// `Held` after it. After an error before the rename, it keeps its state and the
+    /// part goes; after a later error, it is absent.
     async fn place(mut self, mut part: Part) -> Result<(), Error> {
         let store = self.store;
         let path = store.path(self.digest);
-        if let Err(error) = store.files.remove(&path).await {
+        let cleared = async {
+            // The name of the part is durable before the listed file goes, so a crash
+            // between the remove and the rename keeps a copy of the chunk.
+            if matches!(self.after, Some(State::Listed(_))) {
+                store.files.sync_dir(&store.dir).await?;
+            }
+            store.files.remove(&path).await
+        };
+        if let Err(error) = cleared.await {
             store.remove_part(part).await;
             return Err(error.into());
         }
@@ -894,6 +892,46 @@ mod tests {
     /// Fails when `store` gives a chunk for `digest`.
     async fn assert_absent(store: &Store, digest: Digest) {
         assert!(store.get(digest).await.unwrap().is_none());
+    }
+
+    /// The state of a digest, as [`seen`] finds it.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Seen {
+        Absent,
+        Listed,
+        Held,
+    }
+
+    /// The state of `digest`, through public calls only: a get opens no file of an
+    /// absent digest, and a put of `block` opens none of a held one. A listed or held
+    /// digest counts one failure, and a listed one two, so call it after each check
+    /// of [`Status::failures`].
+    async fn seen(
+        node: &sim::node::Node,
+        store: &Store,
+        digest: Digest,
+        block: &Block,
+    ) -> Seen {
+        let at = path(digest);
+        node.fail_file(&at, Operation::Open);
+        match store.get(digest).await {
+            Ok(None) => {
+                assert_no_open(node, &at).await;
+                return Seen::Absent;
+            }
+            got => assert_eq!(got.err(), Some(io(&at, Operation::Open))),
+        }
+        node.fail_file(&at, Operation::Open);
+        match store.put(digest, block).await {
+            Ok(()) => {
+                assert_no_open(node, &at).await;
+                Seen::Held
+            }
+            put => {
+                assert_eq!(put, Err(io(&at, Operation::Open)));
+                Seen::Listed
+            }
+        }
     }
 
     /// Drops a put of `block` with its second file call in flight: its create, or the
@@ -2496,10 +2534,10 @@ mod tests {
                     vec![whole.to_string().into(), torn.to_string().into()];
                 named.sort();
                 assert_eq!(listed, named);
-                assert_eq!(store.peek(whole), Peek::Listed(0));
                 assert_eq!(&store.get(whole).await.unwrap().unwrap()[..], &block[..]);
                 assert_absent(&store, torn).await;
                 assert_eq!(store.status().corruptions, 1);
+                assert_eq!(seen(&node, &store, whole, &block).await, Seen::Listed);
             })
             .unwrap();
         }
@@ -2687,7 +2725,7 @@ mod tests {
             assert_eq!(
                 Error::Stray { path }.to_string(),
                 "blob/notes is in the directory of the store, but it is not named by a \
-                 digest"
+                 digest or by the part of a digest"
             );
             let full = files::Error::Full {
                 path: PathBuf::from("blob/x"),
@@ -2980,7 +3018,7 @@ mod tests {
         }
 
         #[test]
-        fn of_a_held_chunk_makes_no_file_call_and_checks_the_parts() {
+        fn of_a_held_chunk_keeps_its_file_and_removes_the_part() {
             let (mut sim, node) = create_default_node(0);
             sim.run_on(&node, |node, _| async move {
                 let store = open(&node).await.unwrap();
@@ -2996,7 +3034,28 @@ mod tests {
                 assert_eq!(end(receipt, &other).await, Err(mismatch));
                 assert_no_open(&node, &path(digest)).await;
                 assert_no_sync_dir(&node).await;
+                let listed = node.files().list(Path::new(DIR)).await.unwrap();
+                assert_eq!(listed, vec![PathBuf::from(digest.to_string())]);
                 assert_eq!(&store.get(digest).await.unwrap().unwrap()[..], &block[..]);
+                assert_no_failure(&store);
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn of_a_held_chunk_that_a_get_forgets_in_the_body_stores_it() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let (digest, block) = chunk(7, 3000);
+                store.put(digest, &block).await.unwrap();
+                let receipt = store.receive(digest, 3000).await.unwrap();
+                put_bytes(&node, digest, 0, &[0xff; 16]).await;
+                assert_absent(&store, digest).await;
+                assert_eq!(store.status().corruptions, 1);
+                assert_eq!(end(receipt, &block).await, Ok(()));
+                assert_bytes(&node, digest, &block).await;
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Held);
             })
             .unwrap();
         }
@@ -3079,7 +3138,7 @@ mod tests {
                     end(store.receive(digest, 3000).await.unwrap(), &put).await,
                     Ok(())
                 );
-                assert!(matches!(store.peek(digest), Peek::Held(_)));
+                assert_eq!(seen(&node, &store, digest, &put).await, Seen::Held);
             })
             .unwrap();
             sim.crash(&node, Crash::Power);
@@ -3106,6 +3165,32 @@ mod tests {
                 store.put(digest, &block).await.unwrap();
                 assert_bytes(&node, digest, &block).await;
                 assert_eq!(store.status().corruptions, 0);
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn dropped_in_its_rename_leaves_a_chunk_that_a_get_gives() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let (digest, block) = chunk(7, 3000);
+                let mut receipt = store.receive(digest, 3000).await.unwrap();
+                receipt.write(block.clone()).await.unwrap();
+                {
+                    // Each file call takes at most 100 us, and the fourth of the end
+                    // is the rename: three polls before it leave no file at the name.
+                    let mut end = pin!(receipt.end());
+                    for _ in 0..4 {
+                        assert_eq!(poll_once(&mut end).await, Poll::Pending);
+                        node.clock().sleep(Span::from_nanos(100_000)).await;
+                    }
+                }
+                // A dropped call runs to its end, in 100 us at most.
+                node.clock().sleep(Span::from_nanos(200_000)).await;
+                assert_bytes(&node, digest, &block).await;
+                assert_eq!(&store.get(digest).await.unwrap().unwrap()[..], &block[..]);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Listed);
             })
             .unwrap();
         }
@@ -3141,11 +3226,11 @@ mod tests {
                 let receipt = store.receive(digest, 3000).await.unwrap();
                 let mismatch = Error::Mismatch { digest, found };
                 assert_eq!(end(receipt, &other).await, Err(mismatch));
-                assert_eq!(store.peek(digest), Peek::Listed(0));
                 let listed = node.files().list(Path::new(DIR)).await.unwrap();
                 assert_eq!(listed, vec![PathBuf::from(digest.to_string())]);
                 assert_eq!(&store.get(digest).await.unwrap().unwrap()[..], &block[..]);
                 assert_no_failure(&store);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Listed);
             })
             .unwrap();
         }
@@ -3175,14 +3260,14 @@ mod tests {
             let (mut sim, node) = create_default_node(0);
             sim.run_on(&node, |node, _| async move {
                 let store = open(&node).await.unwrap();
-                let (digest, _) = chunk(7, 3000);
+                let (digest, block) = chunk(7, 3000);
                 let (found, other) = chunk(8, 3000);
                 let receipt = store.receive(digest, 3000).await.unwrap();
                 node.fail_file(&part(digest, 0), Operation::Remove);
                 let mismatch = Error::Mismatch { digest, found };
                 assert_eq!(end(receipt, &other).await, Err(mismatch));
-                assert_eq!(store.peek(digest), Peek::Absent);
                 assert_eq!(store.status().failures, 1);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Absent);
             })
             .unwrap();
         }
@@ -3197,12 +3282,12 @@ mod tests {
                 receipt.write(block.clone()).await.unwrap();
                 node.fail_file(&part(digest, 0), Operation::Remove);
                 receipt.discard().await;
-                assert_eq!(store.peek(digest), Peek::Absent);
                 assert_eq!(store.status().failures, 1);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Absent);
                 drop(store);
                 let store = open(&node).await.unwrap();
-                assert_eq!(store.peek(digest), Peek::Listed(0));
                 assert_eq!(&store.get(digest).await.unwrap().unwrap()[..], &block[..]);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Listed);
             })
             .unwrap();
         }
@@ -3218,9 +3303,11 @@ mod tests {
                 let written = receipt.write(block).await;
                 assert_eq!(written, Err(io(&part(digest, 0), Operation::WriteAt)));
                 receipt.discard().await;
-                assert_eq!(store.peek(digest), Peek::Absent);
                 let listed = node.files().list(Path::new(DIR)).await.unwrap();
                 assert_eq!(listed, Vec::<PathBuf>::new());
+                assert_eq!(store.status().failures, 1);
+                let (_, block) = chunk(7, 3000);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Absent);
             })
             .unwrap();
         }
@@ -3235,9 +3322,9 @@ mod tests {
                 node.fail_file(&part(digest, 0), Operation::Open);
                 let refused = store.receive(digest, 3000).await.err();
                 assert_eq!(refused, Some(io(&part(digest, 0), Operation::Open)));
-                assert_eq!(store.peek(digest), Peek::Listed(0));
                 assert_eq!(store.status().failures, 1);
                 assert_eq!(receipts(&store).await.len(), PUTS_MAX);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Listed);
             })
             .unwrap();
         }
@@ -3253,10 +3340,10 @@ mod tests {
                 node.fail_file(&part(digest, 0), Operation::Sync);
                 let synced = end(receipt, &block).await;
                 assert_eq!(synced, Err(io(&part(digest, 0), Operation::Sync)));
-                assert_eq!(store.peek(digest), Peek::Listed(0));
                 let listed = node.files().list(Path::new(DIR)).await.unwrap();
                 assert_eq!(listed, vec![PathBuf::from(digest.to_string())]);
                 assert_eq!(store.status().failures, 1);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Listed);
             })
             .unwrap();
         }
@@ -3272,10 +3359,30 @@ mod tests {
                 node.fail_file(&path(digest), Operation::Remove);
                 let placed = end(receipt, &block).await;
                 assert_eq!(placed, Err(io(&path(digest), Operation::Remove)));
-                assert_eq!(store.peek(digest), Peek::Listed(0));
                 let listed = node.files().list(Path::new(DIR)).await.unwrap();
                 assert_eq!(listed, vec![PathBuf::from(digest.to_string())]);
                 assert_eq!(store.status().failures, 1);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Listed);
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn of_a_listed_chunk_whose_first_directory_sync_fails_gives_io_and_keeps_it() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let (digest, block) = chunk(7, 3000);
+                create_file(&node, &path(digest), &block).await;
+                let store = open(&node).await.unwrap();
+                let receipt = store.receive(digest, 3000).await.unwrap();
+                node.fail_file(Path::new(DIR), Operation::SyncDir);
+                let placed = end(receipt, &block).await;
+                assert_eq!(placed, Err(io(Path::new(DIR), Operation::SyncDir)));
+                let listed = node.files().list(Path::new(DIR)).await.unwrap();
+                assert_eq!(listed, vec![PathBuf::from(digest.to_string())]);
+                assert_eq!(store.status().failures, 1);
+                assert_eq!(&store.get(digest).await.unwrap().unwrap()[..], &block[..]);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Listed);
             })
             .unwrap();
         }
@@ -3291,10 +3398,10 @@ mod tests {
                 node.fail_file(&part(digest, 0), Operation::Rename);
                 let placed = end(receipt, &block).await;
                 assert_eq!(placed, Err(io(&part(digest, 0), Operation::Rename)));
-                assert_eq!(store.peek(digest), Peek::Absent);
                 let listed = node.files().list(Path::new(DIR)).await.unwrap();
                 assert_eq!(listed, Vec::<PathBuf>::new());
                 assert_eq!(store.status().failures, 1);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Absent);
                 store.put(digest, &block).await.unwrap();
                 assert_bytes(&node, digest, &block).await;
             })
@@ -3311,8 +3418,8 @@ mod tests {
                 node.fail_file(Path::new(DIR), Operation::SyncDir);
                 let placed = end(receipt, &block).await;
                 assert_eq!(placed, Err(io(Path::new(DIR), Operation::SyncDir)));
-                assert_eq!(store.peek(digest), Peek::Absent);
                 assert_eq!(store.status().failures, 1);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Absent);
                 store.put(digest, &block).await.unwrap();
                 assert_bytes(&node, digest, &block).await;
             })
@@ -3330,11 +3437,11 @@ mod tests {
                     Box::pin(join(end(receipt, &block), store.put(digest, &block)))
                         .await;
                 assert_eq!((placed, put), (Ok(()), Ok(())));
-                assert!(matches!(store.peek(digest), Peek::Held(_)));
                 let listed = node.files().list(Path::new(DIR)).await.unwrap();
                 assert_eq!(listed, vec![PathBuf::from(digest.to_string())]);
                 assert_bytes(&node, digest, &block).await;
                 assert_no_failure(&store);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Held);
             })
             .unwrap();
         }
@@ -3353,10 +3460,6 @@ mod tests {
                 let mut absent = 0;
                 for index in 1..=8 {
                     let (digest, block) = torn(index);
-                    assert!(
-                        !matches!(store.peek(digest), Peek::Held(_)),
-                        "seed {seed}: chunk {index} is held at the open"
-                    );
                     if let Some(got) = store.get(digest).await.unwrap() {
                         assert_eq!(&got[..], &block[..], "seed {seed}");
                     } else {
@@ -3366,6 +3469,11 @@ mod tests {
                         );
                         absent += 1;
                     }
+                    assert_ne!(
+                        seen(&node, &store, digest, &block).await,
+                        Seen::Held,
+                        "seed {seed}: chunk {index} is held at the open"
+                    );
                 }
                 let listed = node.files().list(Path::new(DIR)).await;
                 assert!(
