@@ -888,6 +888,14 @@ fn log_in_category_99() {
     }
 }
 
+/// Logs an info message in category 99, when `child::running()`.
+#[test]
+fn log_info_in_category_99() {
+    if child::running() {
+        log_at(300, 99);
+    }
+}
+
 #[test]
 fn a_level_that_the_copy_does_not_have_aborts() {
     assert_eq!(
@@ -900,6 +908,14 @@ fn a_level_that_the_copy_does_not_have_aborts() {
 fn a_category_that_the_copy_does_not_have_aborts() {
     assert_eq!(
         child::panicked("event::tests::log_in_category_99", &[]),
+        ["open62541 logged in category 99"]
+    );
+}
+
+#[test]
+fn an_info_message_in_a_category_that_the_copy_does_not_have_aborts() {
+    assert_eq!(
+        child::panicked("event::tests::log_info_in_category_99", &[]),
         ["open62541 logged in category 99"]
     );
 }

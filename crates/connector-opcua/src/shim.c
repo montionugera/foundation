@@ -460,14 +460,11 @@ static const char *category_name(UA_LogCategory category) {
 }
 
 /* Gives the message to `connector_opcua_put_line` with `context`. */
-static void put_line(void *context, bool severe, UA_LogCategory category,
-                     const char *msg, va_list args) {
-    const char *name = category_name(category);
-    if(!name)
-        die("logged in category %d", (int)category);
+static void put_line(void *context, bool severe, const char *category, const char *msg,
+                     va_list args) {
     char line[LINE_BYTES];
     size_t length = format_line(line, msg, args);
-    connector_opcua_put_line(context, severe, name, line, length);
+    connector_opcua_put_line(context, severe, category, line, length);
 }
 
 /* Gives each message of level warning and up to `connector_opcua_put_line` with
@@ -475,13 +472,16 @@ static void put_line(void *context, bool severe, UA_LogCategory category,
  * allocates nothing. The switch has no default, as in `category_name`. */
 static void log_message(void *context, UA_LogLevel level, UA_LogCategory category,
                         const char *msg, va_list args) {
+    const char *name = category_name(category);
+    if(!name)
+        die("logged in category %d", (int)category);
     switch(level) {
     case UA_LOGLEVEL_TRACE:
     case UA_LOGLEVEL_DEBUG:
     case UA_LOGLEVEL_INFO: return;
-    case UA_LOGLEVEL_WARNING: put_line(context, false, category, msg, args); return;
+    case UA_LOGLEVEL_WARNING: put_line(context, false, name, msg, args); return;
     case UA_LOGLEVEL_ERROR:
-    case UA_LOGLEVEL_FATAL: put_line(context, true, category, msg, args); return;
+    case UA_LOGLEVEL_FATAL: put_line(context, true, name, msg, args); return;
     }
     die("logged at level %d", (int)level);
 }
