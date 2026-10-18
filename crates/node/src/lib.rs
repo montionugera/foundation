@@ -23,7 +23,6 @@ mod name;
 mod root;
 mod route;
 mod scope;
-mod sector;
 mod settings;
 #[cfg_attr(
     not(test),
@@ -1333,8 +1332,9 @@ fn channel_key(
     types::channel::Key::v7(at, u128::from_le_bytes(random))
 }
 
-/// The front ends of the config files that the operations read.
-fn front_ends() -> ops::FrontEnds {
+/// The front ends of the config files that a node and its command line read.
+#[must_use]
+pub fn front_ends() -> ops::FrontEnds {
     ops::FrontEnds::new(
         "hcl",
         ops::FrontEnd {

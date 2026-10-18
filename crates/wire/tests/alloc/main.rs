@@ -104,10 +104,16 @@ fn write_head() {
 
 fn write_replies() {
     for reply in [
-        write::Reply::Outcome(Outcome::Lost {
-            range: Range { seq: 7, count: 3 },
-        }),
-        write::Reply::Outcome(Outcome::Refused(Refusal::Order)),
+        write::Reply::Outcome {
+            frame: 1,
+            outcome: Outcome::Lost {
+                range: Range { seq: 7, count: 3 },
+            },
+        },
+        write::Reply::Outcome {
+            frame: 2,
+            outcome: Outcome::Refused(Refusal::Order),
+        },
         write::Reply::Stored { frames: 9 },
     ] {
         let mut out = vec![0; reply.encoded_len()];

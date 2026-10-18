@@ -33,6 +33,7 @@ const LARGE_BROWSE: Code = Code::new("ops.large-browse");
 const LARGE_STATUS: Code = Code::new("ops.large-status");
 const CHANNEL_READ: Code = Code::new("ops.channel-read");
 const READ: Code = Code::new("ops.read");
+const NO_CONFIG: Code = Code::new("ops.no-config");
 const WRITE: Code = Code::new("ops.write");
 const LARGE_REQUEST: Code = Code::new("ops.large-request");
 const BAD_REPLY: Code = Code::new("ops.bad-reply");
@@ -128,6 +129,9 @@ pub(crate) enum Error {
     ChannelRead { connector: Name, message: String },
     /// A command line did not read the file at `path`.
     Read { path: PathBuf, cause: Unread },
+    /// The directory `path` of a command line gives no file with one of
+    /// `extensions`, as [`FrontEnds::named`](crate::FrontEnds::named) gives them.
+    NoConfig { path: PathBuf, extensions: String },
     /// A command line did not write the plan file at `path`.
     Write { path: PathBuf, cause: Unwritten },
     /// The request of a command line has more bytes than one request holds.
@@ -223,8 +227,12 @@ pub(crate) enum Error {
 pub(crate) enum Unread {
     NotFound,
     Directory,
+    /// The paths of the entries of a directory pass the bytes of one read.
+    ManyEntries,
     NotUtf8,
-    Io { code: i32 },
+    Io {
+        code: i32,
+    },
 }
 
 /// Why `foundation mcp` cannot use a folder of `--files`.
@@ -384,6 +392,7 @@ impl Error {
             | Self::Config(_)
             | Self::Plan(_)
             | Self::Read { .. }
+            | Self::NoConfig { .. }
             | Self::LargeRequest
             | Self::Outside { .. }
             | Self::Hidden { .. }
@@ -518,6 +527,15 @@ impl Error {
             Self::Read { .. } => (
                 READ,
                 "Fix the cause in the message, then run the command again".to_owned(),
+            ),
+            Self::NoConfig { path, extensions } => (
+                NO_CONFIG,
+                format!(
+                    "Add a file whose name ends in {} and does not start with `.` \
+                     to {}, or give another path",
+                    extensions,
+                    path.display()
+                ),
             ),
             Self::Write { .. } => (
                 WRITE,
@@ -897,11 +915,17 @@ impl fmt::Display for Error {
                 match cause {
                     Unread::NotFound => write!(f, "no file is at {path}"),
                     Unread::Directory => write!(f, "{path} is a directory, not a file"),
+                    Unread::ManyEntries => {
+                        write!(f, "{path} holds more entries than one read lists")
+                    }
                     Unread::NotUtf8 => write!(f, "the text of {path} is not UTF-8"),
                     Unread::Io { code } => {
                         write!(f, "the read of {path} failed with OS error {code}")
                     }
                 }
+            }
+            Self::NoConfig { path, .. } => {
+                write!(f, "{} holds no config file", path.display())
             }
             Self::Write { path, cause } => {
                 let path = path.display();

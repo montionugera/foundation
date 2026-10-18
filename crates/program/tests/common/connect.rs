@@ -22,7 +22,7 @@ pub(crate) async fn connect(
 }
 
 /// As [`connect`], where the session sends from `pool` and its readers take frames
-/// from `frames`, and the transport sends from a pool of its own.
+/// from `frames`, and the transport receives into a pool of its own.
 pub(crate) async fn connect_with(
     node: &sim::node::Node,
     tasks: env::tasks::Tasks,
@@ -31,12 +31,26 @@ pub(crate) async fn connect_with(
     pool: Rc<block::Pool>,
     frames: Rc<block::Pool>,
 ) -> Result<Session, Error> {
+    connect_receiving(node, tasks, at, key, pool, frames, own_pool()).await
+}
+
+/// As [`connect_with`], where each message that the transport receives lands in a block
+/// of `received`.
+pub(crate) async fn connect_receiving(
+    node: &sim::node::Node,
+    tasks: env::tasks::Tasks,
+    at: Address,
+    key: PrivateKey,
+    pool: Rc<block::Pool>,
+    frames: Rc<block::Pool>,
+    received: Rc<block::Pool>,
+) -> Result<Session, Error> {
     let config = transport::client::Config {
         net: node.net(),
         clock: node.clock(),
         entropy: node.entropy(),
         tasks: tasks.clone(),
-        pool: own_pool(),
+        pool: received,
     };
     let transport = transport::Client::new(config).expect("a client");
     let config = Config {

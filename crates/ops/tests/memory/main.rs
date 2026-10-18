@@ -4,7 +4,12 @@
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
+use std::cell::Cell;
+use std::ffi::OsString;
+use std::path::Path;
+use std::pin::pin;
 use std::sync::Arc;
+use std::task::{Context, Poll, Waker};
 
 use connector::supervisor::{self, Supervisor};
 use ops::{Config, FrontEnd, FrontEnds, Node, serve};
@@ -29,11 +34,95 @@ const ENTRIES: usize = 2_000;
 /// The bytes of the request and of its steps, apart from the reply, that the heap can
 /// hold at once. The steps took at most 3.9 MB on the laptop (Apple M3 Max).
 const STEPS_BYTES: usize = 8 << 20;
+/// The times that a plan gives the directory `cfg` of 1000 empty `.hcl` files: a
+/// request of 68 MB, 4 times the bound.
+const REPEATS: usize = 2_000;
 
 fn main() {
+    a_plan_of_one_directory_many_times_holds_at_most_three_bounds();
+    an_mcp_plan_of_one_directory_many_times_holds_at_most_three_bounds();
     a_reply_of_many_problems_holds_no_more_than_the_bound();
     a_reply_of_many_changes_holds_no_more_than_the_bound();
     roots_of_many_failures_hold_at_most_a_mebibyte();
+}
+
+fn a_plan_of_one_directory_many_times_holds_at_most_three_bounds() {
+    let args: Vec<_> = ["plan"]
+        .into_iter()
+        .chain(std::iter::repeat_n("cfg", REPEATS))
+        .collect();
+    let (_, errors) = run_on_cfg(&args, None);
+    assert!(errors.contains("ops.large-request"), "{errors}");
+}
+
+fn an_mcp_plan_of_one_directory_many_times_holds_at_most_three_bounds() {
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": { "name": "plan", "arguments": { "files": vec!["cfg"; REPEATS] } },
+    });
+    let (output, _) = run_on_cfg(&["mcp"], Some(format!("{call}\n").into_bytes()));
+    assert!(output.contains("ops.large-request"), "{output}");
+}
+
+/// Runs `foundation` with `args`, and `line` as its input, where `/work/cfg` holds 1000
+/// empty `.hcl` files, and returns its output and its errors. It asserts that the heap
+/// grows by at most 3 times the bound and `STEPS_BYTES`: each `File` holds 48 bytes and
+/// a path of 12 for its 34 bytes of JSON, and its `Vec` grows by doubling.
+///
+/// # Panics
+///
+/// When the run sends a request or waits.
+fn run_on_cfg(args: &[&str], line: Option<Vec<u8>>) -> (String, String) {
+    let mut sim = Sim::new(sim::Config::default());
+    let host = sim.node(sim::node::Config::default());
+    host.make_dir(Path::new("/work"));
+    host.make_dir(Path::new("/work/cfg"));
+    host.set_working_dir(Path::new("/work"));
+    let paths = host.paths();
+    for n in 0..1000 {
+        let path = format!("cfg/{n:04}.hcl");
+        paths.write(Path::new(&path), b"").expect("a write");
+    }
+    let line = Cell::new(line);
+    let input = async || Ok(line.take().map_or(ops::Line::End, ops::Line::Bytes));
+    let request = async |_: &[u8]| -> Result<Vec<u8>, ops::Failure> {
+        panic!("a plan past the bound sent a request")
+    };
+    let reach = async |_: &Path| Ok(request);
+    let front_ends = hcl();
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    let before = ALLOCATOR.held();
+    ALLOCATOR.reset_peak();
+    {
+        let args = std::iter::once("foundation").chain(args.iter().copied());
+        let args = args.map(OsString::from);
+        let cli = ops::cli(
+            args,
+            input,
+            &mut output,
+            &mut errors,
+            &paths,
+            &front_ends,
+            reach,
+        );
+        let Poll::Ready(_) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
+        else {
+            panic!("the run waited");
+        };
+    }
+    let grown = ALLOCATOR.peak() - before;
+    let bound =
+        3 * usize::try_from(BODY_BYTES_MAX).expect("the bound fits") + STEPS_BYTES;
+    assert!(
+        grown <= bound,
+        "{} grew the heap by {grown}, past {bound}",
+        args[0]
+    );
+    let text = |bytes| String::from_utf8(bytes).expect("UTF-8");
+    (text(output), text(errors))
 }
 
 /// The failures of one byte hold their `String`, and also their spare capacity.

@@ -12,6 +12,7 @@ use block::{Block, Pool};
 use env::files::{Absolute, Error, File, Files, Mode, Operation};
 
 use crate::disk::{KIB, Scratch, files, opened};
+use crate::fifo::stalled;
 
 /// Runs `body` with the files of a scratch directory of its own and the path of
 /// their data directory.
@@ -321,7 +322,7 @@ fn open_absolute_opens_to_read_only_with_no_lock() {
 fn open_absolute_refuses_a_file_that_is_not_regular_and_waits_for_no_writer() {
     let scratch = Scratch::new();
     let (fifo, dir) = (scratch.0.join("fifo"), scratch.0.clone());
-    mkfifo(&fifo);
+    crate::fifo::make(&fifo);
     // A socket path has a bound of 104 bytes on macOS, which the scratch path can pass.
     let socket =
         PathBuf::from(format!("/tmp/foundation-os-{}.sock", std::process::id()));
@@ -1229,47 +1230,6 @@ fn a_remove_that_drops_while_it_waits_for_room_leaves_the_file() {
         let found = files.open(Path::new("a"), Mode::Read).await.map(drop);
         assert_eq!(found, Ok(()));
     });
-}
-
-/// Runs `start` while the I/O thread of `files` blocks in the open of a FIFO, so each
-/// call that `start` polls once waits in the queue, and then frees the thread.
-async fn stalled<T>(
-    files: &Files,
-    data: &Path,
-    start: impl FnOnce(&mut std::task::Context<'_>) -> T,
-) -> T {
-    mkfifo(&data.join("p"));
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut blocker = Box::pin(files.open(Path::new("p"), Mode::Read));
-    assert!(blocker.as_mut().poll(&mut context).is_pending());
-    let started = start(&mut context);
-    let writer = rustix::fs::open(
-        data.join("p"),
-        rustix::fs::OFlags::WRONLY,
-        rustix::fs::Mode::empty(),
-    );
-    drop(blocker.await.unwrap());
-    drop(writer.unwrap());
-    std::fs::remove_file(data.join("p")).unwrap();
-    started
-}
-
-/// Makes a FIFO at `path`.
-pub(crate) fn mkfifo(path: &Path) {
-    #[cfg(target_os = "linux")]
-    {
-        let mode = rustix::fs::Mode::from_raw_mode(0o600);
-        rustix::fs::mkfifoat(rustix::fs::CWD, path, mode).unwrap();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
-        // SAFETY: `path` ends in a NUL and lives past the call.
-        #[expect(unsafe_code, reason = "`rustix` has no `mkfifoat` on macOS")]
-        let made = unsafe { libc::mkfifo(path.as_ptr(), 0o600) };
-        assert_eq!(made, 0, "{}", std::io::Error::last_os_error());
-    }
 }
 
 /// Polls `future` once, and expects it to wait.

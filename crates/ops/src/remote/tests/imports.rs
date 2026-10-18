@@ -114,6 +114,48 @@ fn the_command_line_writes_the_import_and_a_second_run_adds_nothing() {
     });
 }
 
+/// The import of a directory writes the file in it that holds the connector block,
+/// and leaves each other file as it was.
+#[test]
+fn the_command_line_imports_into_the_file_of_a_directory_with_the_connector() {
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        fixture.sim.make_dir(Path::new("/work/cfg"));
+        let other = "channel \"other.time\" {\n  kind = \"index\"\n}\n";
+        let files = [
+            ("cfg/a.hcl", other),
+            ("cfg/plant.hcl", PLANT),
+            ("cfg/README.md", "not HCL"),
+        ];
+        for (path, text) in files {
+            paths
+                .write(Path::new(path), text.as_bytes())
+                .expect("a write");
+        }
+        let remote = Remote::new(create_browsing_node(&fixture, mesh));
+        let mut args = ARGS;
+        args[2] = "cfg";
+        let (run, text, errors) = remote.cli(&paths, &args).await;
+        assert_eq!((run, errors.as_str()), (Run::Exit(0), ""));
+        let expected = "The import added 2 channels to cfg/plant.hcl.\n\
+                        plant.Temperature Line3/Temperature f64\n\
+                        heat Line3/Heater u16\n\
+                        It added the index channel plant.time.\n";
+        assert_eq!(text, expected);
+        let text = |path: &str| {
+            let Ok(env::paths::Found::File(bytes)) =
+                paths.read(Path::new(path), most())
+            else {
+                panic!("a file at {path}");
+            };
+            String::from_utf8(bytes).expect("UTF-8")
+        };
+        assert_eq!(text("cfg/plant.hcl"), IMPORTED);
+        assert_eq!(text("cfg/a.hcl"), other);
+        assert_eq!(text("cfg/README.md"), "not HCL");
+    });
+}
+
 /// A file that changed after the read gives `ops.file-changed`, and the import writes
 /// nothing.
 #[test]

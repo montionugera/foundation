@@ -4,8 +4,9 @@
 """
 
 import gc
-import ipaddress
 import os
+import pathlib
+import shutil
 import signal
 import socket
 import subprocess
@@ -105,11 +106,10 @@ class Node:
 
     def __init__(self) -> None:
         self.dir = tempfile.TemporaryDirectory(prefix="foundation-python-")
-        data = os.path.join(self.dir.name, "foundation-data", "data")
-        os.makedirs(data)
-        with open(os.path.join(data, "budget"), "wb") as file:
+        self.data = os.path.join(self.dir.name, "foundation-data")
+        os.makedirs(os.path.join(self.data, "data"))
+        with open(os.path.join(self.data, "data", "budget"), "wb") as file:
             file.write(budget(1 << 30, os.cpu_count() * (8 << 20)))
-        self.data = data
         self.process = subprocess.Popen(
             [os.environ["FOUNDATION_NODE"], "start", "--name", "edge"],
             cwd=self.dir.name,
@@ -124,57 +124,29 @@ class Node:
                 f"the node exited with {self.process.returncode}:\n"
                 + self.process.stderr.read().decode()
             )
-        address = self.read("address", 99, b"foundation/address/1")
-        admin = self.read("admin.key", 54, b"foundation/admin/1")
-        family = address[68]
-        if family == 4:
-            ip = ipaddress.IPv4Address(address[69:73])
-        elif family == 6:
-            ip = ipaddress.IPv6Address(address[69:85])
-        else:
-            raise AssertionError(f"the address has family {family}")
-        if ip.is_unspecified:
-            ip = ipaddress.ip_address("127.0.0.1" if family == 4 else "::1")
-        port = int.from_bytes(address[85:87], "big")
-        self.address = f"{ip}:{port}" if family == 4 else f"[{ip}]:{port}"
-        self.key = uuid.UUID(bytes=address[20:36])
-        self.public_key = address[36:68]
-        self.admin = admin[18:50]
+        self.address = self.first().address
 
-    def read(self, name: str, length: int, tag: bytes) -> bytes:
-        """The bytes of the file `name` of the data directory, once it holds `tag`.
-        Checks the CRC32C of the file."""
-        path = os.path.join(self.data, name)
+    def first(self) -> foundation.Client:
+        """A closed client of the first connect from the data directory. The node
+        prints its line before it writes the file `address`."""
         deadline = time.monotonic() + PATIENCE
         while True:
             try:
-                with open(path, "rb") as file:
-                    data = file.read()
-            except FileNotFoundError:
-                data = b""
-            if len(data) == length and data.startswith(tag):
-                body = length - 4
-                crc = crc32c(data[:body]).to_bytes(4, "little")
-                if crc != data[body:]:
-                    raise AssertionError(f"the CRC32C of {name}")
-                return data
-            if time.monotonic() > deadline:
-                raise AssertionError(f"the node writes no {name}: {data!r}")
-            time.sleep(0.01)
+                client = foundation.connect(data=self.data)
+            except ConnectionError as error:
+                if not str(error).startswith("no node runs in "):
+                    raise
+                if time.monotonic() > deadline:
+                    raise AssertionError(f"the node writes no address: {error}")
+                time.sleep(0.01)
+                continue
+            client.close()
+            return client
 
     def connect(self, **arguments) -> foundation.Client:
-        """`foundation.connect` to this node as its admin, with `arguments` in place of
-        the node's own."""
-        return foundation.connect(
-            **{
-                "address": self.address,
-                "node": self.key,
-                "public_key": self.public_key,
-                "subject": ADMIN,
-                "private_key": self.admin,
-                **arguments,
-            }
-        )
+        """`foundation.connect` to this node as its admin, from its data directory,
+        with `arguments`."""
+        return foundation.connect(**{"data": self.data, **arguments})
 
     def pause(self) -> None:
         """Stops the node with SIGSTOP, and returns once it stopped: on macOS, it can
@@ -322,9 +294,77 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(fork(drop), 0)
         self.assertIsNone(clients[0].close())
 
+    def test_a_connect_with_no_argument_on_the_nodes_host_is_the_first_admin(
+        self,
+    ) -> None:
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir(self.node.dir.name)
+        with foundation.connect() as client:
+            self.assertEqual(client.address, self.node.address)
+        with foundation.connect(self.node.address) as client:
+            self.assertEqual(client.address, self.node.address)
+
+    def test_the_subject_keywords_win_over_the_data_directory(self) -> None:
+        with self.assertRaises(ConnectionError) as raised:
+            self.node.connect(subject=ADMIN, private_key=bytes(32))
+        self.assertEqual(
+            str(raised.exception),
+            "the spec has no such subject, does not list the key for it, or the "
+            "signature is not valid",
+        )
+
+    def test_the_address_keyword_wins_over_the_data_directory(self) -> None:
+        at = f"[::1]:{self.node.address.rsplit(':', 1)[1]}"
+        with self.assertRaises(ConnectionError) as raised:
+            foundation.connect(at, data=self.node.data)
+        self.assertEqual(
+            str(raised.exception),
+            f"no source gives the keys of the node at {at}: {self.node.data} holds "
+            f"the node at {self.node.address}; pass node= and public_key=, or connect "
+            f"to {self.node.address}",
+        )
+        with self.assertRaises(ConnectionError) as raised:
+            foundation.connect(
+                at, node=uuid.UUID(int=1), public_key=WRONG, data=self.node.data
+            )
+        self.assertEqual(
+            str(raised.exception),
+            f"no source gives the subject for the node at {at}: {self.node.data} "
+            f"holds the node at {self.node.address}; pass subject= and private_key=, "
+            f"or connect to {self.node.address}",
+        )
+
+    def test_the_data_directory_can_be_a_path(self) -> None:
+        with foundation.connect(data=pathlib.Path(self.node.data)) as client:
+            self.assertEqual(client.address, self.node.address)
+
+    def test_a_data_directory_with_no_admin_key_gives_no_subject(self) -> None:
+        copy = tempfile.TemporaryDirectory(prefix="foundation-python-")
+        self.addCleanup(copy.cleanup)
+        os.makedirs(os.path.join(copy.name, "data"))
+        shutil.copyfile(
+            os.path.join(self.node.data, "data", "address"),
+            os.path.join(copy.name, "data", "address"),
+        )
+        with self.assertRaises(ConnectionError) as raised:
+            foundation.connect(data=copy.name)
+        self.assertEqual(
+            str(raised.exception), f"{copy.name} holds no admin.key that a node wrote"
+        )
+        with self.assertRaises(ConnectionError) as raised:
+            foundation.connect(
+                data=copy.name, subject="plant.operator", private_key=bytes(32)
+            )
+        self.assertEqual(
+            str(raised.exception),
+            "the spec has no such subject, does not list the key for it, or the "
+            "signature is not valid",
+        )
+
     def test_a_subject_that_the_spec_does_not_list_is_refused(self) -> None:
         with self.assertRaises(ConnectionError) as raised:
-            self.node.connect(subject="plant.operator")
+            self.node.connect(subject="plant.operator", private_key=bytes(32))
         self.assertEqual(
             str(raised.exception),
             "the spec has no such subject, does not list the key for it, or the "
@@ -333,7 +373,7 @@ class ClientTest(unittest.TestCase):
 
     def test_a_wrong_public_key_is_not_authenticated(self) -> None:
         with self.assertRaises(ConnectionError) as raised:
-            self.node.connect(public_key=WRONG)
+            self.node.connect(node=uuid.UUID(int=1), public_key=WRONG)
         address = self.node.address
         self.assertEqual(
             str(raised.exception),
@@ -390,6 +430,136 @@ class ArgumentTest(unittest.TestCase):
             }
         )
 
+    def directory(self) -> str:
+        """A new data directory, with its `data`, that holds no node."""
+        dir = tempfile.TemporaryDirectory(prefix="foundation-python-")
+        self.addCleanup(dir.cleanup)
+        os.makedirs(os.path.join(dir.name, "data"))
+        return dir.name
+
+    def test_a_pair_given_in_half_is_refused(self) -> None:
+        for half, text in [
+            ({"node": uuid.UUID(int=1)}, "node and public_key"),
+            ({"public_key": BASE}, "node and public_key"),
+            ({"subject": ADMIN}, "subject and private_key"),
+            ({"private_key": bytes(32)}, "subject and private_key"),
+        ]:
+            with self.assertRaises(ValueError) as raised:
+                foundation.connect("127.0.0.1:1", data=self.directory(), **half)
+            self.assertEqual(
+                str(raised.exception), f"{text} go together: give both or neither"
+            )
+
+    def test_a_connect_with_each_argument_reads_no_data_directory(self) -> None:
+        data = self.directory()
+        os.chmod(os.path.join(data, "data"), 0)
+        self.addCleanup(os.chmod, os.path.join(data, "data"), 0o700)
+        with self.assertRaises(ConnectionError) as raised:
+            self.connect(address="[::1]:0", data=data)
+        self.assertEqual(
+            str(raised.exception),
+            f"the session failed: no address reached peer {BASE.hex()}; "
+            "Udp([::1]:0): this node cannot send to that address",
+        )
+
+    def test_no_address_and_no_node_in_the_data_directory_is_refused(self) -> None:
+        data = self.directory()
+        for dir in [data, os.path.join(data, "other")]:
+            with self.assertRaises(ConnectionError) as raised:
+                foundation.connect(data=dir)
+            self.assertEqual(
+                str(raised.exception),
+                f"no node runs in {dir}: pass the address of the node, or data= with "
+                "the --data of foundation start",
+            )
+
+    def test_no_source_of_the_node_keys_is_refused(self) -> None:
+        with self.assertRaises(ConnectionError) as raised:
+            foundation.connect("127.0.0.1:1", data=self.directory())
+        self.assertEqual(
+            str(raised.exception),
+            "no source gives the keys of the node at 127.0.0.1:1: pass node= and "
+            "public_key=, or data= with the --data of foundation start on the node's "
+            "host",
+        )
+
+    def test_no_source_of_the_subject_is_refused(self) -> None:
+        with self.assertRaises(ConnectionError) as raised:
+            foundation.connect(
+                "127.0.0.1:1",
+                node=uuid.UUID(int=1),
+                public_key=BASE,
+                data=self.directory(),
+            )
+        self.assertEqual(
+            str(raised.exception),
+            "no source gives the subject for the node at 127.0.0.1:1: pass subject= "
+            "and private_key=, or data= with the --data of foundation start on the "
+            "node's host",
+        )
+
+    def test_each_argument_parses_before_the_data_directory_is_read(self) -> None:
+        data = self.directory()
+        os.chmod(os.path.join(data, "data"), 0)
+        self.addCleanup(os.chmod, os.path.join(data, "data"), 0o700)
+        for arguments, text in [
+            (
+                {"address": "localhost:1"},
+                "the address \"localhost:1\" is not ip:port: invalid socket address "
+                "syntax",
+            ),
+            (
+                {"node": uuid.UUID(int=1), "public_key": bytes(31)},
+                "public_key is 31 bytes, not 32",
+            ),
+            (
+                {"subject": "", "private_key": bytes(32)},
+                "subject: a name or pattern is empty",
+            ),
+        ]:
+            with self.assertRaises(ValueError) as raised:
+                foundation.connect(data=data, **arguments)
+            self.assertEqual(str(raised.exception), text)
+
+    def test_a_data_directory_that_cannot_be_read_is_refused(self) -> None:
+        data = self.directory()
+        os.chmod(os.path.join(data, "data"), 0)
+        self.addCleanup(os.chmod, os.path.join(data, "data"), 0o700)
+        with self.assertRaises(ConnectionError) as raised:
+            foundation.connect(data=data)
+        self.assertEqual(
+            str(raised.exception),
+            f"cannot read {data}/data: open of . failed with OS error 13",
+        )
+
+    def test_a_file_in_the_data_directory_that_cannot_be_read_is_refused(
+        self,
+    ) -> None:
+        data = self.directory()
+        address = os.path.join(data, "data", "address")
+        with open(address, "wb") as file:
+            file.write(b"foundation/address/1")
+        os.chmod(address, 0)
+        self.addCleanup(os.chmod, address, 0o600)
+        with self.assertRaises(ConnectionError) as raised:
+            foundation.connect(data=data)
+        self.assertEqual(
+            str(raised.exception),
+            f"cannot read {data}/data: open of address failed with OS error 13",
+        )
+
+    def test_a_file_of_another_format_version_is_refused(self) -> None:
+        data = self.directory()
+        with open(os.path.join(data, "data", "address"), "wb") as file:
+            file.write(b"foundation/address/2")
+        with self.assertRaises(ConnectionError) as raised:
+            foundation.connect("127.0.0.1:1", data=data)
+        self.assertEqual(
+            str(raised.exception),
+            f"{data}/data/address holds format version 2, and this package reads "
+            "version 1: install the package of the node's version",
+        )
+
     def test_an_address_that_is_not_ip_and_port_is_refused(self) -> None:
         with self.assertRaises(ValueError) as raised:
             self.connect(address="localhost:1")
@@ -425,6 +595,11 @@ class ArgumentTest(unittest.TestCase):
         with self.assertRaises(ValueError) as raised:
             self.connect(subject="")
         self.assertEqual(str(raised.exception), "subject: a name or pattern is empty")
+
+    def test_a_data_directory_with_a_nul_byte_is_refused(self) -> None:
+        with self.assertRaises(ValueError) as raised:
+            self.connect(data="a\0b")
+        self.assertEqual(str(raised.exception), "data: the path holds a NUL byte")
 
     def test_other_threads_run_while_a_client_dials(self) -> None:
         silent = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)

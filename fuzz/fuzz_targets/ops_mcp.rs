@@ -20,6 +20,7 @@ fuzz_target!(|input: &[u8]| {
     host.make_dir(Path::new("/work"));
     host.set_working_dir(Path::new("/work"));
     let paths = host.paths();
+    let front_ends = node::front_ends();
     // Each request fails at once, as when no node runs.
     let request = async |_: &[u8]| -> Result<Vec<u8>, ops::Failure> {
         Err(ops::Failure {
@@ -36,6 +37,7 @@ fuzz_target!(|input: &[u8]| {
         &mut output,
         &mut errors,
         &paths,
+        &front_ends,
         reach,
     );
     // No request waits, so one poll ends it.

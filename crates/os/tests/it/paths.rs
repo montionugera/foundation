@@ -17,7 +17,7 @@ use types::time::Span;
 
 use crate::cases::{self, Host};
 use crate::disk::{Scratch, mode};
-use crate::files::mkfifo;
+use crate::fifo;
 
 fn run(case: fn(&Host<'_>)) {
     let scratch = Scratch::new();
@@ -212,7 +212,7 @@ fn within_hides_a_pipe_and_ends() {
     let scratch = Scratch::new();
     let base = fs::canonicalize(&scratch.0).unwrap();
     let pipe = base.join("pipe");
-    mkfifo(&pipe);
+    fifo::make(&pipe);
     let (sent, got) = std::sync::mpsc::channel();
     let hidden = pipe.clone();
     #[expect(clippy::disallowed_methods, reason = "the test bounds the call")]
@@ -1101,7 +1101,7 @@ fn a_write_on_a_device_writes_in_place() {
 fn a_write_on_a_pipe_gives_the_bytes_to_its_reader() {
     let scratch = Scratch::new();
     let pipe = scratch.0.join("pipe");
-    mkfifo(&pipe);
+    fifo::make(&pipe);
     let nonblocking = rustix::fs::OFlags::NONBLOCK.bits().cast_signed();
     let mut reader = fs::OpenOptions::new();
     #[expect(clippy::disallowed_methods, reason = "the test reads the pipe")]
@@ -1127,7 +1127,7 @@ fn a_write_on_a_pipe_gives_the_bytes_to_its_reader() {
 fn a_read_of_a_pipe_is_an_invalid_argument() {
     let scratch = Scratch::new();
     let pipe = scratch.0.join("pipe");
-    mkfifo(&pipe);
+    fifo::make(&pipe);
     let (send, receive) = mpsc::channel();
     #[expect(clippy::disallowed_methods, reason = "the test bounds a hang")]
     thread::spawn(move || send.send(os::paths().read(&pipe, 1)).unwrap());
@@ -1247,7 +1247,7 @@ fn a_read_of_a_path_that_swaps_a_file_for_a_pipe_gives_the_file_or_an_invalid_ar
 {
     let scratch = Scratch::new();
     let (pipe, file) = (scratch.0.join("pipe"), scratch.0.join("file"));
-    mkfifo(&pipe);
+    fifo::make(&pipe);
     fs::write(&file, b"x").unwrap();
     let (link, next) = (scratch.0.join("link"), scratch.0.join("next"));
     symlink(&file, &link).unwrap();

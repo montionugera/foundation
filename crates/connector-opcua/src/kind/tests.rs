@@ -1,7 +1,9 @@
 #![expect(clippy::arithmetic_side_effects, reason = "a test may panic")]
 
+use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::fmt::Display;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
@@ -43,19 +45,17 @@ const DATA: &[&str] = &["plant.a", "plant.b", "plant.c"];
 /// The connector of each scene.
 const PLC: &str = "plant.plc";
 
-/// The first key of the status channels of [`PLC`]: the index, then `state`,
-/// `class`, `restarts`, `backoff`, `error`, `note`, then each of [`COUNTS`].
-const STATUS: u128 = 100;
-const CLASS: u128 = STATUS + 2;
-const RESTARTS: u128 = STATUS + 3;
-const ERROR: u128 = STATUS + 5;
-const NOTE: u128 = STATUS + 6;
-const IN: u128 = STATUS + 7;
-const MISSED: u128 = STATUS + 8;
-const LOST: u128 = STATUS + 9;
-const BAD: u128 = STATUS + 10;
-const UNCERTAIN: u128 = STATUS + 11;
-const MISTYPED: u128 = STATUS + 12;
+/// The last segment of the name of each status channel of [`PLC`] that a test reads.
+const CLASS: &str = "class";
+const RESTARTS: &str = "restarts";
+const ERROR: &str = "error";
+const NOTE: &str = "note";
+const IN: &str = "in";
+const MISSED: &str = "missed";
+const LOST: &str = "lost";
+const BAD: &str = "bad";
+const UNCERTAIN: &str = "uncertain";
+const MISTYPED: &str = "mistyped";
 
 /// The class of a device error in the status.
 const DEVICE: u64 = 2;
@@ -79,17 +79,37 @@ enum Samples {
 /// The series of one frame that a reader received, by key.
 type Frame = BTreeMap<u128, Samples>;
 
+/// The series of one frame of the status channels of [`PLC`] that a reader received,
+/// by the last segment of each name.
+type Segments = BTreeMap<String, Samples>;
+
 /// The samples of `key` in `frame`, when it holds them.
-fn fixed(frame: &Frame, key: u128) -> Option<&[u64]> {
-    match frame.get(&key)? {
+fn fixed<'a, K, Q>(frame: &'a BTreeMap<K, Samples>, key: &Q) -> Option<&'a [u64]>
+where
+    K: Ord + Borrow<Q>,
+    Q: Ord + Display + ?Sized,
+{
+    match frame.get(key)? {
         Samples::Fixed(samples) => Some(samples),
         Samples::Texts(_) => panic!("{key} has fixed samples"),
     }
 }
 
+/// The text samples of `key` in `frame`, or `None` when it has no `key`.
+///
+/// # Panics
+///
+/// When `key` has fixed samples.
+fn text<'a>(frame: &'a Segments, key: &str) -> Option<&'a [String]> {
+    match frame.get(key)? {
+        Samples::Texts(texts) => Some(texts),
+        Samples::Fixed(_) => panic!("{key} has text samples"),
+    }
+}
+
 /// The value of the one sample of the `f64` channel `key` in `frame`.
 fn value(frame: &Frame, key: u128) -> f64 {
-    match fixed(frame, key) {
+    match fixed(frame, &key) {
         Some(&[bits]) => f64::from_bits(bits),
         other => panic!("one sample of {key}: {other:?}"),
     }
@@ -97,16 +117,16 @@ fn value(frame: &Frame, key: u128) -> f64 {
 
 /// The stamp of the one sample of the index `key` in `frame`.
 fn stamp(frame: &Frame, key: u128) -> i64 {
-    match fixed(frame, key) {
+    match fixed(frame, &key) {
         Some(&[bits]) => i64::from_le_bytes(bits.to_le_bytes()),
         other => panic!("one stamp of {key}: {other:?}"),
     }
 }
 
-/// The last sample of the status channel `key` in `statuses`, or 0 when none holds
-/// it.
-fn last(statuses: &[Frame], key: u128) -> u64 {
-    let mut samples = statuses.iter().filter_map(|frame| fixed(frame, key));
+/// The last sample of the status channel `segment` in `statuses`, or 0 when none
+/// holds it.
+fn last(statuses: &[Segments], segment: &str) -> u64 {
+    let mut samples = statuses.iter().filter_map(|frame| fixed(frame, segment));
     samples
         .next_back()
         .and_then(|samples| samples.last().copied())
@@ -115,11 +135,10 @@ fn last(statuses: &[Frame], key: u128) -> u64 {
 
 /// Each text of `error` in `statuses` that is not empty, with the class beside it,
 /// once for each run of equal pairs.
-fn errors(statuses: &[Frame]) -> Vec<(u64, String)> {
+fn errors(statuses: &[Segments]) -> Vec<(u64, String)> {
     let mut errors = Vec::new();
     for frame in statuses {
-        let (Some(Samples::Texts(texts)), Some(classes)) =
-            (frame.get(&ERROR), fixed(frame, CLASS))
+        let (Some(texts), Some(classes)) = (text(frame, ERROR), fixed(frame, CLASS))
         else {
             continue;
         };
@@ -133,28 +152,24 @@ fn errors(statuses: &[Frame]) -> Vec<(u64, String)> {
 
 /// Each text of `note` in `statuses` that is not empty, once for each run of equal
 /// texts.
-fn notes(statuses: &[Frame]) -> Vec<String> {
-    let mut notes = Vec::new();
-    for frame in statuses {
-        if let Some(Samples::Texts(texts)) = frame.get(&NOTE) {
-            notes.extend(texts.iter().filter(|text| !text.is_empty()).cloned());
-        }
-    }
+fn notes(statuses: &[Segments]) -> Vec<String> {
+    let mut notes: Vec<String> = texts(statuses, NOTE)
+        .filter(|note| !note.is_empty())
+        .cloned()
+        .collect();
     notes.dedup();
     notes
 }
 
-/// Each text of `note` in `statuses`, also an empty one, once for each run of equal
-/// texts.
-fn texts(statuses: &[Frame]) -> Vec<String> {
-    let mut texts = Vec::new();
-    for frame in statuses {
-        if let Some(Samples::Texts(notes)) = frame.get(&NOTE) {
-            texts.extend(notes.iter().cloned());
-        }
-    }
-    texts.dedup();
-    texts
+/// Each text of `key` in `statuses`, in order.
+fn texts<'a>(
+    statuses: &'a [Segments],
+    key: &'a str,
+) -> impl Iterator<Item = &'a String> {
+    statuses
+        .iter()
+        .filter_map(|frame| text(frame, key))
+        .flatten()
 }
 
 /// The keys of each of `frames`.
@@ -165,12 +180,15 @@ fn keys(frames: &[Frame]) -> Vec<Vec<u128>> {
         .collect()
 }
 
-/// The series of `received`, by key.
-fn decode(received: &Received<'_>) -> Frame {
+/// The series of `received`, each by the `key` of its channel's key and name.
+fn decode<K: Ord>(
+    received: &Received<'_>,
+    key: fn(channel::Key, &str) -> K,
+) -> BTreeMap<K, Samples> {
     let (set, view) = (received.set(), received.view());
-    let mut frame = Frame::new();
-    for (entry, bytes) in view.iter() {
-        let entry = &set.entries()[entry];
+    let mut frame = BTreeMap::new();
+    for (index, bytes) in view.iter() {
+        let entry = &set.entries()[index];
         let range = view.range(entry.group).expect("the group is present");
         let count = usize::try_from(range.count).expect("a count");
         let mut raw = Vec::new();
@@ -188,17 +206,30 @@ fn decode(received: &Received<'_>) -> Frame {
             let texts = texts.map(|text| String::from_utf8_lossy(text).into_owned());
             Samples::Texts(texts.collect())
         };
-        frame.insert(entry.key.as_u128(), samples);
+        frame.insert(key(entry.key, received.name(index)), samples);
     }
     frame
 }
 
-/// Reads each frame of `names` into the vector it gives, in a task on `tasks`.
-async fn record(
+/// The key of a channel in a [`Frame`].
+fn by_key(key: channel::Key, _: &str) -> u128 {
+    key.as_u128()
+}
+
+/// The key of a status channel in a [`Segments`].
+fn by_segment(_: channel::Key, name: &str) -> String {
+    let last = name.rsplit_once('.').map_or(name, |(_, last)| last);
+    last.to_owned()
+}
+
+/// Reads each frame of `names` into the vector it gives, keyed by `key` as
+/// [`decode`] does, in a task on `tasks`.
+async fn record<K: Ord + 'static>(
     hub: &hub::Hub,
     names: &[Name],
     tasks: &Tasks,
-) -> Rc<RefCell<Vec<Frame>>> {
+    key: fn(channel::Key, &str) -> K,
+) -> Rc<RefCell<Vec<BTreeMap<K, Samples>>>> {
     let config = hub::reader::Config {
         select: Selector::new(names.iter().map(Name::as_str)).expect("a selector"),
         mode: Mode::Complete,
@@ -211,7 +242,7 @@ async fn record(
     let into = Rc::clone(&frames);
     tasks.spawn(async move {
         while let Ok(received) = reader.next().await {
-            into.borrow_mut().push(decode(&received));
+            into.borrow_mut().push(decode(&received, key));
         }
     });
     frames
@@ -395,8 +426,7 @@ impl Scene {
         });
         let open = self
             .rig
-            .supervisor()
-            .open("opcua", name(PLC), &self.config, &token);
+            .open_connector("opcua", name(PLC), &self.config, &token);
         open.await.run().await
     }
 
@@ -425,7 +455,7 @@ struct Record {
     /// The frames of the channels of the setup on each other index, by its key.
     indexes: BTreeMap<u128, Vec<Frame>>,
     /// The frames of the status channels.
-    statuses: Vec<Frame>,
+    statuses: Vec<Segments>,
     served: BTreeMap<String, Vec<Served>>,
     /// The reads of the state of the server that each server answered.
     states: u32,
@@ -460,17 +490,14 @@ where
         let kinds = Table::new().with("opcua", Kind::default());
         let rig = Rig::open(env, node.net(), kinds).await;
         let hub = rig.hub();
-        let counts = COUNTS.map(name);
-        let status = testing::create_status(
-            &name(PLC),
-            &counts,
-            channel::Key::from_u128(STATUS),
-        );
+        let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
+        let config = config(&address, rate, &setup.reads);
+        let status = rig.define_status("opcua", &name(PLC), &config);
         let channels = setup.channels.iter();
         let channels: Vec<_> = channels
             .map(|(text, def)| (name(text), def.clone()))
             .collect();
-        rig.define(status.iter().chain(&channels).cloned().collect());
+        rig.define(channels.clone());
         let mut groups = BTreeMap::<u128, Vec<Name>>::new();
         for (name, definition) in &channels {
             groups
@@ -480,13 +507,11 @@ where
         }
         let mut indexes = BTreeMap::new();
         for (index, names) in groups {
-            indexes.insert(index, record(hub, &names, &tasks).await);
+            indexes.insert(index, record(hub, &names, &tasks, by_key).await);
         }
-        let names: Vec<_> = status.iter().map(|(name, _)| name.clone()).collect();
-        let statuses = record(hub, &names, &tasks).await;
-        let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
+        let statuses = record(hub, &status, &tasks, by_segment).await;
         let scene = Rc::new(Scene {
-            config: config(&address, rate, &setup.reads),
+            config,
             variables: setup.variables(),
             rig,
             server: RefCell::new(None),
@@ -821,6 +846,115 @@ fn keeps_the_run_when_a_check_answers_with_a_bad_state() {
         assert_eq!(last(&outcome.statuses, RESTARTS), 0);
         assert_eq!((outcome.frames.len(), outcome.states), (1, 4));
     }
+}
+
+/// The note of a run with no `read` block.
+const NO_READ: &str = "the connector has no `read` block, so it reads nothing. \
+                       `browse` lists the points of the server, and `import` adds a \
+                       `read` block for each.";
+
+/// A run with no `read` block keeps its session until the cancel: it checks the
+/// connection each 10 s, notes that it reads nothing, and writes no frame. The cancel
+/// ends it once the server answers its `CloseSession`, 500 us later.
+#[test]
+fn a_run_with_no_read_keeps_its_session_and_notes_that_it_reads_nothing() {
+    let setup = Setup {
+        reads: Vec::new(),
+        ..Setup::three()
+    };
+    let outcome = run(setup, |scene| async move {
+        let end = ends_after_the_cancel(&scene, ms(41_050)).await;
+        assert_eq!(end, Span::from_nanos(500_000));
+        Ok(())
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(errors(&outcome.statuses), []);
+    assert_eq!(notes(&outcome.statuses), [NO_READ]);
+    assert_eq!(last(&outcome.statuses, RESTARTS), 0);
+    assert_eq!((outcome.frames.len(), outcome.states), (0, 4));
+}
+
+/// A run with no `read` block and no server ends with the error of the connect.
+#[test]
+fn a_run_with_no_read_and_no_server_ends_with_the_error_of_the_connect() {
+    let setup = Setup {
+        reads: Vec::new(),
+        ..Setup::three()
+    };
+    let outcome = run(setup, |scene| async move {
+        scene.stop().await;
+        scene.supervise(ms(1_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let connect =
+        "the connect to opc.tcp://10.0.0.1:4840 failed with BadConnectionRejected";
+    assert_eq!(errors(&outcome.statuses), [(DEVICE, connect.to_owned())]);
+    assert_eq!(notes(&outcome.statuses), Vec::<String>::new());
+}
+
+/// The error and the note of each status in `statuses`, once for each run of equal
+/// pairs.
+fn shown(statuses: &[Segments]) -> Vec<(String, String)> {
+    let mut shown: Vec<_> = texts(statuses, ERROR)
+        .cloned()
+        .zip(texts(statuses, NOTE).cloned())
+        .collect();
+    shown.dedup();
+    shown
+}
+
+/// A run with no `read` block clears the error of the run before once it connects,
+/// and not before: the status shows the error of the connect while the next connect
+/// waits 3 s for the server. The end of the run clears the note.
+#[test]
+fn a_run_with_no_read_keeps_the_error_of_the_run_before_until_it_connects() {
+    let setup = Setup {
+        reads: Vec::new(),
+        ..Setup::three()
+    };
+    let outcome = run(setup, |scene| async move {
+        scene.stop().await;
+        scene.after(ms(1_050), |scene| async move {
+            scene.gate.close();
+            scene.serve();
+        });
+        scene.after(ms(4_050), |scene| async move { scene.gate.open() });
+        scene.supervise(ms(30_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let connect =
+        "the connect to opc.tcp://10.0.0.1:4840 failed with BadConnectionRejected";
+    let shown = shown(&outcome.statuses);
+    assert_eq!(
+        shown,
+        [
+            (String::new(), String::new()),
+            (connect.to_owned(), String::new()),
+            (String::new(), NO_READ.to_owned()),
+            (String::new(), String::new()),
+        ]
+    );
+}
+
+/// A run with no `read` block whose server stops ends with the `device` error of the
+/// check, and the next run gives the error of its connect.
+#[test]
+fn a_run_with_no_read_ends_with_a_device_error_when_the_server_stops() {
+    let setup = Setup {
+        reads: Vec::new(),
+        ..Setup::three()
+    };
+    let outcome = run(setup, |scene| async move {
+        scene.after(ms(1_050), |scene| async move { scene.stop().await });
+        scene.supervise(ms(2_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let connect =
+        "the connect to opc.tcp://10.0.0.1:4840 failed with BadConnectionRejected";
+    assert_eq!(
+        errors(&outcome.statuses),
+        [(DEVICE, CLOSED.to_owned()), (DEVICE, connect.to_owned())]
+    );
 }
 
 /// A run at 10 Hz reads more often than each 10 s, so it sends no check of the
@@ -1320,7 +1454,7 @@ fn writes_each_type_of_a_value_into_a_channel_of_its_type() {
     let mut written: Vec<Vec<u64>> = (outcome.frames.iter())
         .map(|frame| {
             (2..=12)
-                .map(|key| fixed(frame, key).expect("a series")[0])
+                .map(|key| fixed(frame, &key).expect("a series")[0])
                 .collect()
         })
         .collect();
@@ -1384,7 +1518,9 @@ fn the_note_names_the_first_node_of_another_type_of_the_latest_tick() {
         note(C, "plant.c", "Float"),
         String::new(),
     ];
-    assert_eq!(texts(&outcome.statuses), shown);
+    let mut texts: Vec<_> = texts(&outcome.statuses, NOTE).cloned().collect();
+    texts.dedup();
+    assert_eq!(texts, shown);
     assert_eq!(last(&outcome.statuses, MISTYPED), 20 + 20);
 }
 

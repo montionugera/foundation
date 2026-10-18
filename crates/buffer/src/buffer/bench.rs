@@ -2,7 +2,7 @@
 
 use std::num::NonZeroU32;
 
-use block::{Block, Heap, Pool};
+use block::{Block, Heap, Memory, Pool};
 use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
@@ -45,14 +45,38 @@ impl Deadline {
     /// of one entry of each index is over a body of two blocks.
     #[must_use]
     pub fn new(indexes: u32, blocks: u64) -> Self {
+        let config = block::Config::new(1 << 21).expect("the budget fits");
+        Self::with(
+            indexes,
+            blocks,
+            config.clone(),
+            Heap::new(config.reservation()),
+        )
+    }
+
+    /// As [`new`](Self::new), with each page of the pool committed, so that no later
+    /// deadline makes the first commit of a page, which a pool on `Heap` does once a
+    /// page.
+    ///
+    /// # Panics
+    ///
+    /// As [`new`](Self::new) does.
+    #[must_use]
+    pub fn resident(indexes: u32, blocks: u64) -> Self {
+        let config = block::Config::new(1 << 21).expect("the budget fits");
+        let heap = Heap::new(config.reservation());
+        heap.commit(0, heap.len()).expect("heap memory commits");
+        Self::with(indexes, blocks, config, heap)
+    }
+
+    fn with(indexes: u32, blocks: u64, config: block::Config, heap: Heap) -> Self {
         let area = blocks.checked_mul(BLOCK).expect("a valid layout");
         let layout = Layout::new(area, 2 * ALIGN).expect("a valid layout");
         let count = usize::try_from(indexes).expect("fits");
         layout
             .check(count, count, count * PART)
             .expect("a group of one entry of each index fits a body of two blocks");
-        let config = block::Config::new(1 << 21).expect("the budget fits");
-        let pool = Pool::new(config.clone(), Heap::new(config.reservation()));
+        let pool = Pool::new(config, heap);
         let block_max = group::block_max(&pool).expect("the budget holds an entry");
         let part = pool.alloc(PART).expect("the pool has room").freeze();
         let chain = 9;
@@ -291,6 +315,18 @@ mod tests {
             .find(|&(slot, _)| slot == slow)
             .map(|(_, newest)| newest.bytes.len());
         assert_eq!(bytes, Some(PART));
+    }
+
+    /// The deadlines of `resident` give the tails of those of `new`, up to the carry
+    /// of 32 tails that the `deadline_carry` bench times.
+    #[test]
+    fn a_resident_deadline_carries_as_a_new_one() {
+        let tails = |mut deadline: Deadline| {
+            (0..13).map(|_| deadline.commit(4096)).collect::<Vec<_>>()
+        };
+        let resident = tails(Deadline::resident(32, 64 + PHASE));
+        assert_eq!(resident.last(), Some(&32));
+        assert_eq!(resident, tails(Deadline::new(32, 64 + PHASE)));
     }
 
     #[test]

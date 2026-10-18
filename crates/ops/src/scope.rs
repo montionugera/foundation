@@ -5,12 +5,16 @@ use std::path::{Path, PathBuf};
 use env::paths::{self, Found, Kind, Paths};
 use wire::hub::client::BODY_BYTES_MAX;
 
-use crate::error::{Error, Unread, Unusable, Unwritten};
+use crate::error::{self, Error, Unread, Unusable, Unwritten};
+use crate::front_end::{self, File, FrontEnds};
+use crate::serve;
 
 /// The files that a run reaches: each one for a command line, and for `foundation mcp`
-/// only those under its folders, with its data directory hidden.
+/// only those under its folders, with its data directory hidden. The front ends pick
+/// the config files of a directory.
 pub(crate) struct Scope {
     paths: Paths,
+    front_ends: FrontEnds,
     limits: Option<Limits>,
 }
 
@@ -25,9 +29,10 @@ pub(crate) struct Limits {
 
 impl Scope {
     /// Each file of `paths`, for a command line.
-    pub(crate) fn free(paths: &Paths) -> Self {
+    pub(crate) fn free(paths: &Paths, front_ends: &FrontEnds) -> Self {
         Self {
             paths: paths.clone(),
+            front_ends: front_ends.clone(),
             limits: None,
         }
     }
@@ -45,6 +50,7 @@ impl Scope {
     /// - [`Error::Data`] when `data` is not made, or does not resolve.
     pub(crate) fn mcp(
         paths: &Paths,
+        front_ends: &FrontEnds,
         files: &[PathBuf],
         data: &Path,
     ) -> Result<Self, Error> {
@@ -89,6 +95,7 @@ impl Scope {
             .map_err(unmade)?;
         Ok(Self {
             paths: within,
+            front_ends: front_ends.clone(),
             limits: Some(Limits {
                 folders,
                 data,
@@ -165,6 +172,82 @@ impl Scope {
         Ok(())
     }
 
+    /// The path and text of each config file of `files`, in order: a file, or each
+    /// file of a directory whose name has the extension of a front end and does not
+    /// start with `.`, in name order. The files of a directory in it are not read.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Config`] with `ops.path-not-utf8` for each of `files` whose path is
+    ///   not UTF-8, or each such file of the first directory that has one.
+    /// - [`Error::Read`] for the first file that does not read as UTF-8 text or is a
+    ///   directory in a directory, or a directory whose entries pass the bytes of one
+    ///   read.
+    /// - [`Error::NoConfig`] for the first directory that gives no file.
+    /// - [`Error::LargeRequest`] once the JSON of the files that it read passes the
+    ///   most of a request.
+    /// - The other errors of [`Scope::read`].
+    pub(crate) fn config(&self, files: &[PathBuf]) -> Result<Vec<File>, Error> {
+        utf8(files)?;
+        let mut read = Vec::with_capacity(files.len());
+        let mut total = 0;
+        let large = |total| {
+            if total > most() {
+                Err(Error::LargeRequest)
+            } else {
+                Ok(total)
+            }
+        };
+        let mut add = |path: &Path, bytes: Vec<u8>| {
+            // A file whose bytes pass the most gives `ops.large-request` before the
+            // check of its text.
+            large(total + bytes.len())?;
+            let text = String::from_utf8(bytes).map_err(|_not_utf8| Error::Read {
+                path: path.to_owned(),
+                cause: Unread::NotUtf8,
+            })?;
+            let file = File {
+                path: path.to_owned(),
+                text,
+            };
+            total = large(total + serve::encoded(&file))?;
+            read.push(file);
+            Ok(())
+        };
+        for path in files {
+            match self.found(path)? {
+                Found::Large(Kind::Directory) => {
+                    return Err(Error::Read {
+                        path: path.clone(),
+                        cause: Unread::ManyEntries,
+                    });
+                }
+                Found::Directory(entries) => {
+                    let listed: Vec<_> = entries
+                        .into_iter()
+                        .filter(|entry| {
+                            entry
+                                .file_name()
+                                .is_some_and(|name| self.front_ends.reads(name))
+                        })
+                        .collect();
+                    if listed.is_empty() {
+                        return Err(Error::NoConfig {
+                            path: path.clone(),
+                            extensions: self.front_ends.named(),
+                        });
+                    }
+                    utf8(&listed)?;
+                    for entry in listed {
+                        add(&entry, self.read(&entry)?)?;
+                    }
+                }
+                found => add(path, file(path, found)?)?,
+            }
+        }
+        Ok(read)
+    }
+
     /// The bytes of the file at `path`, of at most the bytes of one request.
     ///
     /// # Errors
@@ -174,16 +257,24 @@ impl Scope {
     /// - [`Error::Outside`], [`Error::Hidden`], or [`Error::FolderChanged`] when the
     ///   limits refuse it.
     pub(crate) fn read(&self, path: &Path) -> Result<Vec<u8>, Error> {
+        file(path, self.found(path)?)
+    }
+
+    /// What is at `path`: the bytes of a file, or the path of each entry of a
+    /// directory in name order, each list of at most the bytes of one request.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Read`] when it is not there or does not read.
+    /// - [`Error::Outside`], [`Error::Hidden`], or [`Error::FolderChanged`] when the
+    ///   limits refuse it.
+    fn found(&self, path: &Path) -> Result<Found, Error> {
         let unread = |cause| Error::Read {
             path: path.to_owned(),
             cause,
         };
         match self.paths.read(path, most()) {
-            Ok(Found::File(bytes)) => Ok(bytes),
-            Ok(Found::Large(Kind::File)) => Err(Error::LargeRequest),
-            Ok(Found::Directory(_) | Found::Large(Kind::Directory)) => {
-                Err(unread(Unread::Directory))
-            }
+            Ok(found) => Ok(found),
             Err(paths::Error::NotFound) => Err(unread(Unread::NotFound)),
             Err(paths::Error::Io { code }) => Err(unread(Unread::Io { code })),
             Err(
@@ -214,4 +305,35 @@ impl Scope {
 pub(crate) fn most() -> usize {
     usize::try_from(BODY_BYTES_MAX)
         .expect("invariant: the bound of a body fits a usize")
+}
+
+/// The bytes of `found`, the file at `path`.
+///
+/// # Errors
+///
+/// - [`Error::LargeRequest`] when it has more than the bytes of one request.
+/// - [`Error::Read`] when `path` is a directory.
+fn file(path: &Path, found: Found) -> Result<Vec<u8>, Error> {
+    match found {
+        Found::File(bytes) => Ok(bytes),
+        Found::Large(Kind::File) => Err(Error::LargeRequest),
+        Found::Directory(_) | Found::Large(Kind::Directory) => Err(Error::Read {
+            path: path.to_owned(),
+            cause: Unread::Directory,
+        }),
+    }
+}
+
+/// `Config` with `ops.path-not-utf8` for each of `files` whose path is not UTF-8.
+fn utf8(files: &[PathBuf]) -> Result<(), Error> {
+    let not_utf8: Vec<_> = files
+        .iter()
+        .filter(|path| path.to_str().is_none())
+        .map(|path| front_end::not_utf8(path))
+        .collect();
+    if not_utf8.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::config(not_utf8, &error::Sources::default()))
+    }
 }

@@ -10,7 +10,9 @@ and `cancel` modules of `connector`. The record CONNECTOR CONFORMANCE
 `scenarios.rs` holds the scenarios, the input type `Suite`, and `suite!`, which expands
 to one `#[test]` for each scenario, and two that check that a scenario that is not done
 at `RING` fails. `<kind>/main.rs` is the root of the test binary of one kind: its
-`Suite` and one `suite!` line. Each kind crate runs its suite as its `conformance` test.
+`Suite`, one `suite!` line, and each test of that kind alone, which uses
+`scenarios::run` and the `pub(crate)` items of `scenarios.rs`. Each kind crate runs its
+suite as its `conformance` test.
 The `[[test]]` entry in the `Cargo.toml` of each kind is part of this oracle: to remove
 it is to weaken the oracle.
 

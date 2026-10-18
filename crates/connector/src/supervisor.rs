@@ -493,7 +493,7 @@ mod tests {
     use super::*;
     use crate::cancel::Token;
     use crate::common::{
-        STATUS, create_config, create_status, env, run_in, run_on, run_with,
+        STATUS, create_config, create_status, env, fill, run_in, run_on, run_with,
     };
     use crate::kind::{Browse, Channels, Kind, Table};
     use crate::testing;
@@ -3599,31 +3599,6 @@ mod tests {
             (Span::from_nanos(1_000_000_002), 2, 7),
         ];
         assert_eq!(hogged_by(hog_to_flush()), want);
-    }
-
-    /// Takes frames of one sample for each channel of `writer` from the shard's pool
-    /// until the pool has no room for a frame of any size up to 2 KiB, so that no
-    /// status frame and no copy of it in the home gets a block. `writer` has `error`
-    /// and `note`, whose texts set the size, so this holds only while the two texts
-    /// of a test are short.
-    fn fill(writer: &hub::writer::Writer) -> Vec<frame::Draft> {
-        let mut held = Vec::new();
-        for text in (0..=2_048).rev().step_by(16) {
-            let series: Vec<_> = (writer.set().entries().iter().enumerate())
-                .map(|(i, entry)| (i, entry.data_type.width().unwrap_or(4 + text)))
-                .collect();
-            let error = loop {
-                match writer.draft(Form::Raw, &series) {
-                    Ok(draft) => held.push(draft),
-                    Err(error) => break error,
-                }
-            };
-            assert!(
-                matches!(error, frame::Error::Pool(block::Error::Exhausted { .. })),
-                "{error}"
-            );
-        }
-        held
     }
 
     /// The ring file of the test shard, which `fail_file` fails.

@@ -504,6 +504,7 @@ dependencies = [
  "document",
  "env",
  "hub",
+ "libc",
  "proptest",
  "sim",
  "spec",
@@ -1248,6 +1249,7 @@ dependencies = [
  "proptest",
  "sdk",
  "secret",
+ "sector",
  "serde",
  "serde_json",
  "sim",
@@ -1913,6 +1915,8 @@ dependencies = [
  "env",
  "os",
  "program",
+ "sector",
+ "spec",
  "tokio",
  "tracing",
  "transport",
@@ -1926,6 +1930,7 @@ dependencies = [
  "program",
  "pyo3",
  "sdk",
+ "sector",
  "transport",
  "types",
 ]
@@ -1943,6 +1948,18 @@ dependencies = [
  "sim",
  "types",
  "zeroize",
+]
+
+[[package]]
+name = "sector"
+version = "0.0.0"
+dependencies = [
+ "block",
+ "crc32c",
+ "env",
+ "proptest",
+ "sim",
+ "types",
 ]
 
 [[package]]
