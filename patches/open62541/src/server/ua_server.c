@@ -240,7 +240,8 @@ UA_GDSTransaction_getCertificateGroup(UA_GDSTransaction *transaction,
                          &UA_TYPES[UA_TYPES_UINT32]);
 
     UA_CertificateGroup_Memorystore(&transaction->certGroups[transaction->certGroupSize-1],
-        (UA_NodeId*)(uintptr_t)&certGroup->certificateGroupId, &trustList, certGroup->logging, &paramsMap);
+        (UA_NodeId*)(uintptr_t)&certGroup->certificateGroupId, &trustList, certGroup->logging,
+        transaction->server->config.eventLoop, &paramsMap);
 
     UA_TrustListDataType_clear(&trustList);
 
