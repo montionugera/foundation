@@ -59,3 +59,24 @@
   call, `close` too, gives the cause: `close` gives `Error::Session` with it when the
   session ended before the close (`laptop.architect-2`, 2026-10-16T22:20:16Z,
   https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225794091).
+  `Client::open_reader(read::Config)` opens a `sdk::read::Reader` of channels by name,
+  on any indexes. `read::Config::new` gives `Mode::Complete`. Until #1818 gives one
+  client read over more indexes, the client's thread opens one `program::Reader` for
+  each index, in a task of its own, and merges them (key choices of kinds 8 and d,
+  approved by the person, 2026-10-18T22:45:12Z,
+  https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6256102155;
+  `laptop.architect-2`, item 2 of
+  https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6256120203, which
+  supersedes item 1 of
+  https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198573817). No
+  request of the node gives the index of a channel, so the task first opens one reader
+  of all the names. When that fails or leaves a name out, it opens one reader for each
+  name, keeps at most one open for each index, and then opens one reader for each index
+  with more than one name: at most `1 + n + g` opens for `n` names on `g` indexes (item
+  3 of the same comment). The frames of one index come in order. Across indexes, the
+  frame with the earliest first stamp of those that the client holds comes first, a
+  frame of no sample first, and the first index on a tie. No call waits for an index
+  with no frame. The task decodes each series with `codec` into a frame that the reader
+  keeps, with the lost seqs of `program::Reader::lost` (edge `sdk` -> `codec`:
+  `laptop.architect`, item 2 of
+  https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6256109116).
