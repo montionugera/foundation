@@ -222,7 +222,10 @@ fn write(
         Time::Frame(path) => (Label::Path(path), None),
         Time::Node => {
             let stamp = next(writer.now(), *stamped);
-            let stamp = stamp_index(&mut draft, writer.set().groups()[0], stamp);
+            let index = draft
+                .series_mut(writer.set().groups()[0])
+                .expect("invariant: a frame of a write holds its index");
+            let stamp = stamp_index(index, stamp);
             (Label::Path(Path::Live), stamp)
         }
     };
@@ -244,14 +247,11 @@ fn next(now: Stamp, stamped: Option<Stamp>) -> Stamp {
     }
 }
 
-/// Writes `stamp` over the one sample of entry `index` of `draft`, and gives it. Gives
-/// `None` and writes nothing when that series is not one stamp, a frame of one sample
-/// that the home refuses as `Codec` after its check of control.
-fn stamp_index(draft: &mut Draft, index: usize, stamp: Stamp) -> Option<Stamp> {
-    let series = draft
-        .series_mut(index)
-        .expect("invariant: a frame of a write holds its index");
-    let sample = <&mut [u8; 8]>::try_from(series).ok()?;
+/// Writes `stamp` over the one sample of `index`, the index series of a frame, and
+/// gives it. Gives `None` and writes nothing when that series is not one stamp, a frame
+/// of one sample that the home refuses as `Codec` after its check of control.
+fn stamp_index(index: &mut [u8], stamp: Stamp) -> Option<Stamp> {
+    let sample = <&mut [u8; 8]>::try_from(index).ok()?;
     *sample = stamp.nanos().to_le_bytes();
     Some(stamp)
 }

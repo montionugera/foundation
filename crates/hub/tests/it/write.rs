@@ -793,7 +793,7 @@ fn ends_control_when_the_program_finishes_the_stream() {
 #[test]
 fn ends_the_wait_for_the_last_stored_when_the_session_closes() {
     let full = async |test: &Test| {
-        fill_at_commit_for(test, Span::from_nanos(2 * Span::SECOND.nanos())).await
+        fill_at_commit_for(test, Span::from_nanos(2 * Span::SECOND.nanos())).await;
     };
     let home = read_session(427, full, |mut agent| async move {
         agent.admit().await;
