@@ -952,6 +952,9 @@ impl Bind {
     }
 }
 
+/// A mesh that opened, and the chunk store that it holds.
+type Opened = (mesh::Mesh, Rc<blob::Store>);
+
 /// What shard 0 opens the node's transport and mesh from, but its files, pool, and
 /// tasks.
 struct Endpoint {
@@ -1055,9 +1058,9 @@ impl Endpoint {
     /// Opens the node's transport on `pool` and `tasks` with `identity`, then, when the
     /// node has a region, the chunk store in directory [`directory::blob`] of `files`,
     /// and the mesh of that region over both, in directory [`directory::mesh`]. Gives
-    /// the transport, also with the error of a founding, a store, or a mesh that did
-    /// not open. A new root region takes the keys of its status at the mesh time of
-    /// `time`.
+    /// the transport, also with the mesh and its store, or the error of a founding, a
+    /// store, or a mesh that did not open. A new root region takes the keys of its
+    /// status at the mesh time of `time`.
     ///
     /// # Errors
     ///
@@ -1069,8 +1072,7 @@ impl Endpoint {
         pool: Rc<block::Pool>,
         time: &clock::Reader,
         tasks: env::tasks::Tasks,
-    ) -> Result<(Rc<transport::Transport>, Result<Option<mesh::Mesh>, Error>), Error>
-    {
+    ) -> Result<(Rc<transport::Transport>, Result<Option<Opened>, Error>), Error> {
         let config = transport::Config {
             private_key: identity.private_key.clone(),
             message_bytes_max: self.settings.message_bytes_max,
@@ -1107,6 +1109,7 @@ impl Endpoint {
             Ok(store) => store,
             Err(error) => return Ok((transport, Err(Error::Blob(error)))),
         };
+        let store = Rc::new(store);
         let config = mesh::Config {
             key: identity.key,
             private_key: identity.private_key,
@@ -1118,10 +1121,11 @@ impl Endpoint {
             tasks,
             pool,
             transport: Rc::clone(&transport),
-            store: Rc::new(store),
+            store: Rc::clone(&store),
         };
         let mesh = mesh::Mesh::open(config).await;
-        Ok((transport, mesh.map(Some).map_err(Error::Mesh)))
+        let opened = mesh.map(|mesh| Some((mesh, store)));
+        Ok((transport, opened.map_err(Error::Mesh)))
     }
 }
 
@@ -1201,9 +1205,10 @@ impl Serve {
         // spawned, which its kind ends at the cancel. So the port is freed before
         // `lock` drops.
         let served = async move {
-            let Ok(mesh) = mesh.map_err(&fail) else {
+            let Ok(opened) = mesh.map_err(&fail) else {
                 return None;
             };
+            let (mesh, store) = opened.unzip();
             let ended = mesh.as_ref().map(mesh::Mesh::ended);
             let secrets =
                 secret::Resolver::new(vars, files.clone(), &directory::secrets());
@@ -1280,6 +1285,7 @@ impl Serve {
                     handles.clone(),
                     clock,
                     tasks.clone(),
+                    store,
                     settings.header_wait,
                     settings.places_max,
                 );

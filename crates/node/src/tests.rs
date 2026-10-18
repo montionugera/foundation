@@ -4510,6 +4510,7 @@ pub(crate) mod port {
         pub(crate) struct Opened {
             pub(crate) hub: ::hub::Hub,
             pub(crate) mesh: ::mesh::Mesh,
+            pub(crate) store: Rc<blob::Store>,
             pub(crate) transport: Rc<transport::Transport>,
             pub(crate) time: clock::Reader,
             pub(crate) entropy: env::entropy::Entropy,
@@ -4544,7 +4545,7 @@ pub(crate) mod port {
                 tasks.clone(),
             );
             let (transport, mesh) = opened.await.expect("the transport opens");
-            let mesh = mesh.expect("the mesh opens").expect("a region");
+            let (mesh, store) = mesh.expect("the mesh opens").expect("a region");
             let hub = ::hub::Hub::new(::hub::Config {
                 home,
                 interner,
@@ -4560,6 +4561,7 @@ pub(crate) mod port {
             Opened {
                 hub,
                 mesh,
+                store,
                 transport,
                 time,
                 entropy,
@@ -4996,13 +4998,83 @@ pub(crate) mod port {
         ///
         /// [`open_unknown`]: super::open_unknown
         fn opened(dialer: Dialer) -> Seen {
+            let first = super::open_unknown();
+            let first: Vec<&[u8]> = first.iter().map(Vec::as_slice).collect();
+            paired_sees(dialer, &first)
+        }
+
+        /// What `dialer` sees when it sends `first` to the node [`OWN`] of a region
+        /// with [`OTHER`].
+        fn paired_sees(dialer: Dialer, first: &[&[u8]]) -> Seen {
             let mut sim = sim::Sim::new(sim::Config::default());
             let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
             let node = start(&hosts[0], region(&pair(&hosts)));
-            let first = super::open_unknown();
-            let first: Vec<&[u8]> = first.iter().map(Vec::as_slice).collect();
-            let seen = dial(&mut sim, &hosts[0], dialer, &first);
+            let seen = dial(&mut sim, &hosts[0], dialer, first);
             watch(sim, node, &seen)
+        }
+
+        /// A member puts a chunk in the node's store over a blob stream, and gets it
+        /// back on another stream into a store of its own.
+        #[test]
+        fn a_member_puts_a_chunk_in_the_store_and_gets_it_back() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let peer = sim.node(sim::node::Config::default());
+            let at = [Address::Udp(listen(&hosts[0]))];
+            let digest = types::digest::Digest::of(b"chunk");
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&peer, move |own, tasks| async move {
+                let (transport, pool) = transport(&own, tasks, OTHER.1);
+                let session =
+                    transport.dial(KEY.public(), &at).await.expect("a session");
+                let open = |dir: &str| {
+                    blob::Store::open(blob::Config {
+                        files: own.files(),
+                        dir: PathBuf::from(dir),
+                        pool: Rc::clone(&pool),
+                        floor_bytes: 0,
+                    })
+                };
+                let (sent, got) =
+                    (open("sent").await.unwrap(), open("got").await.unwrap());
+                sent.put(digest, &pool.copy(b"chunk").unwrap())
+                    .await
+                    .unwrap();
+                let put = blob::peer::put(&sent, &session, &[digest]).await;
+                let misses = blob::peer::get(&got, &session, &[digest]).await;
+                let chunk = got.get(digest).await.unwrap().map(|block| block.to_vec());
+                *seen.lock().unwrap() = Some((put, misses, chunk));
+            });
+            assert_eq!(sim.run_for(Span::HOUR), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let seen = out.lock().unwrap().take();
+            assert_eq!(seen, Some((Ok(()), Ok(vec![]), Some(b"chunk".to_vec()))));
+        }
+
+        /// The node stops a blob stream of a node that is not a member, and resets its
+        /// reply half, with the code of a rejected header.
+        #[test]
+        fn rejects_a_blob_stream_of_a_node_that_is_not_a_member() {
+            let header = wire::header::encode(wire::Protocol::Blob);
+            let Seen { sent, read, .. } = paired_sees(Dialer::Node(CLIENT), &[&header]);
+            let code = Code(wire::header::REJECTED);
+            assert_eq!(sent, transport::Error::Stopped { code });
+            assert_eq!(read, Err(transport::Error::Reset { code }));
+        }
+
+        /// The node stops a blob stream of a program, and resets its reply half, with
+        /// the code of a rejected header.
+        #[test]
+        fn rejects_a_blob_stream_of_a_program() {
+            let header = wire::header::encode(wire::Protocol::Blob);
+            let Seen { sent, read, .. } = paired_sees(Dialer::Program, &[&header]);
+            let code = Code(wire::header::REJECTED);
+            assert_eq!(sent, transport::Error::Stopped { code });
+            assert_eq!(read, Err(transport::Error::Reset { code }));
         }
 
         /// The node gives a hub stream of a member to its hub, which stops an open of
@@ -6527,6 +6599,7 @@ pub(crate) mod port {
                 let Opened {
                     hub,
                     mesh,
+                    store,
                     transport,
                     time,
                     entropy,
@@ -6542,6 +6615,7 @@ pub(crate) mod port {
                     },
                     clock,
                     tasks,
+                    Some(store),
                     settings.header_wait,
                     settings.places_max,
                 );

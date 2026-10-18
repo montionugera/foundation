@@ -21,13 +21,15 @@ use crate::task::Handles;
 /// stops, and gives the error that stopped it. Admits each session of a member of the
 /// region of the mesh of `handles.ops`. Gives each session of another peer a place, of
 /// at most `places_max`; at the bound, the oldest place frees for it
-/// ([`Places::take`]). `route` decides each stream with `handles`, and rejects one
-/// whose header takes longer than `header_wait`.
+/// ([`Places::take`]). `route` decides each stream with `handles` and `store`, the
+/// chunk store of the mesh, and rejects one whose header takes longer than
+/// `header_wait`.
 pub(crate) async fn accept(
     transport: Rc<Transport>,
     handles: Handles,
     clock: env::clock::Clock,
     tasks: env::tasks::Tasks,
+    store: Option<Rc<blob::Store>>,
     header_wait: Span,
     places_max: NonZeroUsize,
 ) -> Error {
@@ -45,6 +47,7 @@ pub(crate) async fn accept(
             session,
             link,
             handles.ops.clone(),
+            store.clone(),
             clock.clone(),
             header_wait,
             tasks.clone(),
@@ -145,6 +148,7 @@ async fn serve(
     session: Session,
     link: Link,
     ops: Option<Rc<ops::Node>>,
+    store: Option<Rc<blob::Store>>,
     clock: env::clock::Clock,
     header_wait: Span,
     tasks: env::tasks::Tasks,
@@ -158,6 +162,7 @@ async fn serve(
             peer,
             link,
             ops.clone(),
+            store.clone(),
             clock.clone(),
             header_wait,
         );
@@ -168,13 +173,15 @@ async fn serve(
 /// Reads the header of `incoming`, its first message, and routes the stream that `peer`
 /// opened by its protocol. With `ops`, a `Mesh` stream of a node goes to the mesh of
 /// `ops`, a `Hub` stream of a member of its region to `link`, and a `Hub` stream of a
-/// program to `link`, with its request answered by `ops`. Each other stream, and one
-/// whose header does not arrive within `header_wait` on `clock`, is rejected.
+/// program to `link`, with its request answered by `ops`, and a `Blob` stream of a
+/// member to `store`. Each other stream, and one whose header does not arrive within
+/// `header_wait` on `clock`, is rejected.
 async fn route(
     mut incoming: Incoming,
     peer: Peer,
     link: Link,
     ops: Option<Rc<ops::Node>>,
+    store: Option<Rc<blob::Store>>,
     clock: env::clock::Clock,
     header_wait: Span,
 ) {
@@ -211,7 +218,14 @@ async fn route(
             (Peer::Client, Some(ops)) => answer(&link, incoming, &ops).await,
             (Peer::Client, None) | (Peer::Node(_), _) => reject(incoming),
         },
-        Protocol::Clock | Protocol::Replica | Protocol::Blob => reject(incoming),
+        Protocol::Blob => match store {
+            Some(store) if member(peer, ops.as_deref().map(ops::Node::mesh)) => {
+                // `serve` stops the stream with the code of its error.
+                drop(blob::peer::serve(&store, incoming).await);
+            }
+            Some(_) | None => reject(incoming),
+        },
+        Protocol::Clock | Protocol::Replica => reject(incoming),
     }
 }
 

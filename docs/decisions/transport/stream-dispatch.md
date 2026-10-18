@@ -4,3 +4,7 @@
   table from protocol to handler and runs one accept loop per session. A protocol
   that the table does not know comes from a peer, so the loop resets that stream with
   a code and goes on. Decided by the coordinator (network's review of #53).
+  `node` routes a `blob` stream only from a member node of its region, to
+  `blob::peer::serve` on the store that it gives `mesh`, and rejects each other one,
+  as `docs/security.md` stated in #3220 (plan:
+  https://github.com/synnaxlabs/foundation/issues/1232#issuecomment-6253609298).
