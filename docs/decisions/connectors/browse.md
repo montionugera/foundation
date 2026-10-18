@@ -41,6 +41,16 @@
   folders and points named 2 000 `a` take 3.9 s to the `Budget`, at load 5.8. A budget of compared
   bytes is open in #2948 (`laptop.architect-2`, 2026-10-16T22:37:40Z:
   https://github.com/synnaxlabs/foundation/pull/2927#issuecomment-6226011243).
+  For `import`, `Scope::Points` gives the entry at each of a list of paths from the
+  start, in the order of the paths and once for each, in one session to the device. It
+  reads each folder that a path is under to its end, once, before the next, so an
+  import of 500 points opens no 500 sessions. A path at a folder or at no entry gives
+  `connector.no-point` ("the entry at "<path>" is a folder", or "the device has no
+  point at "<path>""), with the fix "Give the path of a point that `browse` gives",
+  one diagnostic for each path, all in one error. It counts each entry toward
+  `VISITS`, and at the budget ends `Budget` with the entries that it found and no
+  error (laptop.integrator-2, plan 8a:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244465986).
   Values are read only when the `Query` asks, in one call for the points that it gives.
   A new filter is a new field of `Query`. The walk lives once in `connector`
   (`browse::walk`). It finds the start from the root, one name at a time; a name that is
