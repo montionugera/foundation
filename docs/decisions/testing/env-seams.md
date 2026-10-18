@@ -1302,18 +1302,20 @@
   for a resolved path longer than the host takes, the limits check that name at its
   place as a new name, and the call gives the result of the host. When the host refuses
   the walk of a hidden path at a call, other than with `NotFound` or the error of
-  `Driver::looped`, each step that passes the folders is hidden at that call, since
-  another name of the file there can reach it. On `os` (Linux, Xeon Platinum 8488C,
-  debug), a read 1900 names deep takes 150 ms and a read of a 4000-byte path of `..`
-  takes 5 ms; two tests pin each under 560 ms. A walk takes at most the names of 41
-  paths of PATH_MAX. Links that a writer of the host puts in a folder can still make a
-  walk cost about 41 times the measured 560 ms, since each name goes to the host by its
-  full resolved path. That writer is the attacker of #3094, and a walk by handles makes
-  each name one call. The `within` doc states the gap between the check and the call:
-  "The check and the call are two steps: a process that can write a symbolic link in a
-  folder between them can lead the call to a path that the check refused (#3094)." The
-  gap is a containment escape, its issue is #3094, and #3018 files no other issue for
-  it. Supersedes `Driver::link` and `Driver::working` of
+  `Driver::looped`, or at a name after a step that is a file, each step that passes the
+  folders is hidden at that call, since another name of the file there can reach it.
+  `NotFound`, a step that is a file, and a loop stay as they are: the host reaches no
+  file by that path. On `os` (Linux, Xeon Platinum 8488C, debug), a read 1900 names deep
+  takes 150 ms and a read of a 4000-byte path of `..` takes 5 ms; two tests pin each
+  under 560 ms. A walk takes at most the names of 41 paths of PATH_MAX. Links that a
+  writer of the host puts in a folder can still make a walk cost about 41 times the
+  measured 560 ms, since each name goes to the host by its full resolved path. That
+  writer is the attacker of #3094, and a walk by handles makes each name one call. The
+  `within` doc states the gap between the check and the call: "The check and the call
+  are two steps: a process that can write a symbolic link in a folder between them can
+  lead the call to a path that the check refused (#3094)." The gap is a containment
+  escape, its issue is #3094, and #3018 files no other issue for it. Supersedes
+  `Driver::link` and `Driver::working` of
   https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6231386142; "A
   prefix resolves as `resolve` does, and the walk stops at the first prefix that does
   not resolve", "never a prefix of their join, since a join can be longer than the host
@@ -1354,7 +1356,9 @@
   of `Entry::Link` and the Windows rules, 2026-10-18T01:16:08Z,
   https://github.com/synnaxlabs/foundation/pull/3098#issuecomment-6244123264; the four
   findings of round 1, 2026-10-18T01:25:34Z,
-  https://github.com/synnaxlabs/foundation/pull/3098#issuecomment-6244199067, from the
+  https://github.com/synnaxlabs/foundation/pull/3098#issuecomment-6244199067; the
+  boundary of D1, 2026-10-18T02:17:50Z,
+  https://github.com/synnaxlabs/foundation/pull/3098#issuecomment-6244644441, from the
   plan, https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6243618446,
   and https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6238302038,
   https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6238398268, and
