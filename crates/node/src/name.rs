@@ -151,7 +151,7 @@ fn encode(name: &Name) -> [u8; LEN] {
 
 /// The name that `held` holds, `None` for nothing, or [`Error::Name`] for bytes that
 /// [`encode`] does not give.
-fn decode(held: &Held<LEN>) -> Result<Option<Name>, Error> {
+fn decode(held: &Held<[u8; LEN]>) -> Result<Option<Name>, Error> {
     let bytes = match held {
         Held::Nothing => return Ok(None),
         Held::Written(bytes) => bytes,

@@ -182,15 +182,24 @@
   https://github.com/synnaxlabs/foundation/pull/2391#issuecomment-6108247629).
   `node::client::reach` gives a program on the host of a node a `program::Session` of
   the node that runs on a data directory, as `@admin` (`spec::founding::admin`). It
-  reads `address`, then `admin.key`, through `env::files` with the readers of `node`, so
+  reads `address` and `admin.key` through `env::files` with `sector::local::read`, so
   a simulation gives the simulated disk; it makes and locks nothing, and `os::stored`
   opens `dir/data` of a directory that is there and makes nothing. A file `address`
-  with no address of a node is `Error::NotRunning`, which also covers a node that
-  still writes it; an `admin.key` that no node wrote is `Error::Key`. In place of an
-  unspecified IP in `address`, it dials the loopback IP of its family. A dial that
-  gives no session is `Error::Unanswered` with the address it dialed and the error of
-  the transport; a broken socket of the program is `Error::Transport`, as a failed
-  start of its transport is; a session or hello that fails after the dial is
+  with no address of a node is `Error::Local(local::Error::NotRunning)`, which also
+  covers a node that still writes it; an `admin.key` that no node wrote is
+  `Error::Key`. A file of another version is `Error::Local(local::Error::Version)`,
+  before `NotRunning` and `Key`, and a failed file call is
+  `Error::Local(local::Error::Files)` (the wrapped variant, `laptop.architect-2`,
+  2026-10-18T17:34:06Z,
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252975559).
+  `sector::local::read` gives `Local.admin` as `None` for an `admin.key` that is not
+  there or that no node wrote, as on a node that joined, and `reach` maps `None` to
+  `Error::Key` (`laptop.architect-2`, 2026-10-18T17:28:39Z,
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252920038). In
+  place of an unspecified IP in `address`, it dials the loopback IP of its family. A
+  dial that gives no session is `Error::Unanswered` with the address it dialed and the
+  error of the transport; a broken socket of the program is `Error::Transport`, as a
+  failed start of its transport is; a session or hello that fails after the dial is
   `Error::Session` with the address and the error of `program` (the name,
   `laptop.architect`, 2026-10-15T18:23:47Z,
   https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6199257488); a refused

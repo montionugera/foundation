@@ -2,21 +2,20 @@
 //! last 4 bytes are the CRC32C of the bytes before them (little-endian). A file that
 //! [`publish`] makes is whole or not there, also to a read while the write runs. It
 //! holds the formats of [`address`] and [`admin`], which a program on the node's host
-//! reads with [`local`].
+//! reads with [`local::read`].
 //!
-//! The last byte of a tag is the version of its form, and the bytes before it are the
-//! tag's prefix. A version is one byte, `1` to `9`, then `a` to `z`, so no tag is the
-//! prefix of another.
+//! The last byte of a tag is the version of its format, and the bytes before it are
+//! the tag's prefix. A version is one byte of lowercase ASCII, `1` to `9`, then `a` to
+//! `z`, so no tag is the prefix of another
+//! (<https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252975559>).
 
 pub mod address;
 pub mod admin;
+pub mod local;
 
-use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use env::files::{File, Files, Mode};
-use types::ed25519::{PrivateKey, PublicKey};
 
 /// The pool of the file's block. A call can come while the shard's buffer holds the
 /// blocks of the shard's pool, so that pool can lack room for it.
@@ -25,13 +24,13 @@ const POOL: block::Config = match block::Config::new(4096) {
     Err(_) => panic!("invariant: a sector fits"),
 };
 
-/// What a file of `N` bytes holds.
+/// What a file holds, with `T` the value that a node wrote to it.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Held<const N: usize> {
+pub enum Held<T> {
     /// No file.
     Nothing,
-    /// The bytes that a node wrote, with the tag and a checksum that matches.
-    Written([u8; N]),
+    /// The value that a node wrote, with the tag and a checksum that matches.
+    Written(T),
     /// A file of any length that holds the prefix of the tag and the version in the
     /// byte after it, which is not the version of the tag: a node of another version
     /// wrote it.
@@ -41,137 +40,35 @@ pub enum Held<const N: usize> {
     Foreign,
 }
 
-/// The node that runs on a data directory, and the key of its first admin.
-#[derive(Clone, Debug)]
-pub struct Local {
-    /// The node's key.
-    pub key: types::node::Key,
-    /// The public key that the node's transport proves.
-    pub public_key: PublicKey,
-    /// Where a program on the node's host dials the node: the address where its port
-    /// is bound, with the loopback IP of its family in place of an unspecified IP.
-    pub address: SocketAddr,
-    /// The private key of the first admin of the root region.
-    pub admin: PrivateKey,
-}
-
-/// Why [`local`] gave nothing.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Error {
-    /// No node runs on the directory: its file `address` holds no address of a node.
-    NotRunning,
-    /// The directory holds no file `admin.key` that a node wrote.
-    Key,
-    /// The file `file` holds the format of version `found`, and this program reads
-    /// version `expected`: a node of another version wrote it.
-    Version {
-        /// The name of the file.
-        file: &'static str,
-        /// The version byte that the file holds, which can be any byte.
-        found: u8,
-        /// The version byte of the format that this program reads.
-        expected: u8,
-    },
-    /// A file call on the directory failed.
-    Files(env::files::Error),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl<T> Held<T> {
+    /// The value of `f` on a written value, or [`Held::Foreign`] when `f` gives `None`.
+    pub(crate) fn and_then<U>(self, f: impl FnOnce(T) -> Option<U>) -> Held<U> {
         match self {
-            Self::NotRunning => f.write_str("no node runs on the data directory"),
-            Self::Key => {
-                f.write_str("the data directory holds no admin.key that a node wrote")
-            }
-            Self::Version {
-                file,
-                found,
-                expected,
-            } => write!(
-                f,
-                "{file} holds format version {}, and this program reads version {}",
-                found.escape_ascii(),
-                expected.escape_ascii(),
-            ),
-            Self::Files(error) => write!(f, "{error}"),
+            Self::Nothing => Held::Nothing,
+            Self::Written(value) => f(value).map_or(Held::Foreign, Held::Written),
+            Self::Version(found) => Held::Version(found),
+            Self::Foreign => Held::Foreign,
         }
     }
 }
 
-/// The node that runs on the data directory of `files`, and its first admin. Opens
-/// each file to read only, so it makes nothing and waits for no lock.
-///
-/// # Errors
-///
-/// [`Error::Version`] when a file holds the form of another version, else
-/// [`Error::NotRunning`] when `address` holds no address of a node, [`Error::Key`]
-/// when no node wrote `admin.key`, and [`Error::Files`] for a file call that fails,
-/// other than [`env::files::Error::NotFound`].
-pub async fn local(files: &Files) -> Result<Local, Error> {
-    let path = Path::new(address::FILE);
-    let held = read(files, path, address::TAG)
-        .await
-        .map_err(Error::Files)?;
-    let address = match held {
-        Held::Written(bytes) => address::decode(&bytes),
-        Held::Version(found) => {
-            return Err(version(address::FILE, address::TAG, found));
-        }
-        Held::Nothing | Held::Foreign => None,
-    };
-    let address = address.ok_or(Error::NotRunning)?;
-    let path = Path::new(admin::FILE);
-    let held = read(files, path, admin::TAG).await.map_err(Error::Files)?;
-    let admin = match held {
-        Held::Written(bytes) => admin::decode(&bytes),
-        Held::Version(found) => return Err(version(admin::FILE, admin::TAG, found)),
-        Held::Nothing | Held::Foreign => None,
-    };
-    Ok(Local {
-        key: address.key,
-        public_key: address.public_key,
-        address: dialed(address.bound),
-        admin: admin.ok_or(Error::Key)?,
-    })
-}
-
-/// The [`Error::Version`] of the file `file`, whose tag is `tag`, that holds the
-/// version `found`.
-fn version(file: &'static str, tag: &[u8], found: u8) -> Error {
-    Error::Version {
-        file,
-        found,
-        expected: tag[tag.len() - 1],
-    }
-}
-
-/// Where a program on the node's host dials `bound`: the loopback IP of its family in
-/// place of the unspecified IP.
-fn dialed(mut bound: SocketAddr) -> SocketAddr {
-    match bound.ip() {
-        IpAddr::V4(ip) if ip.is_unspecified() => {
-            bound.set_ip(Ipv4Addr::LOCALHOST.into());
-        }
-        IpAddr::V6(ip) if ip.is_unspecified() => {
-            bound.set_ip(Ipv6Addr::LOCALHOST.into());
-        }
-        IpAddr::V4(_) | IpAddr::V6(_) => {}
-    }
-    bound
-}
-
-/// What `path` in `files`, which [`publish`] makes, holds. Opens it to read only, so
-/// it makes nothing and waits for no lock.
+/// What `path` in `files`, which [`publish`] or [`write`] makes, holds. Opens it to
+/// read only, so it makes nothing and waits for no lock.
 ///
 /// # Errors
 ///
 /// The error of each file call that fails, except [`env::files::Error::NotFound`],
 /// which gives [`Held::Nothing`].
+///
+/// # Panics
+///
+/// When `tag` is empty.
 pub async fn read<const N: usize>(
     files: &Files,
     path: &Path,
     tag: &[u8],
-) -> Result<Held<N>, env::files::Error> {
+) -> Result<Held<[u8; N]>, env::files::Error> {
+    assert!(!tag.is_empty(), "a tag holds its version");
     let file = match files.open(path, Mode::Read).await {
         Ok(file) => file,
         Err(env::files::Error::NotFound { .. }) => return Ok(Held::Nothing),
@@ -193,7 +90,7 @@ pub async fn read<const N: usize>(
 
 /// [`Held::Version`] when `bytes` hold the prefix of `tag` and another version byte
 /// after it, else [`Held::Foreign`].
-fn other<const N: usize>(bytes: &[u8], tag: &[u8]) -> Held<N> {
+fn other<T>(bytes: &[u8], tag: &[u8]) -> Held<T> {
     let (prefix, version) = tag.split_at(tag.len() - 1);
     match bytes
         .get(..tag.len())
@@ -329,29 +226,9 @@ fn block<const N: usize>(bytes: &[u8; N]) -> block::Block {
 
 #[cfg(test)]
 mod tests {
-    use proptest::prelude::*;
+    use types::ed25519::PrivateKey;
 
     use super::*;
-
-    proptest! {
-        #[test]
-        fn dialed_keeps_each_specified_ip(
-            ip in any::<IpAddr>().prop_filter("specified", |ip| !ip.is_unspecified()),
-            port: u16,
-        ) {
-            let bound = SocketAddr::new(ip, port);
-            prop_assert_eq!(dialed(bound), bound);
-        }
-
-        #[test]
-        fn dialed_gives_the_loopback_ip_of_the_family_for_an_unspecified_ip(port: u16) {
-            let v4 = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port);
-            let v6 = SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), port);
-            let loopback = |ip: IpAddr| SocketAddr::new(ip, port);
-            prop_assert_eq!(dialed(v4), loopback(Ipv4Addr::LOCALHOST.into()));
-            prop_assert_eq!(dialed(v6), loopback(Ipv6Addr::LOCALHOST.into()));
-        }
-    }
 
     #[test]
     fn sums_a_body_of_n_minus_4_bytes() {
@@ -402,188 +279,17 @@ mod tests {
         assert_eq!(summed::<8>(&[0; 5]), None);
     }
 
-    /// `body` with its CRC32C appended.
-    fn sealed(body: &[u8]) -> Vec<u8> {
-        let mut bytes = body.to_vec();
-        bytes.extend_from_slice(&crc32c::crc32c(body).to_le_bytes());
-        bytes
-    }
-
     #[test]
     fn the_tag_of_each_format_ends_in_version_1() {
         assert_eq!(address::TAG.last(), Some(&b'1'));
         assert_eq!(admin::TAG.last(), Some(&b'1'));
     }
 
-    #[test]
-    fn version_prints_the_found_byte_as_an_escaped_ascii_char() {
-        let version = |found| Error::Version {
-            file: "address",
-            found,
-            expected: b'1',
-        };
-        assert_eq!(
-            version(b'2').to_string(),
-            "address holds format version 2, and this program reads version 1"
-        );
-        assert_eq!(
-            version(0xff).to_string(),
-            "address holds format version \\xff, and this program reads version 1"
-        );
-    }
-
-    #[test]
-    fn the_texts_of_the_other_errors() {
-        assert_eq!(
-            Error::NotRunning.to_string(),
-            "no node runs on the data directory"
-        );
-        assert_eq!(
-            Error::Key.to_string(),
-            "the data directory holds no admin.key that a node wrote"
-        );
-        let error = env::files::Error::NotFound {
-            path: PathBuf::from("address"),
-        };
-        assert_eq!(Error::Files(error.clone()).to_string(), error.to_string());
-    }
-
-    /// The bytes of `address` of a node at `bound`.
-    fn address_file(bound: SocketAddr) -> [u8; address::LEN] {
-        address::encode(&address::Address {
-            key: types::node::Key::from_u128(7),
-            public_key: PrivateKey([7; 32]).public(),
-            bound,
-        })
-    }
-
-    /// What [`local`] gives on a host whose data directory holds `files`, each a name
-    /// and its bytes, once the run ends.
-    fn local_over(
-        files: Vec<(&'static str, Vec<u8>)>,
-    ) -> Result<Result<Local, Error>, sim::Error> {
-        let mut sim = sim::Sim::new(sim::Config::default());
-        let host = sim.node(sim::node::Config::default());
-        sim.run_on(&host, |host, _| async move {
-            let directory = host.files();
-            let pool = block::Pool::heap(POOL);
-            for (name, bytes) in files {
-                let len = bytes.len() as u64;
-                let path = Path::new(name);
-                let file = directory.open(path, Mode::Create { len }).await;
-                let file = file.expect("makes the file");
-                let block = pool.copy(&bytes).expect("a block");
-                file.write_at(0, &[block]).await.expect("writes");
-            }
-            local(&directory).await
-        })
-    }
-
-    #[test]
-    fn local_gives_the_node_and_the_admin_that_a_node_wrote() {
-        let bound = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 7400));
-        let local = local_over(vec![
-            (address::FILE, address_file(bound).to_vec()),
-            (admin::FILE, admin::encode(&PrivateKey([3; 32])).to_vec()),
-        ])
-        .expect("the run ends")
-        .expect("a node runs");
-        assert_eq!(local.key, types::node::Key::from_u128(7));
-        assert_eq!(local.public_key, PrivateKey([7; 32]).public());
-        assert_eq!(local.address, SocketAddr::from((Ipv4Addr::LOCALHOST, 7400)));
-        assert_eq!(local.admin.0, [3; 32]);
-    }
-
-    /// The [`Error::Version`] of `file` that holds version `2`.
-    fn version_2(file: &'static str) -> Error {
-        Error::Version {
-            file,
-            found: b'2',
-            expected: b'1',
-        }
-    }
-
-    /// What [`local`] gives, with each `Ok` dropped, on an `address` of `bytes`.
-    fn local_over_address(bytes: Vec<u8>) -> Result<Result<(), Error>, sim::Error> {
-        local_over(vec![(address::FILE, bytes)]).map(|read| read.map(drop))
-    }
-
-    /// `bytes` with `len` bytes, `9` after them.
-    fn padded(bytes: &[u8], len: usize) -> Vec<u8> {
-        let mut padded = bytes.to_vec();
-        padded.resize(len, 9);
-        padded
-    }
-
-    #[test]
-    fn local_on_an_address_of_another_version_and_length_gives_version() {
-        let bytes = sealed(&padded(b"foundation/address/2", 140));
-        assert_eq!(local_over_address(bytes), Ok(Err(version_2("address"))));
-    }
-
-    #[test]
-    fn local_on_an_address_of_another_version_and_its_length_gives_version() {
-        let bytes = padded(b"foundation/address/2", address::LEN);
-        assert_eq!(local_over_address(bytes), Ok(Err(version_2("address"))));
-    }
-
-    #[test]
-    fn local_on_an_address_of_only_the_tag_of_another_version_gives_version() {
-        let bytes = b"foundation/address/2".to_vec();
-        assert_eq!(local_over_address(bytes), Ok(Err(version_2("address"))));
-    }
-
-    /// A file past a sector is read only up to the length of the tag.
-    #[test]
-    fn local_on_an_address_of_another_version_past_a_sector_gives_version() {
-        let bytes = padded(b"foundation/address/2", env::files::SECTOR + 100);
-        assert_eq!(local_over_address(bytes), Ok(Err(version_2("address"))));
-    }
-
-    #[test]
-    fn local_on_an_admin_key_of_another_version_gives_version() {
-        let bound = SocketAddr::from((Ipv4Addr::LOCALHOST, 7400));
-        let error = local_over(vec![
-            (address::FILE, address_file(bound).to_vec()),
-            (admin::FILE, padded(b"foundation/admin/2", 60)),
-        ]);
-        let error = error.map(|read| read.map(drop));
-        assert_eq!(error, Ok(Err(version_2("admin.key"))));
-    }
-
-    #[test]
-    fn local_on_an_address_with_another_prefix_gives_not_running() {
-        let bytes = sealed(&padded(b"foundation/other/2", 140));
-        assert_eq!(local_over_address(bytes), Ok(Err(Error::NotRunning)));
-        let bytes = padded(b"foundation/addresx2", address::LEN);
-        assert_eq!(local_over_address(bytes), Ok(Err(Error::NotRunning)));
-    }
-
-    #[test]
-    fn local_on_an_address_shorter_than_its_tag_gives_not_running() {
-        let bytes = b"foundation/address/".to_vec();
-        assert_eq!(local_over_address(bytes), Ok(Err(Error::NotRunning)));
-    }
-
-    #[test]
-    fn local_on_an_address_of_version_1_and_another_length_gives_not_running() {
-        let bytes = sealed(&padded(b"foundation/address/1", 140));
-        assert_eq!(local_over_address(bytes), Ok(Err(Error::NotRunning)));
-    }
-
-    #[test]
-    fn local_on_an_address_of_version_1_with_a_bad_checksum_gives_not_running() {
-        let bound = SocketAddr::from((Ipv4Addr::LOCALHOST, 7400));
-        let mut bytes = address_file(bound).to_vec();
-        bytes[30] ^= 1;
-        assert_eq!(local_over_address(bytes), Ok(Err(Error::NotRunning)));
-    }
-
     /// What `path` holds after `change` runs on the files of a new host, as
     /// [`read`] gives it with the tag of `admin.key`.
     fn held_after<F>(
         change: impl FnOnce(Files) -> F + Send + 'static,
-    ) -> Result<Result<Held<{ admin::LEN }>, env::files::Error>, sim::Error>
+    ) -> Result<Result<Held<[u8; admin::LEN]>, env::files::Error>, sim::Error>
     where
         F: Future<Output = Result<(), env::files::Error>> + 'static,
     {
@@ -594,6 +300,19 @@ mod tests {
             change(files.clone()).await?;
             read(&files, Path::new(admin::FILE), admin::TAG).await
         })
+    }
+
+    #[test]
+    fn read_panics_on_an_empty_tag() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = sim.node(sim::node::Config::default());
+        let run = sim.run_on(&host, |host, _| async move {
+            read::<{ admin::LEN }>(&host.files(), Path::new(admin::FILE), b"").await
+        });
+        let Err(sim::Error::Panicked { message, .. }) = run else {
+            panic!("a panic: {run:?}");
+        };
+        assert_eq!(message, "a tag holds its version");
     }
 
     #[test]

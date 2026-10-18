@@ -8010,8 +8010,9 @@ mod name {
         assert_eq!(host.shard_starts().len(), 0);
     }
 
-    /// A file of another length that is not 0, or that `encode` does not give, is
-    /// not a name: also one whose padding is not zero, under a checksum that holds.
+    /// A file of another length that is not 0, of another version, or that `encode`
+    /// does not give, is not a name: also one whose padding is not zero, under a
+    /// checksum that holds.
     #[test]
     fn a_file_that_no_node_wrote_stops_the_node_which_keeps_it() {
         let mut sim = sim::Sim::new(sim::Config::default());
@@ -8024,9 +8025,14 @@ mod name {
         padded[22] = b'x';
         let checksum = crc32c::crc32c(&padded[..LEN - 4]).to_le_bytes();
         padded[LEN - 4..].copy_from_slice(&checksum);
+        let mut version = kept.clone();
+        version[16] = b'2';
+        let checksum = crc32c::crc32c(&version[..LEN - 4]).to_le_bytes();
+        version[LEN - 4..].copy_from_slice(&checksum);
+        let version_long = [version.clone(), vec![0; 10]].concat();
         let short = kept[..LEN - 1].to_vec();
         let long = [kept, vec![0]].concat();
-        for bytes in [short, long, changed, padded] {
+        for bytes in [short, long, changed, padded, version, version_long] {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = super::host(&mut sim, 2);
             write(&mut sim, &host, FILE, bytes.clone());
@@ -8378,7 +8384,8 @@ mod budget {
         }
     }
 
-    /// A file of another length, or that `encode` does not give, is not budgets.
+    /// A file of another length, of another version, or that `encode` does not give,
+    /// is not budgets.
     #[test]
     fn a_file_that_no_node_wrote_stops_the_node_which_keeps_it() {
         let mut sim = sim::Sim::new(sim::Config::default());
@@ -8388,9 +8395,23 @@ mod budget {
         let file = bytes(&mut sim, &host, FILE).expect("the file");
         let mut changed = file.clone();
         changed[20] ^= 1;
+        let mut version = file.clone();
+        version[18] = b'2';
+        let checksum = crc32c::crc32c(&version[..LEN - 4]).to_le_bytes();
+        version[LEN - 4..].copy_from_slice(&checksum);
+        let version_long = [version.clone(), vec![0; 10]].concat();
         let short = file[..LEN - 1].to_vec();
         let long = [file, vec![0]].concat();
-        for bytes in [short, long, changed, Vec::new(), vec![0; LEN]] {
+        let zeros = vec![0; LEN];
+        for bytes in [
+            short,
+            long,
+            changed,
+            version,
+            version_long,
+            Vec::new(),
+            zeros,
+        ] {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = super::host(&mut sim, 2);
             write(&mut sim, &host, FILE, bytes.clone());

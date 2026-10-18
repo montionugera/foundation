@@ -52,20 +52,8 @@ pub async fn reach(config: Config) -> Result<program::Session, Error> {
         entropy,
         tasks,
     } = config;
-    let local = sector::local(&files).await.map_err(|error| match error {
-        sector::Error::NotRunning => Error::NotRunning,
-        sector::Error::Key => Error::Key,
-        sector::Error::Version {
-            file,
-            found,
-            expected,
-        } => Error::Version {
-            file,
-            found,
-            expected,
-        },
-        sector::Error::Files(error) => Error::Files(error),
-    })?;
+    let local = sector::local::read(&files).await.map_err(Error::Local)?;
+    let admin = local.admin.ok_or(Error::Key)?;
     let pool = Rc::new(block::Pool::heap(POOL));
     let transport = transport::Client::new(transport::client::Config {
         net,
@@ -81,7 +69,7 @@ pub async fn reach(config: Config) -> Result<program::Session, Error> {
         node: local.public_key,
         addresses: vec![transport::Address::Udp(at)],
         subject: spec::founding::admin(),
-        key: local.admin,
+        key: admin,
         clock,
         entropy,
         tasks,
@@ -105,23 +93,10 @@ pub async fn reach(config: Config) -> Result<program::Session, Error> {
 /// Why [`reach`] gave no session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// No node runs on the directory: its file `address` holds no address of a node.
-    NotRunning,
+    /// The files of the directory name no node to reach, as the error says.
+    Local(sector::local::Error),
     /// The directory holds no file `admin.key` that a node wrote.
     Key,
-    /// The file `file` holds the format of version `found`, and this program reads
-    /// version `expected`: the node runs another version of Foundation.
-    Version {
-        /// The name of the file.
-        file: &'static str,
-        /// The version byte that the file holds, one ASCII digit or letter when a node
-        /// wrote it.
-        found: u8,
-        /// The version byte that this program reads.
-        expected: u8,
-    },
-    /// A file call on the directory failed.
-    Files(env::files::Error),
     /// The transport of the program did not start, or its socket broke.
     Transport(transport::Error),
     /// No node answers at `at`, where the file `address` says the node is: the dial

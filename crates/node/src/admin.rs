@@ -5,7 +5,7 @@ use std::path::Path;
 
 use env::files::Files;
 use sector::Held;
-use sector::admin::{FILE, LEN, TAG, decode, encode};
+use sector::admin::{FILE, encode};
 use types::ed25519::PrivateKey;
 
 use crate::Error;
@@ -23,8 +23,7 @@ pub(crate) async fn load(
     files: &Files,
     entropy: &env::entropy::Entropy,
 ) -> Result<PrivateKey, Error> {
-    let held = sector::read::<LEN>(files, Path::new(FILE), TAG).await;
-    match held.map_err(Error::Directory)? {
+    match sector::admin::read(files).await.map_err(Error::Directory)? {
         Held::Nothing => {
             let mut bytes = [0; 32];
             entropy.fill(&mut bytes);
@@ -34,7 +33,7 @@ pub(crate) async fn load(
                 .map_err(Error::Directory)?;
             Ok(private_key)
         }
-        Held::Written(bytes) => Ok(decode(&bytes).expect("invariant: a node wrote it")),
+        Held::Written(private_key) => Ok(private_key),
         Held::Version(_) | Held::Foreign => Err(Error::Admin),
     }
 }

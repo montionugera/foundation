@@ -8,12 +8,16 @@
 //! IPv4, the other 12 bytes of the IP, the flow info, and the scope are zero.
 
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::path::Path;
 
+use env::files::Files;
 use types::ed25519::PublicKey;
+
+use crate::Held;
 
 /// The name of the file.
 pub const FILE: &str = "address";
-/// The first bytes of the file; a new form gets a new tag.
+/// The first bytes of the file; a new format gets a new tag.
 pub(crate) const TAG: &[u8; 20] = b"foundation/address/1";
 /// The length of the tag, the two keys, and the socket address.
 const BODY: usize = 95;
@@ -63,6 +67,17 @@ pub fn decode(bytes: &[u8; LEN]) -> Option<Address> {
     } else {
         None
     }
+}
+
+/// What the file in `files` holds, as [`crate::read`] says, with
+/// [`Held::Foreign`] for bytes with the tag and checksum that hold no address.
+///
+/// # Errors
+///
+/// The error of each file call that fails, as [`crate::read`] says.
+pub async fn read(files: &Files) -> Result<Held<Address>, env::files::Error> {
+    let held = crate::read::<LEN>(files, Path::new(FILE), TAG).await?;
+    Ok(held.and_then(|bytes| fields(&bytes)))
 }
 
 /// The address in `bytes`, whatever its tag and checksum, or `None` for a public key
