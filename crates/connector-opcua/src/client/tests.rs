@@ -121,7 +121,7 @@ impl Peer<'_> {
         let connections = Manager::new(time, self.net.clone(), &mut self.rng);
         // SAFETY: the loop outlives the client, which the drop of the client deletes
         // first.
-        let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
+        let raw = unsafe { crate::client::raw(connections.events().raw()) };
         let raw = NonNull::new(raw).expect("open62541 refused the client");
         if let Some(size) = receive {
             // SAFETY: the client lives and has not connected.

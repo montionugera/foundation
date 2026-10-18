@@ -68,6 +68,17 @@ const _: () = assert!(
     "the other half of the sends of a connection is for the requests of open62541"
 );
 
+/// Gives a client of open62541 on the loop `el` with no connection, or null when out
+/// of memory. It takes at most [`CHUNKS`] chunks in a message.
+///
+/// # Safety
+///
+/// `el` is a live loop that outlives the client.
+pub(crate) unsafe fn raw(el: *mut ffi::EventLoop) -> *mut ffi::Client {
+    // SAFETY: as the caller ensures.
+    unsafe { ffi::shim_client_new(el, CHUNKS) }
+}
+
 /// A client of open62541 with an active session, on its own loop and connection
 /// manager, on the thread that made it. Its loop runs only in its calls, so a client
 /// that waits outside [`Client::idle`] for longer than the channel lifetime (often 10
@@ -212,7 +223,7 @@ impl Client {
         let clock = Clock::clone(&time.clock);
         let connections = Manager::new(time, net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
-        let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
+        let raw = unsafe { raw(connections.events().raw()) };
         let Some(raw) = NonNull::new(raw) else {
             alloc::exhausted()
         };
@@ -224,7 +235,7 @@ impl Client {
     ///
     /// # Safety
     ///
-    /// `raw` comes from `shim_client_new` on the loop of `connections`, has not
+    /// `raw` comes from [`raw`] on the loop of `connections`, has not
     /// connected, and nothing else owns it: the client frees it.
     unsafe fn of(
         clock: Clock,

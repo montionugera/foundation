@@ -58,8 +58,7 @@ impl Client {
     pub fn new(clock: Clock, rng: &mut Rng, timers: usize) -> Self {
         let events = Loop::new(event::Time::monotonic(clock), rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
-        let client =
-            unsafe { ffi::shim_client_new(events.raw(), crate::connection::CHUNKS) };
+        let client = unsafe { crate::client::raw(events.raw()) };
         let Some(raw) = NonNull::new(client) else {
             alloc::exhausted()
         };
@@ -221,9 +220,7 @@ impl Manager {
         let clients = (0..=idle)
             .map(|_| {
                 // SAFETY: the loop outlives the client, which `close` deletes.
-                let client = unsafe {
-                    ffi::shim_client_new(events.raw(), crate::connection::CHUNKS)
-                };
+                let client = unsafe { crate::client::raw(events.raw()) };
                 let Some(client) = NonNull::new(client) else {
                     alloc::exhausted()
                 };
