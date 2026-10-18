@@ -304,11 +304,17 @@
   another frame ends the writer with a reset of `MALFORMED` at any time of its
   arrival. An outcome that names the next frame is its outcome, also when the node
   states it wrong: no field of the wire can tell. The node takes `frame` from its
-  count of frame heads, not of outcomes, so an extra outcome that it sends names a
-  frame that has one. `Writer::write` takes no reply before it sends. Key choice (f)
-  went to `laptop.monitor`, with no objection (2026-10-18T18:16:02Z,
+  count of frame heads, not of outcomes. So an extra outcome that it sends after the
+  outcome of a frame and before the next head names a frame that has one. One that it
+  sends after a head and before the outcome of that frame names that frame, and the
+  program takes it as its outcome. `Writer::write` takes no reply before it sends.
+  Key choice (f) went to `laptop.monitor`, with no objection (2026-10-18T18:16:02Z,
   https://github.com/synnaxlabs/foundation/issues/3217#issuecomment-6253408518).
   Decided by `laptop.architect` at 2026-10-18T18:17:20Z
   (https://github.com/synnaxlabs/foundation/issues/3217#issuecomment-6253421664),
   with the surface and frame 0 as `Unasked` at 2026-10-18T18:18:41Z
-  (https://github.com/synnaxlabs/foundation/issues/3217#issuecomment-6253435782).
+  (https://github.com/synnaxlabs/foundation/issues/3217#issuecomment-6253435782),
+  the limit of an outcome that names the next frame at 2026-10-18T18:43:23Z
+  (https://github.com/synnaxlabs/foundation/pull/3240#issuecomment-6253686852), and
+  the count of frame heads at 2026-10-18T18:59:25Z
+  (https://github.com/synnaxlabs/foundation/pull/3240#issuecomment-6253848770).
