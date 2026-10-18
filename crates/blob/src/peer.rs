@@ -314,13 +314,13 @@ async fn give(store: &Store, sender: &mut Sender, digest: Digest) -> Result<(), 
     Ok(())
 }
 
-/// Sends `chunk` as messages of at most `Sender::bytes_max`, each a range of its
-/// block, so no byte is copied.
+/// Sends `chunk` as messages of at most [`COPIED_MAX`] bytes, each a range of its
+/// block, which `transport` copies, so it holds no block of the chunk after the last
+/// send.
 async fn send_chunk(sender: &mut Sender, chunk: Block) -> Result<(), transport::Error> {
-    let step = sender.bytes_max();
     let mut at = 0;
     while at < chunk.len() {
-        let end = chunk.len().min(at.saturating_add(step));
+        let end = chunk.len().min(at + COPIED_MAX);
         let part = Part {
             range: at..end,
             zeros: 0,

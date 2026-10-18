@@ -25,9 +25,10 @@ use crate::Config;
 const PORT: u16 = 7000;
 const SERVER: PrivateKey = PrivateKey([1; 32]);
 const REQUESTER: PrivateKey = PrivateKey([2; 32]);
-/// The requester's message limit: the least that `transport` takes, so the server
-/// sends a chunk of more bytes in parts.
+/// The requester's message limit: the least that `transport` takes.
 const MESSAGE: usize = 1472;
+/// The longest message that `transport` copies, and so the longest part of a chunk.
+const COPIED: usize = 1452;
 /// The directory of the server's store.
 const DIR: &str = "blob";
 /// The pool budget of each store and transport.
@@ -356,8 +357,8 @@ fn a_get_gives_each_chunk_and_absent_in_order() {
 }
 
 #[test]
-fn a_chunk_over_the_message_limit_comes_in_parts_that_join_to_it() {
-    let len = 2 * MESSAGE + 56;
+fn a_chunk_comes_in_parts_that_transport_copies_and_that_join_to_it() {
+    let len = 2 * COPIED + 56;
     let (digest, bytes) = chunk(7, len);
     let stored = bytes.clone();
     run(
@@ -374,7 +375,7 @@ fn a_chunk_over_the_message_limit_comes_in_parts_that_join_to_it() {
             let len = u32::try_from(len).unwrap();
             assert_eq!(stream.reply().await, Reply::Chunk { digest, len });
             let mut joined = Vec::new();
-            for expected in [MESSAGE, MESSAGE, 56] {
+            for expected in [COPIED, COPIED, 56] {
                 let part = stream.recv().await.unwrap().unwrap();
                 assert_eq!(part.len(), expected);
                 joined.extend_from_slice(&part);
@@ -385,21 +386,17 @@ fn a_chunk_over_the_message_limit_comes_in_parts_that_join_to_it() {
     );
 }
 
-/// `serve` holds the chunk that it sends. With acknowledgments in order, `transport`
-/// holds each chunk with a byte in flight: the chunks that fill the window, and one
-/// that the peer acknowledged in part. The pool has room for these and their reply
-/// heads, and the get asks for more than twice that, so a server that reads ahead
-/// ends the stream with a pool error.
+/// `transport` copies each part of a chunk, so `serve` holds one chunk at a time. The
+/// pool has room for one chunk and its reply head, so a server that reads ahead, or
+/// a transport that holds a sent chunk, ends the stream with a pool error.
 #[test]
-fn a_get_of_many_chunks_holds_the_window_and_two_chunks() {
+fn a_get_of_many_chunks_holds_one_chunk_at_a_time() {
     const LEN: usize = 64 << 10;
-    const HELD: usize = WINDOW / LEN + 2;
-    const COUNT: usize = 2 * HELD + 1;
+    const COUNT: usize = 4;
     let len = u32::try_from(LEN).unwrap();
     let digest = Digest::of(b"");
     let head = Reply::Chunk { digest, len }.encoded_len();
-    let budget = HELD * (block::footprint(LEN) + block::footprint(head));
-    assert_eq!(budget, 1_183_104);
+    let budget = block::footprint(LEN) + block::footprint(head);
     let chunks: Vec<(Digest, Vec<u8>)> = (0..COUNT)
         .map(|at| chunk(u8::try_from(at).unwrap(), LEN))
         .collect();
@@ -448,7 +445,7 @@ fn a_stop_in_the_body_of_a_get_ends_the_stream() {
             stream.get(&[digest]).await;
             let chunk = Reply::Chunk { digest, len: 3000 };
             assert_eq!(stream.reply().await, chunk);
-            assert_eq!(stream.recv().await.unwrap().unwrap().len(), MESSAGE);
+            assert_eq!(stream.recv().await.unwrap().unwrap().len(), COPIED);
             let Stream {
                 pool,
                 mut sender,
@@ -490,7 +487,7 @@ fn a_stop_in_the_body_of_a_get_reads_no_later_chunk() {
             stream.get(&[a, b]).await;
             let len = u32::try_from(LEN).unwrap();
             assert_eq!(stream.reply().await, Reply::Chunk { digest: a, len });
-            assert_eq!(stream.recv().await.unwrap().unwrap().len(), MESSAGE);
+            assert_eq!(stream.recv().await.unwrap().unwrap().len(), COPIED);
             let Stream {
                 sender, receiver, ..
             } = stream;

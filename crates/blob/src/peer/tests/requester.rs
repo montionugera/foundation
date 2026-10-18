@@ -5,8 +5,8 @@ use super::*;
 use crate::peer;
 
 /// The digests of a get message: a 1-byte head and 32 bytes for each digest, in the
-/// 1452 bytes that `transport` copies.
-const BATCH: usize = (1452 - 1) / 32;
+/// bytes that `transport` copies.
+const BATCH: usize = (COPIED - 1) / 32;
 
 /// Serves each stream of `session` from `store` until the session ends, and gives
 /// what each `serve` gave.
@@ -573,6 +573,43 @@ fn a_put_returns_once_each_chunk_is_durable_on_the_peer() {
 }
 
 #[test]
+fn a_put_frees_a_chunk_before_a_reordered_ack() {
+    // Room for one chunk of the largest class and the head blocks.
+    fn create_tight_pool() -> Rc<Pool> {
+        create_pool_of(64 + 4096 + 128)
+    }
+    let (a, a_bytes) = chunk(1, 4000);
+    let (b, b_bytes) = chunk(2, 4000);
+    let held_bytes = (a_bytes.clone(), b_bytes.clone());
+    // The jitter brings the server's ack of a chunk after its `Stored`.
+    let sim = sim::Config {
+        seed: 0,
+        link: sim::link::Config {
+            jitter: Span::from_nanos(500 * Span::MICROSECOND.nanos()),
+            ..sim::link::Config::default()
+        },
+        ..sim::Config::default()
+    };
+    run_session_on(
+        sim,
+        DISK,
+        create_pool,
+        move |node, session| async move {
+            let store = open(&node, 0).await;
+            assert_eq!(serve_each(&store, &session).await, vec![Ok(())]);
+            assert_eq!(held(&store, a).await, Some(held_bytes.0));
+            assert_eq!(held(&store, b).await, Some(held_bytes.1));
+        },
+        move |peer| async move {
+            let store = open_on(&peer.node, create_tight_pool(), 0).await;
+            put(&store, a, &a_bytes).await;
+            put(&store, b, &b_bytes).await;
+            assert_eq!(peer::put(&store, &peer.session, &[a, b]).await, Ok(()));
+        },
+    );
+}
+
+#[test]
 fn a_put_of_no_digests_opens_no_stream() {
     run_session(
         0,
@@ -827,6 +864,34 @@ fn a_get_frees_its_get_message_before_a_reordered_ack() {
             let got = get(&store, &peer.session, &digests).await;
             assert_eq!(got.map(|misses| misses.len()), Ok(absent));
             assert_eq!(held(&store, c).await, Some(bytes));
+        },
+    );
+}
+
+#[test]
+fn serve_frees_each_chunk_before_it_takes_the_next() {
+    // Room for one chunk of the largest class and the head blocks.
+    fn create_tight_pool() -> Rc<Pool> {
+        create_pool_of(64 + 4096 + 128)
+    }
+    let (a, a_bytes) = chunk(1, 4000);
+    let (b, b_bytes) = chunk(2, 4000);
+    let (a_held, b_held) = (a_bytes.clone(), b_bytes.clone());
+    run_session_on(
+        sim::Config::default(),
+        DISK,
+        create_pool,
+        move |node, session| async move {
+            let store = open_on(&node, create_tight_pool(), 0).await;
+            put(&store, a, &a_bytes).await;
+            put(&store, b, &b_bytes).await;
+            assert_eq!(serve_each(&store, &session).await, vec![Ok(())]);
+        },
+        move |peer| async move {
+            let store = open(&peer.node, 0).await;
+            assert_eq!(get(&store, &peer.session, &[a, b]).await, Ok(vec![]));
+            assert_eq!(held(&store, a).await, Some(a_held));
+            assert_eq!(held(&store, b).await, Some(b_held));
         },
     );
 }
