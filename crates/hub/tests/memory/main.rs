@@ -1,9 +1,9 @@
 //! A request that the hub refuses for its length allocates no body, the heap of a hub
 //! does not grow over many opens and closes of a named complete reader, a served open
 //! holds and copies each of its keys once, a read that waits for its home holds no
-//! places, and an open defines no channel of the spec that its hub applied again. This
-//! binary has no test harness: the count covers each thread, and a harness allocates on
-//! its own thread at any time.
+//! places, the channels of a hub hold each name once, and an open defines no channel of
+//! the spec that its hub applied again. This binary has no test harness: the count
+//! covers each thread, and a harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -62,6 +62,7 @@ fn main() {
     holds_no_more_for_a_read_of_one_channel_whose_open_is_at_the_cap();
     holds_no_places_once_a_read_opens();
     holds_no_names_once_a_write_opens();
+    holds_each_channel_name_once();
     defines_no_channel_again_at_an_open_of_the_spec_applied();
     defines_no_channel_again_at_the_first_poll_of_the_spec_task();
 }
@@ -615,6 +616,40 @@ fn holds_no_names_once_a_write_opens() {
         "a write of {NAMED} channels with long names holds {long} bytes, and one with \
          short names holds {short}: their names differ by {differ} bytes"
     );
+}
+
+/// The channels of a hub hold each name once: [`WIDE`] channels with long names hold
+/// at most 1.1 bytes more than [`WIDE`] channels with short names for each byte by
+/// which their names differ.
+fn holds_each_channel_name_once() {
+    let long = "x".repeat(240);
+    let longs: Vec<_> = (0..WIDE).map(|n| name(&format!("l.{long}.{n}"))).collect();
+    let shorts: Vec<_> = (0..WIDE).map(|n| name(&format!("s.{n}"))).collect();
+    let differ: usize = longs
+        .iter()
+        .zip(&shorts)
+        .map(|(long, short)| long.as_str().len() - short.as_str().len())
+        .sum();
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    sim.run_on(&node, move |node, tasks| async move {
+        let mut held = Vec::new();
+        for names in [&longs, &shorts] {
+            let definitions = common::definitions(names);
+            let hub = common::hub_alone(&node, tasks.clone(), &[]).await;
+            let before = ALLOCATOR.held();
+            hub.set_definitions(&definitions);
+            held.push(ALLOCATOR.held() - before);
+            drop(hub);
+        }
+        let (long, short) = (held[0], held[1]);
+        assert!(
+            (long - short) * 10 < differ * 11,
+            "{WIDE} channels with long names hold {long} bytes, and with short names \
+             {short}: their names differ by {differ} bytes"
+        );
+    })
+    .expect("the run ends");
 }
 
 /// On a hub whose region uses the spec that the hub applied, the first poll of an
