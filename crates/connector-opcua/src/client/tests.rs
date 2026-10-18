@@ -621,16 +621,21 @@ fn a_read_after_a_dropped_read_gets_its_own_answer() {
     assert_eq!((time, value), (mistyped("DateTime"), Ok(expected)));
 }
 
-/// Starts `count` reads of `client`, each polled once and then dropped.
+/// Starts `count` reads of [`VALUE`] by `client`, each polled once and then dropped.
 async fn drop_reads(client: &mut Client, count: u16) {
     for _ in 0..count {
-        let mut read = pin!(client.read_one(&VALUE));
-        poll_fn(|cx| {
-            assert!(read.as_mut().poll(cx).is_pending(), "a read waits");
-            Poll::Ready(())
-        })
-        .await;
+        drop_read(client, &VALUE).await;
     }
+}
+
+/// Starts a read of `node` by `client`, polled once and then dropped.
+async fn drop_read(client: &mut Client, node: &Node) {
+    let mut read = pin!(client.read_one(node));
+    poll_fn(|cx| {
+        assert!(read.as_mut().poll(cx).is_pending(), "a read waits");
+        Poll::Ready(())
+    })
+    .await;
 }
 
 /// Without the bound on the reads in flight, the server answers the 257 requests of
