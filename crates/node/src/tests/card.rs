@@ -241,48 +241,66 @@ fn a_stop_during_the_minute_of_a_card_ends_the_node() {
 }
 
 /// A mesh whose log write fails during the call of a card a minute later fails the
-/// node with that error, and logs nothing more of the card.
+/// node with that error, and logs nothing more of the card. The seed gives the order
+/// of the end of the call and the stop of the group, both ready at one instant: of
+/// the 28 seeds in which the call waits, 18 end the call first.
 #[test]
 fn a_mesh_that_stops_during_the_call_of_a_card_logs_no_more_of_it() {
-    let mut sim = sim::Sim::new(sim::Config::default());
-    let host = keyed(&mut sim, 2);
-    let ip = host.addresses()[0];
-    assert_eq!(started(&mut sim, &host, listen(&host)).version, 1);
-    let other = Address::Udp(SocketAddr::new(ip, PORT + 2));
-    let lines = Lines::default();
-    let node = Node::start(Config {
-        region: Region::Stored,
-        listen: SocketAddr::new(ip, PORT + 1),
-        log: to(&lines, false, tracing::Level::WARN),
-        ..config(&host, Size::MEBIBYTE, Box::new(heap))
-    });
-    node.operate(move |ops| async move {
-        let addresses = Addresses::new(vec![other]).unwrap();
-        assert_eq!(ops.mesh().set_addresses(addresses).await, Ok(()));
-    });
-    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
-    let log = Path::new("mesh/log/log-0");
-    host.fail_file(log, env::files::Operation::WriteAt);
-    assert_eq!(sim.run(), Ok(()));
-    let log = mesh::log::Error::Files(env::files::Error::Io {
-        path: log.to_path_buf(),
-        operation: env::files::Operation::WriteAt,
-        code: 5,
-    });
-    assert_eq!(node.join(), Err(Error::Group(mesh::Stopped::Write(log))));
-    let warned: Vec<_> = lines
-        .read()
-        .into_iter()
-        .filter(|line| line.contains(" node::card: "))
-        .collect();
-    assert_eq!(
-        warned,
-        [
-            "2026-01-01T00:00:02.006291Z WARN node::card: the card of this node keeps \
-          its addresses, and the node tries again in a minute error=\"a card of the \
-          same member was proposed less than a minute ago; call again after a minute\""
-        ]
-    );
+    let soon = "WARN node::card: the card of this node keeps its addresses, and the \
+                node tries again in a minute error=\"a card of the same member was \
+                proposed less than a minute ago; call again after a minute\"";
+    let mut waited = 0;
+    for seed in 0..64 {
+        let mut sim = sim::Sim::new(sim::Config {
+            seed,
+            ..sim::Config::default()
+        });
+        let host = keyed(&mut sim, 2);
+        let ip = host.addresses()[0];
+        assert_eq!(started(&mut sim, &host, listen(&host)).version, 1);
+        let other = Address::Udp(SocketAddr::new(ip, PORT + 2));
+        let lines = Lines::default();
+        let node = Node::start(Config {
+            region: Region::Stored,
+            listen: SocketAddr::new(ip, PORT + 1),
+            log: to(&lines, false, tracing::Level::WARN),
+            ..config(&host, Size::MEBIBYTE, Box::new(heap))
+        });
+        let called = Arc::new(Mutex::new(None));
+        let result = Arc::clone(&called);
+        node.operate(move |ops| async move {
+            let addresses = Addresses::new(vec![other]).unwrap();
+            *result.lock().unwrap() = Some(ops.mesh().set_addresses(addresses).await);
+        });
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()), "seed {seed}");
+        // When the start's own call proposes first, no call of the card waits.
+        if *called.lock().unwrap() == Some(Err(mesh::Error::Soon)) {
+            node.stop();
+            assert_eq!(sim.run(), Ok(()), "seed {seed}");
+            assert_eq!(node.join(), Ok(()), "seed {seed}");
+            continue;
+        }
+        assert_eq!(*called.lock().unwrap(), Some(Ok(())), "seed {seed}");
+        let log = Path::new("mesh/log/log-0");
+        host.fail_file(log, env::files::Operation::WriteAt);
+        assert_eq!(sim.run(), Ok(()), "seed {seed}");
+        let log = mesh::log::Error::Files(env::files::Error::Io {
+            path: log.to_path_buf(),
+            operation: env::files::Operation::WriteAt,
+            code: 5,
+        });
+        let stopped = Err(Error::Group(mesh::Stopped::Write(log)));
+        assert_eq!(node.join(), stopped, "seed {seed}");
+        let warned: Vec<_> = lines
+            .read()
+            .into_iter()
+            .filter(|line| line.contains(" node::card: "))
+            .map(|line| line.split_once(' ').unwrap().1.to_owned())
+            .collect();
+        assert_eq!(warned, [soon], "seed {seed}");
+        waited += 1;
+    }
+    assert_eq!(waited, 28);
 }
 
 /// A member that is not a voter keeps the addresses of its card, and warns of it.
