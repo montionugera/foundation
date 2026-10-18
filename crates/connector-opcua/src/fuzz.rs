@@ -1,13 +1,75 @@
 //! The round trip of open62541 binary decoding, and the read of each decoded
-//! `DataValue`, for the `connector_opcua_decode` fuzz target.
+//! `DataValue`, for the `connector_opcua_decode` fuzz target, and the read of the
+//! certificate of a server, for the `connector_opcua_certificate` fuzz target.
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 use std::ffi::c_void;
 
+use env::clock::Clock;
+use env::rng::Rng;
+
+use crate::event::{self, Loop};
 use crate::ffi::{self, BYTE_STRING, Bytes, DATA_VALUE, DataType, DecodeOptions};
-use crate::ffi::{Status, TYPES};
+use crate::ffi::{Security, Status, TYPES};
 use crate::value::Cause;
+
+/// The certificate and key of the policies of [`certificate`].
+const SERVER: [&[u8]; 2] = [
+    include_bytes!("secure/server.der"),
+    include_bytes!("secure/server-key.der"),
+];
+
+/// Reads `data` as a client reads the certificate that a server sends, on a loop of
+/// `clock`: the check of a certificate group that trusts nothing, a channel context of
+/// each policy with `data` as the certificate of the server, and the compare of `data`
+/// with the certificate of a channel. Also reads the application URI of `data`.
+///
+/// # Panics
+///
+/// When the check gives `Good`, or a step that no input changes fails, with the status
+/// name.
+pub fn certificate(clock: Clock, data: &[u8]) {
+    let verified = read(clock, data);
+    assert_ne!(
+        verified.name(),
+        "Good",
+        "a group that trusts nothing trusts it"
+    );
+}
+
+/// Gives the status of the check of `data` in [`certificate`].
+///
+/// # Panics
+///
+/// When a step that no input changes fails, with the status name.
+fn read(clock: Clock, data: &[u8]) -> Status {
+    let events = Loop::new(
+        event::Time::monotonic(clock),
+        tracing::Span::none(),
+        &mut Rng::from_seed(0),
+    );
+    let [certificate, key] = SERVER.map(Bytes::of);
+    let security = Security {
+        certificate,
+        key,
+        trusted: std::ptr::null(),
+        trusted_size: 0,
+    };
+    let mut verified = 0;
+    // SAFETY: each pointer is live for the call, which only reads `data` and
+    // `security`, and the loop lives past it.
+    let status = Status(unsafe {
+        ffi::test::shim_read_certificate(
+            &Bytes::of(data),
+            &raw const security,
+            events.raw(),
+            &raw mut verified,
+        )
+    });
+    assert_eq!(status.name(), "Good", "a step that no input changes");
+    Status(verified)
+}
 
 /// Decodes `data[2..]` as the type of `UA_TYPES` that the little-endian `u16` of
 /// `data[..2]` picks, by its remainder by the table length. When the decode gives
@@ -215,6 +277,37 @@ mod tests {
             count += 1;
         }
         assert!(count > 0, "{root} holds no input");
+    }
+
+    /// Each input of the certificate target reads to the refusal that its name ends
+    /// with.
+    #[test]
+    fn each_certificate_input_reads_to_its_refusal() {
+        let root = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../oracles/fuzz/connector_opcua_certificate"
+        );
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let clock = sim.node(sim::node::Config::default()).clock();
+        let mut read_to = Vec::new();
+        for entry in std::fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            #[expect(clippy::disallowed_methods, reason = "a test reads its oracles")]
+            let data = std::fs::read(&path).unwrap();
+            let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+            read_to.push((name, read(Clock::clone(&clock), &data).name()));
+        }
+        read_to.sort();
+        assert_eq!(
+            read_to,
+            [
+                ("der", "BadCertificateUntrusted"),
+                ("encrypted_pem", "BadCertificateInvalid"),
+                ("pem", "BadCertificateUntrusted"),
+                ("truncated_der", "BadCertificateInvalid"),
+            ]
+            .map(|(name, status)| (name.to_owned(), status))
+        );
     }
 
     /// A `Variant` of 7 `ExtensionObject` values, each with a null type and no body.

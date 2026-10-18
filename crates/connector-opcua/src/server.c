@@ -459,6 +459,45 @@ UA_StatusCode shim_verify_certificate(const UA_ByteString *certificate,
     return status;
 }
 
+/* Reads `certificate` as a client reads the certificate that a server sends: the check
+ * of a memory group with an empty trust list and the loop `el`, then for each policy on
+ * `security`, a channel context with `certificate` as the remote certificate, and the
+ * compare of `certificate` with a context on the certificate of `security`. Also reads
+ * the application URI of `certificate`. Sets `*verified` to the status of the check,
+ * and gives `Good`, or the status of a step that no `certificate` changes. */
+UA_StatusCode shim_read_certificate(const UA_ByteString *certificate,
+                                    const shim_security *security, UA_EventLoop *el,
+                                    UA_StatusCode *verified) {
+    UA_CertificateGroup group;
+    UA_StatusCode status = shim_trust(&group, NULL, 0, NULL, el);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    *verified = group.verifyCertificate(&group, certificate);
+    group.clear(&group);
+    UA_String uri = UA_STRING_NULL;
+    UA_CertificateUtils_getApplicationUri(certificate, &uri);
+    UA_String_clear(&uri);
+    UA_SecurityPolicy *policies = NULL;
+    size_t size = 0;
+    status = shim_add_policies(&policies, &size, security, NULL);
+    for(size_t i = 0; status == UA_STATUSCODE_GOOD && i < size; i++) {
+        UA_SecurityPolicy *policy = &policies[i];
+        void *context;
+        if(policy->newChannelContext(policy, certificate, &context) ==
+           UA_STATUSCODE_GOOD)
+            policy->deleteChannelContext(policy, context);
+        status = policy->newChannelContext(policy, &security->certificate, &context);
+        if(status == UA_STATUSCODE_GOOD) {
+            policy->compareCertificate(policy, context, certificate);
+            policy->deleteChannelContext(policy, context);
+        }
+    }
+    for(size_t i = 0; i < size; i++)
+        policies[i].clear(&policies[i]);
+    UA_free(policies);
+    return status;
+}
+
 /* Gives the status of the constructor of a memory certificate group with an empty trust
  * list and the loop `el`, and clears the group that it makes. */
 UA_StatusCode shim_memory_group(UA_EventLoop *el) {

@@ -291,6 +291,12 @@ unsafe extern "C" {
         trusted: *const Bytes,
         el: *mut EventLoop,
     ) -> u32;
+    pub(crate) fn shim_read_certificate(
+        certificate: *const Bytes,
+        security: *const super::Security,
+        el: *mut EventLoop,
+        verified: *mut u32,
+    ) -> u32;
     pub(crate) fn shim_server_limits(
         server: *mut Server,
         buffer: u32,
