@@ -25,27 +25,26 @@
   present by the kind's compare of node IDs, not by text: the OPC UA kind gives
   `i=2258` for a written `ns=0;i=2258` (`laptop.architect-2`, 2026-10-18T02:10:56Z,
   item 2: https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074).
-  `import::names(connector,
-  start, picks, taken)` gives the channel name of each pick, in pick order: each given
-  name as it is, then the default `<connector>.<path>` of each other pick. Each name of
-  the path below `start` is one segment, with `_` in place of each character other than
-  an ASCII letter, a digit, `_`, and `-`. A default that is in `taken`, is a given name,
-  or is an earlier default, also in another case, gets the first free suffix of `_2`,
-  `_3`, and on. A default longer than `Name::MAX_BYTES`, with its suffix, is `None`, and
-  the summary gives it as not added, with the fix "Give it a name". `taken` holds each
-  name that the files define or imply, such as the status channels of a connector. The
-  path of a pick with no given name that is not below `start` panics: the walk gives
-  each path below its start, so it is a defect of the caller. The fix of a refused given
-  name, "Give another name, or leave it out for `<default>`", needs no other item: `ops`
-  calls `names` again with the refused names as `None`, on the failure path only. No
-  name of a path is empty: `walk` refuses an entry that a kind gives with an empty
-  name (BROWSE), and `Path::from_str` refuses an empty name. `names` takes the
-  characters of a segment from `Name::segment_char` (A3), so its `expect` checks an
-  invariant that holds. Lost: a namer with state (`give`, then `next`), where nothing
-  makes the caller give each given name before the first default; a `Document` from
-  `Kind::block`, where an attribute of one pick merges into the one connector body and
-  collides on a second pick; and the run error `Error`, which has variants that a hook
-  with no I/O cannot give. The person's words of decision 5,
+  `import::names(connector, start, picks, taken)` gives the channel name of each pick,
+  in pick order: each given name as it is, then the default `<connector>.<path>` of each
+  other pick. Each name of the path below `start` is one segment, with `_` in place of
+  each character other than an ASCII letter, a digit, `_`, and `-`. A default that is in
+  `taken`, is a given name, or is an earlier default, also in another case, gets the
+  first free suffix of `_2`, `_3`, and on. A default longer than `Name::MAX_BYTES`, with
+  its suffix, is `None`, and the summary gives it as not added, with the fix "Give it a
+  name". `taken` holds each name that the files define or imply, such as the status
+  channels of a connector. The path of a pick with no given name that is not below
+  `start` panics: the walk gives each path below its start, so it is a defect of the
+  caller. The fix of a refused given name, "Give another name, or leave it out for
+  `<default>`", needs no other item: `ops` calls `names` again with the refused names as
+  `None`, on the failure path only. No name of a path is empty: `walk` refuses an entry
+  that a kind gives with an empty name (BROWSE), and `Path::from_str` refuses an empty
+  name. `names` takes the characters of a segment from `Name::segment_char` (A3), so its
+  `expect` checks an invariant that holds. Lost: a namer with state (`give`, then
+  `next`), where nothing makes the caller give each given name before the first default;
+  a `Document` from `Kind::block`, where an attribute of one pick merges into the one
+  connector body and collides on a second pick; and the run error `Error`, which has
+  variants that a hook with no I/O cannot give. The person's words of decision 5,
   through `laptop.monitor`, 2026-10-15 17:28 UTC: "Yeah, that's fine"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198090285); given
   names first, and one set of name rules in `config`: `laptop.architect-2`, on that
