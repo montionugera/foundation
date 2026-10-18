@@ -166,8 +166,8 @@ impl Writer {
     /// Writes a frame of `count` samples of each place of `series`, in any order, each
     /// in the raw form of its place's type, and blocks until the node took, lost, or
     /// refused it. The series of [`Writer::index`] holds the stamps of the frame. A
-    /// frame of one channel and its index holds at most about 3,500 samples (the
-    /// largest block of the frames of the session, 57,344 bytes).
+    /// frame of one channel of 8-byte samples and its index holds at most about 3,500
+    /// samples (the largest block of the frames of the session, 57,344 bytes).
     ///
     /// # Errors
     ///

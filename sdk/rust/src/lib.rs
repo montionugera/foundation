@@ -260,7 +260,7 @@ impl Client {
     /// node opened it. The node must be the home of their index. Each writer holds a
     /// stream of the session, and the node bounds the streams of a session (64 by
     /// default, one of them the hello): past that bound, the open waits until another
-    /// writer closes or drops.
+    /// stream of the session ends, such as at the close or drop of a writer.
     ///
     /// # Errors
     ///

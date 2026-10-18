@@ -63,7 +63,8 @@
   stamp that it gave the writer. So after a stamp of the caller ahead of now, a frame
   that the node stamps can get `Refusal::Order` (#3282). Each writer holds a stream of
   the session, and the node bounds the streams of a session (64 by default, one of
-  them the hello): past that bound, an open waits until another writer closes or drops.
+  them the hello): past that bound, an open waits until another stream of the session
+  ends, such as at the close or drop of a writer.
   `crates/node/benches/sdk/` gives the p50 and p99 of each round of
   `sdk::Writer::write` and of `program::Writer` with 2 values, and of each leg between
   the caller and the writer task, with the task parked before each call. Decided by
@@ -74,7 +75,7 @@
   leg to the task, which is on the path of a latest-mode read, takes 7.8 µs p50 and
   8.9 µs p99, over the P1 limit of 2.5 µs. The leg to the caller takes 3.7 µs p50 and
   8.6 µs p99, and a write takes 39.8 µs p50, 12.5 µs more than `program`. Accepted as
-  the price of SDK CLIENT, with no spin before the park, because the p99 of the leg is
+  the price of SDK CLIENT. No spin goes before the park, because the p99 of the leg is
   inside its p50 plus the noise of the rounds. Decided by `laptop.architect-2` on
   2026-10-18T23:01:32Z
   (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6256253289).
