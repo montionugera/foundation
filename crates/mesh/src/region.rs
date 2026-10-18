@@ -967,6 +967,16 @@ mod tests {
                 region: name("plant").into()
             })
         );
+        let mut far = create_members(&[1, 2]);
+        far[1].card = signed(2, "factory.node2");
+        far[1].status = status([(long_status(256 - 14), index(1))]);
+        assert_eq!(
+            create_state(name("plant").into(), far),
+            Err(Unfit::Outside {
+                name: name("factory.node2"),
+                region: name("plant").into()
+            })
+        );
         let mut long = create_members(&[1, 2]);
         long[1].status = status([(long_status(256 - 12), index(1))]);
         assert_eq!(
@@ -1630,9 +1640,9 @@ mod tests {
     // Joins on `open_state` with a good admission that fail checks of the member,
     // with the refusal of the first check that each fails.
     fn member_checks() -> [(Join, Refused); 5] {
-        let mut reserved = join(8, 3, "plant.@a");
+        let mut reserved = join(8, 1, "plant.@a");
         reserved.status = status([(long_status(256 - 9), index(9))]);
-        let mut long = join(8, 3, "plant.edge.a");
+        let mut long = join(8, 1, "plant.edge.a");
         long.status =
             status([(long_status(256 - 13), index(9)), (name("t.@a"), index(10))]);
         [
@@ -1941,9 +1951,10 @@ mod tests {
                 let _applied = state.apply(step);
                 for id in 1..7 {
                     let public_key = public(id);
-                    let mut members = state.members.iter();
-                    let scan = members.find(|(_, m)| m.public_key() == public_key);
-                    prop_assert_eq!(state.holder(public_key), scan.map(|(&k, _)| k));
+                    let scan = (1..6).map(node).find(|&key| {
+                        state.member(key).is_some_and(|m| m.public_key() == public_key)
+                    });
+                    prop_assert_eq!(state.holder(public_key), scan);
                 }
             }
         }
