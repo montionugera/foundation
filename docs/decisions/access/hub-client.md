@@ -296,4 +296,6 @@
   the frame is sent is the outcome of that frame: the program cannot tell it from the
   real one. `wire::hub::Error::Stored` holds `frames` and `bound`, the last `Stored`
   when `frames` is below it, else the frames that got an outcome, so `Error` stays 24
-  bytes and the node's decoders do not grow.
+  bytes and the node's decoders do not grow. Decided by `laptop.architect` at
+  2026-10-18T15:49:57Z
+  (https://github.com/synnaxlabs/foundation/pull/3201#issuecomment-6251902903).
