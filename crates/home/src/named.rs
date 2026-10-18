@@ -39,9 +39,6 @@ const RECORD_MAX: usize = FIXED + 2 * Name::MAX_BYTES;
 const PART_MAX: usize = Layout::ENTRY_MAX_MIN;
 const _: () = assert!(HEAD + 7 * RECORD_MAX <= PART_MAX, "7 records fit one part");
 
-/// The most bytes of the records of the named readers of one index.
-pub(crate) const LIMIT: usize = PARTS as usize * (PART_MAX - HEAD);
-
 /// The bytes of the record of `reader` in a body.
 fn record_len(reader: &delivery::named::Key) -> usize {
     FIXED + reader.subject.as_str().len() + reader.name.as_str().len()
@@ -559,7 +556,7 @@ mod tests {
             let records = [record(&longest, &longest, Some(1), Some(1))];
 
             assert_eq!(encoded(&records).len(), HEAD + RECORD_MAX);
-            assert_eq!((RECORD_MAX, len(&records), LIMIT), (546, 551, 257_728));
+            assert_eq!((RECORD_MAX, len(&records)), (546, 551));
         }
     }
 

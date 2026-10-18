@@ -75,9 +75,11 @@
   such an entry, and a restart resumes the readers of its part at the live tail, and
   those of each later part when no index keeps an entry of its tag, as HANDOFF RECORD
   states for a handoff. A named complete open that adds a record that no part has room
-  for gives `Unopened::Full`, with a `limit` of 257,728 bytes (64 parts of 4027 bytes of
-  records), and `hub` gives `reader::Error::Full`. A reopen or a takeover never gives
-  it, as a held record keeps its part. A latest reader adds no record. Parts: decided by
+  for gives `Unopened::Full`, and `hub` gives `reader::Error::Full`, with no field: the
+  64 parts of 4027 bytes of records hold at least 448 records of the longest subjects
+  and names. A reopen or a takeover never gives it, as a held record keeps its part.
+  `Full` with no field: decided by `laptop.architect` (2026-10-18T09:41:10Z:
+  https://github.com/synnaxlabs/foundation/issues/2978#issuecomment-6248353319). A latest reader adds no record. Parts: decided by
   `laptop.architect`
   (2026-10-17T00:37:51Z:
   https://github.com/synnaxlabs/foundation/issues/2833#issuecomment-6227434486), which

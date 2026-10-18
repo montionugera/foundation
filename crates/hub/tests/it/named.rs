@@ -901,11 +901,10 @@ fn opens_no_named_complete_reader_when_no_part_of_the_records_has_room() {
             .reader(open(448))
             .await
             .expect_err("no part has room");
-        assert_eq!(error, reader::Error::Full { limit: 257_728 });
+        assert_eq!(error, reader::Error::Full);
         assert_eq!(
             error.to_string(),
-            "no part of the named records of the index has room for the reader: the \
-             records of an index hold at most 257728 bytes"
+            "no part of the named records of the index has room for the reader"
         );
         let latest = named(&long(448), &"r".repeat(255), Mode::Latest, Span::ZERO);
         assert!(

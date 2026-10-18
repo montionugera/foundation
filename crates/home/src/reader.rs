@@ -68,15 +68,12 @@ pub enum Unopened {
     /// As [`Unsynced`].
     Unsynced,
     /// The open adds a record, and no part of the named records of the index has room
-    /// for it: the records of the index hold close to `limit` bytes. Close a named
+    /// for it: at least 448 records of the longest subjects and names. Close a named
     /// reader of the index whose hold is zero, wait for a hold to end, or open the
     /// reader unnamed. A reopen or a takeover never gives it. The room of a closed
     /// reader's record is free when the entry that drops it appends, at the close or
     /// a later tick.
-    Full {
-        /// The most bytes of the records of the named readers of one index.
-        limit: usize,
-    },
+    Full,
     /// The open adds a record, opens a held one, or takes over an open session with a
     /// new hold, and the buffer had no block or no room for the entry of the part that
     /// holds its record or of a part before it, so a restart would not resume the
@@ -88,10 +85,8 @@ impl fmt::Display for Unopened {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unsynced => Unsynced.fmt(f),
-            Self::Full { limit } => write!(
-                f,
-                "no part of the named records of the index has room for the reader: \
-                 the records of an index hold at most {limit} bytes"
+            Self::Full => f.write_str(
+                "no part of the named records of the index has room for the reader",
             ),
             Self::Unrecorded => write!(
                 f,
@@ -418,9 +413,7 @@ impl Set {
         if let Some(records) = self.opening(place, &reader, hold, live) {
             let parts = &mut self.entries[place].parts;
             let recorded = parts.open(buffer, &records, &reader, head);
-            let recorded = recorded.map_err(|crate::named::Full| Unopened::Full {
-                limit: crate::named::LIMIT,
-            })?;
+            let recorded = recorded.map_err(|crate::named::Full| Unopened::Full)?;
             recorded_at = Some(recorded.ok_or(Unopened::Unrecorded)?);
         }
         let reader = Reader::Named { reader, hold };
@@ -1452,9 +1445,8 @@ mod tests {
                 "the node has no mesh time yet: open the named reader again later"
             );
             assert_eq!(
-                Unopened::Full { limit: 257_728 }.to_string(),
-                "no part of the named records of the index has room for the reader: \
-                 the records of an index hold at most 257728 bytes"
+                Unopened::Full.to_string(),
+                "no part of the named records of the index has room for the reader"
             );
         }
     }

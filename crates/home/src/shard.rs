@@ -6829,7 +6829,7 @@ mod tests {
                             shard.committed().await.expect("the commit ends");
                         }
                         let full = open_longest(&mut shard, longest(448));
-                        assert_eq!(full, Err(Unopened::Full { limit: 257_728 }));
+                        assert_eq!(full, Err(Unopened::Full));
                         let again = open_longest(&mut shard, longest(0));
                         let again = again.expect("its own record is replaced");
                         assert_eq!(again.replaced, Some(opened[0].into()));

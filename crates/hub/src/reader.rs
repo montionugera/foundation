@@ -275,15 +275,12 @@ pub enum Error {
     /// The reader is named and the node has no mesh time yet. Open it again later.
     Unsynced,
     /// The reader is named and complete, its open adds a record, and no part of the
-    /// named records of the index has room for it: the records of the index hold
-    /// close to `limit` bytes. Close a named reader of the index whose hold is zero,
-    /// wait for a hold to end, or open this one unnamed. A reopen or a takeover never
-    /// gives it. The room of a closed reader's record is free when the entry that
-    /// drops it appends, at the close or a later tick.
-    Full {
-        /// The most bytes of the records of the named readers of one index.
-        limit: usize,
-    },
+    /// named records of the index has room for it: at least 448 records of the
+    /// longest subjects and names. Close a named reader of the index whose hold is
+    /// zero, wait for a hold to end, or open this one unnamed. A reopen or a takeover
+    /// never gives it. The room of a closed reader's record is free when the entry
+    /// that drops it appends, at the close or a later tick.
+    Full,
     /// The reader is named and complete, and the home had no room to record its
     /// position, so a restart would not resume it. Open it again later.
     Unrecorded,
@@ -319,10 +316,8 @@ impl fmt::Display for Error {
             Self::Unsynced => f.write_str(
                 "the node has no mesh time yet: open the named reader again later",
             ),
-            Self::Full { limit } => write!(
-                f,
-                "no part of the named records of the index has room for the reader: \
-                 the records of an index hold at most {limit} bytes"
+            Self::Full => f.write_str(
+                "no part of the named records of the index has room for the reader",
             ),
             Self::Unrecorded => f.write_str(
                 "the home had no room to record the position of the named reader: \
@@ -364,7 +359,7 @@ impl From<::home::reader::Unopened> for Error {
     fn from(unopened: ::home::reader::Unopened) -> Self {
         match unopened {
             ::home::reader::Unopened::Unsynced => Self::Unsynced,
-            ::home::reader::Unopened::Full { limit } => Self::Full { limit },
+            ::home::reader::Unopened::Full => Self::Full,
             ::home::reader::Unopened::Unrecorded => Self::Unrecorded,
         }
     }
