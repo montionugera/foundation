@@ -22,7 +22,8 @@ use crate::file::{self, Blocks, CHECK};
 pub(super) const FILE: &str = "card";
 const FORMAT: u16 = 1;
 const SLOT: usize = files::SECTOR;
-const BODY: usize = 2 + 8;
+// The bytes of the frame of a slot.
+const FRAME: usize = CHECK + 2 + 8;
 
 /// Signs the cards of this node, each at a version that the file holds first.
 #[derive(Debug)]
@@ -126,10 +127,7 @@ async fn write(
         .checked_add(1)
         .expect("invariant: a card version is below u64::MAX");
     let at = if versions[0] > versions[1] { SLOT } else { 0 };
-    let mut body = FORMAT.to_le_bytes().to_vec();
-    body.extend(version.to_le_bytes());
-    let mut bytes = file::check(&body).to_vec();
-    bytes.extend(body);
+    let mut bytes = file::frame(FORMAT, &version.to_le_bytes());
     bytes.resize(SLOT, 0);
     blocks.write(file, file::wide(at), &mut &bytes[..]).await?;
     file.sync().await.map_err(Error::Files)?;
@@ -152,16 +150,15 @@ fn read(slot: &[u8]) -> Slot {
     if slot.iter().all(|&byte| byte == 0) {
         return Slot::Unwritten;
     }
-    let (check, body) = slot
-        .split_first_chunk::<CHECK>()
-        .and_then(|(check, rest)| Some((check, rest.first_chunk::<BODY>()?)))
-        .expect("invariant: a slot is a sector");
-    if *check != file::check(body) {
-        return Slot::Broken;
+    let framed = slot.get(..FRAME).expect("invariant: a slot is a sector");
+    match file::unframe(framed) {
+        Some((FORMAT, version)) => {
+            let version = version
+                .try_into()
+                .expect("invariant: a version has 8 bytes");
+            Slot::Version(u64::from_le_bytes(version))
+        }
+        Some(_) => Slot::Foreign,
+        None => Slot::Broken,
     }
-    let [low, high, version @ ..] = *body;
-    if u16::from_le_bytes([low, high]) != FORMAT {
-        return Slot::Foreign;
-    }
-    Slot::Version(u64::from_le_bytes(version))
 }

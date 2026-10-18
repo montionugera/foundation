@@ -27,10 +27,7 @@ fn tried(sim: &mut Sim, node: &sim::node::Node, held: u64) -> Result<u64, Error>
 
 /// A slot whose check holds over `format` and `version`.
 fn slot(format: u16, version: u64) -> Vec<u8> {
-    let mut body = format.to_le_bytes().to_vec();
-    body.extend(version.to_le_bytes());
-    let mut bytes = file::check(&body).to_vec();
-    bytes.extend(body);
+    let mut bytes = file::frame(format, &version.to_le_bytes());
     bytes.resize(files::SECTOR, 0);
     bytes
 }

@@ -15,7 +15,7 @@ use block::Pool;
 use env::files::{self, Files, Mode};
 
 use crate::error::Error;
-use crate::file::{self, Blocks, CHECK};
+use crate::file::{self, Blocks};
 use crate::region::Founding;
 
 /// The name of the founding file in a mesh directory.
@@ -110,16 +110,10 @@ async fn read(
     let stored = blocks.read(&opened).await;
     opened.close().await;
     let stored = stored?;
-    let (check, rest) = stored
-        .split_first_chunk::<CHECK>()
-        .ok_or_else(|| unfounded(dir))?;
-    let (version, body) = rest
-        .split_first_chunk::<2>()
-        .ok_or_else(|| unfounded(dir))?;
-    if *check != file::check(rest) || u16::from_le_bytes(*version) != VERSION {
-        return Err(unfounded(dir));
+    match file::unframe(&stored) {
+        Some((VERSION, body)) => Ok(Some(body.to_vec())),
+        _ => Err(unfounded(dir)),
     }
-    Ok(Some(body.to_vec()))
 }
 
 fn unfounded(dir: &Path) -> Error {
@@ -136,10 +130,7 @@ async fn write(
     blocks: &Blocks,
     given: &[u8],
 ) -> Result<(), Error> {
-    let mut rest = VERSION.to_le_bytes().to_vec();
-    rest.extend(given);
-    let mut bytes = file::check(&rest).to_vec();
-    bytes.extend(rest);
+    let bytes = file::frame(VERSION, given);
     let (path, new) = (dir.join(FILE), dir.join(NEW));
     files.remove(&path).await.map_err(Error::Files)?;
     files.remove(&new).await.map_err(Error::Files)?;
