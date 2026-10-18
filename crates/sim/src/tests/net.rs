@@ -1158,6 +1158,32 @@ fn a_v6_bind_that_is_not_link_local_drops_its_scope() {
     }
 }
 
+/// A datagram from a socket on the link-local address leaves from that address, as on
+/// Linux, not from the routable IPv6 address.
+#[test]
+fn a_link_local_socket_sends_from_its_own_address() {
+    let (mut sim, a, b) = pair(0, link::Config::default());
+    let (ip, interface) = a.link_local();
+    let local = SocketAddr::V6(SocketAddrV6::new(ip, 4433, 0, interface));
+    let (sender, _a) = bind(&a, local).unwrap();
+    let IpAddr::V6(v6) = b.addresses()[1] else {
+        panic!("the second address is IPv6");
+    };
+    let to = SocketAddr::V6(SocketAddrV6::new(v6, 4433, 0, 0));
+    let (_b, receiver) = bind(&b, to).unwrap();
+    let log = Log::default();
+    let _receive = receive(&b, receiver, &log);
+    let _send = send(&a, sender, to, vec![b"abc".to_vec()]);
+    sim.run_for(Span::SECOND).unwrap();
+    let sources: Vec<_> = log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, meta, _)| meta.source)
+        .collect();
+    assert_eq!(sources, [SocketAddr::new(IpAddr::V6(ip), 4433)]);
+}
+
 #[test]
 fn a_bind_to_an_address_of_another_node_fails() {
     let (_sim, a, b) = pair(0, link::Config::default());

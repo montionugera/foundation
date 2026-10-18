@@ -386,7 +386,11 @@ fn route(
         return Err(Error::Unreachable { remote });
     }
     let [v4, v6] = addresses(node);
-    let own = if destination.is_ipv4() { v4 } else { v6 };
+    let own = match local.ip() {
+        IpAddr::V6(ip) if ip.is_unicast_link_local() => local.ip(),
+        _ if destination.is_ipv4() => v4,
+        _ => v6,
+    };
     let ip = ip.unwrap_or(own);
     if ip != own {
         return Err(Error::Io {
