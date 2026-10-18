@@ -586,6 +586,45 @@ fn a_power_cut_in_a_call_leaves_a_mesh_that_sets_again() {
     }
 }
 
+// A voter forwards a card of node 1 at version 2 with a broken signature, which the
+// apply refuses. The card that the call signs at version 2 is another card, so it
+// gets `Soon`, and a minute later it sets the card at version 3. The sim runs on its
+// own thread, because a call that takes the forged card for a repeat never yields.
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a call that never yields stops the sim, so a real thread times it"
+)]
+fn a_card_after_another_at_its_version_gives_soon() {
+    let (done, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        solo(|node, tasks| async move {
+            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+            lead(&mesh, &node.clock(), home_to(1)).await;
+            let card = card::Card {
+                addresses: moved(1, 10),
+                version: 2,
+                ..common::member(1).card.card().clone()
+            };
+            let mut forged = card::Unchecked::sign(key(1), card, &private(1));
+            forged.signature[0] ^= 1;
+            let forged = Change::Card(Box::new(forged));
+            let answer = mesh.answer(public(1), forged).await;
+            assert!(matches!(answer, Ok(Message::Proposed { .. })), "{answer:?}");
+            node.clock().sleep(seconds(1)).await;
+            assert_eq!(card_of(&mesh, 1).version, 1);
+            assert_eq!(mesh.set_addresses(moved(1, 9)).await, Err(Error::Soon));
+            node.clock().sleep(Span::MINUTE).await;
+            assert_eq!(mesh.set_addresses(moved(1, 9)).await, Ok(()));
+            let card = card_of(&mesh, 1);
+            assert_eq!((card.version, card.addresses), (3, moved(1, 9)));
+        });
+        done.send(()).unwrap();
+    });
+    let ended = ended.recv_timeout(std::time::Duration::from_secs(60));
+    assert_eq!(ended, Ok(()), "the call does not end in 60 s of real time");
+}
+
 // The largest card, of the most relay addresses of IPv6, goes through a forward.
 #[test]
 fn a_follower_sets_the_largest_card() {
