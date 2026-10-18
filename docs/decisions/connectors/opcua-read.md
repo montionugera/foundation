@@ -33,7 +33,10 @@
   open62541 moves a value of a fixed size that does not fit whole to the next chunk, and
   splits a string. The largest such value of a Read today is a Double (8 bytes), so the
   check takes 7 bytes off each chunk but the last (`SPLIT`). The answer takes it on
-  trust: a server that leaves more gives a read near the bound `BadSecureChannelClosed`.
+  trust: a server that leaves more gives a read near the bound the status of the error
+  that closes the channel, such as `BadTcpMessageTooLarge` (`laptop.architect-2`,
+  2026-10-18T20:52:27Z,
+  https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6255008245).
   The change that adds a GUID key also changes `SPLIT`, to 18, and `id_bytes`, whose
   match does not build until it gives the size of the new form: a test of the client
   fails to build until it gives the size of each form of a key. Decided by
@@ -65,8 +68,12 @@
   https://github.com/synnaxlabs/foundation/pull/2593#issuecomment-6154599442. Each
   dial, the fallback too, goes to the address of the given URL. A message that the
   client cannot process on an open channel also ends the connect, or the session, with
-  no new dial; its status is #2592 (`laptop.architect-2`, 2026-10-13T19:25:56Z:
-  https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6153426912).
+  no new dial (`laptop.architect-2`, 2026-10-13T19:25:56Z:
+  https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6153426912). The
+  connect, and each read in flight, gives the status of that error. A close by the peer
+  still gives the reads in flight `BadSecureChannelClosed`, and the connect
+  `BadConnectionClosed` (`laptop.architect-2`, 2026-10-18T20:52:27Z,
+  https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6255008245).
   The split and `MaxNodesPerRead` (#2623): `laptop.architect-2` at
   2026-10-14T01:37:20Z,
   https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6158936229, and a
@@ -89,7 +96,9 @@
   answers never closes the channel, and the chunks of request ids that it did not send
   stop at that bound. At the final chunk of an answer, it checks the chunks of that
   answer against `CHUNKS` and its largest message, as the release does. A chunk past one
-  of these bounds closes the channel, and the read gives `BadSecureChannelClosed`. With
+  of these bounds closes the channel, and the read gives the status of that error,
+  `BadTcpMessageTooLarge` (`laptop.architect-2`, 2026-10-18T20:52:27Z,
+  https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6255008245). With
   `READS` 9, a read of 10 to 16 requests takes 2 round trips in place of 1
   (`laptop.monitor`, 2026-10-18 03:47 UTC, and `laptop.architect-2`,
   2026-10-18T03:48:17Z,

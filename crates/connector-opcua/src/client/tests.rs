@@ -913,16 +913,20 @@ fn read_large(chunks: u32) -> (Result<Value, Fault>, Result<Value, Fault>) {
 
 /// The answer of [`FITS`] arrives and is not a Double. The answer of [`PAST`] needs
 /// more than [`CHUNKS`] chunks. The test server refuses to send it, and sends an
-/// error that closes the channel. A server that sends it makes the client close the
-/// channel at its final chunk.
+/// error that closes the channel, whose status the read gets. A server that sends it
+/// makes the client close the channel at its final chunk.
 #[test]
 fn an_answer_of_more_chunks_than_the_bound_fails() {
-    let large = (
+    let refused = (
         mistyped("ByteString"),
-        Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
+        Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE)),
     );
-    assert_eq!(read_large(CHUNKS), large);
-    assert_eq!(read_large(0), large);
+    assert_eq!(read_large(CHUNKS), refused);
+    let closed = (
+        mistyped("ByteString"),
+        Err(Fault::status(Status::BAD_TCP_MESSAGE_TOO_LARGE)),
+    );
+    assert_eq!(read_large(0), closed);
 }
 
 /// A drop of a client with an active session ends, and calls the callback of each
@@ -1593,7 +1597,7 @@ fn a_read_takes_the_max_message_size_of_the_server() {
     assert_eq!(past, [large]);
     assert_eq!(values, Ok(vec![Ok(value); 239]));
     assert_eq!((counts, split), (vec![239, 1], Ok(vec![Ok(value); 240])));
-    assert_eq!(sent, Err(Status::BAD_SECURE_CHANNEL_CLOSED));
+    assert_eq!(sent, Err(Status::BAD_TCP_MESSAGE_TOO_LARGE));
 }
 
 /// A server with buffers of 8192 bytes and a `MaxChunkCount` of 4 gives a message of 4
@@ -2283,7 +2287,7 @@ fn a_message_that_the_client_cannot_process_ends_the_session_with_no_dial() {
         .await
     });
     let reads = (
-        Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
+        Err(Fault::status(Status::BAD_SECURE_CHANNEL_ID_INVALID)),
         Err(Fault::status(Status::BAD_SERVER_NOT_CONNECTED)),
     );
     assert_eq!(out, (reads, 2));

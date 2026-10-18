@@ -2161,8 +2161,10 @@ __Client_networkCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
 
         /* Delete outstanding async services - the RequestId is no longer valid. Do
          * this after setting the Session state. Otherwise we send out new Publish
-         * Requests immediately. */
-        __Client_AsyncService_removeAll(client, UA_STATUSCODE_BADSECURECHANNELCLOSED);
+         * Requests immediately. A close after an error gives them its status. */
+        __Client_AsyncService_removeAll(client,
+            client->connectStatus != UA_STATUSCODE_GOOD ?
+            client->connectStatus : UA_STATUSCODE_BADSECURECHANNELCLOSED);
 
         /* Clean up the channel and set the status to CLOSED */
         UA_SecureChannel_clear(&client->channel);
@@ -2250,18 +2252,16 @@ __Client_networkCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
                      "Processing the message returned the error code %s",
                      UA_StatusCode_name(res));
 
-        /* If processing the buffer fails before the SecureChannel has opened,
-         * then the client cannot recover. Set the connectStatus to reflect
-         * this. The application is notified when the socket has closed. */
+        /* If processing the buffer fails, then the client cannot recover. Set
+         * the connectStatus to reflect this, also on an open SecureChannel. The
+         * application is notified when the socket has closed. */
         setConnectStatus(client, res);
 
         /* Close the SecureChannel, but don't notify the client right away.
          * Return immediately. notifyClientState will be called in the next
          * callback from the ConnectionManager when the connection closes with a
-         * StatusCode.
-         *
-         * If the connectStatus is still good (the SecureChannel was fully
-         * opened before), then that callback ends the connect. */
+         * StatusCode. That callback keeps the connectStatus of the error and
+         * ends the connect. */
         closeSecureChannel(client);
         unlockClient(client);
         return;

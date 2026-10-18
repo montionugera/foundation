@@ -126,6 +126,8 @@ impl Status {
     #[cfg(test)]
     pub(crate) const BAD_RESPONSE_TOO_LARGE: Self = Self(0x80B9_0000);
     #[cfg(test)]
+    pub(crate) const BAD_TCP_MESSAGE_TOO_LARGE: Self = Self(0x8080_0000);
+    #[cfg(test)]
     pub(crate) const BAD_CONNECTION_REJECTED: Self = Self(0x80AC_0000);
     #[cfg(test)]
     pub(crate) const BAD_TOO_MANY_SESSIONS: Self = Self(0x8056_0000);

@@ -240,7 +240,7 @@ fn after_forged(
 /// The answers of a client whose channel closed at a chunk past a bound.
 fn closed() -> (Result<Value, Fault>, Result<Value, Fault>) {
     (
-        Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
+        Err(Fault::status(Status::BAD_TCP_MESSAGE_TOO_LARGE)),
         Err(Fault::status(Status::BAD_SERVER_NOT_CONNECTED)),
     )
 }
