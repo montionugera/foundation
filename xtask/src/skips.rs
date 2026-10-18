@@ -552,11 +552,11 @@ impl<'ast> Visit<'ast> for Items<'_> {
         self.enter(&i.attrs, None, |s, _| syn::visit::visit_item_trait(s, i));
     }
 
-    /// A `cfg` of the call is a gate of each test in its body, by the name of the test.
+    /// A `cfg` of the call is a gate of each function in its body, by its name.
     fn visit_item_macro(&mut self, i: &'ast syn::ItemMacro) {
-        match i.mac.parse_body_with(marked) {
-            Ok(tests) => {
-                for (attributes, name) in tests {
+        match i.mac.parse_body_with(functions) {
+            Ok(functions) => {
+                for (attributes, name) in functions {
                     let attributes = [i.attrs.as_slice(), &attributes].concat();
                     self.enter(&attributes, Some(&name), |s, _| s.record(&attributes));
                 }
@@ -582,20 +582,17 @@ impl<'ast> Visit<'ast> for Items<'_> {
     }
 }
 
-/// The functions with a `test` attribute at the top level of the body of a macro call,
-/// as `proptest!` takes them: their attributes and their names. Each other token is
+/// The functions with an attribute at the top level of the body of a macro call, as
+/// `proptest!` takes them: their attributes and their names. Each other token is
 /// passed.
-fn marked(input: ParseStream<'_>) -> syn::Result<Vec<(Vec<Attribute>, Ident)>> {
-    let mut tests = Vec::new();
+fn functions(input: ParseStream<'_>) -> syn::Result<Vec<(Vec<Attribute>, Ident)>> {
+    let mut functions = Vec::new();
     while !input.is_empty() {
         if input.peek(Token![#]) && input.peek2(syn::token::Bracket) {
             let attributes = input.call(Attribute::parse_outer)?;
-            let test = attributes
-                .iter()
-                .any(|a| a.path().segments.last().is_some_and(|s| s.ident == "test"));
-            if test && input.peek(Token![fn]) {
+            if input.peek(Token![fn]) {
                 input.parse::<Token![fn]>()?;
-                tests.push((attributes, input.call(Ident::parse_any)?));
+                functions.push((attributes, input.call(Ident::parse_any)?));
             }
             continue;
         }
@@ -606,7 +603,7 @@ fn marked(input: ParseStream<'_>) -> syn::Result<Vec<(Vec<Attribute>, Ident)>> {
                 .ok_or_else(|| cursor.error("the end of the body"))
         })?;
     }
-    Ok(tests)
+    Ok(functions)
 }
 
 /// The first line of the doc in `attributes`.
