@@ -17,11 +17,14 @@ passed = result.wasSuccessful() and result.testsRun > 0
 report = stream.getvalue()
 ";
 
-/// Runs the Python suite `sdk/python/tests` in this process, with this build as
-/// `foundation._native`: each `test_*.py` with the feature `sim`, else
-/// `test_client.py`. `FOUNDATION_NODE` is the path of the `foundation` binary that the
-/// suite starts. Panics with the report when a Python test fails or none runs, and
-/// when `FOUNDATION_NODE` is not set.
+/// The files of `sdk/python/tests`. `test_sim.py` runs only with the feature `sim`.
+const FILES: [&str; 2] = ["test_client.py", "test_sim.py"];
+
+/// Runs each file of the Python suite `sdk/python/tests` on its own in this process,
+/// with this build as `foundation._native`. `FOUNDATION_NODE` is the path of the
+/// `foundation` binary that the suite starts. Panics with the report when a Python
+/// test fails or a file runs none, when the `test_*` files of the directory are
+/// not `FILES`, and when `FOUNDATION_NODE` is not set.
 #[test]
 fn the_python_suite_passes() {
     #[expect(clippy::disallowed_methods, reason = "the suite reads the node's path")]
@@ -30,13 +33,26 @@ fn the_python_suite_passes() {
         node.is_some(),
         "FOUNDATION_NODE is not set: give it the path of the foundation binary"
     );
-    let pattern = if cfg!(feature = "sim") {
-        "test_*.py"
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let mut found: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("test_"))
+        .collect();
+    found.sort();
+    assert_eq!(
+        found, FILES,
+        "change `FILES` to the test files of the suite"
+    );
+    let files = if cfg!(feature = "sim") {
+        &FILES[..]
     } else {
-        "test_client.py"
+        &FILES[..1]
     };
-    let (passed, report) = suite(pattern);
-    assert!(passed, "{report}");
+    for file in files {
+        let (passed, report) = suite(file);
+        assert!(passed, "{file}: {report}");
+    }
 }
 
 #[test]
