@@ -259,6 +259,7 @@ impl std::fmt::Debug for Client {
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
+    use std::num::NonZeroU64;
 
     use env::rng::Rng;
     use sim::node::Node;
@@ -372,6 +373,37 @@ mod tests {
         let held = panicked("a connect failed: BadTooManySessions");
         assert_eq!(fifth(minutes(19)), held);
         assert_eq!(fifth(minutes(21)), Ok(()));
+    }
+
+    /// The answer of [`Variable::Bytes`] carries 7 chunks of 64 KiB and less than 8,
+    /// so its read takes that much time on a link of 1 MB/s.
+    #[test]
+    fn a_read_of_the_bytes_carries_seven_chunks_of_64_kib() {
+        let link = sim::link::Config {
+            rate: NonZeroU64::new(1_000_000),
+            ..sim::link::Config::default()
+        };
+        let mut sim = Sim::new(sim::Config {
+            link,
+            ..sim::Config::default()
+        });
+        let node = sim.node(node::Config::default());
+        let took = sim
+            .run_on(&node, move |node, _| async move {
+                let clock = node.clock();
+                scope(&node, async |server: &Server| {
+                    let mut client = server.connect(1).await;
+                    let start = clock.now();
+                    client.read(Variable::Bytes).await;
+                    let took = clock.now() - start;
+                    client.close().await;
+                    took
+                })
+                .await
+            })
+            .expect("the run ends");
+        let at_rate = |chunks: i64| Span::from_nanos(chunks * 65_536 * 1_000);
+        assert!(at_rate(7) <= took && took < at_rate(8), "took {took:?}");
     }
 
     /// The server closes a channel idle for 10 minutes.
