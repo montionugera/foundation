@@ -170,20 +170,6 @@ pub(crate) struct Set {
     /// not carry now: above each key that the index had, so that a key never names two
     /// readers. An index with no number starts at 0.
     first: hash::Map<Slot, u64>,
-    /// Each complete reader whose named open appended its record, or took over a
-    /// session that waits, until the commit that holds the entry. It takes no frame
-    /// until then: a restart before the commit would lose the frames that it got and
-    /// did not ack.
-    recording: hash::Map<complete::Key, Recording>,
-}
-
-/// The commit that a named complete reader waits for before it takes a frame.
-#[derive(Clone, Copy, Debug)]
-struct Recording {
-    /// The count of [`Buffer::commits`] at which its record is durable.
-    until: u64,
-    /// Whether a take found it waiting, so that the commit wakes it.
-    waited: bool,
 }
 
 /// The readers of one carried index.
@@ -374,7 +360,7 @@ impl Set {
         });
         let readers = &mut self.entries[place].readers;
         readers
-            .open(Reader::Unnamed, start, limit_bytes, charge)
+            .open(Reader::Unnamed, start, limit_bytes, charge, None)
             .key
     }
 
@@ -390,8 +376,9 @@ impl Set {
     /// at `place`, at its held position, else at the live tail, the seq `first` of the
     /// head of `target`, with a credit of `limit_bytes` that `charge` charges. An open
     /// that adds a record, opens a held one, or takes over an open session with a new
-    /// hold first appends its parts in `target`, and its reader takes no frame until
-    /// the commit that holds them. A takeover of a session that waits so waits too.
+    /// hold first appends its parts in `target`. Its reader takes no frame until each
+    /// entry appended before the open is durable: a restart before the commit of its
+    /// record would lose the frames that it got and did not ack.
     ///
     /// # Errors
     ///
@@ -412,15 +399,17 @@ impl Set {
         target: state::Target<'_>,
     ) -> Result<delivery::complete::Opened, Unopened> {
         let live = target.head.first;
-        let mut recorded_at = None;
         if let Some(records) = self.opening(place, &reader, hold, live) {
             let parts = &mut self.entries[place].parts;
             let recorded = parts.open(target, &records, &reader);
-            let recorded = recorded.map_err(|Full| Unopened::Full)?;
-            recorded_at = Some(recorded.ok_or(Unopened::Unrecorded)?);
+            if !recorded.map_err(|Full| Unopened::Full)? {
+                return Err(Unopened::Unrecorded);
+            }
         }
+        let buffer = target.buffer;
+        let until = Some(buffer.durable_at()).filter(|&at| at > buffer.commits());
         let reader = Reader::Named { reader, hold };
-        Ok(self.resume(place, reader, live, limit_bytes, charge, recorded_at))
+        Ok(self.resume(place, reader, live, limit_bytes, charge, until))
     }
 
     /// The records of the index at `place` after a named complete open of `reader`
@@ -456,9 +445,8 @@ impl Set {
 
     /// Opens `reader`, which is named, on the index at `place` at its held position,
     /// else at seq `live`, as [`open_complete`](Self::open_complete) does. With
-    /// `recorded_at`, the count of [`Buffer::commits`] at which the entry that records
-    /// it is durable, it takes no frame until then. A takeover of a session that waits
-    /// so waits too.
+    /// `until`, a count of [`Buffer::commits`] that has not ended, it takes no frame
+    /// until then.
     ///
     /// # Panics
     ///
@@ -470,7 +458,7 @@ impl Set {
         live: u64,
         limit_bytes: u64,
         charge: complete::Charge,
-        recorded_at: Option<u64>,
+        until: Option<u64>,
     ) -> delivery::complete::Opened {
         let start = Start::Resume {
             presented: None,
@@ -479,28 +467,11 @@ impl Set {
                 backfill: None,
             },
         };
-        let slot = self.entries[place].slot;
-        let opened =
-            self.entries[place]
-                .readers
-                .open(reader, start, limit_bytes, charge);
-        let inherited = match opened.replaced {
-            Some(delivery::Key::Complete(session)) => self
-                .recording
-                .get(&complete::Key { slot, session })
-                .map(|recording| recording.until),
-            _ => None,
-        };
+        let readers = &mut self.entries[place].readers;
+        let opened = readers.open(reader, start, limit_bytes, charge, until);
         self.replaced(place, opened.replaced);
         self.note(place);
-        if let Some(until) = recorded_at.max(inherited) {
-            let key = complete::Key {
-                slot,
-                session: opened.key,
-            };
-            let waited = false;
-            self.recording.insert(key, Recording { until, waited });
-        }
+        self.list(place);
         opened
     }
 
@@ -580,21 +551,6 @@ impl Set {
         buffer: &Buffer,
     ) -> Next {
         let entry = &mut self.entries[place];
-        if !self.recording.is_empty()
-            && let delivery::Key::Complete(session) = session
-        {
-            let key = complete::Key {
-                slot: entry.slot,
-                session,
-            };
-            if let Some(recording) = self.recording.get_mut(&key) {
-                if buffer.commits() < recording.until {
-                    recording.waited = true;
-                    return Next::Empty;
-                }
-                self.recording.remove(&key);
-            }
-        }
         let from = match entry.readers.take(session) {
             delivery::Next::Frame(frame) => return Next::Frame(frame),
             delivery::Next::Empty => return Next::Empty,
@@ -652,9 +608,6 @@ impl Set {
             }
         }
         entry.readers.reached(key.session, read.next, durable);
-        if entry.readers.pending() && !mem::replace(&mut entry.listed, true) {
-            self.listed.push(place);
-        }
         Ok(())
     }
 
@@ -676,19 +629,16 @@ impl Set {
         self.forget(place, session);
     }
 
-    /// Drops the closed reader `session` of the index at `place`: a latest reader from
-    /// the readers to wake, where only a latest reader waits between calls of
-    /// [`woken`](Self::woken), and a complete reader's recording.
+    /// Drops the closed reader `session` of the index at `place` from the readers to
+    /// wake, where only a latest reader waits between calls of
+    /// [`woken`](Self::woken).
     fn forget(&mut self, place: usize, session: delivery::Key) {
-        let slot = self.entries[place].slot;
-        match session {
-            delivery::Key::Latest(_) => {
-                let key = Key { slot, session };
-                self.keys.retain(|&woken| woken != key);
-            }
-            delivery::Key::Complete(session) => {
-                self.recording.remove(&complete::Key { slot, session });
-            }
+        if let delivery::Key::Latest(_) = session {
+            let key = Key {
+                slot: self.entries[place].slot,
+                session,
+            };
+            self.keys.retain(|&woken| woken != key);
         }
     }
 
@@ -709,6 +659,12 @@ impl Set {
         let entry = &mut self.entries[place];
         entry.readers.queue(&frame, set, seq);
         wake(&mut self.keys, entry.slot, entry.readers.put(frame));
+        self.list(place);
+    }
+
+    /// Lists the index at `place` when its readers are pending and it is not listed.
+    fn list(&mut self, place: usize) {
+        let entry = &mut self.entries[place];
         if entry.readers.pending() && !mem::replace(&mut entry.listed, true) {
             self.listed.push(place);
         }
@@ -744,17 +700,10 @@ impl Set {
             self.listed.retain(|&place| {
                 let entry = &mut entries[place];
                 let durable = buffer.durable(entry.slot, Path::Live).seq;
-                wake(woken, entry.slot, entry.readers.release(durable));
+                let released = entry.readers.release(durable, commits);
+                wake(woken, entry.slot, released);
                 entry.listed = entry.readers.pending();
                 entry.listed
-            });
-            let woken = &mut self.keys;
-            self.recording.retain(|&key, recording| {
-                let recorded = recording.until <= commits;
-                if recorded && recording.waited {
-                    woken.push(key.into());
-                }
-                !recorded
             });
         }
         keys.clear();
@@ -852,7 +801,7 @@ mod tests {
     /// The complete readers of the index at `place` that get frames once its live
     /// frames before `durable` are on disk.
     fn released(set: &mut Set, place: usize, durable: u64) -> Vec<complete::Key> {
-        set.entries[place].readers.release(durable).to_vec()
+        set.entries[place].readers.release(durable, 0).to_vec()
     }
 
     /// The range of each frame that the reader `session` of the index at `place` takes

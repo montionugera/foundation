@@ -66,20 +66,27 @@
   open that adds a record, opens a held one, or takes over an open session with a new
   hold appends its parts before it opens, and its reader takes no frame until the commit
   that holds them. A takeover with the same hold of a session that waits for that commit
-  waits for it too. When the part of its record, or a part before it, finds no block or
-  no room, it opens nothing and gives `Unopened::Unrecorded`, and `hub` gives
-  `reader::Error::Unrecorded`, so a restart never loses the frames of a first open, a
-  reopen, or a takeover. After a failed commit, the open opens, and its reader ends with
-  the error of the commit. Another entry that finds no room or no block stays due for
-  the next tick, so a restart before it resumes at an older position: a repeat, not a
-  loss. Trimming must keep the newest entry of each part of each index (#406). Until it
-  does, a trim (STORE TRIM) can free such an entry, and a restart resumes the readers of
-  its part at the live tail, and those of each later part when no index keeps an entry
-  of its tag, as HANDOFF RECORD states for a handoff. A named complete open that adds a
-  record that no part has room for gives `Unopened::Full`, and `hub` gives
-  `reader::Error::Full`, with no field: the 64 parts of 4027 bytes of records hold at
-  least 448 records of the longest subjects and names. A reopen or a takeover never
-  gives it, as a held record keeps its part.
+  waits for it too. The `delivery` session holds the wait, as its one commit gate: after
+  the commit, a reader below the released end reads from disk, and a reader at the live
+  tail takes live frames. Each other complete open waits for no commit. The gate in the
+  session: decided by `laptop.architect` (2026-10-17T00:38:21Z:
+  https://github.com/synnaxlabs/foundation/issues/2833#issuecomment-6227439506; the
+  form: 2026-10-18T09:41:10Z:
+  https://github.com/synnaxlabs/foundation/issues/2978#issuecomment-6248353319). When
+  the part of its record, or a part before it, finds no block or no room, it opens
+  nothing and gives `Unopened::Unrecorded`, and `hub` gives `reader::Error::Unrecorded`,
+  so a restart never loses the frames of a first open, a reopen, or a takeover. After a
+  failed commit, the open opens, and its reader ends with the error of the commit.
+  Another entry that finds no room or no block stays due for the next tick, so a restart
+  before it resumes at an older position: a repeat, not a loss. Trimming must keep the
+  newest entry of each part of each index (#406). Until it does, a trim (STORE TRIM) can
+  free such an entry, and a restart resumes the readers of its part at the live tail,
+  and those of each later part when no index keeps an entry of its tag, as HANDOFF
+  RECORD states for a handoff. A named complete open that adds a record that no part has
+  room for gives `Unopened::Full`, and `hub` gives `reader::Error::Full`, with no field:
+  the 64 parts of 4027 bytes of records hold at least 448 records of the longest
+  subjects and names. A reopen or a takeover never gives it, as a held record keeps its
+  part.
   The later carry after such a shed: decided by `laptop.architect`
   (2026-10-18T10:25:27Z:
   https://github.com/synnaxlabs/foundation/pull/3174#issuecomment-6248732574).
