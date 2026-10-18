@@ -1914,6 +1914,8 @@ dependencies = [
  "env",
  "os",
  "program",
+ "sector",
+ "spec",
  "tokio",
  "tracing",
  "transport",
@@ -1927,6 +1929,7 @@ dependencies = [
  "program",
  "pyo3",
  "sdk",
+ "sector",
  "transport",
  "types",
 ]

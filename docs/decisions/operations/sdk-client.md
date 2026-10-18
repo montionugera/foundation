@@ -22,12 +22,21 @@
   https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6238447555). This
   replaces the env of its own on `Instant`, `getrandom`, and `socket2`, so #2932 closes:
   `os::clock` counts time while the host sleeps. `sdk` is on the Windows lists of
-  `ci.yaml` until #682 and #2955 give `os::clock` and `os::net` there.
+  `ci.yaml` until #682, #2955, and #2956 give `os::clock`, `os::net`, and
+  `os::stored` there (#2956: `laptop.monitor`, 2026-10-18T20:37Z,
+  https://github.com/synnaxlabs/foundation/pull/3255#issuecomment-6254946471).
   `Client::connect(&Node, Subject)` takes the node (its UDP addresses, its key, and its
   public key) apart from the subject (its name and private key): one node serves many
   subjects, and a node can listen on more than one address. `laptop.architect-2` decided
   on 2026-10-16 at 21:39 UTC
   (https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225208118).
+  `Node::local(dir)` gives the node that runs on a data directory and its first admin
+  as the subject: it opens `dir/data` with `os::stored`, and runs
+  `sector::local::read` on a shard as `connect` does, which logs to the caller's
+  dispatch (`laptop.architect-2`, 2026-10-18T16:46:56Z,
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252485660, and
+  2026-10-18T20:05:17Z,
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6254526787).
   `Client::close` blocks until the close of the session goes out, the transport drains
   each close (up to 3 s), and the thread ends. Drop only signals the end, and a panic of
   the thread after a drop goes to the panic hook of the process (`laptop.architect-2`,
