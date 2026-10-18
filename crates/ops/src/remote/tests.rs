@@ -52,6 +52,12 @@ enum Mode {
     Serve,
     /// Serves each request as `Serve` does, then writes these bytes to `plant.hcl`.
     Changes(Paths, Vec<u8>),
+    /// Serves each request as `Serve` does, then moves `/work/plant.hcl` of this host
+    /// to `/work/old.hcl`, and makes a directory at its path when the flag is set.
+    Moves(sim::node::Node, bool),
+    /// Serves each request as `Serve` does, then makes the next read of `plant.hcl`
+    /// on this host fail with OS error 5.
+    Fails(sim::node::Node),
     /// Gives this reply to each request.
     Reply(Vec<u8>),
     /// Fails with [`lost`].
@@ -95,6 +101,20 @@ impl Remote {
                 paths.write(Path::new("plant.hcl"), bytes).expect("a write");
                 Ok(reply)
             }
+            Mode::Moves(host, dir) => {
+                let reply = serve::serve(&self.node, &name("@admin"), body).await;
+                let plant = Path::new("/work/plant.hcl");
+                host.move_path(plant, Path::new("/work/old.hcl"));
+                if *dir {
+                    host.make_dir(plant);
+                }
+                Ok(reply)
+            }
+            Mode::Fails(host) => {
+                let reply = serve::serve(&self.node, &name("@admin"), body).await;
+                host.fail_path(Path::new("plant.hcl"), 5);
+                Ok(reply)
+            }
             Mode::Reply(reply) => Ok(reply.clone()),
             Mode::Unreached | Mode::Unsent => Err(lost()),
         }
@@ -104,7 +124,12 @@ impl Remote {
         self.reaches.set(self.reaches.get() + 1);
         match self.mode {
             Mode::Unreached => Err(lost()),
-            Mode::Serve | Mode::Changes(..) | Mode::Reply(_) | Mode::Unsent => Ok(()),
+            Mode::Serve
+            | Mode::Changes(..)
+            | Mode::Moves(..)
+            | Mode::Fails(_)
+            | Mode::Reply(_)
+            | Mode::Unsent => Ok(()),
         }
     }
 

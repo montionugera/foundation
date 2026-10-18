@@ -156,6 +156,49 @@ fn an_import_into_a_file_that_grew_too_large_gives_file_changed() {
     });
 }
 
+/// A file that is gone or is now a directory after the read gives `ops.file-changed`,
+/// and the import writes nothing.
+#[test]
+fn an_import_into_a_file_that_moved_gives_file_changed() {
+    for dir in [false, true] {
+        solo(move |fixture, mesh| async move {
+            let paths = with_plant(&fixture.sim, PLANT);
+            let node = create_browsing_node(&fixture, mesh);
+            let remote = Remote::with(node, Mode::Moves(fixture.sim.clone(), dir));
+            let imported = remote.import(&paths, temperature()).await;
+            let Err(error) = imported else {
+                panic!("a moved file");
+            };
+            let message = "the file plant.hcl changed after the import read it, so \
+                           the import wrote nothing";
+            assert_eq!(shown(&error), read("ops.file-changed", message, 1));
+            let old = paths.read(Path::new("old.hcl"), most());
+            let Ok(env::paths::Found::File(old)) = old else {
+                panic!("a file");
+            };
+            assert_eq!(old, PLANT.as_bytes());
+        });
+    }
+}
+
+/// A read of the file that fails after the import read it gives `ops.read`, and the
+/// import writes nothing.
+#[test]
+fn an_import_whose_second_read_fails_gives_read() {
+    solo(|fixture, mesh| async move {
+        let paths = with_plant(&fixture.sim, PLANT);
+        let node = create_browsing_node(&fixture, mesh);
+        let remote = Remote::with(node, Mode::Fails(fixture.sim.clone()));
+        let imported = remote.import(&paths, temperature()).await;
+        let Err(error) = imported else {
+            panic!("a failed read");
+        };
+        let message = "the read of plant.hcl failed with OS error 5";
+        assert_eq!(shown(&error), read("ops.read", message, 1));
+        assert_eq!(plant(&paths), PLANT);
+    });
+}
+
 /// An import whose new text is the text that it sent neither reads the file again nor
 /// writes it, so a change after the read stays.
 #[test]
