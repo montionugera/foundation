@@ -60,18 +60,21 @@ a cgroup with a memory cap and no swap: `systemd-run --user --scope -p MemoryMax
 box that a review agent starts (`.claude/agents/reviewer.md`,
 `.claude/agents/breaker.md`), with `cargo test` in place of `cargo mutants`. The cap of
 a run is the share of its session (`docs/coordination.md`, "Memory on a box"), divided
-by the runs that the session has at once. A review agent takes half the share, because
-round 1 of `/review` runs `reviewer` and `breaker` at once. The person approved a cap of
-these runs, with 32 GB as an example (2026-10-17T16:07:01Z, `laptop.monitor`'s record:
+by the capped runs that the session has at once. A review agent runs in the cap that its
+task gives: the share divided by the agents of its round that run `cargo test`
+(`/review`). The person approved a cap of these runs, with 32 GB as an example
+(2026-10-17T16:07:01Z, `laptop.monitor`'s record:
 https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246411064), and
 `laptop.monitor` gave the bound
 (https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256405286). A session
-runs one mutants run at a time (`laptop.monitor`,
+runs one mutants run at a time, with the whole share and no other capped run
+(`laptop.monitor`,
 https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6043431001,
-2026-10-07T17:40:51Z). A mutant that allocates in a loop then dies alone, its test
-fails, and the run counts it as caught. With no cap, the mutant fills the box and the
-run stalls. Set `OOMPolicy=continue`: the default of a user manager stops the whole
-scope. Both boxes set `DefaultOOMPolicy=continue`
+2026-10-07T17:40:51Z): `--jobs 4` fits in 9 GiB, and a job that dies for lack of memory
+counts its mutant as caught. In the cap, a mutant that allocates in a loop dies alone,
+its test fails, and the run counts it as caught. With no cap, the mutant fills the box
+and the run stalls. Set `OOMPolicy=continue`: the default of a user manager stops the
+whole scope. Both boxes set `DefaultOOMPolicy=continue`
 (https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6236348454), and the
 flag keeps the run alive on a host that does not. Never cap a run on a box with
 `prlimit --data`: it counts reserved memory, not touched pages (#803,

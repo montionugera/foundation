@@ -40,9 +40,8 @@ fix), with Write or Edit, never with a heredoc, `sed -i`, `perl -pi`, or another
 place in Bash: auto mode blocks some of those, and three blocks in a row stop the
 session.
 
-On a box (Linux), run each `cargo test` in the memory cap of a review agent
-(`docs/claude/testing.md`, mutation testing), half the share of the box in
-`docs/coordination.md`, "Memory on a box": `systemd-run --user --scope -p
+On a box (Linux), run each `cargo test` in the memory cap that your task gives
+(`docs/claude/testing.md`, mutation testing): `systemd-run --user --scope -p
 MemoryMax=<cap> -p MemorySwapMax=0 -p OOMPolicy=continue cargo test ...`.
 
 Read `docs/claude/testing.md` and the records of `docs/decisions/` the PR builds. Then
