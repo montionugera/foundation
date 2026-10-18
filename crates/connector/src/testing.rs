@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 use document::Document;
+use document::schema::Body;
 use env::clock::Clock;
 use env::files::{self, Files};
 use env::net::Net;
@@ -31,8 +32,17 @@ use types::time::Span;
 use crate::cancel::Token;
 use crate::http::Roots;
 use crate::kind::{Error, Table};
+use crate::reader;
 use crate::status::{self, Reading};
 use crate::supervisor::{self, Supervisor};
+
+/// The body of a kind that takes only what a reader takes.
+pub const READS: Body = Body {
+    summary: "A reader.",
+    attributes: &[reader::SELECT],
+    blocks: &[reader::BLOCK],
+    examples: &[],
+};
 
 #[cfg(test)]
 #[cfg(not(loom))]
