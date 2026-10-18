@@ -1431,7 +1431,6 @@ fn wide(server: &Server) {
         for c in 0..CHILDREN {
             let number = 20_000 + f * CHILDREN + c;
             let name = CString::new(format!("{number:0>4084}")).expect("no NUL");
-            let name: &'static CStr = Box::leak(name.into_boxed_c_str());
             server.add_variable(&Variable {
                 node: Node {
                     namespace: 1,
@@ -1439,7 +1438,7 @@ fn wide(server: &Server) {
                 },
                 parent: wide_folder(f),
                 reference: HAS_COMPONENT,
-                name,
+                name: &name,
                 data_type: DOUBLE,
                 rank: -1,
                 access: server::READ,
