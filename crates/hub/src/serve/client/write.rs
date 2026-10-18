@@ -143,8 +143,9 @@ async fn start(
 /// program finishes the stream. Then drops `writer`, so that control ends, and gives
 /// the commits that are due. The block of each outcome comes before the draft of its
 /// frame, so a pool with no block for it stops the stream before the home takes the
-/// frame. The block of the next `Stored` comes next, and a frame that finds none is
-/// refused as `Full`, as a frame whose draft finds none is.
+/// frame. The block of the next `Stored` comes after the body, right before the home
+/// takes the frame, and a frame that finds none is refused as `Full`, as a frame whose
+/// draft finds none is.
 async fn relay(
     state: &RefCell<State>,
     mut writer: Writer,
@@ -185,9 +186,7 @@ async fn relay(
             }
             Due::Draft { layout, form } => {
                 let block = alloc(state, Outcome::LEN_MAX)?;
-                let drafted = stored
-                    .reserve(state)
-                    .and_then(|()| layout.draft(state.borrow().home.pool(), form));
+                let drafted = layout.draft(state.borrow().home.pool(), form);
                 match drafted {
                     Ok(draft) => {
                         reply = Some(block);
@@ -214,7 +213,10 @@ async fn relay(
         let block = reply
             .take()
             .expect("invariant: a draft comes with its block");
-        let outcome = write(&mut writer, draft, time, &mut stamped)?;
+        let outcome = match stored.reserve(state) {
+            Ok(()) => write(&mut writer, draft, time, &mut stamped)?,
+            Err(_) => Outcome::Refused(Refusal::Full),
+        };
         stored.counted(state, outcome);
         send(sender, block, Reply::Outcome(outcome)).await?;
     }
@@ -321,8 +323,9 @@ struct Stored {
 
 impl Stored {
     /// Takes the block of the next `Stored` from the home's pool when the stream holds
-    /// none. Call it before each draft, and refuse the frame when it fails, so each
-    /// taken frame has the block of its `Stored`.
+    /// none. Call it right before the home takes each frame, with no await between, and
+    /// refuse the frame when it fails, so each taken frame has the block of its
+    /// `Stored`.
     fn reserve(&mut self, state: &RefCell<State>) -> Result<(), block::Error> {
         if self.next.is_none() {
             self.next = Some(state.borrow().alloc(STORED_BYTES)?);

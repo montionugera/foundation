@@ -772,6 +772,41 @@ fn sends_a_stored_at_its_commit_while_the_pool_is_full() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
+/// A commit that ends while the body of a frame comes leaves that frame the block of
+/// its `Stored`: the home takes each frame, and the last `Stored` covers them all.
+#[test]
+fn keeps_the_stored_block_of_a_frame_whose_body_comes_after_a_commit() {
+    let home = read_session(
+        443,
+        async |_| {},
+        |mut agent| async move {
+            agent.admit().await;
+            let mut stream = write(&agent).await;
+            send(&mut stream, &[1], &[10]).await;
+            send(&mut stream, &[2], &[20]).await;
+            let mut head = [0; Head::LEN];
+            live(1, 2).encode(&mut head);
+            stream.send(&head).await;
+            let (ends, body) = frame(&[(0, &[3]), (1, &[30])]);
+            let mut out = vec![0; ends.len() * wire::hub::ends::LEN];
+            wire::hub::ends::encode(ends.iter().copied(), &mut out);
+            stream.send(&out).await;
+            agent.sleep(START).await;
+            stream.send(&body).await;
+            let replies = end(&mut stream).await;
+            let outcomes: Vec<Reply> = replies
+                .iter()
+                .copied()
+                .filter(|reply| matches!(reply, Reply::Outcome(_)))
+                .collect();
+            assert_eq!(outcomes, [taken(0, 1), taken(1, 1), taken(2, 1)]);
+            assert_eq!(replies.last(), Some(&stored(3)));
+            finish(&mut agent).await;
+        },
+    );
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
 /// At the finish, the last `Stored` comes when its commit ends, while the pool is full.
 #[test]
 fn sends_the_last_stored_at_the_finish_while_the_pool_is_full() {
