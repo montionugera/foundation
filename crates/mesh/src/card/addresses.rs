@@ -48,8 +48,10 @@ impl Addresses {
     /// unspecified address and an IPv6 address with flow info or a scope, at most 32.
     #[must_use]
     pub fn dialable(mut bound: Vec<Address>) -> Self {
+        // Linux gives `[::ffff:0.0.0.0]` for a dual-stack socket bound there.
         bound.retain(|&address| {
-            !socket(address).ip().is_unspecified() && flow_and_scope(address) == (0, 0)
+            let ip = socket(address).ip().to_canonical();
+            !ip.is_unspecified() && flow_and_scope(address) == (0, 0)
         });
         bound.truncate(usize::from(MAX));
         Self(bound)
@@ -244,6 +246,7 @@ mod tests {
         let ip = prop_oneof![
             Just(IpAddr::from([0, 0, 0, 0])),
             Just(IpAddr::from([0_u16; 8])),
+            Just(IpAddr::from([0, 0, 0, 0, 0, 0xffff, 0, 0])),
             any::<[u8; 4]>().prop_map(IpAddr::from),
             any::<[u8; 16]>().prop_map(IpAddr::from),
         ];
@@ -276,8 +279,8 @@ mod tests {
                 .iter()
                 .copied()
                 .filter(|&address| {
-                    let unspecified = socket(address).ip().is_unspecified();
-                    Addresses::new(vec![address]).is_ok() && !unspecified
+                    let ip = socket(address).ip().to_canonical();
+                    Addresses::new(vec![address]).is_ok() && !ip.is_unspecified()
                 })
                 .take(usize::from(MAX))
                 .collect();
@@ -301,6 +304,13 @@ mod tests {
         let many: Vec<_> = (0..40).map(udp).collect();
         let first: Vec<_> = (0..32).map(udp).collect();
         assert_eq!(Addresses::dialable(many).as_slice(), first);
+    }
+
+    #[test]
+    fn dialable_drops_an_ipv4_mapped_unspecified_address() {
+        let mapped: SocketAddr = "[::ffff:0.0.0.0]:4100".parse().unwrap();
+        let bound = vec![Address::Udp(mapped), Address::Tcp(mapped)];
+        assert_eq!(Addresses::dialable(bound).as_slice(), []);
     }
 
     #[test]
