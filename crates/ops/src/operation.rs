@@ -74,7 +74,7 @@ pub(crate) const TABLE: &[Spec] = &[
         summary: "Add the config of points of the device of a connector of the node of \
                   `--data` to the config file of the connector",
         read_only: false,
-        destructive: false,
+        destructive: true,
     },
 ];
 

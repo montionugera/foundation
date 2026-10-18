@@ -273,7 +273,7 @@ fn mcp_import_refuses_a_point_as_a_list() {
     });
 }
 
-/// `tools/list` holds `import`, neither read-only nor destructive, with its input, and
+/// `tools/list` holds `import`, destructive and not read-only, with its input, and
 /// a tool call gives the JSON of `foundation import --json`.
 #[test]
 fn mcp_import_gives_the_json_of_the_command_line() {
@@ -301,7 +301,7 @@ fn mcp_import_gives_the_json_of_the_command_line() {
             .expect("an import tool")
             .clone();
         assert_eq!(tool["annotations"]["readOnlyHint"], false);
-        assert_eq!(tool["annotations"]["destructiveHint"], false);
+        assert_eq!(tool["annotations"]["destructiveHint"], true);
         let schema = &tool["inputSchema"];
         let properties: Vec<_> = schema["properties"]
             .as_object()
