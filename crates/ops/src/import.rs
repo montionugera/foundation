@@ -118,6 +118,7 @@ impl Output {
     /// One line for the file and the count of channels, one for each channel as
     /// `<name> <path> <type>` with `?` for a type that the device does not give, then
     /// one for the index, each fill, each unnamed point, and each count that is not 0.
+    /// Each control character of a value is escaped, so the value stays on its line.
     pub(crate) fn text(&self) -> String {
         let mut lines = vec![format!(
             "The import added {} to {}.",
@@ -127,12 +128,13 @@ impl Output {
         for channel in &self.channels {
             lines.push(format!(
                 "{} {} {}",
-                channel.name,
+                escape_controls(&channel.name),
                 escape_controls(&channel.path),
-                channel.data_type.as_deref().unwrap_or("?")
+                escape_controls(channel.data_type.as_deref().unwrap_or("?"))
             ));
         }
         if let Some(index) = &self.index {
+            let index = escape_controls(index);
             lines.push(format!("It added the index channel {index}."));
         }
         for fill in &self.fills {
@@ -140,7 +142,7 @@ impl Output {
                 fill.what.iter().map(|what| escape_controls(what)).collect();
             lines.push(format!(
                 "Write in place of each `fill` of {}: {}.",
-                fill.name,
+                escape_controls(&fill.name),
                 what.join("; ")
             ));
         }
@@ -148,7 +150,7 @@ impl Output {
             lines.push(format!(
                 "It did not add {}, as its default name is too long. {}.",
                 escape_controls(&unnamed.path),
-                unnamed.fix
+                escape_controls(&unnamed.fix)
             ));
         }
         if self.present > 0 {

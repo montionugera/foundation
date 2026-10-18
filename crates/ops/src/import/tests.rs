@@ -393,22 +393,22 @@ fn the_text_gives_each_part_of_the_output() {
     let output: Output = serde_json::from_value(json!({
         "file": "site\u{7}.hcl",
         "channels": [
-            { "name": "plant.a", "path": "A", "type": "f64" },
+            { "name": "plant.a\u{1b}", "path": "A", "type": "f64\u{7}" },
             { "name": "plant.b", "path": "B", "type": null },
         ],
-        "index": "plant.time",
-        "fills": [{ "name": "plant.b", "what": ["the sample type", "the unit\n"] }],
-        "unnamed": [{ "path": "Long", "fix": "Give it a name" }],
+        "index": "plant.time\u{1b}",
+        "fills": [{ "name": "plant.b\u{1b}", "what": ["the sample type", "the unit\n"] }],
+        "unnamed": [{ "path": "Long", "fix": "Give it a name\u{1b}" }],
         "present": 1,
         "unreadable": 2,
     }))
     .expect("an output");
     let expected = "The import added 2 channels to site\\u{7}.hcl.
-plant.a A f64
+plant.a\\u{1b} A f64\\u{7}
 plant.b B ?
-It added the index channel plant.time.
-Write in place of each `fill` of plant.b: the sample type; the unit\\n.
-It did not add Long, as its default name is too long. Give it a name.
+It added the index channel plant.time\\u{1b}.
+Write in place of each `fill` of plant.b\\u{1b}: the sample type; the unit\\n.
+It did not add Long, as its default name is too long. Give it a name\\u{1b}.
 It did not add 1 point that the file reads or writes already.
 It left out 2 points that the connector cannot read or write.
 ";
