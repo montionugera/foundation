@@ -10,7 +10,7 @@
 //! run ends. The body starts a new message.
 //!
 //! The streams of a program's session are in [`client`], and the frames of its write
-//! stream and their replies in [`write`].
+//! stream and their replies in [`write`](mod@write).
 //!
 //! [`Home`] decodes the messages from the reader's node, and [`Reader`] those from the
 //! home. Each checks the order and the runs of its side of the session.
