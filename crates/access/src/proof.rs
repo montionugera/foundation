@@ -18,6 +18,7 @@ pub const CAP: Span = Span::from_nanos(15 * Span::MINUTE.nanos());
 const HELLO_TAG: &[u8] = b"foundation/hello/1";
 const REQUEST_TAG: &[u8] = b"foundation/request/1";
 const READ_TAG: &[u8] = b"foundation/read/1";
+const WRITE_TAG: &[u8] = b"foundation/write/1";
 
 /// The bytes that the signature of `hello` covers. Each integer is little-endian:
 /// the 18 bytes `foundation/hello/1`, the length of the subject (1 byte), the
@@ -41,17 +42,20 @@ pub enum Kind {
     Request,
     /// The open of a read.
     Read,
+    /// The open of a write.
+    Write,
 }
 
 /// The bytes that the signature of `bytes`, of `kind`, on `connection` covers: the
-/// tag of `kind` (the 20 bytes `foundation/request/1` or the 17 bytes
-/// `foundation/read/1`), the connection (16), and `bytes`, the exact bytes that the
-/// program sent.
+/// tag of `kind` (the 20 bytes `foundation/request/1`, the 17 bytes `foundation/read/1`,
+/// or the 18 bytes `foundation/write/1`), the connection (16), and `bytes`, the exact
+/// bytes that the program sent.
 #[must_use]
 pub fn signed(kind: Kind, connection: connection::Key, bytes: &[u8]) -> Vec<u8> {
     let tag = match kind {
         Kind::Request => REQUEST_TAG,
         Kind::Read => READ_TAG,
+        Kind::Write => WRITE_TAG,
     };
     let mut signed = Vec::with_capacity(tag.len() + 16 + bytes.len());
     signed.extend_from_slice(tag);

@@ -12,10 +12,13 @@
   - request: the 20 bytes `foundation/request/1`, the connection key (16), and the
     exact bytes of the body;
   - read open: the 17 bytes `foundation/read/1`, the connection key (16), and the
-    exact bytes of the open.
+    exact bytes of the open;
+  - write open: the 18 bytes `foundation/write/1`, the connection key (16), and the
+    exact bytes of the open (`laptop.architect`, 2026-10-18T02:34:55Z,
+    https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244779011).
 
   A signature binds its kind: `proof::signed(kind, connection, bytes)` with
-  `proof::Kind` (`Request`, `Read`) gives the signed bytes, and `Rules::verify` takes
+  `proof::Kind` (`Request`, `Read`, `Write`) gives the signed bytes, and `Rules::verify` takes
   the kind. The kind byte of a message is not in the signed bytes, so with one tag a
   forwarding node could send a signed read open as a request body. A later kind adds
   its own tag. Supersedes "request or session open" and `proof::request`. Decided by
