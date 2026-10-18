@@ -118,26 +118,20 @@ impl Peer<'_> {
         receive: Option<u32>,
         message: Option<u32>,
     ) -> Client {
-        let clock = Clock::clone(&self.clock);
-        let time = event::Time::monotonic(Clock::clone(&clock));
-        let connections = Manager::new(time, self.net.clone(), &mut self.rng);
-        // SAFETY: the loop outlives the client, which the drop of the client deletes
-        // first.
-        let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
-        let raw = NonNull::new(raw).expect("open62541 refused the client");
-        if let Some(size) = receive {
-            // SAFETY: the client lives and has not connected.
-            unsafe { ffi::test::shim_client_receive(raw.as_ptr(), size) };
-        }
-        if let Some(size) = message {
-            // SAFETY: the client lives and has not connected.
-            unsafe { ffi::test::shim_client_message(raw.as_ptr(), size) };
-        }
-        let url = CString::new(url).expect("the URL holds no NUL");
-        // SAFETY: `raw` is a new client of the loop of `connections`.
-        let mut client = unsafe { Client::of(clock, connections, raw, url) };
-        client.open().await.expect("the client connects");
-        client
+        let time = event::Time::monotonic(Clock::clone(&self.clock));
+        let setup = |raw: NonNull<ffi::Client>| {
+            if let Some(size) = receive {
+                // SAFETY: the client lives and has not connected.
+                unsafe { ffi::test::shim_client_receive(raw.as_ptr(), size) };
+            }
+            if let Some(size) = message {
+                // SAFETY: the client lives and has not connected.
+                unsafe { ffi::test::shim_client_message(raw.as_ptr(), size) };
+            }
+        };
+        self.client(url, time, setup)
+            .await
+            .expect("the client connects")
     }
 
     /// Connects a client that asks for `policy` in `mode` on `security`, on a loop
@@ -149,27 +143,43 @@ impl Peer<'_> {
         security: &Security,
         wall: Stamp,
     ) -> Result<Client, Status> {
-        let clock = Clock::clone(&self.clock);
-        let time = event::Time::since(Clock::clone(&clock), wall);
+        let time = event::Time::since(Clock::clone(&self.clock), wall);
+        let security = security.raw();
+        let setup = |raw: NonNull<ffi::Client>| {
+            // SAFETY: the client lives and has not connected, and it copies
+            // `security`.
+            let status = Status(unsafe {
+                ffi::test::shim_client_secure(
+                    raw.as_ptr(),
+                    mode,
+                    policy as usize,
+                    &raw const security,
+                )
+            });
+            assert_eq!(status, Status::GOOD, "open62541 refused the policies");
+        };
+        let url = self.url.clone();
+        self.client(&url, time, setup).await
+    }
+
+    /// Connects a client to `url` on a loop that reads `time`, after `setup` sets the
+    /// config of the client, and closes a client that does not connect.
+    async fn client(
+        &mut self,
+        url: &str,
+        time: event::Time,
+        setup: impl FnOnce(NonNull<ffi::Client>),
+    ) -> Result<Client, Status> {
         let connections = Manager::new(time, self.net.clone(), &mut self.rng);
         // SAFETY: the loop outlives the client, which the drop of the client deletes
         // first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
         let raw = NonNull::new(raw).expect("open62541 refused the client");
-        let security = security.raw();
-        // SAFETY: the client lives and has not connected, and it copies `security`.
-        let status = Status(unsafe {
-            ffi::test::shim_client_secure(
-                raw.as_ptr(),
-                mode,
-                policy as usize,
-                &raw const security,
-            )
-        });
-        assert_eq!(status, Status::GOOD, "open62541 refused the policies");
-        let url = CString::new(self.url.as_str()).expect("the URL holds no NUL");
+        setup(raw);
+        let url = CString::new(url).expect("the URL holds no NUL");
         // SAFETY: `raw` is a new client of the loop of `connections`.
-        let mut client = unsafe { Client::of(clock, connections, raw, url) };
+        let mut client =
+            unsafe { Client::of(Clock::clone(&self.clock), connections, raw, url) };
         match client.open().await {
             Ok(()) => Ok(client),
             Err(status) => {
@@ -216,31 +226,20 @@ async fn serve<T>(
     sessions: u16,
     body: impl AsyncFnOnce(Peer<'_>) -> T,
 ) -> T {
-    serve_on(node, sessions, None, body).await
+    serve_on(node, sessions, Stamp::EPOCH, None, body).await
 }
 
-/// Runs `body` as [`serve`] does, on a server that also has the policies of
-/// `security`, on a loop whose wall time starts at `wall`.
-async fn serve_secure<T>(
-    node: &node::Node,
-    security: &Security,
-    wall: Stamp,
-    body: impl AsyncFnOnce(Peer<'_>) -> T,
-) -> T {
-    serve_on(node, 4, Some((security, wall)), body).await
-}
-
-/// [`serve`], with the policies of a security and the start of the wall time of the
-/// server when `secure` holds them.
+/// [`serve`], on a loop whose wall time starts at `wall`, with the policies of
+/// `security` when it is given.
 async fn serve_on<T>(
     node: &node::Node,
     sessions: u16,
-    secure: Option<(&Security, Stamp)>,
+    wall: Stamp,
+    security: Option<&Security>,
     body: impl AsyncFnOnce(Peer<'_>) -> T,
 ) -> T {
     let mut rng = node.entropy().rng();
     let local = SocketAddr::new(node.addresses()[0], PORT);
-    let wall = secure.map_or(Stamp::from_nanos(0), |(_, wall)| wall);
     let manager = Manager::listening(
         event::Time::since(node.clock(), wall),
         node.net(),
@@ -249,9 +248,9 @@ async fn serve_on<T>(
         &mut rng,
     )
     .expect("the port is free");
-    let mut server = match secure {
+    let mut server = match security {
         // SAFETY: the close below deletes the server before the manager drops.
-        Some((security, _)) => unsafe {
+        Some(security) => unsafe {
             Server::start_secure(&manager, c"", sessions, security)
         },
         // SAFETY: as above.

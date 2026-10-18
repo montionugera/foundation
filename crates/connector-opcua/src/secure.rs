@@ -37,8 +37,7 @@ pub(crate) const OTHER: Identity = Identity {
     uri: c"urn:foundation:test:server",
 };
 
-/// The stamp `secs` seconds after the Unix epoch.
-pub(crate) const fn from_secs(secs: i64) -> Stamp {
+const fn from_secs(secs: i64) -> Stamp {
     Stamp::from_nanos(secs * Span::SECOND.nanos())
 }
 
@@ -61,19 +60,11 @@ impl Security {
     /// The `shim_security` of the peer, which borrows its bytes.
     pub(crate) fn raw(&self) -> ffi::test::Security {
         ffi::test::Security {
-            certificate: bytes(self.own.certificate),
-            key: bytes(self.own.key),
-            trusted: bytes(self.trusted),
+            certificate: Bytes::of(self.own.certificate),
+            key: Bytes::of(self.own.key),
+            trusted: Bytes::of(self.trusted),
             uri: self.own.uri.as_ptr(),
         }
-    }
-}
-
-/// A `UA_ByteString` that borrows `der`.
-pub(crate) fn bytes(der: &[u8]) -> Bytes {
-    Bytes {
-        length: der.len(),
-        data: der.as_ptr().cast_mut(),
     }
 }
 

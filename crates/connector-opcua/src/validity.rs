@@ -11,8 +11,8 @@ use env::rng::Rng;
 use types::time::{Span, Stamp};
 
 use crate::event::{self, Loop};
-use crate::ffi::{self, Status};
-use crate::secure::{END, START, bytes, from_secs};
+use crate::ffi::{self, Bytes, Status};
+use crate::secure::{END, START};
 
 /// Self-signed, not a CA, valid from [`START`] to [`END`].
 const LEAF: &[u8] = include_bytes!("validity/leaf.der");
@@ -42,6 +42,10 @@ const MARCH: Stamp = from_secs(983_404_800);
 /// 2001-08-01.
 const AUGUST: Stamp = from_secs(996_624_000);
 
+const fn from_secs(secs: i64) -> Stamp {
+    Stamp::from_nanos(secs * Span::SECOND.nanos())
+}
+
 /// Gives the status of the check of `certificate` by a memory group that trusts
 /// `trusted`, or nothing when it is `None`, on a loop whose wall time is `wall`.
 pub(crate) fn verify(
@@ -56,12 +60,12 @@ pub(crate) fn verify(
         wall: Box::new(move || wall),
     };
     let events = Loop::new(time, &mut Rng::from_seed(0));
-    let trusted = trusted.map(bytes);
+    let trusted = trusted.map(Bytes::of);
     // SAFETY: both point at live bytes or are null, the call only reads them, and the
     // loop lives past the call.
     Status(unsafe {
         ffi::test::shim_verify_certificate(
-            &bytes(certificate),
+            &Bytes::of(certificate),
             trusted
                 .as_ref()
                 .map_or(std::ptr::null(), std::ptr::from_ref),

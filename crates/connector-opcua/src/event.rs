@@ -42,18 +42,20 @@ impl Time {
     /// last stamp, the wall time stays at the last stamp.
     #[cfg(any(test, feature = "sim"))]
     pub(crate) fn monotonic(clock: Clock) -> Self {
-        Self::since(clock, Stamp::from_nanos(0))
+        let now = i64::try_from(clock.now().0).unwrap_or(i64::MAX);
+        Self::since(clock, Stamp::from_nanos(now))
     }
 
-    /// Gives the monotonic time of `clock`, and `start` plus that time as the wall
-    /// time, for a loop of a test that checks certificates. Past the last stamp, the
-    /// wall time stays at the last stamp.
+    /// Gives the monotonic time of `clock`, and a wall time that is `start` now and
+    /// moves with `clock`. Past the last stamp, the wall time stays at the last stamp.
     #[cfg(any(test, feature = "sim"))]
     pub(crate) fn since(clock: Clock, start: Stamp) -> Self {
         let read = Clock::clone(&clock);
+        let origin = read.now();
         let wall = Box::new(move || {
-            let nanos = i64::try_from(read.now().0).unwrap_or(i64::MAX);
-            Stamp::from_nanos(start.nanos().saturating_add(nanos))
+            Stamp::from_nanos(
+                start.nanos().saturating_add((read.now() - origin).nanos()),
+            )
         });
         Self { clock, wall }
     }

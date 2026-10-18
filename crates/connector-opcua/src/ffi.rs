@@ -167,6 +167,16 @@ pub(crate) struct Bytes {
 }
 
 impl Bytes {
+    /// Gives a `UA_ByteString` that borrows `bytes`, which C must not free or keep
+    /// past the borrow.
+    #[cfg(test)]
+    pub(crate) fn of(bytes: &[u8]) -> Self {
+        Self {
+            length: bytes.len(),
+            data: bytes.as_ptr().cast_mut(),
+        }
+    }
+
     /// Gives the bytes as text, with each sequence that is not UTF-8 as U+FFFD.
     ///
     /// # Safety

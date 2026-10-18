@@ -68,14 +68,12 @@ static UA_StatusCode add_policies(UA_SecurityPolicy **policies, size_t *size,
     return UA_STATUSCODE_GOOD;
 }
 
-/* Makes `group`, cleared first when it has a clear, a memory group with the id
- * `group_id` whose trust list holds `trusted`, or nothing when it is NULL, and which
- * reads the time of `el`. */
+/* Makes `group`, which holds no group, a memory group with the id `group_id` whose
+ * trust list holds `trusted`, or nothing when it is NULL, and which reads the time of
+ * `el`. */
 static UA_StatusCode trust(UA_CertificateGroup *group, UA_NodeId group_id,
                            const UA_ByteString *trusted, const UA_Logger *logger,
                            UA_EventLoop *el) {
-    if(group->clear)
-        group->clear(group);
     memset(group, 0, sizeof(*group));
     UA_TrustListDataType list;
     UA_TrustListDataType_init(&list);
@@ -91,13 +89,8 @@ static const UA_NodeId APPLICATION_GROUP = {
     0, UA_NODEIDTYPE_NUMERIC,
     {UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP}};
 
-static const UA_NodeId USER_TOKEN_GROUP = {
-    0, UA_NODEIDTYPE_NUMERIC,
-    {UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP}};
-
-/* Gives `server` the policies of `security`, each in Sign and in SignAndEncrypt, the
- * application URI of `security`, and channel and session checks that trust only the
- * certificate that `security` trusts. */
+/* Gives `server` the policies of `security`, each in Sign and in SignAndEncrypt, and a
+ * channel check that trusts only the certificate that `security` trusts. */
 static UA_StatusCode secure_server(UA_ServerConfig *config,
                                    const shim_security *security) {
     size_t first = config->securityPoliciesSize;
@@ -114,22 +107,17 @@ static UA_StatusCode secure_server(UA_ServerConfig *config,
     }
     if(status != UA_STATUSCODE_GOOD)
         return status;
-    UA_String *uri = &config->applicationDescription.applicationUri;
-    UA_String_clear(uri);
-    *uri = UA_STRING_ALLOC(security->uri);
-    status = trust(&config->secureChannelPKI, APPLICATION_GROUP, &security->trusted,
-                   config->logging, config->eventLoop);
-    if(status != UA_STATUSCODE_GOOD)
-        return status;
-    return trust(&config->sessionPKI, USER_TOKEN_GROUP, &security->trusted,
+    /* `UA_ServerConfig_setMinimal` gives the group the accept-all group. */
+    config->secureChannelPKI.clear(&config->secureChannelPKI);
+    return trust(&config->secureChannelPKI, APPLICATION_GROUP, &security->trusted,
                  config->logging, config->eventLoop);
 }
 
 /* Gives a server on `el` with the minimal config, the one server URL
  * `opc.tcp://{host}:{port}`, room for `sessions` sessions and secure channels, and at
  * most `chunks` chunks in a message, or NULL on a failure. With `security`, the server
- * also has each of the three policies in Sign and in SignAndEncrypt, and trusts only
- * the certificate that `security` trusts. */
+ * also has each of the three policies in Sign and in SignAndEncrypt, and its channels
+ * trust only the certificate that `security` trusts. */
 UA_Server *shim_server_new(UA_EventLoop *el, UA_UInt16 port, const char *host,
                            UA_UInt16 sessions, UA_UInt32 chunks,
                            const shim_security *security) {
@@ -182,6 +170,8 @@ UA_StatusCode shim_client_secure(UA_Client *client, UA_MessageSecurityMode mode,
     UA_String *uri = &config->clientDescription.applicationUri;
     UA_String_clear(uri);
     *uri = UA_STRING_ALLOC(security->uri);
+    /* `UA_ClientConfig_setDefault` gives the group the accept-all group. */
+    config->certificateVerification.clear(&config->certificateVerification);
     return trust(&config->certificateVerification, APPLICATION_GROUP,
                  &security->trusted, config->logging, config->eventLoop);
 }
@@ -524,7 +514,6 @@ UA_StatusCode shim_server_add_view(UA_Server *server, shim_node node, shim_node 
 UA_StatusCode shim_verify_certificate(const UA_ByteString *certificate,
                                       const UA_ByteString *trusted, UA_EventLoop *el) {
     UA_CertificateGroup group;
-    memset(&group, 0, sizeof(group));
     UA_StatusCode status = trust(&group, APPLICATION_GROUP, trusted, NULL, el);
     if(status != UA_STATUSCODE_GOOD)
         return status;
@@ -537,7 +526,6 @@ UA_StatusCode shim_verify_certificate(const UA_ByteString *certificate,
  * list and the loop `el`, and clears the group that it makes. */
 UA_StatusCode shim_memory_group(UA_EventLoop *el) {
     UA_CertificateGroup group;
-    memset(&group, 0, sizeof(group));
     UA_StatusCode status = trust(&group, APPLICATION_GROUP, NULL, NULL, el);
     if(status == UA_STATUSCODE_GOOD)
         group.clear(&group);

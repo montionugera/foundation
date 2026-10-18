@@ -1,6 +1,11 @@
+use env::rng::Rng;
+use sim::Sim;
 use types::time::{Span, Stamp};
 
-use super::{Client, VALUE, run, serve_secure};
+use super::{Client, VALUE, run, serve_on};
+use crate::child;
+use crate::connection::CHUNKS;
+use crate::event::{self, Loop};
 use crate::ffi::test::Mode;
 use crate::ffi::{self, Status};
 use crate::secure::{CLIENT, END, OTHER, Policy, SERVER, START, Security};
@@ -46,7 +51,9 @@ fn uri(policy: Policy) -> &'static str {
     }
 }
 
-/// The policy URI and the mode of the channel of `client`.
+/// The policy URI and the mode of the channel of `client`, read from C: no call of
+/// `Client` and no server log gives them, and a read alone also passes over None,
+/// which the server offers too.
 fn channel(client: &Client) -> (String, Mode) {
     let mut mode = Mode(0);
     // SAFETY: the client lives, and `mode` is a place to write.
@@ -69,7 +76,7 @@ fn connect(
     mode: Mode,
 ) -> (Result<Read, Status>, u64) {
     run(seed, async move |node| {
-        serve_secure(&node, &server, server_wall, async |mut peer| {
+        serve_on(&node, 4, server_wall, Some(&server), async |mut peer| {
             let mut connected = peer.secure(policy, mode, &client, client_wall).await?;
             let read = Read {
                 value: peer.value,
@@ -143,6 +150,31 @@ fn a_client_past_the_end_of_the_server_certificate_ends_the_connect() {
 }
 
 #[test]
+fn a_client_one_second_before_the_end_of_the_server_certificate_reads() {
+    let (read, _) = connect(
+        0,
+        (SERVED, START),
+        (CLIENT_SIDE, END - Span::SECOND),
+        Policy::Basic256Sha256,
+        Mode::SIGN,
+    );
+    let read = read.expect("the client connects");
+    assert_eq!(read.answer, Ok(read.value));
+}
+
+#[test]
+fn a_client_one_second_before_the_start_of_the_server_certificate_ends_the_connect() {
+    let (read, _) = connect(
+        0,
+        (SERVED, START),
+        (CLIENT_SIDE, START - Span::SECOND),
+        Policy::Basic256Sha256,
+        Mode::SIGN,
+    );
+    assert_eq!(read, Err(Status::BAD_CERTIFICATE_TIME_INVALID));
+}
+
+#[test]
 fn a_server_past_the_end_of_the_client_certificate_refuses_the_channel() {
     let (read, _) = connect(
         0,
@@ -153,4 +185,34 @@ fn a_server_past_the_end_of_the_client_certificate_refuses_the_channel() {
     );
     // The server sends the status of its check in the ERR message.
     assert_eq!(read, Err(Status::BAD_CERTIFICATE_TIME_INVALID));
+}
+
+/// Asks for the policy of index 3, past the last one, when `child::running()`.
+#[test]
+fn ask_past_the_last_policy() {
+    if !child::running() {
+        return;
+    }
+    let mut sim = Sim::new(sim::Config::default());
+    let clock = sim.node(sim::node::Config::default()).clock();
+    let events = Loop::new(event::Time::monotonic(clock), &mut Rng::from_seed(0));
+    // SAFETY: the loop outlives the client, which leaks when the process aborts.
+    let client = unsafe { ffi::shim_client_new(events.raw(), CHUNKS) };
+    assert!(!client.is_null(), "open62541 refused the client");
+    let security = CLIENT_SIDE.raw();
+    // SAFETY: the client lives and has not connected, and it copies `security`.
+    let status = unsafe {
+        ffi::test::shim_client_secure(
+            client,
+            Mode::SIGN,
+            Policy::ALL.len(),
+            &raw const security,
+        )
+    };
+    panic!("the client gave {:?}", Status(status))
+}
+
+#[test]
+fn a_policy_index_past_the_last_aborts() {
+    child::aborted_in_c("client::tests::secure::ask_past_the_last_policy", &[], "");
 }
