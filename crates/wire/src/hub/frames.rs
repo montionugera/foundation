@@ -4,7 +4,7 @@ use std::sync::Arc;
 use types::frame::key_set::KeySet;
 use types::frame::{Draft, Frame, Layout};
 
-use super::part::{self, Assembly};
+use super::part::Assembly;
 use super::{Error, FromHome, Gaps, Head, Reader};
 
 /// The frames of a reader session, built from its replies from `Opened` on, at the
@@ -109,17 +109,15 @@ impl Frames {
     ///
     /// When a draft is due, each [`types::frame::Error`] of [`Layout::from_ends`]. The
     /// caller then stops the stream as `MALFORMED`.
-    #[expect(
-        clippy::inline_always,
-        reason = "as a call, it made a frame of one series 30 ns slower"
-    )]
-    #[inline(always)]
+    #[inline]
     pub fn due(&mut self) -> Result<Due<'_>, types::frame::Error> {
-        Ok(match self.assembly.due(self.reader.body())? {
-            part::Due::Message => Due::Message,
-            part::Due::Body(rest) => Due::Body(rest),
-            part::Due::Draft(layout) => Due::Draft(layout),
-        })
+        if self.assembly.drafting() {
+            return self.assembly.layout().map(Due::Draft);
+        }
+        Ok(self
+            .assembly
+            .rest(self.reader.body())
+            .map_or(Due::Message, Due::Body))
     }
 
     /// Takes the next message, whole, or the end of the stream when `None`. A body

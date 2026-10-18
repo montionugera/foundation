@@ -6,7 +6,7 @@ use types::frame::{Draft, Form, Layout};
 
 use super::{Error, Head, Time};
 use crate::hub::ends;
-use crate::hub::part::{self, Assembly, Next, to_usize};
+use crate::hub::part::{Assembly, Next, to_usize};
 
 /// The frames of a program's write stream after the places, at the node. The node
 /// receives each message and makes each draft from the pool of the home. The entries
@@ -71,7 +71,7 @@ impl Frames {
             places,
             next: Next::Head,
             head: None,
-            assembly: Assembly::new(set),
+            assembly: Assembly::reserved(set),
         }
     }
 
@@ -84,17 +84,19 @@ impl Frames {
     /// caller then stops the stream as `MALFORMED`.
     #[inline]
     pub fn due(&mut self) -> Result<Due<'_>, types::frame::Error> {
-        Ok(match (self.assembly.due(self.next.body())?, self.head) {
-            (part::Due::Message, _) => Due::Message,
-            (part::Due::Body(rest), _) => Due::Body(rest),
-            (part::Due::Draft(layout), Some(head)) => Due::Draft {
-                layout,
-                form: head.form,
-            },
-            (part::Due::Draft(_), None) => {
+        if self.assembly.drafting() {
+            let Some(Head { form, .. }) = self.head else {
                 unreachable!("invariant: a draft has a head")
-            }
-        })
+            };
+            return self
+                .assembly
+                .layout()
+                .map(|layout| Due::Draft { layout, form });
+        }
+        Ok(self
+            .assembly
+            .rest(self.next.body())
+            .map_or(Due::Message, Due::Body))
     }
 
     /// Takes the next message, whole. A body message is copied into the draft, or
@@ -242,6 +244,7 @@ impl Frames {
 
     /// The frame of the head and the draft that arrived, or [`Step::More`] when the
     /// frame was skipped.
+    #[inline]
     fn frame(&mut self) -> Step {
         let head = self.head.take().expect("invariant: a frame has a head");
         let Some(mut draft) = self.assembly.take() else {

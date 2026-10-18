@@ -113,18 +113,6 @@ impl Next {
     }
 }
 
-/// What a decoder waits for next, as [`Assembly::due`] gives it. Each decoder gives
-/// its own public `Due` from it.
-#[derive(Debug)]
-pub(super) enum Due<'a> {
-    /// A whole message: a head, a message of the run, or a body message to drop.
-    Message,
-    /// Body bytes, into the rest of the draft's body.
-    Body(&'a mut [u8]),
-    /// A draft of this layout.
-    Draft(Layout<'a>),
-}
-
 /// The ends and the draft of the frame that arrives, from its run of ends to the last
 /// byte of its body.
 #[derive(Debug)]
@@ -151,12 +139,20 @@ enum Stage {
 }
 
 impl Assembly {
-    /// Makes room for one end per place, so no frame allocates.
+    /// The ends grow to those of the widest frame.
     pub(super) fn new(set: Arc<KeySet>) -> Self {
         Self {
-            ends: Vec::with_capacity(set.entries().len()),
             set,
+            ends: Vec::new(),
             stage: Stage::Run,
+        }
+    }
+
+    /// Makes room for one end per place, so no frame allocates.
+    pub(super) fn reserved(set: Arc<KeySet>) -> Self {
+        Self {
+            ends: Vec::with_capacity(set.entries().len()),
+            ..Self::new(set)
         }
     }
 
@@ -164,26 +160,36 @@ impl Assembly {
         &self.set
     }
 
-    /// What the frame waits for, when the next body message starts at `body`.
+    /// Whether a draft is due, so that [`Assembly::layout`] gives its layout.
     #[inline]
-    pub(super) fn due(
-        &mut self,
-        body: Option<usize>,
-    ) -> Result<Due<'_>, types::frame::Error> {
-        if matches!(self.stage, Stage::Drafting | Stage::Refused) {
-            return match Layout::from_ends(&self.set, &self.ends) {
-                Ok(layout) => Ok(Due::Draft(layout)),
-                Err(error) => {
-                    self.stage = Stage::Refused;
-                    Err(error)
-                }
-            };
-        }
+    pub(super) fn drafting(&self) -> bool {
+        matches!(self.stage, Stage::Drafting | Stage::Refused)
+    }
+
+    /// The layout of the draft that is due. An error refuses each later draft and skip.
+    ///
+    /// # Panics
+    ///
+    /// When no draft is due.
+    #[inline]
+    pub(super) fn layout(&mut self) -> Result<Layout<'_>, types::frame::Error> {
+        assert!(self.drafting(), "no draft is due");
+        Layout::from_ends(&self.set, &self.ends).inspect_err(|_| {
+            self.stage = Stage::Refused;
+        })
+    }
+
+    /// The rest of the draft's body, when the next body message starts at `body`.
+    /// `None` when a whole message is due.
+    #[inline]
+    pub(super) fn rest(&mut self, body: Option<usize>) -> Option<&mut [u8]> {
         let Stage::Body(draft) = &mut self.stage else {
-            return Ok(Due::Message);
+            return None;
         };
-        let start = body.expect("invariant: a draft is taken at its last byte");
-        Ok(Due::Body(rest(draft, start)))
+        let Some(start) = body else {
+            unreachable!("invariant: a draft is taken at its last byte")
+        };
+        Some(rest(draft, start))
     }
 
     /// Starts the frame of a head.
@@ -220,10 +226,9 @@ impl Assembly {
     /// Panics with `what` when a draft is due.
     #[inline]
     pub(super) fn check_undrafted(&self, what: &str) {
-        assert!(
-            !matches!(self.stage, Stage::Drafting | Stage::Refused),
-            "a draft is due before {what}"
-        );
+        if matches!(self.stage, Stage::Drafting | Stage::Refused) {
+            due_draft(what);
+        }
     }
 
     /// Panics unless body bytes are due into a draft.
@@ -273,6 +278,12 @@ impl Assembly {
     fn check_drafting(&self) {
         assert!(matches!(self.stage, Stage::Drafting), "no draft is due");
     }
+}
+
+#[cold]
+#[inline(never)]
+fn due_draft(what: &str) -> ! {
+    panic!("a draft is due before {what}")
 }
 
 /// The body of `draft` from `start` on.
