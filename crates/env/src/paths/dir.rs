@@ -34,8 +34,8 @@ pub trait Driver: Debug {
     ///
     /// # Errors
     ///
-    /// [`Error::NotFound`] when this directory is not there, else [`Error::Io`] with
-    /// the code of the host.
+    /// [`Error::NotFound`] when the host finds no directory above this one, else
+    /// [`Error::Io`] with the code of the host.
     fn up(&self) -> Result<Box<dyn Driver>, Error>;
 }
 
@@ -46,7 +46,8 @@ pub enum Entry {
     Link(Key, PathBuf),
     /// A directory, open.
     Directory(Box<dyn Driver>),
-    /// Any other file, also a device or a FIFO, with its key.
+    /// Any other file, also a device or a FIFO, with its key. A directory that a
+    /// program puts at the name during the call can also come back as one.
     File(Key),
 }
 

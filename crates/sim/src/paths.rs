@@ -192,37 +192,35 @@ impl Paths {
     }
 
     /// The inode and entry at `name` in the directory `dir`, by its inode, with no
-    /// link followed. `NotFound` when `dir` or `name` is not there.
+    /// link followed. `NotFound` when nothing is at `name`.
     pub(crate) fn open(
         &self,
         node: usize,
         dir: u64,
         name: &OsStr,
     ) -> Result<(u64, &Entry), Error> {
-        let at = self.find(dir).ok_or(Error::NotFound)?;
-        self.at(node, &at.join(name)).ok_or(Error::NotFound)
+        self.at(node, &self.find(dir).join(name))
+            .ok_or(Error::NotFound)
     }
 
     /// The inode of the directory above the directory `dir`, and `/` above `/`.
-    /// `NotFound` when `dir` is not there.
-    pub(crate) fn up(&self, node: usize, dir: u64) -> Result<u64, Error> {
-        let at = self.find(dir).ok_or(Error::NotFound)?;
+    pub(crate) fn up(&self, node: usize, dir: u64) -> u64 {
+        let at = self.find(dir);
         let above = self.at(node, at.parent().unwrap_or(&at));
         let (inode, _) =
             above.expect("invariant: the directory above a directory is there");
-        Ok(inode)
+        inode
     }
 
-    /// The path of the directory `inode` now, or `None` when it is not there.
-    fn find(&self, inode: u64) -> Option<PathBuf> {
+    /// The path of the directory `inode` now.
+    fn find(&self, inode: u64) -> PathBuf {
         if inode == 0 {
-            return Some(PathBuf::from("/"));
+            return PathBuf::from("/");
         }
-        // Each inode of a run is of one entry, and that of a directory stays one.
-        self.entries
-            .iter()
-            .find(|(_, (at, _))| *at == inode)
-            .map(|((_, path), _)| path.clone())
+        // Each inode of a run is of one entry, and no call removes a directory.
+        let found = self.entries.iter().find(|(_, (at, _))| *at == inode);
+        let ((_, path), _) = found.expect("invariant: a directory stays");
+        path.clone()
     }
 
     /// `path` on the resolved working directory, with each `..` kept, as

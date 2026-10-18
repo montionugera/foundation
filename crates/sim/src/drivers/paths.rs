@@ -97,7 +97,7 @@ impl env::paths::dir::Driver for Dir {
     }
 
     fn up(&self) -> Result<Box<dyn env::paths::dir::Driver>, Error> {
-        let up = lock(&self.shared).paths().up(self.node, self.inode)?;
+        let up = lock(&self.shared).paths().up(self.node, self.inode);
         Ok(handle(&self.shared, self.node, up))
     }
 }
