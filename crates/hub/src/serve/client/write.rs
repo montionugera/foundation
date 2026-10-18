@@ -27,9 +27,6 @@ use crate::writer::{self, Failure, Homed, Writer};
 /// The bytes of the block of a `Stored` reply.
 const STORED_BYTES: usize = Reply::Stored { frames: 0 }.encoded_len();
 
-/// How long the last `Stored` that finds the pool full waits before it tries again.
-const RETRY: Span = Span::from_nanos(10_000_000);
-
 /// Serves the write of `subject` that `write` starts: verifies its open, opens its
 /// writer, and sends its places, then writes each frame of the program and sends its
 /// outcome, and `Stored` after each commit, until the program finishes the stream.
@@ -53,7 +50,7 @@ pub(super) async fn serve(
     start(state, sender, &writer, names).await?;
     drop(decoded);
     let replies = relay(state, writer, receiver, sender).await?;
-    replies.finish(state, &session.transport, sender).await
+    replies.finish(state, sender).await
 }
 
 /// Reads, verifies, and decodes the open, and holds its body in the budget until then.
@@ -146,7 +143,9 @@ async fn start(
 /// program finishes the stream. Then drops `writer`, so that control ends, and gives
 /// the commits that are due. The block of each outcome comes before the draft of its
 /// frame, so a pool with no block for it stops the stream before the home takes the
-/// frame.
+/// frame. The block of the next `Stored` comes after the body, right before the home
+/// takes the frame, and a frame that finds none is refused as `Full`, as a frame whose
+/// draft finds none is.
 async fn relay(
     state: &RefCell<State>,
     mut writer: Writer,
@@ -215,8 +214,9 @@ async fn relay(
         let pending = reply
             .take()
             .expect("invariant: a draft comes with its block");
-        let outcome = write(&mut writer, draft, time, &mut stamped)?;
-        let (block, reply) = replies.outcome(state, pending, outcome);
+        let (block, reply) = replies.write(state, pending, || {
+            write(&mut writer, draft, time, &mut stamped)
+        })?;
         send(sender, block, reply).await?;
     }
 }
@@ -314,11 +314,12 @@ struct Replies {
     /// The count of frames through the last one taken since the call of the commit in
     /// `due`.
     taken: Option<u64>,
-    /// The commit that is due, and the count of frames that it covers.
-    due: Option<(::home::Commit, u64)>,
-    /// The count of frames of the last commit, while the pool had no block for its
+    /// The block of the next `Stored`. Outside [`Replies::write`], it is `Some` exactly
+    /// when `taken` is.
+    next: Option<Unique>,
+    /// The commit that is due, the count of frames that it covers, and the block of its
     /// `Stored`.
-    unsent: Option<u64>,
+    due: Option<(::home::Commit, u64, Unique)>,
 }
 
 /// The block of the outcome of a frame whose head came, and the count of that frame.
@@ -338,9 +339,36 @@ impl Replies {
         })
     }
 
+    /// Writes the frame of `pending` with `write`, and gives its block and reply as
+    /// [`Replies::outcome`] does. First takes the block of the next `Stored` from the
+    /// home's pool when the stream holds none, so each taken frame has the block of its
+    /// `Stored`. A frame that finds none gets `Refused(Full)`, and `write` is not
+    /// called.
+    ///
+    /// # Errors
+    ///
+    /// The error of `write`.
+    fn write(
+        &mut self,
+        state: &RefCell<State>,
+        pending: Pending,
+        write: impl FnOnce() -> Result<Outcome, Error>,
+    ) -> Result<(Unique, Reply), Error> {
+        if self.next.is_none() {
+            self.next = state.borrow().alloc(STORED_BYTES).ok();
+        }
+        let outcome = match self.next {
+            Some(_) => write()?,
+            None => Outcome::Refused(Refusal::Full),
+        };
+        Ok(self.outcome(state, pending, outcome))
+    }
+
     /// Gives the block of `pending` and the reply of `outcome`, labeled with its frame.
     /// A taken frame is counted for the next commit, which this calls when none is due.
-    /// Sync, so the relay's future holds no nested one.
+    /// A frame that the home did not take gives back the block of the next `Stored`
+    /// while no taken frame waits for one. Sync, so the relay's future holds no nested
+    /// one.
     fn outcome(
         &mut self,
         state: &RefCell<State>,
@@ -351,6 +379,8 @@ impl Replies {
         if let Outcome::Taken { .. } = outcome {
             self.taken = Some(frame);
             self.call(state);
+        } else if self.taken.is_none() {
+            self.next = None;
         }
         (block, Reply::Outcome { frame, outcome })
     }
@@ -360,7 +390,11 @@ impl Replies {
         if self.due.is_none()
             && let Some(frames) = self.taken.take()
         {
-            self.due = Some((state.borrow().home.committed(), frames));
+            let block = self
+                .next
+                .take()
+                .expect("invariant: a taken frame has the block of its `Stored`");
+            self.due = Some((state.borrow().home.committed(), frames, block));
         }
     }
 
@@ -373,10 +407,9 @@ impl Replies {
     ) -> Result<T, Error> {
         let mut received = pin!(received);
         loop {
-            let Some((commit, frames)) = &mut self.due else {
+            let Some((commit, ..)) = &mut self.due else {
                 return Ok(received.await?);
             };
-            let frames = *frames;
             let committed = poll_fn(|cx| {
                 if let Poll::Ready(committed) = Pin::new(&mut *commit).poll(cx) {
                     return Poll::Ready(Err(committed));
@@ -387,70 +420,36 @@ impl Replies {
                 Ok(received) => return Ok(received?),
                 Err(committed) => {
                     committed.map_err(Error::Buffer)?;
-                    self.due = None;
-                    self.call(state);
-                    self.stored(state, sender, frames).await?;
+                    self.committed(state, sender).await?;
                 }
             }
         }
     }
 
-    /// Sends `Stored { frames }` when the pool has a block for it. Otherwise keeps
-    /// `frames` for the next `Stored`, which covers it.
-    async fn stored(
+    /// Calls the next commit and sends the `Stored` of the due one, which ended.
+    async fn committed(
         &mut self,
         state: &RefCell<State>,
         sender: &mut Sender,
-        frames: u64,
     ) -> Result<(), Error> {
-        let allocated = state.borrow().alloc(STORED_BYTES);
-        let Ok(block) = allocated else {
-            self.unsent = Some(frames);
-            return Ok(());
-        };
-        self.unsent = None;
+        let (_, frames, block) = self.due.take().expect("invariant: a commit is due");
+        self.call(state);
         send(sender, block, Reply::Stored { frames }).await
     }
 
     /// Waits for the commit of each taken frame, sends its `Stored`, and finishes the
-    /// stream. The last `Stored` waits for a block until `session` closes.
+    /// stream.
     async fn finish(
         mut self,
         state: &RefCell<State>,
-        session: &transport::Session,
         sender: &mut Sender,
     ) -> Result<(), Error> {
-        while let Some((commit, frames)) = self.due.take() {
+        while let Some((commit, ..)) = &mut self.due {
             commit.await.map_err(Error::Buffer)?;
-            self.call(state);
-            self.stored(state, sender, frames).await?;
-        }
-        if let Some(frames) = self.unsent {
-            let block = wait(state, session).await?;
-            send(sender, block, Reply::Stored { frames }).await?;
+            self.committed(state, sender).await?;
         }
         sender.finish()?;
         Ok(())
-    }
-}
-
-/// A block for `Stored` from the home's pool. While the pool has none, tries again
-/// after [`RETRY`], as the streams give their blocks back. Gives the error of the
-/// close when `session` closes first.
-async fn wait(
-    state: &RefCell<State>,
-    session: &transport::Session,
-) -> Result<Unique, Error> {
-    loop {
-        let allocated = state.borrow().alloc(STORED_BYTES);
-        if let Ok(block) = allocated {
-            return Ok(block);
-        }
-        if let Some(error) = session.ended() {
-            return Err(Error::Stream(error));
-        }
-        let time = state.borrow().time.clone();
-        time.sleep_until(time.now().monotonic + RETRY).await;
     }
 }
 
