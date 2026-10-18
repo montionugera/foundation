@@ -17,8 +17,4 @@
   https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6254512129, option
   B, which supersedes option A of 6253931889; `laptop.architect-2`,
   2026-10-18T20:06:45Z:
-  https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6254543021). The
-  end of a session waits for each of its streams, so no caller drops
-  `blob::peer::serve` in a body before the stop of its node, and the trigger of BLOB
-  PEER does not fire (`laptop.architect-2`, 2026-10-18T23:49:44Z:
-  https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6256693937).
+  https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6254543021).
