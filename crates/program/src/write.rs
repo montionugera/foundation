@@ -1,7 +1,10 @@
 //! The writes of a session: one write stream each, on the channels of one index.
 
+use std::future::poll_fn;
+use std::pin::pin;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::task::Poll;
 
 use transport::stream::{Part, Receiver, Sender};
 use transport::{Class, Code};
@@ -96,8 +99,8 @@ impl Writer {
 
     /// The draft that the next [`Writer::write`] sends, to fill: a new frame of the
     /// writer's key set from [`Config::frames`](crate::Config::frames), with `count`
-    /// samples in each series, as [`Draft::new`] takes `series`. The entry of place
-    /// `n` is `n`. Each frame of a sample holds the index series. It drops a held
+    /// samples in each series, as [`Draft::new`] takes `series`. The entry of place `n`
+    /// is `n`. A frame of at least one sample holds the index series. It drops a held
     /// draft that no write sent. While the pool is full, it waits as each block of the
     /// session waits: the blocks of a frame come back as the node acknowledges it. The
     /// writer holds the draft, so a draft of another writer reaches its write only
@@ -107,8 +110,9 @@ impl Writer {
     ///
     /// [`Error::Layout`] when `series` breaks a rule of [`Layout::new`], with no block
     /// taken; the writer goes on. [`Error::Pool`] when no block of the pool can hold
-    /// the frame, and the error of the close when the session closes first. The
-    /// writer then holds no draft.
+    /// the frame, the error of the close when the session closes first, and the error
+    /// that ended the writer, as [`Writer::write`] gives it. The writer then holds no
+    /// draft.
     pub async fn draft(
         &mut self,
         form: Form,
@@ -116,6 +120,7 @@ impl Writer {
         series: &[(usize, usize)],
     ) -> Result<&mut Draft, Error> {
         self.draft = None;
+        self.check()?;
         let shared = &self.session.0;
         let layout = Layout::new(&self.set, series).map_err(Error::Layout)?;
         let mut draft = shared.retry(|| layout.draft(&shared.frames, form)).await?;
@@ -164,10 +169,7 @@ impl Writer {
         if count == 0 || time == Time::Node && (form != Form::Raw || count != 1) {
             return Err(Error::Unsent { count, form });
         }
-        let written = match self.send(time, frame, count).await {
-            Ok(()) => self.outcome().await,
-            Err(error) => Err(error),
-        };
+        let written = self.written(time, frame, count).await;
         self.ending(written)
     }
 
@@ -304,6 +306,23 @@ impl Writer {
         *cut = false;
         self.replies.sent();
         Ok(())
+    }
+
+    /// Takes each reply that came before the call, so that an extra outcome is never
+    /// the outcome of `frame`, then sends `frame` and takes its outcome.
+    async fn written(
+        &mut self,
+        time: Time,
+        frame: Draft,
+        count: u32,
+    ) -> Result<Outcome, Error> {
+        while let Poll::Ready(reply) =
+            poll_fn(|cx| Poll::Ready(pin!(self.reply()).poll(cx))).await
+        {
+            reply?;
+        }
+        self.send(time, frame, count).await?;
+        self.outcome().await
     }
 
     /// Takes replies until the outcome of the last frame sent.

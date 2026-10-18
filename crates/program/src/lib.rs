@@ -1,5 +1,5 @@
 //! The session of a program: it dials one node as a program, keeps its hello
-//! admitted, and sends signed requests and reads.
+//! admitted, and sends signed requests, reads, and writes.
 
 mod read;
 mod turn;
@@ -65,16 +65,16 @@ pub struct Config {
     pub pool: Rc<block::Pool>,
     /// The pool that the frames of each reader and the drafts of each writer take their
     /// blocks from. A frame or a draft holds its block until it drops, and a frame that
-    /// finds the pool full makes `Reader::next` wait. Give a pool apart from `pool` and
-    /// from the transport's: frames and drafts that the program holds there stop the
-    /// renewal of the hello.
+    /// finds the pool full makes `Reader::next` or `Writer::draft` wait. Give a pool
+    /// apart from `pool` and from the transport's: frames and drafts that the program
+    /// holds there stop the renewal of the hello.
     pub frames: Rc<block::Pool>,
 }
 
 /// A program's session with one node, as one subject. It keeps the subject's hello
-/// admitted, sends one request at a time, and opens reads beside them. It stays on
-/// the thread that made it. A clone is the same session. When the last clone and the
-/// last [`Reader`] or [`Writer`] drop, it closes the session with `Code(0)`.
+/// admitted, sends one request at a time, and opens reads and writes beside them. It
+/// stays on the thread that made it. A clone is the same session. When the last clone
+/// and the last [`Reader`] or [`Writer`] drop, it closes the session with `Code(0)`.
 #[derive(Clone, Debug)]
 pub struct Session(Rc<Handle>);
 
@@ -519,7 +519,7 @@ pub enum Error {
     Unanswered,
     /// No block of [`Config::pool`] can hold a message that the session sends, or
     /// the head and an end of each place of a writer, or no block of
-    /// [`Config::frames`] can hold a frame of a read.
+    /// [`Config::frames`] can hold a frame of a read or a draft of a writer.
     Pool(block::Error),
     /// The open of a read or a write is over `OPEN_BYTES_MAX`. Nothing was sent.
     Open {
