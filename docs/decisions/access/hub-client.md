@@ -278,3 +278,14 @@
   impossible. The same ruling moves the `os` bench of the node cost to PR 4 of #2718, in
   place of condition 2 of
   https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6248331209.
+  Amended (#2718 PR 3, round 1): `Writer::draft(form, count, series)` is async. It sets
+  the count of group 0, and it waits for a block of a full pool of frames, as a read
+  does. It gives `Error::Layout` when the series break a rule of the frame layout:
+  nothing was taken, and the writer goes on. `Writer::finish(self)` drops a held draft
+  and finishes the stream, so control ends. It gives `Ok` once the last `Stored` covers
+  each taken frame and the node finished. Dropping the call drops the writer.
+  `wire::hub::write::Replies` checks the order of the replies of a write: an outcome
+  with no frame sent for it gives `wire::hub::Error::Unasked`, and a `Stored` below the
+  last one or past the outcomes gives `wire::hub::Error::Stored`. Each ends the writer
+  with a reset of `MALFORMED`. Decided by `laptop.architect` at 2026-10-18T14:44:41Z
+  (https://github.com/synnaxlabs/foundation/pull/3201#issuecomment-6251244519).
