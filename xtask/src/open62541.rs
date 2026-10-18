@@ -512,9 +512,6 @@ pub(crate) struct Crypto {
     include: Vec<PathBuf>,
     /// The prefix of each of its symbols, with the `_` that ends it.
     prefix: String,
-    /// The directory of its `openssl/*.h`, whose declarations give the readers of
-    /// [`passwords`].
-    openssl: PathBuf,
 }
 
 impl Crypto {
@@ -545,12 +542,7 @@ impl Crypto {
         let include = vec![dir.join("generated-include"), dir.join("aws-lc/include")];
         // The line that the build script of `connector-opcua` reads.
         let prefix = Self::read_prefix(&include[0].join(PREFIX_HEADER))?;
-        let openssl = include[1].join("openssl");
-        Ok(Self {
-            include,
-            prefix,
-            openssl,
-        })
+        Ok(Self { include, prefix })
     }
 
     /// The prefix that the `boringssl_prefix_symbols.h` at `header` defines.
@@ -584,30 +576,32 @@ impl Crypto {
             .flat_map(|dir| ["-isystem".into(), dir.into()])
     }
 
-    /// The [`password_places`] of each of its `openssl/*.h`, which `cc` preprocesses
-    /// together, with no flag of the copy, so that no file or header of the copy
-    /// changes them.
+    /// The [`password_places`] of each header under `openssl/` of its include
+    /// directories, the first directory first for a name as in `cc`, which `cc`
+    /// preprocesses together with no flag of the copy, so that no file or header of
+    /// the copy changes them.
     ///
     /// # Errors
     ///
-    /// A directory that cannot be read, and a `cc` that fails.
+    /// An include directory with no `openssl/` that can be read, and a `cc` that fails.
     fn readers(&self, cc: &Path) -> Result<BTreeMap<String, usize>, String> {
-        let mut headers = std::fs::read_dir(&self.openssl)
-            .and_then(|entries| {
-                entries
-                    .map(|entry| entry.map(|entry| entry.path()))
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .map_err(|e| format!("{}: {e}", self.openssl.display()))?;
-        headers.retain(|path| path.extension().is_some_and(|e| e == "h"));
-        headers.sort();
+        let mut headers = BTreeMap::new();
+        for dir in &self.include {
+            let openssl = dir.join("openssl");
+            for header in files::under(&openssl, "h")? {
+                let name: PathBuf = header
+                    .components()
+                    .skip(openssl.components().count())
+                    .collect();
+                headers.entry(name).or_insert(header);
+            }
+        }
         let mut unit = Command::new(cc);
         unit.args(self.flags()).arg("-E");
-        for header in headers {
+        for header in headers.into_values() {
             unit.arg("-include").arg(header);
         }
-        // An empty unit from the null input of `spawn`.
-        unit.args(["-x", "c", "-"]);
+        unit.args(["-x", "c", "/dev/null"]);
         spawn(&mut unit)
             .and_then(wait)
             .map(|(text, _)| password_places(&tokens(&text)))
@@ -1125,11 +1119,11 @@ fn marker(line: &str) -> Option<(usize, &str)> {
 
 /// An error for each `#include_next`, and each `#include` or `#import` in a file of
 /// the copy, as `preprocessed` (the output of `cc -E -dI` in `copy`) shows it, that
-/// finds a header outside both the copy and the system directories `dirs`, or a
-/// header under `openssl/` outside the directories `crypto`, other than one of the
-/// copy whose name no directory of `crypto` holds. It finds the header as
-/// `cc` does, through the `-I` directories `flags` gives. Unlike `cc -H`, `-dI` also
-/// shows an `#include` of a header that the unit included before.
+/// finds a header outside both the copy and the system directories `dirs`. It finds
+/// the header as `cc` does, through the `-I` directories `flags` gives. Unlike
+/// `cc -H`, `-dI` also shows an `#include` of a header that the unit included before.
+/// Also an error for each header that the unit enters, by any name and from any file,
+/// under `openssl/` of a directory of `dirs` other than the directories `crypto`.
 fn includes(
     preprocessed: &str,
     copy: &Path,
@@ -1147,6 +1141,11 @@ fn includes(
     for line in preprocessed.lines() {
         if let Some((_, name)) = marker(line) {
             file = Path::new(name);
+            let problem =
+                format!("includes {name}, a header of OpenSSL outside the crypto");
+            if foreign(file, dirs, crypto) && !problems.contains(&problem) {
+                problems.push(problem);
+            }
             continue;
         }
         let Some((keyword, directive)) = line.split_once(' ') else {
@@ -1180,19 +1179,6 @@ fn includes(
             .chain(system)
             .find(|(path, _)| copy.join(path).is_file())
         {
-            Some((path, system))
-                if name.starts_with("openssl/")
-                    && !crypto
-                        .iter()
-                        .any(|dir| path.starts_with(files::normalize(dir)))
-                    && (system
-                        || crypto.iter().any(|dir| dir.join(name).is_file())) =>
-            {
-                format!(
-                    "includes {}, a header of OpenSSL outside the crypto",
-                    path.display()
-                )
-            }
             Some((_, true)) => continue,
             Some((path, false)) if inside(&path) => continue,
             Some((path, false)) => {
@@ -1203,6 +1189,19 @@ fn includes(
         problems.push(problem);
     }
     problems
+}
+
+/// Whether `file` is under `openssl/` of a directory of `dirs`, and under no
+/// directory of `crypto`.
+fn foreign(file: &Path, dirs: &[PathBuf], crypto: &[PathBuf]) -> bool {
+    let file = files::normalize(file);
+    !crypto
+        .iter()
+        .any(|dir| file.starts_with(files::normalize(dir)))
+        && dirs.iter().any(|dir| {
+            file.strip_prefix(files::normalize(dir))
+                .is_ok_and(|rest| rest.starts_with("openssl"))
+        })
 }
 
 /// The callbacks that a call in the copy may give a function of aws-lc that takes a
@@ -2330,8 +2329,6 @@ Disassembly of section .text.stamp:
                 ("sys/sys/time.h", ""),
                 ("sys/stdio.h", ""),
                 ("sys/stdint.h", ""),
-                ("sys/openssl/ssl.h", ""),
-                ("crypto/openssl/evp.h", ""),
             ],
         );
         let crypto = [root.join("crypto")];
@@ -2350,8 +2347,6 @@ Disassembly of section .text.stamp:
 #include \"stdint.h\"
 #include <time.h>
 #include <sys/time.h>
-#include <openssl/ssl.h>
-#include <openssl/evp.h>
 #include UA_X
 #import <none.h>
 #include_next <stdio.h>
@@ -2373,10 +2368,6 @@ Disassembly of section .text.stamp:
             [
                 "includes <local.h>, which no include directory holds".to_owned(),
                 "includes src/../../out.h, which is outside the copy".to_owned(),
-                format!(
-                    "includes {}, a header of OpenSSL outside the crypto",
-                    root.join("sys/openssl/ssl.h").display()
-                ),
                 "includes UA_X, which is not a file name".to_owned(),
                 "includes <none.h>, which no include directory holds".to_owned(),
                 "uses #include_next <stdio.h>, which the check cannot follow"
@@ -2388,26 +2379,61 @@ Disassembly of section .text.stamp:
     }
 
     #[test]
-    fn includes_refuses_a_header_of_the_copy_named_as_one_of_the_crypto() {
-        let root = temp("includes-hidden");
+    fn includes_refuses_each_system_header_under_openssl_that_the_unit_enters() {
+        let root = temp("includes-openssl");
         create_files(
             &root,
             &[
-                ("copy/src/openssl/pem.h", ""),
                 ("copy/src/openssl/common.h", ""),
-                ("crypto/openssl/pem.h", ""),
+                ("sys/stdio.h", ""),
+                ("sys/openssl/ssl.h", ""),
+                ("sys/openssl/kdf.h", ""),
+                ("sys/openssl/x.h", ""),
+                ("crypto/openssl/evp.h", ""),
             ],
         );
         let crypto = [root.join("crypto")];
-        let preprocessed = "\
+        let dirs = [crypto[0].clone(), root.join("sys")];
+        let preprocessed = format!(
+            "\
 # 1 \"src/a.c\"
-#include \"openssl/pem.h\"
+#include <openssl/ssl.h>
+# 1 \"{sys}/openssl/ssl.h\" 1 3 4
+# 2 \"src/a.c\" 2
+#include <./openssl/kdf.h>
+# 1 \"{sys}/./openssl/kdf.h\" 1 3 4
+# 3 \"src/a.c\" 2
+#include <stdio.h>
+# 1 \"{sys}/stdio.h\" 1 3 4
+#include <openssl/x.h>
+# 1 \"{sys}/openssl/x.h\" 1 3 4
+# 2 \"{sys}/stdio.h\" 2 3 4
+# 4 \"src/a.c\" 2
+#include <openssl/evp.h>
+# 1 \"{crypto}/openssl/evp.h\" 1 3 4
+# 5 \"src/a.c\" 2
 #include \"openssl/common.h\"
-#include <openssl/pem.h>
-";
+# 1 \"src/openssl/common.h\" 1
+# 6 \"src/a.c\" 2
+#include <openssl/ssl.h>
+# 1 \"{sys}/openssl/ssl.h\" 1 3 4
+",
+            sys = root.join("sys").display(),
+            crypto = crypto[0].display(),
+        );
+        let outside = |name: &str| {
+            format!(
+                "includes {}, a header of OpenSSL outside the crypto",
+                root.join("sys").join(name).display()
+            )
+        };
         assert_eq!(
-            includes(preprocessed, &root.join("copy"), "", &crypto, &crypto),
-            ["includes src/openssl/pem.h, a header of OpenSSL outside the crypto"]
+            includes(&preprocessed, &root.join("copy"), "", &dirs, &crypto),
+            [
+                outside("openssl/ssl.h"),
+                outside("./openssl/kdf.h"),
+                outside("openssl/x.h"),
+            ]
         );
         remove(&root).unwrap();
     }
@@ -2480,29 +2506,55 @@ n = read_x(b, 0, 0, 0);
     #[test]
     fn crypto_readers_reads_each_header_of_aws_lc() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let crypto = Crypto::locked(workspace).unwrap();
-        let readers = crypto.readers(Path::new("cc")).unwrap();
-        let read = format!("{}PEM_read_bio_X509", crypto.prefix);
+        let locked = Crypto::locked(workspace).unwrap();
+        let readers = locked.readers(Path::new("cc")).unwrap();
+        let read = format!("{}PEM_read_bio_X509", locked.prefix);
         assert_eq!(readers.get(&read), Some(&2));
         // aws-lc-sys builds no libssl, so the prefix header has no name of it.
         assert_eq!(readers.get("SSL_CTX_set_default_passwd_cb"), Some(&1));
-        let empty = Crypto {
-            openssl: temp("no-headers"),
-            ..crypto
-        };
-        assert_eq!(empty.readers(Path::new("cc")), Ok(BTreeMap::new()));
-        remove(&empty.openssl).unwrap();
-        let missing = Crypto {
-            openssl: empty.openssl.join("none"),
-            ..empty
+        assert_eq!(crypto().readers(Path::new("cc")), Ok(BTreeMap::new()));
+    }
+
+    #[test]
+    fn crypto_readers_reads_the_first_header_of_each_name_under_openssl() {
+        let dir = temp("readers");
+        create_files(
+            &dir,
+            &[
+                (
+                    "first/openssl/a.h",
+                    "int read_a(int a, pem_password_cb *cb);\n",
+                ),
+                ("second/openssl/a.h", "int read_a(pem_password_cb *cb);\n"),
+                (
+                    "second/openssl/b.h",
+                    "int read_b(int a, pem_password_cb *cb);\n",
+                ),
+                ("second/openssl/x/c.h", "int read_c(pem_password_cb *cb);\n"),
+                ("second/openssl/d.c", "int read_d(pem_password_cb *cb);\n"),
+            ],
+        );
+        let readers = |include: &[&str]| {
+            Crypto {
+                include: include.iter().map(|name| dir.join(name)).collect(),
+                ..crypto()
+            }
+            .readers(Path::new("cc"))
         };
         assert_eq!(
-            missing.readers(Path::new("cc")).unwrap_err(),
-            format!(
-                "{}: No such file or directory (os error 2)",
-                missing.openssl.display()
-            )
+            readers(&["first", "second"]),
+            Ok([("read_a", 1), ("read_b", 1), ("read_c", 0)]
+                .map(|(name, place)| (name.to_owned(), place))
+                .into())
         );
+        assert_eq!(
+            readers(&["first", "none"]),
+            Err(format!(
+                "{}: No such file or directory (os error 2)",
+                dir.join("none/openssl").display()
+            ))
+        );
+        remove(&dir).unwrap();
     }
 
     #[test]
@@ -2535,34 +2587,33 @@ n = read_x(b, 0, 0, 0);
     fn check_finds_a_read_of_the_committed_copy_that_gives_aws_lc_no_callback() {
         let file = "plugins/crypto/openssl/securitypolicy_common.c";
         let call = "PEM_read_bio_X509(bio, NULL, UA_OpenSSL_refusePassword, NULL);";
-        let mut line = 0;
-        let result = check_edited("passwords", &[], file, |text| {
-            line = text.lines().position(|line| line.contains(call)).unwrap() + 1;
-            let changed = call.replace("UA_OpenSSL_refusePassword", "NULL");
-            text.replacen(call, &changed, 1)
-        });
+        let text = committed(file);
+        let line = text.lines().position(|line| line.contains(call)).unwrap() + 1;
+        let changed = call.replace("UA_OpenSSL_refusePassword", "NULL");
+        let (result, prefix) =
+            check_edited("passwords", &[(file, &text.replacen(call, &changed, 1))]);
         assert_eq!(
             result,
-            Err(vec![format!(
-                "{file}: {file}:{line}: gives `{}PEM_read_bio_X509` the callback \
-                 `((void*)0)`, which PASSWORDS does not list",
-                prefix()
+            Err(vec![gives(
+                file,
+                &format!("{file}:{line}"),
+                "((void*)0)",
+                &prefix
             )])
         );
     }
 
+    /// The text of `file` of the committed copy.
+    fn committed(file: &str) -> String {
+        std::fs::read_to_string(workspace().join(DEST).join(file)).unwrap()
+    }
+
     /// The result of [`check`] on a copy of the committed copy with each (path, text)
-    /// of `files`, and with the text of `file` of the copy that `edit` gives.
-    #[expect(
-        clippy::unwrap_in_result,
-        reason = "a test helper panics on a copy that it cannot make"
-    )]
+    /// of `files`, and the symbol prefix of the aws-lc of `Cargo.lock`.
     fn check_edited(
         name: &str,
         files: &[(&str, &str)],
-        file: &str,
-        edit: impl FnOnce(String) -> String,
-    ) -> Result<(), Vec<String>> {
+    ) -> (Result<(), Vec<String>>, String) {
         let root = temp(name);
         std::fs::create_dir(root.join("patches")).unwrap();
         let mut cp = Command::new("cp");
@@ -2573,27 +2624,34 @@ n = read_x(b, 0, 0, 0);
         )
         .unwrap();
         create_files(&root.join(DEST), files);
-        let path = root.join(DEST).join(file);
-        let text = std::fs::read_to_string(&path).unwrap();
-        std::fs::write(&path, edit(text)).unwrap();
-        let result = check(&root, &Crypto::locked(workspace()).unwrap());
+        let crypto = Crypto::locked(workspace()).unwrap();
+        let result = check(&root, &crypto);
         remove(&root).unwrap();
-        result
+        (result, crypto.prefix)
     }
 
-    /// [`check_edited`] with `text` after the end of `src/util/ua_util.c`, and the
-    /// number of the first line of `text`.
+    /// [`check_edited`] with `text` after the end of `src/util/ua_util.c` and each
+    /// (path, text) of `files`, with the number of the first line of `text`.
     fn check_with_util(
         name: &str,
         files: &[(&str, &str)],
         text: &str,
-    ) -> (Result<(), Vec<String>>, usize) {
-        let mut end = 0;
-        let result = check_edited(name, files, UTIL, |util| {
-            end = util.lines().count() + 1;
-            util + text
-        });
-        (result, end)
+    ) -> (Result<(), Vec<String>>, usize, String) {
+        let util = committed(UTIL);
+        let line = util.lines().count() + 1;
+        let edited = util + text;
+        let (result, prefix) =
+            check_edited(name, &[files, &[(UTIL, &edited)]].concat());
+        (result, line, prefix)
+    }
+
+    /// The error of [`check`] for a call at `place` of `unit` that gives
+    /// `PEM_read_bio_X509` with the symbol prefix `prefix` the callback `callback`.
+    fn gives(unit: &str, place: &str, callback: &str, prefix: &str) -> String {
+        format!(
+            "{unit}: {place}: gives `{prefix}PEM_read_bio_X509` the callback \
+             `{callback}`, which PASSWORDS does not list"
+        )
     }
 
     const UTIL: &str = "src/util/ua_util.c";
@@ -2602,15 +2660,10 @@ n = read_x(b, 0, 0, 0);
         Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
     }
 
-    /// The symbol prefix of the aws-lc of `Cargo.lock`.
-    fn prefix() -> String {
-        Crypto::locked(workspace()).unwrap().prefix
-    }
-
     #[test]
     #[cfg(unix)]
     fn check_fails_a_read_of_the_copy_with_no_declaration() {
-        let (result, line) = check_with_util(
+        let (result, line, _) = check_with_util(
             "undeclared",
             &[],
             "void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
@@ -2630,7 +2683,7 @@ n = read_x(b, 0, 0, 0);
     #[test]
     #[cfg(unix)]
     fn check_fails_a_read_of_aws_lc_with_no_declaration() {
-        let (result, line) = check_with_util(
+        let (result, line, prefix) = check_with_util(
             "undeclared-prefixed",
             &[],
             "#include <openssl/base.h>\n\
@@ -2642,9 +2695,8 @@ n = read_x(b, 0, 0, 0);
         assert!(
             errors[0].contains(&format!(
                 "./{UTIL}:{}:25: error: implicit declaration of function \
-                 '{}PEM_read_bio_X509'",
+                 '{prefix}PEM_read_bio_X509'",
                 line + 1,
-                prefix()
             )),
             "{errors:?}"
         );
@@ -2653,30 +2705,27 @@ n = read_x(b, 0, 0, 0);
     #[test]
     #[cfg(unix)]
     fn check_finds_a_read_of_the_copy_with_its_own_declaration() {
-        let (result, line) = check_with_util(
+        let (result, line, prefix) = check_with_util(
             "declared",
             &[],
             "#include <openssl/base.h>\n\
              void *PEM_read_bio_X509(void *, void *, void *, void *);\n\
              void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
         );
-        let gives = |line: usize, callback: &str| {
-            format!(
-                "{UTIL}: {UTIL}:{line}: gives `{}PEM_read_bio_X509` the callback \
-                 `{callback}`, which PASSWORDS does not list",
-                prefix()
-            )
-        };
+        let at = |line: usize| format!("{UTIL}:{line}");
         assert_eq!(
             result,
-            Err(vec![gives(line + 1, "void*"), gives(line + 2, "0")])
+            Err(vec![
+                gives(UTIL, &at(line + 1), "void*", &prefix),
+                gives(UTIL, &at(line + 2), "0", &prefix),
+            ])
         );
     }
 
     #[test]
     #[cfg(unix)]
     fn check_finds_a_read_under_a_macro_of_pem_h() {
-        let (result, line) = check_with_util(
+        let (result, line, prefix) = check_with_util(
             "under-pem",
             &[],
             "#include <openssl/base.h>\n\
@@ -2685,23 +2734,20 @@ n = read_x(b, 0, 0, 0);
              void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n\
              #endif\n",
         );
-        let gives = |line: usize, callback: &str| {
-            format!(
-                "{UTIL}: {UTIL}:{line}: gives `{}PEM_read_bio_X509` the callback \
-                 `{callback}`, which PASSWORDS does not list",
-                prefix()
-            )
-        };
+        let at = |line: usize| format!("{UTIL}:{line}");
         assert_eq!(
             result,
-            Err(vec![gives(line + 2, "void*"), gives(line + 3, "0")])
+            Err(vec![
+                gives(UTIL, &at(line + 2), "void*", &prefix),
+                gives(UTIL, &at(line + 3), "0", &prefix),
+            ])
         );
     }
 
     #[test]
     #[cfg(unix)]
     fn check_finds_a_read_past_a_pem_h_of_the_copy() {
-        let (result, line) = check_with_util(
+        let (result, line, prefix) = check_with_util(
             "pem",
             &[(
                 "src/util/openssl/pem.h",
@@ -2711,22 +2757,11 @@ n = read_x(b, 0, 0, 0);
             "#include \"openssl/pem.h\"\n\
              void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
         );
-        let gives = |place: &str, callback: &str| {
-            format!(
-                "{UTIL}: {place}: gives `{}PEM_read_bio_X509` the callback \
-                 `{callback}`, which PASSWORDS does not list",
-                prefix()
-            )
-        };
         assert_eq!(
             result,
             Err(vec![
-                format!(
-                    "{UTIL}: includes ./src/util/openssl/pem.h, a header of OpenSSL \
-                     outside the crypto"
-                ),
-                gives("src/util/openssl/pem.h:2", "void*"),
-                gives(&format!("{UTIL}:{}", line + 1), "0"),
+                gives(UTIL, "src/util/openssl/pem.h:2", "void*", &prefix),
+                gives(UTIL, &format!("{UTIL}:{}", line + 1), "0", &prefix),
             ])
         );
     }
@@ -3204,13 +3239,11 @@ End of search list.
     /// The symbol prefix of [`crypto`].
     const PREFIX: &str = "fixture_";
 
-    /// A [`Crypto`] with no include directory, the symbol prefix [`PREFIX`], and no
-    /// `openssl/*.h`: the directory of xtask holds no `.h` file.
+    /// A [`Crypto`] with no include directory and the symbol prefix [`PREFIX`].
     fn crypto() -> Crypto {
         Crypto {
             include: Vec::new(),
             prefix: PREFIX.to_owned(),
-            openssl: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
         }
     }
 
@@ -3833,7 +3866,6 @@ End of search list.
         let crypto = Crypto {
             include: vec![dir.join("crypto")],
             prefix: PREFIX.to_owned(),
-            openssl: dir.join("crypto/openssl"),
         };
         assert_eq!(
             inspect(
