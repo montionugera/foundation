@@ -861,10 +861,12 @@
   fails the check. It checks the calls in a `cc -E` pass of each file with the flags of
   its build, so it reads the unit that compiles. It refuses each header that the unit
   enters, by any name or link, under `openssl/` of a system directory other than an
-  include directory of aws-lc. A header of the copy under `openssl/` passes, such as its
-  own `openssl/securitypolicy_common.h`. The readers come from aws-lc alone, and the
-  check reads the calls of the unit that compiles. When a header of the copy hides one
-  of aws-lc, a call of a reader keeps the name of the reader, or it has no prefix, so
+  include directory of aws-lc. It also refuses each file that the unit enters and that
+  it cannot find by its name, such as a name that is not UTF-8, so no header passes
+  unread. A header of the copy under `openssl/` passes, such as its own
+  `openssl/securitypolicy_common.h`. The readers come from aws-lc alone, and the check
+  reads the calls of the unit that compiles. When a header of the copy hides one of
+  aws-lc, a call of a reader keeps the name of the reader, or it has no prefix, so
   `FUNCTION_SYMBOLS` must list it. For a header under `openssl/`, this supersedes "So
   the check refuses no system header" of
   https://github.com/synnaxlabs/foundation/issues/1884#issuecomment-6060989375. In
