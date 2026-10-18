@@ -216,29 +216,28 @@
   on the node of `foundation-data`, which `node::client::reach` reaches. The command
   line gives five codes of its own. `ops.read`: `no file is at <path>`, `<path> is a
   directory, not a file`, `<path> holds more entries than one read lists`, or `the text
-  of <path> is not UTF-8`, status 2, and `the read
-  of <path> failed with OS error <code>`, status 1, each with the fix `Fix the cause in
-  the message, then run the command again`. `ops.large-request`: `the request has more
-  than <n> bytes, the most that a request holds`, for config files whose bytes together
-  pass that bound at their read, or for the encoded request, status 2, fix `Make the
-  config files smaller`; the check comes before the reach. `ops.write`: `the directory
-  of the plan file <path> is not there` or `the write of the plan file <path> failed
-  with OS error <code>`, status 1, fix ``Give `--out`, or `out` of the MCP tool, a path
-  in a directory that can be written``. `ops.no-config`: `<path> holds no config
-  file`, status 2, fix ``Add a file whose name ends in `.hcl` and does not start with
-  `.` to <path>, or give another path``, which names each extension of the table, for
-  a directory of `plan`, `browse`, or `import` that gives no config file (FRONT ENDS;
-  `laptop.architect-2`, 2026-10-18T18:23:36Z,
+  of <path> is not UTF-8`, status 2, and `the read of <path> failed with OS error
+  <code>`, status 1, each with the fix `Fix the cause in the message, then run the
+  command again`. `ops.large-request`: `the request has more than <n> bytes, the most
+  that a request holds`, for config files whose bytes together pass that bound at their
+  read, or for the encoded request, status 2, fix `Make the config files smaller`; the
+  check comes before the reach. `ops.write`: `the directory of the plan file <path> is
+  not there` or `the write of the plan file <path> failed with OS error <code>`, status
+  1, fix ``Give `--out`, or `out` of the MCP tool, a path in a directory that can be
+  written``. `ops.no-config`: `<path> holds no config file`, status 2, fix ``Add a file
+  whose name ends in `.hcl` and does not start with `.` to <path>, or give another
+  path``, which names each extension of the table, for a directory of `plan`, `browse`,
+  or `import` that gives no config file (FRONT ENDS; `laptop.architect-2`,
+  2026-10-18T18:23:36Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253485402, and for
   `browse` and `import`, 2026-10-18T18:34:45Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253598063).
-  `ops.bad-reply`: `the reply of the node is no
-  reply: <why>`, status 1, fix ``Use a `foundation` program of the same version as the
-  node``. A failure to reach the node, or of its request, has status 1 and one of the
-  codes `node.not-running`, `node.unreadable`, `node.admin-key`, `node.socket`,
-  `node.unanswered`, `node.session`, `node.refused`, and `node.no-reply`, with the
-  message and fix of decision 3 of plan revision 4 (`laptop.architect-2`,
-  2026-10-11T07:10:55Z,
+  `ops.bad-reply`: `the reply of the node is no reply: <why>`, status 1, fix ``Use a
+  `foundation` program of the same version as the node``. A failure to reach the node,
+  or of its request, has status 1 and one of the codes `node.not-running`,
+  `node.unreadable`, `node.admin-key`, `node.socket`, `node.unanswered`, `node.session`,
+  `node.refused`, and `node.no-reply`, with the message and fix of decision 3 of plan
+  revision 4 (`laptop.architect-2`, 2026-10-11T07:10:55Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913). The
   fix of `node.not-running` is ``Start one with `foundation start --name <name>` ``,
   with no `--data`, by decision 7 of plan revision 5

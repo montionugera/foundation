@@ -22,18 +22,16 @@
   2026-10-08T18:11:55Z,
   https://github.com/synnaxlabs/foundation/pull/1950#issuecomment-6066159732).
   Supersedes "with no span" and "The message names the path" of
-  https://github.com/synnaxlabs/foundation/issues/337#issuecomment-6054035444. A
-  config path of `plan`, `browse`, or `import` that is a directory (not of `apply`,
-  which reads one plan file) gives each file in it that the table reads, in name order,
-  one level, with
-  each name that starts with `.` skipped, and `ops.no-config` when it gives none. The
-  filter runs on the bytes of a name before the UTF-8 check, so only a kept entry that
-  is not UTF-8 gives `ops.path-not-utf8`. A kept entry that is a directory gives
+  https://github.com/synnaxlabs/foundation/issues/337#issuecomment-6054035444. A config
+  path of `plan`, `browse`, or `import` that is a directory (not of `apply`, which reads
+  one plan file) gives each file in it that the table reads, in name order, one level,
+  with each name that starts with `.` skipped, and `ops.no-config` when it gives none.
+  The filter runs on the bytes of a name before the UTF-8 check, so only a kept entry
+  that is not UTF-8 gives `ops.path-not-utf8`. A kept entry that is a directory gives
   `ops.read`. The command line takes its table from `node::front_ends`, as
   `Config::front_ends` does (plan of PR 3,
-  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253461918,
-  revised in
-  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253590781,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253461918, revised
+  in https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253590781,
   approved by `laptop.architect-2`, 2026-10-18T18:23:36Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253485402, and for
   `browse` and `import`, 2026-10-18T18:34:45Z,

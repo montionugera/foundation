@@ -70,15 +70,14 @@ pub enum Run {
 /// `plan`, `apply`, `status`, `browse`, and `import` run on the node of `--data`, else
 /// of `foundation-data`. Each reads the files it names through `paths`, calls `reach`
 /// with that data directory once, and calls what it gives with the body of one request.
-/// A [`Failure`] of either is the error of the command, with status 1. A config path
-/// of `plan`, `browse`, or `import` that is a directory gives each file in it whose
-/// name has an extension of `front_ends` and does not start with `.`, in name order,
-/// and `ops.read` for such an entry that is a directory; it reads no file of a
-/// directory in it. `foundation mcp`
-/// runs each tool call of `plan`, `apply`, `status`, `browse`, and `import` on the node
-/// of its own `--data`. It calls `reach` at its first such call, and again only at the
-/// call after a [`Failure`] of what `reach` gave. `start` and the other operations call
-/// neither.
+/// A [`Failure`] of either is the error of the command, with status 1. A config path of
+/// `plan`, `browse`, or `import` that is a directory gives each file in it whose name
+/// has an extension of `front_ends` and does not start with `.`, in name order, and
+/// `ops.read` for such an entry that is a directory; it reads no file of a directory in
+/// it. `foundation mcp` runs each tool call of `plan`, `apply`, `status`, `browse`, and
+/// `import` on the node of its own `--data`. It calls `reach` at its first such call,
+/// and again only at the call after a [`Failure`] of what `reach` gave. `start` and the
+/// other operations call neither.
 ///
 /// The tools of `foundation mcp` read and write only under each `--files` folder,
 /// else under the working directory, and never in the data directory. With no
