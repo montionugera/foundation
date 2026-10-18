@@ -418,9 +418,42 @@ fn the_copy_links_the_timer() {
 /// that they may name in the libc of the target, other than [`PLUGINS`]. In glibc: on
 /// x86-64 with GCC or Clang at each optimization level, and on 64-bit Arm with Clang
 /// at `-O2` and `-moutline-atomics`. In the libc of macOS: on 64-bit Arm with Apple
-/// Clang.
+/// Clang at `-O0`, the level of the workspace crates in the tests.
 const OUTSIDE: &[&str] = if cfg!(target_os = "macos") {
     &[
+        "__chkstk_darwin",
+        "__error",
+        "__memcpy_chk",
+        "__memmove_chk",
+        "__memset_chk",
+        "__sprintf_chk",
+        "__stack_chk_fail",
+        "__stack_chk_guard",
+        "__stderrp",
+        "__stdoutp",
+        "__strncpy_chk",
+        "_tlv_bootstrap",
+        "abort",
+        "access",
+        "bzero",
+        "connector_opcua_calloc",
+        "connector_opcua_free",
+        "connector_opcua_malloc",
+        "connector_opcua_realloc",
+        "fflush",
+        "fprintf",
+        "fputs",
+        "isdigit",
+        "memcmp",
+        "memcpy",
+        "memset",
+        "printf",
+        "strcmp",
+        "strlen",
+        "strncmp",
+        "strtod",
+        "strtok_r",
+        "write",
     ]
 } else {
     &[
