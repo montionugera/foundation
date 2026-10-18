@@ -2077,49 +2077,98 @@ mod tests {
         assert_eq!(kepts, largest.collect::<Vec<_>>(), "(old, (len, capacity))");
     }
 
-    /// A record of 20 tagged entries of 150 bytes takes one block, and the carry
-    /// record of their holders two. With trims, the commit and the walk of a later
-    /// open leave the block between them free. With no trims, neither does.
+    /// Commits 20 tagged entries of 150 bytes, in a record of one block whose holders
+    /// take a carry record of two.
+    async fn commit_tagged(buffer: &Buffer, slots: &mut Slots, pool: &Pool) {
+        let part = pool.alloc(150).expect("a block").freeze();
+        let batch: Vec<_> = (1..=20)
+            .map(|index| {
+                let slot = slots.index(channel::Key::from_u128(index));
+                let index = u32::try_from(index).expect("small");
+                Entry {
+                    samples: None,
+                    tag: 1,
+                    ..entry(index, slot, Path::Live, 0, &part)
+                }
+            })
+            .collect();
+        buffer.append(batch).expect("the ring has room");
+        buffer.committed().await.expect("commits");
+    }
+
+    /// Holds the record at 4096 with a read of index 1 from seq 0, so that no trim
+    /// passes it, then commits records of one block until an append is refused.
+    /// Gives the count of the commits and the refusal.
+    async fn fill(buffer: &Buffer, slots: &mut Slots, pool: &Pool) -> (u64, Rejected) {
+        let held = slots.index(channel::Key::from_u128(1));
+        let mut read = pin!(read_from(buffer, held, 0));
+        let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
+        assert!(first.is_pending(), "the read waits on a file read");
+        let part = pool.alloc(3000).expect("a block").freeze();
+        let slot = slots.index(channel::Key::from_u128(99));
+        for count in 0.. {
+            let entry = entry(99, slot, Path::Live, 3 * count, &part);
+            if let Err(refused) = buffer.append([entry]) {
+                return (count, refused);
+            }
+            buffer.committed().await.expect("commits");
+        }
+        unreachable!("a ring of 66 blocks holds few records")
+    }
+
+    /// The carry record of the holders of a record of tagged entries takes one block
+    /// more than the record. With trims, the commit keeps that block free, and so does
+    /// the walk of a later open: the reopened ring takes one record less, for the
+    /// block of its restart record. With no trims, neither keeps it. Records of one
+    /// block fill a ring of 66 blocks, less the restart record, the tagged record, and
+    /// the spare of 5 blocks, and with trims less the carry records and the excess.
     #[test]
     fn an_open_reserves_the_excess_of_a_record_only_with_trims() {
-        for (trimmed, excesses) in [(false, vec![]), (true, vec![(4096, 4096)])] {
-            let mut sim = sim::Sim::new(sim::Config::default());
-            let node = sim.node(sim::node::Config::default());
+        for (trimmed, filled) in [(false, 59), (true, 55)] {
             let found = Arc::new(Mutex::new(Vec::new()));
-            let given = Arc::clone(&found);
-            with_ring(
-                &mut sim,
-                &node,
-                "write",
-                trimmed,
-                move |buffer, mut slots, pool| async move {
-                    let part = pool.alloc(150).expect("a block").freeze();
-                    let batch: Vec<_> = (1..=20)
-                        .map(|index| {
-                            let slot = slots.index(channel::Key::from_u128(index));
-                            let index = u32::try_from(index).expect("small");
-                            Entry {
-                                samples: None,
-                                tag: 1,
-                                ..entry(index, slot, Path::Live, 0, &part)
-                            }
-                        })
-                        .collect();
-                    buffer.append(batch).expect("the ring has room");
-                    buffer.committed().await.expect("commits");
-                    let excesses = buffer.shared.state.borrow().writer.excesses();
-                    given.lock().expect("no panic held the lock").push(excesses);
-                    buffer
-                },
-            );
-            let given = Arc::clone(&found);
-            with_ring(&mut sim, &node, "walk", trimmed, move |buffer, _, _| {
-                let excesses = buffer.shared.state.borrow().writer.excesses();
-                given.lock().expect("no panic held the lock").push(excesses);
-                async move { buffer }
-            });
+            for walked in [false, true] {
+                let mut sim = sim::Sim::new(sim::Config::default());
+                let node = sim.node(sim::node::Config::default());
+                let given = Arc::clone(&found);
+                with_ring(
+                    &mut sim,
+                    &node,
+                    "write",
+                    trimmed,
+                    move |buffer, mut slots, pool| async move {
+                        commit_tagged(&buffer, &mut slots, &pool).await;
+                        if !walked {
+                            let filled = fill(&buffer, &mut slots, &pool).await;
+                            given.lock().expect("no panic held the lock").push(filled);
+                        }
+                        buffer
+                    },
+                );
+                let given = Arc::clone(&found);
+                if walked {
+                    with_ring(
+                        &mut sim,
+                        &node,
+                        "walk",
+                        trimmed,
+                        move |buffer, mut slots, pool| async move {
+                            let filled = fill(&buffer, &mut slots, &pool).await;
+                            given.lock().expect("no panic held the lock").push(filled);
+                            buffer
+                        },
+                    );
+                }
+            }
             let found = found.lock().expect("no panic held the lock").clone();
-            assert_eq!(found, [excesses.clone(), excesses], "trimmed: {trimmed}");
+            let full = Rejected::Full {
+                needed: 4096,
+                free: 0,
+            };
+            assert_eq!(
+                found,
+                [(filled, full.clone()), (filled - 1, full)],
+                "trimmed: {trimmed}"
+            );
         }
     }
 
