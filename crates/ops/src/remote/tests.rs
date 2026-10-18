@@ -601,10 +601,9 @@ fn plan_of_a_file_of_exactly_the_most_reads_it() {
     });
 }
 
-/// `a.hcl` alone fits a request, and leaves fewer bytes than the entry paths of
-/// `config` take.
-/// A directory after a large file lists with the bytes of a whole read, not the bytes
-/// that the request has left.
+/// `a.hcl` leaves 100 bytes of a request, fewer than the entry paths of `config` take.
+/// A directory after it lists with the bytes of a whole read, not the bytes that the
+/// request has left.
 #[test]
 fn plan_of_a_directory_after_a_large_file_reads_its_files() {
     solo(|fixture, mesh| async move {
@@ -613,6 +612,11 @@ fn plan_of_a_directory_after_a_large_file_reads_its_files() {
         paths
             .write(Path::new("config/f.hcl"), b"")
             .expect("a write");
+        for n in 0..10 {
+            paths
+                .write(&PathBuf::from(format!("config/n{n}.md")), b"")
+                .expect("a write");
+        }
         let a = "#".repeat(most() - 100);
         paths
             .write(Path::new("a.hcl"), a.as_bytes())
