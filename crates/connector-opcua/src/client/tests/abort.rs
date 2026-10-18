@@ -27,6 +27,11 @@ fn empty(chunk: &[u8]) -> Vec<u8> {
     of(chunk, &[])
 }
 
+/// An abort of `chunk` with the Error `Good`, which is no Error.
+fn good(chunk: &[u8]) -> Vec<u8> {
+    of(chunk, &[0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF])
+}
+
 /// An abort of `chunk` with the request id `u32::MAX`, which no request has.
 fn unknown(chunk: &[u8]) -> Vec<u8> {
     let mut abort = too_large(chunk);
@@ -92,6 +97,18 @@ fn a_read_after_16_aborted_answers_gives_the_value() {
 #[test]
 fn an_abort_with_no_error_ends_its_read_with_bad_decoding_error() {
     let (aborted, [after, again], value) = reads(0, 1, empty);
+    assert_eq!(
+        aborted,
+        vec![Err(Fault::status(Status::BAD_DECODING_ERROR))]
+    );
+    assert_eq!((after, again), (Ok(value), Ok(value)));
+}
+
+/// An abort chunk with a code that is not Bad holds no Error either, so it also ends
+/// its read with `BadDecodingError`.
+#[test]
+fn an_abort_with_a_good_code_ends_its_read_with_bad_decoding_error() {
+    let (aborted, [after, again], value) = reads(0, 1, good);
     assert_eq!(
         aborted,
         vec![Err(Fault::status(Status::BAD_DECODING_ERROR))]
