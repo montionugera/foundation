@@ -127,19 +127,17 @@ impl Reader {
     /// [`Reader::decode`] of a message, apart so that each caller inlines only the
     /// check of the end of the stream.
     fn message<'m>(&mut self, message: &'m [u8]) -> Result<FromHome<'m>, Error> {
-        let State::Open(next) = &mut self.state else {
-            return self.unopened(message);
-        };
-        match *next {
-            Next::Head => self.head(message),
-            Next::Ends { remain } => {
-                let (ends, last) = next.ends(remain, message)?;
+        // Three arms, so that the body arm is a compare, not a jump table.
+        match &mut self.state {
+            State::Open(next @ Next::Body(_)) => Ok(FromHome::Body {
+                bytes: message,
+                last: next.take(message.len())?,
+            }),
+            State::Open(next @ Next::Ends { .. }) => {
+                let (ends, last) = next.ends(message)?;
                 Ok(FromHome::Ends { ends, last })
             }
-            Next::Body(body) => Ok(FromHome::Body {
-                bytes: message,
-                last: next.take(body, message.len())?,
-            }),
+            State::Unopened | State::Open(Next::Head) => self.reply(message),
         }
     }
 
@@ -191,27 +189,23 @@ impl Reader {
         }
     }
 
-    /// The reply before `Opened`.
-    fn unopened<'m>(&mut self, message: &[u8]) -> Result<FromHome<'m>, Error> {
-        match Reply::decode(message)? {
-            Reply::Opened { live } => {
+    /// The reply that is due: `Opened` first, then a head.
+    // Out of line, so that the body arm of `message` saves no register.
+    #[inline(never)]
+    fn reply<'m>(&mut self, message: &[u8]) -> Result<FromHome<'m>, Error> {
+        match (Reply::decode(message)?, self.state) {
+            (Reply::Opened { live }, State::Unopened) => {
                 self.state = State::Open(Next::Head);
                 self.end = live;
                 Ok(FromHome::Opened { live })
             }
-            Reply::Head(_) => Err(Error::Unopened { kind: HEAD }),
-        }
-    }
-
-    /// The reply after `Opened`, where a head is due.
-    fn head<'m>(&mut self, message: &[u8]) -> Result<FromHome<'m>, Error> {
-        match Reply::decode(message)? {
-            Reply::Opened { .. } => Err(Error::Reopen { kind: OPENED }),
-            Reply::Head(head) if head.series > self.places => Err(Error::Places {
+            (Reply::Head(_), State::Unopened) => Err(Error::Unopened { kind: HEAD }),
+            (Reply::Opened { .. }, _) => Err(Error::Reopen { kind: OPENED }),
+            (Reply::Head(head), _) if head.series > self.places => Err(Error::Places {
                 series: head.series,
                 places: self.places,
             }),
-            Reply::Head(head) => {
+            (Reply::Head(head), _) => {
                 self.end = self.end_of(head)?;
                 self.state = State::Open(Next::Ends {
                     remain: head.series,

@@ -117,13 +117,13 @@ impl Frames {
         self.assembly.check_undrafted("the next message");
         match self.next {
             Next::Head => self.head(message),
-            Next::Ends { remain } => {
-                let (ends, last) = self.next.ends(remain, message)?;
+            Next::Ends { .. } => {
+                let (ends, last) = self.next.ends(message)?;
                 self.assembly.ends(ends, last);
                 Ok(Step::More)
             }
             Next::Body(body) => {
-                let last = self.next.take(body, message.len())?;
+                let last = self.next.take(message.len())?;
                 self.assembly.body(body.at(), message);
                 Ok(self.received_body(last))
             }

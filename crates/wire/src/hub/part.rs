@@ -21,20 +21,25 @@ pub(super) enum Next {
 }
 
 impl Next {
-    /// Decodes `message` as a message of the run, where [`Next::Ends`] gives the ends
-    /// that `remain`. Gives the ends of the message, and whether the run ends with
-    /// them.
+    /// Decodes `message` as a message of the run. Gives the ends of the message, and
+    /// whether the run ends with them.
     ///
     /// # Errors
     ///
     /// The errors of [`ends::decode`], then [`Error::Run`] for more ends than remain.
     /// The part stays as it was.
+    ///
+    /// # Panics
+    ///
+    /// When the next message is not of the run.
     #[inline]
     pub(super) fn ends<'m>(
         &mut self,
-        remain: u32,
         message: &'m [u8],
     ) -> Result<(ends::Iter<'m>, bool), Error> {
+        let Self::Ends { remain } = *self else {
+            panic!("a run of ends is due, not {self:?}")
+        };
         let ends = ends::decode(message)?;
         let remain = rest_of_run(remain, ends.len())?;
         *self = match (remain, ends.last_end()) {
@@ -46,7 +51,7 @@ impl Next {
     }
 
     /// Takes a body message of `len` bytes that the caller has in place, as
-    /// [`Next::decode`] takes it. Gives whether it is the last of the body.
+    /// [`Next::take`] takes it. Gives whether it is the last of the body.
     ///
     /// # Errors
     ///
@@ -58,30 +63,32 @@ impl Next {
     /// body.
     #[inline]
     pub(super) fn received(&mut self, len: usize) -> Result<bool, Error> {
-        let Self::Body(body) = *self else {
-            panic!("a body is due, not {self:?}")
-        };
-        let remain = body.remain();
-        assert!(
-            len <= remain,
-            "a body message of {len} bytes is over the {remain} bytes left of its body"
-        );
-        self.take(body, len)
+        if let Self::Body(body) = *self {
+            let remain = body.remain();
+            assert!(
+                len <= remain,
+                "a body message of {len} bytes is over the {remain} bytes left of its \
+                 body"
+            );
+        }
+        self.take(len)
     }
 
-    /// Takes a body message of `len` bytes, where [`Next::Body`] gives the `body`.
-    /// Gives whether it is the last of the body.
+    /// Takes a body message of `len` bytes. Gives whether it is the last of the body.
     ///
     /// # Errors
     ///
     /// [`Error::Empty`] when `len` is 0, and [`Error::Body`] when it is over the rest
     /// of the body. The part stays as it was.
+    ///
+    /// # Panics
+    ///
+    /// When the next message is not body bytes.
     #[inline]
-    pub(super) fn take(
-        &mut self,
-        mut body: body::Count,
-        len: usize,
-    ) -> Result<bool, Error> {
+    pub(super) fn take(&mut self, len: usize) -> Result<bool, Error> {
+        let Self::Body(mut body) = *self else {
+            panic!("a body is due, not {self:?}")
+        };
         let last = body.take(len)?;
         *self = if last { Self::Head } else { Self::Body(body) };
         Ok(last)
