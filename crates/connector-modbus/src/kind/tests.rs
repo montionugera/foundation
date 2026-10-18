@@ -391,6 +391,8 @@ struct Scene {
     device: Arc<Mutex<Device>>,
     /// The stop of the server that runs.
     server: RefCell<Option<Token>>,
+    /// Drops the server that [`Scene::serve`] started.
+    dropped: RefCell<Option<Token>>,
 }
 
 impl Scene {
@@ -412,12 +414,24 @@ impl Scene {
     /// Serves the device as [`UNIT`] on port 502.
     fn serve(&self) {
         let listener = self.listen();
-        let (stop, device) = (Token::new(), Arc::clone(&self.device));
-        let until = stop.clone();
+        let (stop, drop, device) =
+            (Token::new(), Token::new(), Arc::clone(&self.device));
+        let (until, dropped) = (stop.clone(), drop.clone());
         self.tasks.spawn(async move {
-            until.race(serve(listener, UNIT, &device)).await;
+            let served = dropped.race(serve(listener, until, UNIT, &device)).await;
+            if let Some(served) = served {
+                served.expect("the listener holds");
+            }
         });
         *self.server.borrow_mut() = Some(stop);
+        *self.dropped.borrow_mut() = Some(drop);
+    }
+
+    /// Drops the server that [`Scene::serve`] started, which resets its stream.
+    fn reset(&self) {
+        let dropped = self.dropped.borrow_mut().take();
+        dropped.expect("a server runs").cancel();
+        drop(self.server.borrow_mut().take());
     }
 
     /// Accepts one stream on port 502 and keeps it open with no answer, in place of
@@ -464,6 +478,7 @@ impl Scene {
 
     /// Stops the server, which closes its listener and its stream.
     fn stop(&self) {
+        drop(self.dropped.borrow_mut().take());
         let stop = self.server.borrow_mut().take();
         stop.expect("a server runs").cancel();
     }
@@ -607,6 +622,7 @@ where
         let scene = Rc::new(Scene {
             device: Arc::new(Mutex::new(device)),
             server: RefCell::new(None),
+            dropped: RefCell::new(None),
             node: node.clone(),
             tasks: tasks.clone(),
         });
@@ -878,9 +894,14 @@ fn ends_the_run_with_a_device_error_when_a_reply_is_late() {
 /// The supervisor waits a random backoff before each new run, so each seed takes
 /// another time to read again.
 #[test]
-fn reads_again_in_order_after_the_device_resets_its_stream() {
+fn reads_again_in_order_after_the_device_resets_or_closes_its_stream() {
     const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 7)];
-    for seed in 0..16 {
+    let reset: fn(&Scene) = Scene::reset;
+    let cuts = [
+        (reset, "10.0.0.1:502 reset the stream"),
+        (Scene::stop, "the device closed the stream"),
+    ];
+    for (seed, (cut, ended)) in (0..16).flat_map(|seed| cuts.map(|cut| (seed, cut))) {
         let world = World {
             seed,
             ..World::default()
@@ -891,25 +912,23 @@ fn reads_again_in_order_after_the_device_resets_its_stream() {
             &ONE,
             connector("plc", &ONE, &[]),
             ms(30_050),
-            |scene| async move {
-                scene.after(ms(1_050), |scene| async move { scene.stop() });
+            move |scene| async move {
+                scene.after(ms(1_050), move |scene| async move { cut(&scene) });
                 scene.after(ms(3_050), |scene| async move { scene.serve() });
             },
         );
         let result = record.result.as_ref().map_err(ToString::to_string);
         assert_eq!(result, Ok(&()), "seed {seed}");
-        let reset = (
+        let cut = (
             Class::Device,
-            "the read of the holding registers from address 0 failed: 10.0.0.1:502 \
-             reset the stream"
-                .to_owned(),
+            format!("the read of the holding registers from address 0 failed: {ended}"),
         );
         let refused = (
             Class::Device,
             "the connect to 10.0.0.1:502 failed: 10.0.0.1:502 refused the connection"
                 .to_owned(),
         );
-        assert_eq!(record.errors(), [reset, refused], "seed {seed}");
+        assert_eq!(record.errors(), [cut, refused], "seed {seed}");
         let start = record.stamps()[0];
         let stamps: Vec<_> = record.stamps().iter().map(|at| at - start).collect();
         assert!(stamps.is_sorted_by(|a, b| a < b), "seed {seed}: {stamps:?}");
