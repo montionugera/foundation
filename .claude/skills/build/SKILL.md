@@ -114,7 +114,7 @@ env -u CARGO_TARGET_DIR cargo mutants --in-diff "$p" --jobs 4
   a pass: a timeout means a test caught the mutant.
 - On a box, run `cargo mutants`, and each `cargo test` of a mutant made by hand, in the
   memory cgroup that `docs/claude/testing.md` gives (mutation testing). A run of a hand
-  mutant that ends by `SIGKILL` in the cap is a kill only as that section says.
+  mutant in the cap follows the order and the `SIGKILL` rule of that section.
 - A changed `Cargo.toml` or `Cargo.lock`: also
   `cargo deny check advisories bans licenses sources`.
 - A change under a `models` path in `.github/workflows/ci.yaml`: also `cargo xtask

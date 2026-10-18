@@ -43,8 +43,8 @@ session.
 On a box (Linux), run each `cargo test` in the memory cap that your task gives, with
 four build jobs (`docs/claude/testing.md`, mutation testing): `systemd-run --user
 --scope -p MemoryMax=<cap> -p MemorySwapMax=0 -p OOMPolicy=continue env
-CARGO_BUILD_JOBS=4 cargo test ...`. A run of a hand mutant or of a reverted fix that
-ends by `SIGKILL` in the cap is a kill or a fail only as that section says.
+CARGO_BUILD_JOBS=4 cargo test ...`. A run of a hand mutant or of a reverted fix in the
+cap follows the order and the `SIGKILL` rule of that section.
 
 Read `docs/claude/testing.md` and the records of `docs/decisions/` the PR builds. Then
 read the diff (`gh pr diff <n>`) and every file it touches. In each round, each item,
