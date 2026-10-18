@@ -12,8 +12,9 @@
 
 use types::frame::{self, Form, Path};
 
-use super::client::WRITE;
 use super::{Error, Fields, Writer};
+
+const HEAD: u8 = 7;
 
 const LIVE: u8 = 0;
 const BACKFILL: u8 = 1;
@@ -85,7 +86,7 @@ impl Head {
             Form::Encoded => ENCODED,
         };
         let mut out = Writer::new(out, Self::LEN);
-        out.put(&[WRITE, time, form]);
+        out.put(&[HEAD, time, form]);
         out.put(&self.count.to_le_bytes());
         out.put(&self.series.to_le_bytes());
     }

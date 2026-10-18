@@ -81,7 +81,7 @@ pub use stream::{OPEN_BYTES_MAX, PLACES_MAX, Place, Places, place};
 const HELLO: u8 = 4;
 const REQUEST: u8 = 5;
 const READ: u8 = 6;
-pub(super) const WRITE: u8 = 7;
+const WRITE: u8 = 7;
 
 /// Stop code: the hello, request, or read failed the access check. The spec has no such
 /// subject, does not list the key for it, or the signature is not valid. The node's
