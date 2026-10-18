@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use walk::{Step, Walk};
 
+pub mod dir;
 mod walk;
 
 /// The files of the host by the paths that a user gave, as on a command line. A
@@ -132,9 +133,9 @@ impl Paths {
     ///
     /// [`Error::NotFound`] when `path` is empty or a directory on the way is not there,
     /// the error of [`Driver::looped`] past [`LINKS`] symbolic links, else
-    /// [`Error::Io`], also for a `.`, a `..`, or an end in `/` after a file. Each name
-    /// goes to the host by its resolved path, so `path`, or a name whose resolved
-    /// path, is longer than the host takes fails with [`Error::Io`].
+    /// [`Error::Io`], also for a `.`, a `..`, or an end in `/` after a file, and for a
+    /// `path` longer than the host takes. Each name goes to the host as one call on
+    /// the directory that holds it, so a resolved path has no bound on its length.
     ///
     /// ```
     /// use std::path::{Path, PathBuf};
@@ -165,7 +166,8 @@ impl Paths {
     /// What is at `path`: the bytes of a file of at most `most` bytes, or the path of
     /// each entry of a directory whose entry paths hold at most `most` bytes in all, in
     /// name order. It reads through one open of `path`: a later rename or replace at
-    /// `path` does not change what it reads.
+    /// `path` does not change what it reads. A directory that this user can read and
+    /// not search gives its entries, and each name in it gives `EACCES`.
     ///
     /// # Errors
     ///
@@ -229,9 +231,9 @@ impl Paths {
     /// makes no directory above it, and none through a symbolic link at `path`. A
     /// directory that it makes gives the group and other users no access. On a handle
     /// of [`Paths::within`], `path` first passes the limits of [`Paths::within`]. When
-    /// the host refuses the last name of `path` to the walk, such as for a resolved
-    /// path longer than the host takes, the limits check that name at its place as a
-    /// new name, and the call gives the result of the host.
+    /// the host refuses the last name of `path` to the walk, such as for a name longer
+    /// than the host takes, the limits check that name at its place as a new name, and
+    /// the call gives the result of the host.
     ///
     /// # Errors
     ///
@@ -264,6 +266,21 @@ impl Paths {
         }
         let walk = self.walk(path);
         let now: Vec<_> = self.limits.iter().map(|limit| self.now(limit)).collect();
+        let keys: Vec<_> = self
+            .limits
+            .iter()
+            .zip(&now)
+            .flat_map(|(limit, now)| {
+                let folders = limit.folders.iter().map(|(_, was)| *was);
+                let hidden = limit.hidden.iter().filter_map(|hidden| hidden.was);
+                let seen = now.hidden.iter().filter_map(|seen| match seen {
+                    Seen::There(key) => Some(*key),
+                    _ => None,
+                });
+                folders.chain(hidden).chain(seen)
+            })
+            .collect();
+        let above = walk::Above::new(&walk.steps, &keys);
         for (index, step) in walk.steps.iter().enumerate() {
             let ask = if index + 1 == walk.steps.len() && walk.end.is_ok() {
                 Ask::Hold(call)
@@ -272,34 +289,32 @@ impl Paths {
             } else {
                 Ask::Pass
             };
-            self.allowed(&walk.steps, index, ask, &now)?;
+            self.allowed(&walk.steps, index, ask, &now, &above)?;
         }
         walk.end
     }
 
     /// `Ok` when step `index` of `steps` passes each limit as `ask` gives, where `now`
-    /// is what this call found of each limit.
+    /// is what this call found of each limit, and `above` what the directories above
+    /// each step hold of the keys of `now` and of the limits.
     fn allowed(
         &self,
         steps: &[Step],
         index: usize,
         ask: Ask,
         now: &[Now],
+        above: &walk::Above<'_>,
     ) -> Result<(), Error> {
-        let step = &steps[index];
-        let own = step.own;
-        let dirs: Vec<_> = iter::successors(step.up, |&up| steps[up].up)
-            .filter_map(|up| steps[up].own)
-            .collect();
-        let keys: Vec<_> = own.into_iter().chain(dirs.iter().copied()).collect();
+        let own = steps[index].own;
+        let has = |key: Key| own == Some(key) || above.holds(index, key);
         let (mut vacant, mut veiled) = (false, false);
         for (limit, now) in self.limits.iter().zip(now) {
             for (Hidden { was, .. }, seen) in limit.hidden.iter().zip(&now.hidden) {
-                let moved = was.is_some_and(|key| dirs.contains(&key));
+                let moved = was.is_some_and(|key| above.holds(index, key));
                 let hidden = match seen {
-                    Seen::There(key) => keys.contains(key),
+                    Seen::There(key) => has(*key),
                     Seen::Vacant(deepest) => {
-                        vacant |= own.is_none() && dirs.first() == deepest.as_ref();
+                        vacant |= own.is_none() && above.nearest(index) == *deepest;
                         false
                     }
                     Seen::Refused => true,
@@ -317,7 +332,7 @@ impl Paths {
         };
         let passes = |((_, was), folder): (&(PathBuf, Key), &Folder)| {
             folder.there
-                && (keys.contains(was)
+                && (has(*was)
                     || ask == Ask::Way
                         && own.is_some_and(|own| folder.above.contains(&own)))
         };
@@ -328,6 +343,9 @@ impl Paths {
                 })
         {
             let path = walk::path(steps, index);
+            let keys: Vec<_> = iter::successors(Some(index), |&at| steps[at].up)
+                .filter_map(|at| steps[at].own)
+                .collect();
             let replaced = limit.folders.iter().any(|(dir, was)| {
                 keys.contains(was)
                     || path.starts_with(dir)
@@ -356,13 +374,12 @@ impl Paths {
 
     /// What this call finds of the folders of `limit`.
     fn now(&self, limit: &Limit) -> Now {
-        let key = |path: &Path| match self.driver.entry(path) {
-            Ok(Entry::Directory(key) | Entry::File(key)) => Some(key),
-            _ => None,
-        };
-        let folders = limit.folders.iter().map(|(dir, was)| Folder {
-            there: key(dir) == Some(*was),
-            above: dir.ancestors().skip(1).filter_map(key).collect(),
+        let folders = limit.folders.iter().map(|(dir, was)| {
+            let (above, own) = walk::keys(&*self.driver, dir);
+            Folder {
+                there: own == Some(*was),
+                above,
+            }
         });
         let hidden = limit.hidden.iter().map(|Hidden { given, .. }| {
             let walk = Walk::on_root(&*self.driver, given);
@@ -473,7 +490,8 @@ struct Now {
 struct Folder {
     /// The file at its resolved path is the one that was there at `within`.
     there: bool,
-    /// The key of each directory above its resolved path that the host gives.
+    /// The key of each directory on the way to its resolved path, with no link
+    /// followed.
     above: Vec<Key>,
 }
 
@@ -595,14 +613,16 @@ pub trait Driver: Debug {
     /// none.
     fn home(&self) -> Option<PathBuf>;
 
-    /// What is at `path`, with no symbolic link at its last name followed. A path that
-    /// ends in `/.` or `/..` names the directory that the host resolves for it.
+    /// The root directory of the host on the way to `absolute`, a path with a root,
+    /// open: `/` on a host other than Windows.
     ///
     /// # Errors
     ///
-    /// [`Error::NotFound`] when nothing is at `path`, else [`Error::Io`], also when a
-    /// file is on the way, with the code of the host.
-    fn entry(&self, path: &Path) -> Result<Entry, Error>;
+    /// [`Error::Io`] with the code of the host.
+    fn root(&self, absolute: &Path) -> Result<Box<dyn dir::Driver>, Error>;
+
+    /// The error that the host gives for a name in a file that is not a directory.
+    fn not_directory(&self) -> Error;
 
     /// The absolute path that the host walks for `path`, as text: a relative path on
     /// the resolved working directory, and on Windows the path that Win32 makes of it.
@@ -624,21 +644,24 @@ pub trait Driver: Debug {
 /// host can take fewer.
 pub const LINKS: usize = 40;
 
-/// What [`Driver::entry`] found at a path, with no symbolic link followed.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What [`dir::Driver::open`] found at a name, with no symbolic link followed.
+#[derive(Debug)]
 pub enum Entry {
     /// A symbolic link, with its key and the path that it names, as written.
     Link(Key, PathBuf),
-    /// A directory, with its key.
-    Directory(Key),
-    /// Any other file, also a device or a FIFO, with its key.
+    /// A directory, open.
+    Directory(Box<dyn dir::Driver>),
+    /// A regular file, with its key.
     File(Key),
+    /// A device, a FIFO, or a socket, with its key.
+    Special(Key),
 }
 
 impl Entry {
     fn key(&self) -> Key {
         match self {
-            Self::Link(key, _) | Self::Directory(key) | Self::File(key) => *key,
+            Self::Directory(dir) => dir.key(),
+            Self::Link(key, _) | Self::File(key) | Self::Special(key) => *key,
         }
     }
 }
@@ -658,6 +681,7 @@ pub fn names_directory(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
+    use std::ffi::OsStr;
 
     use super::*;
 
@@ -666,10 +690,9 @@ mod tests {
     const MOST: usize = 64;
 
     /// One file, at any path but one under `/none`, where each other name is a
-    /// directory, other than a name that ends in `.hcl`, which is a file, and a path
-    /// with a name after one, which gives `Io` 20. After a write of `loop`, the name
-    /// `loop` is a link to itself. `c<n>` for n from 1 is a link to `c<n - 1>`, and
-    /// `link` a link to `/out`.
+    /// directory, other than a name that ends in `.hcl`, which is a file. After a write
+    /// of `loop`, the name `loop` is a link to itself. `c<n>` for n from 1 is a link to
+    /// `c<n - 1>`, and `link` a link to `/out`.
     /// `/none/deep` is a link to `/none/new/a`. A directory that it makes is the file
     /// `dir`. A name in `/none` is there only while the last write made a directory,
     /// and a name that starts with `new` never. The key of a path ignores case. The
@@ -677,14 +700,106 @@ mod tests {
     /// name that starts with `swap` in any case takes the bytes of the file after the
     /// path, so a write gives it a new key: after a write of `x`, `/work/swap` has the
     /// key that `/work/swapx` had before it. The name `io` gives `Io` 5. After a write
-    /// of `file`, the name `f` is a file, and a path through it gives `Io` 20. After a
-    /// write of `hop`, `/hop` is a link to `/out`. A path in `/volume` has the key of
-    /// the path without `/volume`, as a second mount of `/` does. It counts its calls
-    /// of `entry`, and a relative path is under its working directory, `/` at first.
-    /// `absolute` refuses a path of [`MOST`] bytes or more as given with `Io` 36. A `\`
-    /// in a path is a `/`, since the walk joins names with `\` on Windows.
-    #[derive(Debug, Default)]
-    struct One(RefCell<Vec<u8>>, Rc<Cell<usize>>, Rc<RefCell<PathBuf>>);
+    /// of `file`, the name `f` is a file. After a write of `hop`, `/hop` is a link to
+    /// `/out`. A path in `/volume` has the key of the path without `/volume`, as a
+    /// second mount of `/` does. `..` of a directory is its path less its last name,
+    /// but `..` of `moved` is `/out` once after a write of `moved`, and each time after
+    /// a write of `away`.
+    /// It counts its opens of a root or a name, and a relative path is under its
+    /// working directory, `/` at first. `absolute` refuses a path of [`MOST`] bytes or
+    /// more as given with `Io` 36. A `\` in a path is a `/`, since the walk joins names
+    /// with `\` on Windows.
+    #[derive(Clone, Debug, Default)]
+    struct One(Rc<RefCell<Vec<u8>>>, Rc<Cell<usize>>, Rc<RefCell<PathBuf>>);
+
+    impl One {
+        fn count(&self) {
+            self.1.set(self.1.get() + 1);
+        }
+
+        fn key(&self, path: &Path) -> Key {
+            let name = path.file_name().unwrap_or_default().as_encoded_bytes();
+            let mut at = path.to_path_buf();
+            if let Ok(rest) = path.strip_prefix("/volume")
+                && rest != Path::new("")
+            {
+                at = Path::new("/").join(rest);
+            }
+            let mut folded = at.as_os_str().as_encoded_bytes().to_ascii_lowercase();
+            if name.to_ascii_lowercase().starts_with(b"swap") {
+                folded.extend_from_slice(&self.0.borrow());
+            }
+            // FNV-1a.
+            let hash = folded
+                .iter()
+                .fold(0xcbf2_9ce4_8422_2325_u64, |hash, &byte| {
+                    (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+                });
+            Key::new(0, hash)
+        }
+
+        fn entry(&self, path: &Path) -> Result<Entry, Error> {
+            let data = self.0.borrow();
+            let name = path.file_name().unwrap_or_default().as_encoded_bytes();
+            if name == b"io" {
+                return Err(Error::Io { code: 5 });
+            }
+            if name == b"Gone" && *data == b"gone" {
+                return Err(Error::Io { code: 13 });
+            }
+            let in_none = path.parent() == Some(Path::new("/none")) && *data != b"dir";
+            if name.starts_with(b"new") || in_none && path != Path::new("/none/deep") {
+                return Err(Error::NotFound);
+            }
+            let key = self.key(path);
+            Ok(match path.to_str() {
+                Some("/none/deep") => Entry::Link(key, "/none/new/a".into()),
+                Some("/hop") if *data == b"hop" => Entry::Link(key, "/out".into()),
+                _ if name == b"link" => Entry::Link(key, "/out".into()),
+                _ if name == b"loop" && *data == b"loop" => {
+                    Entry::Link(key, "loop".into())
+                }
+                _ if name.ends_with(b".hcl") || name == b"f" && *data == b"file" => {
+                    Entry::File(key)
+                }
+                _ => match name
+                    .strip_prefix(b"c")
+                    .and_then(|n| str::from_utf8(n).ok()?.parse::<u8>().ok())
+                {
+                    Some(n @ 1..) => Entry::Link(key, format!("c{}", n - 1).into()),
+                    _ => Entry::Directory(Box::new(Dir(self.clone(), path.into()))),
+                },
+            })
+        }
+    }
+
+    /// A directory of [`One`], open at its path.
+    #[derive(Debug)]
+    struct Dir(One, PathBuf);
+
+    impl dir::Driver for Dir {
+        fn key(&self) -> Key {
+            self.0.key(&self.1)
+        }
+
+        fn open(&self, name: &OsStr) -> Result<Entry, Error> {
+            self.0.count();
+            if name == ".." {
+                let mut data = self.0.0.borrow_mut();
+                let moved = self.1.file_name() == Some(OsStr::new("moved"));
+                if moved && matches!(&data[..], b"moved" | b"away") {
+                    if *data == b"moved" {
+                        data.clear();
+                    }
+                    let out = Dir(self.0.clone(), PathBuf::from("/out"));
+                    return Ok(Entry::Directory(Box::new(out)));
+                }
+                let up = self.1.parent().unwrap_or(&self.1).to_owned();
+                return Ok(Entry::Directory(Box::new(Dir(self.0.clone(), up))));
+            }
+            self.0.entry(&slashed(&self.1.join(name)))
+        }
+    }
 
     impl Driver for One {
         fn read(&self, path: &Path, most: usize) -> Result<Found, Error> {
@@ -716,64 +831,13 @@ mod tests {
             Some(PathBuf::from("/home/user"))
         }
 
-        fn entry(&self, path: &Path) -> Result<Entry, Error> {
-            self.1.set(self.1.get() + 1);
-            let slashed = slashed(path);
-            let path = slashed.as_path();
-            let data = self.0.borrow();
-            let name = path.file_name().unwrap_or_default().as_encoded_bytes();
-            if name == b"io" {
-                return Err(Error::Io { code: 5 });
-            }
-            let bytes = path.as_os_str().as_encoded_bytes();
-            if bytes.windows(5).any(|part| part == b".hcl/") {
-                return Err(Error::Io { code: 20 });
-            }
-            if *data == b"file" && bytes.windows(3).any(|part| part == b"/f/") {
-                return Err(Error::Io { code: 20 });
-            }
-            if name == b"Gone" && *data == b"gone" {
-                return Err(Error::Io { code: 13 });
-            }
-            let in_none = path.parent() == Some(Path::new("/none")) && *data != b"dir";
-            if name.starts_with(b"new") || in_none && path != Path::new("/none/deep") {
-                return Err(Error::NotFound);
-            }
-            let mut at = path.to_path_buf();
-            if let Ok(rest) = path.strip_prefix("/volume")
-                && rest != Path::new("")
-            {
-                at = Path::new("/").join(rest);
-            }
-            let mut folded = at.as_os_str().as_encoded_bytes().to_ascii_lowercase();
-            if name.to_ascii_lowercase().starts_with(b"swap") {
-                folded.extend_from_slice(&data);
-            }
-            // FNV-1a.
-            let hash = folded
-                .iter()
-                .fold(0xcbf2_9ce4_8422_2325_u64, |hash, &byte| {
-                    (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-                });
-            let key = Key::new(0, hash);
-            Ok(match path.to_str() {
-                Some("/none/deep") => Entry::Link(key, "/none/new/a".into()),
-                Some("/hop") if *data == b"hop" => Entry::Link(key, "/out".into()),
-                _ if name == b"link" => Entry::Link(key, "/out".into()),
-                _ if name == b"loop" && *data == b"loop" => {
-                    Entry::Link(key, "loop".into())
-                }
-                _ if name.ends_with(b".hcl") || name == b"f" && *data == b"file" => {
-                    Entry::File(key)
-                }
-                _ => match name
-                    .strip_prefix(b"c")
-                    .and_then(|n| str::from_utf8(n).ok()?.parse::<u8>().ok())
-                {
-                    Some(n @ 1..) => Entry::Link(key, format!("c{}", n - 1).into()),
-                    _ => Entry::Directory(key),
-                },
-            })
+        fn root(&self, _: &Path) -> Result<Box<dyn dir::Driver>, Error> {
+            self.count();
+            Ok(Box::new(Dir(self.clone(), PathBuf::from("/"))))
+        }
+
+        fn not_directory(&self) -> Error {
+            Error::Io { code: 20 }
         }
 
         fn absolute(&self, path: &Path) -> Result<PathBuf, Error> {
@@ -1149,6 +1213,23 @@ mod tests {
         calls.set(0);
         assert_eq!(paths.read(Path::new(&path), 1), Err(Error::NotFound));
         assert_eq!(calls.get(), 7);
+    }
+
+    #[test]
+    fn a_walk_starts_again_at_a_dot_dot_that_reaches_another_directory() {
+        let one = One::default();
+        let calls = Rc::clone(&one.1);
+        let paths = Paths::new(one);
+        paths.write(Path::new("/a"), b"moved").unwrap();
+        calls.set(0);
+        let resolved = paths.resolve(Path::new("/work/moved/../a"));
+        assert_eq!(resolved, Ok(PathBuf::from("/work/a")));
+        assert_eq!(calls.get(), 9);
+        paths.write(Path::new("/a"), b"away").unwrap();
+        calls.set(0);
+        let looped = paths.resolve(Path::new("/work/moved/.."));
+        assert_eq!(looped, Err(Error::Io { code: 40 }));
+        assert_eq!(calls.get(), 4 * (LINKS + 1));
     }
 
     #[test]

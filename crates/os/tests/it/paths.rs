@@ -150,6 +150,24 @@ fn within_hides_a_folder_that_this_user_cannot_list() {
     assert_eq!(within.unwrap().write(&key, b"x"), Err(Error::Hidden));
 }
 
+/// The walk opens a directory with no read permission, and on macOS a directory with
+/// no search permission is open by its key alone, so a directory that this user can
+/// read and not search lists its names, and each name in it gives `EACCES`.
+#[test]
+fn within_lists_a_directory_that_this_user_can_read_and_not_search() {
+    let scratch = Scratch::new();
+    let base = fs::canonicalize(&scratch.0).unwrap();
+    let dir = base.join("read");
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("f"), b"x").unwrap();
+    fs::set_permissions(&dir, Permissions::from_mode(0o400)).unwrap();
+    let within = os::paths().within(slice::from_ref(&base), &[]).unwrap();
+    let found = (within.read(&dir, 4096), within.read(&dir.join("f"), 64));
+    fs::set_permissions(&dir, Permissions::from_mode(0o700)).unwrap();
+    let names = Ok(Found::Directory(vec![dir.join("f")]));
+    assert_eq!(found, (names, Err(Error::Io { code: 13 })));
+}
+
 #[test]
 fn within_hides_a_folder_that_this_user_cannot_search() {
     for bits in [0o600, 0o000] {
@@ -295,9 +313,9 @@ fn a_hidden_folder_that_a_program_moves_and_makes_again_stays_hidden() {
 
 /// A relative link in `work` to a deep directory, so the given path is short and the
 /// resolved path of a new name in it is one byte past the longest path of the OS. The
-/// walk gives the error of the host, and `make_dir` gives the result of the host.
+/// walk takes each name on its directory, so each call gives the result of the host.
 #[test]
-fn within_refuses_a_new_name_whose_resolved_path_is_too_long() {
+fn within_takes_a_new_name_whose_resolved_path_is_too_long_as_the_host_does() {
     run(|host| {
         let (within, base) = cases::within_work(host);
         let most = most();
@@ -322,14 +340,20 @@ fn within_refuses_a_new_name_whose_resolved_path_is_too_long() {
                 within.write(&named, b"x"),
                 made,
                 fs::symlink_metadata(&dir).is_ok(),
+                host.paths.read(&named, 64),
             ));
         }
-        let too_long = Err(Error::Io { code: too_long() });
         assert_eq!(
             found,
             [
-                (Ok(()), too_long, Ok(()), true),
-                (Ok(()), Err(Error::Hidden), Err(Error::Hidden), false),
+                (Ok(()), Ok(()), Ok(()), true, Ok(Found::File(b"x".to_vec()))),
+                (
+                    Ok(()),
+                    Err(Error::Hidden),
+                    Err(Error::Hidden),
+                    false,
+                    Err(Error::NotFound)
+                ),
             ]
         );
     });
@@ -391,20 +415,16 @@ fn a_folder_made_again_read_in_other_case_is_replaced() {
 /// A hidden file that is not there, at a short path through a relative link, whose
 /// resolved path is one byte past the longest path of the OS.
 #[test]
-fn within_refuses_a_hidden_name_whose_resolved_path_is_too_long() {
+fn within_hides_a_hidden_name_whose_resolved_path_is_too_long() {
     run(|host| {
-        cases::within_refuses_a_hidden_name_whose_resolved_path_is_too_long(
-            host,
-            most(),
-            too_long(),
-        );
+        cases::within_hides_a_hidden_name_whose_resolved_path_is_too_long(host, most());
     });
 }
 
 /// A hidden file whose resolved path is longer than the OS takes, made by its short
 /// path through a relative link.
 #[test]
-fn within_refuses_a_long_hidden_file() {
+fn within_hides_a_long_hidden_file() {
     run(|host| {
         let (_, base) = cases::within_work(host);
         let most = most();
@@ -419,17 +439,23 @@ fn within_refuses_a_long_hidden_file() {
         let name = "f".repeat(most - deep.as_os_str().len());
         let key = top.join("s").join(&name);
         fs::write(&key, b"secret").unwrap();
+        let beside = top.join("s").join(name.replace('f', "g"));
+        fs::write(&beside, b"plan").unwrap();
         let within = host
             .paths
-            .within(slice::from_ref(&top), slice::from_ref(&key));
-        let too_long = Error::Io { code: too_long() };
-        assert_eq!(within.err(), Some(too_long));
+            .within(slice::from_ref(&top), slice::from_ref(&key))
+            .unwrap();
+        let read = (within.read(&key, 64), within.read(&beside, 64));
+        assert_eq!(
+            read,
+            (Err(Error::Hidden), Ok(Found::File(b"plan".to_vec())))
+        );
     });
 }
 
 /// A hidden file whose resolved path is longer than the OS takes, made after `within`
-/// through a link that a program points at a deep directory. The host refuses its
-/// walk, so it is hidden at its path and through a hard link.
+/// through a link that a program points at a deep directory. It is hidden at its path
+/// and through a hard link.
 #[test]
 fn within_hides_a_hard_link_to_a_long_hidden_file_made_after_within() {
     run(|host| {

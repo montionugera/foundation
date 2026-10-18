@@ -189,38 +189,46 @@ impl Paths {
         Ok(at)
     }
 
-    /// What is at `path`, as `lstat` gives it: a link at the last name is not
-    /// followed, other than before an end in `/`, `/.`, or `/..`.
-    pub(crate) fn entry(
+    /// What is at `name` in the directory `dir`, by its inode, with no link
+    /// followed, and `open` for a directory, which takes its inode. `NotFound` when
+    /// `dir` is not there.
+    pub(crate) fn open(
         &self,
         node: usize,
-        path: &Path,
+        dir: u64,
+        name: &OsStr,
+        open: impl FnOnce(u64) -> Box<dyn paths::dir::Driver>,
     ) -> Result<paths::Entry, Error> {
-        bound(path)?;
-        let at = match last(path) {
-            Some((dir, name)) if !names_directory(path) => {
-                let dir = self.resolve(node, dir)?;
-                if self.file(node, &dir) {
-                    return Err(Error::Io {
-                        code: NOT_DIRECTORY,
-                    });
-                }
-                dir.join(name)
+        let mut at = self.find(node, dir).ok_or(Error::NotFound)?;
+        match name.as_encoded_bytes() {
+            b"." => return Ok(paths::Entry::Directory(open(dir))),
+            b".." => {
+                at.pop();
+                let up = self.entries.get(&(node, at)).map_or(0, |(inode, _)| *inode);
+                return Ok(paths::Entry::Directory(open(up)));
             }
-            _ => self.resolve(node, path)?,
-        };
-        if at == Path::new("/") {
-            return Ok(paths::Entry::Directory(Key::new(0, 0)));
+            _ => at.push(name),
         }
-        let Some((inode, entry)) = self.entries.get(&(node, at)) else {
-            return Err(Error::NotFound);
-        };
+        let (inode, entry) = self.entries.get(&(node, at)).ok_or(Error::NotFound)?;
         let key = Key::new(0, *inode);
         Ok(match entry {
             Entry::File(_) => paths::Entry::File(key),
             Entry::Link(target) => paths::Entry::Link(key, target.clone()),
-            Entry::Directory => paths::Entry::Directory(key),
+            Entry::Directory => paths::Entry::Directory(open(*inode)),
         })
+    }
+
+    /// The path of the directory `inode` now, or `None` when it is not there.
+    fn find(&self, node: usize, inode: u64) -> Option<PathBuf> {
+        if inode == 0 {
+            return Some(PathBuf::from("/"));
+        }
+        self.entries
+            .iter()
+            .find(|((on, _), (at, entry))| {
+                *on == node && *at == inode && matches!(entry, Entry::Directory)
+            })
+            .map(|((_, path), _)| path.clone())
     }
 
     /// `path` on the resolved working directory, with each `..` kept, as

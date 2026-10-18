@@ -3,6 +3,7 @@
 #[path = "../../../env/tests/common/paths.rs"]
 mod cases;
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::slice;
 
@@ -70,11 +71,9 @@ fn a_path_as_long_as_the_host_takes_reads_and_one_byte_longer_fails() {
 /// A hidden file that is not there, at a short path through a relative link, whose
 /// resolved path is one byte past the Linux `PATH_MAX`.
 #[test]
-fn within_refuses_a_hidden_name_whose_resolved_path_is_too_long() {
+fn within_hides_a_hidden_name_whose_resolved_path_is_too_long() {
     run(|host| {
-        cases::within_refuses_a_hidden_name_whose_resolved_path_is_too_long(
-            host, 4095, 36,
-        );
+        cases::within_hides_a_hidden_name_whose_resolved_path_is_too_long(host, 4095);
     });
 }
 
@@ -475,21 +474,37 @@ fn the_home_is_none_until_a_node_sets_it_and_then_resolves() {
     assert_eq!(paths.home(), Some(PathBuf::from("/users/user")));
 }
 
-/// The walk never asks `entry` for a path that ends in `/`, so no `Paths` call
-/// reaches this arm.
+/// A handle takes each name in its directory by inode, so it keeps the directory
+/// after a move, and gives the directory above where it is now.
 #[test]
-fn an_entry_follows_a_link_before_an_end_in_a_separator_as_lstat_does() {
+fn a_directory_handle_keeps_its_directory_after_a_move() {
     let node = Sim::new(Config::default()).node(node::Config::default());
-    node.make_dir(Path::new("/out"));
-    node.link_path(Path::new("/link"), Path::new("/out"));
-    let link = node.0.entry(Path::new("/link"));
+    node.make_dir(Path::new("/a"));
+    node.make_dir(Path::new("/a/out"));
+    node.link_path(Path::new("/a/out/link"), Path::new("../x"));
+    let root = node.0.root(Path::new("/")).unwrap();
+    let Ok(Entry::Directory(a)) = root.open(OsStr::new("a")) else {
+        panic!("no directory at /a");
+    };
+    let Ok(Entry::Directory(out)) = a.open(OsStr::new("out")) else {
+        panic!("no directory at /a/out");
+    };
+    node.make_dir(Path::new("/b"));
+    node.move_path(Path::new("/a/out"), Path::new("/b/out"));
+    let link = out.open(OsStr::new("link"));
     assert!(
-        matches!(&link, Ok(Entry::Link(_, target)) if target == Path::new("/out")),
+        matches!(&link, Ok(Entry::Link(_, target)) if target == Path::new("../x")),
         "{link:?}"
     );
-    let end = node.0.entry(Path::new("/link/"));
-    assert!(matches!(end, Ok(Entry::Directory(_))), "{end:?}");
-    assert_eq!(end, node.0.entry(Path::new("/out")));
+    let Ok(Entry::Directory(up)) = out.open(OsStr::new("..")) else {
+        panic!("no directory above /b/out");
+    };
+    assert_ne!(up.key(), a.key());
+    let Ok(Entry::Directory(b)) = root.open(OsStr::new("b")) else {
+        panic!("no directory at /b");
+    };
+    assert_eq!(up.key(), b.key());
+    assert_eq!(a.open(OsStr::new("out")).err(), Some(Error::NotFound));
 }
 
 #[test]
