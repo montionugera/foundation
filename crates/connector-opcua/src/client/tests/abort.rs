@@ -1,6 +1,6 @@
-use std::cell::{Cell, RefCell};
-use std::mem;
+use std::cell::Cell;
 
+use super::common::{body, coded, rebuilt, reorder, too_large, with_id};
 use super::{
     CHUNK, FITS, RELAY, Relay, VALUE, Values, drop_read, drop_reads, mistyped, relayed,
     run, serve,
@@ -9,46 +9,18 @@ use crate::ffi::Status;
 use crate::node::{Key, Node};
 use crate::value::{Fault, Value};
 
-/// The abort chunk of the final MSG chunk `chunk`: its message, security, and sequence
-/// headers, then `body` (Part 6, 6.7.3).
-fn of(chunk: &[u8], body: &[u8]) -> Vec<u8> {
-    // The policy None adds nothing past the 24 bytes of headers.
-    let mut abort = chunk[..24].to_vec();
-    abort[3] = b'A';
-    abort.extend_from_slice(body);
-    let size = u32::try_from(abort.len()).expect("fits");
-    abort[4..8].copy_from_slice(&size.to_le_bytes());
-    abort
-}
-
-/// An abort of `chunk` with the Error `code` and a null Reason.
-fn coded(chunk: &[u8], code: u32) -> Vec<u8> {
-    let mut body = code.to_le_bytes().to_vec();
-    body.extend_from_slice(&[0xFF; 4]);
-    of(chunk, &body)
-}
-
-pub(super) fn too_large(chunk: &[u8]) -> Vec<u8> {
-    coded(chunk, 0x80B9_0000)
-}
-
 fn empty(chunk: &[u8]) -> Vec<u8> {
-    of(chunk, &[])
+    rebuilt(chunk, b'A', &[])
 }
 
 /// An abort of `chunk` with the request id `u32::MAX`, which no request has.
 fn unknown(chunk: &[u8]) -> Vec<u8> {
-    let mut abort = too_large(chunk);
-    abort[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
-    abort
+    with_id(too_large(chunk), u32::MAX)
 }
 
 /// The answer of `chunk` as an intermediate chunk of request id 0, which no request has.
 fn orphan(chunk: &[u8]) -> Vec<u8> {
-    let mut orphan = chunk.to_vec();
-    orphan[3] = b'C';
-    orphan[20..24].copy_from_slice(&0u32.to_le_bytes());
-    orphan
+    with_id(rebuilt(chunk, b'C', body(chunk)), 0)
 }
 
 /// A rewrite of the relay that sends `abort` of the next `left` final chunks in their
@@ -200,10 +172,6 @@ const TWO: Node = Node {
     ..FITS
 };
 
-pub(super) fn sequence(chunk: &[u8]) -> [u8; 4] {
-    chunk[16..20].try_into().expect("4 bytes")
-}
-
 /// 16 rounds of a dropped read D, then a read R of [`FITS`] (8 chunks). The relay holds
 /// the answer of D and sends its abort after the first chunk of R when `inside`, else
 /// before it. Gives the reads of R, a read of [`VALUE`] after them, and the value. An
@@ -214,33 +182,18 @@ fn interleaved(inside: bool) -> (Values, Result<Value, Fault>, Value) {
             peer.server.add_bytes(&FITS, 7 * CHUNK);
             let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
             let armed = Cell::new(false);
-            let held = RefCell::new(None::<Vec<u8>>);
-            let rewrite = |chunk: &mut Vec<u8>| {
-                if !armed.get() || !chunk.starts_with(b"MSG") {
-                    return;
-                }
-                let Some(dropped) = held.borrow_mut().take() else {
-                    assert_eq!(chunk[3], b'F', "the answer of D is one chunk");
-                    *held.borrow_mut() = Some(mem::take(chunk));
-                    return;
-                };
-                assert_eq!(chunk[3], b'C', "the first chunk of R");
-                let mut first = mem::take(chunk);
-                let mut abort = too_large(&dropped);
-                // The relay sends the two chunks in a new order, so each gets the
-                // sequence number of the place it takes.
-                let (early, late) = (sequence(&dropped), sequence(&first));
-                let (a, b) = if inside {
-                    (&mut first, &mut abort)
+            let order = |held: Vec<Vec<u8>>| {
+                let [dropped, first] = <[_; 2]>::try_from(held).expect("2 chunks");
+                assert_eq!(dropped[3], b'F', "the answer of D is one chunk");
+                assert_eq!(first[3], b'C', "the first chunk of R");
+                let abort = too_large(&dropped);
+                if inside {
+                    vec![first, abort]
                 } else {
-                    (&mut abort, &mut first)
-                };
-                a[16..20].copy_from_slice(&early);
-                b[16..20].copy_from_slice(&late);
-                chunk.extend_from_slice(a);
-                chunk.extend_from_slice(b);
-                armed.set(false);
+                    vec![abort, first]
+                }
             };
+            let rewrite = reorder(&armed, 2, order);
             let reads = relayed(&node, &Relay::default(), rewrite, async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
@@ -294,20 +247,7 @@ fn an_abort_behind_a_chunk_of_another_read_ends_its_read_with_its_error() {
             peer.server.add_bytes(&TWO, CHUNK);
             let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
             let armed = Cell::new(false);
-            let held = RefCell::new(Vec::<Vec<u8>>::new());
-            let rewrite = |chunk: &mut Vec<u8>| {
-                if !armed.get() || !chunk.starts_with(b"MSG") {
-                    return;
-                }
-                let mut held = held.borrow_mut();
-                held.push(mem::take(chunk));
-                if held.len() < 10 {
-                    return;
-                }
-                let mut r = mem::take(&mut *held);
-                // The relay sends the chunks in a new order, so each gets the sequence
-                // number of the place it takes.
-                let places: Vec<_> = r.iter().map(|c| sequence(c)).collect();
+            let order = |mut r: Vec<Vec<u8>>| {
                 let last = r.pop().expect("the final chunk of D");
                 let first = r.pop().expect("the first chunk of D");
                 let kinds: Vec<_> =
@@ -316,12 +256,9 @@ fn an_abort_behind_a_chunk_of_another_read_ends_its_read_with_its_error() {
                 let rest = r.split_off(1);
                 r.extend([first, too_large(&last)]);
                 r.extend(rest);
-                for (mut sent, place) in r.into_iter().zip(places) {
-                    sent[16..20].copy_from_slice(&place);
-                    chunk.extend_from_slice(&sent);
-                }
-                armed.set(false);
+                r
             };
+            let rewrite = reorder(&armed, 10, order);
             let reads = relayed(&node, &Relay::default(), rewrite, async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));

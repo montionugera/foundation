@@ -1,7 +1,6 @@
 use std::cell::Cell;
-use std::mem;
 
-use super::abort::{sequence, too_large};
+use super::common::{rebuilt, reorder, too_large, with_id};
 use super::{
     FITS, Peer, RELAY, Relay, VALUE, drop_read, mistyped, relayed, run, serve,
 };
@@ -9,45 +8,6 @@ use crate::client::Client;
 use crate::connection::CHUNKS;
 use crate::ffi::Status;
 use crate::value::{Fault, Value};
-
-/// A rewrite of the relay that, once `armed`, holds the next `count` MSG chunks and
-/// sends the chunks that `order` makes of them in their place. Each MSG chunk from the
-/// first held one on gets the next sequence number, as the client checks them.
-fn reorder(
-    armed: &Cell<bool>,
-    count: usize,
-    mut order: impl FnMut(Vec<Vec<u8>>) -> Vec<Vec<u8>>,
-) -> impl FnMut(&mut Vec<u8>) {
-    let mut held = Vec::new();
-    let mut next = None::<u32>;
-    move |chunk| {
-        if !chunk.starts_with(b"MSG") {
-            return;
-        }
-        if armed.get() {
-            next.get_or_insert(u32::from_le_bytes(sequence(chunk)));
-            held.push(mem::take(chunk));
-            if held.len() < count {
-                return;
-            }
-            armed.set(false);
-            for mut sent in order(mem::take(&mut held)) {
-                renumber(&mut next, &mut sent);
-                chunk.extend_from_slice(&sent);
-            }
-        } else {
-            renumber(&mut next, chunk);
-        }
-    }
-}
-
-/// Gives `chunk` the sequence number `next` and steps it, when it is set.
-fn renumber(next: &mut Option<u32>, chunk: &mut [u8]) {
-    if let Some(number) = next {
-        chunk[16..20].copy_from_slice(&number.to_le_bytes());
-        *number += 1;
-    }
-}
 
 /// Connects a client of `peer` to `url` that takes messages of up to `message` bytes,
 /// or the default of open62541 for `None`, and reads [`VALUE`] once, as open62541
@@ -183,14 +143,7 @@ const BODY: usize = 64_000;
 /// An intermediate chunk of the request id `id`, which no request has, with the
 /// headers of the MSG chunk `chunk` and a body of `body` bytes.
 fn forged(chunk: &[u8], id: u32, body: usize) -> Vec<u8> {
-    // The policy None adds nothing past the 24 bytes of headers.
-    let mut forged = chunk[..24].to_vec();
-    forged[3] = b'C';
-    forged[20..24].copy_from_slice(&id.to_le_bytes());
-    forged.resize(24 + body, 0);
-    let size = u32::try_from(forged.len()).expect("fits");
-    forged[4..8].copy_from_slice(&size.to_le_bytes());
-    forged
+    with_id(rebuilt(chunk, b'C', &vec![0; body]), id)
 }
 
 /// The answers of two reads of [`VALUE`], and the value of the server. Before the
