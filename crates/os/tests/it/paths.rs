@@ -13,6 +13,7 @@ use std::time::Duration;
 use env::paths::{Error, Found};
 use rustix::fs::{CWD, RenameFlags, renameat_with};
 use rustix::io::Errno;
+use types::time::Span;
 
 use crate::cases::{self, Host};
 use crate::disk::{Scratch, mode};
@@ -31,6 +32,11 @@ fn run(case: fn(&Host<'_>)) {
 
 fn make_dir(path: &Path) {
     fs::create_dir(path).unwrap();
+}
+
+/// The code of the host for a path longer than it takes.
+fn too_long() -> i32 {
+    Errno::NAMETOOLONG.raw_os_error()
 }
 
 /// A directory that takes no new file: a write that makes one in it gives `EACCES`.
@@ -238,9 +244,11 @@ fn a_hidden_folder_that_a_program_moves_and_makes_again_stays_hidden() {
 }
 
 /// A relative link in `work` to a deep directory, so the given path is short and the
-/// resolved path of a new name in it is one byte past the longest path of the OS.
+/// resolved path of a new name in it is one byte past the longest path of the OS. The
+/// walk gives the error of the host, and `make_dir` makes the directory before its
+/// second check.
 #[test]
-fn within_writes_a_new_name_whose_resolved_path_is_too_long_as_free() {
+fn within_refuses_a_new_name_whose_resolved_path_is_too_long() {
     run(|host| {
         let (within, base) = cases::within_work(host);
         let most: usize = if cfg!(target_os = "macos") {
@@ -271,10 +279,11 @@ fn within_writes_a_new_name_whose_resolved_path_is_too_long_as_free() {
                 fs::symlink_metadata(&dir).is_ok(),
             ));
         }
+        let too_long = Err(Error::Io { code: too_long() });
         assert_eq!(
             found,
             [
-                (Ok(()), Ok(()), Ok(()), true),
+                (Ok(()), too_long, too_long, true),
                 (Ok(()), Err(Error::Hidden), Err(Error::Hidden), false),
             ]
         );
@@ -337,7 +346,7 @@ fn a_folder_made_again_read_in_other_case_is_replaced() {
 /// A hidden file that is not there, at a short path through a relative link, whose
 /// resolved path is one byte past the longest path of the OS.
 #[test]
-fn within_hides_a_hidden_name_whose_resolved_path_is_too_long() {
+fn within_refuses_a_hidden_name_whose_resolved_path_is_too_long() {
     run(|host| {
         let (_, base) = cases::within_work(host);
         let most: usize = if cfg!(target_os = "macos") {
@@ -357,18 +366,16 @@ fn within_hides_a_hidden_name_whose_resolved_path_is_too_long() {
         let key = top.join("s").join(&name);
         let within = host
             .paths
-            .within(slice::from_ref(&top), slice::from_ref(&key))
-            .unwrap();
-        assert_eq!(within.write(&key, b"x"), Err(Error::Vacant));
-        assert!(!deep.join(&name).exists());
-        assert_eq!(within.write(&top.join("b.hcl"), b"x"), Ok(()));
+            .within(slice::from_ref(&top), slice::from_ref(&key));
+        let too_long = Error::Io { code: too_long() };
+        assert_eq!(within.err(), Some(too_long));
     });
 }
 
-/// A hidden file whose resolved path is longer than the OS takes, made after
-/// `within`, does not read at its path, and is hidden through a hard link.
+/// A hidden file whose resolved path is longer than the OS takes, made by its short
+/// path through a relative link.
 #[test]
-fn within_hides_a_hard_link_to_a_long_hidden_file_made_after_within() {
+fn within_refuses_a_long_hidden_file() {
     run(|host| {
         let (_, base) = cases::within_work(host);
         let most: usize = if cfg!(target_os = "macos") {
@@ -386,18 +393,12 @@ fn within_hides_a_hard_link_to_a_long_hidden_file_made_after_within() {
         symlink(&relative, top.join("s")).unwrap();
         let name = "f".repeat(most - deep.as_os_str().len());
         let key = top.join("s").join(&name);
+        fs::write(&key, b"secret").unwrap();
         let within = host
             .paths
-            .within(slice::from_ref(&top), slice::from_ref(&key))
-            .unwrap();
-        fs::write(&key, b"secret").unwrap();
-        let link = top.join("link.key");
-        fs::hard_link(&key, &link).unwrap();
-        let too_long = if cfg!(target_os = "macos") { 63 } else { 36 };
-        assert_eq!(
-            (within.read(&key, 64), within.read(&link, 64)),
-            (Err(Error::Io { code: too_long }), Err(Error::Hidden))
-        );
+            .within(slice::from_ref(&top), slice::from_ref(&key));
+        let too_long = Error::Io { code: too_long() };
+        assert_eq!(within.err(), Some(too_long));
     });
 }
 
@@ -429,9 +430,6 @@ fn within_gives_no_directory_through_a_link_that_is_too_long_to_resolve() {
         let name = "d".repeat(200);
         let next = format!("{name}/n");
         let flags = OFlags::RDONLY | OFlags::DIRECTORY;
-        let too_long = Err(Error::Io {
-            code: Errno::NAMETOOLONG.raw_os_error(),
-        });
         let mut found = Vec::new();
         for (top, target) in [("work/data", "data/n"), ("workshop", "../workshop/n")] {
             let mut at = openat(CWD, base.join(top), flags, Mode::empty()).unwrap();
@@ -451,8 +449,8 @@ fn within_gives_no_directory_through_a_link_that_is_too_long_to_resolve() {
         assert_eq!(
             found,
             [
-                ("work/data", Ok(()), too_long, too_long),
-                ("workshop", Ok(()), too_long, too_long),
+                ("work/data", Ok(()), Err(Error::Hidden), Err(Error::Hidden)),
+                ("workshop", Ok(()), Err(Error::Outside), Err(Error::Outside)),
             ]
         );
     });
@@ -524,15 +522,88 @@ fn within_hides_a_link_that_does_not_resolve_in_a_moved_hidden_folder() {
 
 /// A long path of names that each resolve stops at the longest path that the host
 /// takes.
-#[cfg(target_os = "linux")]
 #[test]
 fn within_stops_a_long_path_of_steps_that_resolve() {
     run(|host| {
         let (within, base) = cases::within_work(host);
         fs::create_dir(base.join("work/s")).unwrap();
         let path = base.join("work").join("s/../".repeat(50_000)).join("a.hcl");
-        let name_too_long = Error::Io { code: 36 };
-        assert_eq!(within.read(&path, 1), Err(name_too_long));
+        let too_long = Error::Io { code: too_long() };
+        assert_eq!(within.read(&path, 1), Err(too_long));
+    });
+}
+
+/// An end in `/.` after a file, by a relative path and by an absolute path. Std drops
+/// that end from an absolute path. The relative path climbs from the working
+/// directory, so the folder is `/`.
+#[test]
+fn within_refuses_a_file_with_a_slash_and_a_dot_by_each_path() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let within = host.paths.within(&["/".into()], &[]).unwrap();
+        let working = host.paths.resolve(Path::new(".")).unwrap();
+        let up = "../".repeat(working.components().count() - 1);
+        let relative = Path::new(&up).join(base.strip_prefix("/").unwrap());
+        let not_directory = Err(Error::Io { code: 20 });
+        for path in [relative, base].map(|dir| dir.join("work/a.hcl/.")) {
+            let got = [
+                within.read(&path, 1).map(|_| ()),
+                host.paths.read(&path, 1).map(|_| ()),
+                within.write(&path, b"y"),
+                host.paths.resolve(&path).map(|_| ()),
+            ];
+            assert_eq!(got, [not_directory; 4], "{}", path.display());
+        }
+    });
+}
+
+/// A file deep in the folder costs one `lstat` for each name, not a resolve of each
+/// prefix.
+#[test]
+fn within_reads_a_file_deep_in_its_folder_in_the_worst_case_time() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        let mut dir = base.join("work");
+        for _ in 0..1900 {
+            dir.push("a");
+            if dir.as_os_str().len() > 4000 {
+                dir.pop();
+                break;
+            }
+            fs::create_dir(&dir).unwrap();
+        }
+        let file = dir.join("f");
+        fs::write(&file, b"x").unwrap();
+        let clock = os::clock();
+        let start = clock.now();
+        let read = within.read(&file, 1);
+        let took = clock.now() - start;
+        assert_eq!(read, Ok(Found::File(b"x".to_vec())));
+        assert!(took < Span::from_nanos(560_000_000), "took {took}");
+    });
+}
+
+#[test]
+fn within_reads_a_long_path_from_a_deep_directory_in_the_worst_case_time() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        let mut dir = base.join("work");
+        for _ in 0..40 {
+            dir.push("dd");
+            assert_eq!(within.make_dir(&dir), Ok(()));
+        }
+        assert_eq!(within.make_dir(&dir.join("s")), Ok(()));
+        let mut path = dir.into_os_string();
+        while path.len() + 5 < 4000 {
+            path.push("/s/..");
+        }
+        let path = PathBuf::from(path).join("f");
+        let clock = os::clock();
+        let start = clock.now();
+        let read = within.read(&path, 1);
+        let took = clock.now() - start;
+        assert_eq!(read, Err(Error::NotFound));
+        assert!(took < Span::from_nanos(560_000_000), "took {took}");
     });
 }
 

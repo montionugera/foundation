@@ -2,9 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use env::paths::{Error, Found, Key};
+use env::paths::{Entry, Error, Found};
 
 use super::Node;
+use crate::LOOP;
 use crate::state::lock;
 
 impl env::paths::Driver for Node {
@@ -20,15 +21,19 @@ impl env::paths::Driver for Node {
         lock(&self.shared).paths().make_dir(self.node, path)
     }
 
-    fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
-        lock(&self.shared).paths().resolve(self.node, path)
-    }
-
     fn home(&self) -> Option<PathBuf> {
         lock(&self.shared).paths().home(self.node)
     }
 
-    fn key(&self, path: &Path) -> Result<Key, Error> {
-        lock(&self.shared).paths().key(self.node, path)
+    fn entry(&self, path: &Path) -> Result<Entry, Error> {
+        lock(&self.shared).paths().entry(self.node, path)
+    }
+
+    fn absolute(&self, path: &Path) -> Result<PathBuf, Error> {
+        lock(&self.shared).paths().absolute(self.node, path)
+    }
+
+    fn looped(&self) -> Error {
+        Error::Io { code: LOOP }
     }
 }

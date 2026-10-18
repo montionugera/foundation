@@ -297,25 +297,25 @@ fn within_tells_no_name_outside_beside_a_hidden_folder_that_is_not_there() {
 #[test]
 fn within_checks_a_relative_first_name_that_does_not_resolve_at_its_place() {
     let node = Sim::new(Config::default()).node(node::Config::default());
-    for dir in ["/work/data", "/out"] {
-        node.make_dir(Path::new(dir));
-        let at = Path::new(dir).join("loop");
-        node.link_path(&at, &at);
+    node.make_dir(Path::new("/out"));
+    for at in ["/work/loop", "/out/loop"].map(Path::new) {
+        node.link_path(at, at);
     }
     let within = node
         .paths()
         .within(&[PathBuf::from("/work")], &[PathBuf::from("/work/data")])
         .unwrap();
-    let got = ["/out", "/work/data"].map(|dir| {
+    let got = ["/work", "/out"].map(|dir| {
         node.set_working_dir(Path::new(dir));
         let path = Path::new("loop");
         (node.paths().read(path, 1), within.read(path, 1))
     });
+    let looped = Err(Error::Io { code: 40 });
     assert_eq!(
         got,
         [
-            (Err(Error::Io { code: 40 }), Err(Error::Outside)),
-            (Err(Error::Io { code: 40 }), Err(Error::Hidden)),
+            (looped.clone(), looped.clone()),
+            (looped, Err(Error::Outside))
         ]
     );
 }
@@ -333,13 +333,14 @@ fn the_home_is_none_until_a_node_sets_it_and_then_resolves() {
 }
 
 #[test]
-fn a_link_to_nothing_resolves_once_its_file_is_there() {
+fn a_link_to_nothing_resolves_to_its_target_and_reads_once_its_file_is_there() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let paths = node.paths();
     node.link_path(Path::new("/plans/b.plan"), Path::new("../config/b.plan"));
     node.make_dir(Path::new("/config"));
     let link = Path::new("/plans/b.plan");
-    assert_eq!(paths.resolve(link), Err(Error::NotFound));
+    assert_eq!(paths.resolve(link), Ok(PathBuf::from("/config/b.plan")));
+    assert_eq!(paths.read(link, 1), Err(Error::NotFound));
     assert_eq!(paths.write(link, b"x"), Err(Error::NotFound));
     paths.write(Path::new("/config/b.plan"), b"x").unwrap();
     assert_eq!(paths.resolve(link), Ok(PathBuf::from("/config/b.plan")));
