@@ -896,3 +896,49 @@ fn a_cancel_returns_while_a_client_reads_nothing_and_its_window_is_full() {
     let ended = ended.lock().expect("no panic under the lock").take();
     assert_eq!(ended, Some((Ok(()), 0)));
 }
+
+#[test]
+fn a_cancel_reads_the_unread_bytes_of_a_stream_before_its_fin() {
+    let mut network = Network::new(23);
+    let (device, until) = (device(), Token::new());
+    let ended = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&ended);
+    network.on_device(1 << 16, move |listener, clock| async move {
+        clock.sleep(ms(400)).await;
+        until.cancel();
+        let end = modbus::serve(listener, until, UNIT, &device).await;
+        *slot.lock().expect("no panic under the lock") = Some(end);
+        std::future::pending::<()>().await;
+    });
+    let (net, remote) = (network.client.net(), network.remote());
+    let peer = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&peer);
+    let handle = network
+        .client
+        .shards()
+        .start(shard("client"), move |_| async move {
+            let config = tcp::Config {
+                remote,
+                options: options(1 << 16),
+            };
+            let mut stream = net.connect(&config).await.expect("the device listens");
+            let header = Header {
+                transaction: 1,
+                unit: UNIT,
+            };
+            let mut frame = Vec::new();
+            modbus::encode(header, &read(Table::HoldingRegisters, 4, 1), &mut frame)
+                .expect("a valid request");
+            write(&mut stream, &frame).await;
+            let mut buffer = [0; 1];
+            let end = poll_fn(|cx| stream.poll_read(cx, &mut buffer)).await;
+            *slot.lock().expect("no panic under the lock") = Some(end);
+        });
+    network.handles.push(handle.expect("the shard starts"));
+    network.sim.run_for(Span::MINUTE).expect("the run ends");
+    assert_eq!(
+        *ended.lock().expect("no panic under the lock"),
+        Some(Ok(()))
+    );
+    assert_eq!(*peer.lock().expect("no panic under the lock"), Some(Ok(0)));
+}
