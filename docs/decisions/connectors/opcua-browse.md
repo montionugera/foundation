@@ -61,6 +61,6 @@
   table of the built-in types that this record asked for became the decode by match of
   OPCUA KIND (`laptop.architect-2`, 2026-10-16T22:17:22Z:
   https://github.com/synnaxlabs/foundation/pull/2931#issuecomment-6225757093). BROWSE
-  states the bound of browses at once in `connector` (#2981), which merges before the
-  CLI or MCP gives browse to a user (`laptop.architect-2`, 2026-10-17T04:05:28Z:
+  states the bound of browses at once in `connector` (#2981, #3122), which merges before
+  the CLI or MCP gives browse to a user (`laptop.architect-2`, 2026-10-17T04:05:28Z:
   https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229428004).
