@@ -270,6 +270,7 @@ pub(crate) const CRATES: &[Crate] = &[
             "transport",
             "os",
             "sector",
+            "spec",
             "env",
             "types",
             "block",

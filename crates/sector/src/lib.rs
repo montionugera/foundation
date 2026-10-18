@@ -4,9 +4,9 @@
 //! holds the formats of [`address`] and [`admin`], which a program on the node's host
 //! reads with [`local`].
 //!
-//! The last byte of a tag is the version of its form, one ASCII digit or letter, and
-//! the bytes before it are the tag's prefix. A new form takes another version, so no
-//! tag is the prefix of another.
+//! The last byte of a tag is the version of its form, and the bytes before it are the
+//! tag's prefix. A version is one byte, `1` to `9`, then `a` to `z`, so no tag is the
+//! prefix of another.
 
 pub mod address;
 pub mod admin;

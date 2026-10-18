@@ -244,8 +244,12 @@
   char, fix ``Use a `foundation` program of the same version as the node``, when
   `address` or `admin.key` holds a format of another version (`laptop.architect-2`,
   2026-10-18, item 7 of
-  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252508020 and
-  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252530569).
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252508020,
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252530569, and
+  the code and its fields in
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252630274; the
+  fix text, that of `ops.bad-reply`, in
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252780856).
   `node.socket` covers a socket of the program that broke, with the message `the
   socket of this program failed: <the transport error>` (`laptop.architect-2`,
   2026-10-13T02:10:54Z, item 4 of
