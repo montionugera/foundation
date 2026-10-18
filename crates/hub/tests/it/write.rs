@@ -306,6 +306,30 @@ fn refuses_a_frame_out_of_order_and_takes_the_next() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
+/// A frame of `Time::Node` behind a timed frame of its own stream is refused as
+/// `Order`: the node stamps after the last stamp that it gave, not after the stamps of
+/// timed frames.
+#[test]
+fn refuses_an_untimed_frame_behind_a_timed_frame_of_its_stream() {
+    let home = read_session(
+        436,
+        async |_| {},
+        |mut agent| async move {
+            let challenge = agent.admit().await;
+            let mut stream = write(&agent).await;
+            let later = challenge.now.latest.nanos() + START.nanos();
+            send(&mut stream, &[later], &[10]).await;
+            assert_eq!(stream.reply().await, taken(0, 1));
+            send_untimed(&mut stream, 20).await;
+            let order = Outcome::Refused(wire::hub::write::Refusal::Order);
+            assert_eq!(outcome(&mut stream).await, order);
+            end(&mut stream).await;
+            finish(&mut agent).await;
+        },
+    );
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
 /// A frame of `Time::Node` that the home loses for no room in the ring spends its
 /// stamp, so the next one at the same mesh time gets 1 ns after it and is not refused
 /// as `Order`.
@@ -557,6 +581,46 @@ fn skips_a_stored_that_finds_no_block_and_covers_it_with_the_next() {
 #[test]
 fn waits_for_a_block_for_the_last_stored_at_the_finish() {
     let home = read_session(426, fill_at_commit, |mut agent| async move {
+        agent.admit().await;
+        let mut stream = write(&agent).await;
+        send(&mut stream, &[1], &[10]).await;
+        let sent = agent.node.clock().now();
+        assert_eq!(end(&mut stream).await, [taken(0, 1), stored(0)]);
+        let waited = agent.node.clock().now() - sent;
+        assert!(waited > Span::from_nanos(START.nanos() / 4), "{waited}");
+        finish(&mut agent).await;
+    });
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
+/// Control ends when the program finishes its stream, also while the last `Stored`
+/// waits for a block: a writer of lower authority then gets control, and the home
+/// spends a seq on its frame, which it loses for no room in the full pool.
+#[test]
+fn ends_control_when_the_program_finishes_the_stream() {
+    let ready = async |test: &Test| {
+        let mut reader = test.reader(&["value"], hub::reader::Mode::Complete).await;
+        let config = writer::Config {
+            authority: Authority(0),
+            ..super::config("b", &["value"])
+        };
+        let mut writer = test.hub.writer(config).await.expect("opens");
+        let draft = super::draft(&writer, &[(1, &[2]), (2, &[20])]);
+        let (clock, pool) = (test.clock.clone(), Rc::clone(&test.pool));
+        test.tasks.spawn(async move {
+            let frame = reader.next().await.expect("a frame");
+            let blocks = super::fill(&pool);
+            clock.sleep(Span::from_nanos(START.nanos() / 4)).await;
+            let written = writer.write(super::LIVE, draft).expect("writes");
+            assert!(
+                matches!(written, [hub::home::Outcome::Lost { range, .. }] if range.seq == 1),
+                "{written:?}"
+            );
+            clock.sleep(START).await;
+            drop((frame, blocks));
+        });
+    };
+    let home = read_session(426, ready, |mut agent| async move {
         agent.admit().await;
         let mut stream = write(&agent).await;
         send(&mut stream, &[1], &[10]).await;

@@ -14,8 +14,8 @@ use types::frame::key_set::Entry;
 use types::frame::{Draft, Label, Path};
 use types::name::Name;
 use types::time::{Span, Stamp};
-use wire::hub::client::write::{Open, Write};
 use wire::hub::client::Place;
+use wire::hub::client::write::{Open, Write};
 use wire::hub::write::{Due, Frames, Outcome, Refusal, Reply, Step, Time};
 
 use super::{Reserved, body, verify};
@@ -51,7 +51,8 @@ pub(super) async fn serve(
         return Ok(());
     };
     start(state, sender, &writer, names).await?;
-    relay(state, &session.transport, writer, receiver, sender).await
+    let stored = relay(state, writer, receiver, sender).await?;
+    stored.finish(state, &session.transport, sender).await
 }
 
 /// Reads, verifies, and decodes the open, and holds its body in the budget until then.
@@ -131,16 +132,16 @@ async fn start(
 }
 
 /// Writes each frame of the program with `writer` and sends its outcome, until the
-/// program finishes the stream. Then sends `Stored` for each taken frame and finishes
-/// the stream. The block of each outcome comes before the draft of its frame, so a
-/// pool with no block for it stops the stream before the home takes the frame.
+/// program finishes the stream. Then drops `writer`, so that control ends, and gives
+/// the commits that are due. The block of each outcome comes before the draft of its
+/// frame, so a pool with no block for it stops the stream before the home takes the
+/// frame.
 async fn relay(
     state: &RefCell<State>,
-    session: &transport::Session,
     mut writer: Writer,
     receiver: &mut Receiver,
     sender: &mut Sender,
-) -> Result<(), Error> {
+) -> Result<Stored, Error> {
     let mut frames = Frames::new(Arc::clone(writer.set()));
     let mut stored = Stored::default();
     let mut stamped: Option<Stamp> = None;
@@ -151,7 +152,7 @@ async fn relay(
                 let Some(message) = stored.race(state, sender, receiver.recv()).await?
                 else {
                     frames.finish()?;
-                    return stored.finish(state, session, sender).await;
+                    return Ok(stored);
                 };
                 frames.decode(&message)?
             }
