@@ -84,7 +84,9 @@
   as `os` gives on Linux, when the source or the destination is IPv6 or the source is
   not unicast: the link-local address from a socket that is not on it, an address of
   another node, an IPv4 source to an IPv6 destination, or an unspecified, multicast, or
-  broadcast IPv4 source. Decided by `laptop.architect-2` at 2026-10-18T09:56:35Z
+  broadcast IPv4 source. A unicast IPv4 source that is not on the node, to an IPv4
+  destination, gives code 99 (`EADDRNOTAVAIL`), not the `Unreachable` that `os` gives
+  on Linux, until #3187. Decided by `laptop.architect-2` at 2026-10-18T09:56:35Z
   (https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248485617), at
   2026-10-18T10:40:06Z for interface 2 and code 99
   (https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248857687), for
