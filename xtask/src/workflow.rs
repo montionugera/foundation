@@ -14,7 +14,7 @@ pub(crate) struct Line<'a> {
 /// # Errors
 ///
 /// When `text` has a character that is not printable ASCII, LF, or the CR of a CR LF,
-/// or a line outside the text of a block scalar that `code` refuses.
+/// or a line outside the text of a block scalar that `code` refuses or that `continues`.
 pub(crate) fn lines(text: &str) -> Result<Vec<Line<'_>>, String> {
     // YAML breaks a line at CR, NEL, LS, and PS too, and a parser can read other white
     // space as text, so `str::lines` and `str::trim` would drop a line that YAML reads.
@@ -30,6 +30,7 @@ pub(crate) fn lines(text: &str) -> Result<Vec<Line<'_>>, String> {
         .collect();
     // The text of a block scalar is not YAML.
     let mut block = None;
+    let mut parent: Option<&str> = None;
     let mut read = Vec::with_capacity(lines.len());
     for text in lines {
         if block.is_some_and(|key| indent(text) > key) {
@@ -37,6 +38,10 @@ pub(crate) fn lines(text: &str) -> Result<Vec<Line<'_>>, String> {
             continue;
         }
         let code = code(text)?;
+        if continues(parent, code) {
+            return Err(format!("ci.yaml has a node that can run on: `{text}`"));
+        }
+        parent = Some(code);
         block = opened(text, code)?;
         read.push(Line {
             text,
@@ -44,6 +49,22 @@ pub(crate) fn lines(text: &str) -> Result<Vec<Line<'_>>, String> {
         });
     }
     Ok(read)
+}
+
+/// Whether `code`, the code of a YAML line after the code line `parent`, can be more of
+/// a plain scalar: YAML reads a plain scalar on into each line indented past its node.
+/// Such a line has no key, or is an item under a line that ends in a scalar.
+fn continues(parent: Option<&str>, code: &str) -> bool {
+    let node = code.trim_start();
+    let item = node == "-" || node.starts_with("- ");
+    if !item {
+        return !(node.ends_with(':') || node.contains(": "));
+    }
+    parent.is_some_and(|parent| {
+        let opens =
+            parent.ends_with(':') || parent.split_whitespace().all(|w| w == "-");
+        indent(code) > indent(parent) && !opens
+    })
 }
 
 /// The indent that each line of the text of a block scalar passes, when `code`, the
@@ -325,6 +346,23 @@ mod tests {
         }
         let text = "  - a: |\n      b\n    c: 'd\n";
         assert_eq!(lines(text), refused("    c: 'd"));
+    }
+
+    #[test]
+    fn lines_refuses_a_plain_scalar_that_runs_on() {
+        for (text, line) in [
+            ("gates:\r\n  - a::b\r\n    c::d\r\n", "    c::d"),
+            ("gates:\n  - a::b\n    c::d\n", "    c::d"),
+            ("gates:\n  - a::b\n    - c\n", "    - c"),
+            ("a:\n  - b: c\n    - d\n", "    - d"),
+            ("gates:\n    e\n", "    e"),
+        ] {
+            assert_eq!(lines(text), refused(line), "{text:?}");
+        }
+        assert_eq!(
+            texts("a:\n  - b: c\n    d:\n      - e\n  -\n    - f\n"),
+            ["a:", "  - b: c", "    d:", "      - e", "  -", "    - f"],
+        );
     }
 
     #[test]
