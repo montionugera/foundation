@@ -257,11 +257,10 @@ impl Paths {
     /// }
     /// ```
     pub fn make_dir(&self, path: &Path) -> Result<(), Error> {
-        match self.check(path, Call::Make)? {
-            // The host takes the last name with no link followed, so its result
-            // stands for an error of the walk at that name.
-            Ok(()) | Err(_) => self.driver.make_dir(path),
-        }
+        // The host takes the last name with no link followed, so its result stands
+        // for an error of the walk at that name.
+        let _end: Result<(), Error> = self.check(path, Call::Make)?;
+        self.driver.make_dir(path)
     }
 
     /// `Ok` with the end of the walk of `path` when each step of it passes each limit
