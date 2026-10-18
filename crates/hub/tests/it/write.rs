@@ -720,6 +720,30 @@ fn refuses_a_frame_whose_stored_finds_no_block_as_full() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
+/// A stream that holds the block of its next `Stored` takes no other: a frame after the
+/// pool fills reaches the home, which loses it for no room.
+#[test]
+fn takes_no_second_block_for_the_next_stored() {
+    let stamps: Vec<i64> = (3..=34).collect();
+    // The blocks of the outcome and of the draft of 32 samples, 560 bytes.
+    let ready = spare_at_take(vec![Outcome::LEN_MAX, 560]);
+    let home = read_session(445, ready, move |mut agent| async move {
+        agent.admit().await;
+        let mut stream = write(&agent).await;
+        send(&mut stream, &[1], &[10]).await;
+        send(&mut stream, &[2], &[20]).await;
+        assert_eq!(stream.reply().await, taken(0, 1));
+        assert_eq!(stream.reply().await, taken(1, 1));
+        send(&mut stream, &stamps, &stamps).await;
+        let lost = Reply::Outcome(Outcome::Lost {
+            range: types::frame::Range { seq: 2, count: 32 },
+        });
+        assert_eq!(end(&mut stream).await, [lost, stored(1), stored(2)]);
+        finish(&mut agent).await;
+    });
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
 /// A refused frame leaves the stream no block when no taken frame waits for a `Stored`:
 /// a frame after the pool fills finds no block for its `Stored`, and is refused as
 /// `Full`.
