@@ -198,6 +198,36 @@ fn a_get_asks_for_as_many_digests_as_the_largest_block_of_the_store_holds() {
 }
 
 #[test]
+fn a_get_batch_is_the_digests_that_the_largest_block_holds() {
+    let create_tight_pool = || create_pool_of(64 + 4096 + 128);
+    // A get message is a 1-byte head and 32 bytes for each digest.
+    let batch = (4096 - 1) / 32;
+    let digests: Vec<Digest> = (0..200_usize)
+        .map(|at| Digest::of(&at.to_le_bytes()))
+        .collect();
+    let asked = digests.clone();
+    run_session(
+        0,
+        DISK,
+        move |_, session| async move {
+            let mut stream = raw(accept(&session).await.unwrap());
+            for batch in [&asked[..batch], &asked[batch..]] {
+                assert!(stream.request().await == batch, "a get of the batch");
+                for &digest in batch {
+                    stream.answer(Reply::Absent { digest }).await;
+                }
+            }
+            stream.finish().await;
+        },
+        move |peer| async move {
+            let store = open_on(&peer.node, create_tight_pool(), 0).await;
+            let got = get(&store, &peer.session, &digests).await.unwrap();
+            assert_eq!(got.len(), 200);
+        },
+    );
+}
+
+#[test]
 fn a_chunk_that_hashes_to_another_digest_gives_mismatch_and_the_rest_come_again() {
     let (a, _) = chunk(1, 3000);
     let (found, bytes) = chunk(9, 3000);
