@@ -14,8 +14,8 @@ impl Digest {
     }
 }
 
-/// Computes the [`Digest`] of bytes that come in parts. The digest of the parts in order
-/// is the digest of their concatenation.
+/// Computes the [`Digest`] of bytes that come in parts. The digest of the parts in
+/// order is the digest of their concatenation.
 #[derive(Clone, Debug, Default)]
 pub struct Hasher(blake3::Hasher);
 
@@ -64,7 +64,8 @@ mod tests {
             bytes in proptest::collection::vec(any::<u8>(), 0..4096),
             cuts in proptest::collection::vec(any::<usize>(), 0..8),
         ) {
-            let mut cuts: Vec<usize> = cuts.iter().map(|cut| cut % (bytes.len() + 1)).collect();
+            let mut cuts: Vec<usize> =
+                cuts.iter().map(|cut| cut % (bytes.len() + 1)).collect();
             cuts.sort_unstable();
             let mut hasher = Hasher::default();
             let mut at = 0;
