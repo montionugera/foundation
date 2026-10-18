@@ -860,17 +860,17 @@
   of the copy, so no file or header of the copy changes the set, and a pass that fails
   fails the check. It checks the calls in a `cc -E` pass of each file with the flags of
   its build, so it reads the unit that compiles. It refuses each header that the unit
-  enters, by any name, under `openssl/` of a system directory other than an include
-  directory of aws-lc. A header of the copy under `openssl/` passes, such as its own
-  `openssl/securitypolicy_common.h`. The readers come from aws-lc alone, and the check
-  reads the calls of the unit that compiles. When a header of the copy hides one of
-  aws-lc, a call of a reader keeps the name of the reader, or it has no prefix, so
+  enters, by any name or link, under `openssl/` of a system directory other than an
+  include directory of aws-lc. A header of the copy under `openssl/` passes, such as its
+  own `openssl/securitypolicy_common.h`. The readers come from aws-lc alone, and the
+  check reads the calls of the unit that compiles. When a header of the copy hides one
+  of aws-lc, a call of a reader keeps the name of the reader, or it has no prefix, so
   `FUNCTION_SYMBOLS` must list it. For a header under `openssl/`, this supersedes "So
   the check refuses no system header" of
   https://github.com/synnaxlabs/foundation/issues/1884#issuecomment-6060989375. In
-  aws-lc-sys 0.45.0, the readers are the functions of `openssl/pem.h` that take one, and
-  `SSL_CTX_set_default_passwd_cb`, `PEM_read_SSL_SESSION`, and
-  `PEM_read_bio_SSL_SESSION` of `openssl/ssl.h`, which are in neither `AWS_LC` nor
+  aws-lc-sys 0.45.0, the readers are the functions of `openssl/pem.h` that take a
+  `pem_password_cb`, and `SSL_CTX_set_default_passwd_cb`, `PEM_read_SSL_SESSION`, and
+  `PEM_read_bio_SSL_SESSION` of `openssl/ssl.h`. These three are in neither `AWS_LC` nor
   `AWS_LC_KEYS`, so the check refuses each call of them. It compiles each file with
   `-Werror=implicit-function-declaration`, as GCC 14 does by default, and with
   `-ftrack-macro-expansion=0`, so a call with no declaration fails the build on each
@@ -897,7 +897,12 @@
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244284643,
   2026-10-18 01:34 UTC). Supersedes the two `openssl/` header sentences of
-  https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6242174637. `OMITTED`
+  https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6242174637. Their
+  text: approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244488818,
+  2026-10-18 01:58 UTC) and `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244603644,
+  2026-10-18 02:12 UTC). `OMITTED`
   in `cargo xtask open62541` is the closed list of the release files that the library
   compiles and the copy leaves out, each with its reason: the file stores,
   `create_certificate.c`, and each policy file other than `Basic256Sha256`,
