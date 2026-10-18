@@ -5,7 +5,7 @@ use super::{
     FITS, Peer, RELAY, Relay, VALUE, drop_read, fits, mistyped, numbered, relayed, run,
     serve,
 };
-use crate::client::{Client, QUEUED, READS};
+use crate::client::{Client, READS};
 use crate::connection::CHUNKS;
 use crate::ffi::Status;
 use crate::value::{Fault, Value};
@@ -228,11 +228,13 @@ fn the_intermediate_chunks_of_one_request_id_stop_at_the_largest_message() {
     assert_eq!((read, after), closed());
 }
 
-/// The queue of a channel holds at most [`QUEUED`] intermediate chunks of all request
-/// ids, as a server can send chunks of ids that no request has.
+/// The queue of a channel holds at most the intermediate chunks of [`READS`] answers
+/// of [`CHUNKS`] chunks, across all request ids, as a server can send chunks of ids
+/// that no request has.
 #[test]
 fn the_queue_of_a_channel_stops_at_the_chunks_of_the_answers_in_flight() {
-    let (queued, chunks) = (to_usize(QUEUED), to_usize(CHUNKS));
+    let chunks = to_usize(CHUNKS);
+    let queued = usize::from(READS) * (chunks - 1);
     let mut full = vec![chunks; queued / chunks];
     full.push(queued % chunks);
     let (read, after, value) = after_forged(&full, 1, MESSAGE);
