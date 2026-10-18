@@ -360,8 +360,10 @@ impl Walker<'_> {
     }
 
     /// Takes `..` to the nearest step above with the key of the directory that the host
-    /// gives, as macOS gives `/` above `/System/Volumes/Data/Users`. `Ok(true)` when no
-    /// step above has it: a program moved a directory of the path during the walk.
+    /// gives, as macOS gives `/` above `/System/Volumes/Data/Users`. When no step above
+    /// has it, takes `..` as a symbolic link to the path of that directory. `Ok(true)`
+    /// when the host gives no path: a program moved a directory of the path during the
+    /// walk.
     fn up(&mut self) -> Result<bool, Error> {
         // A step that fails `..` is still one that the walk would leave.
         self.steps[self.at].back = true;
@@ -379,7 +381,12 @@ impl Walker<'_> {
         // on its way down, as through a step it passes.
         while self.steps[to].own != key {
             let Some(next) = self.steps[to].up else {
-                return Ok(true);
+                let Some(path) = above.path() else {
+                    return Ok(true);
+                };
+                self.links = self.links.checked_sub(1).ok_or(self.driver.looped())?;
+                self.root(&path)?;
+                return Ok(false);
             };
             to = next;
         }

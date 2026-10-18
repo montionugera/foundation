@@ -318,6 +318,18 @@ fn a_dot_dot_of_a_firmlink_target_goes_to_the_directory_that_the_host_gives() {
     assert_eq!(var, Ok(PathBuf::from("/System/Volumes/Data/private")));
 }
 
+/// Only macOS: the host gives the system `/usr` above `/System/Volumes/Data/usr/local`,
+/// a step that the walk did not pass, and the walk goes there.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_dot_dot_to_a_directory_that_the_walk_did_not_pass_goes_where_the_host_gives() {
+    let paths = os::paths();
+    let usr = paths.resolve(Path::new("/System/Volumes/Data/usr/local/.."));
+    assert_eq!(usr, Ok(PathBuf::from("/usr")));
+    let bin = paths.resolve(Path::new("/System/Volumes/Data/usr/local/../bin"));
+    assert_eq!(bin, Ok(PathBuf::from("/usr/bin")));
+}
+
 /// Only Linux: `/proc` and `/sys` are each inode 1, on two devices.
 #[cfg(target_os = "linux")]
 #[test]

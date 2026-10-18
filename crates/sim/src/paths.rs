@@ -213,7 +213,7 @@ impl Paths {
     }
 
     /// The path of the directory `inode` now.
-    fn find(&self, inode: u64) -> PathBuf {
+    pub(crate) fn find(&self, inode: u64) -> PathBuf {
         if inode == 0 {
             return PathBuf::from("/");
         }

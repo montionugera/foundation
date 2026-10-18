@@ -511,6 +511,25 @@ fn a_directory_handle_keeps_its_directory_after_a_move() {
 }
 
 #[test]
+fn a_directory_handle_gives_its_path_after_a_move() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/a"));
+    node.make_dir(Path::new("/a/out"));
+    node.make_dir(Path::new("/b"));
+    let root = node.0.root(Path::new("/")).unwrap();
+    let Ok(Entry::Directory(a)) = root.open(OsStr::new("a")) else {
+        panic!("no directory at /a");
+    };
+    let Ok(Entry::Directory(out)) = a.open(OsStr::new("out")) else {
+        panic!("no directory at /a/out");
+    };
+    assert_eq!(root.path(), Some(PathBuf::from("/")));
+    assert_eq!(out.path(), Some(PathBuf::from("/a/out")));
+    node.move_path(Path::new("/a/out"), Path::new("/b/out"));
+    assert_eq!(out.path(), Some(PathBuf::from("/b/out")));
+}
+
+#[test]
 fn a_link_to_nothing_resolves_to_its_target_and_reads_once_its_file_is_there() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let paths = node.paths();

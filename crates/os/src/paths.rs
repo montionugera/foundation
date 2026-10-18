@@ -143,6 +143,27 @@ impl env::paths::dir::Driver for Dir {
         let up = Self::open(fd.as_fd(), OsStr::new("..")).map_err(errno)?;
         Ok(Box::new(up))
     }
+
+    #[cfg(target_os = "linux")]
+    fn path(&self) -> Option<PathBuf> {
+        use std::os::fd::AsRawFd;
+        let fd = self.fd.as_ref()?.as_raw_fd();
+        let link = format!("/proc/self/fd/{fd}");
+        let path = rustix::fs::readlinkat(CWD, link, Vec::new())
+            .ok()?
+            .into_bytes();
+        // A removed directory keeps its last path with this end.
+        let path = PathBuf::from(OsString::from_vec(path));
+        let gone = path.as_os_str().as_bytes().ends_with(b" (deleted)");
+        (path.is_absolute() && !gone).then_some(path)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn path(&self) -> Option<PathBuf> {
+        let path = rustix::fs::getpath(self.fd.as_ref()?).ok()?.into_bytes();
+        let path = PathBuf::from(OsString::from_vec(path));
+        path.is_absolute().then_some(path)
+    }
 }
 
 /// The key of the file of `stat`.
@@ -263,4 +284,27 @@ fn error(e: &io::Error) -> Error {
     // Std gives no code for a path with a nul byte.
     let code = e.raw_os_error().unwrap_or(Errno::INVAL.raw_os_error());
     Error::Io { code }
+}
+
+#[cfg(test)]
+mod tests {
+    use env::paths::dir::Driver as _;
+
+    use super::*;
+
+    #[test]
+    fn a_directory_gives_the_path_at_which_the_host_finds_it_now() {
+        let name = format!("foundation-os-dir-path-{}", std::process::id());
+        // The path that the host gives, also where the temporary directory is a link.
+        let scratch = fs::canonicalize(std::env::temp_dir()).unwrap().join(name);
+        fs::create_dir_all(scratch.join("a")).unwrap();
+        let a = Dir::open(CWD, scratch.join("a").as_os_str()).unwrap();
+        assert_eq!(a.path(), Some(scratch.join("a")));
+        fs::rename(scratch.join("a"), scratch.join("b")).unwrap();
+        assert_eq!(a.path(), Some(scratch.join("b")));
+        fs::remove_dir(scratch.join("b")).unwrap();
+        fs::remove_dir(&scratch).unwrap();
+        // Linux gives the last path with " (deleted)" at its end.
+        assert_eq!(a.path(), None);
+    }
 }

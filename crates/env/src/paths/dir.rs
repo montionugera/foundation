@@ -37,6 +37,10 @@ pub trait Driver: Debug {
     /// [`Error::NotFound`] when the host finds no directory above this one, else
     /// [`Error::Io`] with the code of the host.
     fn up(&self) -> Result<Box<dyn Driver>, Error>;
+
+    /// The absolute path at which the host finds this directory now, or `None` when
+    /// the host gives none.
+    fn path(&self) -> Option<PathBuf>;
 }
 
 /// What [`Driver::open`] found at a name, with no symbolic link followed.
