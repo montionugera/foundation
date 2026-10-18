@@ -57,9 +57,9 @@ pub enum Error {
     /// This node is not a voter of its configuration, and only a voter proposes a
     /// change. Call it on a voter.
     NoVote,
-    /// This node, or the leader that it forwarded to, proposed a card of the same
-    /// member less than a minute before, and refused this one before the log. Call
-    /// again after a minute.
+    /// This node, or the leader that it forwarded to, refused this card before the
+    /// log. That node proposed a card of the same member after its own start and less
+    /// than a minute before. Call again after a minute.
     Soon,
     /// The region cannot hold a member record of the config.
     Member(Unfit),
