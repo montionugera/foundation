@@ -1314,14 +1314,14 @@
   names and not with the length of each resolved path. Links that a writer of the host
   puts in a folder can still make a walk slow, since each name goes to the host by its
   full resolved path: a read through 40 links of `s/../` from a directory 1900 names
-  deep takes 5.2 s, and the run peaks at 56 MB, where the free handle takes 3 ms. With a
-  full path in each step, it took 5.5 s and peaked at 257 MB. That writer is the
-  attacker of #3094, and a walk by handles makes each name one call. The `within` doc
-  states the gap between the check and the call: "The check and the call are two steps:
-  a process that can write a symbolic link in a folder between them can lead the call to
-  a path that the check refused (#3094)." The gap is a containment escape, its issue is
-  #3094, and #3018 files no other issue for it. Supersedes `Driver::link` and
-  `Driver::working` of
+  deep takes 5.2 s on the same host and build, and the run peaks at 56 MB, where the
+  free handle takes 3 ms. With a full path in each step, it took 5.5 s and peaked at 257
+  MB. That writer is the attacker of #3094, and a walk by handles makes each name one
+  call. The `within` doc states the gap between the check and the call: "The check and
+  the call are two steps: a process that can write a symbolic link in a folder between
+  them can lead the call to a path that the check refused (#3094)." The gap is a
+  containment escape, its issue is #3094, and #3018 files no other issue for it.
+  Supersedes `Driver::link` and `Driver::working` of
   https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6231386142; "A
   prefix resolves as `resolve` does, and the walk stops at the first prefix that does
   not resolve", "never a prefix of their join, since a join can be longer than the host

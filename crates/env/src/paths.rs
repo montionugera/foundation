@@ -60,16 +60,18 @@ impl Paths {
     ///   passes.
     /// - [`Error::Replaced`]: in place of `Outside`, when the file at a folder is not
     ///   the one that was there at this call, and the step is under that folder by its
-    ///   path then or now. A program that renames, replaces, or removes a folder does
-    ///   this.
+    ///   path then or now, is in the directory that it was, or, short of the end, is on
+    ///   the way to it. A program that renames, replaces, or removes a folder does
+    ///   this, unless the host gives the new folder the old key, as ext4 can. A write
+    ///   through this handle replaces a folder that is a file too.
     /// - [`Error::Hidden`]: the step passes the folders and a hidden folder holds it.
     ///   Each call walks each path of `hidden` again, and a directory that was at a
-    ///   hidden path at this call hides too. A relative path of `hidden` starts at the
-    ///   working directory of this call: its resolved path, less one name for each
-    ///   `..` at the start of the path. So a later change or removal of the working
-    ///   directory moves no hidden path. When the host refuses that walk, other
-    ///   than for a name that is not there, a step that is a file, or a loop, each step
-    ///   that passes the folders is hidden.
+    ///   hidden path at this call hides too, but a listing of it does not. A relative
+    ///   path of `hidden` starts at the working directory of this call: its resolved
+    ///   path, less one name for each `..` at the start of the path. So a later change
+    ///   or removal of the working directory moves no hidden path. When the host
+    ///   refuses that walk, other than for a name that is not there, a step that is a
+    ///   file, or a loop, each step that passes the folders is hidden.
     /// - [`Error::Vacant`]: while nothing is at a hidden path, a write or a `make_dir`
     ///   of a new name in the deepest directory on the way to it.
     ///
