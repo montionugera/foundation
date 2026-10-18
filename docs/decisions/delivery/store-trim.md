@@ -27,6 +27,17 @@
   2026-10-14T01:42:08Z; text of
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6196998191,
   2026-10-15T16:27:31Z).
+  Amended (2026-10-18T00:33:50Z, #406): each data record leaves free the spare of
+  S4 in place of the three blocks: two restart records, a carry record of the largest
+  carry body, and the blocks less one of that record that a wrap skips. With trims or
+  without, it also leaves free its excess until a trim passes it, and a carry moves
+  whole records (`laptop.architect`,
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6242940372 and
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6243771938; with
+  no trims too: 2026-10-18T05:48:19Z,
+  https://github.com/synnaxlabs/foundation/pull/3113#issuecomment-6246248971).
+  `Layout::new` refuses an area under four of the largest record and the spare. This
+  supersedes each "three blocks" of this record.
   `set_floor` and `usage` wait for their first effect, the B1 warning (#1080). Lost: a
   `trim` call from the home (it needs the commit rate, a late trim gives a second gap,
   and the edge cases of the ring move up into `home`). Decided by the architect (#160,
@@ -169,3 +180,40 @@
   first sync only when the restart record goes past the room that the older header slot
   keeps, which keeps one sync for most opens with no trim and adds the tail of that slot
   to `Header::decode`.
+  As built (#406, 406-2): a trim keeps the newest durable entry of each nonzero tag on
+  each path of an index, as it keeps the tail of each path. The buffer keeps a heap copy
+  of each such entry (ENTRY TAGS), and the record that holds the copy is a holder, as
+  the record of a tail is: `kept` gives the oldest holder of either kind, so no trim
+  passes one. A commit carries each holder before the reach in a carry record (S4),
+  oldest first, with the bytes from the copy and no file read. A carry record has a
+  budget of bytes, at most the largest carry body of S4: a tail costs 42 bytes and an
+  entry 51 bytes and its bytes, at most 1023 of each. A carry moves whole records, and
+  the holders of each record fit one carry record (`Limit::Carry`, with trims or
+  without, S4), so each commit with a holder before the reach carries at least the
+  holders of the oldest record. An
+  entry replaces the copy of its key only when its end mark is the same as or after the
+  end mark of the copy, so a carry of an older copy after a newer entry, at the commit
+  or at the walk, changes nothing. The walk gives `Error::Invalid` for a carried entry
+  with tag 0 or one that ends past the last seq, for a key that one carry body gives
+  twice, for a copy whose path no record of the walk holds, and for a data record
+  whose holders one carry record does not hold. Planned by
+  `laptop.architect` (#406, 2026-10-14T01:56:45Z:
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6159164617). The mark
+  rule, which replaces the rule of that plan that a commit does not carry a key whose
+  newer entry is in the taken records, and the holder of either kind are approved by
+  `laptop.architect` (#406, 2026-10-17T19:21:03Z:
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6239447936).
+  The copy keeps `slot`, `path`, and `tag` beside `first`, `stored_at`, and the packed
+  kind, so the items and a carry reach a copy by its place. This supersedes "the copy
+  keeps only `first`, `stored_at`, and `kind`" of item 3 of
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6239447936
+  (`laptop.architect`, #3113, 2026-10-18T05:05:33Z:
+  https://github.com/synnaxlabs/foundation/pull/3113#issuecomment-6245930034).
+  Deferred: a limit on the tagged state of a shard, with an exact refusal of the tagged
+  append. Until then, a ring whose tails and tagged entries pass its area less the
+  headroom carries them at each lap, and `append` gives `Rejected::Full` for data. No
+  state is lost. No key leaves, so the refusal lasts until the shard has more area.
+  Trigger to look again: a workload on the milestone path where the tails and tagged
+  entries of one shard pass a tenth of its area. OK by `laptop.architect` (#406,
+  2026-10-17T20:52:49Z:
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6240875264).

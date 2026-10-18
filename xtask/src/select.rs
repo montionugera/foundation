@@ -30,21 +30,35 @@ impl Package {
     }
 }
 
-/// The packages in `metadata` with a `.rs` file whose text `matches`. It reads each
-/// file in the directory of each target's root, so it also reads oracles under
+/// The [`Package`] of each package of [`matching`].
+///
+/// # Errors
+///
+/// An error of [`matching`], or a package object with no `id`.
+pub(crate) fn packages(
+    metadata: &Value,
+    matches: impl Fn(&str) -> bool,
+) -> Result<Vec<Package>, String> {
+    matching(metadata, matches)?
+        .into_iter()
+        .map(Package::read)
+        .collect()
+}
+
+/// The package objects in `metadata` with a `.rs` file whose text `matches`. It reads
+/// each file in the directory of each target's root, so it also reads oracles under
 /// `oracles/`. It never picks `xtask`, whose tests hold sample source.
 ///
 /// # Errors
 ///
 /// A missing metadata field, or a file that cannot be read.
-pub(crate) fn packages(
+pub(crate) fn matching(
     metadata: &Value,
     matches: impl Fn(&str) -> bool,
-) -> Result<Vec<Package>, String> {
+) -> Result<Vec<&Value>, String> {
     let mut picked = Vec::new();
     for package in field::list(metadata, "packages")? {
-        let found = Package::read(package)?;
-        if found.name == "xtask" {
+        if field::text(package, "name")? == "xtask" {
             continue;
         }
         let mut dirs = BTreeSet::new();
@@ -56,7 +70,7 @@ pub(crate) fn packages(
             dirs.insert(dir.to_path_buf());
         }
         if any(&dirs, &matches)? {
-            picked.push(found);
+            picked.push(package);
         }
     }
     Ok(picked)
@@ -152,8 +166,15 @@ mod tests {
                     "JSON has no array field `targets`",
                 ),
                 (
-                    serde_json::json!({ "name": "a", "targets": [] }),
+                    serde_json::json!({
+                        "name": "a",
+                        "targets": [{ "src_path": crate::fixture().join("unmatched/src/lib.rs") }],
+                    }),
                     "JSON has no string field `id`",
+                ),
+                (
+                    serde_json::json!({ "id": "a-id", "targets": [] }),
+                    "JSON has no string field `name`",
                 ),
             ] {
                 let metadata = serde_json::json!({ "packages": [package] });

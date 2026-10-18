@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
+use connector::browse::Malformed;
 use document::Source;
 use serde_json::{Map, Value, json};
 
-use crate::error::{Action, Among, Error, On, Unread, Unwritten};
+use crate::error::{Action, Among, Error, On, Problem, Sources, Unread, Unwritten};
 use crate::operation::{self, Response, TABLE};
 use crate::{FrontEnd, FrontEnds};
 use crate::{front_end, plan};
@@ -47,7 +48,8 @@ fn offline(
         Ok(request)
     };
     let input = async || crate::line(&mut input);
-    let cli = crate::cli(args, input, output, errors, &paths, reach);
+    let front_ends = crate::common::front_ends();
+    let cli = crate::cli(args, input, output, errors, &paths, &front_ends, reach);
     let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
     else {
         panic!("a command waited");
@@ -96,7 +98,7 @@ fn respond(message: &str) -> Option<String> {
         reached.set(reached.get() + 1);
         Ok(request)
     });
-    let scope = crate::scope::Scope::free(&paths);
+    let scope = crate::scope::Scope::free(&paths, &crate::common::front_ends());
     let respond = crate::mcp::respond(message, &scope, &mut link);
     let Poll::Ready(reply) =
         pin!(respond).poll(&mut Context::from_waker(Waker::noop()))
@@ -393,6 +395,26 @@ fn a_text_error_writes_control_characters_as_escapes() {
     }
 }
 
+/// An error of a list shows its one problem, else the count of its problems, and no
+/// error panics when it is shown.
+#[test]
+fn a_list_error_shows_its_one_problem_or_the_count() {
+    let one = Error::DuplicatePick {
+        paths: vec!["x".to_owned()],
+    };
+    assert_eq!(one.to_string(), "the import picks the point `x` twice");
+    let two = Error::BadPoint {
+        points: vec![
+            ("a//b".to_owned(), Malformed::Empty),
+            ("c//d".to_owned(), Malformed::Empty),
+        ],
+    };
+    assert_eq!(two.to_string(), "the import has 2 problems");
+    for error in every() {
+        let _shown = error.to_string();
+    }
+}
+
 #[test]
 fn a_json_error_keeps_the_callers_text() {
     let exit = cli(&["\u{1b}x", "--json"]);
@@ -602,6 +624,8 @@ fn every() -> Vec<Error> {
             on: On::Spec,
         },
         Error::LargeReply,
+        Error::LargeBrowse,
+        Error::LargeStatus,
         Error::ChannelRead {
             connector: "site.a".parse().expect("a name"),
             message: String::new(),
@@ -609,6 +633,10 @@ fn every() -> Vec<Error> {
         Error::Read {
             path: PathBuf::new(),
             cause: Unread::NotFound,
+        },
+        Error::NoConfig {
+            path: PathBuf::from("d"),
+            extensions: "`.hcl`".to_owned(),
         },
         Error::Write {
             path: PathBuf::new(),
@@ -653,56 +681,119 @@ fn every() -> Vec<Error> {
             path: PathBuf::from("/work/foundation-data"),
             error: env::paths::Error::NotFound,
         },
+        Error::browse(
+            &"plant".parse().expect("a name"),
+            &"opcua".parse().expect("a name"),
+            connector::kind::Error::Device("lost".into()),
+            &Sources::default(),
+        ),
+        Error::BrowseNode {
+            connector: "plant".parse().expect("a name"),
+            node: "edge".parse().expect("a name"),
+            this: "core".parse().expect("a name"),
+        },
+        Error::BadStart {
+            text: String::new(),
+            cause: Malformed::Empty,
+        },
+        Error::BadPattern {
+            text: String::new(),
+            cause: Malformed::Escape,
+        },
+        Error::NoPick,
+        Error::PickLimit { picked: 501 },
+        Error::MatchLimit,
+        Error::BadPoint {
+            points: vec![(String::new(), Malformed::Empty)],
+        },
+        Error::DuplicatePick {
+            paths: vec!["Line/Pump".to_owned()],
+        },
+        Error::BadName {
+            names: vec![(String::new(), String::new(), types::name::Error::Empty)],
+        },
+        Error::UnreadablePoint {
+            points: vec![("Line/Pump".to_owned(), "no access".to_owned())],
+        },
+        Error::PickBudget,
+        Error::MatchBudget,
+        Error::LargeImport,
+        Error::FileChanged {
+            path: PathBuf::new(),
+        },
     ]
+}
+
+/// Matches each variant, so a new variant fails to compile until it joins [`every`]
+/// and the golden file.
+fn listed(error: &Error) {
+    // `Config` holds the codes of the front ends, of `config`, and the ones below.
+    // `Node` holds the codes of `node`, and `Remote` the codes of a reply.
+    match error {
+        Error::Argument { .. }
+        | Error::Unknown { .. }
+        | Error::Input { .. }
+        | Error::Output { .. }
+        | Error::Plan(_)
+        | Error::Behind(_)
+        | Error::Stale { .. }
+        | Error::Apply(_)
+        | Error::Stopped(_)
+        | Error::Request { .. }
+        | Error::Denied { .. }
+        | Error::LargeReply
+        | Error::LargeBrowse
+        | Error::LargeStatus
+        | Error::ChannelRead { .. }
+        | Error::Read { .. }
+        | Error::NoConfig { .. }
+        | Error::Write { .. }
+        | Error::LargeRequest
+        | Error::Reply { .. }
+        | Error::Outside { .. }
+        | Error::Hidden { .. }
+        | Error::NoData { .. }
+        | Error::FolderChanged { .. }
+        | Error::PlanName { .. }
+        | Error::WideFolder { .. }
+        | Error::Folder { .. }
+        | Error::Data { .. }
+        | Error::Browse { .. }
+        | Error::BrowseNode { .. }
+        | Error::BadStart { .. }
+        | Error::BadPattern { .. }
+        | Error::NoPick
+        | Error::PickLimit { .. }
+        | Error::MatchLimit
+        | Error::BadPoint { .. }
+        | Error::DuplicatePick { .. }
+        | Error::BadName { .. }
+        | Error::UnreadablePoint { .. }
+        | Error::PickBudget
+        | Error::MatchBudget
+        | Error::LargeImport
+        | Error::FileChanged { .. }
+        | Error::Config(_)
+        | Error::Node(_)
+        | Error::Remote { .. } => {}
+    }
 }
 
 #[test]
 fn error_codes_and_fixes_match_the_golden_file() {
     let every = every();
-    for error in &every {
-        // A new variant fails this match, so it joins `every` and the golden file.
-        // `Config` holds the codes of the front ends, of `config`, and the ones below.
-        // `Node` holds the codes of `node`, and `Remote` the codes of a reply.
-        match error {
-            Error::Argument { .. }
-            | Error::Unknown { .. }
-            | Error::Input { .. }
-            | Error::Output { .. }
-            | Error::Plan(_)
-            | Error::Behind(_)
-            | Error::Stale { .. }
-            | Error::Apply(_)
-            | Error::Stopped(_)
-            | Error::Request { .. }
-            | Error::Denied { .. }
-            | Error::LargeReply
-            | Error::ChannelRead { .. }
-            | Error::Read { .. }
-            | Error::Write { .. }
-            | Error::LargeRequest
-            | Error::Reply { .. }
-            | Error::Outside { .. }
-            | Error::Hidden { .. }
-            | Error::NoData { .. }
-            | Error::FolderChanged { .. }
-            | Error::PlanName { .. }
-            | Error::WideFolder { .. }
-            | Error::Folder { .. }
-            | Error::Data { .. }
-            | Error::Config(_)
-            | Error::Node(_)
-            | Error::Remote { .. } => {}
-        }
-    }
+    every.iter().for_each(listed);
     let mut lines: Vec<_> = every
         .iter()
         .flat_map(|error| error.problems().into_owned())
+        .chain([Problem::more(0)])
         .map(|problem| format!("{}\t{}\n", problem.code, problem.fix))
         .collect();
     let front_ends = FrontEnds::new(
         "hcl",
         FrontEnd {
             read: |_, _| Err(Vec::new()),
+            update: |_, _, _| Err(Vec::new()),
         },
     );
     let unknown = front_end::unknown(Source(0), &front_ends);
@@ -1130,6 +1221,8 @@ mod mcp {
     use serde_json::{Value, json};
 
     use super::{ask, respond};
+    use crate::mcp::GUIDE;
+    use crate::operation::{self, TABLE};
 
     fn request(id: Value, method: &str, params: Value) -> Value {
         let mut request = json!({ "jsonrpc": "2.0", "method": method });
@@ -1161,9 +1254,27 @@ mod mcp {
                     "protocolVersion": "2025-06-18",
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "foundation", "version": env!("CARGO_PKG_VERSION") },
+                    "instructions": GUIDE,
                 },
             })
         );
+    }
+
+    /// Each name in backticks in the guide is a tool, an input of one, or `fill`.
+    #[test]
+    fn the_guide_names_only_tools_their_inputs_and_fill() {
+        let inputs = operation::inputs();
+        let named: Vec<&str> = GUIDE.split('`').skip(1).step_by(2).collect();
+        assert!(named.contains(&"import"), "{named:?}");
+        for name in named {
+            let input = inputs.values().any(|schema| {
+                schema["properties"]
+                    .as_object()
+                    .is_some_and(|properties| properties.contains_key(name))
+            });
+            let tool = TABLE.iter().any(|spec| spec.name == name);
+            assert!(tool || input || name == "fill", "`{name}` in the guide");
+        }
     }
 
     #[test]
@@ -1386,6 +1497,9 @@ mod serve {
         let missing = include_str!("../../../oracles/fuzz/ops_mcp/plan-missing");
         let out = run(&["mcp"], missing.as_bytes()).stdout;
         assert!(out.contains("ops.read"), "{out}");
+        let directory = include_str!("../../../oracles/fuzz/ops_mcp/plan-directory");
+        let out = run(&["mcp"], directory.as_bytes()).stdout;
+        assert!(out.contains("ops.no-config"), "{out}");
     }
 
     #[test]
@@ -1611,7 +1725,8 @@ mod scope {
         host.make_dir(Path::new("/work"));
         host.set_working_dir(Path::new("/work"));
         let data = Path::new("/work/foundation-data");
-        let scope = Scope::mcp(&host.paths(), &[], data).expect("a scope");
+        let scope = Scope::mcp(&host.paths(), &crate::common::front_ends(), &[], data)
+            .expect("a scope");
         (host, scope)
     }
 
@@ -1649,8 +1764,13 @@ mod scope {
         let host = sim.node(sim::node::Config::default());
         host.make_dir(Path::new("/plans"));
         let data = Path::new("/data");
-        let scope =
-            Scope::mcp(&host.paths(), &["/plans".into()], data).expect("a scope");
+        let scope = Scope::mcp(
+            &host.paths(),
+            &crate::common::front_ends(),
+            &["/plans".into()],
+            data,
+        )
+        .expect("a scope");
         host.move_path(Path::new("/plans"), Path::new("/old"));
         host.make_dir(Path::new("/plans"));
         assert_eq!(

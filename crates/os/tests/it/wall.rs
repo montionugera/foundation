@@ -37,6 +37,7 @@ fn gives_a_bound_under_sixteen_seconds_when_a_daemon_runs() {
     );
 }
 
+/// Only Linux: the test refuses a call with a seccomp filter.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_refused_read_fails_at_construction() {

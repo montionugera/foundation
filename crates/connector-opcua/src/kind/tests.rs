@@ -1,18 +1,19 @@
 #![expect(clippy::arithmetic_side_effects, reason = "a test may panic")]
 
+use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::fmt::Display;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use ::sim::{Sim, node};
 use connector::cancel::Token;
 use connector::kind::Table;
-use connector::supervisor::Supervisor;
-use connector::testing;
+use connector::testing::{self, Rig};
 use document::value::{self, Value};
 use document::{Attribute, Map};
 use env::net::{Listener, tcp};
@@ -44,19 +45,17 @@ const DATA: &[&str] = &["plant.a", "plant.b", "plant.c"];
 /// The connector of each scene.
 const PLC: &str = "plant.plc";
 
-/// The first key of the status channels of [`PLC`]: the index, then `state`,
-/// `class`, `restarts`, `backoff`, `error`, `note`, then each of [`COUNTS`].
-const STATUS: u128 = 100;
-const CLASS: u128 = STATUS + 2;
-const RESTARTS: u128 = STATUS + 3;
-const ERROR: u128 = STATUS + 5;
-const NOTE: u128 = STATUS + 6;
-const IN: u128 = STATUS + 7;
-const MISSED: u128 = STATUS + 8;
-const LOST: u128 = STATUS + 9;
-const BAD: u128 = STATUS + 10;
-const UNCERTAIN: u128 = STATUS + 11;
-const MISTYPED: u128 = STATUS + 12;
+/// The last segment of the name of each status channel of [`PLC`] that a test reads.
+const CLASS: &str = "class";
+const RESTARTS: &str = "restarts";
+const ERROR: &str = "error";
+const NOTE: &str = "note";
+const IN: &str = "in";
+const MISSED: &str = "missed";
+const LOST: &str = "lost";
+const BAD: &str = "bad";
+const UNCERTAIN: &str = "uncertain";
+const MISTYPED: &str = "mistyped";
 
 /// The class of a device error in the status.
 const DEVICE: u64 = 2;
@@ -80,9 +79,17 @@ enum Samples {
 /// The series of one frame that a reader received, by key.
 type Frame = BTreeMap<u128, Samples>;
 
+/// The series of one frame of the status channels of [`PLC`] that a reader received,
+/// by the last segment of each name.
+type Segments = BTreeMap<String, Samples>;
+
 /// The samples of `key` in `frame`, when it holds them.
-fn fixed(frame: &Frame, key: u128) -> Option<&[u64]> {
-    match frame.get(&key)? {
+fn fixed<'a, K, Q>(frame: &'a BTreeMap<K, Samples>, key: &Q) -> Option<&'a [u64]>
+where
+    K: Ord + Borrow<Q>,
+    Q: Ord + Display + ?Sized,
+{
+    match frame.get(key)? {
         Samples::Fixed(samples) => Some(samples),
         Samples::Texts(_) => panic!("{key} has fixed samples"),
     }
@@ -90,7 +97,7 @@ fn fixed(frame: &Frame, key: u128) -> Option<&[u64]> {
 
 /// The value of the one sample of the `f64` channel `key` in `frame`.
 fn value(frame: &Frame, key: u128) -> f64 {
-    match fixed(frame, key) {
+    match fixed(frame, &key) {
         Some(&[bits]) => f64::from_bits(bits),
         other => panic!("one sample of {key}: {other:?}"),
     }
@@ -98,16 +105,16 @@ fn value(frame: &Frame, key: u128) -> f64 {
 
 /// The stamp of the one sample of the index `key` in `frame`.
 fn stamp(frame: &Frame, key: u128) -> i64 {
-    match fixed(frame, key) {
+    match fixed(frame, &key) {
         Some(&[bits]) => i64::from_le_bytes(bits.to_le_bytes()),
         other => panic!("one stamp of {key}: {other:?}"),
     }
 }
 
-/// The last sample of the status channel `key` in `statuses`, or 0 when none holds
-/// it.
-fn last(statuses: &[Frame], key: u128) -> u64 {
-    let mut samples = statuses.iter().filter_map(|frame| fixed(frame, key));
+/// The last sample of the status channel `segment` in `statuses`, or 0 when none
+/// holds it.
+fn last(statuses: &[Segments], segment: &str) -> u64 {
+    let mut samples = statuses.iter().filter_map(|frame| fixed(frame, segment));
     samples
         .next_back()
         .and_then(|samples| samples.last().copied())
@@ -116,11 +123,11 @@ fn last(statuses: &[Frame], key: u128) -> u64 {
 
 /// Each text of `error` in `statuses` that is not empty, with the class beside it,
 /// once for each run of equal pairs.
-fn errors(statuses: &[Frame]) -> Vec<(u64, String)> {
+fn errors(statuses: &[Segments]) -> Vec<(u64, String)> {
     let mut errors = Vec::new();
     for frame in statuses {
         let (Some(Samples::Texts(texts)), Some(classes)) =
-            (frame.get(&ERROR), fixed(frame, CLASS))
+            (frame.get(ERROR), fixed(frame, CLASS))
         else {
             continue;
         };
@@ -134,10 +141,10 @@ fn errors(statuses: &[Frame]) -> Vec<(u64, String)> {
 
 /// Each text of `note` in `statuses` that is not empty, once for each run of equal
 /// texts.
-fn notes(statuses: &[Frame]) -> Vec<String> {
+fn notes(statuses: &[Segments]) -> Vec<String> {
     let mut notes = Vec::new();
     for frame in statuses {
-        if let Some(Samples::Texts(texts)) = frame.get(&NOTE) {
+        if let Some(Samples::Texts(texts)) = frame.get(NOTE) {
             notes.extend(texts.iter().filter(|text| !text.is_empty()).cloned());
         }
     }
@@ -147,10 +154,10 @@ fn notes(statuses: &[Frame]) -> Vec<String> {
 
 /// Each text of `note` in `statuses`, also an empty one, once for each run of equal
 /// texts.
-fn texts(statuses: &[Frame]) -> Vec<String> {
+fn texts(statuses: &[Segments]) -> Vec<String> {
     let mut texts = Vec::new();
     for frame in statuses {
-        if let Some(Samples::Texts(notes)) = frame.get(&NOTE) {
+        if let Some(Samples::Texts(notes)) = frame.get(NOTE) {
             texts.extend(notes.iter().cloned());
         }
     }
@@ -166,12 +173,15 @@ fn keys(frames: &[Frame]) -> Vec<Vec<u128>> {
         .collect()
 }
 
-/// The series of `received`, by key.
-fn decode(received: &Received<'_>) -> Frame {
+/// The series of `received`, each by the `key` of its channel's key and name.
+fn decode<K: Ord>(
+    received: &Received<'_>,
+    key: fn(channel::Key, &str) -> K,
+) -> BTreeMap<K, Samples> {
     let (set, view) = (received.set(), received.view());
-    let mut frame = Frame::new();
-    for (entry, bytes) in view.iter() {
-        let entry = &set.entries()[entry];
+    let mut frame = BTreeMap::new();
+    for (index, bytes) in view.iter() {
+        let entry = &set.entries()[index];
         let range = view.range(entry.group).expect("the group is present");
         let count = usize::try_from(range.count).expect("a count");
         let mut raw = Vec::new();
@@ -189,17 +199,30 @@ fn decode(received: &Received<'_>) -> Frame {
             let texts = texts.map(|text| String::from_utf8_lossy(text).into_owned());
             Samples::Texts(texts.collect())
         };
-        frame.insert(entry.key.as_u128(), samples);
+        frame.insert(key(entry.key, received.name(index)), samples);
     }
     frame
 }
 
-/// Reads each frame of `names` into the vector it gives, in a task on `tasks`.
-async fn record(
+/// The key of a channel in a [`Frame`].
+fn by_key(key: channel::Key, _: &str) -> u128 {
+    key.as_u128()
+}
+
+/// The key of a status channel in a [`Segments`].
+fn by_segment(_: channel::Key, name: &str) -> String {
+    let last = name.rsplit_once('.').map_or(name, |(_, last)| last);
+    last.to_owned()
+}
+
+/// Reads each frame of `names` into the vector it gives, keyed by `key` as
+/// [`decode`] does, in a task on `tasks`.
+async fn record<K: Ord + 'static>(
     hub: &hub::Hub,
     names: &[Name],
     tasks: &Tasks,
-) -> Rc<RefCell<Vec<Frame>>> {
+    key: fn(channel::Key, &str) -> K,
+) -> Rc<RefCell<Vec<BTreeMap<K, Samples>>>> {
     let config = hub::reader::Config {
         select: Selector::new(names.iter().map(Name::as_str)).expect("a selector"),
         mode: Mode::Complete,
@@ -212,7 +235,7 @@ async fn record(
     let into = Rc::clone(&frames);
     tasks.spawn(async move {
         while let Ok(received) = reader.next().await {
-            into.borrow_mut().push(decode(&received));
+            into.borrow_mut().push(decode(&received, key));
         }
     });
     frames
@@ -342,13 +365,12 @@ fn listen(node: &node::Node) -> Listener {
     node.net().listen(&listen).expect("the port is free")
 }
 
-/// One node with a hub, a server of [`Setup::nodes`] on its port 4840, and a
-/// supervisor of the `opcua` kind.
+/// One node with a rig of the `opcua` kind and a server of [`Setup::nodes`] on its
+/// port 4840.
 struct Scene {
     node: node::Node,
     tasks: Tasks,
-    hub: hub::Hub,
-    supervisor: Supervisor,
+    rig: Rig,
     variables: Variables,
     /// The gate of each server that runs.
     gate: Gate,
@@ -371,9 +393,8 @@ impl Scene {
         let (variables, until) = (self.variables.clone(), stop.clone());
         let (mut rng, gate) = (self.node.entropy().rng(), self.gate.clone());
         group.tasks().spawn(async move {
-            let until = until.wait();
             let serve = serve(clock, wall, net, listener, &mut rng, &variables, until);
-            gate.hold(serve).await;
+            gate.hold(serve).await.expect("the listener does not fail");
         });
         *self.server.borrow_mut() = Some((stop, group));
     }
@@ -397,8 +418,8 @@ impl Scene {
             canceller.cancel();
         });
         let open = self
-            .supervisor
-            .open("opcua", name(PLC), &self.config, &token);
+            .rig
+            .open_connector("opcua", name(PLC), &self.config, &token);
         open.await.run().await
     }
 
@@ -427,10 +448,12 @@ struct Record {
     /// The frames of the channels of the setup on each other index, by its key.
     indexes: BTreeMap<u128, Vec<Frame>>,
     /// The frames of the status channels.
-    statuses: Vec<Frame>,
+    statuses: Vec<Segments>,
     served: BTreeMap<String, Vec<Served>>,
     /// The reads of the state of the server that each server answered.
     states: u32,
+    /// The lines of target `open62541`.
+    logged: Vec<String>,
 }
 
 /// Runs `script` on a scene of `setup` at 10 Hz, as [`run_at`] does.
@@ -449,9 +472,7 @@ where
     S: FnOnce(Rc<Scene>) -> F + Send + 'static,
     F: Future<Output = Result<(), Error>> + 'static,
 {
-    let mut sim = Sim::new(::sim::Config::default());
-    let node = sim.node(node::Config::default());
-    let run = sim.run_on(&node, move |node, tasks| async move {
+    let run = logged(move |node, tasks| async move {
         let env = hub::testing::Env {
             files: node.files(),
             clock: node.clock(),
@@ -460,20 +481,16 @@ where
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("opcua", Kind::default());
-        let inputs = testing::create_config(env, node.net(), kinds).await;
-        let hub = inputs.hub.clone();
-        let counts = COUNTS.map(name);
-        let status = testing::create_status(
-            &name(PLC),
-            &counts,
-            channel::Key::from_u128(STATUS),
-        );
+        let rig = Rig::open(env, node.net(), kinds).await;
+        let hub = rig.hub();
+        let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
+        let config = config(&address, rate, &setup.reads);
+        let status = rig.define_status("opcua", &name(PLC), &config);
         let channels = setup.channels.iter();
         let channels: Vec<_> = channels
             .map(|(text, def)| (name(text), def.clone()))
             .collect();
-        let definitions = status.iter().chain(&channels);
-        hub.set_definitions(definitions.map(|(name, def)| (name, def)));
+        rig.define(channels.clone());
         let mut groups = BTreeMap::<u128, Vec<Name>>::new();
         for (name, definition) in &channels {
             groups
@@ -483,20 +500,17 @@ where
         }
         let mut indexes = BTreeMap::new();
         for (index, names) in groups {
-            indexes.insert(index, record(&hub, &names, &tasks).await);
+            indexes.insert(index, record(hub, &names, &tasks, by_key).await);
         }
-        let names: Vec<_> = status.iter().map(|(name, _)| name.clone()).collect();
-        let statuses = record(&hub, &names, &tasks).await;
-        let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
+        let statuses = record(hub, &status, &tasks, by_segment).await;
         let scene = Rc::new(Scene {
-            config: config(&address, rate, &setup.reads),
+            config,
             variables: setup.variables(),
-            supervisor: Supervisor::new(inputs),
+            rig,
             server: RefCell::new(None),
             gate: Gate::default(),
             node: node.clone(),
             tasks,
-            hub,
         });
         scene.serve();
         let result = script(Rc::clone(&scene)).await;
@@ -510,7 +524,7 @@ where
         let indexes: BTreeMap<u128, Vec<Frame>> = indexes.collect();
         (result, indexes, statuses.take(), scene.variables.clone())
     });
-    let (result, mut indexes, statuses, variables) = run.expect("the run ends");
+    let ((result, mut indexes, statuses, variables), logged) = run;
     Record {
         result,
         frames: indexes.remove(&1).expect("the index 1"),
@@ -518,7 +532,40 @@ where
         statuses,
         served: variables.served(),
         states: variables.states(),
+        logged,
     }
+}
+
+/// Runs `body` on a shard of a new node of a new sim, as [`Sim::run_on`] does, and
+/// gives what it returned and the lines of target `open62541`.
+fn logged<T, F>(
+    body: impl FnOnce(node::Node, Tasks) -> F + Send + 'static,
+) -> (T, Vec<String>)
+where
+    T: Send + 'static,
+    F: Future<Output = T> + 'static,
+{
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    let (capture, log) = testing::Capture::new("open62541");
+    let out = Arc::new(Mutex::new(None));
+    let (slot, own) = (Arc::clone(&out), node.clone());
+    let config = env::shards::Config {
+        name: "run".into(),
+        core: None,
+    };
+    let start = node
+        .shards()
+        .logged(log)
+        .start(config, move |tasks| async move {
+            let value = body(own, tasks).await;
+            *slot.lock().expect("no panic under the lock") = Some(value);
+        });
+    drop(start.expect("a shard with no core starts"));
+    sim.run().expect("the run ends");
+    let value = out.lock().expect("no panic under the lock").take();
+    let value = value.expect("the run ends after its shard");
+    (value, capture.lines())
 }
 
 /// The values that the server served for `node`.
@@ -650,12 +697,16 @@ fn fill(writer: &Writer) -> Vec<Draft> {
 /// channel token near its own only when its loop reads the mesh time of the node.
 #[test]
 fn the_loop_of_the_kind_reads_the_mesh_time_of_its_node() {
-    let name = "kind::tests::writes_one_stamp_in_each_index_of_a_frame";
-    let output = crate::child::output(name, &[]);
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("test result: ok. 1 passed"), "{stdout}");
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(!stderr.contains("CreatedAt"), "{stderr}");
+    let outcome = run(Setup::three(), |scene| async move {
+        scene.supervise(ms(1_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert!(!outcome.frames.is_empty());
+    let lines = &outcome.logged;
+    assert!(
+        !lines.iter().any(|line| line.contains("CreatedAt")),
+        "{lines:?}"
+    );
 }
 
 #[test]
@@ -842,7 +893,7 @@ fn counts_the_samples_of_each_run_after_a_restart() {
 #[test]
 fn adds_the_missed_ticks_and_lost_samples_of_each_run_to_those_before() {
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = write_ahead(&scene.hub, DATA, &[(1, Span::ZERO)]).await;
+        let rival = write_ahead(scene.rig.hub(), DATA, &[(1, Span::ZERO)]).await;
         scene.after(ms(1_050), move |scene| async move {
             drop(rival);
             scene.node.pause(Span::SECOND);
@@ -850,7 +901,7 @@ fn adds_the_missed_ticks_and_lost_samples_of_each_run_to_those_before() {
         scene.after(ms(2_550), |scene| async move { scene.stop().await });
         scene.after(ms(4_050), |scene| async move { scene.serve() });
         scene.after(ms(5_550), |scene| async move {
-            let rival = open_rival(&scene.hub, Authority(1), DATA).await;
+            let rival = open_rival(scene.rig.hub(), Authority(1), DATA).await;
             let held = fill(&rival);
             scene.node.clock().sleep(Span::SECOND).await;
             drop(held);
@@ -987,7 +1038,7 @@ fn writes_no_stamp_in_the_first_group_with_no_value_left() {
 fn writes_a_frame_refused_as_backwards_again_after_the_stamp_of_the_refusal() {
     let lead = ms(500);
     let outcome = run(Setup::three(), move |scene| async move {
-        drop(write_ahead(&scene.hub, DATA, &[(1, lead)]).await);
+        drop(write_ahead(scene.rig.hub(), DATA, &[(1, lead)]).await);
         scene.supervise(ms(1_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
@@ -1149,7 +1200,7 @@ fn write_after_a_full_frame(kind: Count) {
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("opcua", kind);
-        let rig = testing::Rig::open(env, node.net(), kinds).await;
+        let rig = Rig::open(env, node.net(), kinds).await;
         let setup = Setup::three();
         let channels = setup.channels.iter();
         let channels = channels.map(|(text, def)| (name(text), def.clone()));
@@ -1287,7 +1338,7 @@ fn writes_each_type_of_a_value_into_a_channel_of_its_type() {
     let mut written: Vec<Vec<u64>> = (outcome.frames.iter())
         .map(|frame| {
             (2..=12)
-                .map(|key| fixed(frame, key).expect("a series")[0])
+                .map(|key| fixed(frame, &key).expect("a series")[0])
                 .collect()
         })
         .collect();
@@ -1459,7 +1510,7 @@ fn refuses_a_node_whose_read_alone_is_past_one_message_of_the_server() {
 #[test]
 fn counts_the_samples_of_a_frame_refused_while_another_writer_holds_control() {
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = write_ahead(&scene.hub, DATA, &[(1, Span::ZERO)]).await;
+        let rival = write_ahead(scene.rig.hub(), DATA, &[(1, Span::ZERO)]).await;
         scene.after(ms(1_050), move |_| async move { drop(rival) });
         scene.supervise(ms(2_050)).await
     });
@@ -1472,7 +1523,7 @@ fn counts_the_samples_of_a_frame_refused_while_another_writer_holds_control() {
 #[test]
 fn counts_the_samples_of_a_frame_for_which_the_pool_has_no_room() {
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = open_rival(&scene.hub, Authority(1), DATA).await;
+        let rival = open_rival(scene.rig.hub(), Authority(1), DATA).await;
         scene.after(ms(550), move |scene| async move {
             let held = fill(&rival);
             scene.node.clock().sleep(Span::SECOND).await;
@@ -1589,7 +1640,7 @@ fn writes_groups_refused_as_backwards_again_after_the_latest_stamp() {
         setup.channels[3] = ("plant.c", data(4, 10, F64));
         let outcome = run(setup, move |scene| async move {
             let leads = [(1, ms(one)), (10, ms(ten))];
-            drop(write_ahead(&scene.hub, DATA, &leads).await);
+            drop(write_ahead(scene.rig.hub(), DATA, &leads).await);
             scene.supervise(ms(1_050)).await
         });
         assert!(outcome.result.is_ok(), "{:?}", outcome.result);
@@ -1608,7 +1659,7 @@ fn writes_only_the_refused_second_group_again() {
     setup.channels.push(("plant.other", index(10)));
     setup.channels[3] = ("plant.c", data(4, 10, F64));
     let outcome = run(setup, move |scene| async move {
-        drop(write_ahead(&scene.hub, &["plant.c"], &[(10, ms(600))]).await);
+        drop(write_ahead(scene.rig.hub(), &["plant.c"], &[(10, ms(600))]).await);
         scene.supervise(ms(1_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
@@ -1626,7 +1677,7 @@ fn writes_only_the_refused_second_group_again() {
 #[test]
 fn counts_the_samples_of_a_frame_that_the_home_loses() {
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = open_rival(&scene.hub, Authority(1), DATA).await;
+        let rival = open_rival(scene.rig.hub(), Authority(1), DATA).await;
         scene.after(ms(550), move |scene| async move {
             let mut held = fill(&rival);
             drop(held.pop());
@@ -1650,7 +1701,7 @@ fn stamps_each_frame_within_its_read() {
     let offset = Arc::new(AtomicI64::new(0));
     let mesh = Arc::clone(&offset);
     let outcome = run(Setup::three(), |scene| async move {
-        let rival = open_rival(&scene.hub, Authority(1), DATA).await;
+        let rival = open_rival(scene.rig.hub(), Authority(1), DATA).await;
         let monotonic = i64::try_from(scene.node.clock().now().0).expect("small");
         mesh.store(rival.now().nanos() - monotonic, Ordering::Relaxed);
         drop(rival);

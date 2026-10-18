@@ -33,16 +33,18 @@ pub mod client;
 mod frames;
 mod gaps;
 mod home;
+mod part;
 mod reader;
 pub mod write;
 
 use std::fmt;
+use std::num::NonZeroUsize;
 
 pub use frames::{Due, Frames, Step};
 pub use gaps::Gaps;
 pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
-use types::frame::{Path, Range};
+use types::frame::{Form, Path, Range};
 
 use crate::common::{Fields, Length, Run, Writer, body};
 
@@ -503,7 +505,8 @@ pub mod ends {
     }
 }
 
-/// A message of a reader session, or a reply of a write stream, that is not valid.
+/// A message of a reader session or of a write stream that is not valid, or a write
+/// stream that ends inside a frame.
 /// The decoders of [`client`] give [`client::Error`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -530,7 +533,8 @@ pub enum Error {
         /// The count of the range.
         count: u32,
     },
-    /// A head names no path.
+    /// A head names no path: no read head has this path byte, and no write head has
+    /// this time byte.
     Path {
         /// The path byte.
         byte: u8,
@@ -601,15 +605,65 @@ pub enum Error {
         /// The code.
         code: u8,
     },
+    /// A write's head holds no sample.
+    Samples,
+    /// A write's head names no form.
+    Form {
+        /// The form byte.
+        byte: u8,
+    },
+    /// A write's head of [`write::Time::Node`] has a count other than 1 or the encoded
+    /// form.
+    Stamp {
+        /// The samples of each series.
+        count: u32,
+        /// The form.
+        form: Form,
+    },
+    /// The program finished its write stream inside a frame.
+    Cut {
+        /// The bytes of the frame that came: its head, its ends, and its body.
+        received: usize,
+        /// The bytes of the frame, once its ends are whole.
+        len: Option<NonZeroUsize>,
+    },
+    /// An outcome of a write stream answers a frame that the program did not send
+    /// whole.
+    Unasked {
+        /// The frame that it answers.
+        frame: u64,
+        /// The frames that the program sent whole.
+        sent: u64,
+    },
+    /// An outcome of a write stream answers a frame that the program sent, other than
+    /// the one that the next outcome answers.
+    Order {
+        /// The frame that it answers.
+        frame: u64,
+        /// The frame that the next outcome answers.
+        next: u64,
+    },
+    /// A `Stored` of a write stream covers fewer frames than the last `Stored`, or
+    /// more than got an outcome.
+    Stored {
+        /// The frames that it covers.
+        frames: u64,
+        /// The frames that the last `Stored` covers when `frames` is below them, else
+        /// the frames that got an outcome.
+        bound: u64,
+    },
 }
 
-// Frame decoders give it for each message: it stays `Copy`, with no drop glue.
+// Frame decoders give it for each message: it stays `Copy`, with no drop glue, and 24
+// bytes, so each frame decoder's result stays small.
 const _: fn() = || {
     fn copy<T: Copy>() {}
     copy::<Error>();
 };
+const _: () = assert!(size_of::<Error>() == 24, "an error stays 24 bytes");
 
 impl fmt::Display for Error {
+    #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str("the hub message is empty"),
@@ -630,7 +684,8 @@ impl fmt::Display for Error {
             ),
             Self::Path { byte } => write!(
                 f,
-                "the frame head names path {byte}, which this node does not know"
+                "the frame head names path or time {byte}, which this node does not \
+                 know"
             ),
             Self::Reopen { kind } => write!(
                 f,
@@ -679,6 +734,49 @@ impl fmt::Display for Error {
             Self::Refusal { code } => {
                 write!(f, "the refused frame has code {code}, which no refusal has")
             }
+            Self::Samples => f.write_str("the frame head holds no sample"),
+            Self::Form { byte } => {
+                write!(f, "the frame head names form {byte}, which no frame has")
+            }
+            Self::Stamp { count, form } => write!(
+                f,
+                "the frame head that the node stamps has {count} samples in the \
+                 {form:?} form, not 1 in the raw form"
+            ),
+            Self::Cut {
+                received,
+                len: Some(len),
+            } => write!(
+                f,
+                "the stream ended inside a frame: {received} of {len} bytes"
+            ),
+            Self::Cut {
+                received,
+                len: None,
+            } => write!(
+                f,
+                "the stream ended inside a frame: {received} bytes, before the end of \
+                 its ends"
+            ),
+            Self::Unasked { frame, sent } => write!(
+                f,
+                "the outcome answers frame {frame}, not one of the {sent} frames sent"
+            ),
+            Self::Order { frame, next } => write!(
+                f,
+                "the outcome answers frame {frame}, not frame {next}, which the next \
+                 outcome answers"
+            ),
+            Self::Stored { frames, bound } if frames < bound => write!(
+                f,
+                "the stored reply covers {frames} frames, fewer than the {bound} of \
+                 the last stored reply"
+            ),
+            Self::Stored { frames, bound } => write!(
+                f,
+                "the stored reply covers {frames} frames, more than the {bound} that \
+                 got an outcome"
+            ),
         }
     }
 }
@@ -1330,7 +1428,7 @@ mod tests {
             ),
             (
                 Error::Path { byte: 2 },
-                "the frame head names path 2, which this node does not know",
+                "the frame head names path or time 2, which this node does not know",
             ),
             (
                 Error::Reopen { kind: 1 },

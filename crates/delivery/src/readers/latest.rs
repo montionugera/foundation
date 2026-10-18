@@ -188,7 +188,7 @@ mod tests {
             hold: Span::from_nanos(10),
         };
         readers
-            .open(named, Start::At(position), 0, Charge::Whole)
+            .open(named, Start::At(position), 0, Charge::Whole, None)
             .key
     }
 
@@ -308,7 +308,7 @@ mod tests {
                 presented: None,
                 otherwise: live(0),
             };
-            let opened = readers.open(named, resume, 0, Charge::Whole);
+            let opened = readers.open(named, resume, 0, Charge::Whole, None);
             assert_eq!(opened.replaced, Some(latest.into()));
             assert_eq!(opened.position, live(5));
         }
@@ -360,14 +360,20 @@ mod tests {
                 hold: Span::from_nanos(10),
             };
             let new = readers
-                .open(named, Start::At(live(0)), first.charge(), Charge::Whole)
+                .open(
+                    named,
+                    Start::At(live(0)),
+                    first.charge(),
+                    Charge::Whole,
+                    None,
+                )
                 .key;
             assert_eq!(drained(&mut readers).len(), 1);
             readers.queue(&first, &frames.set, 0..1);
             readers.queue(&frames.frame(2), &frames.set, 1..2);
             dropped(&mut readers, old.into());
             assert_eq!(drained(&mut readers), []);
-            assert_eq!(readers.release(2), [new]);
+            assert_eq!(readers.release(2, 0), [new]);
             dropped(&mut readers, old.into());
             assert_eq!(complete_taken(&mut readers, new), [1]);
         }
@@ -386,10 +392,10 @@ mod tests {
             };
             let limit = 2 * first.charge();
             let new = readers
-                .open(named, Start::At(live(0)), limit, Charge::Whole)
+                .open(named, Start::At(live(0)), limit, Charge::Whole, None)
                 .key;
             readers.queue(&first, &frames.set, 0..1);
-            assert_eq!(readers.release(1), [new]);
+            assert_eq!(readers.release(1, 0), [new]);
             drained(&mut readers);
             assert_eq!(readers.ack(new, live(1)), Ok(()));
             dropped(&mut readers, old.into());
@@ -408,7 +414,7 @@ mod tests {
             assert_eq!(drained(&mut readers), [acked, gone]);
             readers.queue(&frames.frame(2), &frames.set, 1..2);
             readers.queue(&frames.frame(3), &frames.set, 2..3);
-            assert_eq!(readers.release(3), []);
+            assert_eq!(readers.release(3, 0), []);
             assert_eq!(complete_taken(&mut readers, new), [1, 2]);
             dropped(&mut readers, old.into());
             assert_eq!(readers.open_latest(), Key(1));
@@ -416,7 +422,7 @@ mod tests {
             assert_eq!(next, complete::Key(2));
             assert!(matches!(readers.take(next.into()), Next::Empty));
             let below = readers
-                .open(Reader::Unnamed, Start::At(live(2)), 1, Charge::Whole)
+                .open(Reader::Unnamed, Start::At(live(2)), 1, Charge::Whole, None)
                 .key;
             assert_eq!(read(&mut readers, below), (vec![], Mark::at(2)));
             let named = Reader::Named {
@@ -428,7 +434,7 @@ mod tests {
                 otherwise: live(9),
             };
             assert_eq!(
-                readers.open(named, resume, 0, Charge::Whole).position,
+                readers.open(named, resume, 0, Charge::Whole, None).position,
                 live(0)
             );
         }
@@ -711,7 +717,13 @@ mod tests {
                     }
                     Input::Complete => {
                         let key = readers
-                            .open(Reader::Unnamed, Start::At(live(0)), 0, Charge::Whole)
+                            .open(
+                                Reader::Unnamed,
+                                Start::At(live(0)),
+                                0,
+                                Charge::Whole,
+                                None,
+                            )
                             .key;
                         assert!(model.complete.insert(key), "{key} is new");
                     }

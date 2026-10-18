@@ -2,6 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use config::import::{Added, Pick};
+use connector::browse;
 use document::diagnostic::{Code, Diagnostic};
 use document::value::Kind;
 use document::{Document, Span};
@@ -42,6 +44,41 @@ impl Documents {
             Ok(documents) => Ok(Self { sources, documents }),
             Err(diagnostics) => Err(Error::config(diagnostics, &sources)),
         }
+    }
+
+    /// The paths of the files, by source.
+    pub(crate) fn sources(&self) -> &Sources {
+        &self.sources
+    }
+
+    /// The `connector` block of `name` in the files.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] with each problem of [`config::connector`].
+    pub(crate) fn connector(
+        &self,
+        name: &Name,
+    ) -> Result<spec::connector::Connector, Error> {
+        config::connector(&self.documents, name)
+            .map_err(|diagnostics| Error::config(diagnostics, &self.sources))
+    }
+
+    /// The file of the connector block of `connector` with the blocks of `picks` of
+    /// the browse at `start` added, as [`config::import::add`] gives it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] with each problem of [`config::import::add`].
+    pub(crate) fn import(
+        &self,
+        connector: &Name,
+        start: &browse::Path,
+        picks: &[Pick<'_>],
+        kinds: &connector::kind::Table,
+    ) -> Result<Added, Error> {
+        config::import::add(&self.documents, connector, start, picks, kinds)
+            .map_err(|diagnostics| Error::config(diagnostics, &self.sources))
     }
 
     /// The tree key of each definition of the files, in order.

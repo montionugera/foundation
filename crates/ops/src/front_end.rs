@@ -1,12 +1,14 @@
 //! Reads config files into Documents through the front end of each syntax.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use document::diagnostic::{Code, Diagnostic};
+use document::encoding::Checked;
 use document::{Document, Position, Source, Span};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 const UNKNOWN_EXTENSION: Code = Code::new("ops.unknown-extension");
 const PATH_NOT_UTF8: Code = Code::new("ops.path-not-utf8");
@@ -20,6 +22,17 @@ pub struct FrontEnd {
     ///
     /// Each problem in the text, with its span: at least one.
     pub read: fn(source: Source, text: &str) -> Result<Document, Vec<Diagnostic>>,
+    /// Writes `document` into `text`, the text of the file `source`, and keeps each
+    /// byte of `text` that keeps its value and its place.
+    ///
+    /// # Errors
+    ///
+    /// Each problem in `text`, or each part of `document` that the syntax cannot hold.
+    pub update: fn(
+        source: Source,
+        text: &str,
+        document: &Checked,
+    ) -> Result<String, Vec<Diagnostic>>,
 }
 
 /// The front end of each file extension that a node reads. It holds at least one.
@@ -42,10 +55,48 @@ impl FrontEnds {
         self
     }
 
+    /// The front end of the file at `path`, by its extension.
+    fn of(&self, path: &str) -> Option<&FrontEnd> {
+        Path::new(path)
+            .file_name()
+            .and_then(extension)
+            .and_then(|extension| self.0.get(extension))
+    }
+
     /// Each extension, in order.
-    pub(crate) fn extensions(&self) -> impl Iterator<Item = &'static str> {
+    fn extensions(&self) -> impl Iterator<Item = &'static str> {
         self.0.keys().copied()
     }
+
+    /// Each extension with its dot, as one choice: "`.a`, `.b`, or `.c`".
+    pub(crate) fn named(&self) -> String {
+        let mut extensions: Vec<_> = self
+            .extensions()
+            .map(|extension| format!("`.{extension}`"))
+            .collect();
+        let last = extensions
+            .pop()
+            .expect("invariant: the table holds a front end");
+        match extensions.as_slice() {
+            [] => last,
+            [first] => format!("{first} or {last}"),
+            rest => format!("{}, or {last}", rest.join(", ")),
+        }
+    }
+
+    /// Whether the table reads the entry `name` of a directory: a front end has its
+    /// extension, and it does not start with `.`.
+    pub(crate) fn reads(&self, name: &OsStr) -> bool {
+        !name.as_encoded_bytes().starts_with(b".")
+            && extension(name).is_some_and(|extension| self.0.contains_key(extension))
+    }
+}
+
+/// The text after the last `.` of the file name `name`, when it is UTF-8.
+fn extension(name: &OsStr) -> Option<&str> {
+    let name = name.as_encoded_bytes();
+    let dot = name.iter().rposition(|&byte| byte == b'.')?;
+    str::from_utf8(&name[dot + 1..]).ok()
 }
 
 impl fmt::Debug for FrontEnd {
@@ -63,8 +114,7 @@ impl fmt::Debug for FrontEnds {
 }
 
 /// One config file: its path, as the user or a directory listing gave it, and its text.
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Serialize)]
 pub(crate) struct File {
     pub(crate) path: PathBuf,
     pub(crate) text: String,
@@ -93,15 +143,7 @@ pub(crate) fn read(
             diagnostics.push(not_utf8(&file.path));
             continue;
         };
-        let front_end = Path::new(path)
-            .file_name()
-            .map(|name| {
-                name.to_str()
-                    .expect("invariant: a part of a UTF-8 path is UTF-8")
-            })
-            .and_then(|name| name.rsplit_once('.'))
-            .and_then(|(_, extension)| front_ends.0.get(extension));
-        let Some(front_end) = front_end else {
+        let Some(front_end) = front_ends.of(path) else {
             diagnostics.push(unknown(Source(source), front_ends));
             continue;
         };
@@ -123,6 +165,30 @@ pub(crate) fn read(
     }
 }
 
+/// The text of `file`, the file `source` that [`read`] read, with `document` written
+/// into it by its front end.
+///
+/// # Errors
+///
+/// Each problem that the front end gives.
+///
+/// # Panics
+///
+/// When the path of `file` is not UTF-8 or has no front end in `front_ends`.
+pub(crate) fn update(
+    file: &File,
+    source: Source,
+    document: &Checked,
+    front_ends: &FrontEnds,
+) -> Result<String, Vec<Diagnostic>> {
+    let front_end = file
+        .path
+        .to_str()
+        .and_then(|path| front_ends.of(path))
+        .expect("invariant: `read` read the file with a front end");
+    (front_end.update)(source, &file.text, document)
+}
+
 /// The `ops.path-not-utf8` diagnostic of `path`.
 #[expect(
     clippy::unnecessary_debug_formatting,
@@ -139,16 +205,7 @@ pub(crate) fn not_utf8(path: &Path) -> Diagnostic {
 
 /// The `ops.unknown-extension` diagnostic, at the empty span at the start of `source`.
 pub(crate) fn unknown(source: Source, front_ends: &FrontEnds) -> Diagnostic {
-    let extensions: Vec<String> = front_ends
-        .extensions()
-        .map(|extension| format!("`.{extension}`"))
-        .collect();
-    let extensions = match extensions.as_slice() {
-        [one] => one.clone(),
-        [first, second] => format!("{first} or {second}"),
-        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
-        [] => unreachable!("invariant: `FrontEnds` holds a front end"),
-    };
+    let extensions = front_ends.named();
     let start = Position {
         offset: 0,
         line: 0,

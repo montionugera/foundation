@@ -21,6 +21,7 @@ mod sanitizers;
 mod select;
 mod sim;
 mod skips;
+mod workflow;
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -41,7 +42,10 @@ fn main() -> ExitCode {
         ["oracles"] => oracles::check(root),
         ["skips"] => skips::check(root),
         [name @ ("loom" | "shuttle")] => cfg::test(root, name),
-        ["miri"] => miri::run(root),
+        ["miri"] => miri::run(root, miri::Shard::ALL),
+        ["miri", shard] => miri::Shard::parse(shard)
+            .map_err(|e| vec![e])
+            .and_then(|shard| miri::run(root, shard)),
         ["sanitizers"] => sanitizers::run(root),
         ["fuzz"] => fuzz::run(root, fuzz::SECONDS),
         ["fuzz", seconds] => fuzz::seconds(seconds)
@@ -61,7 +65,8 @@ fn main() -> ExitCode {
         _ => {
             eprintln!(
                 "usage: cargo xtask <layers|globals|oracles|skips>\n       \
-                 cargo xtask <loom|shuttle|miri|sanitizers>\n       \
+                 cargo xtask <loom|shuttle|sanitizers>\n       \
+                 cargo xtask miri [<index>/<count>]\n       \
                  cargo xtask fuzz [seconds]\n       \
                  cargo xtask open62541 [tag]\n       \
                  cargo xtask review <pr> <head sha>\n       \
@@ -189,9 +194,8 @@ fn fixture() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod common {
-    use std::os::unix::process::ExitStatusExt;
     use std::path::{Path, PathBuf};
-    use std::process::{ExitStatus, Output};
+    use std::process::Output;
 
     /// A new folder named `name` in the temp folder whose `rust-toolchain-nightly`
     /// pins the installed toolchain of `rust-toolchain.toml`. The caller removes it.
@@ -211,10 +215,46 @@ mod common {
         root
     }
 
+    /// The text that an `ExitStatus` of an exit code prints before the code.
+    #[cfg(unix)]
+    pub(crate) const EXITED: &str = "exit status";
+    #[cfg(windows)]
+    pub(crate) const EXITED: &str = "exit code";
+
+    /// The text of the error of a missing file in a folder that exists.
+    #[cfg(unix)]
+    pub(crate) const NO_FILE: &str = "No such file or directory (os error 2)";
+    #[cfg(windows)]
+    pub(crate) const NO_FILE: &str =
+        "The system cannot find the file specified. (os error 2)";
+
+    /// The text of the error of a missing folder, or of a path in one.
+    #[cfg(unix)]
+    pub(crate) const NO_FOLDER: &str = "No such file or directory (os error 2)";
+    #[cfg(windows)]
+    pub(crate) const NO_FOLDER: &str =
+        "The system cannot find the path specified. (os error 3)";
+
+    /// The text of the error of a removal of a folder at a file.
+    #[cfg(unix)]
+    pub(crate) const NOT_FOLDER: &str = "Not a directory (os error 20)";
+    #[cfg(windows)]
+    pub(crate) const NOT_FOLDER: &str = "The directory name is invalid. (os error 267)";
+
+    /// `path`, written with `/`, with the separator of the OS.
+    pub(crate) fn native(path: &str) -> String {
+        path.replace('/', std::path::MAIN_SEPARATOR_STR)
+    }
+
     /// An output of a process that exits with `code`.
     pub(crate) fn output(code: i32, stdout: &str, stderr: &str) -> Output {
+        #[cfg(unix)]
+        let status = std::os::unix::process::ExitStatusExt::from_raw(code << 8);
+        #[cfg(windows)]
+        let status =
+            std::os::windows::process::ExitStatusExt::from_raw(code.cast_unsigned());
         Output {
-            status: ExitStatus::from_raw(code << 8),
+            status,
             stdout: stdout.into(),
             stderr: stderr.into(),
         }
@@ -224,6 +264,7 @@ mod common {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workflow::indent;
 
     #[test]
     fn layers_reports_crates_missing_from_the_map() {
@@ -240,95 +281,16 @@ mod tests {
         );
     }
 
-    /// The lines of the YAML `text`, with no blank or comment line, which YAML skips.
     fn yaml_lines(text: &str) -> Vec<&str> {
-        // YAML breaks a line at CR, NEL, LS, and PS too, and a parser can read other
-        // white space as text, so `str::lines` and `str::trim` would drop a line that
-        // YAML reads.
-        if let Some(c) = text.chars().find(|c| *c != '\n' && !matches!(c, ' '..='~')) {
-            panic!("ci.yaml has a character that is not printable ASCII or LF: {c:?}");
-        }
-        let lines: Vec<&str> = (text.lines())
-            .filter(|line| !line.trim().is_empty() && !line.trim().starts_with('#'))
-            .collect();
-        // The checks read each line as one node, so none may run on into the next.
-        // The text of a block scalar is not YAML.
-        let mut block = None;
-        for line in &lines {
-            if block.is_some_and(|key| indent(line) > key) {
-                continue;
-            }
-            let code = code(line);
-            let header = code.trim_end_matches(['-', '+']);
-            block = (header.ends_with(": |") || header.ends_with(": >"))
-                .then(|| line.len() - line.trim_start_matches([' ', '-']).len());
-        }
-        lines
+        (workflow::lines(text)
+            .unwrap_or_else(|e| panic!("{e}"))
+            .into_iter())
+        .map(|line| line.text)
+        .collect()
     }
 
-    /// The text of the YAML `line` before its comment.
-    ///
-    /// # Panics
-    ///
-    /// When a quoted scalar or a flow sequence of `line` does not close on it, a flow
-    /// sequence holds more than plain words, or `line` has a flow mapping, an anchor,
-    /// alias, or tag, a `?` or `:` at the start of a node, a `#` after a character that
-    /// is not a space, or a document marker, any of which can make a node run on.
-    fn code(line: &str) -> &str {
-        let refused = || panic!("ci.yaml has a node that can run on: `{line}`");
-        if line.starts_with("---") || line.starts_with("...") {
-            refused();
-        }
-        // `start` holds where a node can start, the only place where a quote or a
-        // bracket opens one.
-        let (mut quote, mut escaped, mut flow, mut start) = (None, false, false, true);
-        let mut prev = ' ';
-        let mut chars = line.char_indices().peekable();
-        while let Some((i, c)) = chars.next() {
-            if let Some(open) = quote {
-                let doubled = chars.peek().is_some_and(|(_, next)| *next == '\'');
-                if escaped {
-                    escaped = false;
-                } else if (open, c) == ('"', '\\')
-                    || (open, c, doubled) == ('\'', '\'', true)
-                {
-                    escaped = true;
-                } else if c == open {
-                    (quote, start) = (None, false);
-                }
-                prev = c;
-                continue;
-            }
-            // A flow of plain words is the only flow ci.yaml needs, and the only one
-            // whose end each parser finds at the same place.
-            if flow {
-                match c {
-                    ']' => (flow, start) = (false, false),
-                    ' ' | ',' | '-' | '_' | '.' | '/' => {}
-                    _ if c.is_ascii_alphanumeric() => {}
-                    _ => refused(),
-                }
-                continue;
-            }
-            match c {
-                ' ' if prev == ':' => start = true,
-                // A `-` keeps a node start only before a space.
-                '-' if chars.peek().is_some_and(|(_, next)| *next == ' ') => {}
-                ' ' => {}
-                '#' if prev == ' ' => return line[..i].trim_end(),
-                // Parsers differ on whether such a `#` starts a comment.
-                '#' => refused(),
-                '\'' | '"' if start => quote = Some(c),
-                '[' if start => flow = true,
-                '{' | '&' | '*' | '!' | '?' | ':' if start => refused(),
-                _ => start = false,
-            }
-            prev = c;
-        }
-        if quote.is_some() || flow {
-            refused();
-        }
-        line
+    fn under<'a>(lines: &[&'a str], key: &str) -> Vec<&'a str> {
+        workflow::under(lines, key).unwrap_or_else(|e| panic!("{e}"))
     }
 
     /// `.github/workflows/ci.yaml` in the workspace at `root`, with no blank or comment
@@ -347,21 +309,6 @@ mod tests {
             "ci.yaml has a top-level key that the checks do not read"
         );
         ci.join("\n")
-    }
-
-    /// The spaces before the text of `line`.
-    fn indent(line: &str) -> usize {
-        line.len() - line.trim_start().len()
-    }
-
-    /// The lines under the first line of `lines` that is `key`: each line after it up
-    /// to the first that is not indented further, which is the value of `key` in YAML.
-    fn under<'a>(lines: &[&'a str], key: &str) -> Vec<&'a str> {
-        let start = (lines.iter().position(|line| *line == key))
-            .unwrap_or_else(|| panic!("ci.yaml has no `{}` in {lines:#?}", key.trim()));
-        (lines[start + 1..].iter().copied())
-            .take_while(|line| indent(line) > indent(key))
-            .collect()
     }
 
     /// The lines of the step `filter` of `ci.yaml` up to the text of its filters.
@@ -436,7 +383,7 @@ mod tests {
 
     /// The lines of each model job of `ci.yaml` under its key. A step or a key that
     /// the job gains can change what it runs, so the whole job is pinned.
-    const JOBS: [(&str, &[&str]); 3] = [
+    const JOBS: [(&str, &[&str]); 4] = [
         (
             "loom",
             &[
@@ -471,10 +418,15 @@ mod tests {
             ],
         ),
         (
-            "miri",
+            "miri-shard",
             &[
                 "    needs: changes",
                 "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"",
+                "    name: miri shard ${{ matrix.shard }}",
+                "    strategy:",
+                "      fail-fast: false",
+                "      matrix:",
+                "        shard: [0, 1, 2, 3, 4, 5, 6, 7]",
                 "    runs-on: ubuntu-24.04",
                 "    steps:",
                 "      - uses: actions/checkout@v4",
@@ -483,9 +435,29 @@ mod tests {
                 "          rustup toolchain install \"$(cat rust-toolchain-nightly)\" \
              --profile minimal \\",
                 "            --component miri,rust-src",
+                "      - uses: taiki-e/install-action@v2",
+                "        with:",
+                "          tool: cargo-nextest@0.9.146",
                 "      - uses: Swatinem/rust-cache@v2",
                 "      - name: Miri",
-                "        run: cargo xtask miri",
+                "        env:",
+                "          SHARD: ${{ matrix.shard }}",
+                "        run: cargo xtask miri \"$SHARD/8\"",
+            ],
+        ),
+        (
+            "miri",
+            &[
+                "    needs: [changes, miri-shard]",
+                "    if: \"!cancelled() && needs.changes.outputs.models != 'false'\"",
+                "    runs-on: ubuntu-24.04",
+                "    steps:",
+                "      - name: The result of the shards",
+                "        env:",
+                "          RESULT: ${{ needs.miri-shard.result }}",
+                "        run: |",
+                "          [ \"$RESULT\" = success ] ||",
+                "            { echo \"::error::The miri shards ended in $RESULT.\"; exit 1; }",
             ],
         ),
     ];
@@ -496,11 +468,11 @@ mod tests {
     ///
     /// When a model job is not its job in [`JOBS`].
     fn pin_jobs(jobs: &[&str]) {
-        for (task, job) in JOBS {
-            let found = under(jobs, &format!("  {task}:"));
+        for (key, job) in JOBS {
+            let found = under(jobs, &format!("  {key}:"));
             assert!(
                 found == job,
-                "the {task} job of .github/workflows/ci.yaml is not the job that the \
+                "the {key} job of .github/workflows/ci.yaml is not the job that the \
                  check pins: {found:#?}"
             );
         }
@@ -541,118 +513,6 @@ mod tests {
                     )),
                 );
             }
-        }
-    }
-
-    #[test]
-    fn yaml_lines_skips_each_blank_and_comment_line() {
-        let text = "a:\n\n  \n  # x\n  b: 1 # c\n";
-        assert_eq!(yaml_lines(text), ["a:", "  b: 1 # c"]);
-        let printable: String = (' '..='~').collect();
-        let text = format!("a: |\n  {printable}");
-        assert_eq!(yaml_lines(&text), ["a: |", &format!("  {printable}")]);
-    }
-
-    #[test]
-    fn yaml_lines_keeps_each_node_that_closes_on_its_line() {
-        let text = concat!(
-            "a: 'b''c'\n",
-            "b: \"c\\\"d\" # e\n",
-            "c: it's a b # c\n",
-            "d: [e, f-g, h_i.j/k] # it's\n",
-            "e: \"!cancelled()\"\n",
-            "f: |\n",
-            "  [echo \"it's\n",
-            "  - g: >-\n",
-            "      [h\n",
-            "i: 'j\\'\n",
-            "a: b[c\n",
-            "d: e,'f\n",
-            "g: |+\n",
-            "  'h\n",
-            "[i]: j\n",
-        );
-        assert_eq!(yaml_lines(text), text.lines().collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn yaml_lines_keeps_each_quoted_key() {
-        let text = concat!(
-            "env:\n",
-            "  \"A\": b\n",
-            "  'C': d # e\n",
-            "steps:\n",
-            "  - \"f\": |\n",
-            "      g\n",
-        );
-        assert_eq!(yaml_lines(text), text.lines().collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn yaml_lines_refuses_each_node_that_can_run_on() {
-        for line in [
-            "    runs-on: \"${{ 'ubuntu-latest' || '",
-            "      [{name: Miri, run: \"true",
-            "  - [x, [y]",
-            "          key: 'x",
-            "      - name: 'Miri",
-            "     note: \"",
-            "a'b: 'c",
-            "a: {\"b\":'c}",
-            "a: \"b\\\"",
-            "a: [b, # c",
-            "a: &b 'c'",
-            "a: !b c",
-            "a: *b",
-            "  ? a",
-            "  : b: |",
-            "a: [? b]",
-            "a: [b:'c, [d']",
-            "a: [b:'#, [c']",
-            "a: [b, [c]]",
-            "a: [b, c",
-            "--- 'a",
-            "... [a",
-            "a: {b: c}",
-            "a: 'b''c",
-            "a: b#c",
-            "a: [\"b\"#c]",
-            "a: ['b'#]",
-            "a: ['b',#]",
-            "a: {'b':#}",
-            "a: [b - 'c, [d']",
-            "a: [b - '#, [d']",
-            "a: [-'b, [c']",
-        ] {
-            let text = format!("x: |\n  y\nz:\n{line}\n");
-            let panic = std::panic::catch_unwind(|| yaml_lines(&text)).expect_err(line);
-            assert_eq!(
-                panic.downcast_ref::<String>(),
-                Some(&format!("ci.yaml has a node that can run on: `{line}`")),
-            );
-        }
-        let text = "  - a: |\n      b\n    c: 'd\n";
-        let panic = std::panic::catch_unwind(|| yaml_lines(text)).expect_err(text);
-        assert_eq!(
-            panic.downcast_ref::<String>(),
-            Some(&"ci.yaml has a node that can run on: `    c: 'd`".to_owned()),
-        );
-    }
-
-    #[test]
-    fn yaml_lines_refuses_each_character_that_is_not_printable_ascii_or_lf() {
-        for c in [
-            '\r', '\t', '\u{85}', '\u{a0}', '\u{2028}', '\u{2029}', '\u{7f}',
-        ] {
-            let text = format!("a:\n  #{c}  b:\n");
-            let panic =
-                std::panic::catch_unwind(|| yaml_lines(&text)).expect_err("refused");
-            assert_eq!(
-                panic.downcast_ref::<String>(),
-                Some(&format!(
-                    "ci.yaml has a character that is not printable ASCII or LF: {c:?}"
-                )),
-            );
         }
     }
 
@@ -834,10 +694,12 @@ mod tests {
         let packages = [
             by_cfg("loom").unwrap(),
             by_cfg("shuttle").unwrap(),
-            miri::packages(&metadata).unwrap(),
+            (miri::crates(&metadata).unwrap().into_iter())
+                .map(|found| found.package)
+                .collect(),
         ];
         pin_jobs(&jobs);
-        for ((task, _), packages) in JOBS.into_iter().zip(packages) {
+        for (task, packages) in ["loom", "shuttle", "miri"].into_iter().zip(packages) {
             for select::Package { name, .. } in packages {
                 assert!(
                     models.contains(&format!("'crates/{name}/**'").as_str()),
@@ -946,7 +808,7 @@ mod tests {
         // The lists are empty at the goal of LINUX CI, so the parse is checked by the
         // keys of each entry. Only a block list puts its items where the check below
         // reads them.
-        for key in ["crates:", "untested:", "tests:"] {
+        for key in ["crates:", "untested:", "tests:", "gates:"] {
             let entries: Vec<&str> = (check.iter())
                 .filter_map(|line| line.strip_prefix("            "))
                 .filter(|line| line.starts_with(key))
@@ -988,9 +850,9 @@ mod tests {
         let models = models(&ci);
         let workspace = metadata["packages"].as_array().unwrap();
         // Each entry is a crate whose code Miri runs, and the crate that Miri tests.
-        let mut open: Vec<(String, String)> = (miri::packages(&metadata).unwrap())
+        let mut open: Vec<(String, String)> = (miri::crates(&metadata).unwrap())
             .into_iter()
-            .map(|select::Package { name, .. }| (name.clone(), name))
+            .map(|found| (found.package.name.clone(), found.package.name))
             .collect();
         let mut seen = BTreeSet::new();
         while let Some((name, tested)) = open.pop() {
@@ -1024,14 +886,14 @@ mod tests {
     fn miri_skips_only_crates_that_name_unsafe_code() {
         let metadata = metadata(&fixture().join("../..")).unwrap();
         let named = select::packages(&metadata, |s| select::has_word(s, "unsafe_code"));
-        let (named, checked) = (named.unwrap(), miri::packages(&metadata).unwrap());
+        let (named, checked) = (named.unwrap(), miri::crates(&metadata).unwrap());
         for name in miri::SKIPPED {
             assert!(
                 named.iter().any(|package| package.name == name),
                 "`{name}` names no `unsafe_code`"
             );
             assert!(
-                !checked.iter().any(|package| package.name == name),
+                !checked.iter().any(|found| found.package.name == name),
                 "Miri checks `{name}`"
             );
         }

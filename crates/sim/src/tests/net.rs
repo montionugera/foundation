@@ -1003,6 +1003,18 @@ fn a_send_to_a_mapped_ipv4_address_goes_to_the_ipv4_address() {
 }
 
 #[test]
+fn a_socket_on_the_unspecified_v6_address_sends_v6_from_the_v6_address() {
+    let (mut sim, a, b) = pair(0, link::Config::default());
+    let log = Log::default();
+    let (sender, _a) = bind(&a, any()).unwrap();
+    let (_b, receiver) = bind(&b, v6(&b)).unwrap();
+    let _receive = receive(&b, receiver, &log);
+    let _send = send(&a, sender, v6(&b), vec![b"v6".to_vec()]);
+    sim.run_for(Span::SECOND).unwrap();
+    assert_eq!(arrivals(&log), [(v6(&a), b"v6".to_vec())]);
+}
+
+#[test]
 fn a_send_from_a_mapped_ipv4_address_goes_from_the_ipv4_address() {
     let make = |a: &node::Node, b: &node::Node| Transmit {
         source: Some(mapped(at(a, 4433)).ip()),
@@ -1106,6 +1118,85 @@ fn port_zero_binds_the_lowest_free_port() {
     assert_eq!(again.local(), taken);
 }
 
+/// A bind of the link-local address with the index of its interface keeps the scope
+/// and drops the flow info, as `getsockname` gives on Linux; also on port 0.
+#[test]
+fn a_link_local_bind_keeps_its_scope_and_no_flow_info() {
+    let mut sim = sim(0);
+    let node = sim.node(node::Config::default());
+    let (ip, interface) = node.link_local();
+    assert_eq!((ip, interface), ("fe80::1".parse().unwrap(), 2));
+    for port in [4433, 0] {
+        let local = SocketAddr::V6(SocketAddrV6::new(ip, port, 5, interface));
+        let (sender, _receiver) = bind(&node, local).unwrap();
+        let port = sender.local().port();
+        let kept = SocketAddr::V6(SocketAddrV6::new(ip, port, 0, interface));
+        assert_eq!(sender.local(), kept);
+    }
+}
+
+/// A link-local bind fails with `EINVAL` with no scope, with `ENODEV` with the index
+/// of no interface, and with `EADDRNOTAVAIL` for the link-local address of another
+/// node.
+#[test]
+fn a_link_local_bind_needs_the_scope_of_the_interface_and_its_own_address() {
+    let (_sim, a, b) = pair(0, link::Config::default());
+    let (ip, interface) = a.link_local();
+    let at = |ip, scope| SocketAddr::V6(SocketAddrV6::new(ip, 4433, 0, scope));
+    let cases = [
+        (at(ip, 0), 22),
+        (at(ip, interface + 1), 19),
+        (at(b.link_local().0, interface), 99),
+    ];
+    for (local, code) in cases {
+        assert_eq!(bind(&a, local).unwrap_err(), Net::Io { code }, "{local}");
+    }
+}
+
+/// A bind of an IPv6 address that is not link-local drops its scope and flow info, as
+/// `getsockname` gives on Linux.
+#[test]
+fn a_v6_bind_that_is_not_link_local_drops_its_scope() {
+    let mut sim = sim(0);
+    let node = sim.node(node::Config::default());
+    let IpAddr::V6(v6) = node.addresses()[1] else {
+        panic!("the second address is IPv6");
+    };
+    for ip in [v6, Ipv6Addr::UNSPECIFIED] {
+        let local = SocketAddr::V6(SocketAddrV6::new(ip, 4433, 5, 2));
+        let (sender, _receiver) = bind(&node, local).unwrap();
+        let dropped = SocketAddr::V6(SocketAddrV6::new(ip, 4433, 0, 0));
+        assert_eq!(sender.local(), dropped);
+    }
+}
+
+/// A datagram from a socket on the link-local address leaves from that address, as on
+/// Linux, not from the routable IPv6 address, and the peer sees it with the scope of
+/// its own interface.
+#[test]
+fn a_link_local_socket_sends_from_its_own_address() {
+    let (mut sim, a, b) = pair(0, link::Config::default());
+    let (ip, interface) = a.link_local();
+    let local = SocketAddr::V6(SocketAddrV6::new(ip, 4433, 0, interface));
+    let (sender, _a) = bind(&a, local).unwrap();
+    let IpAddr::V6(v6) = b.addresses()[1] else {
+        panic!("the second address is IPv6");
+    };
+    let to = SocketAddr::V6(SocketAddrV6::new(v6, 4433, 0, 0));
+    let (_b, receiver) = bind(&b, to).unwrap();
+    let log = Log::default();
+    let _receive = receive(&b, receiver, &log);
+    let _send = send(&a, sender, to, vec![b"abc".to_vec()]);
+    sim.run_for(Span::SECOND).unwrap();
+    let sources: Vec<_> = log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, meta, _)| meta.source)
+        .collect();
+    assert_eq!(sources, [local]);
+}
+
 #[test]
 fn a_bind_to_an_address_of_another_node_fails() {
     let (_sim, a, b) = pair(0, link::Config::default());
@@ -1160,6 +1251,117 @@ fn a_send_from_an_address_of_another_node_fails() {
         ..transmit(at(b, 4433), b"spoof")
     };
     sent(|a| at(a, 4433), spoof, Err(Net::Io { code: 99 }));
+}
+
+/// As on Linux, a socket on the link-local address that names an IPv6 address of
+/// another node as the source gets code 22 (`EINVAL`).
+#[test]
+fn a_link_local_socket_cannot_send_from_an_address_of_another_node() {
+    let local = |a: &node::Node| {
+        let (ip, interface) = a.link_local();
+        SocketAddr::V6(SocketAddrV6::new(ip, 4433, 0, interface))
+    };
+    let spoof = |_: &node::Node, b: &node::Node| Transmit {
+        source: Some(b.addresses()[1]),
+        ..transmit(v6(b), b"spoof")
+    };
+    sent(local, spoof, Err(Net::Io { code: 22 }));
+}
+
+/// As on Linux, a socket with no interface that names its link-local address as the
+/// source gets code 22 (`EINVAL`).
+#[test]
+fn a_socket_on_the_unspecified_v6_address_cannot_send_from_its_link_local_address() {
+    let make = |a: &node::Node, b: &node::Node| Transmit {
+        source: Some(IpAddr::V6(a.link_local().0)),
+        ..transmit(v6(b), b"v6")
+    };
+    sent(|_| any(), make, Err(Net::Io { code: 22 }));
+}
+
+/// As on Linux, a send to an IPv6 address that names an IPv4 source gets code 22
+/// (`EINVAL`), also when the source is the node's own.
+#[test]
+fn a_send_to_a_v6_address_from_a_v4_source_fails() {
+    let make = |a: &node::Node, b: &node::Node| Transmit {
+        source: Some(a.addresses()[0]),
+        ..transmit(v6(b), b"v4")
+    };
+    sent(|_| any(), make, Err(Net::Io { code: 22 }));
+}
+
+#[test]
+fn a_send_to_a_v6_address_from_a_mapped_v4_source_fails() {
+    let make = |a: &node::Node, b: &node::Node| {
+        let IpAddr::V4(v4) = a.addresses()[0] else {
+            panic!("the first address is IPv4");
+        };
+        Transmit {
+            source: Some(IpAddr::V6(v4.to_ipv6_mapped())),
+            ..transmit(v6(b), b"v4")
+        }
+    };
+    sent(|_| any(), make, Err(Net::Io { code: 22 }));
+}
+
+/// As `os` gives on Linux, a send that names an IPv6 source to an IPv4 address, or from
+/// an IPv4 socket, gets code 22 (`EINVAL`), also when the source is the node's own.
+#[test]
+fn a_send_to_a_v4_address_from_a_v6_source_fails() {
+    let make = |a: &node::Node, b: &node::Node| Transmit {
+        source: Some(a.addresses()[1]),
+        ..transmit(at(b, 4433), b"v6")
+    };
+    sent(|a| at(a, 4433), make, Err(Net::Io { code: 22 }));
+    sent(|_| any(), make, Err(Net::Io { code: 22 }));
+}
+
+/// As `os` gives on Linux, an IPv4 source that is not unicast gets code 22 (`EINVAL`).
+#[test]
+fn a_send_from_a_v4_source_that_is_not_unicast_fails() {
+    let ips = [
+        Ipv4Addr::UNSPECIFIED,
+        Ipv4Addr::new(224, 0, 0, 1),
+        Ipv4Addr::BROADCAST,
+    ];
+    for ip in ips {
+        let make = move |_: &node::Node, b: &node::Node| Transmit {
+            source: Some(IpAddr::V4(ip)),
+            ..transmit(at(b, 4433), b"v4")
+        };
+        sent(|a| at(a, 4433), make, Err(Net::Io { code: 22 }));
+    }
+}
+
+/// As with `IPV6_PKTINFO` on Linux, a socket on the link-local address sends from the
+/// routable IPv6 address of its node when the transmit names it.
+#[test]
+fn a_link_local_socket_sends_from_a_routable_source_that_it_names() {
+    let (mut sim, a, b) = pair(0, link::Config::default());
+    let (ip, interface) = a.link_local();
+    let local = SocketAddr::V6(SocketAddrV6::new(ip, 4433, 0, interface));
+    let (mut sender, _a) = bind(&a, local).unwrap();
+    let to = SocketAddr::new(b.addresses()[1], 4433);
+    let (_b, receiver) = bind(&b, to).unwrap();
+    let log = Log::default();
+    let _receive = receive(&b, receiver, &log);
+    let source = a.addresses()[1];
+    let send = a.shards().start(shard("send"), move |_| async move {
+        let transmit = Transmit {
+            source: Some(source),
+            ..transmit(to, b"abc")
+        };
+        poll_fn(|cx| sender.poll_send(cx, &transmit)).await.unwrap();
+    });
+    let _send = send.unwrap();
+    sim.run_for(Span::SECOND).unwrap();
+    let sources: Vec<_> = log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, meta, _)| meta.source)
+        .collect();
+    assert_eq!(sources, [SocketAddr::new(source, 4433)]);
 }
 
 /// The digest of a run that sends 20 datagrams over a jittered link.

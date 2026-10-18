@@ -1,6 +1,8 @@
 //! Fuzz entry points, for the fuzz targets only. Not a stable surface.
 
-use crate::{address, admin, identity, sector};
+use sector::{address, admin};
+
+use crate::identity;
 
 /// Decodes `data` by its length, as the bytes of a file of the data directory: 100
 /// bytes of `node.key`, 54 bytes of `admin.key`, or 99 bytes of `address`, each as

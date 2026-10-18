@@ -2,7 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::rc::Rc;
 
 use super::*;
-use crate::address::{self, Address, FILE, LEN};
+use sector::address::{self, Address, FILE, LEN};
 
 /// What a data directory that [`keyed`] made holds while a node with no region runs
 /// on two cores, and after it stops.
@@ -227,7 +227,7 @@ fn a_running_node_holds_the_address_of_the_corpus() {
         include_bytes!("../../../../oracles/fuzz/node_identity/address-valid");
     let body =
         include_bytes!("../../../../oracles/fuzz/node_identity/address-valid-body");
-    assert_eq!(crate::sector::summed(body).as_ref(), Some(valid));
+    assert_eq!(sector::summed(body).as_ref(), Some(valid));
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
     let node = start(&host, PORT);
@@ -480,7 +480,7 @@ fn a_hold_whose_write_fails_does_not_poll_serve() {
     let address = of(&host, PORT);
     let held = sim.run_on(&host, move |host, _| async move {
         let serve = std::pin::pin!(async { panic!("serve is polled") });
-        address::hold(&host.files(), &address, serve).await
+        crate::address::hold(&host.files(), &address, serve).await
     });
     let error = Error::Directory(env::files::Error::Io {
         path: PathBuf::from(FILE),

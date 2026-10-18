@@ -24,7 +24,7 @@ use types::digest::Digest;
 use types::ed25519::{PrivateKey, PublicKey};
 use types::name::Name;
 use types::node;
-use types::time::{Span, Stamp};
+use types::time::{Monotonic, Span, Stamp};
 use wire::Protocol;
 
 use crate::applied::Applied;
@@ -36,17 +36,21 @@ use crate::member::Member;
 use crate::message::{self, Message};
 use crate::region::{self, Refused, Request};
 use crate::status::{self, Status};
+use bound::Bound;
 pub use founding::founding;
 use send::Senders;
 use used::{Opening, Used};
 
+mod addresses;
 mod apply;
+mod bound;
 mod founding;
 mod home;
 mod propose;
 mod send;
 mod stream;
 pub(crate) mod used;
+mod version;
 
 /// The time of one `raft` tick.
 const TICK: Span = Span::from_nanos(100 * Span::MILLISECOND.nanos());
@@ -66,6 +70,9 @@ const REFUSED: Code = Code(16);
 /// The code of a stream with a request from a node that a committed configuration
 /// removed.
 const REMOVED: Code = Code(17);
+/// The code of a stream with a `Card` change of a member whose card the leader
+/// proposed less than a minute before.
+const SOON: Code = Code(18);
 
 /// What a [`Mesh`] is built from.
 #[derive(Debug)]
@@ -120,6 +127,7 @@ pub struct Mesh {
     pool: Rc<Pool>,
     store: Rc<blob::Store>,
     clock: Clock,
+    cards: Rc<version::Cards>,
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "the join answer of #336 is the first user")
@@ -230,13 +238,14 @@ impl Mesh {
         put(&config.store, &config.pool, &chunks, &tree.chunks).await?;
         let signer = Signer::new(config.key, &config.private_key);
         let pool = Rc::clone(&config.pool);
-        let files = config.files.clone();
-        let (log, stored) = open_log(config.files, &config.dir, config.pool).await?;
+        let files = &config.files;
+        let (log, stored) = open_log(files, &config.dir, Rc::clone(&pool)).await?;
         let logged = stored != log::Stored::default();
         let blocks = log.blocks();
-        founding::keep(&files, &config.dir, blocks, &config.founding, logged).await?;
+        founding::keep(files, &config.dir, blocks, &config.founding, logged).await?;
+        let cards = version::Cards::new(&config, blocks.clone());
         let used = used::open(Opening {
-            files: &files,
+            files,
             dir: &config.dir,
             store: &config.store,
             prefix: state.prefix(),
@@ -258,7 +267,7 @@ impl Mesh {
         tasks.tasks().spawn(used::keep(
             Weak::clone(&weak),
             Rc::clone(&config.store),
-            files,
+            config.files,
             config.dir,
             config.clock.clone(),
         ));
@@ -275,6 +284,7 @@ impl Mesh {
             pool,
             store: config.store,
             clock: config.clock,
+            cards: Rc::new(cards),
             entropy: config.entropy,
         })
     }
@@ -393,10 +403,30 @@ impl Mesh {
     ///   that write ends.
     /// - [`Error::Raft`] with [`raft::Error::NotLeader`] when this node does not
     ///   lead, or when a new leader replaces the entry before a write holds it.
+    /// - [`Error::Soon`] for a `Card` change of a member when this node proposed
+    ///   another card of that member less than a minute before, while it leads.
+    /// - [`Error::NotMember`] for a `Card` change of a node that is not a member of
+    ///   the applied state, while this node leads.
+    ///
+    /// A repeat of a `Card` change that this node proposed in this term, less than
+    /// a minute before, gets no new entry, and returns as the first call does.
     pub(crate) async fn propose(&self, change: Change) -> Result<Position, Error> {
+        let member = match &change {
+            Change::Card(card) => Some(card.key),
+            _ => None,
+        };
         let mut data = Vec::new();
         change.encode(&mut data);
-        self.propose_data(data).await
+        let Some(member) = member else {
+            return self.propose_data(data).await;
+        };
+        let now = self.clock.now();
+        let proposal = {
+            let mut group = self.group.borrow_mut();
+            group.taking()?;
+            group.propose_card(member, now, data)?
+        };
+        self.held(proposal).await
     }
 
     /// Proposes `voters` as the next set of voters, and returns once the entry is on
@@ -446,16 +476,13 @@ impl Mesh {
             let mut group = self.group.borrow_mut();
             group.taking()?;
             let at = propose(&mut group)?;
-            group.sync();
-            let proposal = Rc::new(Proposal {
-                at,
-                held: Cell::new(None),
-                waker: Cell::new(None),
-            });
-            group.proposals.push(Rc::clone(&proposal));
-            group.wake();
-            proposal
+            group.proposal(at)
         };
+        self.held(proposal).await
+    }
+
+    // Waits for the write of the entry of `proposal`.
+    async fn held(&self, proposal: Rc<Proposal>) -> Result<Position, Error> {
         poll_fn(|cx| {
             let group = self.group.borrow();
             match proposal.held.get() {
@@ -467,7 +494,7 @@ impl Mesh {
                 None => {}
             }
             group.running()?;
-            proposal.waker.set(Some(cx.waker().clone()));
+            proposal.wait(cx.waker());
             Poll::Pending
         })
         .await
@@ -475,7 +502,9 @@ impl Mesh {
 
     /// Proposes the `change` that `peer` forwarded, and gives the answer for the
     /// reply half of its stream: the position once the entry is on disk here, or
-    /// "not the leader". A change that `peer` forwards again applies again.
+    /// "not the leader". A change that `peer` forwards again applies again, other
+    /// than a `Card` change that this node proposed in this term less than a minute
+    /// before, which gets the position of its first entry.
     ///
     /// # Errors
     ///
@@ -484,6 +513,11 @@ impl Mesh {
     ///   that write ends. The group does not see the change.
     /// - [`Error::PeerNotVoter`] when `peer` is the key of no voter of this node's
     ///   configuration. The group does not see the change.
+    /// - [`Error::NotMember`] when `change` is a `Card` change of a node that is not
+    ///   a member, while this node leads. The group does not see the change.
+    /// - [`Error::Soon`] when `change` is a `Card` change of a member, and this node
+    ///   leads and proposed another card of that member less than a minute before.
+    ///   The group does not see the change.
     pub(crate) async fn answer(
         &self,
         peer: PublicKey,
@@ -740,6 +774,7 @@ struct Group {
     // for a read of the spec.
     calls: BTreeMap<u64, Waker>,
     used: Used,
+    bound: Bound,
 }
 
 impl Group {
@@ -767,6 +802,7 @@ impl Group {
             applied: Applied::default(),
             calls: BTreeMap::new(),
             used,
+            bound: Bound::default(),
         }
     }
 
@@ -824,6 +860,42 @@ impl Group {
         let (_, new) = unstable.split_at(unstable.len().saturating_sub(new));
         self.unapplied.extend(written(new));
         self.synced = last.at;
+    }
+
+    // The proposal of the entry at `at`, which `raft` just appended.
+    fn proposal(&mut self, at: Position) -> Rc<Proposal> {
+        self.sync();
+        let proposal = Rc::new(Proposal::new(at));
+        self.proposals.push(Rc::clone(&proposal));
+        self.wake();
+        proposal
+    }
+
+    // Proposes `data`, a `Card` change of `member`, under the bound of a leader at
+    // `now`. A repeat that this node proposed in this term less than a minute before
+    // gets the proposal of the first.
+    fn propose_card(
+        &mut self,
+        member: node::Key,
+        now: Monotonic,
+        data: Vec<u8>,
+    ) -> Result<Rc<Proposal>, Error> {
+        let propose = |group: &mut Self, data| {
+            let at = group.raft.propose(data)?;
+            Ok(group.proposal(at))
+        };
+        if self.raft.role() != raft::Role::Leader {
+            return propose(self, data);
+        }
+        if self.state.member(member).is_none() {
+            return Err(Error::NotMember(member));
+        }
+        let term = self.raft.term();
+        let mut bound = mem::take(&mut self.bound);
+        let proposal =
+            bound.propose(member, data, term, now, |data| propose(self, data));
+        self.bound = bound;
+        proposal
     }
 
     fn running(&self) -> Result<(), Error> {
@@ -943,7 +1015,10 @@ impl Group {
     fn apply_change(&mut self, change: Change) -> Result<bool, Refused> {
         let listed = match &change {
             Change::Spec { chunks, .. } => Some(chunks.clone()),
-            Change::Home { .. } | Change::Join(_) | Change::Ticket { .. } => None,
+            Change::Home { .. }
+            | Change::Join(_)
+            | Change::Ticket { .. }
+            | Change::Card(_) => None,
         };
         let applied = self.state.apply(change)?;
         if let Some(listed) = listed {
@@ -994,15 +1069,30 @@ struct Proposal {
     // Whether the write of the first `Ready` after the call held the entry. `None`
     // until that write ends.
     held: Cell<Option<bool>>,
-    // The task of the call, while it waits.
-    waker: Cell<Option<Waker>>,
+    // The task of each call that waits: the call that proposed it, and its repeats.
+    wakers: RefCell<Vec<Waker>>,
 }
 
 impl Proposal {
-    fn wake(&self) {
-        if let Some(waker) = self.waker.take() {
-            waker.wake();
+    fn new(at: Position) -> Self {
+        Self {
+            at,
+            held: Cell::new(None),
+            wakers: RefCell::default(),
         }
+    }
+
+    // Keeps `waker` until the write ends.
+    fn wait(&self, waker: &Waker) {
+        let mut wakers = self.wakers.borrow_mut();
+        if !wakers.iter().any(|kept| kept.will_wake(waker)) {
+            wakers.push(waker.clone());
+        }
+    }
+
+    fn wake(&self) {
+        let wakers = mem::take(&mut *self.wakers.borrow_mut());
+        wakers.into_iter().for_each(Waker::wake);
     }
 }
 
@@ -1162,7 +1252,7 @@ async fn put(
 
 // Makes `dir`, durable in its parent, and opens the log in `LOG` in it.
 async fn open_log(
-    files: Files,
+    files: &Files,
     dir: &Path,
     pool: Rc<Pool>,
 ) -> Result<(Log, log::Stored), log::Error> {
@@ -1170,7 +1260,7 @@ async fn open_log(
     files
         .sync_dir(dir.parent().unwrap_or(Path::new("")))
         .await?;
-    Log::open(files, dir.join(LOG), pool).await
+    Log::open(files.clone(), dir.join(LOG), pool).await
 }
 
 // Ticks the group and does what each `Ready` says, in the order that `raft` needs:
@@ -1296,7 +1386,6 @@ mod tests {
     use transport::{Address, Peer, Port};
     use types::name::{Name, Prefix};
     use types::node::SealKey;
-    use types::time::Monotonic;
     use wire::Protocol;
 
     use super::*;
@@ -1380,6 +1469,11 @@ mod tests {
         /// Each call of `set_home` that returned, in order: its node, the home on
         /// that node at the return, and what the call gave.
         set: Vec<(u8, Option<node::Key>, Result<(), Error>)>,
+        /// The addresses that each node sets on its card next.
+        addresses: BTreeMap<u8, card::addresses::Addresses>,
+        /// Each call of `set_addresses` that returned, in order: its node, what the
+        /// call gave, and the card of that node at the return.
+        moved: Vec<(u8, Result<(), Error>, card::Card)>,
         /// The voters that each node proposes next.
         configurations: BTreeMap<u8, BTreeSet<u8>>,
         /// The spec change that each node proposes next.
@@ -1653,7 +1747,7 @@ mod tests {
                         let protocol = wire::header::decode(&header).unwrap();
                         assert_eq!(protocol, (Protocol::Mesh, &[][..]));
                         match mesh.serve(peer, incoming).await {
-                            Ok(()) | Err(Error::Stream(_)) => {}
+                            Ok(()) | Err(Error::Stream(_) | Error::Soon) => {}
                             Err(error) => panic!("a voter refused a message: {error}"),
                         }
                     });
@@ -1734,6 +1828,26 @@ mod tests {
             let result = mesh.set_home(INDEX, key(home)).await;
             let home = mesh.watch(INDEX).next().await.unwrap();
             board.lock().unwrap().set.push((id, home, result));
+        }
+    }
+
+    /// Sets the addresses that the board gives node `id`, and puts the result on the
+    /// board.
+    async fn readdress(
+        mesh: Mesh,
+        clock: Clock,
+        id: u8,
+        board: Arc<Mutex<Board>>,
+    ) -> ! {
+        loop {
+            clock.sleep(TICK).await;
+            let addresses = board.lock().unwrap().addresses.remove(&id);
+            let Some(addresses) = addresses else {
+                continue;
+            };
+            let result = mesh.set_addresses(addresses).await;
+            let card = mesh.member(key(id)).unwrap().card.card().clone();
+            board.lock().unwrap().moved.push((id, result, card));
         }
     }
 
@@ -1910,6 +2024,10 @@ mod tests {
         let (setting, clock, sets) = (mesh.clone(), node.clock(), Arc::clone(board));
         tasks.spawn(async move {
             set(setting, clock, id, sets).await;
+        });
+        let (moving, clock, moves) = (mesh.clone(), node.clock(), Arc::clone(board));
+        tasks.spawn(async move {
+            readdress(moving, clock, id, moves).await;
         });
         let (applying, clock, applies) =
             (mesh.clone(), node.clock(), Arc::clone(board));
@@ -2335,7 +2453,7 @@ mod tests {
     fn voters_of_the_least_limit_commit_the_largest_change_of_each_kind() {
         let largest = common::create_largest();
         let lengths = largest.each_ref().map(|change| encoded(change).len());
-        assert_eq!(lengths, [33, 19_601, 307, crate::change::BYTES_MAX]);
+        assert_eq!(lengths, [33, 19_601, 307, crate::change::BYTES_MAX, 2_081]);
         let board = behind(&largest);
         let homes = |id| (id, board.homes[&id].last().copied().flatten());
         assert_eq!(IDS.map(homes), IDS.map(|id| (id, Some(key(2)))));
@@ -2858,11 +2976,13 @@ mod tests {
     }
 
     mod apply;
+    mod cards;
     mod founding;
     mod home;
     mod in_use;
     mod send;
     mod serve;
+    mod version;
 
     /// The entries in the log of `node`, which had a power cut.
     fn stored(sim: &mut Sim, node: &sim::node::Node) -> Vec<Entry> {

@@ -7,11 +7,66 @@
   crate and the two names are key choices of kinds 1 and 2 that `laptop.monitor`
   accepted at 2026-10-17T21:32:06Z
   (https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241427370).
-  `connect(address, *, node, public_key, subject, private_key)` takes the node key as a
-  `uuid.UUID`, and a value of another type raises `TypeError`. `sdk::Error::Thread`
-  raises `RuntimeError`, `Bind` raises `OSError`, `Session` raises `ConnectionError`,
-  and `Panicked` raises `PanicException` (`laptop.architect-2`, 2026-10-17T18:44:19Z,
+  `connect(address=None, *, node=None, public_key=None, subject=None,
+  private_key=None, data=None)` dials a node (#3212 PR 1b). Each of the address, the
+  pair (`node`, `public_key`), and the pair (`subject`, `private_key`) comes from the
+  arguments, else from `sdk::Node::local` on the data directory `data` (a `str` or an
+  `os.PathLike`, by default `foundation-data`): the node gives its address and keys,
+  and its first admin gives the subject. With an address, the data directory counts
+  only when its node is at that address. Each given argument parses before any read,
+  and with every value given, `connect` reads no file. `NotRunning` is no source;
+  `Version` and `Files` raise. When no source gives the keys and the subject, the text
+  of the keys wins. `Client.address` is the address that `connect` dialed. The rules
+  are in Rust, not Python. A profile of PR 2 goes between the arguments and the data
+  directory (default 1 of `laptop.architect-2`, 2026-10-15T17:01:25Z,
+  https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6197670062). The
+  texts:
+  - `ValueError`: `node and public_key go together: give both or neither`, and
+    `subject and private_key go together: give both or neither`. A `data` with a NUL
+    byte: `data: the path holds a NUL byte`, as each other value parses
+    (`laptop.architect-2`, 2026-10-18T21:14:26Z, item 5 of
+    https://github.com/synnaxlabs/foundation/pull/3255#issuecomment-6255225319).
+  - `ConnectionError`, with no address and no node on `data`: `no node runs in
+    <data>: pass the address of the node, or data= with the --data of foundation
+    start`.
+  - `ConnectionError`, with no source of the keys: `no source gives the keys of the
+    node at <address>: pass node= and public_key=, or data= with the --data of
+    foundation start on the node's host`. When `data` holds a node at another address:
+    `no source gives the keys of the node at <address>: <data> holds the node at
+    <other>; pass node= and public_key=, or connect to <other>`.
+  - `ConnectionError`, with no source of the subject: `no source gives the subject for
+    the node at <address>: pass subject= and private_key=, or data= with the --data of
+    foundation start on the node's host`, and the same form with `<data> holds the
+    node at <other>; pass subject= and private_key=, or connect to <other>`.
+  - `ConnectionError`, when the subject must come from a node with no `admin.key`:
+    `<data> holds no admin.key that a node wrote`.
+  - `ConnectionError` for `Version`: `<data>/data/<file> holds format version
+    <found>, and this package reads version <expected>: install the package of the
+    node's version`.
+  - `ConnectionError` for `Files`: `cannot read <data>/data: <cause>`. Each path of
+    the cause is relative to `<data>/data`, and `.` is that directory
+    (`laptop.architect-2`, 2026-10-18T20:42:17Z, item 3 of
+    https://github.com/synnaxlabs/foundation/pull/3255#issuecomment-6254906786).
+
+  (`box1.builder-1`, plan, 2026-10-18T20:01:07Z,
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6254483901;
+  `laptop.architect-2`, 2026-10-18T16:46:56Z,
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252485660,
+  2026-10-18T17:28:39Z,
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252920038,
+  2026-10-18T17:34:06Z,
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252975559, and
+  2026-10-18T20:05:17Z,
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6254526787.)
+  `connect` takes the node key as a `uuid.UUID`, and a value of another type raises
+  `TypeError`.
+  `sdk::Error::Thread` raises `RuntimeError`, `Bind` raises `OSError`, `Session` and
+  `Local` raise `ConnectionError`, and `Panicked` raises `PanicException`
+  (`laptop.architect-2`, 2026-10-17T18:44:19Z,
   https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6238826510).
+  No Python test reaches `Bind`, so the Rust table test of the map, with a real `Bind`,
+  is its only test (`laptop.architect-2`, 2026-10-18T15:00:03Z,
+  https://github.com/synnaxlabs/foundation/pull/3193#issuecomment-6251395290).
   `Client.__exit__` lets the error of the block win: when the block raised, an error of
   the close is a note on it, else the error of the close raises (`laptop.architect-2`,
   2026-10-17T18:46:12Z,
@@ -57,4 +112,7 @@
   accepted both, key choices of kinds (a) and (g), at 2026-10-17T18:40:34Z
   (https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6240907801). The
   Windows wheels wait for #682 and #2955 (option (A),
-  https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6238826510).
+  https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6238826510), and
+  for the disk of a data directory (#2956), with no `cfg` gate on `data=`
+  (`laptop.monitor`, 2026-10-18T20:37Z, a key choice of kind (a),
+  https://github.com/synnaxlabs/foundation/pull/3255#issuecomment-6254946471).

@@ -3,20 +3,17 @@
 //! writes the frames of its reads with no server, with a measure of each write. For the
 //! `alloc` test and the `kind` bench.
 
-use std::cell::RefCell;
 use std::future::{Future as _, poll_fn};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::pin::pin;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 use connector::cancel::Token;
-use connector::kind::{self, Channels, Context, Error, Kind as _, Table};
-use connector::status::{self, Reading};
-use connector::supervisor::{self, Supervisor};
-use connector::testing;
+use connector::kind::{self, Channels, Context, Error, Table};
+use connector::status::Reading;
+use connector::testing::Rig;
 use connector_opcua::Config;
 use connector_opcua::sim::{Served, Variables, serve};
 use document::Document;
@@ -25,12 +22,11 @@ use document::value::{self, Value};
 use document::{Attribute, Block, Map};
 use env::net::tcp;
 use env::tasks::Group;
-use hub::reader::Mode;
 use spec::channel::{Channel, Data};
 use spec::data_type::DataType;
 use spec::definition::Definition;
 use types::channel;
-use types::name::{Name, Selector};
+use types::name::Name;
 use types::sample::{Scalar, Type};
 use types::time::{Monotonic, Span};
 
@@ -131,7 +127,7 @@ pub(crate) fn run(
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
-        let inputs = inputs(&node, &tasks, kind, nodes, &scalars).await;
+        let rig = rig(&node, &tasks, kind, nodes, &scalars).await;
         let variables =
             Variables::new(&texts.iter().map(String::as_str).collect::<Vec<_>>());
         let (stop, serving) = (Token::new(), Group::new(tasks.clone()));
@@ -145,8 +141,8 @@ pub(crate) fn run(
         let (answers, until) = (variables.clone(), stop.clone());
         let mut rng = node.entropy().rng();
         serving.tasks().spawn(async move {
-            let until = until.wait();
-            serve(clock, wall, net, listener, &mut rng, &answers, until).await;
+            let served = serve(clock, wall, net, listener, &mut rng, &answers, until);
+            served.await.expect("the listener does not fail");
         });
         let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
         let config = config(&address, nodes);
@@ -157,8 +153,7 @@ pub(crate) fn run(
             clock.sleep(Span::from_nanos(PERIOD.nanos() * ticks)).await;
             canceller.cancel();
         });
-        let supervisor = Supervisor::new(inputs);
-        let open = supervisor.open("opcua", name("plant.plc"), &config, &token);
+        let open = rig.open_connector("opcua", name("plant.plc"), &config, &token);
         let result = open.await.run().await;
         stop.cancel();
         serving.ended().await;
@@ -203,23 +198,15 @@ pub(crate) fn writes(
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
-        let inputs = inputs(&node, &tasks, kind, nodes, scalars).await;
-        let mut status = status(&inputs.hub).await;
-        let readings = Rc::new(RefCell::new(Vec::new()));
-        let into = Rc::clone(&readings);
-        tasks.spawn(async move {
-            while let Ok(received) = status.next().await {
-                let reading = Reading::of(&received).expect("a whole status");
-                into.borrow_mut().push(reading);
-            }
-        });
-        let supervisor = Supervisor::new(inputs);
+        let rig = rig(&node, &tasks, kind, nodes, scalars).await;
         let config = config("opc.tcp://plc:4840", nodes);
+        let names = rig.define_status("opcua", &name("plant.plc"), &config);
+        let status = rig.record(&names).await;
         let token = Token::new();
-        let open = supervisor.open("opcua", name("plant.plc"), &config, &token);
+        let open = rig.open_connector("opcua", name("plant.plc"), &config, &token);
         let result = open.await.run().await;
         node.clock().sleep(Span::SECOND).await;
-        (result, readings.take())
+        (result, status.readings())
     });
     let (result, readings) = run.expect("the run ends");
     assert!(result.is_ok(), "the run ends ok: {result:?}");
@@ -227,41 +214,17 @@ pub(crate) fn writes(
     (measures.clone(), readings)
 }
 
-/// The counts of the `opcua` kind, as its check gives them.
-fn counts() -> Vec<Name> {
-    let kind = connector_opcua::Kind::default();
-    let config = kind.parse(&config("opc.tcp://plc:4840", 1));
-    let config = config.expect("the config parses");
-    kind.check(&config).expect("the config checks").counts
-}
-
-/// A reader of the status channels of `plant.plc`.
-async fn status(hub: &hub::Hub) -> hub::reader::Reader {
-    let names = status::channels(&name("plant.plc"), &counts());
-    let (time, channels) = names.expect("the status names are names");
-    let channels = channels.iter().map(|(name, _)| name.as_str());
-    let select = Selector::new(std::iter::once(time.as_str()).chain(channels));
-    let config = hub::reader::Config {
-        select: select.expect("the status names select"),
-        mode: Mode::Complete,
-        subject: name("rig"),
-        name: None,
-        hold: Span::ZERO,
-    };
-    hub.reader(config).await.expect("the status reader opens")
-}
-
-/// The inputs of a supervisor on `node` with `kind` as `opcua`, and the channels of
-/// `plant.plc`, a connector that reads `nodes` nodes: its status, the index
-/// `plant.time` of key 1, and a channel of key 2 on for each read, of the types of
-/// `scalars` in turn.
-async fn inputs(
+/// A rig on `node` with `kind` as `opcua`, which defines the channels of
+/// `plant.plc`, a connector that reads `nodes` nodes: the index `plant.time` of
+/// key 1, and a channel of key 2 on for each read, of the types of `scalars` in
+/// turn.
+async fn rig(
     node: &sim::node::Node,
     tasks: &env::tasks::Tasks,
     kind: impl kind::Kind,
     nodes: usize,
     scalars: &[Scalar],
-) -> supervisor::Config {
+) -> Rig {
     let env = hub::testing::Env {
         files: node.files(),
         clock: node.clock(),
@@ -270,18 +233,13 @@ async fn inputs(
         tasks: tasks.clone(),
     };
     let kinds = Table::new().with("opcua", kind);
-    let inputs = testing::create_config(env, node.net(), kinds).await;
-    let counts = counts();
-    let first = channel::Key::from_u128(1_000_000);
-    let mut definitions = testing::create_status(&name("plant.plc"), &counts, first);
-    definitions.push((name("plant.time"), index(1)));
+    let rig = Rig::open(env, node.net(), kinds).await;
+    let mut definitions = vec![(name("plant.time"), index(1))];
     let reads = (2..).zip(scalars.iter().cycle()).take(nodes);
     let reads = reads.map(|(key, &scalar)| (name(&read(key).0), data(key, scalar)));
     definitions.extend(reads);
-    inputs
-        .hub
-        .set_definitions(definitions.iter().map(|(name, def)| (name, def)));
-    inputs
+    rig.define(definitions);
+    rig
 }
 
 /// What a measure gives for the polls of a run of the `opcua` kind.

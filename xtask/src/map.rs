@@ -36,6 +36,7 @@ pub(crate) const TEST_EDGES: &[(&str, &str)] = &[
     ("ops", "transport"),
     ("node", "sdk"),
     ("sdk-python", "transport"),
+    ("sdk-python", "program"),
 ];
 
 /// Every crate with its layer and the workspace crates it may depend on.
@@ -119,6 +120,11 @@ pub(crate) const CRATES: &[Crate] = &[
     // Layer 2: drives the mesh's disk, network, and clock. It does.
     Crate {
         name: "os",
+        layer: 2,
+        deps: Deps::Only(&["env", "types", "block"]),
+    },
+    Crate {
+        name: "sector",
         layer: 2,
         deps: Deps::Only(&["env", "types", "block"]),
     },
@@ -260,12 +266,21 @@ pub(crate) const CRATES: &[Crate] = &[
     Crate {
         name: "sdk",
         layer: 4,
-        deps: Deps::Only(&["program", "transport", "os", "env", "types", "block"]),
+        deps: Deps::Only(&[
+            "program",
+            "transport",
+            "os",
+            "sector",
+            "spec",
+            "env",
+            "types",
+            "block",
+        ]),
     },
     Crate {
         name: "sdk-python",
         layer: 4,
-        deps: Deps::Only(&["sdk", "types"]),
+        deps: Deps::Only(&["sdk", "sector", "types"]),
     },
 ];
 

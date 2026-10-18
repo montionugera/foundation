@@ -30,7 +30,7 @@ attacker can use is a GitHub issue with the `security` label and a failing test.
 | Subject | Sign hellos and session opens with a key in the spec | Go past its `access` allows |
 | Member node | Act as itself and as the connectors placed on it; read and change the traffic of subjects connected through it; use their open sessions until the hello expires; drop or delay what it forwards | Hold another node's key; change the spec |
 | Home of an index | Write any data into the index, run its gate, lie to its readers | Act outside its placement |
-| Voter | Vote and stall its region; break `raft` safety (Node to node); until #1273, commit a home that is not a member, so that each node that opens an unnamed reader of its index aborts | Forge a spec change, not built (#1213), or move a home outside placement, not built (#2287) |
+| Voter | Vote and stall its region; break `raft` safety (Node to node); until #1273, commit a home that is not a member, so that each node that opens an unnamed reader of its index aborts; until #3179, hold back the card of a member, a minute at a time, with a forged or old card | Forge a spec change, not built (#1213), or move a home outside placement, not built (#2287) |
 | Time source | Shift the clocks that follow it, within what the estimator accepts | |
 | Device | Send any bytes to a connector | Reach the core except through `hub` |
 | Local user that runs the node | Read and write the node's files and memory, and so hold its keys and cached secrets and become that member node. On the node that founds the root region, read `admin.key` and so be the first admin of the region, not only that node | |
@@ -271,17 +271,23 @@ state on `main`.
   that hashes to its digest (BLOB PEER). It trusts no length: a head over the largest
   block of the pool stops the stream with `TOO_LARGE`, a body is counted against its
   head, and a chunk is stored only when its bytes hash to the digest, else `MISMATCH`. A
-  peer can fill the disk only to the free floor of the store, plus at most one chunk for
-  each put in flight; then each put of a chunk that the disk does not hold stops with
-  `FULL`. No code removes a chunk (#1233), so that room stays taken, and the node's own
-  puts of new chunks then give `Error::Floor` too. `serve` holds at most one chunk in
-  memory for each stream. `transport` also holds each chunk whole while noq keeps a sent
-  byte of it (STREAM WIRE), so a get can hold more than one chunk. The chunks that
-  `transport` holds for a session have at most `window_bytes` bytes together, plus two
-  chunks for each stream (#2361). Who may open a blob stream is not built: `node`
-  rejects each one until it routes them from member nodes only (#1229).
-  The requester is not built (#1229). To attack when it lands: a binary that a peer
-  serves under a hash it does not match (C9d).
+  peer can fill the disk only to the free floor of the store, plus, for each put in
+  flight, its chunk rounded up to whole blocks of the disk and the growth of its
+  directory; then each put of a chunk with no file of its length at its name stops with
+  `FULL`, also the empty chunk. No code removes a chunk (#1233), so that room stays
+  taken, and the node's own puts of new chunks then give `Error::Floor` too. `serve`
+  holds at most one chunk in memory for each stream. `transport` copies each part of a
+  chunk and holds no block of it, so a peer that delays its acks pins only copies inside
+  `window_bytes`. Who may open a blob stream is not built: `node` rejects each one until
+  it routes them from member nodes only (#1232).
+- `blob::peer::get` trusts the peer no more than `serve` does: a head of the oldest open
+  digest over the largest block of its pool stops the stream with `TOO_LARGE`, and bytes
+  that do not hash to the digest stop it with `MISMATCH` and are not stored. So a binary
+  that a peer serves under a hash that it does not match is never stored (C9d). The
+  digests still open go again on a new stream, so each refused chunk costs the peer one
+  stream. A reply out of order, or an end with digests open, stops the stream with
+  `MALFORMED`. `get` and `put` hold at most one chunk of their own. Nothing bounds a
+  silent peer but a drop of the future, which `mesh` owns (#1231).
 
 ### Time source to `estimate`
 
@@ -354,15 +360,31 @@ state on `main`.
   stamp, and a larger count after a carried tail: the open refuses each (#2796);
   `carry_met_after_carry` gives a larger count to a path whose only entry has no
   samples, then a second carry record, and the open refuses the first; and `carry_twice`
-  lists one path twice in one record, which it refuses. Three hold entries in a carry
-  record, and the open refuses each: `carry_entry` holds one valid entry,
-  `carry_entry_cut` counts one entry that the body does not hold, and
-  `carry_entries_over_max` counts 1024 entries. Four reach the count of an
+  lists one path twice in one record, which it refuses. Nine hold entries in a carry
+  record. The open takes three: `carry_entry_tagged` holds a new tagged entry,
+  `carry_entry_older` one of an earlier mark than the copy of its data record, and
+  `carry_entry_replaces` one of the same mark, which replaces that copy. It refuses
+  six: `carry_entry` holds an entry with tag 0, `carry_entry_past` one that ends past
+  the last seq, `carry_entry_twice` one tagged entry twice, `carry_entry_unmet` one of a
+  path that no record holds, `carry_entry_cut` counts one entry that the body does not
+  hold, and `carry_entries_over_max` counts 1024 entries. The open refuses
+  `tagged_over_max`, a data record with a tagged entry of 4244 bytes, over
+  `Layout::ENTRY_MAX_MIN`. Four reach the count of an
   entry with no samples (#2796), and the open refuses each: `empty_count_zero` gives a
   count of 0, `empty_presence` a presence byte of 2, `empty_counted` a count that is not
   the walked one on a path that the walk met, and `empty_crowded` an entry with no
   samples after a count of `u64::MAX` at its seq. The `body_over_max` input holds a data
-  record that follows the chain with a body over `body_max`.
+  record that follows the chain with a body over `body_max`. In `carry_limit`, the
+  carry record of the holders of a batch of tagged entries passes the carry limit,
+  and the append refuses it as `Limit::Carry`. The build of `offsets_past_tail_25`
+  and `offsets_walk_25` starts at a late block of the area, and each moves the tail
+  to its last lap: the record at the tail, or the one after it, passes the last
+  offset, and the open refuses it. `open_full_tail_25` moves the tail to the last lap
+  of a block with no room for the restart record of the open, and the build of
+  `wrap_start` wraps. In `wrap_full_25`, the commit fits only without the end of the
+  area that it skips, and the append refuses it as `Full`. `holders_over_carry` sets
+  the `body_max` of both headers between the body of a record of three tagged entries
+  and the carry body of its holders, and the open refuses it.
 
 ### Device to connector
 
@@ -491,7 +513,8 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `wire_blob` | `wire::blob::Server::decode`, `Requester::decode`, `Put::body`, `Reply::body`, `Body::take`, `Body::end`, `get::encode`, `Put::encode`, `Reply::encode` | Each message encodes to the same bytes; each body counts exactly the bytes of its head, and each refusal of a body is the one that its rest gives; a body ends unfinished while bytes remain; each valid message made from the input decodes to itself |
 | `wire_hub_reader` | `wire::hub::Reader::decode`, `Reply::encode`, `ends::encode` | Each message encodes to the same bytes; each event comes in the order of a session; each head is live, ends at or below `u64::MAX`, and starts at or after the end of the head before it or, for the first head, the `live` of `Opened`; each refusal is one that the order or the heads of the session give; a reply of the retired kind 3 gives `Error::Kind { kind: 3 }`; the body is where `Reader::body` says; `Reader::decode` of `None` gives `Unfinished` inside a body and `Finished` at each other point, and leaves the reader as it was; each valid message made from the input decodes to itself |
 | `wire_hub_frames` | `wire::hub::Frames::open`, `due`, `decode`, `received`, `draft`, `live`, with a small pool | No input panics; each frame has the path and range of its head; a layout error comes again from the next `due`; a reply of the retired kind 3 gives `Error::Kind { kind: 3 }`; a run that receives each body message in place gives the same steps as a run that gives each whole to `decode`; in a complete session, the lost seqs of each frame (`Frames::lost`) and the ranges of its frames with a sample tile the seqs from the open position on, and a latest session or a frame with no sample loses none; `Frames::live` is the open position, then the end of the last frame with a sample |
-| `wire_hub_client` | `wire::hub::client::Challenge::decode`, `Signed::decode`, `Request::decode`, `Response::decode`, `First::decode`, `Read::decode`, `Open::decode`, `Reader::decode`, `Places::decode`, `place::decode`, `Body::take`, `Body::end`, `write::Write::decode`, `write::Open::decode`, `write::Opening::decode`, `wire::hub::write::Reply::decode`, and the encoders of each message | Each message encodes to the same bytes; each decoder but the two opens, `Reader::decode`, and `write::Opening::decode` refuses another kind with its `Kind` error, and `Reader::decode` and `write::Opening::decode` refuse a first message of another kind with it; `First::decode` gives what the decoder of the kind of the message gives; each body ends at its length and nowhere else, and each refusal of a body is the one that its rest gives; a `Reader` of each mode gives nothing before the last place; a `Places` over `PLACES_MAX` gives `Error::Places`; each message of the run holds no more places than remain, and a stamp at the index place; with the last place, and at no message before it, the reader gives the start: the places of the run, their key set in place order with the index group at the index place, and the `hub::Reader` of their count and the mode; places that name a channel twice give `Error::Repeated`; a refused message leaves the reader as it was, and the end of the stream before the last place gives `Error::Finished`; a `write::Opening` gives for each message what a `Reader` gives, and at the last place the reader's places and key set (a `Reader` holds an `Opening`, so the checks of the `Reader` are the checks of the run of both); a `Reply` that decodes holds a range of at least one sample that ends at or below `u64::MAX`; each valid message made from the input decodes to itself |
+| `wire_hub_write` | `wire::hub::write::Frames::due`, `decode`, `received`, `draft`, `skip`, `finish`, with a small pool | No input panics; a frame that finds the pool full is skipped and the stream goes on; each head that it gives encodes back to its message, so no head that `write::Head::encode` panics on gives a step; each error is one that `decode` lists for the part that was due; each frame has the time, form, and count of its head; a layout error comes again from the next `due`; at the end of the input, `finish` gives `Ok` between frames, else `Error::Cut` with the bytes of the frame that came; a run that receives each body message in place gives the same steps as a run that gives each whole to `decode` |
+| `wire_hub_client` | `wire::hub::client::Challenge::decode`, `Signed::decode`, `Request::decode`, `Response::decode`, `First::decode`, `Read::decode`, `Open::decode`, `Reader::decode`, `Places::decode`, `place::decode`, `Body::take`, `Body::end`, `write::Write::decode`, `write::Open::decode`, `write::Opening::decode`, `wire::hub::write::Reply::decode`, `wire::hub::write::Replies::decode`, and the encoders of each message | Each message encodes to the same bytes; each decoder but the two opens, `Reader::decode`, and `write::Opening::decode` refuses another kind with its `Kind` error, and `Reader::decode` and `write::Opening::decode` refuse a first message of another kind with it; `First::decode` gives what the decoder of the kind of the message gives; each body ends at its length and nowhere else, and each refusal of a body is the one that its rest gives; a `Reader` of each mode gives nothing before the last place; a `Places` over `PLACES_MAX` gives `Error::Places`; each message of the run holds no more places than remain, and a stamp at the index place; with the last place, and at no message before it, the reader gives the start: the places of the run, their key set in place order with the index group at the index place, and the `hub::Reader` of their count and the mode; places that name a channel twice give `Error::Repeated`; a refused message leaves the reader as it was, and the end of the stream before the last place gives `Error::Finished`; a `write::Opening` gives for each message what a `Reader` gives, and at the last place the reader's places and key set (a `Reader` holds an `Opening`, so the checks of the `Reader` are the checks of the run of both); a `Reply` that decodes holds a range of at least one sample that ends at or below `u64::MAX`; `Replies` takes or refuses each reply as a model of the order of the replies gives, and its predicates agree with the model; each valid message made from the input decodes to itself |
 | `transport_hello` | `transport::fuzzing::Hello::decode`, `Hello::encode` (feature `fuzzing`) | Gives the hello, or the refusal, that a second reader of the STREAM WIRE rules gives; its encoding decodes to itself |
 | `transport_certificate` | `transport::fuzzing::peer`: the client verifier and the peer of a node's server, for a dialer's chain of 0 to 3 certificates (feature `fuzzing`) | Gives the peer that a second reader of the rules gives: a client for no certificate, none for a chain of more than one or a certificate over 1024 bytes, and else none or the node whose key follows the Ed25519 key header in the certificate; a certificate that a node issues reads back to its key, and two of it are refused. Not reached: the handshake signature, which fuzzed bytes cannot make |
 | `env_host` | `env::net::host::Host::from_str` and `env::net::host::uri` | A host from either reads back from its text, and a name has no uppercase letter |
@@ -532,12 +555,13 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `types_frame_ends` | `frame::Layout::from_ends`, `frame::check`, `frame::split` | Refuses exactly the ends that break a rule, with an error that names a broken rule; the layout is the one that `Layout::new` gives for the lengths; a frame drafted from the ends has them, and `split` cuts its series at them; `check` refuses exactly the ends that do not fit a body whose length the input gives, and `split` cuts a body that `check` took at them. Not reached: the panics of `split`, a body over 64 KiB |
 | `buffer_open` | `Buffer::open` and `Reader::read` on an edited ring | An `Err`, or a commit survives a reopen; a read gives each path as the doc of `Reader::read` says, up to the tail, the same in one read, in steps, from inside an entry or a gap, and after a reopen. Not reached: a pool with no block, a read before a commit ends |
 | `secret_sealed` | `secret::store::Sealed::put` | Takes only the one real sealed value; refuses any other bytes, name, or version; a refused `put` leaves the store as it was |
-| `node_identity` | `node::sector::written` with `node::identity::fields` and `encode` (the checks `node::identity::check` and `node::admin::check`, which call `node::sector::check`), by `node::fuzz::identity` (feature `sim`), on 100 bytes, or on 96 bytes with their CRC32C; the same for `admin.key`, on 54 bytes, or on 50 bytes with their CRC32C; and the decode and encode of `address` (the check `node::address::check`), on 99 bytes, or on 95 bytes with their CRC32C | Gives an identity or an admin key exactly for bytes with the tag and the CRC32C, and an address exactly for the bytes that the encode writes, with the tag and the CRC32C, and that value encodes to the same bytes |
+| `node_identity` | `sector::written` with `node::identity::fields` and `encode` (the checks `node::identity::check` and `sector::admin::check`, which call `sector::check`), by `node::fuzz::identity` (feature `sim`), on 100 bytes, or on 96 bytes with their CRC32C; the same for `admin.key`, on 54 bytes, or on 50 bytes with their CRC32C; and the decode and encode of `address` (the check `sector::address::check`), on 99 bytes, or on 95 bytes with their CRC32C | Gives an identity or an admin key exactly for bytes with the tag and the CRC32C, and an address exactly for the bytes that the encode writes, with the tag and the CRC32C, and that value encodes to the same bytes |
 
 No target yet, because the decoder is private, not built, not reached from a file, or
 not reached from the corpus: `transport::message` (#2139), the QUIC hello
 (`transport::quic::hello::Hello::decode`), the file `founding` of the mesh directory
-(`mesh::region::Founding::decode`, with `mesh::Member::decode` in it, #2311), the join
+(`mesh::region::Founding::decode`, with `mesh::Member::decode` in it, #2311), the file
+`card` of the mesh directory (`mesh::driver::version::read`, #2311), the join
 answer (`mesh::Member::decode` from a peer, #336 adds its target),
 each connector's protocol parser, the `node_id`
 text of the `opcua` kind

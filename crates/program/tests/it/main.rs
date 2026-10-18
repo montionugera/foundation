@@ -23,3 +23,4 @@ mod session;
 #[path = "../../../hub/tests/common/sessions.rs"]
 #[expect(dead_code, reason = "the binary uses only some of the helpers")]
 mod sessions;
+mod write;

@@ -1,4 +1,4 @@
-//! Fixtures that the tests of `plan`, `apply`, `status`, and `Node` share.
+//! Fixtures that the tests of `plan`, `apply`, `status`, `browse`, and `Node` share.
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,10 +14,12 @@ use env::paths::Paths;
 use env::tasks::Tasks;
 use hub::Hub;
 use mesh::Mesh;
+use serde_json::{Value, json};
 use sim::Sim;
 use spec::definition::Definition;
 use types::channel::Key;
 use types::name::Name;
+use wire::hub::client::BODY_BYTES_MAX;
 
 use crate::error::{Error, Sources};
 use crate::front_end::{File, FrontEnd, FrontEnds};
@@ -29,8 +31,11 @@ mod founding;
 #[path = "../tests/common/quickstart.rs"]
 mod quickstart;
 
+mod tree;
+
 pub(crate) use founding::{ADMIN, NODE, create_mesh};
 pub(crate) use quickstart::{plant, shown};
+pub(crate) use tree::{ADDRESS, Tree};
 
 pub(crate) const SITE: &str =
     include_str!("../../acceptance/tests/it/fixtures/site.hcl");
@@ -100,12 +105,18 @@ impl kind::Kind for Reader {
 }
 
 pub(crate) fn front_ends() -> FrontEnds {
-    FrontEnds::new(
-        "hcl",
-        FrontEnd {
-            read: config_hcl::read,
+    FrontEnds::new("hcl", hcl())
+}
+
+/// The front end of HCL.
+pub(crate) fn hcl() -> FrontEnd {
+    FrontEnd {
+        read: config_hcl::read,
+        update: |source, text, document| {
+            config_hcl::update(source, text, document)
+                .map_err(|refusal| Vec::from(&refusal))
         },
-    )
+    }
 }
 
 /// The kinds of the connectors of the fixtures.
@@ -174,6 +185,20 @@ pub(crate) fn create_config(
     }
 }
 
+/// The node of `mesh` on `fixture`, as [`create_node`] makes it, with the kinds `tree`,
+/// `broken`, and `failing` of [`Tree`] in place of the kinds of the fixtures.
+pub(crate) fn create_browsing_node(fixture: &Fixture, mesh: Mesh) -> Node {
+    let secrets = connector::testing::create_secrets(fixture.sim.files());
+    let kinds = Table::new()
+        .with("tree", Tree::create())
+        .with("broken", Tree::create_broken())
+        .with("failing", Tree::create_failing());
+    Node::new(Config {
+        supervisor: create_supervisor(fixture, kinds, secrets.clone()),
+        ..create_config(fixture, mesh, front_ends(), secrets)
+    })
+}
+
 /// A supervisor of `kinds` on `fixture`, which reads secrets through `secrets`.
 pub(crate) fn create_supervisor(
     fixture: &Fixture,
@@ -207,6 +232,42 @@ pub(crate) fn plan(
         .map_err(|diagnostics| Error::config(diagnostics, &Sources::of(files)))
 }
 
+/// Asserts that `reply` is the error reply of `status` to a request whose `count`
+/// problems do not fit in one reply: at most the bound, the first problems, each of
+/// `code`, then `ops.more-problems` with the count of the rest. Gives it as JSON.
+pub(crate) fn more_problems(
+    reply: &[u8],
+    code: &str,
+    count: usize,
+    status: u8,
+) -> Value {
+    assert!(
+        u64::try_from(reply.len()).is_ok_and(|len| len <= BODY_BYTES_MAX),
+        "{}",
+        reply.len()
+    );
+    let reply: Value = serde_json::from_slice(reply).expect("JSON");
+    let errors = reply["errors"].as_array().expect("errors");
+    let (more, kept) = errors.split_last().expect("a problem");
+    assert!(!kept.is_empty());
+    for problem in kept {
+        assert_eq!(problem["code"], code);
+    }
+    let message = format!(
+        "{} more problems do not fit in one reply",
+        count - kept.len()
+    );
+    let expected = json!({
+        "code": "ops.more-problems",
+        "message": message,
+        "fix": "Fix the problems above, then run it again",
+        "notes": [],
+    });
+    assert_eq!(*more, expected);
+    assert_eq!(reply["status"], status);
+    reply
+}
+
 pub(crate) fn name(text: &str) -> Name {
     text.parse().expect("a name")
 }
@@ -234,7 +295,17 @@ where
     let args = ["foundation"].iter().chain(args).map(Into::into);
     let (mut output, mut errors) = (Vec::new(), Vec::new());
     let input = async || crate::line(&mut std::io::empty());
-    let run = crate::cli(args, input, &mut output, &mut errors, paths, reach).await;
+    let front_ends = front_ends();
+    let run = crate::cli(
+        args,
+        input,
+        &mut output,
+        &mut errors,
+        paths,
+        &front_ends,
+        reach,
+    );
+    let run = run.await;
     let text = |bytes| String::from_utf8(bytes).expect("UTF-8");
     (run, text(output), text(errors))
 }

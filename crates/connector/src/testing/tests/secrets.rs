@@ -1,5 +1,3 @@
-//! The secrets that `connector::testing` writes.
-
 use std::cell::{Cell, RefCell};
 use std::future::poll_fn;
 use std::pin::pin;
@@ -7,26 +5,21 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
-use connector::cancel;
-use connector::kind::{Channels, Context, Error, Kind, Table};
-use connector::supervisor::Supervisor;
-use connector::testing::{create_config, create_secret, create_secrets, create_status};
 use document::Document;
 use document::diagnostic::Diagnostic;
 use secret::Source;
-use types::channel;
 use types::name::Name;
 use types::time::Span;
+
+use crate::cancel;
+use crate::common::{env, run_in};
+use crate::kind::{Channels, Context, Error, Kind, Table};
+use crate::testing::{Rig, create_secret, create_secrets};
 
 /// Each value that reads of the secret `plant.token` give while a test writes `t1`
 /// to it, and then `t2`.
 fn read_during_write(seed: u64) -> Vec<Vec<u8>> {
-    let mut sim = sim::Sim::new(sim::Config {
-        seed,
-        ..sim::Config::default()
-    });
-    let node = sim.node(sim::node::Config::default());
-    sim.run_on(&node, |node, tasks| async move {
+    run_in(seed, |node, tasks| async move {
         let name: Name = "plant.token".parse().unwrap();
         let (files, clock) = (node.files(), node.clock());
         let secrets = create_secrets(files.clone());
@@ -52,7 +45,6 @@ fn read_during_write(seed: u64) -> Vec<Vec<u8>> {
         node.clock().sleep(Span::SECOND).await;
         got.take()
     })
-    .expect("the run ends")
 }
 
 #[test]
@@ -69,12 +61,7 @@ fn a_read_gets_no_value_or_a_whole_written_value() {
 
 /// The values of `names` after two tasks write them at once.
 fn two_at_once(seed: u64, names: [&'static str; 2]) -> [Option<Vec<u8>>; 2] {
-    let mut sim = sim::Sim::new(sim::Config {
-        seed,
-        ..sim::Config::default()
-    });
-    let node = sim.node(sim::node::Config::default());
-    sim.run_on(&node, move |node, tasks| async move {
+    run_in(seed, move |node, tasks| async move {
         let files = node.files();
         let other = files.clone();
         tasks.spawn(async move {
@@ -90,13 +77,11 @@ fn two_at_once(seed: u64, names: [&'static str; 2]) -> [Option<Vec<u8>>; 2] {
         }
         got
     })
-    .expect("the run ends")
 }
 
 #[test]
 fn two_secrets_written_at_once_both_land() {
-    // The second pair has one `DefaultHasher` hash, `b2ce31a3c857fea4`, so a staged
-    // file named by a hash of the name is one file for both.
+    // Two names that a staged file named by a hash of the name would put in one file.
     let pairs = [
         ["plant.a", "plant.b"],
         ["p.ac5d98e62022af56d", "p.a8f75ad3ac7923eff"],
@@ -114,12 +99,7 @@ fn two_secrets_written_at_once_both_land() {
 /// The value of `plant.a` after a write of it that ends at `stop` and a write of
 /// `t2`.
 fn write_after_a_dropped_write(seed: u64, stop: i64) -> Option<Vec<u8>> {
-    let mut sim = sim::Sim::new(sim::Config {
-        seed,
-        ..sim::Config::default()
-    });
-    let node = sim.node(sim::node::Config::default());
-    sim.run_on(&node, move |node, _| async move {
+    run_in(seed, move |node, _| async move {
         let (files, clock) = (node.files(), node.clock());
         let name: Name = "plant.a".parse().unwrap();
         {
@@ -142,7 +122,6 @@ fn write_after_a_dropped_write(seed: u64, stop: i64) -> Option<Vec<u8>> {
         let value = create_secrets(files.clone()).get(&read).await;
         value.ok().map(|value| value.expose().to_vec())
     })
-    .expect("the run ends")
 }
 
 #[test]
@@ -191,39 +170,20 @@ impl Kind for Watch {
 fn read_in_a_run(seed: u64) -> Vec<Vec<u8>> {
     let got = Arc::new(Mutex::new(Vec::new()));
     let into = Arc::clone(&got);
-    let mut sim = sim::Sim::new(sim::Config {
-        seed,
-        ..sim::Config::default()
-    });
-    let node = sim.node(sim::node::Config::default());
-    let result = sim.run_on(&node, move |node, tasks| async move {
-        let env = hub::testing::Env {
-            files: node.files(),
-            clock: node.clock(),
-            wall: node.wall(),
-            entropy: node.entropy(),
-            tasks: tasks.clone(),
-        };
+    let result = run_in(seed, move |node, tasks| async move {
         let kinds = Table::new().with("watch", Watch(into));
-        let config = create_config(env, node.net(), kinds).await;
+        let rig = Rig::open(env(&node, tasks.clone()), node.net(), kinds).await;
         let connector: Name = "plant.watch".parse().unwrap();
-        let status = create_status(&connector, &[], channel::Key::from_u128(1 << 20));
-        config
-            .hub
-            .set_definitions(status.iter().map(|(name, def)| (name, def)));
         let (files, clock) = (node.files(), node.clock());
         tasks.spawn(async move {
             clock.sleep(Span::from_nanos(50_000)).await;
             create_secret(&files, &"plant.token".parse().unwrap(), b"t1").await;
         });
         let (token, document) = (cancel::Token::new(), Document::default());
-        let supervisor = Supervisor::new(config);
-        let opened = supervisor.open("watch", connector, &document, &token);
+        let opened = rig.open_connector("watch", connector, &document, &token);
         opened.await.run().await
     });
-    result
-        .expect("the run ends")
-        .expect("the run ends with the value");
+    result.expect("the run ends with the value");
     got.lock().unwrap().clone()
 }
 

@@ -170,7 +170,13 @@ fn open(readers: &mut Readers, live: u64, limit_bytes: u64) -> complete::Key {
         backfill: None,
     });
     readers
-        .open(Reader::Unnamed, start, limit_bytes, complete::Charge::Whole)
+        .open(
+            Reader::Unnamed,
+            start,
+            limit_bytes,
+            complete::Charge::Whole,
+            None,
+        )
         .key
 }
 
@@ -185,7 +191,9 @@ fn places(frame: &impl Fn() -> Frame, set: &Arc<KeySet>) {
     let keys: Vec<_> = (0..SESSIONS)
         .map(|_| {
             let charge = complete::Charge::Places([slot, slot].into());
-            readers.open(Reader::Unnamed, start, u64::MAX, charge).key
+            readers
+                .open(Reader::Unnamed, start, u64::MAX, charge, None)
+                .key
         })
         .collect();
     let mut seq = 0;
@@ -216,7 +224,7 @@ fn missed(frame: &impl Fn() -> Frame, set: &Arc<KeySet>) {
         seq += 1;
     }
     assert!(
-        readers.release(seq).is_empty(),
+        readers.release(seq, 0).is_empty(),
         "the warm session has frames to take"
     );
     // A session of credit 0 waits from the first frame, one of credit 1 from the
@@ -275,7 +283,7 @@ fn flow(
         readers.queue(&frame(), set, *seq..*seq + 1);
         *seq += 1;
     }
-    taken + readers.release(*seq).len()
+    taken + readers.release(*seq, 0).len()
 }
 
 /// The number of frames that the complete session `key` takes before
@@ -343,6 +351,7 @@ fn alternating() {
             start,
             u64::MAX,
             complete::Charge::Places([slot].into()),
+            None,
         )
         .key;
     let mut seq = 0;
@@ -351,7 +360,7 @@ fn alternating() {
         readers.queue(&fa, &a, *seq..*seq + 1);
         readers.queue(&fb, &b, *seq + 1..*seq + 2);
         *seq += 2;
-        let woken = readers.release(*seq).len();
+        let woken = readers.release(*seq, 0).len();
         woken + taken(readers, key)
     };
     for _ in 0..2 {

@@ -1,13 +1,11 @@
 use std::ffi::CString;
 use std::future;
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use ::sim::{Sim, node};
 use connector::browse::{Device, End, Found, Query, Scope, Values};
 use connector::kind::Table;
-use connector::supervisor::{self, Supervisor};
-use connector::{http, testing};
+use connector::testing::Rig;
 use document::value::{self, Value};
 use document::{Attribute, Document, Map};
 use env::net::tcp;
@@ -19,7 +17,7 @@ use crate::client::browse::Foreign;
 use crate::client::tests::{RELAY, Relay, relayed};
 use crate::event::Time;
 use crate::kind::Kind;
-use crate::sim::{Variables, serve, tree};
+use crate::sim::{Variables, during, serve, tree};
 
 /// The sim tree of `sim::serve` from its folder `Plant`.
 const PLANT: &str = "Plant";
@@ -59,14 +57,13 @@ fn browse_each(
             tasks,
         };
         let kinds = Table::new().with("opcua", Kind::default());
-        let supervisor =
-            Supervisor::new(testing::create_config(env, node.net(), kinds).await);
+        let rig = Rig::open(env, node.net(), kinds).await;
         let local = SocketAddr::new(node.addresses()[0], 4840);
         let config = config(&format!("opc.tcp://{local}"));
         let mut found = Vec::new();
         let browse = async {
             for query in &queries {
-                found.push(supervisor.browse("opcua", &config, query).await);
+                found.push(rig.supervisor().browse("opcua", &config, query).await);
             }
         };
         if !served {
@@ -94,25 +91,16 @@ fn browse_relayed(delay: Span, query: Query) -> (Result<Found, Error>, i64, Vec<
             entropy: node.entropy(),
             tasks: tasks.clone(),
         };
-        let hub = hub::testing::open_unsynced(env, delay).await;
-        let supervisor = Supervisor::new(supervisor::Config {
-            kinds: Arc::new(Table::new().with("opcua", Kind::default())),
-            clock: node.clock(),
-            entropy: node.entropy(),
-            net: node.net(),
-            roots: http::Roots::default(),
-            tasks,
-            hub: hub.clone(),
-            secrets: testing::create_secrets(node.files()),
-        });
+        let kinds = Table::new().with("opcua", Kind::default());
+        let rig = Rig::unsynced(env, node.net(), kinds, delay).await;
         let control = Relay::default();
         let config = config(&format!("opc.tcp://{}:{RELAY}", node.addresses()[0]));
-        let browse = supervisor.browse("opcua", &config, &query);
+        let browse = rig.supervisor().browse("opcua", &config, &query);
         let mut found = None;
         let until =
             async { found = Some(relayed(&node, &control, |_| {}, browse).await) };
         serving(&node, until).await;
-        let end = ticks(hub.time().await.now());
+        let end = ticks(rig.hub().time().await.now());
         (found.expect("the browse ends"), end, control.browses.take())
     });
     run.expect("the run ends")
@@ -175,7 +163,8 @@ async fn serving_of(
     let wall = move || wall.now().time;
     let mut rng = node.entropy().rng();
     let (clock, net) = (node.clock(), node.net());
-    serve(clock, wall, net, listener, &mut rng, variables, until).await;
+    let serving = |stop| serve(clock, wall, net, listener, &mut rng, variables, stop);
+    during(serving, until).await;
 }
 
 /// What one browse of `query` gives on a sim server.
@@ -532,8 +521,14 @@ fn on_server_of<T: Send + 'static>(
         let mut out = None;
         let until = async {
             let (time, mut rng) = (Time::monotonic(node.clock()), node.entropy().rng());
-            let connect =
-                Client::connect(time, node.net(), &mut rng, &url, future::pending());
+            let connect = Client::connect(
+                time,
+                tracing::Span::none(),
+                node.net(),
+                &mut rng,
+                &url,
+                future::pending(),
+            );
             let mut client = connect.await.expect("a connect").expect("a client");
             out = Some(body(&mut Server::new(&mut client)).await);
             client.close().await;

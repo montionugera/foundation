@@ -13,7 +13,9 @@
 //! the mean deadline of the commit task, which trims in steps, with an entry of each of
 //! 1 or 32 indexes: the work of `queue_group` with the checkpoints of its trims and the
 //! sync of the logs.
-//! `deadline_carry` times one that also writes a carry record of 32 tails.
+//! `deadline_carry` times one that also writes a carry record of 32 tails. Its setup
+//! commits each page of the pool, so the timed deadline makes no first commit of a
+//! page, which a pool on `Heap` does once a page in its life.
 //! `deadline_trim` times only the deadline that trims a step of 100 blocks on the ring
 //! of ID 4096.
 
@@ -97,14 +99,14 @@ fn deadline_tagged(bencher: Bencher<'_, '_>, indexes: u32) {
 }
 
 /// The last of 32 indexes appends one entry each 4096 deadlines, so the deadline
-/// after 13 carries its tail and fills the record with the tails of the other 31.
+/// after 12 carries its tail and fills the record with the tails of the other 31.
 #[divan::bench]
 fn deadline_carry(bencher: Bencher<'_, '_>) {
     bencher
         .counter(ItemsCount::new(31_usize))
         .with_inputs(|| {
-            let mut deadline = Deadline::new(32, 64 + PHASE);
-            for _ in 0..13 {
+            let mut deadline = Deadline::resident(32, 64 + PHASE);
+            for _ in 0..12 {
                 deadline.commit(4096);
             }
             deadline

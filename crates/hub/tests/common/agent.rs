@@ -11,8 +11,9 @@ use types::time::Span;
 use wire::Protocol;
 use wire::hub::FromHome;
 use wire::hub::client::{
-    self, Challenge, Mode, Open, Place, Places, Read, Request, Response, Signed,
+    self, Challenge, Mode, Open, Place, Places, Read, Request, Response, Signed, write,
 };
+use wire::hub::write::{Head, Reply};
 
 use crate::net::{HOME, NODE, own_pool, public_key};
 
@@ -84,6 +85,60 @@ impl Stream {
         self.send(&out).await;
         self.send(&body).await;
         self.mode = Some(open.mode);
+    }
+
+    /// Sends a write of `open`, signed with `key` as a `kind`, and the open in one
+    /// message.
+    pub(crate) async fn write(
+        &mut self,
+        open: &write::Open,
+        kind: access::proof::Kind,
+        key: &PrivateKey,
+    ) {
+        let mut body = vec![0; open.encoded_len()];
+        open.encode(&mut body);
+        let signed = access::proof::signed(kind, CONNECTION, &body);
+        let write = write::Write {
+            length: u64::try_from(body.len()).expect("an open fits a u64"),
+            signature: Pair::new(key).sign(&signed),
+        };
+        let mut out = [0; write::Write::LEN];
+        write.encode(&mut out);
+        self.send(&out).await;
+        self.send(&body).await;
+    }
+
+    /// Reads the start of the write that the stream sent: the places and their run.
+    pub(crate) async fn started(&mut self) -> write::Start {
+        let mut opening = write::Opening::default();
+        loop {
+            let message = self.recv().await.expect("receives");
+            let message = message.expect("a message before the finish");
+            let decoded = opening.decode(Some(&message));
+            if let Some(start) = decoded.expect("a message of the run") {
+                return start;
+            }
+        }
+    }
+
+    /// Sends one frame of a write: `head`, the run of `ends` in one message, and
+    /// `body` in messages of 4 KiB.
+    pub(crate) async fn frame(&mut self, head: Head, ends: &[(u32, u32)], body: &[u8]) {
+        let mut out = [0; Head::LEN];
+        head.encode(&mut out);
+        self.send(&out).await;
+        let mut out = vec![0; ends.len() * wire::hub::ends::LEN];
+        wire::hub::ends::encode(ends.iter().copied(), &mut out);
+        self.send(&out).await;
+        for part in body.chunks(1 << 12) {
+            self.send(part).await;
+        }
+    }
+
+    /// The next reply of a write.
+    pub(crate) async fn reply(&mut self) -> Reply {
+        let message = self.recv().await.expect("receives");
+        Reply::decode(&message.expect("a reply before the finish")).expect("a reply")
     }
 
     /// The next message from the node, `None` once it finished.
@@ -284,6 +339,26 @@ impl Agent {
                 .expect("a selector"),
         };
         stream.read(&open, access::proof::Kind::Read, &AGENT).await;
+        stream
+    }
+
+    /// Sends a write of `channels` at authority 1 with no lease, signed by the agent,
+    /// on a new `Complete` stream. Leaves the stream open.
+    pub(crate) async fn write(&self, channels: &[&str]) -> Stream {
+        self.write_as(Class::Complete, channels).await
+    }
+
+    /// As [`Agent::write`], on a stream of `class`.
+    pub(crate) async fn write_as(&self, class: Class, channels: &[&str]) -> Stream {
+        let mut stream = self.open_as(class).await;
+        let open = write::Open {
+            authority: types::authority::Authority(1),
+            lease: None,
+            channels: channels.iter().map(|channel| name(channel)).collect(),
+        };
+        stream
+            .write(&open, access::proof::Kind::Write, &AGENT)
+            .await;
         stream
     }
 

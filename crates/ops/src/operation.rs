@@ -14,7 +14,8 @@ use crate::apply::Applied;
 use crate::error::{Among, Error};
 use crate::remote::{self, Link};
 use crate::scope::Scope;
-use crate::{Failure, Log, Start, plan, status};
+use crate::serve::Point;
+use crate::{Failure, Log, Start, browse, import, plan, status};
 
 /// The data directory of a command that names none.
 pub(crate) const DATA: &str = "foundation-data";
@@ -61,6 +62,20 @@ pub(crate) const TABLE: &[Spec] = &[
         read_only: true,
         destructive: false,
     },
+    Spec {
+        name: "browse",
+        summary: "Show the folders and points of the device of a connector of the node \
+                  of `--data`",
+        read_only: true,
+        destructive: false,
+    },
+    Spec {
+        name: "import",
+        summary: "Add the config of points of the device of a connector of the node of \
+                  `--data` to the config file of the connector",
+        read_only: false,
+        destructive: true,
+    },
 ];
 
 #[derive(Parser)]
@@ -68,7 +83,10 @@ pub(crate) const TABLE: &[Spec] = &[
     name = "foundation",
     about = "Run Foundation operations",
     version,
-    disable_help_subcommand = true
+    disable_help_subcommand = true,
+    // A bench dependency turns on clap's `wrap_help` in a workspace build, so help
+    // never wraps, to be the same in each build.
+    term_width = 0
 )]
 struct Cli {
     /// Print the output or the error as JSON.
@@ -88,10 +106,12 @@ enum Command {
     Plan(PlanArgs),
     Apply(ApplyArgs),
     Status(NodeArgs),
+    Browse(BrowseArgs),
+    Import(ImportArgs),
     /// Answer MCP messages on standard input, one JSON-RPC message per line, until it
-    /// closes. Each tool call of `plan`, `apply`, and `status` runs on the node of
-    /// `--data`, and reads and writes only under the folders of `--files`, never in
-    /// the data directory.
+    /// closes. Each tool call of `plan`, `apply`, `status`, `browse`, and `import`
+    /// runs on the node of `--data`, and reads and writes only under the folders of
+    /// `--files`, never in the data directory.
     Mcp(McpArgs),
     /// Print this help, or the help of one command.
     Help {
@@ -169,6 +189,55 @@ struct ApplyArgs {
 }
 
 #[derive(clap::Args)]
+struct BrowseArgs {
+    #[command(flatten)]
+    input: Browse,
+    #[command(flatten)]
+    node: NodeArgs,
+}
+
+#[derive(clap::Args)]
+struct ImportArgs {
+    /// The name of the connector whose points it imports. The node of `--data` runs
+    /// it.
+    connector: String,
+    /// The config files, or directories of config files, that hold the connector. The
+    /// import writes the file that holds the connector block.
+    #[arg(required = true)]
+    files: Vec<PathBuf>,
+    /// The folder where the walk starts, as `browse --start` takes it. The default is
+    /// the root.
+    #[arg(long, value_name = "PATH")]
+    start: Option<String>,
+    /// A point to import, with its default name: its names from the root, as
+    /// `browse` gives its path. Give it once for each point.
+    #[arg(long = "point", value_name = "PATH")]
+    points: Vec<String>,
+    /// A point to import, with the name `<NAME>`. The first `=` splits the two. Give it
+    /// once for each point.
+    #[arg(long = "name", value_name = "NAME=PATH", value_parser = named)]
+    names: Vec<(String, String)>,
+    /// Import each point under the start whose path from it matches, as `browse
+    /// --match` takes the pattern.
+    #[arg(
+        long = "match",
+        value_name = "PATTERN",
+        conflicts_with_all = ["points", "names"]
+    )]
+    pattern: Option<String>,
+    #[command(flatten)]
+    node: NodeArgs,
+}
+
+/// The name and the path of a `--name` value, split at its first `=`.
+fn named(value: &str) -> Result<(String, String), String> {
+    value
+        .split_once('=')
+        .map(|(name, path)| (name.to_owned(), path.to_owned()))
+        .ok_or_else(|| format!("`{value}` has no `=` between a name and a path"))
+}
+
+#[derive(clap::Args)]
 struct McpArgs {
     /// A folder that the tools may read and write, with each folder under it. Give it
     /// once for each folder. The default is the working directory, unless it is `/`
@@ -196,6 +265,8 @@ pub(crate) enum Request {
     Plan(Plan),
     Apply(Apply),
     Status(Empty),
+    Browse(Browse),
+    Import(Import),
 }
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
@@ -205,7 +276,7 @@ pub(crate) struct Empty {}
 #[derive(clap::Args, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Plan {
-    /// The config files.
+    /// Each config file, or directory of config files, in the order given.
     #[arg(required = true)]
     #[serde(deserialize_with = "some")]
     #[schemars(length(min = 1))]
@@ -222,6 +293,62 @@ pub(crate) struct Plan {
 pub(crate) struct Apply {
     /// The plan file.
     plan: PathBuf,
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Browse {
+    /// The name of the connector whose device it browses. The node of `--data` runs
+    /// it.
+    pub(crate) connector: String,
+    /// The config files, or directories of config files, that hold the connector.
+    #[arg(required = true)]
+    #[serde(deserialize_with = "some")]
+    #[schemars(length(min = 1))]
+    pub(crate) files: Vec<PathBuf>,
+    /// The folder where the browse starts: its names from the root, joined by `/`,
+    /// with a `\` before each `/`, `*`, and `\` in a name. The default is the root.
+    #[arg(long, value_name = "PATH")]
+    #[serde(default)]
+    pub(crate) start: Option<String>,
+    /// Give each point under the start whose path from it matches, in place of one
+    /// level: `/` splits names, `**` alone matches any number of names, `*` any text
+    /// in one name, and `\` takes the next character as it is.
+    #[arg(long = "match", value_name = "PATTERN", conflicts_with = "cursor")]
+    #[serde(default, rename = "match")]
+    pub(crate) pattern: Option<String>,
+    /// Give the page of the level from this cursor, which an earlier browse gave.
+    #[arg(long)]
+    #[serde(default)]
+    pub(crate) cursor: Option<String>,
+    /// Read the value of each point that it gives.
+    #[arg(long)]
+    #[serde(default)]
+    pub(crate) values: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Import {
+    /// The name of the connector whose points it imports. The node of `--data` runs
+    /// it.
+    pub(crate) connector: String,
+    /// The config files, or directories of config files, that hold the connector. The
+    /// import writes the file that holds the connector block.
+    #[serde(deserialize_with = "some")]
+    #[schemars(length(min = 1))]
+    pub(crate) files: Vec<PathBuf>,
+    /// The folder where the walk starts, as `browse` takes it. The default is the
+    /// root.
+    #[serde(default)]
+    pub(crate) start: Option<String>,
+    /// The points to import, in place of `match`.
+    #[serde(default)]
+    pub(crate) points: Vec<Point>,
+    /// Import each point under the start whose path from it matches, as `browse`
+    /// takes the pattern, in place of `points`.
+    #[serde(default, rename = "match")]
+    pub(crate) pattern: Option<String>,
 }
 
 /// A list of at least one path.
@@ -243,6 +370,8 @@ pub(crate) enum Response {
     Plan(plan::Output),
     Apply(Applied),
     Status(status::Output),
+    Browse(browse::Output),
+    Import(import::Output),
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -323,11 +452,42 @@ pub(crate) fn parse(args: &[OsString], json: bool) -> Result<Parsed, Error> {
             Ok(on(Request::Apply(input), node))
         }
         Command::Status(node) => Ok(on(Request::Status(Empty {}), node)),
+        Command::Browse(BrowseArgs { input, node }) => {
+            Ok(on(Request::Browse(input), node))
+        }
+        Command::Import(args) => {
+            let (input, node) = args.into_parts();
+            Ok(on(Request::Import(input), node))
+        }
         Command::Mcp(McpArgs {
             files,
             node: NodeArgs { data },
         }) => Ok(Parsed::Mcp { data, files }),
         Command::Help { command } => help(command.as_deref()),
+    }
+}
+
+impl ImportArgs {
+    /// The input, with each `--point`, then each `--name`, as a point, and the node.
+    fn into_parts(self) -> (Import, NodeArgs) {
+        let named = self.names.into_iter().map(|(name, path)| Point {
+            path,
+            name: Some(name),
+        });
+        let points = self
+            .points
+            .into_iter()
+            .map(|path| Point { path, name: None })
+            .chain(named)
+            .collect();
+        let input = Import {
+            connector: self.connector,
+            files: self.files,
+            start: self.start,
+            points,
+            pattern: self.pattern,
+        };
+        (input, self.node)
     }
 }
 
@@ -481,7 +641,8 @@ impl Request {
     ///
     /// # Errors
     ///
-    /// Each error of [`remote::plan`], [`remote::apply`], and [`remote::status`].
+    /// Each error of [`remote::plan`], [`remote::apply`], [`remote::status`],
+    /// [`remote::browse`], and [`remote::import`].
     pub(crate) async fn run<R, C>(
         self,
         scope: &Scope,
@@ -504,6 +665,12 @@ impl Request {
                 Response::Apply(remote::apply(&plan, scope, link).await?)
             }
             Self::Status(Empty {}) => Response::Status(remote::status(link).await?),
+            Self::Browse(input) => {
+                Response::Browse(remote::browse(input, scope, link).await?)
+            }
+            Self::Import(input) => {
+                Response::Import(remote::import(input, scope, link).await?)
+            }
         })
     }
 }
@@ -524,6 +691,8 @@ impl Response {
             Self::Plan(output) => crate::value(output),
             Self::Apply(output) => crate::value(output),
             Self::Status(output) => crate::value(output),
+            Self::Browse(output) => crate::value(output),
+            Self::Import(output) => crate::value(output),
         }
     }
 
@@ -541,6 +710,8 @@ impl Response {
             Self::Plan(output) => output.text(),
             Self::Apply(output) => output.text(),
             Self::Status(output) => output.text(),
+            Self::Browse(output) => output.text(),
+            Self::Import(output) => output.text(),
         }
     }
 }

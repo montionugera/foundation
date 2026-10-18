@@ -202,7 +202,6 @@ struct UA_SecureChannel {
     /* (Decrypted) chunks waiting to be processed */
     UA_ChunkQueue chunks;
     size_t chunksCount;
-    size_t chunksLength;
 
     /* Received buffer from which no chunks have been extracted so far */
     UA_ByteString unprocessed;
@@ -432,6 +431,28 @@ prependHeadersAsym(UA_SecureChannel *const channel, UA_Byte *header_pos,
  * (LegacySequenceNumbers = false) start at 0 and roll over to 0. */
 UA_UInt32
 UA_SecureChannel_nextSequenceNumber(UA_SecureChannel *channel);
+
+/* Gives the bytes that the signature and the padding take in a symmetric chunk of
+ * `length` bytes on `channel`, which signs. */
+size_t
+UA_SecureChannel_securedOverhead(const UA_SecureChannel *channel, size_t length);
+
+/* Gives the payload bytes of a symmetric chunk of `length` bytes on `channel`: the
+ * length less the headers, the signature, and the padding that setBufPos leaves.
+ * Inline, so that setBufPos makes no call in mode None. */
+static UA_INLINE size_t
+UA_SecureChannel_chunkPayload(const UA_SecureChannel *channel, size_t length) {
+    size_t payload = length - UA_SECURECHANNEL_SYMMETRIC_HEADER_TOTALLENGTH;
+    if(channel->securityMode == UA_MESSAGESECURITYMODE_NONE)
+        return payload;
+    return payload - UA_SecureChannel_securedOverhead(channel, length);
+}
+
+/* Gives the payload bytes that a symmetric chunk of `length` bytes from the peer of
+ * `channel` holds at least: the smaller of the chunkPayload and the MaxBodySize of
+ * OPC UA Part 6, as a peer can size its chunks by either. */
+size_t
+UA_SecureChannel_receivedPayload(const UA_SecureChannel *channel, size_t length);
 
 void
 setBufPos(UA_MessageContext *mc);

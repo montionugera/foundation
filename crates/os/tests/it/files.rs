@@ -12,6 +12,7 @@ use block::{Block, Pool};
 use env::files::{Absolute, Error, File, Files, Mode, Operation};
 
 use crate::disk::{KIB, Scratch, files, opened};
+use crate::fifo::stalled;
 
 /// Runs `body` with the files of a scratch directory of its own and the path of
 /// their data directory.
@@ -321,7 +322,7 @@ fn open_absolute_opens_to_read_only_with_no_lock() {
 fn open_absolute_refuses_a_file_that_is_not_regular_and_waits_for_no_writer() {
     let scratch = Scratch::new();
     let (fifo, dir) = (scratch.0.join("fifo"), scratch.0.clone());
-    mkfifo(&fifo);
+    crate::fifo::make(&fifo);
     // A socket path has a bound of 104 bytes on macOS, which the scratch path can pass.
     let socket =
         PathBuf::from(format!("/tmp/foundation-os-{}.sock", std::process::id()));
@@ -885,6 +886,8 @@ fn files_of_a_dir_with_a_missing_parent_gives_dir_and_makes_nothing() {
     assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 0);
 }
 
+/// Only Linux: the test answers a call with a seccomp filter.
+///
 /// Each call syncs the holders of `dir` and `dir/data`, also when they are there: an
 /// entry that a call made before a crash is not durable until then.
 #[cfg(target_os = "linux")]
@@ -949,6 +952,7 @@ fn files_of_a_missing_dir_under_a_parent_it_cannot_write_gives_the_cause() {
     assert!(matches!(found, os::Error::Dir(_)));
 }
 
+/// Only Linux: the test answers a call with a seccomp filter.
 #[cfg(target_os = "linux")]
 #[test]
 fn files_whose_holder_sync_fails_gives_dir() {
@@ -1044,6 +1048,8 @@ fn hold_while_another_create_fails(mode: Mode) {
     writer_thread.join().unwrap();
 }
 
+/// Only Linux: the test answers a call with a seccomp filter.
+///
 /// The `ftruncate` that frees the blocks of a failed create also fails.
 #[cfg(target_os = "linux")]
 #[test]
@@ -1081,6 +1087,8 @@ fn unlock_gives(errno: i32) {
     });
 }
 
+/// Only Linux: the test answers a call with a seccomp filter.
+///
 /// The unlock of a closed write handle fails, as an NFS `LOCKU` or a FUSE daemon can.
 #[cfg(target_os = "linux")]
 #[test]
@@ -1101,6 +1109,8 @@ fn a_close_whose_unlock_fails_closes_the_file() {
     crate::panics::assert_joins(handle.unwrap(), Ok(()));
 }
 
+/// Only Linux: the test answers a call with a seccomp filter.
+///
 /// An unlock that gives `EBADF` is a broken invariant: the close panics the I/O thread.
 #[cfg(target_os = "linux")]
 #[test]
@@ -1121,6 +1131,8 @@ fn a_close_whose_unlock_gives_ebadf_panics_the_io_thread() {
     crate::panics::assert_joins(thread, crate::panics::panicked("files"));
 }
 
+/// Only Linux: the test answers a call with a seccomp filter.
+///
 /// An unlock that gives `EINVAL` is a broken invariant too: the close panics the I/O
 /// thread.
 #[cfg(target_os = "linux")]
@@ -1142,6 +1154,8 @@ fn a_close_whose_unlock_gives_einval_panics_the_io_thread() {
     crate::panics::assert_joins(thread, crate::panics::panicked("files"));
 }
 
+/// Only Linux: the test answers a call with a seccomp filter.
+///
 /// A write open that another disk holds the lock of gives `Busy`, holds no lock, and so
 /// sends no unlock.
 #[cfg(target_os = "linux")]
@@ -1169,6 +1183,8 @@ fn a_busy_write_open_sends_no_unlock() {
     holder_thread.join().unwrap();
 }
 
+/// Only Linux: the test answers a call with a seccomp filter.
+///
 /// A read handle holds no lock, so its close sends no unlock.
 #[cfg(target_os = "linux")]
 #[test]
@@ -1214,47 +1230,6 @@ fn a_remove_that_drops_while_it_waits_for_room_leaves_the_file() {
         let found = files.open(Path::new("a"), Mode::Read).await.map(drop);
         assert_eq!(found, Ok(()));
     });
-}
-
-/// Runs `start` while the I/O thread of `files` blocks in the open of a FIFO, so each
-/// call that `start` polls once waits in the queue, and then frees the thread.
-async fn stalled<T>(
-    files: &Files,
-    data: &Path,
-    start: impl FnOnce(&mut std::task::Context<'_>) -> T,
-) -> T {
-    mkfifo(&data.join("p"));
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut blocker = Box::pin(files.open(Path::new("p"), Mode::Read));
-    assert!(blocker.as_mut().poll(&mut context).is_pending());
-    let started = start(&mut context);
-    let writer = rustix::fs::open(
-        data.join("p"),
-        rustix::fs::OFlags::WRONLY,
-        rustix::fs::Mode::empty(),
-    );
-    drop(blocker.await.unwrap());
-    drop(writer.unwrap());
-    std::fs::remove_file(data.join("p")).unwrap();
-    started
-}
-
-/// Makes a FIFO at `path`.
-pub(crate) fn mkfifo(path: &Path) {
-    #[cfg(target_os = "linux")]
-    {
-        let mode = rustix::fs::Mode::from_raw_mode(0o600);
-        rustix::fs::mkfifoat(rustix::fs::CWD, path, mode).unwrap();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
-        // SAFETY: `path` ends in a NUL and lives past the call.
-        #[expect(unsafe_code, reason = "`rustix` has no `mkfifoat` on macOS")]
-        let made = unsafe { libc::mkfifo(path.as_ptr(), 0o600) };
-        assert_eq!(made, 0, "{}", std::io::Error::last_os_error());
-    }
 }
 
 /// Polls `future` once, and expects it to wait.

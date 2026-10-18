@@ -23,7 +23,7 @@ use crate::agent::{AGENT, SUBJECT, name};
 use crate::connect::{ample, connect, connect_with};
 use crate::hand::by_hand;
 use crate::home::{accept, serve_session, serve_session_on};
-use crate::net::{HOME, header, own_pool, public_key, transport};
+use crate::net::{HOME, header, own_pool, public_key, transport_sized};
 use crate::sessions::{Got, Home, OTHER, QUIET, rules, run_program, shrink_wall_error};
 
 /// Runs `program` with a session of [`SUBJECT`] on a home with mesh time and the
@@ -528,8 +528,24 @@ where
     G: FnOnce(sim::node::Node, env::tasks::Tasks, Address) -> P + Send + 'static,
     P: Future<Output = ()> + 'static,
 {
+    raw_sized(seed, (1 << 16, 1 << 20), hello, program);
+}
+
+/// As [`raw`], with a home that takes messages of at most `sizes.0` bytes and has a
+/// window of `sizes.1` bytes.
+pub(super) fn raw_sized<F, H, G, P>(
+    seed: u64,
+    sizes: (usize, usize),
+    hello: F,
+    program: G,
+) where
+    F: FnOnce(transport::Session, Incoming, sim::node::Node) -> H + Send + 'static,
+    H: Future<Output = ()> + 'static,
+    G: FnOnce(sim::node::Node, env::tasks::Tasks, Address) -> P + Send + 'static,
+    P: Future<Output = ()> + 'static,
+{
     let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
-        let transport = transport(&node, &tasks, &own_pool(), HOME, 1 << 16);
+        let transport = transport_sized(&node, &tasks, &own_pool(), HOME, sizes);
         let session = transport.accept().await.expect("a session");
         let mut incoming = session.accept().await.expect("a stream");
         header(&mut incoming).await;
@@ -777,7 +793,7 @@ pub(super) async fn admit(hello: &mut Incoming, clock: &env::clock::Clock) -> Sp
 }
 
 /// Takes each block of `pool` that it has room for.
-fn fill(pool: &block::Pool) -> Vec<block::Unique> {
+pub(super) fn fill(pool: &block::Pool) -> Vec<block::Unique> {
     let mut held = Vec::new();
     let mut len = pool.largest();
     while len > 0 {
@@ -1215,7 +1231,7 @@ fn names_each_error() {
         ),
         (
             Error::Open { length: 70_000 },
-            "the open of the read has 70000 bytes, over the 65536 that a read holds",
+            "the open has 70000 bytes, over the 65536 that an open holds",
         ),
         (
             Error::Message(wire::hub::client::Error::Repeated {

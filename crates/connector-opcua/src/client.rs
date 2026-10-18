@@ -4,7 +4,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::ffi::{CStr, c_void};
+use std::ffi::{CStr, CString, c_void};
 use std::future;
 use std::mem;
 use std::num::NonZeroUsize;
@@ -34,7 +34,17 @@ pub(crate) mod tests;
 use service::{Bytes, Item, Request, Sizes};
 
 /// The most requests of a client in flight. A request past it waits until one ends.
-const READS: u16 = 16;
+const READS: u16 = 9;
+
+/// The most intermediate chunks that a client queues across its answers: each of
+/// [`READS`] answers waits for its final chunk with at most [`CHUNKS`] - 1 chunks. A
+/// chunk past it closes the channel.
+const QUEUED: u32 = READS as u32 * (CHUNKS - 1);
+
+const _: () = assert!(
+    QUEUED <= 63,
+    "OPCUA READ bounds the queue of a channel at 63 chunks of 64 KiB, about 4 MiB"
+);
 
 /// The most time with no read that [`Client::idle`] waits before it checks the
 /// connection.
@@ -48,10 +58,6 @@ const STATE: Node = Node {
 
 /// The most time that [`Client::close`] waits for the server.
 pub(crate) const GRACE: Span = Span::SECOND;
-
-/// The bytes of the headers of a chunk with the security mode None: the message header
-/// (8), the channel (4), the token (4), and the sequence header (8).
-const HEADER: usize = 24;
 
 /// The most bytes that open62541 leaves empty at the end of a chunk of a Read but the
 /// last. It moves a value of a fixed size whole to the next chunk and splits a string,
@@ -67,6 +73,23 @@ const _: () = assert!(
     READS as usize * CHUNKS as usize <= SENDS / 2,
     "the other half of the sends of a connection is for the requests of open62541"
 );
+
+/// Gives a client of open62541 on the loop `el` with no connection. It takes at most
+/// [`CHUNKS`] chunks in a message and queues at most [`QUEUED`] intermediate chunks.
+///
+/// # Safety
+///
+/// `el` is a live loop that outlives the client.
+///
+/// # Aborts
+///
+/// When open62541 cannot allocate the client: the process stops as the Rust allocator
+/// does when it has no memory.
+pub(crate) unsafe fn unconnected(el: *mut ffi::EventLoop) -> NonNull<ffi::Client> {
+    // SAFETY: as the caller ensures.
+    let client = unsafe { ffi::shim_client_new(el, CHUNKS, QUEUED) };
+    NonNull::new(client).unwrap_or_else(|| alloc::exhausted())
+}
 
 /// A client of open62541 with an active session, on its own loop and connection
 /// manager, on the thread that made it. Its loop runs only in its calls, so a client
@@ -104,8 +127,8 @@ pub(crate) struct Client {
     /// The bounds of the server on a Browse and a Translate, once
     /// [`Client::describe`] reads them.
     bounds: Option<browse::Bounds>,
-    /// The endpoint of the last [`Client::open`], which each failed server call names.
-    address: String,
+    /// The endpoint that [`Client::open`] connects to, which each failure names.
+    url: CString,
     /// Drops after `raw` is deleted, as it holds the loop of the client.
     connections: Manager,
 }
@@ -150,10 +173,11 @@ struct Slots {
 }
 
 impl Client {
-    /// Makes a client on its own manager over `time`, `net`, and `rng`, and connects
-    /// it to the server at the endpoint `url` with the security mode `None` and an
-    /// anonymous session. It gives the client once the session is active and it has
-    /// read the `MaxNodesPerRead` of the server, or `None` when `until` ends first.
+    /// Makes a client on its own manager over `time`, `span`, `net`, and `rng`, as
+    /// [`Manager::new`] does, and connects it to the server at the endpoint `url` with
+    /// the security mode `None` and an anonymous session. It gives the client once the
+    /// session is active and it has read the `MaxNodesPerRead` of the server, or `None`
+    /// when `until` ends first.
     /// After an error, or when `until` ends first, it closes the session that the
     /// connect made, as [`Client::close`] does, so it ends within [`GRACE`] of either.
     /// A drop of the future drops the client.
@@ -172,14 +196,15 @@ impl Client {
     /// client, as [`alloc::exhausted`] says.
     pub(crate) async fn connect(
         time: Time,
+        span: tracing::Span,
         net: Net,
         rng: &mut Rng,
         url: &CStr,
         until: impl Future<Output = ()>,
     ) -> Result<Option<Self>, Status> {
-        let mut client = Self::new(time, net, rng);
+        let mut client = Self::new(time, span, net, rng, url.to_owned());
         let opened = {
-            let (mut until, mut open) = (pin!(until), pin!(client.open(url)));
+            let (mut until, mut open) = (pin!(until), pin!(client.open()));
             // The first poll of `open` starts the loop, which the close drives.
             future::poll_fn(|cx| {
                 if let Poll::Ready(opened) = open.as_mut().poll(cx) {
@@ -202,34 +227,38 @@ impl Client {
         }
     }
 
-    /// Makes a client on its own manager over `time`, `net`, and `rng`, with no
-    /// connection.
+    /// Makes a client of `url` on its own manager over `time`, `span`, `net`, and
+    /// `rng`, with no connection.
     ///
     /// # Aborts
     ///
     /// As [`Client::connect`].
-    fn new(time: Time, net: Net, rng: &mut Rng) -> Self {
+    fn new(
+        time: Time,
+        span: tracing::Span,
+        net: Net,
+        rng: &mut Rng,
+        url: CString,
+    ) -> Self {
         let clock = Clock::clone(&time.clock);
-        let connections = Manager::new(time, net, rng);
+        let connections = Manager::new(time, span, net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
-        let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
-        let Some(raw) = NonNull::new(raw) else {
-            alloc::exhausted()
-        };
+        let raw = unsafe { unconnected(connections.events().raw()) };
         // SAFETY: `raw` is a new client of the loop of `connections`.
-        unsafe { Self::of(clock, connections, raw) }
+        unsafe { Self::of(clock, connections, raw, url) }
     }
 
     /// The client of `raw`, as [`Client::new`] gives it.
     ///
     /// # Safety
     ///
-    /// `raw` comes from `shim_client_new` on the loop of `connections`, has not
+    /// `raw` comes from [`unconnected`] on the loop of `connections`, has not
     /// connected, and nothing else owns it: the client frees it.
     unsafe fn of(
         clock: Clock,
         connections: Manager,
         raw: NonNull<ffi::Client>,
+        url: CString,
     ) -> Self {
         // SAFETY: the client lives.
         let timeout_ms = unsafe { ffi::shim_client_timeout(raw.as_ptr()) };
@@ -247,25 +276,24 @@ impl Client {
             key: Rc::default(),
             supertypes: BTreeMap::new(),
             bounds: None,
-            address: String::new(),
+            url,
             connections,
         }
     }
 
-    /// The endpoint that the client connected to.
-    pub(crate) fn address(&self) -> &str {
-        &self.address
+    /// The endpoint that the client connects to.
+    pub(crate) fn url(&self) -> &CStr {
+        &self.url
     }
 
-    /// Connects the new client to `url`, as [`Client::connect`] does. The client holds
-    /// the state of the connect, so the future can drop at any point, and
+    /// Connects the new client to its URL, as [`Client::connect`] does. The client
+    /// holds the state of the connect, so the future can drop at any point, and
     /// [`Client::close`] then closes the session that it made.
-    async fn open(&mut self, url: &CStr) -> Result<(), Status> {
-        self.address = url.to_string_lossy().into_owned();
+    async fn open(&mut self) -> Result<(), Status> {
         let deadline = self.clock.now() + self.timeout;
         // SAFETY: the client lives, and copies the URL. The drive reads the status that
         // it gives from the state of the client.
-        unsafe { ffi::UA_Client_connectAsync(self.raw.as_ptr(), url.as_ptr()) };
+        unsafe { ffi::UA_Client_connectAsync(self.raw.as_ptr(), self.url.as_ptr()) };
         let connected = self
             .connections
             .drive_until(Some(deadline), |_| {
@@ -314,9 +342,10 @@ impl Client {
     /// alone. Each request takes the next nodes in order while it has at most the
     /// `MaxNodesPerRead` of the server, and while it and a good answer with each field
     /// of a Double, the largest scalar, for each of its nodes fit one message of the
-    /// session: its chunk size times the smaller of [`CHUNKS`] and the
-    /// `MaxChunkCount` of the server, less 7 bytes at the end of each chunk but the
-    /// last, or the `MaxMessageSize` of the server when that is smaller.
+    /// session: the bytes of a chunk past its headers, signature, and padding times the
+    /// smaller of [`CHUNKS`] and the `MaxChunkCount` of the server, less 7 bytes at the
+    /// end of each chunk but the last, or the `MaxMessageSize` of the server when that
+    /// is smaller.
     ///
     /// A node whose request alone, or its answer, does not fit one message is in no
     /// request, and is in [`Nodes::large`].
@@ -678,17 +707,17 @@ fn limit(value: &Result<Value, Fault>) -> Option<NonZeroUsize> {
     }
 }
 
-/// Gives the most bytes of the body of one message of a Read in chunks of `buffer`
-/// bytes, with the `MaxMessageSize` `message` and the `MaxChunkCount` `chunks` of the
-/// server, each 0 for none.
-fn most(buffer: usize, message: usize, chunks: usize) -> usize {
+/// Gives the most bytes of the body of one message of a Read in chunks that each hold
+/// `payload` bytes of it, with the `MaxMessageSize` `message` and the `MaxChunkCount`
+/// `chunks` of the server, each 0 for none.
+fn most(payload: usize, message: usize, chunks: usize) -> usize {
     let local = usize::try_from(CHUNKS).expect("invariant: a usize holds CHUNKS");
     let chunks = if chunks == 0 {
         local
     } else {
         chunks.min(local)
     };
-    let most = chunks * (buffer - HEADER) - (chunks - 1) * SPLIT;
+    let most = chunks * payload - (chunks - 1) * SPLIT;
     if message == 0 {
         most
     } else {

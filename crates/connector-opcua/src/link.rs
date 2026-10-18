@@ -66,7 +66,7 @@ const FILE_STORES: &[&str] = if cfg!(any(target_os = "linux", windows)) {
 const CHILD: &str = "CONNECTOR_OPCUA_REFUSED";
 
 /// Makes the call that `CHILD` names, and does nothing when it is not set.
-/// `each_refused_call_prints_its_name_and_aborts` sets it in a child process.
+/// `each_refused_call_panics_once_with_its_name_and_aborts` sets it in a child process.
 #[test]
 fn call_refused() {
     #[expect(
@@ -158,7 +158,11 @@ fn call_policy(name: &str) -> ! {
 fn call_member(name: &str) -> ! {
     let mut sim = sim::Sim::new(sim::Config::default());
     let clock = sim.node(sim::node::Config::default()).clock();
-    let events = Loop::new(event::Time::monotonic(clock), &mut Rng::from_seed(0));
+    let events = Loop::new(
+        event::Time::monotonic(clock),
+        tracing::Span::none(),
+        &mut Rng::from_seed(0),
+    );
     let (members, raw, none) = (events.members(), events.raw(), std::ptr::null_mut());
     let status = match name {
         "UA_EventLoop.stop" => {
@@ -182,11 +186,12 @@ fn call_member(name: &str) -> ! {
 }
 
 #[test]
-fn each_refused_call_prints_its_name_and_aborts() {
+fn each_refused_call_panics_once_with_its_name_and_aborts() {
     for name in REFUSED.iter().chain(FILE_STORES) {
-        let line =
-            format!("connector-opcua: open62541 called {name}, which is not built\n");
-        crate::child::aborted_in_c("link::call_refused", &[(CHILD, name)], &line);
+        assert_eq!(
+            crate::child::panicked("link::call_refused", &[(CHILD, name)]),
+            [format!("open62541 called {name}, which is not built")]
+        );
     }
 }
 
@@ -209,15 +214,13 @@ fn shim_compiler() -> cc::Tool {
         .get_compiler()
 }
 
-/// Gives each pragma of `file` of `src/` after the preprocessor, which joins split
+/// Gives each pragma of the C file at `path` after the preprocessor, which joins split
 /// lines and expands `_Pragma`.
-fn shim_pragmas(file: &str) -> Vec<String> {
-    // Not `src()`, whose `\\?\` prefix on Windows GCC does not open.
-    let path = std::path::Path::new(ROOT).join("src").join(file);
+fn shim_pragmas(path: &std::path::Path) -> Vec<String> {
     let output = shim_compiler()
         .to_command()
         .arg("-E")
-        .arg(&path)
+        .arg(path)
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
@@ -283,23 +286,25 @@ fn the_pragma_check_reads_a_file_whose_path_is_not_ascii() {
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("pragma.c");
     std::fs::write(&file, "#pragma GCC diagnostic push\nint x;\n").unwrap();
-    assert_eq!(
-        shim_pragmas(file.to_str().unwrap()),
-        ["#pragma GCC diagnostic push"]
-    );
+    assert_eq!(shim_pragmas(&file), ["#pragma GCC diagnostic push"]);
 }
+
+/// The test of the pragmas of the shim, which the tests of its compiler run in a child.
+const PRAGMAS: &str =
+    "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
 
 #[test]
 fn the_shim_ignores_only_the_unused_parameters_of_the_headers() {
     // `cc` reads C flags from the environment, and `-w` there hides each warning.
     if !crate::child::running() {
-        let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
-        crate::child::run(name, &[]);
+        crate::child::run(PRAGMAS, &[]);
         return;
     }
     for file in ["shim.c", "server.c"] {
+        // Not `src()`, whose `\\?\` prefix on Windows GCC does not open.
+        let path = std::path::Path::new(ROOT).join("src").join(file);
         assert_eq!(
-            shim_pragmas(file),
+            shim_pragmas(&path),
             [
                 "#pragma GCC diagnostic push",
                 "#pragma GCC diagnostic ignored \"-Wunused-parameter\"",
@@ -338,9 +343,8 @@ fn the_shim_ignores_only_the_unused_parameters_of_the_headers() {
 
 #[test]
 fn the_shim_check_ignores_the_environment_of_cc() {
-    let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
     let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", name])
+        .args(["--exact", PRAGMAS])
         .env("CC", "cc -w")
         .env("CFLAGS", "-w")
         .env("CRATE_CC_NO_DEFAULTS", "1")
@@ -356,37 +360,38 @@ fn the_shim_check_ignores_the_environment_of_cc() {
 #[test]
 #[cfg(unix)]
 fn the_shim_check_finds_a_cc_relative_to_the_crate() {
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::Path;
-    let cc = Path::new(env!("OUT_DIR")).join("relative-cc");
-    std::fs::write(&cc, "#!/bin/sh\nexec cc \"$@\"\n").unwrap();
-    std::fs::set_permissions(&cc, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let cc = script_cc("relative-cc", "exec cc \"$@\"\n");
     let (root, cc) = (root(), cc.canonicalize().unwrap());
     let common = root.ancestors().find(|dir| cc.starts_with(dir)).unwrap();
     let up = "../".repeat(root.strip_prefix(common).unwrap().components().count());
     let relative = format!("{up}{}", cc.strip_prefix(common).unwrap().display());
-    let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
-    crate::child::run(name, &[("CC", &relative)]);
+    crate::child::run(PRAGMAS, &[("CC", &relative)]);
 }
 
 #[test]
 #[cfg(unix)]
 fn the_shim_check_writes_no_file() {
     // Tests that run at the same time would share the file, and GCC writes it in place.
+    let script = "for arg; do\n  [ \"$last\" = -o ] && [ \"$arg\" != - ] && exit 1\n  \
+                  last=$arg\ndone\nexec cc \"$@\"\n";
+    let cc = script_cc("stdout-cc", script);
+    crate::child::run(PRAGMAS, &[("CC", cc.to_str().unwrap())]);
+}
+
+/// Writes the shell script `body` as the program `name` of `OUT_DIR`, a CC for the
+/// tests of the shim check, and gives its path.
+#[cfg(unix)]
+fn script_cc(name: &str, body: &str) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
-    let cc = std::path::Path::new(env!("OUT_DIR")).join("stdout-cc");
-    let script = "#!/bin/sh\nfor arg; do\n  [ \"$last\" = -o ] && [ \"$arg\" != - ] && \
-                  exit 1\n  last=$arg\ndone\nexec cc \"$@\"\n";
-    std::fs::write(&cc, script).unwrap();
+    let cc = std::path::Path::new(env!("OUT_DIR")).join(name);
+    std::fs::write(&cc, format!("#!/bin/sh\n{body}")).unwrap();
     std::fs::set_permissions(&cc, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
-    crate::child::run(name, &[("CC", cc.to_str().unwrap())]);
+    cc
 }
 
 #[test]
 fn the_shim_check_uses_the_compiler_of_cc() {
-    let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
-    let output = crate::child::output(name, &[("CC", "/missing/gcc")]);
+    let output = crate::child::output(PRAGMAS, &[("CC", "/missing/gcc")]);
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("kind: NotFound"), "{stdout}");
 }
@@ -415,59 +420,121 @@ fn the_copy_links_the_timer() {
 }
 
 /// Each symbol outside the copy, `shim.c`, `server.c`, and the libcrypto ([`PREFIX`])
-/// that they may name in glibc, other than [`PLUGINS`]: on x86-64 with GCC or Clang at
-/// each optimization level, and on 64-bit Arm with Clang at `-O2` and
-/// `-moutline-atomics`.
-const OUTSIDE: [&str; 41] = [
-    "_GLOBAL_OFFSET_TABLE_",
-    "__ctype_b_loc",
-    "__errno_location",
-    "__fprintf_chk",
-    "__memcpy_chk",
-    "__memmove_chk",
-    "__memset_chk",
-    "__printf_chk",
-    "__sprintf_chk",
-    "__stack_chk_fail",
-    "__stack_chk_guard",
-    "__syslog_chk",
-    "__tls_get_addr",
-    "abort",
-    "access",
-    "bcmp",
-    "connector_opcua_calloc",
-    "connector_opcua_free",
-    "connector_opcua_malloc",
-    "connector_opcua_realloc",
-    "fflush",
-    "fprintf",
-    "fputs",
-    "fwrite",
-    "memcmp",
-    "memcpy",
-    "memmove",
-    "memset",
-    "printf",
-    "puts",
-    "sprintf",
-    "stderr",
-    "stdout",
-    "strcmp",
-    "strlen",
-    "strncmp",
-    "strncpy",
-    "strtod",
-    "strtok_r",
-    "syslog",
-    "write",
-];
+/// that they may name in the libc of the target, other than [`PLUGINS`]. In glibc: on
+/// x86-64 with GCC or Clang at each optimization level, and on 64-bit Arm with Clang
+/// at `-O2` and `-moutline-atomics`. In the libc of macOS: on 64-bit Arm and x86-64
+/// with Apple Clang at each optimization level. Empty on another OS, so the tests fail
+/// there until it has its list.
+const OUTSIDE: &[&str] = if cfg!(target_os = "macos") {
+    &[
+        "___chkstk_darwin",
+        "__bzero",
+        "__chkstk_darwin",
+        "__error",
+        "__memcpy_chk",
+        "__memmove_chk",
+        "__memset_chk",
+        "__sprintf_chk",
+        "__stack_chk_fail",
+        "__stack_chk_guard",
+        "__stderrp",
+        "__stdoutp",
+        "__strncpy_chk",
+        "_tlv_bootstrap",
+        "abort",
+        "access",
+        "bzero",
+        "connector_opcua_admit",
+        "connector_opcua_calloc",
+        "connector_opcua_die",
+        "connector_opcua_free",
+        "connector_opcua_malloc",
+        "connector_opcua_put_line",
+        "connector_opcua_realloc",
+        "fflush",
+        "fprintf",
+        "fputs",
+        "isdigit",
+        "memcmp",
+        "memcpy",
+        "memmove",
+        "memset",
+        "printf",
+        "puts",
+        "sprintf",
+        "strcmp",
+        "strlen",
+        "strncmp",
+        "strncpy",
+        "strtod",
+        "strtok_r",
+    ]
+} else if cfg!(target_os = "linux") {
+    &[
+        "_GLOBAL_OFFSET_TABLE_",
+        "__ctype_b_loc",
+        "__errno_location",
+        "__fprintf_chk",
+        "__memcpy_chk",
+        "__memmove_chk",
+        "__memset_chk",
+        "__printf_chk",
+        "__sprintf_chk",
+        "__stack_chk_fail",
+        "__stack_chk_guard",
+        "__syslog_chk",
+        "__tls_get_addr",
+        "abort",
+        "access",
+        "bcmp",
+        "connector_opcua_admit",
+        "connector_opcua_calloc",
+        "connector_opcua_die",
+        "connector_opcua_free",
+        "connector_opcua_malloc",
+        "connector_opcua_put_line",
+        "connector_opcua_realloc",
+        "fflush",
+        "fprintf",
+        "fputs",
+        "fwrite",
+        "memcmp",
+        "memcpy",
+        "memmove",
+        "memset",
+        "printf",
+        "puts",
+        "sprintf",
+        "stderr",
+        "stdout",
+        "strcmp",
+        "strlen",
+        "strncmp",
+        "strncpy",
+        "strtod",
+        "strtok_r",
+        "syslog",
+    ]
+} else {
+    &[]
+};
+
+/// The symbol of `stdin` in the libc of the target. Empty on another OS, so the tests
+/// fail there until it has its name.
+const STDIN: &str = if cfg!(target_os = "macos") {
+    "__stdinp"
+} else if cfg!(target_os = "linux") {
+    "stdin"
+} else {
+    ""
+};
 
 /// The symbols from outside the copy that only one file of it may name, by that file:
 /// `fgets` and `stdin` of `readPrivateKeyPassword`. Each is a call of the source, not
 /// a name that the compiler makes, so the object of its file names it at each
 /// optimization level.
 const PLUGINS: [(&str, &[&str]); 1] =
-    [("plugins/ua_config_default.c", &["fgets", "stdin"])];
+    [("plugins/ua_config_default.c", &["fgets", STDIN])];
 
 /// The names of [`PLUGINS`] that `object` may name.
 fn plugins(object: &str) -> &'static [&'static str] {
@@ -493,7 +560,7 @@ fn stem(path: &str) -> &str {
 fn plugins_admits_each_name_only_in_the_object_of_its_file() {
     assert_eq!(
         plugins("80e9fda3d50fc3d4-ua_config_default.o"),
-        ["fgets", "stdin"]
+        ["fgets", STDIN]
     );
     for object in [
         "80e9fda3d50fc3d4-ua_client.o",
@@ -564,9 +631,18 @@ fn sanitizer_names_only_the_runtimes() {
     }
 }
 
-/// The symbols that `nm` with `flag` gives for each object of `files`, by the name of
-/// the object: its name in an archive, or else the name of its file. No path of
-/// `files` may hold `": "`.
+/// The prefix that the object format of the target puts before each C name: Mach-O
+/// puts `_`.
+const MANGLE: &str = if cfg!(target_vendor = "apple") {
+    "_"
+} else {
+    ""
+};
+
+/// The C names that `nm` with `flag` gives for each object of `files`, by the name of
+/// the object: its name in an archive, or else the name of its file. A name without
+/// [`MANGLE`] stays as `nm` gives it. Each of `files` is an object of the target, and
+/// no path of `files` may hold `": "`.
 fn objects(
     files: &[std::path::PathBuf],
     flag: &str,
@@ -589,6 +665,7 @@ fn objects(
             None => file.rsplit('/').next().unwrap(),
         };
         let name = rest.split_whitespace().next().unwrap();
+        let name = name.strip_prefix(MANGLE).unwrap_or(name);
         objects
             .entry(object.to_owned())
             .or_default()
@@ -676,23 +753,28 @@ fn unlisted_gives_each_name_that_no_list_admits_by_its_object() {
     let defined = ["UA_Client_new".to_owned()].into();
     let crypto = format!("{PREFIX}EVP_sha256");
     let undefined = create_undefined(&[
-        (
-            "1-ua_config_default.o",
-            &["fgets", "stdin", "UA_Client_new"],
-        ),
+        ("1-ua_config_default.o", &["fgets", STDIN, "UA_Client_new"]),
         (
             "2-ua_client.o",
             &["fgets", "malloc", "memcpy", "__asan_report"],
         ),
-        ("3-shim.o", &["connector_opcua_malloc", &crypto, "stdin"]),
+        ("3-shim.o", &["connector_opcua_malloc", &crypto, STDIN]),
     ]);
+    let mut expected: Vec<_> = [
+        ("2-ua_client.o", "fgets"),
+        ("2-ua_client.o", "malloc"),
+        ("2-ua_client.o", "memcpy"),
+        ("3-shim.o", "connector_opcua_malloc"),
+        ("3-shim.o", STDIN),
+    ]
+    .into_iter()
+    .filter(|(_, name)| !OUTSIDE.contains(name))
+    .map(|(object, name)| format!("{object}: {name}"))
+    .collect();
+    expected.sort();
     assert_eq!(
         unlisted(&defined, &undefined, |name| name.starts_with("__asan")),
-        [
-            "2-ua_client.o: fgets",
-            "2-ua_client.o: malloc",
-            "3-shim.o: stdin"
-        ]
+        expected
     );
 }
 
@@ -701,7 +783,7 @@ fn unlisted_gives_each_name_that_no_list_admits_by_its_object() {
 fn unlisted_panics_when_no_object_names_the_allocator() {
     unlisted(
         &[].into(),
-        &create_undefined(&[("1-ua_config_default.o", &["fgets", "stdin"])]),
+        &create_undefined(&[("1-ua_config_default.o", &["fgets", STDIN])]),
         |_| false,
     );
 }
@@ -737,9 +819,9 @@ fn unlisted_panics_when_two_objects_have_a_file_of_plugins() {
         &create_undefined(&[
             (
                 "1-ua_config_default.o",
-                &["connector_opcua_malloc", "fgets", "stdin"],
+                &["connector_opcua_malloc", "fgets", STDIN],
             ),
-            ("2-ua_config_default.o", &["fgets", "stdin"]),
+            ("2-ua_config_default.o", &["fgets", STDIN]),
         ]),
         |_| false,
     );
@@ -1066,7 +1148,7 @@ fn the_scan_names_only_the_files_outside_tests() {
         named_in(&src().join("ffi.rs"), client),
     ]
     .concat();
-    assert_eq!(found.len(), 3, "{found:?}");
+    assert_eq!(found.len(), 2, "{found:?}");
     assert_eq!(named, found);
 }
 
@@ -1499,7 +1581,7 @@ fn the_production_scan_reads_the_c_but_the_server_file() {
 /// `UA_Client_new` gives a client the stdout logger, whose `UA_Log_Stdout_log`
 /// `cargo xtask open62541` lets call the global clock. The production code names
 /// neither `UA_Client_new` nor a `UA_Log_Stdout` function. `shim_client_new` gives a
-/// client the logger of its loop, and the stderr tests of `event` check that.
+/// client the logger of its loop, and the log tests of `event` check that.
 #[test]
 fn the_production_code_gives_no_client_the_stdout_logger() {
     let named = named_in_production(&root(), |name| {
@@ -1510,8 +1592,8 @@ fn the_production_code_gives_no_client_the_stdout_logger() {
 
 /// `cargo xtask open62541` lets `interruptServer` and `UA_random_seed` call the global
 /// clock. The C builds with `-ffunction-sections`, and Rust links with
-/// `--gc-sections`, so this test binary keeps only the functions that the tests reach,
-/// and the test server reaches neither.
+/// `--gc-sections` (`-dead_strip` on macOS), so this test binary keeps only the
+/// functions that the tests reach, and the test server reaches neither.
 #[test]
 fn the_tests_reach_neither_interrupt_server_nor_random_seed() {
     let kept = names(&[std::env::current_exe().unwrap()], "--defined-only");
@@ -1562,11 +1644,11 @@ fn stub(line: &str) -> Option<&str> {
         .or_else(named)
 }
 
-/// Checks the reasons of the clock keys of `encryptUserIdentityTokenEcc` and
-/// `openSSL_verifyChain` in `cargo xtask open62541`: the default config of a client
-/// has only the policy `None`, and the production code names no security policy, no
-/// certificate group, no certificate function, and no function that adds one, other
-/// than at the stubs of `shim.c` that abort.
+/// Checks the reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
+/// open62541`: the default config of a client has only the policy `None`, and the
+/// production code names no security policy, no certificate group, no certificate
+/// function, and no function that adds one, other than at the stubs of `shim.c` that
+/// abort.
 #[test]
 fn the_production_code_gives_a_client_no_security_policy() {
     let policy = |name: &str| {
@@ -1625,6 +1707,11 @@ fn the_c_and_cfg_asan_follow_the_address_sanitizer_of_the_rust() {
 /// so the test finds the names that the code generation for Arm adds, not the names of
 /// a branch of the source for Arm only.
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "only Linux: the code of a 64-bit Arm Linux build is the copy as the \
+              headers of Linux expand it"
+)]
 fn the_c_on_64_bit_arm_names_only_the_listed_symbols_outside_it() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let copy = root.join("../../patches/open62541");

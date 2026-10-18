@@ -22,6 +22,8 @@ use http::Request;
 use types::quality::Quality;
 use types::time::{Monotonic, Span, Stamp};
 
+use crate::common::{UNPICKED, unpicked};
+
 /// The options of each stream that a simulated server accepts.
 const OPTIONS: Options = Options {
     send_buffer_bytes: 1 << 16,
@@ -104,10 +106,10 @@ pub(super) struct Sample {
 }
 
 impl Opcua {
-    /// Serves on a free loopback port, and gives the address: the node ids of
-    /// [`super::VARIABLES`], each at a first value until [`Opcua::change`].
+    /// Serves on a free loopback port of [`UNPICKED`], and gives the address: the node
+    /// ids of [`super::VARIABLES`], each at a first value until [`Opcua::change`].
     pub(super) fn serve(&mut self) -> SocketAddr {
-        let listener = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
+        let listener = unpicked(listen_free);
         let address = listener.local();
         let (variables, clock, zero) = (
             Variables::clone(&self.variables),
@@ -119,8 +121,8 @@ impl Opcua {
             let net = os::net();
             let read = clock.clone();
             let now = move || wall(zero, read.now());
-            let until = token.wait();
-            serve(clock, now, net, listener, &mut rng, &variables, until).await;
+            let served = serve(clock, now, net, listener, &mut rng, &variables, token);
+            served.await.expect("the listener does not fail");
         });
         self.server = Some(server);
         address
@@ -135,6 +137,11 @@ impl Opcua {
         )]
         let sleep = std::thread::sleep;
         pace(ticks, &self.clock, sleep, || self.variables.change(quality));
+    }
+
+    /// The time of the server now, on the scale of [`Opcua::served`].
+    pub(super) fn now(&self) -> Stamp {
+        wall(self.zero, self.clock.now())
     }
 
     /// Each read that the server answered, by node id, in order: the value and status
@@ -160,10 +167,16 @@ impl Influx {
         }
     }
 
-    /// Serves, and gives the address: a free loopback port at the first call, and the
-    /// same port after [`Influx::stop`]. What it stored stays across a stop.
+    /// Serves, and gives the address: a free loopback port of [`UNPICKED`] at the first
+    /// call, and the same port after [`Influx::stop`]. What it stored stays across a
+    /// stop.
     pub(super) fn serve(&mut self) -> SocketAddr {
-        let listener = listen(self.address.unwrap_or((Ipv4Addr::LOCALHOST, 0).into()));
+        let listener = match self.address {
+            Some(address) => {
+                listen(address).expect("listen on the port of the first serve")
+            }
+            None => unpicked(listen_free),
+        };
         let address = listener.local();
         self.address = Some(address);
         let (store, taken) = (Arc::clone(&self.store), self.token.clone());
@@ -282,14 +295,23 @@ fn wait(start: Monotonic, tick: usize, now: Monotonic) -> Duration {
 }
 
 /// Listens on `local`, with the options of each simulated server.
-fn listen(local: SocketAddr) -> Listener {
+fn listen(local: SocketAddr) -> Result<Listener, Error> {
     let listen = Listen {
         local,
         backlog: 128,
         options: OPTIONS,
     };
-    (os::net().listen(&listen))
-        .unwrap_or_else(|error| panic!("listen on {local}: {error}"))
+    os::net().listen(&listen)
+}
+
+/// Listens on `local` when no socket serves it. On macOS, a listen on loopback takes a
+/// port that another process serves on each address.
+fn listen_free(local: SocketAddr) -> Result<Listener, Error> {
+    match connect(local) {
+        None => Err(Error::AddressInUse { local }),
+        Some(Error::Refused { .. }) => listen(local),
+        Some(error) => Err(error),
+    }
 }
 
 /// Starts `main` on a new `os` shard named `name`.
@@ -332,8 +354,9 @@ fn write(address: SocketAddr, lines: &'static str) -> String {
 }
 
 /// Connects to `address` from a shard of its own, and gives the error of the connect,
-/// or `None` when it connects. On macOS, a child that a rig test spawns may hold the
-/// port (`os::net`), so only Linux checks a refusal.
+/// or `None` when it connects. On macOS, a child that another test spawns may hold the
+/// port (`os::net`), so a test that checks a refusal after a stop runs only on Linux.
+/// [`listen_free`] counts a held port as in use.
 fn connect(address: SocketAddr) -> Option<Error> {
     let (send, error) = mpsc::channel();
     let shard = start("connect", move |_| async move {
@@ -404,6 +427,37 @@ fn a_stopped_influx_refuses_and_serves_again_on_its_port_with_what_it_stored() {
     assert_eq!(influx.serve(), address);
     assert_eq!(write(address, "plant f=3 3"), "204 No Content");
     assert_eq!(times(&influx), [Stamp::from_nanos(1), Stamp::from_nanos(3)]);
+}
+
+#[test]
+fn a_served_influx_is_unpicked() {
+    let mut influx = Influx::default();
+    let port = influx.serve().port();
+    assert!(
+        UNPICKED.contains(&port),
+        "port {port} is not in {UNPICKED:?}"
+    );
+}
+
+#[test]
+fn a_served_opcua_is_unpicked() {
+    let mut opcua = Opcua::default();
+    let port = opcua.serve().port();
+    assert!(
+        UNPICKED.contains(&port),
+        "port {port} is not in {UNPICKED:?}"
+    );
+}
+
+#[test]
+fn a_port_that_a_listener_on_each_address_serves_is_in_use() {
+    let each = |at: SocketAddr| SocketAddr::from((Ipv4Addr::UNSPECIFIED, at.port()));
+    let held = unpicked(|at| listen(each(at)));
+    let local = SocketAddr::from((Ipv4Addr::LOCALHOST, held.local().port()));
+    assert_eq!(
+        listen_free(local).err(),
+        Some(Error::AddressInUse { local })
+    );
 }
 
 #[test]

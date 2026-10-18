@@ -71,41 +71,60 @@
   (500) points and ends `Limit` when one more matches, and looks at most at `VISITS` (10
   000) entries, also the entries that find the start, where a page with no entries
   counts as one (a server may give a continuation point with no references), then ends
-  `Budget`. With `Limit`, `import` says "More than `<limit>` points match, the most for
-  one import; narrow the pattern, or import in parts", not a count. It browses no folder
-  whose tag and pattern state are those of a folder that it holds open, so a loop in a
-  graph such as an OPC UA address space ends, and a path that a pattern names through a
-  loop still matches. A pattern ends `Budget` when it holds `DEPTH` (64) folders open,
-  its start with them, and a match can be under one more, so a chain of folders that a
-  server makes cannot hold the walk's memory. A kind gives each entry as a `Child`, with
-  its name and not its path, and the walk makes the path of each entry from its
-  folder's, so an entry holds one link of its own at any depth of the start, and the
-  walk holds at most `DEPTH` pages that the device sent. No path that the walk gives has
-  an empty name, and the record of each kind says what it gives for an empty name of its
-  device, so the text of each path parses. `walk` does not check that no two entries of
-  one folder have the same name: one level gives one page, so it never holds each name
-  of a folder. The record of each kind says how it names two entries of one folder that
-  the device gives the same name. When a kind breaks one of these rules of `Device`: a
-  page over `LIMIT`, an empty name, a count of values that is not the count of tags,
-  `walk` gives `Error::Config` with `connector.broken-browse`, whose message names the
-  rule, then what broke it, and the browse fails with no retry. It never panics: in
-  release a panic stops the node and each of its connectors. The browse operation of
-  `ops` adds the connector and its kind to each error of `Supervisor::browse`;
-  `Supervisor::browse` adds neither. `Kind::browse(ctx, query)` connects and gives
-  `walk` over the session, and gives `connector.no-browse` by default. `Kind::discover`
-  gives `connector.no-discover` by default, not an empty list, which says that the kind
-  looked and found none. Only the default is decided. Its signature is deferred to
-  #2851; trigger: the first kind that finds devices. `discover` for OPC UA is not in C1;
+  `Budget`. With `Limit`, `import` gives `ops.match-limit`, "more than `<limit>` points
+  match, the most for one import", with the fix "Narrow the start or the match", not a
+  count (IMPORT OP; `laptop.architect-2`, 2026-10-18T07:39:38Z:
+  https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247231298), which
+  supersedes "narrow the pattern, or import in parts". It browses no folder whose tag
+  and pattern state are those of a folder that it holds open, so a loop in a graph such
+  as an OPC UA address space ends, and a path that a pattern names through a loop still
+  matches. A pattern ends `Budget` when it holds `DEPTH` (64) folders open, its start
+  with them, and a match can be under one more, so a chain of folders that a server
+  makes cannot hold the walk's memory. A kind gives each entry as a `Child`, with its
+  name and not its path, and the walk makes the path of each entry from its folder's, so
+  an entry holds one link of its own at any depth of the start, and the walk holds at
+  most `DEPTH` pages that the device sent. No path that the walk gives has an empty
+  name, and the record of each kind says what it gives for an empty name of its device,
+  so the text of each path parses. `walk` does not check that no two entries of one
+  folder have the same name: one level gives one page, so it never holds each name of a
+  folder. The record of each kind says how it names two entries of one folder that the
+  device gives the same name. When a kind breaks one of these rules of `Device`: a page
+  over `LIMIT`, an empty name, a count of values that is not the count of tags, `walk`
+  gives `Error::Config` with `connector.broken-browse`, whose message names the rule,
+  then what broke it, and the browse fails with no retry. It never panics: in release a
+  panic stops the node and each of its connectors. The browse operation of `ops` adds
+  the connector and its kind to each error of `Supervisor::browse`; `Supervisor::browse`
+  adds neither. `Kind::browse(ctx, query)` connects and gives `walk` over the session,
+  and gives `connector.no-browse` by default. `Kind::discover` gives
+  `connector.no-discover` by default, not an empty list, which says that the kind looked
+  and found none. Only the default is decided. Its signature is deferred to #2851;
+  trigger: the first kind that finds devices. `discover` for OPC UA is not in C1;
   trigger: the person asks, or a kind that can find its devices (NI cards) is built
   (`laptop.architect-2`, 2026-10-15 17:32 UTC, parameter 5 of
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198270136).
   `Supervisor::browse(kind, config, query)` runs `Kind::browse` apart from any run of
   the connector, with the network, clock, randomness, and secrets of the supervisor; a
   kind reads only what it needs to reach the device, so a block with only `kind`,
-  `node`, and `address` browses. A kind reads mesh time with `browse::Context::time`,
-  which races `Hub::time` against `WAIT` (5 s) and gives `Error::Retry` with "the node
-  has no mesh time after 5s" at the bound, so a kind that reads no mesh time never
-  waits (`laptop.architect-2`, 2026-10-17T03:22:56Z:
+  `node`, and `address` browses. A supervisor runs at most 2 browses at once, since each
+  holds what its device gives. One more gives `Error::Retry` with "2 browses run, the
+  most at once" at once, not a wait, and the caller browses again; an unknown kind gives
+  `connector.unknown-kind` first, as a retry of it cannot succeed. A browse holds its
+  place from the first poll of its future until it returns or drops
+  (`laptop.architect-2`, 2026-10-18T03:45:21Z:
+  https://github.com/synnaxlabs/foundation/issues/2981#issuecomment-6245320764). A place
+  has no time bound of its own; #3125 ends a walk at a deadline. The bound is 2 in place
+  of 4, as `laptop.monitor` asked (`laptop.architect-2`, 2026-10-18T03:39:44Z:
+  https://github.com/synnaxlabs/foundation/issues/2981#issuecomment-6245278357; its 32
+  MiB is withdrawn, 6245419401), and it states no bytes: a whole browse has no byte
+  bound yet (#3124). The text is of `laptop.architect-2`, 2026-10-18T03:58:18Z and
+  04:03:07Z: https://github.com/synnaxlabs/foundation/pull/3122#issuecomment-6245419401
+  and https://github.com/synnaxlabs/foundation/pull/3122#issuecomment-6245457104, the
+  call that holds (`laptop.monitor`, 2026-10-18T04:06:56Z:
+  https://github.com/synnaxlabs/foundation/pull/3122#issuecomment-6245488696). A kind
+  reads mesh time with `browse::Context::time`, which races `Hub::time` against `WAIT`
+  (5 s) and gives `Error::Retry` with "the node has no mesh time after 5s" at the bound,
+  so a kind that reads no mesh time never waits (`laptop.architect-2`,
+  2026-10-17T03:22:56Z:
   https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6228993285).
   `browse::Context` and `kind::Context` stay two types: each input that both give is a
   read of a field or one call, and `secret` is one function. Trigger to make them one:
@@ -212,3 +231,17 @@
   `plan` reads secrets through `Supervisor::secrets`: `laptop.architect-2`,
   2026-10-17 05:40 UTC
   (https://github.com/synnaxlabs/foundation/pull/2999#issuecomment-6230284696).
+  The operation `browse` of `ops` runs `Supervisor::browse` on the node of the
+  connector, for the command line with `--json` and for the MCP tool `browse`. Its
+  checks, its five codes, its JSON, and its text are in OPS OUTPUT. A browse needs
+  `apply`, then `admin`, on the name of the connector, the right to open a session to
+  the device with its secrets, which a remote `plan` also needs to read the sources of
+  the block. The refusal is `ops.denied` and names the right that is missing (kind (b),
+  sent to `laptop.monitor` at 2026-10-17T22:57:51Z,
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6242684265; it goes
+  ahead unless the person objects; approved by `laptop.architect-2`,
+  2026-10-17T23:06:39Z,
+  https://github.com/synnaxlabs/foundation/pull/3079#issuecomment-6242836290). The JSON
+  gives `unit` and `unit_code` as two fields, each `null` when the device cannot know
+  it, as `Facts` holds them (`laptop.architect-2`, 2026-10-17T05:14:44Z, item 2 of
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6230042870).

@@ -195,20 +195,30 @@
   The first poll of a UDP half binds it to its thread, whatever its result. A failed
   `dup` or registration gives `Io` for that poll alone, and the next poll tries again;
   nothing stores a failure. For a source that is not local or is of the other family,
-  `os` gives the kernel's answer (on Linux, `Unreachable` or `Io { code: 22 }`), and
-  `sim` gives `Io { code: 99 }`. For port 0, `os` gives the kernel's answer. Such a
-  transmit changes no state of the socket (`laptop.architect-2`, 2026-10-08 21:15 UTC,
+  `os` gives the kernel's answer (on Linux, `Unreachable` or `Io { code: 22 }`). For
+  port 0, `os` gives the kernel's answer. Such a transmit changes no state of the
+  socket (`laptop.architect-2`, 2026-10-08 21:15 UTC,
   https://github.com/synnaxlabs/foundation/issues/1972#issuecomment-6069193130).
   Decided by `laptop.architect-2` (2026-10-08 18:56 and 19:02 UTC, #1965,
   https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6066909518,
   https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6067014743).
   Supersedes "or the errno" of item 2 of
   https://github.com/synnaxlabs/foundation/issues/119#issuecomment-6066429541: a
-  failure is not stored. One exception: `os` gives `Io { code: 22 }` for each IPv6
-  source on an IPv4 socket, mapped too, for an IPv6 source that is not mapped with an
-  IPv4 destination, and for an unspecified source in any form. Linux skips the
-  `IPV6_PKTINFO` of the first, macOS skips that of the second, and Linux reads the
-  third as no source; each then sends from an address of its choice. Decided by
+  failure is not stored. Amended (2026-10-18, #3185): for such a source, `sim` gives
+  the codes that SIM NETWORK states (`laptop.architect-2`, 2026-10-18T12:49:45Z,
+  https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6250115373).
+  Supersedes "`sim` gives `Io { code: 99 }`" of
+  https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6066909518 and
+  "`sim` stays at 99" of item 2 of
+  https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6067014743, but for
+  a unicast IPv4 source that is not on the node, to an IPv4 destination, which keeps
+  code 99 (#3187; `laptop.architect-2`, 2026-10-18T13:31:33Z,
+  https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6250512376). One
+  exception: `os` gives `Io { code: 22 }` for each IPv6 source on an IPv4 socket,
+  mapped too, for an IPv6 source that is not mapped with an IPv4 destination, and for
+  an unspecified source in any form. Linux skips the `IPV6_PKTINFO` of the first,
+  macOS skips that of the second, and Linux reads the third as no source; each then
+  sends from an address of its choice. Decided by
   `laptop.architect-2` (2026-10-08 20:06 and 20:38 UTC, #1965,
   https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6068090235,
   https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6068606545; the
@@ -668,8 +678,11 @@
   there, which keeps each of them and gives up the whole write. The cost: an operator
   that opens a file to a group opens it again after each write, as after the first. Look
   again when a caller writes a file that the user made, as a formatter of config files.
-  The hidden file has a name of 21 bytes, and a write gives `Io` where the OS refuses
-  its path as too long. Lost: the open and the rename through a handle of the directory,
+  `import` is such a caller, and the look kept this shape (IMPORT; `laptop.architect-2`,
+  2026-10-18T06:03:37Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6246366941). The
+  hidden file has a name of 21 bytes, and a write gives `Io` where the OS refuses its
+  path as too long. Lost: the open and the rename through a handle of the directory,
   which needs read access to the directory, or an open flag that Linux and macOS do not
   share (`laptop.architect-2`, 2026-10-11T17:24:53Z:
   https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6111674956).
@@ -1252,3 +1265,130 @@
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6241808609; the
   supersede, 2026-10-17T22:18:40Z,
   https://github.com/synnaxlabs/foundation/pull/3016#issuecomment-6242108210).
+  Amended (2026-10-18T00:20:52Z, #3018, with #3077): `Paths` walks a path name by name,
+  as a host does, and `Paths::resolve` is this walk. `Driver::resolve` and `Driver::key`
+  go. `Driver::absolute` gives the absolute path that the host walks: on a host other
+  than Windows, it keeps each `..`. The walk takes an end `/` or `/.` from the text of a
+  path before `absolute`, since `std::path::absolute` drops an end `/.`. `Driver::entry`
+  gives what one `lstat` gives at a path, with no link at its last name followed: a link
+  with its key and its target as written (the key gives a link step a file, so the check
+  asks it as a step that changes where the path ends; the key of a link meets no folder
+  or hidden key, since those come from the ends of walks), a directory, or another file,
+  each with its key. A link puts the names of its target before the rest, from the root
+  of the `absolute` of a target with a root, else from the directory of the link. Past
+  `LINKS` (40) links, the walk gives `Driver::looped`, the code of the host on the
+  normal `Io` path (`Io` 40 on Linux and `sim`, 62 on macOS), so `ops` maps no new
+  variant. A host can take fewer: macOS stops at 32 (`MAXSYMLINKS`), so a path through
+  33 to 40 links passes the walk and the call fails with `Io` 62 from the host. The host
+  reaches the file; the walk only checks. On Windows, which `os` has no driver for
+  before #2956, and where #2956 tests each rule on the Windows host: `absolute` gives
+  the path that Win32 makes (`GetFullPathNameW`). A path with only a root starts at the
+  root of the current drive, one with only a drive (`C:a`) at the working directory of
+  that drive, and each `..` is taken by text, as Win32 takes it before it follows a
+  link, so `C:\..\work\a` is `C:\work\a`. `entry` gives a junction and a symbolic link
+  as `Link`, with the target as the absolute path that Windows follows: a relative
+  target on the directory of the link, with each `..` taken by text. A reparse point
+  that is not a name surrogate (a cloud file) is the file or directory that its
+  attributes give, and another name surrogate fails with `Io`. A `\\?\` path takes `..`
+  as a name, so `absolute` fails with `Io` 123 for one with a `.` or `..` name. A driver
+  gives the walk the names as the host takes them, and where it cannot, it fails with
+  `Io`. A disagreement that a driver misses is a defect of that driver. A link to
+  nothing at the last name resolves as its target does, so a handle of `within` checks
+  it at its target, where it can give `Outside`. A handle of `within` checks each step
+  of the walk in order, also each step of a link target. `Paths::home` walks
+  `Driver::home`, which gives the path as the host gives it. The state of a folder is
+  the `entry` of its resolved path, so a link that a program puts in place of a folder,
+  or of a directory above it, is not that directory, also when it names it: after a
+  rename of `work` to `real` and a link `work` to `real`, a read of `work/a.hcl` gives
+  `Replaced`. Each call takes the state of each folder once, and walks each hidden
+  folder from the path that the caller gave, a relative one started at `within` on the
+  resolved working directory, less one name for each `..` at its start, so the deepest
+  directory on its way comes from that call and is never a file (#3077). The cost, for
+  each call, is one `entry` for each name of the walk, and on a handle of `within` also
+  one `entry` for each folder and for each directory above it, and one walk of each
+  hidden folder; a step that fails the folders also walks each folder, to tell
+  `Replaced` from `Outside`. `absolute` refuses a path of PATH_MAX bytes or more as
+  given, so the free handle and a handle of `within` give the same `Io` (36 on Linux and
+  `sim`, 63 on macOS) at once, and the walk takes no name of it. Each name goes to the
+  host by its resolved path, so a name whose resolved path is longer than the host takes
+  fails with `Io`, also where the free handle reaches it by a relative path, and a
+  hidden folder with such a path fails `within`. When the host refuses the last name of
+  the path to the walk, such as for a resolved path longer than the host takes, the
+  limits check that name at its place as a new name, and the call gives the result of
+  the host. When the host refuses the walk of a hidden path at a call, other than with
+  `NotFound` or the error of `Driver::looped`, or at a name after a step that is a file,
+  each step that passes the folders is hidden at that call, since another name of the
+  file there can reach it. `NotFound`, a step that is a file, and a loop stay as they
+  are: the host reaches no file by that path. On `os` (Linux, Xeon Platinum 8488C,
+  debug), a read 1900 names deep takes 150 ms and a read of a 4000-byte path of `..`
+  takes 5 ms; three tests pin each under 5 s, since a read 1904 names deep took 634 ms
+  on the hosted 4-core CI VM, and takes 89 s on box2 with a resolve of each prefix. A
+  walk takes at most the names of 42 paths of PATH_MAX: the path, the working directory,
+  and `LINKS` link targets. It keeps each step as its name and the index of its
+  directory, so its memory grows with the names and not with the length of each resolved
+  path. Links that a writer of the host puts in a folder can still make a walk slow,
+  since each name goes to the host by its full resolved path: a read through 40 links of
+  `s/../` from a directory 1900 names deep takes 5.2 s on the same host and build, and
+  the run peaks at 56 MB, where the free handle takes 3 ms. With a full path in each
+  step, it took 5.5 s and peaked at 257 MB. That writer is the attacker of #3094, and a
+  walk by handles makes each name one call. The `within` doc states the gap between the
+  check and the call: "The check and the call are two steps: a process that can write a
+  symbolic link in a folder between them can lead the call to a path that the check
+  refused (#3094)." The gap is a containment escape, its issue is #3094, and #3018 files
+  no other issue for it. Supersedes `Driver::link` and `Driver::working` of
+  https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6231386142; "A
+  prefix resolves as `resolve` does, and the walk stops at the first prefix that does
+  not resolve", "never a prefix of their join, since a join can be longer than the host
+  takes where neither is", and the text from "The cost is one resolve and one check for
+  each name of the path" to "whether the target of such a link is there" of the
+  amendment of 2026-10-17T07:45:44Z; item 4 of the plan,
+  https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6243618446, and
+  "When the path did not resolve, the call checks it again" of the amendment of
+  2026-10-17T07:45:44Z; "the key of a hidden folder from the given path is right: it is
+  the same file, with no `Io` 63 for a resolved path past PATH_MAX" of
+  https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224298302, and "not
+  hidden" for a refused hidden path; the end `/` part of change 2 of
+  https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6243660689; "from
+  the new `paths::Driver::key`: (`st_dev`, `st_ino`) of a stat on `os`" of the amendment
+  of 2026-10-16T17:13:18Z; "it stats the path after `canonicalize`" of the amendment of
+  2026-10-16T07:06:00Z; and "`Paths::home` gives the home directory of the user,
+  resolved. `os` resolves with `std::fs::canonicalize`" and "The check and the call are
+  two steps: a link that another program makes between them can lead the call out" of
+  the amendment of 2026-10-16T04:52:58Z. Lost: a fix of only the last link, which leaves
+  a leak through each step of a link target (`work/to-deep` to `work/data/a/b`);
+  `resolve` that follows a link to nothing, with no new item, which leaks the same;
+  `Driver::walk`, two copies of the host walk that can disagree; `Driver::link` and
+  `Driver::key`, two calls for each name where one `lstat` gives each fact; a new
+  `Error::Loop`, which changes `ops` and the code of the free handle; a walk that sends
+  the link past `LINKS` to the host, which starts a new count there, so a chain of 41
+  different links resolves; cap-std, which walks one base by open handles and closes the
+  gap, but needs handles in `Driver` and in `sim` (#3094); the second check of
+  `make_dir`, which makes the directory and then fails with the error of the first walk;
+  D2, a key that follows links for hidden paths, which adds back a `Driver` item that
+  #3018 removes and a second walk by the host that can disagree with the walk, and still
+  hides nothing for `Io` 13; for a relative hidden path after the working directory
+  goes, the path as `Driver::absolute` gives it at `within`, whose walk takes the
+  removed directory before the `..` and so ends `NotFound` and hides nothing, as the
+  host names nothing there, and an `absolute` that fails as `Refused`, which hides each
+  path while the working directory is gone and keeps a hidden path that moves with a
+  later change of the working directory. Decided by `laptop.architect-2` (the shape,
+  2026-10-17T07:49:05Z,
+  https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6231386142; the two
+  conditions of `laptop.monitor` for the plan, 2026-10-17T07:49:57Z,
+  https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6231393232; `entry`,
+  `absolute`, `looped`, and the surface, 2026-10-18T00:20:52Z,
+  https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6243660689; the key
+  of `Entry::Link` and the Windows rules, 2026-10-18T01:16:08Z,
+  https://github.com/synnaxlabs/foundation/pull/3098#issuecomment-6244123264; the four
+  findings of round 1, 2026-10-18T01:25:34Z,
+  https://github.com/synnaxlabs/foundation/pull/3098#issuecomment-6244199067; the
+  boundary of D1, 2026-10-18T02:17:50Z,
+  https://github.com/synnaxlabs/foundation/pull/3098#issuecomment-6244644441; a relative
+  hidden path, 2026-10-18T02:26:32Z,
+  https://github.com/synnaxlabs/foundation/pull/3098#issuecomment-6244712574, from the
+  plan, https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6243618446,
+  and https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6238302038,
+  https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6238398268, and
+  https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6238425408), after
+  the decision of `laptop.monitor` (2026-10-18T00:21:40Z, the gap and its doc,
+  https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6243671534).

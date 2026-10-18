@@ -469,7 +469,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::common::output;
+    use crate::common::{EXITED, NO_FOLDER, native, output};
 
     const PATCHED: &str = "path+file:///w/patches/noq-proto#noq-proto@1.3.0";
     const TYPES: &str = "path+file:///w/crates/types#0.0.0";
@@ -627,7 +627,7 @@ mod tests {
     fn refuses_a_stale_fuzz_lock() {
         let root = crate::fixture().join("stale");
         let problems = check(&root).unwrap_err();
-        let lock = root.join("fuzz/Cargo.lock");
+        let lock = root.join(native("fuzz/Cargo.lock"));
         let refused = format!(
             "error: cannot update the lock file {} because --locked was passed to \
              prevent this\n",
@@ -691,22 +691,32 @@ mod tests {
     fn unmet(req: &str, dependent: &str) -> String {
         format!(
             "`{dependent}` has the requirement `p` `{req}`, which the copy \
-             `{}/patches/p/Cargo.toml` and another package of its name that fuzz/ \
+             `{}` and another package of its name that fuzz/ \
              builds both meet, so the graph does not show that fuzz/ builds the copy \
              for it. If fuzz/Cargo.toml does not have \
              the [patch.crates-io] table of the root Cargo.toml, give it that table. \
              If it has the table, change the requirements of fuzz/ so that this \
              requirement does not also meet the other package.",
-            crate::fixture().join("patched").display()
+            crate::fixture()
+                .join(native("patched/patches/p/Cargo.toml"))
+                .display()
         )
+    }
+
+    /// The id that cargo gives the package of `version` at `path` in the cases of
+    /// the fixture `patched`.
+    fn member(path: &str, version: &str) -> String {
+        let dir = crate::fixture().join("patched/cases").join(path);
+        #[cfg(unix)]
+        let url = dir.display().to_string();
+        #[cfg(windows)]
+        let url = format!("/{}", dir.display().to_string().replace('\\', "/"));
+        format!("path+file://{url}#{version}")
     }
 
     #[test]
     fn refuses_a_wide_requirement_that_resolves_to_the_copy_beside_a_later_series() {
-        let dependent = format!(
-            "path+file://{}#0.0.0",
-            crate::fixture().join("patched/cases/later").display()
-        );
+        let dependent = member("later", "0.0.0");
         assert_eq!(patched("later"), Ok(vec![unmet(">=1.3", &dependent)]));
     }
 
@@ -764,8 +774,7 @@ mod tests {
     /// The problem of the requirement `req` of `p` 1.4.0, the case `case` of the
     /// fixture `patched`.
     fn itself(case: &str, req: &str) -> String {
-        let case = crate::fixture().join("patched/cases").join(case);
-        unmet(req, &format!("path+file://{}#p@1.4.0", case.display()))
+        unmet(req, &member(case, "p@1.4.0"))
     }
 
     #[test]
@@ -803,29 +812,20 @@ mod tests {
 
     #[test]
     fn refuses_a_release_of_the_series_of_the_copy_under_a_second_name() {
-        let dependent = format!(
-            "path+file://{}#0.0.0",
-            crate::fixture().join("patched/cases/unpatched").display()
-        );
+        let dependent = member("unpatched", "0.0.0");
         assert_eq!(patched("unpatched"), Ok(vec![unmet("^1", &dependent)]));
     }
 
     #[test]
     fn refuses_a_release_beside_a_path_to_the_copy_under_a_rename_of_the_same_name() {
-        let dependent = format!(
-            "path+file://{}#0.0.0",
-            crate::fixture().join("patched/cases/limit").display()
-        );
+        let dependent = member("limit", "0.0.0");
         assert_eq!(patched("limit"), Ok(vec![unmet("^1", &dependent)]));
     }
 
     #[test]
     fn refuses_a_release_beside_a_path_to_the_copy_with_a_dev_requirement_of_its_name()
     {
-        let dependent = format!(
-            "path+file://{}#0.0.0",
-            crate::fixture().join("patched/cases/masked").display()
-        );
+        let dependent = member("masked", "0.0.0");
         assert_eq!(patched("masked"), Ok(vec![unmet("^1", &dependent)]));
     }
 
@@ -836,10 +836,7 @@ mod tests {
 
     #[test]
     fn refuses_a_release_beside_a_path_to_the_copy_with_a_requirement_of_a_target() {
-        let dependent = format!(
-            "path+file://{}#0.0.0",
-            crate::fixture().join("patched/cases/limitcfg").display()
-        );
+        let dependent = member("limitcfg", "0.0.0");
         assert_eq!(patched("limitcfg"), Ok(vec![unmet("^1", &dependent)]));
     }
 
@@ -851,21 +848,15 @@ mod tests {
     #[test]
     fn refuses_an_optional_requirement_that_is_off_beside_a_release_of_its_name() {
         for case in ["offrename", "split"] {
-            let dependent = format!(
-                "path+file://{}#0.0.0",
-                crate::fixture().join("patched/cases").join(case).display()
-            );
+            let dependent = member(case, "0.0.0");
             assert_eq!(patched(case), Ok(vec![unmet("^1", &dependent)]));
         }
     }
 
     #[test]
     fn refuses_a_requirement_that_a_release_of_the_series_of_the_copy_takes() {
-        let member = format!(
-            "path+file://{}#0.0.0",
-            crate::fixture().join("patched/cases/unified/u").display()
-        );
-        assert_eq!(patched("unified"), Ok(vec![unmet("^1", &member)]));
+        let dependent = member("unified/u", "0.0.0");
+        assert_eq!(patched("unified"), Ok(vec![unmet("^1", &dependent)]));
     }
 
     #[test]
@@ -1345,8 +1336,9 @@ mod tests {
         let Err(error) = Cargo::new(&crate::fixture()) else {
             panic!("the pin of the fixture is not installed");
         };
-        let command = "`rustup run nightly-2000-01-01 rustc -vV`: exit status: 1: ";
-        assert!(error.starts_with(command), "{error}");
+        let command =
+            format!("`rustup run nightly-2000-01-01 rustc -vV`: {EXITED}: 1: ");
+        assert!(error.starts_with(&command), "{error}");
     }
 
     #[test]
@@ -1499,10 +1491,7 @@ mod tests {
         let dir = crate::fixture().join("absent");
         assert_eq!(
             folders(&dir),
-            Err(vec![format!(
-                "{}: No such file or directory (os error 2)",
-                dir.display()
-            )])
+            Err(vec![format!("{}: {NO_FOLDER}", dir.display())])
         );
     }
 }

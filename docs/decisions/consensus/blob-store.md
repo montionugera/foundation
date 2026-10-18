@@ -24,9 +24,13 @@
   the cache that no sync covers, and a put that trusted a read of them would return
   before they are durable. A put refuses a chunk longer than the largest block of the
   pool before any file call. A put of a digest that a put stored since the open makes no
-  file call. A put whose future is dropped stores nothing that a get gives unchecked:
-  the next get of the digest reads and checks the file, and the next put writes it
-  again. Decided by the builder (#1515,
+  file call. A put whose future is dropped before it returns stores nothing that a get
+  gives unchecked: a get of the digest gives only bytes that it read and checked, and
+  the next put writes it again (`laptop.architect`, 2026-10-15T21:44:20Z:
+  https://github.com/synnaxlabs/foundation/pull/2565#issuecomment-6202917382).
+  Supersedes "the next get of the digest reads the file first" of change 1 of
+  https://github.com/synnaxlabs/foundation/pull/1515#issuecomment-6043557708. Decided
+  by the builder (#1515,
   https://github.com/synnaxlabs/foundation/pull/1515) and `laptop.architect`
   (2026-10-07T17:47:50Z):
   https://github.com/synnaxlabs/foundation/pull/1515#issuecomment-6043557708. Supersedes
@@ -71,6 +75,15 @@
   on a sound disk in normal work). Supersedes "`corruptions` keeps its rule" (item 3 of
   https://github.com/synnaxlabs/foundation/issues/2362#issuecomment-6106191288) and its
   doc of the field.
+  Amended (`laptop.architect`, 2026-10-11T20:14:21Z,
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6113261777): a put
+  marks the file of its digest as left by a put of this open only from its open with
+  `Mode::Create`, its first call that can make or change the file. A put that is
+  dropped before that call leaves the state of the digest as it was, so a file that a
+  crash tore still adds one to `corruptions`. Cost: a put that is dropped during that
+  open marks the file, also when the open did not run. Lost: the mark from the start of
+  the put, which made a get of a torn file that the put did not change add none, and
+  gave a digest with no file the state of a listed file.
   `Store::get` and `Store::put` are not a hot path. Each runs one time for each chunk
   call of `blob::peer` and of `mesh`. A chunk holds bytes of a spec tree or of an
   upgrade binary (BQ1). So a chunk message is a control message, and its rate does not
@@ -78,3 +91,43 @@
   `blob` bytes whose count grows with the data makes the two a hot path, and its PR adds
   the benchmark. Ruled by `laptop.architect` (2026-10-11T11:49:10Z,
   https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108706010).
+  Amended (`laptop.architect`, 2026-10-18T20:10:11Z,
+  https://github.com/synnaxlabs/foundation/issues/3251#issuecomment-6254577124, and
+  2026-10-18T20:42:45Z,
+  https://github.com/synnaxlabs/foundation/pull/3258#issuecomment-6254911451; the part
+  file, a key choice of kinds d and 4, accepted by `laptop.monitor`,
+  2026-10-18T20:41:21Z, recorded at 2026-10-18T21:23:12Z:
+  https://github.com/synnaxlabs/foundation/pull/3258#issuecomment-6255313243): a put of
+  `blob::peer::serve` writes its bytes as they come to a part file of its own, and
+  checks them at its end (BLOB PEER). The part is named by the digest, a dot, and a key
+  that is new for each put of `serve` in one open of the store, so no put waits on
+  another put of its digest. Only a put of `serve` writes a part: `Store::put` writes in
+  place, because its bytes are in hand and checked. The put takes no flight of its
+  digest until its end, so no get and no put waits on a peer while its body comes. The
+  floor check runs before the create of the part, and a file of the chunk's length at
+  the name of the digest still takes no new room (BLOB PEER), so the part and that file,
+  both on the disk until the end, can pass the floor by the chunk, within the overshoot
+  of `PUTS_MAX` chunks of the receipts that are open. The end checks the digest and
+  syncs the part. Then, in the flight of the digest, it syncs the directory when the
+  digest is `Listed`, so the name of the part is durable before the listed file goes,
+  removes that file, renames the part to the digest, and syncs the directory, and
+  `serve` sends `Stored` only after that sync. A digest that is `Held` at the end keeps
+  its file: the put removes its part and gives `Stored`. The check is only at the end,
+  because a get can make a `Held` digest absent while the body comes. A put whose body
+  fails or does not match removes its part, and a listed file keeps its bytes. An error
+  before the rename leaves the digest in its state. An error of the rename or later
+  makes the digest absent, so the next put writes it again. A remove of a part that
+  fails counts in `Status::failures`, and a dropped put leaves its part. The open
+  removes each part whose digest has a file, and renames each other part to its digest,
+  which is then `Listed` as a file of an earlier open (`corruptions` above). A crash
+  that undoes that remove or rename makes the next open do it again, so the open does
+  not sync the directory. Each other name, neither a digest nor a part, gives
+  `Error::Stray`. Lost: a rename that replaces the file at its target (FILE RENAME lost
+  it, as no caller wanted it; here it saves only the sync of the directory before the
+  remove of a listed file, a rare case, for an interface change of `env`). Supersedes "A
+  write to a second name and a rename (`File::rename`, #1503) lost" of
+  https://github.com/synnaxlabs/foundation/issues/1226#issuecomment-6046560177, item 1,
+  and "and no rename" of the layout at the head of this record, for the puts of a peer
+  only, because a peer must not hold the chunk's name while its body comes, and both
+  conditions of
+  https://github.com/synnaxlabs/foundation/issues/3251#issuecomment-6254727641.

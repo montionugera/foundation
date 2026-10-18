@@ -14,6 +14,8 @@ use env::files::{Error, Files, Mode};
 #[path = "../common/mod.rs"]
 #[expect(dead_code, reason = "this binary only makes a scratch directory")]
 mod disk;
+#[path = "../common/fifo.rs"]
+mod fifo;
 #[path = "../common/free.rs"]
 mod free;
 #[path = "../common/fsize.rs"]
@@ -145,12 +147,12 @@ fn files_of_a_mount_point_syncs_only_the_mount() {
 
 #[test]
 fn free_drops_by_the_bytes_of_a_created_file() {
-    run(|files, _| async move { free::check(&files, free::Create::Held).await });
+    run(|files, _| async move { free::held(&files).await });
 }
 
 #[test]
 fn a_free_waits_for_a_dropped_create() {
-    run(|files, _| async move { free::check(&files, free::Create::Dropped).await });
+    run(|files, data| async move { free::dropped(&files, &data).await });
 }
 
 #[test]

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use std::path::PathBuf;
 
+use connector::browse::{DEPTH, LIMIT, STARS, VISITS};
 use document::Span;
 use document::diagnostic::{Code, Diagnostic};
 use mesh::used::{Behind, Cause};
@@ -28,8 +29,11 @@ const STOPPED: Code = Code::new("ops.stopped");
 const BAD_REQUEST: Code = Code::new("ops.bad-request");
 const DENIED: Code = Code::new("ops.denied");
 const LARGE_REPLY: Code = Code::new("ops.large-reply");
+const LARGE_BROWSE: Code = Code::new("ops.large-browse");
+const LARGE_STATUS: Code = Code::new("ops.large-status");
 const CHANNEL_READ: Code = Code::new("ops.channel-read");
 const READ: Code = Code::new("ops.read");
+const NO_CONFIG: Code = Code::new("ops.no-config");
 const WRITE: Code = Code::new("ops.write");
 const LARGE_REQUEST: Code = Code::new("ops.large-request");
 const BAD_REPLY: Code = Code::new("ops.bad-reply");
@@ -41,6 +45,25 @@ const PLAN_NAME: Code = Code::new("ops.plan-name");
 const WIDE_FOLDER: Code = Code::new("ops.wide-folder");
 const FOLDER: Code = Code::new("ops.folder");
 const DATA: Code = Code::new("ops.data");
+const BROWSE: Code = Code::new("ops.browse");
+const BROWSE_NODE: Code = Code::new("ops.browse-node");
+const BAD_START: Code = Code::new("ops.bad-start");
+const BAD_PATTERN: Code = Code::new("ops.bad-pattern");
+const NO_PICK: Code = Code::new("ops.no-pick");
+const PICK_LIMIT: Code = Code::new("ops.pick-limit");
+const MATCH_LIMIT: Code = Code::new("ops.match-limit");
+const BAD_POINT: Code = Code::new("ops.bad-point");
+const BAD_POINT_FIX: &str = "Give the names of the path joined by `/`, with a `\\` \
+                             before each `/`, `*`, or `\\` in a name";
+const DUPLICATE_PICK: Code = Code::new("ops.duplicate-pick");
+const BAD_NAME: Code = Code::new("ops.bad-name");
+const BAD_NAME_FIX: &str = "Give another name, or leave it out for the default name";
+const UNREADABLE_POINT: Code = Code::new("ops.unreadable-point");
+const PICK_BUDGET: Code = Code::new("ops.pick-budget");
+const MATCH_BUDGET: Code = Code::new("ops.match-budget");
+const LARGE_IMPORT: Code = Code::new("ops.large-import");
+const FILE_CHANGED: Code = Code::new("ops.file-changed");
+const MORE_PROBLEMS: Code = Code::new("ops.more-problems");
 /// The fix of [`ARGUMENT`].
 const HELP: &str =
     "Match the arguments to `foundation --help` or `foundation <operation> --help`";
@@ -97,11 +120,18 @@ pub(crate) enum Error {
     },
     /// The reply of a node has more bytes than one reply holds.
     LargeReply,
+    /// The reply of a browse has more bytes than one reply holds.
+    LargeBrowse,
+    /// The reply of a status has more bytes than one reply holds.
+    LargeStatus,
     /// A reader of the status channels of `connector` did not open or ended, with the
     /// text of the hub.
     ChannelRead { connector: Name, message: String },
     /// A command line did not read the file at `path`.
     Read { path: PathBuf, cause: Unread },
+    /// The directory `path` of a command line gives no file with one of
+    /// `extensions`, as [`FrontEnds::named`](crate::FrontEnds::named) gives them.
+    NoConfig { path: PathBuf, extensions: String },
     /// A command line did not write the plan file at `path`.
     Write { path: PathBuf, cause: Unwritten },
     /// The request of a command line has more bytes than one request holds.
@@ -136,6 +166,60 @@ pub(crate) enum Error {
         path: PathBuf,
         error: env::paths::Error,
     },
+    /// The browse of `connector` of `kind` failed, with each problem of the failure.
+    /// Each message starts with the names of the connector and its kind.
+    Browse {
+        connector: Name,
+        kind: Name,
+        problems: Vec<Problem>,
+    },
+    /// The files place `connector` on `node`, which is not `this`, the node that got
+    /// the browse.
+    BrowseNode {
+        connector: Name,
+        node: Name,
+        this: Name,
+    },
+    /// The start `text` of a browse is no path.
+    BadStart {
+        text: String,
+        cause: connector::browse::Malformed,
+    },
+    /// The match `text` of a browse is no pattern.
+    BadPattern {
+        text: String,
+        cause: connector::browse::Malformed,
+    },
+    /// An import that picks no point and gives no match.
+    NoPick,
+    /// An import that picks `picked` points, more than [`LIMIT`].
+    PickLimit { picked: usize },
+    /// A match of an import of more points than [`LIMIT`].
+    MatchLimit,
+    /// Each path of a point of an import that is no path, as given, with the cause,
+    /// in the order of the picks.
+    BadPoint {
+        points: Vec<(String, connector::browse::Malformed)>,
+    },
+    /// Each path that an import picks more than once, in the order of the picks.
+    DuplicatePick { paths: Vec<String> },
+    /// Each given name of an import that is no name: the path of its point, the name
+    /// as given, and the cause, in the order of the picks.
+    BadName {
+        names: Vec<(String, String, types::name::Error)>,
+    },
+    /// Each picked point that a connector of the kind cannot read or write, by path,
+    /// with the reason.
+    UnreadablePoint { points: Vec<(String, String)> },
+    /// The walk of the picks of an import stopped at its budget before it found each
+    /// point.
+    PickBudget,
+    /// The walk of a match of an import stopped at its budget.
+    MatchBudget,
+    /// The reply of an import has more bytes than one reply holds.
+    LargeImport,
+    /// The config file at `path` changed after an import read it.
+    FileChanged { path: PathBuf },
 }
 
 /// Why a command line did not read a file.
@@ -143,8 +227,12 @@ pub(crate) enum Error {
 pub(crate) enum Unread {
     NotFound,
     Directory,
+    /// The paths of the entries of a directory pass the bytes of one read.
+    ManyEntries,
     NotUtf8,
-    Io { code: i32 },
+    Io {
+        code: i32,
+    },
 }
 
 /// Why `foundation mcp` cannot use a folder of `--files`.
@@ -231,6 +319,44 @@ impl Error {
         )
     }
 
+    /// `Browse` of `connector` of `kind` with each problem of `cause`. A problem of
+    /// `Config` keeps its code, fix, place, and notes, and its spans are in the files
+    /// of `sources`. `Device` and `Retry` give one problem of `ops.browse`.
+    pub(crate) fn browse(
+        connector: &Name,
+        kind: &Name,
+        cause: connector::kind::Error,
+        sources: &Sources,
+    ) -> Self {
+        let diagnostics = match cause {
+            connector::kind::Error::Config(diagnostics) => diagnostics,
+            cause @ (connector::kind::Error::Device(_)
+            | connector::kind::Error::Retry(_)) => vec![Diagnostic::new(
+                BROWSE,
+                None,
+                cause.to_string(),
+                "Fix the cause in the message, then browse again".to_owned(),
+            )],
+        };
+        let problems = diagnostics
+            .into_iter()
+            .map(|diagnostic| {
+                let mut problem = Problem::of(diagnostic, sources);
+                let message = problem.message;
+                problem.message = format!(
+                    "the browse of the connector `{connector}` of kind `{kind}` \
+                     failed: {message}"
+                );
+                problem
+            })
+            .collect();
+        Self::Browse {
+            connector: connector.clone(),
+            kind: kind.clone(),
+            problems,
+        }
+    }
+
     pub(crate) fn status(&self) -> u8 {
         match self {
             Self::Remote { status, .. } => *status,
@@ -248,32 +374,87 @@ impl Error {
             | Self::Request { .. }
             | Self::Denied { .. }
             | Self::LargeReply
+            | Self::LargeBrowse
+            | Self::LargeStatus
             | Self::ChannelRead { .. }
             | Self::Write { .. }
             | Self::Data { .. }
             | Self::NoData { .. }
             | Self::FolderChanged { .. }
+            | Self::Browse { .. }
+            | Self::PickBudget
+            | Self::MatchBudget
+            | Self::LargeImport
+            | Self::FileChanged { .. }
             | Self::Reply { .. } => 1,
             Self::Argument { .. }
             | Self::Unknown { .. }
             | Self::Config(_)
             | Self::Plan(_)
             | Self::Read { .. }
+            | Self::NoConfig { .. }
             | Self::LargeRequest
             | Self::Outside { .. }
             | Self::Hidden { .. }
             | Self::PlanName { .. }
             | Self::WideFolder { .. }
+            | Self::BrowseNode { .. }
+            | Self::BadStart { .. }
+            | Self::BadPattern { .. }
+            | Self::NoPick
+            | Self::PickLimit { .. }
+            | Self::MatchLimit
+            | Self::BadPoint { .. }
+            | Self::DuplicatePick { .. }
+            | Self::BadName { .. }
+            | Self::UnreadablePoint { .. }
             | Self::Folder { .. } => 2,
         }
     }
 
-    /// Each problem: for each error but `Config`, one with no place and no note.
+    /// Each problem: for each error but `Config`, `Remote`, `Browse`, `BadPoint`,
+    /// `DuplicatePick`, `BadName`, and `UnreadablePoint`, one with no place and no
+    /// note.
     #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     pub(crate) fn problems(&self) -> Cow<'_, [Problem]> {
         let (code, fix) = match self {
-            Self::Config(problems) | Self::Remote { problems, .. } => {
+            Self::Config(problems)
+            | Self::Remote { problems, .. }
+            | Self::Browse { problems, .. } => {
                 return Cow::Borrowed(problems);
+            }
+            Self::BadPoint { points } => {
+                let problems = points.iter().map(|(text, cause)| {
+                    let message = format!("the point `{text}` is not a path: {cause}");
+                    (BAD_POINT, message, BAD_POINT_FIX)
+                });
+                return Cow::Owned(problems.map(Problem::plain).collect());
+            }
+            Self::BadName { names } => {
+                let problems = names.iter().map(|(path, text, cause)| {
+                    let message = format!(
+                        "the name `{text}` of the point `{path}` is not a name: {cause}"
+                    );
+                    (BAD_NAME, message, BAD_NAME_FIX)
+                });
+                return Cow::Owned(problems.map(Problem::plain).collect());
+            }
+            Self::DuplicatePick { paths } => {
+                let problems = paths.iter().map(|path| {
+                    let message = format!("the import picks the point `{path}` twice");
+                    (DUPLICATE_PICK, message, "Pick each point once")
+                });
+                return Cow::Owned(problems.map(Problem::plain).collect());
+            }
+            Self::UnreadablePoint { points } => {
+                let problems = points.iter().map(|(path, reason)| {
+                    let message = format!(
+                        "a connector of the kind cannot read or write the point \
+                         `{path}`: {reason}"
+                    );
+                    (UNREADABLE_POINT, message, "Leave the point out of the import")
+                });
+                return Cow::Owned(problems.map(Problem::plain).collect());
             }
             Self::Node(failure) => (failure.code, failure.fix.clone()),
             Self::Argument { .. } => (ARGUMENT, HELP.to_owned()),
@@ -329,6 +510,15 @@ impl Error {
                 LARGE_REPLY,
                 "Plan and apply the change in smaller steps".to_owned(),
             ),
+            Self::LargeBrowse => (
+                LARGE_BROWSE,
+                "Narrow the start or the match, or browse without `values`".to_owned(),
+            ),
+            Self::LargeStatus => (
+                LARGE_STATUS,
+                "Read the status channels of each connector with a client of the node"
+                    .to_owned(),
+            ),
             Self::ChannelRead { .. } => (
                 CHANNEL_READ,
                 "Fix the cause in the message, then ask for the status again"
@@ -337,6 +527,15 @@ impl Error {
             Self::Read { .. } => (
                 READ,
                 "Fix the cause in the message, then run the command again".to_owned(),
+            ),
+            Self::NoConfig { path, extensions } => (
+                NO_CONFIG,
+                format!(
+                    "Add a file whose name ends in {} and does not start with `.` \
+                     to {}, or give another path",
+                    extensions,
+                    path.display()
+                ),
             ),
             Self::Write { .. } => (
                 WRITE,
@@ -402,14 +601,50 @@ impl Error {
                 DATA,
                 "Give `--data` a directory that this user can make".to_owned(),
             ),
+            Self::BrowseNode { node, .. } => {
+                (BROWSE_NODE, format!("Run it with `--data` of node `{node}`"))
+            }
+            Self::BadStart { .. } => (
+                BAD_START,
+                "Give folder names joined by `/`, with a `\\` before each `/`, `*`, or \
+                 `\\` in a name"
+                    .to_owned(),
+            ),
+            Self::BadPattern { .. } => (
+                BAD_PATTERN,
+                format!(
+                    "Give names joined by `/`, at most {DEPTH} other than `**` and at \
+                     most {STARS} `*`, with a `\\` before each `/`, `*`, or `\\` in a \
+                     name"
+                ),
+            ),
+            Self::NoPick => (
+                NO_PICK,
+                "Give the points to import, or `--match <pattern>`".to_owned(),
+            ),
+            Self::PickLimit { .. } => (
+                PICK_LIMIT,
+                format!("Pick at most {LIMIT} points, and import the others in another run"),
+            ),
+            Self::MatchLimit => (MATCH_LIMIT, "Narrow the start or the match".to_owned()),
+            Self::PickBudget => (
+                PICK_BUDGET,
+                "Pick the points of fewer folders, and import the others in another run"
+                    .to_owned(),
+            ),
+            Self::MatchBudget => (MATCH_BUDGET, "Narrow the start or the match".to_owned()),
+            Self::LargeImport => (
+                LARGE_IMPORT,
+                "Import fewer points at a time, or move other blocks out of the file \
+                 of the connector block"
+                    .to_owned(),
+            ),
+            Self::FileChanged { .. } => (
+                FILE_CHANGED,
+                "Run the import again on the file as it is now".to_owned(),
+            ),
         };
-        Cow::Owned(vec![Problem {
-            code: code.as_str().to_owned(),
-            message: self.to_string(),
-            fix,
-            place: None,
-            notes: Vec::new(),
-        }])
+        Cow::Owned(vec![Problem::plain((code, self.to_string(), &fix))])
     }
 
     /// `{"errors": [...]}`, with each problem.
@@ -417,14 +652,17 @@ impl Error {
         json!({ "errors": self.problems() })
     }
 
-    /// Each problem for a terminal, with one empty line between two. In `Config` and
-    /// `Remote`, each control character is written as its Rust escape, because a
-    /// config producer or the node quotes the text of a file itself. In each other
-    /// error, so are a backslash and each character that does not print, because that
-    /// text holds the caller's text as given.
+    /// Each problem for a terminal, with one empty line between two. In `Config`,
+    /// `Remote`, and `Browse`, each control character is written as its Rust escape,
+    /// because a config producer, the node, or a connector kind quotes the text of a
+    /// file or a device itself. In each other error, so are a backslash and each
+    /// character that does not print, because that text holds the caller's text as
+    /// given.
     pub(crate) fn text(&self) -> String {
         let escape: fn(&str) -> String = match self {
-            Self::Config(_) | Self::Remote { .. } => escape_controls,
+            Self::Config(_) | Self::Remote { .. } | Self::Browse { .. } => {
+                escape_controls
+            }
             _ => escape,
         };
         let problems: Vec<String> = self
@@ -465,6 +703,30 @@ pub(crate) struct Problem {
 }
 
 impl Problem {
+    /// The problem of `code` with `message` and `fix`, with no place and no note.
+    fn plain((code, message, fix): (Code, String, &str)) -> Self {
+        Self {
+            code: code.as_str().to_owned(),
+            message,
+            fix: fix.to_owned(),
+            place: None,
+            notes: Vec::new(),
+        }
+    }
+
+    /// `ops.more-problems`: `count` more problems do not fit in one reply.
+    /// `serve::fitting` takes its encoded length to change only with the digits of
+    /// `count`.
+    pub(crate) fn more(count: usize) -> Self {
+        Self {
+            code: MORE_PROBLEMS.as_str().to_owned(),
+            message: format!("{count} more problems do not fit in one reply"),
+            fix: "Fix the problems above, then run it again".to_owned(),
+            place: None,
+            notes: Vec::new(),
+        }
+    }
+
     /// The problem of `diagnostic`, whose spans are in the files of `sources`.
     pub(crate) fn of(diagnostic: Diagnostic, sources: &Sources) -> Self {
         Self {
@@ -633,6 +895,16 @@ impl fmt::Display for Error {
                 "the reply has more than {BODY_BYTES_MAX} bytes, the most that a reply \
                  holds"
             ),
+            Self::LargeBrowse => write!(
+                f,
+                "the reply of the browse has more than {BODY_BYTES_MAX} bytes, the \
+                 most that a reply holds"
+            ),
+            Self::LargeStatus => write!(
+                f,
+                "the reply of the status has more than {BODY_BYTES_MAX} bytes, the \
+                 most that a reply holds"
+            ),
             Self::ChannelRead { connector, message } => write!(
                 f,
                 "the status channels of the connector `{connector}` did not read: \
@@ -643,11 +915,17 @@ impl fmt::Display for Error {
                 match cause {
                     Unread::NotFound => write!(f, "no file is at {path}"),
                     Unread::Directory => write!(f, "{path} is a directory, not a file"),
+                    Unread::ManyEntries => {
+                        write!(f, "{path} holds more entries than one read lists")
+                    }
                     Unread::NotUtf8 => write!(f, "the text of {path} is not UTF-8"),
                     Unread::Io { code } => {
                         write!(f, "the read of {path} failed with OS error {code}")
                     }
                 }
+            }
+            Self::NoConfig { path, .. } => {
+                write!(f, "{} holds no config file", path.display())
             }
             Self::Write { path, cause } => {
                 let path = path.display();
@@ -735,6 +1013,69 @@ impl fmt::Display for Error {
                 path.display(),
                 failed(*error)
             ),
+            Self::Browse {
+                connector,
+                kind,
+                problems,
+            } => match problems.as_slice() {
+                [one] => f.write_str(&one.message),
+                _ => write!(
+                    f,
+                    "the browse of the connector `{connector}` of kind `{kind}` failed \
+                     with {} problems",
+                    problems.len()
+                ),
+            },
+            Self::BrowseNode {
+                connector,
+                node,
+                this,
+            } => write!(
+                f,
+                "the connector `{connector}` runs on the node `{node}`, not on this \
+                 node `{this}`"
+            ),
+            Self::BadStart { text, cause } => {
+                write!(f, "the start `{text}` is not a path: {cause}")
+            }
+            Self::BadPattern { text, cause } => {
+                write!(f, "the match `{text}` is not a pattern: {cause}")
+            }
+            Self::NoPick => f.write_str("the import picks no point and gives no match"),
+            Self::PickLimit { picked } => write!(
+                f,
+                "the import picks {picked} points, more than {LIMIT}, the most for one \
+                 import"
+            ),
+            Self::MatchLimit => {
+                write!(f, "more than {LIMIT} points match, the most for one import")
+            }
+            Self::MatchBudget => write!(
+                f,
+                "the import stopped after {VISITS} entries, so more points can match"
+            ),
+            Self::PickBudget => write!(
+                f,
+                "the import stopped after {VISITS} entries before it found each point"
+            ),
+            Self::LargeImport => write!(
+                f,
+                "the reply of the import has more than {BODY_BYTES_MAX} bytes, the \
+                 most that a reply holds"
+            ),
+            Self::FileChanged { path } => write!(
+                f,
+                "the file {} changed after the import read it, so the import wrote \
+                 nothing",
+                path.display()
+            ),
+            Self::BadPoint { .. }
+            | Self::DuplicatePick { .. }
+            | Self::BadName { .. }
+            | Self::UnreadablePoint { .. } => match &*self.problems() {
+                [one] => f.write_str(&one.message),
+                problems => write!(f, "the import has {} problems", problems.len()),
+            },
         }
     }
 }

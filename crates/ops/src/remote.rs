@@ -1,14 +1,15 @@
-//! Runs `plan`, `apply`, and `status` of a command line on its node.
+//! Runs `plan`, `apply`, `status`, `browse`, and `import` of a command line on its
+//! node.
 
 use std::path::{Path, PathBuf};
 
 use crate::Failure;
 use crate::apply::Applied;
 use crate::error::{self, Error, Unread};
-use crate::front_end::{self, File};
+use crate::front_end;
 use crate::plan::Output;
-use crate::scope::{Scope, most};
-use crate::{serve, status};
+use crate::scope::Scope;
+use crate::{browse, import, operation, serve, status};
 
 #[cfg(test)]
 mod tests;
@@ -48,12 +49,12 @@ where
 }
 
 /// Plans on the node of `link` the change from the config files at `files`, read
-/// through `scope`, and writes the plan file to `out` when it is given.
+/// through `scope`, and writes the plan file to `out` when it is given. A directory of
+/// `files` gives its config files ([`Scope::config`]).
 ///
 /// # Errors
 ///
-/// - [`Error::Config`] with `ops.path-not-utf8` for each path that is not UTF-8.
-/// - [`Error::Read`] for the first file that does not read as UTF-8 text.
+/// - Each error of [`Scope::config`], after the check of `out`.
 /// - [`Error::LargeRequest`] when the files do not fit one request.
 /// - [`Error::Node`] with the failure of the reach or of the request.
 /// - Each error of [`serve::plan_reply`].
@@ -72,34 +73,10 @@ where
     R: AsyncFnMut() -> Result<C, Failure>,
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
 {
-    let not_utf8: Vec<_> = files
-        .iter()
-        .filter(|path| path.to_str().is_none())
-        .map(|path| front_end::not_utf8(path))
-        .collect();
-    if !not_utf8.is_empty() {
-        return Err(Error::config(not_utf8, &error::Sources::default()));
-    }
     if let Some(out) = out {
         scope.out(out)?;
     }
-    let mut total = 0;
-    let mut read = Vec::with_capacity(files.len());
-    for path in files {
-        let bytes = scope.read(path)?;
-        total += bytes.len();
-        if total > most() {
-            return Err(Error::LargeRequest);
-        }
-        let text = String::from_utf8(bytes).map_err(|_not_utf8| Error::Read {
-            path: path.clone(),
-            cause: Unread::NotUtf8,
-        })?;
-        read.push(File {
-            path: path.clone(),
-            text,
-        });
-    }
+    let read = scope.config(files)?;
     let reply = request(&serve::plan_request(&read)?, link).await?;
     let (output, plan) = serve::plan_reply(&reply)?;
     if let Some(out) = out {
@@ -154,6 +131,101 @@ where
 {
     let reply = request(serve::STATUS_REQUEST, link).await?;
     serve::reply(&reply, "status")
+}
+
+/// Browses on the node of `link` the device of the connector of `input`, with the
+/// config files of `input` read through `scope`.
+///
+/// # Errors
+///
+/// - Each error of [`Scope::config`].
+/// - [`Error::LargeRequest`] when the files do not fit one request.
+/// - [`Error::Node`] with the failure of the reach or of the request.
+/// - Each error of [`serve::reply`].
+pub(crate) async fn browse<R, C>(
+    input: operation::Browse,
+    scope: &Scope,
+    link: &mut Link<R, C>,
+) -> Result<browse::Output, Error>
+where
+    R: AsyncFnMut() -> Result<C, Failure>,
+    C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+{
+    let asked = serve::Browse {
+        connector: input.connector,
+        files: scope.config(&input.files)?,
+        start: input.start,
+        pattern: input.pattern,
+        cursor: input.cursor,
+        values: input.values,
+    };
+    let reply = request(&serve::browse_request(&asked)?, link).await?;
+    serve::reply(&reply, "browse")
+}
+
+/// Imports on the node of `link` the points of `input` into the config file of its
+/// connector, read and written through `scope`. It writes the new text only when the
+/// file still holds the text that it sent, and writes nothing when the text is the
+/// same. A regular file becomes a new file of mode 0600; a symbolic link takes the
+/// text in place (ENV SEAMS).
+///
+/// # Errors
+///
+/// - [`Error::FileChanged`] when the file changed after the read: it holds other
+///   text, holds more than the bytes of one request, is gone, or is a directory.
+/// - [`Error::Reply`] when the reply names a file that the request did not send.
+/// - [`Error::Write`] when the write fails.
+/// - Each error of [`browse`], with [`serve::import_reply`] in place of
+///   [`serve::reply`].
+pub(crate) async fn import<R, C>(
+    input: operation::Import,
+    scope: &Scope,
+    link: &mut Link<R, C>,
+) -> Result<import::Output, Error>
+where
+    R: AsyncFnMut() -> Result<C, Failure>,
+    C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+{
+    let asked = serve::Import {
+        connector: input.connector,
+        files: scope.config(&input.files)?,
+        start: input.start,
+        points: input.points,
+        pattern: input.pattern,
+    };
+    let reply = request(&serve::import_request(&asked)?, link).await?;
+    let (output, text) = serve::import_reply(&reply)?;
+    let Some(sent) = asked
+        .files
+        .iter()
+        .find(|file| file.path.to_str() == Some(output.file.as_str()))
+    else {
+        return Err(Error::Reply {
+            message: "the reply of `import` names a file that the request did not send"
+                .to_owned(),
+        });
+    };
+    if text == sent.text {
+        return Ok(output);
+    }
+    match scope.read(&sent.path) {
+        Ok(bytes) if bytes == sent.text.as_bytes() => {}
+        Ok(_)
+        | Err(
+            Error::LargeRequest
+            | Error::Read {
+                cause: Unread::NotFound | Unread::Directory,
+                ..
+            },
+        ) => {
+            return Err(Error::FileChanged {
+                path: sent.path.clone(),
+            });
+        }
+        Err(error) => return Err(error),
+    }
+    scope.write(&sent.path, text.as_bytes())?;
+    Ok(output)
 }
 
 /// The reply of the node of `link` to `body`.

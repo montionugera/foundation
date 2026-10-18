@@ -10,8 +10,11 @@ ops.stopped	Fix the cause in the message, then start the node and plan again
 ops.bad-request	Use a `foundation` program of the same version as the node
 ops.denied	Ask an admin of the region for an access policy that allows it
 ops.large-reply	Plan and apply the change in smaller steps
+ops.large-browse	Narrow the start or the match, or browse without `values`
+ops.large-status	Read the status channels of each connector with a client of the node
 ops.channel-read	Fix the cause in the message, then ask for the status again
 ops.read	Fix the cause in the message, then run the command again
+ops.no-config	Add a file whose name ends in `.hcl` and does not start with `.` to d, or give another path
 ops.write	Give `--out`, or `out` of the MCP tool, a path in a directory that can be written
 ops.large-request	Make the config files smaller
 ops.bad-reply	Use a `foundation` program of the same version as the node
@@ -23,6 +26,22 @@ ops.plan-name	Give `out` a path that ends in `.plan` and is not a link to anothe
 ops.wide-folder	Add `--files <DIR>` for each folder that the tools may read and write
 ops.folder	Give `--files` a folder that is there
 ops.data	Make /work, or give `--data` a directory whose parent is there
+ops.browse	Fix the cause in the message, then browse again
+ops.browse-node	Run it with `--data` of node `edge`
+ops.bad-start	Give folder names joined by `/`, with a `\` before each `/`, `*`, or `\` in a name
+ops.bad-pattern	Give names joined by `/`, at most 64 other than `**` and at most 256 `*`, with a `\` before each `/`, `*`, or `\` in a name
+ops.no-pick	Give the points to import, or `--match <pattern>`
+ops.pick-limit	Pick at most 500 points, and import the others in another run
+ops.match-limit	Narrow the start or the match
+ops.bad-point	Give the names of the path joined by `/`, with a `\` before each `/`, `*`, or `\` in a name
+ops.duplicate-pick	Pick each point once
+ops.bad-name	Give another name, or leave it out for the default name
+ops.unreadable-point	Leave the point out of the import
+ops.pick-budget	Pick the points of fewer folders, and import the others in another run
+ops.match-budget	Narrow the start or the match
+ops.large-import	Import fewer points at a time, or move other blocks out of the file of the connector block
+ops.file-changed	Run the import again on the file as it is now
+ops.more-problems	Fix the problems above, then run it again
 ops.unknown-extension	Use a file that ends in `.hcl`
 ops.path-not-utf8	Rename the file to a UTF-8 name
 secret.unresolved	Give the node the value at the source, or change the source, then plan again

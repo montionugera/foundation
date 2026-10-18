@@ -10,17 +10,22 @@ const SUITE: &CStr = c"
 import io, sys, unittest
 sys.modules['foundation._native'] = native
 sys.path.insert(0, str(package))
+sys.path.insert(0, str(top))
 stream = io.StringIO()
-suite = unittest.defaultTestLoader.discover(tests, pattern)
-passed = unittest.TextTestRunner(stream, verbosity=2).run(suite).wasSuccessful()
+suite = unittest.TestLoader().loadTestsFromName(module)
+result = unittest.TextTestRunner(stream, verbosity=2).run(suite)
+passed = result.wasSuccessful() and result.testsRun > len(result.skipped)
 report = stream.getvalue()
 ";
 
-/// Runs the Python suite `sdk/python/tests` in this process, with this build as
-/// `foundation._native`: each `test_*.py` with the feature `sim`, else
-/// `test_client.py`. `FOUNDATION_NODE` is the path of the `foundation` binary that the
-/// suite starts. Panics with the report when a Python test fails, and when
-/// `FOUNDATION_NODE` is not set.
+/// The files of `sdk/python/tests`, each with whether it runs only with the feature
+/// `sim`.
+const FILES: [(&str, bool); 2] = [("test_client.py", false), ("test_sim.py", true)];
+
+/// Runs each file of the Python suite `sdk/python/tests` on its own in this process,
+/// with this build as `foundation._native`. `FOUNDATION_NODE` is the path of the
+/// `foundation` binary that the suite starts. Panics with the report as [`run`] says,
+/// and when `FOUNDATION_NODE` is not set.
 #[test]
 fn the_python_suite_passes() {
     #[expect(clippy::disallowed_methods, reason = "the suite reads the node's path")]
@@ -29,41 +34,172 @@ fn the_python_suite_passes() {
         node.is_some(),
         "FOUNDATION_NODE is not set: give it the path of the foundation binary"
     );
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let pattern = if cfg!(feature = "sim") {
-        "test_*.py"
-    } else {
-        "test_client.py"
-    };
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    if let Err(problem) = run(&dir, &FILES, cfg!(feature = "sim")) {
+        panic!("{problem}");
+    }
+}
+
+#[test]
+fn a_file_that_runs_no_test_fails() {
+    let files = [
+        ("more/test_more.py", false),
+        ("more/test_none.py", false),
+        ("test_some.py", false),
+        ("test_none.py", false),
+        ("test_skip.py", true),
+    ];
+    let problem = run(&fixture(), &files, false).unwrap_err();
+    assert!(problem.starts_with("test_none.py: "), "{problem}");
+    assert!(problem.contains("Ran 0 tests"), "{problem}");
+}
+
+#[test]
+fn a_file_whose_tests_all_skip_fails() {
+    let files = [
+        ("more/test_more.py", false),
+        ("more/test_none.py", false),
+        ("test_some.py", false),
+        ("test_skip.py", false),
+        ("test_none.py", false),
+    ];
+    let problem = run(&fixture(), &files, false).unwrap_err();
+    assert!(problem.starts_with("test_skip.py: "), "{problem}");
+    assert!(problem.contains("skipped=1"), "{problem}");
+}
+
+#[test]
+fn a_file_of_the_sim_feature_runs_only_with_it() {
+    let files = [
+        ("more/test_more.py", false),
+        ("more/test_none.py", false),
+        ("test_none.py", true),
+        ("test_skip.py", true),
+        ("test_some.py", false),
+    ];
+    assert_eq!(run(&fixture(), &files, false), Ok(()));
+}
+
+#[test]
+fn an_unlisted_file_fails() {
+    let files = [("test_none.py", false), ("test_some.py", false)];
+    assert_eq!(
+        run(&fixture(), &files, false),
+        Err("the test files of the suite are [\"more/test_more.py\", \
+             \"more/test_none.py\", \"test_none.py\", \"test_skip.py\", \
+             \"test_some.py\"]: change `FILES` to them"
+            .to_owned())
+    );
+}
+
+/// The directory of the fixture suite.
+fn fixture() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("fixture")
+}
+
+/// Runs each of `files`, the `test_*.py` files under `dir` with whether each runs only
+/// with the feature `sim`, on its own, in their order. `sim` is whether the feature is
+/// on. Returns the report of the first file that fails or runs no test that it does not
+/// skip, and an error when `files` are not the `test_*.py` files under `dir`.
+fn run(dir: &Path, files: &[(&str, bool)], sim: bool) -> Result<(), String> {
+    let mut found = Vec::new();
+    tests(dir, "", &mut found);
+    found.sort();
+    let mut listed: Vec<_> = files.iter().map(|&(file, _)| file).collect();
+    listed.sort_unstable();
+    if found != listed {
+        return Err(format!(
+            "the test files of the suite are {found:?}: change `FILES` to them"
+        ));
+    }
+    for &(file, only) in files {
+        if sim || !only {
+            let (passed, report) = suite(dir, file);
+            if !passed {
+                return Err(format!("{file}: {report}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Adds to `found` the path of each `test_*.py` file under `dir`, with `/` between its
+/// parts, after `prefix`.
+fn tests(dir: &Path, prefix: &str, found: &mut Vec<String>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy();
+        if path.is_dir() {
+            tests(&path, &format!("{prefix}{name}/"), found);
+        } else if name.starts_with("test_")
+            && path.extension().is_some_and(|e| e == "py")
+        {
+            found.push(format!("{prefix}{name}"));
+        }
+    }
+}
+
+/// Runs each test of the module of `file`, a `.py` path under `dir`, and gives whether
+/// one ran that did not skip and each passed, and the report.
+fn suite(dir: &Path, file: &str) -> (bool, String) {
+    let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("python");
+    let module = file.strip_suffix(".py").unwrap_or(file).replace('/', ".");
     Python::initialize();
-    let (passed, report) = Python::attach(|py| -> PyResult<(bool, String)> {
+    Python::attach(|py| -> PyResult<(bool, String)> {
         let globals = PyDict::new(py);
         globals.set_item("native", wrap_pymodule!(super::_native)(py))?;
-        globals.set_item("package", root.join("python"))?;
-        globals.set_item("tests", root.join("tests"))?;
-        globals.set_item("pattern", pattern)?;
+        globals.set_item("package", package)?;
+        globals.set_item("module", module)?;
+        globals.set_item("top", dir)?;
         py.run(SUITE, Some(&globals), None)?;
         Ok((
             globals.as_any().get_item("passed")?.extract()?,
             globals.as_any().get_item("report")?.extract()?,
         ))
     })
-    .unwrap_or_else(|e| panic!("the suite did not run: {e}"));
-    assert!(passed, "{report}");
+    .unwrap_or_else(|e| panic!("the suite did not run: {e}"))
 }
 
-/// Maps `Bind`, which no test of the suite reaches: the bind of an ephemeral port fails
-/// only when the process has no free file descriptor, and the count of free ones
-/// changes with the process.
+/// Maps each variant to its class and text. No test of the suite reaches `Bind`: the
+/// bind of an ephemeral port fails only when the process has no free file descriptor,
+/// and the count of free ones changes with the process.
 #[test]
-fn bind_raises_os_error() {
+fn error_raises_the_class_and_text_of_each_variant() {
+    let cases = [
+        (
+            sdk::Error::Thread {
+                reason: "the test".into(),
+            },
+            "RuntimeError",
+            "cannot start the client thread: the test",
+        ),
+        (
+            sdk::Error::Bind(transport::Error::TimedOut),
+            "OSError",
+            "cannot bind the local UDP socket: the peer stopped answering",
+        ),
+        (
+            sdk::Error::Session(program::Error::Unanswered),
+            "ConnectionError",
+            "the node finished a stream with no answer",
+        ),
+        (
+            sdk::Error::Local(sector::local::Error::NotRunning),
+            "ConnectionError",
+            "no node runs on the data directory",
+        ),
+        (
+            sdk::Error::Panicked,
+            "PanicException",
+            "the client thread panicked",
+        ),
+    ];
     Python::initialize();
     Python::attach(|py| {
-        let error = super::error(&sdk::Error::Bind(transport::Error::TimedOut));
-        assert_eq!(error.get_type(py).name().unwrap().to_string(), "OSError");
-        assert_eq!(
-            error.value(py).to_string(),
-            "cannot bind the local UDP socket: the peer stopped answering"
-        );
+        for (variant, class, text) in cases {
+            let error = super::error(&variant);
+            assert_eq!(error.get_type(py).name().unwrap().to_string(), class);
+            assert_eq!(error.value(py).to_string(), text);
+        }
     });
 }

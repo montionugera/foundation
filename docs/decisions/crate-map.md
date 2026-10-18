@@ -47,9 +47,12 @@ Rules:
    `node` may take `sdk`, so its tests run the client of a program against a real node
    (`laptop.architect`, 2026-10-16T21:33:33Z,
    https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225122027).
-   `sdk-python` may take `transport`, so its test of `error` builds a bind error
-   (`laptop.architect-2`, 2026-10-17T21:48:03Z,
-   https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241731905).
+   `sdk-python` may take `transport` and `program`, so its test of `error` builds a
+   bind error and a session error (`transport`: `laptop.architect-2`,
+   2026-10-17T21:48:03Z,
+   https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241731905;
+   `program`: `laptop.architect`, 2026-10-18T13:42:52Z,
+   https://github.com/synnaxlabs/foundation/issues/3062#issuecomment-6250625861).
    A crate may also take itself, so its tests and benches build with its own `sim`
    feature (STORED BENCH; `laptop.architect`, 2026-10-08T01:01:28Z:
    https://github.com/synnaxlabs/foundation/pull/1568#issuecomment-6049989224). A
@@ -85,9 +88,9 @@ Rules:
 
 Order: layer 1 (`block`, `ring`, `counting`, `waker`) -> `types` -> (`env`, `document`,
 `raft`, `estimate`, `control`, `delivery`) -> `codec` -> `wire` -> `spec` -> `access`;
-layer 2 `os` -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`, `program`) ->
-`mesh` -> (`home`, `replica`) -> `hub`; layer 3 `secret` -> `connector` ->
-`connector-<kind>`; layer 4 (`config-hcl`, `config`) -> `ops` -> `node` -> `sdk` ->
+layer 2 (`os`, `sector`) -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`,
+`program`) -> `mesh` -> (`home`, `replica`) -> `hub`; layer 3 `secret` -> `connector`
+-> `connector-<kind>`; layer 4 (`config-hcl`, `config`) -> `ops` -> `node` -> `sdk` ->
 `sdk-python`.
 
 | Layer | Crate | Job (one sentence) | Allowed dependencies |
@@ -104,10 +107,11 @@ layer 2 `os` -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`, `program`) -
 | 1 | `control` | Decides who holds control of an index: authority, ties, control leases, handoffs, start state after failover. | `types` |
 | 1 | `delivery` | Keeps each reader's state per index: positions, credits, live frames for complete readers, latest mailbox, holds, position records, masks. | `types`, `block` |
 | 1 | `codec` | Compresses and checks one series: per-vector selection, codecs, header validation, format version. | `types`, `block` |
-| 1 | `wire` | Defines every message between two nodes, or between a program and the node it connects to, except the bodies of the mesh protocol, which `mesh` encodes (MESH WIRE): per-connection short numbers, predicted seq and counts, session, credit, and replication messages, format version, and builds the frames of a reader session from its messages (HUB WIRE). | `types`, `block`, `codec` |
+| 1 | `wire` | Defines every message between two nodes, or between a program and the node it connects to, except the bodies of the mesh protocol, which `mesh` encodes (MESH WIRE): per-connection short numbers, predicted seq and counts, session, credit, and replication messages, format version, and builds the frames of a reader session (HUB WIRE) and of a program's write at the node (HUB CLIENT) from their messages. | `types`, `block`, `codec` |
 | 1 | `spec` | Defines the definitions (channels, types, units, connectors with opaque config, regions, policies, open folders), the prolly tree, hashes, diffs, and `spec::resolve`. | `types`, `document` |
 | 1 | `access` | Decides whether a proof is of its subject (signed hellos and requests), and whether a subject may do an action on a name: union of allows, authority cap. | `types`, `spec`; `document` as a dev-dependency only |
 | 2 | `os` | Implements the `env` seams and `block::Memory` on the real operating system: monotonic and wall clocks, files, sockets, serial ports, memory, randomness, and threads. The only crate allowed to call them. Holds its own unsafe memory code in `os::memory` (BLOCK MEMORY), and the OS calls of its clock and wall clock in `os::clock` and `os::wall` (#117). On macOS, `os::allocate` holds one `fcntl(F_PREALLOCATE)` call, because `rustix` can allocate only part of a new file (architect, #931, https://github.com/synnaxlabs/foundation/issues/931#issuecomment-6030986099). `os::net` holds one `setsockopt(TCP_NOTSENT_LOWAT)` call, because `rustix` does not give that option (laptop.architect-2, 2026-10-08 02:32 UTC, #120, https://github.com/synnaxlabs/foundation/issues/120#issuecomment-6050971843). `os::net::resolve` holds the `getaddrinfo` and `freeaddrinfo` calls, because std gives one error for `EAI_NONAME` and `EAI_AGAIN` (laptop.architect-2, 2026-10-08 16:52 UTC, #1095, https://github.com/synnaxlabs/foundation/issues/1095#issuecomment-6064802287). `os::signal` holds the signal mask and `sigwait` calls that hold SIGINT and SIGTERM, because `rustix` gives neither (laptop.architect-2, #1732, https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6086905545). On macOS, `os::memory::available` holds the `mach_host_self` and `host_statistics64` calls (laptop.architect-2, 2026-10-09T22:29:12Z, #2191, https://github.com/synnaxlabs/foundation/pull/2191#issuecomment-6090312136), because `rustix` has no Mach calls. `mach_host_self` comes from `mach2`, and `host_statistics64` from `libc`, because `mach2` 0.7.0 has no `host_statistics64` and `libc` does not deprecate it (laptop.architect-2, 2026-10-09T23:26:00Z, https://github.com/synnaxlabs/foundation/pull/2191#issuecomment-6090979726). On macOS, `os::memory` holds one `madvise(MADV_FREE)` call, because `rustix` gives only the POSIX advice there (laptop.architect-2, 2026-10-16T19:41:36Z, #2907, https://github.com/synnaxlabs/foundation/pull/2907#issuecomment-6223324987). `os::roots` reads the CA certificates of the OS through `rustls-native-certs` (laptop.architect-2, 2026-10-16T10:09:09Z, #2702, https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6213160739). Under the feature `sim`, on Linux, `os::memory::available_under` reads the files of `/proc` and of the cgroups under a given root, so the tests of that code go through a public call (laptop.architect-2, 2026-10-10T04:00:18Z, #2191, https://github.com/synnaxlabs/foundation/pull/2191#issuecomment-6093544655). | `env`, `types`, `block` |
+| 2 | `sector` | Reads and makes the small checked files of a data directory, each of one sector with a tag and a CRC32C, and holds the formats of `address` and `admin.key` and the one read of both that a client on the node's host calls (laptop.architect, 2026-10-18T16:48:30Z, #3212, https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252501317; the name, https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252515306). | `env`, `types`, `block` |
 | 2 | `transport` | Carries sessions of prioritized, cancellable streams and datagrams over QUIC, TLS over TCP, relays, and diodes on the `env::net` seam; never calls up. | `env`, `types`, `block` |
 | 2 | `buffer` | Stores each index's log durably within the disk budget (write-ahead ring, segments, trimming, floors, `append`) through a per-OS driver. | `env`, `types`, `block`, `codec` |
 | 2 | `clock` | Runs time source adapters and the peer exchange, feeds `estimate`, serves mesh time as an interval, and gives the OS wall time and mesh time of each log line. | `ring`, `env`, `types`, `estimate`, `wire`, `transport` |
@@ -127,8 +131,8 @@ layer 2 `os` -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`, `program`) -
 | 4 | `ops` | Holds the operation table and handlers, generates the CLI, MCP tools, and docs, and runs each operation on the node that must run it. | `config`, `connector`, `secret`, `hub`, `mesh`, `blob`, `sim`, layer 1 |
 | 4 | `acceptance` | Runs the MVP acceptance scenarios against whole meshes built from `node`. Test-only. | all crates |
 | 4 | `node` | Is the composition root: real seams, pools and shards, all tables (kinds, front ends, time sources, secret stores), the status collector, process lifecycle, and upgrades. | all crates |
-| 4 | `sdk` | Is the Rust client of a program, outside the binary: it runs a `program::Session` on a shard of `os`, and the Python SDK wraps it. | `program`, `transport`, `os`, `env`, `types`, `block` |
-| 4 | `sdk-python` | Is the Python SDK, outside the binary: a PyO3 module that wraps `sdk::Client` for Python programs. | `sdk`, `types`; `transport` as a dev-dependency only (https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241731905) |
+| 4 | `sdk` | Is the Rust client of a program, outside the binary: it runs a `program::Session` on a shard of `os`, reads the node and its first admin from a data directory with `sector`, and the Python SDK wraps it. | `program`, `transport`, `os`, `sector`, `spec`, `env`, `types`, `block` (`sector`: https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252501317; `spec`: laptop.architect-2, item 2 of https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252530569) |
+| 4 | `sdk-python` | Is the Python SDK, outside the binary: a PyO3 module that wraps `sdk::Client` for Python programs. | `sdk`, `sector`, `types` (`sector`: laptop.architect-2, https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252530569, and laptop.architect, https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252972067); `transport` and `program` as dev-dependencies only (https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241731905, https://github.com/synnaxlabs/foundation/issues/3062#issuecomment-6250625861) |
 
 `fuzz` holds the fuzz targets, outside the workspace. It is test-only, builds on the
 pinned nightly, may depend on any crate, and no crate depends on it (#252;
@@ -136,11 +140,12 @@ pinned nightly, may depend on any crate, and no crate depends on it (#252;
 https://github.com/synnaxlabs/foundation/pull/2099#issuecomment-6074164278).
 
 Outside the binary: the Rust SDK `sdk` (`sdk/rust`, layer 4) builds on `program`,
-`transport`, `env`, `types`, and `block`, and takes its clock, entropy, network, and
-the shard of its client from `os` (#2923). The Python SDK `sdk-python` (`sdk/python`,
-layer 4, last) wraps `sdk` with PyO3, and parses keys and names with `types`. It is
-the module `foundation._native` of the wheel `synnax-foundation` (`laptop.architect`,
-2026-10-17T18:41:45Z,
+`transport`, `sector`, `spec`, `env`, `types`, and `block`, and takes its clock,
+entropy, network, the disk of a data directory (`os::stored`), and its shards from `os`
+(#2923, #3212). The Python SDK `sdk-python` (`sdk/python`, layer 4, last) wraps `sdk`
+with PyO3, parses keys and names with `types`, and maps the errors of `sector::local`
+to its texts. It is the module `foundation._native` of the wheel `synnax-foundation`
+(`laptop.architect`, 2026-10-17T18:41:45Z,
 https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6238783320). The data
 path of Python is `sdk` (C6, SDK DATA PATH; the crate, `laptop.architect`,
 2026-10-15T17:56:55Z,

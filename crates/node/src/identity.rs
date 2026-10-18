@@ -3,7 +3,7 @@
 //!
 //! The file is 100 bytes: the tag, the node key (big-endian), the Ed25519 private key,
 //! the X25519 seal private key, and the CRC32C of those 96 bytes (little-endian), in
-//! one sector ([`crate::sector`]).
+//! one sector ([`sector`]).
 
 use std::path::Path;
 
@@ -12,8 +12,8 @@ use secret::seal::Opener;
 use types::ed25519::PrivateKey;
 use types::time::Stamp;
 
-use crate::sector::{self, Held};
 use crate::{Error, directory};
+use sector::Held;
 
 /// The name of the file.
 pub(crate) const FILE: &str = "node.key";
@@ -108,7 +108,7 @@ async fn read(files: &Files) -> Result<Option<[u8; LEN]>, Error> {
     match held.map_err(Error::Directory)? {
         Held::Nothing => Ok(None),
         Held::Written(bytes) => Ok(Some(bytes)),
-        Held::Foreign => Err(Error::Key),
+        Held::Version { .. } | Held::Foreign => Err(Error::Key),
     }
 }
 
@@ -136,7 +136,7 @@ async fn store(files: &Files, identity: &Identity) -> Result<(), Error> {
 pub(crate) async fn write_new(files: &Files, identity: &Identity) -> Result<(), Error> {
     match sector::read::<LEN>(files, Path::new(FILE), TAG).await {
         Ok(Held::Nothing) => store(files, identity).await,
-        Ok(Held::Written(_) | Held::Foreign) => {
+        Ok(Held::Written(_) | Held::Version { .. } | Held::Foreign) => {
             Err(Error::Directory(env::files::Error::Exists {
                 path: FILE.into(),
             }))

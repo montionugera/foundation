@@ -160,10 +160,45 @@
   https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6098661378;
   `laptop.architect-2`, 2026-10-10T15:29:59Z:
   https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6099110161). The
-  tests of `connector` and of each kind build that config with
-  `connector::testing::create_config`, behind `sim`, which opens the hub through
-  `hub::testing::open`. It gives no mesh time, since a task gets it from its writer
-  (#2143) (`laptop.architect-2`, 2026-10-09T13:37:08Z:
+  tests of each kind build that config through `connector::testing::Rig`, behind
+  `sim` (`Rig::open`, `Rig::trusting` for the roots of an `https` connect, or
+  `Rig::unsynced` for a hub whose mesh time comes late) (`laptop.architect-2`,
+  2026-10-18T16:20:05Z:
+  https://github.com/synnaxlabs/foundation/pull/3214#issuecomment-6252209074). A
+  second open of one connector name reuses the status channels that the rig defined
+  for it when the kind's check gives the same counts, so a status reader goes on;
+  other counts panic. `Rig::define_status` defines them before the first open, for a
+  reader that starts first. `Rig::supervisor` serves a browse only
+  (`laptop.architect-2`, 2026-10-18T16:10:06Z:
+  https://github.com/synnaxlabs/foundation/pull/3214#issuecomment-6252107337). The
+  rig keeps those names after `Rig::remove`, so a later open panics when a status
+  channel is gone, unless its cancel is cancelled. `Rig::unsynced` is a constructor
+  and not a `delay` input, since no test needs a delay and roots at once
+  (`laptop.architect-2`, 2026-10-18T18:05:59Z:
+  https://github.com/synnaxlabs/foundation/issues/3039#issuecomment-6253304602).
+  `Rig::define_status` gives the names, and a test keys the status samples by the
+  name of each channel, not by its key or its place (`laptop.architect-2`,
+  2026-10-18T18:51:16Z:
+  https://github.com/synnaxlabs/foundation/pull/3236#issuecomment-6253767097).
+  `Run::end` gives the result of a run only when the run ended before the call
+  (`laptop.architect-2`, 2026-10-18T18:33:24Z:
+  https://github.com/synnaxlabs/foundation/pull/3236#issuecomment-6253583744). An
+  open of a name while a run of it that `Rig::supervise` started goes on panics, also
+  after a drop of its `Run`, since a reader of the new run would read the status of
+  the old one (`laptop.architect-2`, 2026-10-18T18:46:17Z:
+  https://github.com/synnaxlabs/foundation/pull/3236#issuecomment-6253716161).
+  `Run::next` gives each status of a frame, oldest first, so `until` and the hold
+  check of scenario 2 see each change. `Rig::record` reads each status of a connector
+  across its runs, for a fixture that keeps them (`laptop.architect-2`,
+  2026-10-18T20:28:42Z:
+  https://github.com/synnaxlabs/foundation/issues/3039#issuecomment-6254767524). The
+  unit tests of `connector` build it with the crate-private `testing::create_config`,
+  which `Rig` also calls, and which opens the hub through `hub::testing::open`, other
+  than the tests of the wait for mesh time (below) and one test with no status
+  channels, which build it by hand (`laptop.architect-2`, 2026-10-18T15:50:43Z:
+  https://github.com/synnaxlabs/foundation/issues/3039#issuecomment-6251910786). It
+  gives no mesh time, since a task gets it from its writer (#2143)
+  (`laptop.architect-2`, 2026-10-09T13:37:08Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6082035824;
   `laptop.architect`, 2026-10-08T17:50:53Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6065807610). After

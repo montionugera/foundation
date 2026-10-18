@@ -25,9 +25,6 @@ exclude_re = [
   '^bench/',
   # `main` reads the arguments and calls a task. Each task has its own tests.
   'xtask/src/main\.rs:.*(replace main ->| in main$)',
-  # Miri needs the pinned nightly, which only the miri CI job installs. A deliberate
-  # break in that job shows that it fails.
-  'xtask/src/miri\.rs:.*(replace run ->| in run$)',
   # The run needs the pinned nightly, which the mutants job does not install. A planted
   # overflow in the shim fails the sanitizers job.
   'xtask/src/sanitizers\.rs:.*(replace run ->| in run$)',
@@ -97,19 +94,19 @@ exclude_re = [
   # and the mutants of `written` show that it does.
   'crates/node/src/identity\.rs:.*replace check with \(\)',
   # The oracle of `admin.key` in the same target and tests, for the same reason.
-  'crates/node/src/admin\.rs:.*replace check with \(\)',
+  'crates/sector/src/admin\.rs:.*replace check with \(\)',
   # The check that `identity::check`, `admin::check`, and `address::check` call, for
-  # the same reason. The unit tests `panics_when_a_decode_*` in `sector.rs` show that
-  # it panics.
-  'crates/node/src/sector\.rs:.*replace check with \(\)',
+  # the same reason. The unit tests `panics_when_a_decode_*` of `sector` show that it
+  # panics.
+  'crates/sector/src/lib\.rs:.*replace check with \(\)',
   # The oracle of `address` in the same target and tests, for the same reason.
-  'crates/node/src/address\.rs:.*replace check with \(\)',
+  'crates/sector/src/address\.rs:.*replace check with \(\)',
   # The entry of the target, which panics only when a `check` does.
   'crates/node/src/fuzz\.rs:.*replace identity with \(\)',
   # No caller sees the bytes that `file` gives: `identity` panics only when a `check`
   # does. The unit test `a_file_is_its_bytes_or_its_body_with_the_checksum` reads them.
   'crates/node/src/fuzz\.rs:.*replace file -> ',
-  # Only Miri sees the stub task that a skipped clear leaks, and the miri job runs
+  # Only Miri sees the stub task that a skipped clear leaks, and the miri shard jobs run
   # those tests.
   'crates/connector-ni/src/daqmx\.rs:.*replace <impl Drop for Task>::drop with \(\)',
   # A fence changes the order of memory operations around a counter read, and no
@@ -151,6 +148,9 @@ exclude_re = [
   # `a_write_waits_at_the_unsent_bound_not_the_send_buffer`, and
   # `a_full_send_buffer_below_the_bound_makes_a_write_wait`.
   'crates/os/src/net/unsent\.rs:.*Bound::send',
+  # macOS 15 only: Linux refuses the path at the stat. In the `macos` check,
+  # `paths::within_agrees_with_free_on_a_file_with_a_slash_or_a_dot` catches it.
+  'crates/os/src/paths\.rs:.*guard names_directory\(path\) with false in read$',
   # No input makes `getaddrinfo` give `EAI_AGAIN` or `EAI_MEMORY` on demand. The test of
   # the map, through a private call, kills each.
   'crates/os/src/net/resolve\.rs:.*delete match arm \(libc::EAI_(AGAIN|MEMORY), _\)',
@@ -225,4 +225,16 @@ exclude_re = [
   'crates/codec/src/alp\.rs:.*replace (< with <=|> with >=) in Stats::of_f64$',
   # A stub that panics until PR B2 of #432 fills it; B2 removes this line.
   'crates/connector-modbus/src/kind\.rs:.*replace <impl kind::Kind for Kind>::run ->',
+  # `Holder::copy` asserts that `at` fits in 31 bits, so bit 31 is clear and `^`
+  # gives the same bits as `|`.
+  'crates/buffer/src/log\.rs:.*replace \| with \^ in Holder::copy$',
+  # A read's assembly (`SKIP` false) never reaches `Skipped`: its `skip` fails to
+  # build. So the arm under a true guard is never taken.
+  'crates/wire/src/hub/part\.rs:.*replace match guard SKIP with true in Assembly<SKIP>::(body|take)$',
+  # The lead of a frame is 11 bytes and 8 for each place, so it is odd, and each block
+  # payload is even: the lead never equals the largest block.
+  'crates/program/src/write\.rs:.*replace > with >= in Writer::open$',
+  # `Replies::decode` gives a `Stored` error only with `bound` below or above
+  # `frames`, never equal to it.
+  'crates/wire/src/hub\.rs:.*replace < with <= in <impl fmt::Display for Error>::fmt$',
 ]

@@ -367,6 +367,7 @@ dependencies = [
  "document",
  "env",
  "hub",
+ "tracing",
  "types",
 ]
 
@@ -912,7 +913,6 @@ dependencies = [
  "connector-influx",
  "connector-modbus",
  "connector-opcua",
- "crc32c",
  "document",
  "env",
  "estimate",
@@ -924,6 +924,7 @@ dependencies = [
  "os",
  "program",
  "secret",
+ "sector",
  "serde",
  "serde_json",
  "spec",
@@ -1337,6 +1338,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sector"
+version = "0.0.0"
+dependencies = [
+ "block",
+ "crc32c",
+ "env",
+ "types",
+]
+
+[[package]]
 name = "security-framework"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1637,8 +1648,6 @@ dependencies = [
 [[package]]
 name = "tracing-core"
 version = "0.1.36"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
  "valuable",

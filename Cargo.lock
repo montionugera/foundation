@@ -504,9 +504,11 @@ dependencies = [
  "document",
  "env",
  "hub",
+ "libc",
  "proptest",
  "sim",
  "spec",
+ "tracing",
  "types",
 ]
 
@@ -1247,6 +1249,7 @@ dependencies = [
  "proptest",
  "sdk",
  "secret",
+ "sector",
  "serde",
  "serde_json",
  "sim",
@@ -1912,6 +1915,8 @@ dependencies = [
  "env",
  "os",
  "program",
+ "sector",
+ "spec",
  "tokio",
  "tracing",
  "transport",
@@ -1922,8 +1927,10 @@ dependencies = [
 name = "sdk-python"
 version = "0.0.0"
 dependencies = [
+ "program",
  "pyo3",
  "sdk",
+ "sector",
  "transport",
  "types",
 ]
@@ -1941,6 +1948,18 @@ dependencies = [
  "sim",
  "types",
  "zeroize",
+]
+
+[[package]]
+name = "sector"
+version = "0.0.0"
+dependencies = [
+ "block",
+ "crc32c",
+ "env",
+ "proptest",
+ "sim",
+ "types",
 ]
 
 [[package]]
@@ -2339,8 +2358,6 @@ dependencies = [
 [[package]]
 name = "tracing-core"
 version = "0.1.36"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
  "valuable",
@@ -2715,6 +2732,7 @@ dependencies = [
  "cfg-expr",
  "comrak",
  "proptest",
+ "quote",
  "semver",
  "serde_json",
  "syn 3.0.6",

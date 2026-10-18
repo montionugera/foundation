@@ -66,9 +66,10 @@
   milestone path where a holder that had a grace in an earlier run refuses a writer
   (`laptop.architect`, #2314, 2026-10-11T13:00:55Z, item 2:
   https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6109289345).
-  Trimming must keep the last record of each index (#406). Until it does, a trim (STORE
-  TRIM) can free that record, and a holder whose record a trim freed gets no grace after
-  a restart. Retention deletes nothing (decided by `laptop.architect`,
+  A trim keeps the newest handoff of each index (STORE TRIM; `laptop.architect`, #406,
+  2026-10-14T01:56:45Z:
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6159164617).
+  Retention deletes nothing (decided by `laptop.architect`,
   2026-10-07T12:30:53Z and 2026-10-07T12:59:37Z:
   https://github.com/synnaxlabs/foundation/issues/1377#issuecomment-6037946637 and
   https://github.com/synnaxlabs/foundation/issues/1377#issuecomment-6038431739).

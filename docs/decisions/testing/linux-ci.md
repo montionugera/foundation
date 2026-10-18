@@ -16,9 +16,15 @@
     or a defect that its issue fixes. A test whose value on the OS is known asserts it
     with a `cfg` on its expected value. The PR that closes an issue removes each item
     that names only that issue, and removes the issue from an item that names others.
-    The lists only shrink, other than this: a new crate enters a list only with the
-    open issues of the `os` items that it needs. The ONE NODE milestone does not close
-    while a list holds a crate or a test.
+    The lists only shrink, other than this: a new crate enters a list, a new gate
+    enters the `gates` list of an OS, and an item gains an issue once the code of its
+    crate needs another `os` item, each only with the open issues that build on that OS
+    the `os` items that its code needs (`laptop.director`, 2026-10-18T20:47:36Z,
+    https://github.com/synnaxlabs/foundation/pull/3260#issuecomment-6254960151). The
+    review checks that each such issue builds such an item. A crate item that leaves a
+    list, with one `tests` item for each of its tests that still fails, each with an
+    open issue, is a shrink. The ONE NODE milestone does not close while a list holds a
+    crate, a test, or a gate.
   - A test skips an OS by an attribute only in a case of `docs/claude/testing.md`, "No
     `#[ignore]`": the OS does not have the behavior, no test can fix its value there, or
     its test needs an item of one OS to cause the case. Its reason is `only <OS>`, or
@@ -29,12 +35,28 @@
     `needs <tool>` skip too, is an item of the list of that OS with its issue. The
     review checks that the reason is true of the behavior, not only of the tool. `cargo
     xtask skips` reads the module tree of each target of the workspace, other than the
-    body of a macro call, in the job `check` on Linux. For each test, it finds the OSes
-    of the lists on which its `cfg` and those of its modules build it and an `ignore`
-    skips it on the runner of that OS in the job `check`, and checks each reason of
-    those `ignore` attributes. A test that those attributes skip on each OS on which it
-    builds has no OS to name, so each of them is refused, unless a plain `#[ignore]`
-    skips the test on each OS. It also refuses a `path` in a `cfg_attr`.
+    `ignore` attributes in the body of a macro call, in the job `check` on Linux. For
+    each test, it finds the OSes of the lists on which its `cfg` and those of its
+    modules build it and an `ignore` skips it on the runner of that OS in the job
+    `check`, and checks each reason of those `ignore` attributes. A test that those
+    attributes skip on each OS on which it builds has no OS to name, so each of them is
+    refused, unless a plain `#[ignore]` skips the test on each OS. It also refuses a
+    `path` in a `cfg_attr`.
+  - A `cfg` that names a target and leaves out of an OS a test that no item of the same
+    path builds there is a gate, and so is a `cfg_attr` that applies `test` on only some
+    OSes. A gate is an item of the `gates` list of each OS that it leaves out, as
+    `- <file> <path in the file> # #<issue>`, or, in a case of "No `#[ignore]`", the
+    first line of the doc of the item is `Only <OS>` or `Only <arch>`, or starts with
+    either and `:`. `<OS>` names each OS on which the item builds, as for a reason.
+    `<arch>` is the `target_arch` value (`aarch64` or `x86_64`) of each runner on which
+    the item builds, that of `arm.yaml` too, and of no other. The list comes first, so a
+    doc covers only each OS that no list item names, and the review checks its claim on
+    each of those OSes. A gate covers a test module, a test function, a test in the body
+    of a macro call or in a brace group of that body, and each function of a test or
+    bench target with no harness. A branch of `cfg_if!` builds where its `cfg` holds and
+    no `cfg` before it in its chain does. `cargo xtask skips` refuses each other gate,
+    and each list item that names no gate. A `cfg` on a statement, and a test that a
+    macro makes from tokens outside its call, are not read.
   - For `/review`, CI does not run an OS for a crate or a test on the list of that OS
     (`laptop.director`,
     https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229528745).
@@ -90,7 +112,32 @@
     (https://github.com/synnaxlabs/foundation/issues/3015#issuecomment-6231310442), on
     the gap that `laptop.monitor` found at 2026-10-17T07:32:46Z
     (https://github.com/synnaxlabs/foundation/issues/2954#issuecomment-6231250077).
+  - The gates on the lists: `laptop.director`, 2026-10-17T16:02:01Z, option 1
+    (https://github.com/synnaxlabs/foundation/issues/3015#issuecomment-6236264009).
+    The doc form `Only <OS>`, which covers only each OS that no item names, and whose
+    claim the review checks on each of those OSes: `laptop.director`,
+    2026-10-18T04:21:59Z
+    (https://github.com/synnaxlabs/foundation/issues/3015#issuecomment-6245603833).
+    The doc form `Only <arch>`: `laptop.director`, 2026-10-18T05:10:43Z
+    (https://github.com/synnaxlabs/foundation/pull/3134#issuecomment-6245970187), and
+    its reading with the runner of `arm.yaml`, 2026-10-18T14:02:34Z
+    (https://github.com/synnaxlabs/foundation/pull/3134#issuecomment-6250818913).
+  - A new gate only with the issues of the `os` items that it needs: the person left the
+    choice to `laptop.monitor`, 2026-10-18T14:45Z: "Your choice as to what is correctly
+    going to balance factory pace with quality software dev". `laptop.monitor` chose
+    option (b), as `laptop.director` recommends
+    (https://github.com/synnaxlabs/foundation/pull/3134#issuecomment-6251149697).
   - A new crate on a list: the person, relayed by `laptop.monitor` at
     2026-10-17T17:30:12Z
     (https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237654845):
-    "Yeah fine". So `sdk` is on the Windows lists with #682 and #2955.
+    "Yeah fine". So `sdk` entered the Windows lists with #682 and #2955.
+  - An item that gains an issue once the code of its crate needs another `os` item:
+    `laptop.director`, 2026-10-18T20:47:36Z
+    (https://github.com/synnaxlabs/foundation/pull/3260#issuecomment-6254960151). So the
+    `sdk` items gain #2956 (#3260), for `os::stored`, which `sdk::Node::local` needs.
+  - A crate item that becomes `tests` items: `laptop.monitor`, 2026-10-18T09:15:35Z,
+    in place of `laptop.director`, which wrote the PR
+    (https://github.com/synnaxlabs/foundation/pull/3163#issuecomment-6248122830): "a
+    crate item that leaves a list, replaced by one `tests` item for each of its tests
+    that still fails, each with an open issue, is a shrink." So `xtask` leaves the
+    Windows lists with 32 `tests` items of #3165 and #3166.
