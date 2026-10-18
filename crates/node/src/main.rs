@@ -235,8 +235,8 @@ fn unreached(dir: &Path, error: node::client::Error) -> Failure {
             format!(
                 "{} holds format version {}, and this foundation reads version {}",
                 data_file(dir, file),
-                found.escape_ascii(),
-                expected.escape_ascii()
+                char::from(found),
+                char::from(expected)
             ),
             "Use a `foundation` program of the same version as the node".into(),
         ),

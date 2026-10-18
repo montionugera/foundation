@@ -8,8 +8,8 @@
   and another length or checksum, is `Held::Foreign`.
   `sector::local::read` gives `local::Error::Version { file, found, expected }` for
   `address` or `admin.key` of another version, with the text `<file> holds format
-  version <found>, and this program reads version <expected>`, each byte as an escaped
-  ASCII char, and not `NotRunning`. The callers in `node` (`budget`, `identity`,
+  version <found>, and this program reads version <expected>`, each byte as its ASCII
+  char, and not `NotRunning`. The callers in `node` (`budget`, `identity`,
   `name`, `admin`) map `Version` as `Foreign` until #3225 (`laptop.architect-2`:
   https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252530569 at
   2026-10-18T16:51:27Z; item 7 of
@@ -23,7 +23,11 @@
   2026-10-18T17:34:06Z; the names `found` and `expected`, over `held` and `read` of
   6252630274, in item 1 of
   https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6253217340 at
-  2026-10-18T17:57:52Z).
+  2026-10-18T17:57:52Z; `expected` in `Held::Version`, and `Version` only for a byte
+  of the set, over the reason "as the file may hold any byte" of 6252530569 and the
+  escaped byte of 6252630274, in items A and B of
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6253248771 at
+  2026-10-18T18:00:53Z).
   Lost: a version in the decimal digits after the prefix. A key byte follows each tag
   of version 1 and is an ASCII digit 10 times in 256, so a valid file of version 1
   reads as another version, and `foundation/admin/1` is the prefix of

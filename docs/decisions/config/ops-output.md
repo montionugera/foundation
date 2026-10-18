@@ -240,9 +240,10 @@
   `node.session` is by `laptop.architect-2` (2026-10-13T01:44:19Z,
   https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936).
   `node.version`: `<dir>/data/<file> holds format version <found>, and this
-  foundation reads version <expected>`, with each version byte as an escaped ASCII
-  char, fix ``Use a `foundation` program of the same version as the node``, when
-  `address` or `admin.key` holds a format of another version, which `reach` gives as
+  foundation reads version <expected>`, with each version byte as its ASCII char, a
+  version of the set of SECTOR VERSIONS, fix ``Use a `foundation` program of the
+  same version as the node``, when `address` or `admin.key` holds a format of another
+  version, which `reach` gives as
   `node::client::Error::Local(sector::local::Error::Version { .. })`
   (`laptop.architect-2`: item 7 of
   https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252508020 at
@@ -257,7 +258,10 @@
   2026-10-18T17:34:06Z; the names `found` and `expected`, over `held` and `read` of
   6252630274, in item 1 of
   https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6253217340 at
-  2026-10-18T17:57:52Z).
+  2026-10-18T17:57:52Z; the byte as its char, over the escaped byte of 6252630274,
+  in item B of
+  https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6253248771 at
+  2026-10-18T18:00:53Z).
   `node.socket` covers a socket of the program that broke, with the message `the
   socket of this program failed: <the transport error>` (`laptop.architect-2`,
   2026-10-13T02:10:54Z, item 4 of

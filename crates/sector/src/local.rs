@@ -54,8 +54,8 @@ impl fmt::Display for Error {
             } => write!(
                 f,
                 "{file} holds format version {}, and this program reads version {}",
-                found.escape_ascii(),
-                expected.escape_ascii(),
+                char::from(*found),
+                char::from(*expected),
             ),
             Self::Files(error) => write!(f, "{error}"),
         }
@@ -151,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn version_prints_the_found_byte_as_an_escaped_ascii_char() {
+    fn version_prints_each_byte_as_an_ascii_char() {
         let version = |found| Error::Version {
             file: "address",
             found,
