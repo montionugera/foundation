@@ -59,9 +59,15 @@ impl Log {
     /// Writes the count of each window that dropped lines and has ended. It reads the
     /// clock only when a window dropped lines.
     pub(crate) fn flush(&self) {
-        if self.warn.dropped.get() == 0 && self.error.dropped.get() == 0 {
-            return;
+        if self.warn.dropped.get() != 0 || self.error.dropped.get() != 0 {
+            self.flush_dropped();
         }
+    }
+
+    // Out of line, so that each run of a loop inlines only the check.
+    #[cold]
+    #[inline(never)]
+    fn flush_dropped(&self) {
         let now = self.clock.now();
         self.flush_at(Level::Warn, now);
         self.flush_at(Level::Error, now);
