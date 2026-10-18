@@ -91,40 +91,52 @@ pub(crate) unsafe fn unconnected(el: *mut ffi::EventLoop) -> NonNull<ffi::Client
     NonNull::new(client).unwrap_or_else(|| alloc::exhausted())
 }
 
-/// The certificate and private key of a client, each DER or PEM, the certificates
-/// that it trusts, and the mode of its channel: [`ffi::Mode::SIGN`] or
-/// [`ffi::Mode::SIGN_AND_ENCRYPT`]. The client offers each of the three policies of the
-/// copy, and open62541 takes the endpoint in `mode` of the highest security level that
-/// the server offers. The application URI of the client is the URI of `certificate`.
+/// The certificate and private key of a peer, each DER or PEM, and its `trust`: one
+/// DER certificate or one or more PEM certificates. A client offers each of the three
+/// policies of the copy on them, with the URI of `certificate` as its application URI.
 ///
 /// # Errors
 ///
 /// [`Client::connect`] gives `BadCertificateInvalid` when `certificate` does not parse
 /// or holds no RSA key, `BadInvalidArgument` when `key` does not parse,
-/// `BadSecurityChecksFailed` when they do not match, and `BadCertificateUriInvalid`
-/// when `certificate` holds no URI.
-pub(crate) struct Security<'a> {
+/// `BadSecurityChecksFailed` when they do not match, `BadCertificateUriInvalid` when
+/// `certificate` holds no URI, and `BadInternalError` when `trust` is empty or a
+/// certificate of it does not parse.
+pub(crate) struct Credentials<'a> {
     pub(crate) certificate: &'a [u8],
     pub(crate) key: &'a [u8],
-    pub(crate) trust: &'a [&'a [u8]],
-    pub(crate) mode: ffi::Mode,
+    pub(crate) trust: &'a [u8],
 }
 
-impl Security<'_> {
-    /// Gives `f` the `shim_security` of the certificate, the key, and the trust, which
-    /// lives only for the call.
-    pub(crate) fn raw<T>(&self, f: impl FnOnce(&ffi::Security) -> T) -> T {
-        let trusted: Vec<ffi::Bytes> = self
-            .trust
-            .iter()
-            .map(|certificate| ffi::Bytes::of(certificate))
-            .collect();
-        f(&ffi::Security {
+impl Credentials<'_> {
+    /// Gives the `shim_security` of the credentials, which borrows them.
+    pub(crate) fn raw(&self) -> ffi::Security {
+        ffi::Security {
             certificate: ffi::Bytes::of(self.certificate),
             key: ffi::Bytes::of(self.key),
-            trusted: trusted.as_ptr(),
-            trusted_size: trusted.len(),
-        })
+            trust: ffi::Bytes::of(self.trust),
+        }
+    }
+}
+
+/// The mode of a secure channel. open62541 takes the endpoint in the mode of the
+/// highest security level that the server offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the config gives the mode in PR 2b of #2934")
+)]
+pub(crate) enum Mode {
+    Sign,
+    SignAndEncrypt,
+}
+
+impl From<Mode> for ffi::Mode {
+    fn from(mode: Mode) -> Self {
+        match mode {
+            Mode::Sign => Self::SIGN,
+            Mode::SignAndEncrypt => Self::SIGN_AND_ENCRYPT,
+        }
     }
 }
 
@@ -212,7 +224,8 @@ struct Slots {
 impl Client {
     /// Makes a client on its own manager over `time`, `span`, `net`, and `rng`, as
     /// [`Manager::new`] does, and connects it to the server at the endpoint `url` with
-    /// `security`, or the security mode `None` when it is `None`, and an anonymous
+    /// the credentials and mode of `security`, or the security mode `None` when it is
+    /// `None`, and an anonymous
     /// session. It gives the client once the session is active and it has read the
     /// `MaxNodesPerRead` of the server, or `None` when `until` ends first.
     /// After an error, or when `until` ends first, it closes the session that the
@@ -221,7 +234,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Before it dials, the error of [`Security`] when open62541 refuses `security`.
+    /// Before it dials, the error of [`Credentials`] when open62541 refuses them.
     /// `BadTimeout` when the session is not active after the request timeout of the
     /// client (5 s), `BadConnectionClosed` when the server closes or resets an open
     /// stream before the session is active, with no new dial after that close, else the
@@ -238,16 +251,20 @@ impl Client {
         net: Net,
         rng: &mut Rng,
         url: &CStr,
-        security: Option<&Security<'_>>,
+        security: Option<(&Credentials<'_>, Mode)>,
         until: impl Future<Output = ()>,
     ) -> Result<Option<Self>, Status> {
         let mut client = Self::new(time, span, net, rng, url.to_owned());
-        if let Some(security) = security {
-            let status = security.raw(|raw| {
-                // SAFETY: the client lives and has not connected, and it copies `raw`.
-                Status(unsafe {
-                    ffi::shim_client_secure(client.raw.as_ptr(), security.mode, raw)
-                })
+        if let Some((credentials, mode)) = security {
+            let raw = credentials.raw();
+            // SAFETY: the client lives and has not connected, `raw` borrows the live
+            // `credentials`, and the client copies it.
+            let status = Status(unsafe {
+                ffi::shim_client_secure(
+                    client.raw.as_ptr(),
+                    mode.into(),
+                    &raw const raw,
+                )
             });
             if status != Status::GOOD {
                 return Err(status);

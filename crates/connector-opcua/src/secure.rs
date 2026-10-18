@@ -2,14 +2,12 @@
 //!
 //! The fixtures in `secure/` are self-signed RSA 2048 certificates with SHA-256 and
 //! their PKCS #1 keys, in DER from Python `cryptography` 41.0.7, each valid from
-//! [`START`] to [`END`]. They are test keys only.
+//! [`START`] to [`END`], PEM copies of them, and one P-256 certificate and its key. They
+//! are test keys only.
 
 use std::ffi::CStr;
 
 use types::time::{Span, Stamp};
-
-use crate::client;
-use crate::ffi::Mode;
 
 /// 2001-01-01.
 pub(crate) const START: Stamp = from_secs(978_307_200);
@@ -59,6 +57,24 @@ pub(crate) const OTHER: Identity = Identity {
     key: include_bytes!("secure/other-key.der"),
 };
 
+/// [`CLIENT`] in PEM.
+pub(crate) const CLIENT_PEM: Identity = Identity {
+    certificate: include_bytes!("secure/client.pem"),
+    key: include_bytes!("secure/client-key.pem"),
+};
+
+/// A client with the URI of [`CLIENT`] on a P-256 key.
+pub(crate) const EC: Identity = Identity {
+    certificate: include_bytes!("secure/ec.der"),
+    key: include_bytes!("secure/ec-key.der"),
+};
+
+/// [`OTHER`], then [`SERVER`], in PEM.
+pub(crate) const TRUST: &[u8] = include_bytes!("secure/trust.pem");
+
+/// [`SERVER`], then the first 300 bytes of [`OTHER`], in PEM.
+pub(crate) const BROKEN_TRUST: &[u8] = include_bytes!("secure/broken-trust.pem");
+
 const fn from_secs(secs: i64) -> Stamp {
     Stamp::from_nanos(secs * Span::SECOND.nanos())
 }
@@ -68,25 +84,6 @@ const fn from_secs(secs: i64) -> Stamp {
 pub(crate) struct Identity {
     pub(crate) certificate: &'static [u8],
     pub(crate) key: &'static [u8],
-}
-
-/// The identity of a peer and the certificates that it trusts.
-#[derive(Clone, Copy)]
-pub(crate) struct Security {
-    pub(crate) own: Identity,
-    pub(crate) trusted: &'static [&'static [u8]],
-}
-
-impl Security {
-    /// The security of a client of the peer that asks for `mode`.
-    pub(crate) fn client(&self, mode: Mode) -> client::Security<'static> {
-        client::Security {
-            certificate: self.own.certificate,
-            key: self.own.key,
-            trust: self.trusted,
-            mode,
-        }
-    }
 }
 
 /// The three policies that the copy compiles.

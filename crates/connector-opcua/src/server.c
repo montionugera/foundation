@@ -17,17 +17,25 @@
 
 #include "shim.h"
 
-/* Gives `server` the policies of `security`, each in Sign and in SignAndEncrypt, and a
- * channel check that trusts only the certificates that `security` trusts. */
+/* Gives `server` the policies of `security`, with an endpoint in Sign and in
+ * SignAndEncrypt for each of the `count` policy URIs of `policies`, in that order, and a
+ * channel check that trusts only the certificates that `security` trusts. Gives
+ * `BadSecurityPolicyRejected` for a URI that the copy does not compile. */
 static UA_StatusCode secure_server(UA_ServerConfig *config,
-                                   const shim_security *security) {
+                                   const shim_security *security,
+                                   const char *const *policies, size_t count) {
     size_t first = config->securityPoliciesSize;
     UA_StatusCode status = shim_add_policies(&config->securityPolicies,
                                              &config->securityPoliciesSize, security,
                                              config->logging);
-    for(size_t i = first; status == UA_STATUSCODE_GOOD && i < config->securityPoliciesSize;
-        i++) {
-        UA_String uri = config->securityPolicies[i].policyUri;
+    for(size_t i = 0; status == UA_STATUSCODE_GOOD && i < count; i++) {
+        UA_String uri = UA_STRING((char *)(uintptr_t)policies[i]);
+        size_t at = first;
+        while(at < config->securityPoliciesSize &&
+              !UA_String_equal(&config->securityPolicies[at].policyUri, &uri))
+            at++;
+        if(at == config->securityPoliciesSize)
+            return UA_STATUSCODE_BADSECURITYPOLICYREJECTED;
         status = UA_ServerConfig_addEndpoint(config, uri, UA_MESSAGESECURITYMODE_SIGN);
         if(status == UA_STATUSCODE_GOOD)
             status = UA_ServerConfig_addEndpoint(config, uri,
@@ -37,18 +45,20 @@ static UA_StatusCode secure_server(UA_ServerConfig *config,
         return status;
     /* `UA_ServerConfig_setMinimal` gives the group the accept-all group. */
     config->secureChannelPKI.clear(&config->secureChannelPKI);
-    return shim_trust(&config->secureChannelPKI, security->trusted,
-                      security->trusted_size, config->logging, config->eventLoop);
+    return shim_trust(&config->secureChannelPKI, &security->trust, config->logging,
+                      config->eventLoop);
 }
 
 /* Gives a server on `el` with the minimal config, the one server URL
  * `opc.tcp://{host}:{port}`, room for `sessions` sessions and secure channels, and at
  * most `chunks` chunks in a message, or NULL on a failure. With `security`, the server
- * also has each of the three policies in Sign and in SignAndEncrypt, and its channels
- * trust only the certificates that `security` trusts. */
+ * also has an endpoint in Sign and in SignAndEncrypt for each of the `count` policy
+ * URIs of `policies`, in that order, and its channels trust only the certificates that
+ * `security` trusts. */
 UA_Server *shim_server_new(UA_EventLoop *el, UA_UInt16 port, const char *host,
                            UA_UInt16 sessions, UA_UInt32 chunks,
-                           const shim_security *security) {
+                           const shim_security *security,
+                           const char *const *policies, size_t count) {
     UA_ServerConfig config;
     memset(&config, 0, sizeof(config));
     /* The loop of `shim_loop_new` owns its logger, which is not const. */
@@ -56,7 +66,7 @@ UA_Server *shim_server_new(UA_EventLoop *el, UA_UInt16 port, const char *host,
     config.eventLoop = el;
     config.externalEventLoop = true;
     if(UA_ServerConfig_setMinimal(&config, port, NULL) != UA_STATUSCODE_GOOD ||
-       (security && secure_server(&config, security) != UA_STATUSCODE_GOOD)) {
+       (security && secure_server(&config, security, policies, count) != UA_STATUSCODE_GOOD)) {
         UA_ServerConfig_clear(&config);
         return NULL;
     }
@@ -72,14 +82,6 @@ UA_Server *shim_server_new(UA_EventLoop *el, UA_UInt16 port, const char *host,
         return NULL;
     }
     return UA_Server_newWithConfig(&config);
-}
-
-/* Makes `client`, after `shim_client_secure`, ask for the policy `uri`. */
-UA_StatusCode shim_client_policy(UA_Client *client, const char *uri) {
-    UA_String *policy = &UA_Client_getConfig(client)->securityPolicyUri;
-    UA_String_clear(policy);
-    *policy = UA_STRING_ALLOC(uri);
-    return policy->data ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADOUTOFMEMORY;
 }
 
 /* Gives the application URI that `client` sends, which lives as long as its config. */
@@ -451,7 +453,7 @@ UA_StatusCode shim_server_add_view(UA_Server *server, shim_node node, shim_node 
 UA_StatusCode shim_verify_certificate(const UA_ByteString *certificate,
                                       const UA_ByteString *trusted, UA_EventLoop *el) {
     UA_CertificateGroup group;
-    UA_StatusCode status = shim_trust(&group, trusted, trusted ? 1 : 0, NULL, el);
+    UA_StatusCode status = shim_trust(&group, trusted, NULL, el);
     if(status != UA_STATUSCODE_GOOD)
         return status;
     status = group.verifyCertificate(&group, certificate);
@@ -463,19 +465,20 @@ UA_StatusCode shim_verify_certificate(const UA_ByteString *certificate,
  * of a memory group with an empty trust list and the loop `el`, then for each policy on
  * `security`, a channel context with `certificate` as the remote certificate, and the
  * compare of `certificate` with a context on the certificate of `security`. Also reads
- * the application URI of `certificate`. Sets `*verified` to the status of the check,
- * and gives `Good`, or the status of a step that no `certificate` changes. */
+ * the application URI of `certificate`. Sets `*verified` to the status of the check
+ * and `*named` to the status of the read of the URI, and gives `Good`, or the status
+ * of a step that no `certificate` changes. */
 UA_StatusCode shim_read_certificate(const UA_ByteString *certificate,
                                     const shim_security *security, UA_EventLoop *el,
-                                    UA_StatusCode *verified) {
+                                    UA_StatusCode *verified, UA_StatusCode *named) {
     UA_CertificateGroup group;
-    UA_StatusCode status = shim_trust(&group, NULL, 0, NULL, el);
+    UA_StatusCode status = shim_trust(&group, NULL, NULL, el);
     if(status != UA_STATUSCODE_GOOD)
         return status;
     *verified = group.verifyCertificate(&group, certificate);
     group.clear(&group);
     UA_String uri = UA_STRING_NULL;
-    UA_CertificateUtils_getApplicationUri(certificate, &uri);
+    *named = UA_CertificateUtils_getApplicationUri(certificate, &uri);
     UA_String_clear(&uri);
     UA_SecurityPolicy *policies = NULL;
     size_t size = 0;
@@ -502,7 +505,7 @@ UA_StatusCode shim_read_certificate(const UA_ByteString *certificate,
  * list and the loop `el`, and clears the group that it makes. */
 UA_StatusCode shim_memory_group(UA_EventLoop *el) {
     UA_CertificateGroup group;
-    UA_StatusCode status = shim_trust(&group, NULL, 0, NULL, el);
+    UA_StatusCode status = shim_trust(&group, NULL, NULL, el);
     if(status == UA_STATUSCODE_GOOD)
         group.clear(&group);
     return status;

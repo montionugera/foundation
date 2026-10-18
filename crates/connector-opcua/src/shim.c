@@ -797,18 +797,18 @@ UA_StatusCode shim_add_policies(UA_SecurityPolicy **policies, size_t *size,
     return UA_STATUSCODE_GOOD;
 }
 
-UA_StatusCode shim_trust(UA_CertificateGroup *group, const UA_ByteString *trusted,
-                         size_t size, const UA_Logger *logger, UA_EventLoop *el) {
+UA_StatusCode shim_trust(UA_CertificateGroup *group, const UA_ByteString *trust,
+                         const UA_Logger *logger, UA_EventLoop *el) {
     static const UA_NodeId APPLICATION_GROUP = {
         0, UA_NODEIDTYPE_NUMERIC,
         {UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP}};
     memset(group, 0, sizeof(*group));
     UA_TrustListDataType list;
     UA_TrustListDataType_init(&list);
-    if(size > 0) {
+    if(trust) {
         list.specifiedLists = UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES;
-        list.trustedCertificates = (UA_ByteString *)(uintptr_t)trusted;
-        list.trustedCertificatesSize = size;
+        list.trustedCertificates = (UA_ByteString *)(uintptr_t)trust;
+        list.trustedCertificatesSize = 1;
     }
     UA_NodeId id = APPLICATION_GROUP;
     return UA_CertificateGroup_Memorystore(group, &id, &list, logger, el, NULL);
@@ -816,7 +816,7 @@ UA_StatusCode shim_trust(UA_CertificateGroup *group, const UA_ByteString *truste
 
 /* `Security` and `Mode` of `ffi.rs` hold the same layout and values. */
 _Static_assert(sizeof(shim_security) ==
-                   2 * sizeof(UA_ByteString) + sizeof(void *) + sizeof(size_t),
+                   3 * sizeof(UA_ByteString),
                "shim_security changed");
 _Static_assert(sizeof(UA_MessageSecurityMode) == sizeof(int) &&
                    UA_MESSAGESECURITYMODE_SIGN == 2 &&
@@ -829,8 +829,9 @@ _Static_assert(sizeof(UA_MessageSecurityMode) == sizeof(int) &&
  * the endpoint of the highest security level that the server offers in `mode`.
  * Gives `BadCertificateInvalid` when the certificate does not parse or holds no RSA
  * key, `BadInvalidArgument` when the key does not parse, `BadSecurityChecksFailed`
- * when they do not match, and `BadCertificateUriInvalid` when the certificate holds
- * no URI. */
+ * when they do not match, `BadCertificateUriInvalid` when the certificate holds no
+ * URI, and `BadInternalError` when the trust is empty or a certificate of it does not
+ * parse. */
 UA_StatusCode shim_client_secure(UA_Client *client, UA_MessageSecurityMode mode,
                                  const shim_security *security) {
     UA_ClientConfig *config = UA_Client_getConfig(client);
@@ -850,8 +851,8 @@ UA_StatusCode shim_client_secure(UA_Client *client, UA_MessageSecurityMode mode,
     config->clientDescription.applicationUri = uri;
     /* `UA_ClientConfig_setDefault` gives the group the accept-all group. */
     config->certificateVerification.clear(&config->certificateVerification);
-    return shim_trust(&config->certificateVerification, security->trusted,
-                      security->trusted_size, config->logging, config->eventLoop);
+    return shim_trust(&config->certificateVerification, &security->trust,
+                      config->logging, config->eventLoop);
 }
 
 /* Gives the timeout of the requests of `client`, in ms. */

@@ -23,14 +23,15 @@ const SERVER: [&[u8]; 2] = [
 /// Reads `data` as a client reads the certificate that a server sends, on a loop of
 /// `clock`: the check of a certificate group that trusts nothing, a channel context of
 /// each policy with `data` as the certificate of the server, and the compare of `data`
-/// with the certificate of a channel. Also reads the application URI of `data`.
+/// with the certificate of a channel. Also reads the application URI of `data`, which
+/// the client reads only from its own certificate.
 ///
 /// # Panics
 ///
 /// When the check gives `Good`, or a step that no input changes fails, with the status
 /// name.
 pub fn certificate(clock: Clock, data: &[u8]) {
-    let verified = read(clock, data);
+    let (verified, _) = read(clock, data);
     assert_ne!(
         verified.name(),
         "Good",
@@ -38,12 +39,13 @@ pub fn certificate(clock: Clock, data: &[u8]) {
     );
 }
 
-/// Gives the status of the check of `data` in [`certificate`].
+/// Gives the status of the check of `data` in [`certificate`], and of the read of its
+/// application URI.
 ///
 /// # Panics
 ///
 /// When a step that no input changes fails, with the status name.
-fn read(clock: Clock, data: &[u8]) -> Status {
+fn read(clock: Clock, data: &[u8]) -> (Status, Status) {
     let events = Loop::new(
         event::Time::monotonic(clock),
         tracing::Span::none(),
@@ -53,10 +55,9 @@ fn read(clock: Clock, data: &[u8]) -> Status {
     let security = Security {
         certificate,
         key,
-        trusted: std::ptr::null(),
-        trusted_size: 0,
+        trust: Bytes::of(&[]),
     };
-    let mut verified = 0;
+    let (mut verified, mut named) = (0, 0);
     // SAFETY: each pointer is live for the call, which only reads `data` and
     // `security`, and the loop lives past it.
     let status = Status(unsafe {
@@ -65,10 +66,11 @@ fn read(clock: Clock, data: &[u8]) -> Status {
             &raw const security,
             events.raw(),
             &raw mut verified,
+            &raw mut named,
         )
     });
     assert_eq!(status.name(), "Good", "a step that no input changes");
-    Status(verified)
+    (Status(verified), Status(named))
 }
 
 /// Decodes `data[2..]` as the type of `UA_TYPES` that the little-endian `u16` of
@@ -279,8 +281,8 @@ mod tests {
         assert!(count > 0, "{root} holds no input");
     }
 
-    /// Each input of the certificate target reads to the refusal that its name ends
-    /// with.
+    /// Each input of the certificate target reads to its refusal and to the status of
+    /// the read of its URI.
     #[test]
     fn each_certificate_input_reads_to_its_refusal() {
         let root = concat!(
@@ -295,18 +297,47 @@ mod tests {
             #[expect(clippy::disallowed_methods, reason = "a test reads its oracles")]
             let data = std::fs::read(&path).unwrap();
             let name = path.file_name().unwrap().to_str().unwrap().to_owned();
-            read_to.push((name, read(Clock::clone(&clock), &data).name()));
+            let (verified, named) = read(Clock::clone(&clock), &data);
+            read_to.push((name, verified.name(), named.name()));
         }
         read_to.sort();
         assert_eq!(
             read_to,
             [
-                ("der", "BadCertificateUntrusted"),
-                ("encrypted_pem", "BadCertificateInvalid"),
-                ("pem", "BadCertificateUntrusted"),
-                ("truncated_der", "BadCertificateInvalid"),
+                (
+                    "anonymous",
+                    "BadCertificateUntrusted",
+                    "BadCertificateUriInvalid"
+                ),
+                ("der", "BadCertificateUntrusted", "Good"),
+                (
+                    "empty_uri",
+                    "BadCertificateUntrusted",
+                    "BadCertificateUriInvalid"
+                ),
+                (
+                    "encrypted_pem",
+                    "BadCertificateInvalid",
+                    "BadSecurityChecksFailed"
+                ),
+                ("pem", "BadCertificateUntrusted", "Good"),
+                (
+                    "truncated_der",
+                    "BadCertificateInvalid",
+                    "BadSecurityChecksFailed"
+                ),
+                ("two_uris", "BadCertificateUntrusted", "Good"),
+                (
+                    "unnamed",
+                    "BadCertificateUntrusted",
+                    "BadCertificateUriInvalid"
+                ),
             ]
-            .map(|(name, status)| (name.to_owned(), status))
+            .map(|(name, verified, named)| (
+                name.to_owned(),
+                verified,
+                named
+            ))
         );
     }
 

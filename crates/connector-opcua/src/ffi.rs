@@ -527,8 +527,7 @@ pub(crate) struct Client([u8; 0]);
 pub(crate) struct Security {
     pub(crate) certificate: Bytes,
     pub(crate) key: Bytes,
-    pub(crate) trusted: *const Bytes,
-    pub(crate) trusted_size: usize,
+    pub(crate) trust: Bytes,
 }
 
 /// `UA_MessageSecurityMode`, the modes of a channel that signs.
@@ -536,7 +535,6 @@ pub(crate) struct Security {
 #[repr(transparent)]
 pub(crate) struct Mode(pub(crate) c_int);
 
-#[cfg(test)]
 impl Mode {
     pub(crate) const SIGN: Self = Self(2);
     pub(crate) const SIGN_AND_ENCRYPT: Self = Self(3);

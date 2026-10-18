@@ -274,11 +274,9 @@ unsafe extern "C" {
         sessions: u16,
         chunks: u32,
         security: *const super::Security,
+        policies: *const *const std::ffi::c_char,
+        count: usize,
     ) -> *mut Server;
-    pub(crate) fn shim_client_policy(
-        client: *mut super::Client,
-        uri: *const std::ffi::c_char,
-    ) -> u32;
     pub(crate) fn shim_client_uri(client: *mut super::Client) -> *const Bytes;
     pub(crate) fn shim_client_channel(
         client: *mut super::Client,
@@ -296,6 +294,7 @@ unsafe extern "C" {
         security: *const super::Security,
         el: *mut EventLoop,
         verified: *mut u32,
+        named: *mut u32,
     ) -> u32;
     pub(crate) fn shim_server_limits(
         server: *mut Server,

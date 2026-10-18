@@ -91,13 +91,13 @@ impl Server {
     /// refuses the server or its start.
     pub(crate) unsafe fn start(manager: &Manager, host: &CStr, sessions: u16) -> Self {
         // SAFETY: as the caller ensures.
-        unsafe { Self::started(manager, host, sessions, std::ptr::null()) }
+        unsafe { Self::started(manager, host, sessions, std::ptr::null(), &[]) }
     }
 
-    /// Makes and starts the test server as [`Server::start`] does, which also has each
-    /// of the three policies in `Sign` and in `SignAndEncrypt` on the certificate and
-    /// key of `security`, and whose channels trust only the certificates of
-    /// `security`. It reads no mode of `security`.
+    /// Makes and starts the test server as [`Server::start`] does, which also has an
+    /// endpoint in `Sign` and in `SignAndEncrypt` for each of `policies`, in that
+    /// order, on the certificate and key of `credentials`, and whose channels trust
+    /// only the certificates of `credentials`.
     ///
     /// # Safety
     ///
@@ -111,23 +111,32 @@ impl Server {
         manager: &Manager,
         host: &CStr,
         sessions: u16,
-        security: &crate::client::Security<'_>,
+        credentials: &crate::client::Credentials<'_>,
+        policies: &[crate::secure::Policy],
     ) -> Self {
-        // SAFETY: as the caller ensures, and the server copies `raw`.
-        security.raw(|raw| unsafe { Self::started(manager, host, sessions, raw) })
+        let raw = credentials.raw();
+        let uris: Vec<_> = policies
+            .iter()
+            .map(|policy| policy.uri().as_ptr())
+            .collect();
+        // SAFETY: as the caller ensures, `raw` borrows the live `credentials`, and the
+        // server copies `raw` and `uris`.
+        unsafe { Self::started(manager, host, sessions, &raw const raw, &uris) }
     }
 
-    /// [`Server::start`], with the policies of `security` when it is not null.
+    /// [`Server::start`], with the policies of `security` and an endpoint for each of
+    /// the policy URIs `policies` when `security` is not null.
     ///
     /// # Safety
     ///
-    /// As [`Server::start`], and `security` is null or points at a live
-    /// `shim_security`.
+    /// As [`Server::start`], `security` is null or points at a live `shim_security`,
+    /// and each of `policies` is a live C string.
     unsafe fn started(
         manager: &Manager,
         host: &CStr,
         sessions: u16,
         security: *const ffi::Security,
+        policies: &[*const std::ffi::c_char],
     ) -> Self {
         let port = manager
             .port()
@@ -143,6 +152,8 @@ impl Server {
                 sessions,
                 crate::connection::CHUNKS,
                 security,
+                policies.as_ptr(),
+                policies.len(),
             )
         };
         let raw = NonNull::new(raw).expect("open62541 refused the server");

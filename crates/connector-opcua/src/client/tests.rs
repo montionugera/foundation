@@ -21,14 +21,14 @@ use super::{
     Calls, Client, Flight, GRACE, Large, Nodes, READS, Request, SPLIT, STATE, Slots,
     UNREAD, answer, id_bytes, most,
 };
+use crate::client::{Credentials, Mode};
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::event;
-use crate::ffi::Mode;
 use crate::ffi::{self, Status};
 use crate::gate::Gate;
 use crate::node::{Key, Name, Node};
-use crate::secure::{Policy, Security};
+use crate::secure::Policy;
 use crate::server::{Limits, Server};
 use crate::unwind::caught;
 use crate::value::{self, Fault, Value};
@@ -134,46 +134,26 @@ impl Peer<'_> {
             .expect("the client connects")
     }
 
-    /// Connects a client that asks for `policy` in `mode` on `security`, on a loop
-    /// whose wall time starts at `wall`. With no `policy`, it connects through
-    /// [`Client::connect`].
+    /// Connects a client in `mode` on `credentials` through [`Client::connect`], on a
+    /// loop whose wall time starts at `wall`.
     async fn secure(
         &mut self,
-        policy: Option<Policy>,
         mode: Mode,
-        security: &Security,
+        credentials: &Credentials<'_>,
         wall: Stamp,
     ) -> Result<Client, Status> {
         let time = event::Time::since(Clock::clone(&self.clock), wall);
-        let security = security.client(mode);
-        let Some(policy) = policy else {
-            let url = CString::new(self.url.clone()).expect("the URL holds no NUL");
-            let connect = Client::connect(
-                time,
-                tracing::Span::none(),
-                self.net.clone(),
-                &mut self.rng,
-                &url,
-                Some(&security),
-                future::pending(),
-            );
-            return Ok(connect.await?.expect("a pending wait never ends"));
-        };
-        let setup = |raw: NonNull<ffi::Client>| {
-            let status = security.raw(|security| {
-                // SAFETY: the client lives and has not connected, and it copies
-                // `security`.
-                Status(unsafe { ffi::shim_client_secure(raw.as_ptr(), mode, security) })
-            });
-            assert_eq!(status, Status::GOOD, "open62541 refused the policies");
-            // SAFETY: the client lives and has not connected, and it copies the URI.
-            let status = Status(unsafe {
-                ffi::test::shim_client_policy(raw.as_ptr(), policy.uri().as_ptr())
-            });
-            assert_eq!(status, Status::GOOD, "open62541 refused the policy");
-        };
-        let url = self.url.clone();
-        self.client(&url, time, setup).await
+        let url = CString::new(self.url.clone()).expect("the URL holds no NUL");
+        let connect = Client::connect(
+            time,
+            tracing::Span::none(),
+            self.net.clone(),
+            &mut self.rng,
+            &url,
+            Some((credentials, mode)),
+            future::pending(),
+        );
+        Ok(connect.await?.expect("a pending wait never ends"))
     }
 
     /// Connects a client to `url` on a loop that reads `time`, after `setup` sets the
@@ -252,13 +232,13 @@ async fn serve<T>(
     serve_on(node, sessions, time, None, body).await
 }
 
-/// [`serve`], on a loop that reads `time`, with the policies of `security` when it is
-/// given.
+/// [`serve`], on a loop that reads `time`, with an endpoint of each policy of
+/// `security`, in its order, on its credentials, when it is given.
 async fn serve_on<T>(
     node: &node::Node,
     sessions: u16,
     time: event::Time,
-    security: Option<&Security>,
+    security: Option<(&Credentials<'_>, &[Policy])>,
     body: impl AsyncFnOnce(Peer<'_>) -> T,
 ) -> T {
     let mut rng = node.entropy().rng();
@@ -267,13 +247,8 @@ async fn serve_on<T>(
         .expect("the port is free");
     let mut server = match security {
         // SAFETY: the close below deletes the server before the manager drops.
-        Some(security) => unsafe {
-            Server::start_secure(
-                &manager,
-                c"",
-                sessions,
-                &security.client(Mode::SIGN_AND_ENCRYPT),
-            )
+        Some((credentials, policies)) => unsafe {
+            Server::start_secure(&manager, c"", sessions, credentials, policies)
         },
         // SAFETY: as above.
         None => unsafe { Server::start(&manager, c"", sessions) },
