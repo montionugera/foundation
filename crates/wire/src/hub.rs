@@ -33,16 +33,18 @@ pub mod client;
 mod frames;
 mod gaps;
 mod home;
+mod part;
 mod reader;
 pub mod write;
 
 use std::fmt;
+use std::num::NonZeroUsize;
 
 pub use frames::{Due, Frames, Step};
 pub use gaps::Gaps;
 pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
-use types::frame::{Path, Range};
+use types::frame::{Form, Path, Range};
 
 use crate::common::{Fields, Length, Run, Writer, body};
 
@@ -503,7 +505,8 @@ pub mod ends {
     }
 }
 
-/// A message of a reader session, or a reply of a write stream, that is not valid.
+/// A message of a reader session or of a write stream that is not valid, or a write
+/// stream that ends inside a frame.
 /// The decoders of [`client`] give [`client::Error`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -530,7 +533,8 @@ pub enum Error {
         /// The count of the range.
         count: u32,
     },
-    /// A head names no path.
+    /// A head names no path: no read head has this path byte, and no write head has
+    /// this time byte.
     Path {
         /// The path byte.
         byte: u8,
@@ -601,6 +605,28 @@ pub enum Error {
         /// The code.
         code: u8,
     },
+    /// A write's head holds no sample.
+    Samples,
+    /// A write's head names no form.
+    Form {
+        /// The form byte.
+        byte: u8,
+    },
+    /// A write's head of [`write::Time::Node`] has a count other than 1 or the encoded
+    /// form.
+    Stamp {
+        /// The samples of each series.
+        count: u32,
+        /// The form.
+        form: Form,
+    },
+    /// The program finished its write stream inside a frame.
+    Cut {
+        /// The bytes of the frame that came: its head, its ends, and its body.
+        received: usize,
+        /// The bytes of the frame, once its ends are whole.
+        len: Option<NonZeroUsize>,
+    },
 }
 
 // Frame decoders give it for each message: it stays `Copy`, with no drop glue.
@@ -610,6 +636,7 @@ const _: fn() = || {
 };
 
 impl fmt::Display for Error {
+    #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str("the hub message is empty"),
@@ -630,7 +657,8 @@ impl fmt::Display for Error {
             ),
             Self::Path { byte } => write!(
                 f,
-                "the frame head names path {byte}, which this node does not know"
+                "the frame head names path or time {byte}, which this node does not \
+                 know"
             ),
             Self::Reopen { kind } => write!(
                 f,
@@ -679,6 +707,30 @@ impl fmt::Display for Error {
             Self::Refusal { code } => {
                 write!(f, "the refused frame has code {code}, which no refusal has")
             }
+            Self::Samples => f.write_str("the frame head holds no sample"),
+            Self::Form { byte } => {
+                write!(f, "the frame head names form {byte}, which no frame has")
+            }
+            Self::Stamp { count, form } => write!(
+                f,
+                "the frame head that the node stamps has {count} samples in the \
+                 {form:?} form, not 1 in the raw form"
+            ),
+            Self::Cut {
+                received,
+                len: Some(len),
+            } => write!(
+                f,
+                "the stream ended inside a frame: {received} of {len} bytes"
+            ),
+            Self::Cut {
+                received,
+                len: None,
+            } => write!(
+                f,
+                "the stream ended inside a frame: {received} bytes, before the end of \
+                 its ends"
+            ),
         }
     }
 }
@@ -1330,7 +1382,7 @@ mod tests {
             ),
             (
                 Error::Path { byte: 2 },
-                "the frame head names path 2, which this node does not know",
+                "the frame head names path or time 2, which this node does not know",
             ),
             (
                 Error::Reopen { kind: 1 },

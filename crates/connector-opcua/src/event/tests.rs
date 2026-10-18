@@ -315,6 +315,75 @@ fn the_monotonic_wall_of_a_test_loop_gives_the_last_stamp_past_it() {
     assert_eq!(now, i64::MAX / 100 + UNIX_EPOCH_TICKS);
 }
 
+#[test]
+fn the_wall_of_a_test_loop_starts_at_its_start_and_moves_with_its_clock() {
+    let mut sim = Sim::new(sim::Config::default());
+    let clock = sim.node(sim::node::Config::default()).clock();
+    let start = Stamp::from_nanos(978_307_200_000_000_000);
+    let time = Time::since(clock, start);
+    assert_eq!((time.wall)(), start);
+    sim.run_for(Span::from_nanos(2_000_000_000)).unwrap();
+    assert_eq!((time.wall)(), start + Span::from_nanos(2_000_000_000));
+}
+
+#[test]
+fn the_wall_of_a_test_loop_stays_at_the_last_stamp_when_it_moves_past_it() {
+    let mut sim = Sim::new(sim::Config::default());
+    let clock = sim.node(sim::node::Config::default()).clock();
+    let time = Time::since(clock, Stamp::from_nanos(i64::MAX - 1_000_000_000));
+    sim.run_for(Span::from_nanos(2_000_000_000)).unwrap();
+    assert_eq!((time.wall)(), Stamp::from_nanos(i64::MAX));
+}
+
+#[test]
+fn the_wall_of_a_negative_start_moves_past_a_span_of_i64_max() {
+    let mut sim = Sim::new(sim::Config::default());
+    let clock = sim
+        .node(sim::node::Config {
+            monotonic: Monotonic(0),
+            wall: Stamp::from_nanos(i64::MIN),
+            ..sim::node::Config::default()
+        })
+        .clock();
+    let time = Time::since(clock, Stamp::from_nanos(i64::MIN));
+    sim.run_for(Span::from_nanos(i64::MAX)).unwrap();
+    assert_eq!((time.wall)(), Stamp::from_nanos(-1));
+    sim.run_for(Span::from_nanos(1000)).unwrap();
+    assert_eq!((time.wall)(), Stamp::from_nanos(999));
+}
+
+#[test]
+fn the_wall_of_a_negative_start_reaches_the_last_stamp() {
+    let mut sim = Sim::new(sim::Config::default());
+    let clock = sim
+        .node(sim::node::Config {
+            monotonic: Monotonic(0),
+            wall: Stamp::from_nanos(i64::MIN),
+            ..sim::node::Config::default()
+        })
+        .clock();
+    let time = Time::since(clock, Stamp::from_nanos(-1_000_000_000));
+    sim.run_for(Span::from_nanos(i64::MAX)).unwrap();
+    sim.run_for(Span::from_nanos(2_000_000_000)).unwrap();
+    assert_eq!((time.wall)(), Stamp::from_nanos(i64::MAX));
+}
+
+#[test]
+fn the_monotonic_wall_stays_at_the_last_stamp_when_its_clock_runs_past_it() {
+    let mut sim = Sim::new(sim::Config::default());
+    let clock = sim
+        .node(sim::node::Config {
+            monotonic: Monotonic(0),
+            wall: Stamp::from_nanos(i64::MIN),
+            ..sim::node::Config::default()
+        })
+        .clock();
+    let time = Time::monotonic(clock);
+    sim.run_for(Span::from_nanos(i64::MAX)).unwrap();
+    sim.run_for(Span::from_nanos(1000)).unwrap();
+    assert_eq!((time.wall)(), Stamp::from_nanos(i64::MAX));
+}
+
 /// Four values of open62541's generator after a loop with `rng` of `seed`.
 fn draws(seed: u64) -> [u32; 4] {
     let mut sim = Sim::new(sim::Config::default());

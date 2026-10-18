@@ -983,3 +983,29 @@
   (https://github.com/synnaxlabs/foundation/pull/3144#issuecomment-6246301508,
   2026-10-18 05:55 UTC). The test of `leaf.der` at `notAfter` is the test of item 1 of
   6230838999 that moves the clock past `notAfter`.
+  The client part of 1d is in `server.c`, which only a `sim` build compiles, so no
+  production build has a policy; PR 2 moves it into `shim.c`. The test helper takes an
+  enum of the three policies, and `shim_client_secure` aborts on an index past them.
+  1d meets the certificate part of #1992: each loop of a secure test connection runs on
+  the wall time that its test gives, and a test moves each side past the `notAfter` of
+  the certificate of the other side (the plan,
+  https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247720334).
+  Approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247742342,
+  2026-10-18 08:40 UTC). A server refuses an expired client certificate with
+  `BadCertificateTimeInvalid`, the status that it sends, and 1d has no test of a switch
+  of the certificate, which no client config reaches in 1.5.9: OK of
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247943704,
+  2026-10-18 08:56 UTC). The session group of the sim server stays the accept-all
+  group, and the sim server sets no application URI: 1d opens only anonymous sessions,
+  and no check that a test reaches refuses on the URI: at each start of a secure
+  server, `verifyServerApplicationUri` logs one warning for each of the three
+  policies, because the default URI of the minimal config does not match the URI of
+  `server.der`. So a 1d
+  connection checks two groups, not the three of item 1 of 6247742342: OK of
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3167#issuecomment-6248291820,
+  2026-10-18 09:33 UTC). The first PR whose code reads an X509 user token, or has a
+  client check the server URI, sets the session group or the URI in the sim server, with
+  a test that fails without it.
