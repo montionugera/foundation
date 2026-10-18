@@ -1003,6 +1003,18 @@ fn a_send_to_a_mapped_ipv4_address_goes_to_the_ipv4_address() {
 }
 
 #[test]
+fn a_socket_on_the_unspecified_v6_address_sends_v6_from_the_v6_address() {
+    let (mut sim, a, b) = pair(0, link::Config::default());
+    let log = Log::default();
+    let (sender, _a) = bind(&a, any()).unwrap();
+    let (_b, receiver) = bind(&b, v6(&b)).unwrap();
+    let _receive = receive(&b, receiver, &log);
+    let _send = send(&a, sender, v6(&b), vec![b"v6".to_vec()]);
+    sim.run_for(Span::SECOND).unwrap();
+    assert_eq!(arrivals(&log), [(v6(&a), b"v6".to_vec())]);
+}
+
+#[test]
 fn a_send_from_a_mapped_ipv4_address_goes_from_the_ipv4_address() {
     let make = |a: &node::Node, b: &node::Node| Transmit {
         source: Some(mapped(at(a, 4433)).ip()),
