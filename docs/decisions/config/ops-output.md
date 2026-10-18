@@ -219,8 +219,11 @@
   of <path> is not UTF-8`, status 2, and `the read of <path> failed with OS error
   <code>`, status 1, each with the fix `Fix the cause in the message, then run the
   command again`. `ops.large-request`: `the request has more than <n> bytes, the most
-  that a request holds`, for config files whose bytes together pass that bound at their
-  read, or for the encoded request, status 2, fix `Make the config files smaller`; the
+  that a request holds`, for config files whose JSON together passes that bound at their
+  read, where each file counts first by its bytes, before the check of its text, or for
+  the encoded request (`laptop.architect-2`, 2026-10-18T20:17:02Z,
+  https://github.com/synnaxlabs/foundation/pull/3241#issuecomment-6254647508), status
+  2, fix `Make the config files smaller`; the
   check comes before the reach. `ops.write`: `the directory of the plan file <path> is
   not there` or `the write of the plan file <path> failed with OS error <code>`, status
   1, fix ``Give `--out`, or `out` of the MCP tool, a path in a directory that can be
