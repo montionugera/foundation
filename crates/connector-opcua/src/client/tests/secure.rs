@@ -2,12 +2,14 @@ use env::rng::Rng;
 use sim::Sim;
 use types::time::{Span, Stamp};
 
-use super::{Client, VALUE, run, serve_on};
+use super::{Client, VALUE, fits, fitting, long, run, serve_on};
 use crate::child;
+use crate::client::Large;
 use crate::event::{self, Loop};
 use crate::ffi::test::Mode;
 use crate::ffi::{self, Status};
 use crate::secure::{CLIENT, END, OTHER, Policy, SERVER, START, Security};
+use crate::server::Limits;
 use crate::value::{Fault, Value};
 
 /// The test server, which trusts [`CLIENT`].
@@ -185,6 +187,207 @@ fn a_server_past_the_end_of_the_client_certificate_refuses_the_channel() {
     );
     // The server sends the status of its check in the ERR message.
     assert_eq!(read, Err(Status::BAD_CERTIFICATE_TIME_INVALID));
+}
+
+/// What a read of the largest request after [`VALUE`] in one message gives.
+#[derive(Debug)]
+struct Largest {
+    /// The answer of the read.
+    read: Result<Vec<Result<Value, Fault>>, Status>,
+    /// The [`Large`] of a request whose last node is 1 byte longer.
+    past: Vec<Large>,
+    /// The value of [`VALUE`] on the server.
+    value: Value,
+}
+
+/// The read of the largest request after [`VALUE`] that a client with `policy` in
+/// `mode` puts in one message, to a server with a buffer of `buffer` bytes (0 for the
+/// default).
+fn largest_request(policy: Policy, mode: Mode, buffer: u32) -> Largest {
+    let (reads, _) = run(0, async move |node| {
+        let time = event::Time::since(node.clock(), START);
+        serve_on(&node, 4, time, Some(&SERVED), async |mut peer| {
+            peer.server.set_limits(Limits {
+                buffer,
+                ..Limits::default()
+            });
+            let mut client = peer
+                .secure(policy, mode, &CLIENT_SIDE, START)
+                .await
+                .expect("the client connects");
+            let length = fitting(&client, &[], 1 << 20);
+            peer.server.add_scalar(&long(length), Value::F64(2.5));
+            let fit = fits(client.nodes(&[VALUE, long(length)]));
+            let read = client.read(&fit).await.map(<[_]>::to_vec);
+            let past = client.nodes(&[VALUE, long(length + 1)]).large().to_vec();
+            client.close().await;
+            Largest {
+                read,
+                past,
+                value: peer.value,
+            }
+        })
+        .await
+    });
+    reads
+}
+
+#[test]
+fn a_request_that_fits_by_the_client_reads_in_sign() {
+    let Largest { read, value, .. } =
+        largest_request(Policy::Basic256Sha256, Mode::SIGN, 0);
+    assert_eq!(read, Ok(vec![Ok(value), Ok(Value::F64(2.5))]));
+}
+
+#[test]
+fn a_request_that_fits_by_the_client_reads_in_sign_and_encrypt() {
+    let Largest { read, value, .. } =
+        largest_request(Policy::Aes256Sha256RsaPss, Mode::SIGN_AND_ENCRYPT, 0);
+    assert_eq!(read, Ok(vec![Ok(value), Ok(Value::F64(2.5))]));
+}
+
+/// A chunk of 65536 bytes holds 24 bytes of headers and a signature of 32 bytes, and in
+/// `SignAndEncrypt` 1 byte of padding, for each policy.
+#[test]
+fn a_request_takes_the_chunks_of_one_message_with_each_policy_in_each_mode() {
+    for policy in Policy::ALL {
+        for (mode, payload) in [(Mode::SIGN, 65_480), (Mode::SIGN_AND_ENCRYPT, 65_479)]
+        {
+            let Largest { read, past, value } = largest_request(policy, mode, 0);
+            let case = format!("{policy:?} in {mode:?}");
+            assert_eq!(read, Ok(vec![Ok(value), Ok(Value::F64(2.5))]), "{case}");
+            let most = 8 * payload - 7 * 7;
+            let large = Large {
+                index: 1,
+                bytes: most + 1,
+                most,
+            };
+            assert_eq!(past, [large], "{case}");
+        }
+    }
+}
+
+/// A chunk of 8200 bytes, 8 past a block of 16 bytes, also leaves those 8 bytes empty.
+#[test]
+fn a_chunk_leaves_its_bytes_past_a_block_empty() {
+    let Largest { read, past, value } =
+        largest_request(Policy::Basic256Sha256, Mode::SIGN, 8200);
+    assert_eq!(read, Ok(vec![Ok(value), Ok(Value::F64(2.5))]));
+    let most = 8 * (8200 - 24 - 32 - 8) - 7 * 7;
+    let large = Large {
+        index: 1,
+        bytes: most + 1,
+        most,
+    };
+    assert_eq!(past, [large]);
+}
+
+/// A server with a buffer of 8192 bytes and 4 chunks sends an answer of at most 4
+/// chunks of 8136 bytes less 21 in `Sign`, 955 Doubles of 34 bytes after 36, and of
+/// 8120 in `SignAndEncrypt`, 953 Doubles.
+#[test]
+fn an_answer_takes_the_chunks_of_the_server_in_each_mode() {
+    for (mode, split) in [(Mode::SIGN, [955, 1]), (Mode::SIGN_AND_ENCRYPT, [953, 3])] {
+        let (reads, _) = run(0, async move |node| {
+            let time = event::Time::since(node.clock(), START);
+            serve_on(&node, 4, time, Some(&SERVED), async |mut peer| {
+                peer.server.set_limits(Limits {
+                    buffer: 8192,
+                    chunks: 4,
+                    ..Limits::default()
+                });
+                let mut client = peer
+                    .secure(Policy::Basic256Sha256, mode, &CLIENT_SIDE, START)
+                    .await
+                    .expect("the client connects");
+                let nodes = fits(client.nodes(&vec![VALUE; 956]));
+                let values = client.read(&nodes).await.map(<[_]>::to_vec);
+                client.close().await;
+                (nodes.counts(), values, peer.value)
+            })
+            .await
+        });
+        let (counts, values, value) = reads;
+        let read = (counts, values);
+        assert_eq!(read, (split.to_vec(), Ok(vec![Ok(value); 956])), "{mode:?}");
+    }
+}
+
+/// In `SignAndEncrypt`, open62541 gives a chunk of 8135 bytes from a buffer of 8193, 1
+/// less than Part 6, and one of 8199 from 8264, 1 less than Part 6 too. An answer of 4
+/// chunks then holds 955 and 962 Doubles.
+#[test]
+fn an_answer_takes_the_payload_of_open62541_when_it_is_the_smaller() {
+    for (buffer, split) in [(8193, [955, 45]), (8264, [962, 38])] {
+        let (reads, _) = run(0, async move |node| {
+            let time = event::Time::since(node.clock(), START);
+            serve_on(&node, 4, time, Some(&SERVED), async |mut peer| {
+                peer.server.set_limits(Limits {
+                    buffer,
+                    chunks: 4,
+                    ..Limits::default()
+                });
+                let mut client = peer
+                    .secure(
+                        Policy::Basic256Sha256,
+                        Mode::SIGN_AND_ENCRYPT,
+                        &CLIENT_SIDE,
+                        START,
+                    )
+                    .await
+                    .expect("the client connects");
+                let nodes = fits(client.nodes(&vec![VALUE; 1000]));
+                let values = client.read(&nodes).await.map(<[_]>::to_vec);
+                client.close().await;
+                (nodes.counts(), values, peer.value)
+            })
+            .await
+        });
+        let (counts, values, value) = reads;
+        let read = (counts, values);
+        assert_eq!(
+            read,
+            (split.to_vec(), Ok(vec![Ok(value); 1000])),
+            "{buffer}"
+        );
+    }
+}
+
+/// A received chunk holds the smaller of the payload of a sent one and the
+/// `MaxBodySize` of Part 6. In `SignAndEncrypt`, the second is 508 blocks of 16 bytes
+/// less 8 in a chunk of 8192 bytes, and 509 blocks less 8 in one of 8200, 1 byte past
+/// the first.
+#[test]
+fn a_received_chunk_holds_the_smaller_of_two_payloads() {
+    for (mode, buffer, payloads) in [
+        (Mode::SIGN, 8192, [8136, 8136]),
+        (Mode::SIGN_AND_ENCRYPT, 8192, [8135, 8120]),
+        (Mode::SIGN, 8200, [8136, 8136]),
+        (Mode::SIGN_AND_ENCRYPT, 8200, [8135, 8135]),
+    ] {
+        let (limits, _) = run(0, async move |node| {
+            let time = event::Time::since(node.clock(), START);
+            serve_on(&node, 4, time, Some(&SERVED), async |mut peer| {
+                peer.server.set_limits(Limits {
+                    buffer,
+                    ..Limits::default()
+                });
+                let client = peer
+                    .secure(Policy::Basic256Sha256, mode, &CLIENT_SIDE, START)
+                    .await
+                    .expect("the client connects");
+                let mut limits = [0; 5];
+                // SAFETY: the client lives, and its channel is open.
+                let status = Status(unsafe {
+                    ffi::shim_client_limits(client.raw.as_ptr(), &raw mut limits)
+                });
+                client.close().await;
+                (status, [limits[0], limits[1]])
+            })
+            .await
+        });
+        assert_eq!(limits, (Status::GOOD, payloads), "{mode:?} {buffer}");
+    }
 }
 
 /// Asks for the policy of index 3, past the last one, when `child::running()`.

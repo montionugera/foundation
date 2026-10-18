@@ -658,6 +658,35 @@ fn the_command_line_writes_a_page_as_text_or_json() {
     });
 }
 
+/// The command line browses the connector of a file in a directory, and reads only
+/// its config files.
+#[test]
+fn the_command_line_browses_a_connector_in_a_directory() {
+    solo(|fixture, mesh| async move {
+        let node = create_browsing_node(&fixture, mesh);
+        let paths = host(&fixture, "tree");
+        fixture.sim.make_dir(Path::new("/work/cfg"));
+        let site = site("tree", "edge", "");
+        let files = [
+            ("cfg/a.hcl", ""),
+            ("cfg/site.hcl", site.as_str()),
+            ("cfg/README.md", "not HCL"),
+        ];
+        for (path, text) in files {
+            paths
+                .write(Path::new(path), text.as_bytes())
+                .expect("a write");
+        }
+        let args = [
+            "browse", "plant", "cfg", "--start", "Line3", "--cursor", "4",
+        ];
+        let shown = cli(&node, &paths, &args).await;
+        let lines =
+            "Line3/Recipe unreadable: an array\nLine3/Setpoint f32 % read-write\n";
+        assert_eq!(shown, (Run::Exit(0), lines.to_owned(), String::new()));
+    });
+}
+
 /// Tests with kinds of their own.
 mod own_kinds {
     use std::path::Path;

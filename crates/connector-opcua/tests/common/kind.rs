@@ -3,12 +3,10 @@
 //! writes the frames of its reads with no server, with a measure of each write. For the
 //! `alloc` test and the `kind` bench.
 
-use std::cell::RefCell;
 use std::future::{Future as _, poll_fn};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::pin::pin;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
@@ -24,12 +22,11 @@ use document::value::{self, Value};
 use document::{Attribute, Block, Map};
 use env::net::tcp;
 use env::tasks::Group;
-use hub::reader::Mode;
 use spec::channel::{Channel, Data};
 use spec::data_type::DataType;
 use spec::definition::Definition;
 use types::channel;
-use types::name::{Name, Selector};
+use types::name::Name;
 use types::sample::{Scalar, Type};
 use types::time::{Monotonic, Span};
 
@@ -204,38 +201,17 @@ pub(crate) fn writes(
         let rig = rig(&node, &tasks, kind, nodes, scalars).await;
         let config = config("opc.tcp://plc:4840", nodes);
         let names = rig.define_status("opcua", &name("plant.plc"), &config);
-        let mut status = status(rig.hub(), &names).await;
-        let readings = Rc::new(RefCell::new(Vec::new()));
-        let into = Rc::clone(&readings);
-        tasks.spawn(async move {
-            while let Ok(received) = status.next().await {
-                let reading = Reading::of(&received).expect("a whole status");
-                into.borrow_mut().push(reading);
-            }
-        });
+        let status = rig.record(&names).await;
         let token = Token::new();
         let open = rig.open_connector("opcua", name("plant.plc"), &config, &token);
         let result = open.await.run().await;
         node.clock().sleep(Span::SECOND).await;
-        (result, readings.take())
+        (result, status.readings())
     });
     let (result, readings) = run.expect("the run ends");
     assert!(result.is_ok(), "the run ends ok: {result:?}");
     let measures = measures.lock().expect("no panic under the lock");
     (measures.clone(), readings)
-}
-
-/// A reader of the status channels `names`.
-async fn status(hub: &hub::Hub, names: &[Name]) -> hub::reader::Reader {
-    let select = Selector::new(names.iter().map(Name::as_str));
-    let config = hub::reader::Config {
-        select: select.expect("the status names select"),
-        mode: Mode::Complete,
-        subject: name("rig"),
-        name: None,
-        hold: Span::ZERO,
-    };
-    hub.reader(config).await.expect("the status reader opens")
 }
 
 /// A rig on `node` with `kind` as `opcua`, which defines the channels of

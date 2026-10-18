@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 
 use connector::kind::Table;
+use connector::status::{Class, Reading, State};
 use connector_opcua::Kind;
 use connector_opcua::sim::{Variables, serve};
 use document::diagnostic::{Code, Diagnostic};
@@ -30,6 +31,10 @@ use scenarios::{Backoff, Plant, Serve, Suite};
 const NODES: [&str; 3] = ["ns=3;s=SpikeData", "ns=3;i=7", "ns=2;s=Dip"];
 /// The data channels, on `plant.time`.
 const CHANNELS: [&str; 3] = ["plant.a", "plant.b", "plant.c"];
+/// The note of a run with no `read` block.
+const NO_READ: &str = "the connector has no `read` block, so it reads nothing. \
+                       `browse` lists the points of the server, and `import` adds a \
+                       `read` block for each.";
 
 const SUITE: Suite = Suite {
     kinds,
@@ -115,7 +120,8 @@ async fn simulate(inputs: Serve) {
     served.await.expect("the listener holds");
 }
 
-/// Configs with a missing scheme, no `read` block, and a node id that does not parse.
+/// Configs with a missing scheme, two `read` blocks of one channel, and a node id that
+/// does not parse.
 fn refused() -> Vec<(Document, Vec<Diagnostic>)> {
     let device = SocketAddr::from(([10, 0, 0, 2], 9000));
     let read = vec![("plant.a", NODES[0])];
@@ -129,12 +135,15 @@ fn refused() -> Vec<(Document, Vec<Diagnostic>)> {
             )],
         ),
         (
-            config("opc.tcp://plc:4840", "10Hz", Vec::new()),
+            config(
+                "opc.tcp://plc:4840",
+                "10Hz",
+                vec![("plant.a", NODES[0]), ("plant.a", NODES[1])],
+            ),
             vec![diagnostic(
-                "opcua.no-read",
-                "the connector has no `read` block",
-                "Add a `read` block for each channel, such as \
-                 `read \"plant.spike\" { node_id = \"ns=3;s=SpikeData\" }`",
+                "opcua.repeated-channel",
+                "the connector reads `plant.a` in another `read` block",
+                "Remove one of the two `read` blocks",
             )],
         ),
         (
@@ -147,6 +156,39 @@ fn refused() -> Vec<(Document, Vec<Diagnostic>)> {
             )],
         ),
     ]
+}
+
+/// A config with no `read` block checks with no diagnostic and no write.
+#[test]
+fn checks_a_config_with_no_read() {
+    let config = config("opc.tcp://plc:4840", "10Hz", Vec::new());
+    let checked = kinds().check("opcua", None, &config);
+    assert_eq!(checked.map(|channels| channels.writes), Ok(Vec::new()));
+}
+
+/// A config with no `read` block runs against the device: within 10 s Running with
+/// no error, no restart, no sample in, and the note that it reads nothing. Once the
+/// device stops, within 30 s an error of class Device that names the device.
+#[test]
+fn runs_a_config_with_no_read() {
+    scenarios::run(&SUITE, scenarios::direct, |scene| async move {
+        let mut config = scene.setup().await;
+        config.blocks.clear();
+        let served = scene.serve();
+        let mut run = scene.supervise(config).await;
+        let noted = |reading: &Reading| reading.note.as_deref() == Some(NO_READ);
+        let reading = run.until(scenarios::START, noted).await;
+        let shown = (reading.state, reading.restarts, &reading.error);
+        assert_eq!(shown, (State::Running, 0, &None), "{reading:?}");
+        assert_eq!(reading.counts.get(&name("in")), Some(&0), "{reading:?}");
+        scene.stop(served).await;
+        let lost = |reading: &Reading| reading.error.is_some();
+        let reading = run.until(scenarios::LOST, lost).await;
+        let class = reading.error.as_ref().map(|(class, _)| *class);
+        assert_eq!(class, Some(Class::Device), "{reading:?}");
+        scene.named(&reading);
+        run.stop().await.expect("the run ends with no error");
+    });
 }
 
 fn attribute(key: &str, text: &str) -> Attribute {

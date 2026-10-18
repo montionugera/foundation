@@ -2,10 +2,15 @@
   scenarios that each connector kind passes, the oracle of D4's conformance kit. Each
   kind crate runs them as its `conformance` test, from `<kind>/main.rs`: a `Suite` and
   one `suite!` line, which expands to one `#[test]` for each scenario, and two that
-  check that a scenario that is not done at `RING` fails. The `[[test]]` entry of each
-  kind is part of the oracle. The scenarios use only public items: the rig of
-  `connector::testing`, `hub::testing::Env`, the sim, `env`, `document`, `types`, and
-  the `kind`, `status`, and `cancel` modules of `connector`. Each runs two sim nodes:
+  check that a scenario that is not done at `RING` fails. A `<kind>/main.rs` can also
+  hold a test of that kind alone, which uses `scenarios::run` and the `pub(crate)`
+  items of `scenarios.rs` (`opcua`: a config with no `read` block;
+  `laptop.architect-2`, 2026-10-18T22:00:39Z:
+  https://github.com/synnaxlabs/foundation/pull/3272#issuecomment-6255674282). The
+  `[[test]]` entry of each kind is part of the oracle. The scenarios use only public
+  items: the rig of `connector::testing`, `hub::testing::Env`, the sim, `env`,
+  `document`, `types`, and the `kind`, `status`, and `cancel` modules of `connector`.
+  Each runs two sim nodes:
   the plant (the rig and the connector) and the device (the kind's simulator). A `Suite`
   gives plain inputs: its table, a setup that defines what the connector needs and
   starts each writer that feeds it, its simulator, the name of its progress count, its

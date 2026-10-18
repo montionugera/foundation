@@ -1,4 +1,7 @@
-use std::net::Ipv6Addr;
+use std::fs::Permissions;
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -34,12 +37,14 @@ fn each_error_names_its_cause() {
     };
     let bind = Error::Bind(transport::Error::TimedOut);
     let session = Error::Session(program::Error::Unanswered);
+    let local = Error::Local(sector::local::Error::NotRunning);
     assert_eq!(
-        [thread, bind, session, Error::Panicked].map(|e| e.to_string()),
+        [thread, bind, session, local, Error::Panicked].map(|e| e.to_string()),
         [
             "cannot start the client thread: out of memory",
             "cannot bind the local UDP socket: the peer stopped answering",
             "the node finished a stream with no answer",
+            "no node runs on the data directory",
             "the client thread panicked",
         ]
     );
@@ -219,4 +224,129 @@ fn a_connect_inside_a_tokio_runtime_blocks_and_gives_its_error() {
     runtime.block_on(async {
         unreachable(vec![port_0()], &transport::Error::Unroutable);
     });
+}
+
+/// A data directory of its own for the test on this thread, removed when it drops.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new() -> Self {
+        let thread = std::thread::current();
+        let test = thread.name().expect("invariant: libtest names the thread");
+        let name = format!("foundation-sdk-{}-{test}", std::process::id());
+        let dir = std::env::temp_dir().join(name.replace("::", "-"));
+        std::fs::create_dir_all(dir.join("data")).unwrap();
+        Self(dir)
+    }
+
+    /// Writes `bytes` to the file `name` of `data`.
+    fn write(&self, name: &str, bytes: &[u8]) {
+        std::fs::write(self.0.join("data").join(name), bytes).unwrap();
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+}
+
+/// The bytes of `address` of the node of key 7 at `bound`.
+fn address(bound: SocketAddr) -> [u8; sector::address::LEN] {
+    sector::address::encode(&sector::address::Address {
+        key: types::node::Key::from_u128(7),
+        public_key: PrivateKey([7; 32]).public(),
+        bound,
+    })
+}
+
+#[test]
+fn local_gives_the_node_and_its_admin() {
+    let dir = Scratch::new();
+    dir.write(
+        "address",
+        &address(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 7400))),
+    );
+    dir.write("admin.key", &sector::admin::encode(&PrivateKey([3; 32])));
+    let (node, subject) = Node::local(&dir.0).expect("a node runs");
+    let loopback = SocketAddr::from((Ipv4Addr::LOCALHOST, 7400));
+    assert_eq!(node.addresses, [loopback]);
+    assert_eq!(node.key, types::node::Key::from_u128(7));
+    assert_eq!(node.public_key, PrivateKey([7; 32]).public());
+    let subject = subject.expect("an admin");
+    assert_eq!(subject.name, spec::founding::admin());
+    assert_eq!(subject.private_key.0, [3; 32]);
+}
+
+#[test]
+fn local_with_no_admin_key_gives_no_subject() {
+    let dir = Scratch::new();
+    let bound = SocketAddr::from((Ipv6Addr::LOCALHOST, 7401));
+    dir.write("address", &address(bound));
+    let (node, subject) = Node::local(&dir.0).expect("a node runs");
+    assert_eq!(node.addresses, [bound]);
+    assert!(subject.is_none(), "{subject:?}");
+}
+
+/// The error of [`Node::local`] on `dir`.
+fn local_error(dir: &Path) -> Error {
+    Node::local(dir).expect_err("no node")
+}
+
+const NOT_RUNNING: Error = Error::Local(sector::local::Error::NotRunning);
+
+#[test]
+fn local_with_no_address_gives_not_running() {
+    let dir = Scratch::new();
+    assert_eq!(local_error(&dir.0), NOT_RUNNING);
+}
+
+#[test]
+fn local_with_no_directory_gives_not_running() {
+    let dir = Scratch::new();
+    assert_eq!(local_error(&dir.0.join("other")), NOT_RUNNING);
+    std::fs::remove_dir(dir.0.join("data")).unwrap();
+    assert_eq!(local_error(&dir.0), NOT_RUNNING);
+}
+
+#[test]
+fn local_with_a_file_in_place_of_the_directory_gives_not_running() {
+    let dir = Scratch::new();
+    std::fs::write(dir.0.join("file"), b"").unwrap();
+    assert_eq!(local_error(&dir.0.join("file")), NOT_RUNNING);
+    std::fs::remove_dir(dir.0.join("data")).unwrap();
+    std::fs::write(dir.0.join("data"), b"").unwrap();
+    assert_eq!(local_error(&dir.0), NOT_RUNNING);
+}
+
+/// Run as root, the open succeeds, and the test fails.
+#[test]
+fn local_with_a_data_that_cannot_open_gives_files() {
+    let dir = Scratch::new();
+    let data = dir.0.join("data");
+    std::fs::set_permissions(&data, Permissions::from_mode(0o000)).unwrap();
+    let error = local_error(&dir.0);
+    std::fs::set_permissions(&data, Permissions::from_mode(0o700)).unwrap();
+    let io = env::files::Error::Io {
+        path: ".".into(),
+        operation: env::files::Operation::Open,
+        code: 13,
+    };
+    assert_eq!(error, Error::Local(sector::local::Error::Files(io)));
+}
+
+#[test]
+fn local_gives_the_version_of_a_file_of_another_version() {
+    let dir = Scratch::new();
+    dir.write("address", b"foundation/address/2");
+    let version = sector::local::Error::Version {
+        file: "address",
+        found: b'2',
+        expected: b'1',
+    };
+    let error = local_error(&dir.0);
+    assert_eq!(error.to_string(), version.to_string());
+    assert_eq!(error, Error::Local(version));
 }

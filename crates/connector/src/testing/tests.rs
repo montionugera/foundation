@@ -8,6 +8,7 @@ use std::task::Poll;
 use document::Document;
 use document::diagnostic::{Code, Diagnostic};
 use env::clock::Clock;
+use hub::home::Outcome;
 use hub::reader::{Mode, Reader};
 use types::authority::Authority;
 use types::channel;
@@ -16,9 +17,13 @@ use types::time::Span;
 
 use super::{Reading, Rig, create_secret, create_status};
 use crate::cancel;
-use crate::common::{env, run_on};
+use crate::common::{
+    Column, env, fill, open_status, run_on, write_columns, write_status,
+};
 use crate::kind::{Channels, Context, Error, Kind, Table};
 use crate::status::State;
+
+mod secrets;
 
 const REFUSED: Code = Code::new("test.refused");
 
@@ -89,6 +94,25 @@ impl Kind for Refuses {
     }
 }
 
+/// A kind whose check passes and whose run ends with `Ok` at once.
+struct Ends;
+
+impl Kind for Ends {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels::default())
+    }
+
+    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+        std::future::ready(Ok(()))
+    }
+}
+
 fn refused() -> Diagnostic {
     Diagnostic::new(REFUSED, None, "refused".into(), "Fix it".into())
 }
@@ -116,6 +140,19 @@ async fn status_of(rig: &Rig, connector: &str, mode: Mode) -> Reader {
     };
     rig.hub().reader(config).await.expect("the reader opens")
 }
+
+/// The columns of a frame of the statuses `(state, restarts)` of `statuses`, with no
+/// error, for [`write_columns`] through a writer of `STATUS_LASTS`.
+fn statuses(statuses: &[(u64, u64)]) -> Vec<Column> {
+    vec![
+        Column::Numbers(statuses.iter().map(|&(state, _)| state).collect()),
+        Column::Numbers(vec![0; statuses.len()]),
+        Column::Numbers(statuses.iter().map(|&(_, restarts)| restarts).collect()),
+    ]
+}
+
+/// The status channels of [`statuses`], by the last segment of each name.
+const STATUS_LASTS: [&str; 3] = ["state", "class", "restarts"];
 
 /// Asserts that the hub of `rig` defines no channel `channel`.
 async fn assert_undefined(rig: &Rig, channel: &str) {
@@ -306,6 +343,44 @@ fn a_connector_reads_the_secrets_that_create_secret_writes_on_the_files_of_env()
     });
     let read = read.lock().expect("no panic under the lock");
     assert_eq!(*read, [b"t1".to_vec()]);
+}
+
+#[test]
+fn a_record_reads_each_status_of_a_connector_across_its_runs() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |rig, _| async move {
+            let (config, plant) = (Document::default(), name("plant.ticks"));
+            let record = rig
+                .record(&rig.define_status("ticks", &plant, &config))
+                .await;
+            for _ in 0..2 {
+                let mut run =
+                    rig.supervise("ticks", plant.clone(), config.clone()).await;
+                run.until(TEN, ticking).await;
+                assert_eq!(run.stop().await.map_err(|e| e.to_string()), Ok(()));
+            }
+            let readings = record.readings().into_iter();
+            let got: Vec<_> =
+                (readings.map(|r| (r.state, r.counts[&name("ticks")]))).collect();
+            let (running, ending) = (State::Running, State::Ending);
+            let first = [(running, 0), (running, 10), (ending, 10)];
+            let stopped = (State::Stopped, 10);
+            let want: Vec<_> =
+                first.into_iter().chain([stopped]).chain(first).collect();
+            assert_eq!(got, want);
+        },
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "the status reader does not open: the selector matches no channel"
+)]
+fn a_record_of_status_channels_that_the_hub_does_not_define_panics() {
+    on_rig(Table::new, |rig, _| async move {
+        rig.record(&[name("plant.ticks.status.time")]).await;
+    });
 }
 
 #[test]
@@ -522,6 +597,25 @@ fn a_second_open_of_one_name_while_its_run_goes_on_panics() {
 #[should_panic(
     expected = "a run of plant.ticks goes on: stop it before the next open of its name"
 )]
+fn a_third_open_while_the_second_run_goes_on_panics() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |rig, _| async move {
+            let (config, plant) = (Document::default(), name("plant.ticks"));
+            let mut a = rig.supervise("ticks", plant.clone(), config.clone()).await;
+            a.until(TEN, ticking).await;
+            assert_eq!(a.stop().await.map_err(|e| e.to_string()), Ok(()));
+            let mut b = rig.supervise("ticks", plant.clone(), config.clone()).await;
+            b.until(TEN, ticking).await;
+            rig.supervise("ticks", plant, config).await;
+        },
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "a run of plant.ticks goes on: stop it before the next open of its name"
+)]
 fn an_open_after_a_dropped_run_whose_tasks_go_on_panics() {
     on_rig(
         || Table::new().with("ticks", Ticks::default()),
@@ -598,6 +692,105 @@ fn a_drop_of_a_run_cancels_the_connector() {
             })
             .await;
             assert!(in_time, "the connector stops within 10 s of the drop");
+        },
+    );
+}
+
+#[test]
+fn next_gives_each_status_of_a_frame_oldest_first() {
+    on_rig(
+        || Table::new().with("ends", Ends),
+        |rig, clock| async move {
+            let config = Document::default();
+            let mut run = rig.supervise("ends", name("plant.ends"), config).await;
+            run.until(TEN, |reading| reading.state == State::Stopped)
+                .await;
+            clock.sleep(Span::SECOND).await;
+            let columns = STATUS_LASTS.into_iter().zip(statuses(&[(1, 5), (0, 6)]));
+            write_status(rig.hub(), "plant.ends", columns.collect()).await;
+            let (first, second) = (run.next().await, run.next().await);
+            let got = [first, second].map(|reading| (reading.state, reading.restarts));
+            assert_eq!(got, [(State::Restarting, 5), (State::Running, 6)]);
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "the status ends: channel ")]
+fn a_record_panics_when_its_status_reader_ends() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |rig, clock| async move {
+            let (config, plant) = (Document::default(), name("plant.ticks"));
+            let names = rig.define_status("ticks", &plant, &config);
+            let _record = rig.record(&names).await;
+            rig.remove(&names);
+            clock.sleep(Span::SECOND).await;
+        },
+    );
+}
+
+#[test]
+fn a_record_keeps_each_status_of_a_frame_oldest_first() {
+    on_rig(
+        || Table::new().with("ends", Ends),
+        |rig, clock| async move {
+            let (config, plant) = (Document::default(), name("plant.ends"));
+            let names = rig.define_status("ends", &plant, &config);
+            let record = rig.record(&names).await;
+            let columns = STATUS_LASTS.into_iter().zip(statuses(&[(1, 5), (0, 6)]));
+            write_status(rig.hub(), "plant.ends", columns.collect()).await;
+            clock.sleep(Span::SECOND).await;
+            let got: Vec<_> = record
+                .readings()
+                .into_iter()
+                .map(|reading| (reading.state, reading.restarts))
+                .collect();
+            assert_eq!(got, [(State::Restarting, 5), (State::Running, 6)]);
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "a status frame of [plant.ends.status.time, \
+    plant.ends.status.class, plant.ends.status.restarts] holds no whole status")]
+fn a_record_panics_at_a_frame_with_no_state() {
+    on_rig(
+        || Table::new().with("ends", Ends),
+        |rig, clock| async move {
+            let (config, plant) = (Document::default(), name("plant.ends"));
+            let names = rig.define_status("ends", &plant, &config);
+            let _record = rig.record(&names).await;
+            let lasts = &["class", "restarts"];
+            let mut writer = open_status(rig.hub(), "plant.ends", lasts).await;
+            let columns = vec![Column::Numbers(vec![0]), Column::Numbers(vec![1])];
+            write_columns(&mut writer, columns);
+            clock.sleep(Span::SECOND).await;
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "the status reader missed the seqs ")]
+fn next_panics_at_a_status_that_its_reader_missed() {
+    on_rig(
+        || Table::new().with("ends", Ends),
+        |rig, clock| async move {
+            let config = Document::default();
+            let mut run = rig.supervise("ends", name("plant.ends"), config).await;
+            run.until(TEN, |reading| reading.state == State::Stopped)
+                .await;
+            clock.sleep(Span::SECOND).await;
+            let lasts = &STATUS_LASTS;
+            let mut writer = open_status(rig.hub(), "plant.ends", lasts).await;
+            let mut held = fill(&writer);
+            drop(held.pop());
+            let lost = write_columns(&mut writer, statuses(&[(1, 5)]));
+            assert!(matches!(lost[..], [Outcome::Lost { .. }]), "{lost:?}");
+            drop(held);
+            clock.sleep(Span::SECOND).await;
+            write_columns(&mut writer, statuses(&[(0, 6)]));
+            run.next().await;
         },
     );
 }
@@ -699,5 +892,28 @@ fn a_capture_takes_the_events_of_its_target_with_the_fields_of_their_parent() {
             "ERROR gone",
             "INFO alone",
         ]
+    );
+}
+
+#[test]
+#[should_panic(expected = "the status reader missed the seqs ")]
+fn a_record_panics_at_a_status_that_its_reader_missed() {
+    on_rig(
+        || Table::new().with("ends", Ends),
+        |rig, clock| async move {
+            let (config, plant) = (Document::default(), name("plant.ends"));
+            let names = rig.define_status("ends", &plant, &config);
+            let _record = rig.record(&names).await;
+            let lasts = &STATUS_LASTS;
+            let mut writer = open_status(rig.hub(), "plant.ends", lasts).await;
+            let mut held = fill(&writer);
+            drop(held.pop());
+            let lost = write_columns(&mut writer, statuses(&[(1, 5)]));
+            assert!(matches!(lost[..], [Outcome::Lost { .. }]), "{lost:?}");
+            drop(held);
+            clock.sleep(Span::SECOND).await;
+            write_columns(&mut writer, statuses(&[(0, 6)]));
+            clock.sleep(Span::SECOND).await;
+        },
     );
 }

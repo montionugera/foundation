@@ -184,6 +184,11 @@ fn error_raises_the_class_and_text_of_each_variant() {
             "the node finished a stream with no answer",
         ),
         (
+            sdk::Error::Local(sector::local::Error::NotRunning),
+            "ConnectionError",
+            "no node runs on the data directory",
+        ),
+        (
             sdk::Error::Panicked,
             "PanicException",
             "the client thread panicked",
