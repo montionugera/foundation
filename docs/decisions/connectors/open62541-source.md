@@ -1037,12 +1037,14 @@
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255744593. A DER
   entry with a byte after its last certificate, and DER then PEM in one entry, give
   `BadInternalError`. What aws-lc reads as text is dropped: a block with a damaged
-  `BEGIN` line, DER bytes after PEM, and a second certificate in the base64 of one
-  block. So the connect fails closed with an untrusted certificate
-  (`laptop.architect-2`, 2026-10-18 22:30 UTC,
-  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255959458, and
-  for the last two, 2026-10-18 22:50 UTC,
-  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256155598).
+  `BEGIN` line, DER bytes after PEM, a second certificate in the base64 of one block,
+  and a damaged first DER certificate before a PEM block. So the connect fails closed
+  with an untrusted certificate (`laptop.architect-2`, 2026-10-18 22:30 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255959458; for the
+  second and third, 2026-10-18 22:50 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256155598; and for
+  the last, with the DER test, 2026-10-18 22:58 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256221476).
   `laptop.monitor` accepted that the readers of aws-lc read the trust, and our own PEM
   parser lost (message 20c8b048 to `box1.builder-3`). An issuer entry keeps the load of
   the release (`laptop.architect-2`, 2026-10-18 22:07 UTC,

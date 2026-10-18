@@ -261,6 +261,16 @@ fn a_trust_of_der_then_pem_ends_the_connect() {
 }
 
 #[test]
+fn a_trust_of_a_damaged_der_then_pem_drops_the_der() {
+    let (other, _) = blocks();
+    let mut damaged = SERVER.certificate.to_vec();
+    assert_eq!(damaged[4], 0x30, "the to-be-signed part is a sequence");
+    damaged[4] = 0x31;
+    let trust = [&damaged, b"\n".as_slice(), other.as_bytes()].concat();
+    assert_eq!(trusting(trust), Err(Status::BAD_CERTIFICATE_UNTRUSTED));
+}
+
+#[test]
 fn an_empty_trust_ends_the_connect() {
     assert_eq!(trusting(b""), Err(Status::BAD_INTERNAL_ERROR));
 }
