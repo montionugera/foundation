@@ -717,59 +717,62 @@ fn every() -> Vec<Error> {
     ]
 }
 
+/// Matches each variant, so a new variant fails to compile until it joins [`every`]
+/// and the golden file.
+fn listed(error: &Error) {
+    // `Config` holds the codes of the front ends, of `config`, and the ones below.
+    // `Node` holds the codes of `node`, and `Remote` the codes of a reply.
+    match error {
+        Error::Argument { .. }
+        | Error::Unknown { .. }
+        | Error::Input { .. }
+        | Error::Output { .. }
+        | Error::Plan(_)
+        | Error::Behind(_)
+        | Error::Stale { .. }
+        | Error::Apply(_)
+        | Error::Stopped(_)
+        | Error::Request { .. }
+        | Error::Denied { .. }
+        | Error::LargeReply
+        | Error::LargeBrowse
+        | Error::LargeStatus
+        | Error::ChannelRead { .. }
+        | Error::Read { .. }
+        | Error::Write { .. }
+        | Error::LargeRequest
+        | Error::Reply { .. }
+        | Error::Outside { .. }
+        | Error::Hidden { .. }
+        | Error::NoData { .. }
+        | Error::FolderChanged { .. }
+        | Error::PlanName { .. }
+        | Error::WideFolder { .. }
+        | Error::Folder { .. }
+        | Error::Data { .. }
+        | Error::Browse { .. }
+        | Error::BrowseNode { .. }
+        | Error::BadStart { .. }
+        | Error::BadPattern { .. }
+        | Error::NoPick
+        | Error::ImportLimit { .. }
+        | Error::BadPoint { .. }
+        | Error::DuplicatePick { .. }
+        | Error::BadName { .. }
+        | Error::UnreadablePoint { .. }
+        | Error::ImportBudget { .. }
+        | Error::LargeImport
+        | Error::FileChanged { .. }
+        | Error::Config(_)
+        | Error::Node(_)
+        | Error::Remote { .. } => {}
+    }
+}
+
 #[test]
 fn error_codes_and_fixes_match_the_golden_file() {
     let every = every();
-    for error in &every {
-        // A new variant fails this match, so it joins `every` and the golden file.
-        // `Config` holds the codes of the front ends, of `config`, and the ones below.
-        // `Node` holds the codes of `node`, and `Remote` the codes of a reply.
-        match error {
-            Error::Argument { .. }
-            | Error::Unknown { .. }
-            | Error::Input { .. }
-            | Error::Output { .. }
-            | Error::Plan(_)
-            | Error::Behind(_)
-            | Error::Stale { .. }
-            | Error::Apply(_)
-            | Error::Stopped(_)
-            | Error::Request { .. }
-            | Error::Denied { .. }
-            | Error::LargeReply
-            | Error::LargeBrowse
-            | Error::LargeStatus
-            | Error::ChannelRead { .. }
-            | Error::Read { .. }
-            | Error::Write { .. }
-            | Error::LargeRequest
-            | Error::Reply { .. }
-            | Error::Outside { .. }
-            | Error::Hidden { .. }
-            | Error::NoData { .. }
-            | Error::FolderChanged { .. }
-            | Error::PlanName { .. }
-            | Error::WideFolder { .. }
-            | Error::Folder { .. }
-            | Error::Data { .. }
-            | Error::Browse { .. }
-            | Error::BrowseNode { .. }
-            | Error::BadStart { .. }
-            | Error::BadPattern { .. }
-            | Error::NoPick
-            | Error::ImportLimit { .. }
-            | Error::BadPoint { .. }
-            | Error::DuplicatePick { .. }
-            | Error::BadName { .. }
-            | Error::UnreadablePoint { .. }
-            | Error::ImportBudget { .. }
-            | Error::LargeImport
-            | Error::FileChanged { .. }
-            | Error::Config(_)
-            | Error::Node(_)
-            | Error::Remote { .. } => {}
-        }
-    }
+    every.iter().for_each(listed);
     let mut lines: Vec<_> = every
         .iter()
         .flat_map(|error| error.problems().into_owned())
