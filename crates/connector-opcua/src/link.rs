@@ -623,7 +623,8 @@ const MANGLE: &str = if cfg!(target_vendor = "apple") {
 
 /// The C names that `nm` with `flag` gives for each object of `files`, by the name of
 /// the object: its name in an archive, or else the name of its file. A name without
-/// [`MANGLE`] stays as `nm` gives it. No path of `files` may hold `": "`.
+/// [`MANGLE`] stays as `nm` gives it. Each of `files` is an object of the target, and
+/// no path of `files` may hold `": "`.
 fn objects(
     files: &[std::path::PathBuf],
     flag: &str,
