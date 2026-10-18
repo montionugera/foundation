@@ -13,6 +13,8 @@ use types::hash;
 /// and wakes its task, which then ends. A future that completes drops at once.
 pub(crate) struct Scope {
     running: Rc<RefCell<hash::Map<u64, Slot>>>,
+    /// The waker of [`Scope::join`] at its last poll.
+    idle: Rc<RefCell<Waker>>,
     tasks: env::tasks::Tasks,
     next: u64,
 }
@@ -22,6 +24,7 @@ impl Scope {
     pub(crate) fn new(tasks: env::tasks::Tasks) -> Self {
         Self {
             running: Rc::default(),
+            idle: Rc::new(RefCell::new(Waker::noop().clone())),
             tasks,
             next: 0,
         }
@@ -36,11 +39,25 @@ impl Scope {
         let run = Spawned {
             slot: Rc::downgrade(&slot),
             running: Rc::downgrade(&self.running),
+            idle: Rc::downgrade(&self.idle),
             key: self.next,
         };
         self.running.borrow_mut().insert(self.next, slot);
         self.next += 1;
         self.tasks.spawn(poll_fn(move |cx| run.poll(cx)));
+    }
+
+    /// Waits until each future of the scope completes. Dropped before then, it drops
+    /// each future that has not completed, as a drop of the scope does.
+    pub(crate) async fn join(self) {
+        poll_fn(|cx| {
+            if self.running.borrow().is_empty() {
+                return Poll::Ready(());
+            }
+            self.idle.borrow_mut().clone_from(cx.waker());
+            Poll::Pending
+        })
+        .await;
     }
 }
 
@@ -82,6 +99,7 @@ struct Running {
 struct Spawned {
     slot: Weak<RefCell<Running>>,
     running: Weak<RefCell<hash::Map<u64, Slot>>>,
+    idle: Weak<RefCell<Waker>>,
     key: u64,
 }
 
@@ -109,6 +127,11 @@ impl Spawned {
             let done = running.borrow_mut().remove(&self.key);
             // A future's drop may do anything, so it runs with no borrow held.
             drop(done);
+            if running.borrow().is_empty()
+                && let Some(idle) = self.idle.upgrade()
+            {
+                idle.borrow().wake_by_ref();
+            }
         }
         polled
     }
@@ -176,6 +199,54 @@ mod tests {
         drop(scope);
         assert_eq!(Rc::strong_count(&held), 1);
         assert_eq!(woken.0.load(Ordering::Relaxed), 1);
+        assert_eq!(task.as_mut().poll(&mut cx), Poll::Ready(()));
+    }
+
+    #[test]
+    fn join_waits_for_a_pending_future_and_ends_once_it_completes() {
+        let (mut scope, queued) = scope();
+        let done = Rc::new(Cell::new(false));
+        let ready = Rc::clone(&done);
+        scope.spawn(Box::pin(poll_fn(move |_| {
+            if ready.get() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })));
+        let mut task = take(&queued);
+        let mut join = Box::pin(scope.join());
+        let (waiter, woken) = waker();
+        let mut waits = Context::from_waker(&waiter);
+        assert_eq!(join.as_mut().poll(&mut waits), Poll::Pending);
+        let (waker, _) = waker();
+        let mut cx = Context::from_waker(&waker);
+        assert_eq!(task.as_mut().poll(&mut cx), Poll::Pending);
+        assert_eq!(join.as_mut().poll(&mut waits), Poll::Pending);
+        assert_eq!(woken.0.load(Ordering::Relaxed), 0);
+        done.set(true);
+        assert_eq!(task.as_mut().poll(&mut cx), Poll::Ready(()));
+        assert_eq!(woken.0.load(Ordering::Relaxed), 1);
+        assert_eq!(join.as_mut().poll(&mut waits), Poll::Ready(()));
+    }
+
+    #[test]
+    fn a_dropped_join_drops_a_pending_future() {
+        let (mut scope, queued) = scope();
+        let held = Rc::new(());
+        let inner = Rc::clone(&held);
+        scope.spawn(Box::pin(async move {
+            pending::<()>().await;
+            drop(inner);
+        }));
+        let mut task = take(&queued);
+        let (waker, _) = waker();
+        let mut cx = Context::from_waker(&waker);
+        assert_eq!(task.as_mut().poll(&mut cx), Poll::Pending);
+        let mut join = Box::pin(scope.join());
+        assert_eq!(join.as_mut().poll(&mut cx), Poll::Pending);
+        drop(join);
+        assert_eq!(Rc::strong_count(&held), 1);
         assert_eq!(task.as_mut().poll(&mut cx), Poll::Ready(()));
     }
 
