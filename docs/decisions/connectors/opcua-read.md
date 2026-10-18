@@ -85,7 +85,7 @@
   https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6200602125).
   The client checks the queued chunks of each request id against `CHUNKS` and its
   largest message, as a server can interleave the chunks of answers (OPC UA Part 6).
-  It holds at most `READS` times `CHUNKS` - 1 queued chunks in all (63, about 4 MiB),
+  It holds at most `READS` times (`CHUNKS` - 1) queued chunks in all (63, about 4 MiB),
   the intermediate chunks of each answer that it can have in flight, so an interleave
   of its answers never closes the channel, and the chunks of request ids that it did
   not send stop at that bound. A chunk past one of these bounds closes the channel,
