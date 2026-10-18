@@ -211,3 +211,22 @@
   a silent drop hides the defect of an SDK. `laptop.architect` gave `Error::Cut` at
   2026-10-18T05:43:30Z
   (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6246212678).
+  Amended (#2718 PR 2): the node serves a write stream at the home of its index. The
+  open holds its `length` in the hub's body budget until it decodes. Then the stream
+  holds 16 bytes for each channel of the open and one for its index until the stream
+  ends, and ends that do not fit stop with `BUSY` before the writer opens (MEMORY
+  BOUNDS). A write whose channels are on more than one index stops with `MALFORMED`
+  before the home's writer opens, so a refused open takes no control at the gate. A
+  frame of `Time::Node` gets mesh time, or 1 ns after the last stamp that the node gave
+  on the stream when mesh time is not after it. After each commit, the node sends
+  `Stored { through }` with the last seq that it took before it called the commit.
+  When the program finishes, the node waits for the commit of each taken frame, sends
+  its `Stored`, and then finishes the stream, so the program learns that each taken
+  frame is on disk. A write takes a stream of any class, as the class sets only the
+  priority of its replies. The two key choices, the wait at the finish and the ends in
+  the body budget, went to `laptop.monitor`, which let them go ahead. Approved by
+  `laptop.architect` at 2026-10-18T07:45:01Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6247275705) and
+  2026-10-18T08:03:14Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6247422979).
+  Lost: a count cap on write streams, which bounds no bytes without the widest open.

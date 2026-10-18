@@ -129,7 +129,7 @@
   https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244779011) and
   refuses each other kind with `Error::Kind`. The lost reason above, that each caller
   checks the kind again, does not apply: each variant comes, and the node handles each.
-  Until it serves the write stream, the node stops a `Write` as `MALFORMED`.
+  The node serves the write stream (HUB CLIENT, amended by #2718).
   Supersedes, for the node, the rule that each side knows the kind of each stream, of
   https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6063499704.
   `client::Refusal` gains `UNKNOWN` 16 (a selector that matches no channel), `NOT_HOME`
