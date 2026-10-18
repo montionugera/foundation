@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 use std::collections::vec_deque::Drain;
 use std::fmt;
-use std::num::{NonZeroU8, NonZeroU64};
+use std::num::{NonZeroU8, NonZeroU32, NonZeroU64};
 use std::ops::Deref;
 
 use types::channel::{self, Slot};
@@ -576,7 +576,7 @@ pub(crate) struct Newest {
     tag: NonZeroU8,
     first: u64,
     stored_at: Stamp,
-    kind: Kind,
+    kind: Packed,
     /// The entry's parts, joined. A later copy of its key reuses it.
     pub(crate) bytes: Vec<u8>,
 }
@@ -584,7 +584,57 @@ pub(crate) struct Newest {
 impl Newest {
     /// The mark after the entry on its path.
     fn end(&self) -> Mark {
-        Mark::end(self.first, self.kind).expect("invariant: the log checked the entry")
+        Mark::end(self.first, self.kind.into())
+            .expect("invariant: the log checked the entry")
+    }
+}
+
+/// A [`Kind`] in 16 bytes, where a `Kind` takes 24, for a copy that stays in memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Packed {
+    /// The count of samples, or 0 for an entry with no samples.
+    len: u32,
+    /// Whether `value` holds the newest stamp of the samples.
+    stamped: bool,
+    /// The nanoseconds of the newest stamp of the samples, or the count of an entry
+    /// with no samples.
+    value: u64,
+}
+
+impl From<Kind> for Packed {
+    fn from(kind: Kind) -> Self {
+        match kind {
+            Kind::Samples(Samples { len, last }) => Self {
+                len: len.get(),
+                stamped: last.is_some(),
+                value: last.map_or(0, |last| last.nanos().cast_unsigned()),
+            },
+            Kind::Record(given) => Self {
+                len: 0,
+                stamped: false,
+                value: given.get(),
+            },
+        }
+    }
+}
+
+impl From<Packed> for Kind {
+    fn from(packed: Packed) -> Self {
+        let Packed {
+            len,
+            stamped,
+            value,
+        } = packed;
+        match NonZeroU32::new(len) {
+            Some(len) => Self::Samples(Samples {
+                len,
+                last: stamped.then(|| Stamp::from_nanos(value.cast_signed())),
+            }),
+            None => Self::Record(
+                NonZeroU64::new(value)
+                    .expect("invariant: a packed record counts 1 or more"),
+            ),
+        }
     }
 }
 
@@ -948,7 +998,7 @@ impl Logs {
                 path: copy.path,
                 first: copy.first,
                 stored_at: copy.stored_at,
-                kind: copy.kind,
+                kind: copy.kind.into(),
                 tag: copy.tag.get(),
                 bytes: u32::try_from(copy.bytes.len())
                     .expect("invariant: an entry's bytes fit in u32"),
@@ -1080,7 +1130,7 @@ impl Logs {
                 tag,
                 first: header.first,
                 stored_at: header.stored_at,
-                kind: header.kind,
+                kind: header.kind.into(),
                 bytes: Vec::new(),
             });
             self.tags.insert(key, at);
@@ -1102,7 +1152,7 @@ impl Logs {
         copy.offset = offset;
         copy.first = header.first;
         copy.stored_at = header.stored_at;
-        copy.kind = header.kind;
+        copy.kind = header.kind.into();
         Some(&mut copy.bytes)
     }
 
@@ -1558,13 +1608,37 @@ impl Items {
 #[cfg(test)]
 #[expect(clippy::arithmetic_side_effects, reason = "a test may panic")]
 mod tests {
-    use std::num::NonZeroU32;
-
     use super::*;
     use proptest::prelude::*;
 
     /// The area of the logs of each test: 64 records of a block.
     const AREA: u64 = 64 * 4096;
+
+    /// A copy takes 72 bytes beside its bytes: the kind packs into 16 of them.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn a_copy_takes_72_bytes() {
+        assert_eq!(size_of::<Newest>(), 72);
+    }
+
+    proptest! {
+        /// A packed kind gives back the kind that it packs.
+        #[test]
+        fn a_packed_kind_gives_back_its_kind(
+            len in prop::option::of(1_u32..),
+            last in prop::option::of(any::<i64>()),
+            given in 1_u64..,
+        ) {
+            let kind = match len {
+                Some(len) => Kind::Samples(Samples {
+                    len: NonZeroU32::new(len).expect("not 0"),
+                    last: last.map(Stamp::from_nanos),
+                }),
+                None => Kind::Record(NonZeroU64::new(given).expect("not 0")),
+            };
+            prop_assert_eq!(Kind::from(Packed::from(kind)), kind);
+        }
+    }
 
     fn slot(value: u32) -> Slot {
         Slot::new(value)
@@ -2268,7 +2342,7 @@ mod tests {
                 tag,
                 first: header.first,
                 stored_at: header.stored_at,
-                kind: header.kind,
+                kind: header.kind.into(),
                 bytes,
             }
         };
@@ -4114,7 +4188,8 @@ mod tests {
                     queued.push((next.index, header));
                 }
                 let mut carried = Carried::default();
-                logs.carry(8192 * *reach.min(&number), tails_body(*limit), &mut carried);
+                let reach = 8192 * *reach.min(&number);
+                logs.carry(reach, tails_body(*limit), &mut carried);
                 for (index, header) in &queued {
                     prop_assert_eq!(logs.sync(slot(*index), header, synced_at), Ok(()));
                 }
