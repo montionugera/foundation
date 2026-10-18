@@ -5161,10 +5161,11 @@ pub(crate) mod port {
             assert_eq!(warned, [line]);
         }
 
-        /// A member that sends put heads of the largest block of shard 0's pool and no
-        /// bodies, more than the 8 puts that the store holds open, holds no block of
-        /// the pool, so a hub stream of the member still goes to the hub, which stops
-        /// an open of a channel that the node does not know with `UNKNOWN`.
+        /// A member that sends put heads of 42 of the 47 block sizes of shard 0's pool,
+        /// from the largest down, and no bodies, more than the 8 puts that the store
+        /// holds open, still has its hub streams served, so a hub stream of the member
+        /// still goes to the hub, which stops an open of a channel that the node does
+        /// not know with `UNKNOWN`.
         #[test]
         fn put_heads_with_no_body_leave_a_hub_stream_served() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -5183,8 +5184,8 @@ pub(crate) mod port {
                 let largest =
                     block::Pool::heap(block::Config::new(512 << 10).unwrap()).largest();
                 let largest = u32::try_from(largest).unwrap();
-                // A head of each size of block, from the largest down, in fewer streams
-                // than the 64 of a session.
+                // A head of 42 of the 47 sizes of block, from the largest down, in fewer
+                // streams than the 64 of a session.
                 let lens =
                     std::iter::successors(Some(largest), |len| Some(len * 5 / 6));
                 let lens = lens.take_while(|&len| len >= 64);
