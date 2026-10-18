@@ -200,14 +200,15 @@ again once to prove that the failure replays (r16 59).
   an item of one OS needs, is a gate: the first line of the doc of the gated item is
   `Only <OS>` or `Only <arch>`, or starts with either and `:`. `<arch>` is the
   `target_arch` value (`aarch64` or `x86_64`) of each runner on which the item builds,
-  and of no other. A skip that keys on several OSes, of which only some have the
-  behavior, is one `cfg_attr` for each OS, each with its own reason. Each other test
-  that an OS does not run, a test that needs a tool of one OS too, is an item of the
-  list of that OS in the matrix of the job `check` in `ci.yaml`, with the open issue
-  that removes it. A doc covers only each OS that no item names. The review checks that
-  a reason or a doc is true of the behavior on each OS that it covers, not only of the
-  tool. LINUX CI (`docs/decisions/testing/linux-ci.md`) gives the lists, what an item
-  may be, and the names of the OSes, and `cargo xtask skips` checks the form.
+  that of `arm.yaml` too, and of no other. A skip that keys on several OSes, of which
+  only some have the behavior, is one `cfg_attr` for each OS, each with its own reason.
+  Each other test that an OS does not run, a test that needs a tool of one OS too, is an
+  item of the list of that OS in the matrix of the job `check` in `ci.yaml`, with the
+  open issue that removes it. A doc covers only each OS that no item names. The review
+  checks that a reason or a doc is true of the behavior on each OS that it covers, not
+  only of the tool. LINUX CI (`docs/decisions/testing/linux-ci.md`) gives the lists,
+  what an item may be, and the names of the OSes, and `cargo xtask skips` checks the
+  form.
 - **One `check` helper per feature under test.** Inputs and expected output are data,
   so a signature change edits one helper (r16 50).
 - **A fixture helper is `create_*`.** A helper that builds the state a test runs
