@@ -36,14 +36,13 @@
   2026-10-18T17:10:10Z:
   https://github.com/synnaxlabs/foundation/pull/3220#issuecomment-6252724012). It reads
   a body into one block of the chunk's length and calls `Store::put`. A head of the
-  oldest open digest over `Pool::largest`
-  of the store, or bytes that do not hash to the digest, stops the stream with
-  `TOO_LARGE` or `MISMATCH`, and the digests still open go again on a new stream. A
-  reply that does not answer the oldest open digest gives `Error::Unexpected`, and an
-  end of the peer's half with digests open gives `Error::Unanswered`; both stop with
-  `MALFORMED`. A store error is the failure of the requester, so the stream ends with
-  code 0 (the head of the oldest open digest and this code: `laptop.architect`,
-  2026-10-18T16:45:46Z:
+  oldest open digest over `Pool::largest` of the store, or bytes that do not hash to
+  the digest, stops the stream with `TOO_LARGE` or `MISMATCH`, and the digests still
+  open go again on a new stream. A reply that does not answer the oldest open digest
+  gives `Error::Unexpected`, and an end of the peer's half with digests open gives
+  `Error::Unanswered`; both stop with `MALFORMED`. A store error is the failure of the
+  requester, so the stream ends with code 0 (the head of the oldest open digest and
+  this code: `laptop.architect`, 2026-10-18T16:45:46Z:
   https://github.com/synnaxlabs/foundation/pull/3220#issuecomment-6252474303).
   `peer::put(&Store, &Session, &[Digest])` sends each chunk of the store, one at a time,
   as `serve` sends a get, and waits for its `Stored`. A stop or reset with a code that
