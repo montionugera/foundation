@@ -137,6 +137,11 @@ impl Opcua {
         pace(ticks, &self.clock, sleep, || self.variables.change(quality));
     }
 
+    /// The time of the server now, on the scale of [`Opcua::served`].
+    pub(super) fn now(&self) -> Stamp {
+        wall(self.zero, self.clock.now())
+    }
+
     /// Each read that the server answered, by node id, in order: the value and status
     /// of the answer, at the time of the answer.
     pub(super) fn served(&self) -> BTreeMap<String, Vec<Sample>> {
