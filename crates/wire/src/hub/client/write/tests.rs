@@ -463,7 +463,7 @@ mod reply {
     #[test]
     fn refuses_a_code_that_no_refusal_has() {
         for code in (0..=u8::MAX).filter(|code| !(1..=7).contains(code)) {
-            assert_eq!(Reply::decode(&[3, code]), Err(Error::Refused { code }));
+            assert_eq!(Reply::decode(&[3, code]), Err(Error::Refusal { code }));
         }
     }
 

@@ -166,7 +166,7 @@ fn unkinded(message: &[u8]) {
             assert_eq!(error, Error::Kind { kind }, "{message:?}");
         }
         (Some(_), Err(error)) => assert!(
-            matches!(error, Error::Length { .. } | Error::Refused { .. }),
+            matches!(error, Error::Length { .. } | Error::Refusal { .. }),
             "{error:?} is not a refusal of the bytes of {message:?}"
         ),
     }

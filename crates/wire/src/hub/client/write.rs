@@ -462,7 +462,7 @@ impl Reply {
     /// # Errors
     ///
     /// [`Error::Empty`], [`Error::Kind`] for a kind that no reply has,
-    /// [`Error::Length`], and [`Error::Refused`] for a refusal code that no refusal
+    /// [`Error::Length`], and [`Error::Refusal`] for a refusal code that no refusal
     /// has.
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = Fields::new(message);
@@ -480,7 +480,7 @@ impl Reply {
                     .into_iter()
                     .find(|refusal| refusal.code() == code)
                     .map(|refusal| Self::Outcome(Outcome::Refused(refusal)))
-                    .ok_or(Error::Refused { code });
+                    .ok_or(Error::Refusal { code });
             }
             STORED => Self::Stored {
                 through: u64::from_le_bytes(*fields.take()?),

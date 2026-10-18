@@ -331,7 +331,7 @@ pub enum Error {
         count: u32,
     },
     /// A refused frame of a write has a code that no refusal has.
-    Refused {
+    Refusal {
         /// The code.
         code: u8,
     },
@@ -432,7 +432,7 @@ impl fmt::Display for Error {
                      form, not 1 raw sample"
                 )
             }
-            Self::Refused { code } => {
+            Self::Refusal { code } => {
                 write!(f, "the refused frame has code {code}, which no refusal has")
             }
         }

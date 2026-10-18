@@ -755,7 +755,7 @@ fn names_each_error() {
              sample",
         ),
         (
-            Error::Refused { code: 8 },
+            Error::Refusal { code: 8 },
             "the refused frame has code 8, which no refusal has",
         ),
         (
