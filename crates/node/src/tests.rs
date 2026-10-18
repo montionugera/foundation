@@ -395,7 +395,7 @@ fn a_shard_with_no_memory_stops_the_node_before_later_shards_start() {
         );
         assert_eq!(
             e.to_string(),
-            "no memory for a pool of shard-1: the OS refused memory for the first \
+            "no memory for the pool of shard-1: the OS refused memory for the first \
              page of a reserve; free memory or raise the commit limit of the system"
         );
     }
@@ -2623,10 +2623,7 @@ mod hub {
             let files = host.files();
             open.keep(
                 host.files(),
-                crate::Pools {
-                    shard: std::rc::Rc::new(pool),
-                    store: None,
-                },
+                std::rc::Rc::new(pool),
                 tasks,
                 stop.guard(),
                 hold,
@@ -2735,7 +2732,6 @@ mod pool {
 
     use ::hub::writer::Writer;
     use block::testing::{Scarce, Switch};
-    use proptest::prelude::{prop_assert_eq, proptest};
     use types::frame::{self, Form};
     use types::time::Monotonic;
 
@@ -2743,27 +2739,6 @@ mod pool {
     use super::*;
 
     const SECOND_NS: i64 = Span::SECOND.nanos();
-
-    proptest! {
-        /// The pools of the shards and the pool of the chunk store add up to the pool
-        /// budget, and only shard 0 of a node with a region has a store pool, with an
-        /// eighth of its part.
-        #[test]
-        fn the_pools_add_up_to_the_budget(
-            budget: u64,
-            cores in 1..=256_usize,
-            regional: bool,
-        ) {
-            let mut total = 0_u128;
-            for (core, shard) in (0..cores).zip(0_u32..) {
-                let part = crate::part(budget, cores, core);
-                let (pool, store) = crate::pools(part, shard, regional);
-                total += u128::from(pool) + u128::from(store.unwrap_or(0));
-                prop_assert_eq!(store, (shard == 0 && regional).then_some(part / 8));
-            }
-            prop_assert_eq!(total, u128::from(budget));
-        }
-    }
 
     /// A shard gives the pages of a block size back to the system 10 to 20 s after
     /// the last block of that size returned. The last return falls at the open of
@@ -4577,10 +4552,7 @@ pub(crate) mod port {
             let opened = endpoint.open(
                 identity,
                 host.files(),
-                crate::Pools {
-                    shard: super::pool(),
-                    store: Some(super::pool()),
-                },
+                super::pool(),
                 &time,
                 tasks.clone(),
             );
@@ -4899,62 +4871,64 @@ pub(crate) mod port {
         }
 
         /// The least pool budget that each buffer takes also holds an append of the
-        /// largest record, so `Budget::pool` names no refusal of the mesh. Shard 0
-        /// gives an eighth of its part to the store, so its part is a seventh more.
+        /// largest record, so `Budget::pool` names no refusal of the mesh.
         #[test]
         fn the_least_pool_budget_of_the_buffers_opens_the_mesh() {
-            let start = |budget| {
-                let mut sim = sim::Sim::new(sim::Config::default());
-                let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
-                let node = Node::start(Config {
-                    region: Region::Given(region(&pair(&hosts))),
-                    ..config(&hosts[0], budget, Box::new(heap))
-                });
-                assert_eq!(sim.run_for(TEN), Ok(()));
-                node.stop();
-                assert_eq!(sim.run(), Ok(()));
-                node.join()
-            };
+            assert_eq!(founds(least(), 0), Ok(()));
+        }
+
+        /// At the least pool budget, the store puts a founding chunk of a subject of
+        /// 300 keys, about 9.6 KB, in a block of shard 0's pool.
+        #[test]
+        fn the_least_pool_budget_puts_a_founding_chunk_of_300_keys() {
+            assert_eq!(founds(least(), 300), Ok(()));
+        }
+
+        /// At 1 MiB on two shards, the store puts a founding chunk of a subject of 1900
+        /// keys, about 61 KB, in a block of shard 0's pool.
+        #[test]
+        fn a_mebibyte_on_two_shards_puts_a_founding_chunk_of_1900_keys() {
+            assert_eq!(founds(Size::MEBIBYTE, 1900), Ok(()));
+        }
+
+        /// The least pool budget of a node on two shards: twice the least part that
+        /// each buffer takes.
+        fn least() -> Size {
             let Err(Error::Buffer {
                 error: ::buffer::Error::Budget { min, .. },
                 ..
-            }) = start(Size::from_bytes(1))
+            }) = founds(Size::from_bytes(1), 0)
             else {
                 panic!("a pool budget of 1 byte opens no buffer");
             };
-            let part = (8 * u64::try_from(min).unwrap()).div_ceil(7);
-            assert_eq!(start(Size::from_bytes(2 * part)), Ok(()));
+            Size::from_bytes(2 * u64::try_from(min).unwrap())
         }
 
-        /// A node with a region reserves the pool of its chunk store just after the
-        /// pool of shard 0, with an eighth of shard 0's part, and a refused reservation
-        /// of it stops the node with the error of core 0.
-        #[test]
-        fn the_store_pool_takes_an_eighth_of_the_part_of_shard_0() {
+        /// Starts a node of the region of [`pair`] on two shards with a pool budget of
+        /// `budget`, and with a subject of `keys` keys in its founding spec when `keys`
+        /// is not 0, then stops it, and gives its end.
+        fn founds(budget: Size, keys: u16) -> Result<(), Error> {
             let mut sim = sim::Sim::new(sim::Config::default());
             let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
-            let lens = Arc::new(Mutex::new(Vec::new()));
-            let asked = Arc::clone(&lens);
-            let refused = os::memory::Error::Refused;
-            let memory: Memory = Box::new(move |len| {
-                let mut asked = asked.lock().unwrap();
-                asked.push(len);
-                if asked.len() == 2 {
-                    Err(refused)
-                } else {
-                    heap(len)
-                }
-            });
+            let mut region = region(&pair(&hosts));
+            if keys > 0 {
+                let keys = (0..keys).map(|n| {
+                    let mut bytes = [0; 32];
+                    bytes[..2].copy_from_slice(&n.to_le_bytes());
+                    PrivateKey(bytes).public()
+                });
+                let subject = Subject::new(keys.collect()).unwrap();
+                let label = Kind::Subject.key("plant.operator").unwrap();
+                region.definitions = [(label, Definition::Subject(subject))].into();
+            }
             let node = Node::start(Config {
-                region: Region::Given(region(&pair(&hosts))),
-                ..config(&hosts[0], Size::MEBIBYTE, memory)
+                region: Region::Given(region),
+                ..config(&hosts[0], budget, Box::new(heap))
             });
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            node.stop();
             assert_eq!(sim.run(), Ok(()));
-            let error = refused;
-            assert_eq!(node.join(), Err(Error::Memory { core: 0, error }));
-            let reserved = |len| block::Config::new(len).unwrap().reservation();
-            let parts = [reserved(448 << 10), reserved(64 << 10)];
-            assert_eq!(*lens.lock().unwrap(), parts);
+            node.join()
         }
 
         /// A node of the least message limit that its transport takes, 1472 bytes,
@@ -5126,9 +5100,10 @@ pub(crate) mod port {
             assert_eq!(seen, Some((Ok(()), Ok(vec![]), Some(b"chunk".to_vec()))));
         }
 
-        /// A member that sends put heads and no bodies holds only the store's pool, so
-        /// a hub stream of the member still goes to the hub, which stops an open of a
-        /// channel that the node does not know with `UNKNOWN`.
+        /// A member that sends put heads of the largest block of shard 0's pool and no
+        /// bodies, more than the 8 puts that the store holds open, holds no block of
+        /// the pool, so a hub stream of the member still goes to the hub, which stops
+        /// an open of a channel that the node does not know with `UNKNOWN`.
         #[test]
         fn put_heads_with_no_body_leave_a_hub_stream_served() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -5144,15 +5119,19 @@ pub(crate) mod port {
                     transport.dial(KEY.public(), &at).await.expect("a session");
                 let message = |bytes: &[u8]| pool.copy(bytes).unwrap();
                 let mut streams = Vec::new();
-                // Heads of shorter bodies take the room that longer ones leave.
-                let shorter = (7..=14).rev().flat_map(|shift| [1 << shift; 2]);
-                let lens = [32 << 10; 16].into_iter().chain(shorter);
-                for (byte, len) in (0..).zip(lens) {
+                let largest = block::Pool::heap(block::Config::new(512 << 10).unwrap())
+                    .largest();
+                let largest = u32::try_from(largest).unwrap();
+                // A head of each size of block, from the largest down, in fewer streams
+                // than the 64 of a session.
+                let lens = std::iter::successors(Some(largest), |len| Some(len * 5 / 6));
+                let lens = lens.take_while(|&len| len >= 64);
+                for (byte, len) in (0_u16..).zip(lens) {
                     let (mut sender, receiver) =
                         session.open(Class::Complete).await.expect("a stream");
                     let header = wire::header::encode(wire::Protocol::Blob);
                     let put = wire::blob::Put {
-                        digest: types::digest::Digest::of(&[byte]),
+                        digest: types::digest::Digest::of(&byte.to_le_bytes()),
                         len,
                     };
                     let mut head = [0; wire::blob::Put::LEN];
