@@ -264,6 +264,7 @@ fn refuses_a_front_end_error_with_no_problem() {
         "hcl",
         FrontEnd {
             read: |_, _| Err(Vec::new()),
+            update: |_, _, _| Err(Vec::new()),
         },
     );
     let applied = BTreeMap::from([(name("a.time"), channel(1, INDEX))]);
@@ -410,6 +411,7 @@ fn escapes_a_control_character_in_the_text_of_a_problem() {
                 });
                 Err(vec![diagnostic])
             },
+            update: |_, _, _| Err(Vec::new()),
         },
     );
     let error = plan(

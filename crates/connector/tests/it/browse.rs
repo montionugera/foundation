@@ -6,8 +6,7 @@ use connector::browse::{
 };
 use connector::kind::{Channels, Context, Error, Kind, Table};
 use connector::secret::Source;
-use connector::supervisor::Supervisor;
-use connector::testing::{create_config, create_secret};
+use connector::testing::{Rig, create_secret};
 use document::diagnostic::{Code, Diagnostic};
 use document::value::{self, Value};
 use document::{Attribute, Document, Map};
@@ -248,12 +247,11 @@ fn browse_each(
             .with("missing", Vault("plant.missing"))
             .with("upper", Vault("plant.Token"))
             .with("blind", Blind);
-        let config = create_config(env, node.net(), table).await;
+        let rig = Rig::open(env, node.net(), table).await;
         create_secret(&node.files(), &"plant.token".parse().unwrap(), &token).await;
-        let supervisor = Supervisor::new(config);
         let mut found = Vec::new();
         for kind in &kinds {
-            found.push(supervisor.browse(kind, &block(kind), &query).await);
+            found.push(rig.supervisor().browse(kind, &block(kind), &query).await);
         }
         found
     })

@@ -7,7 +7,6 @@ use std::rc::Rc;
 use bytes::Bytes;
 use connector::http::Roots;
 use connector::http::sim::Certificate;
-use connector::supervisor;
 use env::clock::Clock;
 use env::net::tcp;
 use http::{Request, Response, StatusCode};
@@ -111,8 +110,7 @@ type End = Rc<RefCell<Option<Result<(), Error>>>>;
 /// list. Its store holds the secret `plant.influx_token` (`s3cret`). The hub also
 /// defines the channels of [`wide_names`].
 struct Plant {
-    hub: hub::Hub,
-    supervisor: Supervisor,
+    rig: Rig,
     clock: Clock,
     net: env::net::Net,
     tasks: Tasks,
@@ -179,23 +177,19 @@ impl Plant {
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("influx", Kind);
-        let inputs = supervisor::Config {
-            roots,
-            ..testing::create_config(env, node.net(), kinds).await
-        };
+        let rig = Rig::trusting(env, node.net(), kinds, roots).await;
         let token = "plant.influx_token".parse().expect("a name");
         testing::create_secret(&node.files(), &token, b"s3cret").await;
-        define(&inputs);
-        let errors = read_errors(&inputs.hub, &tasks).await;
-        let classes =
-            read_status(&inputs.hub, &tasks, "class", |sample| sample[0]).await;
-        let restarts = read_count(&inputs.hub, &tasks, "restarts").await;
-        let confirmed = read_confirmed(&inputs.hub, &tasks).await;
-        let lost = read_count(&inputs.hub, &tasks, "lost").await;
-        let oversized = read_count(&inputs.hub, &tasks, "oversized").await;
+        define(&rig);
+        let hub = rig.hub();
+        let errors = read_errors(hub, &tasks).await;
+        let classes = read_status(hub, &tasks, "class", |sample| sample[0]).await;
+        let restarts = read_count(hub, &tasks, "restarts").await;
+        let confirmed = read_confirmed(hub, &tasks).await;
+        let lost = read_count(hub, &tasks, "lost").await;
+        let oversized = read_count(hub, &tasks, "oversized").await;
         Self {
-            hub: inputs.hub.clone(),
-            supervisor: Supervisor::new(inputs),
+            rig,
             clock: node.clock(),
             net: node.net(),
             tasks,
@@ -296,8 +290,8 @@ impl Plant {
     /// cancelled.
     fn start(&self, config: Document) -> (cancel::Token, End) {
         let (token, end) = (cancel::Token::new(), Rc::new(RefCell::new(None)));
-        let (supervisor, cancel, into) =
-            (self.supervisor.clone(), token.clone(), Rc::clone(&end));
+        let supervisor = self.rig.supervisor().clone();
+        let (cancel, into) = (token.clone(), Rc::clone(&end));
         self.tasks.spawn(async move {
             let name = "influx".parse().expect("a name");
             let opened = supervisor.open("influx", name, &config, &cancel).await;
@@ -320,7 +314,7 @@ impl Plant {
             lease: None,
             channels: channels.iter().map(|channel| name(channel)).collect(),
         };
-        self.hub.writer(config).await.expect("opens")
+        self.rig.hub().writer(config).await.expect("opens")
     }
 
     fn got(&self) -> Vec<Got> {
@@ -332,7 +326,7 @@ fn name(text: &str) -> Name {
     text.parse().expect("a valid name")
 }
 
-fn define(inputs: &supervisor::Config) {
+fn define(rig: &Rig) {
     let time = channel::Key::from_u128(1);
     let on = |index, key, data_type| {
         let data_type = DataType::Sample(data_type);
@@ -380,9 +374,7 @@ fn define(inputs: &supervisor::Config) {
     definitions.extend(
         wide.map(|(key, text)| (name(&text), on(time, key, Type::Scalar(Scalar::U8)))),
     );
-    inputs
-        .hub
-        .set_definitions(definitions.iter().map(|(name, def)| (name, def)));
+    rig.define(definitions);
 }
 
 /// Reads each sample of the status channel `influx.status.<channel>`, in a task on
@@ -1210,7 +1202,12 @@ fn keeps_the_confirmed_count_across_a_restart_of_the_run() {
             name: Some(name("influx")),
             hold: Span::ZERO,
         };
-        let replaced = plant.hub.reader(open).await.expect("the reader opens");
+        let replaced = plant
+            .rig
+            .hub()
+            .reader(open)
+            .await
+            .expect("the reader opens");
         plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
         drop(replaced);
         write(&mut writer, first + 1, &[(3.0, 4.0)]);
@@ -1698,7 +1695,12 @@ fn is_full_until_each_closed_body_is_taken() {
             name: None,
             hold: Span::ZERO,
         };
-        let mut reader = plant.hub.reader(open).await.expect("the reader opens");
+        let mut reader = plant
+            .rig
+            .hub()
+            .reader(open)
+            .await
+            .expect("the reader opens");
         let first = writer.now().nanos();
         write_wide(&mut writer, first, 700);
         write_wide(&mut writer, first + 10_000, 266);

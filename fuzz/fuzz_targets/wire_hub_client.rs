@@ -8,13 +8,16 @@
 //! a session of their count and the mode, a refused message of a read stream leaves
 //! its decoder as it was, an `Opening` gives what a `Reader` gives, and each valid
 //! message made from the input reads back. A `Reader` holds an `Opening`, so the
-//! checks of the read stream are the checks of the run of both.
+//! checks of the read stream are the checks of the run of both. `write::Replies` takes
+//! or refuses each reply as the order of the replies gives, and a refused reply changes
+//! no count.
 //!
 //! Input: the messages of one stream (`fuzz::messages`). Each decoder reads each
 //! message, an open among them; the body of the first message, when it is a request, a
 //! response, a read, or a write, takes each later message; and a `client::Reader` of
 //! each mode and a `write::Opening` take each message until they give the last place,
-//! and then the end of the stream.
+//! and then the end of the stream. A `write::Replies` counts a frame sent for each
+//! message whose first byte is 0, and decodes each other message as a reply.
 
 #![no_main]
 #![expect(clippy::disallowed_methods, reason = "fuzz_target! calls File::create")]
@@ -39,7 +42,7 @@ use wire::hub::client::{
     BODY_BYTES_MAX, Body, Challenge, Error, First, Mode, OPEN_BYTES_MAX, Open,
     PLACES_MAX, Place, Places, Read, Reader, Request, Response, Signed, place,
 };
-use wire::hub::write::{Outcome, Refusal, Reply};
+use wire::hub::write::{Outcome, Refusal, Replies, Reply};
 
 /// Checks one decoder of kind `kind` on `message`: a decoded message encodes to it,
 /// and a refusal is the one that its first byte gives, or one that `allowed` takes.
@@ -411,6 +414,54 @@ fn read(bytes: &[u8]) {
     assert_eq!(body.end(), ended, "the body ended at another length");
 }
 
+/// Drives a `Replies` on `bytes`: a message whose first byte is 0, a kind that no reply
+/// has, counts a frame sent, and each other message must be taken or refused as a model
+/// of the order of the replies gives.
+fn replies(bytes: &[u8]) {
+    let mut replies = Replies::new();
+    let (mut sent, mut answered, mut taken, mut stored) = (0_u64, 0, 0, 0);
+    for message in fuzz::messages(bytes) {
+        if message.first() == Some(&0) {
+            replies.sent();
+            sent += 1;
+        } else {
+            let want = match Reply::decode(message) {
+                Ok(Reply::Outcome(_)) if answered == sent => {
+                    Err(hub::Error::Unasked { frames: sent })
+                }
+                Ok(reply @ Reply::Outcome(outcome)) => {
+                    answered += 1;
+                    if let Outcome::Taken { .. } = outcome {
+                        taken = answered;
+                    }
+                    Ok(reply)
+                }
+                Ok(Reply::Stored { frames }) if frames < stored => {
+                    Err(hub::Error::Stored {
+                        frames,
+                        bound: stored,
+                    })
+                }
+                Ok(Reply::Stored { frames }) if frames > answered => {
+                    Err(hub::Error::Stored {
+                        frames,
+                        bound: answered,
+                    })
+                }
+                Ok(reply @ Reply::Stored { frames }) => {
+                    stored = frames;
+                    Ok(reply)
+                }
+                Err(error) => Err(error),
+            };
+            assert_eq!(replies.decode(message), want, "{message:?}");
+        }
+        assert_eq!(replies.answered(), answered == sent, "the outcomes differ");
+        let all = answered == sent && stored >= taken;
+        assert_eq!(replies.stored(), all, "the stored frames differ");
+    }
+}
+
 /// Each valid message made from `input` must decode to itself. A key of small order
 /// or a subject that is not a name is not valid, so it becomes a fixed one.
 fn write(input: &mut Unstructured) -> arbitrary::Result<()> {
@@ -567,5 +618,6 @@ fn write_write(input: &mut Unstructured) -> arbitrary::Result<()> {
 
 fuzz_target!(|bytes: &[u8]| {
     read(bytes);
+    replies(bytes);
     write(&mut Unstructured::new(bytes)).expect("an input that ends gives zeros");
 });

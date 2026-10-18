@@ -2,8 +2,8 @@
 
 use connector::cancel;
 use connector::kind::{Kind as _, Table};
-use connector::supervisor::Supervisor;
 use connector::testing;
+use connector::testing::Rig;
 use document::value::Kind as Value;
 use document::{Attribute, Block, Map, Position, Source, Span};
 use env::tasks::Tasks;

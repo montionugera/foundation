@@ -3,7 +3,7 @@
 
 use transport::stream::{Incoming, Sender};
 use types::frame::{Path, Range};
-use wire::hub::client::{Place, Places, Read, place};
+use wire::hub::client::{Body, Place, Places, Read, place};
 use wire::hub::{Head, Reply, ends};
 
 use program::Session;
@@ -62,17 +62,26 @@ pub(crate) async fn reply(sender: &mut Sender, reply: Reply) {
 /// Accepts the next read stream of `session` and takes its read and its open. Gives the
 /// stream.
 pub(crate) async fn accept_read(session: &transport::Session) -> Incoming {
-    let mut read = session.accept().await.expect("a stream");
-    header(&mut read).await;
+    accept_stream(session, |first| Read::decode(first).expect("a read").body()).await
+}
+
+/// Accepts the next stream of `session` and takes its first message, which `body`
+/// decodes to the body of its open, and the open. Gives the stream.
+pub(crate) async fn accept_stream(
+    session: &transport::Session,
+    body: impl FnOnce(&[u8]) -> Body,
+) -> Incoming {
+    let mut incoming = session.accept().await.expect("a stream");
+    header(&mut incoming).await;
     let mut next = async || {
-        let message = read.receiver.recv().await.expect("receives");
+        let message = incoming.receiver.recv().await.expect("receives");
         message.expect("a message before the finish")
     };
-    let mut body = Read::decode(&next().await).expect("a read").body();
+    let mut body = body(&next().await);
     while body.remain() > 0 {
         body.take(&next().await).expect("bytes of the open");
     }
-    read
+    incoming
 }
 
 /// Sends the start of a read on `read`: a places of `places` with its index at

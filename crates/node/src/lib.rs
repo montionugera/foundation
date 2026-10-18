@@ -1338,6 +1338,10 @@ fn front_ends() -> ops::FrontEnds {
         "hcl",
         ops::FrontEnd {
             read: config_hcl::read,
+            update: |source, text, document| {
+                config_hcl::update(source, text, document)
+                    .map_err(|refusal| Vec::from(&refusal))
+            },
         },
     )
 }

@@ -105,12 +105,18 @@ impl kind::Kind for Reader {
 }
 
 pub(crate) fn front_ends() -> FrontEnds {
-    FrontEnds::new(
-        "hcl",
-        FrontEnd {
-            read: config_hcl::read,
+    FrontEnds::new("hcl", hcl())
+}
+
+/// The front end of HCL.
+pub(crate) fn hcl() -> FrontEnd {
+    FrontEnd {
+        read: config_hcl::read,
+        update: |source, text, document| {
+            config_hcl::update(source, text, document)
+                .map_err(|refusal| Vec::from(&refusal))
         },
-    )
+    }
 }
 
 /// The kinds of the connectors of the fixtures.

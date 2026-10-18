@@ -122,7 +122,7 @@ impl Scope {
         }
     }
 
-    /// The error of a resolve or a write of the plan file `out` that failed.
+    /// The error of a resolve or a write of the file `out` that failed.
     fn unwritten(&self, out: &Path, error: paths::Error) -> Error {
         let cause = match error {
             paths::Error::Outside
@@ -197,7 +197,7 @@ impl Scope {
         }
     }
 
-    /// Writes `bytes` to the plan file `out`.
+    /// Writes `bytes` to the file `out`, a plan file or a config file.
     ///
     /// # Errors
     ///

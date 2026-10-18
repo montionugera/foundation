@@ -281,11 +281,16 @@ mod tests {
 
     /// The lines of the YAML `text`, with no blank or comment line, which YAML skips.
     fn yaml_lines(text: &str) -> Vec<&str> {
-        // YAML breaks a line at CR, NEL, LS, and PS too, and a parser can read other
-        // white space as text, so `str::lines` and `str::trim` would drop a line that
-        // YAML reads.
-        if let Some(c) = text.chars().find(|c| *c != '\n' && !matches!(c, ' '..='~')) {
-            panic!("ci.yaml has a character that is not printable ASCII or LF: {c:?}");
+        // YAML breaks a line at a lone CR, NEL, LS, and PS too, and a parser can read
+        // other white space as text, so `str::lines` and `str::trim` would drop a line
+        // that YAML reads. CR LF is one break to both.
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            let crlf = c == '\r' && chars.peek() == Some(&'\n');
+            assert!(
+                crlf || matches!(c, '\n' | ' '..='~'),
+                "ci.yaml has a character that is not printable ASCII, LF, or CR LF: {c:?}"
+            );
         }
         let lines: Vec<&str> = (text.lines())
             .filter(|line| !line.trim().is_empty() && !line.trim().starts_with('#'))
@@ -704,17 +709,31 @@ mod tests {
     }
 
     #[test]
-    fn yaml_lines_refuses_each_character_that_is_not_printable_ascii_or_lf() {
-        for c in [
-            '\r', '\t', '\u{85}', '\u{a0}', '\u{2028}', '\u{2029}', '\u{7f}',
-        ] {
-            let text = format!("a:\n  #{c}  b:\n");
+    fn yaml_lines_reads_crlf_as_one_line_break() {
+        let text = "a:\r\n\r\n  # b\r\n  c: 1 # d\r\n";
+        assert_eq!(yaml_lines(text), ["a:", "  c: 1 # d"]);
+    }
+
+    #[test]
+    fn yaml_lines_refuses_each_character_that_is_not_printable_ascii_lf_or_crlf() {
+        for (text, c) in [
+            ("a:\r  b:\n", '\r'),
+            ("a:\n  b:\r", '\r'),
+            ("a:\r\r\n  b:\n", '\r'),
+        ]
+        .into_iter()
+        .map(|(text, c)| (text.to_owned(), c))
+        .chain(
+            ['\t', '\u{85}', '\u{a0}', '\u{2028}', '\u{2029}', '\u{7f}']
+                .map(|c| (format!("a:\n  #{c}  b:\n"), c)),
+        ) {
             let panic =
-                std::panic::catch_unwind(|| yaml_lines(&text)).expect_err("refused");
+                std::panic::catch_unwind(|| yaml_lines(&text)).expect_err(&text);
             assert_eq!(
                 panic.downcast_ref::<String>(),
                 Some(&format!(
-                    "ci.yaml has a character that is not printable ASCII or LF: {c:?}"
+                    "ci.yaml has a character that is not printable ASCII, LF, or CR LF: \
+                     {c:?}"
                 )),
             );
         }

@@ -420,61 +420,121 @@ fn the_copy_links_the_timer() {
 }
 
 /// Each symbol outside the copy, `shim.c`, `server.c`, and the libcrypto ([`PREFIX`])
-/// that they may name in glibc, other than [`PLUGINS`]: on x86-64 with GCC or Clang at
-/// each optimization level, and on 64-bit Arm with Clang at `-O2` and
-/// `-moutline-atomics`.
-const OUTSIDE: [&str; 43] = [
-    "_GLOBAL_OFFSET_TABLE_",
-    "__ctype_b_loc",
-    "__errno_location",
-    "__fprintf_chk",
-    "__memcpy_chk",
-    "__memmove_chk",
-    "__memset_chk",
-    "__printf_chk",
-    "__sprintf_chk",
-    "__stack_chk_fail",
-    "__stack_chk_guard",
-    "__syslog_chk",
-    "__tls_get_addr",
-    "abort",
-    "access",
-    "bcmp",
-    "connector_opcua_admit",
-    "connector_opcua_calloc",
-    "connector_opcua_die",
-    "connector_opcua_free",
-    "connector_opcua_malloc",
-    "connector_opcua_put_line",
-    "connector_opcua_realloc",
-    "fflush",
-    "fprintf",
-    "fputs",
-    "fwrite",
-    "memcmp",
-    "memcpy",
-    "memmove",
-    "memset",
-    "printf",
-    "puts",
-    "sprintf",
-    "stderr",
-    "stdout",
-    "strcmp",
-    "strlen",
-    "strncmp",
-    "strncpy",
-    "strtod",
-    "strtok_r",
-    "syslog",
-];
+/// that they may name in the libc of the target, other than [`PLUGINS`]. In glibc: on
+/// x86-64 with GCC or Clang at each optimization level, and on 64-bit Arm with Clang
+/// at `-O2` and `-moutline-atomics`. In the libc of macOS: on 64-bit Arm and x86-64
+/// with Apple Clang at each optimization level. Empty on another OS, so the tests fail
+/// there until it has its list.
+const OUTSIDE: &[&str] = if cfg!(target_os = "macos") {
+    &[
+        "___chkstk_darwin",
+        "__bzero",
+        "__chkstk_darwin",
+        "__error",
+        "__memcpy_chk",
+        "__memmove_chk",
+        "__memset_chk",
+        "__sprintf_chk",
+        "__stack_chk_fail",
+        "__stack_chk_guard",
+        "__stderrp",
+        "__stdoutp",
+        "__strncpy_chk",
+        "_tlv_bootstrap",
+        "abort",
+        "access",
+        "bzero",
+        "connector_opcua_admit",
+        "connector_opcua_calloc",
+        "connector_opcua_die",
+        "connector_opcua_free",
+        "connector_opcua_malloc",
+        "connector_opcua_put_line",
+        "connector_opcua_realloc",
+        "fflush",
+        "fprintf",
+        "fputs",
+        "isdigit",
+        "memcmp",
+        "memcpy",
+        "memmove",
+        "memset",
+        "printf",
+        "puts",
+        "sprintf",
+        "strcmp",
+        "strlen",
+        "strncmp",
+        "strncpy",
+        "strtod",
+        "strtok_r",
+    ]
+} else if cfg!(target_os = "linux") {
+    &[
+        "_GLOBAL_OFFSET_TABLE_",
+        "__ctype_b_loc",
+        "__errno_location",
+        "__fprintf_chk",
+        "__memcpy_chk",
+        "__memmove_chk",
+        "__memset_chk",
+        "__printf_chk",
+        "__sprintf_chk",
+        "__stack_chk_fail",
+        "__stack_chk_guard",
+        "__syslog_chk",
+        "__tls_get_addr",
+        "abort",
+        "access",
+        "bcmp",
+        "connector_opcua_admit",
+        "connector_opcua_calloc",
+        "connector_opcua_die",
+        "connector_opcua_free",
+        "connector_opcua_malloc",
+        "connector_opcua_put_line",
+        "connector_opcua_realloc",
+        "fflush",
+        "fprintf",
+        "fputs",
+        "fwrite",
+        "memcmp",
+        "memcpy",
+        "memmove",
+        "memset",
+        "printf",
+        "puts",
+        "sprintf",
+        "stderr",
+        "stdout",
+        "strcmp",
+        "strlen",
+        "strncmp",
+        "strncpy",
+        "strtod",
+        "strtok_r",
+        "syslog",
+    ]
+} else {
+    &[]
+};
+
+/// The symbol of `stdin` in the libc of the target. Empty on another OS, so the tests
+/// fail there until it has its name.
+const STDIN: &str = if cfg!(target_os = "macos") {
+    "__stdinp"
+} else if cfg!(target_os = "linux") {
+    "stdin"
+} else {
+    ""
+};
 
 /// The symbols from outside the copy that only one file of it may name, by that file:
 /// `fgets` and `stdin` of `readPrivateKeyPassword`. Each is a call of the source, not
 /// a name that the compiler makes, so the object of its file names it at each
 /// optimization level.
 const PLUGINS: [(&str, &[&str]); 1] =
-    [("plugins/ua_config_default.c", &["fgets", "stdin"])];
+    [("plugins/ua_config_default.c", &["fgets", STDIN])];
 
 /// The names of [`PLUGINS`] that `object` may name.
 fn plugins(object: &str) -> &'static [&'static str] {
@@ -500,7 +560,7 @@ fn stem(path: &str) -> &str {
 fn plugins_admits_each_name_only_in_the_object_of_its_file() {
     assert_eq!(
         plugins("80e9fda3d50fc3d4-ua_config_default.o"),
-        ["fgets", "stdin"]
+        ["fgets", STDIN]
     );
     for object in [
         "80e9fda3d50fc3d4-ua_client.o",
@@ -571,9 +631,18 @@ fn sanitizer_names_only_the_runtimes() {
     }
 }
 
-/// The symbols that `nm` with `flag` gives for each object of `files`, by the name of
-/// the object: its name in an archive, or else the name of its file. No path of
-/// `files` may hold `": "`.
+/// The prefix that the object format of the target puts before each C name: Mach-O
+/// puts `_`.
+const MANGLE: &str = if cfg!(target_vendor = "apple") {
+    "_"
+} else {
+    ""
+};
+
+/// The C names that `nm` with `flag` gives for each object of `files`, by the name of
+/// the object: its name in an archive, or else the name of its file. A name without
+/// [`MANGLE`] stays as `nm` gives it. Each of `files` is an object of the target, and
+/// no path of `files` may hold `": "`.
 fn objects(
     files: &[std::path::PathBuf],
     flag: &str,
@@ -596,6 +665,7 @@ fn objects(
             None => file.rsplit('/').next().unwrap(),
         };
         let name = rest.split_whitespace().next().unwrap();
+        let name = name.strip_prefix(MANGLE).unwrap_or(name);
         objects
             .entry(object.to_owned())
             .or_default()
@@ -683,23 +753,28 @@ fn unlisted_gives_each_name_that_no_list_admits_by_its_object() {
     let defined = ["UA_Client_new".to_owned()].into();
     let crypto = format!("{PREFIX}EVP_sha256");
     let undefined = create_undefined(&[
-        (
-            "1-ua_config_default.o",
-            &["fgets", "stdin", "UA_Client_new"],
-        ),
+        ("1-ua_config_default.o", &["fgets", STDIN, "UA_Client_new"]),
         (
             "2-ua_client.o",
             &["fgets", "malloc", "memcpy", "__asan_report"],
         ),
-        ("3-shim.o", &["connector_opcua_malloc", &crypto, "stdin"]),
+        ("3-shim.o", &["connector_opcua_malloc", &crypto, STDIN]),
     ]);
+    let mut expected: Vec<_> = [
+        ("2-ua_client.o", "fgets"),
+        ("2-ua_client.o", "malloc"),
+        ("2-ua_client.o", "memcpy"),
+        ("3-shim.o", "connector_opcua_malloc"),
+        ("3-shim.o", STDIN),
+    ]
+    .into_iter()
+    .filter(|(_, name)| !OUTSIDE.contains(name))
+    .map(|(object, name)| format!("{object}: {name}"))
+    .collect();
+    expected.sort();
     assert_eq!(
         unlisted(&defined, &undefined, |name| name.starts_with("__asan")),
-        [
-            "2-ua_client.o: fgets",
-            "2-ua_client.o: malloc",
-            "3-shim.o: stdin"
-        ]
+        expected
     );
 }
 
@@ -708,7 +783,7 @@ fn unlisted_gives_each_name_that_no_list_admits_by_its_object() {
 fn unlisted_panics_when_no_object_names_the_allocator() {
     unlisted(
         &[].into(),
-        &create_undefined(&[("1-ua_config_default.o", &["fgets", "stdin"])]),
+        &create_undefined(&[("1-ua_config_default.o", &["fgets", STDIN])]),
         |_| false,
     );
 }
@@ -744,9 +819,9 @@ fn unlisted_panics_when_two_objects_have_a_file_of_plugins() {
         &create_undefined(&[
             (
                 "1-ua_config_default.o",
-                &["connector_opcua_malloc", "fgets", "stdin"],
+                &["connector_opcua_malloc", "fgets", STDIN],
             ),
-            ("2-ua_config_default.o", &["fgets", "stdin"]),
+            ("2-ua_config_default.o", &["fgets", STDIN]),
         ]),
         |_| false,
     );
@@ -1517,8 +1592,8 @@ fn the_production_code_gives_no_client_the_stdout_logger() {
 
 /// `cargo xtask open62541` lets `interruptServer` and `UA_random_seed` call the global
 /// clock. The C builds with `-ffunction-sections`, and Rust links with
-/// `--gc-sections`, so this test binary keeps only the functions that the tests reach,
-/// and the test server reaches neither.
+/// `--gc-sections` (`-dead_strip` on macOS), so this test binary keeps only the
+/// functions that the tests reach, and the test server reaches neither.
 #[test]
 fn the_tests_reach_neither_interrupt_server_nor_random_seed() {
     let kept = names(&[std::env::current_exe().unwrap()], "--defined-only");
@@ -1632,6 +1707,11 @@ fn the_c_and_cfg_asan_follow_the_address_sanitizer_of_the_rust() {
 /// so the test finds the names that the code generation for Arm adds, not the names of
 /// a branch of the source for Arm only.
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "only Linux: the code of a 64-bit Arm Linux build is the copy as the \
+              headers of Linux expand it"
+)]
 fn the_c_on_64_bit_arm_names_only_the_listed_symbols_outside_it() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let copy = root.join("../../patches/open62541");
