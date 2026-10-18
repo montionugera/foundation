@@ -109,6 +109,8 @@ macro_rules! tests {
             within_refuses_a_new_name_at_the_given_path_of_a_hidden_folder,
             within_holds_nothing_in_a_folder_that_a_link_to_it_replaces,
             within_hides_a_link_that_resolves_in_a_moved_hidden_folder,
+            within_tells_no_file_outside_before_a_parent,
+            within_beside_tells_no_file_of_the_first_before_a_parent,
         );
     };
     (@each $run:ident, $($case:ident),* $(,)?) => {
@@ -1502,4 +1504,34 @@ pub(crate) fn within_hides_a_link_that_resolves_in_a_moved_hidden_folder(
         ];
         assert_eq!(reached, [Err(Error::Hidden); 3], "{name}");
     }
+}
+
+/// A name outside the folders before a `..` gives `Outside`, whether it is a
+/// directory, nothing, or a file.
+pub(crate) fn within_tells_no_file_outside_before_a_parent(host: &Host<'_>) {
+    let (within, base) = within_work(host);
+    let got = ["workshop", "none", "b.hcl"].map(|name| {
+        let path = base.join(name).join("../work/a.hcl");
+        [
+            within.read(&path, 1).map(|_| ()),
+            within.write(&path, b"y"),
+            within.make_dir(&path),
+        ]
+    });
+    assert_eq!(got, [[Err(Error::Outside); 3]; 3]);
+}
+
+/// A handle beside the first tells nothing of the names of the first.
+pub(crate) fn within_beside_tells_no_file_of_the_first_before_a_parent(
+    host: &Host<'_>,
+) {
+    let (within, base) = within_work(host);
+    (host.make_dir)(&base.join("work/x"));
+    (host.make_dir)(&base.join("plans"));
+    let beside = within.within(&[base.join("plans")], &[]).unwrap();
+    let got = ["work/x", "work/none", "work/a.hcl"].map(|name| {
+        let path = base.join(name).join("../../plans/p.hcl");
+        beside.write(&path, b"y")
+    });
+    assert_eq!(got, [Err(Error::Outside); 3]);
 }

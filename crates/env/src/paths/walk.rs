@@ -198,10 +198,10 @@ impl Walker<'_> {
     }
 
     fn up(&mut self) -> Result<(), Error> {
+        // A step that fails `..` is still one that the walk would leave.
+        self.steps[self.at].back = true;
         self.directory("..")?;
-        let step = &mut self.steps[self.at];
-        step.back = true;
-        if let Some(up) = step.up {
+        if let Some(up) = self.steps[self.at].up {
             self.at = up;
         }
         Ok(())
