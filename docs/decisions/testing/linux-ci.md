@@ -130,7 +130,11 @@
   - A new crate on a list: the person, relayed by `laptop.monitor` at
     2026-10-17T17:30:12Z
     (https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237654845):
-    "Yeah fine". So `sdk` is on the Windows lists with #682, #2955, and #2956.
+    "Yeah fine". So `sdk` entered the Windows lists with #682 and #2955.
+  - An item that gains an issue once the code of its crate needs another `os` item:
+    `laptop.director`, 2026-10-18T20:47:36Z
+    (https://github.com/synnaxlabs/foundation/pull/3260#issuecomment-6254960151). So the
+    `sdk` items gain #2956 (#3260), for `os::stored`, which `sdk::Node::local` needs.
   - A crate item that becomes `tests` items: `laptop.monitor`, 2026-10-18T09:15:35Z,
     in place of `laptop.director`, which wrote the PR
     (https://github.com/synnaxlabs/foundation/pull/3163#issuecomment-6248122830): "a

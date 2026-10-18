@@ -22,7 +22,8 @@
   https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6197670062). The
   texts:
   - `ValueError`: `node and public_key go together: give both or neither`, and
-    `subject and private_key go together: give both or neither`.
+    `subject and private_key go together: give both or neither`. A `data` with a NUL
+    byte: `data: the path holds a NUL byte`, as each other value parses.
   - `ConnectionError`, with no address and no node on `data`: `no node runs in
     <data>: pass the address of the node, or data= with the --data of foundation
     start`.
