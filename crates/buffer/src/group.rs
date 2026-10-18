@@ -206,7 +206,9 @@ impl Group {
         let layout = writer.layout();
         layout.check(count, parts, len).map_err(Rejected::Large)?;
         let copy_len = copies(batch, block_max).map_err(Rejected::Large)?;
-        layout.holders(count, copy_len).map_err(Rejected::Large)?;
+        if copy_len != 0 {
+            layout.holders(count, copy_len).map_err(Rejected::Large)?;
+        }
         layout
             .check(
                 start.saturating_add(count),
@@ -215,9 +217,15 @@ impl Group {
             )
             .map_err(|_over: Limit| Rejected::Record)?;
         let copy_len = self.copy_len.saturating_add(copy_len);
-        let carry = layout
-            .holders(start.saturating_add(count), copy_len)
-            .map_err(|_over: Limit| Rejected::Record)?;
+        // With no copy, the holders take at most the record body, so they meet no
+        // limit and leave no excess.
+        let carry = if copy_len == 0 {
+            0
+        } else {
+            layout
+                .holders(start.saturating_add(count), copy_len)
+                .map_err(|_over: Limit| Rejected::Record)?
+        };
         let body = self.body_len_with(count, len);
         if let Err(full) = writer.fits(body, carry) {
             return Err(if self.is_empty() {

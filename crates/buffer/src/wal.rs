@@ -1936,6 +1936,29 @@ mod tests {
         assert_eq!(excess(4000, 50), 0);
     }
 
+    proptest! {
+        /// The holders of a record that `Layout::check` takes, with no copy, are at
+        /// most `carry_max` and leave no excess, as `Group::fit` relies on.
+        #[test]
+        fn holders_with_no_copy_are_in_carry_max_and_leave_no_excess(
+            body_max in prop_oneof![
+                BODY_MIN..=3 * ALIGN - HEADER_LEN,
+                BODY_MIN..1 << 31,
+            ],
+            entries in 0..=ENTRIES_MAX,
+            slack in any::<prop::sample::Index>(),
+        ) {
+            let layout = Layout::fit(u64::MAX, body_max).expect("a ring");
+            let table = entry::table_len(entries);
+            prop_assume!(table <= body_max);
+            let bytes = slack.index(body_max - table + 1);
+            prop_assert_eq!(layout.check(entries, entries, bytes), Ok(()));
+            let carry = layout.holders(entries, 0).expect("in carry_max");
+            prop_assert!(carry <= layout.carry_max());
+            prop_assert_eq!(excess(table + bytes, carry), 0);
+        }
+    }
+
     mod writer {
         use super::*;
 
