@@ -187,11 +187,11 @@ async fn relay(
                 }
             }
             Due::Draft { layout, form } => {
-                let block = replies.head(state)?;
+                let pending = replies.head(state)?;
                 let drafted = layout.draft(state.borrow().home.pool(), form);
                 match drafted {
                     Ok(draft) => {
-                        reply = Some(block);
+                        reply = Some(pending);
                         frames.draft(draft)
                     }
                     Err(error) => {
@@ -202,7 +202,7 @@ async fn relay(
                             | block::Error::Refused { .. } => Refusal::Full,
                         };
                         let outcome = Outcome::Refused(refusal);
-                        replies.outcome(state, sender, block, outcome).await?;
+                        replies.outcome(state, sender, pending, outcome).await?;
                         Step::More
                     }
                 }
@@ -211,11 +211,11 @@ async fn relay(
         let Step::Frame { draft, time } = step else {
             continue;
         };
-        let block = reply
+        let pending = reply
             .take()
             .expect("invariant: a draft comes with its block");
         let outcome = write(&mut writer, draft, time, &mut stamped)?;
-        replies.outcome(state, sender, block, outcome).await?;
+        replies.outcome(state, sender, pending, outcome).await?;
     }
 }
 
@@ -308,7 +308,7 @@ fn outcome(written: Result<&[::home::Outcome], Failure>) -> Result<Outcome, Erro
 #[derive(Default)]
 struct Replies {
     /// The count of frames of the stream whose head came.
-    headed: u64,
+    heads: u64,
     /// The count of frames through the last one taken since the call of the commit in
     /// `due`.
     taken: Option<u64>,
@@ -319,22 +319,32 @@ struct Replies {
     unsent: Option<u64>,
 }
 
+/// The block of the outcome of a frame whose head came, and the count of that frame.
+struct Pending {
+    frame: u64,
+    block: Unique,
+}
+
 impl Replies {
-    /// Counts the frame whose head came, and gives a block for its outcome.
-    fn head(&mut self, state: &RefCell<State>) -> Result<Unique, Error> {
-        self.headed += 1;
-        alloc(state, Outcome::LEN_MAX)
+    /// Counts the frame whose head came, and gives the block for its outcome.
+    fn head(&mut self, state: &RefCell<State>) -> Result<Pending, Error> {
+        self.heads += 1;
+        let block = alloc(state, Outcome::LEN_MAX)?;
+        Ok(Pending {
+            frame: self.heads,
+            block,
+        })
     }
 
-    /// Sends `outcome`, of the frame of the last head, in `block`.
+    /// Sends `outcome` in the block of `pending`, labeled with its frame.
     async fn outcome(
         &mut self,
         state: &RefCell<State>,
         sender: &mut Sender,
-        block: Unique,
+        pending: Pending,
         outcome: Outcome,
     ) -> Result<(), Error> {
-        let frame = self.headed;
+        let Pending { frame, block } = pending;
         if let Outcome::Taken { .. } = outcome {
             self.taken = Some(frame);
             self.call(state);
