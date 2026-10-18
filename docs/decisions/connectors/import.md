@@ -114,31 +114,31 @@
   of https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245080635). A pick
   that ends `Unnamed` makes no later pick of its tag present, so `add` names until no
   pick changes. Lost: one pass that names each pick that the body does not have, then
-  marks the later picks of its tag `Present`, as it spends a suffix on, and checks the given
-  name of, a pick that ends `Present`. The other picks take names in this order: each
-  given name, then the index, then the defaults of `import::names`. The index is that of
-  the first channel that the connector writes whose block names one, else the new
-  `<connector>.time`, or the first free of `_2`, `_3`, and on, with case folded, added
-  only when a pick adds a channel. The blocks of `Table::block` go after the last item
-  of the connector body; the new index and the `channel` blocks go at the end of the
-  file. A given name that is reserved, that the files define or imply or that a
+  marks the later picks of its tag `Present`, as it spends a suffix on, and checks the
+  given name of, a pick that ends `Present`. The other picks take names in this order:
+  each given name, then the index, then the defaults of `import::names`. The index is
+  that of the first channel that the connector writes whose block names one, else the
+  new `<connector>.time`, or the first free of `_2`, `_3`, and on, with case folded,
+  added only when a pick adds a channel. The blocks of `Table::block` go after the last
+  item of the connector body; the new index and the `channel` blocks go at the end of
+  the file. A given name that is reserved, that the files define or imply or that a
   connector writes, in any ASCII case, or that two picks get, fails the call before the
   write, with each diagnostic at once: `config.reserved-name`, or
   `config.duplicate-name` with the path and the name, or one `config.duplicate-name`
   that names both paths. Each has the fix "Give another name, or leave it out for
   `<default>`", with the default of the run with each refused name left out, or "Give
-  another name" when that run gives none. `add` gives no problem of a block outside
-  the connector block other than `config.private-key`. An `index` that is not a name, in
-  the `channel` block of the first channel that the connector writes that has one, gives
-  its diagnostic. The implied names of the other connectors with their counts, the
+  another name" when that run gives none. `add` gives no problem of a block outside the
+  connector block other than `config.private-key`. An `index` that is not a name, in the
+  `channel` block of the first channel that the connector writes that has one, gives its
+  diagnostic. The implied names of the other connectors with their counts, the
   diagnostic of a bad `index`, "or that the connector writes", and "other than
   `config.private-key`": `laptop.architect-2`, 2026-10-18T03:14:04Z, items 2 and 4
   (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245080635), and
   2026-10-18T03:34:05Z
-  (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245234973).
-  "or that a connector writes", with the channels that the other connectors write, the
-  fix default of the run with each refused name left out, the panic of a bad `fill`,
-  and the one-pass shape that lost: `laptop.architect-2`, 2026-10-18T04:22:50Z
+  (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245234973). "or that
+  a connector writes", with the channels that the other connectors write, the fix
+  default of the run with each refused name left out, the panic of a bad `fill`, and the
+  one-pass shape that lost: `laptop.architect-2`, 2026-10-18T04:22:50Z
   (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245610148).
   `Outcome`, `Pick`, `add`, the errors, and the name order: `laptop.architect-2`,
   2026-10-18T02:10:56Z, items 2, 3, 4, 5, and 11
