@@ -73,34 +73,34 @@
   counts as one (a server may give a continuation point with no references), then ends
   `Budget`. With `Limit`, `import` gives `ops.import-limit`, "more than `<limit>` points
   match, the most for one import", with the fix "Narrow the match, or pick at most
-  `<limit>` points", not a count (IMPORT OP; `laptop.architect-2`, 2026-10-18T06:19:04Z: https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6246489783), which supersedes "narrow the pattern, or
-  import in parts".
-  It browses no folder whose tag and pattern state are those of a
-  folder that it holds open, so a loop in a graph such as an OPC UA address space ends,
-  and a path that a pattern names through a loop still matches. A pattern ends `Budget`
-  when it holds `DEPTH` (64) folders open, its start with them, and a match can be under
-  one more, so a chain of folders that a server makes cannot hold the walk's memory. A
-  kind gives each entry as a `Child`, with its name and not its path, and the walk makes
-  the path of each entry from its folder's, so an entry holds one link of its own at any
-  depth of the start, and the walk holds at most `DEPTH` pages that the device sent. No
-  path that the walk gives has an empty name, and the record of each kind says what it
-  gives for an empty name of its device, so the text of each path parses. `walk` does
-  not check that no two entries of one folder have the same name: one level gives one
-  page, so it never holds each name of a folder. The record of each kind says how it
-  names two entries of one folder that the device gives the same name. When a kind
-  breaks one of these rules of `Device`: a page over `LIMIT`, an empty name, a count of
-  values that is not the count of tags, `walk` gives `Error::Config` with
-  `connector.broken-browse`, whose message names the rule, then what broke it, and the
-  browse fails with no retry. It never panics: in release a panic stops the node and
-  each of its connectors. The browse operation of `ops` adds the connector and its kind
-  to each error of `Supervisor::browse`; `Supervisor::browse` adds neither.
-  `Kind::browse(ctx, query)` connects and gives `walk` over the session, and gives
-  `connector.no-browse` by default. `Kind::discover` gives `connector.no-discover` by
-  default, not an empty list, which says that the kind looked and found none. Only the
-  default is decided. Its signature is deferred to #2851; trigger: the first kind that
-  finds devices. `discover` for OPC UA is not in C1; trigger: the person asks, or a kind
-  that can find its devices (NI cards) is built (`laptop.architect-2`, 2026-10-15 17:32
-  UTC, parameter 5 of
+  `<limit>` points", not a count (IMPORT OP; `laptop.architect-2`, 2026-10-18T06:19:04Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6246489783), which
+  supersedes "narrow the pattern, or import in parts". It browses no folder whose tag
+  and pattern state are those of a folder that it holds open, so a loop in a graph such
+  as an OPC UA address space ends, and a path that a pattern names through a loop still
+  matches. A pattern ends `Budget` when it holds `DEPTH` (64) folders open, its start
+  with them, and a match can be under one more, so a chain of folders that a server
+  makes cannot hold the walk's memory. A kind gives each entry as a `Child`, with its
+  name and not its path, and the walk makes the path of each entry from its folder's, so
+  an entry holds one link of its own at any depth of the start, and the walk holds at
+  most `DEPTH` pages that the device sent. No path that the walk gives has an empty
+  name, and the record of each kind says what it gives for an empty name of its device,
+  so the text of each path parses. `walk` does not check that no two entries of one
+  folder have the same name: one level gives one page, so it never holds each name of a
+  folder. The record of each kind says how it names two entries of one folder that the
+  device gives the same name. When a kind breaks one of these rules of `Device`: a page
+  over `LIMIT`, an empty name, a count of values that is not the count of tags, `walk`
+  gives `Error::Config` with `connector.broken-browse`, whose message names the rule,
+  then what broke it, and the browse fails with no retry. It never panics: in release a
+  panic stops the node and each of its connectors. The browse operation of `ops` adds
+  the connector and its kind to each error of `Supervisor::browse`; `Supervisor::browse`
+  adds neither. `Kind::browse(ctx, query)` connects and gives `walk` over the session,
+  and gives `connector.no-browse` by default. `Kind::discover` gives
+  `connector.no-discover` by default, not an empty list, which says that the kind looked
+  and found none. Only the default is decided. Its signature is deferred to #2851;
+  trigger: the first kind that finds devices. `discover` for OPC UA is not in C1;
+  trigger: the person asks, or a kind that can find its devices (NI cards) is built
+  (`laptop.architect-2`, 2026-10-15 17:32 UTC, parameter 5 of
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198270136).
   `Supervisor::browse(kind, config, query)` runs `Kind::browse` apart from any run of
   the connector, with the network, clock, randomness, and secrets of the supervisor; a

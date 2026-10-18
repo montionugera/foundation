@@ -41,11 +41,14 @@
   caller. The fix of a given name that `add` refuses, "Give another name, or leave it
   out for `<default>`", needs no other item: `config::import::add` calls `names` again
   with the refused names as `None`, on the failure path only. A given name that does not
-  parse is refused by `serve` before the walk (IMPORT OP; `laptop.architect-2`, 2026-10-18T06:19:04Z: https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6246489783), with `ops.bad-name`: each
-  such name at once, with its path, its text, and the cause, and the fix "Give another
-  name, or leave it out for the default name". Lost: an item of `config::import` that
-  gives the defaults before the walk, so that this fix names the default, which adds a
-  public item for a rare error (`laptop.architect-2`, 2026-10-18T06:08:27Z:
+  parse is refused by `serve` before the walk (IMPORT OP; `laptop.architect-2`,
+  2026-10-18T06:19:04Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6246489783), with
+  `ops.bad-name`: each such name at once, with its path, its text, and the cause, and
+  the fix "Give another name, or leave it out for the default name". Lost: an item of
+  `config::import` that gives the defaults before the walk, so that this fix names the
+  default, which adds a public item for a rare error (`laptop.architect-2`,
+  2026-10-18T06:08:27Z:
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6246405490, which
   supersedes, for a name that does not parse only, the `<default>` in the fix of the
   ruling on decision 5). No name of a path is empty: `walk` refuses an entry that a kind
@@ -170,40 +173,42 @@
   paths, `ops.bad-point` with each path that does not parse, `ops.duplicate-pick` with
   each path picked twice, `ops.bad-name` with each given name that does not parse, and
   `ops.bad-pattern`. Each of the three holds a list, with one problem for each, so one
-  run reports each bad text of the first of them that fails, and none does device I/O. Then it walks with
-  `Scope::Points` or `Scope::Match`. A walk that ends `Budget` gives `ops.import-budget`
-  and one that ends `Limit` gives `ops.import-limit`, so no import adds part of a match
-  in silence. The fix of `ops.import-limit` is "Narrow the match, or pick at
-  most 500 points", and of `ops.import-budget` "Narrow the start or the match, or pick
-  fewer points", since a walk of points and a match both give each.
-  A picked point that the kind cannot read or write gives
-  `ops.unreadable-point`, one diagnostic for each, with its reason; a match leaves each
-  out and counts it. Then `config::import::add`, then the new text by `FrontEnd::update`
-  of the file. The reply is the JSON line of the output, then the new text, and a reply
-  over the bound of a body gives `ops.large-import`. The CLI and the MCP server write
-  the new text through `Scope`, so the limits of `foundation mcp` hold. They write
-  nothing when it is the text that they sent, and when the file no longer holds the sent
-  text they give `ops.file-changed` and write nothing. On `os`, an import that writes
-  a regular file makes it anew, with mode 0600 and nothing of the old file, so a file
-  that the user opened to a group or to other users is closed to them again after each
-  import. A symbolic link, a device, or a pipe at the path takes the new text in place,
-  with its mode kept, and a crash can leave part of it (ENV SEAMS). Lost: the permission
-  bits of the old file kept on the new one, which open the file to a user that the old
-  file did not when its group changes or when an access control list applies. `--json`
-  and the MCP result are `{file, channels: [{name, path, type}], index, fills: [{name,
-  what}], unnamed: [{path, fix}], present, unreadable}`, with no added blocks: `index`
-  is the added index or `null`, `type` is `null` where the import wrote a `fill`, and
-  `fills` holds each channel with a `fill` in any of its blocks. The text output is one
-  line for the file and the count, one for each channel as `<name> <path> <type>`, then
-  one line for the index, each fill, each unnamed point, and each count that is not 0.
-  `TABLE` holds `import` with `read_only: false` and `destructive: false`. Each code has
-  one fix. The `instructions` of the MCP `initialize` result is the agent guide:
-  `browse`, `import`, a value for each `fill`, `plan` shown to the person, and `apply`
-  only when the person agrees, and `status`. The steps: `laptop.architect-2`, 2026-10-18T07:08:05Z (https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6246968079). It leaves out `discover`, which is not in
-  C1, so no step names a tool that the server does not have. Deferred: picks by tag.
-  Trigger: a user who has a list of tags and no paths. Deferred: the added blocks in the
-  JSON (B of decision 4). Trigger: the person asks. The person's words of decision 4,
-  through `laptop.monitor`, 2026-10-15 17:25 UTC: "I think A is fine for now"
+  run reports each bad text of the first of them that fails, and none does device I/O.
+  Then it walks with `Scope::Points` or `Scope::Match`. A walk that ends `Budget` gives
+  `ops.import-budget` and one that ends `Limit` gives `ops.import-limit`, so no import
+  adds part of a match in silence. The fix of `ops.import-limit` is "Narrow the match,
+  or pick at most 500 points", and of `ops.import-budget` "Narrow the start or the
+  match, or pick fewer points", since a walk of points and a match both give each. A
+  picked point that the kind cannot read or write gives `ops.unreadable-point`, one
+  diagnostic for each, with its reason; a match leaves each out and counts it. Then
+  `config::import::add`, then the new text by `FrontEnd::update` of the file. The reply
+  is the JSON line of the output, then the new text, and a reply over the bound of a
+  body gives `ops.large-import`. The CLI and the MCP server write the new text through
+  `Scope`, so the limits of `foundation mcp` hold. They write nothing when it is the
+  text that they sent, and when the file no longer holds the sent text they give
+  `ops.file-changed` and write nothing. On `os`, an import that writes a regular file
+  makes it anew, with mode 0600 and nothing of the old file, so a file that the user
+  opened to a group or to other users is closed to them again after each import. A
+  symbolic link, a device, or a pipe at the path takes the new text in place, with its
+  mode kept, and a crash can leave part of it (ENV SEAMS). Lost: the permission bits of
+  the old file kept on the new one, which open the file to a user that the old file did
+  not when its group changes or when an access control list applies. `--json` and the
+  MCP result are `{file, channels: [{name, path, type}], index, fills: [{name, what}],
+  unnamed: [{path, fix}], present, unreadable}`, with no added blocks: `index` is the
+  added index or `null`, `type` is `null` where the import wrote a `fill`, and `fills`
+  holds each channel with a `fill` in any of its blocks. The text output is one line for
+  the file and the count, one for each channel as `<name> <path> <type>`, then one line
+  for the index, each fill, each unnamed point, and each count that is not 0. `TABLE`
+  holds `import` with `read_only: false` and `destructive: false`. Each code has one
+  fix. The `instructions` of the MCP `initialize` result is the agent guide: `browse`,
+  `import`, a value for each `fill`, `plan` shown to the person, and `apply` only when
+  the person agrees, and `status`. The steps: `laptop.architect-2`, 2026-10-18T07:08:05Z
+  (https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6246968079). It
+  leaves out `discover`, which is not in C1, so no step names a tool that the server
+  does not have. Deferred: picks by tag. Trigger: a user who has a list of tags and no
+  paths. Deferred: the added blocks in the JSON (B of decision 4). Trigger: the person
+  asks. The person's words of decision 4, through `laptop.monitor`, 2026-10-15 17:25
+  UTC: "I think A is fine for now"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198070930); of
   decision 6, 2026-10-15 17:33 UTC: "Ok this is good"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198173531); of
