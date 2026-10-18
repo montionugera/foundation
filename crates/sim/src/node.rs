@@ -91,9 +91,12 @@ impl Node {
 
     /// The node's network, on its [`Node::addresses`].
     ///
-    /// - A bind, a listen, or a send from an address that is not the node's gives
-    ///   `Error::Io` with code 99 (`EADDRNOTAVAIL`). Port 0 binds the lowest free
-    ///   port from 49152.
+    /// - A bind or a listen on an address that is not the node's gives `Error::Io` with
+    ///   code 99 (`EADDRNOTAVAIL`). A send from a source that the socket cannot send
+    ///   from gives `Error::Io` with code 22 (`EINVAL`) when the source or the
+    ///   destination is IPv6 or the source is not unicast, and with code 99 for a
+    ///   unicast IPv4 source to an IPv4 destination. Port 0 binds the lowest free port
+    ///   from 49152.
     /// - A socket on IPv6 takes `::ffff:a.b.c.d` as `a.b.c.d`, in the destination and
     ///   the source of a send. A send to the other family than the socket's gives
     ///   `Error::Unreachable` with the destination as given.

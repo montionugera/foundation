@@ -212,11 +212,13 @@
   "`sim` stays at 99" of item 2 of
   https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6067014743, but for
   a unicast IPv4 source that is not on the node, to an IPv4 destination, which keeps
-  code 99 (#3187). One exception: `os` gives `Io { code: 22 }` for each IPv6
-  source on an IPv4 socket, mapped too, for an IPv6 source that is not mapped with an
-  IPv4 destination, and for an unspecified source in any form. Linux skips the
-  `IPV6_PKTINFO` of the first, macOS skips that of the second, and Linux reads the
-  third as no source; each then sends from an address of its choice. Decided by
+  code 99 (#3187; `laptop.architect-2`, 2026-10-18T13:31:33Z,
+  https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6250512376). One
+  exception: `os` gives `Io { code: 22 }` for each IPv6 source on an IPv4 socket,
+  mapped too, for an IPv6 source that is not mapped with an IPv4 destination, and for
+  an unspecified source in any form. Linux skips the `IPV6_PKTINFO` of the first,
+  macOS skips that of the second, and Linux reads the third as no source; each then
+  sends from an address of its choice. Decided by
   `laptop.architect-2` (2026-10-08 20:06 and 20:38 UTC, #1965,
   https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6068090235,
   https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6068606545; the
