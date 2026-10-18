@@ -463,7 +463,8 @@ fn a_walk_holds_no_more_points_than_the_server_holds_for_a_session() {
 /// end before the next, so it holds the point of Objects and one more.
 #[test]
 fn a_walk_of_paths_gives_the_entry_at_each_in_one_browse_of_each_folder() {
-    let paths = ["a/e/y", "b/x", "a/c/x"].map(|p| p.parse().expect("a path"));
+    let paths =
+        ["root/a/e/y", "root/b/x", "root/a/c/x"].map(|p| p.parse().expect("a path"));
     let query = Query {
         start: "root".parse().expect("a path"),
         scope: Scope::Points(paths.to_vec()),

@@ -1132,11 +1132,12 @@ mod picks {
     }
 
     #[test]
-    fn gives_a_path_that_repeats_once() {
+    fn gives_a_path_that_repeats_each_time_from_one_browse() {
         let mut tree = Tree::new(&plant(), 10);
         let query = picks("", &["Clock", "Line1/Temp1", "Clock"]);
         let found = now(walk(&mut tree, &query)).expect("found");
-        assert_eq!(paths(&found), ["Clock", "Line1/Temp1"]);
+        assert_eq!(paths(&found), ["Clock", "Line1/Temp1", "Clock"]);
+        assert_eq!(tree.browsed, [path(""), path("Line1")]);
     }
 
     #[test]
@@ -1149,15 +1150,42 @@ mod picks {
     }
 
     #[test]
-    fn takes_each_path_from_its_start() {
+    fn takes_each_path_from_the_root_under_the_start() {
         let mut tree = Tree::new(&plant(), 10);
-        let query = picks("Line2", &["Oven/Temp", "Speed"]);
+        let query = picks("Line2", &["Line2/Oven/Temp", "Line2/Speed"]);
         let found = now(walk(&mut tree, &query)).expect("found");
         assert_eq!(paths(&found), ["Line2/Oven/Temp", "Line2/Speed"]);
-        let found = now(walk(&mut tree, &picks("Line2", &["Temp1"])));
+        let query = picks("Line2", &["Line1/Temp1", "Line2", "Oven/Temp", ""]);
+        let found = now(walk(&mut tree, &query));
+        let Err(Error::Config(diagnostics)) = found else {
+            panic!("a config error: {found:?}");
+        };
+        let outside = |at: &str| {
+            no_point(format!(r#"the path "{at}" is not under the start "Line2""#))
+        };
+        assert_eq!(
+            diagnostics,
+            [
+                outside("Line1/Temp1"),
+                no_point(r#"the device has no point at "Line2""#.into()),
+                outside("Oven/Temp"),
+                outside(""),
+            ]
+        );
+    }
+
+    #[test]
+    fn finds_the_start_first() {
+        let mut tree = Tree::new(&plant(), 10);
+        let found = now(walk(&mut tree, &picks("Line9", &["Clock"])));
         assert_eq!(
             diagnostic(found),
-            no_point(r#"the device has no point at "Line2/Temp1""#.into()),
+            Diagnostic::new(
+                Code::new("connector.no-folder"),
+                None,
+                r#"the device has no folder at "Line9""#.into(),
+                "Browse the folder above it to see the names in it".into(),
+            ),
         );
     }
 
@@ -1182,7 +1210,7 @@ mod picks {
         assert_eq!(
             diagnostics,
             [
-                no_point(r#"the entry at "Line2/Oven" is a folder"#.into()),
+                no_point(r#"the device has no point at "Line2/Oven""#.into()),
                 no_point(r#"the device has no point at "Line9/Temp""#.into()),
                 no_point(r#"the device has no point at "Clock/x""#.into()),
                 no_point(r#"the device has no point at "Line1/Nope""#.into()),
@@ -1198,7 +1226,7 @@ mod picks {
         let found = now(walk(&mut tree, &query));
         assert_eq!(
             diagnostic(found),
-            no_point(r#"the entry at "Line2/Oven" is a folder"#.into()),
+            no_point(r#"the device has no point at "Line2/Oven""#.into()),
         );
     }
 
@@ -1224,6 +1252,13 @@ mod picks {
         let walked = now(walk_within(&mut tree, &query, LIMIT, 4)).expect("found");
         assert_eq!(walked.entries, []);
         assert_eq!(walked.end, End::Budget);
+        let mut tree = Tree::new(&plant(), 10);
+        let query = picks("Line1", &["Line1/Temp1", "Clock"]);
+        let walked = now(walk_within(&mut tree, &query, LIMIT, 2));
+        assert_eq!(
+            diagnostic(walked),
+            no_point(r#"the path "Clock" is not under the start "Line1""#.into()),
+        );
     }
 
     proptest! {
@@ -1237,12 +1272,7 @@ mod picks {
             prop_assume!(!all.is_empty());
             let picked: Vec<Path> =
                 picked.iter().map(|i| all[i.index(all.len())].clone()).collect();
-            let mut expected: Vec<String> = Vec::new();
-            for pick in &picked {
-                if !expected.contains(&pick.to_string()) {
-                    expected.push(pick.to_string());
-                }
-            }
+            let expected: Vec<String> = picked.iter().map(Path::to_string).collect();
             let mut tree = Tree::new(&nodes, LIMIT);
             let found = now(walk(&mut tree, &query("", Scope::Points(picked))))
                 .expect("found");

@@ -155,9 +155,9 @@ pub trait Device {
 ///
 /// [`Error::Config`] with `connector.no-folder` when no folder is at a name of the
 /// start, or at a folder that the device gave and then did not have, with
-/// `connector.no-point` for each path of [`Scope::Points`] at a folder or at no entry,
-/// and with `connector.broken-browse` when `device` breaks a rule of [`Device`] that
-/// its doc says [`walk`] checks.
+/// `connector.no-point` for each path of [`Scope::Points`] at a folder, at no entry,
+/// or not under the start, and with `connector.broken-browse` when `device` breaks a
+/// rule of [`Device`] that its doc says [`walk`] checks.
 /// The errors of `device`.
 pub async fn walk(device: &mut impl Device, query: &Query) -> Result<Found, Error> {
     walk_within(device, query, LIMIT, VISITS).await
@@ -210,7 +210,7 @@ struct Level {
     next: Option<Cursor>,
 }
 
-/// The names of a list of paths, as a tree: the index of the path that ends at a
+/// The names after a start of a list of paths, as a tree: the slot of the entry at a
 /// node, and the names under it.
 #[derive(Default)]
 struct Names<'a> {
@@ -219,21 +219,27 @@ struct Names<'a> {
 }
 
 impl<'a> Names<'a> {
-    /// The names of `paths`, and the path from `start` of each that the names end at,
-    /// once for each path.
-    fn new(paths: &'a [Path], start: &Path) -> (Self, Vec<Path>) {
+    /// The names of each of `paths` that is under `start`, the slot of each path in
+    /// order (`None` for a path not under `start`, one slot for equal paths), and the
+    /// count of slots.
+    fn new(paths: &'a [Path], start: &Path) -> (Self, Vec<Option<usize>>, usize) {
+        let start: Vec<&str> = start.names().collect();
         let mut names = Self::default();
-        let mut wanted = Vec::new();
+        let mut slots = Vec::with_capacity(paths.len());
+        let mut count = 0;
         for path in paths {
-            let node = path
-                .names()
-                .fold(&mut names, |node, name| node.under.entry(name).or_default());
-            if node.at.is_none() {
-                node.at = Some(wanted.len());
-                wanted.push(path.names().fold(start.clone(), |at, n| at.child(n)));
+            let mut rest = path.names();
+            if !start.iter().all(|name| rest.next() == Some(name)) {
+                slots.push(None);
+                continue;
             }
+            let node =
+                rest.fold(&mut names, |node, name| node.under.entry(name).or_default());
+            let at = *node.at.get_or_insert(count);
+            count = count.max(at + 1);
+            slots.push(Some(at));
         }
-        (names, wanted)
+        (names, slots, count)
     }
 }
 
@@ -406,16 +412,15 @@ impl<D: Device> Walker<'_, D> {
         Ok((found, End::Done))
     }
 
-    /// The entry at each of `paths` from `folder`, in the order of the paths, once
-    /// for each path.
+    /// The entry at each of `paths` under `folder`, in the order of the paths.
     async fn points(
         &mut self,
         folder: Option<Entry>,
         paths: &[Path],
     ) -> Result<(Vec<Entry>, End), Error> {
         let start = folder.as_ref().map_or_else(Path::root, |f| f.path.clone());
-        let (names, wanted) = Names::new(paths, &start);
-        let mut seen: Vec<Option<Entry>> = vec![None; wanted.len()];
+        let (names, slots, count) = Names::new(paths, &start);
+        let mut seen: Vec<Option<Entry>> = vec![None; count];
         let mut stack = Vec::new();
         if !names.under.is_empty() {
             stack.push((folder, &names));
@@ -455,12 +460,8 @@ impl<D: Device> Walker<'_, D> {
             }
             false
         };
-        if budget {
-            let found = seen.into_iter().flatten();
-            let found = found.filter(|entry| entry.shape != Shape::Folder);
-            return Ok((found.collect(), End::Budget));
-        }
-        Ok((entries(seen, &wanted)?, End::Done))
+        let entries = entries(&seen, &slots, paths, &start, budget)?;
+        Ok((entries, if budget { End::Budget } else { End::Done }))
     }
 
     /// The frame of the first page of `folder`.
@@ -491,26 +492,36 @@ fn no_folder(path: &Path) -> Error {
     )
 }
 
-/// The entry that a walk saw at each of `wanted`, which is a point or an unreadable
-/// entry.
-fn entries(seen: Vec<Option<Entry>>, wanted: &[Path]) -> Result<Vec<Entry>, Error> {
+/// The entry that a walk saw at the slot of each of `paths` under `start`, which is a
+/// point or an unreadable entry. A walk that ended at the budget gives what it found,
+/// and refuses only a path not under `start`.
+fn entries(
+    seen: &[Option<Entry>],
+    slots: &[Option<usize>],
+    paths: &[Path],
+    start: &Path,
+    budget: bool,
+) -> Result<Vec<Entry>, Error> {
     let mut found = Vec::new();
-    let mut missing = Vec::new();
-    for (entry, path) in seen.into_iter().zip(wanted) {
-        match entry {
-            Some(entry) if entry.shape != Shape::Folder => found.push(entry),
-            Some(_) => missing.push(no_point(&format_args!(
-                "the entry at \"{path}\" is a folder"
-            ))),
-            None => missing.push(no_point(&format_args!(
+    let mut problems = Vec::new();
+    for (slot, path) in slots.iter().zip(paths) {
+        match slot.map(|at| &seen[at]) {
+            Some(Some(entry)) if entry.shape != Shape::Folder => {
+                found.push(entry.clone());
+            }
+            Some(_) if budget => {}
+            Some(_) => problems.push(no_point(&format_args!(
                 "the device has no point at \"{path}\""
+            ))),
+            None => problems.push(no_point(&format_args!(
+                "the path \"{path}\" is not under the start \"{start}\""
             ))),
         }
     }
-    if missing.is_empty() {
+    if problems.is_empty() {
         Ok(found)
     } else {
-        Err(Error::Config(missing))
+        Err(Error::Config(problems))
     }
 }
 
@@ -1081,7 +1092,7 @@ pub struct Query {
     /// The folder where it starts.
     pub start: Path,
     /// One level of `start`, the points under it that match a pattern, or the entries
-    /// at paths from it.
+    /// at paths under it.
     pub scope: Scope,
     /// Whether it reads the value of each point that it gives.
     pub values: Values,
@@ -1094,8 +1105,9 @@ pub enum Scope {
     Level(Option<Cursor>),
     /// Each entry under it that is not a folder and whose path from it matches.
     Match(Pattern),
-    /// The entry at each path from it, in the order of the paths, once for each path:
-    /// a point or an unreadable entry. The walk reads each folder at most once.
+    /// The entry at each path, in the order of the paths: a point or an unreadable
+    /// entry. Each path is from the root, as an [`Entry`] gives it, and under the
+    /// start. The walk reads each folder at most once.
     Points(Vec<Path>),
 }
 
@@ -1132,9 +1144,10 @@ pub enum End {
     Next(Cursor),
     /// More than [`LIMIT`] points match.
     Limit,
-    /// It looked at [`VISITS`] entries before it found its start or saw each entry
-    /// under it, or held [`DEPTH`] folders open and met one more that a match can be
-    /// under, so more may match.
+    /// It looked at [`VISITS`] entries, where each entry of each level that it reads
+    /// counts, before it found its start, saw each entry under it, or found the entry
+    /// at each path of [`Scope::Points`]. Or it held [`DEPTH`] folders open and met
+    /// one more that a match can be under. So more may match.
     Budget,
 }
 
