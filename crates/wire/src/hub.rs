@@ -643,8 +643,8 @@ pub enum Error {
     },
 }
 
-// Frame decoders give it for each message: it stays `Copy`, with no drop glue, and
-// as small as the results of the node's decoders were before it held this variant.
+// Frame decoders give it for each message: it stays `Copy`, with no drop glue, and 24
+// bytes, so each frame decoder's result stays small.
 const _: fn() = || {
     fn copy<T: Copy>() {}
     copy::<Error>();
