@@ -62,6 +62,8 @@ pub trait Kind: Send + Sync + 'static {
     }
 
     /// Runs one connector until `ctx.cancel()` is cancelled or an error leaves it.
+    /// Call [`Context::clear_error`] once the run reaches the device: until then, the
+    /// status shows the error of the last run.
     fn run(
         &self,
         ctx: Context<Self::Config>,
@@ -92,6 +94,15 @@ pub trait Kind: Send + Sync + 'static {
             "this connector kind cannot write the block of a point".into(),
             "Write the blocks of the points by hand".into(),
         )])
+    }
+
+    /// The tag of the point that `block`, a block of the body of a connector block of
+    /// the kind, reads or writes, in the form that a browse of the kind gives it, or
+    /// `None` when it names no point. A kind that gives blocks with [`Kind::block`]
+    /// gives this too. The default gives `None`.
+    fn tag(&self, block: &Block) -> Option<String> {
+        let _: &Block = block;
+        None
     }
 
     /// Browses the device of the connector block `ctx.config()` as `query` asks. A
@@ -315,7 +326,9 @@ impl<C> Context<C> {
 
     /// Shows `error` in the status of the running connector, as an attempt that
     /// failed with the class `retry`. The status gives it within one second. The end
-    /// of the run replaces it, and a call after the run returned shows nothing.
+    /// of the run replaces it, and a call after the run returned shows nothing. Each
+    /// time the status takes a show that changes its text or its class, it also
+    /// writes the log line `error` (WARN).
     pub fn error(&self, error: &dyn fmt::Display) {
         self.status.show(error);
     }
@@ -324,7 +337,8 @@ impl<C> Context<C> {
     /// connector, within one second: the one that [`Context::error`] showed, or the
     /// end of the last run. Until the first call of `error` or `clear_error` in a
     /// run, the status keeps the end of the last run. A call after the run returned
-    /// shows nothing.
+    /// shows nothing. Each time the status takes a clear that changes its text or its
+    /// class, it also writes the log line `cleared` (INFO).
     pub fn clear_error(&self) {
         self.status.clear();
     }
@@ -334,7 +348,9 @@ impl<C> Context<C> {
     /// a mode that the device forces. The status gives it within one second. A note of
     /// more than 1024 bytes keeps its first and last 510 bytes or less at char
     /// boundaries, joined by `…`. An empty `note` shows none. The end of the run
-    /// clears it, and a call after the run returned shows nothing.
+    /// clears it, and a call after the run returned shows nothing. Each time the
+    /// status takes a note that changes its note, it also writes the log line `note`
+    /// (INFO).
     pub fn note(&self, note: &dyn fmt::Display) {
         self.status.note(note);
     }
@@ -499,6 +515,20 @@ impl Table {
         channel: &Name,
     ) -> Result<Vec<Block>, Vec<Diagnostic>> {
         self.get(kind, None)?.block(tag, facts, channel)
+    }
+
+    /// The tag of the point that `block` of a connector block of `kind` reads or
+    /// writes, as [`Kind::tag`] gives it.
+    ///
+    /// # Errors
+    ///
+    /// `connector.unknown-kind`.
+    pub fn tag(
+        &self,
+        kind: &str,
+        block: &Block,
+    ) -> Result<Option<String>, Vec<Diagnostic>> {
+        Ok(self.get(kind, None)?.tag(block))
     }
 
     /// Browses with `kind` as `query` asks.
@@ -776,6 +806,8 @@ trait Erased: Send + Sync {
         facts: &browse::Facts,
         channel: &Name,
     ) -> Result<Vec<Block>, Vec<Diagnostic>>;
+
+    fn tag(&self, block: &Block) -> Option<String>;
 }
 
 impl<K: Kind> Erased for K {
@@ -814,6 +846,10 @@ impl<K: Kind> Erased for K {
         channel: &Name,
     ) -> Result<Vec<Block>, Vec<Diagnostic>> {
         Kind::block(self, tag, facts, channel)
+    }
+
+    fn tag(&self, block: &Block) -> Option<String> {
+        Kind::tag(self, block)
     }
 }
 

@@ -144,3 +144,55 @@
   `lost` of the entry of `tc1`, built only when the caller reads it, and logs one
   WARNING for each gap on its own logger with no setup. It installs no `tracing`
   subscriber (the person and `laptop.architect`, the same comments).
+  Amended (#2718): a program writes on a write stream that it opens at its node. Its
+  first message is `client::write::Write` (kind 7: the length of the open and the
+  signature of a write proof). The open is `write::Open { authority, lease, channels
+  }`. The node replies the `Places` (kind 6, as on a read) and their run.
+  `client::write::Opening` decodes them, and `client::Reader` holds an `Opening` and
+  adds the `hub::Reader` of the session to its start. Then the program sends each frame
+  as a `wire::hub::write::Head { time, form, count, series }`, the run of its ends
+  (`wire::hub::ends`), and its body. A `Head` of `Time::Node` holds one raw sample of
+  each series, and the node writes a stamp over its 8-byte index sample. The node
+  replies `wire::hub::write::Reply`: an `Outcome` for each frame (`Taken` or `Lost`
+  with its `frame::Range`, or `Refused` with a `Refusal`), and `Stored { through }`. A
+  frame that finds the pool full gets `Refused(Full)` and the stream stays open. An
+  untimed frame behind a later stamp of another writer gets `Refused(Order)`.
+  `client::write` is a public module with no re-export, as its `Open` collides with
+  that of the read. Until the forward of BQ12 (#3104), a write at a node that is not
+  the home stops with `NOT_HOME`. The plan
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244711745) was
+  approved by `laptop.architect` at 2026-10-18T02:34:55Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244779011), and
+  the `Head` at 2026-10-18T02:42:50Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244840425). The
+  person objected to its design 1, an `Away` that sends the program to the home, at
+  2026-10-18T02:39:23Z (the time that `laptop.monitor` gave): "No, I disagree. What
+  does cockroachdb do?" (relayed at 02:40:07Z,
+  https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244819528).
+  So BQ12 holds: the program reaches only its node, and the node forwards the signed
+  hello and open to the home (`laptop.architect`, 2026-10-18T02:46:04Z,
+  https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244865133). Lost:
+  the `Away` with typed addresses, and a `label` and an `untimed` flag in the `Head`,
+  which let a `Resend` or an untimed backfill frame be sent.
+  Two shape changes from the plan: `Outcome::Taken` and `Lost` carry a
+  `frame::Range { seq, count }`, the form of the home's `Outcome` and of the head of
+  HUB WIRE, so a reversed range cannot be sent; and `Opening` gives one
+  `Start { places, set }`, which keeps the order of the messages in one decoder.
+  Approved by `laptop.architect` at 2026-10-18T03:10:22Z
+  (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245051476).
+  `Reply::decode` refuses a range of no sample, which no node sends, and one that ends
+  past the highest seq, as HUB WIRE refuses such a head. Found in finding 2 of round 1
+  (2026-10-18T03:46:28Z,
+  https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245328844), and
+  approved with the new `hub::Error` variants by `laptop.architect` at
+  2026-10-18T03:48:25Z
+  (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245343667).
+  The frame messages of a write, `Head`, `Time`, `Reply`, `Outcome`, and `Refusal`,
+  are in `wire::hub::write`, as the session codec of a read is in `wire::hub`, so the
+  forward of BQ12 uses them with no client type. Their errors are in `hub::Error`,
+  which stays `Copy`. One private codec gives the signed first message of a read and
+  of a write by kind, and one private module holds `Places`, `Place`, `place`,
+  `PLACES_MAX`, and `OPEN_BYTES_MAX`, which `client` exports. A node-side
+  `hub::write::Frames` comes in its own PR, and until then `Head` has no public
+  decode. Decided by `laptop.architect` at 2026-10-18T03:22:04Z
+  (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245142760).

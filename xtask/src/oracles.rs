@@ -44,7 +44,7 @@ fn problems(root: &Path) -> Result<Vec<String>, String> {
             ));
         }
     }
-    for file in files::rust(&oracles)? {
+    for file in files::under(&oracles, "rs")? {
         if !compiled.contains(&file) {
             let shown = file.strip_prefix(&workspace).unwrap_or(&file).display();
             problems.push(format!(

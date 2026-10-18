@@ -13,6 +13,7 @@ use connector::kind::{Context, Error};
 use connector::retry::{self, Backoff};
 use connector::secret;
 use http::header::{AUTHORIZATION, HeaderValue};
+use http::uri::Authority;
 use http::{Method, Request, StatusCode, Uri};
 use hub::reader::{Ended, Received};
 use types::time::Span;
@@ -161,6 +162,30 @@ enum Read {
     Ca,
 }
 
+/// Shows the answer `status` with `body` of InfluxDB at `at` as the run's error.
+/// Gives whether the token is the cause.
+fn answered(
+    ctx: &Context<Config>,
+    at: &Authority,
+    status: StatusCode,
+    body: &[u8],
+) -> bool {
+    let text = String::from_utf8_lossy(body);
+    let text = text.trim();
+    let token = matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
+    if let Some(source) = ctx.config().token.as_ref().filter(|_| token) {
+        ctx.error(&format_args!(
+            "InfluxDB at {at} answered {status}. Check the token {source}: {text}"
+        ));
+        return true;
+    }
+    ctx.error(&format_args!(
+        "InfluxDB at {at} answered {status}: {text}{}",
+        fix(status)
+    ));
+    false
+}
+
 /// Sends `body` until InfluxDB answers 204. Shows each other answer as the run's
 /// error, with the fix for a 400, a 404, a 413, or a 422, and waits a backoff before
 /// the next attempt. After a 401 or a 403, it reads the token again before that
@@ -207,26 +232,14 @@ async fn send(
                     None
                 }
             };
-            if let Some((status, body)) = answer {
-                let text = String::from_utf8_lossy(&body);
-                let text = text.trim();
-                let token =
-                    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
-                let source = ctx.config().token.as_ref().filter(|_| token);
-                if source.is_some() {
-                    read = Some(Read::Token);
+            match answer {
+                Some((status, body)) => {
+                    let at =
+                        uri.authority().expect("invariant: a write URI has a host");
+                    answered(ctx, at, status, &body).then_some(Read::Token)
                 }
-                match source {
-                    Some(source) => ctx.error(&format_args!(
-                        "InfluxDB answered {status}. Check the token {source}: {text}"
-                    )),
-                    None => ctx.error(&format_args!(
-                        "InfluxDB answered {status}: {text}{}",
-                        fix(status)
-                    )),
-                }
+                None => read,
             }
-            read
         };
         let backoff =
             backoff.get_or_insert_with(|| Backoff::new(ctx.clock(), ctx.rng(), RETRY));

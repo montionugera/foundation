@@ -5,7 +5,7 @@ use document::diagnostic::{Code, Diagnostic, Note};
 use spec::definition::{Definition, Kind};
 use types::name::Name;
 
-const DUPLICATE_NAME: Code = Code::new("config.duplicate-name");
+pub(crate) const DUPLICATE_NAME: Code = Code::new("config.duplicate-name");
 
 /// Each label of each tree key, with the kind of its block, by the key in ASCII lower
 /// case, so that keys that differ only in case collide. Each key's labels are in the

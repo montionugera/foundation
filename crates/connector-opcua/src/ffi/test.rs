@@ -282,6 +282,7 @@ unsafe extern "C" {
         chunks: u32,
     );
     pub(crate) fn shim_client_receive(client: *mut super::Client, size: u32);
+    pub(crate) fn shim_client_message(client: *mut super::Client, size: u32);
     pub(crate) fn shim_server_reads(server: *mut Server, most: u32);
     pub(crate) fn shim_server_references(server: *mut Server, most: u32);
     pub(crate) fn shim_server_browses(server: *mut Server, browse: u32, translate: u32);

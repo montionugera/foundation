@@ -828,6 +828,25 @@
   by `laptop.architect-2` at `8ab776da8`
   (https://github.com/synnaxlabs/foundation/pull/2450#issuecomment-6128818932,
   2026-10-12 16:59 UTC).
+  An abort chunk (Part 6, 6.7.3) is an answer: a local change of the copy ends its
+  request with the Error of the abort, or with `BadDecodingError` when the abort holds
+  no Bad code. The release drops the abort and never ends the request. Decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2505#issuecomment-6134670336,
+  2026-10-12 23:35 UTC). "No Bad code" in place of "no Error", so that an abort always
+  ends its request with a Bad code: approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3093#issuecomment-6243883839,
+  2026-10-18 00:47 UTC). Lost: a finite open62541 timeout for a read again, which also
+  ends the requests that the server still holds, so the count leaves them out; a close
+  of the channel on an abort, which fails each other read and the session for one
+  answer; and a count in Rust or in the shim, where no seam sees chunks.
+  An abort deletes only the queued chunks of its request id, where the release deletes
+  those of each request. The copy assembles chunks by request id, so with the release
+  an abort between the chunks of another answer closes the channel. Decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3093#issuecomment-6243716532,
+  2026-10-18 00:27 UTC). Supersedes "Keep `deleteChunks` as it is" of
+  https://github.com/synnaxlabs/foundation/issues/2505#issuecomment-6134670336.
   #2934 builds the copy with `UA_ENABLE_ENCRYPTION_OPENSSL` against the `libcrypto` of
   the one `aws-lc-sys` of `Cargo.lock`, not a second crypto library. Directed by
   `laptop.architect-2`
@@ -843,30 +862,94 @@
   any file each function of aws-lc in `AWS_LC`, which reads no clock, file, network,
   randomness, or process state, by its name after the prefix. `AWS_LC_KEYS` keys each
   other call of aws-lc by its file and function, with its reason: each call that draws
-  (TLS RANDOMNESS), each call that reads the clock, and each PEM reader, which with no
-  password callback reads a password from the console (#3017). `AWS_LC_INPUTS` lists the
-  functions of aws-lc that read the clock or the console, and a test fails when no test
-  of `connector-opcua` names the function of each of their keys. `OMITTED` in `cargo
-  xtask open62541` is the closed list of the release files that the library compiles and
-  the copy leaves out, each with its reason: the file stores, `create_certificate.c`,
-  and each policy file other than `Basic256Sha256`, `Aes128_Sha256_RsaOaep`,
-  `Aes256_Sha256_RsaPss`, and their common code. So the copy compiles only the three
-  current policies and `None`, and the production code adds no other. `shim.c` defines
-  each symbol that the rest of the copy names from a left-out file to print its name and
-  abort, and a test calls each one. A test fails on another policy file in
-  `sources.txt`. A test fails when the production code names a policy or a certificate
-  group, or a function `UA_CertificateUtils_*`, other than at its stub in `shim.c`, and
-  a test fails when the objects of `shim.c` or `server.c` name aws-lc or a symbol of
-  `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` writes a `static` flag with
-  no lock. The build defines no `OPENSSL_API_COMPAT`, so the flag guards no call, and
-  #2934 PR 1b removes it from the copy. Lost: the about 35 file and clock calls of the
-  left-out files, each keyed in `FUNCTION_SYMBOLS`; and a copy of each deprecated and
-  ECC policy file. Decided by `laptop.architect-2`
+  (TLS RANDOMNESS), and each call that reads the clock. `AWS_LC_INPUTS`
+  lists the functions of aws-lc that read the clock, and a test fails when no test of
+  `connector-opcua` names the function of each of their keys. With no password callback,
+  a PEM reader of aws-lc reads a password from the console: it opens `/dev/tty`, or
+  prints a prompt on stderr and reads stdin, and sets signal handlers. So each PEM read
+  of the copy gives a callback of `PASSWORDS`: `UA_OpenSSL_refusePassword`, which
+  refuses each encrypted PEM, or `privateKeyPasswordCallback`, which gives the password
+  of its caller and refuses one that does not fit in the buffer of aws-lc. Each refusal
+  returns -1: aws-lc refuses the PEM only on a result below 0, and on 0 it decrypts with
+  the empty password. `cargo xtask open62541` finds each function of aws-lc that takes a
+  `pem_password_cb` in the declarations of the output of `cc -E`, and fails on each name
+  of one in the copy other than in a call that gives a callback of `PASSWORDS` at its
+  place (#3017, #3027). It reads the readers from the declarations of one `cc -E` pass
+  of each header under `openssl/` of aws-lc together, with the flags of aws-lc and none
+  of the copy, so no file or header of the copy changes the set, and a pass that fails
+  fails the check. It checks the calls in a `cc -E` pass of each file with the flags of
+  its build, so it reads the unit that compiles. It refuses each header that the unit
+  enters, by any name or link, under `openssl/` of a system directory other than an
+  include directory of aws-lc. It also refuses each file that the unit enters and that
+  it cannot find by its name, such as a name that is not UTF-8, so no header passes
+  unread. A header of the copy under `openssl/` passes, such as its own
+  `openssl/securitypolicy_common.h`. The readers come from aws-lc alone, and the check
+  reads the calls of the unit that compiles. When a header of the copy hides one of
+  aws-lc, a call of a reader keeps the name of the reader, or it has no prefix, so
+  `FUNCTION_SYMBOLS` must list it. For a header under `openssl/`, this supersedes "So
+  the check refuses no system header" of
+  https://github.com/synnaxlabs/foundation/issues/1884#issuecomment-6060989375. In
+  aws-lc-sys 0.45.0, the readers are the functions of `openssl/pem.h` that take a
+  `pem_password_cb`, and `SSL_CTX_set_default_passwd_cb`, `PEM_read_SSL_SESSION`, and
+  `PEM_read_bio_SSL_SESSION` of `openssl/ssl.h`. These three are in neither `AWS_LC` nor
+  `AWS_LC_KEYS`, so the check refuses each call of them. It compiles each file with
+  `-Werror=implicit-function-declaration`, as GCC 14 does by default, and with
+  `-ftrack-macro-expansion=0`, so a call with no declaration fails the build on each
+  GCC, also of a name of aws-lc, which is a macro of a system header. `AWS_LC` holds the
+  PEM readers, since this check is the one guard of their password. Supersedes "The PEM
+  readers belong in `AWS_LC_KEYS`" of
+  https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231723849, whose
+  reason was the read of the console. The callbacks that return -1, and the check that
+  reads the functions from the declarations: decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6237471608,
+  2026-10-17 17:20 UTC). The `-Werror` and `AWS_LC` sentences, and the `cc -E` sentence:
+  decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6238536489,
+  2026-10-17 18:26 UTC;
+  https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6238944949, 2026-10-17
+  18:51 UTC; https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6241016919,
+  2026-10-17 21:03 UTC). The pass of each header under `openssl/`: OK of
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6241360552,
+  2026-10-17 21:27 UTC). The `openssl/` header sentences: approved by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6242174637,
+  2026-10-17 22:22 UTC). The `openssl/` rules of round 1: decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244284643,
+  2026-10-18 01:34 UTC). Supersedes the two `openssl/` header sentences of
+  https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6242174637. The text
+  of the rules of round 1: approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244707524,
+  2026-10-18 02:25 UTC) and `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244728627,
+  2026-10-18 02:28 UTC), which also decided "by any name or link". The sentence on a
+  file that the unit cannot find by its name: decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6245010018,
+  2026-10-18 03:05 UTC). `OMITTED`
+  in `cargo xtask open62541` is the closed list of the release files that the library
+  compiles and the copy leaves out, each with its reason: the file stores,
+  `create_certificate.c`, and each policy file other than `Basic256Sha256`,
+  `Aes128_Sha256_RsaOaep`, `Aes256_Sha256_RsaPss`, and their common code. So the copy
+  compiles only the three current policies and `None`, and the production code adds no
+  other. `shim.c` defines each symbol that the rest of the copy names from a left-out
+  file to print its name and abort, and a test calls each one. A test fails on another
+  policy file in `sources.txt`. A test fails when the production code names a policy or
+  a certificate group, or a function `UA_CertificateUtils_*`, other than at its stub in
+  `shim.c`, and a test fails when the objects of `shim.c` or `server.c` name aws-lc or a
+  symbol of `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps no state:
+  the copy removes its `static` flag, which it wrote with no lock and which guarded only
+  the calls for OpenSSL before 1.1, and the build fails when `OPENSSL_API_COMPAT` is
+  defined. Lost: the about 35 file and clock calls of the left-out files, each keyed in
+  `FUNCTION_SYMBOLS`; and a copy of each deprecated and ECC policy file. Decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6230888200,
   2026-10-17 06:51 UTC). The `UA_Openssl_Init` sentences: decided by
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231556855,
-  2026-10-17 08:08 UTC). The `AWS_LC_INPUTS` and `PLUGINS` sentences: approved by
-  `laptop.architect-2`
+  2026-10-17 08:08 UTC). The `PLUGINS` sentence: approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231723849,
-  2026-10-17 08:26 UTC).
+  2026-10-17 08:26 UTC). The `AWS_LC_INPUTS` and `UA_Openssl_Init` sentences, and the
+  PEM sentences before the `-Werror` sentence: approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6238447456,
+  2026-10-17 18:18 UTC).

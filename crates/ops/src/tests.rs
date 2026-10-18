@@ -1411,6 +1411,9 @@ mod serve {
         assert!(out.contains("ops.outside"), "{out}");
         let outside = include_str!("../../../oracles/fuzz/ops_mcp/plan-outside");
         let out = run(&["mcp"], outside.as_bytes()).stdout;
+        assert!(out.contains("ops.outside"), "{out}");
+        let missing = include_str!("../../../oracles/fuzz/ops_mcp/plan-missing");
+        let out = run(&["mcp"], missing.as_bytes()).stdout;
         assert!(out.contains("ops.read"), "{out}");
     }
 

@@ -44,6 +44,11 @@
   the `BadTypeMismatch` of the server, the note of the latest tick, and the name of
   the type at 2026-10-15T22:16:48Z:
   https://github.com/synnaxlabs/foundation/pull/2766#issuecomment-6203414079).
+  A connect calls `Context::clear_error`: until then, the status shows the error of
+  the last run (scenario 3 of CONNECTOR CONFORMANCE found it, 2026-10-17T21:08:01Z:
+  https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6241104680; text
+  of `laptop.architect-2`, 2026-10-17T21:10:51Z:
+  https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6241157217).
   Close: after a cancel or an error, the run closes its session. It sends
   CloseSession, waits at most 1 s for the answer, then closes the connection, so a run
   ends within 1 s of a cancel. The connect races the cancel, and the close does not.
@@ -62,16 +67,16 @@
   the channel and the session (`laptop.architect-2`, 2026-10-16T05:10:17Z,
   https://github.com/synnaxlabs/foundation/pull/2809#issuecomment-6208565249). The
   first failed check ends the run with `Error::Device` and the text "the connectivity
-  check failed with <status>", so the supervisor connects again with its backoff. A
-  channel or a session that the client loses between two checks ends the run at once
-  with the same text, from the state of the client: the status of the connect, else
-  `BadConnectionClosed` or `BadSessionClosed`. The check is in Rust: open62541 calls its
-  inactivity callback only for `BadTimeout` and drops each other status of its own
-  check, such as the `BadSessionIdInvalid` of a lost session, so
-  `connectivityCheckInterval` stays 0. The retry of a failed read stays. Approved by the
-  person (2026-10-16T03:44:54Z, "Yes, approved", on "Keep the 10-second keep-alive, and
-  add one rule: if a keep-alive fails, reconnect right away instead of waiting for the
-  next read":
+  check of <address> failed with <status>", where <address> is the `address` of the
+  connector, so the supervisor connects again with its backoff. A channel or a session
+  that the client loses between two checks ends the run at once with the same text, from
+  the state of the client: the status of the connect, else `BadConnectionClosed` or
+  `BadSessionClosed`. The check is in Rust: open62541 calls its inactivity callback only
+  for `BadTimeout` and drops each other status of its own check, such as the
+  `BadSessionIdInvalid` of a lost session, so `connectivityCheckInterval` stays 0. The
+  retry of a failed read stays. Approved by the person (2026-10-16T03:44:54Z, "Yes,
+  approved", on "Keep the 10-second keep-alive, and add one rule: if a keep-alive fails,
+  reconnect right away instead of waiting for the next read":
   https://github.com/synnaxlabs/foundation/pull/2809#issuecomment-6207602232). The count
   of one failed check, what fails a check, the check in Rust, the text, and the tests:
   decided by `laptop.architect-2` (2026-10-16T03:46:32Z,
@@ -135,14 +140,21 @@
   100 000, a freed point gives `Error::Device` with `BadContinuationPointInvalid`, and a
   cursor with no point gives `opcua.bad-cursor`. A skip assumes that the server keeps
   the order of the references of the folder: when the server changes that order, a skip
-  can drop or repeat a
-  reference, and a name with ` (<tag>)` after it can move to another node. A browse
-  keeps the tag and the name of each node before the page of each cursor, at most 16 MiB
-  of them across its cursors, past which the browse gives `Error::Device` (round 2
-  findings 1 and 2, 2026-10-17T03:40:23Z, for this bound and for `VISITS`:
+  can drop or repeat a reference, and a name with ` (<tag>)` after it can move to
+  another node. A browse keeps the tag and the name of each node before the page of each
+  cursor, at most 16 MiB of them across its cursors (round 2 findings 1 and 2,
+  2026-10-17T03:40:23Z, for this bound and for `VISITS`:
   https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229156018, approved
   by `laptop.architect-2`, 2026-10-17T04:05:28Z:
-  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229428004). The bound
+  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229428004). Past it,
+  the browse releases its points one at a time, the one that it used least lately first,
+  of those at a count of at most 100 000, and gives `Error::Device` when no point is
+  left to release (round 2 finding 1 of #3102, 2026-10-18T03:25:25Z:
+  https://github.com/synnaxlabs/foundation/pull/3102#issuecomment-6245168498, approved
+  by `laptop.architect-2`, 2026-10-18T03:34:04Z:
+  https://github.com/synnaxlabs/foundation/pull/3102#issuecomment-6245234798).
+  Supersedes the `Error::Device` at the bound of
+  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229428004. The bound
   of browses at once is #2981. The browse holds at most as many points at a count of at
   most 100 000 as the server holds for a session (`MaxBrowseContinuationPoints`, or
   `DEPTH` when the server gives 0, no value, or a value that is not a `UInt16`). Before
