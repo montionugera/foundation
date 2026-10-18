@@ -1173,17 +1173,6 @@ fn tool(
     result["structuredContent"].clone()
 }
 
-/// The connectors of the `status` output `output`, by name.
-fn connectors(output: &serde_json::Value) -> BTreeMap<String, Connector> {
-    let connectors = output["connectors"].as_array().expect("a list");
-    let connectors = connectors.iter().map(|connector| {
-        let connector: Connector =
-            serde_json::from_value(connector.clone()).expect("a connector");
-        (connector.name.clone(), connector)
-    });
-    connectors.collect()
-}
-
 /// [`a_connector_with_no_read_applies_and_reads_after_an_import`] through the tools of
 /// `foundation mcp`.
 #[test]
@@ -1199,13 +1188,16 @@ fn mcp_applies_a_connector_with_no_read_and_reads_after_an_import() {
         id += 1;
         tool(&mut mcp, id, name, &arguments)
     };
+    let status = |output: serde_json::Value| {
+        crate::status::connectors(output.to_string().as_bytes())
+    };
     let files = serde_json::json!(["plant.hcl"]);
     let plan = serde_json::json!({ "files": files, "out": "plant.plan" });
     call("plan", plan.clone());
     call("apply", serde_json::json!({ "plan": "plant.plan" }));
     rig.wait("plc notes that it reads nothing", || {
         shows(
-            &connectors(&call("status", serde_json::json!({}))),
+            &status(call("status", serde_json::json!({}))),
             Some(NO_READ),
             false,
         )
@@ -1228,11 +1220,7 @@ fn mcp_applies_a_connector_with_no_read_and_reads_after_an_import() {
     call("plan", plan);
     call("apply", serde_json::json!({ "plan": "plant.plan" }));
     rig.wait("plc reads the imported points", || {
-        shows(
-            &connectors(&call("status", serde_json::json!({}))),
-            None,
-            true,
-        )
+        shows(&status(call("status", serde_json::json!({}))), None, true)
     });
     let output = mcp.close();
     assert_eq!((output.status.code(), text(&output.stderr)), (Some(0), ""));
