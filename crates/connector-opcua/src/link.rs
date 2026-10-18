@@ -1566,8 +1566,8 @@ fn the_production_code_gives_no_client_the_stdout_logger() {
 
 /// `cargo xtask open62541` lets `interruptServer` and `UA_random_seed` call the global
 /// clock. The C builds with `-ffunction-sections`, and Rust links with
-/// `--gc-sections`, so this test binary keeps only the functions that the tests reach,
-/// and the test server reaches neither.
+/// `--gc-sections` (`-dead_strip` on macOS), so this test binary keeps only the
+/// functions that the tests reach, and the test server reaches neither.
 #[test]
 fn the_tests_reach_neither_interrupt_server_nor_random_seed() {
     let kept = names(&[std::env::current_exe().unwrap()], "--defined-only");
