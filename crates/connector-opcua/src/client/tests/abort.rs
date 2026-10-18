@@ -247,3 +247,40 @@ fn an_abort_between_the_chunks_of_another_read_leaves_its_answer() {
     let (read, after, value) = interleaved(true);
     assert_eq!((read, after), (mistyped("ByteString"), Ok(value)));
 }
+
+/// An abort after the 7 intermediate chunks of an answer of [`FITS`] frees their place
+/// in the count of chunks, so the next answer of 8 chunks arrives.
+#[test]
+fn an_abort_after_intermediate_chunks_leaves_the_next_answer_each_chunk() {
+    let (reads, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            peer.server.add_bytes(&FITS, 7 * CHUNK);
+            let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
+            let left = Cell::new(0u16);
+            let rewrite = |chunk: &mut Vec<u8>| {
+                if chunk.starts_with(b"MSGF") && left.get() > 0 {
+                    *chunk = too_large(chunk);
+                    left.set(left.get() - 1);
+                }
+            };
+            relayed(&node, &Relay::default(), rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
+                left.set(1);
+                let reads =
+                    [client.read_one(&FITS).await, client.read_one(&FITS).await];
+                client.close().await;
+                reads
+            })
+            .await
+        })
+        .await
+    });
+    assert_eq!(
+        reads,
+        [
+            Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE)),
+            mistyped("ByteString")
+        ]
+    );
+}
