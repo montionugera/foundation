@@ -1,4 +1,5 @@
 mod module;
+mod twins;
 
 #[cfg(unix)]
 #[test]
@@ -46,3 +47,42 @@ m! {
     #[inline]
     fn helper() {}
 }
+
+#[cfg(unix)]
+m! {
+    #[test]
+    pub fn public() {}
+    #[tokio::test]
+    async fn waited() {}
+    mod inner {
+        #[test]
+        fn nested() {}
+    }
+}
+
+#[cfg(miri)]
+#[test]
+fn flagged() {}
+
+/// Only sparc64: a case.
+#[cfg(target_os = "freebsd")]
+mod nowhere {
+    #[test]
+    fn bsd() {}
+}
+
+#[cfg(unix)]
+m! {
+    #[a b]
+    fn unread() {}
+}
+
+/// Only aarch64: a case.
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn armed() {}
+
+/// Only x86_64: a case.
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn misarmed() {}

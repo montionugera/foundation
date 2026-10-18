@@ -4,12 +4,16 @@ jobs:
       matrix:
         include:
           - name: check
-            gates: []
+            gates:
+              - crates/g/src/twins.rs a # #1
           - name: macos
-            gates: []
+            gates:
+              - crates/g/src/twins.rs a # #1
           - name: windows
             gates:
               - crates/g/src/lib.rs listed # #1
+              - crates/g/src/twins.rs a # #1
+              - crates/g/tests/common/shared.rs a # #1
               - crates/g/src/lib.rs both # #1
               - crates/g/src/lib.rs stale # #1
             tests:

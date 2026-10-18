@@ -41,3 +41,6 @@ fn q() {}
 fn r() {}
 #[cfg_attr(test, ignore)]
 fn s() {}
+
+#[test]
+fn listed() {}

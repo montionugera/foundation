@@ -5,15 +5,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use cfg_expr::targets::get_builtin_target_by_triple;
+use cfg_expr::targets::{TargetInfo, get_builtin_target_by_triple};
 use cfg_expr::{Expression, Predicate};
 use syn::ext::IdentExt;
 use syn::parse::ParseStream;
 use syn::punctuated::Punctuated;
 use syn::visit::Visit;
-use syn::{Attribute, Expr, Ident, Item, Lit, Meta, Token};
+use syn::{Attribute, Expr, Ident, Item, Lit, Meta, Token, Type};
 
-use crate::{field, files};
+use crate::{field, files, workflow};
 
 /// A runner of CI that runs the tests of the workspace: its target, its OS as a reason
 /// names it, and the name of its entry in the matrix of the job `check`.
@@ -21,6 +21,13 @@ struct Runner {
     triple: &'static str,
     os: &'static str,
     entry: &'static str,
+}
+
+impl Runner {
+    fn target(&self) -> &'static TargetInfo {
+        get_builtin_target_by_triple(self.triple)
+            .expect("invariant: rustc knows the target of each runner")
+    }
 }
 
 /// The runners of the lists of LINUX CI, one for each OS, in the order in which a
@@ -62,8 +69,7 @@ impl Runners {
             .any(|predicate| matches!(predicate, Predicate::Target(_)));
         let mut runners = Self::NONE;
         for (i, runner) in RUNNERS.iter().enumerate() {
-            let target = get_builtin_target_by_triple(runner.triple)
-                .expect("invariant: rustc knows the target of each runner");
+            let target = runner.target();
             let holds = expression.eval(|predicate| match predicate {
                 Predicate::Target(name) => Some(name.matches(target)),
                 Predicate::Test
@@ -86,6 +92,17 @@ impl Runners {
             }
         }
         Ok((runners, keyed))
+    }
+
+    /// The runners whose target has the `target_arch` `arch`.
+    fn arch(arch: &str) -> Self {
+        let mut runners = Self::NONE;
+        for (i, runner) in RUNNERS.iter().enumerate() {
+            if runner.target().arch.as_str() == arch {
+                runners.0 |= 1 << i;
+            }
+        }
+        runners
     }
 
     fn and(self, other: Self) -> Self {
@@ -111,24 +128,19 @@ impl Runners {
     }
 }
 
-/// Checks each test function in the module tree of each target of the workspace at
-/// `root`. A test that its `cfg` builds on an OS of the lists, but that an `ignore`
-/// skips on the runner of that OS, is refused, unless the reason of each such `ignore`
-/// is `only <OS>` or starts with `only <OS>:`, where `<OS>` names the OSes that run the
-/// test. An item whose `cfg` names a target and leaves out of an OS a test that no item
-/// of the same path builds there is a gate: it is refused, unless the first line of its
-/// doc gives the OSes on which it builds in the same way, with `Only` for `only`, or
-/// the `gates` list of that OS in the job `check` of `.github/workflows/ci.yaml` names
-/// its file and its path in the file. An item of a `gates` list that names no such gate
-/// is refused too. In a target that `cargo test` runs with no harness, each function is
-/// a test; elsewhere, a function with a `test` attribute, in the body of a macro call
-/// too, where a `cfg` of the call is a gate of each test. The `ignore` attributes in
-/// the body of a macro call are not read.
+/// Checks each test in the module tree of each target of the workspace at `root`
+/// against the lists of LINUX CI in `.github/workflows/ci.yaml`, as LINUX CI states. It
+/// refuses an `ignore` that skips an OS on its runner with no `only <OS>` reason, each
+/// gate, a `cfg` that names a target and leaves a test out of an OS, that no `gates`
+/// list item and no `Only <OS>` or `Only <arch>` doc gives, and each list item that
+/// names no gate. A `cfg_attr` that applies `test` on some runners is a gate on the
+/// others. In the body of a macro call, it reads only the functions and modules in the
+/// tokens of the call, and no `ignore`.
 ///
 /// It also refuses a file that does not parse, a `mod` with no file, a `path` in a
 /// `cfg_attr`, a `cfg` predicate that is not one of Rust or whose value on a runner is
-/// not known, an `ignore` reason that is not a string literal, and a `ci.yaml` with no
-/// `gates` list for an entry of the job `check`.
+/// not known, an `ignore` reason that is not a string literal, and a `ci.yaml` that
+/// `workflow` refuses or with no block `gates` list for an entry of the job `check`.
 pub(crate) fn check(root: &Path) -> Result<(), Vec<String>> {
     let problems = problems(root).map_err(|e| vec![e])?;
     if problems.is_empty() {
@@ -143,7 +155,7 @@ fn problems(root: &Path) -> Result<Vec<String>, String> {
     let mut modules = roots(root)?;
     let mut seen = BTreeSet::new();
     let mut problems = BTreeSet::new();
-    let mut found = Found::default();
+    let mut catalog = Catalog::default();
     while let Some(module) = modules.pop() {
         if !seen.insert((module.file.clone(), module.on, module.target)) {
             continue;
@@ -163,10 +175,10 @@ fn problems(root: &Path) -> Result<Vec<String>, String> {
                 continue;
             }
         };
-        let tests = match module.tests {
-            Tests::Root if file.items.iter().any(main) => Tests::Each,
-            Tests::Root => Tests::Marked,
-            tests => tests,
+        let tests = if module.entry && file.items.iter().any(main) {
+            Tests::Each
+        } else {
+            module.tests
         };
         let mut items = Items {
             shown: &shown,
@@ -180,12 +192,12 @@ fn problems(root: &Path) -> Result<Vec<String>, String> {
             gates: module.gates,
             tests,
             modules: &mut modules,
-            found: &mut found,
+            catalog: &mut catalog,
             problems: &mut problems,
         };
         items.enter(&file.attrs, None, |items, _| items.visit_file(&file));
     }
-    found.refuse(&mut lists, &mut problems);
+    catalog.refuse(&mut lists, &mut problems);
     for (runner, list) in RUNNERS.iter().zip(lists) {
         for item in list {
             problems.insert(unlisted(&item, runner.os));
@@ -206,13 +218,8 @@ fn roots(root: &Path) -> Result<Vec<Module>, String> {
                 .ok_or_else(|| format!("{} has no directory", file.display()))?
                 .to_path_buf();
             let kinds = field::list(value, "kind")?;
-            let tests = if !field::flag(value, "test")? {
-                Tests::None
-            } else if kinds.iter().any(|k| k == "test" || k == "bench") {
-                Tests::Root
-            } else {
-                Tests::Marked
-            };
+            let tested = field::flag(value, "test")?;
+            let tests = if tested { Tests::Marked } else { Tests::None };
             modules.push(Module {
                 file,
                 dir,
@@ -221,6 +228,7 @@ fn roots(root: &Path) -> Result<Vec<Module>, String> {
                 path: Vec::new(),
                 gates: Vec::new(),
                 tests,
+                entry: tested && kinds.iter().any(|k| k == "test" || k == "bench"),
             });
         }
     }
@@ -251,8 +259,6 @@ enum Tests {
     Marked,
     /// Each one: the target has no test harness.
     Each,
-    /// `Marked` or `Each`, by the root file of a test or bench target.
-    Root,
 }
 
 /// A target of the workspace: the index of its package, and its index in the package.
@@ -269,6 +275,9 @@ struct Module {
     path: Vec<String>,
     gates: Vec<usize>,
     tests: Tests,
+    /// The file is the root of a test or bench target, so a `main` in it makes each
+    /// function a test.
+    entry: bool,
 }
 
 /// An item whose `cfg` names a target and leaves out runners on which its parent
@@ -286,23 +295,22 @@ struct Gate {
 
 /// The gates and the tests of the workspace.
 #[derive(Default)]
-struct Found {
+struct Catalog {
     gates: Vec<Gate>,
-    /// Each item of each path of a test in its target.
-    tests: BTreeMap<(Target, Vec<String>), Vec<Built>>,
+    /// Each definition of each path of a test in its target.
+    tests: BTreeMap<(Target, Vec<String>), Vec<Definition>>,
 }
 
-/// An item of the path of a test: the runners on which it builds, and the gates around
-/// it.
-struct Built {
+/// A definition of a test: the runners on which it is a test, and the gates around it.
+struct Definition {
     on: Runners,
     gates: Vec<usize>,
 }
 
-impl Found {
-    /// Refuses each gate that leaves a test out of an OS on which no item of its path
-    /// builds, with no item of the `gates` list of that OS and no doc that gives the
-    /// case. It takes each item that it finds out of `lists`.
+impl Catalog {
+    /// Refuses each gate that leaves a test out of an OS on which no definition of its
+    /// path builds, with no item of the `gates` list of that OS and no doc that gives
+    /// the case. It takes each item that it finds out of `lists`.
     fn refuse(&self, lists: &mut [BTreeSet<String>], problems: &mut BTreeSet<String>) {
         let mut out = BTreeSet::new();
         for items in self.tests.values() {
@@ -318,26 +326,30 @@ impl Found {
                 }
             }
         }
+        // Gates can share a name, so an item is taken out only after each of them.
+        let mut used = BTreeSet::new();
         for (gate, i) in out {
             let gate = &self.gates[gate];
-            let given = gate
-                .doc
-                .as_deref()
-                .and_then(|d| d.strip_prefix("Only "))
-                .is_some_and(|d| gives(&format!("only {d}"), &gate.on.oses()));
-            if !lists[i].remove(&gate.named) && !given {
+            if lists[i].contains(&gate.named) {
+                used.insert((i, gate.named.as_str()));
+            } else if !gate.doc.as_deref().is_some_and(|d| covers(d, gate.on)) {
                 problems.insert(gated(&gate.named, RUNNERS[i].os));
             }
+        }
+        for (i, named) in used {
+            lists[i].remove(named);
         }
     }
 }
 
 /// What the attributes of an item do: the runners on which it builds, those on which
-/// each `cfg` that names a target builds it, and each `ignore`, with the runners on
-/// which it applies and its reason.
+/// each `cfg` that names a target builds it, those on which a `test` attribute applies,
+/// if it has one, and each `ignore`, with the runners on which it applies and its
+/// reason.
 struct Effect {
     builds: Runners,
     keyed: Runners,
+    tested: Option<Runners>,
     ignores: Vec<Ignore>,
 }
 
@@ -367,48 +379,57 @@ struct Items<'a> {
     gates: Vec<usize>,
     tests: Tests,
     modules: &'a mut Vec<Module>,
-    found: &'a mut Found,
+    catalog: &'a mut Catalog,
     problems: &'a mut BTreeSet<String>,
 }
 
 impl Items<'_> {
     /// Visits an item with `attributes`, named `name`, on the runners on which it
-    /// builds, if any.
+    /// builds. A `cfg` that names a target can leave a test out of each runner, so the
+    /// items under such a gate are visited on none.
     fn enter(
         &mut self,
         attributes: &[Attribute],
-        name: Option<&Ident>,
-        visit: impl FnOnce(&mut Self, &[Ignore]),
+        name: Option<String>,
+        visit: impl FnOnce(&mut Self, &Effect),
     ) {
-        self.item.extend(name.map(|name| name.unraw().to_string()));
+        let named = name.is_some();
+        self.item.extend(name);
         match effect(attributes) {
             Ok(effect) => {
                 let on = self.on.and(effect.builds);
-                let out = self.on.without(effect.keyed);
-                if out != Runners::NONE {
-                    let item = self.item.join("::");
-                    self.gates.push(self.found.gates.len());
-                    self.found.gates.push(Gate {
-                        named: [self.shown, &item].join(" ").trim_end().to_string(),
-                        out,
-                        on,
-                        doc: doc(attributes),
-                    });
-                }
-                if on != Runners::NONE {
+                let gated = self.gate(self.on.without(effect.keyed), on, attributes);
+                if on != Runners::NONE || gated || self.on == Runners::NONE {
                     let outer = std::mem::replace(&mut self.on, on);
-                    visit(self, &effect.ignores);
+                    visit(self, &effect);
                     self.on = outer;
                 }
-                if out != Runners::NONE {
+                if gated {
                     self.gates.pop();
                 }
             }
             Err(e) => self.problem(&e),
         }
-        if name.is_some() {
+        if named {
             self.item.pop();
         }
+    }
+
+    /// Adds a gate around the item, with `attributes`, that leaves it out of `out` and
+    /// builds it on `on`, unless `out` is empty. It reports whether it added one.
+    fn gate(&mut self, out: Runners, on: Runners, attributes: &[Attribute]) -> bool {
+        if out == Runners::NONE {
+            return false;
+        }
+        let item = self.item.join("::");
+        self.gates.push(self.catalog.gates.len());
+        self.catalog.gates.push(Gate {
+            named: [self.shown, &item].join(" ").trim_end().to_string(),
+            out,
+            on,
+            doc: doc(attributes),
+        });
+        true
     }
 
     fn problem(&mut self, problem: &str) {
@@ -428,35 +449,56 @@ impl Items<'_> {
         name: &Ident,
         visit: impl FnOnce(&mut Self),
     ) {
-        self.enter(attributes, Some(name), |s, ignores| {
-            s.record(attributes);
-            s.test(ignores);
+        self.enter(attributes, Some(name.unraw().to_string()), |s, effect| {
+            s.record(attributes, effect.tested);
+            s.test(&effect.ignores);
             visit(s);
         });
     }
 
-    /// Records the item as a test, when `attributes` are those of a test function.
-    fn record(&mut self, attributes: &[Attribute]) {
-        let test = match self.tests {
-            Tests::None => false,
-            Tests::Root => unreachable!(
-                "invariant: the root file of a target sets `Each` or `Marked`"
-            ),
-            Tests::Marked => attributes
-                .iter()
-                .any(|a| a.path().segments.last().is_some_and(|s| s.ident == "test")),
-            Tests::Each => true,
+    /// Records the function with `attributes` as a test, when it is one, on the runners
+    /// of `tested`, those on which a `test` attribute applies to it. A `cfg_attr` that
+    /// applies it on only some runners is a gate on the others.
+    fn record(&mut self, attributes: &[Attribute], tested: Option<Runners>) {
+        let tested = match (self.tests, tested) {
+            (Tests::None, _) | (Tests::Marked, None) => return,
+            (Tests::Marked, Some(tested)) => tested,
+            (Tests::Each, _) => Runners::ALL,
         };
-        if test {
-            let path = [self.module.as_slice(), &self.item].concat();
-            self.found
-                .tests
-                .entry((self.target, path))
-                .or_default()
-                .push(Built {
-                    on: self.on,
-                    gates: self.gates.clone(),
-                });
+        let on = self.on.and(tested);
+        let gated = self.gate(self.on.without(tested), on, attributes);
+        let path = [self.module.as_slice(), &self.item].concat();
+        self.catalog
+            .tests
+            .entry((self.target, path))
+            .or_default()
+            .push(Definition {
+                on,
+                gates: self.gates.clone(),
+            });
+        if gated {
+            self.gates.pop();
+        }
+    }
+
+    /// Visits `items`, the body of a macro call with `outer`, the attributes of the
+    /// call, or of a module in it, with none.
+    fn body(&mut self, outer: &[Attribute], items: &[Body]) {
+        for item in items {
+            match item {
+                Body::Function(attributes, name) => {
+                    let attributes = [outer, attributes].concat();
+                    let name = name.unraw().to_string();
+                    self.enter(&attributes, Some(name), |s, effect| {
+                        s.record(&attributes, effect.tested);
+                    });
+                }
+                Body::Module(attributes, name, items) => {
+                    let attributes = [outer, attributes].concat();
+                    let name = name.unraw().to_string();
+                    self.enter(&attributes, Some(name), |s, _| s.body(&[], items));
+                }
+            }
         }
     }
 
@@ -515,7 +557,7 @@ impl Items<'_> {
 
 impl<'ast> Visit<'ast> for Items<'_> {
     fn visit_item_mod(&mut self, i: &'ast syn::ItemMod) {
-        self.enter(&i.attrs, Some(&i.ident), |s, _| {
+        self.enter(&i.attrs, Some(i.ident.unraw().to_string()), |s, _| {
             if i.content.is_some() {
                 let dir = match path(&i.attrs) {
                     Ok(Some(path)) => files::normalize(&s.base().join(path)),
@@ -538,29 +580,39 @@ impl<'ast> Visit<'ast> for Items<'_> {
                     path: [s.module.as_slice(), &s.item].concat(),
                     gates: s.gates.clone(),
                     tests: s.tests,
+                    entry: false,
                 }),
                 Err(e) => s.problem(&e),
             }
         });
     }
 
+    /// The items of an `impl` take the name of its type in their path, so that none
+    /// shares the path of a free function.
     fn visit_item_impl(&mut self, i: &'ast syn::ItemImpl) {
-        self.enter(&i.attrs, None, |s, _| syn::visit::visit_item_impl(s, i));
+        let name = match &*i.self_ty {
+            Type::Path(path) => path.path.segments.last().map(|s| s.ident.unraw()),
+            _ => None,
+        };
+        // No item can be named `impl`.
+        let name = name.map_or("impl".to_string(), |name| name.to_string());
+        self.enter(&i.attrs, Some(name), |s, _| {
+            syn::visit::visit_item_impl(s, i);
+        });
     }
 
     fn visit_item_trait(&mut self, i: &'ast syn::ItemTrait) {
-        self.enter(&i.attrs, None, |s, _| syn::visit::visit_item_trait(s, i));
+        let name = i.ident.unraw().to_string();
+        self.enter(&i.attrs, Some(name), |s, _| {
+            syn::visit::visit_item_trait(s, i);
+        });
     }
 
-    /// A `cfg` of the call is a gate of each function in its body, by its name.
+    /// A `cfg` of the call is a gate of each function and module at the top of its
+    /// body, by its name.
     fn visit_item_macro(&mut self, i: &'ast syn::ItemMacro) {
-        match i.mac.parse_body_with(functions) {
-            Ok(functions) => {
-                for (attributes, name) in functions {
-                    let attributes = [i.attrs.as_slice(), &attributes].concat();
-                    self.enter(&attributes, Some(&name), |s, _| s.record(&attributes));
-                }
-            }
+        match i.mac.parse_body_with(body) {
+            Ok(items) => self.body(&i.attrs, &items),
             Err(e) => self.problem(&e.to_string()),
         }
     }
@@ -581,29 +633,54 @@ impl<'ast> Visit<'ast> for Items<'_> {
         });
     }
 }
+///  A function or a module in the body of a macro call: its attributes, its name, and
+/// the
+/// items of the module.
+enum Body {
+    Function(Vec<Attribute>, Ident),
+    Module(Vec<Attribute>, Ident, Vec<Body>),
+}
 
-/// The functions with an attribute at the top level of the body of a macro call, as
-/// `proptest!` takes them: their attributes and their names. Each other token is
-/// passed.
-fn functions(input: ParseStream<'_>) -> syn::Result<Vec<(Vec<Attribute>, Ident)>> {
-    let mut functions = Vec::new();
+/// The functions and modules of the body of a macro call, as `proptest!` takes them,
+/// with the items of each module. Each other token is passed.
+fn body(input: ParseStream<'_>) -> syn::Result<Vec<Body>> {
+    let mut items = Vec::new();
     while !input.is_empty() {
-        if input.peek(Token![#]) && input.peek2(syn::token::Bracket) {
-            let attributes = input.call(Attribute::parse_outer)?;
-            if input.peek(Token![fn]) {
-                input.parse::<Token![fn]>()?;
-                functions.push((attributes, input.call(Ident::parse_any)?));
-            }
-            continue;
+        let attributes = if input.peek(Token![#]) && input.peek2(syn::token::Bracket) {
+            input.call(Attribute::parse_outer)?
+        } else {
+            Vec::new()
+        };
+        let visibility: syn::Visibility = input.parse()?;
+        let qualified = input.parse::<Option<Token![const]>>()?.is_some()
+            | input.parse::<Option<Token![async]>>()?.is_some()
+            | input.parse::<Option<Token![unsafe]>>()?.is_some()
+            | input.parse::<Option<syn::Abi>>()?.is_some();
+        if input.peek(Token![fn]) && input.peek2(Ident::peek_any) {
+            input.parse::<Token![fn]>()?;
+            items.push(Body::Function(attributes, input.call(Ident::parse_any)?));
+        } else if input.peek(Token![mod])
+            && input.peek2(Ident::peek_any)
+            && input.peek3(syn::token::Brace)
+        {
+            input.parse::<Token![mod]>()?;
+            let name = input.call(Ident::parse_any)?;
+            let content;
+            syn::braced!(content in input);
+            items.push(Body::Module(attributes, name, body(&content)?));
+        } else if attributes.is_empty()
+            && matches!(visibility, syn::Visibility::Inherited)
+            && !qualified
+        {
+            input.step(|cursor| {
+                cursor
+                    .token_tree()
+                    .map(|(_, next)| ((), next))
+                    .ok_or_else(|| cursor.error("the end of the body"))
+            })?;
         }
-        input.step(|cursor| {
-            cursor
-                .token_tree()
-                .map(|(_, next)| ((), next))
-                .ok_or_else(|| cursor.error("the end of the body"))
-        })?;
     }
-    Ok(functions)
+    Ok(items)
 }
 
 /// The first line of the doc in `attributes`.
@@ -624,29 +701,30 @@ fn lists(root: &Path) -> Result<Vec<BTreeSet<String>>, String> {
     let path = root.join(".github/workflows/ci.yaml");
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    let indent = |line: &str| line.len() - line.trim_start().len();
-    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-    let job = lines
-        .iter()
-        .position(|line| *line == "  check:")
-        .ok_or("`ci.yaml` has no job `check`")?;
+    let lines = workflow::lines(&text)?;
+    let job = workflow::under(&workflow::under(&lines, "jobs:")?, "  check:")?;
     let mut lists: Vec<Option<BTreeSet<String>>> = vec![None; RUNNERS.len()];
     let (mut entry, mut list) = (None, None);
-    for line in lines[job + 1..].iter().take_while(|line| indent(line) > 2) {
-        let text = line.trim();
+    for line in job {
+        let text = workflow::code(line)?.trim();
         if let Some(name) = text.strip_prefix("- name: ") {
             entry = RUNNERS.iter().position(|runner| runner.entry == name);
             list = None;
-        } else if list.is_some_and(|key| indent(line) > key) {
+        } else if list.is_some_and(|key| workflow::indent(line) > key) {
             if let (Some(i), Some(item)) = (entry, text.strip_prefix("- ")) {
-                let item = item.split_once(" #").map_or(item, |(item, _)| item);
-                lists[i]
-                    .get_or_insert_default()
-                    .insert(item.trim().to_string());
+                lists[i].get_or_insert_default().insert(item.to_string());
             }
-        } else if let (Some(i), true) = (entry, text.starts_with("gates:")) {
+        } else if let (Some(i), Some(value)) = (entry, text.strip_prefix("gates:")) {
             lists[i].get_or_insert_default();
-            list = Some(indent(line));
+            list = match value {
+                "" => Some(workflow::indent(line)),
+                " []" => None,
+                _ => {
+                    return Err(format!(
+                        "`ci.yaml`: a `gates` list that is no block: `{text}`"
+                    ));
+                }
+            };
         } else {
             list = None;
         }
@@ -671,6 +749,7 @@ fn effect(attributes: &[Attribute]) -> Result<Effect, String> {
     let mut effect = Effect {
         builds: Runners::ALL,
         keyed: Runners::ALL,
+        tested: None,
         ignores: Vec::new(),
     };
     apply(
@@ -722,6 +801,10 @@ fn apply<'a>(
                 }
             };
             effect.ignores.push(Ignore { on, keyed, reason });
+        } else if path.segments.last().is_some_and(|s| s.ident == "test")
+            && (keyed || on != Runners::NONE)
+        {
+            effect.tested = Some(effect.tested.unwrap_or(Runners::NONE).or(on));
         }
     }
     Ok(())
@@ -794,6 +877,19 @@ fn gives(reason: &str, oses: &[&str]) -> bool {
         })
 }
 
+/// Reports whether `doc`, the first line of the doc of a gate that builds its item on
+/// `on`, is `Only <OS>` or `Only <arch>`, or starts with either and `:`, where `<OS>`
+/// names the OSes of `on` as a reason does, and `<arch>` is the `target_arch` of each
+/// runner of `on` and of no other.
+fn covers(doc: &str, on: Runners) -> bool {
+    let Some(rest) = doc.strip_prefix("Only ") else {
+        return false;
+    };
+    let arch = rest.split_once(':').map_or(rest, |(arch, _)| arch);
+    gives(&format!("only {rest}"), &on.oses())
+        || (on != Runners::NONE && Runners::arch(arch) == on)
+}
+
 fn refused(shown: &str, item: &str) -> String {
     format!(
         "`{shown}`: `{item}` ignores a test on an OS outside the lists of LINUX CI. \
@@ -811,9 +907,10 @@ fn gated(named: &str, os: &str) -> String {
         "`{named}`: a `cfg` leaves a test out of {os} outside the lists of LINUX CI. \
          Fix: add `- {named} # #<issue>` to the `gates` list of {os} in `ci.yaml`, \
          or, in a case of `docs/claude/testing.md`, \"No `#[ignore]`\", make the \
-         first line of the doc of the item `Only <OS>` or start it with `Only <OS>:`, \
-         where <OS> names each OS on which the item builds, as the reason of an \
-         `ignore` does."
+         first line of the doc of the item `Only <OS>` or `Only <arch>`, or start it \
+         with either and `:`, where <OS> names each OS on which the item builds, as \
+         the reason of an `ignore` does, and <arch> is the `target_arch` of each \
+         runner on which it builds and of no other."
     )
 }
 
@@ -852,8 +949,8 @@ mod tests {
         let reasons_rs = format!("{skips}/reasons.rs");
         expected.extend(["comma", "or", "slash"].map(|i| refused(&reasons_rs, i)));
         let items = [
-            "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n::o",
-            "n::p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
+            "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n::X::o",
+            "n::Y::p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
         ];
         let refused_rs = format!("{skips}/refused.rs");
         expected.extend(items.map(|i| refused(&refused_rs, i)));
@@ -878,14 +975,28 @@ mod tests {
     #[test]
     fn refuses_each_gate_that_no_list_or_doc_gives_and_each_unused_list_item() {
         let lib = "crates/g/src/lib.rs";
+        let free = "crates/g/tests/free.rs";
         let mut expected = vec![
             gated(&format!("{lib} refused"), "Windows"),
             gated(&format!("{lib} misnamed"), "Windows"),
             gated(&format!("{lib} generated"), "Linux"),
             gated(&format!("{lib} generated"), "Windows"),
+            gated(&format!("{lib} public"), "Windows"),
+            gated(&format!("{lib} waited"), "Windows"),
+            gated(&format!("{lib} inner"), "Windows"),
+            gated(&format!("{lib} nowhere"), "Linux"),
+            gated(&format!("{lib} nowhere"), "macOS"),
+            gated(&format!("{lib} nowhere"), "Windows"),
+            gated(&format!("{lib} misarmed"), "Linux"),
+            gated(&format!("{lib} misarmed"), "Windows"),
+            format!("`{lib}`: ``: unexpected token, expected `]`"),
             gated("crates/g/src/module.rs inner", "Linux"),
             gated("crates/g/src/module.rs inner", "macOS"),
-            gated("crates/g/tests/free.rs case", "Windows"),
+            gated("crates/g/src/twins.rs attributed", "Windows"),
+            gated(&format!("{free} case"), "Windows"),
+            gated(&format!("{free} Rig::gated"), "Windows"),
+            gated(&format!("{free} Case::case"), "Windows"),
+            gated(&format!("{free} impl"), "Windows"),
             gated("crates/g/tests/filed.rs", "Windows"),
             gated("crates/g/benches/timed.rs case", "Windows"),
             "`ci.yaml`: the item `crates/g/src/lib.rs stale` of the `gates` list of \
@@ -897,14 +1008,28 @@ mod tests {
     }
 
     #[test]
-    fn refuses_a_ci_yaml_with_no_gates_list_for_an_entry() {
-        assert_eq!(
-            lists(&crate::fixture().join("gates/missing")),
-            Err(
-                "`ci.yaml` has no `gates` list in the entry `windows` of the job \
-                 `check`"
-                    .into()
-            )
+    fn refuses_a_ci_yaml_with_no_gates_list_for_an_entry_or_no_job_check() {
+        let gates = crate::fixture().join("gates");
+        let refused = |dir: &str, problem: String| {
+            assert_eq!(check(&gates.join(dir)), Err(vec![problem]));
+        };
+        refused(
+            "missing",
+            "`ci.yaml` has no `gates` list in the entry `windows` of the job `check`"
+                .into(),
+        );
+        refused("nojob", "ci.yaml has no `check:`".into());
+        refused(
+            "flow",
+            "`ci.yaml`: a `gates` list that is no block: `gates: [a]`".into(),
+        );
+        let absent = gates.join("absent/.github/workflows/ci.yaml");
+        refused(
+            "absent",
+            format!(
+                "{}: No such file or directory (os error 2)",
+                absent.display()
+            ),
         );
     }
 

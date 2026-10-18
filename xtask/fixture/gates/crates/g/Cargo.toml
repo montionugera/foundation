@@ -13,3 +13,12 @@ harness = false
 name = "timed"
 harness = false
 test = true
+
+[[bin]]
+name = "quiet"
+path = "src/quiet.rs"
+test = false
+
+[[bench]]
+name = "untimed"
+harness = false

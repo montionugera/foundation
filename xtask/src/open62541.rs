@@ -4336,8 +4336,8 @@ End of search list.
         remove(&root).and_then(|()| remove(&repo)).unwrap();
     }
 
-    /// Only macOS: on aarch64, `nm` hides each symbol whose name starts with `$x.` or
-    /// `$d.`, as it hides a mapping symbol.
+    /// Only aarch64: `nm` hides each symbol whose name starts with `$x.` or `$d.`, as
+    /// it hides a mapping symbol.
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn check_refuses_an_odd_name_that_looks_like_a_mapping_symbol() {
