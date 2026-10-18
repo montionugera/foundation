@@ -442,7 +442,7 @@ fn fitting(problems: &[Problem], status: u8) -> usize {
 }
 
 /// The length of `value` as JSON.
-fn encoded(value: &impl Serialize) -> usize {
+pub(crate) fn encoded(value: &impl Serialize) -> usize {
     let mut count = Count(0);
     serde_json::to_writer(&mut count, value).unwrap_or_else(|error| {
         panic!("invariant: a body is plain JSON data: {error}")

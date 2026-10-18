@@ -1,6 +1,7 @@
 //! Reads config files into Documents through the front end of each syntax.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -58,18 +59,44 @@ impl FrontEnds {
     fn of(&self, path: &str) -> Option<&FrontEnd> {
         Path::new(path)
             .file_name()
-            .map(|name| {
-                name.to_str()
-                    .expect("invariant: a part of a UTF-8 path is UTF-8")
-            })
-            .and_then(|name| name.rsplit_once('.'))
-            .and_then(|(_, extension)| self.0.get(extension))
+            .and_then(extension)
+            .and_then(|extension| self.0.get(extension))
     }
 
     /// Each extension, in order.
-    pub(crate) fn extensions(&self) -> impl Iterator<Item = &'static str> {
+    fn extensions(&self) -> impl Iterator<Item = &'static str> {
         self.0.keys().copied()
     }
+
+    /// Each extension with its dot, as one choice: "`.a`, `.b`, or `.c`".
+    pub(crate) fn named(&self) -> String {
+        let mut extensions: Vec<_> = self
+            .extensions()
+            .map(|extension| format!("`.{extension}`"))
+            .collect();
+        let last = extensions
+            .pop()
+            .expect("invariant: the table holds a front end");
+        match extensions.as_slice() {
+            [] => last,
+            [first] => format!("{first} or {last}"),
+            rest => format!("{}, or {last}", rest.join(", ")),
+        }
+    }
+
+    /// Whether the table reads the entry `name` of a directory: a front end has its
+    /// extension, and it does not start with `.`.
+    pub(crate) fn reads(&self, name: &OsStr) -> bool {
+        !name.as_encoded_bytes().starts_with(b".")
+            && extension(name).is_some_and(|extension| self.0.contains_key(extension))
+    }
+}
+
+/// The text after the last `.` of the file name `name`, when it is UTF-8.
+fn extension(name: &OsStr) -> Option<&str> {
+    let name = name.as_encoded_bytes();
+    let dot = name.iter().rposition(|&byte| byte == b'.')?;
+    str::from_utf8(&name[dot + 1..]).ok()
 }
 
 impl fmt::Debug for FrontEnd {
@@ -178,16 +205,7 @@ pub(crate) fn not_utf8(path: &Path) -> Diagnostic {
 
 /// The `ops.unknown-extension` diagnostic, at the empty span at the start of `source`.
 pub(crate) fn unknown(source: Source, front_ends: &FrontEnds) -> Diagnostic {
-    let extensions: Vec<String> = front_ends
-        .extensions()
-        .map(|extension| format!("`.{extension}`"))
-        .collect();
-    let extensions = match extensions.as_slice() {
-        [one] => one.clone(),
-        [first, second] => format!("{first} or {second}"),
-        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
-        [] => unreachable!("invariant: `FrontEnds` holds a front end"),
-    };
+    let extensions = front_ends.named();
     let start = Position {
         offset: 0,
         line: 0,
