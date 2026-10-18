@@ -28,11 +28,11 @@
   wait: `TooLarge` never succeeds, so it gives `Error::Pool` at once, which means that
   no block of `pool` can hold a message that the session sends. Lost: a bound of two
   windows from the stream credit, which ack loss can exceed; a `Bytes` body with no
-  copy; a wait in `block::Pool` that wakes at each free. Four callers poll a pool now:
-  three in a program (the transport's reads, the session's sends on `pool`, and the
-  frames of a read on `frames`), and the wait of a node for the block of the last
-  `Stored` of a client write. The trigger fired with the third (#2802;
-  `laptop.architect`, 2026-10-16T03:39:42Z,
+  copy; a wait in `block::Pool` that wakes at each free. Five callers poll a pool now:
+  four in a program (the transport's reads, the session's sends on `pool`, the frames
+  of a read on `frames`, and the drafts of a writer on `frames`), and the wait of a
+  node for the block of the last `Stored` of a client write. The trigger fired with the
+  third (#2802; `laptop.architect`, 2026-10-16T03:39:42Z,
   https://github.com/synnaxlabs/foundation/pull/2802#issuecomment-6207544466): #2811
   adds the wait that a free wakes to `block`.
   `Session` is `Clone`, and a clone is the same session. When the last clone and the
@@ -289,3 +289,11 @@
   last one or past the outcomes gives `wire::hub::Error::Stored`. Each ends the writer
   with a reset of `MALFORMED`. Decided by `laptop.architect` at 2026-10-18T14:44:41Z
   (https://github.com/synnaxlabs/foundation/pull/3201#issuecomment-6251244519).
+  Amended (#2718 PR 3, round 2): `Writer::draft` gives the error that ended the writer
+  before it takes a block. `Writer::write` takes each reply that came before the call
+  before it sends, so an extra outcome that came before it ends the writer with
+  `Unasked` and is never the outcome of its frame. An extra outcome that comes while
+  the frame is sent is the outcome of that frame: the program cannot tell it from the
+  real one. `wire::hub::Error::Stored` holds `frames` and `bound`, the last `Stored`
+  when `frames` is below it, else the frames that got an outcome, so `Error` stays 24
+  bytes and the node's decoders do not grow.
