@@ -922,13 +922,16 @@ fn a_cancel_reads_the_unread_bytes_of_a_stream_before_its_fin() {
                 options: options(1 << 16),
             };
             let mut stream = net.connect(&config).await.expect("the device listens");
-            let header = Header {
-                transaction: 1,
-                unit: UNIT,
-            };
+            // 360 bytes, more than one read of `close` takes.
             let mut frame = Vec::new();
-            modbus::encode(header, &read(Table::HoldingRegisters, 4, 1), &mut frame)
-                .expect("a valid request");
+            for transaction in 1..=30 {
+                let header = Header {
+                    transaction,
+                    unit: UNIT,
+                };
+                let request = read(Table::HoldingRegisters, 4, 1);
+                modbus::encode(header, &request, &mut frame).expect("a valid request");
+            }
             write(&mut stream, &frame).await;
             let mut buffer = [0; 1];
             let end = poll_fn(|cx| stream.poll_read(cx, &mut buffer)).await;
