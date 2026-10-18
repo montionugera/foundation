@@ -161,6 +161,30 @@ fn a_client_that_trusts_a_der_bundle_whose_text_holds_a_pem_line_reads() {
     assert_eq!(read.answer, Ok(read.value));
 }
 
+/// The two certificates of [`TRUST`], [`OTHER`] then [`SERVER`], each as its own PEM.
+fn blocks() -> (String, String) {
+    let trust = std::str::from_utf8(TRUST).expect("PEM is text");
+    let at = trust[1..].find("-----BEGIN").expect("two blocks") + 1;
+    (trust[..at].to_owned(), trust[at..].to_owned())
+}
+
+#[test]
+fn a_client_that_trusts_a_pem_with_text_between_its_certificates_reads() {
+    let (other, server) = blocks();
+    let trust = format!("{other}Bag Attributes\n    friendlyName: server\n{server}");
+    let read = trusting(trust.into_bytes().leak()).expect("the client connects");
+    assert_eq!(read.answer, Ok(read.value));
+}
+
+#[test]
+fn a_client_that_trusts_a_second_x509_certificate_block_reads() {
+    let (other, server) = blocks();
+    let server = server.replace(" CERTIFICATE-----", " X509 CERTIFICATE-----");
+    let trust = format!("{other}{server}").into_bytes().leak();
+    let read = trusting(trust).expect("the client connects");
+    assert_eq!(read.answer, Ok(read.value));
+}
+
 #[test]
 fn a_client_with_a_pem_certificate_and_key_reads() {
     let client = with(CLIENT_PEM, SERVER.certificate);
@@ -183,6 +207,19 @@ fn a_trust_whose_second_certificate_does_not_parse_ends_the_connect() {
 #[test]
 fn a_trust_that_does_not_parse_ends_the_connect() {
     assert_eq!(trusting(b"no certificate"), Err(Status::BAD_INTERNAL_ERROR));
+}
+
+#[test]
+fn a_trust_with_a_byte_after_its_der_certificate_ends_the_connect() {
+    let trust = [SERVER.certificate, b"\n"].concat().leak();
+    assert_eq!(trusting(trust), Err(Status::BAD_INTERNAL_ERROR));
+}
+
+#[test]
+fn a_trust_of_der_then_pem_ends_the_connect() {
+    let (_, server) = blocks();
+    let trust = [OTHER.certificate, server.as_bytes()].concat().leak();
+    assert_eq!(trusting(trust), Err(Status::BAD_INTERNAL_ERROR));
 }
 
 #[test]

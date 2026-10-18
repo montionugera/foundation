@@ -16,6 +16,7 @@
 #include <openssl/x509_vfy.h>
 #include <openssl/x509v3.h>
 #include <openssl/pem.h>
+#include <openssl/err.h>
 
 #include "libc_time.h"
 #include "securitypolicy_common.h"
@@ -428,26 +429,38 @@ openSSLLoadCertificateStack(const UA_ByteString cert) {
     return result;
 }
 
-/* Pushes each certificate of the bytestring onto the stack. Gives false for an
- * empty bytestring, and when a load stops before its end, so that an entry of a
- * trust list never trusts fewer certificates than it holds. PEM starts at the
- * first certificate, past any text before it. */
+/* Pushes each certificate of the bytestring onto the stack: DER certificates back
+ * to back, or the certificate blocks of PEM as aws-lc reads them, which skips the
+ * text outside each block. Gives false for an empty bytestring, and for any error
+ * but the end of PEM, so that an entry of a trust list never trusts fewer
+ * certificates than it holds. */
 static UA_Boolean
 openSSLLoadEachCertificate(const UA_ByteString cert, STACK_OF(X509) *stack) {
-    size_t offset = 0;
-    if(!(cert.length >= 4 && cert.data[0] == 0x30 && cert.data[1] == 0x82)) {
-        const unsigned char *first =
-            UA_Bstrstr(cert.data, cert.length, openssl_PEM_PRE, 27);
-        if(first)
-            offset = (size_t)(first - cert.data);
+    if(cert.length == 0)
+        return false;
+    if(cert.data[0] == 0x30) {
+        const UA_Byte *at = cert.data;
+        const UA_Byte *end = cert.data + cert.length;
+        while(at < end) {
+            X509 *x509 = d2i_X509(NULL, &at, (long)(end - at));
+            if(!x509)
+                return false;
+            sk_X509_push(stack, x509);
+        }
+        return true;
     }
-    do {
-        X509 *x509 = openSSLLoadLeafCertificate(cert, &offset);
-        if(!x509)
-            return false;
+    BIO *bio = BIO_new_mem_buf((void *)cert.data, (int)cert.length);
+    if(!bio)
+        return false;
+    int pushed = sk_X509_num(stack);
+    X509 *x509;
+    while((x509 = PEM_read_bio_X509(bio, NULL, UA_OpenSSL_refusePassword, NULL)))
         sk_X509_push(stack, x509);
-    } while(offset < cert.length);
-    return true;
+    BIO_free(bio);
+    uint32_t error = ERR_peek_last_error();
+    ERR_clear_error();
+    return sk_X509_num(stack) > pushed && ERR_GET_LIB(error) == ERR_LIB_PEM &&
+           ERR_GET_REASON(error) == PEM_R_NO_START_LINE;
 }
 
 /* Return the first matching issuer candidate AFTER prev */

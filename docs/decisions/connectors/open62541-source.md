@@ -954,8 +954,9 @@
   file to panic with its name and abort, and a test calls each one. A test fails on
   another policy file in `sources.txt`. A test fails when the production code names a
   policy or a certificate group, or a function `UA_CertificateUtils_*`, other than the
-  three policies in `POLICIES` of `shim.c`, `UA_CertificateGroup_Memorystore`, the two
-  functions that the client calls, and the stubs of `shim.c`, and a test fails when the objects of `shim.c` or `server.c` name
+  three policies in `POLICIES` of `shim.c`, `UA_CertificateGroup_Memorystore`,
+  `UA_CertificateUtils_checkKeyPair`, `UA_CertificateUtils_getApplicationUri`, and the
+  stubs of `shim.c`. A test fails when the objects of `shim.c` or `server.c` name
   aws-lc or a symbol of `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps
   no state: the copy removes its `static` flag, which it wrote with no lock and which
   guarded only the calls for OpenSSL before 1.1, and the build fails when
@@ -1022,10 +1023,14 @@
   Supersedes the policy index of the test helper and its abort in
   https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247742342: the
   sim server offers an ordered list of policies, and each secure test connects
-  through `Client::connect`. The client trusts one byte string of DER or PEM
-  certificates; the copy loads each certificate of each trust entry, from its first
-  certificate, and refuses an entry whose load stops before its end, and the
-  constructor of the group gives that status (ruling A). An issuer entry keeps the
+  through `Client::connect`. The client trusts one byte string of DER certificates
+  back to back, or of PEM certificates; the copy loads each certificate of each
+  trust entry, and refuses an entry whose load stops before its end, and the
+  constructor of the group gives that status (ruling A). PEM is read by the loop of
+  `PEM_read_bio_X509` of aws-lc, which skips the text outside each certificate
+  block, not by the leaf loader of the copy, which drops a block that does not start
+  with the exact line `-----BEGIN CERTIFICATE-----` (round 2 of review of #3271). An
+  issuer entry keeps the
   load of the release (`laptop.architect-2`,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255744593, item
   2). The validity check of the own certificate and the map

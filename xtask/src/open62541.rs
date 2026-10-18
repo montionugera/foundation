@@ -217,12 +217,26 @@ const FUNCTION_SYMBOLS: [(&str, &str, &str, Access); 25] = [
 /// [`AWS_LC`] does not admit, by its name without the prefix of [`Crypto`]. A key
 /// admits only the name with the prefix. A test of `connector-opcua` names the function
 /// of each key of [`AWS_LC_INPUTS`] and fails when its reason becomes false.
-const AWS_LC_KEYS: [(&str, &str, &str, Access); 17] = [
+const AWS_LC_KEYS: [(&str, &str, &str, Access); 19] = [
     // Gives the time of a certificate, which is never NULL, so it reads no clock.
     (
         "plugins/crypto/openssl/certificategroup.c",
         "UA_CertificateUtils_getExpirationDate",
         "ASN1_TIME_to_tm",
+        Access::Call,
+    ),
+    // The error queue of aws-lc for the thread. The load reads only the last error,
+    // which its own last PEM read pushed, then clears the queue.
+    (
+        "plugins/crypto/openssl/certificategroup.c",
+        "openSSLLoadEachCertificate",
+        "ERR_clear_error",
+        Access::Call,
+    ),
+    (
+        "plugins/crypto/openssl/certificategroup.c",
+        "openSSLLoadEachCertificate",
+        "ERR_peek_last_error",
         Access::Call,
     ),
     // The randomness of aws-lc, which TLS RANDOMNESS admits: the nonces of a channel,
