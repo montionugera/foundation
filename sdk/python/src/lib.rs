@@ -145,8 +145,8 @@ impl Drop for Client {
                 .unwrap_or_else(PoisonError::into_inner);
             #[expect(
                 clippy::mem_forget,
-                reason = "the drop of the session wakes the parent's runtime and detaches \
-                          its thread, which this process does not have"
+                reason = "the drop of the session wakes the parent's runtime and \
+                          detaches its thread, which this process does not have"
             )]
             mem::forget(session.take());
         }
