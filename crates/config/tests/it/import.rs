@@ -14,8 +14,9 @@ use types::sample::{Scalar, Type};
 
 /// A kind whose block of a point is `read "<channel>" { tag = "<tag>" }`, with
 /// `scale = fill("the scale")` for a tag that starts with `scaled`. It refuses a tag
-/// that starts with `bad`. The tag of a `read` block is its `tag` without a leading `ns=0;`, so two
-/// texts can name one point. It writes the channel of each `read` block.
+/// that starts with `bad`. The tag of a `read` block is its `tag` without a leading
+/// `ns=0;`, so two texts can name one point. It writes the channel of each `read`
+/// block, and its check refuses a channel whose last segment is `refused`.
 struct Points;
 
 impl Kind for Points {
@@ -32,6 +33,17 @@ impl Kind for Points {
     }
 
     fn check(&self, reads: &Vec<Name>) -> Result<Channels, Vec<Diagnostic>> {
+        if let Some(read) = reads
+            .iter()
+            .find(|read| read.as_str().ends_with(".refused"))
+        {
+            return Err(vec![Diagnostic::new(
+                Code::new("points.refused"),
+                None,
+                format!("the check refuses {read}"),
+                "Read another".into(),
+            )]);
+        }
         Ok(Channels {
             writes: reads.clone(),
             ..Channels::default()
@@ -76,6 +88,28 @@ impl Kind for Points {
     }
 }
 
+/// A kind with the count `in` and no blocks.
+struct Counting;
+
+impl Kind for Counting {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels {
+            counts: vec![name("in")],
+            ..Channels::default()
+        })
+    }
+
+    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+        std::future::ready(Ok(()))
+    }
+}
+
 fn read_block(channel: &Name, attributes: Vec<Attribute>) -> Block {
     Block {
         keyword: "read".into(),
@@ -108,7 +142,9 @@ fn string(text: &str) -> Value {
 }
 
 fn kinds() -> Table {
-    Table::new().with("points", Points)
+    Table::new()
+        .with("points", Points)
+        .with("counting", Counting)
 }
 
 fn read(source: u32, text: &str) -> Document {
@@ -426,6 +462,148 @@ fn refuses_a_given_name_that_another_connector_implies() {
 }
 
 #[test]
+fn refuses_a_given_name_that_another_connector_counts_or_has() {
+    let other = "connector \"mqtt\" {\n  kind = \"counting\"\n  node = \"edge\"\n}\n";
+    let wants = [named("x", "t1", "mqtt.status.in"), named("y", "t2", "mqtt")];
+    let problems = problems(added(&[PLANT, other], &wants).expect_err("in use"));
+    assert_eq!(
+        problems,
+        vec![
+            problem(
+                "config.duplicate-name",
+                "the name \"mqtt.status.in\" of the point at \"x\" is in use in the \
+                 files",
+                "Give another name, or leave it out for \"plc.x\"",
+            ),
+            problem(
+                "config.duplicate-name",
+                "the name \"mqtt\" of the point at \"y\" is in use in the files",
+                "Give another name, or leave it out for \"plc.y\"",
+            ),
+        ]
+    );
+}
+
+#[test]
+fn gives_no_default_a_count_of_another_connector() {
+    let other =
+        "connector \"plc.Line1\" {\n  kind = \"counting\"\n  node = \"edge\"\n}\n";
+    let added = added(&[PLANT, other], &[want("Line1/status/in", "t1")]);
+    let added = added.expect("it adds");
+    assert_eq!(added.picks, vec![outcome("plc.Line1.status.in_2")]);
+}
+
+#[test]
+fn refuses_a_given_name_with_the_default_on_the_index_of_the_connector() {
+    let wants = [named("time", "t1", "plc.oven")];
+    let problems = problems(added(&[READING], &wants).expect_err("in use"));
+    assert_eq!(
+        problems,
+        vec![problem(
+            "config.duplicate-name",
+            "the name \"plc.oven\" of the point at \"time\" is in use in the files",
+            "Give another name, or leave it out for \"plc.time\"",
+        )]
+    );
+}
+
+#[test]
+fn gives_no_pick_a_channel_that_the_connector_writes_with_no_channel_block() {
+    let text = "connector \"plc\" {\n  kind = \"points\"\n  node = \"edge\"\n\n  \
+                read \"plc.oven\" {\n    tag = \"t0\"\n  }\n}\n";
+    config::check(&[read(0, text)], &kinds()).expect("it checks");
+    let wants = [want("oven", "t1"), named("x", "t2", "PLC.OVEN")];
+    let problems = problems(added(&[text], &wants).expect_err("in use"));
+    assert_eq!(
+        problems,
+        vec![problem(
+            "config.duplicate-name",
+            "the name \"PLC.OVEN\" of the point at \"x\" is in use in the files",
+            "Give another name, or leave it out for \"plc.x\"",
+        )]
+    );
+    let added = added(&[text], &[want("oven", "t1")]).expect("it adds");
+    assert_eq!(added.picks, vec![outcome("plc.oven_2")]);
+}
+
+#[test]
+fn moves_the_new_index_off_a_given_name_in_another_case() {
+    let wants = [named("x", "t1", "PLC.TIME"), want("y", "t2")];
+    let added = added(&[PLANT], &wants).expect("it adds");
+    assert_eq!(added.index, Some(name("plc.time_2")));
+    assert_eq!(added.picks, vec![outcome("PLC.TIME"), outcome("plc.y")]);
+}
+
+#[test]
+fn takes_the_index_of_the_first_channel_that_the_connector_writes() {
+    let text = r#"connector "plc" {
+  kind = "points"
+  node = "edge"
+
+  read "plc.a" {
+    tag = "ta"
+  }
+
+  read "plc.b" {
+    tag = "tb"
+  }
+}
+
+channel "plc.b" {
+  data_type = "f64"
+  index     = "plc.second"
+}
+
+channel "plc.a" {
+  data_type = "f64"
+  index     = "plc.first"
+}
+"#;
+    let added = added(&[text], &[want("c", "tc")]).expect("it adds");
+    assert_eq!(added.index, None);
+    let last = added.document.document().blocks.last().expect("a channel");
+    let index = &last.body.attributes.get("index").expect("an index").value;
+    assert_eq!(index.kind, value::Kind::String("plc.first".into()));
+}
+
+#[test]
+fn gives_the_problem_of_an_index_that_is_not_a_name() {
+    let text = READING.replace("index     = \"plc.clock\"", "index     = 5");
+    let problems = problems(added(&[&text], &[want("A/x", "t1")]).expect_err("bad"));
+    assert_eq!(
+        problems,
+        vec![problem(
+            "document.bad-name",
+            "a name is a string or a reference, not an integer",
+            "Write a name such as \"site_a.node_1\"",
+        )]
+    );
+}
+
+#[test]
+fn gives_the_problems_of_the_check_of_the_kind() {
+    let text = "connector \"plc\" {\n  kind = \"points\"\n  node = \"edge\"\n\n  \
+                read \"plc.refused\" {\n    tag = \"t0\"\n  }\n}\n";
+    let problems = problems(added(&[text], &[want("A/x", "t1")]).expect_err("refused"));
+    assert_eq!(
+        problems,
+        vec![problem(
+            "points.refused",
+            "the check refuses plc.refused",
+            "Read another",
+        )]
+    );
+}
+
+#[test]
+fn adds_beside_a_block_of_the_body_that_has_no_tag() {
+    let text = "connector \"plc\" {\n  kind = \"points\"\n  node = \"edge\"\n\n  \
+                poll {\n    every = \"1s\"\n  }\n}\n";
+    let added = added(&[text], &[want("A/x", "t1")]).expect("it adds");
+    assert_eq!(added.picks, vec![outcome("plc.A.x")]);
+}
+
+#[test]
 fn refuses_a_bad_given_name_with_no_default_with_a_fix_to_give_another() {
     let long = vec!["a"; 130].join("/");
     let wants = [named(&long, "t1", "plc.@x")];
@@ -529,7 +707,7 @@ fn gives_the_problem_of_a_connector_of_no_kind() {
         vec![problem(
             "connector.unknown-kind",
             "this build has no connector kind \"nope\"",
-            "Use one of [\"points\"]",
+            "Use one of [\"counting\", \"points\"]",
         )]
     );
 }

@@ -17,7 +17,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use ::connector::browse::{Facts, Path};
 use ::connector::import::{self, Fill, fill};
 use ::connector::kind::Table;
-use ::connector::status;
 use document::diagnostic::Diagnostic;
 use document::encoding::Checked;
 use document::value::{Kind, Value};
@@ -69,7 +68,8 @@ pub struct Added {
     pub source: Source,
     /// The document of that file with the new blocks.
     pub document: Checked,
-    /// The index channel that the import adds, when the connector reads none.
+    /// The index channel that the import adds: `None` when a channel that the
+    /// connector writes names an index, or when no pick adds a channel.
     pub index: Option<Name>,
     /// What the import did with each pick, in the order of the picks.
     pub picks: Vec<Outcome>,
@@ -77,23 +77,26 @@ pub struct Added {
 
 /// Adds the blocks of `picks` of the connector `connector` of `kinds` to the file of
 /// the connector block in `documents`, as the module doc gives them. `start` is the
-/// start of the browse. It gives no problem of a block outside the connector block.
+/// start of the browse. It gives no problem of a block outside the connector block
+/// other than `config.private-key`.
 ///
 /// # Errors
 ///
-/// The problems of [`config::connector`](crate::connector), then those of the check
-/// of the connector's kind, and `config.long-name` when a status name of the kind is
-/// too long. Else the diagnostics of [`Table::tag`]. Else, for each given name of a
-/// pick that is not present, `config.reserved-name` for a segment that starts with
-/// `@`, `config.duplicate-name` for a name that the files define or imply, in any
-/// ASCII case, and one `config.duplicate-name` that names both paths for a name that
-/// an earlier pick has. Each names the path and the name, with the fix "Give another
-/// name, or leave it out for `<default>`". Else the diagnostics of [`Table::block`].
-/// Else `document.too-deep`.
+/// The problems of [`config::connector`](crate::connector), then those of the check of
+/// the connector's kind, and `config.long-name` when a status name of the kind is too
+/// long. Else the diagnostic of an `index` that is not a name, in the `channel` block
+/// of the first channel that the connector writes that has one. Else, for each given
+/// name of a pick that is not present, `config.reserved-name` for a segment that starts
+/// with `@`, `config.duplicate-name` for a name that the files define or imply or that
+/// the connector writes, in any ASCII case, and one `config.duplicate-name` that names
+/// both paths for a name that an earlier pick has. Each names the path and the name,
+/// with the fix "Give another name, or leave it out for `<default>`". Else the
+/// diagnostics of [`Table::block`]. Else `document.too-deep`.
 ///
 /// # Panics
 ///
-/// When the path of a pick is not under `start`, as [`import::names`] does.
+/// When a pick that is not present, with no given name or a refused one, has a path
+/// that is not under `start`, as [`import::names`] does.
 pub fn add(
     documents: &[Document],
     connector: &Name,
@@ -112,46 +115,46 @@ pub fn add(
     for item in &body.blocks {
         tags.extend(kinds.tag(kind, item)?);
     }
-    let present: Vec<bool> = picks
-        .iter()
-        .map(|pick| !tags.insert(pick.tag.to_owned()))
+    // The place of each pick that is not present.
+    let open: Vec<usize> = (0..picks.len())
+        .filter(|&at| tags.insert(picks[at].tag.to_owned()))
         .collect();
+    let open_picks: Vec<&Pick<'_>> = open.iter().map(|&at| &picks[at]).collect();
     let blocks = crate::blocks(documents);
-    let mut taken = taken(&blocks, connector);
+    let mut taken = taken(&blocks, connector, kinds);
     taken.extend(writes.implied_names().cloned());
-    let refused = refused(picks, &present, &taken);
+    taken.extend(writes.channels().cloned());
+    let existing =
+        index_of(&blocks, writes.channels()).map_err(|problem| vec![problem])?;
+    let refused = refused(&open_picks, &taken);
     if !refused.is_empty() {
-        let kept = picks.iter().zip(&present).enumerate().map(|(at, pick)| {
-            given(pick).filter(|_| !refused.iter().any(|(refused, _)| *refused == at))
+        let kept = open_picks.iter().enumerate().map(|(at, pick)| {
+            let refused = refused.iter().any(|(refused, _)| *refused == at);
+            (pick.path, pick.name.filter(|_| !refused))
         });
-        let (_, names) = name(connector, start, picks, &present, kept, &taken, None);
+        let (_, names) = name(connector, start, kept, &taken, existing);
         return Err(fixed(refused, &names));
     }
-    let existing = index_of(&blocks, writes.channels());
-    let given = picks.iter().zip(&present).map(given);
-    let (index, names) = name(
-        connector,
-        start,
-        picks,
-        &present,
-        given,
-        &taken,
-        existing.clone(),
-    );
-    let written = written(kinds, kind, picks, &present, names, &index)?;
+    let given = open_picks.iter().map(|pick| (pick.path, pick.name));
+    let (index, names) = name(connector, start, given, &taken, existing.clone());
+    let written = written(kinds, kind, &open_picks, names, &index)?;
     let (source, at, item) = place(documents, block);
     let mut document = documents[at].clone();
-    document.blocks[item].body.blocks.extend(written.reads);
+    document.blocks[item].body.blocks.extend(written.body);
     let index = (existing.is_none() && !written.channels.is_empty()).then_some(index);
     document.blocks.extend(index.iter().map(self::index));
     document.blocks.extend(written.channels);
     let document =
         Checked::new(document).map_err(|error| vec![Diagnostic::from(&error)])?;
+    let mut outcomes = vec![Outcome::Present; picks.len()];
+    for (at, outcome) in open.into_iter().zip(written.outcomes) {
+        outcomes[at] = outcome;
+    }
     Ok(Added {
         source,
         document,
         index,
-        picks: written.outcomes,
+        picks: outcomes,
     })
 }
 
@@ -175,13 +178,13 @@ fn fixed(refused: Vec<(usize, Diagnostic)>, names: &[Option<Name>]) -> Vec<Diagn
 /// The blocks that an import writes, and what it did with each pick.
 struct Written {
     /// The blocks of the kind, for the connector body.
-    reads: Vec<Block>,
+    body: Vec<Block>,
     /// The `channel` block of each added pick.
     channels: Vec<Block>,
     outcomes: Vec<Outcome>,
 }
 
-/// The blocks of each pick with a name of `names` on the index `index`.
+/// The blocks of each of `picks` with its name of `names` on the index `index`.
 ///
 /// # Errors
 ///
@@ -189,37 +192,31 @@ struct Written {
 fn written(
     kinds: &Table,
     kind: &str,
-    picks: &[Pick<'_>],
-    present: &[bool],
+    picks: &[&Pick<'_>],
     names: Vec<Option<Name>>,
     index: &Name,
 ) -> Result<Written, Vec<Diagnostic>> {
     let mut written = Written {
-        reads: Vec::new(),
+        body: Vec::new(),
         channels: Vec::new(),
         outcomes: Vec::with_capacity(picks.len()),
     };
     let mut problems = Vec::new();
-    for ((pick, present), name) in picks.iter().zip(present).zip(names) {
-        let outcome = match (present, name) {
-            (true, _) => Outcome::Present,
-            (false, None) => Outcome::Unnamed,
-            (false, Some(name)) => match kinds.block(kind, pick.tag, pick.facts, &name)
-            {
-                Ok(blocks) => {
-                    let channel = channel(&name, index, pick.facts);
-                    let fills = fills(&blocks, &channel);
-                    written.reads.extend(blocks);
-                    written.channels.push(channel);
-                    Outcome::Added { name, fills }
-                }
-                Err(found) => {
-                    problems.extend(found);
-                    continue;
-                }
-            },
+    for (pick, name) in picks.iter().zip(names) {
+        let Some(name) = name else {
+            written.outcomes.push(Outcome::Unnamed);
+            continue;
         };
-        written.outcomes.push(outcome);
+        match kinds.block(kind, pick.tag, pick.facts, &name) {
+            Ok(blocks) => {
+                let channel = channel(&name, index, pick.facts);
+                let fills = fills(&blocks, &channel);
+                written.body.extend(blocks);
+                written.channels.push(channel);
+                written.outcomes.push(Outcome::Added { name, fills });
+            }
+            Err(found) => problems.extend(found),
+        }
     }
     if problems.is_empty() {
         Ok(written)
@@ -246,42 +243,28 @@ fn place(documents: &[Document], block: &Block) -> (Source, usize, usize) {
     (source, at, item)
 }
 
-/// The given name of a pick that is not present.
-fn given<'a>((pick, present): (&Pick<'a>, &bool)) -> Option<&'a Name> {
-    pick.name.filter(|_| !present)
-}
-
-/// Each name that `blocks` define as a channel or a connector, and the status names of
-/// each connector other than `connector` that its kind adds none to.
-fn taken(blocks: &[&Block], connector: &Name) -> Vec<Name> {
+/// Each name that `blocks` define as a channel or a connector, and each channel that
+/// each connector other than `connector` implies.
+fn taken(blocks: &[&Block], connector: &Name, kinds: &Table) -> Vec<Name> {
     let mut taken: Vec<Name> = crate::names(blocks, definition::Kind::Channel)
         .map(|(name, ..)| name)
         .collect();
-    for (name, ..) in crate::names(blocks, definition::Kind::Connector) {
-        // `plan` refuses a connector whose status name is too long.
-        if let (true, Ok((time, data))) =
-            (name != *connector, status::channels(&name, &[]))
-        {
-            taken.push(time);
-            taken.extend(data.into_iter().map(|(name, _)| name));
+    for (name, _, block) in crate::names(blocks, definition::Kind::Connector) {
+        if name != *connector {
+            taken.extend(crate::connector::implied(block, &name, kinds));
         }
         taken.push(name);
     }
     taken
 }
 
-/// The problem of each given name of a pick that is not present, by the place of its
-/// pick, with no fix.
-fn refused(
-    picks: &[Pick<'_>],
-    present: &[bool],
-    taken: &[Name],
-) -> Vec<(usize, Diagnostic)> {
+/// The problem of each given name of `picks`, by the place of its pick, with no fix.
+fn refused(picks: &[&Pick<'_>], taken: &[Name]) -> Vec<(usize, Diagnostic)> {
     let taken: BTreeSet<String> = taken.iter().map(folded).collect();
     let mut first: BTreeMap<String, &Path> = BTreeMap::new();
     let mut refused = Vec::new();
-    for (at, (pick, present)) in picks.iter().zip(present).enumerate() {
-        let Some(name) = pick.name.filter(|_| !present) else {
+    for (at, pick) in picks.iter().enumerate() {
+        let Some(name) = pick.name else {
             continue;
         };
         let (path, text, lower) = (pick.path, name.as_str(), folded(name));
@@ -310,22 +293,20 @@ fn refused(
     refused
 }
 
-/// The index and the channel name of each pick, `None` for a present pick: each name
-/// of `given`, then the index, then the defaults. The index is `existing`, else the
-/// first free of `<connector>.time`, `<connector>.time_2`, and on.
+/// The index and the channel name of each pick of `picks`, by its path and its given
+/// name: each given name, then the index, then the defaults. The index is `existing`,
+/// else the first free of `<connector>.time`, `<connector>.time_2`, and on.
 fn name<'a>(
     connector: &Name,
     start: &Path,
-    picks: &[Pick<'_>],
-    present: &[bool],
-    given: impl Iterator<Item = Option<&'a Name>>,
+    picks: impl Iterator<Item = (&'a Path, Option<&'a Name>)>,
     taken: &[Name],
     existing: Option<Name>,
 ) -> (Name, Vec<Option<Name>>) {
-    let given: Vec<_> = given.collect();
+    let picks: Vec<_> = picks.collect();
     let index = existing.unwrap_or_else(|| {
-        let names = taken.iter().chain(given.iter().flatten().copied());
-        let used: BTreeSet<String> = names.map(folded).collect();
+        let given = picks.iter().filter_map(|(_, given)| *given);
+        let used: BTreeSet<String> = taken.iter().chain(given).map(folded).collect();
         let base = format!("{connector}.time");
         let (mut text, mut suffix) = (base.clone(), 1);
         while used.contains(&text.to_ascii_lowercase()) {
@@ -337,38 +318,28 @@ fn name<'a>(
         text.parse()
             .expect("invariant: fewer than 10^6 names hold the index name")
     });
-    let open: Vec<_> = picks
-        .iter()
-        .zip(&given)
-        .zip(present)
-        .filter(|(_, present)| !**present)
-        .map(|((pick, given), _)| (pick.path, *given))
-        .collect();
     let taken = taken.iter().chain(std::iter::once(&index));
-    let mut names = import::names(connector, start, &open, taken).into_iter();
-    let names = present
-        .iter()
-        .map(|present| {
-            let name = (!present).then(|| names.next());
-            name.flatten().flatten()
-        })
-        .collect();
+    let names = import::names(connector, start, &picks, taken);
     (index, names)
 }
 
 /// The index that the `channel` block of the first of `writes` names, in `blocks`.
+///
+/// # Errors
+///
+/// The diagnostic of [`read::name`] for the `index` of that block.
 fn index_of<'a>(
     blocks: &[&Block],
     writes: impl IntoIterator<Item = &'a Name>,
-) -> Option<Name> {
+) -> Result<Option<Name>, Diagnostic> {
     let mut channels = BTreeMap::new();
     for (name, _, block) in crate::names(blocks, definition::Kind::Channel) {
         channels.entry(name).or_insert(block);
     }
-    writes.into_iter().find_map(|name| {
-        let index = channels.get(name)?.body.attributes.get("index")?;
-        read::name(&index.value).ok()
-    })
+    let index = writes
+        .into_iter()
+        .find_map(|name| channels.get(name)?.body.attributes.get("index"));
+    index.map(|index| read::name(&index.value)).transpose()
 }
 
 /// The text of each `fill("<what>")` in `blocks` and in `channel`.

@@ -1,4 +1,4 @@
-use ::connector::kind::Channels;
+use ::connector::kind::{Channels, Table};
 use ::connector::status;
 use document::diagnostic::{Code, Diagnostic, Note};
 use document::encoding::Checked;
@@ -307,6 +307,24 @@ pub(crate) fn writes(
         data,
         label: at,
     })
+}
+
+/// Each channel that the `connector` block `block` with the label `key` implies, with
+/// the counts that its kind in `kinds` gives. With no counts when its kind does not
+/// check its body, and none when a status name is too long, as `plan` refuses both.
+pub(crate) fn implied(block: &Block, key: &Name, kinds: &Table) -> Vec<Name> {
+    let kind = block.body.attributes.get("kind");
+    let kind = kind.and_then(|kind| read::name(&kind.value).ok());
+    let config = Checked::new(config(block)).ok();
+    let channels = kind.zip(config).and_then(|(kind, config)| {
+        let at = span(block, "kind");
+        kinds.check(kind.as_str(), at, config.document()).ok()
+    });
+    let writes = writes(key, channels.unwrap_or_default(), None);
+    writes.map_or_else(
+        |_| Vec::new(),
+        |writes| writes.implied_names().cloned().collect(),
+    )
 }
 
 /// Adds each channel that each connector implies to the entries, with the span of the
