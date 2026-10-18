@@ -3,6 +3,8 @@
 use std::future::poll_fn;
 use std::mem;
 use std::pin::pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::task::Poll;
 
@@ -61,6 +63,8 @@ pub struct Writer {
     index: usize,
     calls: mpsc::Sender<Call>,
     written: Receiver<Written>,
+    /// Set when the client closed or dropped.
+    closed: Arc<AtomicBool>,
     /// The bytes of the next frame, in the places of the node, which go to the
     /// client's thread and back.
     frame: Frame,
@@ -68,9 +72,10 @@ pub struct Writer {
 
 impl Writer {
     /// Sends the open of `config` on `opens`, and blocks until the client's thread
-    /// opened it.
+    /// opened it. `closed` is set when the client closed or dropped.
     pub(crate) fn open(
         opens: &mpsc::UnboundedSender<Open>,
+        closed: &Arc<AtomicBool>,
         config: Config,
     ) -> Result<Self, Error> {
         let (calls, received) = mpsc::channel(1);
@@ -87,8 +92,8 @@ impl Writer {
             calls: received,
             written: answer,
         };
-        opens.send(open).map_err(|_closed| Error::Closed)?;
-        let (node, index) = wait(&opened)??;
+        opens.send(open).map_err(|_ended| lost(closed))?;
+        let (node, index) = wait(&opened, closed)??;
         let (places, nodes, index) = ordered(&names, &node, index);
         Ok(Self {
             places,
@@ -96,6 +101,7 @@ impl Writer {
             index,
             calls,
             written,
+            closed: Arc::clone(closed),
             frame: Frame::default(),
         })
     }
@@ -126,8 +132,8 @@ impl Writer {
     ///
     /// [`Error::Value`] when a value is not of the type of its place, with nothing
     /// sent; the writer goes on. [`Error::Closed`] when the client's session ended at
-    /// a close or a drop, or the client's thread panicked. [`Error::Session`] when the
-    /// session failed. Else [`Error::Stream`] with each error of
+    /// a close or a drop, and [`Error::Panicked`] when the client's thread panicked.
+    /// [`Error::Session`] when the session failed. Else [`Error::Stream`] with each error of
     /// `program::Writer::draft` and `program::Writer::write`: `Layout` for a place
     /// past the places, with nothing sent, or for a place given twice, and `Unsent`
     /// for no values.
@@ -165,7 +171,8 @@ impl Writer {
     ///
     /// # Errors
     ///
-    /// [`Error::Closed`] and [`Error::Session`] as [`Writer::write`] gives them. Else
+    /// [`Error::Closed`], [`Error::Panicked`], and [`Error::Session`] as
+    /// [`Writer::write`] gives them. Else
     /// [`Error::Stream`] with each error of `program::Writer::draft` and
     /// `program::Writer::write`: `Layout` for a place past the places, with nothing
     /// sent, or for a place given twice, `Unsent` for a frame with no series, and
@@ -189,12 +196,12 @@ impl Writer {
     ///
     /// # Errors
     ///
-    /// [`Error::Closed`], [`Error::Session`], and [`Error::Stream`] as
-    /// [`Writer::write`] gives them.
+    /// [`Error::Closed`], [`Error::Panicked`], [`Error::Session`], and
+    /// [`Error::Stream`] as [`Writer::write`] gives them.
     pub fn close(self) -> Result<(), Error> {
         let (sender, finished) = sync_channel(1);
         self.send(Call::Close(sender))?;
-        wait(&finished)?
+        wait(&finished, &self.closed)?
     }
 
     /// The place of the node and the type of `place`.
@@ -216,7 +223,7 @@ impl Writer {
         self.frame.sort();
         let frame = mem::take(&mut self.frame);
         self.send(Call::Write { frame, time })?;
-        let (outcome, frame) = wait(&self.written)?;
+        let (outcome, frame) = wait(&self.written, &self.closed)?;
         self.frame = frame;
         outcome
     }
@@ -224,7 +231,7 @@ impl Writer {
     /// Sends `call` to the task of the writer.
     fn send(&self, call: Call) -> Result<(), Error> {
         self.calls.try_send(call).map_err(|error| match error {
-            TrySendError::Closed(_) => Error::Closed,
+            TrySendError::Closed(_) => lost(&self.closed),
             TrySendError::Full(_) => {
                 unreachable!("invariant: each call takes its answer before the next")
             }
@@ -257,15 +264,25 @@ fn ordered(
     (places, nodes, at)
 }
 
-/// Blocks for the answer of the client's thread, or [`Error::Closed`] when the thread
-/// dropped its sender.
-fn wait<T>(answers: &Receiver<T>) -> Result<T, Error> {
+/// Blocks for the answer of the client's thread, or the error of [`lost`] when the
+/// thread dropped its sender.
+fn wait<T>(answers: &Receiver<T>, closed: &AtomicBool) -> Result<T, Error> {
     #[expect(
         clippy::disallowed_methods,
         reason = "a call of a writer blocks its caller, which may run a Tokio runtime"
     )]
     let answer = answers.recv();
-    answer.map_err(|_closed| Error::Closed)
+    answer.map_err(|_ended| lost(closed))
+}
+
+/// The error of a call whose task ended: [`Error::Closed`] when the client closed or
+/// dropped (`closed`), else [`Error::Panicked`], as only a panic ends the task first.
+fn lost(closed: &AtomicBool) -> Error {
+    if closed.load(Ordering::Acquire) {
+        Error::Closed
+    } else {
+        Error::Panicked
+    }
 }
 
 /// The open of a writer, which the client's thread serves in a task of its own.

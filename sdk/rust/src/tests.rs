@@ -1,6 +1,5 @@
 use std::net::Ipv6Addr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use tokio::runtime::Builder;
@@ -103,18 +102,22 @@ fn an_open_of_a_writer_sends_its_config_to_the_thread() {
     });
     let client = started.expect("a client");
     let config = write::Config::new(vec!["count".parse().unwrap()]);
-    assert_eq!(client.open_writer(config).map(drop), Err(Error::Closed));
+    assert_eq!(client.open_writer(config).map(drop), Err(Error::Panicked));
     let open = received.try_recv().unwrap();
     assert!(open.contains("count"), "{open}");
     assert_eq!(client.close(), Ok(()));
 }
 
 #[test]
-fn an_open_of_a_writer_after_the_thread_ended_gives_closed() {
-    let client = client(|| Ok(()));
+fn an_open_of_a_writer_after_the_thread_panicked_gives_panicked() {
+    let started = Client::start(|_, outcome, _, _| async move {
+        outcome.send(Ok(())).unwrap();
+        panic!("the session failed");
+    });
+    let client = started.expect("a client");
     let config = write::Config::new(vec!["count".parse().unwrap()]);
-    assert_eq!(client.open_writer(config).map(drop), Err(Error::Closed));
-    assert_eq!(client.close(), Ok(()));
+    assert_eq!(client.open_writer(config).map(drop), Err(Error::Panicked));
+    assert_eq!(client.close(), Err(Error::Panicked));
 }
 
 #[test]

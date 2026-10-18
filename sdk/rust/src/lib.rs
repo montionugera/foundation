@@ -5,7 +5,8 @@ use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::{Mutex, mpsc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::task::Poll;
 
 use env::tasks::{Group, Tasks};
@@ -60,15 +61,31 @@ pub struct Subject {
 pub struct Client {
     thread: Mutex<Thread>,
     requests: tokio::sync::mpsc::UnboundedSender<write::Open>,
+    /// Set at the close or drop of the client, before its thread ends.
+    closed: Arc<AtomicBool>,
 }
 
 /// The thread that holds the session, the sender whose drop ends it, and the outcomes
 /// that it sends. A drop detaches the thread.
 #[derive(Debug)]
 struct Thread {
-    end: oneshot::Sender<()>,
+    end: End,
     outcome: mpsc::Receiver<Result<(), Error>>,
     handle: Handle,
+}
+
+/// The sender whose drop ends the client's thread. The drop first sets `closed`, so
+/// that each call of a writer then gives [`Error::Closed`], not [`Error::Panicked`].
+#[derive(Debug)]
+struct End {
+    closed: Arc<AtomicBool>,
+    _sender: oneshot::Sender<()>,
+}
+
+impl Drop for End {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::Release);
+    }
 }
 
 impl Client {
@@ -110,15 +127,20 @@ impl Client {
         };
         let log = tracing::dispatcher::get_default(Clone::clone);
         let shards = os::shards().map_err(|e| thread(&e))?.logged(log);
-        let (sender, outcome) = mpsc::channel();
-        let (end, ended) = oneshot::channel();
+        let (outcomes, outcome) = mpsc::channel();
+        let (sender, ended) = oneshot::channel();
+        let closed = Arc::new(AtomicBool::new(false));
+        let end = End {
+            closed: Arc::clone(&closed),
+            _sender: sender,
+        };
         let (requests, opened) = tokio::sync::mpsc::unbounded_channel();
         let config = env::shards::Config {
             name: "foundation-sdk".into(),
             core: None,
         };
         let handle = shards
-            .start(config, move |tasks| main(tasks, sender, ended, opened))
+            .start(config, move |tasks| main(tasks, outcomes, ended, opened))
             .map_err(|e| thread(&e))?;
         #[expect(
             clippy::disallowed_methods,
@@ -134,6 +156,7 @@ impl Client {
             Ok(Ok(())) => Ok(Self {
                 thread: Mutex::new(thread),
                 requests,
+                closed,
             }),
             Ok(Err(error)) => thread.end().and(Err(error)),
             Err(_) => {
@@ -153,14 +176,14 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// [`Error::Closed`] when the client's session ended at a close or a drop.
-    /// [`Error::Session`] with the error that ended the session when it failed. Else
+    /// [`Error::Closed`] when the client's session ended at a close or a drop, and
+    /// [`Error::Panicked`] when the client's thread panicked. [`Error::Session`] with the error that ended the session when it failed. Else
     /// [`Error::Stream`] with each error of `program::Session::writer`, such as
     /// `Refused(UNKNOWN)` for a name of no channel, `Refused(NOT_HOME)` when the node
     /// is not the home of their index, and `Refused(MALFORMED)` for channels of more
     /// than one index.
     pub fn open_writer(&self, config: write::Config) -> Result<write::Writer, Error> {
-        write::Writer::open(&self.requests, config)
+        write::Writer::open(&self.requests, &self.closed, config)
     }
 
     /// Closes the session, and blocks until the close goes out, the transport drains
@@ -215,7 +238,8 @@ pub enum Error {
     Stream(program::Error),
     /// The client's thread panicked, and the panic hook of the process got its
     /// message. Only a build where panics unwind gives it: with `panic = "abort"`, the
-    /// panic ends the process.
+    /// panic ends the process. Each call of a writer of the client gives it after the
+    /// panic, until the client closes or drops.
     Panicked,
     /// A value of a write is not of the type of its place. The write sent nothing.
     Value {
@@ -226,9 +250,7 @@ pub enum Error {
         /// The type of the place.
         data_type: Type,
     },
-    /// The client's session ended at [`Client::close`] or a drop of the client. In a
-    /// build where panics unwind, a panic of the client's thread also gives it, and
-    /// then [`Client::close`] gives [`Error::Panicked`].
+    /// The client's session ended at [`Client::close`] or a drop of the client.
     Closed,
 }
 

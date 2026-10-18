@@ -77,7 +77,10 @@ fn writer(outcome: Outcome) -> (Writer, JoinHandle<Sent>) {
         sent
     });
     let channels = vec!["count".parse().unwrap(), "level".parse().unwrap()];
-    (Writer::open(&opens, Config::new(channels)).unwrap(), served)
+    (
+        Writer::open(&opens, &Arc::default(), Config::new(channels)).unwrap(),
+        served,
+    )
 }
 
 /// A writer of `channels` whose open gives `places()` with the index at node place 0.
@@ -89,7 +92,7 @@ fn opened(channels: &[&str]) -> Writer {
         open
     });
     let channels = channels.iter().map(|name| name.parse().unwrap()).collect();
-    let writer = Writer::open(&opens, Config::new(channels)).unwrap();
+    let writer = Writer::open(&opens, &Arc::default(), Config::new(channels)).unwrap();
     drop(served.join().unwrap());
     writer
 }
@@ -128,7 +131,7 @@ fn an_open_sends_its_config_and_gives_its_channels_in_its_order_then_the_index()
         authority: Authority(7),
         lease: Some(lease),
     };
-    let writer = Writer::open(&opens, config.clone()).unwrap();
+    let writer = Writer::open(&opens, &Arc::default(), config.clone()).unwrap();
     let node = places();
     let ordered = [node[2].clone(), node[1].clone(), node[0].clone()];
     assert_eq!(writer.places(), ordered);
@@ -168,24 +171,30 @@ fn an_open_gives_the_error_of_the_node() {
         open.opened.send(Err(refused)).unwrap();
     });
     let config = Config::new(vec!["count".parse().unwrap()]);
-    let opened = Writer::open(&opens, config).map(drop);
+    let opened = Writer::open(&opens, &Arc::default(), config).map(drop);
     assert_eq!(opened, Err(Error::Stream(program::Error::Unanswered)));
     served.join().unwrap();
 }
 
+/// The flag of a client that closed or dropped, and the error of a call whose task
+/// ended, then of a flag of a client that did not.
+const LOST: [(bool, Error); 2] = [(true, Error::Closed), (false, Error::Panicked)];
+
 #[test]
-fn an_open_of_a_closed_client_gives_closed() {
-    let config = Config::new(vec!["count".parse().unwrap()]);
-    let (opens, opened) = mpsc::unbounded_channel::<Open>();
-    drop(opened);
-    assert_eq!(
-        Writer::open(&opens, config.clone()).map(drop),
-        Err(Error::Closed)
-    );
-    let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
-    let served = spawn(move || drop(opened.blocking_recv()));
-    assert_eq!(Writer::open(&opens, config).map(drop), Err(Error::Closed));
-    served.join().unwrap();
+fn an_open_whose_thread_ended_gives_closed_after_a_close_else_panicked() {
+    for (closed, error) in LOST {
+        let closed = Arc::new(AtomicBool::new(closed));
+        let config = Config::new(vec!["count".parse().unwrap()]);
+        let (opens, opened) = mpsc::unbounded_channel::<Open>();
+        drop(opened);
+        let open = Writer::open(&opens, &closed, config.clone()).map(drop);
+        assert_eq!(open, Err(error.clone()));
+        let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+        let served = spawn(move || drop(opened.blocking_recv()));
+        let open = Writer::open(&opens, &closed, config).map(drop);
+        assert_eq!(open, Err(error));
+        served.join().unwrap();
+    }
 }
 
 #[test]
@@ -314,7 +323,7 @@ fn a_write_gives_the_error_of_the_node() {
         finished.send(Err(failed)).unwrap();
     });
     let config = Config::new(vec!["count".parse().unwrap()]);
-    let mut writer = Writer::open(&opens, config).unwrap();
+    let mut writer = Writer::open(&opens, &Arc::default(), config).unwrap();
     let failed = Err(Error::Stream(program::Error::Unanswered));
     assert_eq!(writer.write(&[(0, Value::I64(1))]), failed);
     assert_eq!(writer.close(), failed.map(drop));
@@ -322,36 +331,86 @@ fn a_write_gives_the_error_of_the_node() {
 }
 
 #[test]
-fn each_call_of_a_writer_whose_task_ended_gives_closed() {
-    let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
-    let served = spawn(move || {
-        let open = opened.blocking_recv().unwrap();
+fn each_call_whose_task_ended_gives_closed_after_a_close_else_panicked() {
+    for (closed, error) in LOST {
+        let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+        let served = spawn(move || {
+            let open = opened.blocking_recv().unwrap();
+            open.opened.send(Ok((places(), 0))).unwrap();
+            let mut calls = open.calls;
+            drop(calls.blocking_recv());
+            drop(open.written);
+            calls
+        });
+        let config = Config::new(vec!["count".parse().unwrap()]);
+        let closed = Arc::new(AtomicBool::new(closed));
+        let mut writer = Writer::open(&opens, &closed, config).unwrap();
+        let lost = Err(error.clone());
+        assert_eq!(writer.write(&[(0, Value::I64(1))]), lost);
+        drop(served.join().unwrap());
+        assert_eq!(writer.write(&[(0, Value::I64(1))]), lost);
+        assert_eq!(writer.write_series(1, &[]), lost);
+        assert_eq!(writer.close(), Err(error));
+    }
+}
+
+#[test]
+fn a_close_whose_task_ended_before_its_answer_gives_closed_after_a_close() {
+    for (closed, error) in LOST {
+        let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+        let served = spawn(move || {
+            let open = opened.blocking_recv().unwrap();
+            open.opened.send(Ok((places(), 0))).unwrap();
+            let mut calls = open.calls;
+            drop(calls.blocking_recv());
+        });
+        let config = Config::new(vec!["count".parse().unwrap()]);
+        let closed = Arc::new(AtomicBool::new(closed));
+        let writer = Writer::open(&opens, &closed, config).unwrap();
+        assert_eq!(writer.close(), Err(error));
+        served.join().unwrap();
+    }
+}
+
+/// A client whose thread answers the open of a writer with `places()`, then runs
+/// `after` with the calls of the writer.
+fn client(after: impl FnOnce(mpsc::Receiver<Call>) + Send + 'static) -> crate::Client {
+    let started = crate::Client::start(|_, outcome, ended, mut opens| async move {
+        outcome.send(Ok(())).unwrap();
+        let open = opens.recv().await.unwrap();
         open.opened.send(Ok((places(), 0))).unwrap();
-        let mut calls = open.calls;
-        drop(calls.blocking_recv());
-        drop(open.written);
-        calls
+        after(open.calls);
+        drop(ended.await);
     });
+    started.expect("a client")
+}
+
+#[test]
+fn each_call_of_a_writer_after_a_close_of_its_client_gives_closed() {
+    let client = client(drop);
     let config = Config::new(vec!["count".parse().unwrap()]);
-    let mut writer = Writer::open(&opens, config).unwrap();
+    let mut writer = client.open_writer(config).unwrap();
+    assert_eq!(client.close(), Ok(()));
     assert_eq!(writer.write(&[(0, Value::I64(1))]), Err(Error::Closed));
-    drop(served.join().unwrap());
-    assert_eq!(writer.write(&[(0, Value::I64(1))]), Err(Error::Closed));
-    assert_eq!(writer.write_series(1, &[]), Err(Error::Closed));
     assert_eq!(writer.close(), Err(Error::Closed));
 }
 
 #[test]
-fn a_close_whose_task_ended_before_its_answer_gives_closed() {
-    let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
-    let served = spawn(move || {
-        let open = opened.blocking_recv().unwrap();
-        open.opened.send(Ok((places(), 0))).unwrap();
-        let mut calls = open.calls;
-        drop(calls.blocking_recv());
-    });
+fn each_call_of_a_writer_after_a_drop_of_its_client_gives_closed() {
+    let client = client(drop);
     let config = Config::new(vec!["count".parse().unwrap()]);
-    let writer = Writer::open(&opens, config).unwrap();
-    assert_eq!(writer.close(), Err(Error::Closed));
-    served.join().unwrap();
+    let mut writer = client.open_writer(config).unwrap();
+    drop(client);
+    assert_eq!(writer.write(&[(0, Value::I64(1))]), Err(Error::Closed));
+}
+
+#[test]
+fn each_call_of_a_writer_whose_client_thread_panicked_gives_panicked() {
+    let client = client(|_| panic!("the session failed"));
+    let config = Config::new(vec!["count".parse().unwrap()]);
+    let mut writer = client.open_writer(config).unwrap();
+    assert_eq!(writer.write(&[(0, Value::I64(1))]), Err(Error::Panicked));
+    assert_eq!(writer.write_series(1, &[]), Err(Error::Panicked));
+    assert_eq!(writer.close(), Err(Error::Panicked));
+    assert_eq!(client.close(), Err(Error::Panicked));
 }
