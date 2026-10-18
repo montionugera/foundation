@@ -14,14 +14,17 @@
   each rule that ties it to other attributes.
   Each body that `foundation docs` states holds examples, which pin which attributes
   it takes and which it needs: the check takes each with no diagnostic, still with an
-  attribute removed that it does not need, with `document.missing-attribute` when one
-  that it needs is removed, and with one `document.unknown-attribute` for a name that
-  the body does not state. No test reads the text of `value` or of a `Default`. The
+  attribute removed that it does not need, with a `document.missing-attribute` that
+  names one that it needs when that one is removed, and with one
+  `document.unknown-attribute` for a name that the body does not state. Without the
+  `kind` that picks its form, a block reads as the form whose `kind` has a default.
+  No test reads the text of `value` or of a `Default`. The
   first block of an example is of its body, and of a block with more than one form,
   it holds only attributes of its form. The body of a block inside another body has no
   examples of its own: the examples of that body show it. Each kind gets its examples
-  with `Kind::SCHEMA` (#3270). The tests of the core examples run in `config`, and
-  those of each kind in `node`, over `kinds()`, also on each block inside.
+  with `Kind::SCHEMA` (#3270). Each test also walks each block inside an example, with
+  the body of its form: the tests of the core examples in `config`, and those of each
+  kind in `node`, over `kinds()`.
   Lost: a hand-written `reference.md` with a test that compares its names, whose
   values and defaults drift with no test; a `fn reference(&self) -> String` on each
   check, which keeps a second key list; a `default: Option<&str>`, whose `None` cannot
