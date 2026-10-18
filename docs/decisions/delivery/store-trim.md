@@ -186,13 +186,15 @@
   oldest first, with the bytes from the copy and no file read. A carry record has a
   budget of bytes, at most the largest carry body of S4: a tail costs 42 bytes and an
   entry 51 bytes and its bytes, at most 1023 of each. A carry moves whole records, and
-  the holders of each record fit one carry record (`Limit::Carry`), so each commit with
-  a holder before the reach carries at least the holders of the oldest record. An
+  the holders of each record fit one carry record (`Limit::Carry`, with trims or
+  without, S4), so each commit with a holder before the reach carries at least the
+  holders of the oldest record. An
   entry replaces the copy of its key only when its end mark is the same as or after the
   end mark of the copy, so a carry of an older copy after a newer entry, at the commit
   or at the walk, changes nothing. The walk gives `Error::Invalid` for a carried entry
   with tag 0 or one that ends past the last seq, for a key that one carry body gives
-  twice, and for a copy whose path no record of the walk holds. Planned by
+  twice, for a copy whose path no record of the walk holds, and for a data record
+  whose holders one carry record does not hold. Planned by
   `laptop.architect` (#406, 2026-10-14T01:56:45Z:
   https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6159164617). The mark
   rule, which replaces the rule of that plan that a commit does not carry a key whose
