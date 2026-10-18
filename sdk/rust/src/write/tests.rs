@@ -11,6 +11,17 @@ use super::*;
 
 const WAITING: Outcome = Outcome::Refused(Refusal::Waiting);
 
+/// Runs `serve` on a thread of its own, in place of the client's thread.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a thread stands in for the client's thread"
+)]
+fn spawn<T: Send + 'static>(
+    serve: impl FnOnce() -> T + Send + 'static,
+) -> JoinHandle<T> {
+    thread::spawn(serve)
+}
+
 fn place(at: u128, scalar: Scalar, name: &str) -> Place {
     Place {
         key: channel::Key::from_u128(at),
@@ -35,7 +46,7 @@ type Sent = Vec<(Frame, Time)>;
 /// `outcome` and the close with `Ok`, and gives each write that it served.
 fn writer(outcome: Outcome) -> (Writer, JoinHandle<Sent>) {
     let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
-    let served = thread::spawn(move || {
+    let served = spawn(move || {
         let Open {
             opened: answer,
             mut calls,
@@ -96,7 +107,7 @@ fn a_writer_moves_between_threads() {
 fn an_open_sends_its_config_and_gives_the_places_and_index_of_the_node() {
     let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
     let lease = Span::from_nanos(5);
-    let served = thread::spawn(move || {
+    let served = spawn(move || {
         let open = opened.blocking_recv().unwrap();
         open.opened.send(Ok((places(), 2))).unwrap();
         open.config
@@ -123,7 +134,7 @@ fn an_open_sends_its_config_and_gives_the_places_and_index_of_the_node() {
 #[test]
 fn an_open_gives_the_error_of_the_node() {
     let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
-    let served = thread::spawn(move || {
+    let served = spawn(move || {
         let open = opened.blocking_recv().unwrap();
         let refused = Error::Stream(program::Error::Unanswered);
         open.opened.send(Err(refused)).unwrap();
@@ -144,7 +155,7 @@ fn an_open_of_a_closed_client_gives_closed() {
         Err(Error::Closed)
     );
     let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
-    let served = thread::spawn(move || drop(opened.blocking_recv()));
+    let served = spawn(move || drop(opened.blocking_recv()));
     assert_eq!(Writer::open(&opens, config).map(drop), Err(Error::Closed));
     served.join().unwrap();
 }
@@ -255,7 +266,7 @@ fn a_warm_write_fills_the_frame_of_the_write_before_it() {
 #[test]
 fn a_write_gives_the_error_of_the_node() {
     let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
-    let served = thread::spawn(move || {
+    let served = spawn(move || {
         let open = opened.blocking_recv().unwrap();
         open.opened.send(Ok((places(), 0))).unwrap();
         let mut calls = open.calls;
@@ -280,7 +291,7 @@ fn a_write_gives_the_error_of_the_node() {
 #[test]
 fn each_call_of_a_writer_whose_task_ended_gives_closed() {
     let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
-    let served = thread::spawn(move || {
+    let served = spawn(move || {
         let open = opened.blocking_recv().unwrap();
         open.opened.send(Ok((places(), 0))).unwrap();
         let mut calls = open.calls;
@@ -300,7 +311,7 @@ fn each_call_of_a_writer_whose_task_ended_gives_closed() {
 #[test]
 fn a_close_whose_task_ended_before_its_answer_gives_closed() {
     let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
-    let served = thread::spawn(move || {
+    let served = spawn(move || {
         let open = opened.blocking_recv().unwrap();
         open.opened.send(Ok((places(), 0))).unwrap();
         let mut calls = open.calls;
