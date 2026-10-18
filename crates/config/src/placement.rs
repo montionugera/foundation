@@ -29,31 +29,37 @@ const BODY: Body = Body {
             presence: Presence::Required,
             summary: "The connectors and indexes that it places.",
         },
-        Attribute {
-            name: "home",
-            value: "the name of a node",
-            presence: Presence::Optional,
-            summary: "The node that orders, buffers, and gates the selected indexes.",
-        },
-        Attribute {
-            name: "standby",
-            value: "the name of a node",
-            presence: Presence::Optional,
-            summary: "The node that takes over when the home fails.",
-        },
-        Attribute {
-            name: "copies",
-            value: "the name of a node, or a list of them",
-            presence: Presence::Optional,
-            summary: "The nodes that keep a copy that is never promoted.",
-        },
+        HOME,
+        STANDBY,
+        COPIES,
     ],
     blocks: &[],
     examples: &[EXAMPLE],
 };
 
+const HOME: Attribute = Attribute {
+    name: "home",
+    value: "the name of a node",
+    presence: Presence::Optional,
+    summary: "The node that orders, buffers, and gates the selected indexes.",
+};
+
+const STANDBY: Attribute = Attribute {
+    name: "standby",
+    value: "the name of a node",
+    presence: Presence::Optional,
+    summary: "The node that takes over when the home fails.",
+};
+
+const COPIES: Attribute = Attribute {
+    name: "copies",
+    value: "the name of a node, or a list of them",
+    presence: Presence::Optional,
+    summary: "The nodes that keep a copy that is never promoted.",
+};
+
 /// The attributes that name nodes, in the order of their roles.
-const ROLES: [&str; 3] = ["home", "standby", "copies"];
+const ROLES: [Attribute; 3] = [HOME, STANDBY, COPIES];
 
 const EXAMPLE: &str = "\
 placement \"site_a\" {
@@ -73,9 +79,9 @@ pub(crate) fn check(
     let unknown = found.unknown(block, &BODY);
     let select =
         found.select(block, "connectors and indexes that it places", "site_a.*");
-    let home = found.attribute(block, "home", read::name);
-    let standby = found.attribute(block, "standby", read::name);
-    let copies = found.attribute(block, "copies", |value| {
+    let home = found.attribute(block, HOME.name, read::name);
+    let standby = found.attribute(block, STANDBY.name, read::name);
+    let copies = found.attribute(block, COPIES.name, |value| {
         read::items(value)
             .iter()
             .map(read::name)
@@ -116,7 +122,7 @@ pub(crate) fn nodes(policy: &Policy) -> impl Iterator<Item = &Name> {
 pub(crate) fn spans(block: &Block) -> BTreeMap<Name, Option<Span>> {
     let attributes = ROLES
         .into_iter()
-        .filter_map(|role| block.body.attributes.get(role));
+        .filter_map(|role| block.body.attributes.get(role.name));
     let values = attributes.flat_map(|attribute| read::items(&attribute.value));
     let mut spans = BTreeMap::new();
     for value in values {
@@ -131,7 +137,7 @@ fn refuse(found: &mut Found<'_>, block: &Block, nodes: &Nodes, error: &Error) {
     let diagnostic = match error {
         Error::Empty => Diagnostic::new(
             EMPTY_PLACEMENT,
-            span(block, "copies").or(block.keyword_span),
+            span(block, COPIES.name).or(block.keyword_span),
             format!(
                 "the `{}` block names no home, no standby, and no copy",
                 block.keyword
@@ -140,15 +146,14 @@ fn refuse(found: &mut Found<'_>, block: &Block, nodes: &Nodes, error: &Error) {
         ),
         Error::Overlap(node) => {
             let named = [
-                nodes.home.as_ref() == Some(node),
-                nodes.standby.as_ref() == Some(node),
-                nodes.copies.contains(node),
+                (HOME, nodes.home.as_ref() == Some(node)),
+                (STANDBY, nodes.standby.as_ref() == Some(node)),
+                (COPIES, nodes.copies.contains(node)),
             ];
-            let last = ROLES
+            let last = named
                 .into_iter()
-                .zip(named)
                 .filter(|(_, named)| *named)
-                .filter_map(|(role, _)| span(block, role))
+                .filter_map(|(role, _)| span(block, role.name))
                 .max();
             Diagnostic::new(
                 ROLE_OVERLAP,
