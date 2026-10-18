@@ -222,8 +222,8 @@ fn held(plant: &Plant, reads: &[Reads]) -> Vec<Trace> {
 
 /// The trace of each of `reads`, once `stored` (by channel) holds each read of
 /// `served` (by variable) to the last step of the value in the changes, and `served`
-/// holds the read after that step. Sample `k` stored has the value of read `k`, at a
-/// time [`within`] its limit. A lost or extra sample before a step puts a sample on a
+/// holds the read after that step. Sample `k` stored is read `k`, as [`traced`] checks.
+/// A lost or extra sample before a step puts a sample on a
 /// read of another value. From the last step on, a later read of the same value can
 /// stand in for a lost read. The node started at `started`, and `served` is taken
 /// after `stored`. Else `Err` with what `served` or `stored` lacks, or with the first
@@ -249,31 +249,9 @@ fn caught_up(
                         &served[..reads.changed]
                     )
                 });
-            if served.len() <= end + 1 {
-                return Err(format!(
-                    "{channel}: the server answered no read after read {end}"
-                ));
-            }
-            let windows = windows(started, &served);
-            let checked: Vec<_> = (stored.iter().zip(&served).zip(windows))
-                .take(end + 1)
-                .map(|((sample, read), window)| {
-                    (sample, read, sample.time.checked_since(read.time), window)
-                })
-                .collect();
-            for (k, &(sample, read, offset, window)) in checked.iter().enumerate() {
-                if sample.value.to_bits() != read.value.to_bits()
-                    || !within(k, offset, window)
-                {
-                    let offsets =
-                        checked.iter().map(|&(.., offset, window)| (offset, window));
-                    return Err(format!(
-                        "{channel}: sample {k} stored, {sample:?}, is not read {k}, \
-                         {read:?}\nthe offset of each sample in its window: {}",
-                        shown(offsets)
-                    ));
-                }
-            }
+            let to_end = &stored[..stored.len().min(end + 1)];
+            traced(started, &served, to_end)
+                .map_err(|error| format!("{channel}: {error}"))?;
             if stored.len() <= end {
                 return Err(format!(
                     "{channel}: InfluxDB holds {} of the {} reads",
@@ -288,6 +266,38 @@ fn caught_up(
             })
         })
         .collect()
+}
+
+/// Whether sample `k` of `stored` is read `k` of `served`: read `k` is Good, the sample
+/// has its value, and its time is [`within`] the limit of read `k`. InfluxDB holds no
+/// status, so a sample is Good when its read is. The node started at `started`. Else
+/// `Err` with the first sample that is not its read and the offset and window of each
+/// sample, or with the last read of `served` when `stored` holds a sample of it: its
+/// window needs the read after it.
+fn traced(started: Stamp, served: &[Sample], stored: &[Sample]) -> Result<(), String> {
+    let last = served.len().saturating_sub(1);
+    if stored.len() > last {
+        return Err(format!("the server answered no read after read {last}"));
+    }
+    let checked: Vec<_> = (stored.iter().zip(served).zip(windows(started, served)))
+        .map(|((sample, read), window)| {
+            (sample, read, sample.time.checked_since(read.time), window)
+        })
+        .collect();
+    for (k, &(sample, read, offset, window)) in checked.iter().enumerate() {
+        if read.quality != Some(Quality::GOOD)
+            || sample.value.to_bits() != read.value.to_bits()
+            || !within(k, offset, window)
+        {
+            let offsets = checked.iter().map(|&(.., offset, window)| (offset, window));
+            return Err(format!(
+                "sample {k} stored, {sample:?}, is not read {k}, {read:?}\nthe offset \
+                 of each sample in its window: {}",
+                shown(offsets)
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Whether a sample `offset` from read `k` is within its limit. The window of a read is
@@ -329,41 +339,6 @@ fn windows(started: Stamp, served: &[Sample]) -> impl Iterator<Item = Span> + '_
         .map(|(before, after)| after.time - before)
 }
 
-/// Whether each sample of `stored` has the value of a Good read of `served` to read
-/// `end`, at a time [`within`] its limit. InfluxDB holds no status, so a sample is Good
-/// when its read is. The node started at `started`, and `served` holds a read after
-/// read `end`. Else `Err` with the first sample that is none, and its offset from each
-/// read in the window of that read.
-fn only_good(
-    started: Stamp,
-    served: &[Sample],
-    end: usize,
-    stored: &[Sample],
-) -> Result<(), String> {
-    let reads: Vec<_> = (served.iter().zip(windows(started, served)))
-        .take(end + 1)
-        .collect();
-    for sample in stored {
-        let checked: Vec<_> = (reads.iter())
-            .map(|&(read, window)| (read, sample.time.checked_since(read.time), window))
-            .collect();
-        let read = |(k, &(read, offset, window)): (usize, &(&Sample, _, _))| {
-            read.quality == Some(Quality::GOOD)
-                && read.value.to_bits() == sample.value.to_bits()
-                && within(k, offset, window)
-        };
-        if !checked.iter().enumerate().any(read) {
-            let offsets = checked.iter().map(|&(_, offset, window)| (offset, window));
-            return Err(format!(
-                "{sample:?} stored is no Good read to read {end} within its limit\nits \
-                 offset from each read in its window: {}",
-                shown(offsets)
-            ));
-        }
-    }
-    Ok(())
-}
-
 /// The count `key` of the connector `name` in `status`.
 fn count(status: &BTreeMap<String, Connector>, name: &str, key: &str) -> Option<u64> {
     status.get(name)?.counts.as_ref()?.get(key).copied()
@@ -392,7 +367,7 @@ fn create_served() -> Vec<Sample> {
         .map(|(at, value)| Sample {
             time: Stamp::from_nanos(at * 100 * Span::MILLISECOND.nanos()),
             value,
-            quality: None,
+            quality: Some(Quality::GOOD),
         })
         .collect()
 }
@@ -657,15 +632,15 @@ fn create_qualities() -> Vec<Sample> {
         .collect()
 }
 
-/// [`only_good`] of `stored` against [`create_qualities`] to read 2, from a node that
-/// started at 0.9 s.
+/// [`traced`] of `stored` against [`create_qualities`], from a node that started at
+/// 0.9 s.
 fn check_good(stored: &[Sample]) -> Result<(), String> {
     let started = Stamp::from_nanos(900 * Span::MILLISECOND.nanos());
-    only_good(started, &create_qualities(), 2, stored)
+    traced(started, &create_qualities(), stored)
 }
 
 #[test]
-fn a_sample_of_a_good_read_within_its_limit_passes() {
+fn a_sample_that_is_its_good_read_passes() {
     let stored = create_served();
     let mut cases = vec![vec![], stored[..2].to_vec()];
     for by in both(HOLD) {
@@ -680,27 +655,34 @@ fn a_sample_of_a_good_read_within_its_limit_passes() {
 }
 
 #[test]
-fn a_sample_of_no_good_read_within_its_limit_fails() {
+fn a_sample_that_is_not_its_good_read_fails() {
     let stored = create_served();
-    let at = |k: usize, by| moved(&stored, k, by)[k];
     let [late, early] = both(over(HOLD));
+    let mut wrong = stored[..2].to_vec();
+    wrong[1].value = 9.0;
     let cases = [
-        (at(0, early), "under the hold of read 0"),
-        (at(0, late), "over the hold of read 0"),
-        (at(1, over(BOUND)), "over the target of read 1"),
-        (at(2, BOUND), "at the target of read 2, which is Bad"),
+        (moved(&stored[..1], 0, early), "under the hold of read 0"),
+        (moved(&stored[..1], 0, late), "over the hold of read 0"),
         (
-            Sample {
-                value: 9.0,
-                ..stored[1]
-            },
-            "a value of no read",
+            moved(&stored[..2], 1, over(BOUND)),
+            "over the target of read 1",
         ),
+        (
+            moved(&stored[..2], 1, Span::from_nanos(-over(BOUND).nanos())),
+            "under the target of read 1",
+        ),
+        (stored[..3].to_vec(), "read 2, which is Bad"),
+        (wrong, "a value of no read"),
     ];
-    for (sample, case) in cases {
+    let served = create_qualities();
+    for (stored, case) in cases {
+        let k = stored.len() - 1;
         assert_eq!(
-            first(&check_good(&[sample]).unwrap_err()),
-            format!("{sample:?} stored is no Good read to read 2 within its limit"),
+            first(&check_good(&stored).unwrap_err()),
+            format!(
+                "sample {k} stored, {:?}, is not read {k}, {:?}",
+                stored[k], served[k]
+            ),
             "{case}"
         );
     }
@@ -711,9 +693,9 @@ fn a_sample_of_no_good_read_within_its_limit_fails() {
     assert_eq!(
         check_good(&[far]),
         Err(format!(
-            "{far:?} stored is no Good read to read 2 within its limit\nits offset \
-             from each read in its window: 0: out of range in 200ms, 1: out of range \
-             in 200ms, 2: out of range in 200ms"
+            "sample 0 stored, {far:?}, is not read 0, {:?}\nthe offset of each sample \
+             in its window: 0: out of range in 200ms",
+            served[0]
         ))
     );
 }
@@ -808,10 +790,7 @@ fn a_bad_value_is_left_out_and_counted() {
     let served = served.remove(reads.variable).unwrap_or_default();
     let mut stored = plant.influx.stored();
     let stored = stored.remove(reads.channel).unwrap_or_default();
-    assert_eq!(
-        only_good(plant.started, &served, reads.unchanged, &stored),
-        Ok(())
-    );
+    assert_eq!(traced(plant.started, &served, &stored), Ok(()));
 }
 
 #[test]
