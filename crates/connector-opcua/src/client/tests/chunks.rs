@@ -2,7 +2,10 @@ use std::cell::Cell;
 use std::mem;
 
 use super::abort::{sequence, too_large};
-use super::{FITS, RELAY, Relay, VALUE, drop_read, mistyped, relayed, run, serve};
+use super::{
+    FITS, Peer, RELAY, Relay, VALUE, drop_read, mistyped, relayed, run, serve,
+};
+use crate::client::Client;
 use crate::connection::CHUNKS;
 use crate::ffi::Status;
 use crate::value::{Fault, Value};
@@ -46,6 +49,18 @@ fn renumber(next: &mut Option<u32>, chunk: &mut [u8]) {
     }
 }
 
+/// Connects a client of `peer` to `url` that takes messages of up to `message` bytes,
+/// or the default of open62541 for `None`, and reads [`VALUE`] once, as open62541
+/// reads the namespace array after the connect.
+async fn connect(peer: &mut Peer<'_>, url: &str, message: Option<u32>) -> Client {
+    let mut client = match message {
+        Some(size) => peer.limited(url, None, Some(size)).await,
+        None => peer.connect(url).await.expect("the client connects"),
+    };
+    assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
+    client
+}
+
 /// The answers of a dropped read D of [`FITS`] (8 chunks), then of a read R of it and
 /// of a read of [`VALUE`], and the value of the server. The relay sends the first `d`
 /// intermediate chunks of D, then the first `r` chunks of R, then `between` more
@@ -78,23 +93,18 @@ fn interleaved(
                 }
                 out
             };
-            let reads = relayed(&node, &Relay::default(), reorder(&armed, 8 + r, order), {
-                async {
-                    let mut client = match message {
-                        Some(size) => peer.limited(&url, None, Some(size)).await,
-                        None => peer.connect(&url).await.expect("the client connects"),
-                    };
-                    assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
-                    armed.set(true);
-                    drop_read(&mut client, &FITS).await;
-                    let read = client.read_one(&FITS).await;
-                    assert!(!armed.get(), "the relay sent the held chunks");
-                    let after = client.read_one(&VALUE).await;
-                    client.close().await;
-                    (read, after)
-                }
-            })
-            .await;
+            let body = async {
+                let mut client = connect(&mut peer, &url, message).await;
+                armed.set(true);
+                drop_read(&mut client, &FITS).await;
+                let read = client.read_one(&FITS).await;
+                assert!(!armed.get(), "the relay sent the held chunks");
+                let after = client.read_one(&VALUE).await;
+                client.close().await;
+                (read, after)
+            };
+            let rewrite = reorder(&armed, 8 + r, order);
+            let reads = relayed(&node, &Relay::default(), rewrite, body).await;
             (reads.0, reads.1, peer.value)
         })
         .await
@@ -206,22 +216,17 @@ fn after_forged(
                 out.extend(held);
                 out
             };
-            let reads = relayed(&node, &Relay::default(), reorder(&armed, 1, order), {
-                async {
-                    let mut client = match message {
-                        Some(size) => peer.limited(&url, None, Some(size)).await,
-                        None => peer.connect(&url).await.expect("the client connects"),
-                    };
-                    assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
-                    armed.set(true);
-                    let read = client.read_one(&VALUE).await;
-                    assert!(!armed.get(), "the relay sent the forged chunks");
-                    let after = client.read_one(&VALUE).await;
-                    client.close().await;
-                    (read, after)
-                }
-            })
-            .await;
+            let body = async {
+                let mut client = connect(&mut peer, &url, message).await;
+                armed.set(true);
+                let read = client.read_one(&VALUE).await;
+                assert!(!armed.get(), "the relay sent the forged chunks");
+                let after = client.read_one(&VALUE).await;
+                client.close().await;
+                (read, after)
+            };
+            let rewrite = reorder(&armed, 1, order);
+            let reads = relayed(&node, &Relay::default(), rewrite, body).await;
             (reads.0, reads.1, peer.value)
         })
         .await

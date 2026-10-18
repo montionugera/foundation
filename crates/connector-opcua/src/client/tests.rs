@@ -2559,6 +2559,6 @@ fn a_connect_whose_read_of_the_max_nodes_per_read_fails_closes_its_session() {
 }
 
 mod abort;
-mod chunks;
 mod browse;
+mod chunks;
 mod walk;
