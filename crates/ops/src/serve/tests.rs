@@ -15,6 +15,7 @@ use crate::common::{
     placed_site, plant, solo,
 };
 use crate::error::{Error, Problem};
+use crate::front_end::File;
 use crate::plan;
 
 const DENIED_FIX: &str =
@@ -230,6 +231,58 @@ fn an_error_over_the_bound_counts_the_rest_after_each_problem() {
         reply,
         reply_of(&[kept[0].clone(), kept[1].clone(), Problem::more(9)])
     );
+}
+
+#[test]
+fn a_plan_error_whose_first_problem_does_not_fit_gives_large_reply() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let max = usize::try_from(BODY_BYTES_MAX).expect("a usize");
+        let path = format!("{}.hcl", "x".repeat(max - 200));
+        let body = plan_body(&[(&path, "nope \"a\" {}\n")]);
+        assert!(body.len() <= max, "{}", body.len());
+        let reply = serve(&node, &admin(), &body).await;
+        assert_eq!(split(&reply), (large(), &b""[..]));
+    });
+}
+
+/// The rest after the second problem has one digit fewer than after the first, so
+/// `serve` keeps the second only when it counts the rest after each problem.
+#[test]
+fn a_plan_error_over_the_bound_counts_the_rest_after_each_problem() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let max = usize::try_from(BODY_BYTES_MAX).expect("a usize");
+        let block = "nope \"a\" {}\n";
+        let rest = block.repeat(10);
+        let kept = |path: &str| {
+            let files = [
+                File {
+                    path: path.into(),
+                    text: block.to_owned(),
+                },
+                File {
+                    path: "b.hcl".into(),
+                    text: rest.clone(),
+                },
+            ];
+            let documents =
+                plan::Documents::read(&files, &node.front_ends).expect("documents");
+            let error = documents
+                .names(node.supervisor.kinds())
+                .err()
+                .expect("an error");
+            let problems = error.problems();
+            reply_of(&[problems[0].clone(), problems[1].clone(), Problem::more(9)])
+        };
+        let short = kept("a.hcl").len();
+        let path = format!("{}.hcl", "a".repeat(1 + max - short));
+        let expected = kept(&path);
+        assert_eq!(expected.len(), max);
+        let body = plan_body(&[(&path, block), ("b.hcl", &rest)]);
+        assert!(body.len() <= max, "{}", body.len());
+        assert_eq!(serve(&node, &admin(), &body).await, expected);
+    });
 }
 
 #[test]
