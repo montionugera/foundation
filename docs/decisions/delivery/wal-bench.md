@@ -108,7 +108,7 @@
   So a time holds the mean cost of a deadline of a buffer that trims in steps,
   `deadline_trim` the cost of the deadline that trims a step, and `deadline_carry` that
   of a carry record of 32 tails. `Deadline::resident` is `new` with each page of the
-  pool committed, and `deadline_carry` uses it. Since #3172, a pool on `Heap` writes
+  pool committed, and `deadline_carry` uses it. After #3172, a pool on `Heap` writes
   zero over a page at its first commit, once a page in its life. `deadline_carry`
   makes a new `Deadline` for each sample, so with `new` its timed deadline pays that
   write for each page that its carry takes. Lost: the commit in `new`, which moved
@@ -117,6 +117,9 @@
   runs. The commit before the timed deadline of `deadline_carry` is decided by
   `laptop.architect` (#3227, 2026-10-18T19:43:43Z):
   https://github.com/synnaxlabs/foundation/issues/3227#issuecomment-6254312922.
+  `resident` and its lost commit in `new` are approved by `laptop.architect` (#3254,
+  2026-10-18T21:00:27Z):
+  https://github.com/synnaxlabs/foundation/pull/3254#issuecomment-6255086067.
   `benches/logs.rs` also
   gets the case `lap_shrink` of 10000 paths, which times only the commit of `lap_end`
   that ends the lap of 2756 paths, each with a shrink, while the other paths wait. Lost:
