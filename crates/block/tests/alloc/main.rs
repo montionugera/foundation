@@ -139,7 +139,7 @@ fn heap() {
     untouched();
 }
 
-/// A new heap adds no page to the process in memory.
+/// A new heap of 256 MiB adds fewer than 1024 pages to the process in memory.
 // needs /proc/self/statm
 #[cfg(all(target_os = "linux", not(miri)))]
 fn untouched() {
