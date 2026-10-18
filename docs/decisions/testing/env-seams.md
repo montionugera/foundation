@@ -1405,18 +1405,19 @@
   that open, not of a stat before it. A name is one `openat` of a directory with no link
   followed, and the key of a directory comes from one `fstat`. When the open gives
   `ENOTDIR` or `ELOOP`, the name is also one `fstatat` with no link followed, and a link
-  also one `readlinkat`, so no swap after a stat makes the open follow a link. On macOS,
-  a directory that this user cannot search is open by its key alone, and each name in it
-  gives `EACCES`, as on Linux. On `sim`, a directory is open by its inode, whose path
-  each call finds again, so it keeps its directory after a move; `/` is inode 0 and has
-  no entry, and one lookup gives `/` as inode 0. The walk keeps one directory open: a
-  `..` calls `up` on that directory, which must give the key of the step that the walk
-  came from. When it does not, a program moved a directory of the path during the walk,
-  and the walk starts again from its first name. Each start again follows the links of
-  the path again, with `LINKS` (40) links less one for each start, so past 40 starts the
-  walk gives `Driver::looped`. A start again that fails gives its error, which is no
-  error of a step. The free handle walks the same way in `Paths::resolve` and
-  `Paths::home`, so on macOS they take 40 links where the host takes 32, and a `..`
+  also one `readlinkat`, so no swap after a stat makes the open follow a link. A
+  directory that a program puts at the name after the open is a file to the walk. On
+  macOS, a directory that this user cannot search is open by its key alone, and each
+  name in it gives `EACCES`, as on Linux. On `sim`, a directory is open by its inode,
+  whose path each call finds again, so it keeps its directory after a move; `/` is inode
+  0 and has no entry, and one lookup gives `/` as inode 0. The walk keeps one directory
+  open: a `..` calls `up` on that directory, which must give the key of the step that
+  the walk came from. When it does not, a program moved a directory of the path during
+  the walk, and the walk starts again from its first name. Each start again follows the
+  links of the path again, with `LINKS` (40) links less one for each start, so past 40
+  starts the walk gives `Driver::looped`. A start again that fails gives its error,
+  which is no error of a step. The free handle walks the same way in `Paths::resolve`
+  and `Paths::home`, so on macOS they take 40 links where the host takes 32, and a `..`
   after a move follows the walk, not the host; its `read`, `write`, and `make_dir` go to
   the host by path, with no walk, until part 2 of #3094. `absolute` still bounds the
   path as given, but a name goes to the host as one call on its directory, so a resolved

@@ -112,22 +112,20 @@ impl Dir {
     fn entry(&self, name: &OsStr) -> Result<Entry, Errno> {
         let fd = self.fd.as_ref().ok_or(Errno::ACCESS)?;
         // The open comes first, so no swap after a stat makes it follow a link.
-        let refused = match Self::open(fd.as_fd(), name) {
+        match Self::open(fd.as_fd(), name) {
             Ok(dir) => return Ok(Entry::Directory(Box::new(dir))),
-            Err(e @ (Errno::NOTDIR | Errno::LOOP)) => e,
+            Err(Errno::NOTDIR | Errno::LOOP) => {}
             Err(e) => return Err(e),
-        };
+        }
         let stat = rustix::fs::statat(fd, name, AtFlags::SYMLINK_NOFOLLOW)?;
         let key = key(&stat);
-        Ok(match FileType::from_raw_mode(stat.st_mode) {
-            FileType::Symlink => {
-                let target = rustix::fs::readlinkat(fd, name, Vec::new())?;
-                Entry::Link(key, OsString::from_vec(target.into_bytes()).into())
-            }
-            // A program put a directory at `name` after the open.
-            FileType::Directory => return Err(refused),
-            _ => Entry::File(key),
-        })
+        // A directory that a program puts at `name` after the open is a file to the
+        // walk, which the open refused as a directory.
+        if FileType::from_raw_mode(stat.st_mode) != FileType::Symlink {
+            return Ok(Entry::File(key));
+        }
+        let target = rustix::fs::readlinkat(fd, name, Vec::new())?.into_bytes();
+        Ok(Entry::Link(key, OsString::from_vec(target).into()))
     }
 }
 
