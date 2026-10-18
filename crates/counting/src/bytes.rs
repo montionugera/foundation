@@ -354,19 +354,22 @@ mod tests {
 
     // The trait's own `realloc` allocates before it frees, so it never gives back the
     // old block. glibc, macOS, and Windows each shrink this block in place. Windows
-    // moves a small block: one of 64 B that shrinks to 56 B.
+    // moves a small block: one of 64 B that shrinks to 56 B. macOS 15 on
+    // `macos-15-arm64` moves a block of 64 KiB that shrinks to 32 KiB, from its medium
+    // region to its small one.
     #[test]
     #[cfg_attr(miri, ignore = "Miri does not shrink a block in place")]
     fn shrinks_a_block_in_place_as_the_system_does() {
         const SIZE: usize = 64 * 1024;
+        const SHRUNK: usize = 56 * 1024;
         let bytes = Bytes::new();
         // SAFETY: the layout is not empty.
         let ptr = unsafe { bytes.alloc(sized(SIZE)) };
         assert!(!ptr.is_null(), "the system has no memory for 64 KiB");
-        // SAFETY: `bytes` returned `ptr` for `sized(SIZE)`, and `SIZE / 2` is not zero.
-        let shrunk = unsafe { bytes.realloc(ptr, sized(SIZE), SIZE / 2) };
-        assert_eq!((shrunk, bytes.held()), (ptr, SIZE / 2));
-        free(&bytes, shrunk, sized(SIZE / 2));
+        // SAFETY: `bytes` returned `ptr` for `sized(SIZE)`, and `SHRUNK` is not zero.
+        let shrunk = unsafe { bytes.realloc(ptr, sized(SIZE), SHRUNK) };
+        assert_eq!((shrunk, bytes.held()), (ptr, SHRUNK));
+        free(&bytes, shrunk, sized(SHRUNK));
     }
 
     #[test]
