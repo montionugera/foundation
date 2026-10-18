@@ -2,9 +2,12 @@
 //! transport from a program to a simulated node.
 
 use std::cell::Cell;
+use std::future::poll_fn;
 use std::path::{Path as FilePath, PathBuf};
+use std::pin::pin;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 
 use access::proof::{Error as Refusal, Kind};
 use block::Unique;
@@ -709,16 +712,31 @@ fn refuses_a_backfill_frame_that_the_home_finds_no_block_for_as_full() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
-/// A `Stored` that finds no block during the stream is not sent: the next `Stored`
-/// covers its frame, and the finish sends no other.
+/// The next reply of `stream`, or `None` when none comes within `span`.
+async fn reply_within(agent: &Agent, stream: &mut Stream, span: Span) -> Option<Reply> {
+    let mut reply = pin!(stream.reply());
+    let mut slept = pin!(agent.sleep(span));
+    poll_fn(|cx| {
+        if let Poll::Ready(reply) = reply.as_mut().poll(cx) {
+            return Poll::Ready(Some(reply));
+        }
+        slept.as_mut().poll(cx).map(|()| None)
+    })
+    .await
+}
+
+/// A `Stored` comes while the pool is full, with no next frame and no finish, so a
+/// program that waits for it ends its wait. The next `Stored` covers the next frame.
 #[test]
-fn skips_a_stored_that_finds_no_block_and_covers_it_with_the_next() {
+fn sends_a_stored_at_its_commit_while_the_pool_is_full() {
     let home = read_session(433, fill_at_commit, |mut agent| async move {
         agent.admit().await;
         let mut stream = write(&agent).await;
         send(&mut stream, &[1], &[10]).await;
         assert_eq!(stream.reply().await, taken(0, 1));
-        agent.sleep(Span::from_nanos(START.nanos() * 3 / 2)).await;
+        let span = Span::from_nanos(3 * START.nanos());
+        let got = reply_within(&agent, &mut stream, span).await;
+        assert_eq!(got, Some(stored(1)));
         send(&mut stream, &[2], &[20]).await;
         assert_eq!(stream.reply().await, taken(1, 1));
         assert_eq!(stream.reply().await, stored(2));
