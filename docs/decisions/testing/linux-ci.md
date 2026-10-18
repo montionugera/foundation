@@ -16,9 +16,9 @@
     or a defect that its issue fixes. A test whose value on the OS is known asserts it
     with a `cfg` on its expected value. The PR that closes an issue removes each item
     that names only that issue, and removes the issue from an item that names others.
-    The lists only shrink, other than this: a new crate enters a list only with the
-    open issues of the `os` items that it needs. The ONE NODE milestone does not close
-    while a list holds a crate or a test.
+    The lists of crates and tests only shrink, other than this: a new crate enters a
+    list only with the open issues of the `os` items that it needs. The ONE NODE
+    milestone does not close while a list holds a crate or a test.
   - A test skips an OS by an attribute only in a case of `docs/claude/testing.md`, "No
     `#[ignore]`": the OS does not have the behavior, no test can fix its value there, or
     its test needs an item of one OS to cause the case. Its reason is `only <OS>`, or
@@ -37,15 +37,19 @@
     refused, unless a plain `#[ignore]` skips the test on each OS. It also refuses a
     `path` in a `cfg_attr`.
   - A `cfg` that names a target and leaves out of an OS a test that no item of the same
-    path builds there is a gate. A gate is an item of the `gates` list of each OS that
-    it leaves out, as `- <file> <path in the file> # #<issue>`, or, in a case of "No
-    `#[ignore]`", the first line of the doc of the item is `Only <OS>` or starts with
-    `Only <OS>:`, where `<OS>` names each OS on which the item builds, as for a reason.
-    The list comes first, so a doc covers only each OS that no list item names, and the
-    review checks its claim on each of those OSes. A gate covers a test module, a test
-    function, a test in the body of a macro call, and each function of a test or bench
-    target with no harness. `cargo xtask skips` refuses each other gate, and each list
-    item that names no gate. A `cfg` on a statement is not read.
+    path builds there is a gate, and so is a `cfg_attr` that applies `test` on only some
+    OSes. A gate is an item of the `gates` list of each OS that it leaves out, as
+    `- <file> <path in the file> # #<issue>`, or, in a case of "No `#[ignore]`", the
+    first line of the doc of the item is `Only <OS>` or `Only <arch>`, or starts with
+    either and `:`. `<OS>` names each OS on which the item builds, as for a reason.
+    `<arch>` is the `target_arch` value (`aarch64` or `x86_64`) of each runner of the
+    job `check` on which the item builds, and of no other. The list comes first, so a
+    doc covers only each OS that no list item names, and the review checks its claim on
+    each of those OSes. A gate covers a test module, a test function, a test in the body
+    of a macro call, and each function of a test or bench target with no harness. `cargo
+    xtask skips` refuses each other gate, and each list item that names no gate. A `cfg`
+    on a statement, and a test that a macro makes from tokens outside its call, are not
+    read.
   - For `/review`, CI does not run an OS for a crate or a test on the list of that OS
     (`laptop.director`,
     https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229528745).
@@ -107,6 +111,8 @@
     claim the review checks on each of those OSes: `laptop.director`,
     2026-10-18T04:21:59Z
     (https://github.com/synnaxlabs/foundation/issues/3015#issuecomment-6245603833).
+    The doc form `Only <arch>`: `laptop.director`, 2026-10-18T05:10:43Z
+    (https://github.com/synnaxlabs/foundation/pull/3134#issuecomment-6245970187).
   - A new crate on a list: the person, relayed by `laptop.monitor` at
     2026-10-17T17:30:12Z
     (https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237654845):
