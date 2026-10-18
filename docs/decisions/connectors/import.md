@@ -139,7 +139,9 @@
   a connector writes", with the channels that the other connectors write, the fix
   default of the run with each refused name left out, the panic of a bad `fill`, and the
   one-pass shape that lost: `laptop.architect-2`, 2026-10-18T04:22:50Z
-  (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245610148).
+  (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245610148); "or
+  refuses a name": `laptop.architect-2`, 2026-10-18T04:32:21Z
+  (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245680650).
   `Outcome`, `Pick`, `add`, the errors, and the name order: `laptop.architect-2`,
   2026-10-18T02:10:56Z, items 2, 3, 4, 5, and 11
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074).
