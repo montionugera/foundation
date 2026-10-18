@@ -1,19 +1,14 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
-use codec::Variable;
 use document::diagnostic::{Code, Diagnostic};
-use hub::Hub;
 use hub::reader::{Config, Mode, Received};
 use spec::definition::Definition;
-use types::authority::Authority;
-use types::frame::{Form, Label, Path};
 use types::name::{Name, Selector};
 use types::time::Span;
 
 use super::Reading;
 use crate::cancel::Token;
-use crate::common::{STATUS, env, run_on};
+use crate::common::{Column, STATUS, env, run_on, write_status};
 use crate::kind;
 use crate::status::{Class, State, Writer};
 use crate::testing::create_status;
@@ -39,12 +34,6 @@ enum Step {
     /// Closes the status writer, then writes one frame as a program: the samples of
     /// each channel, by the last segment of its name.
     Program(Vec<(&'static str, Column)>),
-}
-
-/// The samples of one channel in a frame.
-enum Column {
-    Numbers(Vec<u64>),
-    Texts(Vec<&'static str>),
 }
 
 /// The reading of the newest frame of a `Latest` reader of `select`, after a test
@@ -83,7 +72,7 @@ fn read_by<T: Send + 'static>(
             if let Step::Program(columns) = step {
                 open = None;
                 clock.sleep(Span::SECOND).await;
-                program(&hub, columns).await;
+                write_status(&hub, "plant.modbus", columns).await;
                 continue;
             }
             let (writer, status) = open.as_ref().expect("the status writer is open");
@@ -124,75 +113,6 @@ fn read_by<T: Send + 'static>(
         let received = reader.next().await.expect("the newest frame");
         by(&received)
     })
-}
-
-/// Writes one frame of `columns`, and a stamp of the status index for each sample,
-/// as a program.
-async fn program(hub: &Hub, columns: Vec<(&'static str, Column)>) {
-    let status = |last: &str| name(&format!("plant.modbus.status.{last}"));
-    let channels = ["time"]
-        .into_iter()
-        .chain(columns.iter().map(|(last, _)| *last));
-    let config = hub::writer::Config {
-        subject: name("program"),
-        authority: Authority(1),
-        lease: None,
-        channels: channels.map(status).collect(),
-    };
-    let mut program = hub.writer(config).await.expect("the program opens");
-    let entries = program.entries().to_vec();
-    let set = Arc::clone(program.set());
-    let count = match &columns[0].1 {
-        Column::Numbers(values) => values.len(),
-        Column::Texts(values) => values.len(),
-    };
-    let start = u64::try_from(program.now().nanos()).expect("a stamp after 1970");
-    let stamps = (0..count).map(|i| start + u64::try_from(i).expect("few") * 1_000);
-    let stamps = Column::Numbers(stamps.collect());
-    let columns = [&stamps]
-        .into_iter()
-        .chain(columns.iter().map(|(_, column)| column));
-    let bytes: Vec<(usize, Vec<u8>)> = entries
-        .iter()
-        .zip(columns)
-        .map(|(&entry, column)| {
-            let data_type = set.entries()[entry].data_type;
-            let bytes = match column {
-                Column::Numbers(values) => {
-                    let width = data_type.width().expect("a fixed width");
-                    let sample = |value: &u64| {
-                        let mut sample = value.to_le_bytes().to_vec();
-                        sample.resize(width, 0);
-                        sample
-                    };
-                    values.iter().flat_map(sample).collect()
-                }
-                Column::Texts(values) => {
-                    let form = Variable::of(data_type).expect("a variable type");
-                    let len = form.len(values).expect("a short text");
-                    let mut bytes = vec![0; len];
-                    form.write(values, &mut bytes);
-                    bytes
-                }
-            };
-            (entry, bytes)
-        })
-        .collect();
-    let mut series: Vec<_> = bytes
-        .iter()
-        .map(|(entry, bytes)| (*entry, bytes.len()))
-        .collect();
-    series.sort_unstable();
-    let mut draft = program.draft(Form::Raw, &series).expect("a draft");
-    for (entry, bytes) in &bytes {
-        let series = draft.series_mut(*entry).expect("a series of the draft");
-        series.copy_from_slice(bytes);
-    }
-    let group = set.entries()[entries[0]].group;
-    draft.set_count(group, u32::try_from(count).expect("few"));
-    program
-        .write(Label::Path(Path::Live), draft)
-        .expect("the write goes");
 }
 
 /// A reading with the count `in` at `value`.
