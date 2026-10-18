@@ -4,7 +4,6 @@ use types::time::{Span, Stamp};
 
 use super::{Client, VALUE, run, serve_on};
 use crate::child;
-use crate::connection::CHUNKS;
 use crate::event::{self, Loop};
 use crate::ffi::test::Mode;
 use crate::ffi::{self, Status};
@@ -198,8 +197,7 @@ fn ask_past_the_last_policy() {
     let clock = sim.node(sim::node::Config::default()).clock();
     let events = Loop::new(event::Time::monotonic(clock), &mut Rng::from_seed(0));
     // SAFETY: the loop outlives the client, which leaks when the process aborts.
-    let client = unsafe { ffi::shim_client_new(events.raw(), CHUNKS) };
-    assert!(!client.is_null(), "open62541 refused the client");
+    let client = unsafe { crate::client::unconnected(events.raw()) }.as_ptr();
     let security = CLIENT_SIDE.raw();
     // SAFETY: the client lives and has not connected, and it copies `security`.
     let status = unsafe {
