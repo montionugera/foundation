@@ -53,7 +53,7 @@ fn reads(
                 relayed(&node, &Relay::default(), aborting(&left, abort), async {
                     let mut client =
                         peer.connect(&url).await.expect("the client connects");
-                    // open62541 reads the namespace array after the connect.
+                    // The connect is done before the relay arms.
                     assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
                     left.set(dropped + aborted);
                     drop_reads(&mut client, dropped).await;
@@ -177,10 +177,10 @@ const TWO: Node = Node {
     ..FITS
 };
 
-/// 16 rounds of a dropped read D, then a read R of [`FITS`] (8 chunks). The relay holds
-/// the answer of D and sends its abort after the first chunk of R when `inside`, else
-/// before it. Gives the reads of R, a read of [`VALUE`] after them, and the value. An
-/// abort that does not end its D leaves no slot for the 17th read.
+/// [`READS`] + 1 rounds of a dropped read D, then a read R of [`FITS`] (8 chunks). The
+/// relay holds the answer of D and sends its abort after the first chunk of R when
+/// `inside`, else before it. Gives the reads of R, a read of [`VALUE`] after them, and
+/// the value. An abort that does not end its D leaves no slot for the last read.
 fn interleaved(inside: bool) -> (Values, Result<Value, Fault>, Value) {
     run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
@@ -203,7 +203,7 @@ fn interleaved(inside: bool) -> (Values, Result<Value, Fault>, Value) {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
                 let mut reads = Vec::new();
-                for _ in 0..16 {
+                for _ in 0..=READS {
                     armed.set(true);
                     drop_reads(&mut client, 1).await;
                     reads.push(client.read_one(&FITS).await);
@@ -226,7 +226,7 @@ fn interleaved(inside: bool) -> (Values, Result<Value, Fault>, Value) {
 #[test]
 fn an_abort_before_the_chunks_of_another_read_leaves_its_answer() {
     let (reads, after, value) = interleaved(false);
-    assert_eq!(reads, vec![mistyped("ByteString"); 16]);
+    assert_eq!(reads, vec![mistyped("ByteString"); usize::from(READS) + 1]);
     assert_eq!(after, Ok(value));
 }
 
@@ -236,7 +236,7 @@ fn an_abort_before_the_chunks_of_another_read_leaves_its_answer() {
 #[test]
 fn an_abort_between_the_chunks_of_another_read_leaves_its_answer() {
     let (reads, after, value) = interleaved(true);
-    assert_eq!(reads, vec![mistyped("ByteString"); 16]);
+    assert_eq!(reads, vec![mistyped("ByteString"); usize::from(READS) + 1]);
     assert_eq!(after, Ok(value));
 }
 

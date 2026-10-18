@@ -14,7 +14,7 @@ use crate::value::{Fault, Value};
 const MESSAGE: u32 = 1 << 29;
 
 /// Connects a client of `peer` to `url` that takes messages of up to `message` bytes,
-/// and reads [`VALUE`] once, as open62541 reads the namespace array after the connect.
+/// and reads [`VALUE`] once, so the connect is done before the relay arms.
 async fn connect(peer: &mut Peer<'_>, url: &str, message: u32) -> Client {
     let mut client = peer.limited(url, None, Some(message)).await;
     assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
