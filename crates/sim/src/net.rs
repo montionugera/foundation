@@ -6,7 +6,7 @@ pub(crate) mod udp;
 mod wire;
 
 use std::collections::BTreeMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 
 use env::net::Error;
 use env::rng::Rng;
@@ -78,7 +78,8 @@ fn receives(node: usize, local: SocketAddr, destination: SocketAddr) -> bool {
 
 /// The address that a bind of `local` on `node` takes, where `bound` gives the local
 /// address of each socket of the node of the same kind. Port 0 takes the first free
-/// port from 49152.
+/// port from 49152. An IPv6 address keeps the scope of `local`, with no flow info, as
+/// `getsockname` gives.
 ///
 /// # Errors
 ///
@@ -109,7 +110,12 @@ fn bind(
     let Some(port) = port else {
         return Err(Error::AddressInUse { local });
     };
-    Ok(SocketAddr::new(ip, port))
+    Ok(match local {
+        SocketAddr::V4(_) => SocketAddr::new(ip, port),
+        SocketAddr::V6(local) => {
+            SocketAddrV6::new(*local.ip(), port, 0, local.scope_id()).into()
+        }
+    })
 }
 
 /// What happens to a packet, for the digest.

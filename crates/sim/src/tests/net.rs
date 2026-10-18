@@ -1106,6 +1106,24 @@ fn port_zero_binds_the_lowest_free_port() {
     assert_eq!(again.local(), taken);
 }
 
+/// A bind of an IPv6 address keeps its scope and drops its flow info, as
+/// `getsockname` gives; also on port 0.
+#[test]
+fn a_v6_bind_keeps_its_scope_and_no_flow_info() {
+    let mut sim = sim(0);
+    let node = sim.node(node::Config::default());
+    let IpAddr::V6(v6) = node.addresses()[1] else {
+        panic!("the second address is IPv6");
+    };
+    for port in [4433, 0] {
+        let local = SocketAddr::V6(SocketAddrV6::new(v6, port, 5, 2));
+        let (sender, _receiver) = bind(&node, local).unwrap();
+        let port = sender.local().port();
+        let kept = SocketAddr::V6(SocketAddrV6::new(v6, port, 0, 2));
+        assert_eq!(sender.local(), kept);
+    }
+}
+
 #[test]
 fn a_bind_to_an_address_of_another_node_fails() {
     let (_sim, a, b) = pair(0, link::Config::default());
