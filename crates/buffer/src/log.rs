@@ -4,7 +4,7 @@
 #![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
 use std::collections::VecDeque;
-use std::collections::vec_deque::Drain;
+use std::collections::vec_deque::{self, Drain};
 use std::fmt;
 use std::num::{NonZeroU8, NonZeroU32, NonZeroU64};
 use std::ops::Deref;
@@ -690,6 +690,12 @@ impl Holder {
         Self(at | COPY)
     }
 
+    /// The place of the log of a holder of a tail. Each holder in a record whose items
+    /// hold no copy holds a tail.
+    fn at(self) -> u32 {
+        self.0
+    }
+
     fn held(self) -> Held {
         if self.0 & COPY == 0 {
             Held::Tail(self.0)
@@ -907,16 +913,22 @@ impl Logs {
         );
         let mut budget = self.laps.budget();
         self.hidden = tail;
-        while let Some((offset, holders)) = self.items.pop(tail) {
+        while let Some((offset, copied, holders)) = self.items.pop(tail) {
             budget.trimmed(holders.len());
-            for holder in holders {
-                let Held::Tail(at) = holder.held() else {
-                    continue;
-                };
+            let trim = |at| {
                 let log = nth_mut(&mut self.paths, at);
                 if log.trim(offset, self.area) {
                     self.laps.end(&mut budget, log, at, offset);
                 }
+            };
+            if copied {
+                let tails = holders.filter_map(|holder| match holder.held() {
+                    Held::Tail(at) => Some(at),
+                    Held::Copy(_) => None,
+                });
+                tails.for_each(trim);
+            } else {
+                holders.map(Holder::at).for_each(trim);
             }
         }
         self.laps.finish(&mut budget, &mut self.paths, tail);
@@ -948,41 +960,53 @@ impl Logs {
     pub(crate) fn carry(&mut self, reach: u64, room: usize, carried: &mut Carried) {
         carried.clear();
         let mut walk = carry::count(room).saturating_mul(FILL);
-        let mut record = None;
-        let mut start = (self.scanned, carried.taken());
-        'take: {
-            for (number, offset, holder) in self.items.since(self.scanned) {
-                if record != Some(offset) {
-                    record = Some(offset);
-                    start = (number, carried.taken());
-                }
-                if offset >= reach {
-                    let filling = !carried.is_empty();
-                    let Some(left) = walk.checked_sub(1).filter(|_| filling) else {
-                        break 'take;
-                    };
-                    walk = left;
-                }
-                if !self.holds(holder, offset) {
-                    continue;
-                }
-                let first = carried.is_empty();
-                let fits = match holder.held() {
+        let mut stop = None;
+        for record in self.items.records(self.scanned) {
+            let empty = carried.is_empty();
+            if record.offset >= reach {
+                let walked = walk.checked_sub(record.holders.len());
+                let Some(left) = walked.filter(|_| !empty) else {
+                    stop = Some(record.number);
+                    break;
+                };
+                walk = left;
+            }
+            let (number, taken) = (record.number, carried.taken());
+            if !self.take(record, room, carried) {
+                carried.truncate(taken);
+                stop = Some(number);
+                break;
+            }
+            if empty && !carried.is_empty() {
+                carried.first = number;
+            }
+        }
+        self.scanned = stop.unwrap_or_else(|| self.items.added());
+    }
+
+    /// Adds to `carried` the holders of the items of `record` that still hold it, and
+    /// returns whether they all fit in `room` bytes, as [`Carried::tail`] and
+    /// [`Carried::copy`] give it.
+    fn take(&self, record: Record<'_>, room: usize, carried: &mut Carried) -> bool {
+        let Record {
+            offset,
+            copied,
+            holders,
+            ..
+        } = record;
+        if !copied {
+            return holders.map(|holder| holder.at()).all(|at| {
+                let log = nth(&self.paths, at);
+                log.holder != Some(offset) || carried.tail(log, at, room)
+            });
+        }
+        holders.copied().all(|holder| {
+            !self.holds(holder, offset)
+                || match holder.held() {
                     Held::Tail(at) => carried.tail(nth(&self.paths, at), at, room),
                     Held::Copy(at) => carried.copy(nth(&self.copies, at), at, room),
-                };
-                if !fits {
-                    break 'take;
                 }
-                if first {
-                    carried.first = number;
-                }
-            }
-            self.scanned = self.items.added();
-            return;
-        }
-        carried.truncate(start.1);
-        self.scanned = start.0;
+        })
     }
 
     /// Takes back the [`carry`](Self::carry) call that filled `carried`, whose carry
@@ -1412,7 +1436,8 @@ pub(crate) struct Carried {
     copies: Vec<(u32, Mark)>,
     /// The bytes of the copies.
     bytes: usize,
-    /// The number of the item of the first holder.
+    /// The number of the first item of the record of the first holder, from where
+    /// the call that filled it walked.
     first: u64,
 }
 
@@ -1538,12 +1563,17 @@ fn nth_mut<T>(items: &mut [T], at: u32) -> &mut T {
     items.get_mut(at).expect("invariant: a place has its item")
 }
 
+/// The bit of the end of a record in [`Items::records`] that marks a record with an
+/// item that holds a copy.
+const COPIED: u64 = 1 << 63;
+
 /// The holder of each item, grouped by record in ring order. Items are numbered from
 /// 0 in the order that they came, and no number is used twice.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 struct Items {
-    /// The offset of each record with an item, and the number after its last item.
+    /// The offset of each record with an item, and the number after its last item,
+    /// with [`COPIED`] set when an item of the record holds a copy.
     records: VecDeque<(u64, u64)>,
     /// The holder of each item.
     holders: VecDeque<Holder>,
@@ -1555,44 +1585,70 @@ impl Items {
     /// Adds an item for `holder` in the record at `offset`, which is at or after the
     /// record of each item.
     fn push(&mut self, offset: u64, holder: Holder) {
-        let next = self.added().checked_add(1).expect("invariant: numbers fit");
+        let next = self
+            .added()
+            .checked_add(1)
+            .filter(|&next| next < COPIED)
+            .expect("invariant: numbers fit");
+        let copied = match holder.held() {
+            Held::Tail(_) => 0,
+            Held::Copy(_) => COPIED,
+        };
         match self.records.back_mut() {
-            Some((last, end)) if *last == offset => *end = next,
-            _ => self.records.push_back((offset, next)),
+            Some((last, end)) if *last == offset => {
+                *end = next | (*end & COPIED) | copied;
+            }
+            _ => self.records.push_back((offset, next | copied)),
         }
         self.holders.push_back(holder);
     }
 
     /// The number of the next item that `push` adds.
     fn added(&self) -> u64 {
-        self.records.back().map_or(self.base, |&(_, end)| end)
+        self.records
+            .back()
+            .map_or(self.base, |&(_, end)| end & !COPIED)
     }
 
-    /// Removes the front record when it is before `tail`, and gives its offset and
-    /// the holders of its items.
-    fn pop(&mut self, tail: u64) -> Option<(u64, Drain<'_, Holder>)> {
+    /// Removes the front record when it is before `tail`, and gives its offset,
+    /// whether an item of it holds a copy, and the holders of its items.
+    fn pop(&mut self, tail: u64) -> Option<(u64, bool, Drain<'_, Holder>)> {
         let &(offset, end) =
             self.records.front().filter(|&&(offset, _)| offset < tail)?;
         self.records.pop_front();
-        let count = self.index(end);
-        self.base = end;
-        Some((offset, self.holders.drain(..count)))
+        let count = self.index(end & !COPIED);
+        self.base = end & !COPIED;
+        Some((offset, end & COPIED != 0, self.holders.drain(..count)))
+    }
+
+    /// The items of each record from the number `from`, or from the front item when
+    /// it is past, oldest first.
+    fn records(&self, from: u64) -> impl Iterator<Item = Record<'_>> {
+        let mut start = from.max(self.base);
+        let first = self
+            .records
+            .partition_point(|&(_, end)| end & !COPIED <= start);
+        self.records.range(first..).map(move |&(offset, end)| {
+            let number = start;
+            start = end & !COPIED;
+            Record {
+                number,
+                offset,
+                copied: end & COPIED != 0,
+                holders: self.holders.range(self.index(number)..self.index(start)),
+            }
+        })
     }
 
     /// Each item from the number `from`, or from the front item when it is past, with
     /// its number and the offset of its record, oldest first.
     fn since(&self, from: u64) -> impl Iterator<Item = (u64, u64, Holder)> + '_ {
-        let mut start = from.max(self.base);
-        let first = self.records.partition_point(|&(_, end)| end <= start);
-        let skip = self.index(start);
-        let numbers = self.records.range(first..).flat_map(move |&(offset, end)| {
-            let numbers = start..end;
-            start = end;
-            numbers.map(move |number| (number, offset))
-        });
-        numbers
-            .zip(self.holders.range(skip..))
-            .map(|((number, offset), &holder)| (number, offset, holder))
+        self.records(from).flat_map(|record| {
+            let offset = record.offset;
+            (record.number..)
+                .zip(record.holders)
+                .map(move |(number, &holder)| (number, offset, holder))
+        })
     }
 
     /// The index in `holders` of the item numbered `number`, at or after the front.
@@ -1602,6 +1658,17 @@ impl Items {
             .and_then(|index| usize::try_from(index).ok())
             .expect("invariant: a number at or after the front fits")
     }
+}
+
+/// The items of a record from a number, as [`Items::records`] gives them.
+struct Record<'a> {
+    /// The number of the first of these items.
+    number: u64,
+    /// The offset of the record.
+    offset: u64,
+    /// Whether an item of the record holds a copy.
+    copied: bool,
+    holders: vec_deque::Iter<'a, Holder>,
 }
 
 #[cfg(test)]
@@ -2824,13 +2891,49 @@ mod tests {
         items.push(4096, Holder::tail(1));
         items.push(4096, Holder::copy(2));
         items.push(8192, Holder::tail(3));
-        let (offset, holders) = items.pop(8192).expect("a record before the tail");
+        let (offset, copied, holders) =
+            items.pop(8192).expect("a record before the tail");
         let holders: Vec<_> = holders.map(Holder::held).collect();
         assert_eq!(
-            (offset, holders),
-            (4096, vec![Held::Tail(1), Held::Copy(2)])
+            (offset, copied, holders),
+            (4096, true, vec![Held::Tail(1), Held::Copy(2)])
         );
         assert!(items.pop(8192).is_none(), "only the record at 8192 is left");
+        let (offset, copied, holders) =
+            items.pop(12288).expect("a record before the tail");
+        let holders: Vec<_> = holders.map(Holder::held).collect();
+        assert_eq!(
+            (offset, copied, holders),
+            (8192, false, vec![Held::Tail(3)])
+        );
+    }
+
+    /// A copy marks only its own record, after or before the tails of the record.
+    #[test]
+    fn the_records_from_a_number_mark_each_record_with_a_copy() {
+        let mut items = Items::default();
+        items.push(4096, Holder::tail(1));
+        items.push(4096, Holder::tail(2));
+        items.push(8192, Holder::copy(1));
+        items.push(8192, Holder::tail(3));
+        items.push(12288, Holder::tail(4));
+        let records: Vec<_> = items
+            .records(1)
+            .map(|record| {
+                let holders: Vec<_> =
+                    record.holders.map(|holder| holder.held()).collect();
+                (record.number, record.offset, record.copied, holders)
+            })
+            .collect();
+        assert_eq!(
+            records,
+            [
+                (1, 4096, false, vec![Held::Tail(2)]),
+                (2, 8192, true, vec![Held::Copy(1), Held::Tail(3)]),
+                (4, 12288, false, vec![Held::Tail(4)]),
+            ]
+        );
+        assert_eq!(items.added(), 5);
     }
 
     #[test]
