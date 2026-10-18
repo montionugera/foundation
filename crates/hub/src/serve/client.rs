@@ -21,6 +21,7 @@ use crate::State;
 use crate::link::{Served, Session};
 
 pub(super) mod read;
+pub(super) mod write;
 
 /// A request of a client, which `access` verified.
 #[derive(Debug)]
@@ -90,9 +91,10 @@ impl Gate {
     }
 }
 
-/// The body bytes that the open requests and reads of a hub reserved: in all, at most
-/// [`BODIES_BYTES_MAX`], and for each subject, at most [`BODY_BYTES_MAX`]. Shared
-/// borrows only, so the drop of a reply needs no mutable borrow of the hub's state.
+/// The body bytes that the open requests, reads, and writes of a hub reserved: in all,
+/// at most [`BODIES_BYTES_MAX`], and for each subject, at most [`BODY_BYTES_MAX`].
+/// Shared borrows only, so the drop of a reply needs no mutable borrow of the hub's
+/// state.
 #[derive(Debug, Default)]
 pub(crate) struct Bodies {
     held: Cell<u64>,
@@ -375,9 +377,10 @@ pub(crate) async fn later(
                 .await
                 .map(|()| Served::Ended)
         }
-        // This node serves no write stream yet.
-        Ok(Some((_, First::Write(_)))) => {
-            Err(Error::Client(wire::hub::client::Error::Kind { kind: 7 }))
+        Ok(Some((subject, First::Write(open)))) => {
+            write::serve(session, subject, open, &mut receiver, &mut sender)
+                .await
+                .map(|()| Served::Ended)
         }
         Err(error) => Err(error),
     };

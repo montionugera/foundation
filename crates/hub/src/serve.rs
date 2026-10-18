@@ -27,22 +27,27 @@ use wire::hub::{
 
 use crate::pending::Pending;
 use crate::reader::{self, Channels, Complete, Session, Stop};
+use crate::writer;
 use crate::{Away, State};
 
 pub use client::{Reply, Request};
 
 /// The most bytes of client bodies that one hub holds at once, over each of its links:
 /// the body of a request from its decode until the caller sends or drops its
-/// [`Reply`], and the open of a read until it decodes after the wait for the home of
-/// its index. A body that does not fit stops with `BUSY` before the hub reads a byte
-/// of it. The bodies of one subject hold at most [`BODY_BYTES_MAX`] of it
+/// [`Reply`], the open of a read until it decodes after the wait for the home of its
+/// index, the open of a write until it decodes, and the ends of each write stream, 16
+/// bytes for each channel of its open and one for its index, from the decode of the
+/// open until the stream ends. A body that does not fit stops with `BUSY` before the
+/// hub reads a byte of it, and ends that do not fit stop with `BUSY` before the writer
+/// opens. The bodies of one subject hold at most [`BODY_BYTES_MAX`] of it
 /// ([`Error::Share`]).
 pub const BODIES_BYTES_MAX: u64 = 2 * BODY_BYTES_MAX;
 
 /// Why [`Link::serve`](crate::Link::serve) ended a stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// A message from a reader's node that `wire::hub` refuses. Code `MALFORMED`.
+    /// A message from a reader's node, or a frame of a write from a program, that
+    /// `wire::hub` refuses. Code `MALFORMED`.
     Message(wire::hub::Error),
     /// A message from a program that `wire::hub::client` refuses, or a body that ended
     /// early ([`wire::hub::client::Error::Unfinished`]). Code `MALFORMED`.
@@ -51,7 +56,8 @@ pub enum Error {
     OneWay,
     /// The stream's class is not the class of the open's mode. Code `MALFORMED`.
     Class(Class),
-    /// The keys of the open are on more than one index. Code `MALFORMED`.
+    /// The keys of the open of a read, or the channels of the open of a write, are on
+    /// more than one index. Code `MALFORMED`.
     ManyIndexes,
     /// The selector of a read matches more than [`wire::hub::client::PLACES_MAX`]
     /// places with their index. Code `MALFORMED`.
@@ -90,25 +96,29 @@ pub enum Error {
     /// A request stream while another request of the link waits for its reply. Code
     /// `MALFORMED`.
     Pending,
-    /// The request bodies and read opens of the hub hold so many body bytes that a
-    /// body of `length` more is over [`BODIES_BYTES_MAX`]. Code `BUSY`. A retry can
-    /// succeed once enough of them are released.
+    /// The request bodies, read opens, write opens, and ends of write streams of the
+    /// hub hold so many body bytes that a body or ends of `length` more are over
+    /// [`BODIES_BYTES_MAX`]. Code `BUSY`. The ends of a write are released only when
+    /// its stream ends. A retry can succeed once enough of them are released.
     Bodies {
-        /// The body length of the refused request or read.
+        /// The bytes of the refused request, read, or write: a body, or the ends of a
+        /// write.
         length: u64,
-        /// The body bytes that the open requests and reads of the hub held.
+        /// The body bytes that the open requests, reads, and writes of the hub held.
         held: u64,
     },
-    /// The request bodies and read opens of `subject`, over each link of the hub, hold
-    /// so many body bytes that a body of `length` more is over the share of one
-    /// subject, [`BODY_BYTES_MAX`]. Code `BUSY`. A retry can succeed once enough of
-    /// them are released.
+    /// The request bodies, read opens, write opens, and ends of write streams of
+    /// `subject`, over each link of the hub, hold so many body bytes that a body or
+    /// ends of `length` more are over the share of one subject, [`BODY_BYTES_MAX`].
+    /// Code `BUSY`. The ends of a write are released only when its stream ends. A
+    /// retry can succeed once enough of them are released.
     Share {
         /// The subject of the link's admitted hello.
         subject: Name,
-        /// The body length of the refused request or read.
+        /// The bytes of the refused request, read, or write: a body, or the ends of a
+        /// write.
         length: u64,
-        /// The body bytes that the open requests and reads of `subject` held.
+        /// The body bytes that the open requests, reads, and writes of `subject` held.
         held: u64,
     },
     /// The reader of a read did not open. Code: `UNKNOWN` for [`reader::Error::Empty`],
@@ -122,6 +132,13 @@ pub enum Error {
     /// `MALFORMED`, and `FAILED` for `Buffer`, `Stream`, `Message`, `Frame`, and
     /// `Credit`. A read gives no `Replaced`.
     Ended(Box<reader::Ended>),
+    /// The writer of a write did not open. Code: `UNKNOWN` for
+    /// [`writer::Error::Unknown`], `NOT_HOME` for `Remote`, `FAILED` for `Mesh`, and
+    /// `MALFORMED` for a `Home` error of `Lease`. A write gives no `Empty` and no
+    /// `Home` error of `Unsynced`.
+    Writer(Box<writer::Error>),
+    /// The ends of a frame of a write break a rule of its key set. Code `MALFORMED`.
+    Frame(types::frame::Error),
 }
 
 impl Error {
@@ -137,7 +154,8 @@ impl Error {
             | Self::NoIndex
             | Self::Repeated(_)
             | Self::Unadmitted
-            | Self::Pending => Some(Code(MALFORMED)),
+            | Self::Pending
+            | Self::Frame(_) => Some(Code(MALFORMED)),
             Self::Access(error) => Some(Code(client::refusal(error).code())),
             Self::Stale => Some(Code(Refusal::Stale.code())),
             Self::Unknown(_) | Self::Removed(_) => Some(Code(UNKNOWN)),
@@ -149,6 +167,7 @@ impl Error {
             Self::Stream(_) => None,
             Self::Reader(error) => Some(Code(client::read::refused(error).code())),
             Self::Ended(ended) => Some(Code(client::read::ended(ended).code())),
+            Self::Writer(error) => Some(Code(client::write::refused(error).code())),
         }
     }
 }
@@ -215,8 +234,8 @@ impl fmt::Display for Error {
             Self::Bodies { length, held } => write!(
                 f,
                 "a body of {length} bytes does not fit under the cap of \
-                 {BODIES_BYTES_MAX} bytes: the open requests and reads of the hub hold \
-                 {held} bytes"
+                 {BODIES_BYTES_MAX} bytes: the open requests, reads, and writes of \
+                 the hub hold {held} bytes"
             ),
             Self::Share {
                 subject,
@@ -225,13 +244,19 @@ impl fmt::Display for Error {
             } => write!(
                 f,
                 "a body of {length} bytes does not fit under the share of \
-                 {BODY_BYTES_MAX} bytes of subject {subject}: its open requests and \
-                 reads hold {held} bytes"
+                 {BODY_BYTES_MAX} bytes of subject {subject}: its open requests, \
+                 reads, and writes hold {held} bytes"
             ),
             Self::Reader(error) => {
                 write!(f, "the reader of a read did not open: {error}")
             }
             Self::Ended(ended) => write!(f, "the reader of a read ended: {ended}"),
+            Self::Writer(error) => {
+                write!(f, "the writer of a write did not open: {error}")
+            }
+            Self::Frame(error) => {
+                write!(f, "a frame of a write is not valid: {error}")
+            }
         }
     }
 }
@@ -835,6 +860,63 @@ mod tests {
     #[test]
     fn keeps_an_error_at_64_bytes() {
         assert_eq!(size_of::<Error>(), 64);
+    }
+
+    /// Each error of the writer of a write that a write can give stops it with its
+    /// code, and so does a frame that breaks a rule of its key set.
+    #[test]
+    fn each_error_of_the_writer_of_a_write_has_its_code() {
+        let cases = [
+            (
+                Error::Writer(Box::new(writer::Error::Unknown(
+                    "a".parse().expect("a name"),
+                ))),
+                UNKNOWN,
+            ),
+            (
+                Error::Writer(Box::new(writer::Error::Remote {
+                    home: types::node::Key::from_u128(2),
+                })),
+                NOT_HOME,
+            ),
+            (
+                Error::Writer(Box::new(writer::Error::Mesh(mesh::Stopped::Dropped))),
+                FAILED,
+            ),
+            (
+                Error::Writer(Box::new(writer::Error::Home(
+                    ::home::writer::Error::Lease {
+                        span: types::time::Span::ZERO,
+                    },
+                ))),
+                MALFORMED,
+            ),
+            (
+                Error::Frame(frame::Error::OutOfRange {
+                    entry: 1,
+                    entries: 1,
+                }),
+                MALFORMED,
+            ),
+        ];
+        for (error, code) in cases {
+            assert_eq!(error.code(), Some(Code(code)), "{error:?}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "invariant: a write does not give Empty")]
+    fn panics_for_the_code_of_a_writer_that_names_no_channel() {
+        Error::Writer(Box::new(writer::Error::Empty)).code();
+    }
+
+    #[test]
+    #[should_panic(expected = "invariant: a write does not give Home(Unsynced)")]
+    fn panics_for_the_code_of_a_writer_that_the_home_refuses_as_unsynced() {
+        Error::Writer(Box::new(writer::Error::Home(
+            ::home::writer::Error::Unsynced,
+        )))
+        .code();
     }
 
     #[test]
