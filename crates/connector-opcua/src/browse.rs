@@ -317,7 +317,7 @@ impl browse::Device for Server<'_> {
     /// [`Error::Config`] with `opcua.bad-cursor` when the text of `cursor` is not a
     /// count, or is a count past 100 000 that this browse does not hold.
     /// [`Error::Device`] when a Browse, a `BrowseNext`, or a describe fails, or when
-    /// the tags and names before the page, with those of the points that the browse
+    /// the tags and names of the folder up to the end of the page, with those of the points that the browse
     /// cannot release, pass [`BYTES`].
     ///
     /// # Panics
