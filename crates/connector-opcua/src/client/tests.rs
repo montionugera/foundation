@@ -813,7 +813,7 @@ fn read_large(chunks: u32) -> (Result<Value, Fault>, Result<Value, Fault>) {
 /// The answer of [`FITS`] arrives and is not a Double. The answer of [`PAST`] needs
 /// more than [`CHUNKS`] chunks. The test server refuses to send it, and sends an
 /// error that closes the channel. A server that sends it makes the client close the
-/// channel at the chunk past the bound.
+/// channel at its final chunk.
 #[test]
 fn an_answer_of_more_chunks_than_the_bound_fails() {
     let large = (

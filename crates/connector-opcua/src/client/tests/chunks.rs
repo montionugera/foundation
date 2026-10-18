@@ -149,32 +149,55 @@ fn the_largest_message_bounds_each_answer_not_the_queue() {
 /// The body of each forged chunk of [`forged`] in a test of a length, in bytes.
 const BODY: usize = 64_000;
 
-/// An intermediate chunk of the request id `id`, which no request has, with the
+/// A chunk of the kind `kind` and the request id `id`, which no request has, with the
 /// headers of the MSG chunk `chunk` and a body of `body` bytes.
-fn forged(chunk: &[u8], id: u32, body: usize) -> Vec<u8> {
-    with_id(rebuilt(chunk, b'C', &vec![0; body]), id)
+fn forged(chunk: &[u8], kind: u8, id: u32, body: usize) -> Vec<u8> {
+    with_id(rebuilt(chunk, kind, &vec![0; body]), id)
+}
+
+/// The forged chunks of [`after_forged`]: `counts[i]` intermediate chunks of the
+/// request id `1_000_000 + i`, each with a body of `body` bytes.
+fn intermediates(
+    counts: &[usize],
+    body: usize,
+) -> impl Fn(&[u8]) -> Vec<Vec<u8>> + Send + 'static {
+    let counts = counts.to_vec();
+    move |chunk| {
+        let mut out = Vec::new();
+        for (offset, &count) in (0u32..).zip(&counts) {
+            let forged = forged(chunk, b'C', 1_000_000 + offset, body);
+            out.extend(std::iter::repeat_n(forged, count));
+        }
+        out
+    }
+}
+
+/// The forged chunks of [`after_forged`]: an answer of the request id `1_000_000` in
+/// `count` intermediate chunks and a final chunk, each with a body of `body` bytes.
+fn answer(
+    count: usize,
+    body: usize,
+) -> impl Fn(&[u8]) -> Vec<Vec<u8>> + Send + 'static {
+    move |chunk| {
+        let mut out = intermediates(&[count], body)(chunk);
+        out.push(forged(chunk, b'F', 1_000_000, body));
+        out
+    }
 }
 
 /// The answers of two reads of [`VALUE`], and the value of the server. Before the
-/// answer of the first, the relay sends `counts[i]` forged intermediate chunks of the
-/// request id `1_000_000 + i`, each with a body of `body` bytes. The client takes
-/// messages of up to `message` bytes.
+/// answer of the first, the relay sends the chunks that `forge` makes from its first
+/// chunk. The client takes messages of up to `message` bytes.
 fn after_forged(
-    counts: &[usize],
-    body: usize,
+    forge: impl Fn(&[u8]) -> Vec<Vec<u8>> + Send + 'static,
     message: u32,
 ) -> (Result<Value, Fault>, Result<Value, Fault>, Value) {
-    let counts = counts.to_vec();
     run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
             let armed = Cell::new(false);
             let order = |held: Vec<Vec<u8>>| {
-                let mut out = Vec::new();
-                for (offset, &count) in (0u32..).zip(&counts) {
-                    let chunk = forged(&held[0], 1_000_000 + offset, body);
-                    out.extend(std::iter::repeat_n(chunk, count));
-                }
+                let mut out = forge(&held[0]);
                 out.extend(held);
                 out
             };
@@ -211,11 +234,33 @@ fn closed() -> (Result<Value, Fault>, Result<Value, Fault>) {
 fn the_intermediate_chunks_of_one_request_id_stop_only_at_the_queue_bound() {
     let queued = usize::from(READS) * (to_usize(CHUNKS) - 1);
     let message = u32::try_from(3 * BODY).expect("fits");
-    let (read, after, value) = after_forged(&[4], BODY, message);
+    let (read, after, value) = after_forged(intermediates(&[4], BODY), message);
     assert_eq!((read, after), (Ok(value), Ok(value)));
-    let (read, after, _) = after_forged(&[queued], 1, MESSAGE);
+    let (read, after, _) = after_forged(intermediates(&[queued], 1), MESSAGE);
     assert_eq!((read, after), (Ok(value), Ok(value)));
-    let (read, after, _) = after_forged(&[queued + 1], 1, MESSAGE);
+    let (read, after, _) = after_forged(intermediates(&[queued + 1], 1), MESSAGE);
+    assert_eq!((read, after), closed());
+}
+
+/// An answer of a request id that no request has, of [`CHUNKS`] chunks, leaves the
+/// channel open, and one past [`CHUNKS`] chunks closes it at its final chunk.
+#[test]
+fn an_answer_past_the_bound_of_chunks_closes_the_channel_at_its_final_chunk() {
+    let chunks = to_usize(CHUNKS);
+    let (read, after, value) = after_forged(answer(chunks - 1, 1), MESSAGE);
+    assert_eq!((read, after), (Ok(value), Ok(value)));
+    let (read, after, _) = after_forged(answer(chunks, 1), MESSAGE);
+    assert_eq!((read, after), closed());
+}
+
+/// An answer of a request id that no request has, of the largest message, leaves the
+/// channel open, and one past the largest message closes it at its final chunk.
+#[test]
+fn an_answer_past_the_largest_message_closes_the_channel_at_its_final_chunk() {
+    let message = u32::try_from(3 * BODY).expect("fits");
+    let (read, after, value) = after_forged(answer(2, BODY), message);
+    assert_eq!((read, after), (Ok(value), Ok(value)));
+    let (read, after, _) = after_forged(answer(3, BODY), message);
     assert_eq!((read, after), closed());
 }
 
@@ -228,11 +273,11 @@ fn the_queue_of_a_channel_stops_at_the_chunks_of_the_answers_in_flight() {
     let queued = usize::from(READS) * (chunks - 1);
     let mut full = vec![chunks; queued / chunks];
     full.push(queued % chunks);
-    let (read, after, value) = after_forged(&full, 1, MESSAGE);
+    let (read, after, value) = after_forged(intermediates(&full, 1), MESSAGE);
     assert_eq!((read, after), (Ok(value), Ok(value)));
     let mut past = full;
     past.push(1);
-    let (read, after, _) = after_forged(&past, 1, MESSAGE);
+    let (read, after, _) = after_forged(intermediates(&past, 1), MESSAGE);
     assert_eq!((read, after), closed());
 }
 
