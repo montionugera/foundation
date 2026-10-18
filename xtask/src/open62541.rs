@@ -2378,6 +2378,8 @@ Disassembly of section .text.stamp:
         remove(&root).unwrap();
     }
 
+    /// Through a private call: a new test of [`check`] needs GCC, which the macOS job
+    /// of CI lacks (#3041).
     #[test]
     fn includes_refuses_each_system_header_under_openssl_that_the_unit_enters() {
         let root = temp("includes-openssl");
@@ -2503,6 +2505,8 @@ n = read_x(b, 0, 0, 0);
             .into()
     }
 
+    /// Through a private call: a new test of [`check`] needs GCC, which the macOS job
+    /// of CI lacks (#3041).
     #[test]
     fn crypto_readers_reads_each_header_of_aws_lc() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
@@ -2515,6 +2519,8 @@ n = read_x(b, 0, 0, 0);
         assert_eq!(crypto().readers(Path::new("cc")), Ok(BTreeMap::new()));
     }
 
+    /// Through a private call: a new test of [`check`] needs GCC, which the macOS job
+    /// of CI lacks (#3041).
     #[test]
     fn crypto_readers_reads_the_first_header_of_each_name_under_openssl() {
         let dir = temp("readers");
@@ -2532,6 +2538,8 @@ n = read_x(b, 0, 0, 0);
                 ),
                 ("second/openssl/x/c.h", "int read_c(pem_password_cb *cb);\n"),
                 ("second/openssl/d.c", "int read_d(pem_password_cb *cb);\n"),
+                ("second/openssl/e.h.in", "#error e\n"),
+                ("bad/openssl/f.h", "#error f\n"),
             ],
         );
         let readers = |include: &[&str]| {
@@ -2547,6 +2555,10 @@ n = read_x(b, 0, 0, 0);
                 .map(|(name, place)| (name.to_owned(), place))
                 .into())
         );
+        let error = readers(&["bad"]).unwrap_err();
+        assert!(error.starts_with("cc failed: "), "{error}");
+        let place = format!("{}:1:2: error: ", dir.join("bad/openssl/f.h").display());
+        assert!(error.contains(&place), "{error}");
         assert_eq!(
             readers(&["first", "none"]),
             Err(format!(
@@ -2590,16 +2602,31 @@ n = read_x(b, 0, 0, 0);
         let text = committed(file);
         let line = text.lines().position(|line| line.contains(call)).unwrap() + 1;
         let changed = call.replace("UA_OpenSSL_refusePassword", "NULL");
-        let (result, prefix) =
-            check_edited("passwords", &[(file, &text.replacen(call, &changed, 1))]);
+        let util = committed(UTIL);
+        let last = util.lines().count();
+        let util = util
+            + "#include <openssl/ssl.h>\n\
+               void UA_x(SSL_CTX *c) { SSL_CTX_set_default_passwd_cb(c, 0); }\n";
+        let (result, prefix) = check_edited(
+            "passwords",
+            &[(file, &text.replacen(call, &changed, 1)), (UTIL, &util)],
+        );
         assert_eq!(
             result,
-            Err(vec![gives(
-                file,
-                &format!("{file}:{line}"),
-                "((void*)0)",
-                &prefix
-            )])
+            Err(vec![
+                gives(file, &format!("{file}:{line}"), "((void*)0)", &prefix),
+                format!(
+                    "{UTIL}: {UTIL}:{}: gives `SSL_CTX_set_default_passwd_cb` the \
+                     callback `0`, which PASSWORDS does not list",
+                    last + 2
+                ),
+                format!(
+                    "{UTIL}: `UA_x` calls `SSL_CTX_set_default_passwd_cb`, which no \
+                     list admits. Find whether a node runs it; if not, or if it reads \
+                     no clock, file, network, randomness, or process state, add it to \
+                     FUNCTION_SYMBOLS with the reason"
+                ),
+            ])
         );
     }
 
