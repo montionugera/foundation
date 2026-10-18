@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -16,6 +15,7 @@ use crate::common::{
     placed_site, plant, solo,
 };
 use crate::error::{Error, Problem};
+use crate::front_end::File;
 use crate::plan;
 
 const DENIED_FIX: &str =
@@ -195,10 +195,7 @@ fn problem(len: usize) -> Problem {
 
 /// The reply of `errors` with status 2.
 fn reply_of(errors: &[Problem]) -> Vec<u8> {
-    let failed = Answer::<()>::Failed {
-        errors: Cow::Borrowed(errors),
-        status: 2,
-    };
+    let failed = Answer::<(), _>::Failed { errors, status: 2 };
     let mut reply = serde_json::to_vec(&failed).expect("JSON");
     reply.push(b'\n');
     reply
@@ -234,6 +231,66 @@ fn an_error_over_the_bound_counts_the_rest_after_each_problem() {
         reply,
         reply_of(&[kept[0].clone(), kept[1].clone(), Problem::more(9)])
     );
+}
+
+#[test]
+fn a_plan_error_whose_first_problem_does_not_fit_gives_large_reply() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let max = usize::try_from(BODY_BYTES_MAX).expect("a usize");
+        let path = format!("{}.hcl", "x".repeat(max - 200));
+        let body = plan_body(&[(&path, "nope \"a\" {}\n")]);
+        assert!(
+            body.len() <= max,
+            "the request of {} bytes passes the bound of {max} bytes",
+            body.len()
+        );
+        let reply = serve(&node, &admin(), &body).await;
+        assert_eq!(split(&reply), (large(), &b""[..]));
+    });
+}
+
+/// The rest after the second problem has one digit fewer than after the first, so
+/// `serve` keeps the second only when it counts the rest after each problem.
+#[test]
+fn a_plan_error_over_the_bound_counts_the_rest_after_each_problem() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let max = usize::try_from(BODY_BYTES_MAX).expect("a usize");
+        let block = "nope \"a\" {}\n";
+        let rest = block.repeat(10);
+        let kept = |path: &str| {
+            let files = [
+                File {
+                    path: path.into(),
+                    text: block.to_owned(),
+                },
+                File {
+                    path: "b.hcl".into(),
+                    text: rest.clone(),
+                },
+            ];
+            let documents =
+                plan::Documents::read(&files, &node.front_ends).expect("documents");
+            let error = documents
+                .names(node.supervisor.kinds())
+                .expect_err("an error");
+            let mut kept = error.problems()[..2].to_vec();
+            kept.push(Problem::more(9));
+            reply_of(&kept)
+        };
+        let short = kept("a.hcl").len();
+        let path = format!("{}.hcl", "a".repeat(1 + max - short));
+        let expected = kept(&path);
+        assert_eq!(expected.len(), max);
+        let body = plan_body(&[(&path, block), ("b.hcl", &rest)]);
+        assert!(
+            body.len() <= max,
+            "the request of {} bytes passes the bound of {max} bytes",
+            body.len()
+        );
+        assert_eq!(serve(&node, &admin(), &body).await, expected);
+    });
 }
 
 #[test]
@@ -318,6 +375,40 @@ fn refuses_each_body_that_is_no_request() {
             assert_eq!(split(&reply), (bad(message), &b""[..]), "{text}");
         }
         assert_eq!(mesh.pointer().version, 0);
+    });
+}
+
+#[test]
+fn quotes_the_first_bytes_of_a_long_cause_for_each_path() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let mib = 1 << 20;
+        let name = "é".repeat(mib / 2);
+        let string = "a".repeat(mib);
+        let fits = "b".repeat(256 - "the operation `` does not run on a node".len());
+        let over = format!("{fits}c");
+        let cases = [
+            (
+                format!("{{\"{fits}\":{{}}}}\n"),
+                format!("the operation `{fits}` does not run on a node"),
+            ),
+            (
+                format!("{{\"{over}\":{{}}}}\n"),
+                format!("the operation `{over}` does not run on a nod..."),
+            ),
+            (
+                format!("{{\"{name}\":{{}}}}\n"),
+                format!("the operation `{}...", &name[..240]),
+            ),
+            (
+                format!("{{\"plan\":\"{string}\"}}\n"),
+                format!("invalid type: string \"{}...", &string[..234]),
+            ),
+        ];
+        for (body, message) in cases {
+            let reply = serve(&node, &admin(), body.as_bytes()).await;
+            assert_eq!(split(&reply), (bad(&message), &b""[..]));
+        }
     });
 }
 

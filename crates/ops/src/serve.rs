@@ -1,6 +1,5 @@
 //! The requests and replies of a remote program, and how the node runs each request.
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Write};
@@ -35,36 +34,69 @@ mod tests;
 /// `browse`, `ops.denied` for an action that no access policy gives `subject` and for a
 /// request that names no definition. An error reply over the bound keeps the problems
 /// that fit, then `ops.more-problems` for the rest. `ops.large-reply` takes the place
-/// of an output over the bound and of an error whose first problem does not fit, and
-/// `ops.large-browse` takes it for `browse`. `apply` also needs `apply` on the channel
-/// at each edge of each channel that the plan adds or changes, and `admin` on the key
-/// of each definition other than a channel that the plan adds, changes, or removes. It
-/// gives a home only to an index on which `subject` has `apply`, and drops each other
-/// home with no error. `status` shows only each connector on whose label and status
-/// channels `subject` has `read`. When it shows none, also when the node places none,
-/// it needs `read` on the name of the node, and gives `ops.denied` with no grant. It
-/// gives the failures of the read of the OS roots of the node only to a subject with
-/// `read` on the name of the node. It waits at most 1 s from the request. A connector
-/// is `unknown` when no status as the spec defines it comes in that time, and `status`
-/// gives `ops.channel-read` when the reader of a connector fails for another cause.
-/// `browse` needs `apply` and `admin` on the name of the connector, and browses only a
-/// connector that the files place on this node.
+/// of an output over the bound and of an error whose first problem does not fit,
+/// `ops.large-browse` takes it for `browse`, and `ops.large-status` for `status`.
+/// `apply` also needs `apply` on the channel at each edge of each channel that the plan
+/// adds or changes, and `admin` on the key of each definition other than a channel that
+/// the plan adds, changes, or removes. It gives a home only to an index on which
+/// `subject` has `apply`, and drops each other home with no error. `status` shows only
+/// each connector on whose label and status channels `subject` has `read`. When it
+/// shows none, also when the node places none, it needs `read` on the name of the node,
+/// and gives `ops.denied` with no grant. It gives the failures of the read of the OS
+/// roots of the node only to a subject with `read` on the name of the node. It waits at
+/// most 1 s from the request. A connector is `unknown` when no status as the spec
+/// defines it comes in that time, and `status` gives `ops.channel-read` when the reader
+/// of a connector fails for another cause. `browse` needs `apply` and `admin` on the
+/// name of the connector, and browses only a connector that the files place on this
+/// node.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
-    let reply = run(node, subject, body).await;
-    reply
-        .unwrap_or_else(|error| failed(&error, &Error::LargeReply))
-        .0
+    let reply = match read(body) {
+        // The cause is cut, so no reply of a body that is no request reaches
+        // `LargeReply`.
+        Err(error) => failed(&error, &Error::LargeReply),
+        Ok((request, rest)) => {
+            let large = request.large();
+            match run(node, subject, request, rest).await {
+                Ok(ran) => ran.body().unwrap_or_else(|Large| failed(&large, &large)),
+                Err(error) => failed(&error, &large),
+            }
+        }
+    };
+    reply.0
 }
 
 /// A body that would pass the bound.
 #[derive(Debug)]
 struct Large;
 
-impl From<Large> for Error {
-    fn from(Large: Large) -> Self {
-        Self::LargeReply
+/// The output of an operation that ran.
+enum Ran {
+    /// The output of `plan`, then its plan file.
+    Plan(Output, config::plan::Plan),
+    Apply(apply::Effect),
+    Status(status::Output),
+    Browse(crate::browse::Output),
+}
+
+impl Ran {
+    /// The reply that holds this output. Stops at the bound.
+    ///
+    /// # Errors
+    ///
+    /// `Large` when the reply passes the bound.
+    fn body(&self) -> Result<Body, Large> {
+        match self {
+            Self::Plan(output, plan) => {
+                let mut reply = Body::done(output)?;
+                reply.add(&plan.encode())?;
+                Ok(reply)
+            }
+            Self::Apply(effect) => Body::done(effect),
+            Self::Status(output) => Body::done(output),
+            Self::Browse(output) => Body::done(output),
+        }
     }
 }
 
@@ -73,7 +105,8 @@ impl From<Large> for Error {
 struct Body(Vec<u8>);
 
 impl Body {
-    /// The body of `head` as one line of JSON. Stops at the bound.
+    /// The body of `head` as one line of JSON. Stops at the bound. `fitting` counts
+    /// the layout of this line.
     ///
     /// # Errors
     ///
@@ -87,6 +120,24 @@ impl Body {
         }
         body.add(b"\n")?;
         Ok(body)
+    }
+
+    /// The body of a reply that holds `output`. Stops at the bound.
+    ///
+    /// # Errors
+    ///
+    /// `Large` when the line passes the bound.
+    fn done(output: &impl Serialize) -> Result<Self, Large> {
+        Self::line(&Answer::<_, ()>::Done { output })
+    }
+
+    /// The body of a reply that holds `errors` with `status`. Stops at the bound.
+    ///
+    /// # Errors
+    ///
+    /// `Large` when the line passes the bound.
+    fn failed(errors: impl Serialize, status: u8) -> Result<Self, Large> {
+        Self::line(&Answer::<(), _>::Failed { errors, status })
     }
 
     /// Adds `bytes` to the end.
@@ -125,6 +176,17 @@ enum Request {
     Browse(Browse),
     /// An operation of another name.
     Other(String),
+}
+
+impl Request {
+    /// The error of a reply of this request that passes the bound.
+    fn large(&self) -> Error {
+        match self {
+            Self::Plan(_) | Self::Apply | Self::Other(_) => Error::LargeReply,
+            Self::Status => Error::LargeStatus,
+            Self::Browse(_) => Error::LargeBrowse,
+        }
+    }
 }
 
 /// The input of `plan`: each config file, with its path as the user gave it.
@@ -235,17 +297,28 @@ impl<'de> Deserialize<'de> for Request {
 }
 
 /// The first line of a reply: the output of an operation that ran, or its errors with
-/// the exit status of the program.
+/// the exit status of the program. `fitting` counts the layout of `Failed`.
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
-enum Answer<'a, T> {
-    Done {
-        output: T,
-    },
-    Failed {
-        errors: Cow<'a, [Problem]>,
-        status: u8,
-    },
+enum Answer<T, E> {
+    Done { output: T },
+    Failed { errors: E, status: u8 },
+}
+
+/// The errors of a reply over the bound: the problems that fit, then
+/// `ops.more-problems`.
+struct Kept<'a> {
+    problems: &'a [Problem],
+    more: Problem,
+}
+
+impl Serialize for Kept<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.problems.iter().chain([&self.more]))
+    }
 }
 
 /// Whether `len` bytes are within the bound.
@@ -257,21 +330,20 @@ fn fits(len: usize) -> bool {
 /// problems of `error` that fit, then `ops.more-problems` for the rest, with the status
 /// of `error`, or it is the reply of `large` when not even the first problem fits.
 fn failed(error: &Error, large: &Error) -> Body {
-    let line = |errors: Cow<'_, [Problem]>, status: u8| {
-        Body::line(&Answer::<()>::Failed { errors, status })
-    };
     let problems = error.problems();
     let status = error.status();
-    line(Cow::Borrowed(&problems), status).unwrap_or_else(|Large| {
+    Body::failed(&*problems, status).unwrap_or_else(|Large| {
         let kept = fitting(&problems, status);
         if kept == 0 {
-            return line(large.problems(), large.status()).unwrap_or_else(|Large| {
-                panic!("invariant: the reply of an error of the bound fits")
-            });
+            return Body::failed(&*large.problems(), large.status()).unwrap_or_else(
+                |Large| panic!("invariant: the reply of an error of the bound fits"),
+            );
         }
-        let mut errors = problems[..kept].to_vec();
-        errors.push(Problem::more(problems.len() - kept));
-        line(Cow::Owned(errors), status)
+        let errors = Kept {
+            problems: &problems[..kept],
+            more: Problem::more(problems.len() - kept),
+        };
+        Body::failed(&errors, status)
             .unwrap_or_else(|Large| panic!("invariant: the problems that fit fit"))
     })
 }
@@ -279,17 +351,24 @@ fn failed(error: &Error, large: &Error) -> Body {
 /// How many of the first `problems` fit in one reply of `status`, with
 /// `ops.more-problems` for the rest. It encodes each problem at most once.
 fn fitting(problems: &[Problem], status: u8) -> usize {
-    let empty = Answer::<()>::Failed {
-        errors: Cow::Borrowed(&[]),
+    let empty = Answer::<(), &[Problem]>::Failed {
+        errors: &[],
         status,
     };
     // Each problem that is kept adds one `,`, and the line ends in `\n`.
     let mut len = encoded(&empty).saturating_add(1);
+    // The digits of the rest and the length of its `ops.more-problems`, which only
+    // the count of digits changes.
+    let mut more = (None, 0);
     let mut kept = 0;
     for (index, problem) in problems.iter().enumerate() {
         len = len.saturating_add(encoded(problem)).saturating_add(1);
-        let more = Problem::more(problems.len() - index - 1);
-        if !fits(len.saturating_add(encoded(&more))) {
+        let rest = problems.len() - index - 1;
+        let digits = Some(rest.checked_ilog10());
+        if more.0 != digits {
+            more = (digits, encoded(&Problem::more(rest)));
+        }
+        if !fits(len.saturating_add(more.1)) {
             break;
         }
         kept = index + 1;
@@ -408,7 +487,7 @@ fn answer<T: DeserializeOwned>(body: &[u8]) -> Result<(T, &[u8]), Error> {
     let Some((head, rest)) = first_line(body) else {
         return Err(bad_reply("no newline ends the first line"));
     };
-    match serde_json::from_slice::<Answer<'_, Value>>(head) {
+    match serde_json::from_slice::<Answer<Value, Vec<Problem>>>(head) {
         Ok(Answer::Done { output }) => match T::deserialize(output) {
             Ok(output) => Ok((output, rest)),
             Err(error) => Err(bad_reply(error.to_string())),
@@ -417,7 +496,7 @@ fn answer<T: DeserializeOwned>(body: &[u8]) -> Result<(T, &[u8]), Error> {
             Err(bad_reply("an error has the exit status 0, or no problem"))
         }
         Ok(Answer::Failed { errors, status }) => Err(Error::Remote {
-            problems: errors.into_owned(),
+            problems: errors,
             status,
         }),
         Err(error) => Err(bad_reply(error.to_string())),
@@ -431,11 +510,18 @@ fn first_line(body: &[u8]) -> Option<(&[u8], &[u8])> {
     Some((&body[..end], &body[end + 1..]))
 }
 
-/// `Request` with `message`.
+/// The most bytes of the cause that `ops.bad-request` quotes.
+const CAUSE_BYTES_MAX: usize = 256;
+
+/// `Request` with the first `CAUSE_BYTES_MAX` bytes of `message`, cut at a char
+/// boundary, then `...` when it cuts.
 fn bad_request(message: impl Into<String>) -> Error {
-    Error::Request {
-        message: message.into(),
+    let mut message = message.into();
+    if message.len() > CAUSE_BYTES_MAX {
+        message.truncate(message.floor_char_boundary(CAUSE_BYTES_MAX));
+        message.push_str("...");
     }
+    Error::Request { message }
 }
 
 /// `Reply` with `message`.
@@ -445,13 +531,27 @@ fn bad_reply(message: impl Into<String>) -> Error {
     }
 }
 
-/// The reply of the request `body` of `subject`.
-async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Body, Error> {
+/// The request of `body` and the bytes after its first line.
+///
+/// # Errors
+///
+/// [`Error::Request`] when the first line is no request.
+fn read(body: &[u8]) -> Result<(Request, &[u8]), Error> {
     let Some((head, rest)) = first_line(body) else {
         return Err(bad_request("no newline ends the first line"));
     };
     let request =
         serde_json::from_slice(head).map_err(|e| bad_request(e.to_string()))?;
+    Ok((request, rest))
+}
+
+/// The output of `request` of `subject`, with the bytes `rest` after its first line.
+async fn run(
+    node: &Node,
+    subject: &Name,
+    request: Request,
+    rest: &[u8],
+) -> Result<Ran, Error> {
     match request {
         Request::Plan(_) if !rest.is_empty() => {
             Err(bad_request("bytes follow the first line of `plan`"))
@@ -465,9 +565,7 @@ async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Body, Error> {
         Request::Browse(_) if !rest.is_empty() => {
             Err(bad_request("bytes follow the first line of `browse`"))
         }
-        Request::Browse(request) => Ok(browse(node, subject, request)
-            .await
-            .unwrap_or_else(|error| failed(&error, &Error::LargeBrowse))),
+        Request::Browse(request) => browse(node, subject, request).await,
         Request::Other(name) => Err(bad_request(format!(
             "the operation `{name}` does not run on a node"
         ))),
@@ -526,8 +624,8 @@ impl<'a> Check<'a> {
     }
 }
 
-/// The reply of `plan` of `files`: its output, then the plan file.
-async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Body, Error> {
+/// `plan` of `files`: its output and its plan file.
+async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Ran, Error> {
     let files = Documents::read(files, &node.front_ends)?;
     let names = files.names(node.supervisor.kinds())?;
     let spec = used::spec(&node.mesh).await?;
@@ -550,13 +648,11 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Body, Error
     // A subject that may not open a connector learns nothing of its sources.
     let readable = |name: &Name| check.opens(name).is_ok();
     let (output, plan) = files.plan(node, base, &applied, readable).await?;
-    let mut reply = Body::line(&Answer::Done { output: &output })?;
-    reply.add(&plan.encode())?;
-    Ok(reply)
+    Ok(Ran::Plan(output, plan))
 }
 
-/// The reply of `apply` of the plan file `bytes`: its output.
-async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Body, Error> {
+/// `apply` of the plan file `bytes`.
+async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Ran, Error> {
     let mut plan = config::plan::Plan::decode(bytes).map_err(Error::Plan)?;
     let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject);
@@ -597,14 +693,14 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Body, Error>
     let effect =
         apply::apply(plan, spec, &node.mesh, node.supervisor.kinds(), &node.keys)
             .await?;
-    Ok(Body::line(&Answer::Done { output: &effect })?)
+    Ok(Ran::Apply(effect))
 }
 
-/// The reply of `status`: its output. It leaves out each connector unless `subject`
-/// has `read` on its label and on each of its status channels. When it leaves out each
-/// connector, or the node places none, it needs `read` on the name of the node. It
-/// gives the failures of the OS roots only with `read` on the name of the node.
-async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
+/// `status`. It leaves out each connector unless `subject` has `read` on its label and
+/// on each of its status channels. When it leaves out each connector, or the node
+/// places none, it needs `read` on the name of the node. It gives the failures of the
+/// OS roots only with `read` on the name of the node.
+async fn status(node: &Node, subject: &Name) -> Result<Ran, Error> {
     let asked = node.clock.now();
     let spec = used::spec(&node.mesh).await?;
     let check = Check::new(&spec, subject);
@@ -628,14 +724,14 @@ async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
         connectors,
         roots: readable.then(|| node.roots.clone()),
     };
-    Ok(Body::line(&Answer::Done { output: &output })?)
+    Ok(Ran::Status(output))
 }
 
-/// The reply of `browse`: its output. It checks, in this order, that the files read,
-/// that they hold the connector, that `subject` may open it ([`Check::opens`]), that it
-/// runs on this node, that the start and the match parse, and that the request gives
-/// no match with a cursor.
-async fn browse(node: &Node, subject: &Name, request: Browse) -> Result<Body, Error> {
+/// `browse`. It checks, in this order, that the files read, that they hold the
+/// connector, that `subject` may open it ([`Check::opens`]), that it runs on this node,
+/// that the start and the match parse, and that the request gives no match with a
+/// cursor.
+async fn browse(node: &Node, subject: &Name, request: Browse) -> Result<Ran, Error> {
     let files = Documents::read(&request.files, &node.front_ends)?;
     let name: Name = request.connector.parse().map_err(|error| Error::Argument {
         message: format!(
@@ -691,6 +787,5 @@ async fn browse(node: &Node, subject: &Name, request: Browse) -> Result<Body, Er
         .browse(kind.as_str(), connector.config().document(), &query)
         .await
         .map_err(|cause| Error::browse(&name, kind, cause, files.sources()))?;
-    let output = crate::browse::Output::of(found);
-    Body::line(&Answer::Done { output: &output }).map_err(|Large| Error::LargeBrowse)
+    Ok(Ran::Browse(crate::browse::Output::of(found)))
 }

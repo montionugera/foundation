@@ -30,6 +30,7 @@ const BAD_REQUEST: Code = Code::new("ops.bad-request");
 const DENIED: Code = Code::new("ops.denied");
 const LARGE_REPLY: Code = Code::new("ops.large-reply");
 const LARGE_BROWSE: Code = Code::new("ops.large-browse");
+const LARGE_STATUS: Code = Code::new("ops.large-status");
 const CHANNEL_READ: Code = Code::new("ops.channel-read");
 const READ: Code = Code::new("ops.read");
 const WRITE: Code = Code::new("ops.write");
@@ -106,6 +107,8 @@ pub(crate) enum Error {
     LargeReply,
     /// The reply of a browse has more bytes than one reply holds.
     LargeBrowse,
+    /// The reply of a status has more bytes than one reply holds.
+    LargeStatus,
     /// A reader of the status channels of `connector` did not open or ended, with the
     /// text of the hub.
     ChannelRead { connector: Name, message: String },
@@ -320,6 +323,7 @@ impl Error {
             | Self::Denied { .. }
             | Self::LargeReply
             | Self::LargeBrowse
+            | Self::LargeStatus
             | Self::ChannelRead { .. }
             | Self::Write { .. }
             | Self::Data { .. }
@@ -411,6 +415,11 @@ impl Error {
             Self::LargeBrowse => (
                 LARGE_BROWSE,
                 "Narrow the start or the match, or browse without `values`".to_owned(),
+            ),
+            Self::LargeStatus => (
+                LARGE_STATUS,
+                "Read the status channels of each connector with a client of the node"
+                    .to_owned(),
             ),
             Self::ChannelRead { .. } => (
                 CHANNEL_READ,
@@ -569,6 +578,8 @@ pub(crate) struct Problem {
 
 impl Problem {
     /// `ops.more-problems`: `count` more problems do not fit in one reply.
+    /// `serve::fitting` takes its encoded length to change only with the digits of
+    /// `count`.
     pub(crate) fn more(count: usize) -> Self {
         Self {
             code: MORE_PROBLEMS.as_str().to_owned(),
@@ -750,6 +761,11 @@ impl fmt::Display for Error {
             Self::LargeBrowse => write!(
                 f,
                 "the reply of the browse has more than {BODY_BYTES_MAX} bytes, the \
+                 most that a reply holds"
+            ),
+            Self::LargeStatus => write!(
+                f,
+                "the reply of the status has more than {BODY_BYTES_MAX} bytes, the \
                  most that a reply holds"
             ),
             Self::ChannelRead { connector, message } => write!(

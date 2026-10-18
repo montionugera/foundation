@@ -604,6 +604,7 @@ fn every() -> Vec<Error> {
         },
         Error::LargeReply,
         Error::LargeBrowse,
+        Error::LargeStatus,
         Error::ChannelRead {
             connector: "site.a".parse().expect("a name"),
             message: String::new(),
@@ -698,6 +699,7 @@ fn error_codes_and_fixes_match_the_golden_file() {
             | Error::Denied { .. }
             | Error::LargeReply
             | Error::LargeBrowse
+            | Error::LargeStatus
             | Error::ChannelRead { .. }
             | Error::Read { .. }
             | Error::Write { .. }
