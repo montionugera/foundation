@@ -2253,8 +2253,7 @@ __Client_networkCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
         /* If processing the buffer fails before the SecureChannel has opened,
          * then the client cannot recover. Set the connectStatus to reflect
          * this. The application is notified when the socket has closed. */
-        if(client->channel.state != UA_SECURECHANNELSTATE_OPEN)
-            setConnectStatus(client, res);
+        setConnectStatus(client, res);
 
         /* Close the SecureChannel, but don't notify the client right away.
          * Return immediately. notifyClientState will be called in the next

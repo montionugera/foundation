@@ -122,6 +122,8 @@ impl Status {
     #[cfg(test)]
     pub(crate) const BAD_SECURE_CHANNEL_CLOSED: Self = Self(0x8086_0000);
     #[cfg(test)]
+    pub(crate) const BAD_SECURE_CHANNEL_ID_INVALID: Self = Self(0x8022_0000);
+    #[cfg(test)]
     pub(crate) const BAD_RESPONSE_TOO_LARGE: Self = Self(0x80B9_0000);
     #[cfg(test)]
     pub(crate) const BAD_CONNECTION_REJECTED: Self = Self(0x80AC_0000);

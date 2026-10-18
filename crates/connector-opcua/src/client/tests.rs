@@ -2250,8 +2250,9 @@ fn a_switch_of_the_security_mode_ends_with_its_status() {
     assert_eq!(out, (Some(Status::BAD_SECURITY_MODE_REJECTED), 1));
 }
 
-/// A message on an open channel that the client cannot process ends the session, and
-/// the client does not dial again, also after a switch of the URL.
+/// A message on an open channel that the client cannot process ends the session with
+/// the status of its error, and the client does not dial again, also after a switch of
+/// the URL.
 #[test]
 fn a_message_that_the_client_cannot_process_ends_the_session_with_no_dial() {
     let (out, _) = run(0, async |node| {
@@ -2286,6 +2287,50 @@ fn a_message_that_the_client_cannot_process_ends_the_session_with_no_dial() {
         Err(Fault::status(Status::BAD_SERVER_NOT_CONNECTED)),
     );
     assert_eq!(out, (reads, 2));
+}
+
+/// A message of the connect on an open channel that the client cannot process ends the
+/// connect with the status of its error, and the client does not dial again. The first
+/// `MSG` comes before the switch of the URL, so it ends after one dial.
+#[test]
+fn a_connect_message_that_the_client_cannot_process_ends_the_connect_with_its_status() {
+    let ends: Vec<_> = (0..5).map(bad_connect_message).collect();
+    let mut want = vec![(Some(Status::BAD_SECURE_CHANNEL_ID_INVALID), 2); 5];
+    want[0].1 = 1;
+    assert_eq!(ends, want);
+}
+
+/// Connects through a relay that gives the client the `MSG` of the server of index
+/// `bad` with the key of another channel. Gives the status of the connect, and the
+/// accepts 10 ms after it ends.
+fn bad_connect_message(bad: usize) -> (Option<Status>, usize) {
+    let (out, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let clock = Clock::clone(&peer.clock);
+            let mut given = 0;
+            let mut to = to_server(&node);
+            let rewrite = |message: &mut Vec<u8>| {
+                to(message);
+                if message.starts_with(b"MSG") {
+                    if given == bad {
+                        message[8] ^= 0xFF;
+                    }
+                    given += 1;
+                }
+            };
+            let status = relayed(&node, &control, rewrite, async {
+                let status = peer.connect(&url).await.err();
+                clock.sleep(Span::from_nanos(10_000_000)).await;
+                status
+            })
+            .await;
+            (status, control.accepts.get())
+        })
+        .await
+    });
+    out
 }
 
 /// Connects through a relay that gives the client the first `pass` messages of the
