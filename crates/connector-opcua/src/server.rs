@@ -298,7 +298,6 @@ impl Server {
     ///
     /// If open62541 refuses the node, `size` is past `i32::MAX`, or the key of `node`
     /// is the number 0.
-    #[cfg(test)]
     pub(crate) fn add_bytes(&self, node: &Node, size: usize) {
         let length =
             i32::try_from(size).expect("a ByteString of at most i32::MAX bytes");
