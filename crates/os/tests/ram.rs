@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 #[path = "common/mod.rs"]
 #[expect(dead_code, reason = "this binary uses some of the helpers")]
 mod disk;
+#[path = "common/fifo.rs"]
+mod fifo;
 #[path = "common/free.rs"]
 mod free;
 
@@ -61,23 +63,22 @@ fn stdout(command: &mut std::process::Command) -> String {
 
 #[test]
 fn free_drops_by_the_bytes_of_a_created_file() {
-    on_ram(|files| async move { free::held(&files).await });
+    on_ram(|files, _| async move { free::held(&files).await });
 }
 
 #[test]
 fn a_free_waits_for_a_dropped_create() {
-    // No hold: a freeze needs root on macOS, so the create can finish before the
-    // first poll (#3259).
-    on_ram(|files| async move { free::dropped(&files, || ()).await });
+    on_ram(|files, data| async move { free::dropped(&files, &data).await });
 }
 
-/// Runs `body` with the files of a `Ram` of its own.
-fn on_ram<F: Future<Output = ()>>(body: impl FnOnce(env::files::Files) -> F) {
+/// Runs `body` with the files of a `Ram` of its own and the path of their data
+/// directory.
+fn on_ram<F: Future<Output = ()>>(body: impl FnOnce(env::files::Files, PathBuf) -> F) {
     let ram = Ram::new();
     let (files, thread) = files(&ram.mount, "files");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    runtime.block_on(body(files));
+    runtime.block_on(body(files, ram.mount.join("data")));
     thread.join().unwrap();
 }

@@ -1,9 +1,10 @@
 //! The drop of `free` on a disk that no other process writes.
 
 use std::path::Path;
-use std::task::{Context, Waker};
 
 use env::files::{Files, Mode};
+
+use crate::fifo::stalled;
 
 const LEN: u64 = 8 << 20;
 
@@ -19,21 +20,25 @@ pub(crate) async fn held(files: &Files) {
     assert_less_by_len(before, after);
 }
 
-/// Polls a create of the file `a` of 8 MiB through `files` once, while the guard that
-/// `hold` gives keeps the disk from finishing it, and drops the create, then the guard.
-/// Asserts that the next `free` is less by exactly its length. No other process may
-/// write the disk.
-pub(crate) async fn dropped<G>(files: &Files, hold: impl FnOnce() -> G) {
+/// Polls a create of the file `a` of 8 MiB through `files` once and drops it, then
+/// polls a `free` once, while the I/O thread blocks, so both wait in its queue. `data`
+/// is the data directory of `files`. Asserts that the free is less by exactly the
+/// length of the create. No other process may write the disk.
+pub(crate) async fn dropped(files: &Files, data: &Path) {
     let before = files.free().await.unwrap();
-    let held = hold();
-    let mut made = Box::pin(files.open(Path::new("a"), Mode::Create { len: LEN }));
-    let mut context = Context::from_waker(Waker::noop());
-    let pending = made.as_mut().poll(&mut context).is_pending();
-    drop(made);
-    drop(held);
-    assert!(pending, "the create ended before its first poll");
-    let after = files.free().await.unwrap();
-    assert_less_by_len(before, after);
+    let free = stalled(files, data, |context| {
+        let mode = Mode::Create { len: LEN };
+        let mut create = Box::pin(files.open(Path::new("a"), mode));
+        let pending = create.as_mut().poll(context).is_pending();
+        assert!(pending, "the create ended while the I/O thread was stalled");
+        drop(create);
+        let mut free = Box::pin(files.free());
+        let pending = free.as_mut().poll(context).is_pending();
+        assert!(pending, "the free ended while the I/O thread was stalled");
+        free
+    })
+    .await;
+    assert_less_by_len(before, free.await.unwrap());
 }
 
 fn assert_less_by_len(before: u64, after: u64) {

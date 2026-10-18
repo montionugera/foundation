@@ -14,6 +14,8 @@ use env::files::{Error, Files, Mode};
 #[path = "../common/mod.rs"]
 #[expect(dead_code, reason = "this binary only makes a scratch directory")]
 mod disk;
+#[path = "../common/fifo.rs"]
+mod fifo;
 #[path = "../common/free.rs"]
 mod free;
 #[path = "../common/fsize.rs"]
@@ -67,26 +69,6 @@ fn remove(mount: &Path) {
     // Lazy: a command that a parallel test starts can inherit a file on the mount.
     check(sudo("umount").arg("-l").arg(mount));
     std::fs::remove_dir_all(mount.parent().unwrap()).unwrap();
-}
-
-/// A frozen mount: each write there blocks until the guard drops. A `statfs` does not.
-struct Frozen<'a>(&'a Path);
-
-impl<'a> Frozen<'a> {
-    fn new(mount: &'a Path) -> Self {
-        check(sudo("fsfreeze").arg("-f").arg(mount));
-        Self(mount)
-    }
-}
-
-impl Drop for Frozen<'_> {
-    fn drop(&mut self) {
-        // While the thread panics, a command can block and a second panic aborts the
-        // test binary.
-        if !std::thread::panicking() {
-            check(sudo("fsfreeze").arg("-u").arg(self.0));
-        }
-    }
 }
 
 fn sudo(program: &str) -> Command {
@@ -170,10 +152,7 @@ fn free_drops_by_the_bytes_of_a_created_file() {
 
 #[test]
 fn a_free_waits_for_a_dropped_create() {
-    run(|files, data| async move {
-        let mount = data.parent().expect("the data directory is on the mount");
-        free::dropped(&files, || Frozen::new(mount)).await;
-    });
+    run(|files, data| async move { free::dropped(&files, &data).await });
 }
 
 #[test]
