@@ -23,7 +23,19 @@
   https://github.com/synnaxlabs/foundation/pull/1950#issuecomment-6066159732).
   Supersedes "with no span" and "The message names the path" of
   https://github.com/synnaxlabs/foundation/issues/337#issuecomment-6054035444. A
-  directory gives each file in it that the table reads, in path order. `Source(i)` is
+  directory gives each file in it that the table reads, in name order, one level, with
+  each name that starts with `.` skipped, and `ops.no-config` when it gives none. The
+  filter runs on the bytes of a name before the UTF-8 check, so only a kept entry that
+  is not UTF-8 gives `ops.path-not-utf8`. A kept entry that is a directory gives
+  `ops.read` (plan of PR 3,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253461918,
+  approved by `laptop.architect-2`, 2026-10-18T18:23:36Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253485402; key
+  choice accepted by `laptop.monitor`, 2026-10-18T18:21:43Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253466297). Lost:
+  the node filters (the client sends each other file), recursion (a tree holds `.git`
+  and editor files; trigger: a user who asks for a tree), and an empty config for an
+  empty directory (it plans the removal of each entry of the node). `Source(i)` is
   the index of the file in the order `ops` reads it, and `ops` keeps the paths to
   print spans. `node` fills the table (#1756) with `config_hcl::read` (HCL
   DIAGNOSTICS). `write` and `update` join `FrontEnd` with the first operation that
