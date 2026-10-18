@@ -504,6 +504,7 @@ dependencies = [
  "document",
  "env",
  "hub",
+ "libc",
  "proptest",
  "sim",
  "spec",
