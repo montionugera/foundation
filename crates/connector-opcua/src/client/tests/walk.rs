@@ -1182,6 +1182,13 @@ fn a_browse_that_keeps_more_than_its_budget_fails() {
     );
 }
 
+/// The pages of `b` alone keep the budget to the byte, once the point of `a` is
+/// released.
+#[test]
+fn a_browse_that_keeps_its_budget_to_the_byte_passes() {
+    assert_eq!(budget(64 * 1024, 0, 1).expect("the pages of `b`"), 4080);
+}
+
 /// At the bound of 1, the first Browse of `b` releases the point of `a`, and with it
 /// the 64 KiB that the browse kept for that point.
 #[test]
