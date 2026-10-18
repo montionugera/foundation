@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::num::NonZeroUsize;
+use std::ops::Range;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -29,6 +30,11 @@ const OPTIONS: Options = Options {
     unsent_bytes_max: NonZeroUsize::new(1 << 14).unwrap(),
     delayed: false,
 };
+
+/// The loopback ports that no OS of the tests picks for a bind to port 0 or for a
+/// connect: Linux picks from 32768, and macOS from 49152. So no such bind takes the port
+/// of a stopped [`Influx`].
+const UNPICKED: Range<u16> = 1024..32768;
 
 /// The time between two changes of [`Opcua::change`]: 10 Hz.
 const TICK: Span = Span::from_nanos(100 * Span::MILLISECOND.nanos());
@@ -107,7 +113,8 @@ impl Opcua {
     /// Serves on a free loopback port, and gives the address: the node ids of
     /// [`super::VARIABLES`], each at a first value until [`Opcua::change`].
     pub(super) fn serve(&mut self) -> SocketAddr {
-        let listener = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
+        let any = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let listener = listen(any).expect("port 0 is never in use");
         let address = listener.local();
         let (variables, clock, zero) = (
             Variables::clone(&self.variables),
@@ -160,10 +167,16 @@ impl Influx {
         }
     }
 
-    /// Serves, and gives the address: a free loopback port at the first call, and the
-    /// same port after [`Influx::stop`]. What it stored stays across a stop.
+    /// Serves, and gives the address: a free loopback port of [`UNPICKED`] at the first
+    /// call, and the same port after [`Influx::stop`]. What it stored stays across a
+    /// stop.
     pub(super) fn serve(&mut self) -> SocketAddr {
-        let listener = listen(self.address.unwrap_or((Ipv4Addr::LOCALHOST, 0).into()));
+        let listener = match self.address {
+            Some(address) => {
+                listen(address).unwrap_or_else(|| panic!("{address} is in use"))
+            }
+            None => listen_unpicked(),
+        };
         let address = listener.local();
         self.address = Some(address);
         let (store, taken) = (Arc::clone(&self.store), self.token.clone());
@@ -281,15 +294,37 @@ fn wait(start: Monotonic, tick: usize, now: Monotonic) -> Duration {
     Duration::from_nanos(wait.nanos().cast_unsigned())
 }
 
-/// Listens on `local`, with the options of each simulated server.
-fn listen(local: SocketAddr) -> Listener {
+/// Listens on `local`, with the options of each simulated server, or gives `None` when
+/// `local` is in use. Panics on another error.
+fn listen(local: SocketAddr) -> Option<Listener> {
     let listen = Listen {
         local,
         backlog: 128,
         options: OPTIONS,
     };
-    (os::net().listen(&listen))
-        .unwrap_or_else(|error| panic!("listen on {local}: {error}"))
+    match os::net().listen(&listen) {
+        Ok(listener) => Some(listener),
+        Err(Error::AddressInUse { .. }) => None,
+        Err(error) => panic!("listen on {local}: {error}"),
+    }
+}
+
+/// Listens on a free port of [`UNPICKED`], from a random one, so that two servers
+/// seldom try the same ports.
+fn listen_unpicked() -> Listener {
+    let start = os::entropy()
+        .rng()
+        .below(u64::from(UNPICKED.end - UNPICKED.start));
+    listen_from(UNPICKED.start + u16::try_from(start).expect("a port of the range"))
+}
+
+/// Listens on the first free port from `start` to the end of [`UNPICKED`], then from
+/// its start. Panics when no port is free.
+fn listen_from(start: u16) -> Listener {
+    let mut ports = (start..UNPICKED.end).chain(UNPICKED.start..start);
+    let local = |port| SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    (ports.find_map(|port| listen(local(port))))
+        .unwrap_or_else(|| panic!("each port of {UNPICKED:?} is in use"))
 }
 
 /// Starts `main` on a new `os` shard named `name`.
@@ -349,6 +384,24 @@ fn connect(address: SocketAddr) -> Option<Error> {
     error.try_recv().expect("the shard sent the error")
 }
 
+/// The first port of the range from which this host picks the port of a bind to port 0
+/// or of a connect.
+fn first_picked() -> u16 {
+    #[cfg(target_os = "linux")]
+    let range = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+        .expect("Linux gives the range");
+    #[cfg(target_os = "macos")]
+    let range = {
+        let output = std::process::Command::new("sysctl")
+            .args(["-n", "net.inet.ip.portrange.first"])
+            .output()
+            .expect("macOS gives the range");
+        String::from_utf8(output.stdout).expect("the range is text")
+    };
+    let first = range.split_whitespace().next().expect("a first port");
+    first.parse().expect("the first port is a number")
+}
+
 /// The time of each sample of the field `f` that `influx` stored.
 fn times(influx: &Influx) -> Vec<Stamp> {
     let stored = influx.stored();
@@ -404,6 +457,24 @@ fn a_stopped_influx_refuses_and_serves_again_on_its_port_with_what_it_stored() {
     assert_eq!(influx.serve(), address);
     assert_eq!(write(address, "plant f=3 3"), "204 No Content");
     assert_eq!(times(&influx), [Stamp::from_nanos(1), Stamp::from_nanos(3)]);
+}
+
+#[test]
+fn a_served_influx_is_below_the_ports_that_the_os_picks() {
+    let mut influx = Influx::default();
+    let port = influx.serve().port();
+    let first = first_picked();
+    let below = UNPICKED.contains(&port) && UNPICKED.end <= first;
+    assert!(below, "port {port} of {UNPICKED:?}, first picked {first}");
+}
+
+#[test]
+fn a_listen_from_a_taken_port_takes_a_free_one_of_the_range() {
+    let taken = listen_from(UNPICKED.end - 1);
+    let free = listen_from(taken.local().port());
+    let (taken, free) = (taken.local().port(), free.local().port());
+    let other = free != taken && UNPICKED.contains(&free);
+    assert!(other, "{free} after {taken}");
 }
 
 #[test]
