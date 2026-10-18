@@ -15,8 +15,9 @@ impl Mesh {
     /// Serves one stream of a session whose peer proved the key `peer`. The caller
     /// has read the header of the stream, which is its whole first message. `serve`
     /// returns when the stream ends, or at the first message it refuses. A refused
-    /// message changes nothing, and the stream stops with code 16, or with code 17
-    /// for a request from a node that a committed configuration removed.
+    /// message changes nothing, and the stream stops with code 16, with code 17 for a
+    /// request from a node that a committed configuration removed, or with code 18
+    /// for a `Card` change over the bound of [`Mesh::set_addresses`].
     ///
     /// # Errors
     ///
@@ -26,6 +27,8 @@ impl Mesh {
     /// - [`Error::Spoofed`], [`Error::NotVoter`], [`Error::Removed`],
     ///   [`Error::PeerNotVoter`], [`Error::Claim`], and [`Error::Raft`] when the group
     ///   refuses a message.
+    /// - [`Error::Soon`] when the proposal is a `Card` change of a member whose card
+    ///   the leader proposed less than a minute before.
     /// - [`Error::Pool`] when the pool has no block: while the group waits to write its
     ///   log, which refuses the message, or for the answer to a proposal, which the
     ///   peer then does not get, and the group can hold the entry of the proposal. A

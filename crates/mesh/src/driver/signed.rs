@@ -6,10 +6,15 @@
 //! bytes, the format version, and the card version. A write goes to the slot that does
 //! not hold the newest version, so a torn write keeps the newest.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use env::files::{self, Files, Mode};
+use types::ed25519::PrivateKey;
+use types::node;
 
+use super::Config;
+use crate::card::addresses::Addresses;
+use crate::card::{Card, Signed};
 use crate::error::Error;
 use crate::file::{self, Blocks, CHECK};
 
@@ -18,6 +23,50 @@ pub(super) const FILE: &str = "card";
 const FORMAT: u16 = 1;
 const SLOT: usize = files::SECTOR;
 const BODY: usize = 2 + 8;
+
+/// Signs the cards of this node, each at a version that the file holds first.
+#[derive(Debug)]
+pub(super) struct Cards {
+    key: node::Key,
+    private_key: PrivateKey,
+    files: Files,
+    // The mesh directory.
+    dir: PathBuf,
+    blocks: Blocks,
+}
+
+impl Cards {
+    /// The signer of the cards of the node of `config`, which writes the file with
+    /// `blocks`.
+    pub(super) fn new(config: &Config, blocks: Blocks) -> Self {
+        Self {
+            key: config.key,
+            private_key: config.private_key.clone(),
+            files: config.files.clone(),
+            dir: config.dir.clone(),
+            blocks,
+        }
+    }
+
+    /// `held` with `addresses`, at the version that [`next`] gives for it.
+    ///
+    /// # Errors
+    ///
+    /// As [`next`].
+    pub(super) async fn sign(
+        &self,
+        held: &Card,
+        addresses: Addresses,
+    ) -> Result<Signed, Error> {
+        let version = next(&self.files, &self.dir, &self.blocks, held.version).await?;
+        let card = Card {
+            addresses,
+            version,
+            ..held.clone()
+        };
+        Ok(Signed::sign(self.key, card, &self.private_key))
+    }
+}
 
 /// Gives a version above `held` and above each version that the file in `dir` holds,
 /// once the file holds it durably. One call at a time writes the file; a write open
@@ -59,15 +108,13 @@ async fn write(file: &files::File, blocks: &Blocks, held: u64) -> Result<u64, Er
         .max(newest)
         .checked_add(1)
         .expect("invariant: a card version is below u64::MAX");
-    let slot = usize::from(versions[0] > versions[1]);
+    let at = if versions[0] > versions[1] { SLOT } else { 0 };
     let mut body = FORMAT.to_le_bytes().to_vec();
     body.extend(version.to_le_bytes());
     let mut bytes = file::check(&body).to_vec();
     bytes.extend(body);
     bytes.resize(SLOT, 0);
-    blocks
-        .write(file, file::wide(slot * SLOT), &mut &bytes[..])
-        .await?;
+    blocks.write(file, file::wide(at), &mut &bytes[..]).await?;
     file.sync().await.map_err(Error::Files)?;
     Ok(version)
 }

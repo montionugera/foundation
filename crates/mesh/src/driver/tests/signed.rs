@@ -21,7 +21,11 @@ fn next_on(sim: &mut Sim, node: &sim::node::Node, held: u64) -> u64 {
 /// Flips one bit of byte `at` of the file of node 1, and syncs it.
 fn flip(sim: &mut Sim, node: &sim::node::Node, at: u64) {
     sim.run_on(node, move |node, _| async move {
-        let file = node.files().open(Path::new(FILE), Mode::Write).await.unwrap();
+        let file = node
+            .files()
+            .open(Path::new(FILE), Mode::Write)
+            .await
+            .unwrap();
         let pool = create_pool();
         let byte = file.read_at(at, pool.alloc(1).unwrap()).await.unwrap();
         let block = pool.copy(&[byte.first().unwrap() ^ 1]).unwrap();
@@ -127,7 +131,7 @@ fn next_after_a_dropped_call_gives_the_next_version() {
         .run_on(&node, |node, _| async move {
             let blocks = Blocks::new(create_pool()).unwrap();
             let files = node.files();
-            let mut dropped = pin!(next(&files, Path::new(""), &blocks, 1));
+            let mut dropped = Box::pin(next(&files, Path::new(""), &blocks, 1));
             let mut cx = Context::from_waker(Waker::noop());
             assert!(dropped.as_mut().poll(&mut cx).is_pending());
             drop(dropped);

@@ -52,6 +52,11 @@ fn assert_sets<'a, F: Future<Output = Result<(), Error>>>(
 ) {
 }
 
+fn assert_readdresses<'a, F: Future<Output = Result<(), Error>>>(
+    _: fn(&'a Mesh, Addresses) -> F,
+) {
+}
+
 type Named<T> = BTreeMap<Name, T>;
 
 fn assert_applies<'a, F: Future<Output = Result<Pointer, Error>>>(
@@ -468,6 +473,7 @@ fn each_call_of_a_mesh_has_the_signature_that_a_caller_holds() {
     assert_gives_a_home(Watch::next);
     assert_serves(Mesh::serve);
     assert_sets(Mesh::set_home);
+    assert_readdresses(Mesh::set_addresses);
     assert_applies(Mesh::apply);
     assert_gives_the_spec(Mesh::spec);
 }
@@ -504,7 +510,8 @@ fn error_has_one_case_for_each_cause_that_a_public_call_gives() {
         | Error::Voters { .. }
         | Error::Limit { .. }
         | Error::Founding { .. }
-        | Error::Unfounded { .. } => {}
+        | Error::Unfounded { .. }
+        | Error::Soon => {}
     };
     let _: fn(&Error) = cases;
 }

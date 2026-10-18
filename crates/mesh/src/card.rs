@@ -140,6 +140,12 @@ impl Signed {
     }
 }
 
+impl From<Signed> for Unchecked {
+    fn from(signed: Signed) -> Self {
+        signed.0
+    }
+}
+
 /// A signed card whose signature is not yet checked, such as one in a change record
 /// that each node checks at apply.
 #[derive(Clone, Debug, PartialEq, Eq)]

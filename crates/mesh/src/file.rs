@@ -29,7 +29,7 @@ pub(crate) fn check(bytes: &[u8]) -> [u8; CHECK] {
 
 /// A pool whose largest block is one sector or more, and the reads and writes of a
 /// file in its blocks.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Blocks {
     pool: Rc<Pool>,
     // The most bytes in one block: [`CHUNK`], or the most whole sectors in the

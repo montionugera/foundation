@@ -513,7 +513,7 @@ const HALF: Span = Span::from_nanos(5 * TICK.nanos());
 
 /// Node 2 as the leader of node 1 in the term of the tests. It sends a heartbeat
 /// each 300 ms.
-struct Leader {
+pub(super) struct Leader {
     peer: Peer,
     /// Whether node 2 sends no heartbeat now.
     silent: Rc<Cell<bool>>,
@@ -568,12 +568,12 @@ impl Leader {
         sender
     }
 
-    fn clock(&self) -> Clock {
+    pub(super) fn clock(&self) -> Clock {
         self.peer.node.clock()
     }
 
     /// The next proposal of node 1, with the stream of its answer.
-    async fn proposal(&mut self) -> (Change, Asked) {
+    pub(super) async fn proposal(&mut self) -> (Change, Asked) {
         loop {
             let Incoming {
                 class,
@@ -603,20 +603,32 @@ impl Leader {
     }
 
     /// Sends node 1 the entry of `change` at `at`, as committed.
-    async fn append(&self, change: &Change, at: Position) {
+    pub(super) async fn append(&self, change: &Change, at: Position) {
         self.append_data(encoded(change), at).await;
     }
 
     /// Sends node 1 an entry of `data` at `at`, as committed.
     async fn append_data(&self, data: Vec<u8>, at: Position) {
-        let entry = Entry {
+        self.append_each(Position::default(), vec![(data, at)])
+            .await;
+    }
+
+    /// Sends node 1 the entries of `each` after the entry at `prev`, the last as
+    /// committed, in one message.
+    pub(super) async fn append_each(
+        &self,
+        prev: Position,
+        each: Vec<(Vec<u8>, Position)>,
+    ) {
+        let commit = each.last().map_or(0, |(_, at)| at.index);
+        let entries = each.into_iter().map(|(data, at)| Entry {
             at,
             data: Data::Bytes(data),
-        };
+        });
         let append = Body::Append {
-            prev: Position::default(),
-            entries: vec![entry],
-            commit: at.index,
+            prev,
+            entries: entries.collect(),
+            commit,
         };
         let append = Message::Raft(proven(2, 1, append)).encode();
         let mut sender = Self::open(&self.peer, &self.session).await;
@@ -625,7 +637,7 @@ impl Leader {
     }
 
     /// Answers a proposal with the position `at`.
-    async fn answer(
+    pub(super) async fn answer(
         &self,
         asked: &mut Asked,
         at: Position,
@@ -635,7 +647,7 @@ impl Leader {
         asked.sender.finish()
     }
 
-    async fn rest(&self, span: Span) {
+    pub(super) async fn rest(&self, span: Span) {
         self.clock().sleep(span).await;
     }
 
@@ -656,7 +668,7 @@ impl Leader {
 }
 
 /// The stream of a proposal of node 1, after the proposal.
-struct Asked {
+pub(super) struct Asked {
     receiver: Receiver,
     sender: Sender,
 }
@@ -672,7 +684,7 @@ impl Asked {
 
 /// Runs `call` on node 1 with its mesh, which serves each stream of node 2, and
 /// `peer` on node 2 as the leader, for 30 s. Gives what each returned.
-fn run<M, P>(
+pub(super) fn run<M, P>(
     call: impl FnOnce(sim::node::Node, Mesh) -> M + Send + 'static,
     peer: impl FnOnce(Leader) -> P + Send + 'static,
 ) -> (M::Output, P::Output)

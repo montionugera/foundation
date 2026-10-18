@@ -40,6 +40,7 @@ pub use founding::founding;
 use send::Senders;
 use used::{Opening, Used};
 
+mod addresses;
 mod apply;
 mod founding;
 mod home;
@@ -126,6 +127,7 @@ pub struct Mesh {
     pool: Rc<Pool>,
     store: Rc<blob::Store>,
     clock: Clock,
+    cards: Rc<signed::Cards>,
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "the join answer of #336 is the first user")
@@ -236,13 +238,14 @@ impl Mesh {
         put(&config.store, &config.pool, &chunks, &tree.chunks).await?;
         let signer = Signer::new(config.key, &config.private_key);
         let pool = Rc::clone(&config.pool);
-        let files = config.files.clone();
-        let (log, stored) = open_log(config.files, &config.dir, config.pool).await?;
+        let files = &config.files;
+        let (log, stored) = open_log(files, &config.dir, Rc::clone(&pool)).await?;
         let logged = stored != log::Stored::default();
         let blocks = log.blocks();
-        founding::keep(&files, &config.dir, blocks, &config.founding, logged).await?;
+        founding::keep(files, &config.dir, blocks, &config.founding, logged).await?;
+        let cards = signed::Cards::new(&config, blocks.clone());
         let used = used::open(Opening {
-            files: &files,
+            files,
             dir: &config.dir,
             store: &config.store,
             prefix: state.prefix(),
@@ -264,7 +267,7 @@ impl Mesh {
         tasks.tasks().spawn(used::keep(
             Weak::clone(&weak),
             Rc::clone(&config.store),
-            files,
+            config.files,
             config.dir,
             config.clock.clone(),
         ));
@@ -281,6 +284,7 @@ impl Mesh {
             pool,
             store: config.store,
             clock: config.clock,
+            cards: Rc::new(cards),
             entropy: config.entropy,
         })
     }
@@ -413,7 +417,9 @@ impl Mesh {
         };
         let now = self.clock.now();
         self.proposed(|group| {
-            group.cards.retain(|_, &mut at| now < at + CARDS);
+            group
+                .cards
+                .retain(|_, &mut at| at.checked_add(CARDS).is_none_or(|end| now < end));
             if group.cards.contains_key(&card) {
                 return Err(Error::Soon);
             }
@@ -1194,7 +1200,7 @@ async fn put(
 
 // Makes `dir`, durable in its parent, and opens the log in `LOG` in it.
 async fn open_log(
-    files: Files,
+    files: &Files,
     dir: &Path,
     pool: Rc<Pool>,
 ) -> Result<(Log, log::Stored), log::Error> {
@@ -1202,7 +1208,7 @@ async fn open_log(
     files
         .sync_dir(dir.parent().unwrap_or(Path::new("")))
         .await?;
-    Log::open(files, dir.join(LOG), pool).await
+    Log::open(files.clone(), dir.join(LOG), pool).await
 }
 
 // Ticks the group and does what each `Ready` says, in the order that `raft` needs:
@@ -1411,6 +1417,11 @@ mod tests {
         /// Each call of `set_home` that returned, in order: its node, the home on
         /// that node at the return, and what the call gave.
         set: Vec<(u8, Option<node::Key>, Result<(), Error>)>,
+        /// The addresses that each node sets on its card next.
+        addresses: BTreeMap<u8, card::addresses::Addresses>,
+        /// Each call of `set_addresses` that returned, in order: its node, what the
+        /// call gave, and the card of that node at the return.
+        moved: Vec<(u8, Result<(), Error>, card::Card)>,
         /// The voters that each node proposes next.
         configurations: BTreeMap<u8, BTreeSet<u8>>,
         /// The spec change that each node proposes next.
@@ -1684,7 +1695,7 @@ mod tests {
                         let protocol = wire::header::decode(&header).unwrap();
                         assert_eq!(protocol, (Protocol::Mesh, &[][..]));
                         match mesh.serve(peer, incoming).await {
-                            Ok(()) | Err(Error::Stream(_)) => {}
+                            Ok(()) | Err(Error::Stream(_) | Error::Soon) => {}
                             Err(error) => panic!("a voter refused a message: {error}"),
                         }
                     });
@@ -1765,6 +1776,26 @@ mod tests {
             let result = mesh.set_home(INDEX, key(home)).await;
             let home = mesh.watch(INDEX).next().await.unwrap();
             board.lock().unwrap().set.push((id, home, result));
+        }
+    }
+
+    /// Sets the addresses that the board gives node `id`, and puts the result on the
+    /// board.
+    async fn readdress(
+        mesh: Mesh,
+        clock: Clock,
+        id: u8,
+        board: Arc<Mutex<Board>>,
+    ) -> ! {
+        loop {
+            clock.sleep(TICK).await;
+            let addresses = board.lock().unwrap().addresses.remove(&id);
+            let Some(addresses) = addresses else {
+                continue;
+            };
+            let result = mesh.set_addresses(addresses).await;
+            let card = mesh.member(key(id)).unwrap().card.card().clone();
+            board.lock().unwrap().moved.push((id, result, card));
         }
     }
 
@@ -1941,6 +1972,10 @@ mod tests {
         let (setting, clock, sets) = (mesh.clone(), node.clock(), Arc::clone(board));
         tasks.spawn(async move {
             set(setting, clock, id, sets).await;
+        });
+        let (moving, clock, moves) = (mesh.clone(), node.clock(), Arc::clone(board));
+        tasks.spawn(async move {
+            readdress(moving, clock, id, moves).await;
         });
         let (applying, clock, applies) =
             (mesh.clone(), node.clock(), Arc::clone(board));
