@@ -223,11 +223,11 @@ fn held(plant: &Plant, reads: &[Reads]) -> Vec<Trace> {
 /// The trace of each of `reads`, once `stored` (by channel) holds each read of
 /// `served` (by variable) to the last step of the value in the changes, and `served`
 /// holds the read after that step. Sample `k` stored is read `k`, as [`traced`] checks.
-/// A lost or extra sample before a step puts a sample on a
-/// read of another value. From the last step on, a later read of the same value can
-/// stand in for a lost read. The node started at `started`, and `served` is taken
-/// after `stored`. Else `Err` with what `served` or `stored` lacks, or with the first
-/// sample that is not its read and the offset and window of each checked sample.
+/// A lost or extra sample before a step puts a sample on a read of another value. From
+/// the last step on, a later read of the same value can stand in for a lost read. The
+/// node started at `started`, and `served` is taken after `stored`. Else `Err` with
+/// what `served` or `stored` lacks, or with the first sample that is not its read and
+/// the offset and window of each checked sample.
 fn caught_up(
     reads: &[Reads],
     started: Stamp,
