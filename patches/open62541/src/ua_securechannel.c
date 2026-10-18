@@ -934,7 +934,7 @@ UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
                                     UA_MessageType *messageType, UA_UInt32 *requestId,
                                     UA_ByteString *payload, UA_Boolean *copied,
                                     UA_Boolean *aborted, UA_DateTime nowMonotonic) {
-    UA_Chunk chunk, *pchunk;
+    UA_Chunk chunk, *pchunk, *next;
     UA_StatusCode res = UA_STATUSCODE_GOOD;
 
  extract_chunk:
@@ -949,11 +949,19 @@ UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
     /* Process the chunk */
     switch(chunk.chunkType) {
     case UA_CHUNKTYPE_ABORT:
-        /* Remove all chunks received so far. Then continue extracting chunks. */
-        deleteChunks(channel);
+        /* Remove the chunks of the aborted message. Then continue extracting
+         * chunks. */
+        TAILQ_FOREACH_SAFE(pchunk, &channel->chunks, pointers, next) {
+            if(pchunk->requestId != chunk.requestId)
+                continue;
+            channel->chunksCount--;
+            channel->chunksLength -= pchunk->bytes.length;
+            TAILQ_REMOVE(&channel->chunks, pchunk, pointers);
+            UA_Chunk_delete(pchunk);
+        }
         if(aborted) {
             *aborted = true;
-            break; /* No chunk is left, so the abort is a message of one chunk */
+            break; /* No chunk of its message is left, so it is one chunk */
         }
         if(chunk.copied)
             UA_ByteString_clear(&chunk.bytes);
@@ -1049,7 +1057,6 @@ UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
 
         /* Copy over the content from the remaining intermediate chunks.
          * And remove them right away. */
-        UA_Chunk *next;
         for(; pchunk; pchunk = next) {
             next = TAILQ_NEXT(pchunk, pointers);
             if(chunk.requestId != pchunk->requestId)
