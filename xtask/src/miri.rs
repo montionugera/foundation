@@ -182,7 +182,8 @@ pub(crate) fn libs(crates: &[Crate]) -> Vec<String> {
 }
 
 /// The id of each crate of `crates` whose doc tests Cargo runs and for which `list`
-/// gives a doc test that Miri runs. It calls `list` only for those crates.
+/// gives a doc test that Miri runs. It calls `list` only for the crates whose doc
+/// tests Cargo runs.
 ///
 /// # Errors
 ///
@@ -885,5 +886,50 @@ mod tests {
                 "Miri could not list the doc tests of `model`".to_string()
             ])
         );
+    }
+
+    /// The `cargo` of a toolchain folder that lists one doc test of `model`, no lib
+    /// test, and fails each other command.
+    #[cfg(unix)]
+    const CARGO: &str = r#"#!/bin/sh
+case "$*" in
+*"nextest list"*) echo '{"rust-suites":{}}' ;;
+*--ignored*) ;;
+*--list*) echo 'src/lib.rs - x (line 1): test' ;;
+*) exit 1 ;;
+esac
+"#;
+
+    #[cfg(unix)]
+    #[test]
+    fn run_runs_each_part_of_each_pass_and_the_lib_tests() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            create_model_root("xtask-miri-run-all", "test = true\ndoctest = true");
+        let toolchain = root.join("toolchain");
+        let cargo = toolchain.join("bin/cargo");
+        std::fs::create_dir_all(toolchain.join("bin")).unwrap();
+        std::fs::write(&cargo, CARGO).unwrap();
+        let executable = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&cargo, executable).unwrap();
+        let pin = toolchain.to_str().unwrap();
+        std::fs::write(root.join("rust-toolchain-nightly"), pin).unwrap();
+        let ran = run(&root, Shard::ALL).map_err(|mut problems| {
+            problems.sort();
+            problems
+        });
+        std::fs::remove_dir_all(&root).unwrap();
+        let failed = |flags, part| format!("Miri with `{flags}` failed on {part}");
+        let parts = [
+            "the doc tests of `model`",
+            "the lib tests of shard 0/1",
+            "the test target `it` of `model`",
+        ];
+        let [first, second] = PASSES;
+        let problems = [second, first]
+            .into_iter()
+            .flat_map(|flags| parts.map(|part| failed(flags, part)))
+            .collect();
+        assert_eq!(ran, Err(problems));
     }
 }
