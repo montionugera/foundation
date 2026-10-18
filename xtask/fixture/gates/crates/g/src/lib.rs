@@ -176,3 +176,10 @@ mod first;
 #[cfg(not(windows))]
 #[path = "pathed.rs"]
 mod second;
+macro_rules! case {
+    ($m:meta, $name:ident) => {
+        #[$m]
+        fn $name() {}
+    };
+}
+case!(test, made);

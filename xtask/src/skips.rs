@@ -616,8 +616,11 @@ impl<'ast> Visit<'ast> for Items<'_> {
     }
 
     /// A `cfg` of the call is a gate of each function and module at the top of its
-    /// body, by its name.
+    /// body, by its name. A `macro_rules!` holds no item until a call expands it.
     fn visit_item_macro(&mut self, i: &'ast syn::ItemMacro) {
+        if i.mac.path.is_ident("macro_rules") {
+            return;
+        }
         match i.mac.parse_body_with(body) {
             Ok(items) => self.body(&i.attrs, &items),
             Err(e) => self.problem(&e.to_string()),
