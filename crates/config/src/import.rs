@@ -92,7 +92,8 @@ pub struct Added {
 /// both paths for a name that an earlier pick has. Each names the path and the name,
 /// with the fix "Give another name, or leave it out for `<default>`", with the default
 /// of the run with each refused name left out, or "Give another name" when that run
-/// gives none or refuses a name. Else the diagnostics of [`Table::block`]. Else `document.too-deep`.
+/// gives none or refuses a name. Else the diagnostics of [`Table::block`]. Else
+/// `document.too-deep`.
 ///
 /// # Panics
 ///
