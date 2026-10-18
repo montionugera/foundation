@@ -1497,6 +1497,9 @@ mod serve {
         let missing = include_str!("../../../oracles/fuzz/ops_mcp/plan-missing");
         let out = run(&["mcp"], missing.as_bytes()).stdout;
         assert!(out.contains("ops.read"), "{out}");
+        let directory = include_str!("../../../oracles/fuzz/ops_mcp/plan-directory");
+        let out = run(&["mcp"], directory.as_bytes()).stdout;
+        assert!(out.contains("ops.no-config"), "{out}");
     }
 
     #[test]
