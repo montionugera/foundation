@@ -107,6 +107,58 @@ fn builds_a_frame_from_a_whole_body_message() {
 }
 
 #[test]
+fn finishes_between_frames() {
+    let pool = create_pool();
+    let mut frames = Frames::new(create_set());
+    assert_eq!(frames.finish(), Ok(()));
+    ends(&mut frames);
+    draft(&mut frames, &pool);
+    frames.decode(&body()).expect("the body");
+    assert_eq!(frames.finish(), Ok(()));
+}
+
+#[test]
+fn gives_the_bytes_of_a_frame_that_the_stream_cuts() {
+    let pool = create_pool();
+    let mut frames = Frames::new(create_set());
+    let cut = |received, len| Err(Error::Cut { received, len });
+    frames
+        .decode(&encode_head(LIVE, Form::Raw, 2, 2))
+        .expect("the head");
+    assert_eq!(frames.finish(), cut(11, None));
+    frames.decode(&encode_ends(&[(0, 16)])).expect("the end");
+    assert_eq!(frames.finish(), cut(19, None));
+    frames.decode(&encode_ends(&[(1, 32)])).expect("the end");
+    draft(&mut frames, &pool);
+    assert_eq!(frames.finish(), cut(27, Some(59)));
+    frames.decode(&body()[..20]).expect("the part");
+    assert_eq!(frames.finish(), cut(47, Some(59)));
+}
+
+#[test]
+fn prints_each_cut() {
+    let cases = [
+        (Some(59), "the stream ended inside a frame: 47 of 59 bytes"),
+        (
+            None,
+            "the stream ended inside a frame: 47 bytes, before the end of its ends",
+        ),
+    ];
+    for (len, text) in cases {
+        let cut = Error::Cut { received: 47, len };
+        assert_eq!(cut.to_string(), text);
+    }
+}
+
+#[test]
+#[should_panic(expected = "a draft is due before the end of the stream")]
+fn panics_on_a_finish_when_a_draft_is_due() {
+    let mut frames = Frames::new(create_set());
+    ends(&mut frames);
+    let _finished = frames.finish();
+}
+
+#[test]
 fn builds_a_frame_from_a_body_received_in_place() {
     let pool = create_pool();
     let mut frames = Frames::new(create_set());
@@ -394,7 +446,13 @@ proptest! {
                 prop_assert!(matches!(frames.decode(&encode_ends(run)), Ok(Step::More)));
             }
             let mut step = draft(&mut frames, &pool);
+            let fit = "the bytes of a frame fit a usize";
+            let run = ends::LEN.checked_mul(ends.len()).expect(fit);
+            let mut received = Head::LEN.checked_add(run).expect(fit);
+            let len = Some(received.checked_add(body.len()).expect(fit));
             for part in crate::hub::tests::cut(&body, &mut cuts) {
+                prop_assert_eq!(frames.finish(), Err(Error::Cut { received, len }));
+                received = received.checked_add(part.len()).expect(fit);
                 step = if case.in_place {
                     let Ok(Due::Body(rest)) = frames.due() else {
                         panic!("a body is due");
@@ -405,6 +463,7 @@ proptest! {
                     frames.decode(part).expect("the part")
                 };
             }
+            prop_assert_eq!(frames.finish(), Ok(()));
             let (frame, _) = frame(step);
             prop_assert_eq!(frame.range(0), Some(Range { seq: 0, count: case.count }));
             for (&place, bytes) in case.present.iter().zip(&case.series) {

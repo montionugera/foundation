@@ -1,9 +1,10 @@
 //! `wire::hub::write::Frames`, driven as a caller drives it by `Frames::due`, never
 //! panics. Each head that it gives encodes back to its message, so it gives no head
 //! that `Head::encode` panics on. Each error is one that `decode` lists for the part
-//! that was due. Each frame has the time, form, and count of its head, and a run that
-//! receives each body message in place gives the same steps as a run that gives it
-//! whole to `decode`.
+//! that was due. Each frame has the time, form, and count of its head. At the end of
+//! the input, `finish` gives `Ok` between frames, else `Error::Cut` with the bytes of
+//! the frame that came. A run that receives each body message in place gives the same
+//! steps as a run that gives it whole to `decode`.
 //!
 //! Input: one byte, whose low 3 bits are the places of the stream less 1, then the
 //! messages from the program (`fuzz::messages`).
@@ -38,6 +39,8 @@ enum Seen {
     Layout(types::frame::Error),
     /// The pool had no block for the draft.
     Pool,
+    /// The input ended, with what `finish` gave.
+    Finished(Result<(), Error>),
 }
 
 /// An index, then `places - 1` channels of `I64`, in place order.
@@ -118,7 +121,10 @@ fn run(places: u8, bytes: &[u8], in_place: bool) -> Vec<Seen> {
     let mut seen = Vec::new();
     // A head is due at the start and after each frame.
     let mut head = true;
+    // The bytes of the frame that came.
+    let mut received = 0;
     loop {
+        let mut len = 0;
         let step = match frames.due() {
             Err(error) => {
                 assert_eq!(
@@ -138,8 +144,10 @@ fn run(places: u8, bytes: &[u8], in_place: bool) -> Vec<Seen> {
             },
             Ok(Due::Body(rest)) => {
                 let Some(message) = messages.next() else {
+                    seen.push(finished(&frames, received));
                     return seen;
                 };
+                len = message.len();
                 match rest.get_mut(..message.len()) {
                     Some(into) if in_place => {
                         into.copy_from_slice(message);
@@ -150,8 +158,10 @@ fn run(places: u8, bytes: &[u8], in_place: bool) -> Vec<Seen> {
             }
             Ok(Due::Message) => {
                 let Some(message) = messages.next() else {
+                    seen.push(finished(&frames, received));
                     return seen;
                 };
+                len = message.len();
                 let step = frames.decode(message);
                 if let Ok(Step::Head(given)) = &step {
                     let mut out = [0; Head::LEN];
@@ -164,6 +174,7 @@ fn run(places: u8, bytes: &[u8], in_place: bool) -> Vec<Seen> {
         match step {
             Ok(step) => {
                 head = matches!(step, Step::Frame { .. });
+                received = if head { 0 } else { received + len };
                 seen.push(Seen::of(step, places));
             }
             Err(error) => {
@@ -173,6 +184,21 @@ fn run(places: u8, bytes: &[u8], in_place: bool) -> Vec<Seen> {
             }
         }
     }
+}
+
+/// What `finish` gave at the end of the input, checked against the `received` bytes
+/// of the frame that came.
+fn finished(frames: &Frames, received: usize) -> Seen {
+    let finish = frames.finish();
+    match finish {
+        Ok(()) => assert_eq!(received, 0, "a cut frame finished"),
+        Err(Error::Cut { received: cut, len }) => {
+            assert_eq!(cut, received, "the cut has other bytes");
+            assert!(len.is_none_or(|len| len > cut), "the cut has its bytes");
+        }
+        Err(error) => panic!("finish gave {error:?}"),
+    }
+    Seen::Finished(finish)
 }
 
 /// Checks that each frame of `seen` has the time, form, and count of the head before

@@ -531,7 +531,8 @@ pub enum Error {
         /// The count of the range.
         count: u32,
     },
-    /// A head names no path.
+    /// A head names no path: no read head has this path byte, and no write head has
+    /// this time byte.
     Path {
         /// The path byte.
         byte: u8,
@@ -616,6 +617,13 @@ pub enum Error {
         count: u32,
         /// The form.
         form: Form,
+    },
+    /// The program finished its write stream inside a frame.
+    Cut {
+        /// The bytes of the frame that came: its head, its ends, and its body.
+        received: usize,
+        /// The bytes of the frame, once its ends are whole.
+        len: Option<usize>,
     },
 }
 
@@ -704,6 +712,21 @@ impl fmt::Display for Error {
                 f,
                 "the frame head that the node stamps has {count} samples in the {form:?} \
                  form, not 1 in the raw form"
+            ),
+            Self::Cut {
+                received,
+                len: Some(len),
+            } => write!(
+                f,
+                "the stream ended inside a frame: {received} of {len} bytes"
+            ),
+            Self::Cut {
+                received,
+                len: None,
+            } => write!(
+                f,
+                "the stream ended inside a frame: {received} bytes, before the end of \
+                 its ends"
             ),
         }
     }

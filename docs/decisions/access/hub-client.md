@@ -195,6 +195,16 @@
   `PLACES_MAX`, and `OPEN_BYTES_MAX`, which `client` exports. At the node,
   `hub::write::Frames` decodes the frames of a write after the places. It refuses
   each head that `Head::encode` panics on and each head of more series than places,
-  and `Head` has no public decode. When the stream ends inside a frame, the node
-  drops that frame, and the program gets no outcome for it. Decided by `laptop.architect` at 2026-10-18T03:22:04Z
-  (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245142760).
+  and `Head` has no public decode. When the program finishes its stream inside a
+  frame, `Frames::finish` gives `Error::Cut` with the bytes of the frame that came,
+  and the node stops the stream as `MALFORMED`. The home takes no part of a frame and
+  gives it no outcome. Decided by `laptop.architect` at 2026-10-18T03:22:04Z
+  (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245142760), with
+  the surface of `Frames` approved at 2026-10-18T05:42:24Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6246204678). The
+  plan first dropped a cut frame with no error. The person objected, through
+  `laptop.monitor`, at about 2026-10-18T05:43Z: "The silent end is not [accepted]. A
+  program finishes inside a frame only through a defect or a crash, and a silent drop
+  hides the defect of an SDK." `laptop.architect` gave `Error::Cut` at
+  2026-10-18T05:43:30Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6246212678).

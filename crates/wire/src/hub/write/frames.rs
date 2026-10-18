@@ -4,6 +4,7 @@ use types::frame::key_set::KeySet;
 use types::frame::{Draft, Form, Layout};
 
 use super::{Error, Head, Time};
+use crate::hub::ends;
 use crate::hub::part::{Next, Part, prefix, rest, to_usize};
 
 /// The frames of a program's write stream after the places, at the node. The node
@@ -102,8 +103,7 @@ impl Frames {
     }
 
     /// Takes the next message, whole. A body message is copied into the draft. When
-    /// the program finishes its stream inside a frame, drop the frames: the program
-    /// has no outcome for that frame.
+    /// the program finishes its stream, call [`Frames::finish`].
     ///
     /// # Errors
     ///
@@ -179,6 +179,44 @@ impl Frames {
             Some(_) => Step::More,
             None => self.frame(),
         }
+    }
+
+    /// Checks the end of the stream, when the program finished it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Cut`] inside a frame. The caller then stops the stream as `MALFORMED`.
+    ///
+    /// # Panics
+    ///
+    /// When [`Frames::due`] gives [`Due::Draft`].
+    pub fn finish(&self) -> Result<(), Error> {
+        assert!(
+            self.drafting.is_none(),
+            "a draft is due before the end of the stream"
+        );
+        let (remain, body) = match self.next {
+            Next::Head => return Ok(()),
+            Next::Ends { remain } => (remain, None),
+            Next::Body(body) => (0, Some(body)),
+        };
+        let series = self.head.expect("invariant: a frame has a head").series;
+        let ends = series
+            .checked_sub(remain)
+            .expect("invariant: the ends that remain are of the head's series");
+        let fit = "invariant: the bytes of a frame fit a usize";
+        let sum = |a: usize, b: usize| a.checked_add(b).expect(fit);
+        let run = sum(Head::LEN, to_usize(ends).checked_mul(ends::LEN).expect(fit));
+        Err(match body {
+            None => Error::Cut {
+                received: run,
+                len: None,
+            },
+            Some(body) => Error::Cut {
+                received: sum(run, body.at()),
+                len: Some(sum(sum(run, body.at()), body.remain())),
+            },
+        })
     }
 
     fn head(&mut self, message: &[u8]) -> Result<Step, Error> {
