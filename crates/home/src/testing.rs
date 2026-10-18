@@ -245,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn fills_a_new_ring_at_1020_one_frame_commits() {
+    fn fills_a_new_ring_at_1000_one_frame_commits() {
         let commits = run(
             sim::node::Config::default(),
             |_, mut shard, mut interner, now| async move {
@@ -261,7 +261,7 @@ mod tests {
             },
         );
 
-        assert_eq!(commits, 1020);
+        assert_eq!(commits, 1000);
     }
 
     /// The polls of 256 channels of `scalar` that a new ring takes, with a wait for
@@ -306,20 +306,20 @@ mod tests {
         assert_eq!(
             filled,
             [
-                (Scalar::Bool, 340, 441),
-                (Scalar::I8, 340, 441),
-                (Scalar::I16, 340, 441),
-                (Scalar::I32, 340, 441),
-                (Scalar::I64, 340, 379),
-                (Scalar::U8, 340, 441),
-                (Scalar::U16, 340, 441),
-                (Scalar::U32, 340, 441),
-                (Scalar::U64, 340, 379),
-                (Scalar::F32, 340, 441),
-                (Scalar::F64, 340, 379),
-                (Scalar::Stamp, 340, 379),
-                (Scalar::Span, 340, 379),
-                (Scalar::Uuid, 255, 272),
+                (Scalar::Bool, 333, 432),
+                (Scalar::I8, 333, 432),
+                (Scalar::I16, 333, 432),
+                (Scalar::I32, 333, 432),
+                (Scalar::I64, 333, 372),
+                (Scalar::U8, 333, 432),
+                (Scalar::U16, 333, 432),
+                (Scalar::U32, 333, 432),
+                (Scalar::U64, 333, 372),
+                (Scalar::F32, 333, 432),
+                (Scalar::F64, 333, 372),
+                (Scalar::Stamp, 333, 372),
+                (Scalar::Span, 333, 372),
+                (Scalar::Uuid, 250, 266),
             ]
         );
     }
@@ -356,7 +356,7 @@ mod tests {
             .expect("the run ends");
 
         // The 10 commits before the open keep their blocks.
-        assert!(commits <= 1020 - 10, "{commits}");
+        assert!(commits <= 1000 - 10, "{commits}");
     }
 
     #[test]

@@ -7,7 +7,7 @@ use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
 
-use super::{State, tails_max, take};
+use super::{State, take};
 use crate::entry::{Entry, Samples};
 use crate::group::{self, Sealed};
 use crate::header::Header;
@@ -25,7 +25,6 @@ pub struct Deadline {
     state: State,
     pool: Pool,
     block_max: usize,
-    tails_max: usize,
     part: Block,
     tag: u8,
     /// The next seq of each index.
@@ -55,7 +54,6 @@ impl Deadline {
         let config = block::Config::new(1 << 21).expect("the budget fits");
         let pool = Pool::new(config.clone(), Heap::new(config.reservation()));
         let block_max = group::block_max(&pool).expect("the budget holds an entry");
-        let tails_max = tails_max(&pool);
         let part = pool.alloc(PART).expect("the pool has room").freeze();
         let chain = 9;
         let state = State::new(
@@ -68,7 +66,6 @@ impl Deadline {
             state,
             pool,
             block_max,
-            tails_max,
             part,
             tag: 0,
             firsts: vec![0; count],
@@ -92,11 +89,20 @@ impl Deadline {
         }
     }
 
-    /// One deadline after the append of one data entry of 100 bytes of each index
-    /// but the last, which appends one each `period` deadlines: the take of the
-    /// group, the checkpoint of the trim and the carry record, the seal of the
-    /// records, and their sync, with no file write. Gives the tails of the carry
-    /// record.
+    /// Makes the one part of each entry of the later deadlines `len` bytes.
+    ///
+    /// # Panics
+    ///
+    /// When the pool has no room for `len` bytes.
+    pub fn resize(&mut self, len: usize) {
+        self.part = self.pool.alloc(len).expect("the pool has room").freeze();
+    }
+
+    /// One deadline after the append of one data entry of 100 bytes, or of the bytes
+    /// of the last [`resize`](Self::resize), of each index but the last, which
+    /// appends one each `period` deadlines: the take of the group, the checkpoint of
+    /// the trim and the carry record, the seal of the records, and their sync, with
+    /// no file write. Gives the tails of the carry record.
     ///
     /// # Panics
     ///
@@ -130,8 +136,7 @@ impl Deadline {
             .fit(&self.pool, self.block_max, &state.writer, &self.batch)
             .expect("the ring and the pool have room for the group");
         take(&mut state.open, &mut state.logs, &mut self.batch);
-        let (checkpoint, carrying) =
-            state.deadline(&self.pool, Some(self.tails_max), &mut self.sealed);
+        let (checkpoint, carrying) = state.deadline(&self.pool, true, &mut self.sealed);
         let tails = carrying
             .as_ref()
             .map_or(0, |carrying| carrying.carried.tails().len());
@@ -181,7 +186,7 @@ mod tests {
     /// record.
     #[test]
     fn each_sample_of_deadlines_trims_and_checkpoints_each_trim() {
-        for (indexes, most) in [(1, 29), (32, 15)] {
+        for (indexes, most) in [(1, 27), (32, 14)] {
             let mut deadline = Deadline::new(indexes, 64 + PHASE);
             for _ in 0..2 * 64 {
                 deadline.commit(1);
@@ -256,6 +261,36 @@ mod tests {
         let each = (0..3).map(|n| (Slot::new(n), PART)).collect::<Vec<_>>();
         assert_eq!(copies(Deadline::tagged(3, 64 + PHASE)), each);
         assert_eq!(copies(Deadline::new(3, 64 + PHASE)), []);
+    }
+
+    /// The copy of an index that appends once moves to each later carry record over
+    /// three laps, and keeps its bytes.
+    #[test]
+    fn a_tagged_deadline_carries_the_copy_of_an_idle_index() {
+        let (tag, slow) = (std::num::NonZeroU8::MIN, Slot::new(2));
+        let blocks = 64 + PHASE;
+        let mut deadline = Deadline::tagged(3, blocks);
+        let mut holders = Vec::new();
+        for _ in 0..3 * blocks {
+            deadline.commit(u32::MAX);
+            let logs = &deadline.state.logs;
+            let holder = logs.holder(slow, Path::Live, tag).expect("a copy");
+            if holders.last() != Some(&holder) {
+                holders.push(holder);
+            }
+            assert!(
+                deadline.state.writer.tail() <= holder,
+                "the trim passed the copy"
+            );
+        }
+        assert!(holders.len() > 3, "carried {} times", holders.len() - 1);
+        let bytes = deadline
+            .state
+            .logs
+            .newest(Path::Live, tag)
+            .find(|&(slot, _)| slot == slow)
+            .map(|(_, newest)| newest.bytes.len());
+        assert_eq!(bytes, Some(PART));
     }
 
     #[test]

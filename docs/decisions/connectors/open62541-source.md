@@ -741,7 +741,7 @@
   connection itself (OPCUA KIND): it reads the server state when 10 s pass from the
   start of the last read, so the gap between two requests while it waits is 10 s
   plus at most the request timeout. A check goes through `Client::read`, so it shares
-  the bound of 16 requests in flight, and a check that a wait leaves when it ends stays
+  the bound of 9 requests in flight, and a check that a wait leaves when it ends stays
   in flight until its answer. Between two checks, `idle` reads the state of the client
   after each run of the loop, and ends at once when the channel is not open or the
   session is not active. Lost: the check of open62541, which drops each status
@@ -803,19 +803,20 @@
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2397#issuecomment-6110582857,
   2026-10-11 15:26 UTC).
-  A client keeps at most 16 reads in flight. Only reads whose futures dropped or that
-  timed out make more than one, and a read past the 16 first waits until one of them
+  A client keeps at most 9 reads in flight (`READS`, 16 before #3097, which bounds the
+  queue of a channel by it: OPCUA READ). Only reads whose futures dropped or that
+  timed out make more than one, and a read past the 9 first waits until one of them
   ends. A read sends the timeout hint 0, so neither open62541 (2^32 - 1 ms, 49.7 days)
   nor the server ends it, and it stays in flight until the server answers it or the
   channel closes. An open62541 timeout ends a request on the client only, so the count
   would not have the requests that the server still holds. The read gives `BadTimeout`
   at the request timeout of the client, its wait included. When no read ends in that
-  wait, it gives `BadTooManyOperations`: the server holds 16 requests, and the client
+  wait, it gives `BadTooManyOperations`: the server holds 9 requests, and the client
   sends no read until it answers one. The kind closes a client that gives it and
   connects again. The bound is a constant from the sends of a connection, not from the
   rate of reads, as only a server that holds requests fills it. A client sends and takes
   at most 8 chunks in a message, and the test server sends at most 8, so the reads in
-  flight times the chunks of a message stay at 128, half of the 256 sends of a
+  flight times the chunks of a message stay at 72, below half of the 256 sends of a
   connection. The other half is for the requests of open62541 itself. open62541 checks
   the chunks of a message that it sends against its own count, not against the count of
   the peer (`src/ua_securechannel.c`, line 392). Lost: a read whose future drops cancels
@@ -972,3 +973,29 @@
   (https://github.com/synnaxlabs/foundation/pull/3144#issuecomment-6246301508,
   2026-10-18 05:55 UTC). The test of `leaf.der` at `notAfter` is the test of item 1 of
   6230838999 that moves the clock past `notAfter`.
+  The client part of 1d is in `server.c`, which only a `sim` build compiles, so no
+  production build has a policy; PR 2 moves it into `shim.c`. The test helper takes an
+  enum of the three policies, and `shim_client_secure` aborts on an index past them.
+  1d meets the certificate part of #1992: each loop of a secure test connection runs on
+  the wall time that its test gives, and a test moves each side past the `notAfter` of
+  the certificate of the other side (the plan,
+  https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247720334).
+  Approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247742342,
+  2026-10-18 08:40 UTC). A server refuses an expired client certificate with
+  `BadCertificateTimeInvalid`, the status that it sends, and 1d has no test of a switch
+  of the certificate, which no client config reaches in 1.5.9: OK of
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247943704,
+  2026-10-18 08:56 UTC). The session group of the sim server stays the accept-all
+  group, and the sim server sets no application URI: 1d opens only anonymous sessions,
+  and no check that a test reaches refuses on the URI: at each start of a secure
+  server, `verifyServerApplicationUri` logs one warning for each of the three
+  policies, because the default URI of the minimal config does not match the URI of
+  `server.der`. So a 1d
+  connection checks two groups, not the three of item 1 of 6247742342: OK of
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3167#issuecomment-6248291820,
+  2026-10-18 09:33 UTC). The first PR whose code reads an X509 user token, or has a
+  client check the server URI, sets the session group or the URI in the sim server, with
+  a test that fails without it.

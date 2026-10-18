@@ -6,9 +6,10 @@ use std::task::Poll;
 
 use block::Pool;
 use raft::Position;
+use transport::stream::{Receiver, Sender};
 use transport::{Class, Session};
 
-use super::{Mesh, TICK, header};
+use super::{Mesh, SOON, TICK, header};
 use crate::applied::{Floor, Outcome};
 use crate::change::Change;
 use crate::error::Error;
@@ -39,24 +40,48 @@ impl Mesh {
 }
 
 // Sends `change` to the leader on a new stream of `session`, and gives the position
-// in its answer. `None` when the peer did not propose it, or the stream failed.
-async fn forward(session: &Session, pool: &Pool, change: Change) -> Option<Position> {
-    let (mut sender, mut receiver) = session.open(Class::Command).await.ok()?;
+// in its answer. `None` when the peer did not propose it, or the stream failed, and
+// `Soon` when the peer refused it for the bound of cards.
+async fn forward(
+    session: &Session,
+    pool: &Pool,
+    change: Change,
+) -> Result<Option<Position>, Error> {
+    let Some((mut sender, mut receiver)) = ask(session, pool, change).await else {
+        return Ok(None);
+    };
+    // The stream ends only after the answer. A try that drops before it resets the
+    // stream, so the transport sends a proposal that the leader did not get no more.
+    let answer = match receiver.recv().await {
+        Ok(Some(answer)) => answer,
+        Err(transport::Error::Reset { code: SOON }) => return Err(Error::Soon),
+        Ok(None) | Err(_) => return Ok(None),
+    };
+    // The answer stands, whatever the end of the stream gives.
+    drop(sender.finish());
+    Ok(match Message::decode(&answer) {
+        Some(Message::Proposed { at }) => Some(at),
+        Some(
+            Message::Raft(_) | Message::Propose { .. } | Message::NotLeader { .. },
+        )
+        | None => None,
+    })
+}
+
+// Opens a stream on `session`, and sends the header and the proposal of `change`.
+async fn ask(
+    session: &Session,
+    pool: &Pool,
+    change: Change,
+) -> Option<(Sender, Receiver)> {
+    let (mut sender, receiver) = session.open(Class::Command).await.ok()?;
     sender.send(header(pool).ok()?).await.ok()?;
     let proposal = Message::Propose { change };
     sender
         .send(pool.copy(&proposal.encode()).ok()?)
         .await
         .ok()?;
-    // The stream ends only after the answer. A try that drops before it resets the
-    // stream, so the transport sends a proposal that the leader did not get no more.
-    let answer = receiver.recv().await.ok()??;
-    // The answer stands, whatever the end of the stream gives.
-    drop(sender.finish());
-    match Message::decode(&answer)? {
-        Message::Proposed { at } => Some(at),
-        Message::Raft(_) | Message::Propose { .. } | Message::NotLeader { .. } => None,
-    }
+    Some((sender, receiver))
 }
 
 // One try of a call. It holds its floor in the group until it drops.
@@ -114,7 +139,7 @@ impl Try<'_> {
         // change of the lead in the same poll drops no answer.
         poll_fn(|cx| {
             if let Poll::Ready(at) = forward.as_mut().poll(cx) {
-                return Poll::Ready(Ok(at));
+                return Poll::Ready(at);
             }
             let mut group = mesh.group.borrow_mut();
             group.running()?;

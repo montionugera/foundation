@@ -1066,7 +1066,7 @@ fn the_scan_names_only_the_files_outside_tests() {
         named_in(&src().join("ffi.rs"), client),
     ]
     .concat();
-    assert_eq!(found.len(), 3, "{found:?}");
+    assert_eq!(found.len(), 2, "{found:?}");
     assert_eq!(named, found);
 }
 
