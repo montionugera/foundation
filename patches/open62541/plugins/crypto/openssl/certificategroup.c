@@ -273,6 +273,9 @@ MemoryCertStore_clear(UA_CertificateGroup *certGroup) {
     }
 }
 
+static UA_Boolean
+openSSLLoadEachCertificate(const UA_ByteString cert, STACK_OF(X509) *stack);
+
 static UA_StatusCode
 reloadCertificates(UA_CertificateGroup *certGroup) {
     /* Check parameter */
@@ -288,10 +291,9 @@ reloadCertificates(UA_CertificateGroup *certGroup) {
         return UA_STATUSCODE_BADOUTOFMEMORY;
     }
     for(size_t i = 0; i < context->trustList.trustedCertificatesSize; i++) {
-        X509 *cert = UA_OpenSSL_LoadCertificate(&context->trustList.trustedCertificates[i], EVP_PKEY_NONE);
-        if(cert == NULL)
+        if(!openSSLLoadEachCertificate(context->trustList.trustedCertificates[i],
+                                       context->trustedCertificates))
             return UA_STATUSCODE_BADINTERNALERROR;
-        sk_X509_push(context->trustedCertificates, cert);
     }
 
     sk_X509_pop_free(context->issuerCertificates, X509_free);
@@ -300,10 +302,9 @@ reloadCertificates(UA_CertificateGroup *certGroup) {
         return UA_STATUSCODE_BADOUTOFMEMORY;
     }
     for(size_t i = 0; i < context->trustList.issuerCertificatesSize; i++) {
-        X509 *cert = UA_OpenSSL_LoadCertificate(&context->trustList.issuerCertificates[i], EVP_PKEY_NONE);
-        if(cert == NULL)
+        if(!openSSLLoadEachCertificate(context->trustList.issuerCertificates[i],
+                                       context->issuerCertificates))
             return UA_STATUSCODE_BADINTERNALERROR;
-        sk_X509_push(context->issuerCertificates, cert);
     }
 
     sk_X509_CRL_pop_free(context->crls, X509_CRL_free);
@@ -424,6 +425,21 @@ openSSLLoadCertificateStack(const UA_ByteString cert) {
         sk_X509_push(result, x509);
     }
     return result;
+}
+
+/* Pushes each certificate of the bytestring onto the stack. Gives false for an
+ * empty bytestring, and when a load stops before its end, so that an entry of a
+ * trust list never trusts fewer certificates than it holds. */
+static UA_Boolean
+openSSLLoadEachCertificate(const UA_ByteString cert, STACK_OF(X509) *stack) {
+    size_t offset = 0;
+    do {
+        X509 *x509 = openSSLLoadLeafCertificate(cert, &offset);
+        if(!x509)
+            return false;
+        sk_X509_push(stack, x509);
+    } while(offset < cert.length);
+    return true;
 }
 
 /* Return the first matching issuer candidate AFTER prev */
@@ -738,7 +754,9 @@ UA_CertificateGroup_Memorystore(UA_CertificateGroup *certGroup,
     }
 
     UA_TrustListDataType_add(trustList, &context->trustList);
-    reloadCertificates(certGroup);
+    retval = reloadCertificates(certGroup);
+    if(retval != UA_STATUSCODE_GOOD)
+        goto cleanup;
 
     return UA_STATUSCODE_GOOD;
 
