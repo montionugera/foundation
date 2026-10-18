@@ -202,9 +202,8 @@
   (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245142760), with
   the surface of `Frames` approved at 2026-10-18T05:42:24Z
   (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6246204678). The
-  plan first dropped a cut frame with no error. The person objected, through
-  `laptop.monitor`, at about 2026-10-18T05:43Z: "The silent end is not [accepted]. A
-  program finishes inside a frame only through a defect or a crash, and a silent drop
-  hides the defect of an SDK." `laptop.architect` gave `Error::Cut` at
+  plan first dropped a cut frame with no error. `laptop.monitor` refused that silent
+  end, because a program finishes inside a frame only through a defect or a crash, and
+  a silent drop hides the defect of an SDK. `laptop.architect` gave `Error::Cut` at
   2026-10-18T05:43:30Z
   (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6246212678).
