@@ -14,6 +14,9 @@ mod common;
 mod disk;
 mod entropy;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "../common/fifo.rs"]
+mod fifo;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod files;
 #[cfg(target_os = "linux")]
 #[path = "../common/fsize.rs"]

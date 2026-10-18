@@ -1685,10 +1685,10 @@ fn the_key_of_the_limits_gives_no_value_without_a_copy() {
 
 #[test]
 fn a_limit_of_0_from_a_server_is_no_limit() {
-    assert_eq!(most(8192, 0, 0), 8 * 8168 - 7 * 7);
-    assert_eq!(most(8192, 0, 9), 8 * 8168 - 7 * 7);
-    assert_eq!(most(8192, 0, 7), 7 * 8168 - 6 * 7);
-    assert_eq!(most(8192, 50_000, 0), 50_000);
+    assert_eq!(most(8168, 0, 0), 8 * 8168 - 7 * 7);
+    assert_eq!(most(8168, 0, 9), 8 * 8168 - 7 * 7);
+    assert_eq!(most(8168, 0, 7), 7 * 8168 - 6 * 7);
+    assert_eq!(most(8168, 50_000, 0), 50_000);
 }
 
 /// No form of a key leaves more than [`SPLIT`] bytes empty at a chunk end. A new form

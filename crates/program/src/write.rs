@@ -1,10 +1,7 @@
 //! The writes of a session: one write stream each, on the channels of one index.
 
-use std::future::poll_fn;
-use std::pin::pin;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::task::Poll;
 
 use transport::stream::{Part, Receiver, Sender};
 use transport::{Class, Code};
@@ -308,19 +305,13 @@ impl Writer {
         Ok(())
     }
 
-    /// Takes each reply that came before the call, so that an extra outcome is never
-    /// the outcome of `frame`, then sends `frame` and takes its outcome.
+    /// Sends `frame` and takes its outcome.
     async fn written(
         &mut self,
         time: Time,
         frame: Draft,
         count: u32,
     ) -> Result<Outcome, Error> {
-        while let Poll::Ready(reply) =
-            poll_fn(|cx| Poll::Ready(pin!(self.reply()).poll(cx))).await
-        {
-            reply?;
-        }
         self.send(time, frame, count).await?;
         self.outcome().await
     }
@@ -328,7 +319,7 @@ impl Writer {
     /// Takes replies until the outcome of the last frame sent.
     async fn outcome(&mut self) -> Result<Outcome, Error> {
         loop {
-            if let Reply::Outcome(outcome) = self.reply().await?
+            if let Reply::Outcome { outcome, .. } = self.reply().await?
                 && self.replies.answered()
             {
                 return Ok(outcome);

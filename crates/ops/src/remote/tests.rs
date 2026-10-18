@@ -8,14 +8,14 @@ use document::diagnostic::Code;
 use env::paths::{self, Found, Paths};
 use serde_json::{Value, json};
 
-use super::{Link, apply, browse, import, most, plan, status};
+use super::{Link, apply, browse, import, plan, status};
 use crate::apply::Applied;
 use crate::common::{self, create_browsing_node, create_node, name, placed_site, solo};
 use crate::error::{Error, Problem, Unread, Unusable, Unwritten};
 use crate::front_end::File;
 use crate::operation::{self, DATA, Response};
 use crate::plan::Output;
-use crate::scope::{Limits, Scope};
+use crate::scope::{Limits, Scope, most};
 use crate::{Failure, Node, Run, serve};
 
 mod imports;
@@ -75,6 +75,8 @@ struct Remote {
     /// The data directory of each call of `reach` by the command line.
     data: RefCell<Vec<PathBuf>>,
     requests: Cell<usize>,
+    /// The body of each request.
+    bodies: RefCell<Vec<Vec<u8>>>,
 }
 
 impl Remote {
@@ -89,11 +91,13 @@ impl Remote {
             reaches: Cell::new(0),
             data: RefCell::new(Vec::new()),
             requests: Cell::new(0),
+            bodies: RefCell::new(Vec::new()),
         }
     }
 
     async fn send(&self, body: &[u8]) -> Result<Vec<u8>, Failure> {
         self.requests.set(self.requests.get() + 1);
+        self.bodies.borrow_mut().push(body.to_vec());
         match &self.mode {
             Mode::Serve => Ok(serve::serve(&self.node, &name("@admin"), body).await),
             Mode::Changes(paths, bytes) => {
@@ -143,7 +147,8 @@ impl Remote {
             self.reached()?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        plan(files, out, &Scope::free(paths), &mut Link::new(reach)).await
+        let scope = Scope::free(paths, &common::front_ends());
+        plan(files, out, &scope, &mut Link::new(reach)).await
     }
 
     async fn apply(&self, paths: &Paths, file: &Path) -> Result<Applied, Error> {
@@ -151,7 +156,12 @@ impl Remote {
             self.reached()?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        apply(file, &Scope::free(paths), &mut Link::new(reach)).await
+        apply(
+            file,
+            &Scope::free(paths, &common::front_ends()),
+            &mut Link::new(reach),
+        )
+        .await
     }
 
     /// The browse of the root of `plant` in `files`.
@@ -172,7 +182,12 @@ impl Remote {
             cursor: None,
             values: false,
         };
-        browse(input, &Scope::free(paths), &mut Link::new(reach)).await
+        browse(
+            input,
+            &Scope::free(paths, &common::front_ends()),
+            &mut Link::new(reach),
+        )
+        .await
     }
 
     async fn import(
@@ -184,7 +199,12 @@ impl Remote {
             self.reached()?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        import(input, &Scope::free(paths), &mut Link::new(reach)).await
+        import(
+            input,
+            &Scope::free(paths, &common::front_ends()),
+            &mut Link::new(reach),
+        )
+        .await
     }
 
     async fn status(&self) -> Result<crate::status::Output, Error> {
@@ -228,6 +248,7 @@ impl Remote {
             &mut output,
             &mut errors,
             paths,
+            &common::front_ends(),
             reach,
         )
         .await;
@@ -238,6 +259,20 @@ impl Remote {
             .map(|line| serde_json::from_str(line).expect("json"))
             .collect();
         (run, replies)
+    }
+
+    /// The path of each file of the last request, a request of `plan`.
+    fn planned(&self) -> Vec<String> {
+        let bodies = self.bodies.borrow();
+        let body = bodies.last().expect("a request");
+        let line = body.split(|&byte| byte == b'\n').next().expect("a line");
+        let request: Value = serde_json::from_slice(line).expect("JSON");
+        request["plan"]["files"]
+            .as_array()
+            .expect("files")
+            .iter()
+            .map(|file| file["path"].as_str().expect("a path").to_owned())
+            .collect()
     }
 
     /// The count of calls of `reach`, and of requests.
@@ -305,7 +340,7 @@ fn plan_with_no_out_writes_no_file() {
 fn plan_gives_each_failed_read_by_its_cause_and_reaches_no_node() {
     solo(|fixture, mesh| async move {
         let paths = with_site(&fixture.sim);
-        fixture.sim.make_dir(Path::new("/work/config"));
+        fixture.sim.make_dir(Path::new("/work/config/x.hcl"));
         paths
             .write(Path::new("config/a.hcl"), b"")
             .expect("a write");
@@ -315,14 +350,22 @@ fn plan_gives_each_failed_read_by_its_cause_and_reaches_no_node() {
         fixture.sim.fail_path(Path::new("site.hcl"), 5);
         let remote = Remote::new(create_node(&fixture, mesh));
         let cases = [
-            ("gone.hcl", Unread::NotFound, "no file is at gone.hcl", 2),
             (
-                "config",
-                Unread::Directory,
-                "config is a directory, not a file",
+                "gone.hcl",
+                "gone.hcl",
+                Unread::NotFound,
+                "no file is at gone.hcl",
                 2,
             ),
             (
+                "config",
+                "config/x.hcl",
+                Unread::Directory,
+                "config/x.hcl is a directory, not a file",
+                2,
+            ),
+            (
+                "latin.hcl",
                 "latin.hcl",
                 Unread::NotUtf8,
                 "the text of latin.hcl is not UTF-8",
@@ -330,16 +373,17 @@ fn plan_gives_each_failed_read_by_its_cause_and_reaches_no_node() {
             ),
             (
                 "site.hcl",
+                "site.hcl",
                 Unread::Io { code: 5 },
                 "the read of site.hcl failed with OS error 5",
                 1,
             ),
         ];
-        for (path, cause, message, status) in cases {
-            let files = [PathBuf::from(path)];
+        for (given, path, cause, message, status) in cases {
+            let files = [PathBuf::from(given)];
             let planned = remote.plan(&paths, &files, None).await;
             let Err(error) = planned else {
-                panic!("{path} does not read");
+                panic!("{given} does not read");
             };
             let path = PathBuf::from(path);
             assert_eq!(error, Error::Read { path, cause });
@@ -390,7 +434,7 @@ fn plan_of_a_request_one_byte_over_the_most_reaches_no_node() {
     });
 }
 
-/// The entry paths of the directory pass the most bytes of a request.
+/// The entry paths of the directory pass the most bytes of one read.
 #[test]
 fn plan_and_apply_of_a_directory_of_many_entries_give_read() {
     solo(|fixture, mesh| async move {
@@ -403,17 +447,106 @@ fn plan_and_apply_of_a_directory_of_many_entries_give_read() {
         }
         let remote = Remote::with(create_node(&fixture, mesh), Mode::Unsent);
         let path = PathBuf::from(&dir);
-        let directory = format!("{dir} is a directory, not a file");
         let planned = remote.plan(&paths, slice::from_ref(&path), None).await;
         let Err(error) = planned else {
             panic!("a plan of a directory");
         };
-        assert_eq!(shown(&error), read("ops.read", &directory, 2), "plan");
+        let path = PathBuf::from(&dir);
+        let cause = Unread::ManyEntries;
+        assert_eq!(error, Error::Read { path, cause });
+        let many = format!("{dir} holds more entries than one read lists");
+        assert_eq!(shown(&error), read("ops.read", &many, 2), "plan");
+        let path = PathBuf::from(&dir);
         let Err(error) = remote.apply(&paths, &path).await else {
             panic!("an apply of a directory");
         };
+        let directory = format!("{dir} is a directory, not a file");
         assert_eq!(shown(&error), read("ops.read", &directory, 2), "apply");
         assert_eq!(remote.calls(), (0, 0));
+    });
+}
+
+/// A directory gives each of its files that a front end reads and whose name does not
+/// start with `.`, in name order and in the place of the directory, and no file of a
+/// directory in it.
+#[test]
+fn plan_reads_the_config_files_of_a_directory_in_name_order() {
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        fixture.sim.make_dir(Path::new("/work/d/sub"));
+        for (path, bytes) in [
+            ("d/b.hcl", &b""[..]),
+            ("d/a.hcl", b""),
+            ("d/README.md", b"\xff"),
+            ("d/.c.hcl", b"\xff"),
+            ("d/sub/e.hcl", b"\xff"),
+            ("x.hcl", b""),
+        ] {
+            paths.write(Path::new(path), bytes).expect("a write");
+        }
+        let remote = Remote::new(create_node(&fixture, mesh));
+        let files = ["site.hcl", "d", "x.hcl"].map(PathBuf::from);
+        remote.plan(&paths, &files, None).await.expect("a plan");
+        let sent = ["site.hcl", "d/a.hcl", "d/b.hcl", "x.hcl"];
+        assert_eq!(remote.planned(), sent);
+        assert_eq!(remote.calls(), (1, 1));
+    });
+}
+
+/// A directory that gives no config file is refused, since an empty config plans the
+/// removal of each entry of the node.
+#[test]
+fn plan_of_a_directory_with_no_config_file_gives_no_config() {
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        fixture.sim.make_dir(Path::new("/work/d/sub.d"));
+        for path in ["d/README.md", "d/.a.hcl", "d/sub.d/b.hcl"] {
+            paths.write(Path::new(path), b"").expect("a write");
+        }
+        let remote = Remote::new(create_node(&fixture, mesh));
+        let files = ["site.hcl", "d"].map(PathBuf::from);
+        let Err(error) = remote.plan(&paths, &files, None).await else {
+            panic!("a plan of a directory with no config file");
+        };
+        assert_eq!(
+            error,
+            Error::NoConfig {
+                path: PathBuf::from("d"),
+                extensions: "`.hcl`".to_owned(),
+            }
+        );
+        assert_eq!(
+            shown(&error),
+            read("ops.no-config", "d holds no config file", 2)
+        );
+        assert_eq!(
+            error.problems()[0].fix,
+            "Add a file whose name ends in `.hcl` and does not start with `.` to d, or \
+             give another path"
+        );
+        assert_eq!(remote.calls(), (0, 0));
+    });
+}
+
+/// A span in a file of a directory names the path of that file.
+#[test]
+fn the_command_line_names_the_file_of_a_directory_in_a_span() {
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        fixture.sim.make_dir(Path::new("/work/d"));
+        paths.write(Path::new("d/a.hcl"), b"").expect("a write");
+        paths
+            .write(Path::new("d/b.hcl"), b"channel {\n")
+            .expect("a write");
+        let remote = Remote::new(create_node(&fixture, mesh));
+        let (status, output, errors) = remote.cli(&paths, &["plan", "d"]).await;
+        assert_eq!((status, output.as_str()), (Run::Exit(2), ""));
+        assert_eq!(
+            errors,
+            "error[hcl.syntax]: the file needs a key, a block, or the end of the body \
+             here\n  --> d/b.hcl:2:1\nfix: Write it here, or correct the text here or \
+             before it\n"
+        );
     });
 }
 
@@ -468,16 +601,21 @@ fn plan_of_a_file_of_exactly_the_most_reads_it() {
     });
 }
 
-/// `a.hcl` alone fits a request, and leaves fewer bytes than the entry paths of
-/// `config` take.
+/// `a.hcl` leaves 100 bytes of a request, fewer than the entry paths of `config` take.
+/// A directory after it lists with the bytes of a whole read, not the bytes that the
+/// request has left.
 #[test]
-fn plan_of_a_directory_after_a_large_file_gives_read() {
+fn plan_of_a_directory_after_a_large_file_reads_its_files() {
     solo(|fixture, mesh| async move {
         let paths = fixture.sim.paths();
         fixture.sim.make_dir(Path::new("/config"));
+        paths
+            .write(Path::new("config/f.hcl"), b"")
+            .expect("a write");
         for n in 0..10 {
-            let path = PathBuf::from(format!("config/f{n}.hcl"));
-            paths.write(&path, b"").expect("a write");
+            paths
+                .write(&PathBuf::from(format!("config/n{n}.md")), b"")
+                .expect("a write");
         }
         let a = "#".repeat(most() - 100);
         paths
@@ -488,9 +626,7 @@ fn plan_of_a_directory_after_a_large_file_gives_read() {
         assert_eq!(alone.err(), Some(Error::Node(lost())), "a.hcl fits");
         let files = [PathBuf::from("a.hcl"), PathBuf::from("config")];
         let planned = remote.plan(&paths, &files, None).await;
-        let path = PathBuf::from("config");
-        let cause = Unread::Directory;
-        assert_eq!(planned.err(), Some(Error::Read { path, cause }));
+        assert_eq!(planned.err(), Some(Error::Node(lost())), "config fits");
     });
 }
 
@@ -763,6 +899,41 @@ fn plan_apply_and_browse_of_a_path_that_is_not_utf8_reach_no_node() {
         assert_eq!(error.problems()[0].code, "ops.path-not-utf8");
         assert_eq!(error.status(), 2);
         assert_eq!(remote.calls(), (0, 0));
+    });
+}
+
+/// The filter runs on the bytes of a name, so only an entry that it keeps must be UTF-8.
+#[test]
+fn plan_of_a_directory_skips_a_name_that_is_not_utf8_and_refuses_a_kept_one() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        fixture.sim.make_dir(Path::new("/work/d"));
+        let png = PathBuf::from("d").join(OsStr::from_bytes(b"\xff.png"));
+        paths.write(&png, b"").expect("a write");
+        paths.write(Path::new("d/a.hcl"), b"").expect("a write");
+        let remote = Remote::with(create_node(&fixture, mesh), Mode::Unsent);
+        let files = ["site.hcl", "d"].map(PathBuf::from);
+        let planned = remote.plan(&paths, &files, None).await;
+        assert_eq!(
+            planned.err(),
+            Some(Error::Node(lost())),
+            "the png is skipped"
+        );
+        let hcl = PathBuf::from("d").join(OsStr::from_bytes(b"\xff.hcl"));
+        paths.write(&hcl, b"").expect("a write");
+        let Err(error) = remote.plan(&paths, &files, None).await else {
+            panic!("an entry that is not UTF-8");
+        };
+        let problems = error.problems();
+        assert_eq!(problems.len(), 1);
+        assert_eq!(problems[0].code, "ops.path-not-utf8");
+        assert_eq!(
+            problems[0].message,
+            format!("the path {hcl:?} is not UTF-8")
+        );
     });
 }
 
@@ -1121,6 +1292,47 @@ fn mcp_refuses_each_path_outside_its_folders() {
     });
 }
 
+/// Each entry of a directory is read through the folders of `foundation mcp`, so an
+/// entry that is a link out is refused with each folder.
+#[test]
+fn mcp_refuses_an_entry_of_a_directory_that_leads_out() {
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        for dir in ["/a/d", "/b", "/out"] {
+            fixture.sim.make_dir(Path::new(dir));
+        }
+        paths.write(Path::new("/a/d/a.hcl"), b"").expect("a write");
+        paths.write(Path::new("/out/x.hcl"), b"").expect("a write");
+        fixture
+            .sim
+            .link_path(Path::new("/a/d/x.hcl"), Path::new("/out/x.hcl"));
+        let remote = Remote::new(create_node(&fixture, mesh));
+        let messages = [call(1, "plan", &json!({ "files": ["/a/d"] }))];
+        let folders = ["--files", "/a", "--files", "/b"];
+        let (run, replies) = remote.mcp(&paths, &folders, &messages).await;
+        assert_eq!(run, Run::Exit(0));
+        let outside = Error::Outside {
+            path: PathBuf::from("/a/d/x.hcl"),
+            limits: Limits {
+                folders: vec![PathBuf::from("/a"), PathBuf::from("/b")],
+                data: PathBuf::from("/work/foundation-data"),
+                working: PathBuf::from(WORK),
+            },
+        };
+        assert_eq!(replies[0]["result"], failed(&outside));
+        assert_eq!(
+            shown(&outside),
+            (
+                "ops.outside".to_owned(),
+                "`/a/d/x.hcl` is not under a folder of this MCP server (/a, /b)"
+                    .to_owned(),
+                2
+            )
+        );
+        assert_eq!(remote.calls(), (0, 0));
+    });
+}
+
 /// An `out` of `foundation mcp` that does not resolve to a name that ends in `.plan`
 /// is refused before a read, and one that leads out is not written.
 #[test]
@@ -1287,12 +1499,14 @@ fn start_with(
     let ping = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n";
     let (mut output, mut errors) = (Vec::new(), Vec::new());
     let mut input = ping.as_bytes();
+    let front_ends = common::front_ends();
     let cli = crate::cli(
         args,
         async || crate::line(&mut input),
         &mut output,
         &mut errors,
         &paths,
+        &front_ends,
         reach,
     );
     let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
