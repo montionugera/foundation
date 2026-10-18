@@ -6317,7 +6317,7 @@ pub(crate) mod port {
         #[test]
         fn the_log_of_the_mesh_is_free_once_the_lock_is() {
             let (mut held, mut logged, mut ordered) = (false, false, false);
-            // The probe finds the lock free and the log made at about 4.08 ms only.
+            // The probe finds the lock free and the log made at about 4 ms only.
             let mut freed = false;
             // Three orders of the last closes of the log, `shard-1/ring`, and
             // `address` that the stops in a write give at seed 0: the log first, the

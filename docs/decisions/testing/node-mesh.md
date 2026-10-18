@@ -175,16 +175,21 @@
   (2026-10-10T23:18:37Z,
   https://github.com/synnaxlabs/foundation/pull/2310#issuecomment-6103243825), and
   amended to drop an unspecified address (`laptop.architect`, 2026-10-18T05:08:35Z,
-  https://github.com/synnaxlabs/foundation/pull/3137#issuecomment-6245953983). At each
+  https://github.com/synnaxlabs/foundation/pull/3137#issuecomment-6245953983).
+  Supersedes the filter text of
+  https://github.com/synnaxlabs/foundation/pull/2310#issuecomment-6103243825. At each
   start with a region, the node calls `Mesh::set_addresses` with those addresses. The
   start does not wait for the call, and the stop of the node ends it. When the addresses
   are empty, the call first logs the warning "no peer can dial this node: give
   `--listen` an address of this host", with the bound address. After
   `mesh::Error::Soon`, it logs a warning and calls again a minute later (ruling item 3
-  of `laptop.architect`,
+  of `laptop.architect`, 2026-10-18T03:32:43Z,
   https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245224489). After
   another error but `mesh::Error::Stopped`, it logs a warning, and the card keeps its
-  addresses. Key choices 8 and 9, accepted:
+  addresses. The call at each start, its warnings, and the link-local test: ruling
+  items 1 to 3 of `laptop.architect-2` (2026-10-18T09:56:35Z,
+  https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248485617). Key
+  choices 8 and 9, accepted (2026-10-18T03:19:32Z):
   https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6245123301. A test
   binds the node to the link-local address of the sim host, as SIM NETWORK gives. The
   first admin's private key is in the file `admin.key` of the data
