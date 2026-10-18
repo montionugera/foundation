@@ -2432,7 +2432,7 @@ fn a_read_after_a_reset_of_an_active_session_fails_with_no_dial() {
         Err(Fault::status(Status::BAD_SERVER_NOT_CONNECTED)),
     );
     let ends = [false, true].map(reset_of_an_active_session);
-    assert_eq!(ends, [(reads.clone(), 1), (reads, 2)]);
+    assert_eq!(ends, [(reads, 1), (reads, 2)]);
 }
 
 /// Connects through a relay, with a switch of the URL when `switched`, and resets the
