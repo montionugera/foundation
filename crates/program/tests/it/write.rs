@@ -20,6 +20,7 @@ use types::channel;
 use types::frame::{Draft, Form, Frame, Path, Range};
 use types::name::Selector;
 use types::sample::{Scalar, Type};
+use types::time::Span;
 use wire::header::MALFORMED;
 use wire::hub::client::write::Write;
 use wire::hub::client::{Mode, OPEN_BYTES_MAX, Place, Refusal};
@@ -28,11 +29,13 @@ use crate::agent::{AGENT, name};
 use crate::connect::{ample, connect, connect_with};
 use crate::hand::{accept_stream, by_hand, send, start};
 use crate::node::env;
-use crate::session::{admit, raw, within};
+use crate::session::{admit, raw, raw_sized, within};
 use crate::sessions::{self, Home, QUIET, rules};
 
 const STAMP: Type = Type::Scalar(Scalar::Stamp);
 const I64: Type = Type::Scalar(Scalar::I64);
+/// Longer than a renewal takes to end.
+const APART: Span = Span::from_nanos(20_000_000);
 
 fn key(key: u128) -> channel::Key {
     channel::Key::from_u128(key)
@@ -118,8 +121,8 @@ fn entry(places: &[Place], at: u128) -> usize {
         .expect("a place")
 }
 
-/// Fills the draft of `writer`: a raw frame with `count` samples a series: `stamps` on `time`, then
-/// each of `values` on the channel of its key. A sample `n` of a series is its first
+/// Fills the draft of `writer`: a raw frame with `count` samples a series, `stamp` on
+/// `time`, then each of `values` on the channel of its key. A sample `n` of a series is its first
 /// value plus `n`.
 fn frame<'a>(
     writer: &'a mut Writer,
@@ -178,6 +181,36 @@ fn stamp_of(reader: &Reader, frame: &Frame) -> i64 {
         .find(|(at, _)| *at == key(1))
         .expect("the index");
     stamps[0]
+}
+
+/// The places of a writer of `series` places: `time`, then `i64` channels.
+fn wide(series: usize) -> Vec<Place> {
+    [place(1, STAMP, "time")]
+        .into_iter()
+        .chain(
+            (2..)
+                .take(series - 1)
+                .map(|at| place(at, I64, &format!("c{at:05}"))),
+        )
+        .collect()
+}
+
+/// Accepts the next write of `session` and opens it with `places`.
+async fn opened_with(session: &transport::Session, places: &[Place]) -> Incoming {
+    let mut write = accept_stream(session, |first| {
+        Write::decode(first).expect("a write").body()
+    })
+    .await;
+    start(&mut write, places, 0, places.len()).await;
+    write
+}
+
+/// Sends `outcome` on `write`.
+async fn answer(write: &mut Incoming, outcome: Outcome) {
+    let reply = wire::hub::write::Reply::Outcome(outcome);
+    let mut bytes = vec![0; reply.encoded_len()];
+    reply.encode(&mut bytes);
+    send(write.sender.as_mut().expect("two-way"), &bytes).await;
 }
 
 fn taken(seq: u64, count: u32) -> Outcome {
@@ -494,22 +527,11 @@ fn sends_an_open_at_the_cap() {
 #[test]
 fn sends_ends_over_one_message_as_whole_ends() {
     const SERIES: usize = 1 << 15;
-    let places: Vec<Place> = [place(1, STAMP, "time")]
-        .into_iter()
-        .chain(
-            (2..)
-                .take(SERIES - 1)
-                .map(|at| place(at, I64, &format!("c{at:05}"))),
-        )
-        .collect();
+    let places = wide(SERIES);
     by_hand(
         719,
         move |session, node| async move {
-            let mut write = accept_stream(&session, |first| {
-                Write::decode(first).expect("a write").body()
-            })
-            .await;
-            start(&mut write, &places, 0, places.len()).await;
+            let mut write = opened_with(&session, &places).await;
             let mut next = async || {
                 let message = write.receiver.recv().await.expect("receives");
                 message.expect("a message of the frame").to_vec()
@@ -541,10 +563,7 @@ fn sends_ends_over_one_message_as_whole_ends() {
                 "{runs:?} of {most}"
             );
             assert_eq!(last % 8, 0, "whole ends");
-            let reply = wire::hub::write::Reply::Outcome(taken(0, 1));
-            let mut bytes = vec![0; reply.encoded_len()];
-            reply.encode(&mut bytes);
-            send(write.sender.as_mut().expect("two-way"), &bytes).await;
+            answer(&mut write, taken(0, 1)).await;
             node.clock().sleep(QUIET).await;
         },
         |session, node| {
@@ -590,13 +609,7 @@ fn ends_the_writer_after_a_call_that_dropped_while_it_sent() {
 
 /// Accepts the next write of `session` and opens it with `time` and `value`.
 async fn opened(session: &transport::Session) -> Incoming {
-    let mut write = accept_stream(session, |first| {
-        Write::decode(first).expect("a write").body()
-    })
-    .await;
-    let places = [place(1, STAMP, "time"), place(2, I64, "value")];
-    start(&mut write, &places, 0, places.len()).await;
-    write
+    opened_with(session, &[place(1, STAMP, "time"), place(2, I64, "value")]).await
 }
 
 /// Takes the head, the ends, and the body of a frame of 2 series.
@@ -747,10 +760,11 @@ fn keeps_the_writer_whole_after_a_dropped_stored() {
 }
 
 /// A writer whose head and ends of a frame no block of `Config::pool` holds fails at
-/// the open with `Error::Pool`, and the program drops the stream.
+/// the open with `Error::Pool`, and the program drops the stream. A writer of one
+/// channel fewer opens.
 #[test]
 fn refuses_a_writer_whose_frame_lead_no_block_of_its_pool_holds() {
-    const CHANNELS: usize = 127;
+    const CHANNELS: usize = 126;
     let names: Vec<String> = (0..CHANNELS).map(|at| format!("c{at:03}")).collect();
     let places: Vec<Place> = [place(1, STAMP, "time")]
         .into_iter()
@@ -760,11 +774,8 @@ fn refuses_a_writer_whose_frame_lead_no_block_of_its_pool_holds() {
         716,
         move |session, mut hello, node| async move {
             admit(&mut hello, &node.clock()).await;
-            let mut write = accept_stream(&session, |first| {
-                Write::decode(first).expect("a write").body()
-            })
-            .await;
-            start(&mut write, &places, 0, places.len()).await;
+            let _fits = opened_with(&session, &places[..CHANNELS]).await;
+            let mut write = opened_with(&session, &places).await;
             assert_eq!(reset(&mut write).await, Code(0));
             node.clock().sleep(QUIET).await;
         },
@@ -780,13 +791,14 @@ fn refuses_a_writer_whose_frame_lead_no_block_of_its_pool_holds() {
             let session = connect_with(&node, tasks, at, AGENT, Rc::new(pool), ample())
                 .await
                 .expect("connects");
-            let channels = names.iter().map(|n| name(n)).collect();
-            let config = Config {
+            let config = |count| Config {
                 authority: Authority(1),
                 lease: None,
-                channels,
+                channels: names[..count].iter().map(|n| name(n)).collect(),
             };
-            let got = session.writer(config).await.map(drop);
+            let fits = session.writer(config(CHANNELS - 1)).await.expect("opens");
+            assert_eq!(fits.places().len(), CHANNELS);
+            let got = session.writer(config(CHANNELS)).await.map(drop);
             let pool = block::Error::TooLarge {
                 requested: 11 + 8 * (CHANNELS + 1),
                 largest: 1024,
@@ -795,4 +807,236 @@ fn refuses_a_writer_whose_frame_lead_no_block_of_its_pool_holds() {
             node.clock().sleep(QUIET).await;
         },
     );
+}
+
+/// A node whose largest message is not a multiple of 8 gets each run of ends but the
+/// last as the most whole ends under that size, and the body in messages of that size.
+#[test]
+fn sends_whole_ends_to_a_node_whose_message_is_not_a_multiple_of_8() {
+    const SERIES: usize = 400;
+    let places = wide(SERIES);
+    raw_sized(
+        722,
+        (1500, 1 << 20),
+        move |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            let mut write = opened_with(&session, &places).await;
+            let mut lens = Vec::new();
+            while lens.iter().sum::<usize>() < 11 + 2 * 8 * SERIES {
+                let message = write.receiver.recv().await.expect("receives");
+                lens.push(message.expect("a message of the frame").len());
+            }
+            assert_eq!(lens, [11, 1496, 1496, 208, 1500, 1500, 200]);
+            answer(&mut write, taken(0, 1)).await;
+            node.clock().sleep(QUIET).await;
+        },
+        |node, tasks, at| async move {
+            let session = connect(&node, tasks, at, AGENT).await.expect("connects");
+            let mut writer =
+                session.writer(config(&["c00002"], 1)).await.expect("opens");
+            let series: Vec<(usize, usize)> = (0..SERIES).map(|at| (at, 8)).collect();
+            writer
+                .draft(Form::Raw, &series)
+                .expect("a frame")
+                .set_count(0, 1);
+            let outcome = writer.write(Time::Frame(Path::Live)).await;
+            assert_eq!(outcome, Ok(taken(0, 1)));
+            node.clock().sleep(QUIET).await;
+        },
+    );
+}
+
+/// A call dropped in the run of ends ends the writer with a reset of `Code(0)`, and the
+/// node gets the head and whole messages of ends before the reset.
+#[test]
+fn ends_the_writer_after_a_call_dropped_in_its_run_of_ends() {
+    const SERIES: usize = 2000;
+    let places = wide(SERIES);
+    raw_sized(
+        723,
+        (1500, 3000),
+        move |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            let mut write = opened_with(&session, &places).await;
+            let mut lens = Vec::new();
+            let code = loop {
+                match write.receiver.recv().await {
+                    Ok(Some(message)) => lens.push(message.len()),
+                    Err(transport::Error::Reset { code }) => break code,
+                    got => panic!("{:?} after {lens:?}", got.map(|got| got.is_some())),
+                }
+            };
+            assert_eq!(code, Code(0));
+            let (head, ends) = lens.split_first().expect("the head");
+            assert_eq!(*head, 11);
+            assert!(!ends.is_empty(), "{lens:?}");
+            assert!(ends.len() < 8 * SERIES / 1496, "{lens:?}");
+            assert!(ends.iter().all(|&len| len == 1496), "{lens:?}");
+            node.clock().sleep(QUIET).await;
+        },
+        |node, tasks, at| async move {
+            let session = connect(&node, tasks, at, AGENT).await.expect("connects");
+            let mut writer =
+                session.writer(config(&["c00002"], 1)).await.expect("opens");
+            let series: Vec<(usize, usize)> = (0..SERIES).map(|at| (at, 8)).collect();
+            writer
+                .draft(Form::Raw, &series)
+                .expect("a frame")
+                .set_count(0, 1);
+            {
+                let mut write = pin!(writer.write(Time::Frame(Path::Live)));
+                let waits =
+                    poll_fn(|cx| Poll::Ready(write.as_mut().poll(cx).is_pending()));
+                assert!(waits.await, "the write waits for room for the ends");
+                node.clock()
+                    .sleep(Span::from_nanos(QUIET.nanos() / 2))
+                    .await;
+            }
+            writer
+                .draft(Form::Raw, &series)
+                .expect("a frame")
+                .set_count(0, 1);
+            let reset =
+                Err(Error::Transport(transport::Error::Reset { code: Code(0) }));
+            assert_eq!(writer.write(Time::Frame(Path::Live)).await, reset);
+            node.clock().sleep(QUIET).await;
+        },
+    );
+}
+
+/// A draft drops the draft that the writer holds before it takes a block, so a pool
+/// of frames that holds one draft gives a second, and the write sends it.
+#[test]
+fn replaces_a_held_draft_in_a_frames_pool_of_one_frame() {
+    const COUNT: usize = 200;
+    raw(
+        724,
+        |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            let mut write = opened(&session).await;
+            let mut body = Vec::new();
+            for _ in ["head", "ends", "body"] {
+                let message = write.receiver.recv().await.expect("receives");
+                body = message.expect("a message of the frame").to_vec();
+            }
+            let at = 8 * COUNT;
+            assert_eq!(body[at..at + 8], 5_i64.to_le_bytes());
+            answer(&mut write, taken(0, 200)).await;
+            node.clock().sleep(QUIET).await;
+        },
+        |node, tasks, at| async move {
+            let budget = block::Config::new(
+                u64::try_from(block::footprint(1 << 12)).expect("a usize fits a u64"),
+            )
+            .expect("the budget fits");
+            let frames = block::Pool::new(
+                budget.clone(),
+                block::Heap::new(budget.reservation()),
+            );
+            let session =
+                connect_with(&node, tasks, at, AGENT, ample(), Rc::new(frames))
+                    .await
+                    .expect("connects");
+            let mut writer =
+                session.writer(config(&["value"], 1)).await.expect("opens");
+            frame(&mut writer, COUNT, 1_000, &[(2, 1)]);
+            frame(&mut writer, COUNT, 1_000, &[(2, 5)]);
+            let outcome = writer.write(Time::Frame(Path::Live)).await;
+            assert_eq!(outcome, Ok(taken(0, 200)));
+            node.clock().sleep(QUIET).await;
+        },
+    );
+}
+
+/// A writer opened after a challenge that `wire` refuses ended the renewal gives that
+/// error, not the error of the close.
+#[test]
+fn gives_the_error_of_the_renewal_to_a_later_writer() {
+    raw(
+        725,
+        |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            send(hello.sender.as_mut().expect("two-way"), &[0xff]).await;
+            drop(session.closed().await);
+        },
+        |node, tasks, at| async move {
+            let session = connect(&node, tasks, at, AGENT).await.expect("connects");
+            node.clock().sleep(APART).await;
+            let got = session.writer(config(&["value"], 1)).await.map(drop);
+            let ended = Error::Message(wire::hub::client::Error::Kind { kind: 0xff });
+            assert_eq!(got, Err(ended));
+        },
+    );
+}
+
+/// A writer that waits for an outcome when a challenge that `wire` refuses ends the
+/// renewal gives that error at each call, not the error of the close.
+#[test]
+fn gives_the_error_of_the_renewal_to_an_open_writer() {
+    raw(
+        726,
+        |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            let mut write = opened(&session).await;
+            take_frame(&mut write).await;
+            send(hello.sender.as_mut().expect("two-way"), &[0xff]).await;
+            drop(session.closed().await);
+        },
+        |node, tasks, at| async move {
+            let session = connect(&node, tasks, at, AGENT).await.expect("connects");
+            let mut writer =
+                session.writer(config(&["value"], 1)).await.expect("opens");
+            let ended = Err(Error::Message(wire::hub::client::Error::Kind {
+                kind: 0xff,
+            }));
+            frame(&mut writer, 1, 0, &[(2, 1)]);
+            assert_eq!(writer.write(Time::Node).await, ended);
+            frame(&mut writer, 1, 0, &[(2, 2)]);
+            assert_eq!(writer.write(Time::Node).await, ended);
+            assert_eq!(writer.stored().await, ended.map(drop));
+        },
+    );
+}
+
+/// Places that name one channel twice, or a stream that the node finishes before the
+/// last place, give the error of the places, and the program stops the write as
+/// `MALFORMED`.
+#[test]
+fn stops_a_write_whose_places_are_not_valid() {
+    let twice = vec![place(1, STAMP, "time"), place(1, STAMP, "again")];
+    let whole = vec![place(1, STAMP, "time"), place(2, I64, "value")];
+    let cases = [
+        (
+            727,
+            twice,
+            2,
+            wire::hub::client::Error::Repeated { key: key(1) },
+        ),
+        (728, whole, 1, wire::hub::client::Error::Finished),
+    ];
+    for (seed, places, sent, error) in cases {
+        by_hand(
+            seed,
+            move |session, node| async move {
+                let mut write = accept_stream(&session, |first| {
+                    Write::decode(first).expect("a write").body()
+                })
+                .await;
+                start(&mut write, &places, 0, sent).await;
+                if sent < places.len() {
+                    let sender = write.sender.as_mut().expect("two-way");
+                    sender.finish().expect("finishes");
+                }
+                assert_eq!(reset(&mut write).await, Code(MALFORMED));
+                node.clock().sleep(QUIET).await;
+            },
+            move |session, node| {
+                Box::pin(async move {
+                    let got = session.writer(config(&["value"], 1)).await.map(drop);
+                    assert_eq!(got, Err(Error::Message(error)));
+                    node.clock().sleep(QUIET).await;
+                })
+            },
+        );
+    }
 }
