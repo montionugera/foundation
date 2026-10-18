@@ -417,7 +417,7 @@ impl Run {
     /// # Panics
     ///
     /// When the kind's check failed, so the connector has no status, or the status
-    /// reader ends or misses a status.
+    /// reader ends, misses a status, or reads a frame that does not hold a whole status.
     pub async fn next(&mut self) -> Reading {
         loop {
             if let Some(reading) = self.pending.pop_front() {
