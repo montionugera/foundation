@@ -168,7 +168,7 @@ pub(super) fn keys(driver: &dyn Driver, path: &Path) -> (Vec<Key>, Option<Key>) 
         above.push(dir.key());
         match dir.open(name) {
             Ok(Entry::Directory(next)) => dir = next,
-            Ok(Entry::File(key) | Entry::Special(key)) if names.peek().is_none() => {
+            Ok(Entry::File(key)) if names.peek().is_none() => {
                 return (above, Some(key));
             }
             _ => return (above, None),

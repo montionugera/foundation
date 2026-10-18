@@ -119,8 +119,7 @@ impl Dir {
             FileType::Directory => {
                 Entry::Directory(Box::new(Self::open(fd.as_fd(), name)?))
             }
-            FileType::RegularFile => Entry::File(key),
-            _ => Entry::Special(key),
+            _ => Entry::File(key),
         })
     }
 }

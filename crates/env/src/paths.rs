@@ -651,17 +651,15 @@ pub enum Entry {
     Link(Key, PathBuf),
     /// A directory, open.
     Directory(Box<dyn dir::Driver>),
-    /// A regular file, with its key.
+    /// Any other file, also a device or a FIFO, with its key.
     File(Key),
-    /// A device, a FIFO, or a socket, with its key.
-    Special(Key),
 }
 
 impl Entry {
     fn key(&self) -> Key {
         match self {
             Self::Directory(dir) => dir.key(),
-            Self::Link(key, _) | Self::File(key) | Self::Special(key) => *key,
+            Self::Link(key, _) | Self::File(key) => *key,
         }
     }
 }

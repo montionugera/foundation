@@ -1396,27 +1396,27 @@
   directories. `Driver::entry` goes. `Driver::root` gives the root on the way to an
   absolute path, open as a `paths::dir::Driver`, and `dir::Driver::open` gives what is
   at one name of that directory, with no link followed: a link with its key and target
-  as written, a directory, open, a regular file, or another file (`Entry::Special`),
-  each with its key. `Driver::not_directory` gives the error of the host for a name in a
-  file, as `looped` gives that of a loop. On `os`, a directory opens with `openat` and
-  `O_NOFOLLOW` and `O_DIRECTORY`, with `O_PATH` on Linux and `O_SEARCH` on macOS, so it
-  needs no read permission, and its key comes from `fstat` of that open, not of a stat
-  before it. A name is one `fstatat` with no link followed, and a link also one
-  `readlinkat`. On macOS, a directory that this user cannot search is open by its key
-  alone, and each name in it gives `EACCES`, as on Linux. On `sim`, a directory is open
-  by its inode, whose path each call finds again, so it keeps its directory after a
-  move; `/` is inode 0 and has no entry. The walk keeps one directory open: a `..` opens
-  `..` of that directory, which must have the key of the step that the walk came from.
-  When it does not, a program moved a directory of the path during the walk, and the
-  walk starts again from its first name. Each start takes one of the `LINKS` (40) links,
-  so past them the walk gives `Driver::looped`. The free handle walks the same way, so
-  on macOS it takes 40 links where the host takes 32, and a `..` after a move follows
-  the walk, not the host. `absolute` still bounds the path as given, but a name goes to
-  the host as one call on its directory, so a resolved path has no bound on its length:
-  a new name whose resolved path is longer than the host takes is written as the free
-  handle writes it, and a hidden file past PATH_MAX hides only itself, so the arm of a
-  refused hidden path meets only a refusal such as `Io` 13. A directory that this user
-  can read and not search lists its entries, and each name in it gives `EACCES`
+  as written, a directory, open, or another file, each with its key.
+  `Driver::not_directory` gives the error of the host for a name in a file, as `looped`
+  gives that of a loop. On `os`, a directory opens with `openat` and `O_NOFOLLOW` and
+  `O_DIRECTORY`, with `O_PATH` on Linux and `O_SEARCH` on macOS, so it needs no read
+  permission, and its key comes from `fstat` of that open, not of a stat before it. A
+  name is one `fstatat` with no link followed, and a link also one `readlinkat`. On
+  macOS, a directory that this user cannot search is open by its key alone, and each
+  name in it gives `EACCES`, as on Linux. On `sim`, a directory is open by its inode,
+  whose path each call finds again, so it keeps its directory after a move; `/` is inode
+  0 and has no entry. The walk keeps one directory open: a `..` opens `..` of that
+  directory, which must have the key of the step that the walk came from. When it does
+  not, a program moved a directory of the path during the walk, and the walk starts
+  again from its first name. Each start takes one of the `LINKS` (40) links, so past
+  them the walk gives `Driver::looped`. The free handle walks the same way, so on macOS
+  it takes 40 links where the host takes 32, and a `..` after a move follows the walk,
+  not the host. `absolute` still bounds the path as given, but a name goes to the host
+  as one call on its directory, so a resolved path has no bound on its length: a new
+  name whose resolved path is longer than the host takes is written as the free handle
+  writes it, and a hidden file past PATH_MAX hides only itself, so the arm of a refused
+  hidden path meets only a refusal such as `Io` 13. A directory that this user can read
+  and not search lists its entries, and each name in it gives `EACCES`
   (`within_lists_a_directory_that_this_user_can_read_and_not_search`). The check takes
   the keys above each step in one pass over the walk, so it costs the steps and not the
   steps times the depth. On `os` (Linux, Xeon Platinum 8488C, debug), a read through 40
