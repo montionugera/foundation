@@ -9,16 +9,12 @@ use std::ffi::c_void;
 use env::clock::Clock;
 use env::rng::Rng;
 
+use crate::client::Credentials;
 use crate::event::{self, Loop};
 use crate::ffi::{self, BYTE_STRING, Bytes, DATA_VALUE, DataType, DecodeOptions};
-use crate::ffi::{Security, Status, TYPES};
+use crate::ffi::{Status, TYPES};
+use crate::secure::SERVER;
 use crate::value::Cause;
-
-/// The certificate and key of the policies of [`certificate`].
-const SERVER: [&[u8]; 2] = [
-    include_bytes!("secure/server.der"),
-    include_bytes!("secure/server-key.der"),
-];
 
 /// Reads `data` as a client reads the certificate that a server sends, on a loop of
 /// `clock`: the check of a certificate group that trusts nothing, a channel context of
@@ -51,12 +47,12 @@ fn read(clock: Clock, data: &[u8]) -> (Status, Status) {
         tracing::Span::none(),
         &mut Rng::from_seed(0),
     );
-    let [certificate, key] = SERVER.map(Bytes::of);
-    let security = Security {
-        certificate,
-        key,
-        trust: Bytes::of(&[]),
-    };
+    let security = Credentials {
+        certificate: SERVER.certificate,
+        key: SERVER.key,
+        trust: &[],
+    }
+    .raw();
     let (mut verified, mut named) = (0, 0);
     // SAFETY: each pointer is live for the call, which only reads `data` and
     // `security`, and the loop lives past it.
