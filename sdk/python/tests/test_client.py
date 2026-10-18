@@ -207,7 +207,9 @@ class ClientTest(unittest.TestCase):
             nonlocal count
             while not closed.is_set():
                 count += 1
-                time.sleep(0.001)
+                # Gives up the GIL with no wait: on macOS a sleep of 1 ms can take
+                # 20 ms, and the close of a paused node takes about 0.4 s.
+                time.sleep(0)
 
         thread = threading.Thread(target=counter, daemon=True)
         thread.start()
