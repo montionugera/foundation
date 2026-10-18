@@ -263,6 +263,7 @@ impl State {
                 }
                 Ok(moved)
             }
+            Change::Card(card) => self.replace(*card).map(|()| false),
         }
     }
 
@@ -335,6 +336,32 @@ impl State {
             .check(&card, &join.admission, join.at)
             .map_err(Refused::Ticket)?;
         Ok((card, names))
+    }
+
+    // Makes `card` the card of its member. Only the addresses and the version may
+    // change, so the names and the public key that `fits` checked still hold.
+    fn replace(&mut self, card: card::Unchecked) -> Result<(), Refused> {
+        let key = card.key;
+        let member = self
+            .members
+            .get_mut(&key)
+            .ok_or(Refused::Stranger { key })?;
+        let card = card.check().map_err(Refused::Forged)?;
+        let (held, new) = (member.card.card(), card.card());
+        if (&new.name, new.public_key, &new.seal_key)
+            != (&held.name, held.public_key, &held.seal_key)
+        {
+            return Err(Refused::Changed { key });
+        }
+        if new.version <= held.version {
+            return Err(Refused::Behind {
+                key,
+                version: new.version,
+                held: held.version,
+            });
+        }
+        member.card = card;
+        Ok(())
     }
 
     // Adds `member`, whose names `fits` gave.
@@ -481,6 +508,27 @@ pub(crate) enum Refused {
     /// The bytes of a committed entry of a known kind are not the body of that kind,
     /// as [`change::Malformed::Body`].
     Body(Undecoded),
+    /// No member has the key of the card of a `Card` change.
+    Stranger {
+        /// The key of the card.
+        key: node::Key,
+    },
+    /// The card of a `Card` change has another name, public key, or seal key than the
+    /// card of its member.
+    Changed {
+        /// The member.
+        key: node::Key,
+    },
+    /// The version of the card of a `Card` change is not above the version of the
+    /// card of its member.
+    Behind {
+        /// The member.
+        key: node::Key,
+        /// The version of the change's card.
+        version: u64,
+        /// The version of the member's card.
+        held: u64,
+    },
 }
 
 impl From<NoMajority> for Refused {
@@ -523,6 +571,16 @@ impl fmt::Display for Refused {
                  majority"
             ),
             Self::Body(undecoded) => undecoded.fmt(f),
+            Self::Stranger { key } => write!(f, "node {key} is not a member"),
+            Self::Changed { key } => write!(
+                f,
+                "the card of node {key} changes more than its addresses and its version"
+            ),
+            Self::Behind { key, version, held } => write!(
+                f,
+                "card version {version} of node {key} is not above the held version \
+                 {held}"
+            ),
         }
     }
 }
@@ -613,6 +671,8 @@ impl std::error::Error for Unfit {}
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
+    use transport::Address;
+    use types::node::SealKey;
 
     use super::*;
     use crate::common::{
@@ -965,6 +1025,148 @@ mod tests {
             state.apply(ticket_change(8, options("plant", false))),
             Ok(false)
         );
+    }
+
+    // The card of member `id`, at `version`, with the one address `10.0.0.<id>:4100`.
+    fn moved(id: u8, version: u64) -> card::Card {
+        let at = std::net::SocketAddr::from(([10, 0, 0, id], 4100));
+        card::Card {
+            addresses: card::addresses::Addresses::new(vec![Address::Udp(at)]).unwrap(),
+            version,
+            ..member(id).card.card().clone()
+        }
+    }
+
+    // A `Card` change of `card` for node `key`, which the private key of node `signer`
+    // signed, with its signature bits flipped when `forged`.
+    fn card_change(key: u8, card: card::Card, signer: u8, forged: bool) -> Change {
+        let signed = card::Signed::sign(node(key), card, &private(signer));
+        let mut card = unchecked(&signed);
+        if forged {
+            card.signature[0] ^= 1;
+        }
+        Change::Card(Box::new(card))
+    }
+
+    #[test]
+    fn a_card_change_replaces_the_card_of_its_member() {
+        let mut state = state();
+        let mut expected = state.clone();
+        let change = card_change(2, moved(2, 5), 2, false);
+        let Change::Card(card) = change.clone() else {
+            unreachable!()
+        };
+        expected.members.get_mut(&node(2)).unwrap().card = card.check().unwrap();
+        assert_eq!(state.apply(change), Ok(false));
+        assert_eq!(state, expected);
+        assert_eq!(state.named(&name("plant.node2")), Some(node(2)));
+        assert_eq!(state.holder(public(2)), Some(node(2)));
+    }
+
+    #[test]
+    fn a_repeat_of_a_card_change_is_refused_and_changes_nothing() {
+        let mut state = state();
+        let change = card_change(2, moved(2, 2), 2, false);
+        assert_eq!(state.apply(change.clone()), Ok(false));
+        let before = state.clone();
+        let behind = Refused::Behind {
+            key: node(2),
+            version: 2,
+            held: 2,
+        };
+        assert_eq!(state.apply(change), Err(behind));
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn a_card_change_whose_version_is_not_above_is_refused() {
+        let mut state = state();
+        assert_eq!(
+            state.apply(card_change(2, moved(2, 5), 2, false)),
+            Ok(false)
+        );
+        let before = state.clone();
+        for version in [0, 1, 4, 5] {
+            let behind = Refused::Behind {
+                key: node(2),
+                version,
+                held: 5,
+            };
+            let change = card_change(2, moved(2, version), 2, false);
+            assert_eq!(state.apply(change), Err(behind));
+            assert_eq!(state, before);
+        }
+        assert_eq!(
+            state.apply(card_change(2, moved(2, 6), 2, false)),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn a_card_change_of_a_node_that_is_not_a_member_is_refused() {
+        let mut state = state();
+        let before = state.clone();
+        let stranger = Refused::Stranger { key: node(3) };
+        let change = card_change(3, moved(3, 2), 3, false);
+        assert_eq!(state.apply(change), Err(stranger));
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn a_card_change_with_a_forged_card_is_refused() {
+        let mut state = state();
+        let before = state.clone();
+        let forged = Refused::Forged(card::Forged { node: node(2) });
+        let change = card_change(2, moved(2, 2), 2, true);
+        assert_eq!(state.apply(change), Err(forged));
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn a_card_change_of_more_than_the_addresses_is_refused() {
+        let mut state = state();
+        let before = state.clone();
+        let renamed = card::Card {
+            name: name("plant.node9"),
+            ..moved(2, 2)
+        };
+        let rekeyed = card::Card {
+            public_key: public(9),
+            ..moved(2, 2)
+        };
+        let resealed = card::Card {
+            seal_key: SealKey::new([8; 32]).unwrap(),
+            ..moved(2, 2)
+        };
+        let changed = Refused::Changed { key: node(2) };
+        for (card, signer) in [(renamed, 2), (rekeyed, 9), (resealed, 2)] {
+            let change = card_change(2, card, signer, false);
+            assert_eq!(state.apply(change), Err(changed.clone()));
+            assert_eq!(state, before);
+        }
+    }
+
+    #[test]
+    fn a_card_refusal_names_the_first_check_that_fails() {
+        let mut state = state();
+        let stranger = Refused::Stranger { key: node(3) };
+        assert_eq!(
+            state.apply(card_change(3, moved(3, 2), 3, true)),
+            Err(stranger)
+        );
+        let renamed = card::Card {
+            name: name("plant.node9"),
+            ..moved(2, 2)
+        };
+        let forged = Refused::Forged(card::Forged { node: node(2) });
+        let change = card_change(2, renamed.clone(), 2, true);
+        assert_eq!(state.apply(change), Err(forged));
+        let old = card::Card {
+            version: 1,
+            ..renamed
+        };
+        let changed = Refused::Changed { key: node(2) };
+        assert_eq!(state.apply(card_change(2, old, 2, false)), Err(changed));
     }
 
     #[test]
@@ -1418,6 +1620,29 @@ mod tests {
                 "a change of kind 2 and 40 bytes is not in the byte form of its kind"
                     .to_owned(),
             ),
+            (
+                Refused::Stranger { key: node(3) },
+                format!("node {} is not a member", node(3)),
+            ),
+            (
+                Refused::Changed { key: node(2) },
+                format!(
+                    "the card of node {} changes more than its addresses and its \
+                     version",
+                    node(2)
+                ),
+            ),
+            (
+                Refused::Behind {
+                    key: node(2),
+                    version: 1,
+                    held: 4,
+                },
+                format!(
+                    "card version 1 of node {} is not above the held version 4",
+                    node(2)
+                ),
+            ),
         ];
         for (refused, text) in cases {
             assert_eq!(refused.to_string(), text);
@@ -1505,7 +1730,16 @@ mod tests {
                 homed(spec(version, base, root, &[]), &homes)
             },
         );
-        prop_oneof![joins, tickets, specs]
+        let cards = (1..4_u8, 0..4_u64, any::<bool>(), any::<bool>()).prop_map(
+            |(id, version, renamed, forged)| {
+                let mut card = moved(id, version);
+                if renamed {
+                    card.name = name("plant.edge.a");
+                }
+                card_change(id, card, id, forged)
+            },
+        );
+        prop_oneof![joins, tickets, specs, cards]
     }
 
     proptest! {
@@ -1525,6 +1759,15 @@ mod tests {
                     (Ok(_), Change::Join(join)) => {
                         prop_assert!(before.member(join.card.key).is_none());
                         prop_assert!(state.member(join.card.key).is_some());
+                    }
+                    (Ok(moved), Change::Card(card)) => {
+                        prop_assert!(!moved);
+                        let held = before.member(card.key).unwrap().card.card();
+                        prop_assert!(card.card.version > held.version);
+                        let mut expected = before.clone();
+                        let member = expected.members.get_mut(&card.key).unwrap();
+                        member.card = card.check().unwrap();
+                        prop_assert_eq!(&state, &expected);
                     }
                     (Ok(moved), Change::Spec { base, root, homes, .. }) => {
                         prop_assert_eq!(before.pointer(), base);
