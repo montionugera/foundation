@@ -1409,47 +1409,54 @@ fn a_walk_at_the_bound_ends_at_its_budget_past_pages_with_no_references() {
     }
 }
 
-/// 30 folders of 145 variables of 4096 bytes of tag and name, with 16 references in
-/// each page of the server. A walk of paths picks a variable of the ninth page of
-/// each folder, so it stops each folder with 576 KiB held, 16.9 MiB in all.
-#[test]
-fn a_walk_of_paths_releases_the_points_of_stopped_folders_past_the_bytes() {
-    const FOLDERS: u32 = 30;
-    const CHILDREN: u32 = 145;
-    let folder = |f: u32| Node {
+const FOLDERS: u32 = 30;
+const CHILDREN: u32 = 145;
+
+/// The node of the folder `f` of [`wide`].
+fn wide_folder(f: u32) -> Node {
+    Node {
         namespace: 1,
         key: Key::Number(8000 + f),
-    };
-    let setup = move |server: &Server| {
-        server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
-        server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
-        for f in 0..FOLDERS {
-            let name = CString::new(format!("f{f}")).expect("no NUL");
-            server.add_folder(&folder(f), &ROOT, ORGANIZES, &name, &name);
-            for c in 0..CHILDREN {
-                let number = 20_000 + f * CHILDREN + c;
-                let name = CString::new(format!("{number:0>4084}")).expect("no NUL");
-                let name: &'static CStr = Box::leak(name.into_boxed_c_str());
-                server.add_variable(&Variable {
-                    node: Node {
-                        namespace: 1,
-                        key: Key::Number(number),
-                    },
-                    parent: folder(f),
-                    reference: HAS_COMPONENT,
-                    name,
-                    data_type: DOUBLE,
-                    rank: -1,
-                    access: server::READ,
-                    value: None,
-                });
-            }
+    }
+}
+
+/// [`FOLDERS`] folders of [`CHILDREN`] variables of 4096 bytes of tag and name, with
+/// 16 references in each page of the server.
+fn wide(server: &Server) {
+    server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+    server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+    for f in 0..FOLDERS {
+        let name = CString::new(format!("f{f}")).expect("no NUL");
+        server.add_folder(&wide_folder(f), &ROOT, ORGANIZES, &name, &name);
+        for c in 0..CHILDREN {
+            let number = 20_000 + f * CHILDREN + c;
+            let name = CString::new(format!("{number:0>4084}")).expect("no NUL");
+            let name: &'static CStr = Box::leak(name.into_boxed_c_str());
+            server.add_variable(&Variable {
+                node: Node {
+                    namespace: 1,
+                    key: Key::Number(number),
+                },
+                parent: wide_folder(f),
+                reference: HAS_COMPONENT,
+                name,
+                data_type: DOUBLE,
+                rank: -1,
+                access: server::READ,
+                value: None,
+            });
         }
-        server.cap_references(16);
-    };
+    }
+    server.cap_references(16);
+}
+
+/// A walk of paths of [`wide`] picks a variable of the ninth page of each folder, so
+/// it stops each folder with 576 KiB held, 16.9 MiB in all.
+#[test]
+fn a_walk_of_paths_releases_the_points_of_stopped_folders_past_the_bytes() {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
-            setup(peer.server);
+            wide(peer.server);
             let mut client = peer.connected().await;
             let mut picks = Vec::new();
             {
@@ -1457,7 +1464,7 @@ fn a_walk_of_paths_releases_the_points_of_stopped_folders_past_the_bytes() {
                 for f in 0..FOLDERS {
                     let at = entry(
                         &format!("root/f{f}"),
-                        &folder(f).to_string(),
+                        &wide_folder(f).to_string(),
                         Shape::Folder,
                     );
                     let (mut names, mut cursor) = (Vec::new(), None);
