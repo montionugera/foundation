@@ -307,7 +307,7 @@ impl Layout {
     /// [`Buffer::block_max`](crate::Buffer::block_max) gives,
     /// [`Limit::Tagged`](crate::Limit::Tagged), which only an entry with a nonzero
     /// tag meets, or [`Limit::Carry`](crate::Limit::Carry), which only a batch with
-    /// such an entry on a buffer with trims meets.
+    /// such an entry meets.
     ///
     /// # Errors
     ///
