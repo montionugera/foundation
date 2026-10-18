@@ -60,7 +60,7 @@ fn hold_at_most_a_mebibyte(made: &str, failure: impl Fn() -> String) {
 
 fn a_reply_of_many_problems_holds_no_more_than_the_bound() {
     let text = "nope \"a\" {}\n".repeat(ENTRIES);
-    serve_large(&text);
+    serve_large(&text, "document.unknown-block");
 }
 
 fn a_reply_of_many_changes_holds_no_more_than_the_bound() {
@@ -70,12 +70,13 @@ fn a_reply_of_many_changes_holds_no_more_than_the_bound() {
     let text = std::iter::once(placement.to_owned())
         .chain(channels)
         .collect::<String>();
-    serve_large(&text);
+    serve_large(&text, "ops.large-reply");
 }
 
 /// Serves a `plan` request of `text` at a long path, whose reply passes the bound, and
-/// asserts that the heap grows by at most the bound and `STEPS_BYTES`.
-fn serve_large(text: &str) {
+/// asserts that the heap grows by at most the bound and `STEPS_BYTES`, and that the
+/// first problem of the reply has `code`.
+fn serve_large(text: &str, code: &'static str) {
     let path = format!("{}.hcl", "x".repeat(PATH_BYTES - 4));
     let body = format!(
         "{}\n",
@@ -137,7 +138,10 @@ fn serve_large(text: &str) {
             .position(|byte| *byte == b'\n')
             .expect("a line");
         let head: Value = serde_json::from_slice(&reply[..end]).expect("JSON");
-        assert_eq!(head["errors"][0]["code"], "ops.large-reply", "{head}");
+        assert_eq!(
+            head["errors"][0]["code"], code,
+            "the code of the first problem"
+        );
     });
     assert_eq!(ran, Ok(()), "the run ends");
 }

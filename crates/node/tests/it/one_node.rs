@@ -669,3 +669,39 @@ fn status_shows_samples_flow() {
     let before = rig.wait("both counts are above 0", || counts_above(rig, (0, 0)));
     rig.wait("both counts grow", || counts_above(rig, before));
 }
+
+/// `browse` of the OPC UA connector gives the points of a folder of the server, with
+/// their facts and values.
+#[test]
+fn browse_gives_the_points_of_the_server_with_their_values() {
+    let plant = create_plant(plant());
+    let args = [
+        "browse",
+        "plc",
+        "plant.hcl",
+        "--start",
+        "Plant/Line",
+        "--values",
+        "--json",
+    ];
+    let output = plant.rig.run(&args, b"");
+    assert_eq!((output.status.code(), text(&output.stderr)), (Some(0), ""));
+    let found: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("json");
+    let entries = found["entries"].as_array().expect("a list");
+    let temperature = entries
+        .iter()
+        .find(|entry| entry["path"] == "Plant/Line/Temperature")
+        .unwrap_or_else(|| panic!("no Temperature in {found}"));
+    let expected = serde_json::json!({
+        "path": "Plant/Line/Temperature",
+        "tag": "ns=1;s=Plant.Line.Temperature",
+        "shape": "point",
+        "type": "f64",
+        "unit": "°C",
+        "unit_code": "CEL",
+        "access": "read",
+        "value": 21.5,
+    });
+    assert_eq!(*temperature, expected);
+}

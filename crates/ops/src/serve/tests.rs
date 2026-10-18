@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -8,11 +9,13 @@ use spec::definition::Definition;
 use types::name::Name;
 use wire::hub::client::BODY_BYTES_MAX;
 
-use super::{Body, Large, serve};
+use super::{Answer, Body, Large, failed, serve};
 use crate::Node;
 use crate::common::{
-    BOB, EVE, NODE, SAM, SITE, create_node, fail_sync, name, placed_site, plant, solo,
+    BOB, EVE, NODE, SAM, SITE, create_node, fail_sync, more_problems, name,
+    placed_site, plant, solo,
 };
+use crate::error::{Error, Problem};
 use crate::plan;
 
 const DENIED_FIX: &str =
@@ -177,6 +180,60 @@ fn plans_applies_and_plans_no_change() {
         assert_eq!(head["output"]["pointer"]["version"], 1, "{head}");
         assert_eq!(rest, b"");
     });
+}
+
+/// A config problem whose message is `len` times `a`.
+fn problem(len: usize) -> Problem {
+    Problem {
+        code: "config.duplicate-name".to_owned(),
+        message: "a".repeat(len),
+        fix: String::new(),
+        place: None,
+        notes: Vec::new(),
+    }
+}
+
+/// The reply of `errors` with status 2.
+fn reply_of(errors: &[Problem]) -> Vec<u8> {
+    let failed = Answer::<()>::Failed {
+        errors: Cow::Borrowed(errors),
+        status: 2,
+    };
+    let mut reply = serde_json::to_vec(&failed).expect("JSON");
+    reply.push(b'\n');
+    reply
+}
+
+#[test]
+fn an_error_over_the_bound_keeps_the_problems_that_fit_to_the_byte() {
+    let max = usize::try_from(BODY_BYTES_MAX).expect("a usize");
+    let rest = [problem(200), problem(200)];
+    let empty = reply_of(&[problem(0), Problem::more(rest.len())]).len();
+    let fitting = [problem(max - empty)].into_iter().chain(rest.clone());
+    let error = Error::Config(fitting.collect());
+    let reply = failed(&error, &Error::LargeReply).0;
+    assert_eq!(reply.len(), max);
+    assert_eq!(reply, reply_of(&[problem(max - empty), Problem::more(2)]));
+    let over = [problem(max - empty + 1)].into_iter().chain(rest);
+    let reply = failed(&Error::Config(over.collect()), &Error::LargeReply).0;
+    assert_eq!(split(&reply), (large(), &b""[..]));
+}
+
+/// The count of the rest has one digit fewer after the second problem than after the
+/// first, so the second fits only when its own count is used.
+#[test]
+fn an_error_over_the_bound_counts_the_rest_after_each_problem() {
+    let max = usize::try_from(BODY_BYTES_MAX).expect("a usize");
+    let rest = std::iter::repeat_n(problem(200), 9);
+    let empty = reply_of(&[problem(0), problem(0), Problem::more(9)]).len();
+    let kept = [problem(max - empty), problem(0)];
+    let error = Error::Config(kept.iter().cloned().chain(rest).collect());
+    let reply = failed(&error, &Error::LargeReply).0;
+    assert_eq!(reply.len(), max);
+    assert_eq!(
+        reply,
+        reply_of(&[kept[0].clone(), kept[1].clone(), Problem::more(9)])
+    );
 }
 
 #[test]
@@ -1314,13 +1371,13 @@ fn gives_a_reply_at_the_bound_and_refuses_one_over_it() {
 }
 
 #[test]
-fn refuses_the_reply_of_many_problems_at_a_long_path() {
+fn gives_the_problems_that_fit_of_many_at_a_long_path() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         let path = format!("{}.hcl", "x".repeat((64 << 10) - 4));
         let text = "nope \"a\" {}\n".repeat(2_000);
         let reply = serve(&node, &admin(), &plan_body(&[(&path, &text)])).await;
-        assert_eq!(split(&reply), (large(), &b""[..]));
+        more_problems(&reply, "document.unknown-block", 2_000, 2);
     });
 }
 
