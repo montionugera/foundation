@@ -13,7 +13,7 @@ use wire::blob::{
 };
 use wire::header::MALFORMED;
 
-use crate::Store;
+use crate::{Receipt, Store};
 
 /// The longest message that `transport` copies when its carrier takes it, so that it
 /// holds no block of the message until the ack
@@ -290,10 +290,12 @@ async fn answer(
                 }
             }
             FromRequester::Put(put) => {
-                let chunk = body(store, receiver, put.body()).await?;
-                store.put(put.digest, &chunk).await?;
-                // The chunk can fill the pool, and the reply head needs a block.
-                drop(chunk);
+                // A head that waits for a receipt holds no block.
+                drop(message);
+                let len =
+                    usize::try_from(put.len).expect("invariant: a u32 fits a usize");
+                let receipt = store.receive(put.digest, len).await?;
+                receive(receipt, receiver, put.body()).await?;
                 let stored = Reply::Stored { digest: put.digest };
                 reply(store, sender, stored).await?;
             }
@@ -329,6 +331,34 @@ async fn send_chunk(sender: &mut Sender, chunk: Block) -> Result<(), transport::
         at = end;
     }
     Ok(())
+}
+
+/// Writes `body` through `receipt` as each message comes, and ends the put. A body
+/// that does not come whole discards the put.
+async fn receive(
+    mut receipt: Receipt<'_>,
+    receiver: &mut Receiver,
+    mut body: Body,
+) -> Result<(), Error> {
+    let read = async {
+        while body.remain() > 0 {
+            let Some(message) = receiver.recv().await? else {
+                break;
+            };
+            body.take(&message)?;
+            receipt.write(message).await?;
+        }
+        body.end()?;
+        Ok(())
+    }
+    .await;
+    match read {
+        Ok(()) => Ok(receipt.end().await?),
+        Err(error) => {
+            receipt.discard().await;
+            Err(error)
+        }
+    }
 }
 
 /// Reads `body` into one block.

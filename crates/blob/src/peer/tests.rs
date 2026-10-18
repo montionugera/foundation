@@ -555,6 +555,37 @@ fn a_put_of_the_largest_chunk_of_a_pool_of_one_block_gives_stored() {
     );
 }
 
+/// A peer that sends a put head and no body holds no block of the store's pool, so a
+/// local put of the largest chunk of a pool of one block stores.
+#[test]
+fn a_put_head_with_no_body_leaves_the_pool_free_for_a_local_put() {
+    let create_tight_pool = || create_pool_of(64 + 4096);
+    let (theirs, _) = chunk(7, 4096);
+    let (ours, bytes) = chunk(8, 4096);
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            let store = open_on(&node, create_tight_pool(), 0).await;
+            let mut served = pin!(serve(&store, incoming));
+            // 10 ms is many times the time that the head takes to come.
+            for _ in 0..1000 {
+                let polled = poll_fn(|cx| Poll::Ready(served.as_mut().poll(cx)));
+                assert_eq!(polled.await, Poll::Pending);
+                node.clock().sleep(Span::from_nanos(10_000)).await;
+            }
+            put(&store, ours, &bytes).await;
+            let got = store.get(ours).await.unwrap().unwrap();
+            assert_eq!(&got[..], &bytes[..]);
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.put(theirs, 4096).await;
+            assert_eq!(stream.reset().await, reset(0));
+        },
+    );
+}
+
 /// A get of the largest chunk of a pool of one block: the reply head finds no block.
 #[test]
 fn a_get_of_the_largest_chunk_of_a_pool_of_one_block_ends_with_pool() {
