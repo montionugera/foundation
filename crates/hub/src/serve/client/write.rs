@@ -339,6 +339,7 @@ impl Replies {
     }
 
     /// Gives the block of `pending` and the reply of `outcome`, labeled with its frame.
+    /// A taken frame is counted for the next commit, which this calls when none is due.
     /// Sync, so the relay's future holds no nested one.
     fn outcome(
         &mut self,

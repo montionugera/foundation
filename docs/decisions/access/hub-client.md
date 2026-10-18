@@ -317,4 +317,6 @@
   the limit of an outcome that names the next frame at 2026-10-18T18:43:23Z
   (https://github.com/synnaxlabs/foundation/pull/3240#issuecomment-6253686852), and
   the count of frame heads at 2026-10-18T18:59:25Z
-  (https://github.com/synnaxlabs/foundation/pull/3240#issuecomment-6253848770).
+  (https://github.com/synnaxlabs/foundation/pull/3240#issuecomment-6253848770), with
+  its text of both cases approved at 2026-10-18T19:56:18Z
+  (https://github.com/synnaxlabs/foundation/pull/3240#issuecomment-6254436267).
