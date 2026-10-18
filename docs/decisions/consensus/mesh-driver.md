@@ -129,9 +129,10 @@
   node again, and needs a ruling before it lands (decided by `laptop.architect`,
   2026-10-07T12:55:06Z:
   https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6038355946). That
-  change, and the first change that replaces a card, also make `node::runs` read the
-  name of its node again, because today it reads the name once, when the mesh opens
-  (`laptop.architect`, 2026-10-10T14:53:22Z:
+  change, and the first change that renames a member, also make `node::runs` read the
+  name of its node again (a `Card` change keeps the name, MEMBER RECORD), because
+  today it reads the name once, when the mesh opens (`laptop.architect`,
+  2026-10-10T14:53:22Z:
   https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6098763970). So does
   the change that lets a node join a running mesh (#1157), because a node that joins
   opens its mesh before it is a member (`laptop.architect`, 2026-10-10T15:07:08Z,
