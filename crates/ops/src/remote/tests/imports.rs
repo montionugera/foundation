@@ -208,8 +208,8 @@ fn the_command_line_refuses_a_name_with_no_split_and_a_match_with_points() {
         let cases = [
             (
                 ["import", "plant", "plant.hcl", "--name", "heat", "--json"],
-                "invalid value for one of the arguments: `--name <NAME=PATH>`: `heat` has no `=` between a \
-                 name and a path",
+                "invalid value for one of the arguments: `--name <NAME=PATH>`: \
+                 `heat` has no `=` between a name and a path",
             ),
             (
                 ["import", "plant", "plant.hcl", "--match", "*", "--point=x"],

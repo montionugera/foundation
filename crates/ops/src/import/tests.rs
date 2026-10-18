@@ -191,7 +191,13 @@ fn a_match_adds_each_point_that_the_connector_can_read_or_write() {
         let node = create_browsing_node(&fixture, mesh);
         let (reply, text) =
             imported(&node, &json!({ "start": "Line3", "match": "*" })).await;
-        let channel = |name: &str, path: &str, data_type: Value| json!({ "name": name, "path": path, "type": data_type });
+        let channel = |name: &str, path: &str, data_type: Value| {
+            json!({
+                "name": name,
+                "path": path,
+                "type": data_type,
+            })
+        };
         let output = json!({
             "file": "site.hcl",
             "channels": [
@@ -418,7 +424,7 @@ It left out 2 points that the connector cannot read or write.
         "unreadable": 1,
     }))
     .expect("an output");
-    let expected = "The import added 1 channel to site.hcl.\nplant.a A f64\nIt left out \
-                    1 point that the connector cannot read or write.\n";
+    let expected = "The import added 1 channel to site.hcl.\nplant.a A f64\n\
+                    It left out 1 point that the connector cannot read or write.\n";
     assert_eq!(none.text(), expected);
 }

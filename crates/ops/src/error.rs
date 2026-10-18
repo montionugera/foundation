@@ -51,8 +51,8 @@ const BAD_PATTERN: Code = Code::new("ops.bad-pattern");
 const NO_PICK: Code = Code::new("ops.no-pick");
 const IMPORT_LIMIT: Code = Code::new("ops.import-limit");
 const BAD_POINT: Code = Code::new("ops.bad-point");
-const BAD_POINT_FIX: &str = "Give the names of the path joined by `/`, with a `\\` before each `/`, `*`, or \
-     `\\` in a name";
+const BAD_POINT_FIX: &str = "Give the names of the path joined by `/`, with a `\\` \
+                             before each `/`, `*`, or `\\` in a name";
 const DUPLICATE_PICK: Code = Code::new("ops.duplicate-pick");
 const BAD_NAME: Code = Code::new("ops.bad-name");
 const BAD_NAME_FIX: &str = "Give another name, or leave it out for the default name";
@@ -416,8 +416,9 @@ impl Error {
             }
             Self::BadName { names } => {
                 let problems = names.iter().map(|(path, text, cause)| {
-                    let message =
-                        format!("the name `{text}` of the point `{path}` is not a name: {cause}");
+                    let message = format!(
+                        "the name `{text}` of the point `{path}` is not a name: {cause}"
+                    );
                     (BAD_NAME, message, BAD_NAME_FIX)
                 });
                 return Cow::Owned(problems.map(Problem::plain).collect());
