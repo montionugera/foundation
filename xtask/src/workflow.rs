@@ -14,7 +14,8 @@ pub(crate) struct Line<'a> {
 /// # Errors
 ///
 /// When `text` has a character that is not printable ASCII, LF, or the CR of a CR LF,
-/// or a line outside the text of a block scalar that `code` refuses or that `continues`.
+/// or a line outside the text of a block scalar that `code` refuses, or that
+/// `continues`.
 pub(crate) fn lines(text: &str) -> Result<Vec<Line<'_>>, String> {
     // YAML breaks a line at CR, NEL, LS, and PS too, and a parser can read other white
     // space as text, so `str::lines` and `str::trim` would drop a line that YAML reads.
