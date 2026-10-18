@@ -61,7 +61,9 @@ impl Cards {
         }
     }
 
-    /// `held` with `addresses`, at the version that [`next`] gives for it.
+    /// `held` with `addresses`, at the version that [`next`] gives for it. Gives
+    /// `None`, and signs nothing, when `held` has `addresses` and the file holds no
+    /// version above it.
     ///
     /// # Errors
     ///
@@ -69,17 +71,24 @@ impl Cards {
     pub(super) async fn sign(
         &self,
         held: &Card,
-        addresses: Addresses,
-    ) -> Result<Signed, Error> {
+        addresses: &Addresses,
+    ) -> Result<Option<Signed>, Error> {
         let mut turn = self.turn();
         (&mut turn).await;
+        // At a start, the applied state can lag a card of the file that commits after
+        // it, and would then hide `held`.
+        if held.addresses == *addresses
+            && held.version >= last(&self.files, &self.dir, &self.blocks).await?
+        {
+            return Ok(None);
+        }
         let version = next(&self.files, &self.dir, &self.blocks, held.version).await?;
         let card = Card {
-            addresses,
+            addresses: addresses.clone(),
             version,
             ..held.clone()
         };
-        Ok(Signed::sign(self.key, card, &self.private_key))
+        Ok(Some(Signed::sign(self.key, card, &self.private_key)))
     }
 
     fn turn(&self) -> Turn<'_> {
@@ -152,18 +161,38 @@ pub(super) async fn next(
     blocks: &Blocks,
     held: u64,
 ) -> Result<u64, Error> {
-    let len = file::wide(2 * SLOT);
-    let opened = files
-        .open(&dir.join(FILE), Mode::Create { len })
-        .await
-        .map_err(Error::Files)?;
-    let path = dir.join(FILE);
-    let version = write(&opened, &path, blocks, held).await;
+    let opened = open(files, dir).await?;
+    let version = write(&opened, &dir.join(FILE), blocks, held).await;
     opened.close().await;
     let version = version?;
     // The create of the first call is durable only after this.
     files.sync_dir(dir).await.map_err(Error::Files)?;
     Ok(version)
+}
+
+/// The newest version that the file in `dir` holds, or 0 when it holds none.
+///
+/// # Errors
+///
+/// As [`next`].
+pub(super) async fn last(
+    files: &Files,
+    dir: &Path,
+    blocks: &Blocks,
+) -> Result<u64, Error> {
+    let opened = open(files, dir).await?;
+    let versions = versions(&opened, &dir.join(FILE), blocks).await;
+    opened.close().await;
+    Ok(newest(versions?))
+}
+
+// A create that a power cut drops leaves no version, as a file that is not there does.
+async fn open(files: &Files, dir: &Path) -> Result<files::File, Error> {
+    let len = file::wide(2 * SLOT);
+    files
+        .open(&dir.join(FILE), Mode::Create { len })
+        .await
+        .map_err(Error::Files)
 }
 
 async fn write(
@@ -172,20 +201,8 @@ async fn write(
     blocks: &Blocks,
     held: u64,
 ) -> Result<u64, Error> {
-    let bytes = blocks.read(file).await?;
-    let (first, second) = bytes.split_at(SLOT);
-    let versions = match [read(first), read(second)] {
-        [Slot::Broken, Slot::Broken] | [Slot::Foreign, _] | [_, Slot::Foreign] => {
-            return Err(Error::CardFile {
-                path: path.to_path_buf(),
-            });
-        }
-        slots => slots.map(|slot| match slot {
-            Slot::Version(version) => Some(version),
-            _ => None,
-        }),
-    };
-    let newest = versions.iter().flatten().max().copied().unwrap_or(0);
+    let versions = versions(file, path, blocks).await?;
+    let newest = newest(versions);
     let version = held
         .max(newest)
         .checked_add(1)
@@ -196,6 +213,31 @@ async fn write(
     blocks.write(file, file::wide(at), &mut &bytes[..]).await?;
     file.sync().await.map_err(Error::Files)?;
     Ok(version)
+}
+
+// The version of each slot.
+async fn versions(
+    file: &files::File,
+    path: &Path,
+    blocks: &Blocks,
+) -> Result<[Option<u64>; 2], Error> {
+    let bytes = blocks.read(file).await?;
+    let (first, second) = bytes.split_at(SLOT);
+    match [read(first), read(second)] {
+        [Slot::Broken, Slot::Broken] | [Slot::Foreign, _] | [_, Slot::Foreign] => {
+            Err(Error::CardFile {
+                path: path.to_path_buf(),
+            })
+        }
+        slots => Ok(slots.map(|slot| match slot {
+            Slot::Version(version) => Some(version),
+            _ => None,
+        })),
+    }
+}
+
+fn newest(versions: [Option<u64>; 2]) -> u64 {
+    versions.into_iter().flatten().max().unwrap_or(0)
 }
 
 // What a slot of the file holds. A write touches one slot, so a broken slot is a torn

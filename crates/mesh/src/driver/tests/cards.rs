@@ -230,6 +230,33 @@ fn a_card_of_a_later_version_that_applied_first_takes_the_next_version() {
     assert_eq!(card, second);
 }
 
+// The run before signed version 2 with port 10, and node 2 commits it after the call
+// starts. The held card has the addresses of the call at version 1, so the call signs
+// version 3, which applies after version 2.
+#[test]
+fn a_call_with_the_held_addresses_signs_above_a_version_of_the_file() {
+    let call = |_, mesh: Mesh| async move {
+        let held = card_of(&mesh, 1);
+        let signed = mesh.cards.sign(&held, &moved(1, 10)).await.unwrap();
+        assert_eq!(signed.map(|card| card.card().version), Some(2));
+        let set = mesh.set_addresses(held.addresses.clone()).await;
+        (set, held, card_of(&mesh, 1))
+    };
+    let leader = |mut leader: Leader| async move {
+        let (first, mut asked) = leader.proposal().await;
+        leader.answer(&mut asked, at(2)).await.unwrap();
+        let earlier = (encoded(&card_at(1, moved(1, 10), 2)), at(1));
+        let each = vec![earlier, (encoded(&first), at(2))];
+        leader.append_each(Position::default(), each).await;
+        leader.rest(seconds(2)).await;
+        card_in(&first).clone()
+    };
+    let ((set, held, card), first) = run(call, leader);
+    assert_eq!(set, Ok(()));
+    let expected = card::Card { version: 3, ..held };
+    assert_eq!((first, card), (expected.clone(), expected));
+}
+
 // The leader counts the card that the follower forwards, and refuses the next one
 // within the minute with code 18.
 #[test]

@@ -4,7 +4,7 @@ use env::files::Mode;
 
 use super::*;
 
-use crate::driver::version::{FILE, next};
+use crate::driver::version::{FILE, last, next};
 use crate::file;
 
 /// What [`next`] gives on `node` for `held`.
@@ -21,6 +21,19 @@ fn tried(sim: &mut Sim, node: &sim::node::Node, held: u64) -> Result<u64, Error>
     sim.run_on(node, move |node, _| async move {
         let blocks = Blocks::new(create_pool()).unwrap();
         next(&node.files(), Path::new(""), &blocks, held).await
+    })
+    .unwrap()
+}
+
+/// What [`last`] gives on `node`.
+#[expect(
+    clippy::unwrap_in_result,
+    reason = "a sim error is a test failure, not a file error"
+)]
+fn last_on(sim: &mut Sim, node: &sim::node::Node) -> Result<u64, Error> {
+    sim.run_on(node, move |node, _| async move {
+        let blocks = Blocks::new(create_pool()).unwrap();
+        last(&node.files(), Path::new(""), &blocks).await
     })
     .unwrap()
 }
@@ -84,6 +97,21 @@ fn next_gives_a_version_above_the_held_one_and_above_each_it_gave() {
     assert_eq!(next_on(&mut sim, &node, 0), 4);
     assert_eq!(next_on(&mut sim, &node, 9), 10);
     assert_eq!(next_on(&mut sim, &node, 3), 11);
+}
+
+#[test]
+fn last_gives_the_newest_version_and_changes_none() {
+    let sector = file::wide(files::SECTOR);
+    let (mut sim, node) = create_node();
+    assert_eq!(last_on(&mut sim, &node), Ok(0));
+    assert_eq!(next_on(&mut sim, &node, 6), 7);
+    assert_eq!(next_on(&mut sim, &node, 1), 8);
+    assert_eq!(last_on(&mut sim, &node), Ok(8));
+    assert_eq!(last_on(&mut sim, &node), Ok(8));
+    assert_eq!(next_on(&mut sim, &node, 0), 9);
+    flip(&mut sim, &node, sector);
+    flip(&mut sim, &node, 0);
+    assert_eq!(last_on(&mut sim, &node), Err(invalid()));
 }
 
 #[test]

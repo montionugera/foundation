@@ -436,7 +436,13 @@
   a torn write keeps the newest. Else a node that stops after the commit of its card
   and before its own apply proposes the held version at its next start, each node
   refuses it, and the leader dials the stale card (`laptop.architect`,
-  2026-10-18T03:29:11Z, item 4 of 6245196820). A file with no valid slot that a torn
+  2026-10-18T03:29:11Z, item 4 of 6245196820). A call does nothing only when the held
+  card has its addresses at a version at or above the last version in the file. At a
+  start the applied state can lag a card that commits after it, so the call signs
+  above that version and proposes (option (a) of item 1, `laptop.architect`,
+  2026-10-18T07:48:16Z:
+  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247302177). A
+  file with no valid slot that a torn
   write explains gives `Error::CardFile` (`laptop.architect`, 2026-10-18T07:33:59Z:
   https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247185547). A node
   proposes at most one `Change::Card` of each member each minute, by `Config::clock`,
