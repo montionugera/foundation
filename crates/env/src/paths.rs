@@ -132,8 +132,9 @@ impl Paths {
     /// # Errors
     ///
     /// [`Error::NotFound`] when `path` is empty or a directory on the way is not there,
-    /// the error of [`Driver::looped`] past [`LINKS`] symbolic links or [`LINKS`] moves
-    /// of a directory of the path during the walk, else
+    /// the error of [`Driver::looped`] past [`LINKS`] symbolic links less one for each
+    /// time that a move of a directory of the path during the walk starts it again, or
+    /// past [`LINKS`] such starts, else
     /// [`Error::Io`], also for a `.`, a `..`, or an end in `/` after a file, and for a
     /// `path` longer than the host takes. Each name goes to the host as one call on
     /// the directory that holds it, so a resolved path has no bound on its length.
