@@ -83,7 +83,10 @@ pub(crate) const TABLE: &[Spec] = &[
     name = "foundation",
     about = "Run Foundation operations",
     version,
-    disable_help_subcommand = true
+    disable_help_subcommand = true,
+    // A bench dependency turns on clap's `wrap_help` in a workspace build, so help
+    // never wraps, to be the same in each build.
+    term_width = 0
 )]
 struct Cli {
     /// Print the output or the error as JSON.
