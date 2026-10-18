@@ -74,8 +74,9 @@ impl Cards {
 ///
 /// # Errors
 ///
-/// [`Error::Files`] when a file call fails, and [`Error::Pool`] when the pool of
-/// `blocks` has no block.
+/// - [`Error::Files`] when a file call fails.
+/// - [`Error::Pool`] when the pool of `blocks` has no block.
+/// - [`Error::CardFile`] when the file holds no valid slot that a torn write explains.
 ///
 /// # Panics
 ///
@@ -91,7 +92,8 @@ pub(super) async fn next(
         .open(&dir.join(FILE), Mode::Create { len })
         .await
         .map_err(Error::Files)?;
-    let version = write(&opened, blocks, held).await;
+    let path = dir.join(FILE);
+    let version = write(&opened, &path, blocks, held).await;
     opened.close().await;
     let version = version?;
     // The create of the first call is durable only after this.
@@ -99,10 +101,25 @@ pub(super) async fn next(
     Ok(version)
 }
 
-async fn write(file: &files::File, blocks: &Blocks, held: u64) -> Result<u64, Error> {
+async fn write(
+    file: &files::File,
+    path: &Path,
+    blocks: &Blocks,
+    held: u64,
+) -> Result<u64, Error> {
     let bytes = blocks.read(file).await?;
     let (first, second) = bytes.split_at(SLOT);
-    let versions = [read(first), read(second)];
+    let versions = match [read(first), read(second)] {
+        [Slot::Broken, Slot::Broken] | [Slot::Foreign, _] | [_, Slot::Foreign] => {
+            return Err(Error::CardFile {
+                path: path.to_path_buf(),
+            });
+        }
+        slots => slots.map(|slot| match slot {
+            Slot::Version(version) => Some(version),
+            _ => None,
+        }),
+    };
     let newest = versions.iter().flatten().max().copied().unwrap_or(0);
     let version = held
         .max(newest)
@@ -119,13 +136,32 @@ async fn write(file: &files::File, blocks: &Blocks, held: u64) -> Result<u64, Er
     Ok(version)
 }
 
-// The version that `slot` holds, or `None` when its check or format does not hold.
-fn read(slot: &[u8]) -> Option<u64> {
-    let (check, rest) = slot.split_first_chunk::<CHECK>()?;
-    let body = rest.get(..BODY)?;
-    let (format, version) = body.split_first_chunk::<2>()?;
-    if *check != file::check(body) || u16::from_le_bytes(*format) != FORMAT {
-        return None;
+// What a slot of the file holds. A write touches one slot, so a broken slot is a torn
+// write only while the other is not broken.
+enum Slot {
+    // All zero.
+    Unwritten,
+    // Its check fails.
+    Broken,
+    // Its check holds with another format.
+    Foreign,
+    Version(u64),
+}
+
+fn read(slot: &[u8]) -> Slot {
+    if slot.iter().all(|&byte| byte == 0) {
+        return Slot::Unwritten;
     }
-    Some(u64::from_le_bytes(version.try_into().ok()?))
+    let (check, body) = slot
+        .split_first_chunk::<CHECK>()
+        .and_then(|(check, rest)| Some((check, rest.first_chunk::<BODY>()?)))
+        .expect("invariant: a slot is a sector");
+    if *check != file::check(body) {
+        return Slot::Broken;
+    }
+    let [low, high, version @ ..] = *body;
+    if u16::from_le_bytes([low, high]) != FORMAT {
+        return Slot::Foreign;
+    }
+    Slot::Version(u64::from_le_bytes(version))
 }

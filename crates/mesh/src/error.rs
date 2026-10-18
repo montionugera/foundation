@@ -161,6 +161,12 @@ pub enum Error {
         /// The path of the founding file.
         path: PathBuf,
     },
+    /// The file of the last card version that this node signed holds no valid slot that
+    /// a torn write explains.
+    CardFile {
+        /// The path of the file.
+        path: PathBuf,
+    },
 }
 
 impl fmt::Display for Error {
@@ -261,6 +267,11 @@ impl fmt::Display for Error {
                 f,
                 "{} does not read back whole, or is not there while the log of the mesh \
                  directory holds a record",
+                path.display()
+            ),
+            Self::CardFile { path } => write!(
+                f,
+                "the file {} holds no valid card version that this node signed",
                 path.display()
             ),
         }

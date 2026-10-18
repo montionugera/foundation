@@ -511,6 +511,7 @@ fn error_has_one_case_for_each_cause_that_a_public_call_gives() {
         | Error::Limit { .. }
         | Error::Founding { .. }
         | Error::Unfounded { .. }
+        | Error::CardFile { .. }
         | Error::Soon => {}
     };
     let _: fn(&Error) = cases;

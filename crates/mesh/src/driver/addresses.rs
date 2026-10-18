@@ -22,6 +22,7 @@ impl Mesh {
     /// - [`Error::Soon`] when the leader proposed a card of this node less than a
     ///   minute before. Call again after a minute.
     /// - [`Error::Files`] when the write of the last signed version fails.
+    /// - [`Error::CardFile`] when the file of the last signed version is not valid.
     /// - [`Error::Stopped`] when the group stopped.
     ///
     /// # Panics

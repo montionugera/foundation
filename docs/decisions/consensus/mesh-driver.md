@@ -436,10 +436,12 @@
   a torn write keeps the newest. Else a node that stops after the commit of its card
   and before its own apply proposes the held version at its next start, each node
   refuses it, and the leader dials the stale card (`laptop.architect`,
-  2026-10-18T03:29:11Z, item 4 of 6245196820). A node proposes at most one
-  `Change::Card` of each member each minute, by `Config::clock`, for a forwarded change
-  and for a local call. It counts a card when it proposes it, in memory, and refuses
-  another before the log: a forward gets stream code 18, and a local call gets
-  `Error::Soon`. So such a card never gets into the log (decided by `laptop.monitor`,
-  2026-10-18T03:32:43Z:
+  2026-10-18T03:29:11Z, item 4 of 6245196820). A file with no valid slot that a torn
+  write explains gives `Error::CardFile` (`laptop.architect`, 2026-10-18T07:33:59Z:
+  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247185547). A node
+  proposes at most one `Change::Card` of each member each minute, by `Config::clock`,
+  for a forwarded change and for a local call. It counts a card when it proposes it, in
+  memory, and refuses another before the log: a forward gets stream code 18, and a local
+  call gets `Error::Soon`. So such a card never gets into the log (decided by
+  `laptop.monitor`, 2026-10-18T03:32:43Z:
   https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245224489).

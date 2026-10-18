@@ -9,13 +9,51 @@ use crate::file;
 
 /// What [`next`] gives on `node` for `held`.
 fn next_on(sim: &mut Sim, node: &sim::node::Node, held: u64) -> u64 {
+    tried(sim, node, held).unwrap()
+}
+
+/// What [`next`] gives on `node` for `held`, also an error.
+#[expect(
+    clippy::unwrap_in_result,
+    reason = "a sim error is a test failure, not a file error"
+)]
+fn tried(sim: &mut Sim, node: &sim::node::Node, held: u64) -> Result<u64, Error> {
     sim.run_on(node, move |node, _| async move {
         let blocks = Blocks::new(create_pool()).unwrap();
-        next(&node.files(), Path::new(""), &blocks, held)
-            .await
-            .unwrap()
+        next(&node.files(), Path::new(""), &blocks, held).await
     })
     .unwrap()
+}
+
+/// A slot whose check holds over `format` and `version`.
+fn slot(format: u16, version: u64) -> Vec<u8> {
+    let mut body = format.to_le_bytes().to_vec();
+    body.extend(version.to_le_bytes());
+    let mut bytes = file::check(&body).to_vec();
+    bytes.extend(body);
+    bytes.resize(files::SECTOR, 0);
+    bytes
+}
+
+/// Writes `bytes` at byte `at` of the file of `node`, and syncs it.
+fn put(sim: &mut Sim, node: &sim::node::Node, at: u64, bytes: Vec<u8>) {
+    sim.run_on(node, move |node, _| async move {
+        let file = node
+            .files()
+            .open(Path::new(FILE), Mode::Write)
+            .await
+            .unwrap();
+        let block = create_pool().copy(&bytes).unwrap();
+        file.write_at(at, &[block]).await.unwrap();
+        file.sync().await.unwrap();
+    })
+    .unwrap();
+}
+
+fn invalid() -> Error {
+    Error::CardFile {
+        path: PathBuf::from(FILE),
+    }
 }
 
 /// Flips one bit of byte `at` of the file of node 1, and syncs it.
@@ -139,4 +177,62 @@ fn next_after_a_dropped_call_gives_the_next_version() {
         })
         .unwrap();
     assert!((2..=3).contains(&version), "{version}");
+}
+
+/// A first write that broke leaves the other slot unwritten, so it is torn.
+#[test]
+fn a_broken_slot_beside_an_unwritten_one_holds_no_version() {
+    let sector = file::wide(files::SECTOR);
+    for at in [0, 17] {
+        let (mut sim, node) = create_node();
+        assert_eq!(next_on(&mut sim, &node, 4), 5);
+        flip(&mut sim, &node, at);
+        assert_eq!(next_on(&mut sim, &node, 1), 2, "byte {at}");
+    }
+    let (mut sim, node) = create_node();
+    next_on(&mut sim, &node, 4);
+    put(&mut sim, &node, 0, vec![0; files::SECTOR]);
+    put(&mut sim, &node, sector, slot(1, 7));
+    flip(&mut sim, &node, sector);
+    assert_eq!(next_on(&mut sim, &node, 1), 2);
+}
+
+/// A write touches one slot, so two broken slots are not a torn write.
+#[test]
+fn two_broken_slots_give_card_file() {
+    let sector = file::wide(files::SECTOR);
+    let (mut sim, node) = create_node();
+    next_on(&mut sim, &node, 1);
+    next_on(&mut sim, &node, 1);
+    flip(&mut sim, &node, 0);
+    flip(&mut sim, &node, sector + 9);
+    let error = tried(&mut sim, &node, 1).unwrap_err();
+    assert_eq!(error, invalid());
+    let text = "the file card holds no valid card version that this node signed";
+    assert_eq!(error.to_string(), text);
+}
+
+/// A slot whose check holds with another format gives `CardFile`, beside a valid slot,
+/// an unwritten one, or a broken one.
+#[test]
+fn a_slot_of_another_format_gives_card_file() {
+    let sector = file::wide(files::SECTOR);
+    for at in [0, sector] {
+        for other in ["valid", "unwritten", "broken"] {
+            let (mut sim, node) = create_node();
+            next_on(&mut sim, &node, 1);
+            let rest = if at == 0 { sector } else { 0 };
+            match other {
+                "valid" => put(&mut sim, &node, rest, slot(1, 3)),
+                "unwritten" => put(&mut sim, &node, rest, vec![0; files::SECTOR]),
+                _ => {
+                    put(&mut sim, &node, rest, slot(1, 3));
+                    flip(&mut sim, &node, rest);
+                }
+            }
+            put(&mut sim, &node, at, slot(2, 3));
+            let tried = tried(&mut sim, &node, 1);
+            assert_eq!(tried, Err(invalid()), "byte {at}, {other}");
+        }
+    }
 }
