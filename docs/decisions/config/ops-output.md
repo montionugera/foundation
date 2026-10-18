@@ -427,10 +427,9 @@
   call after a stop or a restart of the node can give `node.no-reply` with nothing sent
   to the node (the deferral, `laptop.architect-2`, 2026-10-16T22:15:00Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6225726721).
-  `browse` (BROWSE) is `foundation browse <connector> <file or directory>...
-  [--start <path>]
-  [--match <pattern> | --cursor <cursor>] [--values]`, and the MCP tool `browse` takes
-  `connector`, `files`, `start`, `match`, `cursor`, and `values`. The request is
+  `browse` (BROWSE) is `foundation browse <connector> <file or directory>... [--start
+  <path>] [--match <pattern> | --cursor <cursor>] [--values]`, and the MCP tool `browse`
+  takes `connector`, `files`, `start`, `match`, `cursor`, and `values`. The request is
   `{"browse":{...}}` with these fields, and `files` as `plan` sends them. The node
   checks, in this order, and stops at the first failure: the files read; the connector
   is a name (`ops.argument`); `config::connector` finds its block; the subject has

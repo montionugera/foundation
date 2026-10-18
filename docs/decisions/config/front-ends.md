@@ -30,8 +30,8 @@
   that is not UTF-8 gives `ops.path-not-utf8`. A kept entry that is a directory gives
   `ops.read`. Supersedes "in path order" of
   https://github.com/synnaxlabs/foundation/issues/337#issuecomment-6054035444. The
-  command line takes its table from `node::front_ends`, as
-  `Config::front_ends` does (plan of PR 3,
+  command line takes its table from `node::front_ends`, as `Config::front_ends` does
+  (plan of PR 3,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253461918, revised
   in https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253590781,
   approved by `laptop.architect-2`, 2026-10-18T18:23:36Z,
