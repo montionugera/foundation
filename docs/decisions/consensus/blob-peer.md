@@ -140,15 +140,15 @@
   at most one for each open blob stream, because `serve` reads the next head of a stream
   only after the put before it ends. The bytes of a body wait in the window of its
   stream, which `transport` bounds. A local `Store::put` and each get take no slot. The
-  bound also bounds the overshoot of the floor by the puts of peers: at most `PUTS_MAX`
-  chunks. Lost: `blake3` as a dependency of `blob` (a second crate that names the hash;
-  `types::digest::Hasher` does it); one write of the body at its end (it holds each
-  message in `transport`'s blocks until the end); a stop with a new code at the bound (a
-  new code in `wire::blob` and a retry in each caller, and an honest peer cannot put in
-  either case while a member holds each slot); the read and check of a listed file at
-  the head of a put, in place of the part (a get of the digest then waits on the body of
-  a peer); a receipt that only hashes when its digest is `Held` at the head (a get can
-  make the digest absent while the body comes, and the receipt then has no bytes to
-  store). Supersedes "A put copies its body into one block of the chunk's length and
-  calls `Store::put`, so a put holds one chunk in memory" of
+  bound also bounds the overshoot of the floor by the receipts that are open: at most
+  `PUTS_MAX` chunks. Lost: `blake3` as a dependency of `blob` (a second crate that names
+  the hash; `types::digest::Hasher` does it); one write of the body at its end (it holds
+  each message in `transport`'s blocks until the end); a stop with a new code at the
+  bound (a new code in `wire::blob` and a retry in each caller, and an honest peer
+  cannot put in either case while a member holds each slot); the read and check of a
+  listed file at the head of a put, in place of the part (a get of the digest then waits
+  on the body of a peer); a receipt that only hashes when its digest is `Held` at the
+  head (a get can make the digest absent while the body comes, and the receipt then has
+  no bytes to store). Supersedes "A put copies its body into one block of the chunk's
+  length and calls `Store::put`, so a put holds one chunk in memory" of
   https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6073693777.
