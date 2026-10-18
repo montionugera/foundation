@@ -198,7 +198,11 @@
   and `Head` has no public decode. When the program finishes its stream inside a
   frame, `Frames::finish` gives `Error::Cut` with the bytes of the frame that came,
   and the node stops the stream as `MALFORMED`. The home takes no part of a frame and
-  gives it no outcome. Decided by `laptop.architect` at 2026-10-18T03:22:04Z
+  gives it no outcome. For a frame that finds the pool full, the node refuses it and
+  calls `Frames::skip`, which drops the frame's body and keeps the stream open
+  (`laptop.architect`, 2026-10-18T06:08:47Z,
+  https://github.com/synnaxlabs/foundation/pull/3148#issuecomment-6246407916). Decided
+  by `laptop.architect` at 2026-10-18T03:22:04Z
   (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245142760), with
   the surface of `Frames` approved at 2026-10-18T05:42:24Z
   (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6246204678). The
