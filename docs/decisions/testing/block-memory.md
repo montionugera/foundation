@@ -2,9 +2,12 @@
   `block::Memory`, a small `unsafe` trait in `block`, because `block` sits below `env`.
   `os` implements it over `mmap` (reserve, commit, purge); `block::Heap` implements it
   over `std::alloc` for tests, Miri, `sim`, and a pool that can hold each page it
-  touched until it drops. The shard pools of a node use `os::Memory`
-  (`laptop.architect`, 2026-10-18T09:49:05Z, #3172:
-  https://github.com/synnaxlabs/foundation/pull/3172#issuecomment-6248421277). `Heap`
+  touched until it drops. The shard pools of the `foundation` binary use
+  `os::Memory`, and `sim` tests pass `Heap` (SHARD POOLS; `laptop.architect`,
+  2026-10-18T09:49:05Z, #3172:
+  https://github.com/synnaxlabs/foundation/pull/3172#issuecomment-6248421277, which
+  supersedes "`block::Heap` implements it over `std::alloc` for tests, Miri, and
+  `sim`", #2, commit 355682156). `Heap`
   writes zero over a page at its first commit, so a pool on it touches only the pages
   it commits. The record of the page bits is one allocation in `new`, and `commit`
   allocates nothing (`laptop.architect`, 2026-10-18T05:38:15Z, #3136:
