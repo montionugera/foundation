@@ -156,7 +156,7 @@ async fn fetch(
 ///
 /// [`Error::Absent`] when `store` does not hold a digest, [`Error::Refused`] when the
 /// peer stops the stream with a code, and [`Error::Unexpected`], [`Error::Unanswered`],
-/// [`Error::Stream`], and [`Error::Store`] as for [`get`].
+/// [`Error::Stream`], and [`Error::Store`] as for [`get()`].
 pub async fn put(
     store: &Store,
     session: &Session,
