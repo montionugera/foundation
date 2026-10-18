@@ -28,6 +28,8 @@ pub(super) struct Walk {
     /// path ends: `Ok(Err)` when the host refused that name. `Err` when it stopped
     /// before, at its last step.
     pub(super) end: Result<Result<(), Error>, Error>,
+    /// The host refused a name in a step that is a file, which holds no names.
+    pub(super) in_file: bool,
 }
 
 impl Walk {
@@ -39,11 +41,13 @@ impl Walk {
             names: VecDeque::new(),
             at: 0,
             links: LINKS,
+            in_file: false,
         };
         let end = walker.run(path);
         Self {
             steps: walker.steps,
             end,
+            in_file: walker.in_file,
         }
     }
 
@@ -76,6 +80,7 @@ struct Walker<'a> {
     at: usize,
     /// The links that the walk can still follow.
     links: usize,
+    in_file: bool,
 }
 
 impl Walker<'_> {
@@ -191,6 +196,7 @@ impl Walker<'_> {
                 Ok(false)
             }
             Err(e) if !last || e != Error::NotFound => {
+                self.in_file = self.is_file(self.at);
                 self.at = index;
                 Err(e)
             }
@@ -212,11 +218,20 @@ impl Walker<'_> {
     }
 
     /// The error of the host for `name` in a step that is not a directory.
-    fn directory(&self, name: &str) -> Result<(), Error> {
+    fn directory(&mut self, name: &str) -> Result<(), Error> {
         let step = &self.steps[self.at];
         if step.directory {
             return Ok(());
         }
-        self.driver.entry(&step.path.join(name)).map(|_| ())
+        let entry = self.driver.entry(&step.path.join(name));
+        self.in_file = entry.is_err() && self.is_file(self.at);
+        entry.map(|_| ())
+    }
+
+    /// Step `index` is a file. The walk is never in a link, so a step with a key that
+    /// is not a directory is one.
+    fn is_file(&self, index: usize) -> bool {
+        let step = &self.steps[index];
+        step.own.is_some() && !step.directory
     }
 }

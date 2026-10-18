@@ -76,9 +76,9 @@ impl Paths {
     ///   on the way that was at a hidden path at this call hides too, so a hidden
     ///   folder that a program renames away stays hidden, but not its own listing.
     ///   When the host refuses the walk of a hidden path at a call, other than with
-    ///   [`Error::NotFound`] or the error of [`Driver::looped`], each step that passes
-    ///   the folders is hidden at that call, since another name of the file there can
-    ///   reach it.
+    ///   [`Error::NotFound`] or the error of [`Driver::looped`], or at a name after a
+    ///   step that is a file, each step that passes the folders is hidden at that
+    ///   call, since another name of the file there can reach it.
     /// - [`Error::Vacant`]: while nothing is at a hidden path, a write or a `make_dir`
     ///   whose path ends at a new name in the deepest directory on the way to that
     ///   path. A read there finds nothing, and fails with [`Error::NotFound`].
@@ -383,7 +383,8 @@ impl Paths {
                     Some(step @ Step { own: None, .. }),
                 ) => Seen::Vacant(deepest(step)),
                 (Ok(Err(error)) | Err(error), _)
-                    if ![Error::NotFound, self.driver.looped()].contains(error) =>
+                    if !walk.in_file
+                        && ![Error::NotFound, self.driver.looped()].contains(error) =>
                 {
                     Seen::Refused
                 }
@@ -459,11 +460,12 @@ enum Seen {
     There(Key),
     /// Nothing, with the key of the deepest directory on the way that is there.
     Vacant(Option<Key>),
-    /// The host refused the walk other than for a name that is not there or a loop.
-    /// The file there can have another name, so each step is hidden.
+    /// The host refused the walk other than for a name that is not there, a step that
+    /// is a file, or a loop. The file there can have another name, so each step is
+    /// hidden.
     Refused,
-    /// The host reaches no file by the path: a name on the way is not there, or the
-    /// walk passes [`LINKS`] links.
+    /// The host reaches no file by the path: a name on the way is not there, a step on
+    /// the way is a file, or the walk passes [`LINKS`] links.
     Unreached,
 }
 
@@ -649,9 +651,10 @@ mod tests {
     /// name that starts with `swap` in any case takes the bytes of the file after the
     /// path, so a write gives it a new key: after a write of `x`, `/work/swap` has the
     /// key that `/work/swapx` had before it. The name `io` gives `Io` 5. After a write
-    /// of `hop`, `/hop` is a link to `/out`. A path in `/volume` has the key of the path
-    /// without `/volume`, as a second mount of `/` does. It counts its calls of
-    /// `entry`, and a relative path is under its working directory, `/` at first.
+    /// of `file`, the name `f` is a file, and a path through it gives `Io` 20. After a
+    /// write of `hop`, `/hop` is a link to `/out`. A path in `/volume` has the key of
+    /// the path without `/volume`, as a second mount of `/` does. It counts its calls
+    /// of `entry`, and a relative path is under its working directory, `/` at first.
     #[derive(Debug, Default)]
     struct One(RefCell<Vec<u8>>, Rc<Cell<usize>>, Rc<RefCell<PathBuf>>);
 
@@ -694,6 +697,9 @@ mod tests {
             if bytes.windows(5).any(|part| part == b".hcl/") {
                 return Err(Error::Io { code: 20 });
             }
+            if *data == b"file" && bytes.windows(3).any(|part| part == b"/f/") {
+                return Err(Error::Io { code: 20 });
+            }
             if name == b"Gone" && *data == b"gone" {
                 return Err(Error::Io { code: 13 });
             }
@@ -725,7 +731,9 @@ mod tests {
                 _ if name == b"loop" && *data == b"loop" => {
                     Entry::Link(key, "loop".into())
                 }
-                _ if name.ends_with(b".hcl") => Entry::File(key),
+                _ if name.ends_with(b".hcl") || name == b"f" && *data == b"file" => {
+                    Entry::File(key)
+                }
                 _ => match name
                     .strip_prefix(b"c")
                     .and_then(|n| str::from_utf8(n).ok()?.parse::<u8>().ok())
@@ -1178,6 +1186,9 @@ mod tests {
         for (before, after, hidden, (read, out)) in [
             ("x", "gone", "/work/Gone", hidden),
             ("x", "loop", "/work/loop", open),
+            ("x", "file", "/work/f/x", open),
+            ("x", "file", "/work/f/.", open),
+            ("x", "file", "/work/d/f/..", open),
             ("dir", "x", "/none/a/x", open),
         ] {
             let free = Paths::new(One::default());

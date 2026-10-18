@@ -1335,10 +1335,11 @@ fn within_makes_no_file_at_a_hidden_name_in_other_case() {
     });
 }
 
-/// A program replaces the directory above a hidden file with a file, or takes search
-/// from it. The file can have another name, so each call is hidden.
+/// A program takes search from the directory above a hidden file, so the file can have
+/// another name and each call is hidden. A file in place of that directory holds no
+/// names, so it hides nothing.
 #[test]
-fn a_hidden_path_that_the_host_refuses_hides_each_call() {
+fn a_hidden_path_that_the_host_refuses_hides_each_call_and_a_file_on_its_way_none() {
     run(|host| {
         let (_, base) = cases::within_work(host);
         let data = base.join("work/data");
@@ -1354,8 +1355,8 @@ fn a_hidden_path_that_the_host_refuses_hides_each_call() {
         fs::remove_dir_all(&data).unwrap();
         fs::write(&data, b"file").unwrap();
         let through_file = within.read(&plan, 1);
-        let hidden = Err(Error::Hidden);
-        assert_eq!((unsearchable, through_file), (hidden.clone(), hidden));
+        let file = Ok(Found::File(b"x".to_vec()));
+        assert_eq!((unsearchable, through_file), (Err(Error::Hidden), file));
     });
 }
 
