@@ -285,6 +285,29 @@ impl Shared {
         }
     }
 
+    /// Sends the header, then the first message of a signed stream, which `first`
+    /// writes from the length of `body` and the signature of `kind` over it, then
+    /// `body`, whose length the caller capped at `OPEN_BYTES_MAX`.
+    async fn open<const LEN: usize>(
+        &self,
+        sender: &mut Sender,
+        kind: access::proof::Kind,
+        body: &[u8],
+        first: impl FnOnce(u64, [u8; 64], &mut [u8; LEN]),
+    ) -> Result<(), Error> {
+        let signature =
+            self.pair
+                .sign(&access::proof::signed(kind, self.connection, body));
+        let length =
+            u64::try_from(body.len()).expect("invariant: the caller capped it");
+        let mut message = [0; LEN];
+        first(length, signature, &mut message);
+        self.send(sender, &wire::header::encode(Protocol::Hub))
+            .await?;
+        self.send(sender, &message).await?;
+        self.send_chunks(sender, body).await
+    }
+
     /// A block of `len` bytes, as [`Shared::retry`] takes it.
     async fn alloc(&self, len: usize) -> Result<block::Unique, Error> {
         self.retry(|| self.pool.alloc(len)).await
@@ -394,6 +417,15 @@ async fn renew(
     };
     shared.ended.replace(Some(error));
     shared.session.close(Code(code));
+}
+
+/// Ends `stream` after `error`: stops it as `MALFORMED` when the node broke a rule of
+/// the wire, else drops it.
+fn end((sender, receiver): (Sender, Receiver), error: &Error) {
+    if matches!(error, Error::Message(_) | Error::Reply(_) | Error::Frame(_)) {
+        sender.reset(Code(MALFORMED));
+        receiver.stop(Code(MALFORMED));
+    }
 }
 
 /// A request, which keeps the turn until the node frees it.
