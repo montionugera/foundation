@@ -80,6 +80,9 @@
   `reader::Error::Full`, with no field: the 64 parts of 4027 bytes of records hold at
   least 448 records of the longest subjects and names. A reopen or a takeover never
   gives it, as a held record keeps its part.
+  The later carry after such a shed: decided by `laptop.architect`
+  (2026-10-18T10:25:27Z:
+  https://github.com/synnaxlabs/foundation/pull/3174#issuecomment-6248732574).
   `Full` with no field: decided by `laptop.architect` (2026-10-18T09:41:10Z:
   https://github.com/synnaxlabs/foundation/issues/2978#issuecomment-6248353319).
   Supersedes the `limit` field of the `Full` docs approved in
