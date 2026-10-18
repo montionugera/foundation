@@ -390,9 +390,35 @@ UA_StatusCode shim_server_add_view(UA_Server *server, shim_node node, shim_node 
                                  name_of(node, name), attributes, NULL, NULL);
 }
 
-/* Gives the status of `verifyCertificate` of a memory certificate group with an empty
- * trust list, the check of the remote certificate of each channel, on `certificate`. */
-UA_StatusCode shim_verify_certificate(const UA_ByteString *certificate) {
+/* Gives the status of `verifyCertificate` of a memory certificate group, the check of
+ * the remote certificate of each channel, on `certificate`, or the status of the
+ * constructor of the group when it fails. The trust list holds `trusted`, or nothing
+ * when it is NULL, and the group reads the time of `el`. */
+UA_StatusCode shim_verify_certificate(const UA_ByteString *certificate,
+                                      const UA_ByteString *trusted, UA_EventLoop *el) {
+    UA_CertificateGroup group;
+    memset(&group, 0, sizeof(group));
+    UA_TrustListDataType trust;
+    UA_TrustListDataType_init(&trust);
+    if(trusted) {
+        trust.specifiedLists = UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES;
+        trust.trustedCertificates = (UA_ByteString *)(uintptr_t)trusted;
+        trust.trustedCertificatesSize = 1;
+    }
+    UA_NodeId id = UA_NODEID_NUMERIC(
+        0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
+    UA_StatusCode status =
+        UA_CertificateGroup_Memorystore(&group, &id, &trust, NULL, el, NULL);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    status = group.verifyCertificate(&group, certificate);
+    group.clear(&group);
+    return status;
+}
+
+/* Gives the status of the constructor of a memory certificate group with an empty trust
+ * list and the loop `el`, and clears the group that it makes. */
+UA_StatusCode shim_memory_group(UA_EventLoop *el) {
     UA_CertificateGroup group;
     memset(&group, 0, sizeof(group));
     UA_TrustListDataType trust;
@@ -400,10 +426,8 @@ UA_StatusCode shim_verify_certificate(const UA_ByteString *certificate) {
     UA_NodeId id = UA_NODEID_NUMERIC(
         0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
     UA_StatusCode status =
-        UA_CertificateGroup_Memorystore(&group, &id, &trust, NULL, NULL);
-    if(status != UA_STATUSCODE_GOOD)
-        return status;
-    status = group.verifyCertificate(&group, certificate);
-    group.clear(&group);
+        UA_CertificateGroup_Memorystore(&group, &id, &trust, NULL, el, NULL);
+    if(status == UA_STATUSCODE_GOOD)
+        group.clear(&group);
     return status;
 }

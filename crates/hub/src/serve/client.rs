@@ -340,8 +340,8 @@ async fn expiry(session: &Session) -> Error {
     }
 }
 
-/// Serves a later stream of `session`, a request or a read, by the kind of its first
-/// message.
+/// Serves a later stream of `session`, a request, a read, or a write, by the kind of
+/// its first message.
 pub(crate) async fn later(
     session: &Rc<Session>,
     incoming: Incoming,
@@ -374,6 +374,10 @@ pub(crate) async fn later(
             read::serve(session, class, subject, open, &mut receiver, &mut sender)
                 .await
                 .map(|()| Served::Ended)
+        }
+        // This node serves no write stream yet.
+        Ok(Some((_, First::Write(_)))) => {
+            Err(Error::Client(wire::hub::client::Error::Kind { kind: 7 }))
         }
         Err(error) => Err(error),
     };

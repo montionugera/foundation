@@ -48,6 +48,9 @@ pub mod sim;
 #[cfg(feature = "open62541")]
 #[cfg(any(test, feature = "sim"))]
 mod unwind;
+#[cfg(test)]
+#[cfg(feature = "sim")]
+mod validity;
 #[cfg(feature = "open62541")]
 mod value;
 

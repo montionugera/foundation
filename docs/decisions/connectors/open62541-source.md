@@ -751,7 +751,7 @@
   connection itself (OPCUA KIND): it reads the server state when 10 s pass from the
   start of the last read, so the gap between two requests while it waits is 10 s
   plus at most the request timeout. A check goes through `Client::read`, so it shares
-  the bound of 16 requests in flight, and a check that a wait leaves when it ends stays
+  the bound of 9 requests in flight, and a check that a wait leaves when it ends stays
   in flight until its answer. Between two checks, `idle` reads the state of the client
   after each run of the loop, and ends at once when the channel is not open or the
   session is not active. Lost: the check of open62541, which drops each status
@@ -813,19 +813,20 @@
   `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2397#issuecomment-6110582857,
   2026-10-11 15:26 UTC).
-  A client keeps at most 16 reads in flight. Only reads whose futures dropped or that
-  timed out make more than one, and a read past the 16 first waits until one of them
+  A client keeps at most 9 reads in flight (`READS`, 16 before #3097, which bounds the
+  queue of a channel by it: OPCUA READ). Only reads whose futures dropped or that
+  timed out make more than one, and a read past the 9 first waits until one of them
   ends. A read sends the timeout hint 0, so neither open62541 (2^32 - 1 ms, 49.7 days)
   nor the server ends it, and it stays in flight until the server answers it or the
   channel closes. An open62541 timeout ends a request on the client only, so the count
   would not have the requests that the server still holds. The read gives `BadTimeout`
   at the request timeout of the client, its wait included. When no read ends in that
-  wait, it gives `BadTooManyOperations`: the server holds 16 requests, and the client
+  wait, it gives `BadTooManyOperations`: the server holds 9 requests, and the client
   sends no read until it answers one. The kind closes a client that gives it and
   connects again. The bound is a constant from the sends of a connection, not from the
   rate of reads, as only a server that holds requests fills it. A client sends and takes
   at most 8 chunks in a message, and the test server sends at most 8, so the reads in
-  flight times the chunks of a message stay at 128, half of the 256 sends of a
+  flight times the chunks of a message stay at 72, below half of the 256 sends of a
   connection. The other half is for the requests of open62541 itself. open62541 checks
   the chunks of a message that it sends against its own count, not against the count of
   the peer (`src/ua_securechannel.c`, line 392). Lost: a read whose future drops cancels
@@ -872,8 +873,15 @@
   any file each function of aws-lc in `AWS_LC`, which reads no clock, file, network,
   randomness, or process state, by its name after the prefix. `AWS_LC_KEYS` keys each
   other call of aws-lc by its file and function, with its reason: each call that draws
-  (TLS RANDOMNESS), and each call that reads the clock. `AWS_LC_INPUTS`
-  lists the functions of aws-lc that read the clock, and a test fails when no test of
+  (TLS RANDOMNESS), and `ASN1_TIME_to_tm`, which reads the clock only on a NULL time,
+  which the copy never gives. The validity check of a certificate reads the event loop
+  of its group (a local patch), so no key admits `X509_cmp_current_time`, and `cargo
+  xtask open62541` fails on a call of it (`laptop.architect-2`, 2026-10-17 06:46 UTC,
+  https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6230838999, item 1;
+  the loop as an input of the constructor, 2026-10-18 05:55 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3144#issuecomment-6246301508).
+  `AWS_LC_INPUTS` lists the functions of aws-lc that read the clock, so the error of a
+  new call of one asks for its reason, and a test fails when no test of
   `connector-opcua` names the function of each of their keys. With no password callback,
   a PEM reader of aws-lc reads a password from the console: it opens `/dev/tty`, or
   prints a prompt on stderr and reads stdin, and sets signal handlers. So each PEM read
@@ -885,15 +893,28 @@
   `pem_password_cb` in the declarations of the output of `cc -E`, and fails on each name
   of one in the copy other than in a call that gives a callback of `PASSWORDS` at its
   place (#3017, #3027). It reads the readers from the declarations of one `cc -E` pass
-  of the `openssl/pem.h` of aws-lc alone, with the flags of aws-lc and none of the copy,
-  so no file or header of the copy changes the set. It checks the calls in a `cc -E`
-  pass of each file with the flags of its build, so it reads the unit that compiles. In
-  aws-lc-sys 0.45.0, the one other function that takes a `pem_password_cb`,
-  `SSL_CTX_set_default_passwd_cb` of `openssl/ssl.h`, is in neither `AWS_LC` nor
-  `AWS_LC_KEYS`, so the check refuses each call of it. It compiles each file with
-  `-Werror=implicit-function-declaration`, as GCC 14 does by default, so a call with no
-  declaration fails the build on each GCC. `AWS_LC` holds the PEM readers, since this
-  check is the one guard of their password. Supersedes "The PEM
+  of each header under `openssl/` of aws-lc together, with the flags of aws-lc and none
+  of the copy, so no file or header of the copy changes the set, and a pass that fails
+  fails the check. It checks the calls in a `cc -E` pass of each file with the flags of
+  its build, so it reads the unit that compiles. It refuses each header that the unit
+  enters, by any name or link, under `openssl/` of a system directory other than an
+  include directory of aws-lc. It also refuses each file that the unit enters and that
+  it cannot find by its name, such as a name that is not UTF-8, so no header passes
+  unread. A header of the copy under `openssl/` passes, such as its own
+  `openssl/securitypolicy_common.h`. The readers come from aws-lc alone, and the check
+  reads the calls of the unit that compiles. When a header of the copy hides one of
+  aws-lc, a call of a reader keeps the name of the reader, or it has no prefix, so
+  `FUNCTION_SYMBOLS` must list it. For a header under `openssl/`, this supersedes "So
+  the check refuses no system header" of
+  https://github.com/synnaxlabs/foundation/issues/1884#issuecomment-6060989375. In
+  aws-lc-sys 0.45.0, the readers are the functions of `openssl/pem.h` that take a
+  `pem_password_cb`, and `SSL_CTX_set_default_passwd_cb`, `PEM_read_SSL_SESSION`, and
+  `PEM_read_bio_SSL_SESSION` of `openssl/ssl.h`. These three are in neither `AWS_LC` nor
+  `AWS_LC_KEYS`, so the check refuses each call of them. It compiles each file with
+  `-Werror=implicit-function-declaration`, as GCC 14 does by default, and with
+  `-ftrack-macro-expansion=0`, so a call with no declaration fails the build on each
+  GCC, also of a name of aws-lc, which is a macro of a system header. `AWS_LC` holds the
+  PEM readers, since this check is the one guard of their password. Supersedes "The PEM
   readers belong in `AWS_LC_KEYS`" of
   https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231723849, whose
   reason was the read of the console. The callbacks that return -1, and the check that
@@ -903,26 +924,43 @@
   decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6238536489,
   2026-10-17 18:26 UTC;
-  https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6238944949,
-  2026-10-17 18:51 UTC;
-  https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6241016919,
-  2026-10-17 21:03 UTC). `OMITTED` in `cargo
-  xtask open62541` is the closed list of the release files that the library compiles and
-  the copy leaves out, each with its reason: the file stores, `create_certificate.c`,
-  and each policy file other than `Basic256Sha256`, `Aes128_Sha256_RsaOaep`,
-  `Aes256_Sha256_RsaPss`, and their common code. So the copy compiles only the three
-  current policies and `None`, and the production code adds no other. `shim.c` defines
-  each symbol that the rest of the copy names from a left-out file to panic with its
-  name and abort, and a test calls each one. A test fails on another policy file in
-  `sources.txt`. A test fails when the production code names a policy or a certificate
-  group, or a function `UA_CertificateUtils_*`, other than at its stub in `shim.c`, and
-  a test fails when the objects of `shim.c` or `server.c` name aws-lc or a symbol of
-  `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps no state: the copy
-  removes its `static` flag, which it wrote with no lock and which guarded only the
-  calls for OpenSSL before 1.1, and the build fails when `OPENSSL_API_COMPAT` is
-  defined. Lost: the about 35 file and clock calls of the
-  left-out files, each keyed in `FUNCTION_SYMBOLS`; and a copy of each deprecated and
-  ECC policy file. Decided by `laptop.architect-2`
+  https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6238944949, 2026-10-17
+  18:51 UTC; https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6241016919,
+  2026-10-17 21:03 UTC). The pass of each header under `openssl/`: OK of
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6241360552,
+  2026-10-17 21:27 UTC). The `openssl/` header sentences: approved by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6242174637,
+  2026-10-17 22:22 UTC). The `openssl/` rules of round 1: decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244284643,
+  2026-10-18 01:34 UTC). Supersedes the two `openssl/` header sentences of
+  https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6242174637. The text
+  of the rules of round 1: approved by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244707524,
+  2026-10-18 02:25 UTC) and `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244728627,
+  2026-10-18 02:28 UTC), which also decided "by any name or link". The sentence on a
+  file that the unit cannot find by its name: decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6245010018,
+  2026-10-18 03:05 UTC). `OMITTED`
+  in `cargo xtask open62541` is the closed list of the release files that the library
+  compiles and the copy leaves out, each with its reason: the file stores,
+  `create_certificate.c`, and each policy file other than `Basic256Sha256`,
+  `Aes128_Sha256_RsaOaep`, `Aes256_Sha256_RsaPss`, and their common code. So the copy
+  compiles only the three current policies and `None`, and the production code adds no
+  other. `shim.c` defines each symbol that the rest of the copy names from a left-out
+  file to panic with its name and abort, and a test calls each one. A test fails on another
+  policy file in `sources.txt`. A test fails when the production code names a policy or
+  a certificate group, or a function `UA_CertificateUtils_*`, other than at its stub in
+  `shim.c`, and a test fails when the objects of `shim.c` or `server.c` name aws-lc or a
+  symbol of `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps no state:
+  the copy removes its `static` flag, which it wrote with no lock and which guarded only
+  the calls for OpenSSL before 1.1, and the build fails when `OPENSSL_API_COMPAT` is
+  defined. Lost: the about 35 file and clock calls of the left-out files, each keyed in
+  `FUNCTION_SYMBOLS`; and a copy of each deprecated and ECC policy file. Decided by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6230888200,
   2026-10-17 06:51 UTC). The `UA_Openssl_Init` sentences: decided by
   `laptop.architect-2`
@@ -933,3 +971,15 @@
   PEM sentences before the `-Werror` sentence: approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3057#issuecomment-6238447456,
   2026-10-17 18:18 UTC).
+  The split of #2934 PR 1c into 1c, the clock of the validity check with its tests at
+  the certificate group, and 1d, the secure client and sim server, the test of each
+  policy in each mode, and the replay test of TLS RANDOMNESS: OK of
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6246201281,
+  2026-10-18 05:41 UTC). Both merge before PR 2, and 1d merges after 1c. The plan of 1d
+  goes on #2934 before its code. The loop is an input of
+  `UA_CertificateGroup_Memorystore`, which refuses NULL, not a member of
+  `UA_CertificateGroup` that its owner sets: OK of `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3144#issuecomment-6246301508,
+  2026-10-18 05:55 UTC). The test of `leaf.der` at `notAfter` is the test of item 1 of
+  6230838999 that moves the clock past `notAfter`.

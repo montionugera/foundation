@@ -19,6 +19,8 @@ exclude_re = [
   'crates/connector-opcua/src/server\.rs:.*replace \| with \^ in doubles$',
   # The body of `Unformatted::format_fields` is `Ok(())`, which the mutant gives.
   'crates/node/src/log\.rs:.*replace <impl FormatFields<.w> for Unformatted>::format_fields',
+  # The default body of `Kind::tag` is `None`, which the mutant gives.
+  'crates/connector/src/kind\.rs:.*replace Kind::tag -> Option<String> with None$',
   # Benchmarks ship in no binary; the run itself checks them.
   '^bench/',
   # `main` reads the arguments and calls a task. Each task has its own tests.
@@ -149,6 +151,9 @@ exclude_re = [
   # `a_write_waits_at_the_unsent_bound_not_the_send_buffer`, and
   # `a_full_send_buffer_below_the_bound_makes_a_write_wait`.
   'crates/os/src/net/unsent\.rs:.*Bound::send',
+  # macOS 15 only: Linux refuses the path at the stat. In the `macos` check,
+  # `paths::within_agrees_with_free_on_a_file_with_a_slash_or_a_dot` catches it.
+  'crates/os/src/paths\.rs:.*guard names_directory\(path\) with false in read$',
   # No input makes `getaddrinfo` give `EAI_AGAIN` or `EAI_MEMORY` on demand. The test of
   # the map, through a private call, kills each.
   'crates/os/src/net/resolve\.rs:.*delete match arm \(libc::EAI_(AGAIN|MEMORY), _\)',

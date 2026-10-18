@@ -96,6 +96,15 @@ pub trait Kind: Send + Sync + 'static {
         )])
     }
 
+    /// The tag of the point that `block`, a block of the body of a connector block of
+    /// the kind, reads or writes, in the form that a browse of the kind gives it, or
+    /// `None` when it names no point. A kind that gives blocks with [`Kind::block`]
+    /// gives this too. The default gives `None`.
+    fn tag(&self, block: &Block) -> Option<String> {
+        let _: &Block = block;
+        None
+    }
+
     /// Browses the device of the connector block `ctx.config()` as `query` asks. A
     /// kind connects to its device and gives [`browse::walk`] over it. The default
     /// gives [`Error::Config`] with `connector.no-browse`: the kind cannot browse.
@@ -518,15 +527,28 @@ impl Table {
         self.get(kind, None)?.block(tag, facts, channel)
     }
 
-    /// Browses with `kind` as `query` asks.
-    pub(crate) async fn browse(
+    /// The tag of the point that `block` of a connector block of `kind` reads or
+    /// writes, as [`Kind::tag`] gives it.
+    ///
+    /// # Errors
+    ///
+    /// `connector.unknown-kind`.
+    pub fn tag(
         &self,
         kind: &str,
-        ctx: &browse::Context<'_>,
-        query: &browse::Query,
-    ) -> Result<browse::Found, Error> {
-        let kind = self.get(kind, None).map_err(Error::Config)?;
-        kind.browse(ctx, query).await
+        block: &Block,
+    ) -> Result<Option<String>, Vec<Diagnostic>> {
+        Ok(self.get(kind, None)?.tag(block))
+    }
+
+    /// Starts a browse with `kind` as `query` asks.
+    pub(crate) fn browse<'a>(
+        &'a self,
+        kind: &str,
+        ctx: &'a browse::Context<'a>,
+        query: &'a browse::Query,
+    ) -> Result<Browse<'a>, Vec<Diagnostic>> {
+        Ok(self.get(kind, None)?.browse(ctx, query))
     }
 
     /// Parses `config` and starts one run of `kind` with `ctx`.
@@ -764,7 +786,8 @@ pub(crate) fn config_error(code: Code, error: &dyn fmt::Display, fix: &str) -> E
 pub(crate) type Run<'a> = Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>;
 
 /// One browse of a kind.
-type Browse<'a> = Pin<Box<dyn Future<Output = Result<browse::Found, Error>> + 'a>>;
+pub(crate) type Browse<'a> =
+    Pin<Box<dyn Future<Output = Result<browse::Found, Error>> + 'a>>;
 
 /// A [`Kind`] with its config type erased, so one table holds every kind.
 trait Erased: Send + Sync {
@@ -793,6 +816,8 @@ trait Erased: Send + Sync {
         facts: &browse::Facts,
         channel: &Name,
     ) -> Result<Vec<Block>, Vec<Diagnostic>>;
+
+    fn tag(&self, block: &Block) -> Option<String>;
 }
 
 impl<K: Kind> Erased for K {
@@ -831,6 +856,10 @@ impl<K: Kind> Erased for K {
         channel: &Name,
     ) -> Result<Vec<Block>, Vec<Diagnostic>> {
         Kind::block(self, tag, facts, channel)
+    }
+
+    fn tag(&self, block: &Block) -> Option<String> {
+        Kind::tag(self, block)
     }
 }
 

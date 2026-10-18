@@ -932,9 +932,7 @@ fn a_client_runs_its_housekeeping_on_the_loop() {
     let mut f = Fixture::new();
     let start = f.now();
     // SAFETY: the loop lives until the client is deleted.
-    let client =
-        unsafe { ffi::shim_client_new(f.events.raw(), crate::connection::CHUNKS) };
-    assert!(!client.is_null());
+    let client = unsafe { crate::client::unconnected(f.events.raw()) }.as_ptr();
     assert_eq!(f.members().state, ffi::FRESH);
     // SAFETY: the client lives.
     let status = Status(unsafe { ffi::UA_Client_run_iterate(client, 0) });
@@ -974,9 +972,7 @@ unsafe extern "C" fn count(_: *mut c_void, data: *mut c_void) {
 fn a_timed_callback_at_a_past_date_runs_at_the_next_run() {
     let f = Fixture::new();
     // SAFETY: the loop lives until the client is deleted.
-    let client =
-        unsafe { ffi::shim_client_new(f.events.raw(), crate::connection::CHUNKS) };
-    assert!(!client.is_null());
+    let client = unsafe { crate::client::unconnected(f.events.raw()) }.as_ptr();
     // SAFETY: the client lives.
     let status = Status(unsafe { ffi::UA_Client_run_iterate(client, 0) });
     assert_eq!(status, Status::GOOD);
@@ -1027,9 +1023,7 @@ fn logged(run: impl FnOnce(&mut Fixture)) -> Vec<String> {
 /// and an info message.
 fn connect(f: &Fixture, url: &CStr) {
     // SAFETY: the loop lives until the client is deleted.
-    let client =
-        unsafe { ffi::shim_client_new(f.events.raw(), crate::connection::CHUNKS) };
-    assert!(!client.is_null());
+    let client = unsafe { crate::client::unconnected(f.events.raw()) }.as_ptr();
     // SAFETY: the client lives, and `url` ends with a NUL.
     let status = Status(unsafe { ffi::UA_Client_connectAsync(client, url.as_ptr()) });
     assert_eq!(status.name(), "BadTcpEndpointUrlInvalid");
@@ -1045,9 +1039,7 @@ fn invalid(text: &str) -> String {
 /// Sends a request on a client of `f` with no channel. The copy then logs an error.
 fn send_with_no_channel(f: &Fixture) {
     // SAFETY: the loop lives until the client is deleted.
-    let client =
-        unsafe { ffi::shim_client_new(f.events.raw(), crate::connection::CHUNKS) };
-    assert!(!client.is_null());
+    let client = unsafe { crate::client::unconnected(f.events.raw()) }.as_ptr();
     // SAFETY: the client lives, and with no channel the copy reads no other argument.
     let status = Status(unsafe {
         ffi::test::__UA_Client_AsyncService(

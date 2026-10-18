@@ -137,7 +137,7 @@ impl Server {
     ///
     /// If open62541 refuses the node or the decode of its value, or the key of its node
     /// is the number 0.
-    pub(crate) fn add_variable(&self, variable: &Variable) {
+    pub(crate) fn add_variable(&self, variable: &Variable<'_>) {
         let (value, size) = variable
             .value
             .as_ref()
@@ -298,7 +298,6 @@ impl Server {
     ///
     /// If open62541 refuses the node, `size` is past `i32::MAX`, or the key of `node`
     /// is the number 0.
-    #[cfg(test)]
     pub(crate) fn add_bytes(&self, node: &Node, size: usize) {
         let length =
             i32::try_from(size).expect("a ByteString of at most i32::MAX bytes");
@@ -750,7 +749,7 @@ impl Counts<'_> {
 }
 
 /// A variable of [`Server::add_variable`].
-pub(crate) struct Variable {
+pub(crate) struct Variable<'a> {
     /// Its node, whose key is not the number 0.
     pub(crate) node: Node,
     /// The node that it is under, by `reference`.
@@ -758,7 +757,7 @@ pub(crate) struct Variable {
     /// Its reference type from `parent`, by its number in namespace 0.
     pub(crate) reference: u32,
     /// Its browse and display name.
-    pub(crate) name: &'static CStr,
+    pub(crate) name: &'a CStr,
     /// Its `DataType`.
     pub(crate) data_type: Node,
     /// Its `ValueRank`. The rank 1 also gives it the `ArrayDimensions` 0.
@@ -780,7 +779,7 @@ fn objects(
     name: &'static CStr,
     data_type: u32,
     value: Vec<u8>,
-) -> Variable {
+) -> Variable<'static> {
     Variable {
         node: node.clone(),
         parent: Node::ns0(ns0::OBJECTS),

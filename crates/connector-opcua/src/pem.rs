@@ -20,8 +20,6 @@ unsafe extern "C" {
         password: Bytes,
         out: *mut Bytes,
     ) -> u32;
-    #[cfg(feature = "sim")]
-    fn shim_verify_certificate(certificate: *const Bytes) -> u32;
 }
 
 /// A self-signed P-256 CA certificate (`CN=breaker`).
@@ -89,10 +87,11 @@ fn read() {
             UA_CertificateUtils_checkCA(&bytes(ENCRYPTED_CERTIFICATE))
         }),
         #[cfg(feature = "sim")]
-        "remote certificate" => {
-            // SAFETY: as above.
-            Status(unsafe { shim_verify_certificate(&bytes(ENCRYPTED_CERTIFICATE)) })
-        }
+        "remote certificate" => crate::validity::verify(
+            ENCRYPTED_CERTIFICATE.as_bytes(),
+            None,
+            types::time::Stamp::EPOCH,
+        ),
         _ => panic!("no read is named {name}"),
     };
     let expected = if name == "remote certificate" {
