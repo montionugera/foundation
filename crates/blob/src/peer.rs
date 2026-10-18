@@ -114,10 +114,9 @@ async fn fetch(
 ) -> Result<Option<Miss>, Error> {
     header(store, sender).await?;
     let decoder = Requester::new(store.pool.largest());
-    // A get comes from the pool of the store. At least one digest a get, so a pool too
-    // small for one fails the alloc, and the loop never sends an empty get.
+    // A get comes from the pool of the store.
     let room = sender.bytes_max().min(store.pool.largest());
-    let batch = (room.saturating_sub(get::encoded_len(0)) / size_of::<Digest>()).max(1);
+    let batch = (room - get::encoded_len(0)) / size_of::<Digest>();
     while !open.is_empty() {
         let digests = &open[..open.len().min(batch)];
         let mut message = store
