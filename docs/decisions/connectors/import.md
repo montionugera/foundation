@@ -184,9 +184,11 @@
   the new text through `Scope`, so the limits of `foundation mcp` hold. They write
   nothing when it is the text that they sent, and when the file no longer holds the sent
   text they give `ops.file-changed` and write nothing. On `os`, an import that writes
-  makes the file anew, with mode 0600 and nothing of the old file (ENV SEAMS), so a file
+  a regular file makes it anew, with mode 0600 and nothing of the old file, so a file
   that the user opened to a group or to other users is closed to them again after each
-  import. Lost: the permission bits of the old file kept on the new one, which open the
+  import. A symbolic link, a device, or a pipe at the path takes the new text in
+  place, with its mode kept, and a crash can leave part of it (ENV SEAMS). Lost: the
+  permission bits of the old file kept on the new one, which open the
   file to a user that the old file did not when its group changes or when an access
   control list applies. `--json` and the MCP result are `{file, channels: [{name, path,
   type}], index, fills: [{name, what}], unnamed: [{path, fix}], present, unreadable}`,

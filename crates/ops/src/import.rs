@@ -26,7 +26,8 @@ pub(crate) struct Output {
     pub(crate) fills: Vec<Fill>,
     /// Each point that it did not add, because its default name is too long.
     pub(crate) unnamed: Vec<Unnamed>,
-    /// The count of picks that the config file reads or writes already.
+    /// The count of picks whose point the config file or an earlier pick reads or
+    /// writes already.
     pub(crate) present: usize,
     /// The count of points of the match that a connector of the kind cannot read or
     /// write, which it left out.
@@ -155,7 +156,8 @@ impl Output {
         }
         if self.present > 0 {
             lines.push(format!(
-                "It did not add {} that the file reads or writes already.",
+                "It did not add {} that the file or an earlier pick reads or writes \
+                 already.",
                 count(self.present, "point", "points")
             ));
         }

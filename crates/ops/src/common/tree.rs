@@ -138,7 +138,9 @@ fn line3() -> Vec<Child> {
 
 impl Tree {
     /// The tree of the kind `tree`, with pages of 4 entries. The root holds the
-    /// folders `Line3` (of [`line3`]), `Types`, `Many`, and `Huge`. `Types` holds a
+    /// folders `Line3` (of [`line3`], with the unreadable point `Cell/Matrix`),
+    /// `Types`,
+    /// `Many`, and `Huge`. `Types` holds a
     /// point of each value of [`typed`], then a point with no value. `Many` holds 501
     /// points and `Huge` 10,001.
     pub(crate) fn create() -> Self {
@@ -153,7 +155,12 @@ impl Tree {
             ],
         );
         folders.insert("line3".to_owned(), line3());
-        folders.insert("line3.cell".to_owned(), Vec::new());
+        let matrix = Child {
+            name: "Matrix".to_owned(),
+            tag: "line3.cell.matrix".to_owned(),
+            shape: Shape::Unreadable("a matrix".to_owned()),
+        };
+        folders.insert("line3.cell".to_owned(), vec![matrix]);
         let mut values = BTreeMap::from([
             ("line3.temperature".to_owned(), Value::F64(21.5)),
             ("line3.heater".to_owned(), Value::U16(3)),

@@ -107,8 +107,8 @@ fn the_command_line_writes_the_import_and_a_second_run_adds_nothing() {
         let (run, text, errors) = remote.cli(&paths, &ARGS).await;
         assert_eq!((run, errors.as_str()), (Run::Exit(0), ""));
         let expected = "The import added 0 channels to plant.hcl.\n\
-                        It did not add 2 points that the file reads or writes \
-                        already.\n";
+                        It did not add 2 points that the file or an earlier pick \
+                        reads or writes already.\n";
         assert_eq!(text, expected);
         assert_eq!(plant(&paths), IMPORTED);
     });

@@ -151,7 +151,8 @@
   supersedes the order of the example in item 4. The field `key` is by
   `laptop.architect-2` (2026-10-12T18:47:07Z,
   https://github.com/synnaxlabs/foundation/pull/2466#issuecomment-6130500446).
-  A remote program runs `plan`, `apply`, `status` (STATUS OPERATION), and `browse` on
+  A remote program runs `plan`, `apply`, `status` (STATUS OPERATION), `browse`, and
+  `import` (IMPORT OP) on
   a node through `ops::serve`. The request form is private to `ops`: one line of JSON
   with one operation and its input, a newline, then the bytes of a plan file as they
   are. `plan` sends the path and the text of each file:
@@ -167,7 +168,8 @@
   longer, so that each such reply fits (`laptop.architect-2`, 2026-10-18T00:09:33Z,
   https://github.com/synnaxlabs/foundation/issues/3084#issuecomment-6243561471), and the
   fix ``Use a `foundation` program of the same version as the node``. So is each
-  operation other than `plan`, `apply`, `status`, and `browse`, with the cause ``the
+  operation other than `plan`, `apply`, `status`, `browse`, and `import`, with the cause
+  ``the
   operation `<name>` does not run on a node``. A subject with no grant gets `ops.denied`
   (SERVE ACCESS). An output of more than
   `wire::hub::client::BODY_BYTES_MAX` bytes is `ops.large-reply`, with the bound in the
@@ -179,7 +181,8 @@
   first problems that fit, in order, then `ops.more-problems`, ``<n> more problems do
   not fit in one reply``, fix `Fix the problems above, then run it again`, with no place
   and no notes, and the status of the error. When not even the first problem fits with
-  it, the reply is `ops.large-reply`, or `ops.large-browse` for `browse` (below)
+  it, the reply is `ops.large-reply`, or `ops.large-browse` for `browse` (below), or
+  `ops.large-import` for `import` (IMPORT OP)
   (`laptop.architect-2`, 2026-10-17T23:33:12Z,
   https://github.com/synnaxlabs/foundation/pull/3079#issuecomment-6243126104), or
   `ops.large-status` for `status`. `ops.large-status`, status 1, takes the place of
@@ -212,8 +215,9 @@
   supersedes the `ops.unknown-operation` clause of the `serve` doc of that plan. STATUS
   OPERATION adds `status` to `plan` and `apply` there. Lost: one JSON value with the
   plan file as a list of numbers, which is four times the bytes.
-  `plan`, `apply`, `status` (STATUS OPERATION), and `browse` run on the node of
-  `foundation-data`, which `node::client::reach` reaches. The command line gives four
+  `plan`, `apply`, `status` (STATUS OPERATION), `browse`, and `import` (IMPORT OP) run
+  on the node of `foundation-data`, which `node::client::reach` reaches. The command
+  line gives four
   codes of its own. `ops.read`: `no file is at <path>`, `<path> is a directory, not a
   file`, or `the text of <path> is not UTF-8`, status 2, and `the read of <path> failed
   with OS error <code>`, status 1, each with the fix `Fix the cause in the message, then
@@ -259,7 +263,8 @@
   supersedes the bound on each file of that plan. `laptop.architect-2` approved the
   messages, statuses, and fixes of the four `ops` codes (2026-10-13T03:48:32Z, item 4 of
   https://github.com/synnaxlabs/foundation/pull/2533#issuecomment-6137791971).
-  `plan`, `apply`, `status`, and `browse` take `--data <dir>`, the data directory of
+  `plan`, `apply`, `status`, `browse`, and `import` (IMPORT OP) take `--data <dir>`, the
+  data directory of
   the node, by default `foundation-data`, as `start` does (#2526). This supersedes "run
   on the node of `foundation-data`" above and in the doc of `cli` of
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136638641. In each
@@ -388,7 +393,8 @@
   deprecates; and `ops.outside` with no folders, which shows the agent no way out.
   Amended (2026-10-16T04:45:05Z, #2526): one MCP server talks to one node, picked at
   start with `foundation mcp --data <dir>`, and a tool call cannot pick another. A
-  failed `plan`, `apply`, `status`, or `browse` is a tool result with `isError` and the
+  failed `plan`, `apply`, `status`, `browse`, or `import` (IMPORT OP) is a tool result
+  with `isError` and the
   text `{"errors": [...]}`, while an unknown tool and a malformed request or argument
   stay a JSON-RPC error. Each operation of `foundation --help` but `start` and `mcp` is
   a tool, with the output schema of its `--json`. `version`, `docs`, `status`, and

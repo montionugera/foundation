@@ -311,7 +311,7 @@ fn points_take_their_given_names_and_a_second_import_adds_nothing() {
 }
 
 /// A picked point that the connector cannot read or write fails the import, with its
-/// reason.
+/// reason, one problem for each.
 #[test]
 fn a_picked_point_that_the_connector_cannot_read_gives_its_reason() {
     solo(|fixture, mesh| async move {
@@ -322,6 +322,20 @@ fn a_picked_point_that_the_connector_cannot_read_gives_its_reason() {
                        `Line3/Recipe`: an array";
         let fix = "Leave the point out of the import";
         assert_eq!(reply, refusal("ops.unreadable-point", 2, message, fix));
+        assert_eq!(text, "");
+
+        let picks = points(&["Line3/Cell/Matrix", "Line3/Recipe"]);
+        let (reply, text) = imported(&node, &json!({ "points": picks })).await;
+        let problem = |message: &str| {
+            json!({ "code": "ops.unreadable-point", "message": message, "fix": fix,
+                "notes": [] })
+        };
+        let matrix = "a connector of the kind cannot read or write the point \
+                      `Line3/Cell/Matrix`: a matrix";
+        assert_eq!(
+            reply,
+            json!({ "errors": [problem(matrix), problem(message)], "status": 2 })
+        );
         assert_eq!(text, "");
     });
 }
@@ -393,23 +407,25 @@ fn the_text_gives_each_part_of_the_output() {
     let output: Output = serde_json::from_value(json!({
         "file": "site\u{7}.hcl",
         "channels": [
-            { "name": "plant.a\u{1b}", "path": "A", "type": "f64\u{7}" },
+            { "name": "plant.a\u{1b}", "path": "A\u{1b}", "type": "f64\u{7}" },
             { "name": "plant.b", "path": "B", "type": null },
         ],
         "index": "plant.time\u{1b}",
-        "fills": [{ "name": "plant.b\u{1b}", "what": ["the sample type", "the unit\n"] }],
-        "unnamed": [{ "path": "Long", "fix": "Give it a name\u{1b}" }],
+        "fills": [
+            { "name": "plant.b\u{1b}", "what": ["the sample type", "the unit\n"] },
+        ],
+        "unnamed": [{ "path": "Long\u{7}", "fix": "Give it a name\u{1b}" }],
         "present": 1,
         "unreadable": 2,
     }))
     .expect("an output");
     let expected = "The import added 2 channels to site\\u{7}.hcl.
-plant.a\\u{1b} A f64\\u{7}
+plant.a\\u{1b} A\\u{1b} f64\\u{7}
 plant.b B ?
 It added the index channel plant.time\\u{1b}.
 Write in place of each `fill` of plant.b\\u{1b}: the sample type; the unit\\n.
-It did not add Long, as its default name is too long. Give it a name\\u{1b}.
-It did not add 1 point that the file reads or writes already.
+It did not add Long\\u{7}, as its default name is too long. Give it a name\\u{1b}.
+It did not add 1 point that the file or an earlier pick reads or writes already.
 It left out 2 points that the connector cannot read or write.
 ";
     assert_eq!(output.text(), expected);
