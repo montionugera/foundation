@@ -3853,7 +3853,7 @@ pub(crate) mod port {
                 })
                 .expect("the run ends")?;
             let tag = b"foundation/key/2";
-            assert!(crate::sector::written(&bytes, tag), "a key: {bytes:02x?}");
+            assert!(sector::written(&bytes, tag), "a key: {bytes:02x?}");
             Some(bytes.to_vec())
         }
 
@@ -3979,7 +3979,7 @@ pub(crate) mod port {
                 include_bytes!("../../../oracles/fuzz/node_identity/valid-2");
             let body =
                 include_bytes!("../../../oracles/fuzz/node_identity/valid-body-2");
-            assert_eq!(crate::sector::summed(body).as_ref(), Some(valid));
+            assert_eq!(sector::summed(body).as_ref(), Some(valid));
             proves(valid, &PrivateKey([7; 32]));
         }
 
@@ -4055,7 +4055,7 @@ pub(crate) mod port {
             let tags = edits.map(|(i, byte)| {
                 let mut tag = <[u8; LEN]>::try_from(own()).unwrap();
                 tag[i] = byte;
-                crate::sector::checksum(&mut tag);
+                sector::checksum(&mut tag);
                 tag.to_vec()
             });
             let mut changed = own();
@@ -4065,7 +4065,7 @@ pub(crate) mod port {
             // The form before the seal key: the tag `foundation/key/1`, the node key,
             // and the private key.
             let old = [b"foundation/key/1".as_slice(), &own()[16..64]].concat();
-            let old = crate::sector::summed::<68>(&old).unwrap().to_vec();
+            let old = sector::summed::<68>(&old).unwrap().to_vec();
             for bytes in [short, long, changed, old].into_iter().chain(tags) {
                 let mut sim = sim::Sim::new(sim::Config::default());
                 let host = host(&mut sim, 2);

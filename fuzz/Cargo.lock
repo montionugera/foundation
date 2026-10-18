@@ -913,7 +913,6 @@ dependencies = [
  "connector-influx",
  "connector-modbus",
  "connector-opcua",
- "crc32c",
  "document",
  "env",
  "estimate",
@@ -925,6 +924,7 @@ dependencies = [
  "os",
  "program",
  "secret",
+ "sector",
  "serde",
  "serde_json",
  "spec",
@@ -1335,6 +1335,16 @@ dependencies = [
  "env",
  "types",
  "zeroize",
+]
+
+[[package]]
+name = "sector"
+version = "0.0.0"
+dependencies = [
+ "block",
+ "crc32c",
+ "env",
+ "types",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
-//! `node::sector::written` takes the bytes of `node.key` or `admin.key` exactly when
+//! `sector::written` takes the bytes of `node.key` or `admin.key` exactly when
 //! they have the tag of their file and the CRC32C, and the encode of their fields gives
 //! them back.
-//! For `address`, it takes the bytes and `node::address::fields` gives an address
+//! For `address`, it takes the bytes and `sector::address::fields` gives an address
 //! exactly when the encode of that address gives the bytes back.
 //!
 //! Input: the 100 bytes of `node.key`, the 54 bytes of `admin.key`, or the 99 bytes of

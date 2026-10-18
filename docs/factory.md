@@ -52,7 +52,7 @@ budget. One issue is in progress per crate. The coordinator keeps this table cur
 
 | Machine | Host | Crates |
 | --- | --- | --- |
-| laptop | the laptop, 16 cores | `node`, `config`, `config-hcl`, `document`, `ops`, `acceptance` |
+| laptop | the laptop, 16 cores | `node`, `sector`, `config`, `config-hcl`, `document`, `ops`, `acceptance` |
 | box1 | `foundation-factory`, 64 vCPU | `hub`, `program`, `control`, `delivery`, `home`, `mesh`, `raft`, `spec`, `access`, `blob`, `buffer`, `replica`, `block`, `ring`, `types`, `codec`, `wire`, `counting`, `waker` |
 | box2 | `foundation-factory-2`, 32 vCPU | `transport`, `clock`, `estimate`, `sim`, `env`, `os`, `secret`, `connector`, `connector-<kind>`, `daqmx-stub` |
 
@@ -72,7 +72,7 @@ map needs `laptop.architect`.
 | Architect | Crates |
 | --- | --- |
 | `laptop.architect` | `types`, `hub`, `program`, `control`, `delivery`, `home`, `mesh`, `raft`, `access`, `blob`, `buffer`, `replica`, `block`, `ring`, `codec`, `wire`, `counting`, `waker` |
-| `laptop.architect-2` | `spec`, `node`, `config`, `config-hcl`, `document`, `ops`, `acceptance`, `transport`, `clock`, `estimate`, `sim`, `env`, `os`, `secret`, `connector`, `connector-<kind>`, `daqmx-stub`, `sdk` |
+| `laptop.architect-2` | `spec`, `node`, `sector`, `config`, `config-hcl`, `document`, `ops`, `acceptance`, `transport`, `clock`, `estimate`, `sim`, `env`, `os`, `secret`, `connector`, `connector-<kind>`, `daqmx-stub`, `sdk` |
 
 `program` comes out of `hub` and speaks its wire contract, so it has the architect of
 `hub` (`laptop.director`, 2026-10-15T18:26:51Z,

@@ -1,10 +1,17 @@
-//! A file of the data directory that fits one sector. It starts with a tag, and its
+//! The files of a data directory that fit one sector. Each starts with a tag, and its
 //! last 4 bytes are the CRC32C of the bytes before them (little-endian). A file that
-//! [`publish`] makes is whole or not there, also to a read while the write runs.
+//! [`publish`] makes is whole or not there, also to a read while the write runs. It
+//! holds the formats of [`address`] and [`admin`], which a program on the node's host
+//! reads with [`local`].
 
+pub mod address;
+pub mod admin;
+
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use env::files::{File, Files, Mode};
+use types::ed25519::{PrivateKey, PublicKey};
 
 /// The pool of the file's block. A call can come while the shard's buffer holds the
 /// blocks of the shard's pool, so that pool can lack room for it.
@@ -15,13 +22,85 @@ const POOL: block::Config = match block::Config::new(4096) {
 
 /// What a file of `N` bytes holds.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Held<const N: usize> {
+pub enum Held<const N: usize> {
     /// No file.
     Nothing,
     /// The bytes that a node wrote, with the tag and a checksum that matches.
     Written([u8; N]),
     /// A file that no node wrote: another length, tag, or checksum.
     Foreign,
+}
+
+/// The node that runs on a data directory, and the key of its first admin.
+#[derive(Clone, Debug)]
+pub struct Local {
+    /// The node's key.
+    pub key: types::node::Key,
+    /// The public key that the node's transport proves.
+    pub public_key: PublicKey,
+    /// Where a program on the node's host dials the node: the address where its port
+    /// is bound, with the loopback IP of its family in place of an unspecified IP.
+    pub address: SocketAddr,
+    /// The private key of the first admin of the root region.
+    pub admin: PrivateKey,
+}
+
+/// Why [`local`] gave nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    /// No node runs on the directory: its file `address` holds no address of a node.
+    NotRunning,
+    /// The directory holds no file `admin.key` that a node wrote.
+    Key,
+    /// A file call on the directory failed.
+    Files(env::files::Error),
+}
+
+/// The node that runs on the data directory of `files`, and its first admin. Opens
+/// each file to read only, so it makes nothing and waits for no lock.
+///
+/// # Errors
+///
+/// [`Error::NotRunning`] when `address` holds no address of a node, [`Error::Key`]
+/// when no node wrote `admin.key`, and [`Error::Files`] for a file call that fails,
+/// other than [`env::files::Error::NotFound`].
+pub async fn local(files: &Files) -> Result<Local, Error> {
+    let path = Path::new(address::FILE);
+    let held = read(files, path, address::TAG)
+        .await
+        .map_err(Error::Files)?;
+    let address = match held {
+        Held::Written(bytes) => address::decode(&bytes),
+        Held::Nothing | Held::Foreign => None,
+    };
+    let address = address.ok_or(Error::NotRunning)?;
+    let path = Path::new(admin::FILE);
+    let held = read(files, path, admin::TAG).await.map_err(Error::Files)?;
+    let admin = match held {
+        Held::Written(bytes) => admin::decode(&bytes),
+        Held::Nothing | Held::Foreign => None,
+    };
+    Ok(Local {
+        key: address.key,
+        public_key: address.public_key,
+        address: dialed(address.bound),
+        admin: admin.ok_or(Error::Key)?,
+    })
+}
+
+/// Where a program on the node's host dials `bound`: the loopback IP of its family in
+/// place of the unspecified IP.
+fn dialed(mut bound: SocketAddr) -> SocketAddr {
+    match bound.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => {
+            bound.set_ip(Ipv4Addr::LOCALHOST.into());
+        }
+        IpAddr::V6(ip) if ip.is_unspecified() => {
+            bound.set_ip(Ipv6Addr::LOCALHOST.into());
+        }
+        IpAddr::V4(_) | IpAddr::V6(_) => {}
+    }
+    bound
 }
 
 /// What `path` in `files`, which [`publish`] makes, holds. Opens it to read only, so
@@ -31,7 +110,7 @@ pub(crate) enum Held<const N: usize> {
 ///
 /// The error of each file call that fails, except [`env::files::Error::NotFound`],
 /// which gives [`Held::Nothing`].
-pub(crate) async fn read<const N: usize>(
+pub async fn read<const N: usize>(
     files: &Files,
     path: &Path,
     tag: &[u8],
@@ -61,7 +140,7 @@ pub(crate) async fn read<const N: usize>(
 /// # Errors
 ///
 /// The error of the first file call that fails.
-pub(crate) async fn publish<const N: usize>(
+pub async fn publish<const N: usize>(
     files: &Files,
     path: &Path,
     bytes: &[u8; N],
@@ -82,7 +161,7 @@ pub(crate) async fn publish<const N: usize>(
 /// # Errors
 ///
 /// The error of the first file call that fails.
-pub(crate) async fn write<const N: usize>(
+pub async fn write<const N: usize>(
     files: &Files,
     file: &File,
     bytes: &[u8; N],
@@ -97,21 +176,20 @@ pub(crate) async fn write<const N: usize>(
 /// # Errors
 ///
 /// The error of the write.
-pub(crate) async fn clear<const N: usize>(
-    file: &File,
-) -> Result<(), env::files::Error> {
+pub async fn clear<const N: usize>(file: &File) -> Result<(), env::files::Error> {
     file.write_at(0, &[block(&[0; N])]).await
 }
 
 /// Whether a node wrote `bytes` to a file whose tag is `tag`: they start with the tag,
 /// and their checksum matches.
-pub(crate) fn written<const N: usize>(bytes: &[u8; N], tag: &[u8]) -> bool {
+#[must_use]
+pub fn written<const N: usize>(bytes: &[u8; N], tag: &[u8]) -> bool {
     let (body, sum) = bytes.split_at(N - 4);
     body.starts_with(tag) && crc32c::crc32c(body).to_le_bytes() == *sum
 }
 
 /// Writes the CRC32C of the bytes of `bytes` before its last 4 into those 4.
-pub(crate) fn checksum<const N: usize>(bytes: &mut [u8; N]) {
+pub fn checksum<const N: usize>(bytes: &mut [u8; N]) {
     let (body, sum) = bytes.split_at_mut(N - 4);
     sum.copy_from_slice(&crc32c::crc32c(body).to_le_bytes());
 }
@@ -125,7 +203,7 @@ pub(crate) fn checksum<const N: usize>(bytes: &mut [u8; N]) {
 ///
 /// When the check fails.
 #[cfg(any(test, feature = "sim"))]
-pub(crate) fn check<const N: usize>(
+pub fn check<const N: usize>(
     bytes: &[u8; N],
     tag: &[u8],
     encode: impl Fn(&[u8; N]) -> Option<[u8; N]>,
@@ -141,7 +219,8 @@ pub(crate) fn check<const N: usize>(
 
 /// `body` with its CRC32C appended, or `None` when `body` is not `N - 4` bytes.
 #[cfg(any(test, feature = "sim"))]
-pub(crate) fn summed<const N: usize>(body: &[u8]) -> Option<[u8; N]> {
+#[must_use]
+pub fn summed<const N: usize>(body: &[u8]) -> Option<[u8; N]> {
     if body.len() != N - 4 {
         return None;
     }
@@ -170,7 +249,29 @@ fn block<const N: usize>(bytes: &[u8; N]) -> block::Block {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+
+    proptest! {
+        #[test]
+        fn dialed_keeps_each_specified_ip(
+            ip in any::<IpAddr>().prop_filter("specified", |ip| !ip.is_unspecified()),
+            port: u16,
+        ) {
+            let bound = SocketAddr::new(ip, port);
+            prop_assert_eq!(dialed(bound), bound);
+        }
+
+        #[test]
+        fn dialed_gives_the_loopback_ip_of_the_family_for_an_unspecified_ip(port: u16) {
+            let v4 = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port);
+            let v6 = SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), port);
+            let loopback = |ip: IpAddr| SocketAddr::new(ip, port);
+            prop_assert_eq!(dialed(v4), loopback(Ipv4Addr::LOCALHOST.into()));
+            prop_assert_eq!(dialed(v6), loopback(Ipv6Addr::LOCALHOST.into()));
+        }
+    }
 
     #[test]
     fn sums_a_body_of_n_minus_4_bytes() {

@@ -107,7 +107,7 @@ fn reach_with_an_admin_key_that_no_node_wrote_gives_key() {
     let written = sim.run_on(&host, |host, _| async move {
         let files = host.files();
         let mode = env::files::Mode::Write;
-        let file = files.open(Path::new(crate::admin::FILE), mode).await?;
+        let file = files.open(Path::new(sector::admin::FILE), mode).await?;
         let pool = pool();
         let block = pool.copy(b"x").expect("a block");
         file.write_at(0, &[block]).await
@@ -121,7 +121,7 @@ fn reach_whose_read_of_address_fails_gives_the_file_error() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = crashed(&mut sim);
     let operation = env::files::Operation::ReadAt;
-    host.fail_file(Path::new(crate::address::FILE), operation);
+    host.fail_file(Path::new(sector::address::FILE), operation);
     let error = env::files::Error::Io {
         path: PathBuf::from("address"),
         operation,
@@ -135,7 +135,7 @@ fn reach_whose_read_of_the_admin_key_fails_gives_the_file_error() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = crashed(&mut sim);
     let operation = env::files::Operation::ReadAt;
-    host.fail_file(Path::new(crate::admin::FILE), operation);
+    host.fail_file(Path::new(sector::admin::FILE), operation);
     let error = env::files::Error::Io {
         path: PathBuf::from("admin.key"),
         operation,
@@ -386,13 +386,12 @@ fn operator(
     let slot = Arc::clone(&out);
     shard(host, move |host, tasks| async move {
         let files = host.files();
-        let address = crate::address::read(&files).await.expect("a read");
-        let address = address.expect("a node runs");
+        let local = sector::local(&files).await.expect("a node runs");
         let (transport, pool) = program(&host, tasks.clone());
         let config = program::Config {
-            via: address.key,
-            node: address.public_key,
-            addresses: vec![Address::Udp(address.bound)],
+            via: local.key,
+            node: local.public_key,
+            addresses: vec![Address::Udp(local.address)],
             subject: "plant.operator".parse().unwrap(),
             key: OPERATOR,
             clock: host.clock(),

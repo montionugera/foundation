@@ -4,7 +4,7 @@
 //!
 //! The file is 277 bytes: the tag, the length of the name in one byte, the name with
 //! zero bytes after it up to [`Name::MAX_BYTES`], and the CRC32C of those 273 bytes
-//! (little-endian), in one sector ([`crate::sector`]).
+//! (little-endian), in one sector ([`sector`]).
 
 use std::path::Path;
 use std::rc::Rc;
@@ -13,8 +13,8 @@ use env::files::Files;
 use mesh::region::Founding;
 use types::name::Name;
 
-use crate::sector::{self, Held};
 use crate::{Error, directory, identity, status};
+use sector::Held;
 
 /// The name of the file.
 pub(crate) const FILE: &str = "name";

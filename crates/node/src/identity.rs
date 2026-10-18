@@ -3,7 +3,7 @@
 //!
 //! The file is 100 bytes: the tag, the node key (big-endian), the Ed25519 private key,
 //! the X25519 seal private key, and the CRC32C of those 96 bytes (little-endian), in
-//! one sector ([`crate::sector`]).
+//! one sector ([`sector`]).
 
 use std::path::Path;
 
@@ -12,8 +12,8 @@ use secret::seal::Opener;
 use types::ed25519::PrivateKey;
 use types::time::Stamp;
 
-use crate::sector::{self, Held};
 use crate::{Error, directory};
+use sector::Held;
 
 /// The name of the file.
 pub(crate) const FILE: &str = "node.key";
