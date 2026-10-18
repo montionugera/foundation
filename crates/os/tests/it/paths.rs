@@ -52,6 +52,10 @@ fn most() -> usize {
 /// host, far below a resolve of each prefix.
 const WORST: Span = Span::from_nanos(5_000_000_000);
 
+/// The bound of a walk whose names each take one call on a handle: far above that on
+/// a slow CI host, far below a call by the resolved path of each name.
+const BOUNDED: Span = Span::from_nanos(1_000_000_000);
+
 /// A tree of `a` directories under `top`, as deep as leaves `room` bytes under the
 /// longest path. Its drop removes it level by level, since `remove_dir_all` of
 /// `Scratch` holds a handle for each level.
@@ -1400,5 +1404,73 @@ fn within_stops_a_long_path_of_dots_from_a_deep_directory() {
         let too_long = Err(Error::Io { code: too_long() });
         assert_eq!((free, read), (too_long.clone(), too_long));
         assert!(took < WORST, "took {took}, free {free_took}");
+    });
+}
+
+/// A chain of `LINKS` links in a directory 1900 names deep, each through a long target
+/// of `s/..`: each name of the walk is one call, so it takes about what the free handle
+/// takes, not the names times the depth.
+#[test]
+fn within_reads_through_links_of_long_dots_in_a_deep_directory_in_bounded_time() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        let deep = Deep::new(base.join("work"), 95);
+        fs::create_dir(deep.dir.join("s")).unwrap();
+        fs::write(deep.dir.join("f"), b"x").unwrap();
+        let dots = "s/../".repeat((most() - 50) / 5);
+        for at in 0..env::paths::LINKS {
+            let next = if at + 1 == env::paths::LINKS {
+                "f".to_owned()
+            } else {
+                format!("l{}", at + 1)
+            };
+            symlink(format!("{dots}{next}"), deep.dir.join(format!("l{at}"))).unwrap();
+        }
+        let path = deep.dir.join("l0");
+        let clock = os::clock();
+        let start = clock.now();
+        let free = host.paths.read(&path, 1);
+        let free_took = clock.now() - start;
+        let start = clock.now();
+        let read = within.read(&path, 1);
+        let took = clock.now() - start;
+        let file = Ok(Found::File(b"x".to_vec()));
+        assert_eq!((free, read), (file.clone(), file));
+        assert!(took < BOUNDED, "took {took}, free {free_took}");
+    });
+}
+
+/// A hidden file whose resolved path is longer than the OS takes, made after `within`
+/// through a link that a program points at a deep directory. The walk takes each name
+/// on the handle of its directory, so it reaches the file, which hides only itself.
+#[test]
+fn within_hides_only_a_long_hidden_file_made_after_within() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let most = most();
+        let top = base.join("work");
+        let (mut deep, mut relative) = (top.clone(), PathBuf::new());
+        while deep.as_os_str().len() + 201 < most - 50 {
+            deep.push("d".repeat(200));
+            relative.push("d".repeat(200));
+            fs::create_dir(&deep).unwrap();
+        }
+        let s = top.join("s");
+        symlink("data", &s).unwrap();
+        let name = "f".repeat(most - deep.as_os_str().len());
+        let key = s.join(&name);
+        let within = host
+            .paths
+            .within(slice::from_ref(&top), slice::from_ref(&key))
+            .unwrap();
+        fs::remove_file(&s).unwrap();
+        symlink(&relative, &s).unwrap();
+        fs::write(&key, b"secret").unwrap();
+        fs::write(s.join("plan.hcl"), b"plan").unwrap();
+        let read = (within.read(&key, 64), within.read(&s.join("plan.hcl"), 64));
+        assert_eq!(
+            read,
+            (Err(Error::Hidden), Ok(Found::File(b"plan".to_vec())))
+        );
     });
 }
