@@ -192,6 +192,7 @@ fn problems(root: &Path) -> Result<Vec<String>, String> {
         let mut items = Items {
             shown: &shown,
             file: &module.file,
+            above: &module.above,
             dir: module.dir,
             inline: 0,
             item: Vec::new(),
@@ -231,6 +232,7 @@ fn roots(root: &Path) -> Result<Vec<Module>, String> {
             let tests = if tested { Tests::Marked } else { Tests::None };
             modules.push(Module {
                 file,
+                above: Vec::new(),
                 dir,
                 on: Runners::ALL,
                 target: (package, target),
@@ -278,6 +280,8 @@ type Target = (usize, usize);
 /// of its functions are tests.
 struct Module {
     file: PathBuf,
+    /// The files of the modules that hold the module.
+    above: Vec<PathBuf>,
     dir: PathBuf,
     on: Runners,
     target: Target,
@@ -373,6 +377,8 @@ struct Ignore {
 struct Items<'a> {
     shown: &'a str,
     file: &'a Path,
+    /// The files of the modules that hold the file.
+    above: &'a [PathBuf],
     /// The directory of the modules that the item declares, with each inline module.
     dir: PathBuf,
     /// How many inline modules hold the item.
@@ -581,8 +587,12 @@ impl<'ast> Visit<'ast> for Items<'_> {
                 return;
             }
             match s.declared(i) {
+                Ok((file, _)) if file == s.file || s.above.contains(&file) => {
+                    s.problem("circular modules");
+                }
                 Ok((file, dir)) => s.modules.push(Module {
                     file,
+                    above: [s.above, &[s.file.to_path_buf()]].concat(),
                     dir,
                     on: s.on,
                     target: s.target,
@@ -724,6 +734,9 @@ fn body(input: ParseStream<'_>) -> syn::Result<Vec<Body>> {
         input.parse::<Option<Token![async]>>()?;
         input.parse::<Option<Token![unsafe]>>()?;
         input.parse::<Option<syn::Abi>>()?;
+        if rules(input)? {
+            continue;
+        }
         if input.peek(Token![fn]) && input.peek2(Ident::peek_any) {
             input.parse::<Token![fn]>()?;
             items.push(Body::Function(attributes, input.call(Ident::parse_any)?));
@@ -756,6 +769,21 @@ fn body(input: ParseStream<'_>) -> syn::Result<Vec<Body>> {
         }
     }
     Ok(items)
+}
+
+/// Passes a `macro_rules!` at `input`, which holds no item until a call expands it,
+/// and reports whether one was there.
+fn rules(input: ParseStream<'_>) -> syn::Result<bool> {
+    let rules = input.peek(Ident::peek_any)
+        && input.peek2(Token![!])
+        && input.fork().call(Ident::parse_any)? == "macro_rules";
+    if rules {
+        input.call(Ident::parse_any)?;
+        input.parse::<Token![!]>()?;
+        input.call(Ident::parse_any)?;
+        skip(input)?;
+    }
+    Ok(rules)
 }
 
 /// Reports whether an item ends at `input`: at its end, a brace group, or a `;`.
@@ -1063,6 +1091,7 @@ mod tests {
                 "`{skips}/arity.rs`: `a`: not(unix, windows)\n^^^^^^^^^^^^^^^^^^ not() \
                  takes 1 predicate, found 2"
             ),
+            format!("`{skips}/circle.rs`: `again`: circular modules"),
             refused(&format!("{skips}/everywhere.rs"), "a"),
             refused(&format!("{skips}/everywhere.rs"), "b"),
             refused(&format!("{skips}/everywhere.rs"), "c"),

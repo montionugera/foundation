@@ -96,3 +96,13 @@ m! {
         fn unleaked() {}
     }
 }
+
+m! {
+    macro_rules! case {
+        ($m:meta, $name:ident) => {
+            #[$m]
+            fn $name() {}
+        };
+    }
+    case!(test, made);
+}
