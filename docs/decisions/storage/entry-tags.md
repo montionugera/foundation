@@ -97,12 +97,14 @@
   https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6244272935). This
   supersedes the 53.7 B above: a change that adds to the bytes of a pair states them
   and needs a P1 judgment.
-  Amended (2026-10-18T06:40:21Z, #406, 406-2): a tagged entry costs up to +13 ns on the
-  quiet-host `deadline_tagged/32` line. HOME NAMED READERS holds up to 64 parts an
-  index, and a tick appends each part whose records changed: at 100,000 indexes, that
-  is 1.26 ms/s with one part and about 81 ms/s with 64. The rate follows the ticks and
+  Amended (2026-10-18T06:40:21Z, #406, 406-2): a tagged entry may cost up to +13 ns
+  over the code before 406-2 on the quiet-host `deadline_tagged/32` line (+10.2 ns at
+  `c025fb18b` against `4b019d5e8`). HOME NAMED READERS holds up to 64 parts an index,
+  and a tick appends each part whose records changed: at 100,000 indexes, that is
+  1.26 ms/s with one part and about 81 ms/s with 64. The rate follows the ticks and
   the sessions, not the data. It buys whole records at each carry, so no named position
   is lost at a carry or an open. `laptop.architect` accepted it under P1 (#3113,
   2026-10-18T06:40:21Z,
   https://github.com/synnaxlabs/foundation/pull/3113#issuecomment-6246659111, item 2).
-  A change past +13 ns a tagged entry needs a new P1 judgment.
+  A cost over +13 ns a tagged entry against the code before 406-2 needs a new P1
+  judgment.
