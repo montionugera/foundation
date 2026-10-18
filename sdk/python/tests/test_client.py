@@ -243,6 +243,20 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(fork(close_and_drop), 0)
         self.assertIsNone(clients[0].close())
 
+    def test_a_child_that_drops_an_open_client_touches_no_descriptor(self) -> None:
+        clients = [self.node.connect()]
+
+        def drop() -> object:
+            raised = []
+            sys.unraisablehook = raised.append
+            os.closerange(3, 65536)
+            clients.clear()
+            gc.collect()
+            return raised or None
+
+        self.assertEqual(fork(drop), 0)
+        self.assertIsNone(clients[0].close())
+
     def test_a_subject_that_the_spec_does_not_list_is_refused(self) -> None:
         with self.assertRaises(ConnectionError) as raised:
             self.node.connect(subject="plant.operator")
