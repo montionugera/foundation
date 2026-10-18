@@ -350,7 +350,8 @@ fn write(address: SocketAddr, lines: &'static str) -> String {
 
 /// Connects to `address` from a shard of its own, and gives the error of the connect,
 /// or `None` when it connects. On macOS, a child that a rig test spawns may hold the
-/// port (`os::net`), so only Linux checks a refusal.
+/// port (`os::net`), so a test that checks a refusal after a stop runs only on Linux.
+/// [`listen_free`] counts a held port as in use.
 fn connect(address: SocketAddr) -> Option<Error> {
     let (send, error) = mpsc::channel();
     let shard = start("connect", move |_| async move {
