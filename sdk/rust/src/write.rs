@@ -8,9 +8,10 @@ use std::task::Poll;
 
 pub use program::Place;
 pub use program::write::{Outcome, Refusal};
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, watch};
 use types::authority::Authority;
-use types::frame::{Form, Path};
+use types::frame::{self, Form, Path};
 use types::name::Name;
 use types::sample::{Scalar, Type, Value};
 use types::time::Span;
@@ -49,13 +50,19 @@ impl Config {
 /// blocks until the node answers, and the node applies the frames in the order of the
 /// calls. Dropping it stops the stream, and the node ends the writer;
 /// [`Writer::close`] first waits until each frame is on disk.
+///
+/// Place `n` of each call is `Config::channels[n]`, and the index is place
+/// `channels.len()` when `channels` does not name it.
 #[derive(Debug)]
 pub struct Writer {
     places: Vec<Place>,
+    /// The place of the node of each place.
+    nodes: Vec<usize>,
     index: usize,
     calls: mpsc::Sender<Call>,
     written: Receiver<Written>,
-    /// The bytes of the next frame, which go to the client's thread and back.
+    /// The bytes of the next frame, in the places of the node, which go to the
+    /// client's thread and back.
     frame: Frame,
 }
 
@@ -69,6 +76,7 @@ impl Writer {
         let (calls, received) = mpsc::channel(1);
         let (answer, written) = sync_channel(1);
         let (sender, opened) = sync_channel(1);
+        let names = config.channels.clone();
         let open = Open {
             config: program::write::Config {
                 authority: config.authority,
@@ -80,9 +88,11 @@ impl Writer {
             written: answer,
         };
         opens.send(open).map_err(|_closed| Error::Closed)?;
-        let (places, index) = wait(&opened)??;
+        let (node, index) = wait(&opened)??;
+        let (places, nodes, index) = ordered(&names, &node, index);
         Ok(Self {
             places,
+            nodes,
             index,
             calls,
             written,
@@ -90,65 +100,76 @@ impl Writer {
         })
     }
 
-    /// The channels of the writer: the key, sample type, and name of each place, in
-    /// the order of their keys, not of `Config::channels`. The index is a place, also
-    /// when `Config::channels` does not name it, and its samples are the stamps of
-    /// each frame.
+    /// The channels of the writer: the key, sample type, and name of each place.
+    /// Place `n` is `Config::channels[n]`, then the index when `Config::channels`
+    /// does not name it.
     #[must_use]
     pub fn places(&self) -> &[Place] {
         &self.places
     }
 
+    /// The place of the index, whose samples are the stamps of each frame. When
+    /// `Config::channels` names the index more than once, its first place.
+    #[must_use]
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
     /// Writes a frame of one sample of each place of `values`, in any order, and
     /// blocks until the node took, lost, or refused it. A value of the index place is
     /// the stamp of the frame. With none, the node stamps it: mesh time now, or 1 ns
-    /// after the last stamp of this writer when now is not after it.
+    /// after the last stamp that the node gave this writer when now is not after it.
+    /// So after a stamp of the caller ahead of now, a frame that the node stamps can
+    /// get [`Refusal::Order`].
     ///
     /// # Errors
     ///
     /// [`Error::Value`] when a value is not of the type of its place, with nothing
     /// sent; the writer goes on. [`Error::Closed`] when the client's session ended at
-    /// a close or a drop. [`Error::Session`] when the session failed. Else
-    /// [`Error::Stream`] with each error of `program::Writer::draft` and
-    /// `program::Writer::write`, such as `Layout` for a place past the places or a
-    /// place given twice, after which the writer goes on.
+    /// a close or a drop, or the client's thread panicked. [`Error::Session`] when the
+    /// session failed. Else [`Error::Stream`] with each error of
+    /// `program::Writer::draft` and `program::Writer::write`: `Layout` for a place
+    /// past the places, with nothing sent, or for a place given twice, and `Unsent`
+    /// for no values.
     pub fn write(&mut self, values: &[(usize, Value)]) -> Result<Outcome, Error> {
         self.frame.clear(1);
+        let index = self.nodes[self.index];
         let mut time = Time::Node;
         for &(place, value) in values {
+            let (node, data_type) = self.place(place)?;
             let scalar = value.scalar();
-            if let Some(at) = self.places.get(place)
-                && at.data_type != Type::Scalar(scalar)
-            {
+            if data_type != Type::Scalar(scalar) {
                 return Err(Error::Value {
                     place,
                     scalar,
-                    data_type: at.data_type,
+                    data_type,
                 });
             }
-            if place == self.index {
+            if node == index {
                 time = Time::Frame(Path::Live);
             }
             self.frame
-                .push(place, scalar.width(), |sample| value.write(sample));
+                .push(node, scalar.width(), |sample| value.write(sample));
         }
-        if time == Time::Node {
-            self.frame.push(self.index, Scalar::Stamp.width(), |_| {});
+        if time == Time::Node && !values.is_empty() {
+            self.frame.push(index, Scalar::Stamp.width(), |_| {});
         }
         self.call(time)
     }
 
     /// Writes a frame of `count` samples of each place of `series`, in any order, each
     /// in the raw form of its place's type, and blocks until the node took, lost, or
-    /// refused it. The series of the index place holds the stamps of the frame.
+    /// refused it. The series of [`Writer::index`] holds the stamps of the frame. A
+    /// frame of one channel and its index holds at most about 3,500 samples (the
+    /// largest block of the frames of the session, 57,344 bytes).
     ///
     /// # Errors
     ///
     /// [`Error::Closed`] and [`Error::Session`] as [`Writer::write`] gives them. Else
     /// [`Error::Stream`] with each error of `program::Writer::draft` and
-    /// `program::Writer::write`, such as `Layout` for a place past the places or a
-    /// place given twice, and `Unsent` for a frame with no series; the writer goes on
-    /// after each of these.
+    /// `program::Writer::write`: `Layout` for a place past the places, with nothing
+    /// sent, or for a place given twice, `Unsent` for a frame with no series, and
+    /// `Pool(TooLarge)` for a frame over the largest block.
     pub fn write_series(
         &mut self,
         count: u32,
@@ -156,8 +177,9 @@ impl Writer {
     ) -> Result<Outcome, Error> {
         self.frame.clear(count);
         for &(place, bytes) in series {
+            let (node, _) = self.place(place)?;
             self.frame
-                .push(place, bytes.len(), |to| to.copy_from_slice(bytes));
+                .push(node, bytes.len(), |to| to.copy_from_slice(bytes));
         }
         self.call(Time::Frame(Path::Live))
     }
@@ -171,24 +193,68 @@ impl Writer {
     /// [`Writer::write`] gives them.
     pub fn close(self) -> Result<(), Error> {
         let (sender, finished) = sync_channel(1);
-        self.calls
-            .try_send(Call::Close(sender))
-            .map_err(|_closed| Error::Closed)?;
+        self.send(Call::Close(sender))?;
         wait(&finished)?
+    }
+
+    /// The place of the node and the type of `place`.
+    fn place(&self, place: usize) -> Result<(usize, Type), Error> {
+        let past = || {
+            let entries = self.places.len();
+            let range = frame::Error::OutOfRange {
+                entry: place,
+                entries,
+            };
+            Error::Stream(program::Error::Layout(range))
+        };
+        let node = *self.nodes.get(place).ok_or_else(past)?;
+        Ok((node, self.places[place].data_type))
     }
 
     /// Sends the frame with its stamps from `time`, and blocks for its outcome.
     fn call(&mut self, time: Time) -> Result<Outcome, Error> {
         self.frame.sort();
         let frame = mem::take(&mut self.frame);
-        // Each call takes its answer, so the channel is never full.
-        self.calls
-            .try_send(Call::Write { frame, time })
-            .map_err(|_closed| Error::Closed)?;
+        self.send(Call::Write { frame, time })?;
         let (outcome, frame) = wait(&self.written)?;
         self.frame = frame;
         outcome
     }
+
+    /// Sends `call` to the task of the writer.
+    fn send(&self, call: Call) -> Result<(), Error> {
+        self.calls.try_send(call).map_err(|error| match error {
+            TrySendError::Closed(_) => Error::Closed,
+            TrySendError::Full(_) => {
+                unreachable!("invariant: each call takes its answer before the next")
+            }
+        })
+    }
+}
+
+/// The places of the calls of a writer of `channels`, the place of the node of each,
+/// and the place of the index, from the places of the node and the place of its index.
+///
+/// # Panics
+///
+/// When the node gives no place for a name of `channels`: the node names each place
+/// of a channel of the open with its name in the open.
+fn ordered(
+    channels: &[Name],
+    node: &[Place],
+    index: usize,
+) -> (Vec<Place>, Vec<usize>, usize) {
+    let of = |name: &Name| {
+        let at = node.iter().position(|place| place.name == *name);
+        at.expect("invariant: the node gives a place for each channel of the open")
+    };
+    let mut nodes: Vec<usize> = channels.iter().map(of).collect();
+    let at = nodes.iter().position(|&n| n == index).unwrap_or_else(|| {
+        nodes.push(index);
+        nodes.len() - 1
+    });
+    let places = nodes.iter().map(|&n| node[n].clone()).collect();
+    (places, nodes, at)
 }
 
 /// Blocks for the answer of the client's thread, or [`Error::Closed`] when the thread
@@ -206,7 +272,7 @@ fn wait<T>(answers: &Receiver<T>) -> Result<T, Error> {
 #[derive(Debug)]
 pub(crate) struct Open {
     config: program::write::Config,
-    /// The places of the writer and the place of its index.
+    /// The places of the node and the place of its index.
     opened: SyncSender<Result<(Vec<Place>, usize), Error>>,
     calls: mpsc::Receiver<Call>,
     written: SyncSender<Written>,
@@ -326,11 +392,9 @@ async fn sent(
     time: Time,
 ) -> Result<Outcome, program::Error> {
     let draft = writer.draft(Form::Raw, frame.count, &frame.series).await?;
-    for (place, bytes) in frame.each() {
-        draft
-            .series_mut(place)
-            .expect("invariant: the layout holds each series of the frame")
-            .copy_from_slice(bytes);
+    // The draft holds the series of the frame, both in place order.
+    for ((_, to), (_, bytes)) in draft.iter_mut().zip(frame.each()) {
+        to.copy_from_slice(bytes);
     }
     writer.write(time).await
 }

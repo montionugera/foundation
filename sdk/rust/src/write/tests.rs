@@ -42,8 +42,9 @@ fn places() -> Vec<Place> {
 /// The frame and time of each write that a writer sent, until its first close.
 type Sent = Vec<(Frame, Time)>;
 
-/// A writer of `places()` whose calls a thread serves: it answers each write with
-/// `outcome` and the close with `Ok`, and gives each write that it served.
+/// A writer of `count` and `level`, so places 0, 1, and 2 are `count`, `level`, and
+/// `time`, whose calls a thread serves: it answers each write with `outcome` and the
+/// close with `Ok`, and gives each write that it served.
 fn writer(outcome: Outcome) -> (Writer, JoinHandle<Sent>) {
     let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
     let served = spawn(move || {
@@ -75,8 +76,22 @@ fn writer(outcome: Outcome) -> (Writer, JoinHandle<Sent>) {
         }
         sent
     });
-    let config = Config::new(vec!["count".parse().unwrap()]);
-    (Writer::open(&opens, config).unwrap(), served)
+    let channels = vec!["count".parse().unwrap(), "level".parse().unwrap()];
+    (Writer::open(&opens, Config::new(channels)).unwrap(), served)
+}
+
+/// A writer of `channels` whose open gives `places()` with the index at node place 0.
+fn opened(channels: &[&str]) -> Writer {
+    let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+    let served = spawn(move || {
+        let open = opened.blocking_recv().unwrap();
+        open.opened.send(Ok((places(), 0))).unwrap();
+        open
+    });
+    let channels = channels.iter().map(|name| name.parse().unwrap()).collect();
+    let writer = Writer::open(&opens, Config::new(channels)).unwrap();
+    drop(served.join().unwrap());
+    writer
 }
 
 /// The bytes of each series of `frame`, a sorted frame.
@@ -100,22 +115,24 @@ fn a_writer_moves_between_threads() {
 }
 
 #[test]
-fn an_open_sends_its_config_and_gives_the_places_and_index_of_the_node() {
+fn an_open_sends_its_config_and_gives_its_channels_in_its_order_then_the_index() {
     let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
     let lease = Span::from_nanos(5);
     let served = spawn(move || {
         let open = opened.blocking_recv().unwrap();
-        open.opened.send(Ok((places(), 2))).unwrap();
+        open.opened.send(Ok((places(), 0))).unwrap();
         open.config
     });
     let config = Config {
-        channels: vec!["count".parse().unwrap(), "level".parse().unwrap()],
+        channels: vec!["level".parse().unwrap(), "count".parse().unwrap()],
         authority: Authority(7),
         lease: Some(lease),
     };
     let writer = Writer::open(&opens, config.clone()).unwrap();
-    assert_eq!(writer.places(), places());
-    assert_eq!(writer.index, 2);
+    let node = places();
+    let ordered = [node[2].clone(), node[1].clone(), node[0].clone()];
+    assert_eq!(writer.places(), ordered);
+    assert_eq!(writer.index(), 2);
     let sent = served.join().unwrap();
     assert_eq!(
         sent,
@@ -125,6 +142,21 @@ fn an_open_sends_its_config_and_gives_the_places_and_index_of_the_node() {
             channels: config.channels,
         }
     );
+}
+
+#[test]
+fn a_writer_that_names_the_index_gives_it_at_its_place() {
+    let writer = opened(&["count", "time"]);
+    assert_eq!(writer.places(), [places()[1].clone(), places()[0].clone()]);
+    assert_eq!(writer.index(), 1);
+}
+
+#[test]
+fn a_writer_that_names_a_channel_twice_gives_it_at_each_place() {
+    let writer = opened(&["time", "count", "time", "count"]);
+    let [time, count, _] = places().try_into().unwrap();
+    assert_eq!(writer.places(), [time.clone(), count.clone(), time, count]);
+    assert_eq!(writer.index(), 0);
 }
 
 #[test]
@@ -159,7 +191,7 @@ fn an_open_of_a_closed_client_gives_closed() {
 #[test]
 fn a_write_sends_one_sample_of_each_value_and_a_stamp_of_0_in_place_order() {
     let (mut writer, served) = writer(WAITING);
-    let values = [(2, Value::F64(1.5)), (1, Value::I64(-2))];
+    let values = [(1, Value::F64(1.5)), (0, Value::I64(-2))];
     assert_eq!(writer.write(&values), Ok(WAITING));
     assert_eq!(writer.close(), Ok(()));
     let sent = served.join().unwrap();
@@ -182,7 +214,7 @@ fn a_write_sends_one_sample_of_each_value_and_a_stamp_of_0_in_place_order() {
 #[test]
 fn a_write_with_a_value_of_the_index_sends_it_as_the_stamp_of_the_frame() {
     let (mut writer, served) = writer(WAITING);
-    let values = [(1, Value::I64(3)), (0, Value::Stamp(Stamp::from_nanos(9)))];
+    let values = [(0, Value::I64(3)), (2, Value::Stamp(Stamp::from_nanos(9)))];
     assert_eq!(writer.write(&values), Ok(WAITING));
     assert_eq!(writer.close(), Ok(()));
     let sent = served.join().unwrap();
@@ -201,11 +233,11 @@ fn a_write_with_a_value_of_the_index_sends_it_as_the_stamp_of_the_frame() {
 fn a_write_of_a_value_of_another_type_than_its_place_sends_nothing() {
     let (mut writer, served) = writer(WAITING);
     let cases = [
-        ((1, Value::F64(1.0)), Scalar::I64),
-        ((0, Value::I64(1)), Scalar::Stamp),
+        ((0, Value::F64(1.0)), Scalar::I64),
+        ((2, Value::I64(1)), Scalar::Stamp),
     ];
     for ((place, value), held) in cases {
-        let refused = writer.write(&[(2, Value::F64(2.0)), (place, value)]);
+        let refused = writer.write(&[(1, Value::F64(2.0)), (place, value)]);
         let error = Error::Value {
             place,
             scalar: value.scalar(),
@@ -213,7 +245,7 @@ fn a_write_of_a_value_of_another_type_than_its_place_sends_nothing() {
         };
         assert_eq!(refused, Err(error));
     }
-    assert_eq!(writer.write(&[(1, Value::I64(4))]), Ok(WAITING));
+    assert_eq!(writer.write(&[(0, Value::I64(4))]), Ok(WAITING));
     assert_eq!(writer.close(), Ok(()));
     let sent = served.join().unwrap();
     assert_eq!(sent.len(), 1);
@@ -221,12 +253,31 @@ fn a_write_of_a_value_of_another_type_than_its_place_sends_nothing() {
 }
 
 #[test]
-fn a_write_of_a_value_past_the_places_sends_it_for_the_layout_to_refuse() {
+fn a_call_of_a_place_past_the_places_gives_out_of_range_and_sends_nothing() {
     let (mut writer, served) = writer(WAITING);
-    assert_eq!(writer.write(&[(5, Value::U8(1))]), Ok(WAITING));
+    let past = Err(Error::Stream(program::Error::Layout(
+        frame::Error::OutOfRange {
+            entry: 3,
+            entries: 3,
+        },
+    )));
+    assert_eq!(writer.write(&[(0, Value::I64(1)), (3, Value::U8(1))]), past);
+    assert_eq!(writer.write_series(1, &[(0, &[0; 8]), (3, &[1])]), past);
+    assert_eq!(writer.write(&[(0, Value::I64(2))]), Ok(WAITING));
     assert_eq!(writer.close(), Ok(()));
     let sent = served.join().unwrap();
-    assert_eq!(sent[0].0.series, [(0, 8), (5, 1)]);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(series(&sent[0].0)[1], (1, 2_i64.to_le_bytes().to_vec()));
+}
+
+#[test]
+fn a_write_of_no_values_sends_a_frame_of_no_series() {
+    let (mut writer, served) = writer(WAITING);
+    assert_eq!(writer.write(&[]), Ok(WAITING));
+    assert_eq!(writer.close(), Ok(()));
+    let sent = served.join().unwrap();
+    assert_eq!(sent[0].0.series, []);
+    assert_eq!(sent[0].1, Time::Node);
 }
 
 #[test]
@@ -234,7 +285,7 @@ fn a_write_of_series_sends_each_series_in_place_order_with_its_stamps() {
     let (mut writer, served) = writer(WAITING);
     let stamps = [1_i64, 2].map(i64::to_le_bytes).concat();
     let counts = [5_i64, 6].map(i64::to_le_bytes).concat();
-    let series_of = [(1, counts.as_slice()), (0, stamps.as_slice())];
+    let series_of = [(2, stamps.as_slice()), (0, counts.as_slice())];
     assert_eq!(writer.write_series(2, &series_of), Ok(WAITING));
     assert_eq!(writer.close(), Ok(()));
     let sent = served.join().unwrap();
@@ -243,20 +294,6 @@ fn a_write_of_series_sends_each_series_in_place_order_with_its_stamps() {
     assert_eq!(frame.count, 2);
     assert_eq!(frame.series, [(0, 16), (1, 16)]);
     assert_eq!(series(frame), [(0, stamps), (1, counts)]);
-}
-
-#[test]
-fn a_warm_write_fills_the_frame_of_the_write_before_it() {
-    let (mut writer, served) = writer(WAITING);
-    assert_eq!(writer.write(&[(1, Value::I64(1))]), Ok(WAITING));
-    let frame = &writer.frame;
-    let held = [frame.parts.capacity(), frame.series.capacity()];
-    assert!(held.iter().all(|&held| held >= 2), "{held:?}");
-    assert!(frame.bytes.capacity() >= 16, "{}", frame.bytes.capacity());
-    assert_eq!(writer.write(&[(1, Value::I64(2))]), Ok(WAITING));
-    assert_eq!(writer.close(), Ok(()));
-    let sent = served.join().unwrap();
-    assert_eq!(series(&sent[1].0)[1], (1, 2_i64.to_le_bytes().to_vec()));
 }
 
 #[test]
@@ -279,7 +316,7 @@ fn a_write_gives_the_error_of_the_node() {
     let config = Config::new(vec!["count".parse().unwrap()]);
     let mut writer = Writer::open(&opens, config).unwrap();
     let failed = Err(Error::Stream(program::Error::Unanswered));
-    assert_eq!(writer.write(&[(1, Value::I64(1))]), failed);
+    assert_eq!(writer.write(&[(0, Value::I64(1))]), failed);
     assert_eq!(writer.close(), failed.map(drop));
     served.join().unwrap();
 }
@@ -297,9 +334,9 @@ fn each_call_of_a_writer_whose_task_ended_gives_closed() {
     });
     let config = Config::new(vec!["count".parse().unwrap()]);
     let mut writer = Writer::open(&opens, config).unwrap();
-    assert_eq!(writer.write(&[(1, Value::I64(1))]), Err(Error::Closed));
+    assert_eq!(writer.write(&[(0, Value::I64(1))]), Err(Error::Closed));
     drop(served.join().unwrap());
-    assert_eq!(writer.write(&[(1, Value::I64(1))]), Err(Error::Closed));
+    assert_eq!(writer.write(&[(0, Value::I64(1))]), Err(Error::Closed));
     assert_eq!(writer.write_series(1, &[]), Err(Error::Closed));
     assert_eq!(writer.close(), Err(Error::Closed));
 }

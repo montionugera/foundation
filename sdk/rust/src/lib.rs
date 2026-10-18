@@ -24,7 +24,9 @@ const POOL: block::Config = match block::Config::new(1 << 21) {
     Err(_) => panic!("invariant: the budget fits"),
 };
 
-/// The budget of the pool of the frames of the session's reads.
+/// The budget of the pool of the frames of the session's reads and writes. Its largest
+/// block, 57,344 bytes, bounds the bytes of one frame of
+/// [`write::Writer::write_series`].
 const FRAMES: block::Config = match block::Config::new(64 << 10) {
     Ok(config) => config,
     Err(_) => panic!("invariant: the budget fits"),
@@ -144,7 +146,10 @@ impl Client {
 
 impl Client {
     /// Opens a writer on `config.channels` at the client's node, and blocks until the
-    /// node opened it. The node must be the home of their index.
+    /// node opened it. The node must be the home of their index. Each writer holds a
+    /// stream of the session, and the node bounds the streams of a session (64 by
+    /// default, one of them the hello): past that bound, the open waits until another
+    /// writer closes or drops.
     ///
     /// # Errors
     ///
@@ -189,8 +194,8 @@ impl Thread {
     }
 }
 
-/// Why [`Client::connect`] gave no client, or why the session ended before
-/// [`Client::close`].
+/// Why [`Client::connect`] gave no client, why a call of a client or of a
+/// [`write::Writer`] failed, or why the session ended before [`Client::close`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The client's thread or its runtime cannot start.
@@ -204,7 +209,9 @@ pub enum Error {
     /// close.
     Session(program::Error),
     /// The node refused the open of a stream, or a call of a writer failed. The
-    /// session goes on.
+    /// session goes on. After `Layout`, `Unsent`, and `Pool`, nothing was sent and the
+    /// writer goes on. Each other error ended the writer, and each later call of the
+    /// writer gives it again.
     Stream(program::Error),
     /// The client's thread panicked, and the panic hook of the process got its
     /// message. Only a build where panics unwind gives it: with `panic = "abort"`, the
@@ -219,7 +226,9 @@ pub enum Error {
         /// The type of the place.
         data_type: Type,
     },
-    /// The client's session ended at [`Client::close`] or a drop of the client.
+    /// The client's session ended at [`Client::close`] or a drop of the client. In a
+    /// build where panics unwind, a panic of the client's thread also gives it, and
+    /// then [`Client::close`] gives [`Error::Panicked`].
     Closed,
 }
 
