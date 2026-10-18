@@ -51,8 +51,8 @@ pub struct Rig {
     clock: Clock,
     tasks: Tasks,
     definitions: RefCell<Vec<(Name, Definition)>>,
-    /// The status of each connector whose status channels the rig defined.
-    status: RefCell<BTreeMap<Name, Held>>,
+    /// The status channels that the rig defined, by connector.
+    held: RefCell<BTreeMap<Name, Held>>,
     /// The first key of the status channels of the next connector.
     next: Cell<u128>,
 }
@@ -112,7 +112,7 @@ impl Rig {
             tasks: config.tasks.clone(),
             supervisor: Supervisor::new(config),
             definitions: RefCell::default(),
-            status: RefCell::default(),
+            held: RefCell::default(),
             next: Cell::new(STATUS),
         }
     }
@@ -202,8 +202,8 @@ impl Rig {
             (Token::new(), Token::new(), Rc::new(Cell::new(None)));
         let reader = match self.kinds.check(kind, None, &config) {
             Ok(channels) => {
-                let run = Some(ended.clone());
-                let status = self.hold(kind, &name, channels.counts, run);
+                let status = self.hold(kind, &name, channels.counts);
+                self.track(&name, ended.clone());
                 Some(self.status(&status).await)
             }
             Err(_) => None,
@@ -240,15 +240,15 @@ impl Rig {
         cancel: &'a Token,
     ) -> supervisor::Opened<'a> {
         if let Ok(channels) = self.kinds.check(kind, None, config) {
-            self.hold(kind, &name, channels.counts, None);
+            self.hold(kind, &name, channels.counts);
         }
         self.supervisor.open(kind, name, config, cancel).await
     }
 
     /// Defines the status channels of the connector `name` of `kind` from the counts
-    /// of the kind's check, with the rig's next keys, and gives their names and keys,
-    /// the index first. When the rig holds them for `name`, it defines nothing and
-    /// gives the same names and keys, so a reader of them goes on. [`Self::supervise`] and
+    /// of the kind's check, with the rig's next keys, and gives their names, the
+    /// index first. When the rig holds them for `name`, it defines nothing and gives
+    /// the same names, so a reader of them goes on. [`Self::supervise`] and
     /// [`Self::open_connector`] define the same channels, and define nothing when
     /// the check fails. Call it first to open a reader of the status before the
     /// connector starts.
@@ -263,29 +263,17 @@ impl Rig {
         kind: &str,
         name: &Name,
         config: &Document,
-    ) -> Vec<(Name, channel::Key)> {
+    ) -> Vec<Name> {
         let checked = self.kinds.check(kind, None, config);
         let checked = checked.unwrap_or_else(|diagnostics| {
             panic!("the check of {kind} fails: {diagnostics:?}")
         });
-        self.hold(kind, name, checked.counts, None)
+        self.hold(kind, name, checked.counts)
     }
 
-    /// As [`Self::define_status`], from the `counts` of a check that passed. `run`
-    /// is cancelled once the run that the call opens ends.
-    fn hold(
-        &self,
-        kind: &str,
-        name: &Name,
-        counts: Vec<Name>,
-        run: Option<Token>,
-    ) -> Vec<(Name, channel::Key)> {
-        let ended = run.unwrap_or_else(|| {
-            let ended = Token::new();
-            ended.cancel();
-            ended
-        });
-        if let Some(held) = self.status.borrow_mut().get_mut(name) {
+    /// As [`Self::define_status`], from the `counts` of a check that passed.
+    fn hold(&self, kind: &str, name: &Name, counts: Vec<Name>) -> Vec<Name> {
+        if let Some(held) = self.held.borrow().get(name) {
             assert!(
                 held.counts == counts,
                 "the rig holds the status of {name} with the counts [{}], and the \
@@ -294,35 +282,38 @@ impl Rig {
                 join(&counts),
             );
             assert!(
-                held.ended.cancelled(),
+                held.run.as_ref().is_none_or(Token::cancelled),
                 "a run of {name} goes on: stop it before the next open of its name"
             );
-            held.ended = ended;
-            return held.channels.clone();
+            return held.names.clone();
         }
         let first = self.next.get();
         let status = create_status(name, &counts, channel::Key::from_u128(first));
-        let keys = (first..).map(channel::Key::from_u128);
-        let channels: Vec<_> = status
-            .iter()
-            .map(|(name, _)| name.clone())
-            .zip(keys)
-            .collect();
+        let names: Vec<_> = status.iter().map(|(name, _)| name.clone()).collect();
         let used = u128::try_from(status.len()).expect("invariant: a few channels");
         self.next.set(first + used);
         self.define(status);
         let held = Held {
             counts,
-            channels: channels.clone(),
-            ended,
+            names: names.clone(),
+            run: None,
         };
-        self.status.borrow_mut().insert(name.clone(), held);
-        channels
+        self.held.borrow_mut().insert(name.clone(), held);
+        names
     }
 
-    /// Opens a reader of the status `channels`.
-    async fn status(&self, channels: &[(Name, channel::Key)]) -> Reader {
-        let select = Selector::new(channels.iter().map(|(name, _)| name.as_str()));
+    /// Panics at the next open of `name` until `run` is cancelled. The rig holds
+    /// the status channels of `name`.
+    fn track(&self, name: &Name, run: Token) {
+        let mut held = self.held.borrow_mut();
+        held.get_mut(name)
+            .expect("invariant: the rig holds the name")
+            .run = Some(run);
+    }
+
+    /// Opens a reader of the status channels `names`.
+    async fn status(&self, names: &[Name]) -> Reader {
+        let select = Selector::new(names.iter().map(Name::as_str));
         let config = hub::reader::Config {
             select: select.expect("invariant: names select"),
             mode: Mode::Complete,
@@ -340,11 +331,11 @@ impl Rig {
 #[derive(Debug)]
 struct Held {
     counts: Vec<Name>,
-    /// The names and keys, the index first.
-    channels: Vec<(Name, channel::Key)>,
+    /// The names, the index first.
+    names: Vec<Name>,
     /// Cancelled once the last run that [`Rig::supervise`] started for the connector
-    /// ended.
-    ended: Token,
+    /// ends.
+    run: Option<Token>,
 }
 
 /// A connector that [`Rig::supervise`] started, and a reader of its status. A drop

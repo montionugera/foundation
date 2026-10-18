@@ -314,10 +314,8 @@ fn a_second_open_of_one_name_reuses_its_status() {
         || Table::new().with("ticks", Ticks::default()),
         |rig, _| async move {
             let (config, plant) = (Document::default(), name("plant.ticks"));
-            let held = rig.define_status("ticks", &plant, &config);
-            let first = channel::Key::from_u128(1 << 64);
-            assert_eq!(held[0], (name("plant.ticks.status.time"), first));
-            let select = Selector::new(held.iter().map(|(name, _)| name.as_str()));
+            let names = rig.define_status("ticks", &plant, &config);
+            let select = Selector::new(names.iter().map(Name::as_str));
             let mut reader = rig
                 .hub()
                 .reader(hub::reader::Config {
@@ -345,7 +343,24 @@ fn a_second_open_of_one_name_reuses_its_status() {
             cancel.cancel();
             let c = rig.open_connector("ticks", plant.clone(), &config, &cancel);
             assert_eq!(c.await.run().await.map_err(|e| e.to_string()), Ok(()));
-            assert_eq!(rig.define_status("ticks", &plant, &config), held);
+            assert_eq!(rig.define_status("ticks", &plant, &config), names);
+        },
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "a run of plant.ticks goes on: stop it before the next open of its name"
+)]
+fn a_second_open_after_define_status_while_its_run_goes_on_panics() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |rig, _| async move {
+            let (config, plant) = (Document::default(), name("plant.ticks"));
+            rig.define_status("ticks", &plant, &config);
+            let mut a = rig.supervise("ticks", plant.clone(), config.clone()).await;
+            a.until(TEN, ticking).await;
+            rig.supervise("ticks", plant, config).await;
         },
     );
 }
@@ -534,8 +549,7 @@ fn an_open_after_a_remove_of_its_status_panics() {
         || Table::new().with("ticks", Ticks::default()),
         |rig, _| async move {
             let (config, plant) = (Document::default(), name("plant.ticks"));
-            let status = rig.define_status("ticks", &plant, &config);
-            let names: Vec<_> = status.into_iter().map(|(name, _)| name).collect();
+            let names = rig.define_status("ticks", &plant, &config);
             rig.remove(&names);
             rig.supervise("ticks", plant, config).await;
         },

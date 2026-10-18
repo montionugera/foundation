@@ -203,8 +203,7 @@ pub(crate) fn writes(
     let run = sim.run_on(&node, move |node, tasks| async move {
         let rig = rig(&node, &tasks, kind, nodes, scalars).await;
         let config = config("opc.tcp://plc:4840", nodes);
-        let held = rig.define_status("opcua", &name("plant.plc"), &config);
-        let names: Vec<_> = held.into_iter().map(|(name, _)| name).collect();
+        let names = rig.define_status("opcua", &name("plant.plc"), &config);
         let mut status = status(rig.hub(), &names).await;
         let readings = Rc::new(RefCell::new(Vec::new()));
         let into = Rc::clone(&readings);
