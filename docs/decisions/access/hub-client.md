@@ -303,9 +303,10 @@
   the program sent gives `wire::hub::Error::Order { frame, next }`. So an outcome of
   another frame ends the writer with a reset of `MALFORMED` at any time of its
   arrival. An outcome that names the next frame is its outcome, also when the node
-  states it wrong: no field of the wire can tell. `Writer::write` takes no reply
-  before it sends. Key choice (f) went to `laptop.monitor`, with no objection
-  (2026-10-18T18:16:02Z,
+  states it wrong: no field of the wire can tell. The node takes `frame` from its
+  count of frame heads, not of outcomes, so an extra outcome that it sends names a
+  frame that has one. `Writer::write` takes no reply before it sends. Key choice (f)
+  went to `laptop.monitor`, with no objection (2026-10-18T18:16:02Z,
   https://github.com/synnaxlabs/foundation/issues/3217#issuecomment-6253408518).
   Decided by `laptop.architect` at 2026-10-18T18:17:20Z
   (https://github.com/synnaxlabs/foundation/issues/3217#issuecomment-6253421664),
