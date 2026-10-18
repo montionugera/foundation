@@ -31,6 +31,11 @@ mod tests;
 const SAMPLE_TYPE: Code = Code::new("opcua.sample-type");
 const LARGE_READ: Code = Code::new("opcua.large-read");
 
+/// The note of a run with no `read` block.
+const NO_READ: &str = "the connector has no `read` block, so it reads nothing. \
+                       `browse` lists the points of the server, and `import` adds a \
+                       `read` block for each.";
+
 /// The counts of the status of each connector: the samples that the home applied,
 /// the ticks that the timer skipped, the samples that a frame lost, and the values
 /// that a frame leaves out as Bad, as Uncertain, and as of another type.
@@ -48,7 +53,7 @@ pub struct Kind;
 impl kind::Kind for Kind {
     type Config = Config;
 
-    /// Reads `address`, `rate`, and one or more `read` blocks, each with the channel
+    /// Reads `address`, `rate`, and zero or more `read` blocks, each with the channel
     /// as its label and a `node_id`, and no other key or block.
     fn parse(&self, config: &Document) -> Result<Config, Vec<Diagnostic>> {
         config::parse(config)
@@ -83,6 +88,11 @@ impl kind::Kind for Kind {
     /// for the answer, then closes the connection. So a run ends within 1 s of a
     /// cancel. Call [`Context::clear_error`] once the run reaches the device: until
     /// then, the status shows the error of the last run.
+    ///
+    /// With no `read` block, the run connects, clears the error, and shows the note
+    /// that the connector reads nothing and that `browse` and `import` add reads. Then
+    /// it keeps the session and checks the connection as above until the cancel. It
+    /// writes no frame.
     ///
     /// # Errors
     ///
@@ -187,6 +197,9 @@ async fn walk(
 }
 
 async fn run(ctx: Context<Config>) -> Result<(), Error> {
+    if ctx.config().reads.is_empty() {
+        return idle(&ctx).await;
+    }
     let mut frames = Frames::open(&ctx).await?;
     let time = event::Time::mesh(ctx.clock().clone(), frames.writer.time());
     let ran = session(
@@ -197,6 +210,29 @@ async fn run(ctx: Context<Config>) -> Result<(), Error> {
         &ctx.config().address,
         ctx.cancel().wait(),
         async |client| read(&ctx, client, &mut frames).await,
+    )
+    .await?;
+    ran.unwrap_or(Ok(()))
+}
+
+/// Connects, notes [`NO_READ`], and keeps the session until the cancel. A writer
+/// refuses no channel, so this run opens none.
+async fn idle(ctx: &Context<Config>) -> Result<(), Error> {
+    // The status channels opened, so the node has mesh time and this gives at once.
+    let mesh = ctx.time().await;
+    let ran = session(
+        event::Time::mesh(ctx.clock().clone(), mesh),
+        ctx.span().clone(),
+        ctx.net().clone(),
+        &mut ctx.rng(),
+        &ctx.config().address,
+        ctx.cancel().wait(),
+        async |client| {
+            ctx.clear_error();
+            ctx.note(&NO_READ);
+            let idle = client.idle(ctx.cancel().wait()).await;
+            idle.map_err(|status| failed(client.url(), Call::Check, status))
+        },
     )
     .await?;
     ran.unwrap_or(Ok(()))
