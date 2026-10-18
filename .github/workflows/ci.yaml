@@ -404,11 +404,10 @@ jobs:
   miri-shard:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.models != 'false'"
-    name: miri shard ${{ matrix.kind }} ${{ matrix.shard }}
+    name: miri shard ${{ matrix.shard }}
     strategy:
       fail-fast: false
       matrix:
-        kind: [count, hash, slice]
         shard: [0, 1, 2, 3, 4, 5, 6, 7]
     runs-on: ubuntu-24.04
     steps:
@@ -424,7 +423,6 @@ jobs:
       - name: Miri
         env:
           SHARD: ${{ matrix.shard }}
-          MIRI_PARTITION: ${{ matrix.kind }}
         run: cargo xtask miri "$SHARD/8"
 
   # The required check. It passes when each shard passed.

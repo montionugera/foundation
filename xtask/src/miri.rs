@@ -74,8 +74,7 @@ impl Shard {
 
     /// The nextest `--partition` of this shard, whose index starts at 1.
     fn partition(self) -> String {
-        let kind = std::env::var("MIRI_PARTITION").unwrap_or(PARTITION.to_string());
-        format!("{kind}:{}/{}", self.index + 1, self.count)
+        format!("{PARTITION}:{}/{}", self.index + 1, self.count)
     }
 }
 
