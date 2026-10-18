@@ -837,6 +837,12 @@
   ends the requests that the server still holds, so the count leaves them out; a close
   of the channel on an abort, which fails each other read and the session for one
   answer; and a count in Rust or in the shim, where no seam sees chunks.
+  An abort deletes only the queued chunks of its request id, where the release deletes
+  those of each request. The copy assembles chunks by request id, so with the release
+  an abort between the chunks of another answer closes the channel. Decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3093#issuecomment-6243716532,
+  2026-10-18 00:27 UTC).
   #2934 builds the copy with `UA_ENABLE_ENCRYPTION_OPENSSL` against the `libcrypto` of
   the one `aws-lc-sys` of `Cargo.lock`, not a second crypto library. Directed by
   `laptop.architect-2`
