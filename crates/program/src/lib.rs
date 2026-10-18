@@ -221,6 +221,7 @@ impl Session {
             .await
             .map_err(|error| shared.ended.borrow().clone().unwrap_or(error))
     }
+
     /// Opens a writer on `config.channels` as the session's subject, and waits until
     /// the node opened it. The node must be the home of their index. A write takes no
     /// turn: it runs beside the requests and the reads.
@@ -235,7 +236,9 @@ impl Session {
     /// refuses, `NOT_HOME` when the node is not the home of the index, `REFUSED` for a
     /// signature that the node refuses, `BUSY` when the node has no room for the
     /// open), [`Error::Transport`], [`Error::Message`] for places that `wire` refuses
-    /// or a stream that ends before the last place, and [`Error::Pool`].
+    /// or a stream that ends before the last place, and [`Error::Pool`] when no block
+    /// of [`Config::pool`] holds the open, or the head and an end of each place of a
+    /// frame, which stops the stream.
     pub async fn writer(&self, config: write::Config) -> Result<Writer, Error> {
         let shared = &self.0.0;
         let write::Config {

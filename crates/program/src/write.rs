@@ -41,6 +41,8 @@ pub struct Writer {
     stream: Option<(Sender, Receiver)>,
     places: Vec<Place>,
     set: Arc<KeySet>,
+    /// The frame that the next write sends.
+    draft: Option<Draft>,
     /// The frames sent whole.
     sent: u64,
     /// The frames that got an outcome.
@@ -60,7 +62,7 @@ impl Writer {
     /// `OPEN_BYTES_MAX`. Gives each error of
     /// [`Session::writer`](crate::Session::writer) but [`Error::Unnamed`] and
     /// [`Error::Open`], with the error of the close in place of the error that ended
-    /// the renewal.
+    /// the renewal. Dropping the stream on `Pool` stops it.
     pub(crate) async fn open(session: Rc<Handle>, open: &Open) -> Result<Self, Error> {
         let (mut sender, mut receiver) =
             session.0.session.open(Class::Complete).await?;
@@ -72,11 +74,20 @@ impl Writer {
                     return Err(error);
                 }
             };
+        let lead = Head::LEN + places.len() * ends::LEN;
+        let largest = session.0.pool.largest();
+        if lead > largest {
+            return Err(Error::Pool(block::Error::TooLarge {
+                requested: lead,
+                largest,
+            }));
+        }
         Ok(Self {
             session,
             stream: Some((sender, receiver)),
             places,
             set,
+            draft: None,
             sent: 0,
             answered: 0,
             taken: 0,
@@ -93,28 +104,33 @@ impl Writer {
         &self.places
     }
 
-    /// A frame of the writer's key set to fill, from
-    /// [`Config::frames`](crate::Config::frames), as [`Draft::new`] takes `series`:
-    /// the entry of place `n` is `n`. Each frame holds the index series. Its range
-    /// starts at 0 samples: set the count of group 0 with [`Draft::set_count`]. It
-    /// does not wait for a block.
+    /// The draft that the next [`Writer::write`] sends, to fill: a new frame of the
+    /// writer's key set from [`Config::frames`](crate::Config::frames), as
+    /// [`Draft::new`] takes `series`. The entry of place `n` is `n`. Each frame holds
+    /// the index series. Its range starts at 0 samples: set the count of group 0 with
+    /// [`Draft::set_count`]. It replaces a draft that no write sent, and does not wait
+    /// for a block. The writer holds the draft, so no draft of another writer can
+    /// reach its write.
     ///
     /// # Errors
     ///
-    /// As [`Draft::new`]: [`frame::Error::Pool`] when the pool has no block now.
+    /// As [`Draft::new`]: [`frame::Error::Pool`] when the pool has no block now. The
+    /// writer then holds no draft.
     pub fn draft(
-        &self,
+        &mut self,
         form: Form,
         series: &[(usize, usize)],
-    ) -> Result<Draft, frame::Error> {
-        Draft::new(&self.session.0.frames, &self.set, form, series)
+    ) -> Result<&mut Draft, frame::Error> {
+        self.draft = None;
+        let draft = Draft::new(&self.session.0.frames, &self.set, form, series)?;
+        Ok(self.draft.insert(draft))
     }
 
-    /// Sends `frame`, a draft of this writer, with its stamps from `time`, and waits
-    /// for what the home did with it. A frame of [`Time::Node`] holds one sample of
-    /// each series, in the raw form, and the home writes a stamp over its index
-    /// sample: mesh time now, or 1 ns after the last stamp of this writer when now is
-    /// not after it. Behind a later stamp of another writer, the home refuses it with
+    /// Sends the writer's draft with its stamps from `time`, and waits for what the
+    /// home did with it. A frame of [`Time::Node`] holds one sample of each series,
+    /// in the raw form, and the home writes a stamp over its index sample: mesh time
+    /// now, or 1 ns after the last stamp of this writer when now is not after it.
+    /// Behind a later stamp of another writer, the home refuses it with
     /// [`Refusal::Order`]. A refused or lost frame leaves the writer open. A call
     /// dropped after it sent its frame loses only its outcome; a call dropped while it
     /// sends ends the writer.
@@ -123,15 +139,23 @@ impl Writer {
     ///
     /// [`Error::Unsent`] for a frame of no sample, or a frame of [`Time::Node`] that
     /// is encoded or holds more than one sample, with nothing sent; the writer goes
-    /// on. Else the error that ended the writer, given again at each later call: the
-    /// error that ended the renewal, or [`Error::Refused`] when the node stopped the
-    /// stream (`UNKNOWN` when a channel was removed, `NOT_HOME` when the index moved,
-    /// `FAILED` when the home failed, `MALFORMED` for a frame that breaks a rule of
-    /// the wire), [`Error::Transport`] (a reset of `Code(0)` after a call dropped
-    /// while it sent), [`Error::Reply`] for a reply that `wire` refuses or a stream
-    /// that ends early, and [`Error::Pool`] when no block of
-    /// [`Config::pool`](crate::Config::pool) holds the head and the ends.
-    pub async fn write(&mut self, time: Time, frame: Draft) -> Result<Outcome, Error> {
+    /// on. Else the error that ended the writer, given again at
+    /// each later call: the error that ended the renewal, or [`Error::Refused`] when
+    /// the node stopped the stream (`UNKNOWN` when a channel was removed, `NOT_HOME`
+    /// when the index moved, `FAILED` when the home failed, `MALFORMED` for a frame
+    /// that breaks a rule of the wire), [`Error::Transport`] (a reset of `Code(0)`
+    /// after a call dropped while it sent), and [`Error::Reply`] for a reply that
+    /// `wire` refuses or a stream that ends early.
+    ///
+    /// # Panics
+    ///
+    /// When the writer holds no draft: each write sends the draft of one call of
+    /// [`Writer::draft`].
+    pub async fn write(&mut self, time: Time) -> Result<Outcome, Error> {
+        let frame = self
+            .draft
+            .take()
+            .expect("a write sends the draft of a call of `Writer::draft`");
         self.check()?;
         let count = frame.range(0).map_or(0, |range| range.count);
         let form = frame.form();
@@ -146,7 +170,8 @@ impl Writer {
     }
 
     /// Waits until each frame that the home took before the call is on disk. Gives
-    /// at once when the home took no frame.
+    /// at once when the home took no frame. A call dropped before it gave loses
+    /// nothing: the next call takes the replies that it did not.
     ///
     /// # Errors
     ///
@@ -224,6 +249,7 @@ impl Writer {
             Time::Node => Path::Live,
         });
         let run = to_usize(head.series) * ends::LEN;
+        // The open checked that a block of the pool holds the lead.
         let mut lead = shared.alloc(Head::LEN + run).await?;
         let (bytes, rest) = lead.split_at_mut(Head::LEN);
         head.encode(bytes);

@@ -251,3 +251,26 @@
   last seq of each path, decided by `laptop.architect` at 2026-10-18T10:09:56Z
   (https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6248601265), who sent
   it to `laptop.monitor` as a key choice.
+  Amended (#2718 PR 3): `program::Session::writer` opens a `program::Writer` from a
+  `program::write::Config { authority, lease, channels }`, and waits for the places.
+  `program::write` re-exports `Outcome`, `Refusal`, and `Time` of `wire::hub::write`.
+  The writer holds its one draft: `Writer::draft` gives `&mut Draft`, and
+  `Writer::write(time)` sends it and waits for its outcome, so a draft of another
+  writer, whose key set has the same key, cannot reach it. A write with no draft
+  panics. `Error::Unnamed` refuses a config of no channel, and `Error::Unsent { count,
+  form }` a frame of no sample or a frame of `Time::Node` that is encoded or holds more
+  than one sample; each sends nothing. `Session::writer` gives `Error::Pool` when no
+  block of `Config::pool` holds the head and an end of each place, so a write waits
+  for a block and never gives `Pool`. A `write` dropped after its sends loses only its
+  outcome; one dropped inside its sends ends the writer with a reset of `Code(0)`, and
+  each later call gives that error, so no head lands in a cut body. A dropped `stored`
+  loses nothing. The plan
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6250678711) was
+  approved, with the draft held by the writer, `Pool` at the open, and the doc of a
+  dropped `stored`, by `laptop.architect` at 2026-10-18T13:53:31Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6250729056).
+  Lost: a `write::Draft` with the number of its writer and an `Error::Foreign`, which
+  adds a type of pass-through methods and an error for a case that the held draft
+  makes impossible. The same ruling moves the `os` bench of the node cost to PR 4 of
+  #2718, in place of condition 2 of
+  https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6248331209.
