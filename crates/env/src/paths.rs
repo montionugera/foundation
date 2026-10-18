@@ -111,7 +111,7 @@ impl Paths {
         }
         for given in hidden {
             let given = self.on_working(given)?;
-            let end = self.walk(&given).into_end()?;
+            let end = Walk::on_root(&*self.driver, &given).into_end()?;
             limit.hidden.push(Hidden {
                 given,
                 was: end.own,
@@ -365,7 +365,7 @@ impl Paths {
             above: dir.ancestors().skip(1).filter_map(key).collect(),
         });
         let hidden = limit.hidden.iter().map(|Hidden { given, .. }| {
-            let walk = self.walk(given);
+            let walk = Walk::on_root(&*self.driver, given);
             let deepest = |step: &Step| {
                 let up = &walk.steps[step.up?];
                 up.directory.then_some(up.own).flatten()
@@ -392,9 +392,14 @@ impl Paths {
 
     /// `path` on the resolved working directory when it is relative, less one name for
     /// each `..` at its start: the directory has no link on it, so the host takes each
-    /// such `..` by text.
+    /// such `..` by text. Gives the error of [`Driver::absolute`] for `path` as given,
+    /// which bounds its length.
     fn on_working(&self, path: &Path) -> Result<PathBuf, Error> {
-        if path.is_absolute() || path.as_os_str().is_empty() {
+        if path.as_os_str().is_empty() {
+            return Ok(PathBuf::new());
+        }
+        self.driver.absolute(path)?;
+        if path.is_absolute() {
             return Ok(path.to_owned());
         }
         let mut at = self.resolve(Path::new("."))?;
@@ -656,6 +661,9 @@ mod tests {
 
     use super::*;
 
+    /// The length of a path that the fake host refuses as given, as Linux does.
+    const MOST: usize = 4096;
+
     /// One file, at any path but one under `/none`, where each other name is a
     /// directory, other than a name that ends in `.hcl`, which is a file, and a path
     /// with a name after one, which gives `Io` 20. After a write of `loop`, the name
@@ -672,6 +680,7 @@ mod tests {
     /// write of `hop`, `/hop` is a link to `/out`. A path in `/volume` has the key of
     /// the path without `/volume`, as a second mount of `/` does. It counts its calls
     /// of `entry`, and a relative path is under its working directory, `/` at first.
+    /// `absolute` refuses a path of [`MOST`] bytes or more as given with `Io` 36.
     #[derive(Debug, Default)]
     struct One(RefCell<Vec<u8>>, Rc<Cell<usize>>, Rc<RefCell<PathBuf>>);
 
@@ -762,6 +771,9 @@ mod tests {
         }
 
         fn absolute(&self, path: &Path) -> Result<PathBuf, Error> {
+            if path.as_os_str().len() >= MOST {
+                return Err(Error::Io { code: 36 });
+            }
             Ok(Path::new("/").join(&*self.2.borrow()).join(path))
         }
 
@@ -1056,6 +1068,28 @@ mod tests {
             .map(|path| reached(&paths, path));
         let hidden = Err(Error::Hidden);
         assert_eq!(got, [hidden, hidden, Ok(()), Ok(())]);
+    }
+
+    /// The fake host bounds a path as given, and the joined path is longer.
+    #[test]
+    fn a_short_relative_hidden_path_from_a_deep_working_directory_hides() {
+        let one = One::default();
+        let deep = format!("/work/{}", "d".repeat(MOST - 10));
+        *one.2.borrow_mut() = PathBuf::from(&deep);
+        let paths = Paths::new(one)
+            .within(&["/work".into()], &["s/../k".into()])
+            .unwrap();
+        assert_eq!(reached(&paths, &format!("{deep}/k")), Err(Error::Hidden));
+        assert_eq!(reached(&paths, &format!("{deep}/s")), Ok(()));
+    }
+
+    #[test]
+    fn a_relative_hidden_path_longer_than_the_host_takes_fails_within() {
+        let one = One::default();
+        *one.2.borrow_mut() = PathBuf::from("/work/s");
+        let hidden = PathBuf::from(format!("{}k", "../".repeat(MOST / 3)));
+        let within = Paths::new(one).within(&["/".into()], &[hidden]);
+        assert_eq!(within.err(), Some(Error::Io { code: 36 }));
     }
 
     #[test]

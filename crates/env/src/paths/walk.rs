@@ -37,6 +37,22 @@ pub(super) struct Walk {
 impl Walk {
     /// The walk of `path`. A link to nothing at the last name ends at its target.
     pub(super) fn new(driver: &dyn Driver, path: &Path) -> Self {
+        Self::from(driver, path, Walker::root)
+    }
+
+    /// The walk of `path`, which is absolute, with no bound on its length: the caller
+    /// bounded the path that it came from.
+    pub(super) fn on_root(driver: &dyn Driver, path: &Path) -> Self {
+        Self::from(driver, path, |walker, path| {
+            walker.start(path, names_directory(path))
+        })
+    }
+
+    fn from<'a>(
+        driver: &'a dyn Driver,
+        path: &Path,
+        start: impl FnOnce(&mut Walker<'a>, &Path) -> Result<(), Error>,
+    ) -> Self {
         let mut walker = Walker {
             driver,
             steps: Vec::new(),
@@ -46,7 +62,7 @@ impl Walk {
             links: LINKS,
             in_file: false,
         };
-        let end = walker.run(path);
+        let end = walker.run(path, start);
         Self {
             steps: walker.steps,
             end,
@@ -109,11 +125,15 @@ struct Walker<'a> {
 }
 
 impl Walker<'_> {
-    fn run(&mut self, path: &Path) -> Result<Result<(), Error>, Error> {
+    fn run(
+        &mut self,
+        path: &Path,
+        start: impl FnOnce(&mut Self, &Path) -> Result<(), Error>,
+    ) -> Result<Result<(), Error>, Error> {
         if path.as_os_str().is_empty() {
             return Err(Error::NotFound);
         }
-        self.root(path)?;
+        start(self, path)?;
         let end = loop {
             let Some(name) = self.names.pop_front() else {
                 break Ok(());
@@ -149,6 +169,13 @@ impl Walker<'_> {
     /// Starts again at the root of the absolute path of `path`, with its names first.
     fn root(&mut self, path: &Path) -> Result<(), Error> {
         let absolute = self.driver.absolute(path)?;
+        // `std::path::absolute` drops an end `/.`, so the end comes from `path`.
+        self.start(&absolute, names_directory(path))
+    }
+
+    /// Starts again at the root of `absolute`, with its names first, and an end that
+    /// must be a directory when `directory`.
+    fn start(&mut self, absolute: &Path, directory: bool) -> Result<(), Error> {
         let root: PathBuf = absolute
             .components()
             .take_while(|part| {
@@ -165,8 +192,7 @@ impl Walker<'_> {
         });
         self.at = self.steps.len() - 1;
         self.path = root;
-        // `std::path::absolute` drops an end `/.`, so the end comes from `path`.
-        self.push(&absolute, names_directory(path));
+        self.push(absolute, directory);
         Ok(())
     }
 

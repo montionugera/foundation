@@ -4,6 +4,7 @@
 mod cases;
 
 use std::path::{Path, PathBuf};
+use std::slice;
 
 use env::paths::{Driver, Entry, Error, Found};
 
@@ -214,6 +215,43 @@ fn a_relative_hidden_path_stays_where_the_working_directory_of_within_was() {
             Ok(Found::File(b"x".to_vec()))
         )
     );
+}
+
+/// The host bounds a relative hidden path as given, not on the working directory.
+#[test]
+fn a_short_relative_hidden_path_from_a_deep_working_directory_hides() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    let mut deep = PathBuf::from("/w");
+    while deep.as_os_str().len() + 201 < 4090 {
+        deep.push("d".repeat(200));
+    }
+    deep.push("e".repeat(4089 - deep.as_os_str().len()));
+    node.make_dir(&deep.join("s"));
+    paths.write(&deep.join("k"), b"x").unwrap();
+    node.set_working_dir(&deep);
+    let hidden = PathBuf::from("s/../k");
+    let within = paths.within(slice::from_ref(&deep), slice::from_ref(&hidden));
+    let read = within.map(|within| within.read(&deep.join("k"), 1));
+    assert_eq!(read, Ok(Err(Error::Hidden)));
+}
+
+/// `within` refuses a relative hidden path as `resolve` does, before it takes off
+/// each `..` at its start.
+#[test]
+fn within_refuses_a_long_relative_hidden_path_as_resolve_does() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w/sub"));
+    paths.write(Path::new("/k"), b"x").unwrap();
+    node.set_working_dir(Path::new("/w/sub"));
+    let hidden = PathBuf::from(format!("{}k", "../".repeat(1400)));
+    let resolved = paths.resolve(&hidden).err();
+    let within = paths
+        .within(&[PathBuf::from("/")], slice::from_ref(&hidden))
+        .err();
+    let too_long = Some(Error::Io { code: 36 });
+    assert_eq!((resolved, within), (too_long, too_long));
 }
 
 /// Each call walks a relative hidden path from the working directory of `within`, so
