@@ -1,7 +1,7 @@
 use types::frame::{Path, Range};
 
+use super::part::{Next, Part};
 use super::{Error, HEAD, Head, Mode, OPENED, Open, Reply, ends};
-use crate::common::{body, rest_of_run};
 
 /// The decoder of the replies of a reader session, at the reader's node and at the
 /// program, which gets it from [`client::Reader`](crate::hub::client::Reader). It
@@ -11,18 +11,10 @@ use crate::common::{body, rest_of_run};
 pub struct Reader {
     places: u32,
     latest: bool,
+    opened: bool,
     next: Next,
     /// The seq plus the count of the last head, or the open position of the session.
     end: u64,
-}
-
-/// The message the session expects next.
-#[derive(Clone, Copy, Debug)]
-enum Next {
-    Opened,
-    Head,
-    Ends { remain: u32 },
-    Body(body::Count),
 }
 
 /// A message from the home, decoded.
@@ -76,7 +68,8 @@ impl Reader {
         Self {
             places,
             latest,
-            next: Next::Opened,
+            opened: false,
+            next: Next::Head,
             end: 0,
         }
     }
@@ -127,29 +120,13 @@ impl Reader {
     /// [`Reader::decode`] of a message, apart so that each caller inlines only the
     /// check of the end of the stream.
     fn message<'m>(&mut self, message: &'m [u8]) -> Result<FromHome<'m>, Error> {
-        let (event, next) = match self.next {
-            Next::Opened | Next::Head => self.reply(message)?,
-            Next::Ends { remain } => {
-                let ends = ends::decode(message)?;
-                let remain = rest_of_run(remain, ends.len())?;
-                let next = match (remain, ends.last_end()) {
-                    (0, Some(0)) => Next::Head,
-                    (0, Some(end)) => Next::Body(body::Count::new(body_len(end))),
-                    _ => Next::Ends { remain },
-                };
-                let last = remain == 0;
-                (FromHome::Ends { ends, last }, next)
-            }
-            Next::Body(body) => {
-                let last = self.take(body, message.len())?;
-                return Ok(FromHome::Body {
-                    bytes: message,
-                    last,
-                });
-            }
-        };
-        self.next = next;
-        Ok(event)
+        if let Next::Head = self.next {
+            return self.reply(message);
+        }
+        Ok(match self.next.decode(message)? {
+            Part::Ends { ends, last } => FromHome::Ends { ends, last },
+            Part::Body { bytes, last } => FromHome::Body { bytes, last },
+        })
     }
 
     /// Takes a body message of `len` bytes that the caller has in place, as
@@ -165,21 +142,7 @@ impl Reader {
     /// body.
     #[inline]
     pub(in crate::hub) fn received(&mut self, len: usize) -> Result<bool, Error> {
-        let Next::Body(body) = self.next else {
-            panic!("a body is due, not {:?}", self.next)
-        };
-        let remain = body.remain();
-        assert!(
-            len <= remain,
-            "a body message of {len} bytes is over the {remain} bytes left of its body"
-        );
-        self.take(body, len)
-    }
-
-    fn take(&mut self, mut body: body::Count, len: usize) -> Result<bool, Error> {
-        let last = body.take(len)?;
-        self.next = if last { Next::Head } else { Next::Body(body) };
-        Ok(last)
+        self.next.received(len)
     }
 
     /// Where in the body the next message starts, when the next message is body
@@ -187,48 +150,44 @@ impl Reader {
     #[must_use]
     #[inline]
     pub fn body(&self) -> Option<usize> {
-        match self.next {
-            Next::Body(body) => Some(body.at()),
-            Next::Opened | Next::Head | Next::Ends { .. } => None,
-        }
+        self.next.body()
     }
 
     /// Whether the reader has decoded no `Opened` yet.
     pub(in crate::hub) fn unopened(&self) -> bool {
-        matches!(self.next, Next::Opened)
+        !self.opened
     }
 
     /// The error of a stream that the home finished here: [`Error::Unfinished`] inside
     /// a body, else [`Error::Finished`].
     fn finished(&self) -> Error {
-        match self.next {
-            Next::Body(body) => Error::Unfinished {
-                remain: body.remain(),
-            },
-            Next::Opened | Next::Head | Next::Ends { .. } => Error::Finished,
+        match self.next.unfinished() {
+            Some(remain) => Error::Unfinished { remain },
+            None => Error::Finished,
         }
     }
 
-    fn reply<'m>(&mut self, message: &[u8]) -> Result<(FromHome<'m>, Next), Error> {
-        match (Reply::decode(message)?, self.next) {
-            (Reply::Opened { live }, Next::Opened) => {
+    fn reply<'m>(&mut self, message: &[u8]) -> Result<FromHome<'m>, Error> {
+        match (Reply::decode(message)?, self.opened) {
+            (Reply::Opened { live }, false) => {
+                self.opened = true;
                 self.end = live;
-                Ok((FromHome::Opened { live }, Next::Head))
+                Ok(FromHome::Opened { live })
             }
-            (Reply::Head(_), Next::Opened) => Err(Error::Unopened { kind: HEAD }),
-            (Reply::Opened { .. }, _) => Err(Error::Reopen { kind: OPENED }),
-            (Reply::Head(head), _) if head.series > self.places => Err(Error::Places {
-                series: head.series,
-                places: self.places,
-            }),
-            (Reply::Head(head), _) => {
+            (Reply::Head(_), false) => Err(Error::Unopened { kind: HEAD }),
+            (Reply::Opened { .. }, true) => Err(Error::Reopen { kind: OPENED }),
+            (Reply::Head(head), true) if head.series > self.places => {
+                Err(Error::Places {
+                    series: head.series,
+                    places: self.places,
+                })
+            }
+            (Reply::Head(head), true) => {
                 self.end = self.end_of(head)?;
-                Ok((
-                    FromHome::Head(head),
-                    Next::Ends {
-                        remain: head.series,
-                    },
-                ))
+                self.next = Next::Ends {
+                    remain: head.series,
+                };
+                Ok(FromHome::Head(head))
             }
         }
     }
@@ -256,10 +215,6 @@ fn past_max(range: Range) -> ! {
         "invariant: a decoded head's range ends past u64::MAX: {} samples from seq {}",
         range.count, range.seq
     )
-}
-
-fn body_len(end: u32) -> usize {
-    usize::try_from(end).expect("invariant: a usize holds a u32")
 }
 
 #[cfg(test)]

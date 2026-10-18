@@ -33,6 +33,7 @@ pub mod client;
 mod frames;
 mod gaps;
 mod home;
+mod part;
 mod reader;
 pub mod write;
 

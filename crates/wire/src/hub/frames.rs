@@ -4,6 +4,7 @@ use std::sync::Arc;
 use types::frame::key_set::KeySet;
 use types::frame::{Draft, Frame, Layout};
 
+use super::part::{prefix, rest, to_usize};
 use super::{Error, FromHome, Gaps, Head, Reader};
 
 /// The frames of a reader session, built from its replies from `Opened` on, at the
@@ -221,31 +222,6 @@ impl Frames {
         draft.set_seq(0, head.range.seq);
         draft.freeze(head.path)
     }
-}
-
-/// The body of `draft` from `start` on.
-fn rest(draft: &mut Draft, start: usize) -> &mut [u8] {
-    let body = draft.body_mut();
-    let len = body.len();
-    body.get_mut(start..).unwrap_or_else(|| {
-        panic!(
-            "invariant: a body that starts at {start} is inside its {len} byte draft"
-        )
-    })
-}
-
-/// The first `len` bytes of `rest`.
-fn prefix(rest: &mut [u8], len: usize) -> &mut [u8] {
-    let room = rest.len();
-    rest.get_mut(..len).unwrap_or_else(|| {
-        panic!(
-            "a body message of {len} bytes is over the {room} bytes left of its body"
-        )
-    })
-}
-
-fn to_usize(n: u32) -> usize {
-    usize::try_from(n).expect("invariant: a usize holds a u32")
 }
 
 #[cfg(test)]
