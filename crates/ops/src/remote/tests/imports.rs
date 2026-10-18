@@ -121,7 +121,7 @@ fn an_import_into_a_file_that_changed_writes_nothing() {
     solo(|fixture, mesh| async move {
         let paths = with_plant(&fixture.sim, PLANT);
         let node = create_browsing_node(&fixture, mesh);
-        let remote = Remote::with(node, Mode::Changes(paths.clone()));
+        let remote = Remote::with(node, Mode::Changes(paths.clone(), CHANGED.into()));
         let imported = remote.import(&paths, temperature()).await;
         let Err(error) = imported else {
             panic!("a changed file");
@@ -137,6 +137,25 @@ fn an_import_into_a_file_that_changed_writes_nothing() {
     });
 }
 
+/// A file that grew past the bytes of one request after the read gives
+/// `ops.file-changed` too.
+#[test]
+fn an_import_into_a_file_that_grew_too_large_gives_file_changed() {
+    solo(|fixture, mesh| async move {
+        let paths = with_plant(&fixture.sim, PLANT);
+        let node = create_browsing_node(&fixture, mesh);
+        let large = vec![b'#'; most() + 1];
+        let remote = Remote::with(node, Mode::Changes(paths.clone(), large));
+        let imported = remote.import(&paths, temperature()).await;
+        let Err(error) = imported else {
+            panic!("a changed file");
+        };
+        let message = "the file plant.hcl changed after the import read it, so the \
+                       import wrote nothing";
+        assert_eq!(shown(&error), read("ops.file-changed", message, 1));
+    });
+}
+
 /// An import whose new text is the text that it sent neither reads the file again nor
 /// writes it, so a change after the read stays.
 #[test]
@@ -144,7 +163,7 @@ fn an_import_that_adds_nothing_does_not_write() {
     solo(|fixture, mesh| async move {
         let paths = with_plant(&fixture.sim, IMPORTED);
         let node = create_browsing_node(&fixture, mesh);
-        let remote = Remote::with(node, Mode::Changes(paths.clone()));
+        let remote = Remote::with(node, Mode::Changes(paths.clone(), CHANGED.into()));
         let output = remote
             .import(&paths, temperature())
             .await

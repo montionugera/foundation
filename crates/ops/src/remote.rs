@@ -217,7 +217,8 @@ where
 ///
 /// # Errors
 ///
-/// - [`Error::FileChanged`] when the file changed after the read.
+/// - [`Error::FileChanged`] when the file changed after the read: it holds other
+///   text, holds more than the bytes of one request, is gone, or is a directory.
 /// - [`Error::Reply`] when the reply names a file that the request did not send.
 /// - [`Error::Write`] when the write fails.
 /// - Each error of [`browse`], with [`serve::import_reply`] in place of
@@ -254,10 +255,21 @@ where
     if text == sent.text {
         return Ok(output);
     }
-    if scope.read(&sent.path)? != sent.text.as_bytes() {
-        return Err(Error::FileChanged {
-            path: sent.path.clone(),
-        });
+    match scope.read(&sent.path) {
+        Ok(bytes) if bytes == sent.text.as_bytes() => {}
+        Ok(_)
+        | Err(
+            Error::LargeRequest
+            | Error::Read {
+                cause: Unread::NotFound | Unread::Directory,
+                ..
+            },
+        ) => {
+            return Err(Error::FileChanged {
+                path: sent.path.clone(),
+            });
+        }
+        Err(error) => return Err(error),
     }
     scope.write(&sent.path, text.as_bytes())?;
     Ok(output)

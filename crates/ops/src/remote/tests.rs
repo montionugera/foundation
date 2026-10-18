@@ -40,7 +40,7 @@ fn with_site(host: &sim::node::Node) -> Paths {
     paths
 }
 
-/// The text that [`Mode::Changes`] writes.
+/// The text that [`Mode::Changes`] writes in most tests.
 const CHANGED: &str = "# changed\n";
 
 /// The working directory of the host of [`with_site`].
@@ -50,8 +50,8 @@ const WORK: &str = "/work";
 enum Mode {
     /// Serves each request on the node as `@admin`.
     Serve,
-    /// Serves each request as `Serve` does, then writes [`CHANGED`] to `plant.hcl`.
-    Changes(Paths),
+    /// Serves each request as `Serve` does, then writes these bytes to `plant.hcl`.
+    Changes(Paths, Vec<u8>),
     /// Gives this reply to each request.
     Reply(Vec<u8>),
     /// Fails with [`lost`].
@@ -90,11 +90,9 @@ impl Remote {
         self.requests.set(self.requests.get() + 1);
         match &self.mode {
             Mode::Serve => Ok(serve::serve(&self.node, &name("@admin"), body).await),
-            Mode::Changes(paths) => {
+            Mode::Changes(paths, bytes) => {
                 let reply = serve::serve(&self.node, &name("@admin"), body).await;
-                paths
-                    .write(Path::new("plant.hcl"), CHANGED.as_bytes())
-                    .expect("a write");
+                paths.write(Path::new("plant.hcl"), bytes).expect("a write");
                 Ok(reply)
             }
             Mode::Reply(reply) => Ok(reply.clone()),
@@ -106,7 +104,7 @@ impl Remote {
         self.reaches.set(self.reaches.get() + 1);
         match self.mode {
             Mode::Unreached => Err(lost()),
-            Mode::Serve | Mode::Changes(_) | Mode::Reply(_) | Mode::Unsent => Ok(()),
+            Mode::Serve | Mode::Changes(..) | Mode::Reply(_) | Mode::Unsent => Ok(()),
         }
     }
 
