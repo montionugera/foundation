@@ -516,8 +516,9 @@ pub enum Error {
     /// The node finished a stream with no answer: a request with no response, or the
     /// hello stream with no challenge.
     Unanswered,
-    /// No block of [`Config::pool`] can hold a message that the session sends, or no
-    /// block of [`Config::frames`] can hold a frame of a read.
+    /// No block of [`Config::pool`] can hold a message that the session sends, or
+    /// the head and an end of each place of a writer, or no block of
+    /// [`Config::frames`] can hold a frame of a read.
     Pool(block::Error),
     /// The open of a read or a write is over `OPEN_BYTES_MAX`. Nothing was sent.
     Open {

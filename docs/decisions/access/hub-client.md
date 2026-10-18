@@ -257,7 +257,10 @@
   The writer holds its one draft: `Writer::draft` gives `&mut Draft`, and
   `Writer::write(time)` sends it and waits for its outcome, so a draft of another
   writer, whose key set has the same key, cannot reach it. A write with no draft
-  panics. `Error::Unnamed` refuses a config of no channel, and `Error::Unsent { count,
+  panics. The panic was approved by `laptop.architect` at 2026-10-18T14:13:30Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6250930232).
+  When `sdk` wraps `Writer` (#2177), its write with no draft gives an error, not this
+  panic. `Error::Unnamed` refuses a config of no channel, and `Error::Unsent { count,
   form }` a frame of no sample or a frame of `Time::Node` that is encoded or holds more
   than one sample; each sends nothing. `Session::writer` gives `Error::Pool` when no
   block of `Config::pool` holds the head and an end of each place, so a write waits
