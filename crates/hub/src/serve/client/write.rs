@@ -8,13 +8,16 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use access::proof;
+use block::Unique;
 use transport::stream::{Receiver, Sender};
-use types::frame::key_set::KeySet;
-use types::frame::{Draft, Label, Path};
+use types::channel;
+use types::frame::key_set::{Entry, KeySet};
+use types::frame::{Draft, Label, Path, Range};
+use types::hash;
 use types::name::Name;
 use types::time::{Span, Stamp};
 use wire::hub::client::write::{Open, Write};
-use wire::hub::client::{Place, Places, place};
+use wire::hub::client::{Place, Places};
 use wire::hub::write::{Due, Frames, Outcome, Refusal, Reply, Step, Time};
 
 use super::{Reserved, body, verify};
@@ -23,9 +26,17 @@ use crate::link::Session;
 use crate::serve::{Error, alloc, unless};
 use crate::writer::{self, Failure, Homed, Writer};
 
-/// The bytes that a write holds in the body budget for each channel of its open and
-/// for its index, at least what [`Frames`] holds for each place.
-const PLACE_BYTES: u64 = 16;
+/// The bytes of the block of the outcome of a frame: those of the longest outcome.
+const OUTCOME_BYTES: usize = Reply::Outcome(Outcome::Taken {
+    range: Range { seq: 0, count: 1 },
+})
+.encoded_len();
+
+/// The bytes of the block of a `Stored` reply.
+const STORED_BYTES: usize = Reply::Stored { through: 0 }.encoded_len();
+
+/// How long the last `Stored` that finds the pool full waits before it tries again.
+const RETRY: Span = Span::from_nanos(10 * Span::MILLISECOND.nanos());
 
 /// Serves the write of `subject` that `write` starts: verifies its open, opens its
 /// writer, and sends its places, then writes each frame of the program and sends its
@@ -39,15 +50,15 @@ pub(super) async fn serve(
 ) -> Result<(), Error> {
     let state = &session.state;
     let open = open(session, subject.clone(), write, receiver).await?;
-    let places =
-        u64::try_from(open.channels.len()).expect("invariant: a u64 holds a usize");
-    let _reserved = Reserved::new(state, subject.clone(), (places + 1) * PLACE_BYTES)?;
+    let ends = Frames::bytes(open.channels.len() + 1);
+    let ends = u64::try_from(ends).expect("invariant: a u64 holds a usize");
+    let _reserved = Reserved::new(state, subject.clone(), ends)?;
     let Some(writer) = here(state, subject, open, receiver).await? else {
         sender.finish()?;
         return Ok(());
     };
     start(state, sender, writer.set()).await?;
-    relay(state, writer, receiver, sender).await
+    relay(state, &session.transport, writer, receiver, sender).await
 }
 
 /// Reads, verifies, and decodes the open, and holds its body in the budget until then.
@@ -65,7 +76,7 @@ async fn open(
 
 /// Opens the writer of `open` at this node, the home of its index, or gives `None`
 /// when the program finishes first. A writer on more than one index gives
-/// [`Error::ManyIndexes`] before it opens, so it takes no control.
+/// [`Error::ManyIndexes`] before it waits for a home, so it takes no control.
 async fn here(
     state: &Rc<RefCell<State>>,
     subject: Name,
@@ -85,13 +96,12 @@ async fn here(
             Some(_) => Err(Error::Client(wire::hub::client::Error::Trailing)),
         }
     });
-    let Some(homed) = unless(program, Homed::new(state, config)).await? else {
+    let Some(homed) = unless(program, Homed::one(state, config)).await? else {
         return Ok(None);
     };
-    let homed = homed.map_err(refused)?;
-    if homed.indexes() > 1 {
+    let Some(homed) = homed.map_err(refused)? else {
         return Err(Error::ManyIndexes);
-    }
+    };
     homed.open().map(Some).map_err(refused)
 }
 
@@ -104,50 +114,57 @@ async fn start(
 ) -> Result<(), Error> {
     let places: Vec<Place> = {
         let channels = &state.borrow().channels;
-        let place = |key| Place {
-            key,
-            data_type: channels.known(key).sample(),
-            name: channels.name(key).clone(),
+        let entries = set.entries();
+        let at: hash::Map<channel::Key, usize> = entries
+            .iter()
+            .enumerate()
+            .map(|(n, entry)| (entry.key, n))
+            .collect();
+        let mut names = vec![None; entries.len()];
+        for (name, channel) in channels.iter() {
+            if let Some(&n) = at.get(&channel.key()) {
+                names[n] = Some(name);
+            }
+        }
+        let place = |(entry, name): (&Entry, Option<&Name>)| Place {
+            key: entry.key,
+            data_type: channels.known(entry.key).sample(),
+            name: name
+                .expect("invariant: the channels of a writer are defined")
+                .clone(),
         };
-        set.entries().iter().map(|entry| place(entry.key)).collect()
+        entries.iter().zip(names).map(place).collect()
     };
     let fit = "invariant: an open of a write holds fewer than u32::MAX channels";
     let head = Places {
         count: u32::try_from(places.len()).expect(fit),
         index: u32::try_from(set.groups()[0]).expect(fit),
     };
-    let mut block = alloc(state, Places::LEN)?;
-    head.encode(&mut block);
-    sender.send(block.freeze()).await?;
-    let most = sender.bytes_max().min(state.borrow().home.pool().largest());
-    for message in place::messages(&places, most) {
-        let mut block = alloc(state, message.encoded_len())?;
-        message.encode(&mut block);
-        sender.send(block.freeze()).await?;
-    }
-    Ok(())
+    super::places(state, sender, head, &places).await
 }
 
 /// Writes each frame of the program with `writer` and sends its outcome, until the
 /// program finishes the stream. Then sends `Stored` for each taken frame and finishes
-/// the stream.
+/// the stream. The block of each outcome comes before the draft of its frame, so a
+/// pool with no block for it stops the stream before the home takes the frame.
 async fn relay(
     state: &RefCell<State>,
+    session: &transport::Session,
     mut writer: Writer,
     receiver: &mut Receiver,
     sender: &mut Sender,
 ) -> Result<(), Error> {
     let mut frames = Frames::new(Arc::clone(writer.set()));
-    let index = writer.set().groups()[0];
     let mut stored = Stored::default();
     let mut stamped: Option<Stamp> = None;
+    let mut reply = None;
     loop {
         let step = match frames.due().map_err(Error::Frame)? {
             Due::Message => {
                 let Some(message) = stored.race(state, sender, receiver.recv()).await?
                 else {
                     frames.finish()?;
-                    return stored.finish(state, sender).await;
+                    return stored.finish(state, session, sender).await;
                 };
                 frames.decode(&message)?
             }
@@ -170,9 +187,13 @@ async fn relay(
                 }
             }
             Due::Draft { layout, form } => {
+                let block = alloc(state, OUTCOME_BYTES)?;
                 let drafted = layout.draft(state.borrow().home.pool(), form);
                 match drafted {
-                    Ok(draft) => frames.draft(draft),
+                    Ok(draft) => {
+                        reply = Some(block);
+                        frames.draft(draft)
+                    }
                     Err(error) => {
                         frames.skip();
                         let refusal = match error {
@@ -180,36 +201,57 @@ async fn relay(
                             block::Error::Exhausted { .. }
                             | block::Error::Refused { .. } => Refusal::Full,
                         };
-                        send(state, sender, Reply::Outcome(Outcome::Refused(refusal)))
-                            .await?;
+                        let refused = Reply::Outcome(Outcome::Refused(refusal));
+                        send(sender, block, refused).await?;
                         Step::More
                     }
                 }
             }
         };
-        let Step::Frame { mut draft, time } = step else {
+        let Step::Frame { draft, time } = step else {
             continue;
         };
-        let (label, stamp) = match time {
-            Time::Frame(path) => (Label::Path(path), None),
-            Time::Node => {
-                let stamp = next(writer.now(), stamped);
-                stamp_index(&mut draft, index, stamp);
-                (Label::Path(Path::Live), Some(stamp))
-            }
-        };
-        let outcome = outcome(writer.write(label, draft))?;
+        let block = reply
+            .take()
+            .expect("invariant: a draft comes with its block");
+        let outcome = write(&mut writer, draft, time, &mut stamped)?;
         if let Outcome::Taken { range } = outcome {
             stored.taken(state, range.seq + u64::from(range.count) - 1);
-            stamped = stamp.or(stamped);
         }
-        send(state, sender, Reply::Outcome(outcome)).await?;
+        send(sender, block, Reply::Outcome(outcome)).await?;
     }
 }
 
+/// Writes `draft`, a frame of `time`, with `writer`, and gives its outcome. A frame of
+/// [`Time::Node`] gets its stamp from [`next`], which `stamped` keeps when the home
+/// takes or loses the frame.
+fn write(
+    writer: &mut Writer,
+    mut draft: Draft,
+    time: Time,
+    stamped: &mut Option<Stamp>,
+) -> Result<Outcome, Error> {
+    let (label, stamp) = match time {
+        Time::Frame(path) => (Label::Path(path), None),
+        Time::Node => {
+            let stamp = next(writer.now(), *stamped);
+            if !stamp_index(&mut draft, writer.set().groups()[0], stamp) {
+                return Ok(Outcome::Refused(Refusal::Codec));
+            }
+            (Label::Path(Path::Live), Some(stamp))
+        }
+    };
+    let outcome = outcome(writer.write(label, draft))?;
+    // The home spends the stamp of a lost frame too.
+    if let Outcome::Taken { .. } | Outcome::Lost { .. } = outcome {
+        *stamped = stamp.or(*stamped);
+    }
+    Ok(outcome)
+}
+
 /// The stamp of a frame of [`Time::Node`] at mesh time `now`: `now`, or 1 ns after
-/// `stamped`, the last stamp of the stream that the home took, when `now` is not
-/// after it.
+/// `stamped`, the last stamp of the stream that the home took or lost, when `now` is
+/// not after it.
 fn next(now: Stamp, stamped: Option<Stamp>) -> Stamp {
     match stamped {
         Some(last) if now <= last => last + Span::from_nanos(1),
@@ -217,12 +259,17 @@ fn next(now: Stamp, stamped: Option<Stamp>) -> Stamp {
     }
 }
 
-/// Writes `stamp` over the one sample of entry `index` of `draft`.
-fn stamp_index(draft: &mut Draft, index: usize, stamp: Stamp) {
-    let sample = draft
+/// Writes `stamp` over the one sample of entry `index` of `draft`, or gives `false`
+/// when that series is not one stamp, a frame that the home refuses as `Codec`.
+fn stamp_index(draft: &mut Draft, index: usize, stamp: Stamp) -> bool {
+    let series = draft
         .series_mut(index)
         .expect("invariant: a frame of a write holds its index");
-    sample.copy_from_slice(&stamp.nanos().to_le_bytes());
+    let Ok(sample) = <&mut [u8; 8]>::try_from(series) else {
+        return false;
+    };
+    *sample = stamp.nanos().to_le_bytes();
+    true
 }
 
 /// The outcome of a frame from what the write gave, or the error that stops the
@@ -269,6 +316,8 @@ struct Stored {
     taken: Option<u64>,
     /// The commit that is due, and the last seq taken at its call.
     due: Option<(::home::Commit, u64)>,
+    /// The `through` of the last commit, while the pool had no block for its `Stored`.
+    unsent: Option<u64>,
 }
 
 impl Stored {
@@ -312,39 +361,80 @@ impl Stored {
                     committed.map_err(Error::Buffer)?;
                     self.due = None;
                     self.call(state);
-                    send(state, sender, Reply::Stored { through }).await?;
+                    self.stored(state, sender, through).await?;
                 }
             }
         }
     }
 
+    /// Sends `Stored { through }` when the pool has a block for it. Otherwise keeps
+    /// `through` for the next `Stored`, which covers it.
+    async fn stored(
+        &mut self,
+        state: &RefCell<State>,
+        sender: &mut Sender,
+        through: u64,
+    ) -> Result<(), Error> {
+        let allocated = state.borrow().alloc(STORED_BYTES);
+        let Ok(block) = allocated else {
+            self.unsent = Some(through);
+            return Ok(());
+        };
+        self.unsent = None;
+        send(sender, block, Reply::Stored { through }).await
+    }
+
     /// Waits for the commit of each taken seq, sends its `Stored`, and finishes the
-    /// stream.
+    /// stream. The last `Stored` waits for a block until `session` closes.
     async fn finish(
         mut self,
         state: &RefCell<State>,
+        session: &transport::Session,
         sender: &mut Sender,
     ) -> Result<(), Error> {
-        self.call(state);
         while let Some((commit, through)) = self.due.take() {
             commit.await.map_err(Error::Buffer)?;
             self.call(state);
-            send(state, sender, Reply::Stored { through }).await?;
+            self.stored(state, sender, through).await?;
+        }
+        if let Some(through) = self.unsent {
+            let block = wait(state, session).await?;
+            send(sender, block, Reply::Stored { through }).await?;
         }
         sender.finish()?;
         Ok(())
     }
 }
 
-/// Sends `reply` in a block from the home's pool.
-async fn send(
+/// A block for `Stored` from the home's pool. While the pool has none, tries again
+/// after [`RETRY`], as the streams give their blocks back. Gives the error of the
+/// close when `session` closes first.
+async fn wait(
     state: &RefCell<State>,
+    session: &transport::Session,
+) -> Result<Unique, Error> {
+    loop {
+        let allocated = state.borrow().alloc(STORED_BYTES);
+        if let Ok(block) = allocated {
+            return Ok(block);
+        }
+        if let Some(error) = session.ended() {
+            return Err(Error::Stream(error));
+        }
+        let time = state.borrow().time.clone();
+        time.sleep_until(time.now().monotonic + RETRY).await;
+    }
+}
+
+/// Sends `reply` in the last bytes of `block`.
+async fn send(
     sender: &mut Sender,
+    mut block: Unique,
     reply: Reply,
 ) -> Result<(), Error> {
-    let mut block = alloc(state, reply.encoded_len())?;
-    reply.encode(&mut block);
-    sender.send(block.freeze()).await?;
+    let start = block.len() - reply.encoded_len();
+    reply.encode(&mut block[start..]);
+    sender.send(block.freeze().skip(start)).await?;
     Ok(())
 }
 
@@ -363,6 +453,72 @@ pub(in crate::serve) fn refused(error: &writer::Error) -> wire::hub::client::Ref
         writer::Error::Home(::home::writer::Error::Lease { .. }) => Stop::Malformed,
         writer::Error::Empty | writer::Error::Home(::home::writer::Error::Unsynced) => {
             panic!("invariant: a write does not give {error:?}")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use types::channel::Slot;
+
+    use super::*;
+
+    /// Each outcome and error of a write at the home gives the outcome of the same
+    /// meaning.
+    #[test]
+    fn gives_the_outcome_of_each_outcome_and_error_of_the_home() {
+        let (slot, range) = (Slot::new(3), Range { seq: 4, count: 2 });
+        let stamp = Stamp::from_nanos(9);
+        let refused = |refusal| ::home::Outcome::Refused { slot, refusal };
+        let codec = ::home::Refusal::Codec {
+            channel: types::channel::Key::from_u128(2),
+            error: codec::Error::Tag { vector: 0, tag: 9 },
+        };
+        let order = ::home::order::Error::Backwards {
+            path: Path::Live,
+            before: stamp,
+            stamp,
+        };
+        let cases = [
+            (
+                ::home::Outcome::Applied { slot, range },
+                Outcome::Taken { range },
+            ),
+            (
+                ::home::Outcome::Lost { slot, range },
+                Outcome::Lost { range },
+            ),
+            (
+                refused(::home::Refusal::Waiting),
+                Outcome::Refused(Refusal::Waiting),
+            ),
+            (
+                refused(::home::Refusal::Reserved),
+                Outcome::Refused(Refusal::Reserved),
+            ),
+            (
+                refused(::home::Refusal::Expired),
+                Outcome::Refused(Refusal::Expired),
+            ),
+            (
+                refused(::home::Refusal::Order(order)),
+                Outcome::Refused(Refusal::Order),
+            ),
+            (refused(codec), Outcome::Refused(Refusal::Codec)),
+        ];
+        for (home, want) in cases {
+            assert_eq!(
+                outcome(Ok(std::slice::from_ref(&home))),
+                Ok(want),
+                "{home:?}"
+            );
+        }
+        for (error, refusal) in [
+            (::home::Error::Full, Refusal::Full),
+            (::home::Error::Large, Refusal::Large),
+        ] {
+            let got = outcome(Err(Failure::Home(error.clone())));
+            assert_eq!(got, Ok(Outcome::Refused(refusal)), "{error:?}");
         }
     }
 }

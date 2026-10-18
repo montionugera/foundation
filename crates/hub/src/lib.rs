@@ -259,7 +259,7 @@ impl Hub {
         &self,
         config: writer::Config,
     ) -> Result<Writer, writer::Error> {
-        Writer::open(&self.0, config).await
+        writer::Homed::new(&self.0, config).await?.open()
     }
 
     /// Opens a reader session on the channels that `config.select` matches, which share

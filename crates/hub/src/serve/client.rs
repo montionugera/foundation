@@ -13,7 +13,8 @@ use types::hash;
 use types::name::Name;
 
 use wire::hub::client::{
-    BODY_BYTES_MAX, Body, Challenge, First, Refusal, Response, Signed,
+    BODY_BYTES_MAX, Body, Challenge, First, Place, Places, Refusal, Response, Signed,
+    place,
 };
 
 use super::{BODIES_BYTES_MAX, Error, alloc, halves, stop};
@@ -436,6 +437,25 @@ async fn body(receiver: &mut Receiver, mut rest: Body) -> Result<Vec<u8>, Error>
     }
     rest.end()?;
     Ok(body)
+}
+
+/// Sends `head` and the run of `places` of a read or a write.
+async fn places(
+    state: &RefCell<State>,
+    sender: &mut Sender,
+    head: Places,
+    places: &[Place],
+) -> Result<(), Error> {
+    let mut block = alloc(state, Places::LEN)?;
+    head.encode(&mut block);
+    sender.send(block.freeze()).await?;
+    let most = sender.bytes_max().min(state.borrow().home.pool().largest());
+    for message in place::messages(places, most) {
+        let mut block = alloc(state, message.encoded_len())?;
+        message.encode(&mut block);
+        sender.send(block.freeze()).await?;
+    }
+    Ok(())
 }
 
 /// Verifies `signature`, of `kind`, over `bytes` with the hello that the link

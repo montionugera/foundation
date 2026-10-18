@@ -61,6 +61,7 @@ fn main() {
     holds_no_places_while_a_read_waits_for_its_home();
     holds_no_more_for_a_read_of_one_channel_whose_open_is_at_the_cap();
     holds_no_places_once_a_read_opens();
+    holds_no_names_once_a_write_opens();
     defines_no_channel_again_at_an_open_of_the_spec_applied();
     defines_no_channel_again_at_the_first_poll_of_the_spec_task();
 }
@@ -525,7 +526,7 @@ fn holds_no_places_once_a_read_opens() {
         agent.session.close(Code(0));
         node.clock().sleep(Span::MILLISECOND).await;
     };
-    sessions::run_program(4, home, program);
+    sessions::run_program(5, home, program);
     let (long, short) = measured
         .lock()
         .expect("not poisoned")
@@ -534,6 +535,84 @@ fn holds_no_places_once_a_read_opens() {
     assert!(
         long.abs_diff(short) < differ / 10,
         "a read of {WIDE} channels with long names holds {long} bytes, and one with \
+         short names holds {short}: their names differ by {differ} bytes"
+    );
+}
+
+/// The channels of each write of [`holds_no_names_once_a_write_opens`], whose open of
+/// long names fits [`OPEN_BYTES_MAX`].
+const NAMED: usize = 200;
+
+/// A write of [`NAMED`] channels with long names holds, once it has its places, about
+/// as many bytes as a write of [`NAMED`] channels with short names: at most a tenth of
+/// the bytes by which their names differ. The bytes of a write are those that its end
+/// frees, so that no growth at its open counts.
+fn holds_no_names_once_a_write_opens() {
+    let long = "x".repeat(240);
+    let longs = (0..NAMED).map(|n| name(&format!("l.{long}.{n}")));
+    let shorts = (0..NAMED).map(|n| name(&format!("s.{n}")));
+    let more: Vec<_> = longs.chain(shorts).collect();
+    let (longs, shorts) = more.split_at(NAMED);
+    let differ: usize = longs
+        .iter()
+        .zip(shorts)
+        .map(|(long, short)| long.as_str().len() - short.as_str().len())
+        .sum();
+    let [longs, shorts] = [longs, shorts]
+        .map(|names| names.iter().map(ToString::to_string).collect::<Vec<_>>());
+    let measured = Arc::new(Mutex::new(None));
+    let kept = Arc::clone(&measured);
+    let home = |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
+        let transport =
+            net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
+        let hub = common::hub_alone(&node, tasks.clone(), &more).await;
+        hub.set_rules(rules());
+        let session = transport.accept().await.expect("a session");
+        let link = hub.link(session.clone());
+        let (served, accepted) = (Arc::default(), Rc::new(Cell::new(0)));
+        let clock = node.clock();
+        tasks.spawn(serve_each(
+            &session, &link, &tasks, &clock, &served, &accepted,
+        ));
+        drop(session.closed().await);
+    };
+    let program = move |node: sim::node::Node, tasks, at| async move {
+        let mut agent = Agent::dial(&node, tasks, at, name(SUBJECT)).await;
+        agent.admit().await;
+        // Three writes of each set at once grow the pools and the state of the
+        // channels.
+        let mut firsts = Vec::new();
+        for names in [&longs, &shorts].repeat(3) {
+            firsts.push(started(&agent, names).await);
+        }
+        for mut first in firsts {
+            first.sender.finish().expect("finishes");
+            while first.recv().await.expect("receives").is_some() {}
+        }
+        let mut freed = Vec::new();
+        for names in [&longs, &shorts] {
+            let mut stream = started(&agent, names).await;
+            agent.sleep(common::SETTLE).await;
+            let open = ALLOCATOR.held();
+            stream.sender.finish().expect("finishes");
+            while stream.recv().await.expect("receives").is_some() {}
+            drop(stream);
+            agent.sleep(common::SETTLE).await;
+            freed.push(open - ALLOCATOR.held());
+        }
+        *kept.lock().expect("not poisoned") = Some((freed[0], freed[1]));
+        agent.session.close(Code(0));
+        node.clock().sleep(Span::MILLISECOND).await;
+    };
+    sessions::run_program(5, home, program);
+    let (long, short) = measured
+        .lock()
+        .expect("not poisoned")
+        .take()
+        .expect("the program measured");
+    assert!(
+        long.abs_diff(short) < differ / 10,
+        "a write of {NAMED} channels with long names holds {long} bytes, and one with \
          short names holds {short}: their names differ by {differ} bytes"
     );
 }
@@ -600,6 +679,15 @@ fn defines_no_channel_again_at_the_first_poll_of_the_spec_task() {
         drop(hub);
     })
     .expect("the run ends");
+}
+
+/// A write of `channels` by `agent`, after the program got its places. The program
+/// holds nothing of the places.
+async fn started(agent: &Agent, channels: &[String]) -> agent::Stream {
+    let channels: Vec<&str> = channels.iter().map(String::as_str).collect();
+    let mut stream = agent.write(&channels).await;
+    stream.started().await;
+    stream
 }
 
 /// A complete read of `select` by `agent`, after the program got its places, their

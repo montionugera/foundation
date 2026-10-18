@@ -37,8 +37,7 @@ impl Channel {
 pub(crate) struct Table {
     /// The key of each channel in `defined`, by name.
     names: hash::Map<Name, channel::Key>,
-    /// Each channel and its name, by key.
-    defined: hash::Map<channel::Key, (Name, Channel)>,
+    defined: hash::Map<channel::Key, Channel>,
 }
 
 /// What a [`Table::set`] removed.
@@ -72,7 +71,7 @@ impl Table {
         let mut indexes: Vec<channel::Key> = self
             .defined
             .values()
-            .filter_map(|(_, known)| index(&known.0))
+            .filter_map(|known| index(&known.0))
             .filter(|key| !after.contains(key))
             .collect();
         indexes.sort_unstable();
@@ -85,8 +84,7 @@ impl Table {
         new.sort_unstable_by_key(|&(name, _)| *name);
         for (&name, &channel) in new {
             self.names.insert(name.clone(), channel.key);
-            let defined = (name.clone(), Channel(channel.clone()));
-            self.defined.insert(channel.key, defined);
+            self.defined.insert(channel.key, Channel(channel.clone()));
         }
         Removed {
             channels: removed,
@@ -109,7 +107,7 @@ impl Table {
 
     /// The channel `key`, if it is defined.
     pub(crate) fn get(&self, key: channel::Key) -> Option<&Channel> {
-        self.defined.get(&key).map(|(_, channel)| channel)
+        self.defined.get(&key)
     }
 
     /// The channel `key`.
@@ -118,20 +116,7 @@ impl Table {
     ///
     /// When `key` is not defined: each caller holds a defined key.
     pub(crate) fn known(&self, key: channel::Key) -> &Channel {
-        &self.entry(key).1
-    }
-
-    /// The name of channel `key`.
-    ///
-    /// # Panics
-    ///
-    /// When `key` is not defined: each caller holds a defined key.
-    pub(crate) fn name(&self, key: channel::Key) -> &Name {
-        &self.entry(key).0
-    }
-
-    fn entry(&self, key: channel::Key) -> &(Name, Channel) {
-        let defined = self.defined.get(&key);
-        defined.unwrap_or_else(|| panic!("invariant: channel {key} is defined"))
+        let channel = self.defined.get(&key);
+        channel.unwrap_or_else(|| panic!("invariant: channel {key} is defined"))
     }
 }

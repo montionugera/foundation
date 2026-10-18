@@ -233,9 +233,9 @@ impl fmt::Display for Error {
             ),
             Self::Bodies { length, held } => write!(
                 f,
-                "a body of {length} bytes does not fit under the cap of \
-                 {BODIES_BYTES_MAX} bytes: the open requests, reads, and writes of \
-                 the hub hold {held} bytes"
+                "{length} bytes of a body or of the ends of a write do not fit under \
+                 the cap of {BODIES_BYTES_MAX} bytes: the open requests, reads, and \
+                 writes of the hub hold {held} bytes"
             ),
             Self::Share {
                 subject,
@@ -243,9 +243,9 @@ impl fmt::Display for Error {
                 held,
             } => write!(
                 f,
-                "a body of {length} bytes does not fit under the share of \
-                 {BODY_BYTES_MAX} bytes of subject {subject}: its open requests, \
-                 reads, and writes hold {held} bytes"
+                "{length} bytes of a body or of the ends of a write do not fit under \
+                 the share of {BODY_BYTES_MAX} bytes of subject {subject}: its open \
+                 requests, reads, and writes hold {held} bytes"
             ),
             Self::Reader(error) => {
                 write!(f, "the reader of a read did not open: {error}")

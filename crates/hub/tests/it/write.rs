@@ -30,7 +30,7 @@ use super::{
 };
 use crate::agent::{AGENT, Agent, SUBJECT, Stream, name, reset_with};
 use crate::net::{HOME, own_pool, transport};
-use crate::sessions::{Got, OTHER, recorded, rules, run_program, serve_each};
+use crate::sessions::{Got, Kept, OTHER, recorded, rules, run_program, serve_each};
 
 /// When the home of a test changes what the write meets, after the program opened it.
 const START: Span = Span::from_nanos(100_000_000);
@@ -306,6 +306,73 @@ fn refuses_a_frame_out_of_order_and_takes_the_next() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
+/// A frame of `Time::Node` that the home loses for no room in the ring spends its
+/// stamp, so the next one at the same mesh time gets 1 ns after it and is not refused
+/// as `Order`.
+#[test]
+fn stamps_an_untimed_frame_after_a_lost_untimed_frame() {
+    let home = read_session(
+        420,
+        async |_| {},
+        |mut agent| async move {
+            agent.admit().await;
+            let mut stream = write(&agent).await;
+            for n in 1.. {
+                let stamps: Vec<i64> = (n * 1000..(n + 1) * 1000).collect();
+                send(&mut stream, &stamps, &noise(&stamps)).await;
+                match outcome(&mut stream).await {
+                    Outcome::Taken { .. } => {}
+                    Outcome::Lost { .. } => break,
+                    refused @ Outcome::Refused(_) => panic!("frame {n}: {refused:?}"),
+                }
+            }
+            send_untimed(&mut stream, 10).await;
+            send_untimed(&mut stream, 20).await;
+            let got = [outcome(&mut stream).await, outcome(&mut stream).await];
+            let [
+                Outcome::Lost { range: first },
+                Outcome::Lost { range: second },
+            ] = got
+            else {
+                panic!("{got:?}");
+            };
+            assert_eq!(second.seq, first.seq + 1);
+            end(&mut stream).await;
+            finish(&mut agent).await;
+        },
+    );
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
+/// A frame whose series do not hold its count is refused as `Codec`: one of
+/// `Time::Node` whose index is not one stamp, before the node stamps it, and a timed
+/// one at the home. The stream takes the next frame.
+#[test]
+fn refuses_a_frame_whose_series_do_not_hold_its_count_as_codec() {
+    let home = read_session(
+        421,
+        async |_| {},
+        |mut agent| async move {
+            agent.admit().await;
+            let mut stream = write(&agent).await;
+            let codec = refused(wire::hub::write::Refusal::Codec);
+            for stamps in [&[][..], &[0, 0]] {
+                let (ends, body) = frame(&[(0, stamps), (1, &[10])]);
+                stream.frame(untimed(2), &ends, &body).await;
+                assert_eq!(stream.reply().await, codec, "{stamps:?}");
+            }
+            let (ends, body) = frame(&[(0, &[1, 2]), (1, &[10])]);
+            stream.frame(live(1, 2), &ends, &body).await;
+            assert_eq!(stream.reply().await, codec);
+            send_untimed(&mut stream, 20).await;
+            assert_eq!(stream.reply().await, taken(0, 1));
+            assert_eq!(end(&mut stream).await, [stored(0)]);
+            finish(&mut agent).await;
+        },
+    );
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
 /// A write whose index another writer controls is refused at each frame as `Waiting`.
 #[test]
 fn refuses_a_frame_while_another_writer_holds_control() {
@@ -378,19 +445,137 @@ fn refuses_a_frame_that_finds_no_block_and_takes_it_after_a_free() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
-/// A frame over the body of one write is refused as `Large`, and the stream takes the
-/// next frame.
+/// Fills the pool of `test` at [`START`], and frees it [`START`] later.
+async fn fill_for_a_while(test: &Test) {
+    let (clock, pool) = (test.clock.clone(), Rc::clone(&test.pool));
+    test.tasks.spawn(async move {
+        clock.sleep(START).await;
+        let blocks = super::fill(&pool);
+        clock.sleep(START).await;
+        drop(blocks);
+    });
+}
+
+/// Fills the pool of `test` when a complete reader gets the first frame of `value`, at
+/// its commit, and frees it [`START`] later. The run picks the order of the tasks that
+/// the commit wakes: in the runs of the tests, the reader runs before the write.
+async fn fill_at_commit(test: &Test) {
+    let names = ["value"];
+    let config = super::unnamed(&names, hub::reader::Mode::Complete);
+    let mut reader = test.hub.reader(config).await.expect("opens");
+    let (clock, pool) = (test.clock.clone(), Rc::clone(&test.pool));
+    test.tasks.spawn(async move {
+        let frame = reader.next().await.expect("a frame");
+        let blocks = super::fill(&pool);
+        clock.sleep(START).await;
+        drop((frame, blocks));
+    });
+}
+
+/// A frame that finds no block for its outcome stops the stream as `BUSY` before the
+/// home takes it: the next write takes its first frame at seq 0.
 #[test]
-fn refuses_a_frame_too_large_for_one_write() {
-    // Values that do not compress, so the stored frame is as large as its body.
-    let stamps: Vec<i64> = (1..=10_000).collect();
-    let values: Vec<i64> = stamps
+fn stops_a_write_whose_frame_finds_no_block_for_its_outcome_as_busy() {
+    let home = read_session(424, fill_for_a_while, |mut agent| async move {
+        agent.admit().await;
+        let mut stream = write(&agent).await;
+        agent.sleep(Span::from_nanos(START.nanos() * 3 / 2)).await;
+        send(&mut stream, &[1], &[10]).await;
+        assert_eq!(stream.recv().await, reset_with(BUSY));
+        agent.sleep(START).await;
+        let mut stream = write(&agent).await;
+        send(&mut stream, &[2], &[20]).await;
+        assert_eq!(stream.reply().await, taken(0, 1));
+        assert_eq!(end(&mut stream).await, [stored(0)]);
+        finish(&mut agent).await;
+    });
+    let busy = serve::Error::Pool(block::Error::Exhausted {
+        requested: 13,
+        available: 64,
+    });
+    assert_eq!(home.served, [Err(busy), Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
+/// A `Stored` that finds no block during the stream is not sent: the next `Stored`
+/// covers its frame, and the finish sends no other.
+#[test]
+fn skips_a_stored_that_finds_no_block_and_covers_it_with_the_next() {
+    let home = read_session(433, fill_at_commit, |mut agent| async move {
+        agent.admit().await;
+        let mut stream = write(&agent).await;
+        send(&mut stream, &[1], &[10]).await;
+        assert_eq!(stream.reply().await, taken(0, 1));
+        agent.sleep(Span::from_nanos(START.nanos() * 3 / 2)).await;
+        send(&mut stream, &[2], &[20]).await;
+        assert_eq!(stream.reply().await, taken(1, 1));
+        assert_eq!(stream.reply().await, stored(1));
+        assert_eq!(end(&mut stream).await, []);
+        finish(&mut agent).await;
+    });
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
+/// At the finish, the last `Stored` waits for a block until the pool has one.
+#[test]
+fn waits_for_a_block_for_the_last_stored_at_the_finish() {
+    let home = read_session(426, fill_at_commit, |mut agent| async move {
+        agent.admit().await;
+        let mut stream = write(&agent).await;
+        send(&mut stream, &[1], &[10]).await;
+        let sent = agent.node.clock().now();
+        assert_eq!(end(&mut stream).await, [taken(0, 1), stored(0)]);
+        let waited = agent.node.clock().now() - sent;
+        assert!(waited > Span::from_nanos(START.nanos() / 4), "{waited}");
+        finish(&mut agent).await;
+    });
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
+/// The wait for a block for the last `Stored` ends when the session closes.
+#[test]
+fn ends_the_wait_for_the_last_stored_when_the_session_closes() {
+    let home = read_session(427, fill_at_commit, |mut agent| async move {
+        agent.admit().await;
+        let mut stream = write(&agent).await;
+        send(&mut stream, &[1], &[10]).await;
+        assert_eq!(stream.reply().await, taken(0, 1));
+        stream.sender.finish().expect("finishes");
+        agent.sleep(Span::from_nanos(START.nanos() / 4)).await;
+        agent.session.close(transport::Code(0));
+        agent.sleep(START).await;
+    });
+    let closed = serve::Error::Stream(transport::Error::PeerClosed {
+        code: transport::Code(0),
+    });
+    assert_eq!(home.served, [Err(closed.clone()), Err(closed)]);
+}
+
+/// Values of `stamps` that do not compress, so a stored frame is as large as its body.
+fn noise(stamps: &[i64]) -> Vec<i64> {
+    stamps
         .iter()
         .map(|&stamp| {
             let x = stamp.wrapping_mul(6_364_136_223_846_793_005);
             x ^ (x >> 29)
         })
-        .collect();
+        .collect()
+}
+
+/// The next outcome of a write, past each `Stored`.
+async fn outcome(stream: &mut Stream) -> Outcome {
+    loop {
+        if let Reply::Outcome(outcome) = stream.reply().await {
+            return outcome;
+        }
+    }
+}
+
+/// A frame over the body of one write is refused as `Large`, and the stream takes the
+/// next frame.
+#[test]
+fn refuses_a_frame_too_large_for_one_write() {
+    let stamps: Vec<i64> = (1..=10_000).collect();
+    let values = noise(&stamps);
     let home = read_session(
         406,
         async |_| {},
@@ -520,8 +705,9 @@ fn stops_a_write_whose_ends_pass_the_share_as_busy() {
     assert_eq!(home.served[0], Err(share.clone()));
     assert_eq!(
         share.to_string(),
-        "a body of 32 bytes does not fit under the share of 16777216 bytes of subject \
-         ops.agent: its open requests, reads, and writes hold 16777185 bytes"
+        "32 bytes of a body or of the ends of a write do not fit under the share of \
+         16777216 bytes of subject ops.agent: its open requests, reads, and writes \
+         hold 16777185 bytes"
     );
 }
 
@@ -648,38 +834,90 @@ fn stops_a_write_whose_buffer_failed_as_failed() {
     assert_eq!(home.served, [Err(failed), Ok(Got::Ended)]);
 }
 
+/// A failed sync of the buffer after the program finishes its stream stops the write
+/// as `FAILED`, with no `Stored` for the frame that waits for that commit.
+#[test]
+fn stops_a_write_whose_last_commit_failed_as_failed() {
+    let ready = async |test: &Test| {
+        let (clock, node) = (test.clock.clone(), test.node.clone());
+        test.tasks.spawn(async move {
+            clock.sleep(START).await;
+            node.fail_file(FilePath::new(RING), Operation::Sync);
+        });
+    };
+    let home = read_session(422, ready, |mut agent| async move {
+        agent.admit().await;
+        let mut stream = write(&agent).await;
+        agent.sleep(START).await;
+        send(&mut stream, &[1], &[10]).await;
+        stream.sender.finish().expect("finishes");
+        assert_eq!(stream.reply().await, taken(0, 1));
+        assert_eq!(stream.recv().await, reset_with(FAILED));
+        finish(&mut agent).await;
+    });
+    let failed = serve::Error::Buffer(env::files::Error::Io {
+        path: PathBuf::from(RING),
+        operation: Operation::Sync,
+        code: 5,
+    });
+    assert_eq!(home.served, [Err(failed), Ok(Got::Ended)]);
+}
+
+/// The home of `TIME` is another node and that of `TIME_B` is this node: it serves
+/// one session of a program and records what each stream gave into `kept`.
+async fn split_home(node: sim::node::Node, tasks: env::tasks::Tasks, kept: Kept) {
+    let transport = Rc::new(transport(&node, &tasks, &own_pool(), HOME, 1 << 16));
+    let region =
+        region::open(&node, &tasks, Rc::clone(&transport), Vec::new(), channels())
+            .await;
+    let layout = buffer::Layout::new(AREA, BODY_MAX).expect("a ring");
+    let mut test =
+        Test::new(node.clone(), tasks.clone(), layout, POOL, Some(region)).await;
+    test.sync().await;
+    test.set_home(TIME, region::OTHER).await;
+    test.set_home(TIME_B, NODE).await;
+    test.hub.set_rules(rules());
+    let session = transport.accept().await.expect("a session");
+    let link = test.hub.link(session.clone());
+    let accepted = Rc::new(Cell::new(0));
+    tasks.spawn(serve_each(
+        &session,
+        &link,
+        &tasks,
+        &node.clock(),
+        &kept,
+        &accepted,
+    ));
+    session.closed().await;
+    recorded(&node, &kept, accepted.get()).await;
+}
+
+/// A write on two indexes stops as `MALFORMED` before it waits for a home, also when
+/// the home of one index is another node.
+#[test]
+fn stops_a_write_on_two_indexes_before_it_waits_for_a_home() {
+    let served = Arc::new(Mutex::new(Vec::new()));
+    let kept = Arc::clone(&served);
+    let home = move |node, tasks| split_home(node, tasks, kept);
+    run_program(423, home, |node, tasks, at| {
+        as_agent(node, tasks, at, |mut agent| async move {
+            agent.admit().await;
+            let mut stream = agent.write(&["value", "value-b"]).await;
+            assert_eq!(stream.recv().await, reset_with(MALFORMED));
+            finish(&mut agent).await;
+        })
+    });
+    let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
+    assert_eq!(served, [Err(serve::Error::ManyIndexes), Ok(Got::Ended)]);
+}
+
 /// A node serves a write only of an index whose home it is: a write whose home is
 /// another node stops with `NOT_HOME`, and takes no control there.
 #[test]
 fn stops_a_write_whose_home_is_another_node_as_not_home() {
     let served = Arc::new(Mutex::new(Vec::new()));
     let kept = Arc::clone(&served);
-    let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
-        let transport = Rc::new(transport(&node, &tasks, &own_pool(), HOME, 1 << 16));
-        let region =
-            region::open(&node, &tasks, Rc::clone(&transport), Vec::new(), channels())
-                .await;
-        let layout = buffer::Layout::new(AREA, BODY_MAX).expect("a ring");
-        let mut test =
-            Test::new(node.clone(), tasks.clone(), layout, POOL, Some(region)).await;
-        test.sync().await;
-        test.set_home(TIME, region::OTHER).await;
-        test.set_home(TIME_B, NODE).await;
-        test.hub.set_rules(rules());
-        let session = transport.accept().await.expect("a session");
-        let link = test.hub.link(session.clone());
-        let accepted = Rc::new(Cell::new(0));
-        tasks.spawn(serve_each(
-            &session,
-            &link,
-            &tasks,
-            &node.clock(),
-            &kept,
-            &accepted,
-        ));
-        session.closed().await;
-        recorded(&node, &kept, accepted.get()).await;
-    };
+    let home = move |node, tasks| split_home(node, tasks, kept);
     run_program(414, home, |node, tasks, at| {
         as_agent(node, tasks, at, |mut agent| async move {
             agent.admit().await;

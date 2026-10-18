@@ -8,14 +8,14 @@ use access::proof;
 use transport::Class;
 use transport::stream::{Receiver, Sender};
 use types::name::{Name, Selector};
-use wire::hub::client::{Mode, Open, PLACES_MAX, Place, Places, Read, Refusal, place};
+use wire::hub::client::{Mode, Open, PLACES_MAX, Place, Places, Read, Refusal};
 
 use super::{Reserved, body, verify};
 use crate::State;
 use crate::channel::Channel;
 use crate::link::Session;
 use crate::reader::{self, Home, Reader};
-use crate::serve::{Error, Layout, alloc, reply, unless};
+use crate::serve::{Error, Layout, reply, unless};
 
 /// Serves the read of `subject` that `read` starts: verifies its open, opens its
 /// reader, and sends its places, then each frame of the reader until the program
@@ -144,15 +144,7 @@ async fn start(
     places: Vec<Place>,
     live: u64,
 ) -> Result<(), Error> {
-    let mut block = alloc(state, Places::LEN)?;
-    head.encode(&mut block);
-    sender.send(block.freeze()).await?;
-    let most = sender.bytes_max().min(state.borrow().home.pool().largest());
-    for message in place::messages(&places, most) {
-        let mut block = alloc(state, message.encoded_len())?;
-        message.encode(&mut block);
-        sender.send(block.freeze()).await?;
-    }
+    super::places(state, sender, head, &places).await?;
     sender
         .send(reply(state, wire::hub::Reply::Opened { live })?)
         .await?;

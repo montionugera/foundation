@@ -216,17 +216,27 @@
   holds 16 bytes for each channel of the open and one for its index until the stream
   ends, and ends that do not fit stop with `BUSY` before the writer opens (MEMORY
   BOUNDS). A write whose channels are on more than one index stops with `MALFORMED`
-  before the home's writer opens, so a refused open takes no control at the gate. A
-  frame of `Time::Node` gets mesh time, or 1 ns after the last stamp that the node gave
-  on the stream when mesh time is not after it. After each commit, the node sends
-  `Stored { through }` with the last seq that it took before it called the commit.
-  When the program finishes, the node waits for the commit of each taken frame, sends
-  its `Stored`, and then finishes the stream, so the program learns that each taken
-  frame is on disk. A write takes a stream of any class, as the class sets only the
-  priority of its replies. The two key choices, the wait at the finish and the ends in
-  the body budget, went to `laptop.monitor`, which let them go ahead. Approved by
+  before the node waits for a home, so a refused open takes no control at the gate. A
+  frame of `Time::Node` gets mesh time, or 1 ns after the last stamp of a frame of the
+  stream that the home took or lost, when mesh time is not after it. After each
+  commit, the node sends `Stored { through }` with the last seq that it took before it
+  called the commit. When the program finishes, the node waits for the commit of each
+  taken frame, sends its `Stored`, and then finishes the stream, so the program learns
+  that each taken frame is on disk. Each frame takes a block for its outcome from the
+  home's pool before it takes a draft, and a frame that finds none stops the stream
+  with `BUSY`, so the home took no frame past the last outcome. During the stream, a
+  `Stored` that finds no block is not sent: the next one covers it, as `through` is
+  cumulative. At the finish, the last `Stored` waits for a block until the session
+  closes, so no `Stored` stops a stream. A write takes a stream of any class: at the
+  node, the class sets only the priority and the carrier of its replies. The two key
+  choices, the wait at the finish and the ends in the body budget, went to
+  `laptop.monitor` at 2026-10-18T07:43:08Z, with no objection. Approved by
   `laptop.architect` at 2026-10-18T07:45:01Z
   (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6247275705) and
   2026-10-18T08:03:14Z
   (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6247422979).
   Lost: a count cap on write streams, which bounds no bytes without the widest open.
+  The reply block and the rule for `Stored` approved by `laptop.architect` at
+  2026-10-18T08:45:22Z
+  (https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6247800403), and
+  sent to `laptop.monitor` as a key choice with that ruling.

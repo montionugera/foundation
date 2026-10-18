@@ -182,6 +182,26 @@ impl Homed {
         state: &Rc<RefCell<State>>,
         config: Config,
     ) -> Result<Self, Error> {
+        let homed = Self::most(state, config, usize::MAX).await?;
+        Ok(homed.expect("invariant: no writer has more than usize::MAX indexes"))
+    }
+
+    /// As [`Homed::new`] for a writer on one index. Gives `None`, before any wait,
+    /// when its channels resolve to more than one.
+    pub(crate) async fn one(
+        state: &Rc<RefCell<State>>,
+        config: Config,
+    ) -> Result<Option<Self>, Error> {
+        Self::most(state, config, 1).await
+    }
+
+    /// As [`Homed::new`], or `None` when the channels resolve to more than `indexes`
+    /// indexes.
+    async fn most(
+        state: &Rc<RefCell<State>>,
+        config: Config,
+        indexes: usize,
+    ) -> Result<Option<Self>, Error> {
         let Config {
             subject,
             authority,
@@ -191,16 +211,19 @@ impl Homed {
         if channels.is_empty() {
             return Err(Error::Empty);
         }
-        let indexes = |groups: &[Indexed]| -> Vec<channel::Key> {
-            groups.iter().map(|&(index, _)| index).collect()
-        };
-        // An unknown name fails before the wait. Once the node has mesh time, the wait
-        // is ready at once.
-        resolve(&mut state.borrow_mut(), &channels)?;
+        // An unknown name, or more indexes than the caller takes, fails before the
+        // wait. Once the node has mesh time, the wait is ready at once.
+        if resolve(&mut state.borrow_mut(), &channels)?.1.len() > indexes {
+            return Ok(None);
+        }
         crate::time::known(state).await;
         let (keys, groups) = loop {
             let (keys, groups) = resolve(&mut state.borrow_mut(), &channels)?;
-            let checked = indexes(&groups);
+            if groups.len() > indexes {
+                return Ok(None);
+            }
+            let checked: Vec<channel::Key> =
+                groups.iter().map(|&(index, _)| index).collect();
             let pending = Pending::new(state, keys.clone());
             // A change of a channel ends the wait at once, and the names resolve again.
             if let Ok(homed) = pending.wait(crate::homes(state, &checked)).await {
@@ -208,23 +231,18 @@ impl Homed {
                 break (keys, groups);
             }
         };
-        Ok(Self {
+        Ok(Some(Self {
             state: Rc::clone(state),
             subject,
             authority,
             lease,
             keys,
             groups,
-        })
+        }))
     }
 
-    /// The count of indexes of the writer.
-    pub(crate) fn indexes(&self) -> usize {
-        self.groups.len()
-    }
-
-    /// Opens the writer at the home. Call it with no wait after [`Homed::new`], so
-    /// that the channels and their homes are as it found them.
+    /// Opens the writer at the home. Call it with no wait after [`Homed::new`] or
+    /// [`Homed::one`], so that the channels and their homes are as it found them.
     pub(crate) fn open(self) -> Result<Writer, Error> {
         let Self {
             state,
@@ -270,14 +288,6 @@ impl Homed {
 }
 
 impl Writer {
-    /// Opens a writer on `config.channels` and their indexes.
-    pub(crate) async fn open(
-        state: &Rc<RefCell<State>>,
-        config: Config,
-    ) -> Result<Self, Error> {
-        Homed::new(state, config).await?.open()
-    }
-
     /// The key set of every frame the writer writes.
     #[must_use]
     pub fn set(&self) -> &Arc<KeySet> {
