@@ -597,7 +597,9 @@ openSSL_verifyChain(UA_CertificateGroup *cg, MemoryCertStore *ctx, STACK_OF(X509
         ASN1_TIME *notBefore = X509_get_notBefore(cert);
         ASN1_TIME *notAfter = X509_get_notAfter(cert);
         UA_EventLoop *el = cg->eventLoop;
-        int64_t now = UA_DateTime_toUnixTime(el->dateTime_now(el));
+        UA_DateTime since = el->dateTime_now(el) - UA_DATETIME_UNIX_EPOCH;
+        /* The second that holds the time, also before the epoch */
+        int64_t now = since / UA_DATETIME_SEC - (since % UA_DATETIME_SEC < 0);
         if(X509_cmp_time_posix(notBefore, now) != -1 ||
            X509_cmp_time_posix(notAfter, now) != 1)
             return (depth == 0) ? UA_STATUSCODE_BADCERTIFICATETIMEINVALID :

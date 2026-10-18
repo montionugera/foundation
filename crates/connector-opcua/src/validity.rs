@@ -2,8 +2,8 @@
 //! of the event loop of its group, never the OS clock.
 //!
 //! The fixtures in `validity/` are P-256 certificates in DER from Python
-//! `cryptography` 41.0.7. Each window is in 2001, before the OS clock, so a `Good`
-//! result comes only from the loop.
+//! `cryptography` 41.0.7. Each window but that of [`LONG`] is before the OS clock, so a
+//! `Good` result comes only from the loop.
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
@@ -22,6 +22,13 @@ const CA: &[u8] = include_bytes!("validity/ca.der");
 /// Not a CA, issued by [`CA`], valid from [`START`] to [`END`].
 const ISSUED: &[u8] = include_bytes!("validity/issued.der");
 
+/// Self-signed, not a CA, valid from [`START`] to [`LONG_END`], so the OS clock is
+/// inside its window.
+const LONG: &[u8] = include_bytes!("validity/long.der");
+
+/// Self-signed, not a CA, valid from the Unix epoch to one hour after it.
+const EPOCH: &[u8] = include_bytes!("validity/epoch.der");
+
 /// 2001-01-01, in seconds from the Unix epoch.
 const START: i64 = 978_307_200;
 
@@ -30,6 +37,9 @@ const END: i64 = 1_009_843_200;
 
 /// 2001-07-01.
 const CA_END: i64 = 993_945_600;
+
+/// 2200-01-01.
+const LONG_END: i64 = 7_258_118_400;
 
 /// 2001-03-01.
 const MARCH: i64 = 983_404_800;
@@ -81,6 +91,30 @@ fn a_leaf_is_valid_only_inside_its_window_on_the_loop() {
     for (nanos, expected) in at {
         assert_eq!(verify(LEAF, LEAF, nanos), expected, "{nanos}");
     }
+}
+
+/// A certificate past its window on the loop is refused while the OS clock is inside
+/// it.
+#[test]
+fn a_leaf_past_its_window_on_the_loop_is_refused_inside_it_on_the_os_clock() {
+    assert_eq!(
+        verify(LONG, LONG, LONG_END * SECOND),
+        "BadCertificateTimeInvalid"
+    );
+}
+
+/// A wall time less than a second before the Unix epoch is in the second before it, so
+/// it is before `notBefore` of [`EPOCH`].
+#[test]
+fn a_wall_just_before_the_epoch_is_before_a_window_from_the_epoch() {
+    for nanos in [-SECOND - 1, -SECOND + 1, -1] {
+        assert_eq!(
+            verify(EPOCH, EPOCH, nanos),
+            "BadCertificateTimeInvalid",
+            "{nanos}"
+        );
+    }
+    assert_eq!(verify(EPOCH, EPOCH, 0), "Good");
 }
 
 /// An issuer outside its window gives its own code, while its leaf is inside.
