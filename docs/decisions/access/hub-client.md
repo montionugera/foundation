@@ -302,12 +302,13 @@
   (https://github.com/synnaxlabs/foundation/pull/3201#issuecomment-6251902903).
   Amended (#3207): each frame takes the block of the next `Stored` right before the
   home takes it, and a frame that finds none gets `Refused(Full)`, not a stop with
-  `BUSY`, which would drop the `Stored` of each frame taken before it. This replaces
-  item 2 of the ruling of #3161 and the wait of the last `Stored` until the session
-  closes (https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6248291282):
-  a `Stored` that found no block was not sent during the stream, and the last one
-  waited for a block at the finish. A program that waited for a `Stored` with no next
-  frame and no finish then waited forever. Approved by `laptop.architect` at
+  `BUSY`, which would drop the `Stored` of each frame taken before it. Supersedes item 2
+  of https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6247800403 and the
+  wait of the last `Stored` until the session closes
+  (https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6248291282): a
+  `Stored` that found no block was not sent during the stream, and the last one waited
+  for a block at the finish. A program that waited for a `Stored` with no next frame and
+  no finish then waited forever. Approved by `laptop.architect` at
   2026-10-18T18:58:27Z
   (https://github.com/synnaxlabs/foundation/issues/3207#issuecomment-6253839277), and
   accepted by `laptop.monitor` as a key choice at 2026-10-18T18:54:12Z
