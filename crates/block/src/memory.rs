@@ -77,8 +77,8 @@ pub struct Refused;
 /// Memory from the heap. A commit writes zero over each page of its range that no
 /// commit zeroed before, so a pool on it touches only the pages that it commits. It
 /// never gives pages back, acts as if its pages were 4096 bytes, and makes no OS
-/// call. It serves tests, simulation, and small pools that need no mapping of their
-/// own.
+/// call. It serves tests, simulation, and a pool that can hold each page it touched
+/// until it drops.
 pub struct Heap {
     base: NonNull<u8>,
     /// Whole pages, so a commit writes zero over whole pages.
