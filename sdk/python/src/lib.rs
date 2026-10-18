@@ -176,9 +176,12 @@ fn bytes(name: &str, value: &[u8]) -> PyResult<[u8; 32]> {
 fn error(error: &sdk::Error) -> PyErr {
     let text = error.to_string();
     match error {
-        sdk::Error::Thread { .. } => PyRuntimeError::new_err(text),
+        sdk::Error::Thread { .. } | sdk::Error::Closed => PyRuntimeError::new_err(text),
         sdk::Error::Bind(_) => PyOSError::new_err(text),
-        sdk::Error::Session(_) => PyConnectionError::new_err(text),
+        sdk::Error::Session(_) | sdk::Error::Stream(_) => {
+            PyConnectionError::new_err(text)
+        }
         sdk::Error::Panicked => PanicException::new_err(text),
+        sdk::Error::Value { .. } => PyTypeError::new_err(text),
     }
 }

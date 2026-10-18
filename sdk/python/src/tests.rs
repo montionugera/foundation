@@ -188,6 +188,21 @@ fn error_raises_the_class_and_text_of_each_variant() {
             "PanicException",
             "the client thread panicked",
         ),
+        (
+            sdk::Error::Stream(program::Error::Unanswered),
+            "ConnectionError",
+            "the node finished a stream with no answer",
+        ),
+        (
+            sdk::Error::Value {
+                place: 1,
+                scalar: types::sample::Scalar::F64,
+                data_type: types::sample::Type::Scalar(types::sample::Scalar::I64),
+            },
+            "TypeError",
+            "place 1 holds i64, not f64",
+        ),
+        (sdk::Error::Closed, "RuntimeError", "the client is closed"),
     ];
     Python::initialize();
     Python::attach(|py| {
