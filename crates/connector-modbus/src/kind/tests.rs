@@ -944,6 +944,13 @@ fn reads_again_in_order_after_the_device_resets_or_closes_its_stream() {
         );
         let frames = u64::try_from(record.frames.len()).expect("a few");
         assert_eq!(record.last("in"), frames, "seed {seed}");
+        let running = record
+            .statuses
+            .iter()
+            .rev()
+            .find(|status| status.state == connector::status::State::Running);
+        let running = running.expect("a Running status");
+        assert_eq!(running.error, None, "seed {seed}: {running:?}");
     }
 }
 

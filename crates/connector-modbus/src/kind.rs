@@ -83,6 +83,7 @@ impl kind::Kind for Kind {
             return Ok(());
         };
         let (mut client, remote) = client?;
+        ctx.clear_error();
         let mut values = read::Values::new(config.reads.len());
         let missed = ctx.count("missed");
         let mut timer = pace::Timer::new(ctx.clock(), config.rate);
