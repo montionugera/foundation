@@ -355,10 +355,13 @@ impl Paths {
             Err(e) => Err(e),
         };
         let at = at.unwrap_or_else(|e| panic!("{} gave {e:?}", path.display()));
-        let inode = self.inode();
-        self.entries
-            .entry((node, at.clone()))
-            .or_insert((inode, Entry::Directory));
+        // `/` is inode 0 and has no entry.
+        if at != Path::new("/") {
+            let inode = self.inode();
+            self.entries
+                .entry((node, at.clone()))
+                .or_insert((inode, Entry::Directory));
+        }
         at.join(name)
     }
 

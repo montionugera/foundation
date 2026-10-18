@@ -961,3 +961,18 @@ fn a_relative_home_panics() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     node.set_home(Path::new("home"));
 }
+
+/// `/` is inode 0, also after a call makes a directory under it.
+#[test]
+fn a_dot_dot_reaches_the_root_from_a_directory_under_it() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/work"));
+    node.set_working_dir(Path::new("/work"));
+    node.make_dir(Path::new("/out"));
+    let paths = node.paths();
+    paths.write(Path::new("/out/x.hcl"), b"").unwrap();
+    assert_eq!(
+        paths.resolve(Path::new("../out/x.hcl")),
+        Ok(PathBuf::from("/out/x.hcl"))
+    );
+}
