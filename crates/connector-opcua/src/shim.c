@@ -36,7 +36,7 @@ UA_Int64 UA_DateTime_localTimeUtcOffset(void) { return 0; }
 
 /* The functions of `src/log.rs`. Each takes the `length` bytes of a line at `line`,
  * and `connector_opcua_die` does not return. */
-void connector_opcua_put_line(void *span, UA_LogLevel level, UA_LogCategory category,
+void connector_opcua_put_line(void *span, bool severe, const char *category,
                               const char *line, size_t length);
 void connector_opcua_die(const char *line, size_t length);
 
@@ -441,15 +441,37 @@ static void el_remove_delayed(UA_EventLoop *el, UA_DelayedCallback *dc) {
     }
 }
 
+/* The name of `category`, or NULL for a value that `UA_LogCategory` does not name.
+ * The switch has no default, so a category that the copy adds fails the build. */
+static const char *category_name(UA_LogCategory category) {
+    switch(category) {
+    case UA_LOGCATEGORY_NETWORK: return "network";
+    case UA_LOGCATEGORY_SECURECHANNEL: return "securechannel";
+    case UA_LOGCATEGORY_SESSION: return "session";
+    case UA_LOGCATEGORY_SERVER: return "server";
+    case UA_LOGCATEGORY_CLIENT: return "client";
+    case UA_LOGCATEGORY_APPLICATION: return "application";
+    case UA_LOGCATEGORY_SECURITY: return "security";
+    case UA_LOGCATEGORY_EVENTLOOP: return "eventloop";
+    case UA_LOGCATEGORY_PUBSUB: return "pubsub";
+    case UA_LOGCATEGORY_DISCOVERY: return "discovery";
+    }
+    return NULL;
+}
+
 /* Gives each message of level warning and up to `connector_opcua_put_line` with
- * `context`, the span of the loop. It allocates nothing. */
+ * `context`, the span of the loop: severe for an error or a fatal message. It
+ * allocates nothing. */
 static void log_message(void *context, UA_LogLevel level, UA_LogCategory category,
                         const char *msg, va_list args) {
     if(level < UA_LOGLEVEL_WARNING)
         return;
+    const char *name = category_name(category);
+    if(!name)
+        die("logged in category %d", (int)category);
     char line[LINE_BYTES];
     size_t length = format_line(line, msg, args);
-    connector_opcua_put_line(context, level, category, line, length);
+    connector_opcua_put_line(context, level >= UA_LOGLEVEL_ERROR, name, line, length);
 }
 
 /* Gives a fresh loop whose monotonic time is `now(time)`, whose wall time is

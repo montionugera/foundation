@@ -4,57 +4,37 @@
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 use std::borrow::Cow;
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{CStr, c_char, c_void};
 
-/// The names of the `UA_LogCategory` values of the copy, in order.
-const CATEGORIES: [&str; 10] = [
-    "network",
-    "securechannel",
-    "session",
-    "server",
-    "client",
-    "application",
-    "security",
-    "eventloop",
-    "pubsub",
-    "discovery",
-];
-
-/// Writes the `length` bytes at `line`, a message of `level` and `category` of the
-/// logger of a loop, as one event of target `open62541` whose parent is `span`: WARN
-/// for a warning, ERROR for an error or a fatal message. Each byte sequence that is not
-/// UTF-8 becomes U+FFFD.
-///
-/// # Panics
-///
-/// On a level below warning or past fatal, or a category that the copy does not have.
-/// The panic aborts the process.
+/// Writes the `length` bytes at `line`, a message of the logger of a loop in
+/// `category`, as one event of target `open62541` whose parent is `span`: ERROR when
+/// `severe`, else WARN. Each byte sequence that is not UTF-8 becomes U+FFFD.
 ///
 /// # Safety
 ///
-/// `span` points at a live `tracing::Span`, and `line` at `length` bytes.
+/// `span` points at a live `tracing::Span`, `category` at a NUL-terminated name in
+/// ASCII, and `line` at `length` bytes.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn connector_opcua_put_line(
     span: *const c_void,
-    level: c_int,
-    category: c_int,
+    severe: bool,
+    category: *const c_char,
     line: *const c_char,
     length: usize,
 ) {
     // SAFETY: the caller keeps the span live.
     let span = unsafe { &*span.cast::<tracing::Span>() };
+    // SAFETY: the caller gives a NUL-terminated name.
+    let category = unsafe { CStr::from_ptr(category) };
+    let category = category
+        .to_str()
+        .expect("the shim names a category in ASCII");
     // SAFETY: the caller gives `length` bytes at `line`.
     let text = unsafe { text(line, length) };
-    let category = usize::try_from(category)
-        .ok()
-        .and_then(|category| CATEGORIES.get(category))
-        .unwrap_or_else(|| panic!("open62541 logged in category {category}"));
-    match level {
-        400 => tracing::warn!(target: "open62541", parent: span, category, "{text}"),
-        500 | 600 => {
-            tracing::error!(target: "open62541", parent: span, category, "{text}");
-        }
-        _ => panic!("open62541 logged at level {level}"),
+    if severe {
+        tracing::error!(target: "open62541", parent: span, category, "{text}");
+    } else {
+        tracing::warn!(target: "open62541", parent: span, category, "{text}");
     }
 }
 
