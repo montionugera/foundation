@@ -3319,8 +3319,8 @@ mod tests {
         )
     }
 
-    /// As [`tally_logged`], with the events of `target`, on a sim of `config`, where the
-    /// hub removes the status channels at `removed`.
+    /// As [`tally_logged`], with the events of `target`, on a sim of `config`, where
+    /// the hub removes the status channels at `removed`.
     fn tally_logged_on(
         config: sim::Config,
         target: &'static str,

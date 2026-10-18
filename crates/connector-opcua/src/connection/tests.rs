@@ -437,8 +437,8 @@ impl Network {
         Self { sim, local, peer }
     }
 
-    /// Runs `body` on the local node as `Sim::run_on` does, with the default dispatch of
-    /// the caller in each poll: a thread of the sim has its own.
+    /// Runs `body` on the local node as `Sim::run_on` does, with the default dispatch
+    /// of the caller in each poll: a thread of the sim has its own.
     ///
     /// # Panics
     ///
@@ -1850,10 +1850,13 @@ fn warnings(test: fn()) -> Vec<String> {
     capture.lines()
 }
 
+/// The text of the warning of a close past [`CLOSES`], after the connection.
+const DROPS: &str = "more than 100 streams close, so it drops the oldest";
+
 /// The warnings of `test` that a close past [`CLOSES`] gives.
 fn dropped(test: fn()) -> Vec<String> {
     let mut lines = warnings(test);
-    lines.retain(|line| line.contains("streams close"));
+    lines.retain(|line| line.contains(DROPS));
     lines
 }
 
@@ -3361,9 +3364,7 @@ fn closes_past_the_bound() {
 #[test]
 fn a_close_past_the_bound_drops_the_oldest_closing_stream() {
     let expected: Vec<String> = (2..=102)
-        .map(|id| {
-            format!("WARN connection {id}: more than 100 streams close, so it drops the oldest")
-        })
+        .map(|id| format!("WARN connection {id}: {DROPS}"))
         .collect();
     assert_eq!(dropped(closes_past_the_bound), expected);
 }
@@ -3429,7 +3430,7 @@ fn closes_at_one_instant() {
 fn a_close_past_the_bound_drops_the_first_to_close_at_one_instant() {
     assert_eq!(
         dropped(closes_at_one_instant),
-        ["WARN connection 102: more than 100 streams close, so it drops the oldest"]
+        [format!("WARN connection 102: {DROPS}")]
     );
 }
 

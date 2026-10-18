@@ -1015,8 +1015,8 @@ fn an_error_goes_to_the_log_with_the_span_of_the_loop() {
     assert_eq!(
         logged(send_with_no_channel),
         [concat!(
-            r#"ERROR SecureChannel must be connected to send request connector="press" "#,
-            r#"kind="opcua" category="client""#
+            "ERROR SecureChannel must be connected to send request ",
+            r#"connector="press" kind="opcua" category="client""#
         )]
     );
 }

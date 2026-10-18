@@ -194,7 +194,8 @@ async fn run(ctx: Context<Config>) -> Result<(), Error> {
 }
 
 /// Connects to `address` with `time`, `span`, `net`, and `rng`, as [`Client::connect`]
-/// does, gives the client to `work`, and then closes the session. `None` when `until` ends before the connect.
+/// does, gives the client to `work`, and then closes the session. `None` when `until`
+/// ends before the connect.
 ///
 /// # Errors
 ///

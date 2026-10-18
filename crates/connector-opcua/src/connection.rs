@@ -87,8 +87,9 @@ impl Manager {
         Self::make(time, span, net, None, rng)
     }
 
-    /// As [`Manager::new`] with no span, and the manager also accepts on a listener that
-    /// it binds on `local`, with a queue of `backlog` streams, where a server finds it.
+    /// As [`Manager::new`] with no span, and the manager also accepts on a listener
+    /// that it binds on `local`, with a queue of `backlog` streams, where a server
+    /// finds it.
     ///
     /// # Errors
     ///
