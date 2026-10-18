@@ -16,12 +16,15 @@
     or a defect that its issue fixes. A test whose value on the OS is known asserts it
     with a `cfg` on its expected value. The PR that closes an issue removes each item
     that names only that issue, and removes the issue from an item that names others.
-    The lists only shrink, other than this: a new crate enters a list, and a new gate
-    enters the `gates` list of an OS, only with the open issues that build on that OS
-    the `os` items that its code needs. The review checks that each such issue builds
-    such an item. A crate item that leaves a list, with one `tests` item for each of its
-    tests that still fails, each with an open issue, is a shrink. The ONE NODE milestone
-    does not close while a list holds a crate, a test, or a gate.
+    The lists only shrink, other than this: a new crate enters a list, a new gate
+    enters the `gates` list of an OS, and an item gains an issue once the code of its
+    crate needs another `os` item, each only with the open issues that build on that OS
+    the `os` items that its code needs (`laptop.director`, 2026-10-18T20:47:36Z,
+    https://github.com/synnaxlabs/foundation/pull/3260#issuecomment-6254960151). The
+    review checks that each such issue builds such an item. A crate item that leaves a
+    list, with one `tests` item for each of its tests that still fails, each with an
+    open issue, is a shrink. The ONE NODE milestone does not close while a list holds a
+    crate, a test, or a gate.
   - A test skips an OS by an attribute only in a case of `docs/claude/testing.md`, "No
     `#[ignore]`": the OS does not have the behavior, no test can fix its value there, or
     its test needs an item of one OS to cause the case. Its reason is `only <OS>`, or
