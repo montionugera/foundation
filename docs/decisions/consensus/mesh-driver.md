@@ -412,3 +412,32 @@
   https://github.com/synnaxlabs/foundation/issues/2749, and the quorum and the open only
   at 2026-10-15T21:52:37Z:
   https://github.com/synnaxlabs/foundation/pull/2755#issuecomment-6203047812.
+  Amended (2026-10-18, #2283): `Mesh::set_addresses` proposes a `Change::Card` of the
+  member of this node through `attempt` and `settle`, as `set_home` does. A member that
+  is not a voter gets `Error::NoVote`, as `set_home` gives, because a leader sends
+  entries only to the nodes of its configurations, so such a member applies no entry
+  after its join (`laptop.architect`, 2026-10-18T05:35:52Z:
+  https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6246157119). The
+  forward rule waits for B2 of #2283 (#3116, which waits on #3140): a member that is
+  not a voter forwards its card, the node that takes a forwarded change takes a
+  `Change::Card` from a peer that is not a voter when the card's member has the public
+  key that the transport proves for that peer, and each other change from such a peer
+  stays `Error::PeerNotVoter`. A member that knows no leader forwards to a voter of its
+  configuration, and follows its `NotLeader` answer. B2 also ends the `NoVote` of
+  `set_addresses`. Until B2, a `Change::Card` from a peer that is not a voter gets
+  `Error::PeerNotVoter` (item 3 of
+  https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245196820, as
+  6246157119 corrects it). The version of the card is above the held one and above
+  each version that this node signed before. The mesh keeps the last version that it
+  signed in the file `card` of its directory, synced before the proposal: two slots of
+  one sector, each with a check, and a write goes to the slot of the older version, so
+  a torn write keeps the newest. Else a node that stops after the commit of its card
+  and before its own apply proposes the held version at its next start, each node
+  refuses it, and the leader dials the stale card (`laptop.architect`,
+  2026-10-18T03:29:11Z, item 4 of 6245196820). A node proposes at most one
+  `Change::Card` of each member each minute, by `Config::clock`, for a forwarded change
+  and for a local call. It counts a card when it proposes it, in memory, and refuses
+  another before the log: a forward gets stream code 18, and a local call gets
+  `Error::Soon`. So such a card never gets into the log (decided by `laptop.monitor`,
+  2026-10-18T03:32:43Z:
+  https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245224489).
