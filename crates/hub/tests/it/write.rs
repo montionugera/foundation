@@ -633,7 +633,9 @@ fn skips_a_stored_that_finds_no_block_and_covers_it_with_the_next() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
-/// At the finish, the last `Stored` waits for a block until the pool has one.
+/// At the finish, the last `Stored` waits for a block until the pool has one, and
+/// tries again each 10 ms: it comes less than 20 ms after the pool frees, [`START`]
+/// after the commit.
 #[test]
 fn waits_for_a_block_for_the_last_stored_at_the_finish() {
     let home = read_session(426, fill_at_commit, |mut agent| async move {
@@ -643,7 +645,9 @@ fn waits_for_a_block_for_the_last_stored_at_the_finish() {
         let sent = agent.node.clock().now();
         assert_eq!(end(&mut stream).await, [taken(0, 1), stored(0)]);
         let waited = agent.node.clock().now() - sent;
-        assert!(waited > Span::from_nanos(START.nanos() / 4), "{waited}");
+        assert!(waited > START, "{waited}");
+        let late = Span::from_nanos(START.nanos() + 20_000_000);
+        assert!(waited < late, "{waited}");
         finish(&mut agent).await;
     });
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
