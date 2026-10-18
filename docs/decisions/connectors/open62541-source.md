@@ -979,4 +979,9 @@
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247742342,
   2026-10-18 08:40 UTC). 1d meets the certificate part of #1992: each loop of a secure
   test connection runs on the wall time that its test gives, and a test moves each side
-  past the `notAfter` of the certificate of the other side.
+  past the `notAfter` of the certificate of the other side. A server refuses an expired
+  client certificate with `BadCertificateTimeInvalid`, the status that it sends, and 1d
+  has no test of a switch of the certificate, which no client config reaches in 1.5.9:
+  OK of `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247943704,
+  2026-10-18 08:56 UTC).
