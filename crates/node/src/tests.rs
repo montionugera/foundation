@@ -8458,6 +8458,13 @@ fn each_kind_runs_its_conformance_suite() {
             "[[test]]\nname = \"conformance\"\n\
              path = \"../../oracles/conformance/connector/{name}/main.rs\"\n"
         );
-        assert!(manifest.contains(&entry), "{name} runs no suite");
+        let Some((_, rest)) = manifest.split_once(&entry) else {
+            panic!("{name} runs no suite");
+        };
+        let keys = rest.lines().take_while(|line| !line.is_empty());
+        // Only the features that CI turns on, never `test = false`.
+        for key in keys {
+            assert!(key.starts_with("required-features = "), "{name}: {key}");
+        }
     }
 }
