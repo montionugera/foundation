@@ -198,6 +198,7 @@ mod tests {
             "g: |+\n",
             "  'h\n",
             "[i]: j\n",
+            "k: -'l\n",
         );
         assert_eq!(texts(text), text.lines().collect::<Vec<_>>());
     }
