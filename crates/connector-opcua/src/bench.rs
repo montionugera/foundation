@@ -489,7 +489,7 @@ mod tests {
     use sim::{Sim, node};
     use types::time::Span;
 
-    use super::{Client, Manager};
+    use super::{Client, Log, Manager};
     use crate::client::Nodes;
     use crate::ffi;
     use crate::node::{Key, Node};
@@ -947,5 +947,28 @@ mod tests {
             format!("{client:?}"),
             "Client { next: Some(Monotonic(3601000000000)), .. }"
         );
+    }
+
+    #[test]
+    fn a_warning_goes_to_target_open62541_under_the_span_of_the_log() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let (capture, dispatch) = connector::testing::Capture::new("open62541");
+        tracing::dispatcher::with_default(&dispatch, || {
+            let span = tracing::error_span!("connector", connector = "press");
+            let log = Log::new(node.clock(), &mut node.entropy().rng(), span);
+            log.warn(c"hot");
+        });
+        let line = r#"WARN hot connector="press" category="client""#;
+        assert_eq!(capture.lines(), [line]);
+    }
+
+    #[test]
+    fn the_debug_of_a_log_gives_no_field() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let span = tracing::Span::none();
+        let log = Log::new(node.clock(), &mut node.entropy().rng(), span);
+        assert_eq!(format!("{log:?}"), "Log { .. }");
     }
 }
