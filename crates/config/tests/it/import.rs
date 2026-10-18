@@ -13,8 +13,9 @@ use types::name::Name;
 use types::sample::{Scalar, Type};
 
 /// A kind whose block of a point is `read "<channel>" { tag = "<tag>" }`, with
-/// `scale = fill("the scale")` for a tag that starts with `scaled`. It refuses a tag
-/// that starts with `bad`. The tag of a `read` block is its `tag` without a leading
+/// `scale = fill("the scale")` for a tag that starts with `scaled`, and `scale =
+/// fill()` for a tag that starts with `unfilled`. It refuses a tag that starts with
+/// `bad`. The tag of a `read` block is its `tag` without a leading
 /// `ns=0;`, so two texts can name one point. It writes the channel of each `read`
 /// block, and its check refuses a channel whose last segment is `refused`.
 struct Points;
@@ -71,6 +72,18 @@ impl Kind for Points {
         let mut attributes = vec![attribute("tag", string(tag))];
         if tag.starts_with("scaled") {
             attributes.push(attribute("scale", fill("the scale")));
+        }
+        if tag.starts_with("unfilled") {
+            let call = value::Call {
+                function: "fill".into(),
+                function_span: None,
+                arguments: Vec::new(),
+            };
+            let value = Value {
+                kind: value::Kind::Call(call),
+                span: None,
+            };
+            attributes.push(attribute("scale", value));
         }
         Ok(vec![read_block(channel, attributes)])
     }
@@ -381,6 +394,12 @@ fn adds_a_point_whose_earlier_pick_has_no_name() {
     assert_eq!(added.picks, vec![Outcome::Unnamed, outcome("plc.B.x")]);
     let text = updated(PLANT, &added);
     assert_eq!(text.matches(r#"tag = "t8""#).count(), 1);
+}
+
+#[test]
+#[should_panic(expected = "invariant: a kind writes each call `fill` as `fill` does")]
+fn panics_on_a_call_fill_of_a_kind_with_no_text() {
+    drop(added(&[PLANT], &[want("A/x", "unfilled")]));
 }
 
 #[test]

@@ -373,6 +373,11 @@ fn index_of<'a>(
 }
 
 /// The text of each `fill("<what>")` in `blocks` and in `channel`.
+///
+/// # Panics
+///
+/// If a call `fill` there has other arguments, which neither a kind nor [`channel`]
+/// writes.
 fn fills(blocks: &[Block], channel: &Block) -> Vec<String> {
     let mut fills = Vec::new();
     for block in blocks.iter().chain([channel]) {
@@ -382,7 +387,9 @@ fn fills(blocks: &[Block], channel: &Block) -> Vec<String> {
                     fills.push(what.to_owned());
                     false
                 }
-                Some(Fill::Bad) => false,
+                Some(Fill::Bad) => {
+                    panic!("invariant: a kind writes each call `fill` as `fill` does")
+                }
                 None => true,
             },
             Part::Block(_) | Part::Key(..) => true,
