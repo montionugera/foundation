@@ -146,9 +146,16 @@ class Node:
             }
         )
 
+    def pause(self) -> None:
+        """Stops the node with SIGSTOP, and returns once it stopped: on macOS, it can
+        run on after `kill` returns. `stop` continues it."""
+        self.process.send_signal(signal.SIGSTOP)
+        os.waitpid(self.process.pid, os.WUNTRACED)
+
     def stop(self) -> None:
         """Stops the node with SIGTERM, and waits until it exits."""
         if self.process.poll() is None:
+            self.process.send_signal(signal.SIGCONT)
             self.process.send_signal(signal.SIGTERM)
         self.process.communicate(timeout=PATIENCE)
         self.dir.cleanup()
@@ -192,8 +199,7 @@ class ClientTest(unittest.TestCase):
 
     def test_other_threads_run_while_a_client_closes(self) -> None:
         client = self.node.connect()
-        self.node.process.send_signal(signal.SIGSTOP)
-        self.addCleanup(self.node.process.send_signal, signal.SIGCONT)
+        self.node.pause()
         count = 0
         closed = threading.Event()
 
@@ -214,8 +220,7 @@ class ClientTest(unittest.TestCase):
 
     def test_a_child_forked_during_a_close_gives_none(self) -> None:
         client = self.node.connect()
-        self.node.process.send_signal(signal.SIGSTOP)
-        self.addCleanup(self.node.process.send_signal, signal.SIGCONT)
+        self.node.pause()
         closing = threading.Thread(target=client.close, daemon=True)
         closing.start()
         time.sleep(0.02)
