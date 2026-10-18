@@ -43,9 +43,10 @@ const DATA: &[&str] = &["plant.a", "plant.b", "plant.c"];
 /// The connector of each scene.
 const PLC: &str = "plant.plc";
 
-/// The first key of the status channels of [`PLC`]: the index, then `state`,
-/// `class`, `restarts`, `backoff`, `error`, `note`, then each of [`COUNTS`].
-const STATUS: u128 = 100;
+/// The first key of the status channels of [`PLC`], the first that the rig gives:
+/// the index, then `state`, `class`, `restarts`, `backoff`, `error`, `note`, then each
+/// count of the kind.
+const STATUS: u128 = 1 << 64;
 const CLASS: u128 = STATUS + 2;
 const RESTARTS: u128 = STATUS + 3;
 const ERROR: u128 = STATUS + 5;
@@ -395,8 +396,7 @@ impl Scene {
         });
         let open = self
             .rig
-            .supervisor()
-            .open("opcua", name(PLC), &self.config, &token);
+            .open_connector("opcua", name(PLC), &self.config, &token);
         open.await.run().await
     }
 
@@ -460,17 +460,14 @@ where
         let kinds = Table::new().with("opcua", Kind::default());
         let rig = Rig::open(env, node.net(), kinds).await;
         let hub = rig.hub();
-        let counts = COUNTS.map(name);
-        let status = testing::create_status(
-            &name(PLC),
-            &counts,
-            channel::Key::from_u128(STATUS),
-        );
+        let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
+        let config = config(&address, rate, &setup.reads);
+        let status = rig.define_status("opcua", &name(PLC), &config);
         let channels = setup.channels.iter();
         let channels: Vec<_> = channels
             .map(|(text, def)| (name(text), def.clone()))
             .collect();
-        rig.define(status.iter().chain(&channels).cloned().collect());
+        rig.define(channels.clone());
         let mut groups = BTreeMap::<u128, Vec<Name>>::new();
         for (name, definition) in &channels {
             groups
@@ -482,11 +479,9 @@ where
         for (index, names) in groups {
             indexes.insert(index, record(hub, &names, &tasks).await);
         }
-        let names: Vec<_> = status.iter().map(|(name, _)| name.clone()).collect();
-        let statuses = record(hub, &names, &tasks).await;
-        let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
+        let statuses = record(hub, &status, &tasks).await;
         let scene = Rc::new(Scene {
-            config: config(&address, rate, &setup.reads),
+            config,
             variables: setup.variables(),
             rig,
             server: RefCell::new(None),
