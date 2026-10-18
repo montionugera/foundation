@@ -9,7 +9,8 @@
   no allocation on the caller's thread (`crates/node/tests/it/sdk.rs`, with
   `counting::Local`), and no draft is held across calls. The client's thread makes the
   ACK of each frame in `record_sent_frame` of noq, about 1.1 to 1.2 allocations a write
-  (a `program::Writer` alone makes about 1.04), until #3281; `sdk` makes no other.
+  (a `program::Writer` alone makes about 1.04; a sampled count on box2, Xeon 8488C,
+  before 706b6689b), until #3281; `sdk` makes no other.
   `Writer` is `Send` and holds no borrow of `Client`. The plan
   (https://github.com/synnaxlabs/foundation/issues/3266#issuecomment-6255057555) was
   approved by `laptop.architect-2` at 2026-10-18T21:04:06Z
@@ -74,7 +75,10 @@
   (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6256170281), the
   leg to the task, which is on the path of a latest-mode read, takes 7.8 µs p50 and
   8.9 µs p99, over the P1 limit of 2.5 µs. The leg to the caller takes 3.7 µs p50 and
-  8.6 µs p99, and a write takes 39.8 µs p50, 12.5 µs more than `program`. Accepted as
+  8.6 µs p99, and a write takes 39.8 µs p50, 12.5 µs more than `program`. The merge of
+  `main` in 706b6689b changes the write path of `program`, so the numbers of a write
+  are of 07f84b0cd only; the code of each leg is the same by instructions at
+  x86-64-v2 after it (round 2 of the PR). Accepted as
   the price of SDK CLIENT. No spin goes before the park, because the p99 of the leg is
   inside its p50 plus the noise of the rounds. Decided by `laptop.architect-2` on
   2026-10-18T23:01:32Z
