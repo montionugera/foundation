@@ -633,9 +633,8 @@ impl<'ast> Visit<'ast> for Items<'_> {
         });
     }
 }
-///  A function or a module in the body of a macro call: its attributes, its name, and
-/// the
-/// items of the module.
+/// A function or a module in the body of a macro call: its attributes, its name, and
+/// the items of the module.
 enum Body {
     Function(Vec<Attribute>, Ident),
     Module(Vec<Attribute>, Ident, Vec<Body>),
@@ -651,11 +650,11 @@ fn body(input: ParseStream<'_>) -> syn::Result<Vec<Body>> {
         } else {
             Vec::new()
         };
-        let visibility: syn::Visibility = input.parse()?;
-        let qualified = input.parse::<Option<Token![const]>>()?.is_some()
-            | input.parse::<Option<Token![async]>>()?.is_some()
-            | input.parse::<Option<Token![unsafe]>>()?.is_some()
-            | input.parse::<Option<syn::Abi>>()?.is_some();
+        input.parse::<syn::Visibility>()?;
+        input.parse::<Option<Token![const]>>()?;
+        input.parse::<Option<Token![async]>>()?;
+        input.parse::<Option<Token![unsafe]>>()?;
+        input.parse::<Option<syn::Abi>>()?;
         if input.peek(Token![fn]) && input.peek2(Ident::peek_any) {
             input.parse::<Token![fn]>()?;
             items.push(Body::Function(attributes, input.call(Ident::parse_any)?));
@@ -668,10 +667,9 @@ fn body(input: ParseStream<'_>) -> syn::Result<Vec<Body>> {
             let content;
             syn::braced!(content in input);
             items.push(Body::Module(attributes, name, body(&content)?));
-        } else if attributes.is_empty()
-            && matches!(visibility, syn::Visibility::Inherited)
-            && !qualified
-        {
+        } else if !input.is_empty() {
+            // No function or module starts at the token after a prefix, so a skip of
+            // it loses none.
             input.step(|cursor| {
                 cursor
                     .token_tree()
@@ -1044,5 +1042,23 @@ mod tests {
         assert!(!gives("only Linux and Windows: a case", &["Linux"]));
         assert!(!gives("only Linux: a case", &["Linux", "Windows"]));
         assert!(!gives("only Linuxes", &["Linux"]));
+    }
+
+    #[test]
+    fn a_macro_body_gives_each_function_and_module_and_passes_each_other_token() {
+        fn names(items: &[Body]) -> Vec<String> {
+            (items.iter())
+                .flat_map(|item| match item {
+                    Body::Function(_, name) => vec![name.to_string()],
+                    Body::Module(_, name, items) => std::iter::once(name.to_string())
+                        .chain(names(items))
+                        .collect(),
+                })
+                .collect()
+        }
+        let text = "#![proptest_config(c)] const unsafe X: u8 = 1; #[a] y; pub z; \
+                    async move {} pub const fn f() {} mod m { fn g() {} } unsafe";
+        let items = syn::parse::Parser::parse_str(body, text).unwrap();
+        assert_eq!(names(&items), ["f", "m", "g"]);
     }
 }
