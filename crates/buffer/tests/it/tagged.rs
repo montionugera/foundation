@@ -324,7 +324,7 @@ fn a_crash_in_the_commit_that_carries_keeps_the_entry() {
     });
 }
 
-/// Tagged entries of 4000 bytes of new indexes, one in each commit, until the ring
+/// Tagged entries of 2000 bytes of new indexes, one in each commit, until the ring
 /// has no room: then a frame gets `Full` too, and `newest` gives each entry, also
 /// after a reopen.
 #[test]
@@ -339,13 +339,13 @@ fn tagged_state_over_the_area_refuses_data_and_keeps_each_entry() {
         let mut expected = Vec::new();
         for index in 1..=u32::try_from(AREA / BLOCK).expect("few blocks") {
             let slot = slots.index(key(index));
-            let state = tagged(index, slot, Path::Live, 0, 1, shard.block(4000));
+            let state = tagged(index, slot, Path::Live, 0, 1, shard.block(2000));
             match append_within(&buffer, &shard.clock, &[state], 100).await {
                 Ok(()) => buffer.committed().await.expect("commits"),
                 Err(Rejected::Full { .. }) => break,
                 Err(refused) => panic!("index {index}: {refused}"),
             }
-            expected.push((slot, kept(&shard.block(4000))));
+            expected.push((slot, kept(&shard.block(2000))));
         }
         assert!(expected.len() < to_usize(AREA / BLOCK), "the ring fills");
         let data = slots.index(key(99));
@@ -356,7 +356,7 @@ fn tagged_state_over_the_area_refuses_data_and_keeps_each_entry() {
         let count = u32::try_from(expected.len()).expect("few entries");
         let (buffer, mut slots) = reopen(&shard, buffer).await;
         let mut reopened: Vec<_> = (1..=count)
-            .map(|index| (slots.index(key(index)), kept(&shard.block(4000))))
+            .map(|index| (slots.index(key(index)), kept(&shard.block(2000))))
             .collect();
         reopened.sort_unstable();
         assert_eq!(newest(&buffer, Path::Live, 1), reopened);
@@ -467,4 +467,230 @@ fn dense_tagged_state_on_a_trimmed_ring_never_stays_full() {
         assert_eq!(newest(&buffer, Path::Live, 1), expected[0]);
         assert_eq!(newest(&buffer, Path::Live, 2), expected[1]);
     });
+}
+
+/// The shape of a workload of tagged state and data on a ring with trims.
+#[derive(Clone, Debug)]
+struct Shape {
+    /// Bodies of at most this many blocks less the record header.
+    blocks: usize,
+    /// Bytes of each tagged entry.
+    len: usize,
+    /// Tagged entries of new indexes in each batch, at most what one record holds.
+    per: usize,
+    /// Batches of tagged entries in each commit.
+    batches: usize,
+    /// Bytes of each frame, one frame to a record.
+    frame: usize,
+    /// Frames in each commit.
+    frames: usize,
+    /// Entries with no bytes of new indexes, in one record after the tagged
+    /// entries, whose tails then stay idle.
+    idle: usize,
+}
+
+/// Bytes of the ring of [`lives_with_holders_under_a_quarter_of_the_area`].
+const LIVE_AREA: u64 = 64 * BLOCK;
+
+/// Bytes of the carry body of `idle` tails, and of `n` tails and `n` entries of
+/// `len` bytes.
+fn carried_len(idle: usize, n: usize, len: usize) -> usize {
+    4 + idle * 42 + n * (42 + 51 + len)
+}
+
+fn shape() -> impl Strategy<Value = Shape> {
+    let lens = prop_oneof![1..=64_usize, 1..=Layout::ENTRY_MAX_MIN];
+    let idle = prop_oneof![Just(0_usize), 0..=320_usize];
+    (
+        2..=4_usize,
+        lens,
+        1..=64_usize,
+        1..=4_usize,
+        1..=16_usize,
+        idle,
+    )
+        .prop_flat_map(|(blocks, len, per, batches, frames, idle)| {
+            let body_max = blocks * to_usize(BLOCK) - 9;
+            let per = per.min((body_max - 4) / (42 + 51 + len)).max(1);
+            let idle = idle.min((body_max - 4) / 51);
+            (
+                Just((blocks, len, per, batches, frames, idle)),
+                1000..=body_max - 55,
+            )
+        })
+        .prop_map(|((blocks, len, per, batches, frames, idle), frame)| {
+            let block = to_usize(BLOCK);
+            let frames =
+                frames.min(to_usize(LIVE_AREA) / 4 / frame.next_multiple_of(block));
+            Shape {
+                blocks,
+                len,
+                per,
+                batches,
+                frame,
+                frames: frames.max(1),
+                idle,
+            }
+        })
+}
+
+/// Tagged entries whose holders take under a quarter of the area, then frames over
+/// three laps: each frame gets room within 200 commit spans, a trim passes the
+/// first frame, and `newest` gives each tagged entry.
+async fn live(shard: Shard, shape: Shape) {
+    let shard = trimmed(shard);
+    let body_max = shape.blocks * to_usize(BLOCK) - 9;
+    let mut slots = Slots::new();
+    let buffer = shard
+        .open(layout(LIVE_AREA, body_max), &mut slots)
+        .await
+        .expect("opens");
+    let quarter = to_usize(LIVE_AREA) / 4;
+    let count = (1..quarter)
+        .take_while(|&n| carried_len(shape.idle, n, shape.len) + 42 <= quarter)
+        .last()
+        .unwrap_or(0);
+    let mut expected = Vec::new();
+    let indexes: Vec<u32> = (100..).take(count).collect();
+    for commit in indexes.chunks(shape.per * shape.batches) {
+        for batch in commit.chunks(shape.per) {
+            let entries: Vec<_> = batch
+                .iter()
+                .map(|&index| {
+                    let slot = slots.index(key(index));
+                    expected.push((slot, kept(&shard.block(shape.len))));
+                    tagged(index, slot, Path::Live, 0, 1, shard.block(shape.len))
+                })
+                .collect();
+            append_within(&buffer, &shard.clock, &entries, 200)
+                .await
+                .expect("the ring frees room for the state");
+        }
+        buffer.committed().await.expect("commits");
+    }
+    let idle: Vec<_> = (10_000..)
+        .take(shape.idle)
+        .map(|index| {
+            let slot = slots.index(key(index));
+            entry(index, slot, Path::Live, 0, 1, None, Parts::default())
+        })
+        .collect();
+    append_within(&buffer, &shard.clock, &idle, 200)
+        .await
+        .expect("the ring frees room for the idle tails");
+    buffer.committed().await.expect("commits");
+    let data = slots.index(key(9));
+    frames(&buffer, &shard, data, &shape).await;
+    assert!(trimmed_past_the_start(&buffer, data).await);
+    for entry in &idle {
+        assert_eq!(buffer.durable(entry.slot, Path::Live), tail(1, None));
+    }
+    expected.sort_unstable();
+    let mut newest = newest(&buffer, Path::Live, 1);
+    newest.sort_unstable();
+    assert_eq!(newest, expected);
+}
+
+/// Frames of index 9 at `data` over three laps of the ring, in commits of
+/// `shape.frames` frames, each of which gets room within 200 commit spans.
+async fn frames(buffer: &Buffer, shard: &Shard, data: Slot, shape: &Shape) {
+    let laps = 3 * LIVE_AREA / shape.frame.next_multiple_of(to_usize(BLOCK)) as u64;
+    let mut seq = 0;
+    while seq < laps {
+        for _ in 0..shape.frames {
+            let last = Some(i64::try_from(seq).expect("a small seq") + 1);
+            let frame = entry(
+                9,
+                data,
+                Path::Live,
+                seq,
+                1,
+                last,
+                shard.block(shape.frame).into(),
+            );
+            append_within(buffer, &shard.clock, &[frame], 200)
+                .await
+                .expect("the ring frees room for a frame");
+            seq += 1;
+        }
+        buffer.committed().await.expect("commits");
+    }
+}
+
+/// Holders of three blocks in each record, behind a carry of one record each
+/// commit.
+#[test]
+fn lives_with_a_carry_behind_the_reach() {
+    let shape = Shape {
+        blocks: 3,
+        len: 1087,
+        per: 10,
+        batches: 3,
+        frame: 12_000,
+        frames: 5,
+        idle: 0,
+    };
+    run(406, move |shard| live(shard, shape));
+}
+
+/// Records of one block whose carry bodies take two.
+#[test]
+fn lives_with_carry_bodies_larger_than_their_records() {
+    let shape = Shape {
+        blocks: 3,
+        len: 4000,
+        per: 1,
+        batches: 3,
+        frame: 12_000,
+        frames: 5,
+        idle: 0,
+    };
+    run(407, move |shard| live(shard, shape));
+}
+
+/// One record of more idle tails than two blocks hold, which becomes the oldest
+/// holder while the copies put the carry behind.
+#[test]
+fn lives_with_idle_tails_over_two_blocks_in_one_record() {
+    let shape = Shape {
+        blocks: 3,
+        len: 64,
+        per: 10,
+        batches: 3,
+        frame: 12_000,
+        frames: 5,
+        idle: 240,
+    };
+    run(408, move |shard| live(shard, shape));
+}
+
+/// The oldest holder needs a carry record of four blocks while the head is two
+/// blocks before the end of the area, so the carry skips them.
+#[test]
+fn lives_with_a_carry_that_skips_to_the_start() {
+    let shape = Shape {
+        blocks: 4,
+        len: 1765,
+        per: 8,
+        batches: 4,
+        frame: 13_249,
+        frames: 4,
+        idle: 0,
+    };
+    run(5_519_891_853_575_910_298, move |shard| live(shard, shape));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// Any shape whose live holders are under a quarter of the area: the ring gives
+    /// room again after `Full`, through records at the carry budget, commits of a
+    /// large part of the area, and small tagged entries.
+    #[test]
+    fn lives_with_holders_under_a_quarter_of_the_area(
+        seed in any::<u64>(),
+        shape in shape(),
+    ) {
+        run(seed, move |shard| live(shard, shape));
+    }
 }

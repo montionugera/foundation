@@ -188,17 +188,18 @@ pub enum Rejected {
     /// limit is the first one it is over, in the order of [`Limit`].
     Large(Limit),
     /// The ring has no room for the batch, after the trim of the last commit when
-    /// [`Config::trimmed`] is set: three blocks stay free, for the restart record of
-    /// the next open, the carry record of the commit after it, and the restart
-    /// record of a later open. Room returns only when records leave the ring at its
-    /// tail, and never when the offsets left before their end are under `needed`.
+    /// [`Config::trimmed`] is set. Each record leaves free the room of the restart
+    /// record of the next open, of a carry record of the holders of any one record,
+    /// and of the restart record of a later open. Room returns only when records
+    /// leave the ring at its tail, and never when the offsets left before their end
+    /// are under `needed`.
     /// Without [`Config::trimmed`], nothing moves records out of the ring.
     Full {
         /// Bytes of the area that the batch's record needs, with the rest of the
         /// area it must skip.
         needed: u64,
         /// Bytes the record may take: the area not in use, or the offsets left
-        /// before their end, whichever is less, less the three blocks that stay free.
+        /// before their end, whichever is less, less the room that stays free.
         free: u64,
     },
     /// The pool has no block for the record header.
@@ -697,7 +698,7 @@ impl Buffer {
             min,
         })?;
         let (file, header) = open_ring(&files, &dir, &pool, &entropy, layout).await?;
-        let (cursor, logs) = walk(&file, &pool, &header, slots).await?;
+        let (cursor, logs) = walk(&file, &pool, &header, slots, trimmed).await?;
         let mut state = State::new(cursor.writer(), logs, header, random(&entropy));
         restart(&file, &pool, &mut state, trimmed).await?;
         let carry_max = trimmed.then(|| carry_max(&pool, header.layout));
@@ -1062,8 +1063,9 @@ async fn create_header(
 /// Recovers the tail of every path and the holder of the newest entry of each
 /// nonzero tag on each path from the records after the tail of `header`, and writes
 /// each window that holds them again, as read. Then reads each such entry that a
-/// data record holds into the logs. Returns the cursor at the end of the walk and
-/// the logs.
+/// data record holds into the logs. With `trimmed`, notes in the cursor the carry
+/// body of the holders of each data record with such an entry. Returns the cursor at
+/// the end of the walk and the logs.
 ///
 /// A read can see writes that a failed sync lost, from the cache. Written again,
 /// they read the same until the open's sync makes them durable.
@@ -1072,6 +1074,7 @@ async fn walk(
     pool: &Pool,
     header: &Header,
     slots: &mut Slots,
+    trimmed: bool,
 ) -> Result<(Cursor, Logs), Error> {
     let mut cursor = Cursor::new(header.layout, header.tail, pool.largest());
     let mut logs = Logs::new(header.layout.area());
@@ -1083,7 +1086,11 @@ async fn walk(
         match cursor.next(&bytes)? {
             Step::Data(body) => {
                 let largest = pool.largest();
-                recover(body, offset, largest, slots, &mut logs, &mut newest)?;
+                let carry =
+                    recover(body, offset, largest, slots, &mut logs, &mut newest)?;
+                if trimmed && carry > 0 {
+                    cursor.reserve(offset, body.len, carry);
+                }
             }
             Step::Carry(body) => recover_carried(body, offset, slots, &mut logs)?,
             Step::Moved | Step::More => {}
@@ -1114,9 +1121,11 @@ async fn walk(
 type Tagged = hash::Map<(Slot, Path, NonZeroU8), (u64, usize, u32)>;
 
 /// Feeds the logs the entries of a record body at `offset`, as appended and
-/// synced, and notes each entry with a nonzero tag in `newest`. Fails when an
-/// entry is over `largest`, the pool's largest block, or a tagged entry is over
-/// [`Layout::ENTRY_MAX_MIN`], which no carry record holds.
+/// synced, and notes each entry with a nonzero tag in `newest`. Gives the carry body
+/// of the holders of the record as [`Group::fit`](group::Group::fit) counts it, or 0
+/// when no entry has a nonzero tag. Fails when an entry is over `largest`, the
+/// pool's largest block, or a tagged entry is over [`Layout::ENTRY_MAX_MIN`], which
+/// no carry record holds.
 fn recover(
     body: Body<'_>,
     offset: u64,
@@ -1124,9 +1133,10 @@ fn recover(
     slots: &mut Slots,
     logs: &mut Logs,
     newest: &mut Tagged,
-) -> Result<(), Error> {
+) -> Result<usize, Error> {
     let unread = |_: entry::Invalid| Error::Invalid { offset };
     let misplaced = |_: log::Invalid| Error::Invalid { offset };
+    let (mut count, mut copies, mut copy_len) = (0, 0, 0);
     for header in entry::parse(body.start, body.len).map_err(unread)? {
         let (header, at) = header.map_err(unread)?;
         let requested = usize::try_from(header.bytes).unwrap_or(usize::MAX);
@@ -1138,11 +1148,17 @@ fn recover(
         }
         let slot = slots.index(header.index);
         logs.walk(slot, &header, offset).map_err(misplaced)?;
+        count += 1;
         if let Some(tag) = NonZeroU8::new(header.tag) {
             newest.insert((slot, header.path, tag), (offset, at, header.bytes));
+            (copies, copy_len) = (copies + 1, copy_len + requested);
         }
     }
-    Ok(())
+    Ok(if copies > 0 {
+        carry::body_len(count, copies, copy_len)
+    } else {
+        0
+    })
 }
 
 /// Feeds the logs the tails and the entries of a carry record body at `offset`.
@@ -1638,7 +1654,7 @@ mod tests {
                     clock: shard.clock(),
                     tasks,
                     entropy: shard.entropy(),
-                    layout: Layout::new(64 * 4096, 8183)
+                    layout: Layout::new(66 * 4096, 8183)
                         .expect("the sizes make a ring"),
                     commit: COMMIT,
                     trimmed,
@@ -1887,9 +1903,9 @@ mod tests {
             },
         );
         // The restart record and 60 records of one block are synced. The headroom
-        // is three records of two blocks and the three blocks that each record keeps
-        // free, so the low mark is at 6 blocks, and the high mark is half of the
-        // lead of 55 blocks past it.
+        // is three records of two blocks and the spare of 5 blocks that each record
+        // keeps free, so the low mark is at 6 blocks, and the high mark is half of
+        // the lead of 55 blocks past it.
         let tail = tail.lock().expect("no panic held the lock");
         assert_eq!(tail.map(crate::wal::Position::offset), Some(34 * 4096));
     }
@@ -2283,7 +2299,7 @@ mod tests {
         }
 
         /// A read waits on the file read of the record at 4096 while 55 commits of
-        /// another path want the room of the ring of 64 blocks. The trims stop before
+        /// another path want the room of the ring of 66 blocks. The trims stop before
         /// that record, and the read gives its entries. Once the read drops, the trims
         /// go on, so 100 more commits fit.
         #[test]
@@ -2352,7 +2368,7 @@ mod tests {
         }
 
         /// The live path of index 1 writes [0, 3) once, then 100 commits of index 2
-        /// turn the ring of 64 blocks. A carry record keeps the tail of index 1, and
+        /// turn the ring of 66 blocks. A carry record keeps the tail of index 1, and
         /// the trims pass its record, so its log keeps no run, and a read gives the
         /// seqs as a gap and no entry.
         #[test]
@@ -2390,8 +2406,8 @@ mod tests {
             assert_eq!(*found, Some(((Some(0..3), vec![], Mark::at(3)), tail)));
         }
 
-        /// One record holds an entry of each of indexes 1 to 100, after 8 records of
-        /// index 101. The commits of index 101 turn the ring of 64 blocks, and the
+        /// One record holds an entry of each of indexes 1 to 100, after 10 records of
+        /// index 101. The commits of index 101 turn the ring of 66 blocks, and the
         /// carry record of the 100 tails takes 2 blocks where the area has one left,
         /// so it wraps, and later trims pass the record of the 100 entries. After a
         /// cut of the power, the open walks past the wrap and finds each tail.
@@ -2409,7 +2425,7 @@ mod tests {
                     let byte = pool.alloc(1).expect("a block").freeze();
                     let part = pool.alloc(100).expect("a block").freeze();
                     let filler = slots.index(channel::Key::from_u128(101));
-                    commit_each(&buffer, (101, filler), &part, 0..8).await;
+                    commit_each(&buffer, (101, filler), &part, 0..10).await;
                     let batch: Vec<Entry> = (1..=100)
                         .map(|index| {
                             let slot =
@@ -2419,14 +2435,14 @@ mod tests {
                         .collect();
                     buffer.append(batch).expect("the ring has room");
                     buffer.committed().await.expect("commits");
-                    commit_each(&buffer, (101, filler), &part, 8..58).await;
+                    commit_each(&buffer, (101, filler), &part, 10..60).await;
                     let skip = buffer.shared.state.borrow().writer.skip();
                     *given.lock().expect("no panic held the lock") = Some(skip);
                     buffer
                 },
             );
             let skip = skipped.lock().expect("no panic held the lock").clone();
-            assert_eq!(skip, Some(63 * 4096..64 * 4096), "the carry record wraps");
+            assert_eq!(skip, Some(65 * 4096..66 * 4096), "the carry record wraps");
             sim.crash(&node, sim::Crash::Power);
             let found = Arc::new(Mutex::new(Vec::new()));
             let given = Arc::clone(&found);
@@ -2446,12 +2462,12 @@ mod tests {
                 },
             );
             let mut seqs = vec![3; 100];
-            seqs.push(174);
+            seqs.push(180);
             assert_eq!(*found.lock().expect("no panic held the lock"), seqs);
         }
 
         /// The live path of index 1 writes [0, 3) once, then 100 commits of index 2
-        /// turn the ring of 64 blocks, and the power cuts. The open finds the seq and
+        /// turn the ring of 66 blocks, and the power cuts. The open finds the seq and
         /// stamp of index 1 in a carry record, and the path goes on from there.
         #[test]
         fn an_index_that_writes_once_continues_after_the_ring_turns() {
@@ -2920,7 +2936,7 @@ mod tests {
             );
             assert_eq!(
                 rooms[3],
-                (4087, 3 * 4096, 65 * 4096, Some(64 * 4096)),
+                (8183, 3 * 4096, 65 * 4096, Some(64 * 4096)),
                 "the carry takes the owed block and holds paths 1 and 2"
             );
             assert_eq!(
@@ -3034,7 +3050,7 @@ mod tests {
                 rooms,
                 [
                     (8183, 3 * 4096, 64 * 4096, Some(3 * 4096)),
-                    (4087, 3 * 4096, 65 * 4096, Some(64 * 4096)),
+                    (8183, 3 * 4096, 65 * 4096, Some(64 * 4096)),
                     (8183, 38 * 4096, 65 * 4096, Some(64 * 4096)),
                 ],
                 "the restart record takes the owed block, the first commit carries \
@@ -3078,7 +3094,7 @@ mod tests {
             assert_eq!(before, after);
         }
 
-        /// 100 commits of one path in the ring of 64 blocks each fit, since a commit
+        /// 100 commits of one path in the ring of 66 blocks each fit, since a commit
         /// past the low mark trims the oldest records. A read from seq 0 gives the
         /// trimmed seqs as its gap, then the entries that the ring holds.
         #[test]
@@ -3109,10 +3125,10 @@ mod tests {
             assert_eq!(next, Mark::at(300));
         }
 
-        /// 70 commits of one path turn the ring of 64 blocks. Appends of 100 bytes
+        /// 70 commits of one path turn the ring of 66 blocks. Appends of 100 bytes
         /// then queue with no commit until the ring refuses one: the refusal comes
         /// only when the queued records fill the ring after the trim of the last
-        /// commit, but the three blocks that stay free. After the next commit, the
+        /// commit, but the spare of 5 blocks. After the next commit, the
         /// refused append fits.
         #[test]
         fn full_comes_only_when_the_queued_records_do_not_fit_after_the_trim() {
@@ -3155,12 +3171,12 @@ mod tests {
             assert_eq!(
                 queued,
                 (8183, 29 * 4096, 90 * 4096, Some(70 * 4096)),
-                "the queued records fill the ring but the three blocks that stay free"
+                "the queued records fill the ring but the spare of 5 blocks"
             );
             assert_eq!(fits, Ok(()));
         }
 
-        /// 70 commits of one path trim the ring of 64 blocks, and the power cuts after
+        /// 70 commits of one path trim the ring of 66 blocks, and the power cuts after
         /// the last. The open walks from the tail that the last commit synced, so a
         /// read gives the same gap and entries as before the cut. The test does not pin
         /// the tail, which the room that each record keeps free sets.

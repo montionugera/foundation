@@ -868,45 +868,56 @@ impl Logs {
         holding.map(|(_, offset, _)| offset)
     }
 
-    /// Clears `carried`, then puts in it each holder before `reach`, oldest first:
-    /// the appended tail of a path, or a copy. It stops at the first that does not
-    /// fit a body of `room` bytes, or of [`carry::TAILS_MAX`] tails or
-    /// [`carry::ENTRIES_MAX`] entries. When it puts in one, it fills `carried` with
-    /// the oldest holders in the next [`FILL`] items after `reach` for each tail that
-    /// `room` holds, so that small carry records merge. The next call goes on at the
-    /// first item that this call did not walk. Call it in the borrow that takes the
+    /// Clears `carried`, then puts in it the holders of each record before `reach`,
+    /// oldest first: the appended tail of a path, or a copy. It takes whole records:
+    /// it stops before the first record whose holders do not all fit a body of
+    /// `room` bytes, or of [`carry::TAILS_MAX`] tails or [`carry::ENTRIES_MAX`]
+    /// entries. When it puts in one, it fills `carried` with the holders of the
+    /// records in the next [`FILL`] items after `reach` for each tail that `room`
+    /// holds, so that small carry records merge, and stops before a record that it
+    /// cannot walk to its end. The next call goes on at the first record that this
+    /// call did not take. Call it in the borrow that takes the
     /// records of a commit: each appended entry is then in a taken record, so the
     /// tail is the end after those records, and the carry record goes right after
     /// them.
     pub(crate) fn carry(&mut self, reach: u64, room: usize, carried: &mut Carried) {
         carried.clear();
         let mut walk = carry::count(room).saturating_mul(FILL);
-        for (number, offset, holder) in self.items.since(self.scanned) {
-            if offset >= reach {
-                let filling = !carried.is_empty();
-                let Some(left) = walk.checked_sub(1).filter(|_| filling) else {
-                    self.scanned = number;
-                    return;
+        let mut record = None;
+        let mut start = (self.scanned, carried.taken());
+        'take: {
+            for (number, offset, holder) in self.items.since(self.scanned) {
+                if record != Some(offset) {
+                    record = Some(offset);
+                    start = (number, carried.taken());
+                }
+                if offset >= reach {
+                    let filling = !carried.is_empty();
+                    let Some(left) = walk.checked_sub(1).filter(|_| filling) else {
+                        break 'take;
+                    };
+                    walk = left;
+                }
+                if !self.holds(holder, offset) {
+                    continue;
+                }
+                let first = carried.is_empty();
+                let fits = match holder.held() {
+                    Held::Tail(at) => carried.tail(nth(&self.paths, at), at, room),
+                    Held::Copy(at) => carried.copy(nth(&self.copies, at), at, room),
                 };
-                walk = left;
+                if !fits {
+                    break 'take;
+                }
+                if first {
+                    carried.first = number;
+                }
             }
-            if !self.holds(holder, offset) {
-                continue;
-            }
-            let first = carried.is_empty();
-            let fits = match holder.held() {
-                Held::Tail(at) => carried.tail(nth(&self.paths, at), at, room),
-                Held::Copy(at) => carried.copy(nth(&self.copies, at), at, room),
-            };
-            if !fits {
-                self.scanned = number;
-                return;
-            }
-            if first {
-                carried.first = number;
-            }
+            self.scanned = self.items.added();
+            return;
         }
-        self.scanned = self.items.added();
+        carried.truncate(start.1);
+        self.scanned = start.0;
     }
 
     /// Takes back the [`carry`](Self::carry) call that filled `carried`, whose carry
@@ -1356,6 +1367,14 @@ pub(crate) struct Carried {
     first: u64,
 }
 
+/// How much a [`Carried`] holds: its tails, its copies, and their bytes.
+#[derive(Clone, Copy, Debug)]
+struct Taken {
+    tails: usize,
+    copies: usize,
+    bytes: usize,
+}
+
 impl Carried {
     /// Room for `tails` tails, so that a carry of at most that many tails and no
     /// copy allocates nothing.
@@ -1381,6 +1400,23 @@ impl Carried {
     /// The size of the record body.
     pub(crate) fn len(&self) -> usize {
         carry::body_len(self.tails.len(), self.copies.len(), self.bytes)
+    }
+
+    /// How much it holds, for [`truncate`](Self::truncate).
+    fn taken(&self) -> Taken {
+        Taken {
+            tails: self.tails.len(),
+            copies: self.copies.len(),
+            bytes: self.bytes,
+        }
+    }
+
+    /// Drops each holder added after it held `taken`.
+    fn truncate(&mut self, taken: Taken) {
+        self.tails.truncate(taken.tails);
+        self.places.truncate(taken.tails);
+        self.copies.truncate(taken.copies);
+        self.bytes = taken.bytes;
     }
 
     /// Drops the holders and keeps the capacity.
@@ -1793,8 +1829,8 @@ mod tests {
         /// tagged entries, a carry record of those holders may come after it, and a
         /// trim may pass the records before the oldest holder. Each holder comes once,
         /// oldest first: a tail with its path's appended end, a copy with its end
-        /// mark. A holder before the reach is left out only when the call stopped at
-        /// it for room.
+        /// mark. A holder before the reach is left out only when the holders of its
+        /// record do not all fit the room that the call had left.
         #[test]
         fn gives_each_idle_holder_once_and_keeps_the_oldest(
             records in prop::collection::vec(
@@ -1950,16 +1986,23 @@ mod tests {
                 return Ok(());
             };
             prop_assert!(newest <= oldest, "{:?} is left out", left[0]);
+            prop_assert!(
+                given.is_empty() || newest < oldest,
+                "{:?} is left out of a record that the call took",
+                left[0]
+            );
             if oldest < reach {
-                let (tails, copies) = (carried.tails().len(), carried.copies.len());
-                let stops = left
-                    .iter()
-                    .take_while(|&&(_, holder, _)| holder == oldest)
-                    .any(|&(key, _, bytes)| {
-                        let tail = usize::from(key.2 == 0);
-                        let (tails, copies) = (tails + tail, copies + 1 - tail);
-                        carry::body_len(tails, copies, carried.bytes + bytes) > room
-                    });
+                let (mut tails, mut copies) =
+                    (carried.tails().len(), carried.copies.len());
+                let mut bytes = carried.bytes;
+                for &(key, _, len) in
+                    left.iter().take_while(|&&(_, at, _)| at == oldest)
+                {
+                    let tail = usize::from(key.2 == 0);
+                    (tails, copies, bytes) =
+                        (tails + tail, copies + 1 - tail, bytes + len);
+                }
+                let stops = carry::body_len(tails, copies, bytes) > room;
                 prop_assert!(stops, "{:?} is left out with room", left[0]);
             }
             Ok(())

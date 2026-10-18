@@ -196,7 +196,7 @@ mod tests {
     /// record.
     #[test]
     fn each_sample_of_deadlines_trims_and_checkpoints_each_trim() {
-        for (indexes, most) in [(1, 29), (32, 15)] {
+        for (indexes, most) in [(1, 27), (32, 14)] {
             let mut deadline = Deadline::new(indexes, 64 + PHASE);
             for _ in 0..2 * 64 {
                 deadline.commit(1);

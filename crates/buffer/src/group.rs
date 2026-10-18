@@ -132,6 +132,9 @@ pub(crate) struct Group {
     /// The entries with a nonzero tag, and their bytes together.
     copies: usize,
     copy_len: usize,
+    /// The carry body of the holders of the record when [`fit`](Self::fit) had a
+    /// `carry_max` and the record has a copy, else 0.
+    carry: usize,
     meta: Option<Unique>,
     wrap: Option<Unique>,
 }
@@ -173,7 +176,8 @@ impl Group {
     /// `block_max`. With a `carry_max`, the carry body of each holder that the
     /// record can have, each entry as a tail and each entry with a nonzero tag also
     /// as a copy, is at most `carry_max` bytes. So one carry record moves every
-    /// holder of the record. When the group has no
+    /// holder of the record, and the ring keeps free the room that body takes past
+    /// the record, as [`Writer::append`] does. When the group has no
     /// blocks, it takes them from `pool`. Counts the bytes of the batch in the
     /// group, so the caller then gives each entry of `batch` to
     /// [`take`](Self::take), in order.
@@ -217,13 +221,19 @@ impl Group {
             self.copies.saturating_add(copies),
             self.copy_len.saturating_add(copy_len),
         );
-        if let Some(max) = carry_max.filter(|_| copies > 0 && !self.is_empty())
-            && carry::body_len(start.saturating_add(count), copies, copy_len) > max
-        {
-            return Err(Rejected::Record);
-        }
+        let carry = match carry_max {
+            Some(max) if copies > 0 => {
+                let carry =
+                    carry::body_len(start.saturating_add(count), copies, copy_len);
+                if carry > max {
+                    return Err(Rejected::Record);
+                }
+                carry
+            }
+            _ => 0,
+        };
         let body = self.body_len_with(count, len);
-        if let Err(full) = writer.fits(body) {
+        if let Err(full) = writer.fits(body, carry) {
             return Err(if self.is_empty() {
                 Rejected::Ring(full)
             } else {
@@ -240,7 +250,7 @@ impl Group {
             .bytes
             .checked_add(len)
             .expect("invariant: a body fits in usize");
-        (self.copies, self.copy_len) = (copies, copy_len);
+        (self.copies, self.copy_len, self.carry) = (copies, copy_len, carry);
         Ok(())
     }
 
@@ -280,7 +290,7 @@ impl Group {
             .len()
             .checked_add(self.bytes)
             .expect("invariant: a body fits in usize");
-        let plan = writer.append(body).unwrap_or_else(|full| {
+        let plan = writer.append(body, self.carry).unwrap_or_else(|full| {
             panic!(
                 "invariant: a closed group needs {} bytes of the ring, {} are free",
                 full.needed, full.free
@@ -450,7 +460,7 @@ impl Sealed {
         group.slots.clear();
         group.writes.clear();
         group.bytes = 0;
-        (group.copies, group.copy_len) = (0, 0);
+        (group.copies, group.copy_len, group.carry) = (0, 0, 0);
         group
     }
 }
@@ -474,7 +484,7 @@ mod tests {
     use crate::record::HEADER_LEN;
     use crate::wal::{self, Cursor, Position, Step, Window};
 
-    const BLOCKS: u64 = 32;
+    const BLOCKS: u64 = 34;
     const AREA: u64 = BLOCKS * 4096;
     const BODY_MAX: usize = 8192;
     const CHAIN: u32 = 0x5EED_0001;
@@ -953,28 +963,33 @@ mod tests {
         );
     }
 
-    /// Ten records of three blocks follow the restart block, with the tail past the
-    /// second record, so a record of two blocks does not fit in the last block and
-    /// wraps.
+    /// A record of two blocks and ten records of three blocks follow the restart
+    /// block, with the tail past the third record, so a record of two blocks does
+    /// not fit in the last block and wraps.
     #[test]
     fn a_closed_group_holds_the_wrap_header_when_the_record_wraps() {
         let mut area = Area::new();
         let mut group = Group::default();
         let mut tail = start();
-        for first in 0..10 {
-            let part = block(&area.pool, &vec![7; BODY_MAX - table_len(1)]);
+        for first in 0..11 {
+            let size = if first == 0 {
+                4096
+            } else {
+                BODY_MAX - table_len(1)
+            };
+            let part = block(&area.pool, &vec![7; size]);
             area.push(&mut group, header(1, Path::Live, 2 * first), part.into());
             let closed = group.close(&mut area.writer);
             let sealed = area.commit(closed);
             area.writer.synced(sealed.ends());
-            if first == 1 {
+            if first == 2 {
                 tail = sealed.ends().record;
                 area.writer.release(tail.offset());
             }
             group = sealed.clear();
         }
-        assert_eq!(area.writer.head(), 31 * 4096);
-        assert_eq!(tail.offset(), 7 * 4096);
+        assert_eq!(area.writer.head(), 33 * 4096);
+        assert_eq!(tail.offset(), 9 * 4096);
         let part = block(&area.pool, &[7; 4096]);
         area.push(&mut group, header(1, Path::Live, 100), part.into());
         let closed = group.close(&mut area.writer);
@@ -985,11 +1000,11 @@ mod tests {
             .collect();
         assert_eq!(
             writes,
-            [(31 * 4096, 1), (0, 2)],
+            [(33 * 4096, 1), (0, 2)],
             "the wrap, then the record"
         );
-        assert_eq!(sealed.offset(), 32 * 4096, "the offset is past the wrap");
-        assert_eq!(sealed.ends().record.offset(), 34 * 4096);
+        assert_eq!(sealed.offset(), 34 * 4096, "the offset is past the wrap");
+        assert_eq!(sealed.ends().record.offset(), 36 * 4096);
         let bodies = area.walk_from(tail);
         assert_eq!(bodies.len(), 9);
         assert_eq!(bodies[8].len(), table_len(1) + 4096);
@@ -1109,11 +1124,11 @@ mod tests {
                 Err(rejected) => break rejected,
             }
         };
-        // Nine records of three blocks follow the restart block and leave four, of
-        // which three stay free.
+        // Eight records of three blocks follow the restart block and leave nine, of
+        // which the spare keeps seven.
         let full = Full {
             needed: 3 * 4096,
-            free: 4096,
+            free: 2 * 4096,
         };
         assert_eq!(rejected, Rejected::Ring(full));
         assert!(group.is_empty());
@@ -1602,32 +1617,34 @@ mod tests {
         assert_eq!(group.bytes, 2 * third);
     }
 
-    /// Records of nine times three blocks, two blocks, and one block follow the
-    /// restart block. With the tail past the first record, a one-block record fits
-    /// the last block and leaves the three blocks that each record keeps free, but
-    /// the group with a second entry would skip it and not fit: the batch is not
-    /// refused, the group closes first.
+    /// Records of three blocks, two times two blocks, seven times three blocks, and
+    /// two times two blocks follow the restart block. With the tail past the first
+    /// three records, a one-block record fits the last block and leaves the spare of
+    /// 7 blocks, but the group with a second entry would skip it and not fit: the
+    /// batch is not refused, the group closes first.
     #[test]
     fn a_batch_that_fits_its_own_record_asks_for_a_close_before_full() {
         let mut area = Area::new();
         let mut group = Group::default();
-        let sizes = [BODY_MAX - table_len(1); 9].into_iter().chain([4096, 100]);
+        let three = BODY_MAX - table_len(1);
+        let sizes = [three, 4096, 4096].into_iter().chain([three; 7]);
+        let sizes = sizes.chain([4096; 2]);
         for (first, size) in (0..).zip(sizes) {
             let part = block(&area.pool, &vec![7; size]);
             area.push(&mut group, header(1, Path::Live, 2 * first), part.into());
             let closed = group.close(&mut area.writer);
             let sealed = area.commit(closed);
             area.writer.synced(sealed.ends());
-            if first == 0 {
+            if first <= 2 {
                 area.writer.release(sealed.ends().record.offset());
             }
             group = sealed.clear();
         }
-        assert_eq!(area.writer.head(), 31 * 4096);
+        assert_eq!(area.writer.head(), 33 * 4096);
         let big = block(&area.pool, &[7; 4000]);
-        area.push(&mut group, header(1, Path::Live, 20), big.into());
+        area.push(&mut group, header(1, Path::Live, 24), big.into());
         let small = block(&area.pool, &[7; 100]);
-        let mut batch = vec![entry(header(1, Path::Live, 22), small.into())];
+        let mut batch = vec![entry(header(1, Path::Live, 26), small.into())];
         let rejected = push(
             &mut group,
             &area.pool,

@@ -75,7 +75,7 @@ impl Ring {
         for _ in 0..records {
             let len = LENS[self.next % LENS.len()];
             self.next += 1;
-            let plan = self.writer.append(len).expect("the ring has room");
+            let plan = self.writer.append(len, 0).expect("the ring has room");
             let wrap = plan.wrap.map(|_| {
                 self.chain = self.chain.wrapping_add(1);
                 Position::new(plan.offset, self.chain).expect("aligned")
@@ -283,20 +283,23 @@ impl Logs {
         self.offset += BLOCK;
     }
 
-    /// One commit as `commit(1)`, with an append of each entry, then carry records
-    /// in the next records, as commits that carry: each takes the idle tails before
-    /// it, at most [`carry::TAILS_MAX`], and is their holder, so the hide of the next
-    /// commit drops the run of each index.
+    /// One commit as `commit(1)`, with an append of each entry, in records of at
+    /// most [`carry::TAILS_MAX`] entries, as a group holds them. Then carry records
+    /// in the next records, as commits that carry: each takes the idle tails of the
+    /// records before it, at most [`carry::TAILS_MAX`], and is their holder, so the
+    /// hide of the next commit drops the run of each index.
     pub fn carry(&mut self) {
         self.keep_up();
-        for (slot, header) in &mut self.headers {
-            header.kind = append(&mut self.inner, *slot, header);
-            self.inner
-                .sync(*slot, header, self.offset)
-                .expect("entries in order");
-            header.first += 1;
+        for record in self.headers.chunks_mut(carry::TAILS_MAX) {
+            for (slot, header) in record {
+                header.kind = append(&mut self.inner, *slot, header);
+                self.inner
+                    .sync(*slot, header, self.offset)
+                    .expect("entries in order");
+                header.first += 1;
+            }
+            self.offset += BLOCK;
         }
-        self.offset += BLOCK;
         let reach = self.offset;
         loop {
             self.inner.carry(reach, self.room, &mut self.carried);
@@ -478,17 +481,17 @@ mod tests {
     use super::*;
 
     /// The restart record and records of 1, 1, 2, 1, 3, 1, and 1 blocks fill 11 of
-    /// 15 blocks, and leave the three blocks that stay free.
+    /// 19 blocks, and leave the spare of 7 blocks and one more.
     #[test]
-    fn a_ring_of_15_blocks_takes_a_commit_of_7_records() {
-        Ring::new(15).commit(7);
+    fn a_ring_of_19_blocks_takes_a_commit_of_7_records() {
+        Ring::new(19).commit(7);
     }
 
-    /// The 8th record, of 2 blocks, does not fit with those three blocks.
+    /// The 8th record, of 2 blocks, does not fit in that one block.
     #[test]
     #[should_panic(expected = "the ring has room")]
-    fn a_ring_of_15_blocks_refuses_a_commit_of_8_records() {
-        Ring::new(15).commit(8);
+    fn a_ring_of_19_blocks_refuses_a_commit_of_8_records() {
+        Ring::new(19).commit(8);
     }
 
     /// After the warm-up of the `wal` bench, the commits of 1 and of 8 records trim
@@ -497,7 +500,7 @@ mod tests {
     #[test]
     fn each_sample_of_commits_trims_on_the_rings_of_the_bench() {
         for (records, id, most) in
-            [(1, 64, 19), (1, 4096, 64), (8, 64, 2), (8, 4096, 9)]
+            [(1, 64, 18), (1, 4096, 64), (8, 64, 2), (8, 4096, 9)]
         {
             let mut ring = Ring::new(id + PHASE);
             for _ in 0..2 * id {
@@ -516,7 +519,7 @@ mod tests {
     /// private writer: `commit` gives nothing back.
     #[test]
     fn each_sample_of_group_commits_trims_on_the_ring_of_the_bench() {
-        for (entries, most) in [(1, 29), (32, 15)] {
+        for (entries, most) in [(1, 27), (32, 14)] {
             let mut ring = Group::new(64 + PHASE);
             for _ in 0..2 * 64 {
                 ring.commit(entries);
@@ -534,7 +537,7 @@ mod tests {
     /// logs: `queue` gives nothing back.
     #[test]
     fn each_queue_trims_and_appends_each_entry() {
-        for (entries, most) in [(1, 29), (32, 15)] {
+        for (entries, most) in [(1, 27), (32, 14)] {
             let mut ring = Group::new(64 + PHASE);
             for _ in 0..2 * 64 {
                 ring.queue(entries);
