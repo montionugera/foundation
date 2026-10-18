@@ -753,6 +753,9 @@ mod tests {
             Ok(match path.to_str() {
                 Some("/none/deep") => Entry::Link(key, "/none/new/a".into()),
                 Some("/hop") if *data == b"hop" => Entry::Link(key, "/out".into()),
+                Some("/lifted") if *data == b"lifted" => {
+                    Entry::File(self.key(Path::new("/lifted/a.hcl")))
+                }
                 _ if name == b"link" => Entry::Link(key, "/out".into()),
                 _ if name == b"loop" && *data == b"loop" => {
                     Entry::Link(key, "loop".into())
@@ -1090,6 +1093,25 @@ mod tests {
             assert_eq!(reached(&paths, path), Err(Error::Hidden), "{path}");
         }
         assert_eq!(reached(&paths, "/WORKSHOP"), Err(Error::Outside));
+    }
+
+    #[test]
+    fn a_folder_that_is_a_file_holds_its_file() {
+        let paths = Paths::new(One::default())
+            .within(&["/a.hcl".into()], &[])
+            .unwrap();
+        assert_eq!(reached(&paths, "/a.hcl"), Ok(()));
+    }
+
+    #[test]
+    fn a_folder_that_is_a_file_is_replaced_when_it_moves_above_its_path() {
+        let one = One::default();
+        let data = Rc::clone(&one.0);
+        let paths = Paths::new(one)
+            .within(&["/lifted/a.hcl".into()], &[])
+            .unwrap();
+        *data.borrow_mut() = b"lifted".to_vec();
+        assert_eq!(paths.read(Path::new("/lifted"), 8), Err(Error::Replaced));
     }
 
     #[test]

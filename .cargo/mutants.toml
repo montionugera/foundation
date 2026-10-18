@@ -161,6 +161,12 @@ exclude_re = [
   # macOS 15 only: Linux refuses the path at the stat. In the `macos` check,
   # `paths::within_agrees_with_free_on_a_file_with_a_slash_or_a_dot` catches it.
   'crates/os/src/paths\.rs:.*guard names_directory\(path\) with false in read$',
+  # The open flags share no bit, so `|` and `^` give the same flags.
+  'crates/os/src/paths\.rs:.*replace \| with \^ in Dir::open$',
+  # macOS only, as above. In the `macos` check,
+  # `paths::within_lists_a_directory_that_this_user_can_read_and_not_search` catches
+  # it.
+  'crates/os/src/paths\.rs:.*replace != with == in Dir::open$',
   # No input makes `getaddrinfo` give `EAI_AGAIN` or `EAI_MEMORY` on demand. The test of
   # the map, through a private call, kills each.
   'crates/os/src/net/resolve\.rs:.*delete match arm \(libc::EAI_(AGAIN|MEMORY), _\)',

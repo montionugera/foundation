@@ -504,6 +504,12 @@ fn a_directory_handle_keeps_its_directory_after_a_move() {
         panic!("no directory at /b");
     };
     assert_eq!(up.key(), b.key());
+    assert_eq!(format!("{up:?}"), format!("{b:?}"));
+    assert_ne!(format!("{up:?}"), format!("{a:?}"));
+    let Ok(Entry::Directory(here)) = root.open(OsStr::new(".")) else {
+        panic!("no directory at /.");
+    };
+    assert_eq!(here.key(), root.key());
     assert_eq!(a.open(OsStr::new("out")).err(), Some(Error::NotFound));
 }
 

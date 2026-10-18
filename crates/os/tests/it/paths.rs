@@ -168,6 +168,21 @@ fn within_lists_a_directory_that_this_user_can_read_and_not_search() {
     assert_eq!(found, (names, Err(Error::Io { code: 13 })));
 }
 
+/// The walk opens a directory with search permission alone.
+#[test]
+fn within_reads_through_a_directory_that_this_user_can_search_and_not_read() {
+    let scratch = Scratch::new();
+    let base = fs::canonicalize(&scratch.0).unwrap();
+    let dir = base.join("search");
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("f"), b"x").unwrap();
+    fs::set_permissions(&dir, Permissions::from_mode(0o100)).unwrap();
+    let within = os::paths().within(slice::from_ref(&base), &[]).unwrap();
+    let read = within.read(&dir.join("f"), 64);
+    fs::set_permissions(&dir, Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(read, Ok(Found::File(b"x".to_vec())));
+}
+
 #[test]
 fn within_hides_a_folder_that_this_user_cannot_search() {
     for bits in [0o600, 0o000] {
