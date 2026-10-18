@@ -11,7 +11,7 @@
 //!   answer takes 8 chunks.
 //! - `client N` and `round N`: the same for one read of N nodes by number. A read of
 //!   512 nodes sends 2 requests of [`PER_READ`] nodes, and a read of 4352 sends 17,
-//!   one more than the requests in flight.
+//!   more than the requests in flight.
 //!
 //! [`PER_READ`]: connector_opcua::bench::client::PER_READ
 

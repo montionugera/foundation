@@ -34,7 +34,7 @@ pub(crate) mod tests;
 use service::{Bytes, Item, Request, Sizes};
 
 /// The most requests of a client in flight. A request past it waits until one ends.
-const READS: u16 = 16;
+const READS: u16 = 9;
 
 /// The most intermediate chunks that a client queues across its answers: each of
 /// [`READS`] answers waits for its final chunk with at most [`CHUNKS`] - 1 chunks. A
