@@ -66,18 +66,41 @@ fn suite(pattern: &str) -> (bool, String) {
     .unwrap_or_else(|e| panic!("the suite did not run: {e}"))
 }
 
-/// Maps `Bind`, which no test of the suite reaches: the bind of an ephemeral port fails
-/// only when the process has no free file descriptor, and the count of free ones
-/// changes with the process.
+/// Maps each variant to its class and text. No test of the suite reaches `Bind`: the
+/// bind of an ephemeral port fails only when the process has no free file descriptor,
+/// and the count of free ones changes with the process.
 #[test]
-fn bind_raises_os_error() {
+fn error_raises_the_class_and_text_of_each_variant() {
+    let cases = [
+        (
+            sdk::Error::Thread {
+                reason: "the test".into(),
+            },
+            "RuntimeError",
+            "cannot start the client thread: the test",
+        ),
+        (
+            sdk::Error::Bind(transport::Error::TimedOut),
+            "OSError",
+            "cannot bind the local UDP socket: the peer stopped answering",
+        ),
+        (
+            sdk::Error::Session(program::Error::Unanswered),
+            "ConnectionError",
+            "the node finished a stream with no answer",
+        ),
+        (
+            sdk::Error::Panicked,
+            "PanicException",
+            "the client thread panicked",
+        ),
+    ];
     Python::initialize();
     Python::attach(|py| {
-        let error = super::error(&sdk::Error::Bind(transport::Error::TimedOut));
-        assert_eq!(error.get_type(py).name().unwrap().to_string(), "OSError");
-        assert_eq!(
-            error.value(py).to_string(),
-            "cannot bind the local UDP socket: the peer stopped answering"
-        );
+        for (variant, class, text) in cases {
+            let error = super::error(&variant);
+            assert_eq!(error.get_type(py).name().unwrap().to_string(), class);
+            assert_eq!(error.value(py).to_string(), text);
+        }
     });
 }

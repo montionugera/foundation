@@ -1922,6 +1922,7 @@ dependencies = [
 name = "sdk-python"
 version = "0.0.0"
 dependencies = [
+ "program",
  "pyo3",
  "sdk",
  "transport",
