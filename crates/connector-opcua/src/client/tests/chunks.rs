@@ -204,27 +204,18 @@ fn closed() -> (Result<Value, Fault>, Result<Value, Fault>) {
     )
 }
 
-/// [`CHUNKS`] intermediate chunks of one request id queue, and one more closes the
-/// channel, also with no final chunk.
+/// The limits of one message hold at its final chunk, so the intermediate chunks of
+/// one request id queue past [`CHUNKS`] chunks and the largest message, up to the
+/// queue bound.
 #[test]
-fn the_intermediate_chunks_of_one_request_id_stop_at_the_bound() {
-    let chunks = usize::try_from(CHUNKS).expect("fits");
-    let (read, after, value) = after_forged(&[chunks], 1, MESSAGE);
-    assert_eq!((read, after), (Ok(value), Ok(value)));
-    let (read, after, _) = after_forged(&[chunks + 1], 1, MESSAGE);
-    assert_eq!((read, after), closed());
-}
-
-/// Intermediate chunks of one request id whose bodies are the largest message in all
-/// queue, and one more byte closes the channel, also with no final chunk.
-#[test]
-fn the_intermediate_chunks_of_one_request_id_stop_at_the_largest_message() {
+fn the_intermediate_chunks_of_one_request_id_stop_only_at_the_queue_bound() {
+    let queued = usize::from(READS) * (to_usize(CHUNKS) - 1);
     let message = u32::try_from(3 * BODY).expect("fits");
-    let (read, after, value) = after_forged(&[3], BODY, message);
+    let (read, after, value) = after_forged(&[4], BODY, message);
     assert_eq!((read, after), (Ok(value), Ok(value)));
-    let (read, after, _) = after_forged(&[2, 1, 3], BODY, message);
+    let (read, after, _) = after_forged(&[queued], 1, MESSAGE);
     assert_eq!((read, after), (Ok(value), Ok(value)));
-    let (read, after, _) = after_forged(&[4], BODY, message);
+    let (read, after, _) = after_forged(&[queued + 1], 1, MESSAGE);
     assert_eq!((read, after), closed());
 }
 

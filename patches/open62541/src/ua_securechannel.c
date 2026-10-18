@@ -934,7 +934,6 @@ UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
                                     UA_ByteString *payload, UA_Boolean *copied,
                                     UA_Boolean *aborted, UA_DateTime nowMonotonic) {
     UA_Chunk chunk, *pchunk, *next;
-    size_t idCount, idLength;
     UA_StatusCode res = UA_STATUSCODE_GOOD;
 
  extract_chunk:
@@ -970,21 +969,10 @@ UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
         goto extract_chunk;
 
     case UA_CHUNKTYPE_INTERMEDIATE:
-        /* The limits hold for each message, as answers can interleave */
-        idCount = 0;
-        idLength = chunk.bytes.length;
-        TAILQ_FOREACH(pchunk, &channel->chunks, pointers) {
-            if(pchunk->requestId != chunk.requestId)
-                continue;
-            idCount++;
-            idLength += pchunk->bytes.length;
-        }
-        if((channel->config.localMaxChunkCount != 0 &&
-            idCount >= channel->config.localMaxChunkCount) ||
-           (channel->config.localMaxMessageSize != 0 &&
-            idLength > channel->config.localMaxMessageSize) ||
-           (channel->config.localMaxQueuedChunks != 0 &&
-            channel->chunksCount >= channel->config.localMaxQueuedChunks)) {
+        /* Answers can interleave, so the limits of one message hold only at the
+         * final chunk */
+        if(channel->config.localMaxQueuedChunks != 0 &&
+           channel->chunksCount >= channel->config.localMaxQueuedChunks) {
             if(chunk.copied)
                 UA_ByteString_clear(&chunk.bytes);
             return UA_STATUSCODE_BADTCPMESSAGETOOLARGE;
