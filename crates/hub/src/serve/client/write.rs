@@ -310,7 +310,7 @@ struct Stored {
     /// The count of frames through the last one taken since the call of the commit in
     /// `due`.
     taken: Option<u64>,
-    /// The block of the next `Stored`, which `taken` holds whenever it is `Some`.
+    /// The block of the next `Stored`. It is `Some` whenever `taken` is.
     next: Option<Unique>,
     /// The commit that is due, the count of frames that it covers, and the block of its
     /// `Stored`.
