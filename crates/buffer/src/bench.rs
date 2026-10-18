@@ -224,6 +224,9 @@ pub struct Logs {
     /// The body of a carry record of a tail of each index, or of the most tails.
     room: usize,
     carried: Carried,
+    /// The carry body that [`carry`](Self::carry) writes, empty when no entry has a
+    /// tag.
+    body: Vec<u8>,
 }
 
 impl Logs {
@@ -252,7 +255,22 @@ impl Logs {
             commits: 0,
             room,
             carried: Carried::with_capacity(usize::try_from(indexes).expect("fits")),
+            body: Vec::new(),
         }
+    }
+
+    /// As [`new`](Self::new), with each entry of tag 1, whose 8 bytes each sync
+    /// copies and [`carry`](Self::carry) writes into its body.
+    #[must_use]
+    pub fn tagged(indexes: u32) -> Self {
+        let mut logs = Self::new(indexes);
+        for (_, header) in &mut logs.headers {
+            header.tag = 1;
+        }
+        let count = logs.headers.len().min(carry::TAILS_MAX);
+        logs.room = carry::body_len(count, count, 8 * count);
+        logs.body = vec![0; logs.room];
+        logs
     }
 
     /// One commit of one record that holds `entries` data entries of each index. It
@@ -275,7 +293,9 @@ impl Logs {
     /// most [`carry::TAILS_MAX`] entries, as a group holds them. Then carry records
     /// in the next records, as commits that carry: each takes the idle tails of the
     /// records before it, at most [`carry::TAILS_MAX`], and is their holder, so the
-    /// hide of the next commit drops the run of each index.
+    /// hide of the next commit drops the run of each index. Of
+    /// [`tagged`](Self::tagged) logs, each sync also copies the entry, and each carry
+    /// record holds the copies and writes its body.
     pub fn carry(&mut self) {
         self.keep_up();
         for record in self.headers.chunks_mut(carry::TAILS_MAX) {
@@ -284,6 +304,9 @@ impl Logs {
                 self.inner
                     .sync(*slot, header, self.offset)
                     .expect("entries in order");
+                if header.tag != 0 {
+                    self.inner.copy(*slot, header, self.offset, &[&[7; 8][..]]);
+                }
                 header.first += 1;
             }
             self.offset += BLOCK;
@@ -291,6 +314,9 @@ impl Logs {
         let reach = self.offset;
         loop {
             self.inner.carry(reach, self.room, &mut self.carried);
+            if !self.body.is_empty() {
+                hint::black_box(self.inner.write(&self.carried, &mut self.body));
+            }
             self.inner.hold(&self.carried, self.offset);
             self.offset += BLOCK;
             if self.carried.tails().len() < carry::TAILS_MAX {
@@ -689,6 +715,21 @@ mod tests {
             assert_eq!(offsets, [5 * BLOCK], "index {n}");
             let stamp = logs.inner.durable(Slot::new(n), Path::Live).stamp;
             assert_eq!(stamp, None, "index {n}");
+        }
+    }
+
+    /// Each carry of tagged logs holds the tail and the copy of each index. It
+    /// reads the private `carried`: `carry` gives nothing.
+    #[test]
+    fn a_tagged_carry_holds_a_tail_and_a_copy_of_each_index() {
+        for indexes in [1, 64, 256] {
+            let mut logs = Logs::tagged(indexes);
+            let count = usize::try_from(indexes).expect("fits");
+            for _ in 0..4 {
+                logs.carry();
+                let len = carry::body_len(count, count, 8 * count);
+                assert_eq!(logs.carried.len(), len, "{indexes} indexes");
+            }
         }
     }
 }
