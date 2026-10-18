@@ -951,16 +951,16 @@
   `Aes128_Sha256_RsaOaep`, `Aes256_Sha256_RsaPss`, and their common code. So the copy
   compiles only the three current policies and `None`, and the production code adds no
   other. `shim.c` defines each symbol that the rest of the copy names from a left-out
-  file to panic with its name and abort, and a test calls each one. A test fails on another
-  policy file in `sources.txt`. A test fails when the production code names a policy or
-  a certificate group, or a function `UA_CertificateUtils_*`, other than at its stub in
-  `shim.c`, and a test fails when the objects of `shim.c` or `server.c` name aws-lc or a
-  symbol of `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps no state:
-  the copy removes its `static` flag, which it wrote with no lock and which guarded only
-  the calls for OpenSSL before 1.1, and the build fails when `OPENSSL_API_COMPAT` is
-  defined. Lost: the about 35 file and clock calls of the left-out files, each keyed in
-  `FUNCTION_SYMBOLS`; and a copy of each deprecated and ECC policy file. Decided by
-  `laptop.architect-2`
+  file to panic with its name and abort, and a test calls each one. A test fails on
+  another policy file in `sources.txt`. A test fails when the production code names a
+  policy or a certificate group, or a function `UA_CertificateUtils_*`, other than at
+  its stub in `shim.c`, and a test fails when the objects of `shim.c` or `server.c` name
+  aws-lc or a symbol of `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps
+  no state: the copy removes its `static` flag, which it wrote with no lock and which
+  guarded only the calls for OpenSSL before 1.1, and the build fails when
+  `OPENSSL_API_COMPAT` is defined. Lost: the about 35 file and clock calls of the
+  left-out files, each keyed in `FUNCTION_SYMBOLS`; and a copy of each deprecated and
+  ECC policy file. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6230888200,
   2026-10-17 06:51 UTC). The `UA_Openssl_Init` sentences: decided by
   `laptop.architect-2`
