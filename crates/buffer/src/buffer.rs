@@ -1074,11 +1074,12 @@ async fn walk(
         match cursor.next(&bytes)? {
             Step::Data(body) => {
                 let largest = pool.largest();
-                let carry =
+                let (count, copy_len) =
                     recover(body, offset, largest, slots, &mut logs, &mut newest)?;
-                if carry > header.layout.carry_max() {
-                    return Err(Error::Invalid { offset });
-                }
+                let carry = header
+                    .layout
+                    .holders(count, copy_len)
+                    .map_err(|_over: Limit| Error::Invalid { offset })?;
                 cursor.reserve(offset, body.len, carry);
             }
             Step::Carry(body) => recover_carried(body, offset, slots, &mut logs)?,
@@ -1110,9 +1111,9 @@ async fn walk(
 type Tagged = hash::Map<(Slot, Path, NonZeroU8), (u64, usize, u32)>;
 
 /// Feeds the logs the entries of a record body at `offset`, as appended and
-/// synced, and notes each entry with a nonzero tag in `newest`. Gives the carry body
-/// of the holders of the record as [`Group::fit`](group::Group::fit) counts it, or 0
-/// when no entry has a nonzero tag. Fails when an entry is over `largest`, the
+/// synced, and notes each entry with a nonzero tag in `newest`. Gives the count of
+/// entries and the bytes that their copies take in a carry body, as
+/// [`Group::fit`](group::Group::fit) counts them. Fails when an entry is over `largest`, the
 /// pool's largest block, or a tagged entry is over [`Layout::ENTRY_MAX_MIN`], which
 /// no carry record holds.
 fn recover(
@@ -1122,7 +1123,7 @@ fn recover(
     slots: &mut Slots,
     logs: &mut Logs,
     newest: &mut Tagged,
-) -> Result<usize, Error> {
+) -> Result<(usize, usize), Error> {
     let unread = |_: entry::Invalid| Error::Invalid { offset };
     let misplaced = |_: log::Invalid| Error::Invalid { offset };
     let (mut count, mut copy_len) = (0, 0);
@@ -1143,7 +1144,7 @@ fn recover(
             copy_len += carry::copy_len(requested);
         }
     }
-    Ok(carry::holders_len(count, copy_len))
+    Ok((count, copy_len))
 }
 
 /// Feeds the logs the tails and the entries of a carry record body at `offset`.

@@ -205,11 +205,7 @@ impl Group {
         let layout = writer.layout();
         layout.check(count, parts, len).map_err(Rejected::Large)?;
         let copy_len = copies(batch, block_max).map_err(Rejected::Large)?;
-        let max = layout.carry_max();
-        let carry = carry::holders_len(count, copy_len);
-        if carry > max {
-            return Err(Rejected::Large(Limit::Carry { len: carry, max }));
-        }
+        layout.holders(count, copy_len).map_err(Rejected::Large)?;
         layout
             .check(
                 start.saturating_add(count),
@@ -218,10 +214,9 @@ impl Group {
             )
             .map_err(|_over: Limit| Rejected::Record)?;
         let copy_len = self.copy_len.saturating_add(copy_len);
-        let carry = carry::holders_len(start.saturating_add(count), copy_len);
-        if carry > max {
-            return Err(Rejected::Record);
-        }
+        let carry = layout
+            .holders(start.saturating_add(count), copy_len)
+            .map_err(|_over: Limit| Rejected::Record)?;
         let body = self.body_len_with(count, len);
         if let Err(full) = writer.fits(body, carry) {
             return Err(if self.is_empty() {

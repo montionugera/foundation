@@ -336,6 +336,26 @@ impl Layout {
         Ok(())
     }
 
+    /// The carry body of the holders of a record of `count` entries whose copies take
+    /// `copy_len` bytes, each as [`carry::copy_len`] gives it: each entry as a tail
+    /// and each entry with a nonzero tag also as a copy.
+    ///
+    /// # Errors
+    ///
+    /// [`Limit::Carry`] when the body is over [`carry_max`](Self::carry_max).
+    ///
+    /// # Panics
+    ///
+    /// When `count` is over [`ENTRIES_MAX`].
+    pub(crate) fn holders(self, count: usize, copy_len: usize) -> Result<usize, Limit> {
+        let len = carry::body_len(count, 0, copy_len);
+        let max = self.carry_max();
+        if len > max {
+            return Err(Limit::Carry { len, max });
+        }
+        Ok(len)
+    }
+
     /// The length of the ring file: the two header blocks and the area.
     pub(crate) fn file_len(self) -> u64 {
         AREA_START + self.area

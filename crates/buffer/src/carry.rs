@@ -124,50 +124,34 @@ pub(crate) const fn copy_len(bytes: usize) -> usize {
         .expect("invariant: a copy fits in memory")
 }
 
-/// The carry body of the holders of a record of `count` entries whose copies take
-/// `copy_len` bytes, each as [`copy_len`] gives it: each entry as a tail and each
-/// entry with a nonzero tag also as a copy. 0 when `copy_len` is 0, so when no entry
-/// has a nonzero tag.
-///
-/// # Panics
-///
-/// As [`body_len`] does, when `copy_len` is not 0.
-pub(crate) const fn holders_len(count: usize, copy_len: usize) -> usize {
-    if copy_len == 0 {
-        return 0;
-    }
-    body_len(count, 0, copy_len)
-}
-
 /// Writes the body that holds `tails` and `entries`, each header with its bytes, at
-/// the front of `into` and returns its size, as [`body_len`] gives it. `bytes` is
-/// the bytes of the entries together.
+/// the front of `into` and returns its size, as [`body_len`] gives it.
 ///
 /// # Panics
 ///
 /// When there are over [`TAILS_MAX`] tails or [`ENTRIES_MAX`] entries, an entry's
-/// header names another size than its bytes, the entries hold other than `bytes`
-/// bytes, or `into` is shorter than the body.
+/// header names another size than its bytes, or `into` is shorter than the body.
 pub(crate) fn write<'a>(
     tails: &[Tail],
     entries: impl ExactSizeIterator<Item = (Header, &'a [u8])>,
-    bytes: usize,
     into: &mut [u8],
 ) -> usize {
     let count = entries.len();
-    let len = body_len(tails.len(), count, bytes);
-    let Some((body, _)) = into.split_at_mut_checked(len) else {
+    let len = body_len(tails.len(), count, 0);
+    let given = into.len();
+    let short = |needed: usize| -> ! {
         panic!(
-            "invariant: the body of {} tails and {count} entries takes {len} bytes, \
-             given {}",
-            tails.len(),
-            into.len()
-        );
+            "invariant: the body of {} tails and {count} entries takes at least \
+             {needed} bytes, given {given}",
+            tails.len()
+        )
+    };
+    let Some((head, mut data)) = into.split_at_mut_checked(len) else {
+        short(len);
     };
     let counted = |count: usize| {
         u16::try_from(count).expect("invariant: a count of at most 1023 fits a u16")
     };
-    let (head, mut data) = body.split_at_mut(body_len(tails.len(), count, 0));
     let (slot, mut rest) = head.split_at_mut(COUNTS);
     let (first, second) = slot.split_at_mut(2);
     first.copy_from_slice(&counted(tails.len()).to_le_bytes());
@@ -187,14 +171,14 @@ pub(crate) fn write<'a>(
         let (slot, after) = rest.split_at_mut(entry::HEADER_LEN);
         slot.copy_from_slice(&header.encode());
         rest = after;
+        let at = given.saturating_sub(data.len());
         let Some((slot, after)) = data.split_at_mut_checked(held.len()) else {
-            panic!("invariant: the entries hold more than {bytes} bytes");
+            short(at.saturating_add(held.len()));
         };
         slot.copy_from_slice(held);
         data = after;
     }
-    assert!(data.is_empty(), "invariant: the entries hold {bytes} bytes");
-    len
+    given.saturating_sub(data.len())
 }
 
 /// The tails and the entries of a whole carry body, each in order.
@@ -340,7 +324,7 @@ mod tests {
         let bytes = entries.iter().map(|(_, bytes)| bytes.len()).sum();
         let mut body = vec![0; body_len(tails.len(), entries.len(), bytes)];
         assert_eq!(
-            write(tails, entries.iter().copied(), bytes, &mut body),
+            write(tails, entries.iter().copied(), &mut body),
             body.len(),
             "the tails and the entries fill the body"
         );
@@ -448,17 +432,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "invariant: the entries hold more than 1 bytes")]
-    fn write_panics_on_entries_of_more_bytes_than_given() {
-        let mut body = vec![0; 64];
-        write(&[], [(header(1, 2), &[1, 2][..])].into_iter(), 1, &mut body);
-    }
-
-    #[test]
-    #[should_panic(expected = "invariant: the entries hold 3 bytes")]
-    fn write_panics_on_entries_of_fewer_bytes_than_given() {
-        let mut body = vec![0; 64];
-        write(&[], [(header(1, 2), &[1, 2][..])].into_iter(), 3, &mut body);
+    #[should_panic(
+        expected = "invariant: the body of 0 tails and 1 entries takes at least 57 \
+                    bytes, given 56"
+    )]
+    fn write_panics_on_a_body_longer_than_into() {
+        let mut body = vec![0; 56];
+        write(&[], [(header(1, 2), &[1, 2][..])].into_iter(), &mut body);
     }
 
     #[test]

@@ -974,7 +974,7 @@ impl Logs {
             };
             (header, copy.bytes.as_slice())
         });
-        carry::write(carried.tails(), entries, carried.bytes, into)
+        carry::write(carried.tails(), entries, into)
     }
 
     /// Makes the carry record at `offset` the holder of each tail of `carried`, and
