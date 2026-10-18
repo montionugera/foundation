@@ -346,17 +346,25 @@ impl State {
             .members
             .get_mut(&key)
             .ok_or(Refused::Stranger { key })?;
-        let card = card.check().map_err(Refused::Forged)?;
-        let (held, new) = (member.card.card(), card.card());
-        if (&new.name, new.public_key, &new.seal_key)
+        let held = member.card.card();
+        let card = card.check_with(held.public_key).map_err(Refused::Forged)?;
+        // Each field is named, so a new field of a card is not changeable by default.
+        let card::Card {
+            name,
+            public_key,
+            seal_key,
+            addresses: _,
+            version,
+        } = card.card();
+        if (name, *public_key, seal_key)
             != (&held.name, held.public_key, &held.seal_key)
         {
             return Err(Refused::Changed { key });
         }
-        if new.version <= held.version {
+        if *version <= held.version {
             return Err(Refused::Behind {
                 key,
-                version: new.version,
+                version: *version,
                 held: held.version,
             });
         }
@@ -672,6 +680,7 @@ impl std::error::Error for Unfit {}
 mod tests {
     use proptest::prelude::*;
     use transport::Address;
+    use types::ed25519::Pair;
     use types::node::SealKey;
 
     use super::*;
@@ -1038,10 +1047,16 @@ mod tests {
     }
 
     // A `Card` change of `card` for node `key`, which the private key of node `signer`
-    // signed, with its signature bits flipped when `forged`.
+    // signed, with its signature bits flipped when `forged`. The key of `signer` need
+    // not be the key of the card.
     fn card_change(key: u8, card: card::Card, signer: u8, forged: bool) -> Change {
-        let mut card =
-            unchecked(&card::Signed::sign(node(key), card, &private(signer)));
+        let statement = card::statement(card::TAG, node(key), &card);
+        let signature = Pair::new(&private(signer)).sign(&statement);
+        let mut card = card::Unchecked {
+            key: node(key),
+            card,
+            signature,
+        };
         if forged {
             card.signature[0] ^= 1;
         }
@@ -1051,12 +1066,15 @@ mod tests {
     #[test]
     fn a_card_change_replaces_the_card_of_its_member() {
         let mut state = state();
-        let mut expected = state.clone();
         let change = card_change(2, moved(2, 5), 2, false);
         let Change::Card(card) = change.clone() else {
             unreachable!()
         };
-        expected.members.get_mut(&node(2)).unwrap().card = card.check().unwrap();
+        let mut members = create_members(&[1, 2]);
+        members[1].card = card.check().unwrap();
+        let mut expected = create_state(name("plant").into(), members).unwrap();
+        let recorded = expected.apply(ticket_change(7, options("plant.edge", false)));
+        assert_eq!(recorded, Ok(false));
         assert_eq!(state.apply(change), Ok(false));
         assert_eq!(state, expected);
         assert_eq!(state.named(&name("plant.node2")), Some(node(2)));
@@ -1139,11 +1157,26 @@ mod tests {
             ..moved(2, 2)
         };
         let changed = Refused::Changed { key: node(2) };
-        for (card, signer) in [(renamed, 2), (rekeyed, 9), (resealed, 2)] {
-            let change = card_change(2, card, signer, false);
+        for card in [renamed, rekeyed, resealed] {
+            let change = card_change(2, card, 2, false);
             assert_eq!(state.apply(change), Err(changed.clone()));
             assert_eq!(state, before);
         }
+    }
+
+    /// The signature holds with the public key of the member, not with the key that
+    /// the card holds.
+    #[test]
+    fn a_card_that_its_new_public_key_signed_is_forged() {
+        let mut state = state();
+        let before = state.clone();
+        let rekeyed = card::Card {
+            public_key: public(9),
+            ..moved(2, 2)
+        };
+        let forged = Refused::Forged(card::Forged { node: node(2) });
+        assert_eq!(state.apply(card_change(2, rekeyed, 9, false)), Err(forged));
+        assert_eq!(state, before);
     }
 
     #[test]
@@ -1773,6 +1806,9 @@ mod tests {
                         prop_assert!(!moved);
                         let held = before.member(card.key).unwrap().card.card();
                         prop_assert!(card.card.version > held.version);
+                        // Only a compare of the whole state shows that the change
+                        // changes nothing else, and no public call builds a state
+                        // with a given card, so this sets the private field.
                         let mut expected = before.clone();
                         let member = expected.members.get_mut(&card.key).unwrap();
                         member.card = card.check().unwrap();

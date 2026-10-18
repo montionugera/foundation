@@ -12,7 +12,8 @@ use crate::bytes::{
 
 pub mod addresses;
 
-const TAG: &[u8] = b"foundation/card/1";
+/// The tag of the statement of a card.
+pub(crate) const TAG: &[u8] = b"foundation/card/1";
 
 /// What a node states about itself. Its own Ed25519 key signs all of it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -177,8 +178,18 @@ impl Unchecked {
     ///
     /// [`Forged`] when it does not hold for `card.public_key`.
     pub(crate) fn check(self) -> Result<Signed, Forged> {
-        let statement = statement(TAG, self.key, &self.card);
         let key = self.card.public_key;
+        self.check_with(key)
+    }
+
+    /// The signed card, when the signature holds for `key`, which need not be the
+    /// key of the card.
+    ///
+    /// # Errors
+    ///
+    /// [`Forged`] when it does not hold for `key`.
+    pub(crate) fn check_with(self, key: PublicKey) -> Result<Signed, Forged> {
+        let statement = statement(TAG, self.key, &self.card);
         key.verify(&statement, &self.signature)
             .map_err(|_bad: BadSignature| Forged { node: self.key })?;
         Ok(Signed(self))

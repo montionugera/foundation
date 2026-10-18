@@ -181,10 +181,9 @@
   A `Card` change (kind 5) makes a card the card of its member, so a node can change
   its addresses. It holds a `card::Unchecked` in the byte form of a `Join` card: the
   node key, the card, and its signature. Apply refuses, in this order, a card whose key
-  is not a member (`Refused::Stranger`), whose signature does not hold for its own
-  public key (`Forged`), that changes more than the addresses and the version
-  (`Changed`, so a valid card holds the member's public key), and whose version is not
-  above the held version (`Behind`). So a repeat
+  is not a member (`Refused::Stranger`), whose signature does not hold with the
+  member's public key (`Forged`), that changes more than the addresses and the version
+  (`Changed`), and whose version is not above the held version (`Behind`). So a repeat
   and a late older proposal are no-ops, and the name and the keys of a member never
   change. Approved by `laptop.architect` (2026-10-18T03:29:11Z:
   https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245196820).
