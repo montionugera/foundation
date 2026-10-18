@@ -142,6 +142,33 @@ fn a_get_of_more_digests_than_one_message_holds_gives_each() {
 }
 
 #[test]
+fn a_get_asks_for_as_many_digests_as_one_message_of_the_peer_holds() {
+    let digests: Vec<Digest> = (0..=BATCH)
+        .map(|at| Digest::of(&at.to_le_bytes()))
+        .collect();
+    let asked = digests.clone();
+    run_session(
+        0,
+        DISK,
+        move |_, session| async move {
+            let mut stream = raw(accept(&session).await.unwrap());
+            for batch in [&asked[..BATCH], &asked[BATCH..]] {
+                assert!(stream.request().await == batch, "a get of the batch");
+                for &digest in batch {
+                    stream.answer(Reply::Absent { digest }).await;
+                }
+            }
+            stream.finish().await;
+        },
+        move |peer| async move {
+            let store = open(&peer.node, 0).await;
+            let got = get(&store, &peer.session, &digests).await.unwrap();
+            assert_eq!(got.len(), BATCH + 1);
+        },
+    );
+}
+
+#[test]
 fn a_chunk_that_hashes_to_another_digest_gives_mismatch_and_the_rest_come_again() {
     let (a, _) = chunk(1, 3000);
     let (found, bytes) = chunk(9, 3000);
@@ -251,6 +278,31 @@ fn a_reply_of_another_digest_gives_unexpected_and_stops_as_malformed() {
         move |peer| async move {
             let store = open(&peer.node, 0).await;
             let reply = Reply::Absent { digest: b };
+            let got = get(&store, &peer.session, &[a]).await;
+            assert_eq!(got, Err(Error::Unexpected { reply }));
+        },
+    );
+}
+
+#[test]
+fn a_chunk_of_another_digest_gives_unexpected_and_stops_as_malformed() {
+    let (a, _) = chunk(1, 100);
+    let (b, _) = chunk(2, 100);
+    let reply = Reply::Chunk {
+        digest: b,
+        len: 100,
+    };
+    run_session(
+        0,
+        DISK,
+        move |_, session| async move {
+            let mut stream = raw(accept(&session).await.unwrap());
+            assert_eq!(stream.request().await, vec![a]);
+            stream.answer(reply).await;
+            assert_eq!(stream.reset().await, reset(MALFORMED));
+        },
+        move |peer| async move {
+            let store = open(&peer.node, 0).await;
             let got = get(&store, &peer.session, &[a]).await;
             assert_eq!(got, Err(Error::Unexpected { reply }));
         },
