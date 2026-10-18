@@ -8,7 +8,7 @@ use access::proof;
 use transport::Class;
 use transport::stream::{Receiver, Sender};
 use types::name::{Name, Selector};
-use wire::hub::client::{Mode, Open, PLACES_MAX, Place, Places, Read, Refusal};
+use wire::hub::client::{Mode, Open, PLACES_MAX, Place, Read, Refusal};
 
 use super::{Reserved, body, verify};
 use crate::State;
@@ -36,13 +36,13 @@ pub(super) async fn serve(
         }
     });
     let state = &session.state;
-    let Some((reader, live, head, places, layout)) =
+    let Some((reader, live, index, places, layout)) =
         here(state, open, mode, program.as_mut()).await?
     else {
         sender.finish()?;
         return Ok(());
     };
-    start(state, sender, head, places, live).await?;
+    start(state, sender, index, places, live).await?;
     relay(state, reader, layout, program, sender).await
 }
 
@@ -89,7 +89,7 @@ async fn open(
 }
 
 /// Opens the reader of `open` at this node, the home of its index, and gives it with
-/// its open position, the head of its places, its places, and their layout, or `None`
+/// its open position, the place of its index, its places, and their layout, or `None`
 /// when `program` finishes first. Holds the reservation of `open` until the open
 /// decodes after the wait for the home. Places over [`PLACES_MAX`] give
 /// [`Error::Places`], also when the home is another node, and this node then
@@ -99,7 +99,7 @@ async fn here<F>(
     open: Held,
     mode: reader::Mode,
     program: Pin<&mut F>,
-) -> Result<Option<(Reader, u64, Places, Vec<Place>, Layout)>, Error>
+) -> Result<Option<(Reader, u64, usize, Vec<Place>, Layout)>, Error>
 where
     F: Future<Output = Result<(), Error>>,
 {
@@ -125,26 +125,22 @@ where
         Home::Away(home) => return Err(refused(reader::Error::Remote { home })),
     };
     let channels = here.carry(&mut state.borrow_mut());
-    let head = Places {
-        count: u32::try_from(count).expect("invariant: at most PLACES_MAX"),
-        index: u32::try_from(places.index)
-            .expect("invariant: the index is one of the places"),
-    };
     let layout = Layout::new(channels.slots.clone(), channels.index);
     let (reader, live) = Reader::here(state, channels, mode);
-    Ok(Some((reader, live, head, places.items, layout)))
+    Ok(Some((reader, live, places.index, places.items, layout)))
 }
 
-/// Sends `head`, the run of `places`, and `Opened` with `live`, the open position, and
+/// Sends `places`, whose index is place `index`, and `Opened` with `live`, the open
+/// position, and
 /// drops the places.
 async fn start(
     state: &RefCell<State>,
     sender: &mut Sender,
-    head: Places,
+    index: usize,
     places: Vec<Place>,
     live: u64,
 ) -> Result<(), Error> {
-    super::places(state, sender, head, &places).await?;
+    super::places(state, sender, index, &places).await?;
     sender
         .send(reply(state, wire::hub::Reply::Opened { live })?)
         .await?;

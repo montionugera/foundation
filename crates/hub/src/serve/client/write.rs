@@ -10,14 +10,12 @@ use std::task::Poll;
 use access::proof;
 use block::Unique;
 use transport::stream::{Receiver, Sender};
-use types::channel;
-use types::frame::key_set::{Entry, KeySet};
+use types::frame::key_set::Entry;
 use types::frame::{Draft, Label, Path};
-use types::hash;
 use types::name::Name;
 use types::time::{Span, Stamp};
 use wire::hub::client::write::{Open, Write};
-use wire::hub::client::{Place, Places};
+use wire::hub::client::Place;
 use wire::hub::write::{Due, Frames, Outcome, Refusal, Reply, Step, Time};
 
 use super::{Reserved, body, verify};
@@ -47,11 +45,12 @@ pub(super) async fn serve(
     let ends = Frames::bytes(open.channels.len() + 1);
     let ends = u64::try_from(ends).expect("invariant: a u64 holds a usize");
     let _reserved = Reserved::new(state, subject.clone(), ends)?;
+    let names = open.channels.clone();
     let Some(writer) = here(state, subject, open, receiver).await? else {
         sender.finish()?;
         return Ok(());
     };
-    start(state, sender, writer.set()).await?;
+    start(state, sender, &writer, names).await?;
     relay(state, &session.transport, writer, receiver, sender).await
 }
 
@@ -99,42 +98,36 @@ async fn here(
     homed.open().map(Some).map_err(refused)
 }
 
-/// Sends the head of the places of `set` and their run: place `n` is entry `n`. Call
-/// it with no wait after the writer opens, while each channel of `set` is defined.
+/// Sends the places of `writer` and their run: place `n` is entry `n` of its key set,
+/// with its name from `names`, the channels of its open, or from the table for its
+/// index. Call it with no wait after the writer opens, while each channel of the open
+/// has the key that it opened with.
 async fn start(
     state: &RefCell<State>,
     sender: &mut Sender,
-    set: &KeySet,
+    writer: &Writer,
+    names: Vec<Name>,
 ) -> Result<(), Error> {
+    let set = writer.set();
+    let index = set.groups()[0];
     let places: Vec<Place> = {
         let channels = &state.borrow().channels;
         let entries = set.entries();
-        let at: hash::Map<channel::Key, usize> = entries
-            .iter()
-            .enumerate()
-            .map(|(n, entry)| (entry.key, n))
-            .collect();
-        let mut names = vec![None; entries.len()];
-        for (name, channel) in channels.iter() {
-            if let Some(&n) = at.get(&channel.key()) {
-                names[n] = Some(name);
-            }
+        let mut of = vec![None; entries.len()];
+        for (&n, name) in writer.entries().iter().zip(&names) {
+            of[n] = Some(name);
         }
+        of[index].get_or_insert_with(|| channels.index(entries[index].key).0);
         let place = |(entry, name): (&Entry, Option<&Name>)| Place {
             key: entry.key,
             data_type: channels.known(entry.key).sample(),
             name: name
-                .expect("invariant: the channels of a writer are defined")
+                .expect("invariant: each entry is a channel of the open or its index")
                 .clone(),
         };
-        entries.iter().zip(names).map(place).collect()
+        entries.iter().zip(of).map(place).collect()
     };
-    let fit = "invariant: an open of a write holds fewer than u32::MAX channels";
-    let head = Places {
-        count: u32::try_from(places.len()).expect(fit),
-        index: u32::try_from(set.groups()[0]).expect(fit),
-    };
-    super::places(state, sender, head, &places).await
+    super::places(state, sender, index, &places).await
 }
 
 /// Writes each frame of the program with `writer` and sends its outcome, until the
