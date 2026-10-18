@@ -309,36 +309,108 @@ fn a_connector_reads_the_secrets_that_create_secret_writes_on_the_files_of_env()
 }
 
 #[test]
-#[should_panic(expected = "two channels are named plant.ticks.status.time")]
-fn supervise_panics_on_a_second_connector_of_one_name() {
+fn a_second_open_of_one_name_reuses_its_status() {
     on_rig(
         || Table::new().with("ticks", Ticks::default()),
+        |rig, _| async move {
+            let (config, plant) = (Document::default(), name("plant.ticks"));
+            let names = rig.define_status("ticks", &plant, &config);
+            let select = Selector::new(names.iter().map(Name::as_str));
+            let mut reader = rig
+                .hub()
+                .reader(hub::reader::Config {
+                    select: select.expect("a selector"),
+                    mode: Mode::Complete,
+                    subject: name("plant.test"),
+                    name: None,
+                    hold: Span::ZERO,
+                })
+                .await
+                .expect("the reader opens");
+            let mut a = rig.supervise("ticks", plant.clone(), config.clone()).await;
+            a.until(TEN, ticking).await;
+            assert_eq!(a.stop().await.map_err(|e| e.to_string()), Ok(()));
+            let mut b = rig.supervise("ticks", plant.clone(), config.clone()).await;
+            b.until(TEN, ticking).await;
+            let mut states = Vec::new();
+            while states.iter().filter(|s| **s == State::Running).count() < 2 {
+                let received = reader.next().await.expect("a status frame");
+                let reading = Reading::of(&received).expect("a whole status");
+                states.push(reading.state);
+            }
+            assert_eq!(b.stop().await.map_err(|e| e.to_string()), Ok(()));
+            let cancel = cancel::Token::new();
+            cancel.cancel();
+            let c = rig.open_connector("ticks", plant.clone(), &config, &cancel);
+            assert_eq!(c.await.run().await.map_err(|e| e.to_string()), Ok(()));
+            assert_eq!(rig.define_status("ticks", &plant, &config), names);
+        },
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "a run of plant.ticks goes on: stop it before the next open of its name"
+)]
+fn a_second_open_after_define_status_while_its_run_goes_on_panics() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |rig, _| async move {
+            let (config, plant) = (Document::default(), name("plant.ticks"));
+            rig.define_status("ticks", &plant, &config);
+            let mut a = rig.supervise("ticks", plant.clone(), config.clone()).await;
+            a.until(TEN, ticking).await;
+            rig.supervise("ticks", plant, config).await;
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "the rig holds the status of plant.ticks with the counts \
+                           [ticks], and the check of secret gives []")]
+fn a_second_open_of_one_name_with_other_counts_panics() {
+    on_rig(
+        || {
+            Table::new()
+                .with("ticks", Ticks::default())
+                .with("secret", Secret::default())
+        },
         |rig, _| async move {
             let config = Document::default();
             let a = rig
                 .supervise("ticks", name("plant.ticks"), config.clone())
                 .await;
             assert_eq!(a.stop().await.map_err(|e| e.to_string()), Ok(()));
-            let _b = rig.supervise("ticks", name("plant.ticks"), config).await;
+            let _b = rig.supervise("secret", name("plant.ticks"), config).await;
         },
     );
 }
 
 #[test]
-#[should_panic(expected = "two channels are named plant.ticks.status.time")]
-fn open_connector_panics_on_a_second_connector_of_one_name() {
+#[should_panic(expected = "the check of refuses fails: [Diagnostic")]
+fn define_status_panics_when_the_check_fails() {
     on_rig(
-        || Table::new().with("ticks", Ticks::default()),
+        || Table::new().with("refuses", Refuses),
         |rig, _| async move {
-            let (config, cancel) = (Document::default(), cancel::Token::new());
-            let _a = rig
-                .supervise("ticks", name("plant.ticks"), config.clone())
-                .await;
-            let _b = rig
-                .open_connector("ticks", name("plant.ticks"), &config, &cancel)
-                .await;
+            let config = Document::default();
+            rig.define_status("refuses", &name("plant.refuses"), &config);
         },
     );
+}
+
+#[test]
+fn a_rig_of_unsynced_starts_its_connectors_once_the_mesh_time_comes() {
+    let delay = Span::from_nanos(5_000_000_000);
+    run_on(move |node, tasks| async move {
+        let kinds = Table::new().with("ticks", Ticks::default());
+        let rig = Rig::unsynced(env(&node, tasks), node.net(), kinds, delay).await;
+        let (clock, config) = (node.clock(), Document::default());
+        let start = clock.now();
+        let mut run = rig.supervise("ticks", name("plant.ticks"), config).await;
+        run.until(TEN, ticking).await;
+        assert!(clock.now() - start >= delay, "{:?}", clock.now() - start);
+        assert_eq!(run.stop().await.map_err(|e| e.to_string()), Ok(()));
+    });
 }
 
 #[test]
@@ -399,6 +471,87 @@ fn a_run_shows_whether_it_ended() {
             assert_eq!(format!("{run:?}"), "Run { ended: false, .. }");
             clock.sleep(Span::SECOND).await;
             assert_eq!(format!("{run:?}"), "Run { ended: true, .. }");
+        },
+    );
+}
+
+#[test]
+fn end_gives_the_result_only_of_a_run_that_ended_before_the_call() {
+    on_rig(
+        || {
+            Table::new()
+                .with("refuses", Refuses)
+                .with("ticks", Ticks::default())
+        },
+        |rig, _| async move {
+            let config = Document::default();
+            let refusal = rig
+                .supervise("refuses", name("plant.refuses"), config.clone())
+                .await;
+            let mut ticks = rig.supervise("ticks", name("plant.ticks"), config).await;
+            ticks.until(TEN, ticking).await;
+            let Some(Err(Error::Config(diagnostics))) = refusal.end().await else {
+                panic!("a refused config ends with `Config` before the call")
+            };
+            assert_eq!(diagnostics, [refused()]);
+            let end = ticks.end().await.map(|end| end.map_err(|e| e.to_string()));
+            assert_eq!(end, None);
+        },
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "a run of plant.ticks goes on: stop it before the next open of its name"
+)]
+fn a_second_open_of_one_name_while_its_run_goes_on_panics() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |rig, _| async move {
+            let config = Document::default();
+            let mut a = rig
+                .supervise("ticks", name("plant.ticks"), config.clone())
+                .await;
+            a.until(TEN, ticking).await;
+            rig.supervise("ticks", name("plant.ticks"), config).await;
+        },
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "a run of plant.ticks goes on: stop it before the next open of its name"
+)]
+fn an_open_after_a_dropped_run_whose_tasks_go_on_panics() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |rig, _| async move {
+            let config = Document::default();
+            let mut a = rig
+                .supervise("ticks", name("plant.ticks"), config.clone())
+                .await;
+            a.until(TEN, ticking).await;
+            drop(a);
+            let cancel = cancel::Token::new();
+            let opened =
+                rig.open_connector("ticks", name("plant.ticks"), &config, &cancel);
+            drop(opened.await);
+        },
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "the status reader does not open: the selector matches no channel"
+)]
+fn an_open_after_a_remove_of_its_status_panics() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |rig, _| async move {
+            let (config, plant) = (Document::default(), name("plant.ticks"));
+            let names = rig.define_status("ticks", &plant, &config);
+            rig.remove(&names);
+            rig.supervise("ticks", plant, config).await;
         },
     );
 }

@@ -1,14 +1,11 @@
 use std::ffi::CString;
 use std::future;
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use ::sim::{Sim, node};
 use connector::browse::{Device, End, Found, Query, Scope, Values};
-use connector::http;
 use connector::kind::Table;
-use connector::supervisor::{self, Supervisor};
-use connector::testing::{self, Rig};
+use connector::testing::Rig;
 use document::value::{self, Value};
 use document::{Attribute, Document, Map};
 use env::net::tcp;
@@ -94,25 +91,16 @@ fn browse_relayed(delay: Span, query: Query) -> (Result<Found, Error>, i64, Vec<
             entropy: node.entropy(),
             tasks: tasks.clone(),
         };
-        let hub = hub::testing::open_unsynced(env, delay).await;
-        let supervisor = Supervisor::new(supervisor::Config {
-            kinds: Arc::new(Table::new().with("opcua", Kind::default())),
-            clock: node.clock(),
-            entropy: node.entropy(),
-            net: node.net(),
-            roots: http::Roots::default(),
-            tasks,
-            hub: hub.clone(),
-            secrets: testing::create_secrets(node.files()),
-        });
+        let kinds = Table::new().with("opcua", Kind::default());
+        let rig = Rig::unsynced(env, node.net(), kinds, delay).await;
         let control = Relay::default();
         let config = config(&format!("opc.tcp://{}:{RELAY}", node.addresses()[0]));
-        let browse = supervisor.browse("opcua", &config, &query);
+        let browse = rig.supervisor().browse("opcua", &config, &query);
         let mut found = None;
         let until =
             async { found = Some(relayed(&node, &control, |_| {}, browse).await) };
         serving(&node, until).await;
-        let end = ticks(hub.time().await.now());
+        let end = ticks(rig.hub().time().await.now());
         (found.expect("the browse ends"), end, control.browses.take())
     });
     run.expect("the run ends")

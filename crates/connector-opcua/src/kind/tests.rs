@@ -1,7 +1,9 @@
 #![expect(clippy::arithmetic_side_effects, reason = "a test may panic")]
 
+use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::fmt::Display;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
@@ -43,19 +45,17 @@ const DATA: &[&str] = &["plant.a", "plant.b", "plant.c"];
 /// The connector of each scene.
 const PLC: &str = "plant.plc";
 
-/// The first key of the status channels of [`PLC`]: the index, then `state`,
-/// `class`, `restarts`, `backoff`, `error`, `note`, then each of [`COUNTS`].
-const STATUS: u128 = 100;
-const CLASS: u128 = STATUS + 2;
-const RESTARTS: u128 = STATUS + 3;
-const ERROR: u128 = STATUS + 5;
-const NOTE: u128 = STATUS + 6;
-const IN: u128 = STATUS + 7;
-const MISSED: u128 = STATUS + 8;
-const LOST: u128 = STATUS + 9;
-const BAD: u128 = STATUS + 10;
-const UNCERTAIN: u128 = STATUS + 11;
-const MISTYPED: u128 = STATUS + 12;
+/// The last segment of the name of each status channel of [`PLC`] that a test reads.
+const CLASS: &str = "class";
+const RESTARTS: &str = "restarts";
+const ERROR: &str = "error";
+const NOTE: &str = "note";
+const IN: &str = "in";
+const MISSED: &str = "missed";
+const LOST: &str = "lost";
+const BAD: &str = "bad";
+const UNCERTAIN: &str = "uncertain";
+const MISTYPED: &str = "mistyped";
 
 /// The class of a device error in the status.
 const DEVICE: u64 = 2;
@@ -79,9 +79,17 @@ enum Samples {
 /// The series of one frame that a reader received, by key.
 type Frame = BTreeMap<u128, Samples>;
 
+/// The series of one frame of the status channels of [`PLC`] that a reader received,
+/// by the last segment of each name.
+type Segments = BTreeMap<String, Samples>;
+
 /// The samples of `key` in `frame`, when it holds them.
-fn fixed(frame: &Frame, key: u128) -> Option<&[u64]> {
-    match frame.get(&key)? {
+fn fixed<'a, K, Q>(frame: &'a BTreeMap<K, Samples>, key: &Q) -> Option<&'a [u64]>
+where
+    K: Ord + Borrow<Q>,
+    Q: Ord + Display + ?Sized,
+{
+    match frame.get(key)? {
         Samples::Fixed(samples) => Some(samples),
         Samples::Texts(_) => panic!("{key} has fixed samples"),
     }
@@ -89,7 +97,7 @@ fn fixed(frame: &Frame, key: u128) -> Option<&[u64]> {
 
 /// The value of the one sample of the `f64` channel `key` in `frame`.
 fn value(frame: &Frame, key: u128) -> f64 {
-    match fixed(frame, key) {
+    match fixed(frame, &key) {
         Some(&[bits]) => f64::from_bits(bits),
         other => panic!("one sample of {key}: {other:?}"),
     }
@@ -97,16 +105,16 @@ fn value(frame: &Frame, key: u128) -> f64 {
 
 /// The stamp of the one sample of the index `key` in `frame`.
 fn stamp(frame: &Frame, key: u128) -> i64 {
-    match fixed(frame, key) {
+    match fixed(frame, &key) {
         Some(&[bits]) => i64::from_le_bytes(bits.to_le_bytes()),
         other => panic!("one stamp of {key}: {other:?}"),
     }
 }
 
-/// The last sample of the status channel `key` in `statuses`, or 0 when none holds
-/// it.
-fn last(statuses: &[Frame], key: u128) -> u64 {
-    let mut samples = statuses.iter().filter_map(|frame| fixed(frame, key));
+/// The last sample of the status channel `segment` in `statuses`, or 0 when none
+/// holds it.
+fn last(statuses: &[Segments], segment: &str) -> u64 {
+    let mut samples = statuses.iter().filter_map(|frame| fixed(frame, segment));
     samples
         .next_back()
         .and_then(|samples| samples.last().copied())
@@ -115,11 +123,11 @@ fn last(statuses: &[Frame], key: u128) -> u64 {
 
 /// Each text of `error` in `statuses` that is not empty, with the class beside it,
 /// once for each run of equal pairs.
-fn errors(statuses: &[Frame]) -> Vec<(u64, String)> {
+fn errors(statuses: &[Segments]) -> Vec<(u64, String)> {
     let mut errors = Vec::new();
     for frame in statuses {
         let (Some(Samples::Texts(texts)), Some(classes)) =
-            (frame.get(&ERROR), fixed(frame, CLASS))
+            (frame.get(ERROR), fixed(frame, CLASS))
         else {
             continue;
         };
@@ -133,10 +141,10 @@ fn errors(statuses: &[Frame]) -> Vec<(u64, String)> {
 
 /// Each text of `note` in `statuses` that is not empty, once for each run of equal
 /// texts.
-fn notes(statuses: &[Frame]) -> Vec<String> {
+fn notes(statuses: &[Segments]) -> Vec<String> {
     let mut notes = Vec::new();
     for frame in statuses {
-        if let Some(Samples::Texts(texts)) = frame.get(&NOTE) {
+        if let Some(Samples::Texts(texts)) = frame.get(NOTE) {
             notes.extend(texts.iter().filter(|text| !text.is_empty()).cloned());
         }
     }
@@ -146,10 +154,10 @@ fn notes(statuses: &[Frame]) -> Vec<String> {
 
 /// Each text of `note` in `statuses`, also an empty one, once for each run of equal
 /// texts.
-fn texts(statuses: &[Frame]) -> Vec<String> {
+fn texts(statuses: &[Segments]) -> Vec<String> {
     let mut texts = Vec::new();
     for frame in statuses {
-        if let Some(Samples::Texts(notes)) = frame.get(&NOTE) {
+        if let Some(Samples::Texts(notes)) = frame.get(NOTE) {
             texts.extend(notes.iter().cloned());
         }
     }
@@ -165,12 +173,15 @@ fn keys(frames: &[Frame]) -> Vec<Vec<u128>> {
         .collect()
 }
 
-/// The series of `received`, by key.
-fn decode(received: &Received<'_>) -> Frame {
+/// The series of `received`, each by the `key` of its channel's key and name.
+fn decode<K: Ord>(
+    received: &Received<'_>,
+    key: fn(channel::Key, &str) -> K,
+) -> BTreeMap<K, Samples> {
     let (set, view) = (received.set(), received.view());
-    let mut frame = Frame::new();
-    for (entry, bytes) in view.iter() {
-        let entry = &set.entries()[entry];
+    let mut frame = BTreeMap::new();
+    for (index, bytes) in view.iter() {
+        let entry = &set.entries()[index];
         let range = view.range(entry.group).expect("the group is present");
         let count = usize::try_from(range.count).expect("a count");
         let mut raw = Vec::new();
@@ -188,17 +199,30 @@ fn decode(received: &Received<'_>) -> Frame {
             let texts = texts.map(|text| String::from_utf8_lossy(text).into_owned());
             Samples::Texts(texts.collect())
         };
-        frame.insert(entry.key.as_u128(), samples);
+        frame.insert(key(entry.key, received.name(index)), samples);
     }
     frame
 }
 
-/// Reads each frame of `names` into the vector it gives, in a task on `tasks`.
-async fn record(
+/// The key of a channel in a [`Frame`].
+fn by_key(key: channel::Key, _: &str) -> u128 {
+    key.as_u128()
+}
+
+/// The key of a status channel in a [`Segments`].
+fn by_segment(_: channel::Key, name: &str) -> String {
+    let last = name.rsplit_once('.').map_or(name, |(_, last)| last);
+    last.to_owned()
+}
+
+/// Reads each frame of `names` into the vector it gives, keyed by `key` as
+/// [`decode`] does, in a task on `tasks`.
+async fn record<K: Ord + 'static>(
     hub: &hub::Hub,
     names: &[Name],
     tasks: &Tasks,
-) -> Rc<RefCell<Vec<Frame>>> {
+    key: fn(channel::Key, &str) -> K,
+) -> Rc<RefCell<Vec<BTreeMap<K, Samples>>>> {
     let config = hub::reader::Config {
         select: Selector::new(names.iter().map(Name::as_str)).expect("a selector"),
         mode: Mode::Complete,
@@ -211,7 +235,7 @@ async fn record(
     let into = Rc::clone(&frames);
     tasks.spawn(async move {
         while let Ok(received) = reader.next().await {
-            into.borrow_mut().push(decode(&received));
+            into.borrow_mut().push(decode(&received, key));
         }
     });
     frames
@@ -395,8 +419,7 @@ impl Scene {
         });
         let open = self
             .rig
-            .supervisor()
-            .open("opcua", name(PLC), &self.config, &token);
+            .open_connector("opcua", name(PLC), &self.config, &token);
         open.await.run().await
     }
 
@@ -425,7 +448,7 @@ struct Record {
     /// The frames of the channels of the setup on each other index, by its key.
     indexes: BTreeMap<u128, Vec<Frame>>,
     /// The frames of the status channels.
-    statuses: Vec<Frame>,
+    statuses: Vec<Segments>,
     served: BTreeMap<String, Vec<Served>>,
     /// The reads of the state of the server that each server answered.
     states: u32,
@@ -460,17 +483,14 @@ where
         let kinds = Table::new().with("opcua", Kind::default());
         let rig = Rig::open(env, node.net(), kinds).await;
         let hub = rig.hub();
-        let counts = COUNTS.map(name);
-        let status = testing::create_status(
-            &name(PLC),
-            &counts,
-            channel::Key::from_u128(STATUS),
-        );
+        let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
+        let config = config(&address, rate, &setup.reads);
+        let status = rig.define_status("opcua", &name(PLC), &config);
         let channels = setup.channels.iter();
         let channels: Vec<_> = channels
             .map(|(text, def)| (name(text), def.clone()))
             .collect();
-        rig.define(status.iter().chain(&channels).cloned().collect());
+        rig.define(channels.clone());
         let mut groups = BTreeMap::<u128, Vec<Name>>::new();
         for (name, definition) in &channels {
             groups
@@ -480,13 +500,11 @@ where
         }
         let mut indexes = BTreeMap::new();
         for (index, names) in groups {
-            indexes.insert(index, record(hub, &names, &tasks).await);
+            indexes.insert(index, record(hub, &names, &tasks, by_key).await);
         }
-        let names: Vec<_> = status.iter().map(|(name, _)| name.clone()).collect();
-        let statuses = record(hub, &names, &tasks).await;
-        let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
+        let statuses = record(hub, &status, &tasks, by_segment).await;
         let scene = Rc::new(Scene {
-            config: config(&address, rate, &setup.reads),
+            config,
             variables: setup.variables(),
             rig,
             server: RefCell::new(None),
@@ -1320,7 +1338,7 @@ fn writes_each_type_of_a_value_into_a_channel_of_its_type() {
     let mut written: Vec<Vec<u64>> = (outcome.frames.iter())
         .map(|frame| {
             (2..=12)
-                .map(|key| fixed(frame, key).expect("a series")[0])
+                .map(|key| fixed(frame, &key).expect("a series")[0])
                 .collect()
         })
         .collect();
