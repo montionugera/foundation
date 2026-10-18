@@ -680,12 +680,15 @@ mod tests {
     /// write of `hop`, `/hop` is a link to `/out`. A path in `/volume` has the key of
     /// the path without `/volume`, as a second mount of `/` does. It counts its calls
     /// of `entry`, and a relative path is under its working directory, `/` at first.
-    /// `absolute` refuses a path of [`MOST`] bytes or more as given with `Io` 36.
+    /// `absolute` refuses a path of [`MOST`] bytes or more as given with `Io` 36. A `\`
+    /// in a path is a `/`, since the walk joins names with `\` on Windows.
     #[derive(Debug, Default)]
     struct One(RefCell<Vec<u8>>, Rc<Cell<usize>>, Rc<RefCell<PathBuf>>);
 
     impl Driver for One {
         fn read(&self, path: &Path, most: usize) -> Result<Found, Error> {
+            let slashed = slashed(path);
+            let path = slashed.as_path();
             match path.to_str() {
                 Some(path) if path.is_empty() || path.starts_with("/none") => {
                     Err(Error::NotFound)
@@ -714,6 +717,8 @@ mod tests {
 
         fn entry(&self, path: &Path) -> Result<Entry, Error> {
             self.1.set(self.1.get() + 1);
+            let slashed = slashed(path);
+            let path = slashed.as_path();
             let data = self.0.borrow();
             let name = path.file_name().unwrap_or_default().as_encoded_bytes();
             if name == b"io" {
@@ -780,6 +785,10 @@ mod tests {
         fn looped(&self) -> Error {
             Error::Io { code: 40 }
         }
+    }
+
+    fn slashed(path: &Path) -> PathBuf {
+        path.to_string_lossy().replace('\\', "/").into()
     }
 
     /// What a write and a `make_dir` of `path` give, which agree. A read gives the
