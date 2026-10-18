@@ -451,14 +451,14 @@ impl Shard {
     /// Before the node first has mesh time, such a handoff waits as one with no room
     /// does. At a tick of the named readers, with mesh time, it restores the records
     /// that wait, ends each hold whose end the midpoint of mesh time passed, and
-    /// appends the records of each index whose records changed: an ack moves a named
-    /// position with no append. Records that find no room wait for the next tick. Call
-    /// it at [`deadline`](Self::deadline); an earlier call changes nothing. After it,
-    /// [`deadline`](Self::deadline) is `None` or later than the shard's monotonic time
-    /// at the call. Takes O(n) time for n carried indexes. Each holder that loses
-    /// control adds O(w) time for the w open writers of its index, and the append of
-    /// its handoff. A tick adds O(r) time for the r named readers of each index with
-    /// named readers or records.
+    /// appends the records of each index whose records changed or whose parts hold
+    /// records of a shed: an ack moves a named position with no append. Records that
+    /// find no room wait for the next tick. Call it at [`deadline`](Self::deadline); an
+    /// earlier call changes nothing. After it, [`deadline`](Self::deadline) is `None`
+    /// or later than the shard's monotonic time at the call. Takes O(n) time for n
+    /// carried indexes. Each holder that loses control adds O(w) time for the w open
+    /// writers of its index, and the append of its handoff. A tick adds O(r) time for
+    /// the r named readers of each index with named readers or records.
     pub fn advance(&mut self) {
         let clock::Time { monotonic, mesh } = self.clock.now();
         let mesh = mesh.map(midpoint);
