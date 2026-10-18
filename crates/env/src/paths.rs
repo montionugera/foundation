@@ -1185,6 +1185,7 @@ mod tests {
         let open = (Ok(()), Err(Error::Outside));
         for (before, after, hidden, (read, out)) in [
             ("x", "gone", "/work/Gone", hidden),
+            ("x", "gone", "/work/Gone/k", hidden),
             ("x", "loop", "/work/loop", open),
             ("x", "file", "/work/f/x", open),
             ("x", "file", "/work/f/.", open),

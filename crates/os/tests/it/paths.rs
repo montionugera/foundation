@@ -48,6 +48,39 @@ fn most() -> usize {
     }
 }
 
+/// A tree of `a` directories under `top`, as deep as leaves `room` bytes under the
+/// longest path. Its drop removes it level by level, since `remove_dir_all` of
+/// `Scratch` holds a handle for each level.
+struct Deep {
+    top: PathBuf,
+    dir: PathBuf,
+}
+
+impl Deep {
+    fn new(top: PathBuf, room: usize) -> Self {
+        let mut dir = top.clone();
+        for _ in 0..1900 {
+            dir.push("a");
+            if dir.as_os_str().len() + room > most() {
+                dir.pop();
+                break;
+            }
+            fs::create_dir(&dir).unwrap();
+        }
+        Self { top, dir }
+    }
+}
+
+impl Drop for Deep {
+    fn drop(&mut self) {
+        let mut gone = fs::remove_dir_all(&self.dir).is_ok();
+        let mut dir = self.dir.clone();
+        while gone && dir.pop() && dir != self.top {
+            gone = fs::remove_dir(&dir).is_ok();
+        }
+    }
+}
+
 /// A directory that takes no new file: a write that makes one in it gives `EACCES`.
 fn sealed(scratch: &Scratch) -> PathBuf {
     let dir = scratch.0.join("sealed");
@@ -603,16 +636,8 @@ fn within_refuses_a_file_with_a_slash_and_a_dot_by_each_path() {
 fn within_reads_a_file_deep_in_its_folder_in_the_worst_case_time() {
     run(|host| {
         let (within, base) = cases::within_work(host);
-        let mut dir = base.join("work");
-        for _ in 0..1900 {
-            dir.push("a");
-            if dir.as_os_str().len() + 95 > most() {
-                dir.pop();
-                break;
-            }
-            fs::create_dir(&dir).unwrap();
-        }
-        let file = dir.join("f");
+        let deep = Deep::new(base.join("work"), 95);
+        let file = deep.dir.join("f");
         fs::write(&file, b"x").unwrap();
         let clock = os::clock();
         let start = clock.now();
@@ -620,12 +645,6 @@ fn within_reads_a_file_deep_in_its_folder_in_the_worst_case_time() {
         let took = clock.now() - start;
         assert_eq!(read, Ok(Found::File(b"x".to_vec())));
         assert!(took < Span::from_nanos(560_000_000), "took {took}");
-        // `remove_dir_all` of `Scratch` holds a handle for each level.
-        fs::remove_file(&file).unwrap();
-        while dir != base.join("work") {
-            fs::remove_dir(&dir).unwrap();
-            dir.pop();
-        }
     });
 }
 
@@ -1335,28 +1354,34 @@ fn within_makes_no_file_at_a_hidden_name_in_other_case() {
     });
 }
 
-/// A program takes search from the directory above a hidden file, so the file can have
-/// another name and each call is hidden. A file in place of that directory holds no
-/// names, so it hides nothing.
+/// A program takes search from a directory on the way to a hidden file, above it or
+/// above its directory, so the file can have another name and each call is hidden. A
+/// file in place of that directory holds no names, so it hides nothing.
 #[test]
 fn a_hidden_path_that_the_host_refuses_hides_each_call_and_a_file_on_its_way_none() {
     run(|host| {
         let (_, base) = cases::within_work(host);
         let data = base.join("work/data");
-        let key = data.join("admin.key");
-        let within = host
-            .paths
-            .within(&[base.join("work")], slice::from_ref(&key))
-            .unwrap();
+        fs::create_dir(data.join("in")).unwrap();
+        let handles = [data.join("admin.key"), data.join("in/k")].map(|key| {
+            fs::write(&key, b"k").unwrap();
+            host.paths.within(&[base.join("work")], &[key]).unwrap()
+        });
         let plan = base.join("work/a.hcl");
         fs::set_permissions(&data, Permissions::from_mode(0o000)).unwrap();
-        let unsearchable = within.read(&plan, 1);
+        let unsearchable = handles.each_ref().map(|within| within.read(&plan, 1));
         fs::set_permissions(&data, Permissions::from_mode(0o700)).unwrap();
         fs::remove_dir_all(&data).unwrap();
         fs::write(&data, b"file").unwrap();
-        let through_file = within.read(&plan, 1);
+        let through_file = handles.each_ref().map(|within| within.read(&plan, 1));
         let file = Ok(Found::File(b"x".to_vec()));
-        assert_eq!((unsearchable, through_file), (Err(Error::Hidden), file));
+        assert_eq!(
+            (unsearchable, through_file),
+            (
+                [Err(Error::Hidden), Err(Error::Hidden)],
+                [file.clone(), file]
+            )
+        );
     });
 }
 
@@ -1366,17 +1391,9 @@ fn a_hidden_path_that_the_host_refuses_hides_each_call_and_a_file_on_its_way_non
 fn within_stops_a_long_path_of_dots_from_a_deep_directory() {
     run(|host| {
         let (within, base) = cases::within_work(host);
-        let mut dir = base.join("work");
-        for _ in 0..1900 {
-            dir.push("a");
-            if dir.as_os_str().len() + 95 > most() {
-                dir.pop();
-                break;
-            }
-            fs::create_dir(&dir).unwrap();
-        }
-        fs::create_dir(dir.join("s")).unwrap();
-        let mut path = dir.into_os_string();
+        let deep = Deep::new(base.join("work"), 95);
+        fs::create_dir(deep.dir.join("s")).unwrap();
+        let mut path = deep.dir.clone().into_os_string();
         while path.len() < 1 << 20 {
             path.push("/s/..");
         }
