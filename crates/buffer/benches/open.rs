@@ -12,7 +12,7 @@
 //! A debug build, which `cargo test` makes, runs one small case, so a test run stays
 //! fast.
 
-#[path = "../tests/it/memory.rs"]
+#[path = "../tests/common/memory.rs"]
 #[expect(dead_code, reason = "the bench uses only the driver")]
 mod memory;
 
