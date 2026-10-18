@@ -56,7 +56,7 @@ pub(crate) fn detached(name: &str, envs: &[(&str, &str)], stdin: &[u8]) -> Outpu
     use std::process::Stdio;
     let mut child = Command::new(std::env::current_exe().unwrap());
     child.args(["--exact", name]);
-    // `CommandExt::setsid` replaces this hook once it is stable.
+    // `CommandExt::setsid` replaces this hook once it is stable (#3237).
     let hook = || {
         // SAFETY: `setsid` takes no arguments. The forked child leads no process
         // group, so the call does not fail with `EPERM`.
