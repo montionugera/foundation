@@ -1081,6 +1081,7 @@ mod tests {
 
     /// The fake host bounds a path as given, and the joined path is longer.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri takes 35 min over the 4 KiB working directory")]
     fn a_short_relative_hidden_path_from_a_deep_working_directory_hides() {
         let one = One::default();
         let deep = format!("/work/{}", "d".repeat(MOST - 10));
