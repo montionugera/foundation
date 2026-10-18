@@ -885,6 +885,76 @@ fn a_run_with_no_read_and_no_server_ends_with_the_error_of_the_connect() {
     assert_eq!(notes(&outcome.statuses), Vec::<String>::new());
 }
 
+/// The error and the note of each status in `statuses`, once for each run of equal
+/// pairs.
+fn shown(statuses: &[Segments]) -> Vec<(String, String)> {
+    let mut shown = Vec::new();
+    for frame in statuses {
+        let (Some(Samples::Texts(errors)), Some(Samples::Texts(notes))) =
+            (frame.get(ERROR), frame.get(NOTE))
+        else {
+            continue;
+        };
+        shown.extend(errors.iter().cloned().zip(notes.iter().cloned()));
+    }
+    shown.dedup();
+    shown
+}
+
+/// A run with no `read` block clears the error of the run before once it connects,
+/// and not before: the status shows the error of the connect while the next connect
+/// waits 3 s for the server. The end of the run clears the note.
+#[test]
+fn a_run_with_no_read_keeps_the_error_of_the_run_before_until_it_connects() {
+    let setup = Setup {
+        reads: Vec::new(),
+        ..Setup::three()
+    };
+    let outcome = run(setup, |scene| async move {
+        scene.stop().await;
+        scene.after(ms(1_050), |scene| async move {
+            scene.gate.close();
+            scene.serve();
+        });
+        scene.after(ms(4_050), |scene| async move { scene.gate.open() });
+        scene.supervise(ms(9_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let connect =
+        "the connect to opc.tcp://10.0.0.1:4840 failed with BadConnectionRejected";
+    let shown = shown(&outcome.statuses);
+    assert_eq!(
+        shown,
+        [
+            (String::new(), String::new()),
+            (connect.to_owned(), String::new()),
+            (String::new(), NO_READ.to_owned()),
+            (String::new(), String::new()),
+        ]
+    );
+}
+
+/// A run with no `read` block whose server stops ends with the `device` error of the
+/// check, and the next run gives the error of its connect.
+#[test]
+fn a_run_with_no_read_ends_with_a_device_error_when_the_server_stops() {
+    let setup = Setup {
+        reads: Vec::new(),
+        ..Setup::three()
+    };
+    let outcome = run(setup, |scene| async move {
+        scene.after(ms(1_050), |scene| async move { scene.stop().await });
+        scene.supervise(ms(2_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let connect =
+        "the connect to opc.tcp://10.0.0.1:4840 failed with BadConnectionRejected";
+    assert_eq!(
+        errors(&outcome.statuses),
+        [(DEVICE, CLOSED.to_owned()), (DEVICE, connect.to_owned())]
+    );
+}
+
 /// A run at 10 Hz reads more often than each 10 s, so it sends no check of the
 /// connection.
 #[test]
