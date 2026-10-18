@@ -1,6 +1,5 @@
 //! The requests and replies of a remote program, and how the node runs each request.
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Write};
@@ -87,6 +86,24 @@ impl Body {
         }
         body.add(b"\n")?;
         Ok(body)
+    }
+
+    /// The body of a reply that holds `output`. Stops at the bound.
+    ///
+    /// # Errors
+    ///
+    /// `Large` when the line passes the bound.
+    fn done(output: &impl Serialize) -> Result<Self, Large> {
+        Self::line(&Answer::<_, ()>::Done { output })
+    }
+
+    /// The body of a reply that holds `errors` with `status`. Stops at the bound.
+    ///
+    /// # Errors
+    ///
+    /// `Large` when the line passes the bound.
+    fn failed(errors: impl Serialize, status: u8) -> Result<Self, Large> {
+        Self::line(&Answer::<(), _>::Failed { errors, status })
     }
 
     /// Adds `bytes` to the end.
@@ -238,14 +255,25 @@ impl<'de> Deserialize<'de> for Request {
 /// the exit status of the program.
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
-enum Answer<'a, T> {
-    Done {
-        output: T,
-    },
-    Failed {
-        errors: Cow<'a, [Problem]>,
-        status: u8,
-    },
+enum Answer<T, E> {
+    Done { output: T },
+    Failed { errors: E, status: u8 },
+}
+
+/// The errors of a reply over the bound: the problems that fit, then
+/// `ops.more-problems`.
+struct Kept<'a> {
+    problems: &'a [Problem],
+    more: Problem,
+}
+
+impl Serialize for Kept<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.problems.iter().chain([&self.more]))
+    }
 }
 
 /// Whether `len` bytes are within the bound.
@@ -257,21 +285,20 @@ fn fits(len: usize) -> bool {
 /// problems of `error` that fit, then `ops.more-problems` for the rest, with the status
 /// of `error`, or it is the reply of `large` when not even the first problem fits.
 fn failed(error: &Error, large: &Error) -> Body {
-    let line = |errors: Cow<'_, [Problem]>, status: u8| {
-        Body::line(&Answer::<()>::Failed { errors, status })
-    };
     let problems = error.problems();
     let status = error.status();
-    line(Cow::Borrowed(&problems), status).unwrap_or_else(|Large| {
+    Body::failed(&*problems, status).unwrap_or_else(|Large| {
         let kept = fitting(&problems, status);
         if kept == 0 {
-            return line(large.problems(), large.status()).unwrap_or_else(|Large| {
-                panic!("invariant: the reply of an error of the bound fits")
-            });
+            return Body::failed(&*large.problems(), large.status()).unwrap_or_else(
+                |Large| panic!("invariant: the reply of an error of the bound fits"),
+            );
         }
-        let mut errors = problems[..kept].to_vec();
-        errors.push(Problem::more(problems.len() - kept));
-        line(Cow::Owned(errors), status)
+        let errors = Kept {
+            problems: &problems[..kept],
+            more: Problem::more(problems.len() - kept),
+        };
+        Body::failed(&errors, status)
             .unwrap_or_else(|Large| panic!("invariant: the problems that fit fit"))
     })
 }
@@ -279,17 +306,24 @@ fn failed(error: &Error, large: &Error) -> Body {
 /// How many of the first `problems` fit in one reply of `status`, with
 /// `ops.more-problems` for the rest. It encodes each problem at most once.
 fn fitting(problems: &[Problem], status: u8) -> usize {
-    let empty = Answer::<()>::Failed {
-        errors: Cow::Borrowed(&[]),
+    let empty = Answer::<(), &[Problem]>::Failed {
+        errors: &[],
         status,
     };
     // Each problem that is kept adds one `,`, and the line ends in `\n`.
     let mut len = encoded(&empty).saturating_add(1);
+    // The digits of the rest and the length of its `ops.more-problems`, which only
+    // the count of digits changes.
+    let mut more = (None, 0);
     let mut kept = 0;
     for (index, problem) in problems.iter().enumerate() {
         len = len.saturating_add(encoded(problem)).saturating_add(1);
-        let more = Problem::more(problems.len() - index - 1);
-        if !fits(len.saturating_add(encoded(&more))) {
+        let rest = problems.len() - index - 1;
+        let digits = Some(rest.checked_ilog10());
+        if more.0 != digits {
+            more = (digits, encoded(&Problem::more(rest)));
+        }
+        if !fits(len.saturating_add(more.1)) {
             break;
         }
         kept = index + 1;
@@ -408,7 +442,7 @@ fn answer<T: DeserializeOwned>(body: &[u8]) -> Result<(T, &[u8]), Error> {
     let Some((head, rest)) = first_line(body) else {
         return Err(bad_reply("no newline ends the first line"));
     };
-    match serde_json::from_slice::<Answer<'_, Value>>(head) {
+    match serde_json::from_slice::<Answer<Value, Vec<Problem>>>(head) {
         Ok(Answer::Done { output }) => match T::deserialize(output) {
             Ok(output) => Ok((output, rest)),
             Err(error) => Err(bad_reply(error.to_string())),
@@ -417,7 +451,7 @@ fn answer<T: DeserializeOwned>(body: &[u8]) -> Result<(T, &[u8]), Error> {
             Err(bad_reply("an error has the exit status 0, or no problem"))
         }
         Ok(Answer::Failed { errors, status }) => Err(Error::Remote {
-            problems: errors.into_owned(),
+            problems: errors,
             status,
         }),
         Err(error) => Err(bad_reply(error.to_string())),
@@ -550,7 +584,7 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Body, Error
     // A subject that may not open a connector learns nothing of its sources.
     let readable = |name: &Name| check.opens(name).is_ok();
     let (output, plan) = files.plan(node, base, &applied, readable).await?;
-    let mut reply = Body::line(&Answer::Done { output: &output })?;
+    let mut reply = Body::done(&output)?;
     reply.add(&plan.encode())?;
     Ok(reply)
 }
@@ -597,7 +631,7 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Body, Error>
     let effect =
         apply::apply(plan, spec, &node.mesh, node.supervisor.kinds(), &node.keys)
             .await?;
-    Ok(Body::line(&Answer::Done { output: &effect })?)
+    Ok(Body::done(&effect)?)
 }
 
 /// The reply of `status`: its output. It leaves out each connector unless `subject`
@@ -628,7 +662,7 @@ async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
         connectors,
         roots: readable.then(|| node.roots.clone()),
     };
-    Ok(Body::line(&Answer::Done { output: &output })?)
+    Ok(Body::done(&output)?)
 }
 
 /// The reply of `browse`: its output. It checks, in this order, that the files read,
@@ -692,5 +726,5 @@ async fn browse(node: &Node, subject: &Name, request: Browse) -> Result<Body, Er
         .await
         .map_err(|cause| Error::browse(&name, kind, cause, files.sources()))?;
     let output = crate::browse::Output::of(found);
-    Body::line(&Answer::Done { output: &output }).map_err(|Large| Error::LargeBrowse)
+    Body::done(&output).map_err(|Large| Error::LargeBrowse)
 }

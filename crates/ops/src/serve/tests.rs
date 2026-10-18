@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -195,10 +194,7 @@ fn problem(len: usize) -> Problem {
 
 /// The reply of `errors` with status 2.
 fn reply_of(errors: &[Problem]) -> Vec<u8> {
-    let failed = Answer::<()>::Failed {
-        errors: Cow::Borrowed(errors),
-        status: 2,
-    };
+    let failed = Answer::<(), _>::Failed { errors, status: 2 };
     let mut reply = serde_json::to_vec(&failed).expect("JSON");
     reply.push(b'\n');
     reply
