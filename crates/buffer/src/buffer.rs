@@ -2082,6 +2082,52 @@ mod tests {
         assert_eq!(kepts, largest.collect::<Vec<_>>(), "(old, (len, capacity))");
     }
 
+    /// A record of 20 tagged entries of 150 bytes takes one block, and the carry
+    /// record of their holders two. With trims, the commit and the walk of a later
+    /// open leave the block between them free. With no trims, neither does.
+    #[test]
+    fn an_open_reserves_the_excess_of_a_record_only_with_trims() {
+        for (trimmed, excesses) in [(false, vec![]), (true, vec![(4096, 4096)])] {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let found = Arc::new(Mutex::new(Vec::new()));
+            let given = Arc::clone(&found);
+            with_ring(
+                &mut sim,
+                &node,
+                "write",
+                trimmed,
+                move |buffer, mut slots, pool| async move {
+                    let part = pool.alloc(150).expect("a block").freeze();
+                    let batch: Vec<_> = (1..=20)
+                        .map(|index| {
+                            let slot = slots.index(channel::Key::from_u128(index));
+                            let index = u32::try_from(index).expect("small");
+                            Entry {
+                                samples: None,
+                                tag: 1,
+                                ..entry(index, slot, Path::Live, 0, &part)
+                            }
+                        })
+                        .collect();
+                    buffer.append(batch).expect("the ring has room");
+                    buffer.committed().await.expect("commits");
+                    let excesses = buffer.shared.state.borrow().writer.excesses();
+                    given.lock().expect("no panic held the lock").push(excesses);
+                    buffer
+                },
+            );
+            let given = Arc::clone(&found);
+            with_ring(&mut sim, &node, "walk", trimmed, move |buffer, _, _| {
+                let excesses = buffer.shared.state.borrow().writer.excesses();
+                given.lock().expect("no panic held the lock").push(excesses);
+                async move { buffer }
+            });
+            let found = found.lock().expect("no panic held the lock").clone();
+            assert_eq!(found, [excesses.clone(), excesses], "trimmed: {trimmed}");
+        }
+    }
+
     /// A read holds the record it waits on until the read ends or drops, and
     /// `newest` holds no record. [0, 3), [3, 6), and the tagged entry and [6, 9) of
     /// one path are in the records at 4096, 8192, and 12288, so the tail of the path

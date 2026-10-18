@@ -575,6 +575,18 @@ impl Writer {
         self.skip.clone()
     }
 
+    /// The offset and the excess of each data record that leaves its excess free,
+    /// oldest first.
+    #[cfg(test)]
+    pub(crate) fn excesses(&self) -> Vec<(u64, u64)> {
+        assert_eq!(
+            self.reserved,
+            self.excess.iter().map(|&(_, excess)| excess).sum::<u64>(),
+            "the reserve is the sum of the excesses"
+        );
+        self.excess.iter().copied().collect()
+    }
+
     /// The writer of an empty ring of `layout` with its tail at `offset`, after its
     /// restart record of one block.
     ///
@@ -1894,6 +1906,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn excess_gives_the_blocks_that_the_carry_record_takes_past_the_data_record() {
+        assert_eq!(excess(100, 4088), 4096);
+        assert_eq!(excess(1, 8184), 8192);
+        assert_eq!(excess(4087, 4096), 4096);
+        assert_eq!(excess(100, 4087), 0);
+        assert_eq!(excess(4088, 4100), 0);
+        assert_eq!(excess(4000, 50), 0);
+    }
+
     mod writer {
         use super::*;
 
@@ -2580,6 +2602,58 @@ mod tests {
             writer
         }
 
+        /// With 14 records after the restart record, the spare and one block are
+        /// free, so a data record of one block fits only with no excess.
+        #[test]
+        fn a_data_record_leaves_its_excess_free() {
+            let mut writer = Writer::empty(layout(), 0);
+            for chain in 0..14 {
+                let ends = queue(&mut writer, 1, chain).expect("the ring has room");
+                writer.synced(ends);
+            }
+            let full = Full {
+                needed: 4096,
+                free: 0,
+            };
+            assert_eq!(writer.fits(1, 4088), Err(full));
+            assert_eq!(writer.append(1, 4088), Err(full));
+            assert_eq!(writer.fits(1, 4087), Ok(()));
+            writer.append(1, 4087).expect("the block is free");
+            assert_eq!(writer.excesses(), []);
+        }
+
+        /// The record at 4096 leaves one block free past the spare until a release
+        /// past it.
+        #[test]
+        fn a_release_past_a_record_frees_its_excess() {
+            let mut writer = Writer::empty(layout(), 0);
+            let plan = writer.append(1, 4088).expect("the ring has room");
+            let record = Position {
+                offset: plan.next,
+                chain: 1,
+            };
+            writer.synced(Ends { wrap: None, record });
+            assert_eq!(writer.excesses(), [(4096, 4096)]);
+            for chain in 2..15 {
+                let ends = queue(&mut writer, 1, chain).expect("the ring has room");
+                writer.synced(ends);
+            }
+            let free = |writer: &Writer| match writer.fits(BODY_MAX, 0) {
+                Err(Full {
+                    needed: 16384,
+                    free,
+                }) => free / 4096,
+                other => panic!("{other:?} is not full"),
+            };
+            assert_eq!(free(&writer), 0);
+            writer.release(4096);
+            assert_eq!(writer.excesses(), [(4096, 4096)]);
+            assert_eq!(free(&writer), 1);
+            writer.release(8192);
+            assert_eq!(writer.excesses(), []);
+            assert_eq!(free(&writer), 3);
+        }
+
         /// The nine free blocks are for the restart record of the next open, the
         /// largest carry record of the commit after it, the blocks that its wrap
         /// skips, and the restart record of a later open, so no data record fits in
@@ -2850,6 +2924,20 @@ mod tests {
                 (writer.head(), sealed.wrap, sealed.record),
                 (4096, None, record)
             );
+        }
+
+        /// The writer leaves free the excess of each record that the walk
+        /// reserved with one, in their order.
+        #[test]
+        fn gives_the_writer_each_reserved_excess() {
+            let area = vec![0; index(AREA)];
+            let (_, mut cursor) = walk(&area, START).expect("a zeroed area is valid");
+            cursor.reserve(4096, 100, 4088);
+            cursor.reserve(8192, 4000, 50);
+            cursor.reserve(12288, 4086, 4087);
+            cursor.reserve(16384, 1, 8184);
+            let writer = cursor.writer();
+            assert_eq!(writer.excesses(), [(4096, 4096), (16384, 8192)]);
         }
 
         #[test]

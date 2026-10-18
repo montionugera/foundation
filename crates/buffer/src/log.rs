@@ -2873,6 +2873,17 @@ mod tests {
     mod carry_tail {
         use super::*;
 
+        #[cfg(feature = "sim")]
+        #[test]
+        fn with_capacity_has_room_for_its_tails_before_a_carry() {
+            let carried = Carried::with_capacity(5);
+            let room = (carried.tails.capacity(), carried.places.capacity());
+            assert!(
+                room.0 >= 5 && room.1 >= 5,
+                "room for (tails, places): {room:?}"
+            );
+        }
+
         #[test]
         fn moves_a_new_path_to_the_carried_tail_with_no_run() {
             let mut logs = Logs::new(AREA);
