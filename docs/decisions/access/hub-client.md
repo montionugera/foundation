@@ -228,11 +228,12 @@
   stream, so the program learns that each taken frame is on disk. Control ends when the
   program finishes the stream: the writer closes before the node waits for those
   commits. Each frame takes a block for its outcome from the home's pool before it takes
-  a draft, and then a block for the next `Stored` when the stream holds none. A frame
-  that finds no block stops the stream with `BUSY`, so the home took no frame past the
-  last outcome, and each taken frame has the block of its `Stored`. So the node sends
-  each `Stored` when its commit ends, also while the pool is full, and the finish waits
-  only for the commits (amended by #3207). A
+  a draft, and a frame that finds none stops the stream with `BUSY`, so the home took no
+  frame past the last outcome. Then the frame takes a block for the next `Stored` when
+  the stream holds none, and a frame that finds none gets `Refused(Full)`. So each
+  taken frame has the block of its `Stored`: the node sends each `Stored` when its
+  commit ends, also while the pool is full, and the finish waits only for the commits.
+  A stream that stops sends no `Stored` after the stop (amended by #3207). A
   write takes a stream of any class: at the node, the class sets only the priority and
   the carrier of its replies. The two key choices, the wait at the finish and the ends
   in the body budget, went to `laptop.monitor` at 2026-10-18T07:43:08Z, with no
@@ -299,12 +300,17 @@
   bytes and the node's decoders do not grow. Decided by `laptop.architect` at
   2026-10-18T15:49:57Z
   (https://github.com/synnaxlabs/foundation/pull/3201#issuecomment-6251902903).
-  Amended (#3207): each frame takes the block of the next `Stored` before its draft.
-  This replaces two parts of the ruling of #3161: a `Stored` that found no block was
-  not sent during the stream, and the last one waited for a block at the finish. A
-  program that waited for a `Stored` with no next frame and no finish then waited
-  forever. Sent to `laptop.monitor` as a key choice, and accepted at
-  2026-10-18T18:54:12Z
-  (https://github.com/synnaxlabs/foundation/issues/3207#issuecomment-6253796728). Lost:
+  Amended (#3207): each frame takes the block of the next `Stored` before its draft,
+  and a frame that finds none gets `Refused(Full)`, not a stop with `BUSY`, which would
+  drop the `Stored` of each frame taken before it. This replaces item 2 of the ruling
+  of #3161: a `Stored` that found no block was not sent during the stream, and the
+  last one waited for a block at the finish. A program that waited for a `Stored` with
+  no next frame and no finish then waited forever. Approved by `laptop.architect` at
+  2026-10-18T18:58:27Z
+  (https://github.com/synnaxlabs/foundation/issues/3207#issuecomment-6253839277), and
+  accepted by `laptop.monitor` as a key choice at 2026-10-18T18:54:12Z
+  (https://github.com/synnaxlabs/foundation/issues/3207#issuecomment-6253796728) and
+  2026-10-18T18:58:45Z
+  (https://github.com/synnaxlabs/foundation/issues/3207#issuecomment-6253842265). Lost:
   a `Stored` that finds no block tries again every 10 ms, which sends it up to 10 ms
   after a free and keeps a poller of the pool.
