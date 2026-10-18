@@ -207,8 +207,9 @@ async fn session<T>(
 ) -> Result<Option<T>, Error> {
     let connected = Client::connect(time, net, rng, address, until).await;
     let connected = connected.map_err(|status| {
-        device(Failure::Connect {
+        device(Failure::Client {
             address: address.to_string_lossy().into_owned(),
+            action: Action::Connect,
             status,
         })
     })?;
@@ -237,12 +238,8 @@ async fn read(
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
     loop {
         let idle = client.idle(timer.tick(ctx.cancel())).await;
-        let Some(tick) = idle.map_err(|status| {
-            device(Failure::Check {
-                address: client.address().to_owned(),
-                status,
-            })
-        })?
+        let Some(tick) =
+            idle.map_err(|status| device(client.failure(Action::Check, status)))?
         else {
             break;
         };
@@ -256,12 +253,7 @@ async fn read(
         };
         let values = match read {
             Ok(values) => values,
-            Err(status) => {
-                return Err(device(Failure::Read {
-                    address: client.address().to_owned(),
-                    status,
-                }));
-            }
+            Err(status) => return Err(device(client.failure(Action::Read, status))),
         };
         frames.write(values, stamp)?;
     }
@@ -518,23 +510,22 @@ fn large_read(reads: &[Read], &Large { index, bytes, most }: &Large) -> Error {
     )])
 }
 
+/// A call to the server that a [`Failure::Client`] names.
+#[derive(Debug)]
+pub(crate) enum Action {
+    Connect,
+    Read,
+    Check,
+    Browse,
+}
+
 /// Why a run ended with [`Error::Device`].
 #[derive(Debug)]
 pub(crate) enum Failure {
-    Connect {
+    /// `action` on the server at `address` failed with `status`.
+    Client {
         address: String,
-        status: Status,
-    },
-    Read {
-        address: String,
-        status: Status,
-    },
-    Check {
-        address: String,
-        status: Status,
-    },
-    Browse {
-        address: String,
+        action: Action,
         status: Status,
     },
     /// The tags and names before the pages of a browse pass [`crate::browse::BYTES`].
@@ -547,19 +538,18 @@ pub(crate) enum Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Connect { address, status } => {
-                write!(f, "the connect to {address} failed with {}", status.name())
-            }
-            Self::Read { address, status } => {
-                write!(f, "the read from {address} failed with {}", status.name())
-            }
-            Self::Check { address, status } => write!(
-                f,
-                "the connectivity check of {address} failed with {}",
-                status.name()
-            ),
-            Self::Browse { address, status } => {
-                write!(f, "the browse of {address} failed with {}", status.name())
+            Self::Client {
+                address,
+                action,
+                status,
+            } => {
+                let action = match action {
+                    Action::Connect => "the connect to",
+                    Action::Read => "the read from",
+                    Action::Check => "the connectivity check of",
+                    Action::Browse => "the browse of",
+                };
+                write!(f, "{action} {address} failed with {}", status.name())
             }
             Self::Names => write!(
                 f,

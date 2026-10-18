@@ -15,7 +15,7 @@ use crate::client::browse::{
     self as client, Base, Cause, Class, Description, Point, Reference,
 };
 use crate::ffi::Status;
-use crate::kind::{Failure, device};
+use crate::kind::{Action, Failure, device};
 use crate::node::{Node, ns0};
 
 const BAD_CURSOR: Code = Code::new("opcua.bad-cursor");
@@ -195,10 +195,7 @@ impl<'a> Server<'a> {
     /// The device error of a Browse, a `BrowseNext`, or a describe that failed with
     /// `status`.
     fn failed(&self, status: Status) -> Error {
-        device(Failure::Browse {
-            address: self.client.address().to_owned(),
-            status,
-        })
+        device(self.client.failure(Action::Browse, status))
     }
 
     /// Gives the first page of `folder`, or `None` when the server does not have it.
@@ -419,10 +416,7 @@ impl browse::Device for Server<'_> {
         let read = match self.client.read(&fit).await {
             Ok(read) => read,
             Err(status) => {
-                return Err(device(Failure::Read {
-                    address: self.client.address().to_owned(),
-                    status,
-                }));
+                return Err(device(self.client.failure(Action::Read, status)));
             }
         };
         let mut read = read.iter();

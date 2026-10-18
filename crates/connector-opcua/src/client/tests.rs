@@ -26,6 +26,7 @@ use crate::connection::Manager;
 use crate::event;
 use crate::ffi::{self, Status};
 use crate::gate::Gate;
+use crate::kind::Action;
 use crate::node::{Key, Name, Node};
 use crate::server::{Limits, Server};
 use crate::unwind::caught;
@@ -133,8 +134,8 @@ impl Peer<'_> {
         }
         let url = CString::new(url).expect("the URL holds no NUL");
         // SAFETY: `raw` is a new client of the loop of `connections`.
-        let mut client = unsafe { Client::of(clock, connections, raw) };
-        client.open(&url).await.expect("the client connects");
+        let mut client = unsafe { Client::of(clock, connections, raw, url) };
+        client.open().await.expect("the client connects");
         client
     }
 }
@@ -256,6 +257,29 @@ fn a_read_of_an_unknown_node_fails_with_its_status() {
         .await
     });
     assert_eq!(read, Err(Fault::status(Status::BAD_NODE_ID_UNKNOWN)));
+}
+
+#[test]
+fn a_client_names_its_url_in_a_failure_before_and_after_its_open() {
+    let (texts, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let url = CString::new(peer.url.clone()).expect("the URL holds no NUL");
+            let time = event::Time::monotonic(Clock::clone(&peer.clock));
+            let new = Client::new(time, Net::clone(&peer.net), &mut peer.rng, url);
+            let before = new.failure(Action::Read, Status::BAD_TIMEOUT).to_string();
+            drop(new);
+            let client = peer.connected().await;
+            let after = client.failure(Action::Browse, Status::BAD_TIMEOUT);
+            (before, after.to_string(), peer.url.clone())
+        })
+        .await
+    });
+    let (before, after, url) = texts;
+    assert_eq!(
+        before,
+        format!("the read from {url} failed with BadTimeout")
+    );
+    assert_eq!(after, format!("the browse of {url} failed with BadTimeout"));
 }
 
 /// The name `node` must reach the server whole: it holds a `;`, an `=`, and a byte
