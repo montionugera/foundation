@@ -176,11 +176,13 @@
   which let a `Resend` or an untimed backfill frame be sent.
   Two shape changes from the plan: `Outcome::Taken` and `Lost` carry a
   `frame::Range { seq, count }`, the form of the home's `Outcome` and of the head of
-  HUB WIRE, so a reversed range cannot be sent, and `Reply::decode` refuses a range of
-  no sample or one that ends past the highest seq; and `Opening` gives one
+  HUB WIRE, so a reversed range cannot be sent; and `Opening` gives one
   `Start { places, set }`, which keeps the order of the messages in one decoder.
   Approved by `laptop.architect` at 2026-10-18T03:10:22Z
   (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245051476).
+  `Reply::decode` refuses a range of no sample or one that ends past the highest seq,
+  as HUB WIRE refuses such a head (finding 2 of round 1,
+  https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245328844).
   The frame messages of a write, `Head`, `Time`, `Reply`, `Outcome`, and `Refusal`,
   are in `wire::hub::write`, as the session codec of a read is in `wire::hub`, so the
   forward of BQ12 uses them with no client type. Their errors are in `hub::Error`,

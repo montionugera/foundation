@@ -7,7 +7,8 @@
 //! gives with its last place the places of its run, their key set, and the decoder of
 //! a session of their count and the mode, a refused message of a read stream leaves
 //! its decoder as it was, an `Opening` gives what a `Reader` gives, and each valid
-//! message made from the input reads back.
+//! message made from the input reads back. A `Reader` holds an `Opening`, so the
+//! checks of the read stream are the checks of the run of both.
 //!
 //! Input: the messages of one stream (`fuzz::messages`). Each decoder reads each
 //! message, an open among them; the body of the first message, when it is a request, a
