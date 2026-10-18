@@ -73,6 +73,9 @@ const REMOVED: Code = Code(17);
 /// The code of a stream with a `Card` change of a member whose card the leader
 /// proposed less than a minute before.
 const SOON: Code = Code(18);
+/// The code of a stream with a `Join` change whose node key the leader holds with
+/// another public key.
+const CONTESTED: Code = Code(19);
 
 /// What a [`Mesh`] is built from.
 #[derive(Debug)]
@@ -1497,6 +1500,10 @@ mod tests {
         requests: BTreeMap<u8, Request>,
         /// The join that each node stamped.
         stamped: BTreeMap<u8, Change>,
+        /// The join that each node settles next.
+        joins: BTreeMap<u8, Change>,
+        /// Each settle of `joins` that returned, in order: its node and what it gave.
+        settled: Vec<(u8, Result<Option<Result<(), Refused>>, Error>)>,
         /// The members that are not founding voters.
         learners: BTreeSet<u8>,
         /// The home that each node sets next.
@@ -1782,7 +1789,12 @@ mod tests {
                         let protocol = wire::header::decode(&header).unwrap();
                         assert_eq!(protocol, (Protocol::Mesh, &[][..]));
                         match mesh.serve(peer, incoming).await {
-                            Ok(()) | Err(Error::Stream(_) | Error::Soon) => {}
+                            Ok(())
+                            | Err(
+                                Error::Stream(_)
+                                | Error::Soon
+                                | Error::Contested { .. },
+                            ) => {}
                             Err(error) => panic!("a voter refused a message: {error}"),
                         }
                     });
@@ -1848,6 +1860,20 @@ mod tests {
             };
             let join = mesh.stamp(&time, request).unwrap();
             board.lock().unwrap().stamped.insert(id, join);
+        }
+    }
+
+    /// Settles one try of the join that the board gives node `id`, and puts the
+    /// result on the board.
+    async fn settle(mesh: Mesh, clock: Clock, id: u8, board: Arc<Mutex<Board>>) -> ! {
+        loop {
+            clock.sleep(TICK).await;
+            let join = board.lock().unwrap().joins.remove(&id);
+            let Some(join) = join else {
+                continue;
+            };
+            let result = mesh.attempt().unwrap().settle(join).await;
+            board.lock().unwrap().settled.push((id, result));
         }
     }
 
@@ -2059,6 +2085,10 @@ mod tests {
         let (setting, clock, sets) = (mesh.clone(), node.clock(), Arc::clone(board));
         tasks.spawn(async move {
             set(setting, clock, id, sets).await;
+        });
+        let (joining, clock, joins) = (mesh.clone(), node.clock(), Arc::clone(board));
+        tasks.spawn(async move {
+            settle(joining, clock, id, joins).await;
         });
         let (moving, clock, moves) = (mesh.clone(), node.clock(), Arc::clone(board));
         tasks.spawn(async move {

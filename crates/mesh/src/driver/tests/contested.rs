@@ -63,3 +63,25 @@ fn a_follower_gives_not_leader_for_a_join_that_its_log_contests() {
         assert_eq!(mesh.propose(twin(4)).await, Err(not_leader));
     });
 }
+
+// The leader refuses the forwarded twin of a voter with code 19, so the voter does
+// not forward it again, and the twin takes no entry.
+#[test]
+fn a_voter_gives_contested_for_a_join_that_the_leader_refuses() {
+    for run in 0..4 {
+        let (mut cluster, leader, follower, at) = Cluster::led(run);
+        cluster
+            .board
+            .lock()
+            .unwrap()
+            .joins
+            .insert(follower, twin(follower));
+        cluster.run(seconds(5));
+        let settled = vec![(follower, Err(contested(follower)))];
+        assert_eq!(cluster.board().settled, settled, "run {run}");
+        let script = [(leader, [encoded(&home_to(9))].into())].into();
+        cluster.board.lock().unwrap().script = script;
+        cluster.run(seconds(5));
+        assert_eq!(cluster.board().at, [after(at, 1)], "run {run}");
+    }
+}
