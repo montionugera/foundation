@@ -15,11 +15,9 @@ use block::Pool;
 use env::files::Operation;
 use env::tasks::Tasks;
 use sim::Crash;
-use transport::{Address, Class, Port, Session, Transport};
+use transport::{Address, Port, Transport};
 use types::ed25519::PrivateKey;
 use types::time::Span;
-use wire::Protocol;
-use wire::blob::{Requester, TOO_LARGE};
 
 use super::*;
 use crate::Config;
@@ -34,6 +32,9 @@ const MESSAGE: usize = 1472;
 const DIR: &str = "blob";
 /// The pool budget of each store and transport.
 const BUDGET: u64 = 1 << 20;
+
+/// The server's message limit.
+const SERVER_MESSAGE: usize = 1 << 16;
 
 /// The window of each transport.
 const WINDOW: usize = 1 << 20;
@@ -116,6 +117,7 @@ fn transport(
 
 /// The requester's node and its session to the server.
 struct Peer {
+    node: sim::node::Node,
     clock: env::clock::Clock,
     pool: Rc<Pool>,
     session: Session,
@@ -191,12 +193,33 @@ fn reset(code: u32) -> transport::Error {
 
 /// Runs one session from the requester's node to the server's node, whose disk has
 /// `disk_bytes`. The server's node accepts one stream, reads its header, and gives
-/// the stream to `server`; the requester's node gives its session to `requester`.
-/// Panics unless both return. Gives the run and the server's node, for a crash.
+/// the stream to `server`. As [`run_session`] for the rest.
 fn run<S, R>(
     seed: u64,
     disk_bytes: u64,
     server: impl FnOnce(sim::node::Node, Incoming) -> S + Send + 'static,
+    requester: impl FnOnce(Peer) -> R + Send + 'static,
+) -> (sim::Sim, sim::node::Node)
+where
+    S: Future<Output = ()> + 'static,
+    R: Future<Output = ()> + 'static,
+{
+    let server = |node, session: Session| async move {
+        let incoming = accept(&session).await.expect("a stream");
+        server(node, incoming).await;
+    };
+    run_session(seed, disk_bytes, server, requester)
+}
+
+/// Runs one session from the requester's node to the server's node, whose disk has
+/// `disk_bytes`. The server's node gives its session to `server`, and the requester's
+/// node gives its session to `requester`, which closes a millisecond after
+/// `requester` returns.
+/// Panics unless both return. Gives the run and the server's node, for a crash.
+fn run_session<S, R>(
+    seed: u64,
+    disk_bytes: u64,
+    server: impl FnOnce(sim::node::Node, Session) -> S + Send + 'static,
     requester: impl FnOnce(Peer) -> R + Send + 'static,
 ) -> (sim::Sim, sim::node::Node)
 where
@@ -222,14 +245,9 @@ where
     let node = server_node.clone();
     let done = Arc::clone(&server_ended);
     let main = move |tasks: Tasks| async move {
-        let transport = transport(&node, &tasks, SERVER, 1 << 16);
+        let transport = transport(&node, &tasks, SERVER, SERVER_MESSAGE);
         let session = transport.accept().await.expect("a session");
-        let mut incoming = session.accept().await.expect("a stream");
-        let header = incoming.receiver.recv().await.expect("a header");
-        let header = header.expect("the header comes before the finish");
-        assert_eq!(wire::header::decode(&header), Ok((Protocol::Blob, &[][..])));
-        drop(header);
-        server(node, incoming).await;
+        server(node, session.clone()).await;
         done.store(true, Ordering::Relaxed);
         drop(session.closed().await);
     };
@@ -245,12 +263,15 @@ where
         let transport = transport(&node, &tasks, REQUESTER, MESSAGE);
         let session = transport.dial(SERVER.public(), &[at]).await.expect("dials");
         let peer = Peer {
+            node: node.clone(),
             clock: node.clock(),
             pool: create_pool(),
             session: session.clone(),
         };
         requester(peer).await;
         done.store(true, Ordering::Relaxed);
+        // A close drops what the session did not send yet, such as a last stop.
+        node.clock().sleep(Span::MILLISECOND).await;
         session.close(Code(0));
         node.clock().sleep(Span::MILLISECOND).await;
     };
@@ -267,6 +288,16 @@ where
         "the requester returns"
     );
     (sim, server_node)
+}
+
+/// The next stream of `session`, once it read the blob header, or the error that
+/// ended the session.
+async fn accept(session: &Session) -> Result<Incoming, transport::Error> {
+    let mut incoming = session.accept().await?;
+    let header = incoming.receiver.recv().await.expect("a header");
+    let header = header.expect("the header comes before the finish");
+    assert_eq!(wire::header::decode(&header), Ok((Protocol::Blob, &[][..])));
+    Ok(incoming)
 }
 
 /// The disk of the server's node.
@@ -797,7 +828,7 @@ fn a_put_on_a_full_disk_stops_with_full() {
         move |peer| async move {
             let mut stream = peer.open().await;
             stream.put(digest, 128 << 10).await;
-            for part in bytes.chunks(1 << 16) {
+            for part in bytes.chunks(SERVER_MESSAGE) {
                 stream.send(part).await;
             }
             assert_eq!(stream.reset().await, reset(FULL));
@@ -971,3 +1002,5 @@ fn an_error_displays_its_cause() {
         format!("the blob stream failed: {stream}")
     );
 }
+
+mod requester;

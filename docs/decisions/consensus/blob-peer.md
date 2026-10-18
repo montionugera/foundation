@@ -1,6 +1,5 @@
 - **BLOB PEER (#1229)** `blob::peer` runs BLOB WIRE between this node's store and a
-  peer, over one stream per call. Until PR 2 of #1229 adds the requester (`peer::get`,
-  `peer::put`), `serve` is its one function. `peer::serve(&Store, Incoming)` answers
+  peer, over one stream per call. `peer::serve(&Store, Incoming)` answers
   each get and stores each put of a stream whose header the caller read, in order, until
   the peer's half ends, and then finishes its own half. It reads heads with
   `wire::blob::Server` at the limit `Pool::largest` of the store. A get gives
@@ -30,7 +29,27 @@
   `MALFORMED` for a one-way stream (`peer::Error::OneWay`), `MISMATCH` for bytes that do
   not hash to the digest, and `FULL` for `Error::Floor` and a full disk. Each other
   store error is the failure of the server, not of the peer: both halves end with code
-  0, which the requester reads as a dropped stream. The free floor:
+  0, which the requester reads as a dropped stream. `peer::get(&Store, &Session,
+  &[Digest])` gets each digest and puts each chunk in the store, and gives each digest
+  that the peer did not give as a `Miss` with its `Cause` (`Absent`, `TooLarge`,
+  `Mismatch`), in order. Each call opens streams with `Class::Complete`. It sends one
+  get of as many open digests as `Sender::bytes_max` holds, and reads each reply before
+  it sends the next, so neither side fills the window of the other. It reads a body as
+  `serve` reads a put. A head over `Pool::largest` of the store, or bytes that do not
+  hash to the digest, stops the stream with `TOO_LARGE` or `MISMATCH`, and the digests
+  still open go again on a new stream. A reply that does not answer the oldest open
+  digest gives `Error::Unexpected`, and an end of the peer's half with digests open
+  gives `Error::Unanswered`; both stop with `MALFORMED`. `peer::put(&Store, &Session,
+  &[Digest])` sends each chunk of the store, one at a time, as `serve` sends a get, and
+  waits for its `Stored`. A stop or reset with a code that is not 0 is the peer's
+  refusal (`Error::Refused`), and code 0 a failed stream. A drop of either future ends
+  the stream with code 0. Each holds at most one chunk of its own, and a put holds its
+  chunk and its `Put` head at once, as `Config::pool` states (`laptop.architect`,
+  2026-10-18T16:05:19Z:
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6252058410, items 1
+  and 2, on the plan
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6141090295). The
+  free floor:
   `Config::floor_bytes`, and `Store::put` gives `Error::Floor` when `Files::free` less
   the chunk's length is under it. A put over a file of the chunk's length takes no new
   room, so the floor does not refuse it: a node whose disk is under the floor still
@@ -41,8 +60,11 @@
   https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6108145440). One
   check in `Store::put` covers the puts of a peer, the chunks that a get stores, and
   local puts. The floor bounds what a peer may fill and is not a reservation: the room
-  of the other puts in flight is not counted, so the overshoot is at most one chunk for
-  each put in flight. A put is in flight for a check while its caller holds its future,
+  of the other puts in flight is not counted, so the overshoot is, for each put in
+  flight, its chunk rounded up to whole blocks of the disk and the growth of its
+  directory (`laptop.architect`, 2026-10-18T16:05:19Z:
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6252058410, item
+  3). A put is in flight for a check while its caller holds its future,
   and also when its future drops after the `free` of that check started
   (`laptop.architect`, 2026-10-11T16:58:32Z:
   https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6111434083;

@@ -1,6 +1,7 @@
 //! Stores chunks by digest on the node's disk, through `env::files`, and reads them
 //! back only when their bytes hash to the digest. A chunk torn by a crash reads as
-//! absent. [`peer`] serves the store to a peer over a blob stream.
+//! absent. [`peer`] serves the store to a peer, and gets and puts chunks of a peer,
+//! over blob streams.
 
 pub mod peer;
 
@@ -26,9 +27,10 @@ pub struct Config {
     pub dir: PathBuf,
     /// Blocks for the chunks a get gives, for checks of chunks on disk, and for the
     /// put bodies and the reply heads of [`peer::serve`]. Its largest block bounds a
-    /// chunk. A get that `serve` answers holds its chunk and its reply head at once.
-    /// A pool that cannot hold both gives that get [`Error::Pool`], as a pool under
-    /// load does, and `serve` ends the stream with code 0.
+    /// chunk. A get that `serve` answers, and a put of `peer::put`, holds its chunk
+    /// and its reply head at once. A pool that cannot hold both gives that get
+    /// [`Error::Pool`], as a pool under load does, and `serve` ends the stream with
+    /// code 0.
     pub pool: Rc<Pool>,
     /// The bytes the store leaves free on the disk. A put that would leave fewer gives
     /// [`Error::Floor`], unless a file of the chunk's length is at its name.

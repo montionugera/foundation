@@ -271,17 +271,25 @@ state on `main`.
   that hashes to its digest (BLOB PEER). It trusts no length: a head over the largest
   block of the pool stops the stream with `TOO_LARGE`, a body is counted against its
   head, and a chunk is stored only when its bytes hash to the digest, else `MISMATCH`. A
-  peer can fill the disk only to the free floor of the store, plus at most one chunk for
-  each put in flight; then each put of a chunk that the disk does not hold stops with
-  `FULL`. No code removes a chunk (#1233), so that room stays taken, and the node's own
-  puts of new chunks then give `Error::Floor` too. `serve` holds at most one chunk in
-  memory for each stream. `transport` also holds each chunk whole while noq keeps a sent
-  byte of it (STREAM WIRE), so a get can hold more than one chunk. The chunks that
-  `transport` holds for a session have at most `window_bytes` bytes together, plus two
-  chunks for each stream (#2361). Who may open a blob stream is not built: `node`
-  rejects each one until it routes them from member nodes only (#1229).
-  The requester is not built (#1229). To attack when it lands: a binary that a peer
-  serves under a hash it does not match (C9d).
+  peer can fill the disk only to the free floor of the store, plus, for each put in
+  flight, its chunk rounded up to whole blocks of the disk and the growth of its
+  directory; then each put of a chunk with no file of its length at its name stops with
+  `FULL`, also the empty chunk. No code removes a chunk (#1233), so that room stays
+  taken, and the node's own puts of new chunks then give `Error::Floor` too. `serve`
+  holds at most one chunk in memory for each stream. `transport` also holds each chunk
+  whole while noq keeps a sent byte of it (STREAM WIRE), so a get can hold more than one
+  chunk. The chunks that `transport` holds for a session have at most `window_bytes`
+  bytes together, plus two chunks for each stream (#2361). Who may open a blob stream is
+  not built: `node` rejects each one until it routes them from member nodes only
+  (#1229).
+- `blob::peer::get` trusts the peer no more than `serve` does: a head over the largest
+  block of its pool stops the stream with `TOO_LARGE`, and bytes that do not hash to the
+  digest stop it with `MISMATCH` and are not stored. So a binary that a peer serves
+  under a hash that it does not match is never stored (C9d). The digests still open go
+  again on a new stream, so each refused chunk costs the peer one stream. A reply out of
+  order, or an end with digests open, stops the stream with `MALFORMED`. `get` and
+  `put` hold at most one chunk of their own. Nothing bounds a silent peer but a drop of
+  the future, which `mesh` owns.
 
 ### Time source to `estimate`
 
