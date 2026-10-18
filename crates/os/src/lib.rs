@@ -18,6 +18,7 @@ use std::fmt;
 #[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
 use std::path::Path;
 
+/// Only macOS: rustix allocates all of a file on Linux.
 #[cfg(target_os = "macos")]
 #[expect(
     unsafe_code,

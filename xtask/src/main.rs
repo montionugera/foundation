@@ -21,6 +21,7 @@ mod sanitizers;
 mod select;
 mod sim;
 mod skips;
+mod workflow;
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -263,6 +264,7 @@ mod common {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workflow::indent;
 
     #[test]
     fn layers_reports_crates_missing_from_the_map() {
@@ -279,100 +281,16 @@ mod tests {
         );
     }
 
-    /// The lines of the YAML `text`, with no blank or comment line, which YAML skips.
     fn yaml_lines(text: &str) -> Vec<&str> {
-        // YAML breaks a line at a lone CR, NEL, LS, and PS too, and a parser can read
-        // other white space as text, so `str::lines` and `str::trim` would drop a line
-        // that YAML reads. CR LF is one break to both.
-        let mut chars = text.chars().peekable();
-        while let Some(c) = chars.next() {
-            let crlf = c == '\r' && chars.peek() == Some(&'\n');
-            assert!(
-                crlf || matches!(c, '\n' | ' '..='~'),
-                "ci.yaml has a character that is not printable ASCII, LF, or CR LF: {c:?}"
-            );
-        }
-        let lines: Vec<&str> = (text.lines())
-            .filter(|line| !line.trim().is_empty() && !line.trim().starts_with('#'))
-            .collect();
-        // The checks read each line as one node, so none may run on into the next.
-        // The text of a block scalar is not YAML.
-        let mut block = None;
-        for line in &lines {
-            if block.is_some_and(|key| indent(line) > key) {
-                continue;
-            }
-            let code = code(line);
-            let header = code.trim_end_matches(['-', '+']);
-            block = (header.ends_with(": |") || header.ends_with(": >"))
-                .then(|| line.len() - line.trim_start_matches([' ', '-']).len());
-        }
-        lines
+        (workflow::lines(text)
+            .unwrap_or_else(|e| panic!("{e}"))
+            .into_iter())
+        .map(|line| line.text)
+        .collect()
     }
 
-    /// The text of the YAML `line` before its comment.
-    ///
-    /// # Panics
-    ///
-    /// When a quoted scalar or a flow sequence of `line` does not close on it, a flow
-    /// sequence holds more than plain words, or `line` has a flow mapping, an anchor,
-    /// alias, or tag, a `?` or `:` at the start of a node, a `#` after a character that
-    /// is not a space, or a document marker, any of which can make a node run on.
-    fn code(line: &str) -> &str {
-        let refused = || panic!("ci.yaml has a node that can run on: `{line}`");
-        if line.starts_with("---") || line.starts_with("...") {
-            refused();
-        }
-        // `start` holds where a node can start, the only place where a quote or a
-        // bracket opens one.
-        let (mut quote, mut escaped, mut flow, mut start) = (None, false, false, true);
-        let mut prev = ' ';
-        let mut chars = line.char_indices().peekable();
-        while let Some((i, c)) = chars.next() {
-            if let Some(open) = quote {
-                let doubled = chars.peek().is_some_and(|(_, next)| *next == '\'');
-                if escaped {
-                    escaped = false;
-                } else if (open, c) == ('"', '\\')
-                    || (open, c, doubled) == ('\'', '\'', true)
-                {
-                    escaped = true;
-                } else if c == open {
-                    (quote, start) = (None, false);
-                }
-                prev = c;
-                continue;
-            }
-            // A flow of plain words is the only flow ci.yaml needs, and the only one
-            // whose end each parser finds at the same place.
-            if flow {
-                match c {
-                    ']' => (flow, start) = (false, false),
-                    ' ' | ',' | '-' | '_' | '.' | '/' => {}
-                    _ if c.is_ascii_alphanumeric() => {}
-                    _ => refused(),
-                }
-                continue;
-            }
-            match c {
-                ' ' if prev == ':' => start = true,
-                // A `-` keeps a node start only before a space.
-                '-' if chars.peek().is_some_and(|(_, next)| *next == ' ') => {}
-                ' ' => {}
-                '#' if prev == ' ' => return line[..i].trim_end(),
-                // Parsers differ on whether such a `#` starts a comment.
-                '#' => refused(),
-                '\'' | '"' if start => quote = Some(c),
-                '[' if start => flow = true,
-                '{' | '&' | '*' | '!' | '?' | ':' if start => refused(),
-                _ => start = false,
-            }
-            prev = c;
-        }
-        if quote.is_some() || flow {
-            refused();
-        }
-        line
+    fn under<'a>(lines: &[&'a str], key: &str) -> Vec<&'a str> {
+        workflow::under(lines, key).unwrap_or_else(|e| panic!("{e}"))
     }
 
     /// `.github/workflows/ci.yaml` in the workspace at `root`, with no blank or comment
@@ -391,21 +309,6 @@ mod tests {
             "ci.yaml has a top-level key that the checks do not read"
         );
         ci.join("\n")
-    }
-
-    /// The spaces before the text of `line`.
-    fn indent(line: &str) -> usize {
-        line.len() - line.trim_start().len()
-    }
-
-    /// The lines under the first line of `lines` that is `key`: each line after it up
-    /// to the first that is not indented further, which is the value of `key` in YAML.
-    fn under<'a>(lines: &[&'a str], key: &str) -> Vec<&'a str> {
-        let start = (lines.iter().position(|line| *line == key))
-            .unwrap_or_else(|| panic!("ci.yaml has no `{}` in {lines:#?}", key.trim()));
-        (lines[start + 1..].iter().copied())
-            .take_while(|line| indent(line) > indent(key))
-            .collect()
     }
 
     /// The lines of the step `filter` of `ci.yaml` up to the text of its filters.
@@ -614,132 +517,6 @@ mod tests {
     }
 
     #[test]
-    fn yaml_lines_skips_each_blank_and_comment_line() {
-        let text = "a:\n\n  \n  # x\n  b: 1 # c\n";
-        assert_eq!(yaml_lines(text), ["a:", "  b: 1 # c"]);
-        let printable: String = (' '..='~').collect();
-        let text = format!("a: |\n  {printable}");
-        assert_eq!(yaml_lines(&text), ["a: |", &format!("  {printable}")]);
-    }
-
-    #[test]
-    fn yaml_lines_keeps_each_node_that_closes_on_its_line() {
-        let text = concat!(
-            "a: 'b''c'\n",
-            "b: \"c\\\"d\" # e\n",
-            "c: it's a b # c\n",
-            "d: [e, f-g, h_i.j/k] # it's\n",
-            "e: \"!cancelled()\"\n",
-            "f: |\n",
-            "  [echo \"it's\n",
-            "  - g: >-\n",
-            "      [h\n",
-            "i: 'j\\'\n",
-            "a: b[c\n",
-            "d: e,'f\n",
-            "g: |+\n",
-            "  'h\n",
-            "[i]: j\n",
-        );
-        assert_eq!(yaml_lines(text), text.lines().collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn yaml_lines_keeps_each_quoted_key() {
-        let text = concat!(
-            "env:\n",
-            "  \"A\": b\n",
-            "  'C': d # e\n",
-            "steps:\n",
-            "  - \"f\": |\n",
-            "      g\n",
-        );
-        assert_eq!(yaml_lines(text), text.lines().collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn yaml_lines_refuses_each_node_that_can_run_on() {
-        for line in [
-            "    runs-on: \"${{ 'ubuntu-latest' || '",
-            "      [{name: Miri, run: \"true",
-            "  - [x, [y]",
-            "          key: 'x",
-            "      - name: 'Miri",
-            "     note: \"",
-            "a'b: 'c",
-            "a: {\"b\":'c}",
-            "a: \"b\\\"",
-            "a: [b, # c",
-            "a: &b 'c'",
-            "a: !b c",
-            "a: *b",
-            "  ? a",
-            "  : b: |",
-            "a: [? b]",
-            "a: [b:'c, [d']",
-            "a: [b:'#, [c']",
-            "a: [b, [c]]",
-            "a: [b, c",
-            "--- 'a",
-            "... [a",
-            "a: {b: c}",
-            "a: 'b''c",
-            "a: b#c",
-            "a: [\"b\"#c]",
-            "a: ['b'#]",
-            "a: ['b',#]",
-            "a: {'b':#}",
-            "a: [b - 'c, [d']",
-            "a: [b - '#, [d']",
-            "a: [-'b, [c']",
-        ] {
-            let text = format!("x: |\n  y\nz:\n{line}\n");
-            let panic = std::panic::catch_unwind(|| yaml_lines(&text)).expect_err(line);
-            assert_eq!(
-                panic.downcast_ref::<String>(),
-                Some(&format!("ci.yaml has a node that can run on: `{line}`")),
-            );
-        }
-        let text = "  - a: |\n      b\n    c: 'd\n";
-        let panic = std::panic::catch_unwind(|| yaml_lines(text)).expect_err(text);
-        assert_eq!(
-            panic.downcast_ref::<String>(),
-            Some(&"ci.yaml has a node that can run on: `    c: 'd`".to_owned()),
-        );
-    }
-
-    #[test]
-    fn yaml_lines_reads_crlf_as_one_line_break() {
-        let text = "a:\r\n\r\n  # b\r\n  c: 1 # d\r\n";
-        assert_eq!(yaml_lines(text), ["a:", "  c: 1 # d"]);
-    }
-
-    #[test]
-    fn yaml_lines_refuses_each_character_that_is_not_printable_ascii_lf_or_crlf() {
-        for (text, c) in [
-            ("a:\r  b:\n", '\r'),
-            ("a:\n  b:\r", '\r'),
-            ("a:\r\r\n  b:\n", '\r'),
-        ]
-        .into_iter()
-        .map(|(text, c)| (text.to_owned(), c))
-        .chain(
-            ['\t', '\u{85}', '\u{a0}', '\u{2028}', '\u{2029}', '\u{7f}']
-                .map(|c| (format!("a:\n  #{c}  b:\n"), c)),
-        ) {
-            let panic =
-                std::panic::catch_unwind(|| yaml_lines(&text)).expect_err(&text);
-            assert_eq!(
-                panic.downcast_ref::<String>(),
-                Some(&format!(
-                    "ci.yaml has a character that is not printable ASCII, LF, or CR LF: \
-                     {c:?}"
-                )),
-            );
-        }
-    }
-
-    #[test]
     fn models_reads_only_the_filter_and_output_of_the_changes_job() {
         let ci = concat!(
             "jobs:\n",
@@ -917,7 +694,9 @@ mod tests {
         let packages = [
             by_cfg("loom").unwrap(),
             by_cfg("shuttle").unwrap(),
-            miri::packages(&metadata).unwrap(),
+            (miri::crates(&metadata).unwrap().into_iter())
+                .map(|found| found.package)
+                .collect(),
         ];
         pin_jobs(&jobs);
         for (task, packages) in ["loom", "shuttle", "miri"].into_iter().zip(packages) {
@@ -1029,7 +808,7 @@ mod tests {
         // The lists are empty at the goal of LINUX CI, so the parse is checked by the
         // keys of each entry. Only a block list puts its items where the check below
         // reads them.
-        for key in ["crates:", "untested:", "tests:"] {
+        for key in ["crates:", "untested:", "tests:", "gates:"] {
             let entries: Vec<&str> = (check.iter())
                 .filter_map(|line| line.strip_prefix("            "))
                 .filter(|line| line.starts_with(key))
@@ -1071,9 +850,9 @@ mod tests {
         let models = models(&ci);
         let workspace = metadata["packages"].as_array().unwrap();
         // Each entry is a crate whose code Miri runs, and the crate that Miri tests.
-        let mut open: Vec<(String, String)> = (miri::packages(&metadata).unwrap())
+        let mut open: Vec<(String, String)> = (miri::crates(&metadata).unwrap())
             .into_iter()
-            .map(|select::Package { name, .. }| (name.clone(), name))
+            .map(|found| (found.package.name.clone(), found.package.name))
             .collect();
         let mut seen = BTreeSet::new();
         while let Some((name, tested)) = open.pop() {
@@ -1107,14 +886,14 @@ mod tests {
     fn miri_skips_only_crates_that_name_unsafe_code() {
         let metadata = metadata(&fixture().join("../..")).unwrap();
         let named = select::packages(&metadata, |s| select::has_word(s, "unsafe_code"));
-        let (named, checked) = (named.unwrap(), miri::packages(&metadata).unwrap());
+        let (named, checked) = (named.unwrap(), miri::crates(&metadata).unwrap());
         for name in miri::SKIPPED {
             assert!(
                 named.iter().any(|package| package.name == name),
                 "`{name}` names no `unsafe_code`"
             );
             assert!(
-                !checked.iter().any(|package| package.name == name),
+                !checked.iter().any(|found| found.package.name == name),
                 "Miri checks `{name}`"
             );
         }

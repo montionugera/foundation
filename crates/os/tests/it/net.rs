@@ -385,6 +385,8 @@ fn a_write_of_no_parts_after_an_unseen_reset_gives_0() {
     });
 }
 
+/// Only macOS: only on macOS does `os` cut a write at the unsent bound.
+///
 /// With a send buffer of the unsent bound, the kernel can refuse a write before the
 /// bytes since the last wait reach the bound. The write then waits.
 #[test]
@@ -407,7 +409,7 @@ fn a_full_send_buffer_below_the_bound_makes_a_write_wait() {
     });
 }
 
-/// On macOS, one write takes at most the unsent bound, since the kernel applies it
+/// Only macOS: one write takes at most the unsent bound, since the kernel applies it
 /// only to the write event. An accepted stream keeps the bound of its listener.
 #[test]
 #[cfg(target_os = "macos")]
@@ -425,7 +427,8 @@ fn a_write_takes_at_most_the_unsent_bound() {
     });
 }
 
-/// On macOS, a write takes only the rest of the unsent bound that earlier writes left.
+/// Only macOS: a write takes only the rest of the unsent bound that earlier writes
+/// left.
 #[test]
 #[cfg(target_os = "macos")]
 fn a_write_after_a_small_write_takes_the_rest_of_the_unsent_bound() {
@@ -438,7 +441,7 @@ fn a_write_after_a_small_write_takes_the_rest_of_the_unsent_bound() {
     });
 }
 
-/// On macOS, a vectored write whose last part crosses the unsent bound takes the
+/// Only macOS: a vectored write whose last part crosses the unsent bound takes the
 /// whole parts before it, in order.
 #[test]
 #[cfg(target_os = "macos")]
@@ -454,7 +457,7 @@ fn a_vectored_write_across_the_unsent_bound_takes_the_whole_parts() {
     });
 }
 
-/// On macOS, whole parts that fill the unsent bound go in one write.
+/// Only macOS: whole parts that fill the unsent bound go in one write.
 #[test]
 #[cfg(target_os = "macos")]
 fn whole_parts_that_fill_the_unsent_bound_go_in_one_write() {

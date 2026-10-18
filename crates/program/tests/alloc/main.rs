@@ -133,9 +133,12 @@ fn writes_a_frame_with_no_allocation() {
                     let message = write.receiver.recv().await.expect("receives");
                     message.expect("a message of the frame");
                 }
-                let reply = Reply::Outcome(Outcome::Taken {
-                    range: Range { seq, count: 1 },
-                });
+                let reply = Reply::Outcome {
+                    frame: seq + 1,
+                    outcome: Outcome::Taken {
+                        range: Range { seq, count: 1 },
+                    },
+                };
                 let mut bytes = vec![0; reply.encoded_len()];
                 reply.encode(&mut bytes);
                 send(write.sender.as_mut().expect("two-way"), &bytes).await;

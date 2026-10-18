@@ -296,6 +296,7 @@ mod linux {
     }
 }
 
+/// Only macOS: it reads the page counts of Mach.
 #[cfg(target_os = "macos")]
 mod macos {
     use std::io;

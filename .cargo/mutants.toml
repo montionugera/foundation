@@ -29,16 +29,6 @@ exclude_re = [
   '^bench/',
   # `main` reads the arguments and calls a task. Each task has its own tests.
   'xtask/src/main\.rs:.*(replace main ->| in main$)',
-  # These five need the pinned nightly, and `run`, `list`, and `nextest` also need
-  # cargo-nextest, which only the miri shard CI jobs install. Each choice of the plan is
-  # in a `pub(crate)` function of `miri` with its own test; these start the commands and
-  # compose the results. A test that panics under Miri, planted in a lib, a doc test, or
-  # another target, fails the shard job that runs it.
-  'xtask/src/miri\.rs:.*(replace run ->| in run$)',
-  'xtask/src/miri\.rs:.*(replace doc_tests ->| in doc_tests$)',
-  'xtask/src/miri\.rs:.*(replace list ->| in list$)',
-  'xtask/src/miri\.rs:.*(replace nextest ->| in nextest$)',
-  'xtask/src/miri\.rs:.*(replace worker ->| in worker$)',
   # The run needs the pinned nightly, which the mutants job does not install. A planted
   # overflow in the shim fails the sanitizers job.
   'xtask/src/sanitizers\.rs:.*(replace run ->| in run$)',
@@ -108,13 +98,13 @@ exclude_re = [
   # and the mutants of `written` show that it does.
   'crates/node/src/identity\.rs:.*replace check with \(\)',
   # The oracle of `admin.key` in the same target and tests, for the same reason.
-  'crates/node/src/admin\.rs:.*replace check with \(\)',
+  'crates/sector/src/admin\.rs:.*replace check with \(\)',
   # The check that `identity::check`, `admin::check`, and `address::check` call, for
-  # the same reason. The unit tests `panics_when_a_decode_*` in `sector.rs` show that
-  # it panics.
-  'crates/node/src/sector\.rs:.*replace check with \(\)',
+  # the same reason. The unit tests `panics_when_a_decode_*` of `sector` show that it
+  # panics.
+  'crates/sector/src/lib\.rs:.*replace check with \(\)',
   # The oracle of `address` in the same target and tests, for the same reason.
-  'crates/node/src/address\.rs:.*replace check with \(\)',
+  'crates/sector/src/address\.rs:.*replace check with \(\)',
   # The entry of the target, which panics only when a `check` does.
   'crates/node/src/fuzz\.rs:.*replace identity with \(\)',
   # No caller sees the bytes that `file` gives: `identity` panics only when a `check`

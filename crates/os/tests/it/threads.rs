@@ -187,6 +187,7 @@ fn a_body_may_block_on_a_tokio_runtime_of_its_own() {
     assert_joins(handle, Ok(()));
 }
 
+/// Only Linux: only Linux pins a shard.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_thread_started_on_a_pinned_shard_runs_on_every_cpu_of_the_set() {

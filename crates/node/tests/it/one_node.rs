@@ -47,17 +47,34 @@ struct Plant {
     rig: Rig,
     opcua: Opcua,
     influx: Influx,
+    /// The time of `opcua` before the node started.
+    started: Stamp,
+}
+
+impl Plant {
+    /// Starts the node of `rig`, which reads `opcua` and pushes to `influx`. No config
+    /// applies yet.
+    fn start(mut rig: Rig, opcua: Opcua, influx: Influx) -> Self {
+        let started = opcua.now();
+        rig.start();
+        Self {
+            rig,
+            opcua,
+            influx,
+            started,
+        }
+    }
 }
 
 /// A running node on `hcl`, with both servers serving.
 fn create_plant(hcl: &str) -> Plant {
     let mut opcua = Opcua::default();
     let mut influx = Influx::default();
-    let mut rig = Rig::new();
+    let rig = Rig::new();
     rig.config(&served(hcl, opcua.serve(), influx.serve()));
-    rig.start();
-    rig.apply();
-    Plant { rig, opcua, influx }
+    let plant = Plant::start(rig, opcua, influx);
+    plant.rig.apply();
+    plant
 }
 
 /// The quickstart config, with the token of `influx` from `source`.
@@ -78,8 +95,7 @@ fn create_token_plant(source: impl FnOnce(&Rig) -> String) -> Plant {
     rig.var("INFLUX_TOKEN", "t0ken");
     let hcl = with_token(&source(&rig));
     rig.config(&served(&hcl, opcua.serve(), influx.serve()));
-    rig.start();
-    Plant { rig, opcua, influx }
+    Plant::start(rig, opcua, influx)
 }
 
 /// Asserts that `plan` of `rig` exits with one `secret.unresolved` problem at the
@@ -200,18 +216,21 @@ fn change(
 fn held(plant: &Plant, reads: &[Reads]) -> Vec<Trace> {
     plant.rig.wait("InfluxDB holds each read", || {
         let stored = plant.influx.stored();
-        caught_up(reads, plant.opcua.served(), stored)
+        caught_up(reads, plant.started, plant.opcua.served(), stored)
     })
 }
 
 /// The trace of each of `reads`, once `stored` (by channel) holds each read of
-/// `served` (by variable) to the last step of the value in the changes. Sample `k`
-/// stored has the value of read `k`, at a time within [`BOUND`] of it. A lost or extra
-/// sample before a step puts a sample on a read of another value. From the last step
-/// on, a later read of the same value can stand in for a lost read. `served` is taken
-/// after `stored`. Else `Err` with the first sample that is not its read.
+/// `served` (by variable) to the last step of the value in the changes, and `served`
+/// holds the read after that step. Sample `k` stored is read `k`, as [`traced`] checks.
+/// A lost or extra sample before a step puts a sample on a read of another value. From
+/// the last step on, a later read of the same value can stand in for a lost read. The
+/// node started at `started`, and `served` is taken after `stored`. Else `Err` with
+/// what `served` or `stored` lacks, or with the first sample that is not its read and
+/// the offset and window of each checked sample.
 fn caught_up(
     reads: &[Reads],
+    started: Stamp,
     mut served: BTreeMap<String, Vec<Sample>>,
     mut stored: BTreeMap<String, Vec<Sample>>,
 ) -> Result<Vec<Trace>, String> {
@@ -230,18 +249,9 @@ fn caught_up(
                         &served[..reads.changed]
                     )
                 });
-            for (k, (sample, read)) in
-                stored.iter().zip(&served).take(end + 1).enumerate()
-            {
-                if sample.value.to_bits() != read.value.to_bits()
-                    || (sample.time - read.time).nanos().abs() > BOUND.nanos()
-                {
-                    return Err(format!(
-                        "{channel}: sample {k} stored, {sample:?}, is not read {k}, \
-                         {read:?}"
-                    ));
-                }
-            }
+            let to_end = &stored[..stored.len().min(end + 1)];
+            traced(started, &served, to_end)
+                .map_err(|error| format!("{channel}: {error}"))?;
             if stored.len() <= end {
                 return Err(format!(
                     "{channel}: InfluxDB holds {} of the {} reads",
@@ -256,6 +266,77 @@ fn caught_up(
             })
         })
         .collect()
+}
+
+/// Whether sample `k` of `stored` is read `k` of `served`: read `k` is Good, the sample
+/// has its value, and its time is [`within`] the limit of read `k`. InfluxDB holds no
+/// status, so a sample is Good when its read is. The node started at `started`. Else
+/// `Err` with the first sample that is not its read and the offset and window of each
+/// sample, or with the last read of `served` when `stored` holds a sample of it: its
+/// window needs the read after it.
+fn traced(started: Stamp, served: &[Sample], stored: &[Sample]) -> Result<(), String> {
+    let last = served.len().saturating_sub(1);
+    if stored.len() > last {
+        return Err(format!("the server answered no read after read {last}"));
+    }
+    let checked: Vec<_> = (stored.iter().zip(served).zip(windows(started, served)))
+        .map(|((sample, read), window)| {
+            (sample, read, sample.time.checked_since(read.time), window)
+        })
+        .collect();
+    for (k, &(sample, read, offset, window)) in checked.iter().enumerate() {
+        if read.quality != Some(Quality::GOOD)
+            || sample.value.to_bits() != read.value.to_bits()
+            || !within(k, offset, window)
+        {
+            let offsets = checked.iter().map(|&(.., offset, window)| (offset, window));
+            return Err(format!(
+                "sample {k} stored, {sample:?}, is not read {k}, {read:?}\nthe offset \
+                 of each sample in its window: {}",
+                shown(offsets)
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a sample `offset` from read `k` is within its limit. The window of a read is
+/// the time from the read before it, or from the start of the node, to the read after
+/// it. A stamp is the midpoint of its read, so the hold, half the window plus
+/// [`BOUND`], holds each sample. A read after the first whose window is at most
+/// `2 * BOUND` takes the MVP target, [`BOUND`]. An offset that does not fit in a
+/// [`Span`] is over each limit.
+fn within(k: usize, offset: Option<Span>, window: Span) -> bool {
+    let Some(offset) = offset else {
+        return false;
+    };
+    let offset = i128::from(offset.nanos()).abs();
+    let (window, bound) = (i128::from(window.nanos()), i128::from(BOUND.nanos()));
+    if k >= 1 && window <= 2 * bound {
+        offset <= bound
+    } else {
+        2 * offset <= window + 2 * bound
+    }
+}
+
+/// Each offset and its window, as `0: 5ms in 200ms, 1: 1.005s in 200ms`.
+fn shown(offsets: impl Iterator<Item = (Option<Span>, Span)>) -> String {
+    let shown: Vec<_> = (offsets.enumerate())
+        .map(|(k, (offset, window))| match offset {
+            Some(offset) => format!("{k}: {offset} in {window}"),
+            None => format!("{k}: out of range in {window}"),
+        })
+        .collect();
+    shown.join(", ")
+}
+
+/// The window of each read of `served` but the last, from a node that started at
+/// `started`.
+fn windows(started: Stamp, served: &[Sample]) -> impl Iterator<Item = Span> + '_ {
+    let before = std::iter::once(started).chain(served.iter().map(|read| read.time));
+    before
+        .zip(served.iter().skip(1))
+        .map(|(before, after)| after.time - before)
 }
 
 /// The count `key` of the connector `name` in `status`.
@@ -286,12 +367,13 @@ fn create_served() -> Vec<Sample> {
         .map(|(at, value)| Sample {
             time: Stamp::from_nanos(at * 100 * Span::MILLISECOND.nanos()),
             value,
-            quality: None,
+            quality: Some(Quality::GOOD),
         })
         .collect()
 }
 
-/// [`caught_up`] of `stored` against `served`.
+/// [`caught_up`] of `stored` against `served`, from a node that started at 0.9 s, one
+/// read before the first of [`create_served`].
 fn check(served: &[Sample], stored: &[Sample]) -> Result<Vec<Trace>, String> {
     let reads = [Reads {
         variable: "ns=3;s=SpikeData",
@@ -301,6 +383,7 @@ fn check(served: &[Sample], stored: &[Sample]) -> Result<Vec<Trace>, String> {
     }];
     caught_up(
         &reads,
+        Stamp::from_nanos(900 * Span::MILLISECOND.nanos()),
         BTreeMap::from([("ns=3;s=SpikeData".into(), served.to_vec())]),
         BTreeMap::from([("plant.spike".into(), stored.to_vec())]),
     )
@@ -315,27 +398,72 @@ fn later(samples: &[Sample], by: Span) -> Vec<Sample> {
     samples.iter().map(later).collect()
 }
 
+/// `samples`, with sample `k` `by` later.
+fn moved(samples: &[Sample], k: usize, by: Span) -> Vec<Sample> {
+    let mut moved = samples.to_vec();
+    moved[k].time = moved[k].time + by;
+    moved
+}
+
+/// [`create_served`], with each read after read `k` later, so that the window of read
+/// `k` is `window`.
+fn widened(k: usize, window: Span) -> Vec<Sample> {
+    let served = create_served();
+    let by = window.nanos() - (served[k + 1].time - served[k - 1].time).nanos();
+    let (before, after) = served.split_at(k + 1);
+    [before, &later(after, Span::from_nanos(by))].concat()
+}
+
+/// `by` and `-by`.
+fn both(by: Span) -> [Span; 2] {
+    [by, Span::from_nanos(-by.nanos())]
+}
+
+/// `span` and 1 ns.
+fn over(span: Span) -> Span {
+    Span::from_nanos(span.nanos() + 1)
+}
+
+/// The first line of `error`.
+fn first(error: &str) -> &str {
+    error.lines().next().unwrap_or_default()
+}
+
+/// The hold of read 0 in [`check`]: half its window of 200 ms, plus [`BOUND`].
+const HOLD: Span = Span::from_nanos(100 * Span::MILLISECOND.nanos() + BOUND.nanos());
+
+/// A window over `2 * BOUND`, and its hold.
+const WIDE: (Span, Span) = (
+    Span::from_nanos(2 * BOUND.nanos() + 2),
+    Span::from_nanos(2 * BOUND.nanos() + 1),
+);
+
 #[test]
-fn a_trace_holds_each_read_to_the_last_step_within_the_bound() {
+fn a_trace_holds_each_read_to_the_last_step_within_its_limit() {
     let served = create_served();
     let mut stepped = served.clone();
     stepped[6].value = 4.0;
     let mut tick = served.clone();
     tick[3].time = tick[3].time + Span::from_nanos(90 * Span::MILLISECOND.nanos());
-    let cases = [
+    let wide = widened(2, WIDE.0);
+    let mut cases = vec![
         (served.clone(), served.clone()),
         (served.clone(), served[..6].to_vec()),
         (stepped.clone(), stepped.clone()),
-        (served.clone(), later(&served, BOUND)),
-        (
-            served.clone(),
-            later(&served, Span::from_nanos(-BOUND.nanos())),
-        ),
         (
             tick.clone(),
             later(&tick, Span::from_nanos(6 * Span::MILLISECOND.nanos())),
         ),
     ];
+    for by in both(BOUND) {
+        cases.push((served.clone(), later(&served, by)));
+    }
+    for by in both(HOLD) {
+        cases.push((served.clone(), moved(&served, 0, by)));
+    }
+    for by in both(WIDE.1) {
+        cases.push((wide.clone(), moved(&wide, 2, by)));
+    }
     for (served, stored) in cases {
         let traces = check(&served, &stored).expect("caught up");
         let pairs = (traces.iter())
@@ -345,7 +473,7 @@ fn a_trace_holds_each_read_to_the_last_step_within_the_bound() {
 }
 
 #[test]
-fn a_lost_extra_or_late_sample_fails_the_trace() {
+fn a_lost_or_extra_sample_fails_the_trace() {
     let served = create_served();
     let not_read = |k, stored: &Sample| {
         format!(
@@ -361,9 +489,6 @@ fn a_lost_extra_or_late_sample_fails_the_trace() {
         time: served[k].time,
         ..served[4]
     };
-    let (mut late, mut early) = (served.clone(), served.clone());
-    late[0].time = late[0].time + BOUND + Span::from_nanos(1);
-    early[0].time = early[0].time - BOUND - Span::from_nanos(1);
     let cases = [
         (
             served[1..].to_vec(),
@@ -395,22 +520,184 @@ fn a_lost_extra_or_late_sample_fails_the_trace() {
             not_read(5, &stale(5)),
             "the value before the last step in place of the last value",
         ),
-        (late.clone(), not_read(0, &late[0]), "a late time"),
-        (early.clone(), not_read(0, &early[0]), "an early time"),
-        (
-            served[..5].to_vec(),
-            "plant.spike: InfluxDB holds 5 of the 6 reads".into(),
-            "not caught up",
-        ),
-        (
-            vec![],
-            "plant.spike: InfluxDB holds 0 of the 6 reads".into(),
-            "none stored",
-        ),
     ];
     for (stored, error, case) in cases {
-        assert_eq!(check(&served, &stored).unwrap_err(), error, "{case}");
+        let failed = check(&served, &stored).unwrap_err();
+        assert_eq!(first(&failed), error, "{case}");
     }
+    let held = [
+        (
+            served[..5].to_vec(),
+            "plant.spike: InfluxDB holds 5 of the 6 reads",
+        ),
+        (vec![], "plant.spike: InfluxDB holds 0 of the 6 reads"),
+    ];
+    for (stored, error) in held {
+        assert_eq!(check(&served, &stored).unwrap_err(), error);
+    }
+}
+
+#[test]
+fn a_time_over_its_limit_fails_the_trace() {
+    let served = create_served();
+    let edge = widened(2, Span::from_nanos(2 * BOUND.nanos()));
+    let wide = widened(2, WIDE.0);
+    let cases = [
+        (&served, 0, over(HOLD)),
+        (&served, 1, over(BOUND)),
+        (&edge, 2, over(BOUND)),
+        (&wide, 2, over(WIDE.1)),
+    ];
+    for (served, k, limit) in cases {
+        for by in both(limit) {
+            let stored = moved(served, k, by);
+            let failed = check(served, &stored).unwrap_err();
+            let error = format!(
+                "plant.spike: sample {k} stored, {:?}, is not read {k}, {:?}",
+                stored[k], served[k]
+            );
+            assert_eq!(first(&failed), error, "{by} at {k}");
+        }
+    }
+}
+
+#[test]
+fn a_failed_trace_gives_the_offset_and_window_of_each_sample() {
+    let served = widened(2, Span::from_nanos(500 * Span::MILLISECOND.nanos()));
+    let offset = Span::from_nanos(5 * Span::MILLISECOND.nanos());
+    let stored = moved(&later(&served, offset), 1, BOUND);
+    assert_eq!(
+        check(&served, &stored).unwrap_err(),
+        format!(
+            "plant.spike: sample 1 stored, {:?}, is not read 1, {:?}\nthe offset of \
+             each sample in its window: 0: 5ms in 200ms, 1: 1.005s in 200ms, 2: 5ms in \
+             500ms, 3: 5ms in 500ms, 4: 5ms in 200ms, 5: 5ms in 200ms",
+            stored[1], served[1]
+        )
+    );
+}
+
+#[test]
+fn a_trace_waits_for_the_read_after_the_last_step() {
+    let served = &create_served()[..6];
+    assert_eq!(
+        check(served, served).unwrap_err(),
+        "plant.spike: the server answered no read after read 5"
+    );
+}
+
+#[test]
+fn a_far_time_fails_the_trace() {
+    let served = create_served();
+    let wide = widened(2, WIDE.0);
+    let far = |samples: &[Sample], k: usize, nanos| {
+        let mut far = samples.to_vec();
+        far[k].time = Stamp::from_nanos(nanos);
+        far
+    };
+    let mut wrong = far(&served, 4, i64::MIN);
+    wrong[1].value = 9.0;
+    let cases = [
+        (&served, far(&served, 0, i64::MAX), 0),
+        (&wide, far(&wide, 2, i64::MAX), 2),
+        (&served, wrong.clone(), 1),
+    ];
+    for (served, stored, k) in cases {
+        let error = format!(
+            "plant.spike: sample {k} stored, {:?}, is not read {k}, {:?}",
+            stored[k], served[k]
+        );
+        assert_eq!(first(&check(served, &stored).unwrap_err()), error);
+    }
+    assert_eq!(
+        check(&served, &wrong).unwrap_err(),
+        format!(
+            "plant.spike: sample 1 stored, {:?}, is not read 1, {:?}\nthe offset of \
+             each sample in its window: 0: 0s in 200ms, 1: 0s in 200ms, 2: 0s in \
+             200ms, 3: 0s in 200ms, 4: out of range in 200ms, 5: 0s in 200ms",
+            wrong[1], served[1]
+        )
+    );
+}
+
+/// [`create_served`], with reads 0 and 1 Good and each read after them Bad. Read 2
+/// keeps the value of the reads before it.
+fn create_qualities() -> Vec<Sample> {
+    let quality = |k| Some(if k < 2 { Quality::GOOD } else { BAD });
+    (create_served().into_iter().enumerate())
+        .map(|(k, read)| Sample {
+            quality: quality(k),
+            ..read
+        })
+        .collect()
+}
+
+/// [`traced`] of `stored` against [`create_qualities`], from a node that started at
+/// 0.9 s.
+fn check_good(stored: &[Sample]) -> Result<(), String> {
+    let started = Stamp::from_nanos(900 * Span::MILLISECOND.nanos());
+    traced(started, &create_qualities(), stored)
+}
+
+#[test]
+fn a_sample_that_is_its_good_read_passes() {
+    let stored = create_served();
+    let mut cases = vec![vec![], stored[..2].to_vec()];
+    for by in both(HOLD) {
+        cases.push(moved(&stored[..1], 0, by));
+    }
+    for by in both(BOUND) {
+        cases.push(moved(&stored[..2], 1, by));
+    }
+    for stored in cases {
+        assert_eq!(check_good(&stored), Ok(()), "{stored:?}");
+    }
+}
+
+#[test]
+fn a_sample_that_is_not_its_good_read_fails() {
+    let stored = create_served();
+    let [late, early] = both(over(HOLD));
+    let mut wrong = stored[..2].to_vec();
+    wrong[1].value = 9.0;
+    let cases = [
+        (moved(&stored[..1], 0, early), "under the hold of read 0"),
+        (moved(&stored[..1], 0, late), "over the hold of read 0"),
+        (
+            moved(&stored[..2], 1, over(BOUND)),
+            "over the target of read 1",
+        ),
+        (
+            moved(&stored[..2], 1, Span::from_nanos(-over(BOUND).nanos())),
+            "under the target of read 1",
+        ),
+        (stored[..3].to_vec(), "read 2, which is Bad"),
+        (wrong, "a value of no read"),
+    ];
+    let served = create_qualities();
+    for (stored, case) in cases {
+        let k = stored.len() - 1;
+        assert_eq!(
+            first(&check_good(&stored).unwrap_err()),
+            format!(
+                "sample {k} stored, {:?}, is not read {k}, {:?}",
+                stored[k], served[k]
+            ),
+            "{case}"
+        );
+    }
+    let far = Sample {
+        time: Stamp::from_nanos(i64::MIN),
+        ..stored[0]
+    };
+    assert_eq!(
+        check_good(&[far]),
+        Err(format!(
+            "sample 0 stored, {far:?}, is not read 0, {:?}\nthe offset of each sample \
+             in its window: 0: out of range in 200ms",
+            served[0]
+        ))
+    );
 }
 
 #[test]
@@ -420,7 +707,7 @@ fn a_lost_read_fails_when_the_last_value_came_before() {
     served[6].value = 1.0;
     let stored = [&served[..4], &served[5..]].concat();
     assert_eq!(
-        check(&served, &stored).unwrap_err(),
+        first(&check(&served, &stored).unwrap_err()),
         format!(
             "plant.spike: sample 4 stored, {:?}, is not read 4, {:?}",
             served[5], served[4]
@@ -466,6 +753,24 @@ fn samples_from_an_opc_ua_server_reach_influxdb() {
 }
 
 #[test]
+fn a_plant_starts_before_its_first_read() {
+    let mut opcua = Opcua::default();
+    let mut influx = Influx::default();
+    let rig = Rig::new();
+    rig.config(&served(plant(), opcua.serve(), influx.serve()));
+    let before = opcua.now();
+    let plant = Plant::start(rig, opcua, influx);
+    plant.rig.apply();
+    first_stored(&plant, &VARIABLES[..1]);
+    let first = plant.opcua.served()[VARIABLES[0].0][0].time;
+    let started = plant.started;
+    assert!(
+        before <= started && started <= first,
+        "the start {started:?} is not between {before:?} and the first read {first:?}"
+    );
+}
+
+#[test]
 fn a_bad_value_is_left_out_and_counted() {
     let plant = create_plant(QUALITY);
     let spike = &VARIABLES[..1];
@@ -483,21 +788,9 @@ fn a_bad_value_is_left_out_and_counted() {
     });
     let mut served = plant.opcua.served();
     let served = served.remove(reads.variable).unwrap_or_default();
-    let before = &served[..=reads.unchanged];
-    let good = |sample: &Sample| sample.quality == Some(Quality::GOOD);
-    // InfluxDB holds no status, so a sample is Good when its read is.
     let mut stored = plant.influx.stored();
-    for sample in stored.remove(reads.channel).unwrap_or_default() {
-        let read = |read: &Sample| {
-            good(read)
-                && read.value.to_bits() == sample.value.to_bits()
-                && (sample.time - read.time).nanos().abs() <= BOUND.nanos()
-        };
-        assert!(
-            before.iter().any(read),
-            "{sample:?} is a Good read before the changes: {before:?}"
-        );
-    }
+    let stored = stored.remove(reads.channel).unwrap_or_default();
+    assert_eq!(traced(plant.started, &served, &stored), Ok(()));
 }
 
 #[test]
@@ -539,12 +832,13 @@ fn a_wrong_config_gives_its_file_line_and_fix() {
 fn a_wrong_endpoint_shows_in_status_and_heals() {
     let mut opcua = Opcua::default();
     let mut influx = Influx::default();
-    let mut rig = Rig::new();
+    let rig = Rig::new();
     let opcua_address = opcua.serve();
     let influx_address = influx.serve();
     influx.stop();
     rig.config(&served(plant(), opcua_address, influx_address));
-    rig.start();
+    let mut plant = Plant::start(rig, opcua, influx);
+    let rig = &plant.rig;
     rig.apply();
     let failing = rig.wait("`influx` shows the failed write", || {
         let status = rig.status();
@@ -584,7 +878,6 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
             _ => Err(format!("{status:#?}")),
         }
     });
-    let mut plant = Plant { rig, opcua, influx };
     let reads = change(&plant.opcua, &VARIABLES, Quality::GOOD, TICKS);
     plant.influx.serve();
     held(&plant, &reads);

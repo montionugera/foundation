@@ -401,13 +401,19 @@ fn decode_write(bencher: Bencher<'_, '_>, series: u32, in_place: bool) {
 /// The replies of a write: a frame taken, a frame refused, and the seqs on disk.
 fn write_replies() -> [write::Reply; 3] {
     [
-        write::Reply::Outcome(Outcome::Taken {
-            range: Range {
-                seq: 7,
-                count: 1_000,
+        write::Reply::Outcome {
+            frame: 5,
+            outcome: Outcome::Taken {
+                range: Range {
+                    seq: 7,
+                    count: 1_000,
+                },
             },
-        }),
-        write::Reply::Outcome(Outcome::Refused(Refusal::Full)),
+        },
+        write::Reply::Outcome {
+            frame: 6,
+            outcome: Outcome::Refused(Refusal::Full),
+        },
         write::Reply::Stored { frames: 1_006 },
     ]
 }
@@ -416,7 +422,7 @@ fn write_replies() -> [write::Reply; 3] {
 #[divan::bench]
 fn encode_write_replies(bencher: Bencher<'_, '_>) {
     let replies = write_replies();
-    let mut out = [0; 13];
+    let mut out = [0; Outcome::LEN_MAX];
     bencher.bench_local(|| {
         for reply in divan::black_box(&replies) {
             reply.encode(&mut out[..reply.encoded_len()]);

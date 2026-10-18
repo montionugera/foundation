@@ -1,3 +1,5 @@
+//! Only Linux: the test refuses calls with a seccomp filter.
+//!
 //! A lookup that cannot read part of the configuration of the C library. glibc reads
 //! it only at the first lookup of a process, and the filter acts on each thread that
 //! the test thread starts, so it runs in a test binary of its own, with this one test

@@ -2,7 +2,7 @@
 //!
 //! The file is 39 bytes: the tag, the pool budget and the disk budget as `u64`
 //! (little-endian), and the CRC32C of those 35 bytes (little-endian), in one sector
-//! ([`crate::sector`]).
+//! ([`sector`]).
 
 use std::path::Path;
 
@@ -10,7 +10,7 @@ use env::files::Files;
 use types::byte::Size;
 
 use crate::Error;
-use crate::sector::{self, Held};
+use sector::Held;
 
 /// The name of the file.
 pub(crate) const FILE: &str = "budget";
@@ -45,7 +45,7 @@ pub async fn budget(files: &Files) -> Result<Option<Budget>, Error> {
     match held.map_err(Error::Directory)? {
         Held::Nothing => Ok(None),
         Held::Written(bytes) => Ok(Some(decode(&bytes))),
-        Held::Foreign => Err(Error::Budget),
+        Held::Version { .. } | Held::Foreign => Err(Error::Budget),
     }
 }
 
