@@ -55,6 +55,15 @@ pub async fn reach(config: Config) -> Result<program::Session, Error> {
     let local = sector::local(&files).await.map_err(|error| match error {
         sector::Error::NotRunning => Error::NotRunning,
         sector::Error::Key => Error::Key,
+        sector::Error::Version {
+            file,
+            found,
+            expected,
+        } => Error::Version {
+            file,
+            found,
+            expected,
+        },
         sector::Error::Files(error) => Error::Files(error),
     })?;
     let pool = Rc::new(block::Pool::heap(POOL));
@@ -100,6 +109,17 @@ pub enum Error {
     NotRunning,
     /// The directory holds no file `admin.key` that a node wrote.
     Key,
+    /// The file `file` holds the format of version `found`, and this program reads
+    /// version `expected`: the node runs another version of Foundation.
+    Version {
+        /// The name of the file.
+        file: &'static str,
+        /// The version byte that the file holds, one ASCII digit or letter when a node
+        /// wrote it.
+        found: u8,
+        /// The version byte that this program reads.
+        expected: u8,
+    },
     /// A file call on the directory failed.
     Files(env::files::Error),
     /// The transport of the program did not start, or its socket broke.

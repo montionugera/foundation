@@ -108,7 +108,7 @@ async fn read(files: &Files) -> Result<Option<[u8; LEN]>, Error> {
     match held.map_err(Error::Directory)? {
         Held::Nothing => Ok(None),
         Held::Written(bytes) => Ok(Some(bytes)),
-        Held::Foreign => Err(Error::Key),
+        Held::Version(_) | Held::Foreign => Err(Error::Key),
     }
 }
 
@@ -136,7 +136,7 @@ async fn store(files: &Files, identity: &Identity) -> Result<(), Error> {
 pub(crate) async fn write_new(files: &Files, identity: &Identity) -> Result<(), Error> {
     match sector::read::<LEN>(files, Path::new(FILE), TAG).await {
         Ok(Held::Nothing) => store(files, identity).await,
-        Ok(Held::Written(_) | Held::Foreign) => {
+        Ok(Held::Written(_) | Held::Version(_) | Held::Foreign) => {
             Err(Error::Directory(env::files::Error::Exists {
                 path: FILE.into(),
             }))

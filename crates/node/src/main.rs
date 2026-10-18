@@ -43,6 +43,7 @@ const FAILED: Code = Code::new("node.failed");
 const NOT_RUNNING: Code = Code::new("node.not-running");
 const UNREADABLE: Code = Code::new("node.unreadable");
 const ADMIN_KEY: Code = Code::new("node.admin-key");
+const VERSION: Code = Code::new("node.version");
 const SOCKET: Code = Code::new("node.socket");
 const UNANSWERED: Code = Code::new("node.unanswered");
 const SESSION: Code = Code::new("node.session");
@@ -220,6 +221,20 @@ fn unreached(dir: &Path, error: node::client::Error) -> Failure {
             ADMIN_KEY,
             format!("{data} holds no admin.key that a node wrote"),
             "Put back the `admin.key` that the first start wrote".into(),
+        ),
+        node::client::Error::Version {
+            file,
+            found,
+            expected,
+        } => (
+            VERSION,
+            format!(
+                "{data}/data/{file} holds format version {}, and this foundation \
+                 reads version {}",
+                found.escape_ascii(),
+                expected.escape_ascii()
+            ),
+            "Use a `foundation` program of the same version as the node".into(),
         ),
         node::client::Error::Transport(error) => (
             SOCKET,
@@ -1470,6 +1485,24 @@ mod tests {
                 ADMIN_KEY,
                 "foundation-data holds no admin.key that a node wrote",
                 "Put back the `admin.key` that the first start wrote",
+            )
+        );
+    }
+
+    #[test]
+    fn a_file_of_another_version_names_both_versions() {
+        let error = node::client::Error::Version {
+            file: "address",
+            found: b'2',
+            expected: b'1',
+        };
+        assert_eq!(
+            unreached(dir(), error),
+            of_reach(
+                VERSION,
+                "foundation-data/data/address holds format version 2, and this \
+                 foundation reads version 1",
+                "Use a `foundation` program of the same version as the node",
             )
         );
     }

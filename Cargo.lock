@@ -1953,6 +1953,7 @@ dependencies = [
  "crc32c",
  "env",
  "proptest",
+ "sim",
  "types",
 ]
 

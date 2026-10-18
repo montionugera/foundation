@@ -227,7 +227,8 @@
   `the reply of the node is no reply: <why>`, status 1, fix ``Use a `foundation` program
   of the same version as the node``. A failure to reach the node, or of its request, has
   status 1 and one of the codes `node.not-running`, `node.unreadable`, `node.admin-key`,
-  `node.socket`, `node.unanswered`, `node.session`, `node.refused`, and `node.no-reply`,
+  `node.version`, `node.socket`, `node.unanswered`, `node.session`, `node.refused`, and
+  `node.no-reply`,
   with the message and fix of decision 3 of plan revision 4 (`laptop.architect-2`,
   2026-10-11T07:10:55Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913). The
@@ -238,6 +239,13 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6136677419).
   `node.session` is by `laptop.architect-2` (2026-10-13T01:44:19Z,
   https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936).
+  `node.version`: `<dir>/data/<file> holds format version <found>, and this
+  foundation reads version <expected>`, with each version byte as an escaped ASCII
+  char, fix ``Use a `foundation` program of the same version as the node``, when
+  `address` or `admin.key` holds a format of another version (`laptop.architect-2`,
+  2026-10-18, item 7 of
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252508020 and
+  https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252530569).
   `node.socket` covers a socket of the program that broke, with the message `the
   socket of this program failed: <the transport error>` (`laptop.architect-2`,
   2026-10-13T02:10:54Z, item 4 of

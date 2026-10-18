@@ -35,6 +35,6 @@ pub(crate) async fn load(
             Ok(private_key)
         }
         Held::Written(bytes) => Ok(decode(&bytes).expect("invariant: a node wrote it")),
-        Held::Foreign => Err(Error::Admin),
+        Held::Version(_) | Held::Foreign => Err(Error::Admin),
     }
 }
