@@ -302,9 +302,10 @@ reloadCertificates(UA_CertificateGroup *certGroup) {
         return UA_STATUSCODE_BADOUTOFMEMORY;
     }
     for(size_t i = 0; i < context->trustList.issuerCertificatesSize; i++) {
-        if(!openSSLLoadEachCertificate(context->trustList.issuerCertificates[i],
-                                       context->issuerCertificates))
+        X509 *cert = UA_OpenSSL_LoadCertificate(&context->trustList.issuerCertificates[i], EVP_PKEY_NONE);
+        if(cert == NULL)
             return UA_STATUSCODE_BADINTERNALERROR;
+        sk_X509_push(context->issuerCertificates, cert);
     }
 
     sk_X509_CRL_pop_free(context->crls, X509_CRL_free);
@@ -429,10 +430,17 @@ openSSLLoadCertificateStack(const UA_ByteString cert) {
 
 /* Pushes each certificate of the bytestring onto the stack. Gives false for an
  * empty bytestring, and when a load stops before its end, so that an entry of a
- * trust list never trusts fewer certificates than it holds. */
+ * trust list never trusts fewer certificates than it holds. PEM starts at the
+ * first certificate, past any text before it. */
 static UA_Boolean
 openSSLLoadEachCertificate(const UA_ByteString cert, STACK_OF(X509) *stack) {
     size_t offset = 0;
+    if(!(cert.length >= 4 && cert.data[0] == 0x30 && cert.data[1] == 0x82)) {
+        const unsigned char *first =
+            UA_Bstrstr(cert.data, cert.length, openssl_PEM_PRE, 27);
+        if(first)
+            offset = (size_t)(first - cert.data);
+    }
     do {
         X509 *x509 = openSSLLoadLeafCertificate(cert, &offset);
         if(!x509)

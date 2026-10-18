@@ -1023,9 +1023,12 @@
   https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247742342: the
   sim server offers an ordered list of policies, and each secure test connects
   through `Client::connect`. The client trusts one byte string of DER or PEM
-  certificates; the copy loads each certificate of each trust and issuer entry, and
-  refuses an entry whose load stops before its end, and the constructor of the group
-  gives that status (ruling A). The validity check of the own certificate and the map
+  certificates; the copy loads each certificate of each trust entry, from its first
+  certificate, and refuses an entry whose load stops before its end, and the
+  constructor of the group gives that status (ruling A). An issuer entry keeps the
+  load of the release (`laptop.architect-2`,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255744593, item
+  2). The validity check of the own certificate and the map
   of each refusal in `kind.rs` move to PR 2b (`laptop.architect-2`,
   2026-10-18 21:37 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255457069, items 1

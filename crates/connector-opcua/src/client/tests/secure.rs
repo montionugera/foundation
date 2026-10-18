@@ -9,8 +9,8 @@ use crate::client::{Credentials, Large, Mode};
 use crate::event;
 use crate::ffi::{self, Status};
 use crate::secure::{
-    ANONYMOUS, BROKEN_TRUST, CLIENT, CLIENT_PEM, EC, EMPTY_URI, END, Identity, OTHER,
-    Policy, SERVER, START, TRUST, TWO_URIS, UNNAMED,
+    ANONYMOUS, BROKEN_TRUST, CLIENT, CLIENT_PEM, EC, EMPTY_URI, END, HEADED_TRUST,
+    Identity, LINE_TRUST, OTHER, Policy, SERVER, START, TRUST, TWO_URIS, UNNAMED,
 };
 use crate::server::Limits;
 use crate::value::{Fault, Value};
@@ -146,6 +146,18 @@ fn trusting(trust: &'static [u8]) -> Result<Read, Status> {
 #[test]
 fn a_client_that_trusts_a_pem_of_two_certificates_reads() {
     let read = trusting(TRUST).expect("the client connects");
+    assert_eq!(read.answer, Ok(read.value));
+}
+
+#[test]
+fn a_client_that_trusts_a_pem_after_a_header_reads() {
+    let read = trusting(HEADED_TRUST).expect("the client connects");
+    assert_eq!(read.answer, Ok(read.value));
+}
+
+#[test]
+fn a_client_that_trusts_a_der_bundle_whose_text_holds_a_pem_line_reads() {
+    let read = trusting(LINE_TRUST).expect("the client connects");
     assert_eq!(read.answer, Ok(read.value));
 }
 

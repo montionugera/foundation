@@ -72,6 +72,21 @@ pub(crate) const EC: Identity = Identity {
 /// [`OTHER`], then [`SERVER`], in PEM.
 pub(crate) const TRUST: &[u8] = include_bytes!("secure/trust.pem");
 
+/// [`TRUST`] after the 81 bytes of text that `openssl pkcs12 -nokeys` writes before a
+/// certificate.
+pub(crate) const HEADED_TRUST: &[u8] = concat!(
+    "Bag Attributes\n",
+    "    localKeyID: 01 00 00 00 \n",
+    "subject=CN = other\n",
+    "issuer=CN = other\n",
+    include_str!("secure/trust.pem"),
+)
+.as_bytes();
+
+/// A certificate whose common name is the first line of a PEM certificate, then
+/// [`SERVER`], in DER.
+pub(crate) const LINE_TRUST: &[u8] = include_bytes!("secure/line-trust.der");
+
 /// [`SERVER`], then the first 300 bytes of [`OTHER`], in PEM.
 pub(crate) const BROKEN_TRUST: &[u8] = include_bytes!("secure/broken-trust.pem");
 
