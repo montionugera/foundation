@@ -6,9 +6,10 @@
 //! - [`Head`]: kind 7, the time (`u8`, live 0, backfill 1, node 2), the form (`u8`, raw
 //!   0, encoded 1), the samples of each series (`u32`), and the count of series
 //!   (`u32`).
-//! - [`Reply`]: taken 1 or lost 2, then the seq (`u64`) and the count (`u32`); refused
-//!   3, then the code (`u8`, waiting 1, reserved 2, expired 3, order 4, codec 5, full
-//!   6, large 7); stored 4, then the count of frames that it covers (`u64`).
+//! - [`Reply`]: taken 1 or lost 2, then the frame (`u64`), the seq (`u64`), and the
+//!   count (`u32`); refused 3, then the frame (`u64`) and the code (`u8`, waiting 1,
+//!   reserved 2, expired 3, order 4, codec 5, full 6, large 7); stored 4, then the
+//!   count of frames that it covers (`u64`).
 
 use types::frame::{self, Form, Path};
 
@@ -138,8 +139,14 @@ impl Head {
 /// A reply of the node on a write stream after the places.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reply {
-    /// What the home did with the next frame.
-    Outcome(Outcome),
+    /// What the home did with one frame.
+    Outcome {
+        /// The frame that it answers, from 1: the count of frames of the stream
+        /// through it.
+        frame: u64,
+        /// What the home did with the frame.
+        outcome: Outcome,
+    },
     /// Each frame of the stream among the first `frames` that the home took is on
     /// disk. `frames` counts each frame that got an [`Outcome`], in their order, and
     /// never goes back.
@@ -170,7 +177,7 @@ pub enum Outcome {
 
 impl Outcome {
     /// The most bytes that a [`Reply::Outcome`] encodes to.
-    pub const LEN_MAX: usize = 13;
+    pub const LEN_MAX: usize = 21;
 }
 
 /// Why the home refused a frame.
@@ -222,10 +229,14 @@ impl Reply {
     #[must_use]
     pub const fn encoded_len(&self) -> usize {
         match self {
-            Self::Outcome(Outcome::Taken { .. } | Outcome::Lost { .. }) => {
-                Outcome::LEN_MAX
-            }
-            Self::Outcome(Outcome::Refused(_)) => 2,
+            Self::Outcome {
+                outcome: Outcome::Taken { .. } | Outcome::Lost { .. },
+                ..
+            } => Outcome::LEN_MAX,
+            Self::Outcome {
+                outcome: Outcome::Refused(_),
+                ..
+            } => 10,
             Self::Stored { .. } => 9,
         }
     }
@@ -239,12 +250,20 @@ impl Reply {
     pub fn encode(&self, out: &mut [u8]) {
         let mut out = Writer::new(out, self.encoded_len());
         match *self {
-            Self::Outcome(Outcome::Taken { range }) => {
-                put_range(&mut out, TAKEN, range);
-            }
-            Self::Outcome(Outcome::Lost { range }) => put_range(&mut out, LOST, range),
-            Self::Outcome(Outcome::Refused(refusal)) => {
-                out.put(&[REFUSED, refusal.code()]);
+            Self::Outcome { frame, outcome } => {
+                let kind = match outcome {
+                    Outcome::Taken { .. } => TAKEN,
+                    Outcome::Lost { .. } => LOST,
+                    Outcome::Refused(_) => REFUSED,
+                };
+                out.put(&[kind]);
+                out.put(&frame.to_le_bytes());
+                match outcome {
+                    Outcome::Taken { range } | Outcome::Lost { range } => {
+                        put_range(&mut out, range);
+                    }
+                    Outcome::Refused(refusal) => out.put(&[refusal.code()]),
+                }
             }
             Self::Stored { frames } => {
                 out.put(&[STORED]);
@@ -263,36 +282,41 @@ impl Reply {
     /// [`Error::Refusal`] for a refusal code that no refusal has.
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = Fields::new(message);
-        let reply = match fields.kind().ok_or(Error::Empty)? {
-            TAKEN => Self::Outcome(Outcome::Taken {
+        let kind = fields.kind().ok_or(Error::Empty)?;
+        if kind == STORED {
+            let frames = u64::from_le_bytes(*fields.take()?);
+            fields.end()?;
+            return Ok(Self::Stored { frames });
+        }
+        if !matches!(kind, TAKEN | LOST | REFUSED) {
+            return Err(Error::Kind { kind });
+        }
+        let frame = u64::from_le_bytes(*fields.take()?);
+        let outcome = match kind {
+            TAKEN => Outcome::Taken {
                 range: take_range(&mut fields)?,
-            }),
-            LOST => Self::Outcome(Outcome::Lost {
+            },
+            LOST => Outcome::Lost {
                 range: take_range(&mut fields)?,
-            }),
-            REFUSED => {
+            },
+            _ => {
                 let [code] = *fields.take()?;
                 fields.end()?;
-                return Refusal::ALL
-                    .into_iter()
-                    .find(|refusal| refusal.code() == code)
-                    .map(|refusal| Self::Outcome(Outcome::Refused(refusal)))
-                    .ok_or(Error::Refusal { code });
+                Outcome::Refused(
+                    Refusal::ALL
+                        .into_iter()
+                        .find(|refusal| refusal.code() == code)
+                        .ok_or(Error::Refusal { code })?,
+                )
             }
-            STORED => {
-                let frames = u64::from_le_bytes(*fields.take()?);
-                fields.end()?;
-                Self::Stored { frames }
-            }
-            kind => return Err(Error::Kind { kind }),
         };
-        Ok(reply)
+        Ok(Self::Outcome { frame, outcome })
     }
 }
 
 /// The order of the replies of a write stream at the program: an outcome answers the
-/// oldest frame sent whole with no outcome, and [`Reply::Stored`] never passes the
-/// outcomes given nor goes back.
+/// oldest frame sent whole with no outcome, and names it, and [`Reply::Stored`] never
+/// passes the outcomes given nor goes back.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Replies {
     sent: u64,
@@ -318,19 +342,28 @@ impl Replies {
     ///
     /// # Errors
     ///
-    /// As [`Reply::decode`], [`Error::Unasked`] for an outcome with no frame waiting
-    /// for one, and [`Error::Stored`] for a [`Reply::Stored`] past the outcomes given
-    /// or below the last [`Reply::Stored`]. A reply that it refuses changes no count.
+    /// As [`Reply::decode`], [`Error::Unasked`] for an outcome of frame 0 or of a frame
+    /// past those sent, [`Error::Order`] for an outcome of another frame than the oldest sent with
+    /// no outcome, and [`Error::Stored`] for a [`Reply::Stored`] past the outcomes
+    /// given or below the last [`Reply::Stored`]. A reply that it refuses changes no
+    /// count.
     pub fn decode(&mut self, message: &[u8]) -> Result<Reply, Error> {
         let reply = Reply::decode(message)?;
         match reply {
-            Reply::Outcome(_) if self.answered == self.sent => {
-                return Err(Error::Unasked { frames: self.sent });
+            Reply::Outcome { frame, .. } if frame == 0 || frame > self.sent => {
+                return Err(Error::Unasked {
+                    frame,
+                    sent: self.sent,
+                });
             }
-            Reply::Outcome(outcome) => {
-                self.answered = self.answered.strict_add(1);
+            Reply::Outcome { frame, outcome } => {
+                let next = self.answered.strict_add(1);
+                if frame != next {
+                    return Err(Error::Order { frame, next });
+                }
+                self.answered = next;
                 if let Outcome::Taken { .. } = outcome {
-                    self.taken = self.answered;
+                    self.taken = next;
                 }
             }
             Reply::Stored { frames } if frames < self.stored => {
@@ -360,7 +393,7 @@ impl Replies {
     }
 }
 
-fn put_range(out: &mut Writer<'_>, kind: u8, range: frame::Range) {
+fn put_range(out: &mut Writer<'_>, range: frame::Range) {
     assert!(
         range.count > 0 && range.end().is_some(),
         "a reply's range of {} samples from seq {} holds none or ends past the highest \
@@ -368,7 +401,6 @@ fn put_range(out: &mut Writer<'_>, kind: u8, range: frame::Range) {
         range.count,
         range.seq
     );
-    out.put(&[kind]);
     out.put(&range.seq.to_le_bytes());
     out.put(&range.count.to_le_bytes());
 }

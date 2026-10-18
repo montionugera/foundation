@@ -202,18 +202,21 @@ async fn answer(session: transport::Session, node: sim::node::Node) {
         .await;
         start(&mut write, &places, 0, places.len()).await;
         let mut seq = 0;
-        for _ in 0..(WARMUP + ROUNDS) * FRAMES {
+        for frame in 1..=(WARMUP + ROUNDS) * FRAMES {
             let mut got = 0;
             while got < shape.total() {
                 let message = write.receiver.recv().await.expect("receives");
                 got += message.expect("a message of the frame").len();
             }
-            let reply = Reply::Outcome(Outcome::Taken {
-                range: Range {
-                    seq,
-                    count: shape.samples,
+            let reply = Reply::Outcome {
+                frame: u64::try_from(frame).expect("a frame"),
+                outcome: Outcome::Taken {
+                    range: Range {
+                        seq,
+                        count: shape.samples,
+                    },
                 },
-            });
+            };
             let mut bytes = vec![0; reply.encoded_len()];
             reply.encode(&mut bytes);
             send(write.sender.as_mut().expect("two-way"), &bytes).await;

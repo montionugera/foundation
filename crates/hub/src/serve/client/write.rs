@@ -200,9 +200,9 @@ async fn relay(
                             block::Error::Exhausted { .. }
                             | block::Error::Refused { .. } => Refusal::Full,
                         };
-                        let refused = Outcome::Refused(refusal);
-                        stored.counted(state, refused);
-                        send(sender, block, Reply::Outcome(refused)).await?;
+                        let outcome = Outcome::Refused(refusal);
+                        let frame = stored.counted(state, outcome);
+                        send(sender, block, Reply::Outcome { frame, outcome }).await?;
                         Step::More
                     }
                 }
@@ -215,8 +215,8 @@ async fn relay(
             .take()
             .expect("invariant: a draft comes with its block");
         let outcome = write(&mut writer, draft, time, &mut stamped)?;
-        stored.counted(state, outcome);
-        send(sender, block, Reply::Outcome(outcome)).await?;
+        let frame = stored.counted(state, outcome);
+        send(sender, block, Reply::Outcome { frame, outcome }).await?;
     }
 }
 
@@ -320,13 +320,15 @@ struct Stored {
 }
 
 impl Stored {
-    /// Counts the next frame of the stream, whose outcome is `outcome`.
-    fn counted(&mut self, state: &RefCell<State>, outcome: Outcome) {
+    /// Counts the next frame of the stream, whose outcome is `outcome`, and gives its
+    /// count.
+    fn counted(&mut self, state: &RefCell<State>, outcome: Outcome) -> u64 {
         self.counted += 1;
         if let Outcome::Taken { .. } = outcome {
             self.taken = Some(self.counted);
             self.call(state);
         }
+        self.counted
     }
 
     /// Calls a commit for the taken frames when none is due.
