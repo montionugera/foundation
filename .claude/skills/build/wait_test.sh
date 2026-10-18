@@ -156,8 +156,13 @@ for c in FAILURE TIMED_OUT STARTUP_FAILURE ACTION_REQUIRED; do
   run "$c check" 1 "#7 has a failed check" 1 \
     "$(pr OPEN "$(job CI 1 test 3 "\"$c\"" true)" "$review")"
 done
-run "failed check that is not required" 1 "#7 has a failed check" 1 \
+run "failed gate of Review" 1 "#7 has a failed check" 1 \
   "$(pr OPEN "$(job Review 1 gate 3 '"FAILURE"' false)" "$review")"
+for j in "CI macos" "SDK gate (macos-15, test_client.py)" "SDK gate"; do
+  run "failed $j that is not required waits" 0 "#7 merged" 2 \
+    "$(pr OPEN "$(job "${j%% *}" 1 "${j#* }" 3 '"FAILURE"' false)" "$review")" \
+    "$merged"
+done
 for c in FAILURE ERROR; do
   run "$c status" 1 "#7 has a failed check" 1 "$(pr OPEN "$(status $c)")"
 done
@@ -172,8 +177,8 @@ run "two jobs of one run" 1 "#7 has a failed check" 1 \
   "$(pr OPEN "$(job CI 1 test 3 '"FAILURE"' true)" \
     "$(job CI 1 check 4 '"SUCCESS"' true)" "$review")"
 run "same job name in two workflows" 1 "#7 has a failed check" 1 \
-  "$(pr OPEN "$(job CI 1 changes 3 '"FAILURE"' false)" \
-    "$(job Arm 2 changes 4 '"SUCCESS"' false)" "$review")"
+  "$(pr OPEN "$(job CI 1 changes 3 '"FAILURE"' true)" \
+    "$(job Arm 2 changes 4 '"SUCCESS"' true)" "$review")"
 run "canceled required check" 1 "#7 has a canceled required check" 1 \
   "$(pr OPEN "$(job CI 1 test 3 '"CANCELLED"' true)" "$review")"
 run "canceled required check that a rerun passed" 0 "#7 merged" 2 \
