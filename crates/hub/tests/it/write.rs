@@ -585,11 +585,6 @@ async fn fill_for_a_while(test: &Test) {
 /// its commit, and frees it [`START`] later. The run picks the order of the tasks that
 /// the commit wakes: in the runs of the tests, the reader runs before the write.
 async fn fill_at_commit(test: &Test) {
-    fill_at_commit_for(test, START).await;
-}
-
-/// As [`fill_at_commit`], but frees the pool `held` after the fill.
-async fn fill_at_commit_for(test: &Test, held: Span) {
     let names = ["value"];
     let config = super::unnamed(&names, hub::reader::Mode::Complete);
     let mut reader = test.hub.reader(config).await.expect("opens");
@@ -597,7 +592,7 @@ async fn fill_at_commit_for(test: &Test, held: Span) {
     test.tasks.spawn(async move {
         let frame = reader.next().await.expect("a frame");
         let blocks = super::fill(&pool);
-        clock.sleep(held).await;
+        clock.sleep(START).await;
         drop((frame, blocks));
     });
 }
@@ -679,13 +674,44 @@ fn stops_a_write_whose_outcome_finds_no_block_after_its_draft_as_busy() {
     assert_eq!(home.served[1..], [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
+/// A frame whose outcome finds a block but whose `Stored` finds none stops the stream
+/// as `BUSY` before the home takes it: the next write takes its first frame at seq 0.
+#[test]
+fn stops_a_write_whose_stored_finds_no_block_as_busy() {
+    let ready = spare_for_a_while(vec![Outcome::LEN_MAX]);
+    let home = read_session(442, ready, |mut agent| async move {
+        agent.admit().await;
+        let mut stream = write(&agent).await;
+        agent.sleep(Span::from_nanos(START.nanos() * 3 / 2)).await;
+        send(&mut stream, &[1], &[10]).await;
+        assert_eq!(stream.recv().await, reset_with(BUSY));
+        agent.sleep(START).await;
+        let mut stream = write(&agent).await;
+        send(&mut stream, &[2], &[20]).await;
+        assert_eq!(stream.reply().await, taken(0, 1));
+        assert_eq!(end(&mut stream).await, [stored(1)]);
+        finish(&mut agent).await;
+    });
+    let [
+        Err(serve::Error::Pool(block::Error::Exhausted { requested, .. })),
+        ..,
+    ] = home.served[..]
+    else {
+        panic!("{:?}", home.served);
+    };
+    assert_eq!(requested, Reply::Stored { frames: 0 }.encoded_len());
+    assert_eq!(home.served[1..], [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
 /// A backfill frame whose entry finds no block at the home is refused as `Full`, and
 /// the stream takes it once the pool has room.
 #[test]
 fn refuses_a_backfill_frame_that_the_home_finds_no_block_for_as_full() {
     let stamps: Vec<i64> = (1..=32).collect();
-    // The blocks of the outcome and of the draft of 32 samples, 560 bytes.
-    let ready = spare_for_a_while(vec![Outcome::LEN_MAX, 560]);
+    // The blocks of the outcome, of the `Stored`, and of the draft of 32 samples, 560
+    // bytes.
+    let len = Reply::Stored { frames: 0 }.encoded_len();
+    let ready = spare_for_a_while(vec![Outcome::LEN_MAX, len, 560]);
     let home = read_session(439, ready, move |mut agent| async move {
         agent.admit().await;
         let mut stream = write(&agent).await;
@@ -725,8 +751,9 @@ async fn reply_within(agent: &Agent, stream: &mut Stream, span: Span) -> Option<
     .await
 }
 
-/// A `Stored` comes while the pool is full, with no next frame and no finish, so a
-/// program that waits for it ends its wait. The next `Stored` covers the next frame.
+/// A `Stored` comes when its commit ends, while the pool is full, with no next frame
+/// and no finish, so a program that waits for it ends its wait. The next `Stored`
+/// covers the next frame.
 #[test]
 fn sends_a_stored_at_its_commit_while_the_pool_is_full() {
     let home = read_session(433, fill_at_commit, |mut agent| async move {
@@ -734,9 +761,10 @@ fn sends_a_stored_at_its_commit_while_the_pool_is_full() {
         let mut stream = write(&agent).await;
         send(&mut stream, &[1], &[10]).await;
         assert_eq!(stream.reply().await, taken(0, 1));
-        let span = Span::from_nanos(3 * START.nanos());
-        let got = reply_within(&agent, &mut stream, span).await;
+        let full = Span::from_nanos(START.nanos() / 2);
+        let got = reply_within(&agent, &mut stream, full).await;
         assert_eq!(got, Some(stored(1)));
+        agent.sleep(Span::from_nanos(START.nanos() * 3 / 2)).await;
         send(&mut stream, &[2], &[20]).await;
         assert_eq!(stream.reply().await, taken(1, 1));
         assert_eq!(stream.reply().await, stored(2));
@@ -746,11 +774,9 @@ fn sends_a_stored_at_its_commit_while_the_pool_is_full() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
-/// At the finish, the last `Stored` waits for a block until the pool has one, and
-/// tries again each 10 ms: it comes less than 20 ms after the pool frees, [`START`]
-/// after the commit.
+/// At the finish, the last `Stored` comes when its commit ends, while the pool is full.
 #[test]
-fn waits_for_a_block_for_the_last_stored_at_the_finish() {
+fn sends_the_last_stored_at_the_finish_while_the_pool_is_full() {
     let home = read_session(426, fill_at_commit, |mut agent| async move {
         agent.admit().await;
         let mut stream = write(&agent).await;
@@ -758,17 +784,15 @@ fn waits_for_a_block_for_the_last_stored_at_the_finish() {
         let sent = agent.node.clock().now();
         assert_eq!(end(&mut stream).await, [taken(0, 1), stored(1)]);
         let waited = agent.node.clock().now() - sent;
-        assert!(waited > START, "{waited}");
-        let late = Span::from_nanos(START.nanos() + 20_000_000);
-        assert!(waited < late, "{waited}");
+        assert!(waited < Span::from_nanos(START.nanos() / 2), "{waited}");
         finish(&mut agent).await;
     });
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
-/// Control ends when the program finishes its stream, also while the last `Stored`
-/// waits for a block: a writer of lower authority then gets control, and the home
-/// spends a seq on its frame, which it loses for no room in the full pool.
+/// Control ends when the program finishes its stream: a writer of lower authority then
+/// gets control, and the home spends a seq on its frame, which it loses for no room in
+/// the full pool.
 #[test]
 fn ends_control_when_the_program_finishes_the_stream() {
     let ready = async |test: &Test| {
@@ -797,36 +821,10 @@ fn ends_control_when_the_program_finishes_the_stream() {
         agent.admit().await;
         let mut stream = write(&agent).await;
         send(&mut stream, &[1], &[10]).await;
-        let sent = agent.node.clock().now();
         assert_eq!(end(&mut stream).await, [taken(0, 1), stored(1)]);
-        let waited = agent.node.clock().now() - sent;
-        assert!(waited > Span::from_nanos(START.nanos() / 4), "{waited}");
         finish(&mut agent).await;
     });
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
-}
-
-/// The wait for a block for the last `Stored` ends when the session closes, while the
-/// pool stays full: the home records each serve within a second of the close.
-#[test]
-fn ends_the_wait_for_the_last_stored_when_the_session_closes() {
-    let full = async |test: &Test| {
-        fill_at_commit_for(test, Span::from_nanos(2 * Span::SECOND.nanos())).await;
-    };
-    let home = read_session(427, full, |mut agent| async move {
-        agent.admit().await;
-        let mut stream = write(&agent).await;
-        send(&mut stream, &[1], &[10]).await;
-        assert_eq!(stream.reply().await, taken(0, 1));
-        stream.sender.finish().expect("finishes");
-        agent.sleep(Span::from_nanos(START.nanos() / 4)).await;
-        agent.session.close(transport::Code(0));
-        agent.sleep(START).await;
-    });
-    let closed = serve::Error::Stream(transport::Error::PeerClosed {
-        code: transport::Code(0),
-    });
-    assert_eq!(home.served, [Err(closed.clone()), Err(closed)]);
 }
 
 /// Values of `stamps` that do not compress, so a stored frame is as large as its body.
