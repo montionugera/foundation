@@ -299,3 +299,9 @@
   bytes and the node's decoders do not grow. Decided by `laptop.architect` at
   2026-10-18T15:49:57Z
   (https://github.com/synnaxlabs/foundation/pull/3201#issuecomment-6251902903).
+  Amended (#3266): `program` re-exports `Place` at its root, and
+  `program::Writer::index` gives the place of the index of the writer, so `sdk` needs
+  no `wire` to read the places. Lost: a flag of the index on each `Place`, which
+  changes `wire` for one fact of the stream. Decided by `laptop.architect` at
+  2026-10-18T20:58:27Z
+  (https://github.com/synnaxlabs/foundation/issues/3266#issuecomment-6255066811).
