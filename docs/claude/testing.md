@@ -56,19 +56,23 @@ checks on each PR that agent-written tests catch real changes. A missed mutant f
 A mutant that makes a test hang (a timeout) counts as caught. Each run on a box runs in
 a cgroup with a memory cap of 16G and no swap: `systemd-run --user --scope -p
 MemoryMax=16G -p MemorySwapMax=0 -p OOMPolicy=continue env -u CARGO_TARGET_DIR cargo
-mutants --jobs 4 ...`. So does each test run on a box that a review agent starts
-(`.claude/agents/reviewer.md`, `.claude/agents/breaker.md`), also of a mutant made by
-hand, with `cargo test` in place of `cargo mutants`. The person approved a cap of these
-runs, with 32 GB as an example (2026-10-17T16:07:01Z, `laptop.monitor`'s record:
+mutants --jobs 4 ...`. So does each test run on a box of a mutant made by hand, and each
+test run on a box that a review agent starts (`.claude/agents/reviewer.md`,
+`.claude/agents/breaker.md`), with `cargo test` in place of `cargo mutants`. The person
+approved a cap of these runs, with 32 GB as an example (2026-10-17T16:07:01Z,
+`laptop.monitor`'s record:
 https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246411064). After
-that OK, `laptop.monitor` chose 16G, a quarter of a box of 61 GB. A session runs one
-mutants run at a time (`laptop.monitor`,
+that OK, `laptop.monitor` chose 16G for each run on box1 (123 GiB) and box2 (61 GiB).
+The cap bounds one run, not the sum of the runs: four runs at the cap (64 GiB) fill
+box2. A session runs one mutants run at a time (`laptop.monitor`,
 https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6043431001,
 2026-10-07T17:40:51Z). A mutant that allocates in a loop then dies alone, its test
 fails, and the run counts it as caught. With no cap, the mutant fills the box and the
-run stalls. Set `OOMPolicy=continue`, because the default of the user manager stops the
-whole scope. Never cap a run on a box with `prlimit --data`: it counts reserved memory,
-not touched pages (#803,
+run stalls. Set `OOMPolicy=continue`: the default of a user manager stops the whole
+scope. Both boxes set `DefaultOOMPolicy=continue`
+(https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6236348454), and the
+flag keeps the run alive on a host that does not. Never cap a run on a box with
+`prlimit --data`: it counts reserved memory, not touched pages (#803,
 https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6009258555,
 2026-10-06T04:20:13Z). CI keeps it until each runner host has the cgroup cap (#899). An
 assertion through a private field or call, or a compare of the `Debug` string of the
