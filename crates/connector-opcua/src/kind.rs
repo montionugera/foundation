@@ -32,9 +32,9 @@ const SAMPLE_TYPE: Code = Code::new("opcua.sample-type");
 const LARGE_READ: Code = Code::new("opcua.large-read");
 
 /// The note of a run with no `read` block.
-const NO_READ: &str = "the connector has no `read` block, so it reads nothing. `browse` \
-                       lists the points of the server, and `import` adds a `read` block \
-                       for each.";
+const NO_READ: &str = "the connector has no `read` block, so it reads nothing. \
+                       `browse` lists the points of the server, and `import` adds a \
+                       `read` block for each.";
 
 /// The counts of the status of each connector: the samples that the home applied,
 /// the ticks that the timer skipped, the samples that a frame lost, and the values
