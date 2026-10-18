@@ -190,6 +190,16 @@ pub(crate) fn block(tag: &str, channel: &Name) -> Result<Vec<Block>, Vec<Diagnos
     Ok(vec![read_block(channel, value)])
 }
 
+/// The node of the `read` block `block` as a browse gives its tag, as
+/// [`Kind::tag`](connector::kind::Kind::tag) asks.
+pub(crate) fn tag(block: &Block) -> Option<String> {
+    if &*block.keyword != "read" {
+        return None;
+    }
+    let node_id = block.body.attributes.get("node_id")?;
+    node(&node_id.value).ok().map(|node| node.to_string())
+}
+
 /// `read "<channel>" { node_id = <node_id> }`.
 fn read_block(channel: &Name, node_id: Value) -> Block {
     let node_id = Attribute {

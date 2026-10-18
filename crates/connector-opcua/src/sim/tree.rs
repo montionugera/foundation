@@ -192,7 +192,7 @@ fn variable(
     name: &'static CStr,
     data_type: Node,
     value: Option<Vec<u8>>,
-) -> Variable {
+) -> Variable<'static> {
     Variable {
         node: node(path),
         parent: node(parent),

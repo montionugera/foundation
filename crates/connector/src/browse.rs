@@ -1,13 +1,14 @@
-//! Browses a device as a tree of folders and points: one level, or each point whose
-//! path matches a pattern.
+//! Browses a device as a tree of folders and points: one level, each point whose
+//! path matches a pattern, or the entry at each of a list of paths.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::ControlFlow;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use document::Document;
-use document::diagnostic::Code;
+use document::diagnostic::{Code, Diagnostic};
 use env::clock::Clock;
 use env::net::Net;
 use env::rng::Rng;
@@ -21,8 +22,8 @@ use crate::{deadline, secret, supervisor};
 pub const LIMIT: usize = 500;
 
 /// The most entries that one browse looks at: the entries that find its start, and
-/// for a pattern each entry that it walks, where a page with no entries counts as
-/// one.
+/// for a pattern or a list of paths each entry of each level that it reads, where a
+/// page with no entries counts as one.
 pub const VISITS: usize = 10_000;
 
 /// The most that [`Context::time`] waits for the node's first mesh time.
@@ -111,7 +112,8 @@ pub trait Device {
     /// Gives one page of the entries of `folder`, or of the root when `None`, in
     /// device order, from `cursor`, or from the first entry when `None`. A page holds
     /// at most [`LIMIT`] entries. `None` when the device no longer has `folder` as a
-    /// folder.
+    /// folder. A walk may never ask for the page at a `next` that it got, so a kind
+    /// bounds the state that it keeps for its cursors in one session.
     ///
     /// # Errors
     ///
@@ -147,14 +149,17 @@ pub trait Device {
 /// A pattern walks depth first, in device order. It browses no folder that no match
 /// can be under, and no folder whose tag and pattern state are those of a folder that
 /// it holds open, so a loop in the device's graph ends. It ends when it holds
-/// [`DEPTH`] folders open and a match can be under one more.
+/// [`DEPTH`] folders open and a match can be under one more. Paths browse only the
+/// folders that a path is under.
 ///
 /// # Errors
 ///
 /// [`Error::Config`] with `connector.no-folder` when no folder is at a name of the
-/// start, or at a folder that the device gave and then did not have, and with
-/// `connector.broken-browse` when `device` breaks a rule of [`Device`] that its doc
-/// says [`walk`] checks.
+/// start, or at a folder that the device gave and then did not have, with
+/// `connector.no-point` for each path of [`Scope::Points`] at a folder, at no entry,
+/// or not under the start, other than a path at a folder or at no entry when the walk
+/// ends at [`End::Budget`], and with `connector.broken-browse` when `device` breaks a
+/// rule of [`Device`] that its doc says [`walk`] checks.
 /// The errors of `device`.
 pub async fn walk(device: &mut impl Device, query: &Query) -> Result<Found, Error> {
     walk_within(device, query, LIMIT, VISITS).await
@@ -173,13 +178,20 @@ async fn walk_within<D: Device>(
         visits,
     };
     let (entries, end) = match walker.find(&query.start).await? {
-        ControlFlow::Break(end) => (Vec::new(), end),
+        ControlFlow::Break(end) => {
+            if let Scope::Points(paths) = &query.scope {
+                let names = Names::new(paths, query.start.clone());
+                names.found(&vec![None; names.count], true)?;
+            }
+            (Vec::new(), end)
+        }
         ControlFlow::Continue(folder) => match &query.scope {
             Scope::Level(cursor) => {
                 let page = walker.page(folder.as_ref(), cursor.as_ref()).await?;
                 (page.entries, page.next.map_or(End::Done, End::Next))
             }
             Scope::Match(pattern) => walker.search(folder, pattern, limit).await?,
+            Scope::Points(paths) => walker.points(folder, paths).await?,
         },
     };
     let values = match query.values {
@@ -204,6 +216,87 @@ struct Walker<'a, D> {
 struct Level {
     entries: Vec<Entry>,
     next: Option<Cursor>,
+}
+
+/// The names after a start of a list of paths, as a tree whose nodes are in one
+/// `Vec`, so that no build or drop recurses on a deep path.
+struct Names<'a> {
+    paths: &'a [Path],
+    start: Path,
+    /// The first is the start.
+    nodes: Vec<Node<'a>>,
+    /// The slot of each path, in order: `None` for a path not under the start, one
+    /// slot for equal paths.
+    slots: Vec<Option<usize>>,
+    count: usize,
+}
+
+/// A name of [`Names`]: the slot of the entry at it, and the node of each name under
+/// it.
+#[derive(Default)]
+struct Node<'a> {
+    at: Option<usize>,
+    under: BTreeMap<&'a str, usize>,
+}
+
+impl<'a> Names<'a> {
+    /// The names of each of `paths` that is under `start`.
+    fn new(paths: &'a [Path], start: Path) -> Self {
+        let mut names = Self {
+            paths,
+            start,
+            nodes: vec![Node::default()],
+            slots: Vec::with_capacity(paths.len()),
+            count: 0,
+        };
+        for path in paths {
+            let mut rest = path.names();
+            if !names.start.names().all(|name| rest.next() == Some(name)) {
+                names.slots.push(None);
+                continue;
+            }
+            let mut node = 0;
+            for name in rest {
+                let next = names.nodes.len();
+                node = *names.nodes[node].under.entry(name).or_insert(next);
+                if node == next {
+                    names.nodes.push(Node::default());
+                }
+            }
+            let at = *names.nodes[node].at.get_or_insert(names.count);
+            names.count = names.count.max(at + 1);
+            names.slots.push(Some(at));
+        }
+        names
+    }
+
+    /// The entry in `seen` at the slot of each path, which is a point or an unreadable
+    /// entry. A walk that ended at the budget gives what it found, and refuses only a
+    /// path not under the start.
+    fn found(&self, seen: &[Option<Entry>], budget: bool) -> Result<Vec<Entry>, Error> {
+        let mut found = Vec::new();
+        let mut problems = Vec::new();
+        for (slot, path) in self.slots.iter().zip(self.paths) {
+            match slot.map(|at| &seen[at]) {
+                Some(Some(entry)) if entry.shape != Shape::Folder => {
+                    found.push(entry.clone());
+                }
+                Some(_) if budget => {}
+                Some(_) => problems.push(no_point(&format_args!(
+                    "the device has no point at \"{path}\""
+                ))),
+                None => problems.push(no_point(&format_args!(
+                    "the path \"{path}\" is not under the start \"{}\"",
+                    self.start
+                ))),
+            }
+        }
+        if problems.is_empty() {
+            Ok(found)
+        } else {
+            Err(Error::Config(problems))
+        }
+    }
 }
 
 /// One folder of a walk whose entries are not all seen.
@@ -277,6 +370,35 @@ impl<D: Device> Walker<'_, D> {
         self.seen <= self.visits
     }
 
+    /// Gives each entry of `folder` to `each`, page by page, until `each` breaks or
+    /// the folder ends. It breaks with [`End::Budget`] when the budget ends first.
+    async fn scan(
+        &mut self,
+        folder: Option<&Entry>,
+        mut each: impl FnMut(Entry) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<End>, Error> {
+        let mut cursor = None;
+        loop {
+            let ControlFlow::Continue(page) =
+                self.take(folder, cursor.as_ref()).await?
+            else {
+                return Ok(ControlFlow::Break(End::Budget));
+            };
+            for entry in page.entries {
+                if !self.visit() {
+                    return Ok(ControlFlow::Break(End::Budget));
+                }
+                if each(entry).is_break() {
+                    return Ok(ControlFlow::Continue(()));
+                }
+            }
+            cursor = page.next;
+            if cursor.is_none() {
+                return Ok(ControlFlow::Continue(()));
+            }
+        }
+    }
+
     /// The folder at `start`, `None` for the root.
     async fn find(
         &mut self,
@@ -284,26 +406,17 @@ impl<D: Device> Walker<'_, D> {
     ) -> Result<ControlFlow<End, Option<Entry>>, Error> {
         let mut folder = None;
         for at in start.links() {
-            let mut cursor = None;
-            let child = 'pages: loop {
-                let ControlFlow::Continue(page) =
-                    self.take(folder.as_ref(), cursor.as_ref()).await?
-                else {
-                    return Ok(ControlFlow::Break(End::Budget));
-                };
-                for entry in page.entries {
-                    if !self.visit() {
-                        return Ok(ControlFlow::Break(End::Budget));
-                    }
-                    if entry.path.0.as_ref().is_some_and(|e| e.name == at.name) {
-                        break 'pages Some(entry);
-                    }
+            let mut child = None;
+            let scan = self.scan(folder.as_ref(), |entry| {
+                if entry.path.0.as_ref().is_some_and(|e| e.name == at.name) {
+                    child = Some(entry);
+                    return ControlFlow::Break(());
                 }
-                cursor = page.next;
-                if cursor.is_none() {
-                    break None;
-                }
-            };
+                ControlFlow::Continue(())
+            });
+            if let ControlFlow::Break(end) = scan.await? {
+                return Ok(ControlFlow::Break(end));
+            }
             match child {
                 Some(entry) if entry.shape == Shape::Folder => folder = Some(entry),
                 _ => {
@@ -375,6 +488,53 @@ impl<D: Device> Walker<'_, D> {
         Ok((found, End::Done))
     }
 
+    /// The entry at each of `paths` under `folder`, in the order of the paths. It
+    /// stops a folder when it has seen each name that a path takes in it.
+    async fn points(
+        &mut self,
+        folder: Option<Entry>,
+        paths: &[Path],
+    ) -> Result<(Vec<Entry>, End), Error> {
+        let start = folder.as_ref().map_or_else(Path::root, |f| f.path.clone());
+        let names = Names::new(paths, start);
+        let mut seen: Vec<Option<Entry>> = vec![None; names.count];
+        let mut stack = Vec::new();
+        if !names.nodes[0].under.is_empty() {
+            stack.push((folder, 0));
+        }
+        let budget = 'walk: {
+            while let Some((folder, node)) = stack.pop() {
+                let under = &names.nodes[node].under;
+                let mut left = under.len();
+                let scan = self.scan(folder.as_ref(), |entry| {
+                    let link = entry.path.0.as_ref();
+                    let link = link.expect("invariant: an entry has a name");
+                    let Some(&at) = under.get(&*link.name) else {
+                        return ControlFlow::Continue(());
+                    };
+                    let child = &names.nodes[at];
+                    if entry.shape == Shape::Folder && !child.under.is_empty() {
+                        stack.push((Some(entry), at));
+                    } else if let Some(slot) = child.at {
+                        seen[slot] = Some(entry);
+                    }
+                    left -= 1;
+                    if left == 0 {
+                        ControlFlow::Break(())
+                    } else {
+                        ControlFlow::Continue(())
+                    }
+                });
+                if scan.await?.is_break() {
+                    break 'walk true;
+                }
+            }
+            false
+        };
+        let entries = names.found(&seen, budget)?;
+        Ok((entries, if budget { End::Budget } else { End::Done }))
+    }
+
     /// The frame of the first page of `folder`.
     async fn open(
         &mut self,
@@ -400,6 +560,16 @@ fn no_folder(path: &Path) -> Error {
         NO_FOLDER,
         &format_args!("the device has no folder at \"{path}\""),
         "Browse the folder above it to see the names in it",
+    )
+}
+
+/// The problem of a path of [`Scope::Points`].
+fn no_point(problem: &dyn fmt::Display) -> Diagnostic {
+    Diagnostic::new(
+        NO_POINT,
+        None,
+        problem.to_string(),
+        "Give the path of a point that `browse` gives".into(),
     )
 }
 
@@ -436,6 +606,7 @@ async fn read(
 
 const NO_VALUES: Code = Code::new("connector.no-values");
 const NO_FOLDER: Code = Code::new("connector.no-folder");
+const NO_POINT: Code = Code::new("connector.no-point");
 const BROKEN: Code = Code::new("connector.broken-browse");
 
 /// The path of an entry from the root of a device's tree: the name of each entry on
@@ -958,7 +1129,8 @@ impl Cursor {
 pub struct Query {
     /// The folder where it starts.
     pub start: Path,
-    /// One level of `start`, or the points under it that match a pattern.
+    /// One level of `start`, the points under it that match a pattern, or the entries
+    /// at paths under it.
     pub scope: Scope,
     /// Whether it reads the value of each point that it gives.
     pub values: Values,
@@ -971,6 +1143,10 @@ pub enum Scope {
     Level(Option<Cursor>),
     /// Each entry under it that is not a folder and whose path from it matches.
     Match(Pattern),
+    /// The entry at each path, in the order of the paths: a point or an unreadable
+    /// entry. Each path is from the root, as an [`Entry`] gives it, and under the
+    /// start. The walk reads the folder at each prefix of the paths at most once.
+    Points(Vec<Path>),
 }
 
 /// Whether a browse reads values.
@@ -986,7 +1162,8 @@ pub enum Values {
 /// What a browse found.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Found {
-    /// The entries, in device order: at most [`LIMIT`] for [`Scope::Match`].
+    /// The entries, in device order: at most [`LIMIT`] for [`Scope::Match`]. In the
+    /// order of the paths for [`Scope::Points`].
     pub entries: Vec<Entry>,
     /// With [`Values::Read`], the value of each entry, in the order of `entries`:
     /// `None` for a folder, an unreadable point, or a value that the device did not
@@ -1005,9 +1182,10 @@ pub enum End {
     Next(Cursor),
     /// More than [`LIMIT`] points match.
     Limit,
-    /// It looked at [`VISITS`] entries before it found its start or saw each entry
-    /// under it, or held [`DEPTH`] folders open and met one more that a match can be
-    /// under, so more may match.
+    /// It looked at [`VISITS`] entries, where each entry of each level that it reads
+    /// counts, before it found its start, saw each entry under it, or found the entry
+    /// at each path of [`Scope::Points`]. Or it held [`DEPTH`] folders open and met
+    /// one more that a match can be under. So more may match.
     Budget,
 }
 
