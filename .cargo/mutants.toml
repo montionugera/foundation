@@ -25,9 +25,9 @@ exclude_re = [
   '^bench/',
   # `main` reads the arguments and calls a task. Each task has its own tests.
   'xtask/src/main\.rs:.*(replace main ->| in main$)',
-  # Miri needs the pinned nightly, which only the miri CI job installs. A deliberate
-  # break in that job shows that it fails.
-  'xtask/src/miri\.rs:.*(replace run ->| in run$)',
+  # Miri needs the pinned nightly, which only the miri CI jobs install. A deliberate
+  # break in those jobs shows that they fail.
+  'xtask/src/miri\.rs:.*(replace (run|listed|worker) ->| in (run|listed|worker)$)',
   # The run needs the pinned nightly, which the mutants job does not install. A planted
   # overflow in the shim fails the sanitizers job.
   'xtask/src/sanitizers\.rs:.*(replace run ->| in run$)',

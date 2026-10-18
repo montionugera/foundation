@@ -400,9 +400,15 @@ jobs:
       - name: Shuttle
         run: cargo xtask shuttle
 
-  miri:
+  # Each shard runs each eighth Miri test, one at a time on each core.
+  miri-shard:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.models != 'false'"
+    name: miri shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -412,7 +418,22 @@ jobs:
             --component miri,rust-src
       - uses: Swatinem/rust-cache@v2
       - name: Miri
-        run: cargo xtask miri
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: cargo xtask miri "$SHARD/8"
+
+  # The required check. It passes when each shard passed.
+  miri:
+    needs: [changes, miri-shard]
+    if: "!cancelled() && needs.changes.outputs.models != 'false'"
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The result of the shards
+        env:
+          RESULT: ${{ needs.miri-shard.result }}
+        run: |
+          [ "$RESULT" = success ] ||
+            { echo "::error::The miri shards ended in $RESULT."; exit 1; }
 
   # Miri cannot run C, so ASan and UBSan check `connector-opcua` in its place.
   sanitizers:
