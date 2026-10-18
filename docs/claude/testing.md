@@ -80,13 +80,12 @@ https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256556315,
 runner of CI, which fit in 9 GiB there, a test that dies for lack of memory counts its
 mutant as caught, and a build that dies counts it as unviable. In the cap, a mutant that
 allocates in a loop dies alone, its test fails, and the run counts it as caught. With no
-cap, the mutant fills the box and the run stalls. A test run of a hand mutant or of a
-reverted fix comes after the same command passed in the same cap and worktree on the
-code with no such change, else it is no result. Then a test that `SIGKILL` ends in its
-cap (the kernel kills it for lack of memory) shows a kill or a fail, and a build that it
-ends (cargo prints `signal: 9` for `rustc`) is no result. Report a run with no result as
-not run, and never count it as a kill or a fail. Set `OOMPolicy=continue`: the default
-of a user manager stops the whole scope. Both boxes set `DefaultOOMPolicy=continue`
+cap, the mutant fills the box and the run stalls. A run of a hand mutant or of a
+reverted fix in which cargo reports `signal: 9` (`SIGKILL`) for a step (a build, a link,
+a build script, or a test) is no result, because its output does not show which limit
+fired: report it as not run, and never count it as a kill or a fail. Set
+`OOMPolicy=continue`: the default of a user manager stops the whole scope. Both boxes
+set `DefaultOOMPolicy=continue`
 (https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6236348454), and the
 flag keeps the run alive on a host that does not. Never cap a run on a box with
 `prlimit --data`: it counts reserved memory, not touched pages (#803,
