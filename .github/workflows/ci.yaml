@@ -153,7 +153,6 @@ jobs:
               - --skip a_listener_with_a_failed_registration_refuses_while_a_copy_is_open # #3036
               - --skip start::a_kept_pool_budget_too_large_for_the_host_fails_with_no_panic # #3043
               - --skip start::a_kept_pool_budget_that_the_system_cannot_reserve_fails # #3043
-              - --skip bytes::tests::shrinks_a_block_in_place_as_the_system_does # #3042
               - --skip open62541::tests::check_refuses_a_line_directive_in_the_copy # #3041
               - --skip open62541::tests::run_copies_each_compiled_source_and_its_headers # #3041
               - --skip open62541::tests::run_refuses_a_release_with_no_file_of_extra # #3041
@@ -221,7 +220,6 @@ jobs:
               - --skip log::tests::refuses_a_write_after_a_failed_or_dropped_one # #2973
               - --skip daqmx::tests::names_a_library_that_does_not_load # #3033
               - --skip daqmx::tests::names_a_function_the_library_lacks # #3033
-              - --skip bytes::tests::shrinks_a_block_in_place_as_the_system_does # #3042
     runs-on: ${{ matrix.runner }}
     env:
       RUST: ${{ needs.changes.outputs.rust }}
