@@ -80,9 +80,10 @@
   no packet reaches it: the first test that sends to one adds it to the addresses of the
   node, and a check of the scope of a send. As with `IPV6_PKTINFO` on Linux, a socket on
   the link-local address that names the routable IPv6 address of its node as the source
-  sends from that address. A send that names another IPv6 source gives code 22
-  (`EINVAL`), as on Linux: the link-local address from a socket that is not on it, or an
-  address of another node. Decided by `laptop.architect-2` at
+  sends from that address. A send that names another source gives code 22 (`EINVAL`),
+  as on Linux, when the source or the destination is IPv6: the link-local address from
+  a socket that is not on it, an address of another node, or an IPv4 source to an IPv6
+  destination. Decided by `laptop.architect-2` at
   2026-10-18T09:56:35Z
   (https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6248485617), at
   2026-10-18T10:40:06Z for interface 2 and code 99
