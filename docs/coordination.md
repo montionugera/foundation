@@ -87,8 +87,8 @@ group caps current
 | box2 | 61 GiB | 54 GiB | 4 | 12G |
 
 The group cap is the `MemoryMax` of `user-1000.slice`. It is a runtime setting, so a
-`factory-up` drops it. On 2026-10-18 it was not set, and `laptop.monitor` sets it when
-the person allows it.
+`factory-up` drops it, and `laptop.monitor` sets it again (both boxes,
+2026-10-18T23:22Z, factory message `33c32910`).
 
 ## Issues
 
