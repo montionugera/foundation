@@ -184,19 +184,26 @@ again once to prove that the failure replays (r16 59).
   yet. The PR that closes such an issue, or after which such a test no longer waits on
   such an issue, removes the issue from the reason of each test that no longer waits on
   it, also when the test still waits on another issue, and removes the `#[ignore]` when
-  no issue is left. A test that needs a tool of one OS, and that CI runs on that OS, is
-  `#[cfg_attr(not(target_os = "<os>"), ignore = "needs <tool>")]`, never
-  `#[cfg(target_os = ...)]`, which hides it on another OS with no reason. A test binary
-  with no harness (`harness = false`) has no `ignore`, so there such a check is
-  `#[cfg(target_os = "<os>")]` with the comment `// needs <tool>` on its gate. A test of
-  a behavior that differs by OS checks it on each OS that the crate builds for: with
-  `#[cfg(target_os = ...)]` on its expected value, as `UNLINK_DIRECTORY` in
-  `crates/os/tests/it/files.rs` does, or with one test for each OS. A behavior has no
-  test on another OS only when that OS does not have it, when no test can fix its value
-  there (a count that a kernel buffer sets), or when its test needs an item that exists
-  on one OS to cause the case, such as a seccomp filter. A test whose code calls such an
-  item does not compile on another OS, so it is `#[cfg(target_os = ...)]`, not the
-  `cfg_attr` form above.
+  no issue is left. A test of a behavior that differs by OS checks it on each OS that
+  the crate builds for: with `#[cfg(target_os = ...)]` on its expected value, as
+  `UNLINK_DIRECTORY` in `crates/os/tests/it/files.rs` does, or with one test for each
+  OS. A behavior has no test on another OS only when that OS does not have it, when no
+  test can fix its value there (a count that a kernel buffer sets), or when its test
+  needs an item that exists on one OS to cause the case, such as a seccomp filter. Only
+  such a test skips an OS with no list item. The reason of an `ignore` that skips it is
+  `only <OS>`, or starts with `only <OS>:`, as `"only Linux: macOS and Windows have no
+  seccomp filters"`. A `cfg` that leaves it out of an OS, which a test whose code calls
+  an item of one OS needs, is a gate: the first line of the doc of the gated item is
+  `Only <OS>` or `Only <arch>`, or starts with either and `:`. `<arch>` is the
+  `target_arch` value (`aarch64` or `x86_64`) of each runner on which the item builds,
+  and of no other. A skip that keys on several OSes, of which only some have the
+  behavior, is one `cfg_attr` for each OS, each with its own reason. Each other test
+  that an OS does not run, a test that needs a tool of one OS too, is an item of the
+  list of that OS in the matrix of the job `check` in `ci.yaml`, with the open issue
+  that removes it. A doc covers only each OS that no item names. The review checks that
+  a reason or a doc is true of the behavior on each OS that it covers, not only of the
+  tool. LINUX CI (`docs/decisions/testing/linux-ci.md`) gives the lists, what an item
+  may be, and the names of the OSes, and `cargo xtask skips` checks the form.
 - **One `check` helper per feature under test.** Inputs and expected output are data,
   so a signature change edits one helper (r16 50).
 - **A fixture helper is `create_*`.** A helper that builds the state a test runs
