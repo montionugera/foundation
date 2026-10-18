@@ -41,6 +41,11 @@ const READS: u16 = 9;
 /// chunk past it closes the channel.
 const QUEUED: u32 = READS as u32 * (CHUNKS - 1);
 
+const _: () = assert!(
+    QUEUED <= 63,
+    "OPCUA READ bounds the queue of a channel at 63 chunks of 64 KiB, about 4 MiB"
+);
+
 /// The most time with no read that [`Client::idle`] waits before it checks the
 /// connection.
 pub(crate) const CHECK: Span = Span::from_nanos(10 * Span::SECOND.nanos());
