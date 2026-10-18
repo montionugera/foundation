@@ -1498,6 +1498,8 @@ fn within_reads_through_links_of_long_dots_in_a_deep_directory_in_bounded_time()
     });
 }
 
+/// Only Linux: macOS takes no link target past its `PATH_MAX` of 1024 bytes.
+///
 /// As above, with each link out of a folder 12000 names deep, far past `PATH_MAX`, and
 /// back down: the check of each step above the folder costs no scan of its depth.
 #[cfg(target_os = "linux")]
