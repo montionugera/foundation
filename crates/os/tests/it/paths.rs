@@ -1491,6 +1491,78 @@ fn within_reads_through_links_of_long_dots_in_a_deep_directory_in_bounded_time()
     });
 }
 
+/// As above, with each link out of a folder 12000 names deep, far past `PATH_MAX`, and
+/// back down: the check of each step above the folder costs no scan of its depth.
+#[cfg(target_os = "linux")]
+#[test]
+fn within_reads_through_links_that_leave_a_folder_past_path_max_in_bounded_time() {
+    use rustix::fs::{AtFlags, Mode, OFlags, mkdirat, openat, symlinkat, unlinkat};
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let work = base.join("work");
+        let deep = Deep::new(work.clone(), 95);
+        let depth = deep.dir.strip_prefix(&work).unwrap().components().count();
+        symlink("a/".repeat(depth), work.join("j")).unwrap();
+        let flags = OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC;
+        let mode = Mode::from_raw_mode(0o700);
+        let leaf = openat(CWD, &deep.dir, flags, Mode::empty()).unwrap();
+        symlinkat(format!("b/{}", "a/".repeat(1999)), &leaf, "k").unwrap();
+        mkdirat(&leaf, "b", mode).unwrap();
+        let mut fd = openat(&leaf, "b", flags, Mode::empty()).unwrap();
+        let hops = 6;
+        let levels = 2000 * hops;
+        for at in 1..levels {
+            mkdirat(&fd, "a", mode).unwrap();
+            fd = openat(&fd, "a", flags, Mode::empty()).unwrap();
+            if at % 2000 == 1999 {
+                symlinkat("a/".repeat(2000), &fd, "m").unwrap();
+            }
+        }
+        let mut folder = work.join("j/k");
+        for _ in 1..hops {
+            folder.push("m");
+        }
+        fs::write(folder.join("f"), b"x").unwrap();
+        let k = (most() - 50) / 5;
+        let round = format!("{}{}", "../".repeat(k), "a/".repeat(k));
+        // `j`, `k`, and each `m` take one.
+        let links = links() - 1 - hops;
+        for at in 0..links {
+            let next = if at + 1 == links {
+                "f".to_owned()
+            } else {
+                format!("l{}", at + 1)
+            };
+            symlink(format!("{round}{next}"), folder.join(format!("l{at}"))).unwrap();
+        }
+        let within = host.paths.within(slice::from_ref(&folder), &[]).unwrap();
+        let path = folder.join("l0");
+        let clock = os::clock();
+        let start = clock.now();
+        let free = host.paths.read(&path, 1);
+        let free_took = clock.now() - start;
+        let start = clock.now();
+        let read = within.read(&path, 1);
+        let took = clock.now() - start;
+        unlinkat(&fd, "f", AtFlags::empty()).unwrap();
+        for at in 0..links {
+            unlinkat(&fd, format!("l{at}"), AtFlags::empty()).unwrap();
+        }
+        for _ in 1..levels {
+            if let Err(e) = unlinkat(&fd, "m", AtFlags::empty()) {
+                assert_eq!(e, Errno::NOENT);
+            }
+            let up = openat(&fd, "..", flags, Mode::empty()).unwrap();
+            unlinkat(&up, "a", AtFlags::REMOVEDIR).unwrap();
+            fd = up;
+        }
+        unlinkat(&leaf, "b", AtFlags::REMOVEDIR).unwrap();
+        let file = Ok(Found::File(b"x".to_vec()));
+        assert_eq!((free, read), (file.clone(), file));
+        assert!(took < BOUNDED, "took {took}, free {free_took}");
+    });
+}
+
 /// A hidden file whose resolved path is longer than the OS takes, made after `within`
 /// through a link that a program points at a deep directory. The walk takes each name
 /// on the handle of its directory, so it reaches the file, which hides only itself.

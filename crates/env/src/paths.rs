@@ -4,6 +4,7 @@ use std::fmt::Debug;
 use std::path::{Component, Path, PathBuf, is_separator};
 use std::rc::Rc;
 
+use types::hash;
 use walk::{Step, Walk};
 
 pub mod dir;
@@ -131,7 +132,8 @@ impl Paths {
     /// # Errors
     ///
     /// [`Error::NotFound`] when `path` is empty or a directory on the way is not there,
-    /// the error of [`Driver::looped`] past [`LINKS`] symbolic links, else
+    /// the error of [`Driver::looped`] past [`LINKS`] symbolic links or [`LINKS`] moves
+    /// of a directory of the path during the walk, else
     /// [`Error::Io`], also for a `.`, a `..`, or an end in `/` after a file, and for a
     /// `path` longer than the host takes. Each name goes to the host as one call on
     /// the directory that holds it, so a resolved path has no bound on its length.
@@ -473,7 +475,7 @@ struct Folder {
     there: bool,
     /// The key of each directory on the way to its resolved path, with no link
     /// followed.
-    above: Vec<Key>,
+    above: hash::Set<Key>,
 }
 
 /// What one call finds at a hidden path.
@@ -621,8 +623,9 @@ pub trait Driver: Debug {
     fn looped(&self) -> Error;
 }
 
-/// The most symbolic links that the walk of one path goes through, as on Linux. A
-/// host can take fewer.
+/// The most symbolic links that the walk of one path goes through, as on Linux, and
+/// the most times that it starts again after a program moves a directory of the path.
+/// A host can take fewer links.
 pub const LINKS: usize = 40;
 
 /// Whether `path` is empty or ends in a separator, `.`, or `..`. By its text, such a
@@ -664,7 +667,8 @@ mod tests {
     /// `/out`. A path in `/volume` has the key of the path without `/volume`, as a
     /// second mount of `/` does. `..` of a directory is its path less its last name,
     /// but `..` of `moved` is `/out` once after a write of `moved`, and each time after
-    /// a write of `away`.
+    /// a write of `away`. After a write of `full`, `..` of `moved` is `/out`, and each
+    /// later open of a root gives `Io` 24.
     /// It counts its opens of a root or a name, and a relative path is under its
     /// working directory, `/` at first. `absolute` refuses a path of [`MOST`] bytes or
     /// more as given with `Io` 36. A `\` in a path is a `/`, since the walk joins names
@@ -754,9 +758,11 @@ mod tests {
             self.0.count();
             let mut data = self.0.0.borrow_mut();
             let moved = self.1.file_name() == Some(OsStr::new("moved"));
-            if moved && matches!(&data[..], b"moved" | b"away") {
-                if *data == b"moved" {
-                    data.clear();
+            if moved && matches!(&data[..], b"moved" | b"away" | b"full") {
+                match &data[..] {
+                    b"moved" => data.clear(),
+                    b"full" => *data = b"rootless".to_vec(),
+                    _ => {}
                 }
                 return Ok(Box::new(Dir(self.0.clone(), PathBuf::from("/out"))));
             }
@@ -797,6 +803,9 @@ mod tests {
 
         fn root(&self, _: &Path) -> Result<Box<dyn dir::Driver>, Error> {
             self.count();
+            if *self.0.borrow() == b"rootless" {
+                return Err(Error::Io { code: 24 });
+            }
             Ok(Box::new(Dir(self.clone(), PathBuf::from("/"))))
         }
 
@@ -1213,6 +1222,23 @@ mod tests {
         let looped = paths.resolve(Path::new("/work/moved/.."));
         assert_eq!(looped, Err(Error::Io { code: 40 }));
         assert_eq!(calls.get(), 4 * (LINKS + 1));
+    }
+
+    #[test]
+    fn a_walk_that_starts_again_at_its_last_dot_dot_gives_the_error_of_the_start() {
+        let paths = Paths::new(One::default());
+        paths.write(Path::new("/a"), b"full").unwrap();
+        let resolved = paths.resolve(Path::new("/work/moved/.."));
+        assert_eq!(resolved, Err(Error::Io { code: 24 }));
+    }
+
+    #[test]
+    fn a_walk_that_starts_again_follows_the_links_of_its_path_again() {
+        let paths = Paths::new(One::default());
+        let path = Path::new("/work/c20/moved/../a");
+        assert_eq!(paths.resolve(path), Ok(PathBuf::from("/work/c0/a")));
+        paths.write(Path::new("/a"), b"moved").unwrap();
+        assert_eq!(paths.resolve(path), Ok(PathBuf::from("/work/c0/a")));
     }
 
     #[test]

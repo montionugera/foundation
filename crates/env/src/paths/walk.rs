@@ -6,6 +6,8 @@ use std::ffi::{OsStr, OsString};
 use std::iter;
 use std::path::{Component, Path, PathBuf};
 
+use types::hash;
+
 use super::dir::{self, Entry};
 use super::{Driver, Error, Key, LINKS, names_directory};
 
@@ -58,6 +60,7 @@ impl Walk {
             at: 0,
             dir: None,
             links: LINKS,
+            starts: 0,
             in_file: false,
         };
         let end = walker.run();
@@ -150,11 +153,11 @@ impl<'a> Above<'a> {
 /// The key of each directory on the way to `path`, which is resolved, from its root,
 /// and that of the file at `path`, or `None` when a link or nothing is there. No link
 /// is followed, so the directories stop at a name that is not one.
-pub(super) fn keys(driver: &dyn Driver, path: &Path) -> (Vec<Key>, Option<Key>) {
+pub(super) fn keys(driver: &dyn Driver, path: &Path) -> (hash::Set<Key>, Option<Key>) {
+    let mut above = hash::Set::default();
     let Ok(mut dir) = driver.root(path) else {
-        return (Vec::new(), None);
+        return (above, None);
     };
-    let mut above = Vec::new();
     let mut names = path
         .components()
         .filter_map(|part| match part {
@@ -163,7 +166,7 @@ pub(super) fn keys(driver: &dyn Driver, path: &Path) -> (Vec<Key>, Option<Key>) 
         })
         .peekable();
     while let Some(name) = names.next() {
-        above.push(dir.key());
+        above.insert(dir.key());
         match dir.open(name) {
             Ok(Entry::Directory(next)) => dir = next,
             Ok(Entry::File(key)) if names.peek().is_none() => {
@@ -197,8 +200,10 @@ struct Walker<'a> {
     at: usize,
     /// Step `at`, open, or `None` when it is not a directory.
     dir: Option<Box<dyn dir::Driver>>,
-    /// The links that the walk can still follow.
+    /// The links that this start of the walk can still follow.
     links: usize,
+    /// The times that the walk started again.
+    starts: usize,
     in_file: bool,
 }
 
@@ -222,7 +227,15 @@ impl Walker<'_> {
                     Ok(false) => Ok(()),
                     Err(e) => Err(e),
                 },
-                Name::Up => self.up(),
+                // A start that fails has no step, so its error is not one of the end.
+                Name::Up => match self.up() {
+                    Ok(true) => {
+                        self.begin()?;
+                        Ok(())
+                    }
+                    Ok(false) => Ok(()),
+                    Err(e) => Err(e),
+                },
                 Name::Directory if self.dir.is_some() => Ok(()),
                 Name::Directory => {
                     self.steps[self.at].back = true;
@@ -352,10 +365,10 @@ impl Walker<'_> {
         }
     }
 
-    /// Takes `..`. When the host gives a directory other than the step above, a
-    /// program moved a directory of the path during the walk, and the walk starts
-    /// again, which takes one of its links.
-    fn up(&mut self) -> Result<(), Error> {
+    /// Takes `..`. `Ok(true)` when the host gives a directory other than the step
+    /// above: a program moved a directory of the path during the walk, so the walk
+    /// must start again, with its links less one for each start.
+    fn up(&mut self) -> Result<bool, Error> {
         // A step that fails `..` is still one that the walk would leave.
         self.steps[self.at].back = true;
         let Some(dir) = &self.dir else {
@@ -363,18 +376,18 @@ impl Walker<'_> {
         };
         // `..` of a root is the root.
         let Some(up) = self.steps[self.at].up else {
-            return Ok(());
+            return Ok(false);
         };
         let above = dir.up()?;
         if Some(above.key()) == self.steps[up].own {
             self.enter(up, Some(above));
-            return Ok(());
+            return Ok(false);
         }
-        self.links = self
-            .links
-            .checked_sub(1)
+        self.starts += 1;
+        self.links = LINKS
+            .checked_sub(self.starts)
             .ok_or_else(|| self.driver.looped())?;
-        self.begin()
+        Ok(true)
     }
 
     /// Makes step `index` the step of the walk, with `dir` open at it.

@@ -1394,45 +1394,51 @@
   https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6243671534).
   Amended (2026-10-18T18:28:15Z, #3094, part 1 of 2): the walk of `Paths` runs on open
   directories. `Driver::entry` goes. `Driver::root` gives the root on the way to an
-  absolute path, open as a `paths::dir::Driver`, and `dir::Driver::open` gives what is
-  at one name of that directory, with no link followed: a link with its key and target
-  as written, a directory, open, or another file, each with its key.
-  `Driver::not_directory` gives the error of the host for a name in a file, as `looped`
-  gives that of a loop. On `os`, a directory opens with `openat` and `O_NOFOLLOW` and
-  `O_DIRECTORY`, with `O_PATH` on Linux and `O_SEARCH` on macOS, so it needs no read
-  permission, and its key comes from `fstat` of that open, not of a stat before it. A
-  name is one `fstatat` with no link followed, and a link also one `readlinkat`. On
-  macOS, a directory that this user cannot search is open by its key alone, and each
-  name in it gives `EACCES`, as on Linux. On `sim`, a directory is open by its inode,
-  whose path each call finds again, so it keeps its directory after a move; `/` is inode
-  0 and has no entry. The walk keeps one directory open: a `..` opens `..` of that
-  directory, which must have the key of the step that the walk came from. When it does
-  not, a program moved a directory of the path during the walk, and the walk starts
-  again from its first name. Each start takes one of the `LINKS` (40) links, so past
-  them the walk gives `Driver::looped`. The free handle walks the same way, so on macOS
-  it takes 40 links where the host takes 32, and a `..` after a move follows the walk,
-  not the host. `absolute` still bounds the path as given, but a name goes to the host
-  as one call on its directory, so a resolved path has no bound on its length: a new
-  name whose resolved path is longer than the host takes is written as the free handle
-  writes it, and a hidden file past PATH_MAX hides only itself, so the arm of a refused
-  hidden path meets only a refusal such as `Io` 13. A directory that this user can read
-  and not search lists its entries, and each name in it gives `EACCES`
-  (`within_lists_a_directory_that_this_user_can_read_and_not_search`). The check takes
-  the keys above each step in one pass over the walk, so it costs the steps and not the
-  steps times the depth. On `os` (Linux, Xeon Platinum 8488C, debug), a read through 40
-  links of `s/../` from a directory 1900 names deep takes 140 ms, where the free handle
-  takes 3 ms; a test pins it under 1 s. The calls (`read`, `write`, `make_dir`) still go
-  to the host by path, and the gap between the check and the call stays until part 2 of
-  #3094. `os` has no `paths` driver on Windows before #2956. Supersedes, of the
-  amendment of 2026-10-18T00:20:52Z: "`Driver::entry` gives what one `lstat` gives at a
-  path", "The state of a folder is the `entry` of its resolved path" (it is now the walk
-  of that path with no link followed), "The cost, for each call, is one `entry` for each
-  name of the walk", "Each name goes to the host by its resolved path, so a name whose
-  resolved path is longer than the host takes fails with `Io`, also where the free
-  handle reaches it by a relative path, and a hidden folder with such a path fails
-  `within`", the costs from "Links that a writer of the host puts in a folder can still
-  make a walk slow" to "a walk by handles makes each name one call", and the lost design
-  cap-std "(#3094)". Also supersedes, with the ruling of `laptop.monitor` on #3018
+  absolute path, open as a `paths::dir::Driver`. `dir::Driver::open` gives the
+  `dir::Entry` at one name of that directory, never `.` or `..`, with no link followed:
+  a link with its key and target as written, a directory, open, or another file, each
+  with its key. `dir::Driver::up` gives the directory that the host gives above it,
+  open, and the root above the root. `Driver::not_directory` gives the error of the host
+  for a name in a file, as `looped` gives that of a loop. On `os`, a directory opens
+  with `openat` and `O_NOFOLLOW` and `O_DIRECTORY`, with `O_PATH` on Linux and
+  `O_SEARCH` on macOS, so it needs no read permission, and its key comes from `fstat` of
+  that open, not of a stat before it. A name is one `fstatat` with no link followed, and
+  a link also one `readlinkat`. On macOS, a directory that this user cannot search is
+  open by its key alone, and each name in it gives `EACCES`, as on Linux. On `sim`, a
+  directory is open by its inode, whose path each call finds again, so it keeps its
+  directory after a move; `/` is inode 0 and has no entry, and one lookup gives `/` as
+  inode 0. The walk keeps one directory open: a `..` calls `up` on that directory, which
+  must give the key of the step that the walk came from. When it does not, a program
+  moved a directory of the path during the walk, and the walk starts again from its
+  first name. Each start again follows the links of the path again, with `LINKS` (40)
+  links less one for each start, so past 40 starts the walk gives `Driver::looped`. A
+  start again that fails gives its error, which is no error of a step. The free handle
+  walks the same way, so on macOS it takes 40 links where the host takes 32, and a `..`
+  after a move follows the walk, not the host. `absolute` still bounds the path as
+  given, but a name goes to the host as one call on its directory, so a resolved path
+  has no bound on its length: a new name whose resolved path is longer than the host
+  takes is written as the free handle writes it, and a hidden file past PATH_MAX hides
+  only itself, so the arm of a refused hidden path meets only a refusal such as `Io` 13.
+  A directory that this user can read and not search lists its entries, and each name in
+  it gives `EACCES` (`within_lists_a_directory_that_this_user_can_read_and_not_search`).
+  For each key that it asks about, the check finds in one pass over the walk the steps
+  that have that key above them, and keeps the result, so it costs the steps times the
+  keys it asks about and not the steps times the depth. The keys on the way to a folder
+  are a set, so a step that leaves a folder past PATH_MAX costs no scan of its depth. On
+  `os` (Linux, Xeon Platinum 8488C, debug), a read through 40 links of `s/../` from a
+  directory 1900 names deep takes 140 ms, where the free handle takes 3 ms; a test pins
+  it under 1 s. The calls (`read`, `write`, `make_dir`) still go to the host by path,
+  and the gap between the check and the call stays until part 2 of #3094. `os` has no
+  `paths` driver on Windows before #2956. Supersedes, of the amendment of
+  2026-10-18T00:20:52Z: "`Driver::entry` gives what one `lstat` gives at a path", "The
+  state of a folder is the `entry` of its resolved path" (it is now the walk of that
+  path with no link followed), "The cost, for each call, is one `entry` for each name of
+  the walk", "Each name goes to the host by its resolved path, so a name whose resolved
+  path is longer than the host takes fails with `Io`, also where the free handle reaches
+  it by a relative path, and a hidden folder with such a path fails `within`", the costs
+  from "Links that a writer of the host puts in a folder can still make a walk slow" to
+  "a walk by handles makes each name one call", and the lost design cap-std "(#3094)".
+  Also supersedes, with the ruling of `laptop.monitor` on #3018
   (https://github.com/synnaxlabs/foundation/issues/3018#issuecomment-6243671534) as the
   reason, three lost designs: "the open and the rename through a handle of the
   directory, which needs read access to the directory, or an open flag that Linux and
