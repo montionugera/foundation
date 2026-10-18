@@ -73,7 +73,8 @@
   counts as one (a server may give a continuation point with no references), then ends
   `Budget`. With `Limit`, `import` gives `ops.import-limit`, "more than `<limit>` points
   match, the most for one import", with the fix "Narrow the match, or pick at most
-  `<limit>` points", not a count.
+  `<limit>` points", not a count (IMPORT OP), which supersedes "narrow the pattern, or
+  import in parts".
   It browses no folder whose tag and pattern state are those of a
   folder that it holds open, so a loop in a graph such as an OPC UA address space ends,
   and a path that a pattern names through a loop still matches. A pattern ends `Budget`

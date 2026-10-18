@@ -217,9 +217,11 @@
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244788485), which
   supersedes the words "with the added documents" of item 4 of
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198070930. The
-  parse of each point and given name in `serve`, each in a list: `laptop.architect-2`,
-  2026-10-18T06:19:04Z
-  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6246489783). The
+  parse of each point and given name in `serve`, each in a list, and one fix for each
+  code: `laptop.architect-2`, 2026-10-18T06:19:04Z
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6246489783), which
+  supersedes the two fixes of `ops.import-budget` in item 6 of
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074. The
   mode 0600: `laptop.architect-2`, 2026-10-18T06:03:37Z
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6246366941), which
   supersedes the kept bits of item 8 of
