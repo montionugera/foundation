@@ -127,10 +127,9 @@
   refuses, in this order, a forged admission, a name outside the prefix, and a join at
   or after the expiry. `Record::unused` refuses a second use of a single-use ticket.
   Apply counts a use only when all checks pass, so a refused join never uses up a
-  ticket. The expiry is the
-  first mesh time at which the ticket admits no node, so the `Expired` text is "ticket
-  {public_key} expired at {expiry}, and the join is at {at}". The text and the admit
-  order approved by `laptop.architect` (2026-10-07T11:03:29Z):
+  ticket. The expiry is the first mesh time at which the ticket admits no node, so the
+  `Expired` text is "ticket {public_key} expired at {expiry}, and the join is at {at}".
+  The text and the admit order approved by `laptop.architect` (2026-10-07T11:03:29Z):
   https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6036571225. The
   ephemeral expiry of a `Member` comes from its ticket, because the admin decides what a
   ticket admits (BQ11a) and the joining node is outside input. Lost: a bearer secret in
@@ -155,14 +154,14 @@
   card of a member holds (`Unfit::Held`; `laptop.architect`, 2026-10-08T22:29:26Z,
   https://github.com/synnaxlabs/foundation/issues/2023#issuecomment-6070338077), a
   name that a member holds, a status key that a member holds or that the join repeats
-  (A4), and the refusal of `Record::unused`. So no refusal counts a use. A member's names are its card name and each
-  `<name>.<status>`, and two names are equal when they differ only in ASCII case (A3,
-  X27), so each full name maps to at most one member. Region state cannot see the keys
-  of the spec, so the status key check covers members only. The name and key checks are
-  one function, which `State::new` also runs on the founding members; both give a
-  `region::Unfit`, which `Refused::Unfit` wraps. A member and a `Join` hold at most 64
-  status entries, as the 32 of `Addresses`. Decided by `laptop.architect`
-  (2026-10-07T10:44:26Z):
+  (A4), and the refusal of `Record::unused`. So no refusal counts a use. A member's
+  names are its card name and each `<name>.<status>`, and two names are equal when they
+  differ only in ASCII case (A3, X27), so each full name maps to at most one member.
+  Region state cannot see the keys of the spec, so the status key check covers members
+  only. The name and key checks are one function, which `State::new` also runs on the
+  founding members; both give a `region::Unfit`, which `Refused::Unfit` wraps. A member
+  and a `Join` hold at most 64 status entries, as the 32 of `Addresses`. Decided by
+  `laptop.architect` (2026-10-07T10:44:26Z):
   https://github.com/synnaxlabs/foundation/pull/1328#issuecomment-6036265582. The type
   `mesh::status::Status` holds the cap of 64: `Status::new` refuses more (`Many`), and
   the decode refuses more before it reads an entry. So each `Member` that `encode`
