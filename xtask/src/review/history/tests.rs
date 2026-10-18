@@ -9,9 +9,14 @@ pub(crate) struct Repo {
 }
 
 impl Repo {
+    /// The directory of the repository `name` of this process.
+    fn dir(name: &str) -> PathBuf {
+        std::env::temp_dir()
+            .join(format!("xtask-history-{name}-{}", std::process::id()))
+    }
+
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir()
-            .join(format!("xtask-history-{name}-{}", std::process::id()));
+        let dir = Self::dir(name);
         // A failed or killed run with the same PID can leave the directory behind.
         match std::fs::remove_dir_all(&dir) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
@@ -731,10 +736,16 @@ fn a_nul_byte_does_not_hide_code() {
 fn reads_a_name_that_git_quotes() {
     for name in ["caf\u{e9}.rs", "a b.rs", "a\tb.rs", "\"a\".rs"] {
         let (repo, _) = Repo::with_pr("quoted");
-        let from = repo.commit(name, "fn a() {}\n");
-        let docs = repo.commit(name, "// A.\nfn a() {}\n");
+        // Windows refuses a file named with a tab or a quote.
+        let commit = |text| {
+            repo.add("100644", name.as_bytes(), text);
+            repo.git(&["commit", "--quiet", "-m", "c"]);
+            repo.head()
+        };
+        let from = commit("fn a() {}\n");
+        let docs = commit("// A.\nfn a() {}\n");
         assert_eq!(repo.code_change(&from, &docs), Ok(None), "{name:?}");
-        let code = repo.commit(name, "// A.\nfn b() {}\n");
+        let code = commit("// A.\nfn b() {}\n");
         assert_eq!(
             repo.code_change(&docs, &code),
             Ok(Some(format!("changes code at `{name}:2`"))),
@@ -1965,8 +1976,7 @@ fn a_failed_removal_fails_the_test() {
 
 #[test]
 fn a_failed_removal_of_a_left_directory_names_it() {
-    let dir = std::env::temp_dir()
-        .join(format!("xtask-history-left-file-{}", std::process::id()));
+    let dir = Repo::dir("left-file");
     std::fs::write(&dir, "").unwrap();
     let refused = std::fs::remove_dir_all(&dir).unwrap_err();
     let panic = std::panic::catch_unwind(|| Repo::new("left-file")).err();
