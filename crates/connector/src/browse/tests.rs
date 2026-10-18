@@ -1119,7 +1119,7 @@ mod picks {
         assert_eq!(found.entries[3].shape, Shape::Unreadable("an array".into()));
         assert_eq!(found.end, End::Done);
         assert!(found.values.is_empty());
-        let browsed = ["", "", "Line2", "Line2/Oven", "Line1", "Line1"];
+        let browsed = ["", "", "Line2", "Line2/Oven", "Line1"];
         assert_eq!(tree.browsed, browsed.map(path));
     }
 
@@ -1237,8 +1237,7 @@ mod picks {
         for (visits, found, end) in [
             (2, &[][..], End::Budget),
             (3, &["Clock"], End::Budget),
-            (5, &["Clock", "Line1/Temp1"], End::Budget),
-            (6, &["Clock", "Line1/Temp1"], End::Done),
+            (4, &["Clock", "Line1/Temp1"], End::Done),
         ] {
             let mut tree = Tree::new(&plant(), 10);
             let query = picks("", &["Clock", "Line1/Temp1"]);
@@ -1258,6 +1257,39 @@ mod picks {
         assert_eq!(
             diagnostic(walked),
             no_point(r#"the path "Clock" is not under the start "Line1""#.into()),
+        );
+    }
+
+    /// Through `walk_within`: Line2 gives Oven, a folder, and Line1 gives Temp1 at the
+    /// last visit.
+    #[test]
+    fn refuses_no_path_that_the_device_decides_at_the_budget() {
+        let mut tree = Tree::new(&plant(), 10);
+        let query = picks("", &["Line2/Oven", "Line1/Temp2"]);
+        let walked = now(walk_within(&mut tree, &query, LIMIT, 4)).expect("found");
+        assert_eq!(walked.entries, []);
+        assert_eq!(walked.end, End::Budget);
+    }
+
+    #[test]
+    fn stops_a_folder_when_it_has_seen_each_name_that_a_path_takes_in_it() {
+        let big: Vec<Node> = (0..VISITS).map(|i| point(&format!("p{i}"))).collect();
+        let mut tree = Tree::new(&[folder("Big", big)], LIMIT);
+        let query = picks("", &["Big/p1", "Big/p0"]);
+        let found = now(walk(&mut tree, &query)).expect("found");
+        assert_eq!(paths(&found), ["Big/p1", "Big/p0"]);
+        assert_eq!(found.end, End::Done);
+        assert_eq!(tree.browsed, [path(""), path("Big")]);
+    }
+
+    #[test]
+    fn gives_no_point_at_a_deep_path() {
+        let text = vec!["a"; 20_000].join("/");
+        let mut tree = Tree::new(&plant(), 10);
+        let found = now(walk(&mut tree, &picks("", &[&text])));
+        assert_eq!(
+            diagnostic(found),
+            no_point(format!("the device has no point at \"{text}\"")),
         );
     }
 

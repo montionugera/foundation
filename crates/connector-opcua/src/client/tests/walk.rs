@@ -459,8 +459,8 @@ fn a_walk_holds_no_more_points_than_the_server_holds_for_a_session() {
 }
 
 /// A walk of paths makes one Browse request for each of Objects, `root`, `a`, `b`,
-/// `c`, and `e`, and none for `d`, which no path is under. It reads each folder to its
-/// end before the next, so it holds the point of Objects and one more.
+/// `c`, and `e`, and none for `d`, which no path is under. It stops `b` and `c` when it
+/// has seen `x`, so it holds the points of Objects, `b`, and `c`.
 #[test]
 fn a_walk_of_paths_gives_the_entry_at_each_in_one_browse_of_each_folder() {
     let paths =
@@ -475,7 +475,7 @@ fn a_walk_of_paths_gives_the_entry_at_each_in_one_browse_of_each_folder() {
     let paths: Vec<String> = found.entries.iter().map(|e| e.path.to_string()).collect();
     assert_eq!(paths, ["root/a/e/y", "root/b/x", "root/a/c/x"]);
     assert_eq!(found.end, End::Done);
-    assert_eq!((points, browses), (2, 6));
+    assert_eq!((points, browses), (3, 6));
 }
 
 /// Gives each server message to `rewrite`, and makes the result of the Browse
