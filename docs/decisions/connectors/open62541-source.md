@@ -972,3 +972,11 @@
   (https://github.com/synnaxlabs/foundation/pull/3144#issuecomment-6246301508,
   2026-10-18 05:55 UTC). The test of `leaf.der` at `notAfter` is the test of item 1 of
   6230838999 that moves the clock past `notAfter`.
+  The client part of 1d is in `server.c`, which only a `sim` build compiles, so no
+  production build has a policy; PR 2 moves it into `shim.c`. The test helper takes an
+  enum of the three policies, and `shim_client_secure` aborts on an index past them.
+  Approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247742342,
+  2026-10-18 08:40 UTC). 1d meets the certificate part of #1992: each loop of a secure
+  test connection runs on the wall time that its test gives, and a test moves each side
+  past the `notAfter` of the certificate of the other side.
