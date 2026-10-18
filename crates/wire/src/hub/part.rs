@@ -1,9 +1,12 @@
 //! The parts of a frame after its head, in a read and in a write: the run of its ends,
 //! then its body when the last end is not 0.
 
-use types::frame::Draft;
+use std::sync::Arc;
 
-use super::{Error, ends};
+use types::frame::key_set::KeySet;
+use types::frame::{Draft, Layout};
+
+use super::{Due, Error, ends};
 use crate::common::{body, rest_of_run};
 
 /// The part of a frame that a stream expects next.
@@ -17,8 +20,10 @@ pub(super) enum Next {
     Body(body::Count),
 }
 
-/// A message of a run of ends or of a body, decoded.
+/// A message of a frame, decoded as far as [`Next`] can.
 pub(super) enum Part<'m> {
+    /// The message of a head, for the caller to decode.
+    Head(&'m [u8]),
     /// The ends of the message, each a place and an end. The run ends with the `last`.
     Ends { ends: ends::Iter<'m>, last: bool },
     /// The bytes of the message. The body ends with the `last`.
@@ -26,17 +31,13 @@ pub(super) enum Part<'m> {
 }
 
 impl Next {
-    /// Decodes `message` as the next message of the run of ends or of the body.
+    /// Decodes `message` as the next part of the frame.
     ///
     /// # Errors
     ///
     /// For a message of the run, the errors of [`ends::decode`], then [`Error::Run`]
     /// for more ends than remain. For a body message, [`Error::Empty`] and
     /// [`Error::Body`]. The part stays as it was.
-    ///
-    /// # Panics
-    ///
-    /// When a head is due.
     #[inline]
     pub(super) fn decode<'m>(&mut self, message: &'m [u8]) -> Result<Part<'m>, Error> {
         match *self {
@@ -57,7 +58,7 @@ impl Next {
                 bytes: message,
                 last: self.take(body, message.len())?,
             }),
-            Self::Head => panic!("a head is due, not a part of a frame"),
+            Self::Head => Ok(Part::Head(message)),
         }
     }
 
@@ -110,8 +111,104 @@ impl Next {
     }
 }
 
+/// The ends and the draft of the frame that arrives, from its run of ends to the last
+/// byte of its body.
+#[derive(Debug)]
+pub(super) struct Assembly {
+    set: Arc<KeySet>,
+    /// The entry and end of each series.
+    ends: Vec<(usize, usize)>,
+    /// The ends are whole and the draft is not given.
+    drafting: bool,
+    /// `None` in the body of a skipped frame.
+    draft: Option<Draft>,
+}
+
+impl Assembly {
+    /// Makes room for one end per place, so no frame allocates.
+    pub(super) fn new(set: Arc<KeySet>) -> Self {
+        Self {
+            ends: Vec::with_capacity(set.entries().len()),
+            set,
+            drafting: false,
+            draft: None,
+        }
+    }
+
+    pub(super) fn set(&self) -> &Arc<KeySet> {
+        &self.set
+    }
+
+    /// What the frame waits for, when the next body message starts at `body`.
+    #[inline]
+    pub(super) fn due(
+        &mut self,
+        body: Option<usize>,
+    ) -> Result<Due<'_>, types::frame::Error> {
+        if self.drafting {
+            return Layout::from_ends(&self.set, &self.ends).map(Due::Draft);
+        }
+        Ok(match (body, self.draft.as_mut()) {
+            (Some(start), Some(draft)) => Due::Body(rest(draft, start)),
+            _ => Due::Message,
+        })
+    }
+
+    /// Starts the frame of a head.
+    pub(super) fn head(&mut self) {
+        self.ends.clear();
+    }
+
+    /// Takes the ends of a run message. The draft is due after the `last`.
+    #[inline]
+    pub(super) fn ends(&mut self, ends: ends::Iter<'_>, last: bool) {
+        self.ends
+            .extend(ends.map(|(place, end)| (to_usize(place), to_usize(end))));
+        self.drafting = last;
+    }
+
+    /// Copies body bytes that start at `start` into the draft. A skipped frame drops
+    /// them.
+    #[inline]
+    pub(super) fn body(&mut self, start: usize, bytes: &[u8]) {
+        if let Some(draft) = self.draft.as_mut() {
+            prefix(rest(draft, start), bytes.len()).copy_from_slice(bytes);
+        }
+    }
+
+    /// Panics with `what` when a draft is due.
+    #[inline]
+    pub(super) fn check_undrafted(&self, what: &str) {
+        assert!(!self.drafting, "a draft is due before {what}");
+    }
+
+    /// Panics unless body bytes are due into a draft.
+    #[inline]
+    pub(super) fn check_body(&self) {
+        assert!(self.draft.is_some(), "a body is due");
+    }
+
+    /// Takes the draft that is due, or none for a skipped frame.
+    ///
+    /// # Panics
+    ///
+    /// When no draft is due.
+    #[inline]
+    pub(super) fn draft(&mut self, draft: Option<Draft>) {
+        assert!(self.drafting, "no draft is due");
+        self.drafting = false;
+        self.draft = draft;
+    }
+
+    /// The draft of the frame that arrived, `None` for a skipped frame.
+    #[inline]
+    pub(super) fn take(&mut self) -> Option<Draft> {
+        self.draft.take()
+    }
+}
+
 /// The body of `draft` from `start` on.
-pub(super) fn rest(draft: &mut Draft, start: usize) -> &mut [u8] {
+fn rest(draft: &mut Draft, start: usize) -> &mut [u8] {
     let body = draft.body_mut();
     let len = body.len();
     body.get_mut(start..).unwrap_or_else(|| {
@@ -122,7 +219,7 @@ pub(super) fn rest(draft: &mut Draft, start: usize) -> &mut [u8] {
 }
 
 /// The first `len` bytes of `rest`.
-pub(super) fn prefix(rest: &mut [u8], len: usize) -> &mut [u8] {
+fn prefix(rest: &mut [u8], len: usize) -> &mut [u8] {
     let room = rest.len();
     rest.get_mut(..len).unwrap_or_else(|| {
         panic!(
