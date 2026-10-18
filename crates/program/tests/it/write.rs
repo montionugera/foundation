@@ -1456,6 +1456,7 @@ fn ends_the_writer_at_an_extra_outcome_held_back_by_a_full_pool() {
             let held = fill(&received);
             frame(&mut writer, 1, 0, &[(2, 2)]).await;
             clock.sleep(Span::from_nanos(QUIET.nanos() * 3 / 2)).await;
+            let freed = clock.now() + QUIET;
             let free = clock.clone();
             tasks.spawn(async move {
                 free.sleep(QUIET).await;
@@ -1463,6 +1464,7 @@ fn ends_the_writer_at_an_extra_outcome_held_back_by_a_full_pool() {
             });
             let order = wire::hub::Error::Order { frame: 1, next: 2 };
             assert_eq!(writer.write(Time::Node).await, Err(Error::Reply(order)));
+            assert!(clock.now() >= freed, "the outcome waits for the pool");
             clock.sleep(QUIET).await;
         },
     );
