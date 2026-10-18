@@ -725,9 +725,10 @@ impl Shard {
     /// [`open_complete`](Self::open_complete) says. The shard appends the record of
     /// each named reader of the index, open or held, in parts of one entry each, which
     /// a restart restores; an ack moves the recorded position at the next tick
-    /// ([`advance`](Self::advance)). An open that appends its record takes no frame
-    /// until the commit that holds it, which [`woken`](Self::woken) names, and nor
-    /// does a takeover with the same hold of a session that waits.
+    /// ([`advance`](Self::advance)). Its reader takes no frame until each entry
+    /// appended before the open is durable, also when the open appends nothing, as a
+    /// takeover with the same hold does. At that commit, [`woken`](Self::woken) names
+    /// it when it reads from disk or takes a frame.
     ///
     /// # Errors
     ///
@@ -5586,6 +5587,12 @@ mod tests {
                 woken(shard)
             }
 
+            /// Waits for the commit and gives the readers to wake.
+            async fn commit(shard: &mut Shard) -> Vec<reader::Key> {
+                shard.committed().await.expect("the commit ends");
+                woken(shard)
+            }
+
             #[test]
             fn opens_no_named_reader_before_the_node_has_mesh_time() {
                 run(120, |test| async move {
@@ -5687,7 +5694,7 @@ mod tests {
                     let second = named(&mut shard, "a", "r");
                     assert_eq!(woken(&mut shard), []);
                     let woken = committed(&test, &mut shard, a, &[50]).await;
-                    assert_eq!(woken, []);
+                    assert_eq!(woken, [second.key.into()]);
                     let frames = caught_up(&mut shard, second.key, 0).await;
                     assert_eq!(frames, [seq(2, 1), seq(3, 1), seq(4, 1)]);
                     let woken = committed(&test, &mut shard, a, &[60]).await;
@@ -5786,7 +5793,7 @@ mod tests {
                     assert_eq!(taken(&mut shard, latest.key, 0), []);
                     // At the live tail it would take the next frame.
                     let woken = committed(&test, &mut shard, a, &[40]).await;
-                    assert_eq!(woken, []);
+                    assert_eq!(woken, [second.key.into()]);
                     let frames = caught_up(&mut shard, second.key, 0).await;
                     assert_eq!(frames, [seq(1, 1), seq(2, 1), seq(3, 1)]);
                 });
@@ -5820,7 +5827,7 @@ mod tests {
                     close(&mut shard, first.key.into());
                     test.clock.sleep(INSIDE).await;
                     let second = named(&mut shard, "a", "r");
-                    shard.committed().await.expect("the commit ends");
+                    assert_eq!(commit(&mut shard).await, [second.key.into()]);
                     let frames = caught_up(&mut shard, second.key, 0).await;
                     assert_eq!(frames, [seq(1, 1)]);
                 });
@@ -5839,7 +5846,7 @@ mod tests {
                     close(&mut shard, latest.key);
                     test.clock.sleep(INSIDE).await;
                     let second = named(&mut shard, "a", "r");
-                    shard.committed().await.expect("the commit ends");
+                    assert_eq!(commit(&mut shard).await, [second.key.into()]);
                     let frames = caught_up(&mut shard, second.key, 0).await;
                     assert_eq!(frames, [seq(1, 1)]);
                 });
@@ -5860,7 +5867,7 @@ mod tests {
                         last = named(&mut shard, "a", "r").key;
                     }
                     let woken = committed(&test, &mut shard, a, &[30]).await;
-                    assert_eq!(woken, []);
+                    assert_eq!(woken, [last.into()]);
                     let frames = caught_up(&mut shard, last, 0).await;
                     assert_eq!(frames, [seq(1, 1), seq(2, 1)]);
                 });
@@ -5903,7 +5910,7 @@ mod tests {
                             Charge::Whole,
                         )
                         .expect("synced");
-                    shard.committed().await.expect("the commit ends");
+                    assert_eq!(commit(&mut shard).await, [second.key.into()]);
                     let (frames, end, reads) = read(&mut shard, second.key).await;
                     assert!(frames.is_empty() && reads == 0, "{reads} reads");
                     assert!(matches!(end, reader::Next::Empty), "{end:?}");
@@ -5951,7 +5958,7 @@ mod tests {
                     committed(&test, &mut shard, a, &[40]).await;
                     assert_eq!(stored(&shard, Slot::new(0), Path::Live), 4);
                     let second = named(&mut shard, "a", "r");
-                    shard.committed().await.expect("the commit ends");
+                    assert_eq!(commit(&mut shard).await, [second.key.into()]);
                     let frames = caught_up(&mut shard, second.key, 0).await;
                     assert_eq!(frames, [seq(1, 1), seq(3, 1)]);
                 });
@@ -5970,7 +5977,7 @@ mod tests {
                     lose(&test, &mut shard, b, 40);
                     committed(&test, &mut shard, b, &[50]).await;
                     let second = named(&mut shard, "a", "r");
-                    shard.committed().await.expect("the commit ends");
+                    assert_eq!(commit(&mut shard).await, [second.key.into()]);
                     let (frames, end, reads) = read(&mut shard, second.key).await;
                     assert_eq!((ranges(&frames, 0), reads), (vec![seq(3, 1)], 3));
                     assert_eq!(frames[0].series(0), Some(&encoded(&[50])[..]));
@@ -5992,7 +5999,7 @@ mod tests {
                     committed(&test, &mut shard, a, &[60]).await;
                     assert_eq!(stored(&shard, Slot::new(0), Path::Live), 5);
                     let second = named(&mut shard, "a", "r");
-                    shard.committed().await.expect("the commit ends");
+                    assert_eq!(commit(&mut shard).await, [second.key.into()]);
                     let frames = caught_up(&mut shard, second.key, 0).await;
                     assert_eq!(frames, [seq(1, 1), seq(4, 1)]);
                     close(&mut shard, other.key.into());
@@ -6023,7 +6030,7 @@ mod tests {
                             Charge::Whole,
                         )
                         .expect("synced");
-                    shard.committed().await.expect("the commit ends");
+                    assert_eq!(commit(&mut shard).await, [second.key.into()]);
                     let (frames, end, _) = read(&mut shard, second.key).await;
                     assert_eq!(ranges(&frames, 0), [seq(1, 1)]);
                     assert!(matches!(end, reader::Next::Empty), "{end:?}");
@@ -6055,7 +6062,7 @@ mod tests {
                     shard.committed().await.expect("the commit ends");
                     assert_eq!(stored(&shard, Slot::new(0), Path::Live), 2);
                     let second = named(&mut shard, "a", "r");
-                    shard.committed().await.expect("the commit ends");
+                    assert_eq!(commit(&mut shard).await, [second.key.into()]);
                     let frames = caught_up(&mut shard, second.key, 0).await;
                     assert_eq!(frames, [seq(1, 1)]);
                 });
@@ -6092,7 +6099,7 @@ mod tests {
                     held(&test, &mut shard, a).await;
                     committed(&test, &mut shard, a, &[20, 30]).await;
                     let second = named(&mut shard, "a", "r");
-                    shard.committed().await.expect("the commit ends");
+                    assert_eq!(commit(&mut shard).await, [second.key.into()]);
                     let reader::Next::Disk(disk) = shard.take(second.key.into()) else {
                         panic!("the reader reads from disk");
                     };
@@ -6131,7 +6138,7 @@ mod tests {
                             Charge::Whole,
                         )
                         .expect("synced");
-                    shard.committed().await.expect("the commit ends");
+                    assert_eq!(commit(&mut shard).await, [second.key.into()]);
                     let set = disk_set(Slot::new(0));
                     let (mut frames, mut reads) = (Vec::new(), 0);
                     let end = loop {
@@ -6181,7 +6188,7 @@ mod tests {
                         }
                     }
                     let second = named(&mut shard, "a", "r");
-                    shard.committed().await.expect("the commit ends");
+                    assert_eq!(commit(&mut shard).await, [second.key.into()]);
                     let (frames, end, reads) = read(&mut shard, second.key).await;
                     let all: Vec<_> = (0..150).map(|n| seq(n * 300, 300)).collect();
                     assert_eq!((ranges(&frames, 0), reads), (all, 2));
@@ -6301,16 +6308,16 @@ mod tests {
                     };
                     restart(190, before, async |_, shard: &mut Shard| {
                         let a = open(shard, "a");
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(shard).await, [a.into()]);
                         assert_eq!(caught_up(shard, a, 0).await, [seq(1, 1)]);
                         let b = open(shard, "b");
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(shard).await, [b.into()]);
                         assert_eq!(
                             caught_up(shard, b, 0).await,
                             [seq(0, 1), seq(1, 1)]
                         );
                         let c = open(shard, "c");
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(shard).await, []);
                         assert_eq!(caught_up(shard, c, 0).await, []);
                     });
                 }
@@ -6323,7 +6330,7 @@ mod tests {
                     };
                     restart(191, before, async |_, shard: &mut Shard| {
                         let b = open(shard, "b");
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(shard).await, [b.into()]);
                         assert_eq!(
                             caught_up(shard, b, 0).await,
                             [seq(0, 1), seq(1, 1)]
@@ -6335,7 +6342,7 @@ mod tests {
                 fn writes_an_acked_position_only_at_the_tick() {
                     restart(192, acked, async |_, shard: &mut Shard| {
                         let a = open(shard, "a");
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(shard).await, [a.into()]);
                         assert_eq!(
                             caught_up(shard, a, 0).await,
                             [seq(0, 1), seq(1, 1)]
@@ -6354,7 +6361,7 @@ mod tests {
                     };
                     restart(193, before, async |_, shard: &mut Shard| {
                         let a = open(shard, "a");
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(shard).await, [a.into()]);
                         assert_eq!(caught_up(shard, a, 0).await, [seq(1, 1)]);
                     });
                 }
@@ -6367,7 +6374,7 @@ mod tests {
                     };
                     restart(194, before, async |_, shard: &mut Shard| {
                         let a = open(shard, "a");
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(shard).await, [a.into()]);
                         assert_eq!(caught_up(shard, a, 0).await, [seq(1, 1)]);
                     });
                 }
@@ -6383,7 +6390,7 @@ mod tests {
                     };
                     restart(195, before, async |_, shard: &mut Shard| {
                         let a = open(shard, "a");
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(shard).await, []);
                         assert_eq!(caught_up(shard, a, 0).await, []);
                     });
                 }
@@ -6416,7 +6423,7 @@ mod tests {
                             test.clock.sleep(Span::from_nanos(1)).await;
                         }
                         let a = open(&mut shard, "a");
-                        shard.committed().await.expect("the commit ends");
+                        commit(&mut shard).await;
                         assert_eq!(caught_up(&mut shard, a, 0).await, [seq(1, 1)]);
                     })
                     .expect("the run after the cut ends");
@@ -6585,7 +6592,7 @@ mod tests {
                         test.clock.sleep(Span::from_nanos(500_000_000)).await;
                         let mut shard = test.shard(AREA).await;
                         let a = open_with(&mut shard, hold).expect("opens").key;
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(&mut shard).await, [a.into()]);
                         assert_eq!(caught_up(&mut shard, a, 0).await, [seq(0, 1)]);
                     })
                     .expect("the run after the cut ends");
@@ -6642,7 +6649,7 @@ mod tests {
                         test.clock.sleep(Span::from_nanos(3_000_000_000)).await;
                         let mut shard = test.shard(AREA).await;
                         let a = open_held(&mut shard);
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(&mut shard).await, [a.into()]);
                         assert_eq!(caught_up(&mut shard, a, 0).await, [seq(1, 1)]);
                     })
                     .expect("the run after the cut ends");
@@ -6693,7 +6700,7 @@ mod tests {
                         test.clock.sleep(Span::from_nanos(3_000_000_000)).await;
                         let mut shard = test.shard(AREA).await;
                         let a = open_held(&mut shard);
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(&mut shard).await, [a.into()]);
                         assert_eq!(caught_up(&mut shard, a, 0).await, [seq(1, 1)]);
                     })
                     .expect("the run after the cut ends");
@@ -6723,7 +6730,7 @@ mod tests {
                         let a = open(&mut shard, "a");
                         assert_eq!(
                             shard.buffer.durable_at(),
-                            shard.buffer.commits() + 2,
+                            Some(shard.buffer.commits() + 2),
                             "a sync runs, and the entry waits for the next commit"
                         );
                         first.await.expect("the first commit ends");
@@ -6782,7 +6789,7 @@ mod tests {
                         assert_eq!(taken(&mut shard, a.into(), 0), []);
                         shard.committed().await.expect("the commit ends");
                         assert_eq!(woken(&mut shard), [a.into()]);
-                        assert_eq!(taken(&mut shard, a.into(), 0), [seq(2, 1)]);
+                        assert_eq!(caught_up(&mut shard, a, 0).await, [seq(2, 1)]);
                     })
                     .expect("the first run ends");
                     sim.crash(&node, sim::Crash::Power);
@@ -6791,7 +6798,7 @@ mod tests {
                         test.clock.sleep(Span::from_nanos(3_000_000_000)).await;
                         let mut shard = test.shard(AREA).await;
                         let a = open_held(&mut shard);
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(&mut shard).await, [a.into()]);
                         assert_eq!(caught_up(&mut shard, a, 0).await, [seq(2, 1)]);
                     })
                     .expect("the run after the cut ends");
@@ -6830,7 +6837,7 @@ mod tests {
                         test.clock.sleep(Span::from_nanos(3_000_000_000)).await;
                         let mut shard = test.shard(AREA).await;
                         let a = open_held(&mut shard);
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(&mut shard).await, [a.into()]);
                         assert_eq!(caught_up(&mut shard, a, 0).await, [seq(1, 1)]);
                     })
                     .expect("the run after the cut ends");
@@ -6878,9 +6885,78 @@ mod tests {
                         shard.committed().await.expect("the commit ends");
                         let replaced = open_held(&mut shard);
                         assert_eq!(taken(&mut shard, replaced.into(), 0), []);
-                        let _a = open_held(&mut shard);
+                        let a = open_held(&mut shard);
+                        assert_eq!(commit(&mut shard).await, [a.into()]);
+                    });
+                }
+
+                #[test]
+                fn waits_at_a_takeover_with_its_hold_for_a_write_before_it() {
+                    run(707, |test| async move {
+                        let set = two_indexes();
+                        let mut shard = test.shard(AREA).await;
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        let a = open_held(&mut shard);
+                        committed(&test, &mut shard, w, &[10, 20]).await;
+                        assert_eq!(
+                            taken(&mut shard, a.into(), 0),
+                            [seq(0, 1), seq(1, 1)]
+                        );
+                        shard.ack(a, live(1)).expect("forward");
+                        write(&test, &mut shard, w, &[30]);
+                        let a = open_held(&mut shard);
+                        assert_eq!(caught_up(&mut shard, a, 0).await, []);
+                        assert_eq!(commit(&mut shard).await, [a.into()]);
+                        assert_eq!(
+                            caught_up(&mut shard, a, 0).await,
+                            [seq(1, 1), seq(2, 1)]
+                        );
+                    });
+                }
+
+                #[test]
+                fn reopens_below_frames_written_with_no_reader_and_reads_each_after_their_commit()
+                 {
+                    run(708, |test| async move {
+                        let set = two_indexes();
+                        let mut shard = test.shard(AREA).await;
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        let a = open_held(&mut shard);
+                        committed(&test, &mut shard, w, &[10, 20]).await;
+                        assert_eq!(
+                            taken(&mut shard, a.into(), 0),
+                            [seq(0, 1), seq(1, 1)]
+                        );
+                        shard.ack(a, live(2)).expect("forward");
+                        shard.close_reader(a.into());
                         shard.committed().await.expect("the commit ends");
-                        assert_eq!(woken(&mut shard), []);
+                        write(&test, &mut shard, w, &[30, 40]);
+                        let a = open_held(&mut shard);
+                        assert_eq!(caught_up(&mut shard, a, 0).await, []);
+                        assert_eq!(commit(&mut shard).await, [a.into()]);
+                        assert_eq!(caught_up(&mut shard, a, 0).await, [seq(2, 2)]);
+                        assert_eq!(caught_up(&mut shard, a, 0).await, []);
+                    });
+                }
+
+                #[test]
+                fn reads_at_once_after_a_takeover_with_no_entry_that_waits() {
+                    run(706, |test| async move {
+                        let set = two_indexes();
+                        let mut shard = test.shard(AREA).await;
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        let a = open_held(&mut shard);
+                        committed(&test, &mut shard, w, &[10, 20]).await;
+                        assert_eq!(
+                            taken(&mut shard, a.into(), 0),
+                            [seq(0, 1), seq(1, 1)]
+                        );
+                        shard.ack(a, live(1)).expect("forward");
+                        let a = open_held(&mut shard);
+                        assert_eq!(caught_up(&mut shard, a, 0).await, [seq(1, 1)]);
                     });
                 }
 
@@ -6898,7 +6974,7 @@ mod tests {
                     };
                     restart(202, before, async |_, shard: &mut Shard| {
                         let a = open(shard, "a");
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(shard).await, [a.into()]);
                         assert_eq!(
                             caught_up(shard, a, 0).await,
                             [seq(0, 1), seq(1, 1)]
@@ -6920,7 +6996,7 @@ mod tests {
                     };
                     restart(197, before, async |_, shard: &mut Shard| {
                         let a = open(shard, "a");
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(shard).await, [a.into()]);
                         assert_eq!(caught_up(shard, a, 0).await, [seq(1, 1)]);
                     });
                 }
@@ -7023,7 +7099,7 @@ mod tests {
                         for n in 0..20 {
                             let reader = open_longest(shard, longest(n));
                             let reader = reader.expect("opens").key;
-                            shard.committed().await.expect("the commit ends");
+                            commit(shard).await;
                             let read = caught_up(shard, reader, 0).await;
                             let expected = if n % 2 == 1 {
                                 &[seq(1, 1)][..]
@@ -7134,12 +7210,12 @@ mod tests {
                     };
                     restart(207, before, async |_, shard: &mut Shard| {
                         let k = open_longest(shard, longest(0)).expect("opens").key;
-                        shard.committed().await.expect("the commit ends");
+                        commit(shard).await;
                         assert_eq!(caught_up(shard, k, 0).await, [], "k has no record");
                         for n in 1..8 {
                             let reader = open_longest(shard, longest(n));
                             let reader = reader.expect("opens").key;
-                            shard.committed().await.expect("the commit ends");
+                            commit(shard).await;
                             let read = caught_up(shard, reader, 0).await;
                             let expected = if n < 7 {
                                 &[seq(0, 1), seq(1, 1)][..]
@@ -7188,7 +7264,7 @@ mod tests {
                     restart(208, append_part_0_only, async |_, shard: &mut Shard| {
                         let reader =
                             open_longest(shard, longest(7)).expect("opens").key;
-                        shard.committed().await.expect("the commit ends");
+                        commit(shard).await;
                         let read = caught_up(shard, reader, 0).await;
                         assert_eq!(
                             read,
@@ -7207,7 +7283,7 @@ mod tests {
                     restart(211, before, async |_, shard: &mut Shard| {
                         let reader =
                             open_longest(shard, longest(7)).expect("opens").key;
-                        shard.committed().await.expect("the commit ends");
+                        commit(shard).await;
                         let read = caught_up(shard, reader, 0).await;
                         assert_eq!(
                             read,
@@ -7423,7 +7499,7 @@ mod tests {
                         for n in [0, 7] {
                             let reader = open_longest(shard, longest(n));
                             let reader = reader.expect("opens").key;
-                            shard.committed().await.expect("the commit ends");
+                            commit(shard).await;
                             assert_eq!(caught_up(shard, reader, 0).await, [], "{n}");
                         }
                     });
@@ -7563,7 +7639,7 @@ mod tests {
                     };
                     restart(204, before, async |_, shard: &mut Shard| {
                         let a = open(shard, "a");
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(shard).await, [a.into()]);
                         assert_eq!(caught_up(shard, a, 0).await, [seq(1, 1)]);
                     });
                 }
@@ -7598,7 +7674,7 @@ mod tests {
                     };
                     restart(211, before, async |_, shard: &mut Shard| {
                         let a = open(shard, "a");
-                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(commit(shard).await, [a.into()]);
                         assert_eq!(
                             caught_up(shard, a, 0).await,
                             [seq(0, 1), seq(1, 1)]
@@ -7671,7 +7747,7 @@ mod tests {
                         let mut caught = Vec::new();
                         for n in 0..7 {
                             let key = open(&mut shard, n).expect("opens");
-                            shard.committed().await.expect("the commit ends");
+                            commit(&mut shard).await;
                             caught.push(caught_up(&mut shard, key, 0).await.len());
                         }
                         assert_eq!(caught, got, "each opened reader gets them again");
@@ -7712,7 +7788,7 @@ mod tests {
                     restart(210, before, async move |_, shard: &mut Shard| {
                         for reader in readers() {
                             let key = open(shard, reader);
-                            shard.committed().await.expect("the commit ends");
+                            assert_eq!(commit(shard).await, [key.into()]);
                             assert_eq!(
                                 caught_up(shard, key, 0).await,
                                 [seq(0, 1), seq(1, 1)]

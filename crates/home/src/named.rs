@@ -149,10 +149,9 @@ impl Parts {
     }
 
     /// Appends the parts that `records` change, as [`append`](Self::append) does,
-    /// for a named open of `reader`, whose record `records` hold. Returns the count of
-    /// [`Buffer::commits`] at which the entry that holds its record is durable, or
-    /// `None` when the part of its record, or a part before it, found no block or no
-    /// room.
+    /// for a named open of `reader`, whose record `records` hold. Returns whether it
+    /// appended the part of its record and each part before it: `false` when one found
+    /// no block or no room.
     ///
     /// # Errors
     ///
@@ -167,10 +166,9 @@ impl Parts {
         target: state::Target<'_>,
         records: &[Record],
         reader: &delivery::named::Key,
-    ) -> Result<Option<u64>, Full> {
+    ) -> Result<bool, Full> {
         let appended = self.write(target, records)?;
-        let recorded = self.recorded(reader, appended);
-        Ok(recorded.then(|| target.buffer.durable_at()))
+        Ok(self.recorded(reader, appended))
     }
 
     /// Appends each part whose records differ from the ones that its last entry holds,

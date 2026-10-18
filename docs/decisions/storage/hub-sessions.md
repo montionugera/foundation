@@ -570,3 +570,10 @@
   https://github.com/synnaxlabs/foundation/issues/2989#issuecomment-6230866460, and
   2026-10-17T07:50:29Z:
   https://github.com/synnaxlabs/foundation/pull/3019#issuecomment-6231397750).
+  Amended (#2884): the one commit wait of a complete session is at its open.
+  `Readers::open` takes `until`, the commit count that the session waits for, and
+  `Readers::release(durable, commits)` ends the wait. A read that reaches the durable
+  end below the released end is a defect of the caller, and `reached` panics
+  (`laptop.architect`, 2026-10-18T09:41:10Z:
+  https://github.com/synnaxlabs/foundation/issues/2978#issuecomment-6248353319).
+  Supersedes "The commit wait keeps the whole mark" above.

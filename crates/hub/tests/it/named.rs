@@ -297,6 +297,33 @@ fn gives_a_held_named_reader_the_gap_of_a_run_lost_while_another_is_open() {
 }
 
 #[test]
+fn wakes_a_reopened_named_complete_reader_at_the_commit_of_its_record() {
+    run(47, |test| async move {
+        let open = named("a", "r", Mode::Complete, Span::SECOND);
+        let mut first = test.hub.reader(open).await.expect("opens");
+        let mut writer = test.writer("w", &["value"]).await;
+        write(&mut writer, &[test.now()], &[7]);
+        let position = first.next().await.expect("a frame").position();
+        first.ack(position);
+        drop(first);
+        test.clock.sleep(SETTLE).await;
+        write(&mut writer, &[test.now()], &[8]);
+        let open = named("a", "r", Mode::Complete, Span::SECOND);
+        let mut reader = test.hub.reader(open).await.expect("opens");
+        let mut next = pin!(reader.next());
+        let (polled, woken) = poll_flagged(next.as_mut());
+        assert!(polled.is_pending(), "the record waits for its commit");
+        test.clock.sleep(SETTLE).await;
+        assert!(
+            woken.0.load(Ordering::Relaxed),
+            "the commit wakes the reader"
+        );
+        let received = next.await.expect("a frame");
+        assert_eq!(samples(&received, 2), [8]);
+    });
+}
+
+#[test]
 fn resumes_each_later_open_of_a_named_complete_reader_at_the_same_position() {
     run(17, |test| async move {
         let open = named("a", "r", Mode::Complete, Span::SECOND);
