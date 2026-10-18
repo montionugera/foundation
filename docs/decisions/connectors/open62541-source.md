@@ -953,8 +953,9 @@
   other. `shim.c` defines each symbol that the rest of the copy names from a left-out
   file to panic with its name and abort, and a test calls each one. A test fails on
   another policy file in `sources.txt`. A test fails when the production code names a
-  policy or a certificate group, or a function `UA_CertificateUtils_*`, other than at
-  its stub in `shim.c`, and a test fails when the objects of `shim.c` or `server.c` name
+  policy or a certificate group, or a function `UA_CertificateUtils_*`, other than the
+  three policies in `POLICIES` of `shim.c`, `UA_CertificateGroup_Memorystore`, the two
+  functions that the client calls, and the stubs of `shim.c`, and a test fails when the objects of `shim.c` or `server.c` name
   aws-lc or a symbol of `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps
   no state: the copy removes its `static` flag, which it wrote with no lock and which
   guarded only the calls for OpenSSL before 1.1, and the build fails when
@@ -1015,7 +1016,9 @@
   `libcrypto` of aws-lc in `shim.c`, which only the OpenSSL plugins of the copy
   include; our own DER parser; and a Rust X.509 crate, a second parse of the
   certificate (`laptop.architect-2`, 2026-10-18 20:53 UTC,
-  https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6255016583).
+  https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6255016583, as
+  fixed in
+  https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6255409915).
   Supersedes the policy index of the test helper and its abort in
   https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247742342: the
   sim server offers an ordered list of policies, and each secure test connects

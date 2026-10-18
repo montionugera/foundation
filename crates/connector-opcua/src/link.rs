@@ -1644,19 +1644,37 @@ fn stub(line: &str) -> Option<&str> {
         .or_else(named)
 }
 
+/// The three policies that the production code adds.
+const POLICIES: [&str; 3] = [
+    "UA_SecurityPolicy_Basic256Sha256",
+    "UA_SecurityPolicy_Aes128Sha256RsaOaep",
+    "UA_SecurityPolicy_Aes256Sha256RsaPss",
+];
+
 /// Checks the reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
-/// open62541`: the production code names no ECC policy, and no function or field that
-/// adds policies of its own choice, other than at the stubs of `shim.c` that abort.
+/// open62541`: the production code names no security policy, certificate group, or
+/// certificate function, and no function or field that adds policies of its own
+/// choice, other than [`POLICIES`] in `POLICIES` of `shim.c`, the memory store, the
+/// two certificate functions of the client, and the stubs of `shim.c` that abort.
 #[test]
-fn the_production_code_names_no_ecc_policy() {
+fn the_production_code_adds_only_the_three_policies() {
+    let allowed = [
+        "UA_CertificateGroup_Memorystore",
+        "UA_CertificateUtils_checkKeyPair",
+        "UA_CertificateUtils_getApplicationUri",
+    ];
     let policy = |name: &str| {
-        name.starts_with("UA_SecurityPolicy_Ecc")
+        (name.starts_with("UA_SecurityPolicy_")
+            || name.starts_with("UA_CertificateGroup_")
+            || name.starts_with("UA_CertificateUtils_")
             || [
                 "UA_ClientConfig_setDefaultEncryption",
                 "UA_ClientConfig_setAuthenticationCert",
                 "authSecurityPolicies",
             ]
-            .contains(&name)
+            .contains(&name))
+            && !POLICIES.contains(&name)
+            && !allowed.contains(&name)
     };
     let shim = root().join("src/shim.c");
     let text = std::fs::read_to_string(&shim).unwrap();
@@ -1666,13 +1684,30 @@ fn the_production_code_names_no_ecc_policy() {
         .collect();
     let names: std::collections::BTreeSet<_> = stubs.iter().map(|(_, n)| *n).collect();
     let refused = REFUSED.iter().filter(|name| policy(name));
-    let expected: std::collections::BTreeSet<_> = refused.copied().collect();
+    let mut expected: std::collections::BTreeSet<_> = refused.copied().collect();
+    expected.extend([
+        "UA_CertificateGroup_Filestore",
+        "UA_SecurityPolicy_Filestore",
+    ]);
     assert_eq!(names, expected);
     let at_stubs: Vec<_> = stubs
         .iter()
         .map(|(line, name)| format!("{}:{line}: {name}", shim.display()))
         .collect();
     assert_eq!(named_in_production(&root(), policy), at_stubs);
+    let mut lines = (1..).zip(text.lines());
+    let first = lines
+        .find(|(_, text)| text.contains("POLICIES[] = {"))
+        .unwrap()
+        .0;
+    let at_list: Vec<_> = (first..)
+        .zip(POLICIES)
+        .map(|(line, name)| format!("{}:{line}: {name}", shim.display()))
+        .collect();
+    assert_eq!(
+        named_in_production(&root(), |name| POLICIES.contains(&name)),
+        at_list
+    );
 }
 
 /// When this test binary links the address sanitizer, the sanitizer instruments the C
