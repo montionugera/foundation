@@ -17,7 +17,7 @@ mod recorded;
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
@@ -31,23 +31,33 @@ fn seen() {
     tracing::info!("seen");
 }
 
-/// A log that wants no event. Its first interest call takes 200 ms, as a thread that
-/// the OS takes off its core, or a filter that waits on its lock, does.
+/// A log that wants no event. Its first interest call waits for the test to make a
+/// second log, at most 200 ms, as a thread that the OS takes off its core does.
 struct Slow {
     /// Tells the test that the first interest call started.
     met: Mutex<Option<mpsc::Sender<()>>>,
+    /// Tells the first interest call that the second log exists.
+    made: Mutex<mpsc::Receiver<()>>,
     slowed: AtomicBool,
 }
 
 impl Subscriber for Slow {
-    #[expect(clippy::disallowed_methods, reason = "the delay is of an OS thread")]
+    #[expect(clippy::disallowed_methods, reason = "the wait is of an OS thread")]
     fn register_callsite(&self, meta: &'static Metadata<'static>) -> Interest {
         if meta.target() == module_path!() && !self.slowed.swap(true, Ordering::SeqCst)
         {
             if let Some(met) = self.met.lock().unwrap().take() {
                 met.send(()).unwrap();
             }
-            thread::sleep(Duration::from_millis(200));
+            // With the read lock held here, the second log waits for this call, and
+            // this wait times out.
+            let made = self.made.lock().unwrap();
+            let waited = made.recv_timeout(Duration::from_millis(200));
+            assert_ne!(
+                waited,
+                Err(RecvTimeoutError::Disconnected),
+                "the test sends"
+            );
         }
         Interest::never()
     }
@@ -76,25 +86,30 @@ impl Subscriber for Slow {
 #[test]
 #[expect(clippy::disallowed_methods, reason = "the race is with an OS thread")]
 fn a_log_gets_an_event_of_a_callsite_that_another_thread_meets_as_the_sim_starts() {
-    let (met, waits) = mpsc::channel();
+    let (met, meets) = mpsc::channel();
+    let (made, makes) = mpsc::channel();
     let slow = tracing::Dispatch::new(Slow {
         met: Mutex::new(Some(met)),
+        made: Mutex::new(makes),
         slowed: AtomicBool::new(false),
     });
     let other = {
         let slow = slow.clone();
         thread::spawn(move || tracing::dispatcher::with_default(&slow, seen))
     };
-    waits.recv().unwrap();
+    meets
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the other thread meets the callsite");
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let log = Log::default();
+    let logged = node.threads().logged(log.dispatch());
+    made.send(()).unwrap();
     let clock = node.clock();
-    let started =
-        (node.threads().logged(log.dispatch())).start("logged", move || async move {
-            clock.sleep(Span::SECOND).await;
-            seen();
-        });
+    let started = logged.start("logged", move || async move {
+        clock.sleep(Span::SECOND).await;
+        seen();
+    });
     drop(started.expect("the thread starts"));
     other.join().unwrap();
     assert_eq!(sim.run(), Ok(()));
