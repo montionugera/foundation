@@ -807,6 +807,18 @@ fn gives_no_default_for_a_refused_name_outside_the_start() {
             "Give another name"
         )]
     );
+    let at_start = [named("S", "t1", "plc")];
+    let problems = self::problems(
+        added_from(&[PLANT], &path("S"), &at_start).expect_err("in use"),
+    );
+    assert_eq!(
+        problems,
+        vec![problem(
+            "config.duplicate-name",
+            "the name \"plc\" of the point at \"S\" is in use in the files",
+            "Give another name"
+        )]
+    );
 }
 
 #[test]

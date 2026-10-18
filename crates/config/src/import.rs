@@ -148,12 +148,11 @@ pub fn add(
                 let open: Vec<&Pick<'_>> = open.iter().map(|&at| &left[at]).collect();
                 self::refused(&open, &taken).is_empty()
             });
-        let (open, names) = match kept {
-            Some((open, _, names)) => (open, names),
-            None => {
-                let none = vec![None; open.len()];
-                (open, none)
-            }
+        let (open, names) = if let Some((open, _, names)) = kept {
+            (open, names)
+        } else {
+            let none = vec![None; open.len()];
+            (open, none)
         };
         return Err(fixed(refused, &open, &names));
     }
@@ -200,9 +199,12 @@ fn open(
         .collect()
 }
 
-/// The place of each pick of `picks` that is not present, the index, and the name of
-/// each of those picks, or the path of a pick that is not present, with no given name,
-/// that is not under `start`.
+/// The place of each pick that is not present, the index, and the name of each of
+/// those picks.
+type Run = (Vec<usize>, Name, Vec<Option<Name>>);
+
+/// The [`Run`] of `picks`, or the path of a pick that is not present, with no given
+/// name, that is not under `start`.
 fn named<'p>(
     connector: &Name,
     start: &Path,
@@ -210,7 +212,7 @@ fn named<'p>(
     tags: &BTreeSet<String>,
     taken: &[Name],
     existing: Option<&Name>,
-) -> Result<(Vec<usize>, Name, Vec<Option<Name>>), &'p Path> {
+) -> Result<Run, &'p Path> {
     // A pick that ends `Unnamed` makes no later pick of its tag present, and opening
     // such a pick can leave another `Unnamed`, so name until no pick changes.
     let mut unnamed = BTreeSet::new();
