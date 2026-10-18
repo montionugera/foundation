@@ -531,15 +531,14 @@ impl Table {
         Ok(self.get(kind, None)?.tag(block))
     }
 
-    /// Browses with `kind` as `query` asks.
-    pub(crate) async fn browse(
-        &self,
+    /// Starts a browse with `kind` as `query` asks.
+    pub(crate) fn browse<'a>(
+        &'a self,
         kind: &str,
-        ctx: &browse::Context<'_>,
-        query: &browse::Query,
-    ) -> Result<browse::Found, Error> {
-        let kind = self.get(kind, None).map_err(Error::Config)?;
-        kind.browse(ctx, query).await
+        ctx: &'a browse::Context<'a>,
+        query: &'a browse::Query,
+    ) -> Result<Browse<'a>, Vec<Diagnostic>> {
+        Ok(self.get(kind, None)?.browse(ctx, query))
     }
 
     /// Parses `config` and starts one run of `kind` with `ctx`.
@@ -777,7 +776,8 @@ pub(crate) fn config_error(code: Code, error: &dyn fmt::Display, fix: &str) -> E
 pub(crate) type Run<'a> = Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>;
 
 /// One browse of a kind.
-type Browse<'a> = Pin<Box<dyn Future<Output = Result<browse::Found, Error>> + 'a>>;
+pub(crate) type Browse<'a> =
+    Pin<Box<dyn Future<Output = Result<browse::Found, Error>> + 'a>>;
 
 /// A [`Kind`] with its config type erased, so one table holds every kind.
 trait Erased: Send + Sync {
