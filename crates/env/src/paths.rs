@@ -334,14 +334,15 @@ impl Paths {
                     !limit.folders.iter().zip(&now.folders).any(passes)
                 })
         {
+            let path = walk::path(steps, index);
             let replaced = limit.folders.iter().any(|(dir, was)| {
                 keys.contains(was)
-                    || step.path.starts_with(dir)
-                    || !matches!(ask, Ask::Hold(_)) && dir.starts_with(&step.path)
+                    || path.starts_with(dir)
+                    || !matches!(ask, Ask::Hold(_)) && dir.starts_with(&path)
                     || self.walk(dir).into_end().is_ok_and(|to| {
                         // A host that ignores case reaches the folder by a name
                         // in other case, which only the key tells.
-                        step.path.starts_with(&to.path)
+                        path.starts_with(&to.path)
                             || to.own.is_some_and(|key| keys.contains(&key))
                     })
             });
