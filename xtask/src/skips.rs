@@ -125,12 +125,14 @@ impl Runners {
         Self(self.0 & !other.0)
     }
 
-    /// The OSes of the runners, in the order of `RUNNERS`.
+    /// The OSes of the runners, in the order of `RUNNERS`. The runner of `ARM` is
+    /// Linux.
     fn oses(self) -> Vec<&'static str> {
+        let arm = self.0 >> RUNNERS.len() & 1 == 1;
         RUNNERS
             .iter()
             .enumerate()
-            .filter(|(i, _)| self.0 >> i & 1 == 1)
+            .filter(|(i, runner)| self.0 >> i & 1 == 1 || arm && runner.os == "Linux")
             .map(|(_, runner)| runner.os)
             .collect()
     }
@@ -1076,8 +1078,8 @@ mod tests {
         let reasons_rs = format!("{skips}/reasons.rs");
         expected.extend(["comma", "or", "slash"].map(|i| refused(&reasons_rs, i)));
         let items = [
-            "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n::X::o",
-            "n::Y::p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
+            "a", "aa", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
+            "n::X::o", "n::Y::p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
         ];
         let refused_rs = format!("{skips}/refused.rs");
         expected.extend(items.map(|i| refused(&refused_rs, i)));
@@ -1119,6 +1121,8 @@ mod tests {
             gated(&format!("{lib} apple"), "Linux"),
             gated(&format!("{lib} apple"), "Windows"),
             gated(&format!("{lib} intel"), "macOS"),
+            gated(&format!("{lib} falsemac"), "Linux"),
+            gated(&format!("{lib} falsemac"), "Windows"),
             gated(&format!("{lib} colon"), "Linux"),
             gated(&format!("{lib} colon"), "macOS"),
             gated(&format!("{lib} colon"), "Windows"),

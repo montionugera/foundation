@@ -166,3 +166,7 @@ m! {
 cfg_if::cfg_if! {
     if #[doc(hidden)] {}
 }
+/// Only macOS: a case.
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn falsemac() {}
