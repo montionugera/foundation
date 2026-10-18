@@ -10,8 +10,9 @@ const SUITE: &CStr = c"
 import io, sys, unittest
 sys.modules['foundation._native'] = native
 sys.path.insert(0, str(package))
+sys.path.insert(0, str(top))
 stream = io.StringIO()
-suite = unittest.TestLoader().discover(start, pattern, top)
+suite = unittest.TestLoader().loadTestsFromName(module)
 result = unittest.TextTestRunner(stream, verbosity=2).run(suite)
 passed = result.wasSuccessful() and result.testsRun > len(result.skipped)
 report = stream.getvalue()
@@ -43,6 +44,7 @@ fn the_python_suite_passes() {
 fn a_file_that_runs_no_test_fails() {
     let files = [
         ("more/test_more.py", false),
+        ("more/test_none.py", false),
         ("test_some.py", false),
         ("test_none.py", false),
         ("test_skip.py", true),
@@ -56,6 +58,7 @@ fn a_file_that_runs_no_test_fails() {
 fn a_file_whose_tests_all_skip_fails() {
     let files = [
         ("more/test_more.py", false),
+        ("more/test_none.py", false),
         ("test_some.py", false),
         ("test_skip.py", false),
         ("test_none.py", false),
@@ -69,6 +72,7 @@ fn a_file_whose_tests_all_skip_fails() {
 fn a_file_of_the_sim_feature_runs_only_with_it() {
     let files = [
         ("more/test_more.py", false),
+        ("more/test_none.py", false),
         ("test_none.py", true),
         ("test_skip.py", true),
         ("test_some.py", false),
@@ -81,11 +85,10 @@ fn an_unlisted_file_fails() {
     let files = [("test_none.py", false), ("test_some.py", false)];
     assert_eq!(
         run(&fixture(), &files, false),
-        Err(
-            "the test files of the suite are [\"more/test_more.py\", \"test_none.py\", \
-             \"test_skip.py\", \"test_some.py\"]: change `FILES` to them"
-                .to_owned()
-        )
+        Err("the test files of the suite are [\"more/test_more.py\", \
+             \"more/test_none.py\", \"test_none.py\", \"test_skip.py\", \
+             \"test_some.py\"]: change `FILES` to them"
+            .to_owned())
     );
 }
 
@@ -136,18 +139,17 @@ fn tests(dir: &Path, prefix: &str, found: &mut Vec<String>) {
     }
 }
 
-/// Runs each test of `file`, a path under `dir`, and gives whether one ran and each
-/// passed, and the report.
+/// Runs each test of the module of `file`, a `.py` path under `dir`, and gives whether
+/// one ran that did not skip and each passed, and the report.
 fn suite(dir: &Path, file: &str) -> (bool, String) {
     let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("python");
-    let path = dir.join(file);
+    let module = file.strip_suffix(".py").unwrap_or(file).replace('/', ".");
     Python::initialize();
     Python::attach(|py| -> PyResult<(bool, String)> {
         let globals = PyDict::new(py);
         globals.set_item("native", wrap_pymodule!(super::_native)(py))?;
         globals.set_item("package", package)?;
-        globals.set_item("start", path.parent())?;
-        globals.set_item("pattern", path.file_name())?;
+        globals.set_item("module", module)?;
         globals.set_item("top", dir)?;
         py.run(SUITE, Some(&globals), None)?;
         Ok((
