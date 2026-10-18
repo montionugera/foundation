@@ -153,8 +153,9 @@ pub struct Store {
     corruptions: Cell<u64>,
     failures: Cell<u64>,
     /// The serial of the next flight. A read that saw one flight's state must not
-    /// forget a later one's, so two flights never leave equal states. It starts at 1:
-    /// serial 0 is the open's.
+    /// forget a later one's, so two flights that reach their create never leave equal
+    /// states. A flight dropped before it leaves the state it took: it did not change
+    /// the file. It starts at 1: serial 0 is the open's.
     flights: Cell<u64>,
     /// The key of the next call that waits for a put.
     waiters: Cell<u64>,
@@ -206,8 +207,8 @@ impl Store {
     /// crash after the return keeps it. A put of a digest that a put stored since the
     /// open makes no file call. A second put of one digest while the first is in
     /// flight waits for it. A put whose future is dropped before it returns stores
-    /// nothing that a get gives unchecked: the next get of the digest reads and checks
-    /// the file, and the next put writes it again.
+    /// nothing that a get gives unchecked: a get of the digest gives only bytes that it
+    /// read and checked, and the next put writes it again.
     ///
     /// # Errors
     ///
@@ -647,7 +648,8 @@ mod tests {
         assert!(store.get(digest).await.unwrap().is_none());
     }
 
-    /// Drops a put of `block` with its create in flight, which leaves a file of zeros.
+    /// Drops a put of `block` with its second file call in flight: its create, or the
+    /// open of its floor check when that runs.
     async fn drop_put(
         node: &sim::node::Node,
         store: &Store,
