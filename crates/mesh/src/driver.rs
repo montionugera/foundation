@@ -45,6 +45,7 @@ mod founding;
 mod home;
 mod propose;
 mod send;
+mod signed;
 mod stream;
 pub(crate) mod used;
 
@@ -2866,6 +2867,7 @@ mod tests {
     mod in_use;
     mod send;
     mod serve;
+    mod signed;
 
     /// The entries in the log of `node`, which had a power cut.
     fn stored(sim: &mut Sim, node: &sim::node::Node) -> Vec<Entry> {
