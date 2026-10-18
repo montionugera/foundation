@@ -8,16 +8,16 @@ use std::task::Poll;
 use document::Document;
 use document::diagnostic::{Code, Diagnostic};
 use env::clock::Clock;
+use hub::home::Outcome;
 use hub::reader::{Mode, Reader};
 use types::authority::Authority;
 use types::channel;
-use types::frame::{Form, Label, Path};
 use types::name::{Name, Selector};
 use types::time::Span;
 
 use super::{Reading, Rig, create_secret, create_status};
 use crate::cancel;
-use crate::common::{env, run_on};
+use crate::common::{Column, env, fill, open_status, run_on, write_columns};
 use crate::kind::{Channels, Context, Error, Kind, Table};
 use crate::status::State;
 
@@ -139,49 +139,18 @@ async fn status_of(rig: &Rig, connector: &str, mode: Mode) -> Reader {
     rig.hub().reader(config).await.expect("the reader opens")
 }
 
-/// Writes one frame to the status channels of `connector` on the hub of `rig`, with
-/// one sample time for each `(state, restarts)` of `statuses`, and no error.
-async fn write_statuses(rig: &Rig, connector: &str, statuses: &[(u64, u64)]) {
-    let channels = ["time", "state", "class", "restarts"];
-    let channels = channels.map(|last| name(&format!("{connector}.status.{last}")));
-    let mut writer = rig.writer(name("plant.test"), channels.to_vec()).await;
-    let start = u64::try_from(writer.now().nanos()).expect("a stamp after 1970");
-    let columns: [Vec<u64>; 4] = [
-        (0..)
-            .map(|i| start + i * 1_000)
-            .take(statuses.len())
-            .collect(),
-        statuses.iter().map(|&(state, _)| state).collect(),
-        vec![0; statuses.len()],
-        statuses.iter().map(|&(_, restarts)| restarts).collect(),
-    ];
-    let (entries, set) = (writer.entries().to_vec(), Arc::clone(writer.set()));
-    let bytes: Vec<(usize, Vec<u8>)> = entries
-        .iter()
-        .zip(columns)
-        .map(|(&entry, column)| {
-            let width = set.entries()[entry]
-                .data_type
-                .width()
-                .expect("a fixed width");
-            let sample = |value: u64| value.to_le_bytes()[..width].to_vec();
-            (entry, column.into_iter().flat_map(sample).collect())
-        })
-        .collect();
-    let mut series: Vec<_> =
-        bytes.iter().map(|(at, bytes)| (*at, bytes.len())).collect();
-    series.sort_unstable();
-    let mut draft = writer.draft(Form::Raw, &series).expect("a draft");
-    for (entry, bytes) in &bytes {
-        let series = draft.series_mut(*entry).expect("a series of the draft");
-        series.copy_from_slice(bytes);
-    }
-    let count = u32::try_from(statuses.len()).expect("few");
-    draft.set_count(set.entries()[entries[0]].group, count);
-    writer
-        .write(Label::Path(Path::Live), draft)
-        .expect("the write goes");
+/// The columns of a frame of the statuses `(state, restarts)` of `statuses`, with no
+/// error, for [`write_columns`] through a writer of `STATUS_LASTS`.
+fn statuses(statuses: &[(u64, u64)]) -> Vec<Column> {
+    vec![
+        Column::Numbers(statuses.iter().map(|&(state, _)| state).collect()),
+        Column::Numbers(vec![0; statuses.len()]),
+        Column::Numbers(statuses.iter().map(|&(_, restarts)| restarts).collect()),
+    ]
 }
+
+/// The status channels of [`statuses`], by the last segment of each name.
+const STATUS_LASTS: [&str; 3] = ["state", "class", "restarts"];
 
 /// Asserts that the hub of `rig` defines no channel `channel`.
 async fn assert_undefined(rig: &Rig, channel: &str) {
@@ -735,10 +704,52 @@ fn next_gives_each_status_of_a_frame_oldest_first() {
             run.until(TEN, |reading| reading.state == State::Stopped)
                 .await;
             clock.sleep(Span::SECOND).await;
-            write_statuses(&rig, "plant.ends", &[(1, 5), (0, 6)]).await;
+            let lasts = &STATUS_LASTS;
+            let mut writer = open_status(rig.hub(), "plant.ends", lasts).await;
+            write_columns(&mut writer, statuses(&[(1, 5), (0, 6)]));
             let (first, second) = (run.next().await, run.next().await);
             let got = [first, second].map(|reading| (reading.state, reading.restarts));
             assert_eq!(got, [(State::Restarting, 5), (State::Running, 6)]);
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "the status ends: channel ")]
+fn a_record_panics_when_its_status_reader_ends() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |rig, clock| async move {
+            let (config, plant) = (Document::default(), name("plant.ticks"));
+            let names = rig.define_status("ticks", &plant, &config);
+            let _record = rig.record(&names).await;
+            rig.remove(&names);
+            clock.sleep(Span::SECOND).await;
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "the status reader missed the seqs ")]
+fn next_panics_at_a_status_that_its_reader_missed() {
+    on_rig(
+        || Table::new().with("ends", Ends),
+        |rig, clock| async move {
+            let config = Document::default();
+            let mut run = rig.supervise("ends", name("plant.ends"), config).await;
+            run.until(TEN, |reading| reading.state == State::Stopped)
+                .await;
+            clock.sleep(Span::SECOND).await;
+            let lasts = &STATUS_LASTS;
+            let mut writer = open_status(rig.hub(), "plant.ends", lasts).await;
+            let mut held = fill(&writer);
+            drop(held.pop());
+            let lost = write_columns(&mut writer, statuses(&[(1, 5)]));
+            assert!(matches!(lost[..], [Outcome::Lost { .. }]), "{lost:?}");
+            drop(held);
+            clock.sleep(Span::SECOND).await;
+            write_columns(&mut writer, statuses(&[(0, 6)]));
+            run.next().await;
         },
     );
 }

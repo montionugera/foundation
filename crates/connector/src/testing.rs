@@ -18,7 +18,7 @@ use env::files::{self, Files};
 use env::net::Net;
 use env::tasks::Tasks;
 use hub::Hub;
-use hub::reader::{Mode, Reader};
+use hub::reader::{Mode, Reader, Received};
 use hub::writer::Writer;
 use spec::channel::{Channel, Data, Kind};
 use spec::data_type::DataType;
@@ -314,24 +314,24 @@ impl Rig {
 
     /// Records each status of the connector whose status channels are `names`, as
     /// [`Self::define_status`] gives them, from now on, in a task of the rig's shard.
-    /// The record goes on across the runs of the connector, and ends when the hub
-    /// closes.
+    /// The record goes on across the runs of the connector.
     ///
     /// # Panics
     ///
     /// When the status reader does not open, such as when the hub defines no channel
-    /// of `names`. A frame that does not hold a whole status panics the task of the
-    /// record, which ends the shard, as [`Run::next`] does.
+    /// of `names`. The task of the record panics, which ends the shard, as
+    /// [`Run::next`] does: when the status reader ends, misses a status, or reads a
+    /// frame that does not hold a whole status.
     pub async fn record(&self, names: &[Name]) -> Record {
         let mut reader = self.status(names).await;
         let record = Record(Rc::default());
         let into = Rc::clone(&record.0);
         self.tasks.spawn(async move {
-            while let Ok(received) = reader.next().await {
-                let readings = Reading::each(&received);
-                let readings = readings
-                    .expect("invariant: each status frame holds the whole status");
-                into.borrow_mut().extend(readings);
+            loop {
+                let received = reader.next().await;
+                let received =
+                    received.unwrap_or_else(|end| panic!("the status ends: {end}"));
+                into.borrow_mut().extend(readings(&received));
             }
         });
         record
@@ -417,7 +417,7 @@ impl Run {
     /// # Panics
     ///
     /// When the kind's check failed, so the connector has no status, or the status
-    /// reader ends.
+    /// reader ends or misses a status.
     pub async fn next(&mut self) -> Reading {
         loop {
             if let Some(reading) = self.pending.pop_front() {
@@ -428,10 +428,7 @@ impl Run {
             let received = reader.next().await;
             let received =
                 received.unwrap_or_else(|end| panic!("the status ends: {end}"));
-            let readings = Reading::each(&received);
-            self.pending = readings
-                .expect("invariant: each status frame holds the whole status")
-                .into();
+            self.pending = readings(&received).into();
         }
     }
 
@@ -486,6 +483,23 @@ impl Drop for Run {
     fn drop(&mut self) {
         self.cancel.cancel();
     }
+}
+
+/// Each status of the status frame `received`, oldest first.
+///
+/// # Panics
+///
+/// When the reader missed a status before `received`, or `received` does not hold a
+/// whole status.
+fn readings(received: &Received<'_>) -> Vec<Reading> {
+    if let Some(gap) = received.gap() {
+        panic!(
+            "the status reader missed the seqs {}..{}",
+            gap.start, gap.end
+        );
+    }
+    let readings = Reading::each(received);
+    readings.expect("invariant: each status frame holds the whole status")
 }
 
 /// `names` with `, ` between them.
