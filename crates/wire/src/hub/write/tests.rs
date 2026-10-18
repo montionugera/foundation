@@ -597,8 +597,8 @@ mod corpus {
         got
     }
 
-    fn outcome(frame: u64, outcome: Outcome) -> Result<Reply, Error> {
-        Ok(Reply::Outcome { frame, outcome })
+    fn outcome(frame: u64, outcome: Outcome) -> Reply {
+        Reply::Outcome { frame, outcome }
     }
 
     fn range(seq: u64, count: u32) -> frame::Range {
@@ -635,19 +635,19 @@ mod corpus {
         assert_eq!(
             decoded(corpus!("write_replies_order_framed")),
             [
-                outcome(1, Outcome::Taken { range: range(0, 1) }),
+                Ok(outcome(1, Outcome::Taken { range: range(0, 1) })),
                 Err(Error::Unasked { frame: 2, sent: 1 }),
                 Err(Error::Stored {
                     frames: 2,
                     bound: 1
                 }),
                 Ok(Reply::Stored { frames: 1 }),
-                outcome(2, Outcome::Lost { range: range(1, 1) }),
+                Ok(outcome(2, Outcome::Lost { range: range(1, 1) })),
                 Err(Error::Stored {
                     frames: 0,
                     bound: 1
                 }),
-                outcome(3, Outcome::Refused(Refusal::Order)),
+                Ok(outcome(3, Outcome::Refused(Refusal::Order))),
                 Err(Error::Refusal { code: 9 }),
                 Ok(Reply::Stored { frames: 1 }),
             ]
@@ -658,7 +658,7 @@ mod corpus {
     /// an outcome of another frame than the next.
     #[test]
     fn refuses_each_outcome_of_another_frame_in_the_fuzz_inputs() {
-        let taken = |frame| outcome(frame, Outcome::Taken { range: range(0, 1) });
+        let taken = |frame| Ok(outcome(frame, Outcome::Taken { range: range(0, 1) }));
         assert_eq!(
             decoded(corpus!("write_outcome_unasked")),
             [
@@ -676,7 +676,7 @@ mod corpus {
                 taken(1),
                 Err(Error::Order { frame: 1, next: 2 }),
                 Err(Error::Unasked { frame: 3, sent: 2 }),
-                outcome(2, Outcome::Refused(Refusal::Order)),
+                Ok(outcome(2, Outcome::Refused(Refusal::Order))),
             ]
         );
     }
