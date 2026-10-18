@@ -17,7 +17,7 @@ pub struct Frames {
     places: u32,
     next: Next,
     head: Option<Head>,
-    assembly: Assembly,
+    assembly: Assembly<true>,
 }
 
 /// What [`Frames`] waits for next.
