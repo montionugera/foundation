@@ -217,20 +217,12 @@ const FUNCTION_SYMBOLS: [(&str, &str, &str, Access); 25] = [
 /// [`AWS_LC`] does not admit, by its name without the prefix of [`Crypto`]. A key
 /// admits only the name with the prefix. A test of `connector-opcua` names the function
 /// of each key of [`AWS_LC_INPUTS`] and fails when its reason becomes false.
-const AWS_LC_KEYS: [(&str, &str, &str, Access); 18] = [
+const AWS_LC_KEYS: [(&str, &str, &str, Access); 17] = [
     // Gives the time of a certificate, which is never NULL, so it reads no clock.
     (
         "plugins/crypto/openssl/certificategroup.c",
         "UA_CertificateUtils_getExpirationDate",
         "ASN1_TIME_to_tm",
-        Access::Call,
-    ),
-    // The validity of a certificate against the OS clock. No node checks a
-    // certificate: `connector-opcua` adds no security policy.
-    (
-        "plugins/crypto/openssl/certificategroup.c",
-        "openSSL_verifyChain",
-        "X509_cmp_current_time",
         Access::Call,
     ),
     // The randomness of aws-lc, which TLS RANDOMNESS admits: the nonces of a channel,
@@ -336,9 +328,9 @@ const AWS_LC_KEYS: [(&str, &str, &str, Access); 18] = [
     ),
 ];
 
-/// The functions of aws-lc that the copy calls and that read the clock on each call.
-/// `ASN1_TIME_to_tm` reads the clock only on a NULL time, which its key states the
-/// copy never gives.
+/// The functions of aws-lc that read the clock on each call. The copy calls none: its
+/// validity check of a certificate reads the loop of the group. `ASN1_TIME_to_tm`
+/// reads the clock only on a NULL time, which its key states the copy never gives.
 const AWS_LC_INPUTS: [&str; 1] = ["X509_cmp_current_time"];
 
 /// The release files that the copy holds and the library of our options does not
@@ -454,7 +446,7 @@ const SYMBOLS: [&str; 30] = [
 /// an algorithm and not its result. A PEM reader reads no console only with a callback
 /// of [`PASSWORDS`], which [`passwords`] checks.
 #[rustfmt::skip]
-const AWS_LC: [&str; 148] = [
+const AWS_LC: [&str; 149] = [
     "ASN1_INTEGER_cmp", "BIO_free", "BIO_new_mem_buf", "BIO_reset", "BN_bin2bn",
     "BN_bn2binpad", "BN_free", "BN_new", "BN_set_word", "ECDSA_SIG_free",
     "ECDSA_SIG_get0", "ECDSA_SIG_new", "ECDSA_SIG_set0", "ECDSA_size",
@@ -491,7 +483,8 @@ const AWS_LC: [&str; 148] = [
     "X509_REQ_add_extensions", "X509_REQ_free", "X509_REQ_get_pubkey", "X509_REQ_new",
     "X509_REQ_set_pubkey", "X509_REQ_set_subject_name", "X509_REQ_set_version",
     "X509_REVOKED_get0_serialNumber", "X509_check_private_key", "X509_cmp",
-    "X509_digest", "X509_free", "X509_get0_pubkey", "X509_get0_serialNumber",
+    "X509_cmp_time_posix", "X509_digest", "X509_free", "X509_get0_pubkey",
+    "X509_get0_serialNumber",
     "X509_get_ext", "X509_get_ext_by_NID", "X509_get_ext_d2i",
     "X509_get_extension_flags", "X509_get_issuer_name", "X509_get_key_usage",
     "X509_get_notAfter", "X509_get_notBefore", "X509_get_pubkey",
@@ -1795,13 +1788,14 @@ const ARCHITECTURES: [Architecture; 2] = [
 
 /// [`Architecture::instructions`] of x86-64.
 #[rustfmt::skip]
-const X86_64: [&str; 109] = [
+const X86_64: [&str; 110] = [
     "adc", "add", "addsd", "addss", "and", "call", "cdq", "cdqe", "cmp", "comisd",
     "comiss", "cqo", "cvtsi2sd", "cvtsi2ss", "cvtss2sd", "cvttsd2si", "cwde", "div",
     "divsd", "divss", "idiv", "imul", "lea", "leave", "mov", "movabs", "movapd",
-    "movaps", "movdqa", "movq", "movsd", "movss", "movsx", "movsxd", "movzx", "mul",
-    "mulsd", "neg", "nop", "not", "or", "pop", "push", "pxor", "ret", "ror", "sar",
-    "shl", "shld", "shr", "sub", "subsd", "test", "ucomisd", "ucomiss", "xor",
+    "movaps", "movdqa", "movq", "movsd", "movss", "movsx", "movsxd", "movups",
+    "movzx", "mul", "mulsd", "neg", "nop", "not", "or", "pop", "push", "pxor", "ret",
+    "ror", "sar", "shl", "shld", "shr", "sub", "subsd", "test", "ucomisd", "ucomiss",
+    "xor",
     // A copy of memory, and a fill of it.
     "rep movs", "rep stos",
     // `endbr64` marks the target of an indirect jump; `notrack jmp` is an indirect jump

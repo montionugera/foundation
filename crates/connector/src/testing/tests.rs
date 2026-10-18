@@ -518,7 +518,7 @@ fn a_run_reads_its_status_up_to_the_frames_lost_for_no_room_after_a_long_sleep()
                 received.expect("a status frame");
                 taken += 1;
             }
-            assert_eq!(taken, 1_020);
+            assert_eq!(taken, 1_000);
         },
     );
 }

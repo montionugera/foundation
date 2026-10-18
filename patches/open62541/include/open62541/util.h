@@ -207,6 +207,8 @@ typedef struct {
     UA_UInt32 remoteMaxMessageSize; /* (0 = unbounded) */
     UA_UInt32 localMaxChunkCount;   /* (0 = unbounded) */
     UA_UInt32 remoteMaxChunkCount;  /* (0 = unbounded) */
+    UA_UInt32 localMaxQueuedChunks; /* intermediate chunks of all messages
+                                     * (0 = unbounded) */
 } UA_ConnectionConfig;
 
 /**

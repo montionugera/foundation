@@ -340,7 +340,32 @@ fn restarts() {
     );
 }
 
+/// A tagged copy that grows from 2000 to 3000 bytes holds 1000 bytes more than one
+/// that stays at 2000: it keeps no more than its largest copy.
+fn grows_exactly() {
+    let held = |last: usize| {
+        let before = ALLOCATOR.held();
+        let mut deadline = buffer::bench::Deadline::tagged(1, 1024);
+        deadline.resize(2000);
+        for _ in 0..64 {
+            deadline.commit(1);
+        }
+        deadline.resize(last);
+        deadline.commit(1);
+        let held = ALLOCATOR.held() - before;
+        drop(deadline);
+        held
+    };
+    let (stays, grows) = (held(2000), held(3000));
+    assert_eq!(
+        grows - stays,
+        1000,
+        "a copy grows to the bytes of its largest copy"
+    );
+}
+
 fn main() {
+    grows_exactly();
     waits_behind();
     drains();
     counts_first();

@@ -8,10 +8,13 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use env::entropy::Driver as _;
-use env::paths::{Error, Found, Key, Kind, names_directory};
+use env::paths::{Entry, Error, Found, Key, Kind, names_directory};
 use rustix::io::Errno;
 
 use crate::{dir, entropy, host};
+
+/// The longest path that the host takes, with its end NUL.
+const PATH_MAX: usize = libc::PATH_MAX.unsigned_abs() as usize;
 
 #[derive(Debug)]
 pub(crate) struct Driver;
@@ -29,51 +32,49 @@ impl env::paths::Driver for Driver {
         make_dir(path).map_err(|e| error(&e))
     }
 
-    fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
-        resolve(path).map_err(|e| error(&e))
-    }
-
     fn home(&self) -> Option<PathBuf> {
-        resolve(&std::env::home_dir()?).ok()
+        std::env::home_dir()
     }
 
-    fn key(&self, path: &Path) -> Result<Key, Error> {
-        let file = fs::metadata(path).map_err(|e| error(&e))?;
-        Ok(Key::new(file.dev(), file.ino()))
+    fn entry(&self, path: &Path) -> Result<Entry, Error> {
+        entry(path).map_err(|e| error(&e))
+    }
+
+    fn absolute(&self, path: &Path) -> Result<PathBuf, Error> {
+        // The walk takes a step for each name, so this bounds its work.
+        if path.as_os_str().len() >= PATH_MAX {
+            return Err(Error::Io {
+                code: Errno::NAMETOOLONG.raw_os_error(),
+            });
+        }
+        std::path::absolute(path).map_err(|e| error(&e))
+    }
+
+    fn looped(&self) -> Error {
+        Error::Io {
+            code: Errno::LOOP.raw_os_error(),
+        }
     }
 }
 
-fn resolve(path: &Path) -> io::Result<PathBuf> {
-    let missing = match fs::canonicalize(path) {
-        // macOS resolves a file at a path that ends in `/`, `/.`, or `/..`, also
-        // through a link, where the stat fails. The stat also fails past the longest
-        // path that the host takes, where glibc `realpath` does not, which bounds the
-        // walk of `Paths::within`.
-        Ok(resolved) => return fs::metadata(path).map(|_| resolved),
-        // Only a last name that is not there passes `symlink_metadata` below.
-        Err(e) => e,
-    };
-    // `file_name` is `None` for an end in `..`, whose directory must be there.
-    let (Some(name), Some(dir)) = (path.file_name(), path.parent()) else {
-        return Err(missing);
-    };
-    // Not `path`: an end in `/` or `/.` makes the stat follow a link at `name`.
-    match fs::symlink_metadata(dir.join(name)) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        // A symbolic link to nothing.
-        Ok(_) => return Err(missing),
-        Err(e) => return Err(e),
-    }
-    let dir = if dir.as_os_str().is_empty() {
-        Path::new(".")
+fn entry(path: &Path) -> io::Result<Entry> {
+    let file = fs::symlink_metadata(path)?;
+    let key = Key::new(file.dev(), file.ino());
+    Ok(if file.is_symlink() {
+        Entry::Link(key, fs::read_link(path)?)
+    } else if file.is_dir() {
+        Entry::Directory(key)
     } else {
-        dir
-    };
-    Ok(fs::canonicalize(dir)?.join(name))
+        Entry::File(key)
+    })
 }
 
 fn read(path: &Path, most: usize) -> io::Result<Found> {
     let file = match host::open(path)? {
+        // macOS 15 opens the file of a link at a path that ends in `/`.
+        host::Readable::Regular(..) if names_directory(path) => {
+            return Err(Errno::NOTDIR.into());
+        }
         host::Readable::Regular(file, _) => file,
         host::Readable::Directory(dir) => {
             let (mut entries, mut size) = (Vec::new(), 0_usize);
@@ -100,11 +101,17 @@ fn read(path: &Path, most: usize) -> io::Result<Found> {
 
 fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     // `Path` drops an end in `/` or `.`, and takes a name after an end in `..`, so the
-    // hidden file would go beside that directory or in it. The stat does not stop
-    // this: the directory can come after it. Such a path resolves only to a
-    // directory, so the open fails.
+    // hidden file would go beside that directory or in it. Such a path names only a
+    // directory, which takes no write. No open: macOS 15 opens the file of a link at
+    // a path that ends in `/`.
     if names_directory(path) {
-        return in_place(path, bytes);
+        let found = fs::metadata(path)?;
+        let code = if found.is_dir() {
+            Errno::ISDIR
+        } else {
+            Errno::NOTDIR
+        };
+        return Err(code.into());
     }
     match fs::symlink_metadata(path) {
         Ok(old) if old.is_file() => {}
