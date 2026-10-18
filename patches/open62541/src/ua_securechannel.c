@@ -970,8 +970,7 @@ UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
         goto extract_chunk;
 
     case UA_CHUNKTYPE_INTERMEDIATE:
-        /* The limits hold for each message, as answers can interleave. The queue
-         * of all request ids holds at most localMaxChunkCount messages in part. */
+        /* The limits hold for each message, as answers can interleave */
         idCount = 0;
         idLength = chunk.bytes.length;
         TAILQ_FOREACH(pchunk, &channel->chunks, pointers) {
@@ -981,11 +980,11 @@ UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
             idLength += pchunk->bytes.length;
         }
         if((channel->config.localMaxChunkCount != 0 &&
-            (idCount >= channel->config.localMaxChunkCount ||
-             channel->chunksCount >= (size_t)channel->config.localMaxChunkCount *
-                                     channel->config.localMaxChunkCount)) ||
+            idCount >= channel->config.localMaxChunkCount) ||
            (channel->config.localMaxMessageSize != 0 &&
-            idLength > channel->config.localMaxMessageSize)) {
+            idLength > channel->config.localMaxMessageSize) ||
+           (channel->config.localMaxQueuedChunks != 0 &&
+            channel->chunksCount >= channel->config.localMaxQueuedChunks)) {
             if(chunk.copied)
                 UA_ByteString_clear(&chunk.bytes);
             return UA_STATUSCODE_BADTCPMESSAGETOOLARGE;

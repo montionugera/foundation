@@ -36,6 +36,11 @@ use service::{Bytes, Item, Request, Sizes};
 /// The most requests of a client in flight. A request past it waits until one ends.
 const READS: u16 = 16;
 
+/// The most intermediate chunks that a client queues across its answers: each of
+/// [`READS`] answers waits for its final chunk with at most [`CHUNKS`] - 1 chunks. A
+/// chunk past it closes the channel.
+const QUEUED: u32 = READS as u32 * (CHUNKS - 1);
+
 /// The most time with no read that [`Client::idle`] waits before it checks the
 /// connection.
 pub(crate) const CHECK: Span = Span::from_nanos(10 * Span::SECOND.nanos());
@@ -69,14 +74,15 @@ const _: () = assert!(
 );
 
 /// Gives a client of open62541 on the loop `el` with no connection, or null when out
-/// of memory. It takes at most [`CHUNKS`] chunks in a message.
+/// of memory. It takes at most [`CHUNKS`] chunks in a message and queues at most
+/// [`QUEUED`] intermediate chunks.
 ///
 /// # Safety
 ///
 /// `el` is a live loop that outlives the client.
 pub(crate) unsafe fn raw(el: *mut ffi::EventLoop) -> *mut ffi::Client {
     // SAFETY: as the caller ensures.
-    unsafe { ffi::shim_client_new(el, CHUNKS) }
+    unsafe { ffi::shim_client_new(el, CHUNKS, QUEUED) }
 }
 
 /// A client of open62541 with an active session, on its own loop and connection

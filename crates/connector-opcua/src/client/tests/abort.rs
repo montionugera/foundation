@@ -5,6 +5,7 @@ use super::{
     CHUNK, FITS, RELAY, Relay, VALUE, Values, drop_read, drop_reads, mistyped, relayed,
     run, serve,
 };
+use crate::client::READS;
 use crate::ffi::Status;
 use crate::node::{Key, Node};
 use crate::value::{Fault, Value};
@@ -151,14 +152,17 @@ fn an_abort_with_an_unknown_id_ends_no_read() {
 
 /// An abort after the 7 intermediate chunks of an answer of [`FITS`] deletes them, so
 /// its read gives the Error of the abort, and frees their place in the queue of the
-/// channel, which holds 64 chunks, so after 10 such aborts each next answer of 8
-/// chunks arrives.
+/// channel, so after [`READS`] + 1 such aborts, more chunks than the queue holds, each
+/// next answer of 8 chunks arrives.
 #[test]
 fn an_abort_after_intermediate_chunks_ends_its_read_and_frees_their_place() {
-    let (aborted, [after, again], _) = reads(&FITS, 0, 10, too_large);
+    let (aborted, [after, again], _) = reads(&FITS, 0, READS + 1, too_large);
     assert_eq!(
         aborted,
-        vec![Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE)); 10]
+        vec![
+            Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE));
+            usize::from(READS) + 1
+        ]
     );
     assert_eq!(
         (after, again),
