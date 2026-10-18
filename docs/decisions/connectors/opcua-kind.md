@@ -143,11 +143,11 @@
   can drop or repeat a
   reference, and a name with ` (<tag>)` after it can move to another node. A browse
   keeps the tag and the name of each node before the page of each cursor, at most 16 MiB
-  of them across its cursors, past which the browse gives `Error::Device` (round 2
+  of them across its cursors (round 2
   findings 1 and 2, 2026-10-17T03:40:23Z, for this bound and for `VISITS`:
   https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229156018, approved
   by `laptop.architect-2`, 2026-10-17T04:05:28Z:
-  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229428004). The bound
+  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229428004). Past it, the browse releases its points one at a time, the one that it used least lately first, of those at a count of at most 100 000, and gives `Error::Device` when no point is left to release (round 2 finding 1 of #3102, 2026-10-18T03:25:25Z: https://github.com/synnaxlabs/foundation/pull/3102#issuecomment-6245168498). The bound
   of browses at once is #2981. The browse holds at most as many points at a count of at
   most 100 000 as the server holds for a session (`MaxBrowseContinuationPoints`, or
   `DEPTH` when the server gives 0, no value, or a value that is not a `UInt16`). Before

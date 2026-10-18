@@ -47,7 +47,7 @@
   The walk finds the start first, with `connector.no-folder` as for the other scopes.
   It reads the folder at each prefix of the paths at most once, before the next, and
   stops a folder when it has seen each name that a path takes in it, so an import of 500
-  points opens no 500 sessions. A path at a folder, at no entry, or not under the start
+  points opens no 500 sessions (`laptop.architect-2`, 2026-10-18T02:44:21Z, the docs of round 1: https://github.com/synnaxlabs/foundation/pull/3102#issuecomment-6244852270). A path at a folder, at no entry, or not under the start
   gives `connector.no-point` ("the device has no point at "<path>"", or "the path
   "<path>" is not under the start "<start>""), with the fix "Give the path of a point
   that `browse` gives", one diagnostic for each path, all in one `Error::Config`. Each
