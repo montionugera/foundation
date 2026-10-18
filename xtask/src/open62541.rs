@@ -2,6 +2,7 @@
 //! C file that our options compile, each header that it includes, and each file of
 //! [`EXTRA`].
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
@@ -1111,11 +1112,31 @@ fn inside(path: &Path) -> bool {
 }
 
 /// The line and the file of `line` when it is a line marker of `cc -E` (`# 1 "a.c" 2`),
-/// which sets them for the line after it.
-fn marker(line: &str) -> Option<(usize, &str)> {
+/// which sets them for the line after it. It undoes the escapes that GCC writes for
+/// `\\`, `"`, and a newline in the name.
+fn marker(line: &str) -> Option<(usize, Cow<'_, str>)> {
     let (number, name) = line.strip_prefix("# ")?.split_once(" \"")?;
     let name = name.rsplit_once('"').map_or(name, |(name, _)| name);
-    Some((number.parse().ok()?, name))
+    let number = number.parse().ok()?;
+    if !name.contains('\\') {
+        return Some((number, Cow::Borrowed(name)));
+    }
+    let mut text = String::with_capacity(name.len());
+    let mut chars = name.chars();
+    while let Some(c) = chars.next() {
+        match (c, chars.clone().next()) {
+            ('\\', Some(next @ ('\\' | '"'))) => {
+                text.push(next);
+                chars.next();
+            }
+            ('\\', Some('n')) => {
+                text.push('\n');
+                chars.next();
+            }
+            _ => text.push(c),
+        }
+    }
+    Some((number, Cow::Owned(text)))
 }
 
 /// An error for each `#include_next`, and each `#include` or `#import` in a file of
@@ -1135,16 +1156,17 @@ fn includes(
         .map(Path::new)
         .collect();
     let mut problems = Vec::new();
-    let mut file = Path::new("");
+    let mut file = PathBuf::new();
     for line in preprocessed.lines() {
         if let Some((_, name)) = marker(line) {
-            file = Path::new(name);
+            file = PathBuf::from(&*name);
             continue;
         }
         let Some((keyword, directive)) = line.split_once(' ') else {
             continue;
         };
-        if !matches!(keyword, "#include" | "#import" | "#include_next") || !inside(file)
+        if !matches!(keyword, "#include" | "#import" | "#include_next")
+            || !inside(&file)
         {
             continue;
         }
@@ -1203,8 +1225,10 @@ fn foreign(
     let (dirs, crypto) = (real(dirs), real(crypto));
     let mut problems = Vec::new();
     for (_, name) in preprocessed.lines().filter_map(marker) {
-        let file =
-            std::fs::canonicalize(copy.join(name)).unwrap_or_else(|_| name.into());
+        // `<built-in>` and the name of a `#line` directive name no file.
+        let Ok(file) = std::fs::canonicalize(copy.join(&*name)) else {
+            continue;
+        };
         let system = dirs.iter().any(|dir| {
             file.strip_prefix(dir)
                 .is_ok_and(|rest| rest.starts_with("openssl"))
@@ -1220,7 +1244,6 @@ fn foreign(
     }
     problems
 }
-
 /// The callbacks that a call in the copy may give a function of aws-lc that takes a
 /// `pem_password_cb`. Each gives aws-lc only a password that its caller gives, so no
 /// read waits on the console.
@@ -1230,7 +1253,7 @@ const PASSWORDS: [&str; 2] =
 /// A token of `cc -E` output, with the file and the line that hold it.
 struct Token<'a> {
     text: &'a str,
-    file: &'a str,
+    file: Cow<'a, str>,
     line: usize,
 }
 
@@ -1239,7 +1262,7 @@ struct Token<'a> {
 /// is one token.
 fn tokens(preprocessed: &str) -> Vec<Token<'_>> {
     let mut tokens = Vec::new();
-    let (mut file, mut line) = ("", 0);
+    let (mut file, mut line) = (Cow::Borrowed(""), 0);
     for text in preprocessed.lines() {
         if let Some(marker) = marker(text) {
             (line, file) = marker;
@@ -1252,7 +1275,7 @@ fn tokens(preprocessed: &str) -> Vec<Token<'_>> {
                 let length = token_length(rest);
                 tokens.push(Token {
                     text: &rest[..length],
-                    file,
+                    file: file.clone(),
                     line,
                 });
                 rest = &rest[length..];
@@ -1359,10 +1382,10 @@ fn passwords(preprocessed: &str, readers: &BTreeMap<String, usize>) -> Vec<Strin
         let Some(&place) = readers.get(token.text) else {
             continue;
         };
-        if !inside(Path::new(token.file)) {
+        if !inside(Path::new(&*token.file)) {
             continue;
         }
-        let file = files::normalize(Path::new(token.file));
+        let file = files::normalize(Path::new(&*token.file));
         let (file, line, name) = (file.display(), token.line, token.text);
         match call_arguments(&tokens[at + 1..]) {
             None => problems.push(format!(
@@ -2393,6 +2416,16 @@ Disassembly of section .text.stamp:
             ]
         );
         remove(&root).unwrap();
+    }
+
+    #[test]
+    fn marker_undoes_the_escapes_of_gcc() {
+        assert_eq!(marker(r#"# 1 "a.c""#), Some((1, Cow::Borrowed("a.c"))));
+        assert_eq!(
+            marker(r#"# 12 "/s\\x/q\"y/n\nl/\t.h" 1 3 4"#),
+            Some((12, Cow::Owned("/s\\x/q\"y/n\nl/\\t.h".to_owned())))
+        );
+        assert_eq!(marker(r#"#line 1 "a.c""#), None);
     }
 
     /// `cc -E` output of headers of aws-lc with three functions that take a
@@ -3778,7 +3811,7 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
     /// system header, as the build of `connector-opcua` does. The readers come from
     /// the first header of each name under `openssl/` of the crypto, and each other
     /// system header under `openssl/` is refused, also through a link shorter than its
-    /// target, whose path GCC keeps.
+    /// target, whose path GCC keeps, and through a directory whose name GCC escapes.
     #[test]
     fn check_builds_against_the_headers_of_the_crypto() {
         let dir = temp("crypto");
@@ -3806,13 +3839,18 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
                 ("bad/openssl/f.h", "#error f\n"),
                 ("system/openssl/kdf.h", "struct kdf;\n"),
                 ("system/openssl/x.h", "struct x;\n"),
-                ("system/wrap.h", "#include <openssl/x.h>\n"),
+                (
+                    "system/wrap.h",
+                    "#include <openssl/x.h>\n#include <openssl/y.h>\n",
+                ),
+                ("q\\\"x/openssl/y.h", "struct y;\n"),
             ],
         );
         std::os::unix::fs::symlink(dir.join("system"), dir.join("s")).unwrap();
         let script = format!(
-            "#!/bin/sh\nexec cc \"$@\" -isystem '{}'\n",
-            dir.join("s").display()
+            "#!/bin/sh\nexec cc \"$@\" -isystem '{}' -isystem '{}'\n",
+            dir.join("s").display(),
+            dir.join("q\\\"x").display()
         );
         let cc = create_cc(&dir, &script);
         let inspect = |include: &[&str]| {
@@ -3825,12 +3863,13 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
         let outside = |name: &str| {
             format!(
                 "a.c: includes {}, a header of OpenSSL outside the crypto",
-                dir.join("s").join(name).display()
+                dir.join(name).display()
             )
         };
         let mut problems = vec![
-            outside("./openssl/kdf.h"),
-            outside("openssl/x.h"),
+            outside("s/./openssl/kdf.h"),
+            outside("s/openssl/x.h"),
+            outside("q\\\"x/openssl/y.h"),
             gives("a.c", "a.c:8", "0", PREFIX),
         ];
         problems.extend(Uses::default().mismatches());
