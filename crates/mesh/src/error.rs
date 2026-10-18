@@ -58,7 +58,7 @@ pub enum Error {
     /// change. Call it on a voter.
     NoVote,
     /// This node, or the leader that it forwarded to, proposed a card of the same
-    /// member less than a minute before and since its own start, and refused this one
+    /// member less than a minute before and after its own start, and refused this one
     /// before the log. Call again after a minute.
     Soon,
     /// The region cannot hold a member record of the config.
