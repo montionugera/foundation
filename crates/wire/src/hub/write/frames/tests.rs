@@ -130,15 +130,18 @@ fn gives_the_bytes_of_a_frame_that_the_stream_cuts() {
     assert_eq!(frames.finish(), cut(19, None));
     frames.decode(&encode_ends(&[(1, 32)])).expect("the end");
     draft(&mut frames, &pool);
-    assert_eq!(frames.finish(), cut(27, Some(59)));
+    assert_eq!(frames.finish(), cut(27, NonZeroUsize::new(59)));
     frames.decode(&body()[..20]).expect("the part");
-    assert_eq!(frames.finish(), cut(47, Some(59)));
+    assert_eq!(frames.finish(), cut(47, NonZeroUsize::new(59)));
 }
 
 #[test]
 fn prints_each_cut() {
     let cases = [
-        (Some(59), "the stream ended inside a frame: 47 of 59 bytes"),
+        (
+            NonZeroUsize::new(59),
+            "the stream ended inside a frame: 47 of 59 bytes",
+        ),
         (
             None,
             "the stream ended inside a frame: 47 bytes, before the end of its ends",
@@ -433,7 +436,7 @@ fn drops_the_body_of_a_skipped_frame_and_takes_the_next_frame() {
         frames.finish(),
         Err(Error::Cut {
             received: 47,
-            len: Some(59)
+            len: NonZeroUsize::new(59)
         })
     );
     assert!(matches!(frames.decode(&body[20..]), Ok(Step::More)));
@@ -574,7 +577,7 @@ proptest! {
             let fit = "the bytes of a frame fit a usize";
             let run = ends::LEN.checked_mul(ends.len()).expect(fit);
             let mut received = Head::LEN.checked_add(run).expect(fit);
-            let len = Some(received.checked_add(body.len()).expect(fit));
+            let len = NonZeroUsize::new(received.checked_add(body.len()).expect(fit));
             for part in crate::hub::tests::cut(&body, &mut cuts) {
                 prop_assert_eq!(frames.finish(), Err(Error::Cut { received, len }));
                 received = received.checked_add(part.len()).expect(fit);

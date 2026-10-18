@@ -1,6 +1,6 @@
 use types::frame::{Path, Range};
 
-use super::part::{Next, Part};
+use super::part::Next;
 use super::{Error, HEAD, Head, Mode, OPENED, Open, Reply, ends};
 
 /// The decoder of the replies of a reader session, at the reader's node and at the
@@ -130,11 +130,17 @@ impl Reader {
         let State::Open(next) = &mut self.state else {
             return self.unopened(message);
         };
-        Ok(match next.decode(message)? {
-            Part::Head(message) => return self.head(message),
-            Part::Ends { ends, last } => FromHome::Ends { ends, last },
-            Part::Body { bytes, last } => FromHome::Body { bytes, last },
-        })
+        match *next {
+            Next::Head => self.head(message),
+            Next::Ends { remain } => {
+                let (ends, last) = next.ends(remain, message)?;
+                Ok(FromHome::Ends { ends, last })
+            }
+            Next::Body(body) => Ok(FromHome::Body {
+                bytes: message,
+                last: next.take(body, message.len())?,
+            }),
+        }
     }
 
     /// Takes a body message of `len` bytes that the caller has in place, as

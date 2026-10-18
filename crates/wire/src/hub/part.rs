@@ -20,46 +20,29 @@ pub(super) enum Next {
     Body(body::Count),
 }
 
-/// A message of a frame, decoded as far as [`Next`] can.
-pub(super) enum Part<'m> {
-    /// The message of a head, for the caller to decode.
-    Head(&'m [u8]),
-    /// The ends of the message, each a place and an end. The run ends with the `last`.
-    Ends { ends: ends::Iter<'m>, last: bool },
-    /// The bytes of the message. The body ends with the `last`.
-    Body { bytes: &'m [u8], last: bool },
-}
-
 impl Next {
-    /// Decodes `message` as the next part of the frame.
+    /// Decodes `message` as a message of the run, where [`Next::Ends`] gives the ends
+    /// that `remain`. Gives the ends of the message, and whether the run ends with
+    /// them.
     ///
     /// # Errors
     ///
-    /// For a message of the run, the errors of [`ends::decode`], then [`Error::Run`]
-    /// for more ends than remain. For a body message, [`Error::Empty`] and
-    /// [`Error::Body`]. The part stays as it was.
+    /// The errors of [`ends::decode`], then [`Error::Run`] for more ends than remain.
+    /// The part stays as it was.
     #[inline]
-    pub(super) fn decode<'m>(&mut self, message: &'m [u8]) -> Result<Part<'m>, Error> {
-        match *self {
-            Self::Ends { remain } => {
-                let ends = ends::decode(message)?;
-                let remain = rest_of_run(remain, ends.len())?;
-                *self = match (remain, ends.last_end()) {
-                    (0, Some(0)) => Self::Head,
-                    (0, Some(end)) => Self::Body(body::Count::new(to_usize(end))),
-                    _ => Self::Ends { remain },
-                };
-                Ok(Part::Ends {
-                    ends,
-                    last: remain == 0,
-                })
-            }
-            Self::Body(body) => Ok(Part::Body {
-                bytes: message,
-                last: self.take(body, message.len())?,
-            }),
-            Self::Head => Ok(Part::Head(message)),
-        }
+    pub(super) fn ends<'m>(
+        &mut self,
+        remain: u32,
+        message: &'m [u8],
+    ) -> Result<(ends::Iter<'m>, bool), Error> {
+        let ends = ends::decode(message)?;
+        let remain = rest_of_run(remain, ends.len())?;
+        *self = match (remain, ends.last_end()) {
+            (0, Some(0)) => Self::Head,
+            (0, Some(end)) => Self::Body(body::Count::new(to_usize(end))),
+            _ => Self::Ends { remain },
+        };
+        Ok((ends, remain == 0))
     }
 
     /// Takes a body message of `len` bytes that the caller has in place, as
@@ -86,7 +69,19 @@ impl Next {
         self.take(body, len)
     }
 
-    fn take(&mut self, mut body: body::Count, len: usize) -> Result<bool, Error> {
+    /// Takes a body message of `len` bytes, where [`Next::Body`] gives the `body`.
+    /// Gives whether it is the last of the body.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Empty`] when `len` is 0, and [`Error::Body`] when it is over the rest
+    /// of the body. The part stays as it was.
+    #[inline]
+    pub(super) fn take(
+        &mut self,
+        mut body: body::Count,
+        len: usize,
+    ) -> Result<bool, Error> {
         let last = body.take(len)?;
         *self = if last { Self::Head } else { Self::Body(body) };
         Ok(last)

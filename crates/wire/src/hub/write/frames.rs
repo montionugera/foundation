@@ -1,10 +1,11 @@
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use types::frame::key_set::KeySet;
 use types::frame::{Draft, Form, Layout};
 
 use super::{Error, Head, Time};
-use crate::hub::part::{Assembly, Next, Part, to_usize};
+use crate::hub::part::{Assembly, Next, to_usize};
 use crate::hub::{self, ends};
 
 /// The frames of a program's write stream after the places, at the node. The node
@@ -114,16 +115,16 @@ impl Frames {
     #[inline]
     pub fn decode(&mut self, message: &[u8]) -> Result<Step, Error> {
         self.assembly.check_undrafted("the next message");
-        let start = self.next.body();
-        match self.next.decode(message)? {
-            Part::Head(message) => self.head(message),
-            Part::Ends { ends, last } => {
+        match self.next {
+            Next::Head => self.head(message),
+            Next::Ends { remain } => {
+                let (ends, last) = self.next.ends(remain, message)?;
                 self.assembly.ends(ends, last);
                 Ok(Step::More)
             }
-            Part::Body { bytes, last } => {
-                let start = start.expect("invariant: body bytes come inside a body");
-                self.assembly.body(start, bytes);
+            Next::Body(body) => {
+                let last = self.next.take(body, message.len())?;
+                self.assembly.body(body.at(), message);
                 Ok(self.received_body(last))
             }
         }
@@ -203,9 +204,10 @@ impl Frames {
                 received: run,
                 len: None,
             },
+            // Never `None`: a frame holds its head.
             Some(body) => Error::Cut {
                 received: sum(run, body.at()),
-                len: Some(sum(sum(run, body.at()), body.remain())),
+                len: NonZeroUsize::new(sum(sum(run, body.at()), body.remain())),
             },
         })
     }

@@ -38,6 +38,7 @@ mod reader;
 pub mod write;
 
 use std::fmt;
+use std::num::NonZeroUsize;
 
 pub use frames::{Due, Frames, Step};
 pub use gaps::Gaps;
@@ -624,7 +625,7 @@ pub enum Error {
         /// The bytes of the frame that came: its head, its ends, and its body.
         received: usize,
         /// The bytes of the frame, once its ends are whole.
-        len: Option<usize>,
+        len: Option<NonZeroUsize>,
     },
 }
 

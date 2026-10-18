@@ -267,7 +267,10 @@ fn finished(frames: &Frames, received: usize) -> Seen {
         Ok(()) => assert_eq!(received, 0, "a cut frame finished"),
         Err(Error::Cut { received: cut, len }) => {
             assert_eq!(cut, received, "the cut has other bytes");
-            assert!(len.is_none_or(|len| len > cut), "the cut has its bytes");
+            assert!(
+                len.is_none_or(|len| len.get() > cut),
+                "the cut has its bytes"
+            );
         }
         Err(error) => panic!("finish gave {error:?}"),
     }
