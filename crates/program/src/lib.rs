@@ -594,7 +594,7 @@ impl fmt::Display for Error {
             Self::Unnamed => f.write_str("the writer names no channel"),
             Self::Unplaced(name) => write!(
                 f,
-                "the node gave no place for the channel {name} of the open of a writer"
+                "the node gave no place for the channel {name} of the open"
             ),
             Self::Unsent { count: 0, .. } => {
                 f.write_str("the frame holds no sample, so it was not sent")

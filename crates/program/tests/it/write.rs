@@ -1101,7 +1101,7 @@ fn stops_a_write_whose_places_are_not_valid() {
     ];
     assert_eq!(
         cases[2].3.to_string(),
-        "the node gave no place for the channel value of the open of a writer"
+        "the node gave no place for the channel value of the open"
     );
     for (seed, places, sent, error) in cases {
         by_hand(
