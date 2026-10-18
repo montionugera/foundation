@@ -23,6 +23,10 @@ proptest = { workspace = true }
 name = "frame"
 harness = false
 
+[[bench]]
+name = "sample"
+harness = false
+
 [[test]]
 name = "alloc"
 harness = false
