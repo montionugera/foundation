@@ -4,21 +4,20 @@
 #![deny(clippy::indexing_slicing, clippy::as_conversions)]
 
 use std::mem;
-use std::num::NonZeroU8;
 use std::ops::Range;
 
 use block::{Block, Pool, Unique};
 use env::files::File;
-use types::channel::{self, Slot};
+use types::channel;
 use types::frame::Path;
-use types::hash;
 use types::time::Stamp;
 
 use crate::buffer::Error;
 use crate::entry::{self, Header, Samples};
-use crate::log::{Mark, Run};
+use crate::log::{self, Run};
 use crate::record::{self, ALIGN, AREA_START, HEADER_LEN};
 use crate::wal::Layout;
+use types::log::Mark;
 
 /// One entry that a read gives back.
 #[derive(Clone, Debug)]
@@ -207,7 +206,7 @@ impl<'a> Reading<'a> {
             if (header.index, header.path) != (index, self.path) {
                 continue;
             }
-            at = at.after(header.first, header.len());
+            at = log::after(at, header.first, header.len());
             if at > self.read.next {
                 wanted.push((header, offset, at));
             }
@@ -216,47 +215,8 @@ impl<'a> Reading<'a> {
     }
 }
 
-/// The last entry with `tag` on `path` of each index of `wanted` in the record at
-/// `place` in the ring `file`, with the index's slot from `wanted`, in no order.
-///
-/// # Errors
-///
-/// [`Error::Files`] when a ring read fails, and [`Error::Pool`] when the pool has no
-/// block.
-pub(crate) async fn newest(
-    file: &File,
-    pool: &Pool,
-    place: u64,
-    path: Path,
-    tag: NonZeroU8,
-    wanted: &hash::Map<channel::Key, Slot>,
-) -> Result<Vec<(Slot, Stored)>, Error> {
-    let table = table(file, pool, place).await?;
-    let mut last: hash::Map<channel::Key, (usize, Slot, Header, usize)> =
-        hash::Map::default();
-    for (at, header) in headers(&table).enumerate() {
-        let (header, offset) = header.expect("invariant: a run names a record");
-        let Some(&slot) = wanted.get(&header.index) else {
-            continue;
-        };
-        if (header.path, header.tag) != (path, tag.get()) {
-            continue;
-        }
-        last.insert(header.index, (at, slot, header, offset));
-    }
-    drop(table);
-    let mut last: Vec<_> = last.into_values().collect();
-    last.sort_unstable_by_key(|&(at, ..)| at);
-    let mut found = Vec::with_capacity(last.len());
-    for (_, slot, header, offset) in last {
-        let bytes = bytes(file, pool, place, offset, header.bytes).await?;
-        found.push((slot, stored(header, bytes)));
-    }
-    Ok(found)
-}
-
 /// The stored entry of `header`, with the entry's `bytes`.
-fn stored(header: Header, bytes: Block) -> Stored {
+pub(crate) fn stored(header: Header, bytes: Block) -> Stored {
     Stored {
         first: header.first,
         samples: header.samples(),
@@ -299,7 +259,7 @@ async fn table(file: &File, pool: &Pool, place: u64) -> Result<Unique, Error> {
 
 /// The `len` bytes at body offset `offset` of the record at `place` in the ring
 /// `file`. No bytes make no file read.
-async fn bytes(
+pub(crate) async fn bytes(
     file: &File,
     pool: &Pool,
     place: u64,

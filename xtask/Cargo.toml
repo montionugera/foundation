@@ -5,9 +5,11 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+cfg-expr = "0.20"
 comrak.workspace = true
 semver = "1"
 serde_json = "1"
+syn.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

@@ -7,10 +7,12 @@ use std::collections::VecDeque;
 use std::collections::vec_deque::Drain;
 use std::fmt;
 use std::num::{NonZeroU8, NonZeroU64};
+use std::ops::Deref;
 
 use types::channel::{self, Slot};
 use types::frame::Path;
 use types::hash;
+use types::log::Mark;
 use types::time::Stamp;
 
 use crate::carry;
@@ -169,53 +171,33 @@ impl fmt::Display for Invalid {
     }
 }
 
-/// Where a read of a path stands: before the entries that end past `seq`, and
-/// past the first `given` entries with no samples at `seq`. Marks order as reads
-/// do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Mark {
-    /// The seq that the entries the read has not given end past.
-    pub seq: u64,
-    /// How many entries with no samples at `seq` the read gave.
-    pub given: u64,
+/// The mark after an entry of `len` samples from `first` that comes at `mark` on its
+/// path.
+///
+/// # Panics
+///
+/// When `first + len` passes `u64::MAX`: the tail checked the entry. When `given`
+/// passes `u64::MAX`: the log checked the entry.
+pub(crate) fn after(mark: Mark, first: u64, len: u32) -> Mark {
+    if len != 0 {
+        let seq = first
+            .checked_add(u64::from(len))
+            .expect("invariant: the tail checked the entry");
+        return Mark::at(seq);
+    }
+    Mark {
+        seq: first,
+        given: count(mark, first)
+            .expect("invariant: the log checked the entry")
+            .get(),
+    }
 }
 
-impl Mark {
-    /// The mark before every entry that ends past `seq`.
-    #[must_use]
-    pub const fn at(seq: u64) -> Self {
-        Self { seq, given: 0 }
-    }
-
-    /// The mark after an entry of `len` samples from `first` that comes at this
-    /// mark on its path.
-    ///
-    /// # Panics
-    ///
-    /// When `first + len` passes `u64::MAX`: the tail checked the entry. When
-    /// `given` passes `u64::MAX`: the log checked the entry.
-    pub(crate) fn after(self, first: u64, len: u32) -> Self {
-        if len != 0 {
-            let seq = first
-                .checked_add(u64::from(len))
-                .expect("invariant: the tail checked the entry");
-            return Self::at(seq);
-        }
-        Self {
-            seq: first,
-            given: self
-                .count(first)
-                .expect("invariant: the log checked the entry")
-                .get(),
-        }
-    }
-
-    /// The count of an entry with no samples at `first` that comes at this mark on
-    /// its path, or `None` past `u64::MAX`.
-    fn count(self, first: u64) -> Option<NonZeroU64> {
-        let given = if first == self.seq { self.given } else { 0 };
-        NonZeroU64::MIN.checked_add(given)
-    }
+/// The count of an entry with no samples at `first` that comes at `mark` on its path,
+/// or `None` past `u64::MAX`.
+fn count(mark: Mark, first: u64) -> Option<NonZeroU64> {
+    let given = if first == mark.seq { mark.given } else { 0 };
+    NonZeroU64::MIN.checked_add(given)
 }
 
 /// A record that holds entries of one path: the mark before the path's first
@@ -277,7 +259,7 @@ impl Position {
             });
         }
         let Some(samples) = samples else {
-            let given = start.count(first).ok_or(Fault::Crowded { seq: first })?;
+            let given = count(start, first).ok_or(Fault::Crowded { seq: first })?;
             self.tail.seq = first;
             self.given = given.get();
             return Ok((start, Kind::Record(given)));
@@ -532,6 +514,15 @@ impl Budget {
     }
 }
 
+/// The copy of the newest durable entry of one nonzero tag on one path of an index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Newest {
+    /// The offset of the record that holds it.
+    pub(crate) offset: u64,
+    /// The entry's parts, joined. A later copy of its log and tag reuses it.
+    pub(crate) bytes: Vec<u8>,
+}
+
 /// Every path the buffer holds, by the node's slot of the index and the path.
 /// `append` feeds it with each appended entry; the recovery walk and each sync
 /// feed it with each record's entries, in ring order. A trim hides the records
@@ -548,10 +539,10 @@ pub(crate) struct Logs {
     /// place in `places`, `items`, and `laps` stays valid. A change that drops a log
     /// updates each.
     paths: Vec<Log>,
-    /// The offset of the newest record that holds a durable entry with each nonzero
-    /// tag, by the log and the tag. Tag 0 marks samples, which no caller looks up. A
-    /// change that drops a log drops its tags in the same place.
-    tags: hash::Map<(Slot, Path, NonZeroU8), u64>,
+    /// The newest durable entry with each nonzero tag, by the log and the tag. Tag
+    /// 0 marks samples, which no caller looks up. A change that drops a log drops
+    /// its tags in the same place.
+    tags: hash::Map<(Slot, Path, NonZeroU8), Newest>,
     /// No read finds a record before this offset.
     hidden: u64,
     /// One item for each run and each carried tail. An item is stale once its path
@@ -650,31 +641,56 @@ impl Logs {
         }
     }
 
-    /// The offset of the newest record that holds a durable entry with `tag` on
-    /// `path`, for each index whose record is not hidden, with its slot and index,
-    /// in no order.
-    pub(crate) fn tagged(
+    /// The newest durable entry with `tag` on `path` of each index whose record is
+    /// not hidden, with its slot, in no order.
+    pub(crate) fn newest(
         &self,
         path: Path,
         tag: NonZeroU8,
-    ) -> Vec<(u64, Slot, channel::Key)> {
-        let tagged = self.tags.iter().filter(|&(&(_, on, of), &offset)| {
-            (on, of) == (path, tag) && offset >= self.hidden
-        });
-        tagged
-            .map(|(&(slot, ..), &offset)| {
-                let log = self.log(slot, path);
-                (
-                    offset,
-                    slot,
-                    log.expect("invariant: a tag has its log").index,
-                )
+    ) -> impl Iterator<Item = (Slot, &Newest)> {
+        self.tags
+            .iter()
+            .filter_map(move |(&(slot, on, of), newest)| {
+                ((on, of) == (path, tag) && newest.offset >= self.hidden)
+                    .then_some((slot, newest))
             })
-            .collect()
+    }
+
+    /// Makes the joined `parts` the newest durable entry of the tag of `header` on
+    /// its path of the index at `slot`, in the record at `offset`. It reuses the
+    /// bytes of the copy that it replaces, so a copy no larger than that one makes no
+    /// heap allocation.
+    ///
+    /// # Panics
+    ///
+    /// When the tag of `header` is 0.
+    pub(crate) fn copy<P: Deref<Target = [u8]>>(
+        &mut self,
+        slot: Slot,
+        header: &Header,
+        offset: u64,
+        parts: &[P],
+    ) {
+        let tag = NonZeroU8::new(header.tag).expect("invariant: a copy has a tag");
+        let newest = self
+            .tags
+            .entry((slot, header.path, tag))
+            .or_insert_with(|| Newest {
+                offset,
+                bytes: Vec::new(),
+            });
+        newest.offset = offset;
+        newest.bytes.clear();
+        newest
+            .bytes
+            .reserve_exact(parts.iter().map(|part| part.len()).sum());
+        for part in parts {
+            newest.bytes.extend_from_slice(part);
+        }
     }
 
     /// Hides the records before the offset `tail` from each later
-    /// [`find`](Self::find) and [`tagged`](Self::tagged), and drops their runs. It
+    /// [`find`](Self::find) and [`newest`](Self::newest), and drops their runs. It
     /// visits each path once for each run and carried tail of the records that it
     /// hides, and each path whose lap end waits, up to the first that needs a shrink
     /// when none is left. It shrinks the room of the runs of at most [`SHRINKS`]
@@ -919,8 +935,7 @@ impl Logs {
     /// Moves the durable tail of the header's path past the entry, as
     /// [`Position::advance`], and adds the record at `offset` to the path's runs when
     /// it is not the newest. The record becomes the path's holder when the entry gives
-    /// the durable stamp. A nonzero tag makes `offset` the newest record of its tag
-    /// on the path.
+    /// the durable stamp.
     ///
     /// # Errors
     ///
@@ -941,9 +956,6 @@ impl Logs {
         })?;
         if added {
             self.items.push(offset, at);
-        }
-        if let Some(tag) = NonZeroU8::new(header.tag) {
-            self.tags.insert((slot, header.path, tag), offset);
         }
         Ok(())
     }
@@ -1296,7 +1308,7 @@ mod tests {
                 });
             }
             marks.push(at);
-            at = at.after(header.first, header.len());
+            at = after(at, header.first, header.len());
         }
         (runs, marks)
     }
@@ -1343,7 +1355,7 @@ mod tests {
                         let run = runs.iter().rev().find(|run| run.offset == *offset);
                         let found = Found::Run(key, *run.expect("an entry has a run"));
                         prop_assert_eq!(logs.find(slot(index), path, *before), found);
-                        end = before.after(header.first, header.len());
+                        end = after(*before, header.first, header.len());
                     }
                     prop_assert_eq!(logs.find(slot(index), path, end), Found::End(end));
                 }
@@ -1388,7 +1400,7 @@ mod tests {
                         .zip(&marks)
                         .last()
                         .map_or(Mark::at(0), |(header, before)| {
-                            before.after(header.first, header.len())
+                            after(*before, header.first, header.len())
                         });
                     marks.push(end);
                     // No call of `Logs` shows the drop, so the model reads the runs.
@@ -1552,7 +1564,7 @@ mod tests {
                     .get(&key)
                     .copied()
                     .unwrap_or((offset, Mark::at(0), None));
-            let end = end.after(header.first, header.len());
+            let end = after(end, header.first, header.len());
             let last = header.samples().and_then(|samples| samples.last);
             let stamp = last.or(stamp);
             let holder = if last == stamp { offset } else { holder };
@@ -1722,6 +1734,101 @@ mod tests {
     }
 
     #[test]
+    fn newest_gives_the_last_copy_of_each_index_until_a_hide() {
+        let mut logs = Logs::new(AREA);
+        let tagged = |index, path, tag| Header {
+            tag,
+            ..header(index, path, 0, 2, None)
+        };
+        let bytes = |bytes: &[u8]| bytes.to_vec();
+        logs.copy(
+            slot(1),
+            &tagged(1, Path::Live, 2),
+            4096,
+            &[b"old".as_slice()],
+        );
+        logs.copy(
+            slot(1),
+            &tagged(1, Path::Live, 2),
+            8192,
+            &[b"ne".as_slice(), b"w"],
+        );
+        logs.copy(
+            slot(2),
+            &tagged(2, Path::Live, 2),
+            4096,
+            &[b"two".as_slice()],
+        );
+        logs.copy(
+            slot(1),
+            &tagged(1, Path::Live, 3),
+            4096,
+            &[b"tag 3".as_slice()],
+        );
+        logs.copy(
+            slot(1),
+            &tagged(1, Path::Backfill, 2),
+            4096,
+            &[b"back".as_slice()],
+        );
+        let tag = NonZeroU8::new(2).expect("not 0");
+        let newest = |logs: &Logs| {
+            let mut newest: Vec<(Slot, Newest)> = logs
+                .newest(Path::Live, tag)
+                .map(|(slot, newest)| (slot, newest.clone()))
+                .collect();
+            newest.sort_unstable_by_key(|&(slot, _)| slot);
+            newest
+        };
+        let new = Newest {
+            offset: 8192,
+            bytes: bytes(b"new"),
+        };
+        let two = Newest {
+            offset: 4096,
+            bytes: bytes(b"two"),
+        };
+        assert_eq!(newest(&logs), [(slot(1), new.clone()), (slot(2), two)]);
+        logs.hide(8192);
+        assert_eq!(newest(&logs), [(slot(1), new)]);
+    }
+
+    #[test]
+    fn a_copy_replaces_the_copy_of_its_path_and_tag() {
+        let mut logs = Logs::new(AREA);
+        let header = Header {
+            tag: 2,
+            ..header(1, Path::Live, 0, 2, None)
+        };
+        let tag = NonZeroU8::new(2).expect("not 0");
+        logs.copy(slot(1), &header, 4096, &[b"long".as_slice(), b" entry"]);
+        logs.copy(slot(1), &header, 8192, &[b"short".as_slice()]);
+        let (_, newest) = logs.newest(Path::Live, tag).next().expect("a copy");
+        let kept = (newest.bytes.as_slice(), newest.offset);
+        assert_eq!(kept, (b"short".as_slice(), 8192));
+    }
+
+    #[test]
+    fn sync_makes_no_copy() {
+        let mut logs = Logs::new(AREA);
+        let header = Header {
+            tag: 2,
+            ..header(1, Path::Live, 0, 2, None)
+        };
+        logs.sync(slot(1), &header, 4096).expect("syncs");
+        let tag = NonZeroU8::new(2).expect("not 0");
+        assert_eq!(logs.newest(Path::Live, tag).count(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "invariant: a copy has a tag")]
+    fn a_copy_of_tag_0_is_a_broken_invariant() {
+        let mut logs = Logs::new(AREA);
+        let header = header(1, Path::Live, 0, 2, None);
+        logs.copy::<&[u8]>(slot(1), &header, 4096, &[]);
+    }
+
+    #[test]
     fn a_record_with_two_entries_of_a_path_makes_one_run() {
         let mut logs = Logs::new(AREA);
         logs.sync(slot(1), &header(1, Path::Live, 0, 2, None), 4096)
@@ -1815,13 +1922,13 @@ mod tests {
 
     #[test]
     fn a_mark_moves_past_an_entry_as_a_read_does() {
-        assert_eq!(mark(0, 0).after(0, 3), mark(3, 0));
-        assert_eq!(mark(1, 0).after(0, 3), mark(3, 0), "inside the entry");
-        assert_eq!(mark(3, 0).after(5, 2), mark(7, 0), "a skip ahead");
-        assert_eq!(mark(3, 0).after(3, 0), mark(3, 1), "no samples");
-        assert_eq!(mark(3, 1).after(3, 0), mark(3, 2), "no samples again");
+        assert_eq!(after(mark(0, 0), 0, 3), mark(3, 0));
+        assert_eq!(after(mark(1, 0), 0, 3), mark(3, 0), "inside the entry");
+        assert_eq!(after(mark(3, 0), 5, 2), mark(7, 0), "a skip ahead");
+        assert_eq!(after(mark(3, 0), 3, 0), mark(3, 1), "no samples");
+        assert_eq!(after(mark(3, 1), 3, 0), mark(3, 2), "no samples again");
         assert_eq!(
-            mark(3, 2).after(5, 0),
+            after(mark(3, 2), 5, 0),
             mark(5, 1),
             "no samples after a skip"
         );
@@ -1831,7 +1938,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "invariant: the tail checked the entry")]
     fn a_mark_past_the_last_seq_is_a_broken_invariant() {
-        let _: Mark = mark(0, 0).after(u64::MAX, 1);
+        let _: Mark = after(mark(0, 0), u64::MAX, 1);
     }
 
     /// Record 1 holds [2, 5) and an entry with no samples at 5; record 2 starts at
@@ -3475,7 +3582,7 @@ mod tests {
             .iter()
             .filter(|(_, header)| (header.index, header.path) == (key, path))
             .filter_map(|&(_, header)| {
-                at = at.after(header.first, header.len());
+                at = after(at, header.first, header.len());
                 (at > from).then_some((header, at))
             })
             .collect()

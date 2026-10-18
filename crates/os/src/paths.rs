@@ -8,7 +8,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use env::entropy::Driver as _;
-use env::paths::{Error, Found, Key, names_directory};
+use env::paths::{Error, Found, Key, Kind, names_directory};
 use rustix::io::Errno;
 
 use crate::{dir, entropy, host};
@@ -46,7 +46,9 @@ impl env::paths::Driver for Driver {
 fn resolve(path: &Path) -> io::Result<PathBuf> {
     let missing = match fs::canonicalize(path) {
         // macOS resolves a file at a path that ends in `/`, `/.`, or `/..`, also
-        // through a link, where the stat fails.
+        // through a link, where the stat fails. The stat also fails past the longest
+        // path that the host takes, where glibc `realpath` does not, which bounds the
+        // walk of `Paths::within`.
         Ok(resolved) => return fs::metadata(path).map(|_| resolved),
         // Only a last name that is not there passes `symlink_metadata` below.
         Err(e) => e,
@@ -79,7 +81,7 @@ fn read(path: &Path, most: usize) -> io::Result<Found> {
                 let entry = path.join(name?);
                 size = size.saturating_add(entry.as_os_str().len());
                 if size > most {
-                    return Ok(Found::Large);
+                    return Ok(Found::Large(Kind::Directory));
                 }
                 entries.push(entry);
             }
@@ -91,7 +93,7 @@ fn read(path: &Path, most: usize) -> io::Result<Found> {
     let mut bytes = Vec::new();
     File::from(file).take(over).read_to_end(&mut bytes)?;
     if bytes.len() > most {
-        return Ok(Found::Large);
+        return Ok(Found::Large(Kind::File));
     }
     Ok(Found::File(bytes))
 }

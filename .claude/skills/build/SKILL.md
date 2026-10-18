@@ -101,7 +101,7 @@ crates that use a public item you changed (`-p <a> -p <b>`):
 ```sh
 cargo fmt --check
 cargo clippy -p <crates> --all-targets --all-features -- -D warnings
-cargo xtask layers && cargo xtask globals && cargo xtask oracles
+cargo xtask layers && cargo xtask globals && cargo xtask skips && cargo xtask oracles
 cargo test -p <crates> --all-features
 cargo hack check -p <crates> --each-feature --no-dev-deps
 p=$(mktemp) && git diff origin/main...HEAD > "$p"

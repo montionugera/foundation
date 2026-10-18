@@ -2,7 +2,7 @@
 //! C file that our options compile, each header that it includes, and each file of
 //! [`EXTRA`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -216,7 +216,7 @@ const FUNCTION_SYMBOLS: [(&str, &str, &str, Access); 25] = [
 /// [`AWS_LC`] does not admit, by its name without the prefix of [`Crypto`]. A key
 /// admits only the name with the prefix. A test of `connector-opcua` names the function
 /// of each key of [`AWS_LC_INPUTS`] and fails when its reason becomes false.
-const AWS_LC_KEYS: [(&str, &str, &str, Access); 26] = [
+const AWS_LC_KEYS: [(&str, &str, &str, Access); 18] = [
     // Gives the time of a certificate, which is never NULL, so it reads no clock.
     (
         "plugins/crypto/openssl/certificategroup.c",
@@ -230,58 +230,6 @@ const AWS_LC_KEYS: [(&str, &str, &str, Access); 26] = [
         "plugins/crypto/openssl/certificategroup.c",
         "openSSL_verifyChain",
         "X509_cmp_current_time",
-        Access::Call,
-    ),
-    // With no callback, an encrypted PEM makes aws-lc read a password from the
-    // console. No node loads a key or a certificate: `connector-opcua` adds no
-    // security policy (#3017).
-    (
-        "plugins/crypto/openssl/certificategroup.c",
-        "UA_CertificateUtils_comparePublicKeys",
-        "PEM_read_bio_X509",
-        Access::Call,
-    ),
-    (
-        "plugins/crypto/openssl/certificategroup.c",
-        "UA_CertificateUtils_comparePublicKeys",
-        "PEM_read_bio_X509_REQ",
-        Access::Call,
-    ),
-    (
-        "plugins/crypto/openssl/certificategroup.c",
-        "openSSLLoadLeafCertificate",
-        "PEM_read_bio_X509",
-        Access::Call,
-    ),
-    (
-        "plugins/crypto/openssl/certificategroup.c",
-        "reloadCertificates",
-        "PEM_read_bio_X509_CRL",
-        Access::Call,
-    ),
-    (
-        "plugins/crypto/openssl/securitypolicy_common.c",
-        "UA_OpenSSL_LoadPemCertificate",
-        "PEM_read_bio_X509",
-        Access::Call,
-    ),
-    (
-        "plugins/crypto/openssl/securitypolicy_common.c",
-        "UA_OpenSSL_LoadPemCrl",
-        "PEM_read_bio_X509_CRL",
-        Access::Call,
-    ),
-    (
-        "plugins/crypto/openssl/securitypolicy_common.c",
-        "UA_OpenSSL_LoadPrivateKey",
-        "PEM_read_bio_PrivateKey",
-        Access::Call,
-    ),
-    // The callback gives the password of the argument, so it reads no console.
-    (
-        "plugins/crypto/openssl/certificategroup.c",
-        "UA_CertificateUtils_decryptPrivateKey",
-        "PEM_read_bio_PrivateKey",
         Access::Call,
     ),
     // The randomness of aws-lc, which TLS RANDOMNESS admits: the nonces of a channel,
@@ -387,16 +335,10 @@ const AWS_LC_KEYS: [(&str, &str, &str, Access); 26] = [
     ),
 ];
 
-/// The functions of aws-lc that the copy calls and that read the clock on each call or,
-/// with no password callback, the console. `ASN1_TIME_to_tm` reads the clock only on a
-/// NULL time, which its key states the copy never gives.
-const AWS_LC_INPUTS: [&str; 5] = [
-    "PEM_read_bio_PrivateKey",
-    "PEM_read_bio_X509",
-    "PEM_read_bio_X509_CRL",
-    "PEM_read_bio_X509_REQ",
-    "X509_cmp_current_time",
-];
+/// The functions of aws-lc that the copy calls and that read the clock on each call.
+/// `ASN1_TIME_to_tm` reads the clock only on a NULL time, which its key states the
+/// copy never gives.
+const AWS_LC_INPUTS: [&str; 1] = ["X509_cmp_current_time"];
 
 /// The release files that the copy holds and the library of our options does not
 /// compile. A `.c` file goes in `sources.txt`, so it builds with `flags.txt`.
@@ -508,9 +450,10 @@ const SYMBOLS: [&str; 30] = [
 /// The functions of aws-lc that any file of the copy may call, by name without the
 /// prefix of [`Crypto`]. Each reads no clock, file, network, randomness, or process
 /// state, other than the features of the processor, by which aws-lc picks the code of
-/// an algorithm and not its result.
+/// an algorithm and not its result. A PEM reader reads no console only with a callback
+/// of [`PASSWORDS`], which [`passwords`] checks.
 #[rustfmt::skip]
-const AWS_LC: [&str; 144] = [
+const AWS_LC: [&str; 148] = [
     "ASN1_INTEGER_cmp", "BIO_free", "BIO_new_mem_buf", "BIO_reset", "BN_bin2bn",
     "BN_bn2binpad", "BN_free", "BN_new", "BN_set_word", "ECDSA_SIG_free",
     "ECDSA_SIG_get0", "ECDSA_SIG_new", "ECDSA_SIG_set0", "ECDSA_size",
@@ -539,7 +482,8 @@ const AWS_LC: [&str; 144] = [
     "EVP_sha256", "EVP_sha384", "GENERAL_NAME_free", "HMAC", "OBJ_txt2nid",
     "OPENSSL_cleanse", "OPENSSL_free", "OPENSSL_sk_free", "OPENSSL_sk_new_null",
     "OPENSSL_sk_num", "OPENSSL_sk_pop_free_ex", "OPENSSL_sk_push", "OPENSSL_sk_value",
-    "RSA_free", "RSA_new", "RSA_size", "X509V3_EXT_conf_nid",
+    "PEM_read_bio_PrivateKey", "PEM_read_bio_X509", "PEM_read_bio_X509_CRL",
+    "PEM_read_bio_X509_REQ", "RSA_free", "RSA_new", "RSA_size", "X509V3_EXT_conf_nid",
     "X509_CRL_digest", "X509_CRL_free", "X509_CRL_get_REVOKED", "X509_CRL_get_issuer",
     "X509_EXTENSION_free", "X509_NAME_add_entry_by_txt", "X509_NAME_cmp",
     "X509_NAME_dup", "X509_NAME_free", "X509_NAME_new", "X509_NAME_oneline",
@@ -568,6 +512,8 @@ pub(crate) struct Crypto {
     include: Vec<PathBuf>,
     /// The prefix of each of its symbols, with the `_` that ends it.
     prefix: String,
+    /// Its `openssl/pem.h`, whose declarations give the readers of [`passwords`].
+    pem: PathBuf,
 }
 
 impl Crypto {
@@ -598,7 +544,12 @@ impl Crypto {
         let include = vec![dir.join("generated-include"), dir.join("aws-lc/include")];
         // The line that the build script of `connector-opcua` reads.
         let prefix = Self::read_prefix(&include[0].join(PREFIX_HEADER))?;
-        Ok(Self { include, prefix })
+        let pem = include[1].join("openssl/pem.h");
+        Ok(Self {
+            include,
+            prefix,
+            pem,
+        })
     }
 
     /// The prefix that the `boringssl_prefix_symbols.h` at `header` defines.
@@ -630,6 +581,20 @@ impl Crypto {
         self.include
             .iter()
             .flat_map(|dir| ["-isystem".into(), dir.into()])
+    }
+
+    /// The [`readers`] of its `openssl/pem.h`, which `cc` preprocesses alone, with no
+    /// flag of the copy, so that no file or header of the copy changes them.
+    ///
+    /// # Errors
+    ///
+    /// A `cc` that fails.
+    fn readers(&self, cc: &Path) -> Result<BTreeMap<String, usize>, String> {
+        let mut pem = Command::new(cc);
+        pem.args(self.flags()).arg("-E").arg(&self.pem);
+        spawn(&mut pem)
+            .and_then(wait)
+            .map(|(text, _)| readers(&tokens(&text)))
     }
 
     /// Whether `symbol` is a function of [`AWS_LC`].
@@ -988,9 +953,6 @@ fn inspect(
     if !other.is_empty() {
         return Err(other);
     }
-    remove(out)
-        .and_then(|()| std::fs::create_dir_all(out).map_err(|e| format!("{e}")))
-        .map_err(|e| vec![e])?;
     let mut probe = Command::new(cc);
     probe
         .args(crypto.flags())
@@ -999,6 +961,7 @@ fn inspect(
     gcc(&macros).map_err(|e| vec![e])?;
     let architecture = Architecture::read(&macros).map_err(|e| vec![e])?;
     let dirs = system_dirs(&verbose);
+    let readers = crypto.readers(cc).map_err(|e| vec![e])?;
     let objects =
         build(copy, &sources, &flags, out, cc, crypto).map_err(|e| vec![e])?;
     let exported = symbols(
@@ -1038,7 +1001,8 @@ fn inspect(
                  caller"
             ));
         }
-        for problem in includes(&preprocessed, copy, &flags, &dirs, &crypto.include) {
+        let found = includes(&preprocessed, copy, &flags, &dirs, &crypto.include);
+        for problem in found.into_iter().chain(passwords(&preprocessed, &readers)) {
             problems.push(format!("{source}: {problem}"));
         }
     }
@@ -1135,6 +1099,14 @@ fn inside(path: &Path) -> bool {
     })
 }
 
+/// The line and the file of `line` when it is a line marker of `cc -E` (`# 1 "a.c" 2`),
+/// which sets them for the line after it.
+fn marker(line: &str) -> Option<(usize, &str)> {
+    let (number, name) = line.strip_prefix("# ")?.split_once(" \"")?;
+    let name = name.rsplit_once('"').map_or(name, |(name, _)| name);
+    Some((number.parse().ok()?, name))
+}
+
 /// An error for each `#include_next`, and each `#include` or `#import` in a file of
 /// the copy, as `preprocessed` (the output of `cc -E -dI` in `copy`) shows it, that
 /// finds a header outside both the copy and the system directories `dirs`, or a
@@ -1156,10 +1128,8 @@ fn includes(
     let mut problems = Vec::new();
     let mut file = Path::new("");
     for line in preprocessed.lines() {
-        if let Some(marker) = line.strip_prefix("# ")
-            && let Some((_, name)) = marker.split_once(" \"")
-        {
-            file = Path::new(name.rsplit_once('"').map_or(name, |(name, _)| name));
+        if let Some((_, name)) = marker(line) {
+            file = Path::new(name);
             continue;
         }
         let Some((keyword, directive)) = line.split_once(' ') else {
@@ -1216,6 +1186,168 @@ fn includes(
     problems
 }
 
+/// The callbacks that a call in the copy may give a function of aws-lc that takes a
+/// `pem_password_cb`. Each gives aws-lc only a password that its caller gives, so no
+/// read waits on the console.
+const PASSWORDS: [&str; 2] =
+    ["UA_OpenSSL_refusePassword", "privateKeyPasswordCallback"];
+
+/// A token of `cc -E` output, with the file and the line that hold it.
+struct Token<'a> {
+    text: &'a str,
+    file: &'a str,
+    line: usize,
+}
+
+/// The tokens of `preprocessed`, the output of `cc -E -dI`, less its directives. A
+/// run of letters, digits, and `_`, or a literal, is one token; each other character
+/// is one token.
+fn tokens(preprocessed: &str) -> Vec<Token<'_>> {
+    let mut tokens = Vec::new();
+    let (mut file, mut line) = ("", 0);
+    for text in preprocessed.lines() {
+        if let Some(marker) = marker(text) {
+            (line, file) = marker;
+            continue;
+        }
+        let mut rest = text;
+        if !rest.trim_start().starts_with('#') {
+            while let Some(start) = rest.find(|c: char| !c.is_whitespace()) {
+                rest = &rest[start..];
+                let length = token_length(rest);
+                tokens.push(Token {
+                    text: &rest[..length],
+                    file,
+                    line,
+                });
+                rest = &rest[length..];
+            }
+        }
+        line += 1;
+    }
+    tokens
+}
+
+/// Whether `c` is a character of a C word: a letter, a digit, or `_`.
+fn word(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// The length in bytes of the token at the start of `text`, which is not empty.
+fn token_length(text: &str) -> usize {
+    let first = text.chars().next().unwrap_or(' ');
+    if word(first) {
+        return text.find(|c: char| !word(c)).unwrap_or(text.len());
+    }
+    if first == '"' || first == '\'' {
+        let mut escaped = false;
+        for (at, c) in text.char_indices().skip(1) {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                _ if c == first => return at + 1,
+                _ => {}
+            }
+        }
+        return text.len();
+    }
+    first.len_utf8()
+}
+
+/// Each function that a declaration outside the copy in `tokens` gives a parameter of
+/// the type `pem_password_cb`, with the index of that parameter.
+fn readers(tokens: &[Token<'_>]) -> BTreeMap<String, usize> {
+    let mut readers = BTreeMap::new();
+    // The index of each open parenthesis, with the count of commas after it.
+    let mut open: Vec<(usize, usize)> = Vec::new();
+    for (at, token) in tokens.iter().enumerate() {
+        match token.text {
+            "(" => open.push((at, 0)),
+            ")" => {
+                open.pop();
+            }
+            "," => {
+                if let Some((_, commas)) = open.last_mut() {
+                    *commas += 1;
+                }
+            }
+            "pem_password_cb" if !inside(Path::new(token.file)) => {
+                if let Some(&(paren, commas)) = open.last()
+                    && let Some(name) = paren.checked_sub(1).map(|at| tokens[at].text)
+                    && name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                {
+                    readers.insert(name.to_owned(), commas);
+                }
+            }
+            _ => {}
+        }
+    }
+    readers
+}
+
+/// The text of each argument of the call whose `(` starts `tokens`, or `None` when
+/// `tokens` starts with no `(` or ends before its `)`.
+fn call_arguments(tokens: &[Token<'_>]) -> Option<Vec<String>> {
+    if tokens.first()?.text != "(" {
+        return None;
+    }
+    let mut arguments = vec![String::new()];
+    let mut depth = 0_usize;
+    for token in &tokens[1..] {
+        match token.text {
+            "(" | "[" | "{" => depth += 1,
+            ")" if depth == 0 => return Some(arguments),
+            ")" | "]" | "}" => depth = depth.checked_sub(1)?,
+            "," if depth == 0 => {
+                arguments.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        let argument = arguments.last_mut()?;
+        if argument.ends_with(word) && token.text.starts_with(word) {
+            argument.push(' ');
+        }
+        argument.push_str(token.text);
+    }
+    None
+}
+
+/// An error for each name, in a file of the copy in `preprocessed` (the output of
+/// `cc -E -dI`), of a function of `readers` (from [`readers`]), other than in a call
+/// that gives a callback of [`PASSWORDS`] at its place. With no callback, aws-lc
+/// reads a password from the console.
+fn passwords(preprocessed: &str, readers: &BTreeMap<String, usize>) -> Vec<String> {
+    let tokens = tokens(preprocessed);
+    let mut problems = Vec::new();
+    for (at, token) in tokens.iter().enumerate() {
+        let Some(&place) = readers.get(token.text) else {
+            continue;
+        };
+        if !inside(Path::new(token.file)) {
+            continue;
+        }
+        let file = files::normalize(Path::new(token.file));
+        let (file, line, name) = (file.display(), token.line, token.text);
+        match call_arguments(&tokens[at + 1..]) {
+            None => problems.push(format!(
+                "{file}:{line}: names `{name}`, which takes a `pem_password_cb`, \
+                 other than in a call, so a call through it escapes PASSWORDS"
+            )),
+            Some(arguments) => {
+                let callback = arguments.get(place).map_or("", String::as_str);
+                if !PASSWORDS.contains(&callback) {
+                    problems.push(format!(
+                        "{file}:{line}: gives `{name}` the callback `{callback}`, \
+                         which PASSWORDS does not list"
+                    ));
+                }
+            }
+        }
+    }
+    problems
+}
+
 /// Refuses a `cc` that is not GCC, from `macros`, the output of `cc -dM -E`. The
 /// check passes GCC's `-dumpbase`, whose value clang reads as a source file.
 fn gcc(macros: &str) -> Result<(), String> {
@@ -1242,9 +1374,9 @@ fn system_dirs(verbose: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Compiles and preprocesses each source of `sources` in `copy` into `out` at once
-/// with `cc` against `crypto`, and gives each (source, object, the output of
-/// `cc -E -dI`).
+/// Compiles and preprocesses each source of `sources` in `copy` into `out`, which it
+/// empties first, at once with `cc` against `crypto`, and gives each (source,
+/// object, the output of `cc -E -dI`).
 fn build<'a>(
     copy: &Path,
     sources: &'a str,
@@ -1253,6 +1385,8 @@ fn build<'a>(
     cc: &Path,
     crypto: &Crypto,
 ) -> Result<Vec<(&'a str, PathBuf, String)>, String> {
+    remove(out)?;
+    std::fs::create_dir_all(out).map_err(|e| format!("{e}"))?;
     let mut children = Vec::new();
     for (index, source) in sources.lines().enumerate() {
         let object = out.join(format!("{index}.o"));
@@ -1261,17 +1395,25 @@ fn build<'a>(
             // `./` keeps a source such as `-x.c` or `@x.c` from being an option. Else
             // GCC gives cc1 the base name as `-dumpbase`, which cc1 reads as a
             // response file when it starts with `@`. With no stack protector, a
-            // reference to its random canary is one that the C makes.
+            // reference to its random canary is one that the C makes. A call with no
+            // declaration fails, as on GCC 14, also when its name is a macro of the
+            // prefix header, which GCC does not report with macro tracking.
             cc.current_dir(copy)
                 .args(flags.lines())
                 .args(crypto.flags())
-                .args(["-g", "-O0", "-fno-stack-protector", "-dumpbase"])
+                .args(["-g", "-O0", "-fno-stack-protector"])
+                .args([
+                    "-Werror=implicit-function-declaration",
+                    "-ftrack-macro-expansion=0",
+                ])
+                .arg("-dumpbase")
                 .arg(index.to_string())
                 .args(mode);
             spawn(cc.arg(Path::new(".").join(source)))
         };
         let compile = compiler(&["-c", "-o", &object.to_string_lossy()])?;
-        children.push((source, object, compile, compiler(&["-E", "-dI"])?));
+        let preprocess = compiler(&["-E", "-dI"])?;
+        children.push((source, object, compile, preprocess));
     }
     children
         .into_iter()
@@ -1285,7 +1427,7 @@ fn build<'a>(
 /// The name of each function that the output of `objdump --dwarf=info` shows inlined.
 /// An `always_inline` function is inlined also at `-O0`.
 fn inlined(info: &str) -> Vec<String> {
-    let mut names = std::collections::BTreeMap::new();
+    let mut names = BTreeMap::new();
     let mut origins = Vec::new();
     let (mut entry, mut inline) = ("", false);
     for line in info.lines() {
@@ -1477,8 +1619,7 @@ impl Uses {
 
     /// An error for each key of `keys` that `list`, named `name`, does not hold, and
     /// for each key of `list` that `keys` does not hold. The error of a key whose
-    /// symbol is in `inputs`, which read a clock or the console, asks for a check of
-    /// its reason.
+    /// symbol is in `inputs`, which read a clock, asks for a check of its reason.
     fn compare(
         keys: &BTreeSet<(String, String, String, Access)>,
         list: &[(&str, &str, &str, Access)],
@@ -1496,24 +1637,25 @@ impl Uses {
                 )
             })
             .collect();
-        let new = keys.difference(&listed).map(|(file, function, symbol, access)| {
-            let verb = access.verb();
-            if inputs.contains(&symbol.as_str()) {
-                format!(
-                    "{file}: `{function}` {verb} `{symbol}`, which reads a clock or \
-                     the console. Find whether a node runs it; if not, add it to \
-                     {name} with the reason and a check of the reason in \
-                     connector-opcua"
-                )
-            } else {
-                format!(
-                    "{file}: `{function}` {verb} `{symbol}`, which no list admits. \
+        let new = keys
+            .difference(&listed)
+            .map(|(file, function, symbol, access)| {
+                let verb = access.verb();
+                if inputs.contains(&symbol.as_str()) {
+                    format!(
+                        "{file}: `{function}` {verb} `{symbol}`, which reads a clock. \
+                     Find whether a node runs it; if not, add it to {name} with the \
+                     reason and a check of the reason in connector-opcua"
+                    )
+                } else {
+                    format!(
+                        "{file}: `{function}` {verb} `{symbol}`, which no list admits. \
                      Find whether a node runs it; if not, or if it reads no clock, \
                      file, network, randomness, or process state, add it to {name} \
                      with the reason"
-                )
-            }
-        });
+                    )
+                }
+            });
         let gone = listed
             .difference(keys)
             .map(|(file, function, symbol, access)| {
@@ -2225,6 +2367,277 @@ Disassembly of section .text.stamp:
         remove(&root).unwrap();
     }
 
+    /// `cc -E -dI` output of `a.c` of a copy, which includes a header of aws-lc with
+    /// two functions that take a `pem_password_cb`, and a header of the copy.
+    const PREPROCESSED: &str = r#"# 0 "./a.c"
+# 0 "<built-in>"
+# 1 "./a.c"
+#include <openssl/pem.h>
+# 1 "/aws/include/openssl/pem.h" 1
+typedef int pem_password_cb (char *buf, int size, int rwflag, void *userdata);
+extern X *read_x(B *o, X **x, pem_password_cb *cb, void *u); extern int write_x(B *o);
+__attribute__((deprecated("Since " "3.0"))) RSA *read_r(BIO *out,
+                                                        pem_password_cb *cb, void *u);
+int (*pointer)(pem_password_cb *cb);
+extern X *read_q(B *o, int (*f)(void), pem_password_cb *cb, void *u);
+# 2 "./a.c" 2
+x = read_x(b, ((void*)0), UA_OpenSSL_refusePassword, ((void*)0));
+y = read_r(b, privateKeyPasswordCallback, 0);
+z = read_x(b, ((void*)0), ((void*)0), ((void*)0));
+w = read_r(b,
+           other, 0);
+v = read_x(f(a, b), c, g(d, e), 0);
+p = &read_r;
+q = read_x(b, c, "a\", b", 0);
+r = read_x(b, ',', ',', 0);
+s = write_x(b, 0) + pointer(0);
+u = read_q(b, 0, sizeof x, 0);
+#include "copy.h"
+# 1 "include/copy.h" 1
+int wrap(pem_password_cb *cb);
+# 14 "./a.c" 2
+t = wrap(0);
+m = read_x(b, ((void*)0),
+#pragma GCC diagnostic push
+           UA_OpenSSL_refusePassword, 0);
+k = read_x(b, (X *[]){0, 0}, UA_OpenSSL_refusePassword, 0);
+#include "guarded.h"
+#include "guarded.h"
+n = read_x(b, 0, 0, 0);
+"#;
+
+    #[test]
+    fn readers_gives_each_function_of_aws_lc_with_the_place_of_its_callback() {
+        assert_eq!(
+            readers(&tokens(PREPROCESSED)),
+            [("read_q", 2), ("read_r", 1), ("read_x", 2)]
+                .map(|(name, place)| (name.to_owned(), place))
+                .into()
+        );
+    }
+
+    #[test]
+    fn passwords_names_each_use_of_a_reader_that_gives_no_callback_of_passwords() {
+        let gives = |line: usize, name: &str, callback: &str| {
+            format!(
+                "a.c:{line}: gives `{name}` the callback `{callback}`, which PASSWORDS \
+                 does not list"
+            )
+        };
+        assert_eq!(
+            passwords(PREPROCESSED, &readers(&tokens(PREPROCESSED))),
+            [
+                gives(4, "read_x", "((void*)0)"),
+                gives(5, "read_r", "other"),
+                gives(7, "read_x", "g(d,e)"),
+                "a.c:8: names `read_r`, which takes a `pem_password_cb`, other than in \
+                 a call, so a call through it escapes PASSWORDS"
+                    .to_owned(),
+                gives(9, "read_x", r#""a\", b""#),
+                gives(10, "read_x", "','"),
+                gives(12, "read_q", "sizeof x"),
+                gives(21, "read_x", "0"),
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn check_finds_a_read_of_the_committed_copy_that_gives_aws_lc_no_callback() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let root = temp("passwords");
+        std::fs::create_dir(root.join("patches")).unwrap();
+        let mut cp = Command::new("cp");
+        exec(
+            cp.arg("-R")
+                .arg(workspace.join(DEST))
+                .arg(root.join("patches")),
+        )
+        .unwrap();
+        let file = "plugins/crypto/openssl/securitypolicy_common.c";
+        let path = root.join(DEST).join(file);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let call = "PEM_read_bio_X509(bio, NULL, UA_OpenSSL_refusePassword, NULL);";
+        let line = text.lines().position(|line| line.contains(call)).unwrap() + 1;
+        let changed = call.replace("UA_OpenSSL_refusePassword", "NULL");
+        std::fs::write(&path, text.replacen(call, &changed, 1)).unwrap();
+        let crypto = Crypto::locked(workspace).unwrap();
+        assert_eq!(
+            check(&root, &crypto),
+            Err(vec![format!(
+                "{file}: {file}:{line}: gives `{}PEM_read_bio_X509` the callback \
+                 `((void*)0)`, which PASSWORDS does not list",
+                crypto.prefix
+            )])
+        );
+        remove(&root).unwrap();
+    }
+
+    /// The result of [`check`] on a copy of the committed copy with each (path, text)
+    /// of `files` and with `text` after the end of `src/util/ua_util.c`, with the
+    /// prefix of aws-lc.
+    fn check_with_util(
+        name: &str,
+        files: &[(&str, &str)],
+        text: &str,
+    ) -> (Result<(), Vec<String>>, String) {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let root = temp(name);
+        std::fs::create_dir(root.join("patches")).unwrap();
+        let mut cp = Command::new("cp");
+        exec(
+            cp.arg("-R")
+                .arg(workspace.join(DEST))
+                .arg(root.join("patches")),
+        )
+        .unwrap();
+        create_files(&root.join(DEST), files);
+        let path = root.join(DEST).join(UTIL);
+        let util = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, util + text).unwrap();
+        let crypto = Crypto::locked(workspace).unwrap();
+        let result = check(&root, &crypto);
+        remove(&root).unwrap();
+        (result, crypto.prefix.clone())
+    }
+
+    const UTIL: &str = "src/util/ua_util.c";
+
+    /// The number of the line after the last line of `src/util/ua_util.c`.
+    fn util_end() -> usize {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let util = std::fs::read_to_string(workspace.join(DEST).join(UTIL)).unwrap();
+        util.lines().count() + 1
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn check_fails_a_read_of_the_copy_with_no_declaration() {
+        let (result, _) = check_with_util(
+            "undeclared",
+            &[],
+            "void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
+        );
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].starts_with("cc failed: "), "{errors:?}");
+        assert!(
+            errors[0].contains(&format!(
+                "./{UTIL}:{}:25: error: implicit declaration of function \
+                 'PEM_read_bio_X509'",
+                util_end()
+            )),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn check_fails_a_read_of_aws_lc_with_no_declaration() {
+        let (result, prefix) = check_with_util(
+            "undeclared-prefixed",
+            &[],
+            "#include <openssl/base.h>\n\
+             void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
+        );
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].starts_with("cc failed: "), "{errors:?}");
+        assert!(
+            errors[0].contains(&format!(
+                "./{UTIL}:{}:25: error: implicit declaration of function \
+                 '{prefix}PEM_read_bio_X509'",
+                util_end() + 1
+            )),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn check_finds_a_read_of_the_copy_with_its_own_declaration() {
+        let line = util_end() + 2;
+        let (result, prefix) = check_with_util(
+            "declared",
+            &[],
+            "#include <openssl/base.h>\n\
+             void *PEM_read_bio_X509(void *, void *, void *, void *);\n\
+             void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
+        );
+        assert_eq!(
+            result,
+            Err(vec![
+                format!(
+                    "{UTIL}: {UTIL}:{}: gives `{prefix}PEM_read_bio_X509` the callback \
+                     `void*`, which PASSWORDS does not list",
+                    line - 1
+                ),
+                format!(
+                    "{UTIL}: {UTIL}:{line}: gives `{prefix}PEM_read_bio_X509` the callback \
+                     `0`, which PASSWORDS does not list"
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn check_finds_a_read_under_a_macro_of_pem_h() {
+        let line = util_end() + 3;
+        let (result, prefix) = check_with_util(
+            "under-pem",
+            &[],
+            "#include <openssl/base.h>\n\
+             #ifndef OPENSSL_HEADER_PEM_H\n\
+             void *PEM_read_bio_X509(void *, void *, void *, void *);\n\
+             void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n\
+             #endif\n",
+        );
+        assert_eq!(
+            result,
+            Err(vec![
+                format!(
+                    "{UTIL}: {UTIL}:{}: gives `{prefix}PEM_read_bio_X509` the \
+                     callback `void*`, which PASSWORDS does not list",
+                    line - 1
+                ),
+                format!(
+                    "{UTIL}: {UTIL}:{line}: gives `{prefix}PEM_read_bio_X509` the \
+                     callback `0`, which PASSWORDS does not list"
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn check_finds_a_read_past_a_pem_h_of_the_copy() {
+        let line = util_end() + 1;
+        let (result, prefix) = check_with_util(
+            "pem",
+            &[(
+                "src/util/openssl/pem.h",
+                "#include <openssl/base.h>\n\
+                 void *PEM_read_bio_X509(void *, void *, void *, void *);\n",
+            )],
+            "#include \"openssl/pem.h\"\n\
+             void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
+        );
+        let gives = |place: &str, callback: &str| {
+            format!(
+                "{UTIL}: {place}: gives `{prefix}PEM_read_bio_X509` the callback \
+                 `{callback}`, which PASSWORDS does not list"
+            )
+        };
+        assert_eq!(
+            result,
+            Err(vec![
+                gives("src/util/openssl/pem.h:2", "void*"),
+                gives(&format!("{UTIL}:{line}"), "0"),
+            ])
+        );
+    }
+
     #[test]
     fn line_directives_names_each_line_directive_and_marker() {
         let copy = temp("lines");
@@ -2281,10 +2694,6 @@ Disassembly of section .text.stamp:
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_refuses_a_line_directive_in_the_copy() {
         let (root, repo, result) = run_after("line", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -2679,13 +3088,13 @@ End of search list.
         unlisted_input(file, function, "UA_DateTime_now", "FUNCTION_SYMBOLS")
     }
 
-    /// The error of [`Uses::mismatches`] for a call of `symbol`, which reads a clock or
-    /// the console, that `list` does not admit.
+    /// The error of [`Uses::mismatches`] for a call of `symbol`, which reads a clock,
+    /// that `list` does not admit.
     fn unlisted_input(file: &str, function: &str, symbol: &str, list: &str) -> String {
         format!(
-            "{file}: `{function}` calls `{symbol}`, which reads a clock or the \
-             console. Find whether a node runs it; if not, add it to {list} with the \
-             reason and a check of the reason in connector-opcua"
+            "{file}: `{function}` calls `{symbol}`, which reads a clock. Find \
+             whether a node runs it; if not, add it to {list} with the reason and a \
+             check of the reason in connector-opcua"
         )
     }
 
@@ -2702,11 +3111,13 @@ End of search list.
     /// The symbol prefix of [`crypto`].
     const PREFIX: &str = "fixture_";
 
-    /// A [`Crypto`] with no include directory and the symbol prefix [`PREFIX`].
+    /// A [`Crypto`] with no include directory, the symbol prefix [`PREFIX`], and an
+    /// empty `pem.h`.
     fn crypto() -> Crypto {
         Crypto {
             include: Vec::new(),
             prefix: PREFIX.to_owned(),
+            pem: PathBuf::from("/dev/null"),
         }
     }
 
@@ -2738,7 +3149,7 @@ End of search list.
     }
 
     #[test]
-    fn a_test_of_connector_opcua_names_the_function_of_each_clock_and_console_key() {
+    fn a_test_of_connector_opcua_names_the_function_of_each_clock_key() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let link = workspace.join("crates/connector-opcua/src/link.rs");
         let text = std::fs::read_to_string(link).unwrap();
@@ -3072,7 +3483,7 @@ End of search list.
 
     /// C text of `file` that references each symbol at its place in [`keys`].
     fn uses(file: &str) -> String {
-        let mut functions = std::collections::BTreeMap::<_, Vec<_>>::new();
+        let mut functions = BTreeMap::<_, Vec<_>>::new();
         for (f, function, symbol, _) in keys() {
             if f == file {
                 functions
@@ -3178,10 +3589,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_copies_each_compiled_source_and_its_headers() {
         let (root, repo, result) = run_on("copies", |_| {});
         assert_eq!(result, Ok(()));
@@ -3256,10 +3663,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_refuses_a_release_with_no_file_of_extra() {
         let (root, repo, result) = run_on("extra", |repo| {
             std::fs::remove_file(repo.join("arch/common/timer.h")).unwrap();
@@ -3277,10 +3680,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_refuses_a_file_of_extra_that_the_library_holds() {
         let (root, repo, result) = run_on("stale", |repo| {
             let cmake = repo.join("CMakeLists.txt");
@@ -3300,10 +3699,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_refuses_a_file_of_omitted_that_the_library_does_not_compile() {
         let (root, repo, result) = run_on("omitted", |repo| {
             let cmake = repo.join("CMakeLists.txt");
@@ -3326,10 +3721,6 @@ End of search list.
     /// A header of the [`Crypto`] is outside the copy, and the check reads it as a
     /// system header, as the build of `connector-opcua` does.
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_builds_against_the_headers_of_the_crypto() {
         let dir = temp("crypto");
         let source =
@@ -3349,6 +3740,7 @@ End of search list.
         let crypto = Crypto {
             include: vec![dir.join("crypto")],
             prefix: PREFIX.to_owned(),
+            pem: PathBuf::from("/dev/null"),
         };
         assert_eq!(
             inspect(
@@ -3363,10 +3755,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_refuses_each_problem_of_the_staged_copy() {
         let (root, repo, result) = run_on("refuses", |repo| {
             create_files(
@@ -3429,10 +3817,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_names_a_static_helper_that_calls_a_clock() {
         let (root, repo, result) = run_on("helper", |repo| {
             let log = "#include \"clock.h\"\n\
@@ -3455,10 +3839,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_refuses_a_source_with_other_flags() {
         let (root, repo, result) = run_on("flags", |repo| {
             let cmake = repo.join("CMakeLists.txt");
@@ -3478,10 +3858,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_refuses_a_flag_in_no_list() {
         let (root, repo, result) = run_on("unsorted", |repo| {
             let cmake = repo.join("CMakeLists.txt");
@@ -3503,10 +3879,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_copies_a_source_whose_name_starts_with_a_dash() {
         let (root, repo, result) = run_on("dash-source", |repo| {
             create_files(repo, &[("-gen.c", "int gen;\n")]);
@@ -3521,10 +3893,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_names_a_clock_call_in_a_source_whose_name_starts_with_an_at_sign() {
         let (root, repo, result) = run_on("at-source", |repo| {
             let text = "long long UA_DateTime_now(void);\n\
@@ -3540,10 +3908,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_keeps_the_copy_when_a_file_is_missing() {
         let (root, repo, result) = run_on("license", |repo| {
             std::fs::remove_file(repo.join("LICENSE")).unwrap();
@@ -3561,10 +3925,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_clock_call_added_to_the_copy() {
         let (root, repo, result) = run_after("check", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -3679,10 +4039,6 @@ End of search list.
 
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_builtin_and_an_asm_statement_that_read_a_clock() {
         let (root, repo, result) = run_after("instructions", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -3695,10 +4051,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_an_os_call_through_a_header_that_includes_its_own() {
         let (root, repo, result) = run_after("os", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -3737,10 +4089,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_an_os_call_whose_name_another_file_defines_as_static() {
         let (root, repo, result) = run_after("static", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -3772,10 +4120,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_read_of_errno_that_no_call_of_the_copy_set() {
         // `errno` holds the error of the last OS call of the thread, also one that
         // code outside the copy made.
@@ -3801,10 +4145,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_listed_symbol_at_a_place_that_the_list_does_not_name() {
         let (root, repo, result) = run_after("place", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -3836,10 +4176,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_listed_symbol_in_a_nested_function_of_a_new_function() {
         let (root, repo, result) = run_after("nested", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -3889,10 +4225,6 @@ End of search list.
     /// A listed function that stores the address of a symbol that it may only call
     /// lets a new function call the symbol with no reference to it.
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_the_address_of_a_listed_symbol_in_its_function() {
         let (root, repo, result) = run_after("address", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -3935,10 +4267,6 @@ End of search list.
     /// the first name of `nm`, which a trim of its output would cut. `a$b` is plain.
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_reads_each_name_to_its_end() {
         let (root, repo, result) = run_after("names", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4012,10 +4340,6 @@ End of search list.
     /// it hides a mapping symbol.
     #[test]
     #[cfg(target_arch = "aarch64")]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_refuses_an_odd_name_that_looks_like_a_mapping_symbol() {
         let (root, repo, result) = run_after("mapping", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4050,10 +4374,6 @@ End of search list.
     /// it gives none to a mapping symbol, so its code reads as code of the function
     /// before it.
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_fails_on_a_c_identifier_that_holds_a_dollar() {
         let (root, repo, result) = run_after("dollar", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4076,10 +4396,6 @@ End of search list.
     /// `-fno-dollars-in-identifiers`, so a build with that flag and a build with no
     /// such flag compile other C from this input.
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_reads_the_symbols_that_a_build_with_the_flags_of_the_copy_gives() {
         let (root, repo, result) = run_after("macro", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4117,10 +4433,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_passes_an_undefined_symbol_that_no_relocation_names() {
         // As the assembler of x86-64 makes `_GLOBAL_OFFSET_TABLE_` for each object
         // that reads the table.
@@ -4134,10 +4446,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_read_of_the_table_of_the_linker_that_the_c_makes() {
         // Its entries are addresses of imported functions, so a call through one
         // names no symbol.
@@ -4164,10 +4472,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_clock_call_that_a_listed_function_inlines() {
         let (root, repo, result) = run_after("inline", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4194,10 +4498,6 @@ End of search list.
 
     #[test]
     #[cfg(unix)]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_passes_on_the_committed_copy() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         // A root of its own: `cargo xtask open62541 <tag>` removes `target/open62541/`.
@@ -4211,7 +4511,6 @@ End of search list.
 
     #[test]
     #[cfg(unix)]
-    #[cfg_attr(not(target_os = "linux"), ignore = "needs GCC")]
     fn each_thread_of_the_committed_copy_draws_from_its_own_random_state_or_aborts() {
         use std::os::unix::process::ExitStatusExt;
         /// The signal number of `SIGABRT` on Linux.

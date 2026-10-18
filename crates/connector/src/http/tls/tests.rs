@@ -11,8 +11,8 @@ use proptest::prelude::*;
 use rustls::ServerConfig;
 use rustls::pki_types::ServerName;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
+use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use ::sim::{Sim, name, node};
 use bytes::Bytes;
@@ -26,6 +26,7 @@ use types::time::{Span, Stamp};
 use super::super::stream::Stream;
 use super::super::tests::stream_error;
 use super::{Pem, Roots};
+use crate::cancel::Token;
 use crate::http::sim::{self, Certificate};
 use crate::http::{Client, Config, Error, Tls};
 
@@ -63,6 +64,9 @@ struct Network {
     sim: Sim,
     client: node::Node,
     server: node::Node,
+    /// Drops the serve of the IPv4 listener, which stops its accepts and leaves its
+    /// streams.
+    accepts: Token,
     handles: Vec<Handle>,
 }
 
@@ -94,6 +98,8 @@ impl Network {
             };
             server.net().listen(&listen).expect("the port is free")
         });
+        let accepts = Token::new();
+        let stop = accepts.clone();
         let handle = server
             .shards()
             .start(shard("server"), move |tasks| async move {
@@ -104,9 +110,17 @@ impl Network {
                         path => Bytes::from(path.to_owned()),
                     })
                 };
-                let serve = sim::serve_tls(v6, tasks.clone(), certificate, answer);
+                let serve = sim::serve_tls(
+                    v6,
+                    tasks.clone(),
+                    Token::new(),
+                    certificate,
+                    answer,
+                );
                 tasks.spawn(async move { drop(serve.await) });
-                drop(sim::serve_tls(v4, tasks, certificate, answer).await);
+                let serve =
+                    sim::serve_tls(v4, tasks, Token::new(), certificate, answer);
+                drop(stop.race(serve).await);
                 // The streams it accepted end when this shard ends.
                 std::future::pending::<()>().await;
             })
@@ -115,6 +129,7 @@ impl Network {
             sim,
             client,
             server,
+            accepts,
             handles: vec![handle],
         }
     }
@@ -143,6 +158,31 @@ impl Network {
             })
             .expect("the shard starts");
         self.handles.push(handle);
+    }
+
+    /// Runs `run` with the client node on a shard of that node, and gives what it
+    /// returns once it ends.
+    fn client<T, F>(
+        &mut self,
+        run: impl FnOnce(node::Node) -> F + Send + 'static,
+    ) -> Arc<Mutex<Option<T>>>
+    where
+        F: Future<Output = T> + 'static,
+        T: Send + 'static,
+    {
+        let client = self.client.clone();
+        let out = Arc::new(Mutex::new(None));
+        let slot = Arc::clone(&out);
+        let handle = self
+            .client
+            .shards()
+            .start(shard("client"), move |_| async move {
+                let got = run(client).await;
+                *slot.lock().expect("no panic") = Some(got);
+            })
+            .expect("the shard starts");
+        self.handles.push(handle);
+        out
     }
 
     /// Starts one client that trusts `roots` on the client node, which runs `steps`
@@ -273,7 +313,7 @@ const SELF_CA: [&str; 2] = [
 fn serve(network: &mut Network, config: Arc<ServerConfig>) {
     network.listen(8087, move |listener, tasks| async move {
         let answer = |_: Request<Bytes>| Response::new(Bytes::from_static(b"ok"));
-        drop(sim::run(listener, tasks, Some(config), answer).await);
+        drop(sim::run(listener, tasks, Token::new(), Some(config), answer).await);
     });
 }
 
@@ -471,7 +511,7 @@ fn fails_the_handshake_with_a_server_that_does_not_speak_tls() {
     let mut network = Network::new(10, Certificate::Valid, JUNE_2026);
     network.listen(8087, |listener, tasks| async move {
         let answer = |_: Request<Bytes>| Response::new(Bytes::new());
-        drop(sim::serve(listener, tasks, answer).await);
+        drop(sim::serve(listener, tasks, Token::new(), answer).await);
     });
     assert_eq!(
         failed(network.send(sim::ca(), "https://server:8087/ping")),
@@ -528,31 +568,22 @@ fn fails_a_handshake_whose_first_write_finds_the_stream_reset() {
         }
     });
     let remote = SocketAddr::new(network.server.addresses()[0], 8087);
-    let client = network.client.clone();
-    let out = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&out);
-    let handle = network
-        .client
-        .shards()
-        .start(shard("client"), move |_| async move {
-            let config = tcp::Config {
-                remote,
-                options: super::super::OPTIONS,
-            };
-            let tcp = client.net().connect(&config).await.expect("a stream");
-            // The reset comes before the hello goes, so the first write fails.
-            client.clock().sleep(Span::SECOND).await;
-            let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-            let config = super::client(&provider, &sim::ca(), JUNE_2026);
-            let name = "server".try_into().expect("a DNS name");
-            let Err(error) = Stream::client(tcp, config, name, Rc::default()).await
-            else {
-                panic!("the stream is reset")
-            };
-            *slot.lock().expect("no panic") = Some(error.to_string());
-        })
-        .expect("the shard starts");
-    network.handles.push(handle);
+    let out = network.client(move |client| async move {
+        let config = tcp::Config {
+            remote,
+            options: super::super::OPTIONS,
+        };
+        let tcp = client.net().connect(&config).await.expect("a stream");
+        // The reset comes before the hello goes, so the first write fails.
+        client.clock().sleep(Span::SECOND).await;
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let config = super::client(&provider, &sim::ca(), JUNE_2026);
+        let name = "server".try_into().expect("a DNS name");
+        let Err(error) = Stream::client(tcp, config, name, Rc::default()).await else {
+            panic!("the stream is reset")
+        };
+        error.to_string()
+    });
     network.sim.run_for(Span::MINUTE).expect("the run ends");
     let got = out.lock().expect("no panic").take();
     assert_eq!(got, Some(format!("{remote} reset the stream")));
@@ -579,8 +610,8 @@ fn fails_an_upload_when_the_server_crashes() {
     assert_eq!(
         texts,
         [
-            "the exchange failed: connection error <- connection error <- \
-             10.0.0.2:8086 reset the stream; the `env` error: \
+            "the exchange with server:8086 failed: connection error <- connection \
+             error <- 10.0.0.2:8086 reset the stream; the `env` error: \
              Some(\"10.0.0.2:8086 reset the stream\")"
         ]
     );
@@ -595,9 +626,10 @@ fn fails_a_download_when_the_server_crashes() {
     assert_eq!(
         texts,
         [
-            "the exchange failed: error reading a body from connection <- error \
-             reading a body from connection <- 10.0.0.2:8086 reset the stream; the \
-             `env` error: Some(\"10.0.0.2:8086 reset the stream\")"
+            "the exchange with server:8086 failed: error reading a body from \
+             connection <- error reading a body from connection <- 10.0.0.2:8086 \
+             reset the stream; the `env` error: \
+             Some(\"10.0.0.2:8086 reset the stream\")"
         ]
     );
 }
@@ -618,9 +650,9 @@ fn fails_a_body_that_ends_with_no_close_notify() {
             .send(sim::ca(), "https://server:8087/ping")
             .map_err(|error| chain(&error)),
         Err(
-            "the exchange failed: error reading a body from connection <- error \
-             reading a body from connection <- peer closed connection without \
-             sending TLS close_notify: \
+            "the exchange with server:8087 failed: error reading a body from \
+             connection <- error reading a body from connection <- peer closed \
+             connection without sending TLS close_notify: \
              https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html\
              #unexpected-eof"
                 .to_owned()
@@ -656,7 +688,7 @@ fn reuses_an_https_connection_and_opens_a_new_one_for_http() {
         .run_for(Span::from_nanos(5_000_000_000))
         .expect("the run ends");
     let remote = SocketAddr::new(network.server.addresses()[0], PORT);
-    network.server.fail_listener(remote);
+    network.accepts.cancel();
     network.sim.run_for(Span::MINUTE).expect("the run ends");
     let outcomes = std::mem::take(&mut *out.lock().expect("no panic"));
     let texts: Vec<_> = outcomes
@@ -897,4 +929,136 @@ fn checks_the_longest_name_with_a_final_dot_as_the_name_with_none() {
              DnsName(\"server\")"
         )
     );
+}
+
+/// Runs `serve_tls` on port 8087, which answers [`LARGE`] bytes, with a client that
+/// writes `sent` and then reads once when `reads`, and cancels `serve_tls` at 1 s.
+/// Gives what the read gave, whether `serve_tls` returned, and the count of the
+/// streams of the server node at the end.
+fn cancelled(
+    sent: &'static [u8],
+    reads: bool,
+) -> (Option<Result<usize, String>>, bool, usize) {
+    let mut network = Network::new(22, Certificate::Valid, JUNE_2026);
+    let (until, returned) = (Token::new(), Arc::new(Mutex::new(false)));
+    let (stop, flag) = (until.clone(), Arc::clone(&returned));
+    network.listen(8087, move |listener, tasks| async move {
+        let answer = |_: Request<Bytes>| Response::new(Bytes::from(vec![b'x'; LARGE]));
+        let served = sim::serve_tls(listener, tasks, stop, Certificate::Valid, answer);
+        served.await.expect("the listener works");
+        *flag.lock().expect("no panic") = true;
+    });
+    let remote = SocketAddr::new(network.server.addresses()[0], 8087);
+    let out = network.client(move |client| async move {
+        let config = tcp::Config {
+            remote,
+            options: super::super::OPTIONS,
+        };
+        let tcp = client.net().connect(&config).await.expect("a stream");
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let config = super::client(&provider, &sim::ca(), JUNE_2026);
+        let name = "server".try_into().expect("a DNS name");
+        let mut session = TlsConnector::from(config)
+            .connect(name, Peer(tcp))
+            .await
+            .expect("the handshake ends");
+        let mut rest = sent;
+        while !rest.is_empty() {
+            let n = poll_fn(|cx| Pin::new(&mut session).poll_write(cx, rest))
+                .await
+                .expect("the write works");
+            rest = rest.get(n..).expect("a write fits its buffer");
+        }
+        poll_fn(|cx| Pin::new(&mut session).poll_flush(cx))
+            .await
+            .expect("the write works");
+        if !reads {
+            std::future::pending::<()>().await;
+        }
+        let mut bytes = [0; 16];
+        let mut buf = ReadBuf::new(&mut bytes);
+        let read = poll_fn(|cx| Pin::new(&mut session).poll_read(cx, &mut buf)).await;
+        let read = read.map(|()| buf.filled().len());
+        read.map_err(|error| error.to_string())
+    });
+    network.sim.run_for(Span::SECOND).expect("the run goes on");
+    assert_eq!(network.server.streams(), 1);
+    until.cancel();
+    network.sim.run_for(Span::MINUTE).expect("the run ends");
+    let read = out.lock().expect("no panic").take();
+    let returned = *returned.lock().expect("no panic");
+    (read, returned, network.server.streams())
+}
+
+#[test]
+fn a_cancel_closes_each_stream_with_a_close_notify() {
+    assert_eq!(cancelled(b"", true), (Some(Ok(0)), true, 0));
+}
+
+#[test]
+fn a_peer_that_reads_nothing_does_not_hold_a_cancel() {
+    let request = b"GET /large HTTP/1.1\r\nhost: server\r\n\r\n";
+    assert_eq!(cancelled(request, false), (None, true, 0));
+}
+
+#[test]
+fn a_cancel_closes_a_tls_stream_with_bytes_that_arrive_in_the_same_poll() {
+    let mut network = Network::new(23, Certificate::Valid, JUNE_2026);
+    let until = Token::new();
+    let stop = until.clone();
+    network.listen(8087, move |listener, tasks| async move {
+        let answer = |_: Request<Bytes>| Response::new(Bytes::from_static(b"ok"));
+        let served = sim::serve_tls(listener, tasks, stop, Certificate::Valid, answer);
+        served.await.expect("the listener works");
+    });
+    let remote = SocketAddr::new(network.server.addresses()[0], 8087);
+    let out = network.client(move |client| async move {
+        let config = tcp::Config {
+            remote,
+            options: super::super::OPTIONS,
+        };
+        let tcp = client.net().connect(&config).await.expect("a stream");
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let config = super::client(&provider, &sim::ca(), JUNE_2026);
+        let name = "server".try_into().expect("a DNS name");
+        let mut session = TlsConnector::from(config)
+            .connect(name, Peer(tcp))
+            .await
+            .expect("the handshake ends");
+        // In the pause of the server, and more bytes than one read of the close
+        // takes.
+        client.clock().sleep(Span::from_nanos(1_200_000_000)).await;
+        let pad = "a".repeat(20000);
+        let sent = format!("GET /a HTTP/1.1\r\nhost: server\r\nx-pad: {pad}\r\n\r\n");
+        let mut rest = sent.as_bytes();
+        while !rest.is_empty() {
+            let n = poll_fn(|cx| Pin::new(&mut session).poll_write(cx, rest))
+                .await
+                .expect("the write works");
+            rest = rest.get(n..).expect("a write fits its buffer");
+        }
+        poll_fn(|cx| Pin::new(&mut session).poll_flush(cx))
+            .await
+            .expect("the write works");
+        let mut bytes = [0; 16];
+        let mut buf = ReadBuf::new(&mut bytes);
+        let read = poll_fn(|cx| Pin::new(&mut session).poll_read(cx, &mut buf)).await;
+        let tls = read.map(|()| buf.filled().len());
+        let Peer(mut tcp) = session.into_inner().0;
+        let raw = poll_fn(|cx| tcp.poll_read(cx, &mut bytes)).await;
+        (
+            tls.map_err(|error| error.to_string()),
+            raw.map_err(|error| error.to_string()),
+        )
+    });
+    network.sim.run_for(Span::SECOND).expect("the run goes on");
+    network.server.pause(Span::SECOND);
+    let cancel = Span::from_nanos(700_000_000);
+    network.sim.run_for(cancel).expect("the run goes on");
+    until.cancel();
+    network.sim.run_for(Span::MINUTE).expect("the run ends");
+    // A reset would give an error on the TCP stream in place of its FIN.
+    let ended = out.lock().expect("no panic").take();
+    assert_eq!(ended, Some((Ok(0), Ok(0))));
+    assert_eq!(network.server.streams(), 0);
 }

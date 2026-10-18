@@ -42,8 +42,7 @@ use std::rc::Rc;
 
 use block::{Block, Heap, Pool};
 use buffer::{
-    Buffer, Config, Entry, Error, Layout, Limit, Mark, Parts, Rejected, Samples,
-    Stored, Tail,
+    Buffer, Config, Entry, Error, Layout, Limit, Parts, Rejected, Samples, Stored, Tail,
 };
 use env::files::{File, Mode};
 use env::tasks::Tasks;
@@ -51,6 +50,7 @@ use libfuzzer_sys::arbitrary::{Arbitrary, Result, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use types::channel::{self, Slot, Slots};
 use types::frame;
+use types::log::Mark;
 use types::sample::{Scalar, Type};
 use types::time::{Span, Stamp};
 
@@ -99,7 +99,8 @@ const CHECK_LAST: Stamp = Stamp::from_nanos(9);
 /// The tag of the first entry of the build and of the check. Each entry takes the
 /// next tag, fills its bytes with it, and is stored at it. The tags of the build
 /// start again after 128 entries, below the tags of the check, so entries that
-/// share a tag differ in `first`.
+/// share a tag differ in `first`. A build entry over [`Layout::ENTRY_MAX_MIN`]
+/// bytes is appended with tag 0, as a nonzero tag holds at most that.
 const BUILD_TAG: u8 = 0x01;
 const CHECK_TAG: u8 = 0x81;
 /// The last offset of a ring.
@@ -942,6 +943,7 @@ impl Append {
             len,
             last: Some(Stamp::from_nanos(i64::try_from(first).expect("small"))),
         });
+        let large = self.parts.iter().sum::<usize>() > Layout::ENTRY_MAX_MIN;
         let mut blocks = self.parts.iter().map(|len| shard.block(*len, tag));
         let parts = match (blocks.next(), blocks.next()) {
             (Some(one), Some(two)) => Parts::from([one, two]),
@@ -954,7 +956,7 @@ impl Append {
             first,
             samples,
             stored_at: stored_at(tag),
-            tag,
+            tag: if large { 0 } else { tag },
             parts,
         }
     }

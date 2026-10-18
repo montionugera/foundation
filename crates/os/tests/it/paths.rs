@@ -25,6 +25,7 @@ fn run(case: fn(&Host<'_>)) {
         dir: &scratch.0,
         make_dir: &make_dir,
         make_link: &|path, target| symlink(target, path).unwrap(),
+        move_path: &|from, to| fs::rename(from, to).unwrap(),
     });
 }
 
@@ -281,7 +282,7 @@ fn within_writes_a_new_name_whose_resolved_path_is_too_long_as_free() {
 }
 
 /// A work folder that a program moves away and makes again holds nothing at either
-/// name until a new `within`.
+/// name until a new `within`, and refuses a path at each name as replaced.
 #[test]
 fn a_folder_that_a_program_moves_and_makes_again_holds_nothing() {
     run(|host| {
@@ -291,7 +292,45 @@ fn a_folder_that_a_program_moves_and_makes_again_holds_nothing() {
         let moved = within.read(&base.join("moved/a.hcl"), 1);
         host.paths.write(&base.join("work/a.hcl"), b"y").unwrap();
         let made = within.read(&base.join("work/a.hcl"), 1);
-        assert_eq!((moved, made), (Err(Error::Outside), Err(Error::Outside)));
+        assert_eq!((moved, made), (Err(Error::Replaced), Err(Error::Replaced)));
+    });
+}
+
+/// APFS ignores the case of a name, so a folder made again in another case is the
+/// folder that a program replaced.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_folder_made_again_in_other_case_is_replaced() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        fs::rename(base.join("work"), base.join("old")).unwrap();
+        fs::create_dir(base.join("WORK")).unwrap();
+        host.paths.write(&base.join("WORK/a.hcl"), b"y").unwrap();
+        let lower = within.read(&base.join("work/a.hcl"), 1);
+        let upper = within.read(&base.join("WORK/a.hcl"), 1);
+        let resolved = host.paths.resolve(&base.join("work/a.hcl"));
+        assert_eq!(
+            (lower, upper),
+            (Err(Error::Replaced), Err(Error::Replaced)),
+            "{resolved:?}"
+        );
+    });
+}
+
+/// The old folder stays, so the host cannot give the new one its key.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_folder_made_again_read_in_other_case_is_replaced() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        let read = within.read(&base.join("WORK/a.hcl"), 1);
+        assert_eq!(read, Ok(Found::File(b"x".to_vec())));
+        fs::rename(base.join("work"), base.join("old")).unwrap();
+        fs::create_dir(base.join("work")).unwrap();
+        host.paths.write(&base.join("work/a.hcl"), b"y").unwrap();
+        let upper = within.read(&base.join("WORK/a.hcl"), 1);
+        let resolved = host.paths.resolve(&base.join("WORK/a.hcl"));
+        assert_eq!(upper, Err(Error::Replaced), "{resolved:?}");
     });
 }
 
@@ -320,7 +359,7 @@ fn within_hides_a_hidden_name_whose_resolved_path_is_too_long() {
             .paths
             .within(slice::from_ref(&top), slice::from_ref(&key))
             .unwrap();
-        assert_eq!(within.write(&key, b"x"), Err(Error::Hidden));
+        assert_eq!(within.write(&key, b"x"), Err(Error::Vacant));
         assert!(!deep.join(&name).exists());
         assert_eq!(within.write(&top.join("b.hcl"), b"x"), Ok(()));
     });
@@ -428,8 +467,27 @@ fn within_makes_a_directory_of_a_name_longer_than_the_host_takes_as_free() {
     });
 }
 
+/// A hidden folder outside the folders that a program moves away tells no name that it
+/// holds.
+#[test]
+fn within_tells_no_name_of_a_moved_hidden_folder_outside_the_folders() {
+    let scratch = Scratch::new();
+    let base = scratch.0.canonicalize().unwrap();
+    for name in ["work", "out", "out/h", "out/h/s"] {
+        fs::create_dir(base.join(name)).unwrap();
+    }
+    let within = os::paths()
+        .within(&[base.join("work")], &[base.join("out/h")])
+        .unwrap();
+    fs::rename(base.join("out/h"), base.join("out/z")).unwrap();
+    for name in ["out/z/s/x", "out/z/t/x"] {
+        let path = base.join(name);
+        assert_eq!(within.read(&path, 1), Err(Error::Outside), "{name}");
+    }
+}
+
 /// A link that does not resolve, in a hidden folder that a program moves away, is under
-/// that folder by its place, as a new name there is.
+/// that folder by its place for each call, as a new name there is.
 #[test]
 fn within_hides_a_link_that_does_not_resolve_in_a_moved_hidden_folder() {
     run(|host| {
@@ -446,13 +504,71 @@ fn within_hides_a_link_that_does_not_resolve_in_a_moved_hidden_folder() {
         .unwrap();
         for name in [
             "work/moved/new",
+            "work/moved/none/x",
             "work/moved/loop",
+            "work/moved/loop/x",
             "work/moved/to-none",
+            "work/moved/to-none/x",
             "work/moved/sub/loop",
         ] {
-            let made = within.make_dir(&base.join(name));
-            assert_eq!(made, Err(Error::Hidden), "{name}");
+            let path = base.join(name);
+            let reached = [
+                within.read(&path, 1).map(|_| ()),
+                within.write(&path, b"x"),
+                within.make_dir(&path),
+            ];
+            assert_eq!(reached, [Err(Error::Hidden); 3], "{name}");
         }
+    });
+}
+
+/// A long path of names that each resolve stops at the longest path that the host
+/// takes.
+#[cfg(target_os = "linux")]
+#[test]
+fn within_stops_a_long_path_of_steps_that_resolve() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        fs::create_dir(base.join("work/s")).unwrap();
+        let path = base.join("work").join("s/../".repeat(50_000)).join("a.hcl");
+        let name_too_long = Error::Io { code: 36 };
+        assert_eq!(within.read(&path, 1), Err(name_too_long));
+    });
+}
+
+/// A relative path that the host takes, but not once it is joined to the working
+/// directory, still passes each step.
+#[cfg(target_os = "linux")]
+#[test]
+fn within_checks_a_relative_path_longer_once_joined_by_its_own_prefixes() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        fs::create_dir(base.join("work/s")).unwrap();
+        let hidden = base.join("work/data");
+        let within = host.paths.within(&["/".into()], slice::from_ref(&hidden));
+        let within = within.unwrap();
+        let working = host.paths.resolve(Path::new(".")).unwrap();
+        let up = "../".repeat(working.components().count() - 1);
+        let long = |name: &str| {
+            let mut path = Path::new(&up).join(base.strip_prefix("/").unwrap());
+            path.push("work");
+            let pads = (4095 - path.join(name).as_os_str().len() - 1) / 5;
+            path.push("s/../".repeat(pads));
+            // The host takes the path, but not the join of its directory.
+            let joined = working.join(&path).as_os_str().len();
+            path.push(name);
+            assert!(path.as_os_str().len() < 4096 && joined > 4096, "{joined}");
+            path
+        };
+        let got = [
+            within.read(&long("data/admin.key"), 1).map(|_| ()),
+            within.write(&long("data/admin.key"), b"y"),
+            within.make_dir(&long("data/made")),
+        ];
+        assert_eq!(got, [Err(Error::Hidden); 3]);
+        let read = host.paths.read(&hidden.join("admin.key"), 1);
+        assert_eq!(read, Ok(Found::File(b"x".to_vec())));
+        assert!(!hidden.join("made").exists());
     });
 }
 
@@ -1101,23 +1217,8 @@ fn within_makes_no_file_at_a_hidden_name_in_other_case() {
         let there = (fs::metadata(&key).is_ok(), fs::metadata(&dir).is_ok());
         assert_eq!(
             (wrote, made, there),
-            (Err(Error::Hidden), Err(Error::Hidden), (false, false))
+            (Err(Error::Vacant), Err(Error::Vacant), (false, false))
         );
-    });
-}
-
-/// A program replaces the folder with a link to a directory outside it.
-#[test]
-fn a_folder_that_a_link_replaces_holds_nothing_outside() {
-    run(|host| {
-        let (_, base) = cases::within_work(host);
-        let work = base.join("work");
-        let within = host.paths.within(slice::from_ref(&work), &[]).unwrap();
-        fs::rename(&work, base.join("old")).unwrap();
-        symlink(base.join("workshop"), &work).unwrap();
-        let read = within.read(&work.join("a.hcl"), 1);
-        let direct = within.read(&base.join("workshop/a.hcl"), 1);
-        assert_eq!((read, direct), (Err(Error::Outside), Err(Error::Outside)));
     });
 }
 

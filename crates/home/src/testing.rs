@@ -89,9 +89,7 @@ pub async fn unsynced_shard(env: Env, delay: Span) -> (Shard, Interner, clock::R
             earliest: Stamp::from_nanos(1),
             ahead: Span::from_nanos(1_000_000_000),
         },
-    })
-    .await
-    .expect("opens");
+    });
     (shard, interner, mesh)
 }
 
@@ -106,7 +104,7 @@ pub fn hold(shard: &Shard, slot: Slot) -> Hold {
     let reader = shard.reader();
     let mut read: Pin<Box<dyn Future<Output = Result<buffer::Read, buffer::Error>>>> =
         Box::pin(async move {
-            let from = buffer::Mark::at(0);
+            let from = types::log::Mark::at(0);
             reader
                 .read(slot, types::frame::Path::Live, from, usize::MAX)
                 .await

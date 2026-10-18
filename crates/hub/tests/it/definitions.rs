@@ -625,9 +625,7 @@ pub(super) async fn reopen(
         buffer,
         clock: mesh.clone(),
         limits: super::LIMITS,
-    })
-    .await
-    .expect("opens");
+    });
     hub::Hub::new(hub::Config {
         home,
         interner,

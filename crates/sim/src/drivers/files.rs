@@ -106,14 +106,19 @@ impl env::files::Driver for Node {
                     Ok(descriptor)
                 }
                 Ok(Found::Directory(_)) => Err(io(DIRECTORY)),
-                Ok(Found::Large) => {
-                    unreachable!("invariant: no file is over usize::MAX")
+                Ok(Found::Large(_)) => {
+                    unreachable!("invariant: no read is over usize::MAX")
                 }
                 Err(env::paths::Error::NotFound) => Err(Error::NotFound {
                     path: path.to_path_buf(),
                 }),
                 Err(env::paths::Error::Io { code }) => Err(io(code)),
-                Err(env::paths::Error::Outside | env::paths::Error::Hidden) => {
+                Err(
+                    env::paths::Error::Outside
+                    | env::paths::Error::Hidden
+                    | env::paths::Error::Vacant
+                    | env::paths::Error::Replaced,
+                ) => {
                     unreachable!("invariant: the paths of a host have no limit")
                 }
             }

@@ -101,10 +101,17 @@
   2026-10-13T20:52:58Z), which item 9 of the ruling of `laptop.architect-2` kept on
   2026-10-13T21:05:46Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155189112). With a
-  `token`, a 401 or a 403 gives "InfluxDB answered {status}. Check the token {source}:
-  {body}", so that the cut of a long error keeps the status. With no `token`, "InfluxDB
-  answered {status}: {body}". A token that holds a byte that an HTTP header cannot hold
-  gives `Error::Retry`. Approved by `laptop.architect-2` on 2026-10-14T04:16:45Z
+  `token`, a 401 or a 403 gives "InfluxDB at {host} answered {status}. Check the token
+  {source}: {body}", so that the cut of a long error keeps the status. With no
+  `token`, "InfluxDB at {host} answered {status}: {body}". `{host}` is the host of
+  `address`, with its port when `address` names one, so each error names the device
+  (condition of `laptop.monitor`,
+  https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6241940271). The
+  texts with `{host}`: `laptop.architect-2`, 2026-10-17T23:01:30Z
+  (https://github.com/synnaxlabs/foundation/pull/3068#issuecomment-6242754079). They
+  supersede "InfluxDB answered ..." of the two approvals below. A token that holds a
+  byte that an HTTP header cannot hold gives `Error::Retry`.
+  Approved by `laptop.architect-2` on 2026-10-14T04:16:45Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6160767913); the
   401 and 403 text on 2026-10-14T20:02:29Z
   (https://github.com/synnaxlabs/foundation/pull/2687#issuecomment-6177206734).
@@ -218,19 +225,20 @@
   `laptop.architect-2` on 2026-10-17T03:26:02Z
   (https://github.com/synnaxlabs/foundation/pull/2972#issuecomment-6229020580). Each
   other answer, and each failed request, keeps the request, shows its text with
-  `Context::error`, and sends the request again after a
-  `retry::Backoff` of 1 s to 1 min. No answer or failed request ends the run: an action
-  in InfluxDB fixes a 400, a 404, a 413, or a 422, and the next try after it lands the
-  request. The reader stays open meanwhile, as in an outage of InfluxDB. The text is
-  `InfluxDB answered {status}: {body}`, and for these four statuses it adds a fix. A 400
-  and a 422 (InfluxDB 1 gives 400, and InfluxDB 2 gives 422, for a field type conflict
-  and for points past retention): "For a field type conflict, write to another
-  `measurement` or delete the old field in InfluxDB. For points older than the retention
-  period, raise it or write to another bucket". A 404: "Create the database, the bucket,
-  or the org in InfluxDB, or name one that exists". A 413: "Raise the request size limit
-  of InfluxDB (`--max-http-request-size` of InfluxDB 3, `max-body-size` of InfluxDB 1),
-  or write fewer channels or shorter samples at each sample time" (the condition of
-  `laptop.monitor` on the batch bound, 2026-10-16T19:31:19Z,
+  `Context::error`, and sends the request again after a `retry::Backoff` of 1 s to 1
+  min. No answer or failed request ends the run: an action in InfluxDB fixes a 400, a
+  404, a 413, or a 422, and the next try after it lands the request. The reader stays
+  open meanwhile, as in an outage of InfluxDB. The text is `InfluxDB at {host} answered
+  {status}: {body}` (the same ruling of 2026-10-17T23:01:30Z), and for these four
+  statuses it adds a fix. A 400 and a 422 (InfluxDB 1 gives 400, and InfluxDB 2 gives
+  422, for a field type conflict and for points past retention): "For a field type
+  conflict, write to another `measurement` or delete the old field in InfluxDB. For
+  points older than the retention period, raise it or write to another bucket". A 404:
+  "Create the database, the bucket, or the org in InfluxDB, or name one that exists". A
+  413: "Raise the request size limit of InfluxDB (`--max-http-request-size` of InfluxDB
+  3, `max-body-size` of InfluxDB 1), or write fewer channels or shorter samples at each
+  sample time" (the condition of `laptop.monitor` on the batch bound,
+  2026-10-16T19:31:19Z,
   https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223151793), with its
   words of 2026-10-17T03:20Z
   (https://github.com/synnaxlabs/foundation/pull/2972#issuecomment-6228984070). An
