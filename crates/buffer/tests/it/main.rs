@@ -4,6 +4,7 @@
 #![cfg(test)]
 
 mod carry;
+#[path = "../common/memory.rs"]
 mod memory;
 mod tagged;
 

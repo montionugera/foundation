@@ -1,5 +1,6 @@
 //! The cost of the hub messages on a frame's path: a head, its ends, its body, and a
-//! credit, and of building a frame from them with `Frames`.
+//! credit, and of building a frame from them with `Frames`; and of the head and the
+//! replies of a program's write.
 
 use std::sync::Arc;
 
@@ -15,6 +16,7 @@ use types::{
 use wire::hub::{
     Credit, Due, Error, Frames, FromHome, FromReader, Head, Home, Mode, Open, Reader,
     Reply, Step, ends, keys,
+    write::{self, Outcome, Refusal, Time},
 };
 
 const SERIES: [u32; 4] = [1, 3, 1_000, 100_000];
@@ -315,6 +317,60 @@ fn decode_a_credit(bencher: Bencher<'_, '_>) {
     bencher.bench_local(|| match home.decode(divan::black_box(&credit)) {
         Ok(FromReader::Credit(credit)) => credit,
         other => panic!("the credit did not decode: {other:?}"),
+    });
+}
+
+/// Encodes the head of a program's frame of 1,000 samples.
+#[divan::bench]
+fn encode_a_write_head(bencher: Bencher<'_, '_>) {
+    let head = write::Head {
+        time: Time::Frame(Path::Live),
+        form: Form::Raw,
+        count: 1_000,
+        series: 3,
+    };
+    let mut out = [0; write::Head::LEN];
+    bencher.bench_local(|| divan::black_box(head).encode(&mut out));
+}
+
+/// The replies of a write: a frame taken, a frame refused, and the seqs on disk.
+fn write_replies() -> [write::Reply; 3] {
+    [
+        write::Reply::Outcome(Outcome::Taken {
+            range: Range {
+                seq: 7,
+                count: 1_000,
+            },
+        }),
+        write::Reply::Outcome(Outcome::Refused(Refusal::Full)),
+        write::Reply::Stored { through: 1_006 },
+    ]
+}
+
+/// Encodes each reply of [`write_replies`].
+#[divan::bench]
+fn encode_write_replies(bencher: Bencher<'_, '_>) {
+    let replies = write_replies();
+    let mut out = [0; 13];
+    bencher.bench_local(|| {
+        for reply in divan::black_box(&replies) {
+            reply.encode(&mut out[..reply.encoded_len()]);
+        }
+    });
+}
+
+/// Decodes each reply of [`write_replies`].
+#[divan::bench]
+fn decode_write_replies(bencher: Bencher<'_, '_>) {
+    let messages = write_replies().map(|reply| {
+        let mut out = vec![0; reply.encoded_len()];
+        reply.encode(&mut out);
+        out
+    });
+    bencher.bench_local(|| {
+        for message in divan::black_box(&messages) {
+            divan::black_box(write::Reply::decode(message).expect("the reply decodes"));
+        }
     });
 }
 

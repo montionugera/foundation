@@ -322,12 +322,13 @@ struct Log {
 }
 
 impl Log {
-    fn new(index: channel::Key, path: Path) -> Self {
+    /// The log of `path` of `index`, with both tails at `start` and no run.
+    fn new(index: channel::Key, path: Path, start: Position) -> Self {
         Self {
             index,
             path,
-            appended: Position::default(),
-            durable: Position::default(),
+            appended: start,
+            durable: start,
             runs: VecDeque::new(),
             holder: None,
             lap: 0,
@@ -391,12 +392,57 @@ impl Log {
     /// holder when the entry gives the durable stamp. Returns true when it adds a run
     /// of the record, which the path has none of.
     ///
+    /// # Errors
+    ///
+    /// The fault of [`Position::advance`]. Nothing changes.
+    ///
     /// # Panics
     ///
     /// When `offset` is below the newest record of the path.
     fn sync(&mut self, header: &Header, offset: u64) -> Result<bool, Fault> {
         let samples = header.samples();
         let (start, _) = self.durable.advance(header.first, samples)?;
+        Ok(self.hold(start, samples, offset))
+    }
+
+    /// Moves both tails past the walk's entry `header` of the record at `offset`, as
+    /// [`sync`](Self::sync). The walk feeds each entry as appended and synced, so the
+    /// tails are equal.
+    ///
+    /// # Errors
+    ///
+    /// The fault of [`Position::advance`], and [`Fault::Counted`] when the entry's
+    /// count is another than the walk's. Nothing changes.
+    ///
+    /// # Panics
+    ///
+    /// As [`sync`](Self::sync).
+    fn walk(&mut self, header: &Header, offset: u64) -> Result<bool, Fault> {
+        let samples = header.samples();
+        let mut durable = self.durable;
+        let (start, walked) = durable.advance(header.first, samples)?;
+        if let (Kind::Record(given), Kind::Record(walked)) = (header.kind, walked)
+            && given != walked
+        {
+            return Err(Fault::Counted {
+                seq: header.first,
+                given: given.get(),
+                walked: walked.get(),
+            });
+        }
+        self.appended = durable;
+        self.durable = durable;
+        Ok(self.hold(start, samples, offset))
+    }
+
+    /// Holds the record at `offset` for the entry of `samples` that moved the durable
+    /// tail past the mark `start`. Makes the record the holder when the entry gives
+    /// the durable stamp. Returns true when it adds a run of the record.
+    ///
+    /// # Panics
+    ///
+    /// When `offset` is below the newest record of the path.
+    fn hold(&mut self, start: Mark, samples: Option<Samples>, offset: u64) -> bool {
         let newest = self.runs.back().map(|run| run.offset).max(self.holder);
         if let Some(newest) = newest {
             assert!(
@@ -408,10 +454,10 @@ impl Log {
             self.holder = Some(offset);
         }
         if self.runs.back().is_some_and(|run| run.offset == offset) {
-            return Ok(false);
+            return false;
         }
         self.runs.push_back(Run { start, offset });
-        Ok(true)
+        true
     }
 }
 
@@ -1169,15 +1215,14 @@ impl Logs {
     ) -> Result<(), Invalid> {
         let key = (slot, carried.path);
         let Some(&at) = self.places.get(&key) else {
-            let mut log = Log::new(carried.index, carried.path);
-            log.durable = Position {
+            let start = Position {
                 tail: Tail {
                     seq: carried.seq,
                     stamp: carried.stamp,
                 },
                 given: carried.given,
             };
-            log.appended = log.durable;
+            let mut log = Log::new(carried.index, carried.path, start);
             log.holder = Some(offset);
             let at = self.add(key, log);
             self.items.push(offset, Holder::tail(at));
@@ -1236,7 +1281,7 @@ impl Logs {
         first: u64,
         samples: Option<Samples>,
     ) -> Result<Kind, Invalid> {
-        let (kind, _) = self.change(slot, index, path, |log| {
+        let (kind, _) = self.change(slot, index, path, Position::default(), |log| {
             Ok(log.appended.advance(first, samples)?.1)
         })?;
         Ok(kind)
@@ -1261,9 +1306,11 @@ impl Logs {
         header: &Header,
         offset: u64,
     ) -> Result<(), Invalid> {
-        let (added, at) = self.change(slot, header.index, header.path, |log| {
-            log.sync(header, offset)
-        })?;
+        let start = Position::default();
+        let (added, at) =
+            self.change(slot, header.index, header.path, start, |log| {
+                log.sync(header, offset)
+            })?;
         if added {
             self.items.push(offset, Holder::tail(at));
         }
@@ -1291,37 +1338,23 @@ impl Logs {
         header: &Header,
         offset: u64,
     ) -> Result<(), Invalid> {
-        let key = (slot, header.path);
-        if let Kind::Record(given) = header.kind
-            && !self.places.contains_key(&key)
-        {
-            let mut log = Log::new(header.index, header.path);
-            log.durable = Position {
+        let start = match header.kind {
+            Kind::Record(given) => Position {
                 tail: Tail {
                     seq: header.first,
                     stamp: None,
                 },
                 given: given.get() - 1,
-            };
-            log.appended = log.durable;
-            self.add(key, log);
+            },
+            Kind::Samples(_) => Position::default(),
+        };
+        let (added, at) =
+            self.change(slot, header.index, header.path, start, |log| {
+                log.walk(header, offset)
+            })?;
+        if added {
+            self.items.push(offset, Holder::tail(at));
         }
-        self.change(slot, header.index, header.path, |log| {
-            let mut appended = log.appended;
-            let (_, walked) = appended.advance(header.first, header.samples())?;
-            if let (Kind::Record(given), Kind::Record(walked)) = (header.kind, walked)
-                && given != walked
-            {
-                return Err(Fault::Counted {
-                    seq: header.first,
-                    given: given.get(),
-                    walked: walked.get(),
-                });
-            }
-            log.appended = appended;
-            Ok(())
-        })?;
-        self.sync(slot, header, offset)?;
         if let Some(tag) = NonZeroU8::new(header.tag) {
             let end = end(header.first, header.kind)
                 .expect("invariant: the log checked the entry");
@@ -1332,9 +1365,9 @@ impl Logs {
         Ok(())
     }
 
-    /// Applies `change` to the log of `slot` on `path`, which starts empty when the
-    /// path is new, and gives the place of the log. A change that fails on a new path
-    /// adds nothing.
+    /// Applies `change` to the log of `slot` on `path`, which starts with both tails
+    /// at `start` when the path is new, and gives the place of the log. A change that
+    /// fails on a new path adds nothing.
     ///
     /// # Errors
     ///
@@ -1348,6 +1381,7 @@ impl Logs {
         slot: Slot,
         index: channel::Key,
         path: Path,
+        start: Position,
         change: impl FnOnce(&mut Log) -> Result<T, Fault>,
     ) -> Result<(T, u32), Invalid> {
         let invalid = |fault: Fault| fault.on(index, path);
@@ -1363,7 +1397,7 @@ impl Logs {
             );
             return Ok((change(log).map_err(invalid)?, at));
         }
-        let mut log = Log::new(index, path);
+        let mut log = Log::new(index, path, start);
         let changed = change(&mut log).map_err(invalid)?;
         Ok((changed, self.add(key, log)))
     }
@@ -3393,6 +3427,31 @@ mod tests {
         );
     }
 
+    #[test]
+    #[should_panic(expected = "invariant: slot 1 holds index \
+        00000000-0000-0000-0000-000000000001 and index \
+        00000000-0000-0000-0000-000000000002")]
+    fn a_walk_of_a_second_index_on_a_slot_is_a_broken_invariant() {
+        let mut logs = walk_from(&[(4096, header(1, Path::Live, 0, 3, None))], 0);
+        logs.walk(slot(1), &header(2, Path::Live, 3, 2, None), 8192)
+            .expect("the invariant panics first");
+    }
+
+    /// A walk that fails on a new path adds no log and no item.
+    #[test]
+    fn a_failed_walk_of_a_new_path_adds_nothing() {
+        let mut logs = Logs::new(AREA);
+        let past = header(1, Path::Live, u64::MAX - 1, 3, None);
+        let invalid = Invalid::Past {
+            index: channel::Key::from_u128(1),
+            path: Path::Live,
+            first: u64::MAX - 1,
+            len: 3,
+        };
+        assert_eq!(logs.walk(slot(1), &past, 4096), Err(invalid));
+        assert_eq!(logs, Logs::new(AREA));
+    }
+
     /// The walk takes the largest count, and an append or a walk of one more entry
     /// with no samples at its seq is crowded, and the logs do not change.
     #[test]
@@ -3579,7 +3638,8 @@ mod tests {
     /// A log with room for `room` runs and a run in each of the records 1 to `runs`,
     /// of a block each, in a lap that starts at 0.
     fn log_with(room: usize, runs: u64) -> Log {
-        let mut log = Log::new(channel::Key::from_u128(1), Path::Live);
+        let mut log =
+            Log::new(channel::Key::from_u128(1), Path::Live, Position::default());
         log.runs = VecDeque::with_capacity(room);
         log.runs
             .extend((1..=runs).map(|record| run(record - 1, 0, 4096 * record)));

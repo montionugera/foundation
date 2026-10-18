@@ -502,7 +502,7 @@ fn stops_a_request_before_the_hello_is_admitted() {
     );
     assert_eq!(
         serve::Error::Unadmitted.to_string(),
-        "the program sent a request or a read before the node admitted a hello"
+        "the program opened a stream before the node admitted a hello"
     );
 }
 
@@ -570,6 +570,36 @@ fn takes_each_request_sent_once_the_last_reply_ends() {
         .chain([Err(serve::Error::Stream(closed_with(0)))])
         .collect();
     assert_eq!(home.served, expected);
+}
+
+/// A write stream stops as `MALFORMED` while this node serves none, and the session
+/// stays open.
+#[test]
+fn stops_a_write_stream() {
+    let home = session(110, true, |mut agent| async move {
+        agent.admit().await;
+        let mut write = agent.open().await;
+        let mut bytes = vec![0; wire::hub::client::write::Write::LEN];
+        wire::hub::client::write::Write {
+            length: 1,
+            signature: [0; 64],
+        }
+        .encode(&mut bytes);
+        write.send(&bytes).await;
+        assert_eq!(write.recv().await, reset_with(MALFORMED));
+        let mut stream = agent.request(2, b"ab").await;
+        assert_eq!(stream.response().await, b"ba");
+    });
+    assert_eq!(
+        home.served,
+        [
+            Err(serve::Error::Client(wire::hub::client::Error::Kind {
+                kind: 7
+            })),
+            Ok(Got::Request(name(SUBJECT), b"ab".to_vec())),
+            Err(serve::Error::Stream(closed_with(0))),
+        ]
+    );
 }
 
 /// A hello on a stream after the first stops as `MALFORMED`, and the session stays

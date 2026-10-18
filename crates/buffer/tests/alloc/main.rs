@@ -7,7 +7,7 @@
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
-#[path = "../it/memory.rs"]
+#[path = "../common/memory.rs"]
 #[expect(dead_code, reason = "this binary uses only the driver")]
 mod memory;
 
