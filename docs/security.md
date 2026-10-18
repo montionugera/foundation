@@ -368,7 +368,9 @@ state on `main`.
   count of 0, `empty_presence` a presence byte of 2, `empty_counted` a count that is not
   the walked one on a path that the walk met, and `empty_crowded` an entry with no
   samples after a count of `u64::MAX` at its seq. The `body_over_max` input holds a data
-  record that follows the chain with a body over `body_max`.
+  record that follows the chain with a body over `body_max`. In `carry_limit`, the
+  carry record of the holders of a batch of tagged entries passes the carry limit,
+  and the append refuses it as `Limit::Carry`.
 
 ### Device to connector
 

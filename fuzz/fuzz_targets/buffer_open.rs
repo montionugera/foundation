@@ -75,7 +75,7 @@ const RING: &str = "shard-0/ring";
 const COMMIT: Span = Span::from_nanos(10_000_000);
 const INDEXES: usize = 3;
 /// The least and the most bytes of each entry the check commits: a record of one
-/// block, and one of the largest.
+/// block, and one of the largest. Over 2635 bytes, the carry limit refuses it.
 const CHECK_PART: usize = 512;
 const CHECK_PART_MAX: usize = 2677;
 const _: () = assert!(check_record(CHECK_PART) <= BLOCK);
@@ -747,7 +747,7 @@ async fn build(shard: &Shard, input: &Input) -> Built {
         let mut firsts = next.clone();
         let mut appended = Vec::new();
         let mut entries = Vec::new();
-        let (mut parts, mut bytes) = (0, 0);
+        let (mut parts, mut bytes, mut tagged, mut copied) = (0, 0, 0, 0);
         for (append, tag) in batch.iter().zip(&mut tags) {
             let path = usize::from(append.path == frame::Path::Backfill);
             let first = firsts[append.index][path] + append.skip;
@@ -775,12 +775,17 @@ async fn build(shard: &Shard, input: &Input) -> Built {
             };
             let given = Given::from(&entry);
             bytes += given.bytes.len();
+            if !large {
+                tagged += 1;
+                copied += given.bytes.len();
+            }
             appended.push((append.index, path, given));
             entries.push(entry);
         }
         let fits = limit(BODY_MAX, entries.len(), parts, bytes);
         let checked = buffer.layout().check(entries.len(), parts, bytes);
         assert_eq!(checked, fits, "the layout check is not the record limits");
+        let fits = fits.and_then(|()| carry(BODY_MAX, entries.len(), tagged, copied));
         let blocks = (record::HEAD + body(entries.len(), bytes)).div_ceil(BLOCK);
         let taken = buffer.append(entries);
         if let Err(limit) = fits {
@@ -807,6 +812,8 @@ async fn build(shard: &Shard, input: &Input) -> Built {
     }
 }
 
+const COUNT_MAX: usize = 1023;
+
 /// The first limit of one record that a batch of `entries` entries, `parts` parts,
 /// and `bytes` bytes is over: 1023 entries, 1023 parts, and a body of `body_max`.
 fn limit(
@@ -815,7 +822,6 @@ fn limit(
     parts: usize,
     bytes: usize,
 ) -> std::result::Result<(), Limit> {
-    const COUNT_MAX: usize = 1023;
     let len = body(entries, bytes);
     if entries > COUNT_MAX {
         Err(Limit::Entries { count: entries })
@@ -823,6 +829,25 @@ fn limit(
         Err(Limit::Parts { count: parts })
     } else if len > body_max {
         Err(Limit::Body { len, max: body_max })
+    } else {
+        Ok(())
+    }
+}
+
+/// The carry limit of a batch of `entries` entries, of which `tagged` entries with a
+/// nonzero tag hold `copied` bytes. With a tagged entry, the carry body of its
+/// holders, 4 bytes and 42 an entry and a header of 51 and the bytes of each tagged
+/// entry, is at most `body_max` and the body of 1023 tails.
+fn carry(
+    body_max: usize,
+    entries: usize,
+    tagged: usize,
+    copied: usize,
+) -> std::result::Result<(), Limit> {
+    let max = body_max.min(4 + 42 * COUNT_MAX);
+    let len = 4 + 42 * entries + 51 * tagged + copied;
+    if tagged > 0 && len > max {
+        Err(Limit::Carry { len, max })
     } else {
         Ok(())
     }
@@ -1091,6 +1116,7 @@ async fn check(
     let fits = limit(body_max, count, count, bytes);
     let checked = buffer.layout().check(count, count, bytes);
     assert_eq!(checked, fits, "the layout check is not the record limits");
+    let fits = fits.and_then(|()| carry(body_max, count, count, bytes));
     let taken = buffer.append(entries);
     if let Err(limit) = fits {
         assert_eq!(
