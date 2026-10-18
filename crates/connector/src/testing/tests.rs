@@ -522,6 +522,25 @@ fn a_second_open_of_one_name_while_its_run_goes_on_panics() {
 #[should_panic(
     expected = "a run of plant.ticks goes on: stop it before the next open of its name"
 )]
+fn a_third_open_while_the_second_run_goes_on_panics() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |rig, _| async move {
+            let (config, plant) = (Document::default(), name("plant.ticks"));
+            let mut a = rig.supervise("ticks", plant.clone(), config.clone()).await;
+            a.until(TEN, ticking).await;
+            assert_eq!(a.stop().await.map_err(|e| e.to_string()), Ok(()));
+            let mut b = rig.supervise("ticks", plant.clone(), config.clone()).await;
+            b.until(TEN, ticking).await;
+            rig.supervise("ticks", plant, config).await;
+        },
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "a run of plant.ticks goes on: stop it before the next open of its name"
+)]
 fn an_open_after_a_dropped_run_whose_tasks_go_on_panics() {
     on_rig(
         || Table::new().with("ticks", Ticks::default()),
