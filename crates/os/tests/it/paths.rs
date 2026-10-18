@@ -292,6 +292,20 @@ fn a_folder_holds_its_files_through_the_data_volume() {
     });
 }
 
+/// Only macOS: only macOS has firmlinks.
+///
+/// `/Users` and `/private/var` are firmlinks to directories of the data volume. The
+/// walk takes a `..` of a directory of another key as a move.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_dot_dot_leaves_a_firmlink_to_the_directory_that_holds_it() {
+    let paths = os::paths();
+    let users = paths.resolve(Path::new("/Users/.."));
+    assert_eq!(users, Ok(PathBuf::from("/")));
+    let private = paths.resolve(Path::new("/private/var/.."));
+    assert_eq!(private, Ok(PathBuf::from("/private")));
+}
+
 /// Only Linux: `/proc` and `/sys` are each inode 1, on two devices.
 #[cfg(target_os = "linux")]
 #[test]
