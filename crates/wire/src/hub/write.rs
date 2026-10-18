@@ -343,10 +343,10 @@ impl Replies {
     /// # Errors
     ///
     /// As [`Reply::decode`], [`Error::Unasked`] for an outcome of frame 0 or of a frame
-    /// past those sent, [`Error::Order`] for an outcome of another frame than the oldest sent with
-    /// no outcome, and [`Error::Stored`] for a [`Reply::Stored`] past the outcomes
-    /// given or below the last [`Reply::Stored`]. A reply that it refuses changes no
-    /// count.
+    /// past those sent, [`Error::Order`] for an outcome of another frame than the
+    /// oldest sent with no outcome, and [`Error::Stored`] for a [`Reply::Stored`] past
+    /// the outcomes given or below the last [`Reply::Stored`]. A reply that it refuses
+    /// changes no count.
     pub fn decode(&mut self, message: &[u8]) -> Result<Reply, Error> {
         let reply = Reply::decode(message)?;
         match reply {
