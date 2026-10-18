@@ -1,5 +1,6 @@
-//! A rig that runs connectors on a simulated hub, the inputs of a supervisor, and the
-//! status channels of a connector, for the tests of `connector` and of the kinds.
+//! A rig that runs connectors on a simulated hub, the store of their secrets, the
+//! status channels of a connector, and a capture of events, for the tests of
+//! `connector` and of the kinds.
 
 use std::cell::{Cell, RefCell};
 use std::fmt;
@@ -102,7 +103,9 @@ impl Rig {
     }
 
     /// The supervisor of the rig's connectors, for a browse, or for an open of a
-    /// connector whose status channels the test defines.
+    /// connector whose status channels the test defines. Define them with
+    /// [`Self::define`], never with [`Hub::set_definitions`], so that a later
+    /// [`Self::define`] or [`Self::remove`] keeps them on the hub.
     #[must_use]
     pub fn supervisor(&self) -> &Supervisor {
         &self.supervisor
