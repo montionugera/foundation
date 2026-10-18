@@ -59,3 +59,5 @@ fn x() {}
 fn y() {}
 #[cfg_attr(all(target_os = "linux", target_arch = "x86_64"), ignore)]
 fn z() {}
+#[cfg_attr(target_arch = "x86_64", ignore = "only macOS")]
+fn aa() {}

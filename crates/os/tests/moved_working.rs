@@ -4,7 +4,7 @@
 
 // Lets Clippy treat the test as test code.
 #![cfg(test)]
-#![cfg(any(target_os = "linux", target_os = "macos"))] // #2956
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::fs;
 use std::path::Path;

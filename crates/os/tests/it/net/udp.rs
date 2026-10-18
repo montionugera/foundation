@@ -14,6 +14,7 @@ use env::net::{Ecn, Error, Net};
 use tokio::sync::Notify;
 use tokio::time::timeout;
 
+/// Only Linux: a seccomp filter answers each `sendmsg`.
 #[cfg(target_os = "linux")]
 mod full;
 #[cfg(target_os = "linux")]
@@ -139,7 +140,7 @@ fn a_full_batch_arrives_in_order() {
     });
 }
 
-/// Only Linux sends more than one datagram in a batch, with GSO.
+/// Only Linux: only Linux sends more than one datagram in a batch, with GSO.
 #[test]
 #[cfg(target_os = "linux")]
 fn a_batch_with_a_short_last_datagram_arrives_whole() {
@@ -160,6 +161,8 @@ fn a_batch_with_a_short_last_datagram_arrives_whole() {
     });
 }
 
+/// Only Linux: only Linux sends a batch in one call, with GSO.
+///
 /// A batch goes out in one call with GSO, and the receiver takes it back with GRO.
 #[test]
 #[cfg(target_os = "linux")]
@@ -205,6 +208,8 @@ async fn receive_batch(receiver: &mut Receiver) -> (Vec<u8>, usize, Option<Ecn>)
     (buffers[0][..meta.len].to_vec(), meta.stride, meta.ecn)
 }
 
+/// Only Linux: only Linux sends a batch in one call, with GSO.
+///
 /// A transmit that the kernel refuses leaves GSO and the IPv4 ECN mark on.
 #[test]
 #[cfg(target_os = "linux")]
@@ -252,6 +257,8 @@ fn a_refused_transmit_leaves_gso_and_ecn_on() {
     });
 }
 
+/// Only Linux: only Linux sends a batch in one call, with GSO.
+///
 /// A kernel that refuses GSO still gets each datagram of a batch, with its ECN mark.
 #[test]
 #[cfg(target_os = "linux")]
@@ -304,7 +311,7 @@ fn each_batch_sent_one_datagram_at_a_time_arrives_whole() {
     });
 }
 
-/// macOS loses it: `a_datagram_over_the_path_mtu_is_lost`.
+/// Only Linux: macOS loses it, in `a_datagram_over_the_path_mtu_is_lost`.
 #[test]
 #[cfg(target_os = "linux")]
 fn a_datagram_of_the_byte_max_arrives() {
@@ -327,8 +334,8 @@ fn a_datagram_of_the_byte_max_arrives() {
     });
 }
 
-/// Linux loopback takes each datagram up to the byte max, and macOS loopback has an
-/// MTU of 16,384 bytes.
+/// Only macOS: Linux loopback takes each datagram up to the byte max, and macOS
+/// loopback has an MTU of 16,384 bytes.
 #[test]
 #[cfg(target_os = "macos")]
 fn a_datagram_over_the_path_mtu_is_lost() {
@@ -348,6 +355,8 @@ fn a_datagram_over_the_path_mtu_is_lost() {
     });
 }
 
+/// Only Linux: only Linux sends a batch in one call, with GSO.
+///
 /// A segment of 65,500 bytes and its headers are over the 65,536-byte MTU of the
 /// Linux loopback, so the batch is over the path MTU with GSO.
 #[test]
@@ -443,7 +452,8 @@ fn an_any_v6_socket_talks_plain_ipv4() {
     });
 }
 
-/// Linux holds all of 127.0.0.0/8 on the loopback, and macOS holds only 127.0.0.1.
+/// Only Linux: Linux holds all of 127.0.0.0/8 on the loopback, and macOS holds only
+/// 127.0.0.1.
 #[test]
 #[cfg(target_os = "linux")]
 fn a_source_address_picks_the_local_address() {
@@ -537,6 +547,8 @@ fn a_v6_socket_on_a_specific_address_cannot_reach_ipv4() {
     });
 }
 
+/// Only Linux: each OS gives its own answer.
+///
 /// ENV SEAMS: `os` gives the kernel's answer for a source that is not local or is of
 /// the other family, and for port 0.
 #[cfg(target_os = "linux")]
@@ -606,6 +618,8 @@ fn a_bad_source_or_port_0_gives_the_answer_of_linux() {
     });
 }
 
+/// Only macOS: each OS gives its own answer.
+///
 /// ENV SEAMS: `os` gives the kernel's answer for a source that is not local.
 #[cfg(target_os = "macos")]
 #[test]

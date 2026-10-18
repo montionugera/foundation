@@ -1,4 +1,5 @@
 mod arity;
+mod circle;
 #[cfg_attr(unix, path = "chosen_unix.rs")]
 mod chosen;
 mod everywhere;
