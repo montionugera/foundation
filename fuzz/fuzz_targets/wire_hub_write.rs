@@ -1,10 +1,11 @@
 //! `wire::hub::write::Frames`, driven as a caller drives it by `Frames::due`, never
 //! panics. Each head that it gives encodes back to its message, so it gives no head
 //! that `Head::encode` panics on. Each error is one that `decode` lists for the part
-//! that was due. Each frame has the time, form, and count of its head. At the end of
-//! the input, `finish` gives `Ok` between frames, else `Error::Cut` with the bytes of
-//! the frame that came. A run that receives each body message in place gives the same
-//! steps as a run that gives it whole to `decode`.
+//! that was due, and each body is as long as its layout says. Each frame has the time,
+//! form, and count of its head. A frame that finds the pool full is skipped, and the
+//! stream goes on. At the end of the input, `finish` gives `Ok` between frames, else
+//! `Error::Cut` with the bytes of the frame that came. A run that receives each body
+//! message in place gives the same steps as a run that gives it whole to `decode`.
 //!
 //! Input: one byte, whose low 3 bits are the places of the stream less 1, then the
 //! messages from the program (`fuzz::messages`).
@@ -37,8 +38,8 @@ enum Seen {
     Message(Error),
     /// The error of a draft's layout, which stops the stream.
     Layout(types::frame::Error),
-    /// The pool had no block for the draft.
-    Pool,
+    /// The pool had no block for the draft, so the frame was skipped.
+    Skipped,
     /// The input ended, with what `finish` gave.
     Finished(Result<(), Error>),
 }
@@ -80,11 +81,22 @@ impl Seen {
     }
 }
 
-/// Checks that `error` is one that `decode` lists for a head when `head` is due, else
-/// for a part of the frame.
-fn check_error(error: Error, head: bool) {
-    let listed = if head {
-        matches!(
+/// The part of a frame that the stream expects, as the steps show it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Part {
+    Head,
+    Ends,
+    /// The body, with its bytes that remain, skipped when the pool had no block.
+    Body {
+        remain: usize,
+        skipped: bool,
+    },
+}
+
+/// Checks that `error` is one that `decode` lists for `part`.
+fn check_error(error: Error, part: Part) {
+    let listed = match part {
+        Part::Head => matches!(
             error,
             Error::Empty
                 | Error::Kind { .. }
@@ -95,21 +107,43 @@ fn check_error(error: Error, head: bool) {
                 | Error::Series
                 | Error::Stamp { .. }
                 | Error::Places { .. }
-        )
-    } else {
-        matches!(
+        ),
+        Part::Ends => matches!(
             error,
-            Error::Empty
-                | Error::Length { .. }
-                | Error::Run { .. }
-                | Error::Body { .. }
-        )
+            Error::Empty | Error::Length { .. } | Error::Run { .. }
+        ),
+        Part::Body { .. } => matches!(error, Error::Empty | Error::Body { .. }),
     };
-    assert!(
-        listed,
-        "a {} gave {error:?}",
-        if head { "head" } else { "part" }
-    );
+    assert!(listed, "{part:?} gave {error:?}");
+}
+
+/// The part after `step`, which took `len` bytes in `part`.
+fn after(step: &Step, part: Part, len: usize) -> Part {
+    match (step, part) {
+        (Step::Head(_), Part::Head) => Part::Ends,
+        (Step::More, Part::Ends) => Part::Ends,
+        (Step::More, Part::Body { remain, skipped }) => {
+            let remain = remain
+                .checked_sub(len)
+                .expect("a body message fits its body");
+            match (remain, skipped) {
+                (0, true) => Part::Head,
+                (0, false) => panic!("a whole body gave no frame"),
+                _ => Part::Body { remain, skipped },
+            }
+        }
+        (
+            Step::Frame { .. },
+            Part::Body {
+                remain,
+                skipped: false,
+            },
+        ) => {
+            assert_eq!(remain, len, "a frame came before the end of its body");
+            Part::Head
+        }
+        (step, part) => panic!("{part:?} gave {step:?}"),
+    }
 }
 
 /// The steps of a stream of `places` that reads `bytes`, each body message received
@@ -119,8 +153,7 @@ fn run(places: u8, bytes: &[u8], in_place: bool) -> Vec<Seen> {
     let mut frames = Frames::new(set(places));
     let mut messages = fuzz::messages(bytes);
     let mut seen = Vec::new();
-    // A head is due at the start and after each frame.
-    let mut head = true;
+    let mut part = Part::Head;
     // The bytes of the frame that came.
     let mut received = 0;
     loop {
@@ -135,55 +168,95 @@ fn run(places: u8, bytes: &[u8], in_place: bool) -> Vec<Seen> {
                 seen.push(Seen::Layout(error));
                 return seen;
             }
-            Ok(Due::Draft { layout, form }) => match layout.draft(&pool, form) {
-                Ok(draft) => Ok(frames.draft(draft)),
-                Err(_) => {
-                    seen.push(Seen::Pool);
-                    return seen;
+            Ok(Due::Draft { layout, form }) => {
+                assert_eq!(part, Part::Ends, "a draft is due outside the ends");
+                let remain = layout.body_len();
+                part = Part::Body {
+                    remain,
+                    skipped: false,
+                };
+                match layout.draft(&pool, form) {
+                    Ok(draft) => frames.draft(draft),
+                    Err(_) => {
+                        frames.skip();
+                        seen.push(Seen::Skipped);
+                        part = match remain {
+                            0 => Part::Head,
+                            _ => Part::Body {
+                                remain,
+                                skipped: true,
+                            },
+                        };
+                        if part == Part::Head {
+                            received = 0;
+                        }
+                        continue;
+                    }
                 }
-            },
+            }
             Ok(Due::Body(rest)) => {
+                let Part::Body {
+                    remain,
+                    skipped: false,
+                } = part
+                else {
+                    panic!("{part:?} gave a body slice");
+                };
+                assert_eq!(rest.len(), remain, "the slice is not the rest of the body");
                 let Some(message) = messages.next() else {
                     seen.push(finished(&frames, received));
                     return seen;
                 };
                 len = message.len();
-                match rest.get_mut(..message.len()) {
+                let step = match rest.get_mut(..message.len()) {
                     Some(into) if in_place => {
                         into.copy_from_slice(message);
                         frames.received(message.len())
                     }
                     _ => frames.decode(message),
+                };
+                match step {
+                    Ok(step) => step,
+                    Err(error) => return stopped(seen, error, part),
                 }
             }
             Ok(Due::Message) => {
+                assert!(
+                    !matches!(part, Part::Body { skipped: false, .. }),
+                    "{part:?} gave a whole message"
+                );
                 let Some(message) = messages.next() else {
                     seen.push(finished(&frames, received));
                     return seen;
                 };
                 len = message.len();
-                let step = frames.decode(message);
-                if let Ok(Step::Head(given)) = &step {
-                    let mut out = [0; Head::LEN];
-                    given.encode(&mut out);
-                    assert_eq!(&out[..], message, "the head changed");
+                match frames.decode(message) {
+                    Ok(Step::Head(given)) => {
+                        let mut out = [0; Head::LEN];
+                        given.encode(&mut out);
+                        assert_eq!(&out[..], message, "the head changed");
+                        Step::Head(given)
+                    }
+                    Ok(step) => step,
+                    Err(error) => return stopped(seen, error, part),
                 }
-                step
             }
         };
-        match step {
-            Ok(step) => {
-                head = matches!(step, Step::Frame { .. });
-                received = if head { 0 } else { received + len };
-                seen.push(Seen::of(step, places));
-            }
-            Err(error) => {
-                check_error(error, head);
-                seen.push(Seen::Message(error));
-                return seen;
-            }
-        }
+        part = after(&step, part, len);
+        received = if part == Part::Head {
+            0
+        } else {
+            received + len
+        };
+        seen.push(Seen::of(step, places));
     }
+}
+
+/// `seen` with the `error` that stopped the stream in `part`.
+fn stopped(mut seen: Vec<Seen>, error: Error, part: Part) -> Vec<Seen> {
+    check_error(error, part);
+    seen.push(Seen::Message(error));
+    seen
 }
 
 /// What `finish` gave at the end of the input, checked against the `received` bytes
@@ -208,6 +281,9 @@ fn check(seen: &[Seen]) {
     for step in seen {
         match step {
             Seen::Head(next) => head = Some(*next),
+            Seen::Skipped => {
+                head.take().expect("a skipped frame came with no head");
+            }
             Seen::Frame {
                 time, form, range, ..
             } => {

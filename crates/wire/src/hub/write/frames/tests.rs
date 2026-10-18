@@ -159,6 +159,36 @@ fn panics_on_a_finish_when_a_draft_is_due() {
 }
 
 #[test]
+#[should_panic(expected = "a draft is due before the next message")]
+fn panics_on_a_message_when_a_draft_is_due() {
+    let mut frames = Frames::new(create_set());
+    ends(&mut frames);
+    let _step = frames.decode(&body());
+}
+
+#[test]
+#[should_panic(expected = "a body is due")]
+fn panics_on_a_body_received_in_place_when_a_draft_is_due() {
+    let mut frames = Frames::new(create_set());
+    ends(&mut frames);
+    let _step = frames.received(1);
+}
+
+#[test]
+#[should_panic(expected = "no draft is due")]
+fn panics_on_a_draft_when_no_draft_is_due() {
+    let pool = create_pool();
+    let mut frames = Frames::new(create_set());
+    ends(&mut frames);
+    let Ok(Due::Draft { layout, form }) = frames.due() else {
+        panic!("a draft is due");
+    };
+    let twice = layout.draft(&pool, form).expect("a block");
+    draft(&mut frames, &pool);
+    let _step = frames.draft(twice);
+}
+
+#[test]
 fn builds_a_frame_from_a_body_received_in_place() {
     let pool = create_pool();
     let mut frames = Frames::new(create_set());
@@ -245,7 +275,7 @@ fn refuses_each_head_that_the_program_cannot_encode() {
         (
             head_bytes(3, 2, 0, 0),
             Error::Path { byte: 3 },
-            "the frame head names path 3, which this node does not know",
+            "the frame head names path or time 3, which this node does not know",
         ),
         (
             head_bytes(0, 2, 0, 0),
@@ -268,8 +298,8 @@ fn refuses_each_head_that_the_program_cannot_encode() {
                 count: 1,
                 form: Form::Encoded,
             },
-            "the frame head that the node stamps has 1 samples in the Encoded form, not \
-             1 in the raw form",
+            "the frame head that the node stamps has 1 samples in the Encoded form, \
+             not 1 in the raw form",
         ),
         (
             head_bytes(2, 0, 2, 9),
@@ -351,6 +381,100 @@ fn gives_the_layout_error_of_ends_out_of_order() {
         frames.due(),
         Err(types::frame::Error::End(BadEnd::Before { .. }))
     ));
+}
+
+/// Takes drafts of the due layout from `pool` until it has none, and gives them with
+/// the pool's error.
+fn create_full(frames: &mut Frames, pool: &block::Pool) -> (Vec<Draft>, block::Error) {
+    let Ok(Due::Draft { layout, form }) = frames.due() else {
+        panic!("a draft is due");
+    };
+    let mut held = Vec::new();
+    loop {
+        match layout.draft(pool, form) {
+            Ok(draft) => held.push(draft),
+            Err(error) => return (held, error),
+        }
+    }
+}
+
+#[test]
+fn takes_the_next_frame_after_a_frame_of_no_body_finds_the_pool_full() {
+    let pool = create_pool();
+    let mut frames = Frames::new(create_set());
+    frames
+        .decode(&encode_head(LIVE, Form::Raw, 1, 1))
+        .expect("the head");
+    frames.decode(&encode_ends(&[(0, 0)])).expect("the ends");
+    let (held, error) = create_full(&mut frames, &pool);
+    assert!(matches!(error, block::Error::Exhausted { .. }), "{error:?}");
+    frames.skip();
+    drop(held);
+    assert!(matches!(frames.due(), Ok(Due::Message)));
+    assert_eq!(frames.finish(), Ok(()));
+    ends(&mut frames);
+    draft(&mut frames, &pool);
+    let (frame, _) = frame(frames.decode(&body()).expect("the body"));
+    check(&frame, &body());
+}
+
+#[test]
+fn drops_the_body_of_a_skipped_frame_and_takes_the_next_frame() {
+    let pool = create_pool();
+    let mut frames = Frames::new(create_set());
+    ends(&mut frames);
+    let (held, _) = create_full(&mut frames, &pool);
+    frames.skip();
+    drop(held);
+    let body = body();
+    assert!(matches!(frames.due(), Ok(Due::Message)));
+    assert!(matches!(frames.decode(&body[..20]), Ok(Step::More)));
+    assert_eq!(
+        frames.finish(),
+        Err(Error::Cut {
+            received: 47,
+            len: Some(59)
+        })
+    );
+    assert!(matches!(frames.decode(&body[20..]), Ok(Step::More)));
+    assert!(matches!(frames.due(), Ok(Due::Message)));
+    assert_eq!(frames.finish(), Ok(()));
+    ends(&mut frames);
+    draft(&mut frames, &pool);
+    let (frame, _) = frame(frames.decode(&body).expect("the body"));
+    check(&frame, &body);
+}
+
+#[test]
+fn refuses_an_empty_or_long_body_message_of_a_skipped_frame() {
+    let mut frames = Frames::new(create_set());
+    ends(&mut frames);
+    frames.skip();
+    assert_eq!(frames.decode(&[]).map(|_| ()), Err(Error::Empty));
+    assert_eq!(
+        frames.decode(&[0; 33]).map(|_| ()),
+        Err(Error::Body {
+            len: 33,
+            remain: 32
+        })
+    );
+    assert!(matches!(frames.decode(&body()), Ok(Step::More)));
+}
+
+#[test]
+#[should_panic(expected = "no draft is due")]
+fn panics_on_a_skip_when_no_draft_is_due() {
+    let mut frames = Frames::new(create_set());
+    frames.skip();
+}
+
+#[test]
+#[should_panic(expected = "a body is due")]
+fn panics_on_a_body_received_in_place_for_a_skipped_frame() {
+    let mut frames = Frames::new(create_set());
+    ends(&mut frames);
+    frames.skip();
+    let _received = frames.received(1);
 }
 
 #[test]
@@ -443,7 +567,8 @@ proptest! {
             prop_assert!(matches!(step, Ok(Step::Head(_))));
             let mut cuts = case.cuts.iter().copied().cycle();
             for run in crate::hub::tests::cut(&ends, &mut cuts) {
-                prop_assert!(matches!(frames.decode(&encode_ends(run)), Ok(Step::More)));
+                let step = frames.decode(&encode_ends(run));
+                prop_assert!(matches!(step, Ok(Step::More)));
             }
             let mut step = draft(&mut frames, &pool);
             let fit = "the bytes of a frame fit a usize";

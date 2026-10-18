@@ -4,30 +4,25 @@ use types::frame::key_set::KeySet;
 use types::frame::{Draft, Form, Layout};
 
 use super::{Error, Head, Time};
-use crate::hub::ends;
-use crate::hub::part::{Next, Part, prefix, rest, to_usize};
+use crate::hub::part::{Assembly, Next, Part, to_usize};
+use crate::hub::{self, ends};
 
 /// The frames of a program's write stream after the places, at the node. The node
 /// receives each message and makes each draft from the pool of the home. The entries
-/// of each frame index the key set: entry `n` is place `n`.
+/// of each frame index the key set: entry `n` is place `n`. It holds 16 bytes for each
+/// place, and allocates nothing after [`Frames::new`].
 #[derive(Debug)]
 pub struct Frames {
-    set: Arc<KeySet>,
     places: u32,
     next: Next,
     head: Option<Head>,
-    /// The entry and end of each series of the frame that arrives.
-    ends: Vec<(usize, usize)>,
-    /// The form of the draft that is due: the ends are whole and the draft is not
-    /// given.
-    drafting: Option<Form>,
-    draft: Option<Draft>,
+    assembly: Assembly,
 }
 
 /// What [`Frames`] waits for next.
 #[derive(Debug)]
 pub enum Due<'f> {
-    /// A whole message, for [`Frames::decode`].
+    /// A whole message, for [`Frames::decode`]. The body of a skipped frame comes so.
     Message,
     /// Body bytes. Receive into the slice, the rest of the draft's body, and give the
     /// length to [`Frames::received`]. A message over the slice goes to
@@ -72,13 +67,10 @@ impl Frames {
         let places = u32::try_from(set.entries().len())
             .expect("a write stream has at most u32::MAX places");
         Self {
-            set,
             places,
             next: Next::Head,
             head: None,
-            ends: Vec::new(),
-            drafting: None,
-            draft: None,
+            assembly: Assembly::new(set),
         }
     }
 
@@ -91,19 +83,20 @@ impl Frames {
     /// caller then stops the stream as `MALFORMED`.
     #[inline]
     pub fn due(&mut self) -> Result<Due<'_>, types::frame::Error> {
-        if let Some(form) = self.drafting {
-            return Layout::from_ends(&self.set, &self.ends)
-                .map(|layout| Due::Draft { layout, form });
-        }
-        Ok(match (self.next.body(), self.draft.as_mut()) {
-            (Some(start), Some(draft)) => Due::Body(rest(draft, start)),
-            (None, _) => Due::Message,
-            (Some(_), None) => unreachable!("invariant: a body has a draft"),
+        Ok(match (self.assembly.due(self.next.body())?, self.head) {
+            (hub::Due::Message, _) => Due::Message,
+            (hub::Due::Body(rest), _) => Due::Body(rest),
+            (hub::Due::Draft(layout), Some(head)) => Due::Draft {
+                layout,
+                form: head.form,
+            },
+            (hub::Due::Draft(_), None) => unreachable!("invariant: a draft has a head"),
         })
     }
 
-    /// Takes the next message, whole. A body message is copied into the draft. When
-    /// the program finishes its stream, call [`Frames::finish`].
+    /// Takes the next message, whole. A body message is copied into the draft, or
+    /// dropped for a skipped frame. When the program finishes its stream, call
+    /// [`Frames::finish`].
     ///
     /// # Errors
     ///
@@ -120,28 +113,17 @@ impl Frames {
     /// When [`Frames::due`] gives [`Due::Draft`].
     #[inline]
     pub fn decode(&mut self, message: &[u8]) -> Result<Step, Error> {
-        assert!(
-            self.drafting.is_none(),
-            "a draft is due before the next message"
-        );
+        self.assembly.check_undrafted("the next message");
         let start = self.next.body();
-        if let Next::Head = self.next {
-            return self.head(message);
-        }
         match self.next.decode(message)? {
+            Part::Head(message) => self.head(message),
             Part::Ends { ends, last } => {
-                self.ends
-                    .extend(ends.map(|(place, end)| (to_usize(place), to_usize(end))));
-                if last {
-                    self.drafting =
-                        Some(self.head.expect("invariant: a run has a head").form);
-                }
+                self.assembly.ends(ends, last);
                 Ok(Step::More)
             }
             Part::Body { bytes, last } => {
                 let start = start.expect("invariant: body bytes come inside a body");
-                let draft = self.draft.as_mut().expect("invariant: a body has a draft");
-                prefix(rest(draft, start), bytes.len()).copy_from_slice(bytes);
+                self.assembly.body(start, bytes);
                 Ok(self.received_body(last))
             }
         }
@@ -160,7 +142,7 @@ impl Frames {
     /// When [`Frames::due`] does not give [`Due::Body`], or `len` is over its slice.
     #[inline]
     pub fn received(&mut self, len: usize) -> Result<Step, Error> {
-        assert!(self.drafting.is_none(), "a body is due");
+        self.assembly.check_body();
         let last = self.next.received(len)?;
         Ok(self.received_body(last))
     }
@@ -173,12 +155,24 @@ impl Frames {
     /// When [`Frames::due`] does not give [`Due::Draft`].
     #[inline]
     pub fn draft(&mut self, draft: Draft) -> Step {
-        assert!(self.drafting.take().is_some(), "no draft is due");
-        self.draft = Some(draft);
+        self.assembly.draft(Some(draft));
         match self.next.body() {
             Some(_) => Step::More,
             None => self.frame(),
         }
+    }
+
+    /// Takes no draft for the frame whose draft is due, when the pool of the home has
+    /// no block for it. The frame's body, when it has one, then comes as
+    /// [`Due::Message`], and [`Frames::decode`] checks each message, drops it, and
+    /// gives [`Step::More`].
+    ///
+    /// # Panics
+    ///
+    /// When [`Frames::due`] does not give [`Due::Draft`].
+    #[inline]
+    pub fn skip(&mut self) {
+        self.assembly.draft(None);
     }
 
     /// Checks the end of the stream, when the program finished it.
@@ -191,10 +185,7 @@ impl Frames {
     ///
     /// When [`Frames::due`] gives [`Due::Draft`].
     pub fn finish(&self) -> Result<(), Error> {
-        assert!(
-            self.drafting.is_none(),
-            "a draft is due before the end of the stream"
-        );
+        self.assembly.check_undrafted("the end of the stream");
         let (remain, body) = match self.next {
             Next::Head => return Ok(()),
             Next::Ends { remain } => (remain, None),
@@ -228,22 +219,25 @@ impl Frames {
             });
         }
         self.head = Some(head);
-        self.ends.clear();
+        self.assembly.head();
         self.next = Next::Ends {
             remain: head.series,
         };
         Ok(Step::Head(head))
     }
 
-    /// The step of the body message that arrived, a frame when it is the `last`.
+    /// The step of the body message that arrived, the frame when it is the `last`.
     fn received_body(&mut self, last: bool) -> Step {
         if last { self.frame() } else { Step::More }
     }
 
-    /// The frame of the head and the draft that arrived.
+    /// The frame of the head and the draft that arrived, or [`Step::More`] when the
+    /// frame was skipped.
     fn frame(&mut self) -> Step {
         let head = self.head.take().expect("invariant: a frame has a head");
-        let mut draft = self.draft.take().expect("invariant: a frame has a draft");
+        let Some(mut draft) = self.assembly.take() else {
+            return Step::More;
+        };
         draft.set_count(0, head.count);
         Step::Frame {
             draft,
