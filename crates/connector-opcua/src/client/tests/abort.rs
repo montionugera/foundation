@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use super::{RELAY, Relay, VALUE, Values, drop_reads, relayed, run, serve};
+use super::{RELAY, Relay, VALUE, Values, drop_reads, fits, relayed, run, serve};
 use crate::ffi::Status;
 use crate::value::{Fault, Value};
 
@@ -132,4 +132,38 @@ fn an_abort_with_an_unknown_id_ends_no_read() {
     let (aborted, [after, again], value) = reads(0, 1, unknown);
     assert_eq!(aborted, vec![Err(Fault::status(Status::BAD_TIMEOUT))]);
     assert_eq!((after, again), (Ok(value), Ok(value)));
+}
+
+/// An abort after intermediate chunks of its answer deletes them, so its read gives
+/// the Error of the abort. With chunks of 8,192 bytes, the answer of 1,500 nodes is one
+/// intermediate chunk and one final chunk.
+#[test]
+fn an_abort_after_intermediate_chunks_ends_its_read_with_its_error() {
+    let ((aborted, after, value), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            peer.url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
+            let left = Cell::new(0u16);
+            let rewrite = |chunk: &mut Vec<u8>| {
+                if chunk.starts_with(b"MSGF") && left.get() > 0 {
+                    *chunk = too_large(chunk);
+                    left.set(left.get() - 1);
+                }
+            };
+            relayed(&node, &Relay::default(), rewrite, async {
+                let mut client = peer.receiving(8192).await;
+                assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
+                let nodes = fits(client.nodes(&vec![VALUE; 1500]));
+                assert_eq!(nodes.counts(), vec![1500]);
+                left.set(1);
+                let aborted = client.read(&nodes).await.map(<[_]>::to_vec);
+                let after = client.read_one(&VALUE).await;
+                client.close().await;
+                (aborted, after, peer.value)
+            })
+            .await
+        })
+        .await
+    });
+    assert_eq!(aborted, Err(Status::BAD_RESPONSE_TOO_LARGE));
+    assert_eq!(after, Ok(value));
 }
