@@ -925,12 +925,7 @@ fn matched<T>(
     {
         at
     } else {
-        let named = state
-            .channels
-            .iter()
-            .find(|(_, channel)| channel.key() == index)
-            .expect("invariant: the index of a defined channel is defined");
-        found.push(named);
+        found.push(state.channels.index(index));
         found.len() - 1
     };
     let keys = found.iter().map(|(_, channel)| channel.key()).collect();
