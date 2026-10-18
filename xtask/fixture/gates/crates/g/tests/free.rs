@@ -84,3 +84,15 @@ impl Other for fn() {
 impl Other for dyn Fn() {
     fn other() {}
 }
+
+m! {
+    #[cfg(unix)]
+    impl Rig {
+        fn implied() {}
+    }
+    #[cfg(unix)]
+    static S: u8 = 0;
+    impl Rig {
+        fn unleaked() {}
+    }
+}

@@ -183,3 +183,10 @@ macro_rules! case {
     };
 }
 case!(test, made);
+m! {
+    #[cfg(unix)]
+    proptest::proptest! {
+        #[test]
+        fn called() {}
+    }
+}

@@ -618,8 +618,9 @@ impl<'ast> Visit<'ast> for Items<'_> {
         });
     }
 
-    /// A `cfg` of the call is a gate of each function and module at the top of its
-    /// body, by its name. A `macro_rules!` holds no item until a call expands it.
+    /// A `cfg` of the call is a gate of each function and module in its body, in a
+    /// brace group too, by its name. A `macro_rules!` holds no item until a call
+    /// expands it.
     fn visit_item_macro(&mut self, i: &'ast syn::ItemMacro) {
         if i.mac.path.is_ident("macro_rules") {
             return;
@@ -737,22 +738,39 @@ fn body(input: ParseStream<'_>) -> syn::Result<Vec<Body>> {
             let attributes =
                 [attributes, content.call(Attribute::parse_inner)?].concat();
             items.push(Body::Module(attributes, name, body(&content)?));
-        } else if input.peek(syn::token::Brace) {
-            let content;
-            syn::braced!(content in input);
-            items.push(Body::Group(attributes, body(&content)?));
-        } else if !input.is_empty() {
-            // No function or module starts at the token after a prefix, so a skip of
-            // it loses none.
-            input.step(|cursor| {
-                cursor
-                    .token_tree()
-                    .map(|(_, next)| ((), next))
-                    .ok_or_else(|| cursor.error("the end of the body"))
-            })?;
+        } else {
+            // The attributes of another item gate its first brace group: the body of
+            // an `impl` or the input of a macro call. The item ends at it or at a `;`.
+            while !attributes.is_empty() && !ends(input) {
+                skip(input)?;
+            }
+            if input.peek(syn::token::Brace) {
+                let content;
+                syn::braced!(content in input);
+                items.push(Body::Group(attributes, body(&content)?));
+            } else if !input.is_empty() {
+                // No function or module starts at the token after a prefix, so a skip
+                // of it loses none.
+                skip(input)?;
+            }
         }
     }
     Ok(items)
+}
+
+/// Reports whether an item ends at `input`: at its end, a brace group, or a `;`.
+fn ends(input: ParseStream<'_>) -> bool {
+    input.is_empty() || input.peek(syn::token::Brace) || input.peek(Token![;])
+}
+
+/// Passes the token tree at `input`.
+fn skip(input: ParseStream<'_>) -> syn::Result<()> {
+    input.step(|cursor| {
+        cursor
+            .token_tree()
+            .map(|(_, next)| ((), next))
+            .ok_or_else(|| cursor.error("the end of the body"))
+    })
 }
 
 /// The predicate of the attributes at the start of `input`, which must be one `cfg`.
@@ -1106,6 +1124,8 @@ mod tests {
             gated(&format!("{lib} falsemac"), "Linux"),
             gated(&format!("{lib} falsemac"), "Windows"),
             gated(&format!("{lib} first"), "Windows"),
+            gated(&format!("{lib} called"), "Windows"),
+            gated(&format!("{free} implied"), "Windows"),
             gated(&format!("{lib} colon"), "Linux"),
             gated(&format!("{lib} colon"), "macOS"),
             gated(&format!("{lib} colon"), "Windows"),
