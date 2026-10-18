@@ -85,8 +85,10 @@
   https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6153426912). The
   connect, and each read in flight, gives the status of that error. The first error
   stays: an error that comes after it, such as the failure of a new session that the
-  client asks for after an `ERR`, does not replace it. A close by the
-  client, also at the timeout of the connect, gives the reads in flight
+  client asks for after an `ERR`, does not replace it (`laptop.architect-2`,
+  2026-10-18T22:40:49Z,
+  https://github.com/synnaxlabs/foundation/pull/3268#issuecomment-6256060302). A close
+  by the client, also at the timeout of the connect, gives the reads in flight
   `BadConnectionClosed`. A close or reset of the stream by the server still gives them
   `BadSecureChannelClosed`, and the connect `BadConnectionClosed`
   (`laptop.architect-2`, 2026-10-18T20:52:27Z,
