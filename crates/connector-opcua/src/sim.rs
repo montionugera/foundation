@@ -381,18 +381,19 @@ pub async fn serve(
     Server::serve(manager, SESSIONS, add, until.wait()).await
 }
 
-/// Runs `serve`, the [`serve`] of `until`, until `work` ends, then cancels `until`,
-/// waits for `serve`, and gives the output of `work`.
+/// Runs the [`serve`] that `serve` gives for a new token until `work` ends, then
+/// cancels the token, waits for the serve, and gives the output of `work`.
 ///
 /// # Panics
 ///
-/// When `serve` ends before `work`, or fails.
+/// When the serve ends before `work`, or fails.
 #[cfg(test)]
-pub(crate) async fn during<T>(
-    until: &Token,
-    serve: impl Future<Output = Result<(), net::Error>>,
+pub(crate) async fn during<F: Future<Output = Result<(), net::Error>>, T>(
+    serve: impl FnOnce(Token) -> F,
     work: impl Future<Output = T>,
 ) -> T {
+    let until = Token::new();
+    let serve = serve(until.clone());
     let (mut serve, mut work) = (std::pin::pin!(serve), std::pin::pin!(work));
     let out = std::future::poll_fn(|cx| {
         if let std::task::Poll::Ready(end) = serve.as_mut().poll(cx) {

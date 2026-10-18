@@ -16,8 +16,11 @@
   and returns the error of the listener, as HTTP SIM SERVER asks of a simulator that a
   conformance scenario stops (`laptop.architect-2`, 2026-10-18T06:35:44Z:
   https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6246623008).
+  This supersedes the `until` that completes of
+  https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136492404.
   `wall` gives the wall time of the server, which a client compares with the time of
-  each channel token, so the caller gives the wall time of the client's node (`laptop.architect-2`,
+  each channel token, so the caller gives the wall time of the client's node
+  (`laptop.architect-2`,
   https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147681882,
   2026-10-13 14:19 UTC). It adds each namespace from 2 to the highest of `variables`,
   gives each stream of the server the options of `listener`, and panics on a variable

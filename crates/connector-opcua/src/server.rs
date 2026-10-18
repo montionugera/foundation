@@ -588,7 +588,7 @@ impl Server {
         }
         let manager = &serving.manager;
         let out = {
-            let mut drive = pin!(manager.drive(|_| match manager.refused() {
+            let mut drive = pin!(manager.drive(|_| match manager.accept_error() {
                 Some(e) => Poll::Ready(e),
                 None => Poll::Pending,
             }));

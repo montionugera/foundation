@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use ::sim::{Sim, node};
 use connector::browse::{Device, End, Found, Query, Scope, Values};
-use connector::cancel::Token;
 use connector::kind::Table;
 use connector::supervisor::{self, Supervisor};
 use connector::{http, testing};
@@ -176,17 +175,8 @@ async fn serving_of(
     let wall = move || wall.now().time;
     let mut rng = node.entropy().rng();
     let (clock, net) = (node.clock(), node.net());
-    let stop = Token::new();
-    let serving = serve(
-        clock,
-        wall,
-        net,
-        listener,
-        &mut rng,
-        variables,
-        stop.clone(),
-    );
-    during(&stop, serving, until).await;
+    let serving = |stop| serve(clock, wall, net, listener, &mut rng, variables, stop);
+    during(serving, until).await;
 }
 
 /// What one browse of `query` gives on a sim server.

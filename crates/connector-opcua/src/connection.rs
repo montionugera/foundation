@@ -148,7 +148,8 @@ impl Manager {
             ahead: Cell::new(usize::MAX),
             again: RefCell::new(Vec::new()),
             accepted: Cell::new(None),
-            refused: Cell::new(None),
+            #[cfg(any(test, feature = "sim"))]
+            accept_error: Cell::new(None),
             #[cfg(feature = "sim")]
             moves: Cell::new(0),
             ends: RefCell::new(VecDeque::new()),
@@ -179,8 +180,9 @@ impl Manager {
     /// Takes the error of the accept of the listener of [`Manager::listening`] or
     /// [`Manager::accepting`], once the accept failed. The listen connection closes at
     /// its failure, so a server accepts no more streams after it.
-    pub(crate) fn refused(&self) -> Option<net::Error> {
-        self.state().refused.take()
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) fn accept_error(&self) -> Option<net::Error> {
+        self.state().accept_error.take()
     }
 
     /// Gives the loop, for a client or server config with `externalEventLoop`.
@@ -363,9 +365,10 @@ struct State {
     /// purged. It holds the listen connection from an accept until the next run of the
     /// loop, also when the loop closes it in between.
     accepted: Cell<Option<usize>>,
-    /// The error of the failed accept of the listener, until [`Manager::refused`]
-    /// takes it.
-    refused: Cell<Option<net::Error>>,
+    /// The error of the failed accept of the listener, until
+    /// [`Manager::accept_error`] takes it.
+    #[cfg(any(test, feature = "sim"))]
+    accept_error: Cell<Option<net::Error>>,
     /// The calls of `move_on`, for tests of the work of a drive.
     #[cfg(feature = "sim")]
     moves: Cell<usize>,
@@ -487,8 +490,9 @@ impl State {
     /// `CLOSING` unless a close queued it.
     fn fail(&self, id: usize, failure: &Failure) {
         self.warn(id, format_args!("{failure}"));
+        #[cfg(any(test, feature = "sim"))]
         if let Failure::Accept(e) = failure {
-            self.refused.set(Some(e.clone()));
+            self.accept_error.set(Some(e.clone()));
         }
         let stream = self
             .table
