@@ -206,14 +206,14 @@ impl Layout {
     ///
     /// [`Unfit`] when `body_max` is under 8183 bytes (two blocks less the record
     /// header, which hold the carry body of one tail and one tagged entry of
-    /// [`ENTRY_MAX_MIN`](Self::ENTRY_MAX_MIN) bytes), over `u32::MAX`, or so large
-    /// that the largest record does not fit in a `usize`.
-    /// Also when `area` is not a multiple of [`ALIGN`], when it is less than four
-    /// times the largest record (a 9-byte header and `body_max`, in whole 4096-byte
-    /// blocks), one block, and two times the record of a body of the fewer of
-    /// `body_max` and 42970 bytes, or when the ring file (two header blocks and the
-    /// area) does not fit in a `u64`. A ring of that area that holds only its
-    /// restart record takes any record, wherever the restart record is.
+    /// [`ENTRY_MAX_MIN`](Self::ENTRY_MAX_MIN) bytes), over `u32::MAX`, or so large that
+    /// the largest record does not fit in a `usize`. Also when `area` is not a multiple
+    /// of [`ALIGN`], when it is less than four times the largest record (a 9-byte
+    /// header and `body_max`, in whole 4096-byte blocks), one block, and two times the
+    /// record of a body of the fewer of `body_max` and 42970 bytes, or when the ring
+    /// file (two header blocks and the area) does not fit in a `u64`. A ring of that
+    /// area that holds only its restart record takes any record, wherever the restart
+    /// record is.
     pub fn new(area: u64, body_max: usize) -> Result<Self, Unfit> {
         match window(body_max) {
             Some(window)
@@ -342,8 +342,8 @@ impl Layout {
     }
 }
 
-/// A limit of one record, of the pool block that holds one entry, or of an entry
-/// with a nonzero tag.
+/// A limit of one record, of the pool block that holds one entry, of an entry with a
+/// nonzero tag, or of the carry record of a batch with such an entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Limit {
     /// More entries than one record holds.

@@ -184,9 +184,10 @@
   the record of a tail is: `kept` gives the oldest holder of either kind, so no trim
   passes one. A commit carries each holder before the reach in a carry record (S4),
   oldest first, with the bytes from the copy and no file read. A carry record has a
-  budget of bytes: a tail costs 42 bytes and an entry 51 bytes and its bytes, at most
-  1023 of each, within the body of the largest block. One block body holds any one
-  holder, so each commit with a holder before the reach carries at least the oldest. An
+  budget of bytes, at most the largest carry body of S4: a tail costs 42 bytes and an
+  entry 51 bytes and its bytes, at most 1023 of each. A carry moves whole records, and
+  the holders of each record fit one carry record (`Limit::Carry`), so each commit with
+  a holder before the reach carries at least the holders of the oldest record. An
   entry replaces the copy of its key only when its end mark is the same as or after the
   end mark of the copy, so a carry of an older copy after a newer entry, at the commit
   or at the walk, changes nothing. The walk gives `Error::Invalid` for a carried entry
