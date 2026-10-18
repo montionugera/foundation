@@ -1013,7 +1013,7 @@ fn inspect(
         }
         let found = includes(&preprocessed, copy, &flags, &dirs)
             .into_iter()
-            .chain(foreign(&preprocessed, &dirs, &crypto.include))
+            .chain(foreign(&preprocessed, copy, &dirs, &crypto.include))
             .chain(passwords(&preprocessed, &readers));
         problems.extend(found.map(|problem| format!("{source}: {problem}")));
     }
@@ -1186,9 +1186,15 @@ fn includes(
 
 /// An error for each header that the unit enters, by any name and from any file,
 /// under `openssl/` of a directory of `dirs` other than the directories `crypto`, as
-/// the line markers of `preprocessed` (the output of `cc -E`) show it. GCC writes the
-/// real path of a system header, so a directory that does not exist holds none.
-fn foreign(preprocessed: &str, dirs: &[PathBuf], crypto: &[PathBuf]) -> Vec<String> {
+/// the line markers of `preprocessed` (the output of `cc -E` in `copy`) show it. It
+/// compares real paths, since GCC writes the real path of a header only when it is
+/// shorter.
+fn foreign(
+    preprocessed: &str,
+    copy: &Path,
+    dirs: &[PathBuf],
+    crypto: &[PathBuf],
+) -> Vec<String> {
     let real = |dirs: &[PathBuf]| -> Vec<PathBuf> {
         dirs.iter()
             .filter_map(|dir| std::fs::canonicalize(dir).ok())
@@ -1197,7 +1203,8 @@ fn foreign(preprocessed: &str, dirs: &[PathBuf], crypto: &[PathBuf]) -> Vec<Stri
     let (dirs, crypto) = (real(dirs), real(crypto));
     let mut problems = Vec::new();
     for (_, name) in preprocessed.lines().filter_map(marker) {
-        let file = Path::new(name);
+        let file =
+            std::fs::canonicalize(copy.join(name)).unwrap_or_else(|_| name.into());
         let system = dirs.iter().any(|dir| {
             file.strip_prefix(dir)
                 .is_ok_and(|rest| rest.starts_with("openssl"))
@@ -3770,7 +3777,8 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
     /// A header of the [`Crypto`] is outside the copy, and the check reads it as a
     /// system header, as the build of `connector-opcua` does. The readers come from
     /// the first header of each name under `openssl/` of the crypto, and each other
-    /// system header under `openssl/` is refused.
+    /// system header under `openssl/` is refused, also through a link shorter than its
+    /// target, whose path GCC keeps.
     #[test]
     fn check_builds_against_the_headers_of_the_crypto() {
         let dir = temp("crypto");
@@ -3796,15 +3804,15 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
                 ("crypto/x/README", ""),
                 ("second/openssl/x/read.h", &second),
                 ("bad/openssl/f.h", "#error f\n"),
-                ("sys/openssl/kdf.h", "struct kdf;\n"),
-                ("sys/openssl/x.h", "struct x;\n"),
-                ("sys/wrap.h", "#include <openssl/x.h>\n"),
+                ("system/openssl/kdf.h", "struct kdf;\n"),
+                ("system/openssl/x.h", "struct x;\n"),
+                ("system/wrap.h", "#include <openssl/x.h>\n"),
             ],
         );
-        std::os::unix::fs::symlink(dir.join("sys"), dir.join("link")).unwrap();
+        std::os::unix::fs::symlink(dir.join("system"), dir.join("s")).unwrap();
         let script = format!(
             "#!/bin/sh\nexec cc \"$@\" -isystem '{}'\n",
-            dir.join("link").display()
+            dir.join("s").display()
         );
         let cc = create_cc(&dir, &script);
         let inspect = |include: &[&str]| {
@@ -3817,12 +3825,12 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
         let outside = |name: &str| {
             format!(
                 "a.c: includes {}, a header of OpenSSL outside the crypto",
-                dir.join("sys/openssl").join(name).display()
+                dir.join("s").join(name).display()
             )
         };
         let mut problems = vec![
-            outside("kdf.h"),
-            outside("x.h"),
+            outside("./openssl/kdf.h"),
+            outside("openssl/x.h"),
             gives("a.c", "a.c:8", "0", PREFIX),
         ];
         problems.extend(Uses::default().mismatches());
