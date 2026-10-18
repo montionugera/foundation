@@ -414,9 +414,10 @@ pub enum Error {
     Wire(wire::blob::Error),
     /// The peer opened the stream one way. The stream stops with code `MALFORMED`.
     OneWay,
-    /// The store refused a put, or failed. The stream stops with `MISMATCH` for
-    /// [`crate::Error::Mismatch`], with `FULL` for [`crate::Error::Floor`] and a full
-    /// disk, and with code 0 for each other error.
+    /// The store refused a put, or failed. `serve` stops the stream with `MISMATCH`
+    /// for [`crate::Error::Mismatch`], with `FULL` for [`crate::Error::Floor`] and a
+    /// full disk, and with code 0 for each other error. [`get()`] and [`put()`] end
+    /// it with code 0.
     Store(crate::Error),
     /// The stream or its session failed. No code.
     Stream(transport::Error),
