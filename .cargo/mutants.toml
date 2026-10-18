@@ -25,16 +25,14 @@ exclude_re = [
   '^bench/',
   # `main` reads the arguments and calls a task. Each task has its own tests.
   'xtask/src/main\.rs:.*(replace main ->| in main$)',
-  # Miri needs the pinned nightly, which only the miri shard CI jobs install. A
-  # deliberate break in those jobs shows that they fail.
+  # These five need the pinned nightly and cargo-nextest, which only the miri shard CI
+  # jobs install. Each choice of the run is in a `pub(crate)` function of `miri` with
+  # its own test; these only start the commands. A test that panics under Miri, planted
+  # in a lib, a doc test, or another target, fails the shard job that runs it.
   'xtask/src/miri\.rs:.*(replace run ->| in run$)',
-  # Lists the doc tests through Miri, with the same nightly.
   'xtask/src/miri\.rs:.*(replace doc_tests ->| in doc_tests$)',
-  # Lists the lib tests through nextest under Miri, with the same nightly.
   'xtask/src/miri\.rs:.*(replace list ->| in list$)',
-  # Runs the lib tests through nextest under Miri, with the same nightly.
   'xtask/src/miri\.rs:.*(replace nextest ->| in nextest$)',
-  # Runs each unit through Miri, with the same nightly.
   'xtask/src/miri\.rs:.*(replace worker ->| in worker$)',
   # The run needs the pinned nightly, which the mutants job does not install. A planted
   # overflow in the shim fails the sanitizers job.

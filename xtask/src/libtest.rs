@@ -9,6 +9,9 @@ pub(crate) enum Run {
     Failed,
     /// The command passed, and no test passed: none exists, or each is ignored.
     Empty,
+    /// The command passed and printed no libtest report, as a target with no harness
+    /// does.
+    Silent,
     /// The command passed, and at least one test passed.
     Passed,
 }
@@ -24,6 +27,8 @@ pub(crate) fn run(command: &mut Command) -> Result<Run, String> {
     eprint!("{stdout}");
     Ok(if !output.status.success() {
         Run::Failed
+    } else if !stdout.lines().any(|line| line.starts_with("test result: ")) {
+        Run::Silent
     } else if tests_passed(&stdout) == 0 {
         Run::Empty
     } else {
@@ -55,6 +60,7 @@ mod tests {
         assert_eq!(sh("echo 'test result: ok. 0 passed'"), Ok(Run::Empty));
         assert_eq!(sh(&format!("{passed}; exit 101")), Ok(Run::Failed));
         assert_eq!(sh("exit 101"), Ok(Run::Failed));
+        assert_eq!(sh("echo 'checked'"), Ok(Run::Silent));
     }
 
     #[test]
