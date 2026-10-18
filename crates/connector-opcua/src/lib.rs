@@ -34,6 +34,8 @@ mod kind;
 #[cfg(feature = "open62541")]
 mod link;
 #[cfg(feature = "open62541")]
+mod log;
+#[cfg(feature = "open62541")]
 mod node;
 #[cfg(test)]
 #[cfg(feature = "open62541")]

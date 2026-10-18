@@ -112,13 +112,16 @@
   2026-10-07T10:38:49Z:
   https://github.com/synnaxlabs/foundation/pull/1263#issuecomment-6036181809); a
   member that is not a voter proposes with join (#336). The leader does not check the
-  home of a forwarded change: `Error::NotMember` checks only the argument of a local
-  caller, and the check of a home at apply on each node is #1273. A forwarded change
-  applies at least one time: a member that got no answer forwards it again, and the
-  leader then appends a second entry. A try of `set_home` that gives up resets its
-  stream. A proposal that the network delivers late, before the reset, can still apply
-  after a later call returned and set the older home, until #1273 refuses it (ruled by
-  the architect, 2026-10-07T20:58:20Z:
+  home of a forwarded change: `Error::NotMember` checks the argument of a local caller
+  and the member of a `Card` change, and the check of a home at apply on each node is
+  #1273. A forwarded change applies at least one time: a member that got no answer
+  forwards it again, and the leader then appends a second entry, other than for a
+  `Card` change that it proposed in the same term less than a minute before
+  (`laptop.architect`, 2026-10-18T07:48:16Z, item 2:
+  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247302177). A try
+  of `set_home` that gives up resets its stream. A proposal that the network delivers
+  late, before the reset, can still apply after a later call returned and set the
+  older home, until #1273 refuses it (ruled by the architect, 2026-10-07T20:58:20Z:
   https://github.com/synnaxlabs/foundation/pull/1607#issuecomment-6046723849).
   Supersedes the sentence that a repeat of `Change::Home` gives the state of a call
   that took effect last:
@@ -414,3 +417,59 @@
   https://github.com/synnaxlabs/foundation/issues/2749, and the quorum and the open only
   at 2026-10-15T21:52:37Z:
   https://github.com/synnaxlabs/foundation/pull/2755#issuecomment-6203047812.
+  Amended (2026-10-18, #2283): `Mesh::set_addresses` proposes a `Change::Card` of the
+  member of this node through `attempt` and `settle`, as `set_home` does. A member that
+  is not a voter gets `Error::NoVote`, as `set_home` gives, because a leader sends
+  entries only to the nodes of its configurations, so such a member applies no entry
+  after its join (`laptop.architect`, 2026-10-18T05:35:52Z:
+  https://github.com/synnaxlabs/foundation/issues/2283#issuecomment-6246157119). The
+  forward rule waits for B2 of #2283 (#3116, which waits on #3140): a member that is
+  not a voter forwards its card, the node that takes a forwarded change takes a
+  `Change::Card` from a peer that is not a voter when the card's member has the public
+  key that the transport proves for that peer, and each other change from such a peer
+  stays `Error::PeerNotVoter`. A member that knows no leader forwards to a voter of its
+  configuration, and follows its `NotLeader` answer. B2 also ends the `NoVote` of
+  `set_addresses`. Until B2, a `Change::Card` from a peer that is not a voter gets
+  `Error::PeerNotVoter` (item 3 of
+  https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245196820, as
+  6246157119 corrects it). The version of the card is above the held one and above
+  each version that this node signed before. The mesh keeps the last version that it
+  signed in the file `card` of its directory, synced before the proposal: two slots of
+  one sector, each with a check, and a write goes to the slot of the older version, so
+  a torn write keeps the newest. Else a node that stops after the commit of its card
+  and before its own apply proposes the held version at its next start, each node
+  refuses it, and the leader dials the stale card (`laptop.architect`,
+  2026-10-18T03:29:11Z, item 4 of 6245196820). A call does nothing only when the held
+  card has its addresses at a version at or above the last version in the file. At a
+  start the applied state can lag a card that commits after it, so the call signs
+  above that version and proposes (option (a) of item 1, `laptop.architect`,
+  2026-10-18T07:48:16Z:
+  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247302177). A file
+  with no valid slot that a torn write explains gives `Error::CardFile`
+  (`laptop.architect`, 2026-10-18T07:33:59Z:
+  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247185547). A node
+  proposes at most one `Change::Card` of each member each minute, by `Config::clock`,
+  for a forwarded change and for a local call. It counts a card when it proposes it, in
+  memory, and refuses another before the log: a forward gets stream code 18, and a local
+  call gets `Error::Soon`. So such a card never gets into the log (decided by
+  `laptop.monitor`, 2026-10-18T03:32:43Z:
+  https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245224489).
+  The count is in memory and ends at a restart of the node, as at a change of leader.
+  So a node that leads after its own restart, such as the one voter of its mesh,
+  proposes its new card at once: its cards follow its starts that change its
+  addresses (`laptop.architect`, 2026-10-18T11:22:56Z:
+  https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6249316017).
+  The bound applies only while the node leads, so a node that lost its lead gives
+  `NotLeader` and the call forwards the card. A repeat of the card that it proposed,
+  the same encoded change, gets no new entry. Another card of the member, also one
+  at the same version, gets `Error::Soon` (`laptop.architect`, 2026-10-18T10:28:03Z:
+  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6248754140). A
+  repeat waits for the write of that entry and gets its position, as the first call
+  does (`laptop.architect`, 2026-10-18T07:48:16Z and 2026-10-18T07:48:57Z:
+  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247302177 and
+  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247307620). It
+  counts only the cards of members: the leader refuses a card of a node that is not a
+  member before the log, with `Error::NotMember`. A repeat in a later term than the
+  entry proposes again, as the entry can be gone from the log (`laptop.architect`,
+  2026-10-18T08:28:03Z:
+  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247634446).

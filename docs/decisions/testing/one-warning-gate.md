@@ -1,6 +1,6 @@
 - **ONE WARNING GATE (2026-10-16)** The `check` job, on the pinned stable (`cargo
   clippy --workspace --all-targets --all-features -- -D warnings`), is the one gate
-  that fails on a warning. The jobs on the pinned nightly (`miri`, `sanitizers`,
+  that fails on a warning. The jobs on the pinned nightly (`miri-shard`, `sanitizers`,
   `fuzz`) check what they exist for (undefined behavior, memory errors, crashes) and do
   not fail on a warning: a builder cannot run that nightly on the laptop, so such a
   failure would not be reproducible, and those jobs already end before `check`. A bump

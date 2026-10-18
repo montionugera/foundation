@@ -12,6 +12,10 @@
 //! - `span`: a `trace` span entered and dropped under the level `trace`.
 //! - `status`: the status line `error` of a connector, with the span of the
 //!   connector as its parent, under the level `info`.
+//! - `opcua`: a warning of 511 B through the logger of open62541 in C, with the span of
+//!   a connector as its parent, under the level `info`, each in a new window of the
+//!   bound of 100 lines a second.
+//! - `opcua_dropped`: the same warning past that bound, which only counts it.
 //! - `recorded`: a record of a field of a `trace` span under the level `trace`, as
 //!   noq-proto makes for a frame that names a path.
 //! - `build`: the build of the dispatch, once for each node.
@@ -20,6 +24,7 @@
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
+use std::ffi::CString;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::mpsc;
@@ -28,6 +33,7 @@ use std::time::Duration;
 
 use divan::Bencher;
 use tracing::Level;
+use types::time::Span;
 
 #[global_allocator]
 static ALLOCATOR: counting::Allocator = counting::Allocator::new();
@@ -167,6 +173,40 @@ fn status(bencher: Bencher<'_, '_>) {
             let error = divan::black_box("no route to host");
             tracing::warn!(parent: &span, error, "error");
         });
+    });
+}
+
+/// A loop of open62541 on a sim clock whose lines have the span of a connector as
+/// their parent, and a line at the most bytes that its logger writes.
+fn opcua_log() -> (sim::Sim, connector_opcua::bench::Log, CString) {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    let span = tracing::error_span!("connector", connector = "plant.a", kind = "opcua");
+    let log =
+        connector_opcua::bench::Log::new(node.clock(), &mut node.entropy().rng(), span);
+    let text = CString::new("w".repeat(511)).expect("no NUL");
+    (sim, log, text)
+}
+
+/// One line for each sample, since the clock moves 1 s before each line.
+#[divan::bench(sample_count = 1000, sample_size = 1)]
+fn opcua(bencher: Bencher<'_, '_>) {
+    let d = dispatch(false, Level::INFO);
+    tracing::dispatcher::with_default(d.dispatch(), || {
+        let (mut sim, log, text) = opcua_log();
+        bencher
+            .with_inputs(|| sim.run_for(Span::SECOND).expect("the run has no task"))
+            .bench_local_values(|()| log.warn(&text));
+    });
+}
+
+#[divan::bench]
+fn opcua_dropped(bencher: Bencher<'_, '_>) {
+    let d = dispatch(false, Level::INFO);
+    tracing::dispatcher::with_default(d.dispatch(), || {
+        let (_sim, log, text) = opcua_log();
+        (0..100).for_each(|_| log.warn(&text));
+        bencher.bench_local(|| log.warn(&text));
     });
 }
 

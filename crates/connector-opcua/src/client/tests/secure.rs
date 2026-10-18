@@ -195,7 +195,11 @@ fn ask_past_the_last_policy() {
     }
     let mut sim = Sim::new(sim::Config::default());
     let clock = sim.node(sim::node::Config::default()).clock();
-    let events = Loop::new(event::Time::monotonic(clock), &mut Rng::from_seed(0));
+    let events = Loop::new(
+        event::Time::monotonic(clock),
+        tracing::Span::none(),
+        &mut Rng::from_seed(0),
+    );
     // SAFETY: the loop outlives the client, which leaks when the process aborts.
     let client = unsafe { crate::client::unconnected(events.raw()) }.as_ptr();
     let security = CLIENT_SIDE.raw();

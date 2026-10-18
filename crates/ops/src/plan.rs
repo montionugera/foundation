@@ -44,6 +44,24 @@ impl Documents {
         }
     }
 
+    /// The paths of the files, by source.
+    pub(crate) fn sources(&self) -> &Sources {
+        &self.sources
+    }
+
+    /// The `connector` block of `name` in the files.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] with each problem of [`config::connector`].
+    pub(crate) fn connector(
+        &self,
+        name: &Name,
+    ) -> Result<spec::connector::Connector, Error> {
+        config::connector(&self.documents, name)
+            .map_err(|diagnostics| Error::config(diagnostics, &self.sources))
+    }
+
     /// The tree key of each definition of the files, in order.
     ///
     /// # Errors

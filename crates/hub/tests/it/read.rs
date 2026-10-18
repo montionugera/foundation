@@ -38,7 +38,7 @@ const START: Span = Span::from_nanos(100_000_000);
 
 /// Runs one client session on a synced [`Test`] hub, as `link::session` does, where
 /// `ready` gets the hub before the home serves the session's streams.
-fn read_session<P>(
+pub(super) fn read_session<P>(
     seed: u64,
     ready: impl AsyncFnOnce(&Test) + Send + 'static,
     program: impl FnOnce(Agent) -> P + Send + 'static,
@@ -103,7 +103,7 @@ fn place(key: u128, data_type: Type, channel: &str) -> Place {
 }
 
 /// Finishes the hello stream and waits, so the hello stream ends as `Ended`.
-async fn finish(agent: &mut Agent) {
+pub(super) async fn finish(agent: &mut Agent) {
     agent.hello.sender.finish().expect("finishes");
     agent.sleep(QUIET).await;
 }
@@ -300,8 +300,9 @@ fn opens_reads_beside_a_request_and_stops_ones_over_the_share_as_busy() {
     assert_eq!(home.served[0], Err(share.clone()));
     assert_eq!(
         share.to_string(),
-        "a body of 14 bytes does not fit under the share of 16777216 bytes of subject \
-         ops.agent: its open requests and reads hold 16777208 bytes"
+        "14 bytes of a body or of the ends or names of a write do not fit under the \
+         share of 16777216 bytes of subject ops.agent: its open requests, reads, and \
+         writes hold 16777208 bytes"
     );
 }
 

@@ -30,7 +30,7 @@ attacker can use is a GitHub issue with the `security` label and a failing test.
 | Subject | Sign hellos and session opens with a key in the spec | Go past its `access` allows |
 | Member node | Act as itself and as the connectors placed on it; read and change the traffic of subjects connected through it; use their open sessions until the hello expires; drop or delay what it forwards | Hold another node's key; change the spec |
 | Home of an index | Write any data into the index, run its gate, lie to its readers | Act outside its placement |
-| Voter | Vote and stall its region; break `raft` safety (Node to node); until #1273, commit a home that is not a member, so that each node that opens an unnamed reader of its index aborts | Forge a spec change, not built (#1213), or move a home outside placement, not built (#2287) |
+| Voter | Vote and stall its region; break `raft` safety (Node to node); until #1273, commit a home that is not a member, so that each node that opens an unnamed reader of its index aborts; until #3179, hold back the card of a member, a minute at a time, with a forged or old card | Forge a spec change, not built (#1213), or move a home outside placement, not built (#2287) |
 | Time source | Shift the clocks that follow it, within what the estimator accepts | |
 | Device | Send any bytes to a connector | Reach the core except through `hub` |
 | Local user that runs the node | Read and write the node's files and memory, and so hold its keys and cached secrets and become that member node. On the node that founds the root region, read `admin.key` and so be the first admin of the region, not only that node | |
@@ -554,7 +554,8 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 No target yet, because the decoder is private, not built, not reached from a file, or
 not reached from the corpus: `transport::message` (#2139), the QUIC hello
 (`transport::quic::hello::Hello::decode`), the file `founding` of the mesh directory
-(`mesh::region::Founding::decode`, with `mesh::Member::decode` in it, #2311), the join
+(`mesh::region::Founding::decode`, with `mesh::Member::decode` in it, #2311), the file
+`card` of the mesh directory (`mesh::driver::version::read`, #2311), the join
 answer (`mesh::Member::decode` from a peer, #336 adds its target),
 each connector's protocol parser, the `node_id`
 text of the `opcua` kind

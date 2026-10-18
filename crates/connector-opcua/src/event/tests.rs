@@ -45,6 +45,15 @@ impl Fixture {
     }
 
     fn with(node: sim::node::Config) -> Self {
+        Self::make(node, tracing::Span::none())
+    }
+
+    /// A fixture whose loop logs with the parent `span`.
+    fn logged(span: tracing::Span) -> Self {
+        Self::make(sim::node::Config::default(), span)
+    }
+
+    fn make(node: sim::node::Config, span: tracing::Span) -> Self {
         let mut sim = Sim::new(sim::Config::default());
         let node = sim.node(node);
         let clock = node.clock();
@@ -54,7 +63,7 @@ impl Fixture {
             clock: env::clock::Clock::clone(&clock),
             wall: Box::new(move || read.get()),
         };
-        let events = Loop::new(time, &mut Rng::from_seed(0));
+        let events = Loop::new(time, span, &mut Rng::from_seed(0));
         let probe = Box::new(Probe {
             ran: RefCell::new(Vec::new()),
             raw: events.raw(),
@@ -296,7 +305,11 @@ fn the_monotonic_wall_of_a_test_loop_gives_the_last_stamp_past_it() {
             ..sim::node::Config::default()
         })
         .clock();
-    let events = Loop::new(Time::monotonic(clock), &mut Rng::from_seed(0));
+    let events = Loop::new(
+        Time::monotonic(clock),
+        tracing::Span::none(),
+        &mut Rng::from_seed(0),
+    );
     // SAFETY: the member takes its own loop.
     let now = unsafe { (events.members().now)(events.raw()) };
     assert_eq!(now, i64::MAX / 100 + UNIX_EPOCH_TICKS);
@@ -375,7 +388,11 @@ fn the_monotonic_wall_stays_at_the_last_stamp_when_its_clock_runs_past_it() {
 fn draws(seed: u64) -> [u32; 4] {
     let mut sim = Sim::new(sim::Config::default());
     let clock = sim.node(sim::node::Config::default()).clock();
-    let _events = Loop::new(Time::monotonic(clock), &mut Rng::from_seed(seed));
+    let _events = Loop::new(
+        Time::monotonic(clock),
+        tracing::Span::none(),
+        &mut Rng::from_seed(seed),
+    );
     // SAFETY: it draws from the generator of this thread.
     std::array::from_fn(|_| unsafe { ffi::test::UA_UInt32_random() })
 }
@@ -917,10 +934,66 @@ fn drop_65_passes() {
 }
 
 #[test]
-fn the_drop_aborts_after_64_passes() {
-    let line = "connector-opcua: open62541 queued delayed callbacks for 64 passes of a loop \
-                free\n";
-    child::aborted_in_c("event::tests::drop_65_passes", &[], line);
+fn the_drop_panics_once_and_aborts_after_64_passes() {
+    assert_eq!(
+        child::panicked("event::tests::drop_65_passes", &[]),
+        ["open62541 queued delayed callbacks for 64 passes of a loop free"]
+    );
+}
+
+/// Logs a message at level 700, which open62541 does not name, when `child::running()`.
+#[test]
+fn log_at_level_700() {
+    if child::running() {
+        log_at(700, 4);
+    }
+}
+
+/// Logs a warning in category 99, when `child::running()`.
+#[test]
+fn log_in_category_99() {
+    if child::running() {
+        log_at(400, 99);
+    }
+}
+
+/// Logs an info message in category 99, when `child::running()`.
+#[test]
+fn log_info_in_category_99() {
+    if child::running() {
+        log_at(300, 99);
+    }
+}
+
+#[test]
+fn a_level_that_the_copy_does_not_have_aborts() {
+    assert_eq!(
+        child::panicked("event::tests::log_at_level_700", &[]),
+        ["open62541 logged at level 700"]
+    );
+}
+
+#[test]
+fn a_category_that_the_copy_does_not_have_aborts() {
+    assert_eq!(
+        child::panicked("event::tests::log_in_category_99", &[]),
+        ["open62541 logged in category 99"]
+    );
+}
+
+#[test]
+fn an_info_message_in_a_category_that_the_copy_does_not_have_aborts() {
+    assert_eq!(
+        child::panicked("event::tests::log_info_in_category_99", &[]),
+        ["open62541 logged in category 99"]
+    );
+}
+
+/// Logs `w` at `level` in `category` through the logger of a fresh loop.
+fn log_at(level: i32, category: i32) {
+    let f = Fixture::new();
+    // SAFETY: the loop lives, and the text ends with a NUL.
+    unsafe { ffi::test::shim_log_at(f.events.raw(), level, category, c"w".as_ptr()) };
 }
 
 #[test]
@@ -1003,13 +1076,21 @@ fn ms(n: i64) -> Span {
     Span::from_nanos(n * Span::MILLISECOND.nanos())
 }
 
-/// Connects a client to `url`, which is not valid, when `child::running()`. The copy
-/// then logs a warning and an info message.
-fn connect(url: &CStr) {
-    if !child::running() {
-        return;
-    }
-    let f = Fixture::new();
+/// The lines of target `open62541` that `run` writes on a fixture whose loop has the
+/// span `connector` of the connector `press` of kind `opcua`.
+fn logged(run: impl FnOnce(&mut Fixture)) -> Vec<String> {
+    let (capture, log) = connector::testing::Capture::new("open62541");
+    tracing::dispatcher::with_default(&log, || {
+        let span =
+            tracing::error_span!("connector", connector = "press", kind = "opcua");
+        run(&mut Fixture::logged(span));
+    });
+    capture.lines()
+}
+
+/// Connects a client of `f` to `url`, which is not valid. The copy then logs a warning
+/// and an info message.
+fn connect(f: &Fixture, url: &CStr) {
     // SAFETY: the loop lives until the client is deleted.
     let client = unsafe { crate::client::unconnected(f.events.raw()) }.as_ptr();
     // SAFETY: the client lives, and `url` ends with a NUL.
@@ -1019,29 +1100,13 @@ fn connect(url: &CStr) {
     unsafe { ffi::UA_Client_delete(client) };
 }
 
-#[test]
-fn connect_to_a_bad_url() {
-    connect(c"bad:url");
+/// The line of a connect to `url` with the text `text`.
+fn invalid(text: &str) -> String {
+    format!(r#"WARN {text} connector="press" kind="opcua" category="network""#)
 }
 
-/// A URL of 600 bytes.
-fn long() -> CString {
-    CString::new(format!("bad:{}", "x".repeat(596))).unwrap()
-}
-
-#[test]
-fn connect_to_a_long_url() {
-    connect(&long());
-}
-
-/// Sends a request on a client with no channel, when `child::running()`. The copy then
-/// logs an error.
-#[test]
-fn send_with_no_channel() {
-    if !child::running() {
-        return;
-    }
-    let f = Fixture::new();
+/// Sends a request on a client of `f` with no channel. The copy then logs an error.
+fn send_with_no_channel(f: &Fixture) {
     // SAFETY: the loop lives until the client is deleted.
     let client = unsafe { crate::client::unconnected(f.events.raw()) }.as_ptr();
     // SAFETY: the client lives, and with no channel the copy reads no other argument.
@@ -1062,36 +1127,197 @@ fn send_with_no_channel() {
 }
 
 #[test]
-fn an_error_goes_to_stderr() {
-    let output = child::output("event::tests::send_with_no_channel", &[]);
-    assert!(output.status.success());
+fn an_error_goes_to_the_log_with_the_span_of_the_loop() {
     assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "connector-opcua: open62541 error: SecureChannel must be connected to send \
-         request\n"
+        logged(|f| send_with_no_channel(f)),
+        [concat!(
+            "ERROR SecureChannel must be connected to send request ",
+            r#"connector="press" kind="opcua" category="client""#
+        )]
     );
 }
 
 #[test]
-fn a_warning_goes_to_stderr_and_an_info_message_does_not() {
-    let output = child::output("event::tests::connect_to_a_bad_url", &[]);
-    assert!(output.status.success());
+fn a_fatal_message_goes_to_the_log_as_an_error() {
+    let lines = logged(|f| {
+        // SAFETY: the loop lives, and the text ends with a NUL.
+        unsafe { ffi::test::shim_log_fatal(f.events.raw(), c"gone".as_ptr()) };
+    });
     assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "connector-opcua: open62541 warning: Endpoint URL is invalid: bad:url\n"
+        lines,
+        [r#"ERROR gone connector="press" kind="opcua" category="client""#]
     );
 }
 
 #[test]
-fn a_long_line_is_cut_to_512_bytes_with_its_newline() {
-    let output = child::output("event::tests::connect_to_a_long_url", &[]);
-    assert!(output.status.success());
-    let line = format!(
-        "connector-opcua: open62541 warning: Endpoint URL is invalid: {}",
-        long().to_str().unwrap()
-    );
+fn a_warning_goes_to_the_log_and_an_info_message_does_not() {
     assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        format!("{}\n", &line[..511])
+        logged(|f| connect(f, c"bad:url")),
+        [invalid("Endpoint URL is invalid: bad:url")]
     );
+}
+
+#[test]
+fn a_long_line_is_cut_to_511_bytes() {
+    let url = format!("bad:{}", "x".repeat(596));
+    let text = format!("Endpoint URL is invalid: {url}");
+    assert_eq!(
+        logged(|f| connect(f, &CString::new(url).unwrap())),
+        [invalid(&text[..511])]
+    );
+}
+
+#[test]
+fn a_cut_in_a_character_ends_the_line_with_a_replacement_character() {
+    // The text before the URL has 25 bytes, so `é` takes bytes 510 and 511.
+    let url = format!("bad:{}é{}", "x".repeat(481), "x".repeat(100));
+    let text = format!("Endpoint URL is invalid: {url}");
+    assert!(!text.is_char_boundary(511));
+    assert_eq!(
+        logged(|f| connect(f, &CString::new(url).unwrap())),
+        [invalid(&format!("{}\u{FFFD}", &text[..510]))]
+    );
+}
+
+/// Logs `count` warnings `w0`, `w1`, and on through the logger of `f`.
+fn warn(f: &Fixture, count: usize) {
+    for n in 0..count {
+        let text = CString::new(format!("w{n}")).unwrap();
+        // SAFETY: the loop lives, and the text ends with a NUL.
+        unsafe { ffi::test::shim_log_warning(f.events.raw(), text.as_ptr()) };
+    }
+}
+
+/// Logs the fatal message `text` through the logger of `f`.
+fn fatal(f: &Fixture, text: &CStr) {
+    // SAFETY: the loop lives, and the text ends with a NUL.
+    unsafe { ffi::test::shim_log_fatal(f.events.raw(), text.as_ptr()) };
+}
+
+/// The lines of the warnings `w0` to `w<count - 1>`.
+fn warned(count: usize) -> Vec<String> {
+    (0..count)
+        .map(|n| {
+            format!(r#"WARN w{n} connector="press" kind="opcua" category="client""#)
+        })
+        .collect()
+}
+
+fn dropped(level: &str, lines: u64) -> String {
+    format!(r#"{level} dropped connector="press" kind="opcua" lines={lines}"#)
+}
+
+#[test]
+fn a_flood_of_warnings_drops_past_100_lines_and_counts_them_before_the_next_window() {
+    let lines = logged(|f| {
+        warn(f, 150);
+        f.advance(ms(1000));
+        warn(f, 1);
+    });
+    let mut want = warned(100);
+    want.push(dropped("WARN", 50));
+    want.extend(warned(1));
+    assert_eq!(lines, want);
+}
+
+#[test]
+fn a_thousand_warnings_in_one_second_give_100_lines_and_a_count_of_900() {
+    let lines = logged(|f| {
+        for _ in 0..1000 {
+            warn(f, 1);
+            f.advance(Span::MILLISECOND);
+        }
+    });
+    let mut want = vec![warned(1).remove(0); 100];
+    want.push(dropped("WARN", 900));
+    assert_eq!(lines, want);
+}
+
+#[test]
+fn an_error_in_a_flood_of_warnings_goes_to_the_log() {
+    let lines = logged(|f| {
+        warn(f, 150);
+        send_with_no_channel(f);
+    });
+    assert_eq!(lines.len(), 102, "{lines:?}");
+    assert_eq!(lines[..100], warned(100));
+    assert!(lines[100].starts_with("ERROR "), "{}", lines[100]);
+    assert_eq!(lines[101], dropped("WARN", 50));
+}
+
+#[test]
+fn a_flood_of_errors_drops_past_100_lines_and_counts_them_at_its_level() {
+    let lines = logged(|f| {
+        for _ in 0..101 {
+            fatal(f, c"gone");
+        }
+    });
+    let gone = r#"ERROR gone connector="press" kind="opcua" category="client""#;
+    let mut want = vec![gone.to_owned(); 100];
+    want.push(dropped("ERROR", 1));
+    assert_eq!(lines, want);
+}
+
+#[test]
+fn the_count_goes_out_at_the_first_run_after_the_window() {
+    let lines = logged(|f| {
+        assert_eq!(f.start(), Status::GOOD);
+        warn(f, 101);
+        f.advance(ms(999));
+        f.events.run();
+        fatal(f, c"mark");
+        f.advance(ms(1));
+        f.events.run();
+        fatal(f, c"after");
+    });
+    let mut want = warned(100);
+    want.push(
+        r#"ERROR mark connector="press" kind="opcua" category="client""#.to_owned(),
+    );
+    want.push(dropped("WARN", 1));
+    want.push(
+        r#"ERROR after connector="press" kind="opcua" category="client""#.to_owned(),
+    );
+    assert_eq!(lines, want);
+}
+
+#[test]
+fn the_count_of_errors_goes_out_at_the_first_run_after_the_window() {
+    let lines = logged(|f| {
+        assert_eq!(f.start(), Status::GOOD);
+        for _ in 0..101 {
+            fatal(f, c"gone");
+        }
+        f.advance(ms(1000));
+        f.events.run();
+        warn(f, 1);
+    });
+    let gone = r#"ERROR gone connector="press" kind="opcua" category="client""#;
+    let mut want = vec![gone.to_owned(); 100];
+    want.push(dropped("ERROR", 1));
+    want.extend(warned(1));
+    assert_eq!(lines, want);
+}
+
+#[test]
+fn the_count_goes_out_at_the_drop_of_the_loop_when_no_run_comes() {
+    let lines = logged(|f| warn(f, 101));
+    let mut want = warned(100);
+    want.push(dropped("WARN", 1));
+    assert_eq!(lines, want);
+}
+
+#[test]
+fn a_window_starts_at_the_first_line_after_the_last_window_ends() {
+    let lines = logged(|f| {
+        warn(f, 100);
+        f.advance(ms(1500));
+        warn(f, 100);
+        f.advance(ms(900));
+        warn(f, 1);
+    });
+    let mut want = warned(100);
+    want.extend(warned(100));
+    want.push(dropped("WARN", 1));
+    assert_eq!(lines, want);
 }

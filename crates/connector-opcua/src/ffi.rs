@@ -668,15 +668,11 @@ unsafe extern "C" {
         now: Now,
         wall: Now,
         time: *mut c_void,
+        log: *mut c_void,
     ) -> *mut EventLoop;
     pub(crate) fn shim_loop_free(el: *mut EventLoop);
     pub(crate) fn shim_loop_delayed(el: *mut EventLoop) -> bool;
     pub(crate) static shim_free_passes: c_int;
-    pub(crate) fn shim_log_warning(
-        el: *mut EventLoop,
-        message: *const u8,
-        length: usize,
-    );
 
     pub(crate) fn shim_client_new(
         el: *mut EventLoop,

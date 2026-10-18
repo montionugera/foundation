@@ -139,6 +139,21 @@ pub(crate) fn aborted_in_c(name: &str, envs: &[(&str, &str)], line: &str) {
     }
 }
 
+/// Runs the test `name` as `aborted` does, with no capture of its output, and gives
+/// the message of each panic in order: the line after each `panicked at`.
+pub(crate) fn panicked(name: &str, envs: &[(&str, &str)]) -> Vec<String> {
+    let envs = [envs, &[("RUST_TEST_NOCAPTURE", "1")]].concat();
+    let stderr = String::from_utf8(aborted(name, &envs).stderr).unwrap();
+    let mut lines = stderr.lines();
+    let mut messages = Vec::new();
+    while let Some(line) = lines.next() {
+        if line.contains("panicked at") {
+            messages.push(lines.next().unwrap_or_default().to_owned());
+        }
+    }
+    messages
+}
+
 /// A child that exits before it reads its standard input gives its output: more bytes
 /// than a pipe holds make the write fail.
 #[test]

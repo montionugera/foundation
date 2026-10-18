@@ -159,25 +159,41 @@ pub(crate) fn check(kind: &str, counts: &[Name]) {
     }
 }
 
-/// The status channels of one connector, which its supervisor and its kind share.
-/// Each write gives one sample on every status channel, with the last value of each.
+/// The status channels of one connector, which its supervisor and its kind share,
+/// and the span of its run, the parent of the events of both. Each write gives one
+/// sample on every status channel, with the last value of each.
 #[derive(Debug)]
-pub(crate) struct Status(Rc<Values>);
+pub(crate) struct Status {
+    values: Rc<Values>,
+    /// The parent of each event of the supervisor and the kind. Not in `Values`, which
+    /// each write of a frame reads.
+    span: tracing::Span,
+}
 
 impl Status {
-    /// A status with each of `counts` at 0, that no writer writes yet.
-    pub(crate) fn new(counts: Vec<Name>) -> Self {
-        Self(Rc::new(Values {
+    /// A status with each of `counts` at 0, that no writer writes yet, of the run whose
+    /// span is `span`.
+    pub(crate) fn new(counts: Vec<Name>, span: tracing::Span) -> Self {
+        let values = Rc::new(Values {
             counts: counts.into_iter().map(|n| (n, Cell::new(0))).collect(),
             run: RefCell::default(),
             staged: Cell::new(false),
             waker: Cell::new(None),
-        }))
+        });
+        Self { values, span }
     }
 
     /// The same status, for one more holder.
     pub(crate) fn share(&self) -> Self {
-        Self(Rc::clone(&self.0))
+        Self {
+            values: Rc::clone(&self.values),
+            span: self.span.clone(),
+        }
+    }
+
+    /// The span of the run, the parent of each event of the supervisor and the kind.
+    pub(crate) fn span(&self) -> &tracing::Span {
+        &self.span
     }
 
     /// The count `name`.
@@ -187,7 +203,7 @@ impl Status {
     /// When the kind's `check` did not name `name` as a count: the name is internal.
     pub(crate) fn count(&self, name: &str) -> Count {
         let at = self
-            .0
+            .values
             .counts
             .iter()
             .position(|(count, _)| count.as_str() == name);
@@ -195,7 +211,7 @@ impl Status {
             panic!("the kind did not name the count `{name}` in its check")
         });
         Count {
-            values: Rc::clone(&self.0),
+            values: Rc::clone(&self.values),
             at,
         }
     }
@@ -238,9 +254,9 @@ impl Status {
     /// Applies `change` to the run, and stages the status when it gives `true`. With
     /// no run, it does nothing. No borrow is held while it stages, which wakes.
     fn change(&self, change: impl FnOnce(&mut Run) -> bool) {
-        let changed = self.0.run.borrow_mut().as_mut().is_some_and(change);
+        let changed = self.values.run.borrow_mut().as_mut().is_some_and(change);
         if changed {
-            self.0.stage();
+            self.values.stage();
         }
     }
 }
@@ -495,7 +511,7 @@ impl Writer {
         };
         let (error, note) = (text(error), text(note));
         let group = set.entries()[entries[0]].group;
-        let status = Status::new(counts);
+        let status = Status::new(counts, span.clone());
         let session = Session {
             hub: session,
             entries,
@@ -514,7 +530,7 @@ impl Writer {
         };
         let writer = Self {
             session: RefCell::new(session),
-            values: Rc::clone(&status.0),
+            values: Rc::clone(&status.values),
             span,
             clock,
             cancel,
@@ -1188,11 +1204,11 @@ mod tests {
 
     #[test]
     fn debugs_each_value_but_the_waker() {
-        let status = Status::new(vec![name("samples")]);
+        let status = Status::new(vec![name("samples")], tracing::Span::none());
         status.count("samples").set(3);
-        let want = "Status(Values { counts: \
+        let want = "Status { values: Values { counts: \
                     [(Name(\"samples\"), Cell { value: 3 })], run: None, staged: \
-                    true, .. })";
+                    true, .. }, span: Span { none: true } }";
         assert_eq!(format!("{status:?}"), want);
     }
 

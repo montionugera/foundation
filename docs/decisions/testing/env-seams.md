@@ -195,20 +195,30 @@
   The first poll of a UDP half binds it to its thread, whatever its result. A failed
   `dup` or registration gives `Io` for that poll alone, and the next poll tries again;
   nothing stores a failure. For a source that is not local or is of the other family,
-  `os` gives the kernel's answer (on Linux, `Unreachable` or `Io { code: 22 }`), and
-  `sim` gives `Io { code: 99 }`. For port 0, `os` gives the kernel's answer. Such a
-  transmit changes no state of the socket (`laptop.architect-2`, 2026-10-08 21:15 UTC,
+  `os` gives the kernel's answer (on Linux, `Unreachable` or `Io { code: 22 }`). For
+  port 0, `os` gives the kernel's answer. Such a transmit changes no state of the
+  socket (`laptop.architect-2`, 2026-10-08 21:15 UTC,
   https://github.com/synnaxlabs/foundation/issues/1972#issuecomment-6069193130).
   Decided by `laptop.architect-2` (2026-10-08 18:56 and 19:02 UTC, #1965,
   https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6066909518,
   https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6067014743).
   Supersedes "or the errno" of item 2 of
   https://github.com/synnaxlabs/foundation/issues/119#issuecomment-6066429541: a
-  failure is not stored. One exception: `os` gives `Io { code: 22 }` for each IPv6
-  source on an IPv4 socket, mapped too, for an IPv6 source that is not mapped with an
-  IPv4 destination, and for an unspecified source in any form. Linux skips the
-  `IPV6_PKTINFO` of the first, macOS skips that of the second, and Linux reads the
-  third as no source; each then sends from an address of its choice. Decided by
+  failure is not stored. Amended (2026-10-18, #3185): for such a source, `sim` gives
+  the codes that SIM NETWORK states (`laptop.architect-2`, 2026-10-18T12:49:45Z,
+  https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6250115373).
+  Supersedes "`sim` gives `Io { code: 99 }`" of
+  https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6066909518 and
+  "`sim` stays at 99" of item 2 of
+  https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6067014743, but for
+  a unicast IPv4 source that is not on the node, to an IPv4 destination, which keeps
+  code 99 (#3187; `laptop.architect-2`, 2026-10-18T13:31:33Z,
+  https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6250512376). One
+  exception: `os` gives `Io { code: 22 }` for each IPv6 source on an IPv4 socket,
+  mapped too, for an IPv6 source that is not mapped with an IPv4 destination, and for
+  an unspecified source in any form. Linux skips the `IPV6_PKTINFO` of the first,
+  macOS skips that of the second, and Linux reads the third as no source; each then
+  sends from an address of its choice. Decided by
   `laptop.architect-2` (2026-10-08 20:06 and 20:38 UTC, #1965,
   https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6068090235,
   https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6068606545; the

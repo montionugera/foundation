@@ -14,9 +14,10 @@
 //! - `show`: a show of the same error, with no poll, after it was shown.
 //! - `note`: a note of the same text, with no poll, after it was noted.
 //!
-//! Each figure is ns per step, with the count of the allocations of the steps. Judge
-//! `poll` by its p50. A line panics when its last status state is not `stopped`, or
-//! `running` for the closed line, whose writer wrote no state after the removal.
+//! Each figure is ns per step to the ps, with the count of the allocations of the
+//! steps. Judge `poll` by its p50. A line panics when its last status state is not
+//! `stopped`, or `running` for the closed line, whose writer wrote no state after the
+//! removal.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -89,10 +90,10 @@ impl Step {
     }
 }
 
-/// The ns per step of each timed round, and the allocations of all of them.
+/// The ps per step of each timed round, and the allocations of all of them.
 struct Line {
     name: &'static str,
-    nanos: Vec<u64>,
+    picos: Vec<u64>,
     allocations: u64,
 }
 
@@ -145,8 +146,9 @@ impl Kind for Steps {
             let nanos = Instant::now().duration_since(start).as_nanos();
             if round >= WARMUP {
                 let mut line = self.line.lock().expect("no panic under the lock");
-                let nanos = u64::try_from(nanos).expect("a round takes under 2^64 ns");
-                line.nanos.push(nanos / STEPS);
+                let picos =
+                    u64::try_from(nanos * 1000).expect("a round takes under 2^64 ps");
+                line.picos.push(picos / STEPS);
                 line.allocations += allocations;
             }
         }
@@ -178,7 +180,7 @@ fn samples() -> Name {
 fn run(step: Step) -> Line {
     let line = Arc::new(Mutex::new(Line {
         name: step.name(),
-        nanos: Vec::new(),
+        picos: Vec::new(),
         allocations: 0,
     }));
     let kind = Steps {
@@ -276,15 +278,18 @@ async fn last_state(reader: &mut hub::reader::Reader, state: &str) -> Option<u8>
 fn print(lines: &[Line]) {
     println!("ns per step over {ROUNDS} rounds of {STEPS} steps");
     println!(
-        "{:<20} {:>7} {:>7} {:>7} {:>7}",
+        "{:<20} {:>9} {:>9} {:>9} {:>7}",
         "line", "p10", "p50", "p90", "allocs"
     );
     for line in lines {
-        let mut nanos = line.nanos.clone();
-        nanos.sort_unstable();
-        let at = |percent: usize| nanos[nanos.len() * percent / 100];
+        let mut picos = line.picos.clone();
+        picos.sort_unstable();
+        let at = |percent: usize| {
+            let p = picos[picos.len() * percent / 100];
+            format!("{}.{:03}", p / 1000, p % 1000)
+        };
         println!(
-            "{:<20} {:>7} {:>7} {:>7} {:>7}",
+            "{:<20} {:>9} {:>9} {:>9} {:>7}",
             line.name,
             at(10),
             at(50),

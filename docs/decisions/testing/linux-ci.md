@@ -17,8 +17,10 @@
     with a `cfg` on its expected value. The PR that closes an issue removes each item
     that names only that issue, and removes the issue from an item that names others.
     The lists only shrink, other than this: a new crate enters a list only with the
-    open issues of the `os` items that it needs. The ONE NODE milestone does not close
-    while a list holds a crate or a test.
+    open issues of the `os` items that it needs. A crate item that leaves a list, with
+    one `tests` item for each of its tests that still fails, each with an open issue, is
+    a shrink. The ONE NODE milestone does not close while a list holds a crate or a
+    test.
   - A test skips an OS by an attribute only in a case of `docs/claude/testing.md`, "No
     `#[ignore]`": the OS does not have the behavior, no test can fix its value there, or
     its test needs an item of one OS to cause the case. Its reason is `only <OS>`, or
@@ -94,3 +96,9 @@
     2026-10-17T17:30:12Z
     (https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237654845):
     "Yeah fine". So `sdk` is on the Windows lists with #682 and #2955.
+  - A crate item that becomes `tests` items: `laptop.monitor`, 2026-10-18T09:15:35Z,
+    in place of `laptop.director`, which wrote the PR
+    (https://github.com/synnaxlabs/foundation/pull/3163#issuecomment-6248122830): "a
+    crate item that leaves a list, replaced by one `tests` item for each of its tests
+    that still fails, each with an open issue, is a shrink." So `xtask` leaves the
+    Windows lists with 32 `tests` items of #3165 and #3166.
