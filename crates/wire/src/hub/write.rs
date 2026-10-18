@@ -333,14 +333,13 @@ impl Replies {
                     self.taken = self.answered;
                 }
             }
-            Reply::Stored { frames }
-                if frames < self.stored || frames > self.answered =>
-            {
-                return Err(Error::Stored {
-                    frames,
-                    stored: self.stored,
-                    answered: self.answered,
-                });
+            Reply::Stored { frames } if frames < self.stored => {
+                let bound = self.stored;
+                return Err(Error::Stored { frames, bound });
+            }
+            Reply::Stored { frames } if frames > self.answered => {
+                let bound = self.answered;
+                return Err(Error::Stored { frames, bound });
             }
             Reply::Stored { frames } => self.stored = frames,
         }

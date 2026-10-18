@@ -319,14 +319,12 @@ mod replies {
         let error = replies.decode(&encode_reply(stored(2)));
         let want = Error::Stored {
             frames: 2,
-            stored: 0,
-            answered: 1,
+            bound: 1,
         };
         assert_eq!(error, Err(want));
         assert_eq!(
             want.to_string(),
-            "the stored reply covers 2 frames, outside the 0 of the last stored reply to \
-             the 1 that got an outcome"
+            "the stored reply covers 2 frames, more than the 1 that got an outcome"
         );
         assert_eq!(replies, before);
     }
@@ -338,10 +336,14 @@ mod replies {
         let error = replies.decode(&encode_reply(stored(1)));
         let want = Error::Stored {
             frames: 1,
-            stored: 2,
-            answered: 2,
+            bound: 2,
         };
         assert_eq!(error, Err(want));
+        assert_eq!(
+            want.to_string(),
+            "the stored reply covers 1 frames, fewer than the 2 of the last stored \
+             reply"
+        );
         assert_eq!(replies, before);
     }
 
@@ -441,8 +443,11 @@ mod replies {
                         }
                         Ok(reply)
                     }
-                    Reply::Stored { frames } if frames < last || frames > answered => {
-                        Err(Error::Stored { frames, stored: last, answered })
+                    Reply::Stored { frames } if frames < last => {
+                        Err(Error::Stored { frames, bound: last })
+                    }
+                    Reply::Stored { frames } if frames > answered => {
+                        Err(Error::Stored { frames, bound: answered })
                     }
                     Reply::Stored { frames } => {
                         last = frames;

@@ -1101,8 +1101,7 @@ fn ends_the_writer_at_a_stored_past_the_outcomes() {
                 frame(&mut writer, 1, 0, &[(2, 1)]).await;
                 let error = wire::hub::Error::Stored {
                     frames: 9,
-                    stored: 0,
-                    answered: 0,
+                    bound: 0,
                 };
                 let ended = Err(Error::Reply(error));
                 assert_eq!(writer.write(Time::Node).await, ended);

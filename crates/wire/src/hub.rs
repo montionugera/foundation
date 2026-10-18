@@ -637,18 +637,19 @@ pub enum Error {
     Stored {
         /// The frames that it covers.
         frames: u64,
-        /// The frames that the last `Stored` covers.
-        stored: u64,
-        /// The frames that got an outcome.
-        answered: u64,
+        /// The frames that the last `Stored` covers when `frames` is below them, else
+        /// the frames that got an outcome.
+        bound: u64,
     },
 }
 
-// Frame decoders give it for each message: it stays `Copy`, with no drop glue.
+// Frame decoders give it for each message: it stays `Copy`, with no drop glue, and
+// as small as the results of the node's decoders were before it held this variant.
 const _: fn() = || {
     fn copy<T: Copy>() {}
     copy::<Error>();
 };
+const _: () = assert!(size_of::<Error>() == 24, "an error stays 24 bytes");
 
 impl fmt::Display for Error {
     #[expect(clippy::too_many_lines, reason = "one arm for each error")]
@@ -750,14 +751,15 @@ impl fmt::Display for Error {
                 f,
                 "the outcome answers no frame: each of the {frames} frames sent has one"
             ),
-            Self::Stored {
-                frames,
-                stored,
-                answered,
-            } => write!(
+            Self::Stored { frames, bound } if frames < bound => write!(
                 f,
-                "the stored reply covers {frames} frames, outside the {stored} of the \
-                 last stored reply to the {answered} that got an outcome"
+                "the stored reply covers {frames} frames, fewer than the {bound} of \
+                 the last stored reply"
+            ),
+            Self::Stored { frames, bound } => write!(
+                f,
+                "the stored reply covers {frames} frames, more than the {bound} that \
+                 got an outcome"
             ),
         }
     }
