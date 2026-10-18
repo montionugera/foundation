@@ -25,7 +25,18 @@ use crate::serve::{Error, alloc, unless};
 use crate::writer::{self, Failure, Homed, Writer};
 
 /// The bytes of the block of a `Stored` reply.
-const STORED_BYTES: usize = Reply::Stored { through: 0 }.encoded_len();
+const STORED_BYTES: usize = Reply::Stored {
+    path: Path::Live,
+    through: 0,
+}
+.encoded_len();
+
+/// The paths of an index, in the order of their `Stored` replies after a commit.
+const PATHS: [Path; 2] = [Path::Live, Path::Backfill];
+
+/// A last seq for each path of [`PATHS`], in its order, or `None` for a path with
+/// none.
+type Seqs = [Option<u64>; 2];
 
 /// How long the last `Stored` that finds the pool full waits before it tries again.
 const RETRY: Span = Span::from_nanos(10_000_000);
@@ -204,7 +215,7 @@ async fn relay(
             .expect("invariant: a draft comes with its block");
         let outcome = write(&mut writer, draft, time, &mut stamped)?;
         if let Outcome::Taken { range } = outcome {
-            stored.taken(state, range.seq + u64::from(range.count) - 1);
+            stored.taken(state, path(time), range.seq + u64::from(range.count) - 1);
         }
         send(sender, block, Reply::Outcome(outcome)).await?;
     }
@@ -219,20 +230,27 @@ fn write(
     time: Time,
     stamped: &mut Option<Stamp>,
 ) -> Result<Outcome, Error> {
-    let (label, stamp) = match time {
-        Time::Frame(path) => (Label::Path(path), None),
+    let stamp = match time {
+        Time::Frame(_) => None,
         Time::Node => {
             let stamp = next(writer.now(), *stamped);
-            let stamp = stamp_index(&mut draft, writer.set().groups()[0], stamp);
-            (Label::Path(Path::Live), stamp)
+            stamp_index(&mut draft, writer.set().groups()[0], stamp)
         }
     };
-    let outcome = outcome(writer.write(label, draft))?;
+    let outcome = outcome(writer.write(Label::Path(path(time)), draft))?;
     // The home spends the stamp of a lost frame too.
     if let Outcome::Taken { .. } | Outcome::Lost { .. } = outcome {
         *stamped = stamp.or(*stamped);
     }
     Ok(outcome)
+}
+
+/// The path of a frame of `time`.
+fn path(time: Time) -> Path {
+    match time {
+        Time::Frame(path) => path,
+        Time::Node => Path::Live,
+    }
 }
 
 /// The stamp of a frame of [`Time::Node`] at mesh time `now`: `now`, or 1 ns after
@@ -297,26 +315,30 @@ fn outcome(written: Result<&[::home::Outcome], Failure>) -> Result<Outcome, Erro
 /// The commits of the frames that a write took, and their `Stored` replies.
 #[derive(Default)]
 struct Stored {
-    /// The last seq taken since the call of the commit in `due`.
-    taken: Option<u64>,
-    /// The commit that is due, and the last seq taken at its call.
-    due: Option<(::home::Commit, u64)>,
-    /// The `through` of the last commit, while the pool had no block for its `Stored`.
-    unsent: Option<u64>,
+    /// The last seq of each path taken since the call of the commit in `due`.
+    taken: Seqs,
+    /// The commit that is due, and the last seq of each path taken at its call.
+    due: Option<(::home::Commit, Seqs)>,
+    /// The `through` of each path of the last commits, while the pool had no block for
+    /// its `Stored`.
+    unsent: Seqs,
 }
 
 impl Stored {
-    /// Notes that the home took each seq through `last`.
-    fn taken(&mut self, state: &RefCell<State>, last: u64) {
-        self.taken = Some(last);
+    /// Notes that the home took each seq of `path` through `last`.
+    fn taken(&mut self, state: &RefCell<State>, path: Path, last: u64) {
+        let at = PATHS
+            .iter()
+            .position(|&each| each == path)
+            .expect("invariant: PATHS holds each path");
+        self.taken[at] = Some(last);
         self.call(state);
     }
 
     /// Calls a commit for the taken seqs when none is due.
     fn call(&mut self, state: &RefCell<State>) {
-        if self.due.is_none()
-            && let Some(through) = self.taken.take()
-        {
+        if self.due.is_none() && self.taken.iter().any(Option::is_some) {
+            let through = std::mem::take(&mut self.taken);
             self.due = Some((state.borrow().home.committed(), through));
         }
     }
@@ -352,21 +374,30 @@ impl Stored {
         }
     }
 
-    /// Sends `Stored { through }` when the pool has a block for it. Otherwise keeps
-    /// `through` for the next `Stored`, which covers it.
+    /// Sends `Stored` for each path of `through` with a seq, when the pool has a block
+    /// for it. Otherwise keeps its seq for the next `Stored` of the path, which covers
+    /// it.
     async fn stored(
         &mut self,
         state: &RefCell<State>,
         sender: &mut Sender,
-        through: u64,
+        through: Seqs,
     ) -> Result<(), Error> {
-        let allocated = state.borrow().alloc(STORED_BYTES);
-        let Ok(block) = allocated else {
-            self.unsent = Some(through);
-            return Ok(());
-        };
-        self.unsent = None;
-        send(sender, block, Reply::Stored { through }).await
+        for ((path, through), unsent) in
+            PATHS.into_iter().zip(through).zip(&mut self.unsent)
+        {
+            let Some(through) = through else {
+                continue;
+            };
+            let allocated = state.borrow().alloc(STORED_BYTES);
+            let Ok(block) = allocated else {
+                *unsent = Some(through);
+                continue;
+            };
+            *unsent = None;
+            send(sender, block, Reply::Stored { path, through }).await?;
+        }
+        Ok(())
     }
 
     /// Waits for the commit of each taken seq, sends its `Stored`, and finishes the
@@ -382,9 +413,11 @@ impl Stored {
             self.call(state);
             self.stored(state, sender, through).await?;
         }
-        if let Some(through) = self.unsent {
-            let block = wait(state, session).await?;
-            send(sender, block, Reply::Stored { through }).await?;
+        for (path, through) in PATHS.into_iter().zip(self.unsent) {
+            if let Some(through) = through {
+                let block = wait(state, session).await?;
+                send(sender, block, Reply::Stored { path, through }).await?;
+            }
         }
         sender.finish()?;
         Ok(())

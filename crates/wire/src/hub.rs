@@ -533,8 +533,8 @@ pub enum Error {
         /// The count of the range.
         count: u32,
     },
-    /// A head names no path: no read head has this path byte, and no write head has
-    /// this time byte.
+    /// A message names no path: no read head or `Stored` reply has this path byte,
+    /// and no write head has this time byte.
     Path {
         /// The path byte.
         byte: u8,
@@ -657,7 +657,7 @@ impl fmt::Display for Error {
             ),
             Self::Path { byte } => write!(
                 f,
-                "the frame head names path or time {byte}, which this node does not \
+                "the message names path or time {byte}, which this node does not \
                  know"
             ),
             Self::Reopen { kind } => write!(
@@ -1382,7 +1382,7 @@ mod tests {
             ),
             (
                 Error::Path { byte: 2 },
-                "the frame head names path or time 2, which this node does not know",
+                "the message names path or time 2, which this node does not know",
             ),
             (
                 Error::Reopen { kind: 1 },

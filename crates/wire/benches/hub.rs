@@ -408,7 +408,10 @@ fn write_replies() -> [write::Reply; 3] {
             },
         }),
         write::Reply::Outcome(Outcome::Refused(Refusal::Full)),
-        write::Reply::Stored { through: 1_006 },
+        write::Reply::Stored {
+            path: Path::Live,
+            through: 1_006,
+        },
     ]
 }
 

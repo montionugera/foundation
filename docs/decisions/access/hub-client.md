@@ -154,8 +154,8 @@
   as a `wire::hub::write::Head { time, form, count, series }`, the run of its ends
   (`wire::hub::ends`), and its body. A `Head` of `Time::Node` holds one raw sample of
   each series, and the node writes a stamp over its 8-byte index sample. The node
-  replies `wire::hub::write::Reply`: an `Outcome` for each frame (`Taken` or `Lost`
-  with its `frame::Range`, or `Refused` with a `Refusal`), and `Stored { through }`. A
+  replies `wire::hub::write::Reply`: an `Outcome` for each frame (`Taken` or `Lost` with
+  its `frame::Range`, or `Refused` with a `Refusal`), and `Stored { path, through }`. A
   frame that finds the pool full gets `Refused(Full)` and the stream stays open. An
   untimed frame behind a later stamp of another writer, or of a timed frame of its own
   stream, gets `Refused(Order)`. `client::write` is a public module with no re-export,
@@ -220,19 +220,21 @@
   before the node waits for a home, so a refused open takes no control at the gate. A
   frame of `Time::Node` gets mesh time, or 1 ns after the last stamp that the node gave
   a frame of the stream that the home took or lost, when mesh time is not after it.
-  After each commit, the node sends `Stored { through }` with the last seq that it took
-  before it called the commit. When the program finishes, the node waits for the commit
-  of each taken frame, sends its `Stored`, and then finishes the stream, so the program
-  learns that each taken frame is on disk. Control ends when the program finishes the
-  stream: the writer closes before the node waits for those commits. Each frame takes a
-  block for its outcome from the home's pool before it takes a draft, and a frame that
-  finds none stops the stream with `BUSY`, so the home took no frame past the last
-  outcome. During the stream, a `Stored` that finds no block is not sent: the next one
-  covers it, as `through` is cumulative. At the finish, the last `Stored` waits for a
-  block until the session closes, so no `Stored` stops a stream. A write takes a stream
-  of any class: at the node, the class sets only the priority and the carrier of its
-  replies. The two key choices, the wait at the finish and the ends in the body budget,
-  went to `laptop.monitor` at 2026-10-18T07:43:08Z, with no objection. Approved by
+  Each path of an index has its own seqs. After each commit, the node sends one
+  `Stored { path, through }` for each path that took a frame before it called the
+  commit, live first, with the last seq of that path that it took. When the program
+  finishes, the node waits for the commit of each taken frame, sends its `Stored`, and
+  then finishes the stream, so the program learns that each taken frame is on disk.
+  Control ends when the program finishes the stream: the writer closes before the node
+  waits for those commits. Each frame takes a block for its outcome from the home's pool
+  before it takes a draft, and a frame that finds none stops the stream with `BUSY`, so
+  the home took no frame past the last outcome. During the stream, a `Stored` that finds
+  no block is not sent: the next one of its path covers it, as `through` is cumulative
+  on its path. At the finish, the last `Stored` waits for a block until the session
+  closes, so no `Stored` stops a stream. A write takes a stream of any class: at the
+  node, the class sets only the priority and the carrier of its replies. The two key
+  choices, the wait at the finish and the ends in the body budget, went to
+  `laptop.monitor` at 2026-10-18T07:43:08Z, with no objection. Approved by
   `laptop.architect` at 2026-10-18T07:45:01Z
   (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6247275705) and
   2026-10-18T08:03:14Z
@@ -243,4 +245,7 @@
   to `laptop.monitor` as a key choice with that ruling at 2026-10-18T08:53:42Z, with no
   objection. The wait of the last `Stored` until the session closes, not the stream,
   approved by `laptop.architect` at 2026-10-18T09:33:51Z
-  (https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6248291282).
+  (https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6248291282). The path
+  in `Stored` sent to `laptop.architect` and to `laptop.monitor` as a key choice at
+  2026-10-18T10:08:39Z
+  (https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6248590313).

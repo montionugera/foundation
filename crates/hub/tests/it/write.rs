@@ -101,8 +101,19 @@ async fn end(stream: &mut Stream) -> Vec<Reply> {
     replies
 }
 
+/// A `Stored` of the live path.
 fn stored(through: u64) -> Reply {
-    Reply::Stored { through }
+    Reply::Stored {
+        path: Path::Live,
+        through,
+    }
+}
+
+fn stored_backfill(through: u64) -> Reply {
+    Reply::Stored {
+        path: Path::Backfill,
+        through,
+    }
 }
 
 fn taken(seq: u64, count: u32) -> Reply {
@@ -156,7 +167,7 @@ fn takes_each_frame_of_a_write_in_order_and_stores_it() {
             for (seq, (stamp, value)) in (0..).zip([(1, 10), (2, 20)]) {
                 send(&mut stream, &[stamp], &[value]).await;
                 assert_eq!(stream.reply().await, taken(seq, 1));
-                assert_eq!(stream.reply().await, Reply::Stored { through: seq });
+                assert_eq!(stream.reply().await, stored(seq));
                 assert_eq!(next(&mut reading, &mut reader).await, (value, stamp));
             }
             stream.sender.finish().expect("finishes");
@@ -172,6 +183,33 @@ fn takes_each_frame_of_a_write_in_order_and_stores_it() {
     );
 }
 
+/// Each path has its own seqs, and a commit of frames of both paths gives a `Stored`
+/// of each, live first.
+#[test]
+fn stores_each_path_with_its_own_seqs() {
+    let home = read_session(
+        440,
+        async |_| {},
+        |mut agent| async move {
+            agent.admit().await;
+            let mut stream = write(&agent).await;
+            send(&mut stream, &[100], &[1]).await;
+            let (ends, body) = frame(&[(0, &[1, 2, 3]), (1, &[2, 2, 2])]);
+            let backfill = Head {
+                time: Time::Frame(Path::Backfill),
+                ..live(3, 2)
+            };
+            stream.frame(backfill, &ends, &body).await;
+            send(&mut stream, &[101], &[3]).await;
+            let replies = [taken(0, 1), taken(0, 3), taken(1, 1)];
+            let stored = [stored(0), stored(1), stored_backfill(2)];
+            assert_eq!(end(&mut stream).await, [replies, stored].concat());
+            finish(&mut agent).await;
+        },
+    );
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
 /// A program that finishes its stream right after a frame gets the frame's `Stored`
 /// before the finish.
 #[test]
@@ -185,7 +223,7 @@ fn stores_each_taken_frame_before_it_finishes_the_stream() {
             send(&mut stream, &[1, 2, 3], &[10, 20, 30]).await;
             stream.sender.finish().expect("finishes");
             assert_eq!(stream.reply().await, taken(0, 3));
-            assert_eq!(stream.reply().await, Reply::Stored { through: 2 });
+            assert_eq!(stream.reply().await, stored(2));
             assert_eq!(stream.recv().await, Ok(None));
             finish(&mut agent).await;
         },
@@ -564,26 +602,25 @@ fn stops_a_write_whose_frame_finds_no_block_for_its_outcome_as_busy() {
     assert_eq!(home.served, [Err(busy), Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
-/// Fills the pool of `test` at [`START`] but for one free block of each size from 2048
-/// bytes down to 128, and frees the rest [`START`] later. The pool then has no block
-/// of 64 bytes, the smallest size, and no pages to give back: each of those sizes has
-/// a block in use, and a free block of under two pages gives back none.
-async fn spare_for_a_while(test: &Test) {
-    let (clock, pool) = (test.clock.clone(), Rc::clone(&test.pool));
-    test.tasks.spawn(async move {
-        clock.sleep(START).await;
-        let (mut held, mut spared) = (Vec::new(), Vec::new());
-        let mut len = 2048;
-        while len > 64 {
-            held.push(pool.alloc(len).expect("a block"));
-            spared.push(pool.alloc(len).expect("a block"));
-            len -= len.div_ceil(16);
-        }
-        held.extend(super::fill(&pool));
-        drop(spared);
-        clock.sleep(START).await;
-        drop(held);
-    });
+/// Fills the pool of a test at [`START`] but for one free block of each of `sizes`, and
+/// frees the rest [`START`] later. The pool then has no pages to give back: each of
+/// those sizes has a block in use, and a free block of under two pages gives back none.
+fn spare_for_a_while(sizes: Vec<usize>) -> impl AsyncFnOnce(&Test) + Send + 'static {
+    async move |test: &Test| {
+        let (clock, pool) = (test.clock.clone(), Rc::clone(&test.pool));
+        test.tasks.spawn(async move {
+            clock.sleep(START).await;
+            let (mut held, mut spared) = (Vec::new(), Vec::new());
+            for len in sizes {
+                held.push(pool.alloc(len).expect("a block"));
+                spared.push(pool.alloc(len).expect("a block"));
+            }
+            held.extend(super::fill(&pool));
+            drop(spared);
+            clock.sleep(START).await;
+            drop(held);
+        });
+    }
 }
 
 /// A frame whose draft finds a block but whose outcome finds none stops the stream
@@ -591,7 +628,11 @@ async fn spare_for_a_while(test: &Test) {
 #[test]
 fn stops_a_write_whose_outcome_finds_no_block_after_its_draft_as_busy() {
     let stamps: Vec<i64> = (1..=32).collect();
-    let home = read_session(438, spare_for_a_while, move |mut agent| async move {
+    // One block of each size but 64 bytes, the smallest.
+    let sizes =
+        (65..=2048).filter(|&len| block::footprint(len) != block::footprint(len - 1));
+    let ready = spare_for_a_while(sizes.collect());
+    let home = read_session(438, ready, move |mut agent| async move {
         agent.admit().await;
         let mut stream = write(&agent).await;
         agent.sleep(Span::from_nanos(START.nanos() * 3 / 2)).await;
@@ -612,6 +653,39 @@ fn stops_a_write_whose_outcome_finds_no_block_after_its_draft_as_busy() {
         panic!("{:?}", home.served);
     };
     assert_eq!(home.served[1..], [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
+/// A backfill frame whose entry finds no block at the home is refused as `Full`, and
+/// the stream takes it once the pool has room.
+#[test]
+fn refuses_a_backfill_frame_that_the_home_finds_no_block_for_as_full() {
+    let stamps: Vec<i64> = (1..=32).collect();
+    // The blocks of the outcome and of the draft of 32 samples, 560 bytes.
+    let ready = spare_for_a_while(vec![Outcome::LEN_MAX, 560]);
+    let home = read_session(439, ready, move |mut agent| async move {
+        agent.admit().await;
+        let mut stream = write(&agent).await;
+        send(&mut stream, &[100], &[100]).await;
+        assert_eq!(stream.reply().await, taken(0, 1));
+        assert_eq!(stream.reply().await, stored(0));
+        agent.sleep(Span::from_nanos(START.nanos() * 3 / 2)).await;
+        let (ends, body) = frame(&[(0, &stamps), (1, &stamps)]);
+        let backfill = Head {
+            time: Time::Frame(Path::Backfill),
+            ..live(32, 2)
+        };
+        stream.frame(backfill, &ends, &body).await;
+        assert_eq!(
+            stream.reply().await,
+            refused(wire::hub::write::Refusal::Full)
+        );
+        agent.sleep(START).await;
+        stream.frame(backfill, &ends, &body).await;
+        assert_eq!(stream.reply().await, taken(0, 32));
+        assert_eq!(end(&mut stream).await, [stored_backfill(31)]);
+        finish(&mut agent).await;
+    });
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
 /// A `Stored` that finds no block during the stream is not sent: the next `Stored`

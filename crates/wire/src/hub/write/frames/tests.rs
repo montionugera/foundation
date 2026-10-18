@@ -286,7 +286,7 @@ fn refuses_each_head_that_the_program_cannot_encode() {
         (
             head_bytes(3, 2, 0, 0),
             Error::Path { byte: 3 },
-            "the frame head names path or time 3, which this node does not know",
+            "the message names path or time 3, which this node does not know",
         ),
         (
             head_bytes(0, 2, 0, 0),

@@ -91,8 +91,18 @@ mod pins {
             let refused = Reply::Outcome(Outcome::Refused(refusal));
             assert_eq!(encode_reply(refused), [3, code]);
         }
-        let stored = Reply::Stored { through: 0x0506 };
-        assert_eq!(encode_reply(stored), [4, 0x06, 0x05, 0, 0, 0, 0, 0, 0]);
+        let mut stored = Reply::Stored {
+            path: Path::Live,
+            through: 0x0506,
+        };
+        let mut bytes = vec![4, 0, 0x06, 0x05, 0, 0, 0, 0, 0, 0];
+        assert_eq!(encode_reply(stored), bytes);
+        stored = Reply::Stored {
+            path: Path::Backfill,
+            through: 0x0506,
+        };
+        bytes[1] = 1;
+        assert_eq!(encode_reply(stored), bytes);
     }
 }
 
@@ -146,14 +156,23 @@ mod reply {
 
     #[test]
     fn refuses_each_wrong_length() {
-        for (kind, len) in [(1, 12), (1, 14), (2, 1), (2, 14), (3, 1), (3, 3), (4, 8)] {
+        for (kind, len) in [(1, 12), (1, 14), (2, 1), (2, 14), (3, 1), (3, 3), (4, 9)] {
             assert_eq!(
                 Reply::decode(&zeros(kind, len)),
                 Err(Error::Length { len }),
                 "{kind}"
             );
         }
-        assert_eq!(Reply::decode(&zeros(4, 10)), Err(Error::Length { len: 10 }));
+        assert_eq!(Reply::decode(&zeros(4, 11)), Err(Error::Length { len: 11 }));
+    }
+
+    #[test]
+    fn refuses_a_stored_path_that_no_path_has() {
+        for byte in 2..=u8::MAX {
+            let mut bytes = zeros(4, 10);
+            bytes[1] = byte;
+            assert_eq!(Reply::decode(&bytes), Err(Error::Path { byte }));
+        }
     }
 
     #[test]
@@ -270,7 +289,10 @@ fn reply() -> impl Strategy<Value = Reply> {
         range.prop_map(|range| Reply::Outcome(Outcome::Lost { range })),
         (0..REFUSALS.len())
             .prop_map(|at| Reply::Outcome(Outcome::Refused(REFUSALS[at].0))),
-        any::<u64>().prop_map(|through| Reply::Stored { through }),
+        (any::<bool>(), any::<u64>()).prop_map(|(live, through)| Reply::Stored {
+            path: if live { Path::Live } else { Path::Backfill },
+            through,
+        }),
     ]
 }
 
