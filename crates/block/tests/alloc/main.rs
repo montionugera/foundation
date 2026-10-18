@@ -55,25 +55,7 @@ fn count(f: impl FnOnce()) -> u64 {
 
 fn main() {
     assert_eq!(count(|| drop(Box::new(1_u8))), 1, "the allocator counts");
-    let (freed, zeroed) = (
-        ALLOCATOR.freed.load(Relaxed),
-        ALLOCATOR.zeroed.load(Relaxed),
-    );
-    let allocations = count(|| drop(Heap::new(1 << 20)));
-    assert_eq!(
-        allocations, 2,
-        "a heap allocates its bytes and its page bits"
-    );
-    assert_eq!(
-        ALLOCATOR.freed.load(Relaxed) - freed,
-        2,
-        "a heap frees both"
-    );
-    assert_eq!(
-        ALLOCATOR.zeroed.load(Relaxed) - zeroed,
-        0,
-        "a heap writes zero only over the pages that it commits"
-    );
+    heap();
 
     let config = Config::new(1 << 16).expect("the budget fits");
     let heap = Heap::new(config.reservation());
@@ -127,6 +109,49 @@ fn main() {
     assert_eq!(allocations, 0, "the purge path allocated");
     assert_eq!(pool.committed(), 0, "each idle size gave its pages back");
     cold_block();
+}
+
+/// A heap allocates once for its bytes and once for its page bits, and touches only
+/// the pages that it commits.
+fn heap() {
+    let (freed, zeroed) = (
+        ALLOCATOR.freed.load(Relaxed),
+        ALLOCATOR.zeroed.load(Relaxed),
+    );
+    let allocations = count(|| drop(Heap::new(1 << 20)));
+    assert_eq!(
+        allocations, 2,
+        "a heap allocates its bytes and its page bits"
+    );
+    assert_eq!(
+        ALLOCATOR.freed.load(Relaxed) - freed,
+        2,
+        "a heap frees both"
+    );
+    assert_eq!(
+        ALLOCATOR.zeroed.load(Relaxed) - zeroed,
+        0,
+        "a heap writes zero only over the pages that it commits"
+    );
+    if cfg!(all(target_os = "linux", not(miri))) {
+        let before = resident();
+        let heap = Heap::new(1 << 28);
+        assert!(
+            resident().saturating_sub(before) < 1024,
+            "a heap touches only the pages that it commits"
+        );
+        drop(heap);
+    }
+}
+
+/// The pages of the process in memory, from Linux.
+fn resident() -> u64 {
+    let statm = std::fs::read_to_string("/proc/self/statm").expect("Linux gives statm");
+    let pages = statm
+        .split(' ')
+        .nth(1)
+        .expect("statm gives the resident pages");
+    pages.parse().expect("the resident pages are a number")
 }
 
 /// A free large block gives its pages to a small alloc, and the large alloc takes it

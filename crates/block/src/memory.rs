@@ -1,12 +1,12 @@
 //! The address space a pool cuts its blocks from.
 
 use std::alloc::{Layout, alloc, dealloc};
-use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::iter;
-use std::ops::Range;
 use std::ptr::NonNull;
 use std::slice;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering::Relaxed;
 
 use zeroize::Zeroize;
 
@@ -75,16 +75,18 @@ pub unsafe trait Memory: Send {
 pub struct Refused;
 
 /// Memory from the heap. A commit writes zero over each page of its range that no
-/// commit got before, so a pool on it touches only the pages that it commits. It
-/// never gives pages back, and acts as if its pages were 4096 bytes. It serves tests
-/// and simulation, and makes no OS call.
+/// commit zeroed before, so a pool on it touches only the pages that it commits. It
+/// never gives pages back, acts as if its pages were 4096 bytes, and makes no OS
+/// call. It serves tests, simulation, and small pools that need no mapping of their
+/// own.
 pub struct Heap {
     base: NonNull<u8>,
     /// Whole pages, so a commit writes zero over whole pages.
     layout: Layout,
     len: usize,
-    /// One bit for each page, set when a commit got the page.
-    got: Box<[Cell<u64>]>,
+    /// One bit for each page, set when a commit zeroed the page. Atomic only to keep
+    /// `Heap` `RefUnwindSafe`: one thread uses it.
+    zeroed: Box<[AtomicU64]>,
 }
 
 impl Heap {
@@ -108,17 +110,26 @@ impl Heap {
         let Some(base) = NonNull::new(unsafe { alloc(layout) }) else {
             too_large()
         };
-        let got = iter::repeat_with(Cell::default)
+        let zeroed = iter::repeat_with(AtomicU64::default)
             .take(len.div_ceil(PAGE).div_ceil(64))
             .collect();
         let heap = Self {
             base,
             layout,
             len,
-            got,
+            zeroed,
         };
         heap.commit(0, 1).expect("heap memory commits");
         heap
+    }
+
+    /// The offset of each page that a bit of `bits`, word `index` of `zeroed`, gives.
+    fn pages(index: usize, mut bits: u64) -> impl Iterator<Item = usize> {
+        iter::from_fn(move || {
+            let bit = (bits != 0).then(|| bits.trailing_zeros() as usize)?;
+            bits &= bits - 1;
+            Some((index * 64 + bit) * PAGE)
+        })
     }
 }
 
@@ -126,7 +137,7 @@ impl Heap {
 unsafe impl Send for Heap {}
 
 // SAFETY: `new` commits the first page, and `commit` writes zero over each page of
-// its range that `got` does not hold, so each byte of a committed range is
+// its range that `zeroed` does not hold, so each byte of a committed range is
 // initialized. The allocation stays at one address until the drop, and `purge` and
 // `discard` change nothing.
 unsafe impl Memory for Heap {
@@ -139,10 +150,14 @@ unsafe impl Memory for Heap {
     }
 
     fn commit(&self, offset: usize, len: usize) -> Result<(), Refused> {
-        let end = offset.checked_add(len).filter(|&end| end <= self.len());
-        let end = end.expect("a commit lies in the memory");
+        let Some(end) = offset.checked_add(len).filter(|&end| end <= self.len) else {
+            panic!(
+                "a commit of {len} bytes at {offset} lies past the {} bytes of memory",
+                self.len
+            )
+        };
         let pages = offset / PAGE..end.div_ceil(PAGE);
-        // A word at a time, so a commit of pages that it got costs a load per 64.
+        // A word at a time, so a commit of zeroed pages costs a load per 64.
         for index in pages.start / 64..pages.end.div_ceil(64) {
             let below = |page: usize| match page - index * 64 {
                 64 => u64::MAX,
@@ -150,12 +165,10 @@ unsafe impl Memory for Heap {
             };
             let range = below(pages.end.min(index * 64 + 64))
                 & !below(pages.start.max(index * 64));
-            let word = &self.got[index];
-            let mut fresh = range & !word.get();
-            word.set(word.get() | range);
-            while fresh != 0 {
-                let start = (index * 64 + fresh.trailing_zeros() as usize) * PAGE;
-                fresh &= fresh - 1;
+            let word = &self.zeroed[index];
+            let old = word.load(Relaxed);
+            word.store(old | range, Relaxed);
+            for start in Self::pages(index, range & !old) {
                 // SAFETY: the page starts under `len`.
                 let page = unsafe { self.base.add(start) };
                 // SAFETY: the allocation holds whole pages.
@@ -188,13 +201,9 @@ impl Drop for Heap {
 }
 
 /// Heap memory, as [`Heap`] gives it, for blocks that hold a secret. At the drop, it
-/// writes zero over the first [`ALIGN`] bytes and over each range that
-/// [`Memory::commit`] got, with writes that the compiler keeps, before it frees them.
-pub(crate) struct Erased {
-    heap: Heap,
-    /// The first [`ALIGN`] bytes and the ranges that `commit` got.
-    committed: RefCell<Vec<Range<usize>>>,
-}
+/// writes zero over each page that a commit zeroed, the first page with them, with
+/// writes that the compiler keeps, before it frees them.
+pub(crate) struct Erased(Heap);
 
 impl Erased {
     /// Allocates `len` bytes aligned to [`ALIGN`], as [`Heap::new`] does.
@@ -204,38 +213,22 @@ impl Erased {
     /// If `len` is 0 or too large to allocate.
     #[must_use]
     pub(crate) fn new(len: usize) -> Self {
-        Self {
-            heap: Heap::new(len),
-            committed: RefCell::new(iter::once(0..ALIGN.min(len)).collect()),
-        }
+        Self(Heap::new(len))
     }
 }
 
-// SAFETY: each method is the one of `heap`, and `commit` also records its range.
+// SAFETY: each method is the one of the heap.
 unsafe impl Memory for Erased {
     fn base(&self) -> NonNull<u8> {
-        self.heap.base()
+        self.0.base()
     }
 
     fn len(&self) -> usize {
-        self.heap.len()
+        self.0.len()
     }
 
     fn commit(&self, offset: usize, len: usize) -> Result<(), Refused> {
-        self.heap.commit(offset, len)?;
-        let end = offset + len;
-        let mut committed = self.committed.borrow_mut();
-        // A pool commits each class from the start of its span up, so a new range
-        // mostly touches one in the record. A join keeps the union, so no committed
-        // byte leaves the record.
-        let touched = committed
-            .iter_mut()
-            .find(|range| range.start <= end && offset <= range.end);
-        match touched {
-            Some(range) => *range = range.start.min(offset)..range.end.max(end),
-            None => committed.push(offset..end),
-        }
-        Ok(())
+        self.0.commit(offset, len)
     }
 
     fn purge(&self, _offset: usize, _len: usize) {}
@@ -243,26 +236,29 @@ unsafe impl Memory for Erased {
     fn discard(&self, _offset: usize, _len: usize) {}
 
     fn page(&self) -> usize {
-        self.heap.page()
+        self.0.page()
     }
 }
 
 impl Drop for Erased {
     fn drop(&mut self) {
-        for range in self.committed.get_mut().drain(..) {
-            // SAFETY: each range lies in the `len` bytes at `base`.
-            let start = unsafe { self.heap.base().add(range.start) };
-            // SAFETY: a commit of `heap` initialized the bytes, and nothing else holds
-            // them at the drop.
-            let bytes =
-                unsafe { slice::from_raw_parts_mut(start.as_ptr(), range.len()) };
-            bytes.zeroize();
+        for (index, word) in self.0.zeroed.iter().enumerate() {
+            for start in Heap::pages(index, word.load(Relaxed)) {
+                // SAFETY: the page starts under `len`.
+                let page = unsafe { self.0.base.add(start) };
+                // SAFETY: the allocation holds whole pages, a commit initialized the
+                // page, and nothing else holds it at the drop.
+                let bytes = unsafe { slice::from_raw_parts_mut(page.as_ptr(), PAGE) };
+                bytes.zeroize();
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Range;
+
     use super::*;
 
     /// Heap memory of `len` bytes with `0xaa` in each byte after the first page, as
@@ -350,41 +346,42 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "a commit lies in the memory")]
+    #[should_panic(
+        expected = "a commit of 2 bytes at 4095 lies past the 4096 bytes of"
+    )]
     fn a_heap_panics_on_a_commit_past_its_end() {
         Heap::new(PAGE)
             .commit(PAGE - 1, 2)
             .expect("the commit panics first");
     }
 
-    fn committed(memory: &Erased) -> Vec<Range<usize>> {
-        memory.committed.borrow().clone()
-    }
-
-    /// Reads `committed`, because the first `ALIGN` bytes hold only the header of the
-    /// region, which holds no byte of a block, so no caller can see their erase. A
-    /// commit next to a range that adds a range in place of a join erases the same
-    /// bytes, so a caller sees only a longer record.
     #[test]
-    fn erased_records_the_first_bytes_and_merges_a_commit_that_touches_a_range() {
-        let memory = Erased::new(4096);
-        let first = slice::from_ref(&(0..ALIGN));
-        assert_eq!(committed(&memory), first, "the first bytes");
-        let commits = [
-            ((1000, 100), [0..ALIGN, 1000..1100]),
-            ((ALIGN, 100), [0..164, 1000..1100]),
-            ((1100, 50), [0..164, 1000..1150]),
-            ((950, 50), [0..164, 950..1150]),
-            ((1000, 10), [0..164, 950..1150]),
-        ];
-        for ((offset, len), ranges) in commits {
-            memory.commit(offset, len).expect("heap memory commits");
-            assert_eq!(committed(&memory), ranges, "after a commit at {offset}");
-        }
+    #[should_panic(expected = "a commit of 2 bytes at 18446744073709551615 lies past")]
+    fn a_heap_panics_on_a_commit_whose_end_overflows() {
+        Heap::new(PAGE)
+            .commit(usize::MAX, 2)
+            .expect("the commit panics first");
     }
 
     #[test]
-    #[should_panic(expected = "a commit lies in the memory")]
+    fn a_heap_is_unwind_safe() {
+        fn unwind_safe<T: std::panic::RefUnwindSafe + std::panic::UnwindSafe>() {}
+        unwind_safe::<Heap>();
+    }
+
+    #[test]
+    fn erased_writes_zero_over_a_page_at_its_first_commit() {
+        let memory = Erased::new(2 * PAGE);
+        // SAFETY: the second page starts in the allocation.
+        let page = unsafe { memory.base().add(PAGE) };
+        // SAFETY: the bytes lie in the allocation, and no commit holds them yet.
+        unsafe { page.write_bytes(0xaa, PAGE) };
+        memory.commit(PAGE + 10, 1).expect("heap memory commits");
+        assert_eq!(bytes(&memory.0, PAGE..2 * PAGE), [0; PAGE]);
+    }
+
+    #[test]
+    #[should_panic(expected = "a commit of 97 bytes at 4000 lies past the 4096 bytes")]
     fn erased_panics_on_a_commit_past_its_end() {
         let memory = Erased::new(4096);
         memory.commit(4000, 97).expect("the commit panics first");

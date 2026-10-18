@@ -1528,9 +1528,9 @@ mod tests {
 
         #[test]
         #[cfg_attr(miri, ignore = "Miri stops at an allocation it cannot make")]
-        #[should_panic(expected = "heap memory of 9223372036854775743 bytes is too")]
+        #[should_panic(expected = "heap memory of 9223372036854771712 bytes is too")]
         fn panics_when_the_layout_fits_but_cannot_be_allocated() {
-            drop(Heap::new(isize::MAX as usize - ALIGN));
+            drop(Heap::new(isize::MAX as usize - 4095));
         }
 
         mod pool {
