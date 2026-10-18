@@ -407,18 +407,27 @@ impl Mesh {
     ///   another card of that member less than a minute before, while it leads.
     /// - [`Error::NotMember`] for a `Card` change of a node that is not a member of
     ///   the applied state, while this node leads.
+    /// - [`Error::Contested`] for a `Join` change whose node key a member of the
+    ///   applied state, or a join of the log that is not applied, holds with another
+    ///   public key, while this node leads.
     ///
     /// A repeat of a `Card` change that this node proposed in this term, less than
     /// a minute before, gets no new entry, and returns as the first call does.
     pub(crate) async fn propose(&self, change: Change) -> Result<Position, Error> {
-        let member = match &change {
-            Change::Card(card) => Some(card.key),
-            _ => None,
-        };
         let mut data = Vec::new();
         change.encode(&mut data);
-        let Some(member) = member else {
-            return self.propose_data(data).await;
+        let member = match &change {
+            Change::Card(card) => card.key,
+            Change::Join(join) => {
+                let (key, public_key) = (join.card.key, join.card.card.public_key);
+                return self
+                    .proposed(|group| {
+                        group.check_join(key, public_key)?;
+                        Ok(group.raft.propose(data)?)
+                    })
+                    .await;
+            }
+            _ => return self.propose_data(data).await,
         };
         let now = self.clock.now();
         let proposal = {
@@ -518,6 +527,10 @@ impl Mesh {
     /// - [`Error::Soon`] when `change` is a `Card` change of a member, and this node
     ///   leads and proposed another card of that member less than a minute before.
     ///   The group does not see the change.
+    /// - [`Error::Contested`] when `change` is a `Join` change whose node key a member
+    ///   of the applied state, or a join of the log that is not applied, holds with
+    ///   another public key, while this node leads. The group does not see the
+    ///   change.
     pub(crate) async fn answer(
         &self,
         peer: PublicKey,
@@ -896,6 +909,28 @@ impl Group {
             bound.propose(member, data, term, now, |data| propose(self, data));
         self.bound = bound;
         proposal
+    }
+
+    // Refuses the join of `key` under `public_key` while this node leads, when a
+    // member or a join of the log that is not applied holds `key` with another public
+    // key. So with a leader that does not lie, no log holds two such joins.
+    fn check_join(&self, key: node::Key, public_key: PublicKey) -> Result<(), Error> {
+        if self.raft.role() != raft::Role::Leader {
+            return Ok(());
+        }
+        let member = self.state.member(key).map(Member::public_key);
+        let joins = self.unapplied.values().filter_map(|written| match written {
+            Written::Join(of, public) if *of == key => Some(*public),
+            Written::Join(..) | Written::Named(_) => None,
+        });
+        if member
+            .into_iter()
+            .chain(joins)
+            .any(|held| held != public_key)
+        {
+            return Err(Error::Contested { key });
+        }
+        Ok(())
     }
 
     fn running(&self) -> Result<(), Error> {
@@ -2977,6 +3012,7 @@ mod tests {
 
     mod apply;
     mod cards;
+    mod contested;
     mod founding;
     mod home;
     mod in_use;
@@ -4247,8 +4283,8 @@ mod tests {
 
         // The forged join of 4 is below the change that names it too, so the node
         // has no key for 4, and a leader that 2 and 4 elected is unproven here. Under
-        // a leader that does not lie, #2345 keeps the second join out of the log. A
-        // leader that lies can still write both (MESH DRIVER).
+        // a leader that does not lie, `Error::Contested` keeps the second join out of
+        // the log. A leader that lies can still write both (MESH DRIVER).
         #[test]
         fn a_leader_elected_under_a_change_above_two_written_joins_is_unproven() {
             solo(|node, tasks| async move {

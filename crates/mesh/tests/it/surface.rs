@@ -491,6 +491,7 @@ fn error_has_one_case_for_each_cause_that_a_public_call_gives() {
         | Error::Claim(_)
         | Error::NotMember(_)
         | Error::NoVote
+        | Error::Contested { .. }
         | Error::Member(_)
         | Error::WrongKey
         | Error::Pool(_)

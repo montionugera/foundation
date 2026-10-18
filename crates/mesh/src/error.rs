@@ -61,6 +61,12 @@ pub enum Error {
     /// log. That node proposed a card of the same member after its own start and less
     /// than a minute before. Call again after a minute.
     Soon,
+    /// The leader refused a join: a member or a join that is not applied yet holds its
+    /// node key with another public key. The node joins with a new key.
+    Contested {
+        /// The node key of the join.
+        key: node::Key,
+    },
     /// The region cannot hold a member record of the config.
     Member(Unfit),
     /// This node's private key is not the key of its member.
@@ -202,6 +208,11 @@ impl fmt::Display for Error {
             Self::Soon => f.write_str(
                 "a card of the same member was proposed less than a minute ago; call \
                  again after a minute",
+            ),
+            Self::Contested { key } => write!(
+                f,
+                "node key {key} has another public key in a member or in a join that is \
+                 not applied yet"
             ),
             Self::Member(refused) => refused.fmt(f),
             Self::WrongKey => {
