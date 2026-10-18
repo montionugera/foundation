@@ -40,12 +40,28 @@ pub async fn serve(store: &Store, incoming: Incoming) -> Result<(), Error> {
         Ok(()) => sender.finish()?,
         // With no code, both halves drop, which ends them with code 0.
         Err(error) => {
-            if let Some(code) = error.code() {
+            let code = match error {
+                Error::Store(error) => refusal(error),
+                error => error.code(),
+            };
+            if let Some(code) = code {
                 stop(sender, receiver, code);
             }
         }
     }
     answered
+}
+
+/// The code with which `serve` refuses the put that `error` failed, or `None` for a
+/// failure of the store.
+fn refusal(error: &crate::Error) -> Option<Code> {
+    match error {
+        crate::Error::Mismatch { .. } => Some(Code(MISMATCH)),
+        crate::Error::Floor { .. } | crate::Error::Files(files::Error::Full { .. }) => {
+            Some(Code(FULL))
+        }
+        _ => None,
+    }
 }
 
 /// Ends both halves of a stream with `code`.
@@ -80,27 +96,35 @@ pub async fn get(
         let (mut sender, mut receiver) = session.open(Class::Complete).await?;
         let fetched = fetch(store, &mut sender, &mut receiver, &mut open, &mut misses);
         let fetched = fetched.await;
-        if let Some(code) = fetched.as_ref().map_or_else(Error::code, |code| *code) {
+        let code = match &fetched {
+            Ok(refused) => refused.and_then(|miss| miss.cause.code()),
+            Err(error) => error.code(),
+        };
+        if let Some(code) = code {
             stop(sender, receiver, code);
         }
-        fetched?;
+        misses.extend(fetched?);
     }
     Ok(misses)
 }
 
 /// Gets the digests of `open` on one stream, oldest first, and takes each one that
-/// the peer answers off `open`. Gives the code of a refused chunk, which the stream
-/// stops with, or `None` once `open` is empty and both halves ended.
+/// the peer answers off `open`, and each absent one onto `misses`. Gives the miss of
+/// a refused chunk, whose stream then stops, or `None` once `open` is empty and both
+/// halves ended.
 async fn fetch(
     store: &Store,
     sender: &mut Sender,
     receiver: &mut Receiver,
     open: &mut &[Digest],
     misses: &mut Vec<Miss>,
-) -> Result<Option<Code>, Error> {
+) -> Result<Option<Miss>, Error> {
     header(store, sender).await?;
     let decoder = Requester::new(store.pool.largest());
-    let batch = (sender.bytes_max() - get::encoded_len(0)) / size_of::<Digest>();
+    // A get comes from the pool of the store. At least one digest a get, so a pool too
+    // small for one fails the alloc, and the loop never sends an empty get.
+    let room = sender.bytes_max().min(store.pool.largest());
+    let batch = (room.saturating_sub(get::encoded_len(0)) / size_of::<Digest>()).max(1);
     while !open.is_empty() {
         let digests = &open[..open.len().min(batch)];
         let mut message = store
@@ -114,8 +138,14 @@ async fn fetch(
                 return Err(Error::Unanswered);
             };
             let cause = match decoder.decode(&message) {
+                // The decoder checks the limit before it gives the digest of the head.
                 Err(wire::blob::Error::TooLarge { len, max }) => {
-                    Some(Cause::TooLarge { len, max })
+                    match unread(&message)? {
+                        Reply::Chunk { digest: of, .. } if of == digest => {
+                            Some(Cause::TooLarge { len, max })
+                        }
+                        reply => return Err(Error::Unexpected { reply }),
+                    }
                 }
                 Ok(Reply::Absent { digest: of }) if of == digest => Some(Cause::Absent),
                 Ok(reply @ Reply::Chunk { digest: of, .. }) if of == digest => {
@@ -135,16 +165,18 @@ async fn fetch(
                 Err(error) => return Err(error.into()),
             };
             *open = &open[1..];
-            if let Some(cause) = cause {
-                misses.push(Miss { digest, cause });
-                if let Some(code) = cause.code() {
-                    return Ok(Some(code));
-                }
+            match cause {
+                None => {}
+                Some(Cause::Absent) => misses.push(Miss {
+                    digest,
+                    cause: Cause::Absent,
+                }),
+                Some(cause) => return Ok(Some(Miss { digest, cause })),
             }
         }
     }
     sender.finish()?;
-    end(receiver, &decoder).await?;
+    end(receiver).await?;
     Ok(None)
 }
 
@@ -155,8 +187,9 @@ async fn fetch(
 /// # Errors
 ///
 /// [`Error::Absent`] when `store` does not hold a digest, [`Error::Refused`] when the
-/// peer stops the stream with a code, and [`Error::Unexpected`], [`Error::Unanswered`],
-/// [`Error::Stream`], and [`Error::Store`] as for [`get()`].
+/// peer stops the stream with a code, [`Error::Unexpected`], [`Error::Unanswered`],
+/// and [`Error::Stream`] as for [`get()`], and [`Error::Store`] when the store fails
+/// to read a chunk or the pool has no block.
 pub async fn put(
     store: &Store,
     session: &Session,
@@ -183,7 +216,6 @@ async fn push(
     digests: &[Digest],
 ) -> Result<(), Error> {
     header(store, sender).await?;
-    let decoder = Requester::new(store.pool.largest());
     for &digest in digests {
         let Some(chunk) = store.get(digest).await? else {
             return Err(Error::Absent { digest });
@@ -198,13 +230,13 @@ async fn push(
         let Some(message) = receiver.recv().await.map_err(refusal)? else {
             return Err(Error::Unanswered);
         };
-        match decoder.decode(&message)? {
+        match unread(&message)? {
             Reply::Stored { digest: of } if of == digest => {}
             reply => return Err(Error::Unexpected { reply }),
         }
     }
     sender.finish()?;
-    end(receiver, &decoder).await
+    end(receiver).await
 }
 
 /// The error of a put of `digest` that `error` ended: the peer's refusal when the
@@ -229,13 +261,19 @@ async fn header(store: &Store, sender: &mut Sender) -> Result<(), Error> {
 }
 
 /// Waits for the end of the peer's half, once no request is open.
-async fn end(receiver: &mut Receiver, decoder: &Requester) -> Result<(), Error> {
+async fn end(receiver: &mut Receiver) -> Result<(), Error> {
     match receiver.recv().await? {
         None => Ok(()),
         Some(message) => Err(Error::Unexpected {
-            reply: decoder.decode(&message)?,
+            reply: unread(&message)?,
         }),
     }
+}
+
+/// Decodes a reply whose body the requester does not read, so a chunk head of any
+/// length decodes.
+fn unread(message: &[u8]) -> Result<Reply, Error> {
+    Ok(Requester::new(usize::MAX).decode(message)?)
 }
 
 /// Answers each request of `receiver` on `sender` until the peer's half ends.
@@ -407,18 +445,15 @@ pub enum Error {
 }
 
 impl Error {
-    /// The code that the stream stops with, or `None` when it drops with code 0.
+    /// The code of a fault of the peer that the stream stops with, or `None` when it
+    /// drops with code 0. A store error is a failure of this node: only `serve` takes
+    /// a code for it, from [`refusal`].
     fn code(&self) -> Option<Code> {
         match self {
             Self::Wire(error) => Some(Code(error.code())),
             Self::OneWay | Self::Unexpected { .. } | Self::Unanswered => {
                 Some(Code(MALFORMED))
             }
-            Self::Store(crate::Error::Mismatch { .. }) => Some(Code(MISMATCH)),
-            Self::Store(
-                crate::Error::Floor { .. }
-                | crate::Error::Files(files::Error::Full { .. }),
-            ) => Some(Code(FULL)),
             Self::Store(_)
             | Self::Stream(_)
             | Self::Absent { .. }

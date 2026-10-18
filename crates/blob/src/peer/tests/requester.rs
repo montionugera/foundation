@@ -169,6 +169,35 @@ fn a_get_asks_for_as_many_digests_as_one_message_of_the_peer_holds() {
 }
 
 #[test]
+fn a_get_asks_for_as_many_digests_as_the_largest_block_of_the_store_holds() {
+    let create_tight_pool = || create_pool_of(64 + 4096 + 128);
+    assert_eq!(create_tight_pool().largest(), 4096);
+    let digests: Vec<Digest> = (0..200_usize)
+        .map(|at| Digest::of(&at.to_le_bytes()))
+        .collect();
+    let expected: Vec<Miss> = digests
+        .iter()
+        .map(|&digest| Miss {
+            digest,
+            cause: Cause::Absent,
+        })
+        .collect();
+    run_session(
+        0,
+        DISK,
+        move |node, session| async move {
+            let store = open(&node, 0).await;
+            assert_eq!(serve_each(&store, &session).await, vec![Ok(())]);
+        },
+        move |peer| async move {
+            let store = open_on(&peer.node, create_tight_pool(), 0).await;
+            let got = get(&store, &peer.session, &digests).await;
+            assert_eq!(got, Ok(expected));
+        },
+    );
+}
+
+#[test]
 fn a_chunk_that_hashes_to_another_digest_gives_mismatch_and_the_rest_come_again() {
     let (a, _) = chunk(1, 3000);
     let (found, bytes) = chunk(9, 3000);
@@ -231,6 +260,29 @@ fn a_chunk_over_the_largest_block_gives_too_large_and_the_rest_come_again() {
             let cause = Cause::TooLarge { len, max };
             assert_eq!(got, Ok(vec![Miss { digest: a, cause }]));
             assert_eq!(held(&store, b).await, Some(b_bytes));
+        },
+    );
+}
+
+#[test]
+fn a_chunk_over_the_largest_block_of_another_digest_gives_unexpected() {
+    let len = u32::try_from(create_pool().largest() + 1).unwrap();
+    let (a, _) = chunk(1, 100);
+    let (b, _) = chunk(2, 100);
+    let reply = Reply::Chunk { digest: b, len };
+    run_session(
+        0,
+        DISK,
+        move |_, session| async move {
+            let mut stream = raw(accept(&session).await.unwrap());
+            assert_eq!(stream.request().await, vec![a]);
+            stream.answer(reply).await;
+            assert_eq!(stream.reset().await, reset(MALFORMED));
+        },
+        move |peer| async move {
+            let store = open(&peer.node, 0).await;
+            let got = get(&store, &peer.session, &[a]).await;
+            assert_eq!(got, Err(Error::Unexpected { reply }));
         },
     );
 }
@@ -332,6 +384,31 @@ fn a_reply_after_the_last_answer_gives_unexpected() {
 }
 
 #[test]
+fn a_chunk_over_the_largest_block_after_the_last_answer_gives_unexpected() {
+    let (a, _) = chunk(1, 100);
+    let reply = Reply::Chunk {
+        digest: a,
+        len: u32::MAX,
+    };
+    run_session(
+        0,
+        DISK,
+        move |_, session| async move {
+            let mut stream = raw(accept(&session).await.unwrap());
+            assert_eq!(stream.request().await, vec![a]);
+            stream.answer(Reply::Absent { digest: a }).await;
+            stream.answer(reply).await;
+            assert_eq!(stream.reset().await, reset(MALFORMED));
+        },
+        move |peer| async move {
+            let store = open(&peer.node, 0).await;
+            let got = get(&store, &peer.session, &[a]).await;
+            assert_eq!(got, Err(Error::Unexpected { reply }));
+        },
+    );
+}
+
+#[test]
 fn a_reply_that_does_not_decode_stops_with_its_code() {
     let (a, _) = chunk(1, 100);
     run_session(
@@ -375,7 +452,7 @@ fn a_peer_that_finishes_with_digests_open_gives_unanswered() {
 }
 
 #[test]
-fn a_get_whose_store_refuses_the_chunk_stops_with_full() {
+fn a_get_whose_store_refuses_the_chunk_ends_the_stream_with_code_0() {
     let (a, bytes) = chunk(1, 3000);
     let stored = bytes.clone();
     run_session(
@@ -385,7 +462,7 @@ fn a_get_whose_store_refuses_the_chunk_stops_with_full() {
             let store = open(&node, 0).await;
             put(&store, a, &stored).await;
             let served = serve_each(&store, &session).await;
-            assert_eq!(served, vec![Err(Error::Stream(reset(FULL)))]);
+            assert_eq!(served, vec![Err(Error::Stream(reset(0)))]);
         },
         move |peer| async move {
             let free_bytes = free(&peer.node).await;
@@ -520,11 +597,11 @@ fn a_put_of_a_digest_that_the_store_lacks_gives_absent_and_sends_nothing_of_it()
     run_session(
         0,
         DISK,
-        move |node, session| async move {
-            let store = open(&node, 0).await;
-            let served = serve_each(&store, &session).await;
-            assert_eq!(served, vec![Err(Error::Stream(reset(0)))]);
-            assert_eq!(held(&store, a).await, Some(a_bytes));
+        move |_, session| async move {
+            let mut stream = raw(accept(&session).await.unwrap());
+            assert_eq!(stream.take_put().await.1, a_bytes);
+            stream.answer(Reply::Stored { digest: a }).await;
+            assert_eq!(stream.recv().await, Err(reset(0)));
         },
         move |peer| async move {
             let store = open(&peer.node, 0).await;
@@ -558,6 +635,58 @@ fn a_put_reset_with_code_0_fails_the_stream() {
             put(&store, a, &bytes).await;
             let got = peer::put(&store, &peer.session, &[a]).await;
             assert_eq!(got, Err(Error::Stream(reset(0))));
+        },
+    );
+}
+
+#[test]
+fn a_dropped_put_ends_the_stream_with_code_0() {
+    let (a, bytes) = chunk(1, 3000);
+    let sent = bytes.clone();
+    run_session(
+        0,
+        DISK,
+        move |_, session| async move {
+            let mut stream = raw(accept(&session).await.unwrap());
+            assert_eq!(stream.take_put().await.1, sent);
+            assert_eq!(stream.reset().await, reset(0));
+        },
+        move |peer| async move {
+            let store = open(&peer.node, 0).await;
+            put(&store, a, &bytes).await;
+            let digests = [a];
+            let mut put = pin!(peer::put(&store, &peer.session, &digests));
+            for _ in 0..10 {
+                let polled = poll_fn(|cx| Poll::Ready(put.as_mut().poll(cx)));
+                assert_eq!(polled.await, Poll::Pending);
+                peer.clock.sleep(Span::MILLISECOND).await;
+            }
+        },
+    );
+}
+
+#[test]
+fn a_put_answered_with_a_chunk_over_the_largest_block_gives_unexpected() {
+    let (a, bytes) = chunk(1, 100);
+    let sent = bytes.clone();
+    let reply = Reply::Chunk {
+        digest: a,
+        len: u32::MAX,
+    };
+    run_session(
+        0,
+        DISK,
+        move |_, session| async move {
+            let mut stream = raw(accept(&session).await.unwrap());
+            assert_eq!(stream.take_put().await.1, sent);
+            stream.answer(reply).await;
+            assert_eq!(stream.reset().await, reset(MALFORMED));
+        },
+        move |peer| async move {
+            let store = open(&peer.node, 0).await;
+            put(&store, a, &bytes).await;
+            let got = peer::put(&store, &peer.session, &[a]).await;
+            assert_eq!(got, Err(Error::Unexpected { reply }));
         },
     );
 }
@@ -603,6 +732,31 @@ fn a_put_whose_peer_finishes_unanswered_gives_unanswered() {
             put(&store, a, &bytes).await;
             let got = peer::put(&store, &peer.session, &[a]).await;
             assert_eq!(got, Err(Error::Unanswered));
+        },
+    );
+}
+
+#[test]
+fn a_get_frees_the_head_of_a_chunk_before_it_takes_the_block_of_the_chunk() {
+    // Room for the chunk and the messages of the transport, but not also the head.
+    fn create_tight_pool() -> Rc<Pool> {
+        create_pool_of(6848)
+    }
+    let (a, bytes) = chunk(1, 5120);
+    let stored = bytes.clone();
+    run_session_on(
+        0,
+        DISK,
+        create_tight_pool,
+        move |node, session| async move {
+            let store = open(&node, 0).await;
+            put(&store, a, &stored).await;
+            assert_eq!(serve_each(&store, &session).await, vec![Ok(())]);
+        },
+        move |peer| async move {
+            let store = open_on(&peer.node, Rc::clone(&peer.pool), 0).await;
+            assert_eq!(get(&store, &peer.session, &[a]).await, Ok(vec![]));
+            assert_eq!(held(&store, a).await, Some(bytes));
         },
     );
 }

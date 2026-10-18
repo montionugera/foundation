@@ -96,6 +96,7 @@ fn transport(
     tasks: &Tasks,
     key: PrivateKey,
     message: usize,
+    pool: Rc<Pool>,
 ) -> Transport {
     let at = SocketAddr::new(node.addresses()[0], PORT);
     let mut parts = Port::bind(&node.net(), at)
@@ -110,7 +111,7 @@ fn transport(
         clock: node.clock(),
         entropy: node.entropy(),
         tasks: tasks.clone(),
-        pool: create_pool(),
+        pool,
     };
     Transport::new(config, parts.pop().expect("one part")).expect("a transport")
 }
@@ -211,14 +212,30 @@ where
     run_session(seed, disk_bytes, server, requester)
 }
 
-/// Runs one session from the requester's node to the server's node, whose disk has
-/// `disk_bytes`. The server's node gives its session to `server`, and the requester's
-/// node gives its session to `requester`, which closes a millisecond after
-/// `requester` returns.
-/// Panics unless both return. Gives the run and the server's node, for a crash.
+/// As [`run_session_on`], with a pool of [`BUDGET`] for the requester.
 fn run_session<S, R>(
     seed: u64,
     disk_bytes: u64,
+    server: impl FnOnce(sim::node::Node, Session) -> S + Send + 'static,
+    requester: impl FnOnce(Peer) -> R + Send + 'static,
+) -> (sim::Sim, sim::node::Node)
+where
+    S: Future<Output = ()> + 'static,
+    R: Future<Output = ()> + 'static,
+{
+    run_session_on(seed, disk_bytes, create_pool, server, requester)
+}
+
+/// Runs one session from the requester's node to the server's node, whose disk has
+/// `disk_bytes`. The server's node gives its session to `server`, and the requester's
+/// node gives its session to `requester`, which closes a millisecond after
+/// `requester` returns. The requester's transport and [`Peer::pool`] share the pool
+/// of `create_requester_pool`, as in `node`.
+/// Panics unless both return. Gives the run and the server's node, for a crash.
+fn run_session_on<S, R>(
+    seed: u64,
+    disk_bytes: u64,
+    create_requester_pool: fn() -> Rc<Pool>,
     server: impl FnOnce(sim::node::Node, Session) -> S + Send + 'static,
     requester: impl FnOnce(Peer) -> R + Send + 'static,
 ) -> (sim::Sim, sim::node::Node)
@@ -245,7 +262,7 @@ where
     let node = server_node.clone();
     let done = Arc::clone(&server_ended);
     let main = move |tasks: Tasks| async move {
-        let transport = transport(&node, &tasks, SERVER, SERVER_MESSAGE);
+        let transport = transport(&node, &tasks, SERVER, SERVER_MESSAGE, create_pool());
         let session = transport.accept().await.expect("a session");
         server(node, session.clone()).await;
         done.store(true, Ordering::Relaxed);
@@ -260,12 +277,13 @@ where
     let node = requester_node.clone();
     let done = Arc::clone(&requester_ended);
     let main = move |tasks: Tasks| async move {
-        let transport = transport(&node, &tasks, REQUESTER, MESSAGE);
+        let pool = create_requester_pool();
+        let transport = transport(&node, &tasks, REQUESTER, MESSAGE, Rc::clone(&pool));
         let session = transport.dial(SERVER.public(), &[at]).await.expect("dials");
         let peer = Peer {
             node: node.clone(),
             clock: node.clock(),
-            pool: create_pool(),
+            pool,
             session: session.clone(),
         };
         requester(peer).await;
@@ -1000,6 +1018,25 @@ fn an_error_displays_its_cause() {
     assert_eq!(
         Error::Stream(stream.clone()).to_string(),
         format!("the blob stream failed: {stream}")
+    );
+    let digest = Digest::of(b"a");
+    assert_eq!(
+        Error::Absent { digest }.to_string(),
+        format!("the store does not hold {digest}")
+    );
+    let code = Code(FULL);
+    assert_eq!(
+        Error::Refused { digest, code }.to_string(),
+        format!("the peer refused the put of {digest} with code 18")
+    );
+    let reply = Reply::Stored { digest };
+    assert_eq!(
+        Error::Unexpected { reply }.to_string(),
+        format!("the reply {reply:?} does not answer the oldest request")
+    );
+    assert_eq!(
+        Error::Unanswered.to_string(),
+        "the peer ended its half with requests open"
     );
 }
 
