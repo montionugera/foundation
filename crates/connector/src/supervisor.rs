@@ -29,7 +29,7 @@ const RESTART: retry::Config = retry::Config {
 const HEALTHY: Span = Span::MINUTE;
 
 /// The most browses that one supervisor runs at once, since each holds what its device
-/// gives, up to 16 MiB for `opcua`.
+/// gives.
 const BROWSES: usize = 2;
 
 /// The inputs of a supervisor on one shard.
@@ -94,9 +94,9 @@ impl Supervisor {
     /// # Errors
     ///
     /// The errors of [`Kind::browse`](kind::Kind::browse), [`Error::Config`] with
-    /// `connector.unknown-kind`, and [`Error::Retry`] with "the node runs 2 browses,
-    /// the most at once" when 2 browses of the supervisor run. A browse runs from the
-    /// first poll of its future until it returns or drops.
+    /// `connector.unknown-kind`, and [`Error::Retry`] with "2 browses run, the most at
+    /// once" when 2 browses of the supervisor run. A browse runs from the first poll of
+    /// its future until its future returns or drops.
     pub async fn browse(
         &self,
         kind: &str,
@@ -107,7 +107,7 @@ impl Supervisor {
         let browse = self.config.kinds.browse(kind, &ctx, query);
         let browse = browse.map_err(Error::Config)?;
         let Some(_place) = Place::take(&self.browses) else {
-            let error = format!("the node runs {BROWSES} browses, the most at once");
+            let error = format!("{BROWSES} browses run, the most at once");
             return Err(Error::Retry(error.into()));
         };
         browse.await
@@ -477,7 +477,7 @@ mod tests {
     use std::io::IoSlice;
     use std::net::SocketAddr;
     use std::num::NonZeroUsize;
-    use std::pin::{Pin, pin};
+    use std::pin::pin;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::Waker;
@@ -495,7 +495,7 @@ mod tests {
     use crate::common::{
         STATUS, create_config, create_status, env, run_in, run_on, run_with,
     };
-    use crate::kind::{Channels, Kind, Table};
+    use crate::kind::{Browse, Channels, Kind, Table};
     use crate::testing;
     use hub::home::Refusal;
     use hub::reader::{Mode, Received};
@@ -5727,8 +5727,6 @@ mod tests {
         }
     }
 
-    type Browse<'a> = Pin<Box<dyn Future<Output = Result<browse::Found, Error>> + 'a>>;
-
     /// Starts [`BROWSES`] browses of `slow`, each polled once.
     async fn start_held<'a>(
         supervisor: &'a Supervisor,
@@ -5763,10 +5761,7 @@ mod tests {
         let Err(Error::Retry(error)) = found else {
             panic!("not a retry: {found:?}");
         };
-        assert_eq!(
-            error.to_string(),
-            "the node runs 2 browses, the most at once"
-        );
+        assert_eq!(error.to_string(), "2 browses run, the most at once");
         assert_eq!(waited, Span::ZERO);
     }
 
@@ -5817,5 +5812,19 @@ mod tests {
             supervisor.browse("slow", &config, &query).await
         });
         assert_eq!(found.expect("found").end, browse::End::Done);
+    }
+
+    #[test]
+    fn a_clone_counts_the_browses_of_its_supervisor() {
+        let found = run_on(|node, tasks| async move {
+            let supervisor = create_slow(&node, tasks).await;
+            let (config, query) = (config(), level());
+            let _held = start_held(&supervisor, &config, &query).await;
+            supervisor.clone().browse("slow", &config, &query).await
+        });
+        let Err(Error::Retry(error)) = found else {
+            panic!("not a retry: {found:?}");
+        };
+        assert_eq!(error.to_string(), "2 browses run, the most at once");
     }
 }
