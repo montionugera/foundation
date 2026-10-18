@@ -2572,12 +2572,14 @@ n = read_x(b, 0, 0, 0);
     }
 
     /// The text of `file` of the committed copy.
+    #[cfg(unix)]
     fn committed(file: &str) -> String {
         std::fs::read_to_string(workspace().join(DEST).join(file)).unwrap()
     }
 
     /// The result of [`check`] on a copy of the committed copy with each (path, text)
     /// of `files`, and the symbol prefix of the aws-lc of `Cargo.lock`.
+    #[cfg(unix)]
     fn check_edited(
         name: &str,
         files: &[(&str, &str)],
@@ -2600,6 +2602,7 @@ n = read_x(b, 0, 0, 0);
 
     /// [`check_edited`] with `text` after the end of `src/util/ua_util.c` and each
     /// (path, text) of `files`, with the number of the first line of `text`.
+    #[cfg(unix)]
     fn check_with_util(
         name: &str,
         files: &[(&str, &str)],
@@ -2615,6 +2618,7 @@ n = read_x(b, 0, 0, 0);
 
     /// The error of [`check`] for a call at `place` of `unit` that gives
     /// `PEM_read_bio_X509` with the symbol prefix `prefix` the callback `callback`.
+    #[cfg(unix)]
     fn gives(unit: &str, place: &str, callback: &str, prefix: &str) -> String {
         format!(
             "{unit}: {place}: gives `{prefix}PEM_read_bio_X509` the callback \
@@ -2622,8 +2626,10 @@ n = read_x(b, 0, 0, 0);
         )
     }
 
+    #[cfg(unix)]
     const UTIL: &str = "src/util/ua_util.c";
 
+    #[cfg(unix)]
     fn workspace() -> &'static Path {
         Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
     }
@@ -2932,6 +2938,7 @@ n = read_x(b, 0, 0, 0);
     }
 
     /// Writes the shell script `script` as `cc` in `dir`, and gives its path.
+    #[cfg(unix)]
     fn create_cc(dir: &Path, script: &str) -> PathBuf {
         let cc = dir.join("cc");
         // A child writes it: while this process holds it open for writing, a process
@@ -3814,6 +3821,7 @@ End of search list.
 
     /// A file of a copy that includes headers of the crypto, of the copy, and of a
     /// system directory under `openssl/`, and calls a reader.
+    #[cfg(unix)]
     const CRYPTO_UNIT: &str = "#include <openssl/fixture.h>
 #include <openssl/x/read.h>
 #include <./openssl/kdf.h>
@@ -3828,6 +3836,7 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
     /// [`check_builds_against_the_headers_of_the_crypto`], and gives a `cc` that adds
     /// the system directories: one through a link shorter than its target, one whose
     /// name GCC escapes, and one whose name is not UTF-8.
+    #[cfg(unix)]
     fn create_crypto(dir: &Path) -> PathBuf {
         let read = "#define PEM_read_bio_X509 fixture_PEM_read_bio_X509\n\
                     typedef int pem_password_cb(char *, int, int, void *);\n";
@@ -3882,6 +3891,7 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
     /// system header under `openssl/` is refused, also through a link shorter than its
     /// target, whose path GCC keeps, and through a directory whose name GCC escapes or
     /// is not UTF-8.
+    #[cfg(unix)]
     #[test]
     fn check_builds_against_the_headers_of_the_crypto() {
         let dir = temp("crypto");
