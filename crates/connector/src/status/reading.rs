@@ -43,7 +43,34 @@ impl Reading {
     /// that its status channel never has.
     #[must_use]
     pub fn of(received: &Received<'_>) -> Option<Self> {
-        let samples = Samples::of(received);
+        Self::from(Samples::back(received, 0))
+    }
+
+    /// Each status in `received`, one for each sample time of its index, oldest
+    /// first, as [`Self::of`] reads the newest. Returns `None` when [`Self::of`]
+    /// would for one of them.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::of`], and when a channel of `received` has fewer samples than
+    /// another.
+    pub(crate) fn each(received: &Received<'_>) -> Option<Vec<Self>> {
+        let view = received.view();
+        let counts = view.iter().map(|(entry, _)| {
+            let group = received.set().entries()[entry].group;
+            view.range(group)
+                .expect("invariant: a view holds each index")
+                .count
+        });
+        let times = counts.max().unwrap_or(0);
+        (0..times)
+            .rev()
+            .map(|back| Self::from(Samples::back(received, back)))
+            .collect()
+    }
+
+    /// The status of `samples`, or `None` as [`Self::of`] gives it.
+    fn from(samples: Samples) -> Option<Self> {
         let error = match samples.class? {
             0 => None,
             code => Some((Class::of(code)?, samples.text?)),
@@ -58,7 +85,7 @@ impl Reading {
     }
 }
 
-/// The newest sample of each status channel in a frame.
+/// One sample of each status channel in a frame.
 struct Samples {
     state: Option<u64>,
     class: Option<u64>,
@@ -69,13 +96,15 @@ struct Samples {
 }
 
 impl Samples {
-    /// The newest samples in `received`, each channel by the last segment of its name.
-    /// Each channel that the supervisor does not write is a count.
+    /// The samples `back` before the newest in `received`, each channel by the last
+    /// segment of its name. Each channel that the supervisor does not write is a
+    /// count.
     ///
     /// # Panics
     ///
-    /// When a series of `received` does not decode.
-    fn of(received: &Received<'_>) -> Self {
+    /// When a series of `received` does not decode, or holds `back` samples or
+    /// fewer.
+    fn back(received: &Received<'_>, back: u32) -> Self {
         let (set, view) = (received.set(), received.view());
         let mut samples = Self {
             state: None,
@@ -91,7 +120,7 @@ impl Samples {
             let entry = &set.entries()[entry];
             let range = view.range(entry.group);
             let count = range.expect("invariant: a view holds each index").count;
-            let sample = || newest(entry.data_type, count, bytes);
+            let sample = || nth_back(entry.data_type, count, bytes, back);
             match last {
                 TIME | segment::BACKOFF => {}
                 segment::STATE => samples.state = Some(number(&sample())),
@@ -114,27 +143,29 @@ fn text(bytes: Vec<u8>) -> String {
     String::from_utf8(bytes).expect("invariant: decode checks UTF-8")
 }
 
-/// The bytes of the last of the `count` samples of the encoded series `bytes` of
-/// `data_type`.
+/// The bytes of the sample `back` before the last of the `count` samples of the
+/// encoded series `bytes` of `data_type`.
 ///
 /// # Panics
 ///
-/// When the series does not decode, or `count` is 0.
-fn newest(data_type: Type, count: u32, bytes: &[u8]) -> Vec<u8> {
+/// When the series does not decode, or `count` is `back` or less.
+fn nth_back(data_type: Type, count: u32, bytes: &[u8], back: u32) -> Vec<u8> {
     let count =
         usize::try_from(count).expect("invariant: a frame's count fits in memory");
+    let back = usize::try_from(back).expect("invariant: below a count");
     let mut raw = Vec::new();
     // A remote reader passes a peer's series on unchecked (#2144).
     codec::decode(data_type, count, bytes, &mut raw).expect("a series that decodes");
     let sample = if let Some(form) = Variable::of(data_type) {
-        form.samples(count, &raw).last()
+        let at = count.checked_sub(back + 1);
+        at.and_then(|at| form.samples(count, &raw).nth(at))
     } else {
         let width = data_type.width();
         let width = width.expect("invariant: a fixed type has a width");
-        raw.rchunks_exact(width).next()
+        raw.rchunks_exact(width).nth(back)
     };
     sample
-        .expect("invariant: a group in a frame has a sample")
+        .expect("a channel with a sample `back` before its last")
         .to_vec()
 }
 

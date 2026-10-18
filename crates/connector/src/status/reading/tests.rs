@@ -4,7 +4,7 @@ use std::sync::Arc;
 use codec::Variable;
 use document::diagnostic::{Code, Diagnostic};
 use hub::Hub;
-use hub::reader::{Config, Mode};
+use hub::reader::{Config, Mode, Received};
 use spec::definition::Definition;
 use types::authority::Authority;
 use types::frame::{Form, Label, Path};
@@ -51,6 +51,15 @@ enum Column {
 /// does `steps` to the status channels of `plant.modbus`, whose kind names the count
 /// `in`.
 fn read(steps: Vec<Step>, select: &'static [&'static str]) -> Option<Reading> {
+    read_by(steps, select, Reading::of)
+}
+
+/// As [`read`], with `by` in place of [`Reading::of`].
+fn read_by<T: Send + 'static>(
+    steps: Vec<Step>,
+    select: &'static [&'static str],
+    by: fn(&Received<'_>) -> T,
+) -> T {
     run_on(move |node, tasks| async move {
         let (hub, _) = hub::testing::open(env(&node, tasks)).await;
         let connector = name("plant.modbus");
@@ -113,7 +122,7 @@ fn read(steps: Vec<Step>, select: &'static [&'static str]) -> Option<Reading> {
         };
         let mut reader = hub.reader(config).await.expect("the reader opens");
         let received = reader.next().await.expect("the newest frame");
-        Reading::of(&received)
+        by(&received)
     })
 }
 
@@ -334,6 +343,42 @@ fn reads_the_newest_of_many_samples() {
     let got = read(vec![step], ALL);
     let want = reading(State::Stopped, 3, Some((Class::Device, "busy")), 9);
     assert_eq!(got, Some(want));
+}
+
+#[test]
+fn each_gives_each_status_of_a_frame_oldest_first() {
+    let step = Step::Program(vec![
+        ("state", Column::Numbers(vec![0, 1, 2])),
+        ("class", Column::Numbers(vec![0, 2, 3])),
+        ("restarts", Column::Numbers(vec![0, 1, 3])),
+        ("in", Column::Numbers(vec![1, 5, 9])),
+        ("error", Column::Texts(vec!["", "busy", "late"])),
+    ]);
+    let got = read_by(vec![step], ALL, Reading::each);
+    let want = vec![
+        reading(State::Running, 0, None, 1),
+        reading(State::Restarting, 1, Some((Class::Device, "busy")), 5),
+        reading(State::Stopped, 3, Some((Class::Retry, "late")), 9),
+    ];
+    assert_eq!(got, Some(want));
+}
+
+#[test]
+fn each_gives_the_one_status_of_a_frame_of_one_sample() {
+    let got = read_by(vec![frame([2, 0, 1, 0, 6], "")], ALL, Reading::each);
+    assert_eq!(got, Some(vec![reading(State::Stopped, 1, None, 6)]));
+}
+
+#[test]
+fn each_gives_none_when_an_older_status_of_the_frame_has_a_state_that_none_has() {
+    let step = Step::Program(vec![
+        ("state", Column::Numbers(vec![7, 2])),
+        ("class", Column::Numbers(vec![0, 0])),
+        ("restarts", Column::Numbers(vec![0, 0])),
+        ("in", Column::Numbers(vec![1, 9])),
+        ("error", Column::Texts(vec!["", ""])),
+    ]);
+    assert_eq!(read_by(vec![step], ALL, Reading::each), None);
 }
 
 #[test]
