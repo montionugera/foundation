@@ -12,7 +12,7 @@ use block::Unique;
 use transport::stream::{Receiver, Sender};
 use types::channel;
 use types::frame::key_set::{Entry, KeySet};
-use types::frame::{Draft, Label, Path, Range};
+use types::frame::{Draft, Label, Path};
 use types::hash;
 use types::name::Name;
 use types::time::{Span, Stamp};
@@ -25,12 +25,6 @@ use crate::State;
 use crate::link::Session;
 use crate::serve::{Error, alloc, unless};
 use crate::writer::{self, Failure, Homed, Writer};
-
-/// The bytes of the block of the outcome of a frame: those of the longest outcome.
-const OUTCOME_BYTES: usize = Reply::Outcome(Outcome::Taken {
-    range: Range { seq: 0, count: 1 },
-})
-.encoded_len();
 
 /// The bytes of the block of a `Stored` reply.
 const STORED_BYTES: usize = Reply::Stored { through: 0 }.encoded_len();
@@ -187,7 +181,7 @@ async fn relay(
                 }
             }
             Due::Draft { layout, form } => {
-                let block = alloc(state, OUTCOME_BYTES)?;
+                let block = alloc(state, Outcome::LEN_MAX)?;
                 let drafted = layout.draft(state.borrow().home.pool(), form);
                 match drafted {
                     Ok(draft) => {
@@ -460,6 +454,7 @@ pub(in crate::serve) fn refused(error: &writer::Error) -> wire::hub::client::Ref
 #[cfg(test)]
 mod tests {
     use types::channel::Slot;
+    use types::frame::Range;
 
     use super::*;
 

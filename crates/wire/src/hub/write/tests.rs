@@ -213,6 +213,29 @@ mod reply {
     }
 
     #[test]
+    fn outcome_len_max_is_the_len_of_the_longest_outcome() {
+        let range = frame::Range { seq: 0, count: 1 };
+        let mut outcomes = Vec::new();
+        // A new outcome does not compile here until the list holds it.
+        for outcome in [
+            Outcome::Taken { range },
+            Outcome::Lost { range },
+            Outcome::Refused(Refusal::Waiting),
+        ] {
+            match outcome {
+                Outcome::Taken { .. } | Outcome::Lost { .. } => outcomes.push(outcome),
+                Outcome::Refused(_) => {
+                    outcomes.extend(Refusal::ALL.map(Outcome::Refused));
+                }
+            }
+        }
+        let lens = outcomes
+            .into_iter()
+            .map(|outcome| Reply::Outcome(outcome).encoded_len());
+        assert_eq!(lens.max(), Some(Outcome::LEN_MAX));
+    }
+
+    #[test]
     #[should_panic(
         expected = "a reply's range of 0 samples from seq 4 holds none or ends past \
                     the highest seq"

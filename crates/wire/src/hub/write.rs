@@ -166,6 +166,11 @@ pub enum Outcome {
     Refused(Refusal),
 }
 
+impl Outcome {
+    /// The most bytes that a [`Reply::Outcome`] encodes to.
+    pub const LEN_MAX: usize = 13;
+}
+
 /// Why the home refused a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -215,7 +220,9 @@ impl Reply {
     #[must_use]
     pub const fn encoded_len(&self) -> usize {
         match self {
-            Self::Outcome(Outcome::Taken { .. } | Outcome::Lost { .. }) => 13,
+            Self::Outcome(Outcome::Taken { .. } | Outcome::Lost { .. }) => {
+                Outcome::LEN_MAX
+            }
             Self::Outcome(Outcome::Refused(_)) => 2,
             Self::Stored { .. } => 9,
         }
