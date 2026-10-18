@@ -28,7 +28,7 @@ attacker can use is a GitHub issue with the `security` label and a failing test.
 | Relay | Drop or delay what it carries | Read or change it: it sees only ciphertext |
 | Unknown client | Open a TLS session with no certificate (`Peer::Client`) | Sign a hello for a subject in the spec |
 | Subject | Sign hellos and session opens with a key in the spec | Go past its `access` allows |
-| Member node | Act as itself and as the connectors placed on it; read and change the traffic of subjects connected through it; use their open sessions until the hello expires; drop or delay what it forwards; put chunks on each node until its store is at the free floor, after which the node's own puts of new chunks give `Error::Floor` (until #1233) | Hold another node's key; change the spec |
+| Member node | Act as itself and as the connectors placed on it; read and change the traffic of subjects connected through it; use their open sessions until the hello expires; drop or delay what it forwards; put chunks on each node until its store is at the free floor, after which the node's own puts of new chunks give `Error::Floor` (until #1233); hold the pool of the chunk store of each node with put heads, so that its blob streams fail | Hold another node's key; change the spec |
 | Home of an index | Write any data into the index, run its gate, lie to its readers | Act outside its placement |
 | Voter | Vote and stall its region; break `raft` safety (Node to node); until #1273, commit a home that is not a member, so that each node that opens an unnamed reader of its index aborts; until #3179, hold back the card of a member, a minute at a time, with a forged or old card | Forge a spec change, not built (#1213), or move a home outside placement, not built (#2287) |
 | Time source | Shift the clocks that follow it, within what the estimator accepts | |
@@ -138,17 +138,17 @@ state on `main`.
   request that the hub verified with `ops::serve`. With no region, it rejects a
   client's. It gives a node's `Blob` stream to `blob::peer::serve` on the store of its
   mesh only when a member of its region has the peer's public key, once, at the header,
-  and rejects a client's. `node` stops and resets each other stream until its protocol has a server.
-  It reads no datagram yet (#1661). It admits each member of the region to a session,
-  and gives other peers at most 256 places by default (`node::Settings::places_max`,
-  NODE PORT): one for each session of a program, and one for the key of a node. At the
-  bound, the oldest place frees for the new peer, and its sessions close unless its peer
-  is now a member. So a peer outside the region keeps its session until that many later
-  peers took a place. A flood that takes that many places in the time that a peer needs
-  to prove its right (a member, the client hello of #1744 (#2548), or the ticket of
-  #1157) closes that peer's session; only a limit on handshakes before admission bounds
-  that rate (#563). It rejects a stream whose header has not arrived within 10 s by
-  default (`node::Settings::header_wait`).
+  and rejects a client's. `node` stops and resets each other stream until its protocol
+  has a server. It reads no datagram yet (#1661). It admits each member of the region to
+  a session, and gives other peers at most 256 places by default
+  (`node::Settings::places_max`, NODE PORT): one for each session of a program, and one
+  for the key of a node. At the bound, the oldest place frees for the new peer, and its
+  sessions close unless its peer is now a member. So a peer outside the region keeps its
+  session until that many later peers took a place. A flood that takes that many places
+  in the time that a peer needs to prove its right (a member, the client hello of #1744
+  (#2548), or the ticket of #1157) closes that peer's session; only a limit on
+  handshakes before admission bounds that rate (#563). It rejects a stream whose header
+  has not arrived within 10 s by default (`node::Settings::header_wait`).
 
 ### Subject to owner
 
