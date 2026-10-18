@@ -1215,7 +1215,7 @@ fn names_each_error() {
         ),
         (
             Error::Open { length: 70_000 },
-            "the open of the read has 70000 bytes, over the 65536 that a read holds",
+            "the open has 70000 bytes, over the 65536 that an open holds",
         ),
         (
             Error::Message(wire::hub::client::Error::Repeated {

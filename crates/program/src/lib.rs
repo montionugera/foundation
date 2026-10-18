@@ -63,10 +63,11 @@ pub struct Config {
     /// waits for a block, so a small pool makes the session slower, not fail. The wait
     /// ends when the session closes.
     pub pool: Rc<block::Pool>,
-    /// The pool that the frames of each reader take their blocks from. A frame holds
-    /// its block until it drops, and a frame that finds the pool full makes
-    /// `Reader::next` wait. Give a pool apart from `pool` and from the transport's:
-    /// frames that the program holds there stop the renewal of the hello.
+    /// The pool that the frames of each reader and the drafts of each writer take their
+    /// blocks from. A frame or a draft holds its block until it drops, and a frame that
+    /// finds the pool full makes `Reader::next` wait. Give a pool apart from `pool` and
+    /// from the transport's: frames and drafts that the program holds there stop the
+    /// renewal of the hello.
     pub frames: Rc<block::Pool>,
 }
 
@@ -228,17 +229,17 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// [`Error::Unnamed`] when `config.channels` is empty, and [`Error::Open`] when
-    /// the open is over `OPEN_BYTES_MAX`, each with nothing sent. The error that ended
-    /// the renewal, when it ended before or during the open. Else [`Error::Refused`]
-    /// when the node stopped the write (`UNKNOWN` for a name of no channel,
-    /// `MALFORMED` for channels of more than one index or a lease that the home
-    /// refuses, `NOT_HOME` when the node is not the home of the index, `REFUSED` for a
-    /// signature that the node refuses, `BUSY` when the node has no room for the
-    /// open), [`Error::Transport`], [`Error::Message`] for places that `wire` refuses
-    /// or a stream that ends before the last place, and [`Error::Pool`] when no block
-    /// of [`Config::pool`] holds the open, or the head and an end of each place of a
-    /// frame, which stops the stream.
+    /// [`Error::Unnamed`] when `config.channels` is empty, and [`Error::Open`] when the
+    /// open is over `OPEN_BYTES_MAX`, each with nothing sent. The error that ended the
+    /// renewal, when it ended before or during the open. Else [`Error::Refused`] when
+    /// the node stopped the write (`UNKNOWN` for a name of no channel, `FAILED` when
+    /// the home cannot open the write, `MALFORMED` for channels of more than one index
+    /// or a lease that the home refuses, `NOT_HOME` when the node is not the home of
+    /// the index, `REFUSED` for a signature that the node refuses, `BUSY` when the node
+    /// has no room for the open), [`Error::Transport`], [`Error::Message`] for places
+    /// that `wire` refuses or a stream that ends before the last place, and
+    /// [`Error::Pool`] when no block of [`Config::pool`] holds the open, or the head
+    /// and an end of each place of a frame, which stops the stream.
     pub async fn writer(&self, config: write::Config) -> Result<Writer, Error> {
         let shared = &self.0.0;
         let write::Config {
@@ -567,8 +568,8 @@ impl fmt::Display for Error {
             }
             Self::Open { length } => write!(
                 f,
-                "the open of the read has {length} bytes, over the {OPEN_BYTES_MAX} \
-                 that a read holds"
+                "the open has {length} bytes, over the {OPEN_BYTES_MAX} that an open \
+                 holds"
             ),
             Self::Reply(error) => {
                 write!(f, "the node sent a reply that is not valid: {error}")

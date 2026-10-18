@@ -109,8 +109,8 @@ impl Writer {
     /// [`Draft::new`] takes `series`. The entry of place `n` is `n`. Each frame holds
     /// the index series. Its range starts at 0 samples: set the count of group 0 with
     /// [`Draft::set_count`]. It drops a held draft that no write sent, and does not
-    /// wait for a block. The writer holds the draft, so no draft of another writer can
-    /// reach its write.
+    /// wait for a block. The writer holds the draft, so a draft of another writer
+    /// reaches its write only through a swap of two `&mut Draft`.
     ///
     /// # Errors
     ///
@@ -139,15 +139,15 @@ impl Writer {
     ///
     /// # Errors
     ///
-    /// [`Error::Unsent`] for a frame of no sample, or a frame of [`Time::Node`] that
-    /// is encoded or holds more than one sample, with nothing sent and the draft
-    /// dropped; the writer goes on. Else the error that ended the writer, given again
-    /// at each later call: the error that ended the renewal, or [`Error::Refused`] when
-    /// the node stopped the stream (`UNKNOWN` when a channel was removed, `NOT_HOME`
-    /// when the index moved, `FAILED` when the home failed, `MALFORMED` for a frame
-    /// that breaks a rule of the wire), [`Error::Transport`] (a reset of `Code(0)`
-    /// after a call dropped while it sent), and [`Error::Reply`] for a reply that
-    /// `wire` refuses or a stream that ends early.
+    /// [`Error::Unsent`] for a frame of no sample, or a frame of [`Time::Node`] that is
+    /// encoded or holds more than one sample, with nothing sent and the draft dropped;
+    /// the writer goes on. Else the error that ended the writer, given again at each
+    /// later call: the error that ended the renewal, or [`Error::Refused`] when the
+    /// node stopped the stream (`UNKNOWN` when a channel was removed, `FAILED` when the
+    /// home failed, `BUSY` when the home has no block for the outcome of a frame,
+    /// `MALFORMED` for a frame that breaks a rule of the wire), [`Error::Transport`] (a
+    /// reset of `Code(0)` after a call dropped while it sent), and [`Error::Reply`] for
+    /// a reply that `wire` refuses or a stream that ends early.
     ///
     /// # Panics
     ///
