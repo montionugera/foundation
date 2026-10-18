@@ -104,8 +104,10 @@ fn opened(error: os::Error) -> Error {
             }))
         }
         os::Error::Thread(error) => thread(&error),
-        os::Error::Cores(_) | os::Error::Memory(_) | os::Error::Wall(_) => {
-            unreachable!("invariant: `os::stored` gives only `Dir` and `Thread`")
+        error @ (os::Error::Cores(_) | os::Error::Memory(_) | os::Error::Wall(_)) => {
+            unreachable!(
+                "invariant: `os::stored` gives only `Dir` and `Thread`, not {error}"
+            )
         }
     }
 }
@@ -245,8 +247,7 @@ impl Thread {
 /// session ended before [`Client::close`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// A thread of the client or of [`Node::local`], or the client's runtime, cannot
-    /// start.
+    /// A thread of the client or of [`Node::local`], or its runtime, cannot start.
     Thread {
         /// The text of the error of `env` or `os`.
         reason: String,

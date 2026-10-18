@@ -44,10 +44,10 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
 ///
 /// Raises `TypeError` for an argument of a wrong type, `ValueError` for an argument
 /// that does not parse or a pair given in half, `RuntimeError` when a thread of the
-/// client cannot start, `OSError` when the local UDP socket cannot bind,
-/// `ConnectionError` when no source gives a value, the data directory cannot be read,
-/// the client cannot reach the node, or the node refuses the subject, and
-/// `PanicException` when a thread of the client panicked.
+/// client or of the read of `data` cannot start, `OSError` when the local UDP socket
+/// cannot bind, `ConnectionError` when no source gives a value, the data directory
+/// cannot be read, the client cannot reach the node, or the node refuses the subject,
+/// and `PanicException` when a thread of the client or of the read of `data` panicked.
 #[pyfunction]
 #[pyo3(signature = (
     address=None, *, node=None, public_key=None, subject=None, private_key=None,
@@ -65,6 +65,7 @@ fn connect(
     let keys = pair(["node", "public_key"], node, public_key)?;
     let subject = pair(["subject", "private_key"], subject, private_key)?;
     let address = address.map(parse_address).transpose()?;
+    let data = data.map(parse_data).transpose()?;
     let keys = keys.map(|(node, public_key)| node_keys(node, public_key));
     let subject = subject.map(|(name, key)| parse_subject(name, key));
     let given = Given {
@@ -229,6 +230,14 @@ fn parse_address(address: &str) -> PyResult<SocketAddr> {
     address.parse().map_err(|e| {
         PyValueError::new_err(format!("the address {address:?} is not ip:port: {e}"))
     })
+}
+
+/// The data directory of the argument `data`, which names a file only with no NUL byte.
+fn parse_data(data: PathBuf) -> PyResult<PathBuf> {
+    if data.as_os_str().as_encoded_bytes().contains(&0) {
+        return Err(PyValueError::new_err("data: the path holds a NUL byte"));
+    }
+    Ok(data)
 }
 
 /// The node's keys of the arguments `node` and `public_key`.
