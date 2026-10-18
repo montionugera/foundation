@@ -671,10 +671,16 @@ impl Writer {
         let excess = excess(len, carry);
         let plan = self.plan(Kind::Data, len, excess)?;
         if excess > 0 {
-            self.excess.push_back((plan.offset, excess));
-            self.reserved += excess;
+            self.hold(plan.offset, excess);
         }
         Ok(plan)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn hold(&mut self, offset: u64, excess: u64) {
+        self.excess.push_back((offset, excess));
+        self.reserved += excess;
     }
 
     /// Plans a carry record of a body of `len` bytes. It leaves one block free, for the

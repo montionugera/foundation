@@ -96,7 +96,7 @@ fn need(starts: &[usize], len: usize) -> usize {
 fn copies(batch: &[Entry], block_max: usize) -> Result<usize, Limit> {
     let max = Layout::ENTRY_MAX_MIN;
     let mut tagged = None;
-    let mut copy_len = 0_usize;
+    let mut copied = false;
     for entry in batch {
         let len = entry.parts.bytes();
         if len > block_max {
@@ -106,13 +106,38 @@ fn copies(batch: &[Entry], block_max: usize) -> Result<usize, Limit> {
             });
         }
         if entry.tag != 0 {
+            copied = true;
             if tagged.is_none() && len > max {
                 tagged = Some(Limit::Tagged { len, max });
             }
-            copy_len = copy_len.saturating_add(carry::copy_len(len));
         }
     }
-    tagged.map_or(Ok(copy_len), Err)
+    if let Some(limit) = tagged {
+        return Err(limit);
+    }
+    Ok(if copied { copy_len(batch) } else { 0 })
+}
+
+// Out of line, as are `held` and `Writer::hold`: a batch of tag 0 calls none of them,
+// and inline they cost it about 4 ns a fit.
+#[cold]
+#[inline(never)]
+fn copy_len(batch: &[Entry]) -> usize {
+    batch
+        .iter()
+        .filter(|entry| entry.tag != 0)
+        .fold(0_usize, |sum, entry| {
+            sum.saturating_add(carry::copy_len(entry.parts.bytes()))
+        })
+}
+
+/// [`Layout::holders`], with its limit as [`Rejected::Record`].
+#[cold]
+#[inline(never)]
+fn held(layout: Layout, count: usize, copy_len: usize) -> Result<usize, Rejected> {
+    layout
+        .holders(count, copy_len)
+        .map_err(|_over: Limit| Rejected::Record)
 }
 
 /// The entries of one group commit, in append order. The first fit takes the block
@@ -222,9 +247,7 @@ impl Group {
         let carry = if copy_len == 0 {
             0
         } else {
-            layout
-                .holders(start.saturating_add(count), copy_len)
-                .map_err(|_over: Limit| Rejected::Record)?
+            held(layout, start.saturating_add(count), copy_len)?
         };
         let body = self.body_len_with(count, len);
         if let Err(full) = writer.fits(body, carry) {
