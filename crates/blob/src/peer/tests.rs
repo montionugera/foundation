@@ -223,17 +223,21 @@ where
     S: Future<Output = ()> + 'static,
     R: Future<Output = ()> + 'static,
 {
-    run_session_on(seed, disk_bytes, create_pool, server, requester)
+    let sim = sim::Config {
+        seed,
+        ..sim::Config::default()
+    };
+    run_session_on(sim, disk_bytes, create_pool, server, requester)
 }
 
-/// Runs one session from the requester's node to the server's node, whose disk has
-/// `disk_bytes`. The server's node gives its session to `server`, and the requester's
-/// node gives its session to `requester`, which closes a millisecond after
-/// `requester` returns. The requester's transport and [`Peer::pool`] share the pool
-/// of `create_requester_pool`, as in `node`.
+/// Runs one session in a sim of `sim`, from the requester's node to the server's
+/// node, whose disk has `disk_bytes`. The server's node gives its session to
+/// `server`, and the requester's node gives its session to `requester`, which closes
+/// a millisecond after `requester` returns. The requester's transport and
+/// [`Peer::pool`] share the pool of `create_requester_pool`, as in `node`.
 /// Panics unless both return. Gives the run and the server's node, for a crash.
 fn run_session_on<S, R>(
-    seed: u64,
+    sim: sim::Config,
     disk_bytes: u64,
     create_requester_pool: fn() -> Rc<Pool>,
     server: impl FnOnce(sim::node::Node, Session) -> S + Send + 'static,
@@ -243,10 +247,7 @@ where
     S: Future<Output = ()> + 'static,
     R: Future<Output = ()> + 'static,
 {
-    let mut sim = sim::Sim::new(sim::Config {
-        seed,
-        ..sim::Config::default()
-    });
+    let mut sim = sim::Sim::new(sim);
     let server_node = sim.node(sim::node::Config {
         disk_bytes,
         ..sim::node::Config::default()

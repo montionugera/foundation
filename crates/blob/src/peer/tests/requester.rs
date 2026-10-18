@@ -775,7 +775,7 @@ fn a_get_frees_the_head_of_a_chunk_before_it_takes_the_block_of_the_chunk() {
     let (a, bytes) = chunk(1, 5120);
     let stored = bytes.clone();
     run_session_on(
-        0,
+        sim::Config::default(),
         DISK,
         create_tight_pool,
         move |node, session| async move {
