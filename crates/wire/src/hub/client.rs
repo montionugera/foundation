@@ -82,9 +82,9 @@ const REQUEST: u8 = 5;
 const READ: u8 = 6;
 const WRITE: u8 = 7;
 
-/// Stop code: the hello, request, or read failed the access check. The spec has no such
-/// subject, does not list the key for it, or the signature is not valid. The node's
-/// log names which.
+/// Stop code: the hello, request, read, or write failed the access check. The spec has
+/// no such subject, does not list the key for it, or the signature is not valid. The
+/// node's log names which.
 pub const REFUSED: u32 = 20;
 
 /// Stop code: the node has no mesh time yet.
@@ -110,15 +110,17 @@ pub enum Refusal {
     /// [`MALFORMED`]: a message of the program does not decode, or breaks a rule of
     /// the client wire.
     Malformed,
-    /// [`UNKNOWN`]: the selector of a read matches no channel, or a channel of the
-    /// read was removed.
+    /// [`UNKNOWN`]: the selector of a read matches no channel, a channel of the read
+    /// was removed, or a channel of a write is unknown or was removed.
     Unknown,
     /// [`NOT_HOME`]: the home of the index of a read is another node, at the open or
-    /// after a move.
+    /// after a move, or the home of the index of a write is another node at the open.
     NotHome,
-    /// [`FAILED`]: the reader of a read failed.
+    /// [`FAILED`]: the reader of a read failed, or the writer of a write failed or
+    /// could not store a frame.
     Failed,
-    /// [`BUSY`]: the node had no memory for a response, a request body, or a read.
+    /// [`BUSY`]: the node had no memory for a response, a request body, a read, or
+    /// the open or the ends of a write.
     Busy,
     /// [`REFUSED`].
     Refused,
