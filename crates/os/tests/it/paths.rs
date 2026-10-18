@@ -294,8 +294,8 @@ fn a_folder_holds_its_files_through_the_data_volume() {
 
 /// Only macOS: only macOS has firmlinks.
 ///
-/// `/Users` and `/private/var` are firmlinks to directories of the data volume. The
-/// walk takes a `..` of a directory of another key as a move.
+/// `/Users` and `/private/var` are firmlinks to directories of the data volume, and the
+/// host gives the directory that holds each as the one above it.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_dot_dot_leaves_a_firmlink_to_the_directory_that_holds_it() {
@@ -304,6 +304,18 @@ fn a_dot_dot_leaves_a_firmlink_to_the_directory_that_holds_it() {
     assert_eq!(users, Ok(PathBuf::from("/")));
     let private = paths.resolve(Path::new("/private/var/.."));
     assert_eq!(private, Ok(PathBuf::from("/private")));
+}
+
+/// Only macOS: the host gives `/` above `/System/Volumes/Data/Users`, a step that the
+/// walk passed, which is no move.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_dot_dot_of_a_firmlink_target_goes_to_the_directory_that_the_host_gives() {
+    let paths = os::paths();
+    let users = paths.resolve(Path::new("/System/Volumes/Data/Users/.."));
+    assert_eq!(users, Ok(PathBuf::from("/")));
+    let var = paths.resolve(Path::new("/System/Volumes/Data/private/var/.."));
+    assert_eq!(var, Ok(PathBuf::from("/System/Volumes/Data/private")));
 }
 
 /// Only Linux: `/proc` and `/sys` are each inode 1, on two devices.

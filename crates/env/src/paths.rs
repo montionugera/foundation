@@ -663,7 +663,8 @@ mod tests {
     /// second mount of `/` does. `..` of a directory is its path less its last name,
     /// but `..` of `moved` is `/out` once after a write of `moved`, and each time after
     /// a write of `away`. After a write of `full`, `..` of `moved` is `/out`, and each
-    /// later open of a root gives `Io` 24.
+    /// later open of a root gives `Io` 24. `..` of `firm` is `/`, as macOS gives `/`
+    /// above the target of a firmlink.
     /// It counts its opens of a root or a name, and a relative path is under its
     /// working directory, `/` at first. `absolute` refuses a path of [`MOST`] bytes or
     /// more as given with `Io` 36. A `\` in a path is a `/`, since the walk joins names
@@ -760,6 +761,9 @@ mod tests {
                     _ => {}
                 }
                 return Ok(Box::new(Dir(self.0.clone(), PathBuf::from("/out"))));
+            }
+            if self.1.file_name() == Some(OsStr::new("firm")) {
+                return Ok(Box::new(Dir(self.0.clone(), PathBuf::from("/"))));
             }
             let up = self.1.parent().unwrap_or(&self.1).to_owned();
             Ok(Box::new(Dir(self.0.clone(), up)))
@@ -1234,6 +1238,27 @@ mod tests {
         assert_eq!(paths.resolve(path), Ok(PathBuf::from("/work/c0/a")));
         paths.write(Path::new("/a"), b"moved").unwrap();
         assert_eq!(paths.resolve(path), Ok(PathBuf::from("/work/c0/a")));
+    }
+
+    #[test]
+    fn a_dot_dot_takes_the_step_above_that_the_host_gives_with_no_start_again() {
+        let one = One::default();
+        let calls = Rc::clone(&one.1);
+        let paths = Paths::new(one);
+        let resolved = paths.resolve(Path::new("/work/firm/../a"));
+        assert_eq!(resolved, Ok(PathBuf::from("/a")));
+        assert_eq!(calls.get(), 5);
+    }
+
+    #[test]
+    fn a_dot_dot_to_a_step_far_above_checks_the_step_that_it_leaves() {
+        let paths = Paths::new(One::default())
+            .within(&["/in".into()], &[])
+            .unwrap();
+        let read = paths.read(Path::new("/out/firm/../in/a"), 1);
+        assert_eq!(read, Err(Error::Outside));
+        let read = paths.read(Path::new("/in/firm/../in/a"), 1);
+        assert_eq!(read, Ok(Found::File(Vec::new())));
     }
 
     #[test]

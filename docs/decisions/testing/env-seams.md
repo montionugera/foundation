@@ -1411,8 +1411,10 @@
   name in it gives `EACCES`, as on Linux. On `sim`, a directory is open by its inode,
   whose path each call finds again, so it keeps its directory after a move; `/` is inode
   0 and has no entry, and one lookup gives `/` as inode 0. The walk keeps one directory
-  open: a `..` calls `up` on that directory, which must give the key of the step that
-  the walk came from. When it does not, a program moved a directory of the path during
+  open: a `..` calls `up` on that directory, which must give the key of a step above
+  it. The walk goes on at the nearest such step, as macOS gives `/` above
+  `/System/Volumes/Data/Users`, and the `..` leaves only the step that it is taken
+  at. When no step above has the key, a program moved a directory of the path during
   the walk, and the walk starts again from its first name. Each start again follows the
   links of the path again, with all `LINKS` (40) links, and past 40 starts the walk
   gives `Driver::looped`. A start again that fails gives its error,
