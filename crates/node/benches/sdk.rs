@@ -5,12 +5,18 @@
 //! Each line gives the p50 and p99 of the calls of each round, in µs:
 //!
 //! - `leg to task`: from a `try_send` on a Tokio channel of 1 to the return of the
-//!   `recv` of a task on an `os` shard, as `sdk::Writer` sends each call.
-//! - `leg to caller`: from the task's `try_send` on a `std` channel of 1 to the
-//!   return of the caller's `recv`, as the task sends each outcome.
+//!   `recv` of a task on an `os` shard, as `Writer::send` sends each call to the task
+//!   of `served` in `sdk/rust/src/write.rs`.
+//! - `leg to caller`: from the task's `try_send` on a `std` `sync_channel` of 1 to the
+//!   return of the caller's `recv`, as `served` sends each outcome to `wait`.
 //! - `sdk`: `sdk::Writer::write` of 2 values with the node's stamp.
 //! - `program`: `program::Writer::draft` and `write` of the same frame, on an `os`
-//!   shard of its own, as the client's thread writes it.
+//!   shard of its own, as `served` writes it.
+//!
+//! The channels are those of `Writer::open`, and each shard is one of `Client::start`
+//! in `sdk/rust/src/lib.rs`: `os`, with the caller's log. Before each call of the
+//! first three lines, the caller spins for [`GAP`], so that the task parks before each
+//! send, as it does between the writes of a program.
 //!
 //! Each write must give `Taken`: the rig's disk budget holds about 40,000 frames, and a
 //! frame past it is `Lost`. Judge `sdk` against `program` from one run, and each leg
@@ -54,6 +60,10 @@ use types::sample::Value;
 /// Calls before the timed rounds.
 const WARMUP: usize = 500;
 
+/// The spin of the caller before each call, which is longer than the time for the
+/// task to park.
+const GAP: Duration = Duration::from_micros(100);
+
 fn main() {
     let benched = std::env::args().any(|arg| arg == "--bench");
     let (rounds, calls) = if benched { (5, 2_000) } else { (1, 100) };
@@ -65,6 +75,7 @@ fn main() {
     let mut writer = client.open_writer(config).expect("the writer opens");
     let values = [(0, Value::I64(1)), (1, Value::I64(2))];
     let sdk = rounded(rounds, calls, || {
+        spin();
         let start = Instant::now();
         let written = writer.write(&values);
         let span = start.elapsed();
@@ -127,6 +138,7 @@ fn legs(rounds: usize, calls: usize) -> (Vec<Vec<Duration>>, Vec<Vec<Duration>>)
     let handle = started("task", main);
     let mut back = Vec::new();
     let mut trip = || {
+        spin();
         to_task
             .try_send(Instant::now())
             .expect("the task took the call before");
@@ -207,8 +219,17 @@ where
         name: name.into(),
         core: None,
     };
-    let shards = os::shards().expect("the shards start");
+    let log = tracing::dispatcher::get_default(Clone::clone);
+    let shards = os::shards().expect("the shards start").logged(log);
     shards.start(config, main).expect("the thread starts")
+}
+
+/// Spins for [`GAP`].
+fn spin() {
+    let start = Instant::now();
+    while start.elapsed() < GAP {
+        std::hint::spin_loop();
+    }
 }
 
 fn micros(span: Duration) -> f64 {
