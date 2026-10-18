@@ -93,17 +93,19 @@ pub(crate) unsafe fn unconnected(el: *mut ffi::EventLoop) -> NonNull<ffi::Client
 }
 
 /// The certificate and private key of a peer, each DER or PEM, and its `trust`: DER
-/// certificates back to back, or PEM certificates with any text around them. A client
-/// offers each of the three policies of the copy on them, with the URI of
-/// `certificate` as its application URI.
+/// certificates back to back, or PEM certificates with any text around them. In PEM,
+/// all but a block that aws-lc reads as a certificate is text, also DER bytes and a
+/// block with a damaged `BEGIN` line. A client offers each of the three policies of
+/// the copy on them, with the URI of `certificate` as its application URI.
 ///
 /// # Errors
 ///
 /// [`Client::connect`] gives `BadCertificateInvalid` when `certificate` does not parse
 /// or holds no RSA key, `BadInvalidArgument` when `key` does not parse,
 /// `BadSecurityChecksFailed` when they do not match, `BadCertificateUriInvalid` when
-/// `certificate` holds no URI, and `BadInternalError` when `trust` is empty, a
-/// certificate of it does not parse, or a byte follows its last DER certificate.
+/// `certificate` holds no URI, and `BadInternalError` when `trust` holds no
+/// certificate, a certificate of it does not parse, or a byte follows its last DER
+/// certificate.
 pub(crate) struct Credentials<'a> {
     pub(crate) certificate: &'a [u8],
     pub(crate) key: &'a [u8],

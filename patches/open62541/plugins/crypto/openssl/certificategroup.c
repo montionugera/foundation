@@ -429,31 +429,26 @@ openSSLLoadCertificateStack(const UA_ByteString cert) {
     return result;
 }
 
-/* Pushes each certificate of the bytestring onto the stack: DER certificates back
- * to back, or each block of PEM that aws-lc reads as a certificate, also a `TRUSTED
- * CERTIFICATE`, past the text outside the blocks. Gives false for an empty
- * bytestring, and for any error but the end of PEM, so that an entry of a trust list
- * never trusts fewer certificates than it holds. */
+/* Pushes each certificate of the bytestring onto the stack. A bytestring that starts
+ * with a DER certificate is DER certificates back to back, and fails on any byte
+ * after the last one. Else it is PEM: each block that aws-lc reads as a certificate,
+ * also a `TRUSTED CERTIFICATE`, and aws-lc skips all else as text. Gives false when
+ * no certificate loads, and for any error but the end of PEM. */
 static UA_Boolean
 openSSLLoadEachCertificate(const UA_ByteString cert, STACK_OF(X509) *stack) {
-    if(cert.length == 0)
-        return false;
-    if(cert.data[0] == 0x30) {
-        const UA_Byte *at = cert.data;
-        const UA_Byte *end = cert.data + cert.length;
-        while(at < end) {
-            X509 *x509 = d2i_X509(NULL, &at, (long)(end - at));
-            if(!x509)
-                return false;
+    const UA_Byte *at = cert.data;
+    const UA_Byte *end = cert.data + cert.length;
+    X509 *x509 = d2i_X509(NULL, &at, (long)cert.length);
+    if(x509) {
+        do
             sk_X509_push(stack, x509);
-        }
-        return true;
+        while(at < end && (x509 = d2i_X509(NULL, &at, (long)(end - at))));
+        return at == end;
     }
-    BIO *bio = BIO_new_mem_buf((void *)cert.data, (int)cert.length);
+    BIO *bio = BIO_new_mem_buf((void *)cert.data, (ossl_ssize_t)cert.length);
     if(!bio)
         return false;
     int pushed = sk_X509_num(stack);
-    X509 *x509;
     while((x509 = PEM_read_bio_X509_AUX(bio, NULL, UA_OpenSSL_refusePassword,
                                         NULL)))
         sk_X509_push(stack, x509);

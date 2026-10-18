@@ -57,19 +57,24 @@ fn channel(client: &Client) -> (String, ffi::Mode) {
     (unsafe { policy.lossy() }, mode)
 }
 
-/// The connect of a client whose loop starts at `client_wall` with `client`, and its
-/// read of [`VALUE`], to a server whose loop starts at `server_wall` with `server`,
-/// which offers `policies` in that order, in `mode`, in a run of `seed`, and the
-/// digest of the run.
+/// The connect of a client whose loop starts at `client_wall` with `client` that
+/// trusts `trust`, and its read of [`VALUE`], to a server whose loop starts at
+/// `server_wall` with `server`, which offers `policies` in that order, in `mode`, in a
+/// run of `seed`, and the digest of the run.
 fn connect(
     seed: u64,
     (server, server_wall): (Credentials<'static>, Stamp),
-    (client, client_wall): (Credentials<'static>, Stamp),
+    (client, trust, client_wall): (Identity, impl AsRef<[u8]> + Send + 'static, Stamp),
     policies: &[Policy],
     mode: Mode,
 ) -> (Result<Read, Status>, u64) {
     let policies = policies.to_vec();
     run(seed, async move |node| {
+        let client = Credentials {
+            certificate: client.certificate,
+            key: client.key,
+            trust: trust.as_ref(),
+        };
         let time = event::Time::since(node.clock(), server_wall);
         serve_on(
             &node,
@@ -94,7 +99,13 @@ fn connect(
 /// A read from a server that offers `policies`, in `mode` at [`START`], in a run of
 /// `seed`.
 fn read(seed: u64, policies: &[Policy], mode: Mode) -> (Result<Read, Status>, u64) {
-    connect(seed, (SERVED, START), (CLIENT_SIDE, START), policies, mode)
+    connect(
+        seed,
+        (SERVED, START),
+        (CLIENT, SERVER.certificate, START),
+        policies,
+        mode,
+    )
 }
 
 #[test]
@@ -131,12 +142,11 @@ fn a_client_takes_the_policy_of_the_highest_level() {
 }
 
 /// The connect of a client with [`CLIENT`] that trusts `trust`, in `Sign`.
-fn trusting(trust: &'static [u8]) -> Result<Read, Status> {
-    let client = with(CLIENT, trust);
+fn trusting(trust: impl AsRef<[u8]> + Send + 'static) -> Result<Read, Status> {
     let (read, _) = connect(
         0,
         (SERVED, START),
-        (client, START),
+        (CLIENT, trust, START),
         &Policy::ALL,
         Mode::Sign,
     );
@@ -172,7 +182,7 @@ fn blocks() -> (String, String) {
 fn a_client_that_trusts_a_pem_with_text_between_its_certificates_reads() {
     let (other, server) = blocks();
     let trust = format!("{other}Bag Attributes\n    friendlyName: server\n{server}");
-    let read = trusting(trust.into_bytes().leak()).expect("the client connects");
+    let read = trusting(trust).expect("the client connects");
     assert_eq!(read.answer, Ok(read.value));
 }
 
@@ -180,7 +190,7 @@ fn a_client_that_trusts_a_pem_with_text_between_its_certificates_reads() {
 fn a_client_that_trusts_a_second_x509_certificate_block_reads() {
     let (other, server) = blocks();
     let server = server.replace(" CERTIFICATE-----", " X509 CERTIFICATE-----");
-    let trust = format!("{other}{server}").into_bytes().leak();
+    let trust = format!("{other}{server}");
     let read = trusting(trust).expect("the client connects");
     assert_eq!(read.answer, Ok(read.value));
 }
@@ -189,18 +199,37 @@ fn a_client_that_trusts_a_second_x509_certificate_block_reads() {
 fn a_client_that_trusts_a_second_trusted_certificate_block_reads() {
     let (other, server) = blocks();
     let server = server.replace(" CERTIFICATE-----", " TRUSTED CERTIFICATE-----");
-    let trust = format!("{other}{server}").into_bytes().leak();
+    let trust = format!("{other}{server}");
+    let read = trusting(trust).expect("the client connects");
+    assert_eq!(read.answer, Ok(read.value));
+}
+
+#[test]
+fn a_client_that_trusts_a_pem_past_4_gib_reads() {
+    let (other, server) = blocks();
+    // Zeros take no memory until written. A cut to 32 bits keeps only `other`.
+    let mut trust = vec![0; (1 << 32) + other.len()];
+    trust[..other.len()].copy_from_slice(other.as_bytes());
+    let at = trust.len() - server.len();
+    trust[at - 1] = b'\n';
+    trust[at..].copy_from_slice(server.as_bytes());
+    let read = trusting(trust).expect("the client connects");
+    assert_eq!(read.answer, Ok(read.value));
+}
+
+#[test]
+fn a_client_that_trusts_a_pem_after_text_that_starts_with_a_zero_reads() {
+    let trust = [b"0 1 2\n", TRUST].concat();
     let read = trusting(trust).expect("the client connects");
     assert_eq!(read.answer, Ok(read.value));
 }
 
 #[test]
 fn a_client_with_a_pem_certificate_and_key_reads() {
-    let client = with(CLIENT_PEM, SERVER.certificate);
     let (read, _) = connect(
         0,
         (SERVED, START),
-        (client, START),
+        (CLIENT_PEM, SERVER.certificate, START),
         &Policy::ALL,
         Mode::Sign,
     );
@@ -220,14 +249,14 @@ fn a_trust_that_does_not_parse_ends_the_connect() {
 
 #[test]
 fn a_trust_with_a_byte_after_its_der_certificate_ends_the_connect() {
-    let trust = [SERVER.certificate, b"\n"].concat().leak();
+    let trust = [SERVER.certificate, b"\n"].concat();
     assert_eq!(trusting(trust), Err(Status::BAD_INTERNAL_ERROR));
 }
 
 #[test]
 fn a_trust_of_der_then_pem_ends_the_connect() {
     let (_, server) = blocks();
-    let trust = [OTHER.certificate, server.as_bytes()].concat().leak();
+    let trust = [OTHER.certificate, server.as_bytes()].concat();
     assert_eq!(trusting(trust), Err(Status::BAD_INTERNAL_ERROR));
 }
 
@@ -360,7 +389,7 @@ fn a_server_certificate_that_the_client_does_not_trust_ends_the_connect() {
     let (read, _) = connect(
         0,
         (other, START),
-        (CLIENT_SIDE, START),
+        (CLIENT, SERVER.certificate, START),
         &Policy::ALL,
         Mode::Sign,
     );
@@ -372,7 +401,7 @@ fn a_client_past_the_end_of_the_server_certificate_ends_the_connect() {
     let (read, _) = connect(
         0,
         (SERVED, START),
-        (CLIENT_SIDE, END + Span::SECOND),
+        (CLIENT, SERVER.certificate, END + Span::SECOND),
         &Policy::ALL,
         Mode::Sign,
     );
@@ -384,7 +413,7 @@ fn a_client_one_second_before_the_end_of_the_server_certificate_reads() {
     let (read, _) = connect(
         0,
         (SERVED, START),
-        (CLIENT_SIDE, END - Span::SECOND),
+        (CLIENT, SERVER.certificate, END - Span::SECOND),
         &Policy::ALL,
         Mode::Sign,
     );
@@ -397,7 +426,7 @@ fn a_client_one_second_before_the_start_of_the_server_certificate_ends_the_conne
     let (read, _) = connect(
         0,
         (SERVED, START),
-        (CLIENT_SIDE, START - Span::SECOND),
+        (CLIENT, SERVER.certificate, START - Span::SECOND),
         &Policy::ALL,
         Mode::Sign,
     );
@@ -409,7 +438,7 @@ fn a_server_past_the_end_of_the_client_certificate_refuses_the_channel() {
     let (read, _) = connect(
         0,
         (SERVED, END + Span::SECOND),
-        (CLIENT_SIDE, START),
+        (CLIENT, SERVER.certificate, START),
         &Policy::ALL,
         Mode::Sign,
     );
