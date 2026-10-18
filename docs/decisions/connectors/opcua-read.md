@@ -12,7 +12,7 @@
   and hold at most the `MaxNodesPerRead` of the server (`ns=0;i=11705`, read once after
   the activation; 0, a value that is not a UInt32, or a status that is not Good, is no
   limit; a failed read of it fails the connect). It refuses only a node whose Read
-  alone does not fit. A read sends each request, at most 16 (`READS`) in flight, and
+  alone does not fit. A read sends each request, at most 9 (`READS`) in flight, and
   gives the values in node order. The first failed answer ends the read with its
   status, and each later answer of that read is dropped by its request number. A lost
   session ends the run, so a session is a run, and the check is the first step of each
@@ -84,11 +84,29 @@
   OPC UA type of an array or a String at 2026-10-15T19:32:35Z:
   https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6200602125).
   The client checks the queued chunks of each request id against `CHUNKS` and its
-  largest message, as a server can interleave the chunks of answers (OPC UA Part 6),
-  and holds at most `CHUNKS` squared queued chunks in all (64, at most 4 MiB), as a
-  server can send chunks of any request id. A chunk past either bound closes the
-  channel, and the read gives `BadSecureChannelClosed`. The copy of open62541 makes
-  these checks (`docs/dependencies.md`, "Local patches"). Lost: a refusal of the
-  chunks of a request id with no call in flight (an answer after the timeout of its
-  call closes the channel); the bound of one message on the queue of all ids (an
-  interleave of two answers that each fit closes the channel) (#3097).
+  largest message, as a server can interleave the chunks of answers (OPC UA Part 6).
+  It holds at most `READS` times `CHUNKS` - 1 queued chunks in all (63, about 4 MiB),
+  the intermediate chunks of each answer that it can have in flight, so an interleave
+  of its answers never closes the channel, and the chunks of request ids that it did
+  not send stop at that bound. A chunk past one of these bounds closes the channel,
+  and the read gives `BadSecureChannelClosed`. With `READS` 9, a read of 10 to 16
+  requests takes 2 round trips in place of 1 (`laptop.monitor`, 2026-10-18 03:47 UTC,
+  and `laptop.architect-2`, 2026-10-18T03:48:17Z,
+  https://github.com/synnaxlabs/foundation/pull/3121#issuecomment-6245342591). The
+  copy of open62541 makes these checks (`docs/dependencies.md`, "Local patches").
+  A Raspberry Pi 4 (P1, idle under 50 MB) runs few OPC UA clients. Lost: a refusal of
+  the chunks of a request id with no call in flight (no call times out in open62541,
+  so each request stays in flight until its answer); the bound of one message on the
+  queue of all ids (an interleave of two answers that each fit closes the channel);
+  the bound of `CHUNKS` squared (an interleave of more than 9 answers that each fit
+  closes the channel) (#3097). The per-id checks: `laptop.architect-2`,
+  2026-10-18T03:44:48Z,
+  https://github.com/synnaxlabs/foundation/pull/3121#issuecomment-6245316650. The
+  person, through `laptop.monitor` (kind (a)/(d)), 2026-10-18T03:47:06Z,
+  https://github.com/synnaxlabs/foundation/pull/3121#issuecomment-6245333593: "A
+  server that follows the rules must never lose its channel through our client. The
+  112 comes from our own `READS` (16 reads in flight), so the cause is that two of our
+  constants disagree. Fix it in one place: derive the queue cap from READS in code
+  (`READS * (CHUNKS - 1)`), so the two cannot drift. Then pick READS by memory: 9 keeps
+  the cap at 63 chunks (about 4 MiB a channel), as you want for the Pi. Keep 16 (112
+  chunks, 7 MiB) only if the read bench of the connector shows 9 is slower."
