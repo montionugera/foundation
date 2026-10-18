@@ -108,10 +108,7 @@ fn write_replies() {
             range: Range { seq: 7, count: 3 },
         }),
         write::Reply::Outcome(Outcome::Refused(Refusal::Order)),
-        write::Reply::Stored {
-            path: Path::Backfill,
-            through: 9,
-        },
+        write::Reply::Stored { frames: 9 },
     ] {
         let mut out = vec![0; reply.encoded_len()];
         let ((), allocations) = ALLOCATOR.count(|| reply.encode(&mut out));

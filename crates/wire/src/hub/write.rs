@@ -8,8 +8,7 @@
 //!   (`u32`).
 //! - [`Reply`]: taken 1 or lost 2, then the seq (`u64`) and the count (`u32`); refused
 //!   3, then the code (`u8`, waiting 1, reserved 2, expired 3, order 4, codec 5, full
-//!   6, large 7); stored 4, then the path (`u8`, live 0, backfill 1) and the last seq
-//!   of the path on disk (`u64`).
+//!   6, large 7); stored 4, then the count of frames that it covers (`u64`).
 
 use types::frame::{self, Form, Path};
 
@@ -141,12 +140,12 @@ impl Head {
 pub enum Reply {
     /// What the home did with the next frame.
     Outcome(Outcome),
-    /// Each seq of `path` up to `through` that a frame took is on disk.
+    /// Each frame of the stream among the first `frames` that the home took is on
+    /// disk. `frames` counts each frame that got an [`Outcome`], in their order, and
+    /// never goes back.
     Stored {
-        /// The path of the seqs. Each path of an index has its own seqs.
-        path: Path,
-        /// The last seq of `path` on disk.
-        through: u64,
+        /// The count of frames that it covers.
+        frames: u64,
     },
 }
 
@@ -227,7 +226,7 @@ impl Reply {
                 Outcome::LEN_MAX
             }
             Self::Outcome(Outcome::Refused(_)) => 2,
-            Self::Stored { .. } => 10,
+            Self::Stored { .. } => 9,
         }
     }
 
@@ -247,9 +246,9 @@ impl Reply {
             Self::Outcome(Outcome::Refused(refusal)) => {
                 out.put(&[REFUSED, refusal.code()]);
             }
-            Self::Stored { path, through } => {
-                out.put(&[STORED, super::path_byte(path)]);
-                out.put(&through.to_le_bytes());
+            Self::Stored { frames } => {
+                out.put(&[STORED]);
+                out.put(&frames.to_le_bytes());
             }
         }
     }
@@ -261,8 +260,7 @@ impl Reply {
     /// [`Error::Empty`], [`Error::Kind`] for a kind that no reply has,
     /// [`Error::Length`], [`Error::Count`] for a range that holds no sample,
     /// [`Error::Range`] for a range that ends past `u64::MAX`, and
-    /// [`Error::Refusal`] for a refusal code that no refusal has, and [`Error::Path`]
-    /// for a path byte that no path has.
+    /// [`Error::Refusal`] for a refusal code that no refusal has.
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = Fields::new(message);
         let reply = match fields.kind().ok_or(Error::Empty)? {
@@ -282,11 +280,9 @@ impl Reply {
                     .ok_or(Error::Refusal { code });
             }
             STORED => {
-                let [path] = *fields.take()?;
-                let through = u64::from_le_bytes(*fields.take()?);
+                let frames = u64::from_le_bytes(*fields.take()?);
                 fields.end()?;
-                let path = super::path_of(path)?;
-                Self::Stored { path, through }
+                Self::Stored { frames }
             }
             kind => return Err(Error::Kind { kind }),
         };

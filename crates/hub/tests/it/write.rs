@@ -101,19 +101,8 @@ async fn end(stream: &mut Stream) -> Vec<Reply> {
     replies
 }
 
-/// A `Stored` of the live path.
-fn stored(through: u64) -> Reply {
-    Reply::Stored {
-        path: Path::Live,
-        through,
-    }
-}
-
-fn stored_backfill(through: u64) -> Reply {
-    Reply::Stored {
-        path: Path::Backfill,
-        through,
-    }
+fn stored(frames: u64) -> Reply {
+    Reply::Stored { frames }
 }
 
 fn taken(seq: u64, count: u32) -> Reply {
@@ -154,7 +143,7 @@ async fn next(stream: &mut Stream, reader: &mut wire::hub::Reader) -> (i64, i64)
 }
 
 /// Each frame of a write is taken in order, a read at the home gets it, and `Stored`
-/// comes after its commit with its seq.
+/// comes after its commit with the count of frames.
 #[test]
 fn takes_each_frame_of_a_write_in_order_and_stores_it() {
     let home = read_session(
@@ -167,7 +156,7 @@ fn takes_each_frame_of_a_write_in_order_and_stores_it() {
             for (seq, (stamp, value)) in (0..).zip([(1, 10), (2, 20)]) {
                 send(&mut stream, &[stamp], &[value]).await;
                 assert_eq!(stream.reply().await, taken(seq, 1));
-                assert_eq!(stream.reply().await, stored(seq));
+                assert_eq!(stream.reply().await, stored(seq + 1));
                 assert_eq!(next(&mut reading, &mut reader).await, (value, stamp));
             }
             stream.sender.finish().expect("finishes");
@@ -183,10 +172,9 @@ fn takes_each_frame_of_a_write_in_order_and_stores_it() {
     );
 }
 
-/// Each path has its own seqs, and a commit of frames of both paths gives a `Stored`
-/// of each, live first.
+/// Each path has its own seqs, and `Stored` counts the frames of both paths.
 #[test]
-fn stores_each_path_with_its_own_seqs() {
+fn counts_the_frames_of_each_path_in_stored() {
     let home = read_session(
         440,
         async |_| {},
@@ -194,16 +182,17 @@ fn stores_each_path_with_its_own_seqs() {
             agent.admit().await;
             let mut stream = write(&agent).await;
             send(&mut stream, &[100], &[1]).await;
-            let (ends, body) = frame(&[(0, &[1, 2, 3]), (1, &[2, 2, 2])]);
+            let stamps: Vec<i64> = (1..=32).collect();
+            let (ends, body) = frame(&[(0, &stamps), (1, &stamps)]);
             let backfill = Head {
                 time: Time::Frame(Path::Backfill),
-                ..live(3, 2)
+                ..live(32, 2)
             };
             stream.frame(backfill, &ends, &body).await;
             send(&mut stream, &[101], &[3]).await;
-            let replies = [taken(0, 1), taken(0, 3), taken(1, 1)];
-            let stored = [stored(0), stored(1), stored_backfill(2)];
-            assert_eq!(end(&mut stream).await, [replies, stored].concat());
+            let replies = [taken(0, 1), taken(0, 32), taken(1, 1)];
+            let stored = [stored(1), stored(3)];
+            assert_eq!(end(&mut stream).await, [&replies[..], &stored].concat());
             finish(&mut agent).await;
         },
     );
@@ -223,7 +212,7 @@ fn stores_each_taken_frame_before_it_finishes_the_stream() {
             send(&mut stream, &[1, 2, 3], &[10, 20, 30]).await;
             stream.sender.finish().expect("finishes");
             assert_eq!(stream.reply().await, taken(0, 3));
-            assert_eq!(stream.reply().await, stored(2));
+            assert_eq!(stream.reply().await, stored(1));
             assert_eq!(stream.recv().await, Ok(None));
             finish(&mut agent).await;
         },
@@ -247,7 +236,7 @@ fn serves_a_write_on_a_stream_of_each_class() {
                 let stamp = i64::try_from(seq).expect("a stamp") + 1;
                 send(&mut stream, &[stamp], &[10]).await;
                 assert_eq!(stream.reply().await, taken(seq, 1), "{class:?}");
-                assert_eq!(end(&mut stream).await, [stored(seq)], "{class:?}");
+                assert_eq!(end(&mut stream).await, [stored(1)], "{class:?}");
             }
             finish(&mut agent).await;
         },
@@ -290,8 +279,8 @@ fn stamps_an_untimed_frame_with_mesh_time_and_after_the_stamp_before_it() {
             assert_eq!(next(&mut reading, &mut reader).await, (20, first + 1));
             agent.sleep(Span::MILLISECOND).await;
             send_untimed(&mut stream, 30).await;
-            assert_eq!(stream.reply().await, stored(0));
             assert_eq!(stream.reply().await, stored(1));
+            assert_eq!(stream.reply().await, stored(2));
             assert_eq!(stream.reply().await, taken(2, 1));
             let (value, third) = next(&mut reading, &mut reader).await;
             assert_eq!(value, 30);
@@ -299,7 +288,7 @@ fn stamps_an_untimed_frame_with_mesh_time_and_after_the_stamp_before_it() {
                 third >= first + Span::MILLISECOND.nanos(),
                 "the stamp {third} is not mesh time 1 ms after {first}"
             );
-            assert_eq!(end(&mut stream).await, [stored(2)]);
+            assert_eq!(end(&mut stream).await, [stored(3)]);
             reading.sender.finish().expect("finishes");
             assert_eq!(reading.recv().await, Ok(None));
             finish(&mut agent).await;
@@ -339,7 +328,7 @@ fn refuses_a_frame_out_of_order_and_takes_the_next() {
         );
         send_untimed(&mut stream, 40).await;
         assert_eq!(stream.reply().await, taken(2, 1));
-        assert_eq!(end(&mut stream).await, [stored(1), stored(2)]);
+        assert_eq!(end(&mut stream).await, [stored(2), stored(4)]);
         finish(&mut agent).await;
     });
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
@@ -465,7 +454,7 @@ fn refuses_a_frame_whose_series_do_not_hold_its_count_as_codec() {
             assert_eq!(stream.reply().await, codec);
             send_untimed(&mut stream, 20).await;
             assert_eq!(stream.reply().await, taken(0, 1));
-            assert_eq!(end(&mut stream).await, [stored(0)]);
+            assert_eq!(end(&mut stream).await, [stored(4)]);
             finish(&mut agent).await;
         },
     );
@@ -519,7 +508,7 @@ fn refuses_a_frame_after_the_lease_of_its_write_ran_out_as_expired() {
             stream.started().await;
             send(&mut stream, &[1], &[10]).await;
             assert_eq!(stream.reply().await, taken(0, 1));
-            assert_eq!(stream.reply().await, stored(0));
+            assert_eq!(stream.reply().await, stored(1));
             agent.sleep(Span::from_nanos(START.nanos() * 2)).await;
             send(&mut stream, &[2], &[20]).await;
             assert_eq!(
@@ -572,7 +561,7 @@ fn refuses_a_frame_that_finds_no_block_and_takes_it_after_a_free() {
         agent.sleep(START).await;
         send(&mut stream, &stamps, &stamps).await;
         assert_eq!(stream.reply().await, taken(0, 3000));
-        assert_eq!(end(&mut stream).await, [stored(2999)]);
+        assert_eq!(end(&mut stream).await, [stored(2)]);
         finish(&mut agent).await;
     });
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
@@ -624,7 +613,7 @@ fn stops_a_write_whose_frame_finds_no_block_for_its_outcome_as_busy() {
         let mut stream = write(&agent).await;
         send(&mut stream, &[2], &[20]).await;
         assert_eq!(stream.reply().await, taken(0, 1));
-        assert_eq!(end(&mut stream).await, [stored(0)]);
+        assert_eq!(end(&mut stream).await, [stored(1)]);
         finish(&mut agent).await;
     });
     let busy = serve::Error::Pool(block::Error::Exhausted {
@@ -674,7 +663,7 @@ fn stops_a_write_whose_outcome_finds_no_block_after_its_draft_as_busy() {
         let mut stream = write(&agent).await;
         send(&mut stream, &[100], &[20]).await;
         assert_eq!(stream.reply().await, taken(0, 1));
-        assert_eq!(end(&mut stream).await, [stored(0)]);
+        assert_eq!(end(&mut stream).await, [stored(1)]);
         finish(&mut agent).await;
     });
     let [
@@ -699,7 +688,7 @@ fn refuses_a_backfill_frame_that_the_home_finds_no_block_for_as_full() {
         let mut stream = write(&agent).await;
         send(&mut stream, &[100], &[100]).await;
         assert_eq!(stream.reply().await, taken(0, 1));
-        assert_eq!(stream.reply().await, stored(0));
+        assert_eq!(stream.reply().await, stored(1));
         agent.sleep(Span::from_nanos(START.nanos() * 3 / 2)).await;
         let (ends, body) = frame(&[(0, &stamps), (1, &stamps)]);
         let backfill = Head {
@@ -714,7 +703,7 @@ fn refuses_a_backfill_frame_that_the_home_finds_no_block_for_as_full() {
         agent.sleep(START).await;
         stream.frame(backfill, &ends, &body).await;
         assert_eq!(stream.reply().await, taken(0, 32));
-        assert_eq!(end(&mut stream).await, [stored_backfill(31)]);
+        assert_eq!(end(&mut stream).await, [stored(3)]);
         finish(&mut agent).await;
     });
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
@@ -732,7 +721,7 @@ fn skips_a_stored_that_finds_no_block_and_covers_it_with_the_next() {
         agent.sleep(Span::from_nanos(START.nanos() * 3 / 2)).await;
         send(&mut stream, &[2], &[20]).await;
         assert_eq!(stream.reply().await, taken(1, 1));
-        assert_eq!(stream.reply().await, stored(1));
+        assert_eq!(stream.reply().await, stored(2));
         assert_eq!(end(&mut stream).await, []);
         finish(&mut agent).await;
     });
@@ -749,7 +738,7 @@ fn waits_for_a_block_for_the_last_stored_at_the_finish() {
         let mut stream = write(&agent).await;
         send(&mut stream, &[1], &[10]).await;
         let sent = agent.node.clock().now();
-        assert_eq!(end(&mut stream).await, [taken(0, 1), stored(0)]);
+        assert_eq!(end(&mut stream).await, [taken(0, 1), stored(1)]);
         let waited = agent.node.clock().now() - sent;
         assert!(waited > START, "{waited}");
         let late = Span::from_nanos(START.nanos() + 20_000_000);
@@ -791,7 +780,7 @@ fn ends_control_when_the_program_finishes_the_stream() {
         let mut stream = write(&agent).await;
         send(&mut stream, &[1], &[10]).await;
         let sent = agent.node.clock().now();
-        assert_eq!(end(&mut stream).await, [taken(0, 1), stored(0)]);
+        assert_eq!(end(&mut stream).await, [taken(0, 1), stored(1)]);
         let waited = agent.node.clock().now() - sent;
         assert!(waited > Span::from_nanos(START.nanos() / 4), "{waited}");
         finish(&mut agent).await;
@@ -861,7 +850,7 @@ fn refuses_a_frame_too_large_for_one_write() {
             );
             send(&mut stream, &[1], &[10]).await;
             assert_eq!(stream.reply().await, taken(0, 1));
-            assert_eq!(end(&mut stream).await, [stored(0)]);
+            assert_eq!(end(&mut stream).await, [stored(2)]);
             finish(&mut agent).await;
         },
     );
