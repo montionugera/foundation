@@ -35,11 +35,11 @@ use types::sample::{Scalar, Type};
 use types::time::{Interval, Span, Stamp};
 use wire::hub;
 use wire::hub::client::write::{self, Opening};
-use wire::hub::write::{Outcome, Refusal, Reply};
 use wire::hub::client::{
     BODY_BYTES_MAX, Body, Challenge, Error, First, Mode, OPEN_BYTES_MAX, Open,
     PLACES_MAX, Place, Places, Read, Reader, Request, Response, Signed, place,
 };
+use wire::hub::write::{Outcome, Refusal, Reply};
 
 /// Checks one decoder of kind `kind` on `message`: a decoded message encodes to it,
 /// and a refusal is the one that its first byte gives, or one that `allowed` takes.
@@ -191,12 +191,12 @@ fn open(bytes: &[u8]) {
 }
 
 /// Drives a reader of `mode` on `bytes` until it gives the last place, then ends the
-/// stream. A refused message leaves the reader as it was. Each message that it takes
-/// decodes alone as places or as a run that encodes to it, a run holds no more places
-/// than remain and a stamp at the index place, and only the message with the last
-/// place gives the start: the places of the run, their key set in place order, and
-/// the decoder of a session of the count and the mode. An end before the last place
-/// gives `Error::Finished`.
+/// stream. A refused message leaves the reader as it was, and a refused first message
+/// gives the error of its places. Each message that it takes decodes alone as places or
+/// as a run that encodes to it, a run holds no more places than remain and a stamp at
+/// the index place, and only the message with the last place gives the start: the
+/// places of the run, their key set in place order, and the decoder of a session of the
+/// count and the mode. An end before the last place gives `Error::Finished`.
 fn drive(bytes: &[u8], mode: Mode) {
     let mut reader = Reader::new(mode);
     let mut run: Option<(Places, u32, Vec<Place>)> = None;
@@ -204,6 +204,14 @@ fn drive(bytes: &[u8], mode: Mode) {
         let start = match reader.decode(Some(message)) {
             Ok(start) => start,
             Err(error) => {
+                if run.is_none() {
+                    let places = Places::decode(message).err();
+                    assert_eq!(
+                        places.as_ref(),
+                        Some(&error),
+                        "not the error of the places"
+                    );
+                }
                 if let Some(repeated) = refusal(run.as_ref(), message) {
                     let expected = repeated.map(|key| Error::Repeated { key });
                     assert_eq!(Some(error), expected, "a valid message refused");
