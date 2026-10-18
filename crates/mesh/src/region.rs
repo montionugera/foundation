@@ -136,7 +136,7 @@ pub(crate) struct State {
     status: BTreeSet<channel::Key>,
     // The member that holds each public key, by its bytes. A `Card` change keeps the
     // public key, and no change removes a member, so only `insert` writes this.
-    holders: BTreeMap<[u8; 32], node::Key>,
+    public_keys: BTreeMap<[u8; 32], node::Key>,
 }
 
 impl State {
@@ -167,7 +167,7 @@ impl State {
             },
             names: BTreeMap::new(),
             status: BTreeSet::new(),
-            holders: BTreeMap::new(),
+            public_keys: BTreeMap::new(),
         };
         for member in members {
             let names = state.fits(&member.card, &member.status)?;
@@ -196,7 +196,7 @@ impl State {
 
     /// The key of the member whose card holds `public_key`, or `None` when none does.
     pub(crate) fn holder(&self, public_key: PublicKey) -> Option<node::Key> {
-        self.holders.get(&public_key.to_bytes()).copied()
+        self.public_keys.get(&public_key.to_bytes()).copied()
     }
 
     /// The record of the ticket with `public_key`, or `None` when none is recorded.
@@ -380,7 +380,7 @@ impl State {
         let key = member.card.key();
         self.names.extend(names.into_iter().map(|name| (name, key)));
         self.status.extend(member.status.as_map().values());
-        self.holders.insert(member.public_key().to_bytes(), key);
+        self.public_keys.insert(member.public_key().to_bytes(), key);
         self.members.insert(key, member);
     }
 
