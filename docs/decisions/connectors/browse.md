@@ -90,7 +90,7 @@
   has no time bound of its own; #3125 ends a walk at a deadline. The bound is 2 in place
   of 4, as `laptop.monitor` asked (`laptop.architect-2`, 2026-10-18T03:39:44Z:
   https://github.com/synnaxlabs/foundation/issues/2981#issuecomment-6245278357), and it
-  states no bytes: a browse has no byte bound yet (#3124). The text is of
+  states no bytes: a whole browse has no byte bound yet (#3124). The text is of
   `laptop.architect-2`, 2026-10-18T03:58:18Z and 04:03:07Z:
   https://github.com/synnaxlabs/foundation/pull/3122#issuecomment-6245419401 and
   https://github.com/synnaxlabs/foundation/pull/3122#issuecomment-6245457104, the call
