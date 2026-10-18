@@ -50,7 +50,7 @@ unsafe extern "C" fn connector_opcua_die(line: *const c_char, length: usize) -> 
     // SAFETY: the caller gives `length` bytes at `line`.
     let text = unsafe { text(line, length) };
     // In a build that unwinds, a panic out of this frame runs the hook a second time.
-    drop(std::panic::catch_unwind(|| panic!("open62541 {text}")));
+    let Err(_) = std::panic::catch_unwind(|| -> ! { panic!("open62541 {text}") });
     std::process::abort()
 }
 
