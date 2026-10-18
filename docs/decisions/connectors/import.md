@@ -109,8 +109,8 @@
   `config::import::add(documents, connector, start, picks, kinds)` gives the document
   of the file of the connector block with the blocks of each `Pick` added, and an
   `Outcome` for each pick: `Added { name, fills }`, `Unnamed`, or `Present`. A pick is
-  present when a block of the connector body or an earlier pick has its tag as
-  `Table::tag` gives it, and takes no name. The other picks take names in this order:
+  present when a block of the connector body or an earlier pick that adds a channel has its tag as
+  `Table::tag` gives it, and takes no name (`laptop.architect-2`, ruling A on round 1 finding 4, item 3 of https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245080635). The other picks take names in this order:
   each given name, then the index, then the defaults of `import::names`. The index is
   that of the first channel that the connector writes whose block names one, else the
   new `<connector>.time`, or the first free of `_2`, `_3`, and on, with case folded,
