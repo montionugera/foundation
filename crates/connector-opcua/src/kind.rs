@@ -175,6 +175,7 @@ async fn walk(
     let time = event::Time::mesh(ctx.clock().clone(), ctx.time().await?);
     let found = session(
         time,
+        tracing::Span::none(),
         ctx.net().clone(),
         &mut ctx.rng(),
         &address,
@@ -190,6 +191,7 @@ async fn run(ctx: Context<Config>) -> Result<(), Error> {
     let time = event::Time::mesh(ctx.clock().clone(), frames.writer.time());
     let ran = session(
         time,
+        ctx.span().clone(),
         ctx.net().clone(),
         &mut ctx.rng(),
         &ctx.config().address,
@@ -200,21 +202,23 @@ async fn run(ctx: Context<Config>) -> Result<(), Error> {
     ran.unwrap_or(Ok(()))
 }
 
-/// Connects to `address` with `time`, `net`, and `rng`, gives the client to `work`,
-/// and then closes the session. `None` when `until` ends before the connect.
+/// Connects to `address` with `time`, `span`, `net`, and `rng`, as [`Client::connect`]
+/// does, gives the client to `work`, and then closes the session. `None` when `until`
+/// ends before the connect.
 ///
 /// # Errors
 ///
 /// [`Error::Device`] with the address when the connect fails.
 async fn session<T>(
     time: event::Time,
+    span: tracing::Span,
     net: Net,
     rng: &mut Rng,
     address: &CStr,
     until: impl Future<Output = ()>,
     work: impl AsyncFnOnce(&mut Client) -> T,
 ) -> Result<Option<T>, Error> {
-    let connected = Client::connect(time, net, rng, address, until).await;
+    let connected = Client::connect(time, span, net, rng, address, until).await;
     let connected =
         connected.map_err(|status| failed(address, Call::Connect, status))?;
     let Some(mut client) = connected else {

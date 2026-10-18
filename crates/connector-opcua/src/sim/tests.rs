@@ -607,6 +607,13 @@ async fn connect(
     url: &CStr,
 ) -> Result<Client, Status> {
     let time = event::Time::monotonic(node.clock());
-    let connect = Client::connect(time, node.net(), rng, url, future::pending());
+    let connect = Client::connect(
+        time,
+        tracing::Span::none(),
+        node.net(),
+        rng,
+        url,
+        future::pending(),
+    );
     Ok(connect.await?.expect("a pending wait never ends"))
 }

@@ -46,6 +46,7 @@ use types::time::{Monotonic, Stamp};
 
 use crate::connection::Manager;
 use crate::event;
+pub use crate::log::call_refused;
 use crate::node::Node;
 use crate::server::Server;
 use crate::value::Value;

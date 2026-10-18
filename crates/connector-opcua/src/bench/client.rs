@@ -144,6 +144,7 @@ impl Server {
         let net = Net::clone(&self.net);
         let connect = crate::client::Client::connect(
             time,
+            tracing::Span::none(),
             net,
             rng,
             &self.url,

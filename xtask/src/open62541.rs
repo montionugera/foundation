@@ -343,7 +343,7 @@ const EXTRA: [&str; 2] = [
 ];
 
 /// The sources of the library that the copy leaves out. `shim.c` defines each symbol
-/// of them that the copy references, to print its name and abort, so a call fails
+/// of them that the copy references, to panic with its name and abort, so a call fails
 /// loudly. A node keeps its certificates in its config, not in files of the copy.
 const OMITTED: [&str; 14] = [
     // The file stores of certificates, which read and write files and watch them with
@@ -420,7 +420,7 @@ const SYMBOLS: [&str; 30] = [
     "strncmp",
     "strncpy",
     "strtok_r",
-    // `shim.c` defines each to print its name and abort.
+    // `shim.c` defines each to panic with its name and abort.
     "UA_CertificateGroup_Filestore",
     "UA_ConnectionManager_new_POSIX_Ethernet",
     "UA_ConnectionManager_new_POSIX_TCP",
