@@ -24,7 +24,7 @@ use types::digest::Digest;
 use types::ed25519::{PrivateKey, PublicKey};
 use types::name::Name;
 use types::node;
-use types::time::{Monotonic, Span, Stamp};
+use types::time::{Span, Stamp};
 use wire::Protocol;
 
 use crate::applied::Applied;
@@ -36,12 +36,14 @@ use crate::member::Member;
 use crate::message::{self, Message};
 use crate::region::{self, Refused, Request};
 use crate::status::{self, Status};
+use bound::Bound;
 pub use founding::founding;
 use send::Senders;
 use used::{Opening, Used};
 
 mod addresses;
 mod apply;
+mod bound;
 mod founding;
 mod home;
 mod propose;
@@ -69,15 +71,8 @@ const REFUSED: Code = Code(16);
 /// removed.
 const REMOVED: Code = Code(17);
 /// The code of a stream with a `Card` change of a member whose card the leader
-/// proposed less than [`CARDS`] before.
+/// proposed less than a minute before.
 const SOON: Code = Code(18);
-/// The least time between two proposals of a `Card` change of one member.
-const CARDS: Span = Span::MINUTE;
-
-/// Whether a `Card` change proposed at `at` holds back another of its member at `now`.
-fn recent(at: Monotonic, now: Monotonic) -> bool {
-    at.checked_add(CARDS).is_none_or(|end| now < end)
-}
 
 /// What a [`Mesh`] is built from.
 #[derive(Debug)]
@@ -408,26 +403,41 @@ impl Mesh {
     ///   that write ends.
     /// - [`Error::Raft`] with [`raft::Error::NotLeader`] when this node does not
     ///   lead, or when a new leader replaces the entry before a write holds it.
-    /// - [`Error::Soon`] for a `Card` change of a member whose `Card` change this
-    ///   node proposed less than a minute before.
+    /// - [`Error::Soon`] for a `Card` change of a member whose `Card` change at
+    ///   another version this node proposed less than a minute before, while it
+    ///   leads.
+    /// - [`Error::NotMember`] for a `Card` change of a node that is not a member of
+    ///   the applied state, while this node leads.
+    ///
+    /// A repeat of a `Card` change that this node proposed in this term, less than
+    /// a minute before, gets the position of its entry at once and no new entry.
     pub(crate) async fn propose(&self, change: Change) -> Result<Position, Error> {
         let card = match &change {
-            Change::Card(card) => Some(card.key),
+            Change::Card(card) => Some((card.key, card.card.version)),
             _ => None,
         };
         let mut data = Vec::new();
         change.encode(&mut data);
-        let Some(card) = card else {
+        let Some((member, version)) = card else {
             return self.propose_data(data).await;
         };
         let now = self.clock.now();
-        self.proposed(|group| {
-            group.cards.retain(|_, &mut at| recent(at, now));
-            if group.cards.contains_key(&card) {
-                return Err(Error::Soon);
+        {
+            let mut group = self.group.borrow_mut();
+            group.taking()?;
+            if group.raft.role() == raft::Role::Leader {
+                if group.state.member(member).is_none() {
+                    return Err(Error::NotMember(member));
+                }
+                let term = group.raft.term();
+                if let Some(at) = group.bound.check(member, version, term, now)? {
+                    return Ok(at);
+                }
             }
+        }
+        self.proposed(|group| {
             let at = group.raft.propose(data)?;
-            group.cards.insert(card, now);
+            group.bound.proposed(member, version, at, now);
             Ok(at)
         })
         .await
@@ -774,9 +784,7 @@ struct Group {
     // for a read of the spec.
     calls: BTreeMap<u64, Waker>,
     used: Used,
-    // The time of each proposal of a `Card` change here, less than `CARDS` ago, by
-    // the member of the card.
-    cards: BTreeMap<node::Key, Monotonic>,
+    bound: Bound,
 }
 
 impl Group {
@@ -804,7 +812,7 @@ impl Group {
             applied: Applied::default(),
             calls: BTreeMap::new(),
             used,
-            cards: BTreeMap::new(),
+            bound: Bound::default(),
         }
     }
 
@@ -1337,6 +1345,7 @@ mod tests {
     use transport::{Address, Peer, Port};
     use types::name::{Name, Prefix};
     use types::node::SealKey;
+    use types::time::Monotonic;
     use wire::Protocol;
 
     use super::*;

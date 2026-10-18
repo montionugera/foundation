@@ -57,9 +57,9 @@ pub enum Error {
     /// This node is not a voter of its configuration, and only a voter proposes a
     /// change. Call it on a voter.
     NoVote,
-    /// The leader proposed a card of this node less than a minute before, and
-    /// proposes at most one card of each member each minute. Call again after a
-    /// minute.
+    /// This node, or the leader that it forwarded to, proposed a card of the same
+    /// member less than a minute before, and refused this one before the log. Call
+    /// again after a minute.
     Soon,
     /// The region cannot hold a member record of the config.
     Member(Unfit),
@@ -200,7 +200,7 @@ impl fmt::Display for Error {
                 "this node is not a voter, and only a voter proposes a change",
             ),
             Self::Soon => f.write_str(
-                "a node proposed a card of this node less than a minute ago; call \
+                "a card of the same member was proposed less than a minute ago; call \
                  again after a minute",
             ),
             Self::Member(refused) => refused.fmt(f),

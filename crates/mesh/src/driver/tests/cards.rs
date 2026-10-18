@@ -57,8 +57,8 @@ fn a_leader_proposes_one_card_of_each_member_each_minute() {
         node.clock().sleep_until(minute - Span::from_nanos(1)).await;
         let soon = mesh.propose(card_change(2, 3)).await;
         assert_eq!(soon, Err(Error::Soon));
-        let text = "a node proposed a card of this node less than a minute ago; call \
-                    again after a minute";
+        let text = "a card of the same member was proposed less than a minute ago; \
+                    call again after a minute";
         assert_eq!(soon.unwrap_err().to_string(), text);
         assert_eq!(mesh.propose(home_to(1)).await, Ok(after(at, 3)));
         node.clock().sleep_until(minute).await;
@@ -67,12 +67,49 @@ fn a_leader_proposes_one_card_of_each_member_each_minute() {
 }
 
 #[test]
-fn a_card_change_holds_back_another_for_one_minute() {
-    let at = Monotonic(5);
-    assert!(recent(at, at));
-    assert!(recent(at, Monotonic(60_000_000_004)));
-    assert!(!recent(at, Monotonic(60_000_000_005)));
-    assert!(recent(Monotonic(u64::MAX), Monotonic(u64::MAX)));
+fn a_repeat_of_a_card_gets_its_entry_and_no_new_one() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
+        let at = lead(&mesh, &node.clock(), home_to(1)).await;
+        assert_eq!(mesh.propose(card_change(2, 2)).await, Ok(after(at, 1)));
+        assert_eq!(mesh.propose(card_change(2, 2)).await, Ok(after(at, 1)));
+        assert_eq!(mesh.propose(home_to(1)).await, Ok(after(at, 2)));
+    });
+}
+
+#[test]
+fn a_leader_refuses_a_card_of_a_node_that_is_not_a_member_before_the_log() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        let at = lead(&mesh, &node.clock(), home_to(1)).await;
+        let stranger = Error::NotMember(key(2));
+        let answer = mesh.answer(public(1), card_change(2, 2)).await;
+        assert_eq!(answer, Err(stranger.clone()));
+        assert_eq!(mesh.propose(card_change(2, 2)).await, Err(stranger));
+        assert_eq!(mesh.propose(home_to(1)).await, Ok(after(at, 1)));
+    });
+}
+
+// The node proposed a card of member 2 and then lost its lead, so another version of
+// it gets `NotLeader` and the call forwards it.
+#[test]
+fn a_node_that_lost_its_lead_does_not_bound_a_card() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+        let first = elect(&mesh).await;
+        let mut proposal = pin!(mesh.propose(card_change(2, 2)));
+        assert!(now(proposal.as_mut()).await.is_pending());
+        let beat = Body::Append {
+            prev: Position::default(),
+            entries: vec![],
+            commit: 0,
+        };
+        let later = common::proven_in(Term(first.term.0 + 1), 2, 1, beat);
+        assert_eq!(mesh.receive(public(2), later), Ok(()));
+        let leader = Some(key(2));
+        let follower = Error::Raft(raft::Error::NotLeader { leader });
+        assert_eq!(mesh.propose(card_change(2, 3)).await, Err(follower));
+    });
 }
 
 /// A proposal that the group does not take does not count.
@@ -234,6 +271,69 @@ fn a_follower_sets_its_addresses_through_the_leader_once_a_minute() {
     let board = cluster.board();
     let card = card(moved(follower, 10), 4);
     assert_eq!(board.moved, [(follower, Ok(()), card)]);
+}
+
+// The leader puts the card of the call in its log and loses its lead before a
+// quorum has it. The next leader replaces the entry, so the call forwards the card
+// to it.
+#[test]
+fn a_leader_that_loses_its_lead_sets_its_addresses_through_the_next_leader() {
+    let (mut cluster, old, ..) = Cluster::led(2);
+    cluster.link_each(old, 1.0);
+    cluster
+        .board
+        .lock()
+        .unwrap()
+        .addresses
+        .insert(old, moved(old, 9));
+    cluster.run(seconds(5));
+    assert_eq!(cluster.board().moved, []);
+    cluster.link_each(old, 0.0);
+    cluster.run(seconds(5));
+    let card = card::Card {
+        addresses: moved(old, 9),
+        version: 2,
+        ..create_voter(old).card.card().clone()
+    };
+    assert_eq!(cluster.board().moved, [(old, Ok(()), card)]);
+}
+
+// The leader takes the forward, and the cut drops its answer. The call forwards
+// the same card again after the heal, and gets the entry of the first.
+#[test]
+fn a_call_whose_answer_was_lost_returns_ok() {
+    for step in 0..96_i64 {
+        let (run, wait) = (u64::try_from(step / 12).unwrap(), step % 12);
+        let (mut cluster, _, follower, _) = Cluster::led(run);
+        let config = link::Config {
+            delay: Span::from_nanos(6 * TICK.nanos()),
+            ..link::Config::default()
+        };
+        for other in IDS.into_iter().filter(|&id| id != follower) {
+            let (a, b) = (cluster.node(follower).clone(), cluster.node(other).clone());
+            cluster.sim.link(&a, &b, config);
+            cluster.sim.link(&b, &a, config);
+        }
+        cluster.run(seconds(5));
+        cluster
+            .board
+            .lock()
+            .unwrap()
+            .addresses
+            .insert(follower, moved(follower, 9));
+        cluster.run(Span::from_nanos((wait + 1) * TICK.nanos()));
+        cluster.link_each(follower, 1.0);
+        cluster.run(seconds(5));
+        cluster.link_each(follower, 0.0);
+        cluster.run(seconds(10));
+        let card = card::Card {
+            addresses: moved(follower, 9),
+            version: 2,
+            ..create_voter(follower).card.card().clone()
+        };
+        let moved = cluster.board().moved;
+        assert_eq!(moved, [(follower, Ok(()), card)], "step {step}");
+    }
 }
 
 /// Two calls at once write the file of the last signed version in turn, so neither

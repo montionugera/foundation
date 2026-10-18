@@ -445,3 +445,12 @@
   call gets `Error::Soon`. So such a card never gets into the log (decided by
   `laptop.monitor`, 2026-10-18T03:32:43Z:
   https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245224489).
+  The bound applies only while the node leads, so a node that lost its lead gives
+  `NotLeader` and the call forwards the card. It counts only the cards of members: the
+  leader refuses a card of a node that is not a member before the log, with
+  `Error::NotMember`. A repeat of the card that it proposed, the same version of the
+  same member, gets no new entry. It gets the answer of that card when it applies. A
+  repeat in a later term than the entry proposes again, as the entry can be gone from
+  the log (`laptop.architect`, 2026-10-18T07:48:16Z and 2026-10-18T07:48:57Z:
+  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247302177 and
+  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247307620).
