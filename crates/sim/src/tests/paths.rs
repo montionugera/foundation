@@ -7,7 +7,8 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::slice;
 
-use env::paths::{Driver, Entry, Error, Found};
+use env::paths::dir::Entry;
+use env::paths::{Driver, Error, Found};
 
 use crate::{Config, Crash, Sim, node};
 use cases::Host;
@@ -496,9 +497,7 @@ fn a_directory_handle_keeps_its_directory_after_a_move() {
         matches!(&link, Ok(Entry::Link(_, target)) if target == Path::new("../x")),
         "{link:?}"
     );
-    let Ok(Entry::Directory(up)) = out.open(OsStr::new("..")) else {
-        panic!("no directory above /b/out");
-    };
+    let up = out.up().unwrap();
     assert_ne!(up.key(), a.key());
     let Ok(Entry::Directory(b)) = root.open(OsStr::new("b")) else {
         panic!("no directory at /b");
@@ -506,10 +505,8 @@ fn a_directory_handle_keeps_its_directory_after_a_move() {
     assert_eq!(up.key(), b.key());
     assert_eq!(format!("{up:?}"), format!("{b:?}"));
     assert_ne!(format!("{up:?}"), format!("{a:?}"));
-    let Ok(Entry::Directory(here)) = root.open(OsStr::new(".")) else {
-        panic!("no directory at /.");
-    };
-    assert_eq!(here.key(), root.key());
+    assert_eq!(root.up().unwrap().key(), root.key());
+    assert_eq!(b.up().unwrap().key(), root.key());
     assert_eq!(a.open(OsStr::new("out")).err(), Some(Error::NotFound));
 }
 

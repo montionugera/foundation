@@ -5,9 +5,11 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use env::paths::{Entry, Error, Found, Key};
+use env::paths::dir::Entry;
+use env::paths::{Error, Found, Key};
 
 use super::Node;
+use crate::paths;
 use crate::state::{Shared, lock};
 use crate::{LOOP, NOT_DIRECTORY};
 
@@ -82,9 +84,20 @@ impl env::paths::dir::Driver for Dir {
     }
 
     fn open(&self, name: &OsStr) -> Result<Entry, Error> {
-        let open = |inode| handle(&self.shared, self.node, inode);
-        lock(&self.shared)
-            .paths()
-            .open(self.node, self.inode, name, open)
+        let mut state = lock(&self.shared);
+        let (inode, entry) = state.paths().open(self.node, self.inode, name)?;
+        let key = Key::new(0, inode);
+        Ok(match entry {
+            paths::Entry::File(_) => Entry::File(key),
+            paths::Entry::Link(target) => Entry::Link(key, target.clone()),
+            paths::Entry::Directory => {
+                Entry::Directory(handle(&self.shared, self.node, inode))
+            }
+        })
+    }
+
+    fn up(&self) -> Result<Box<dyn env::paths::dir::Driver>, Error> {
+        let up = lock(&self.shared).paths().up(self.node, self.inode)?;
+        Ok(handle(&self.shared, self.node, up))
     }
 }

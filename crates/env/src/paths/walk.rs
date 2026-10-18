@@ -1,11 +1,13 @@
 //! The walk of a path, name by name, as the host takes it, on open directories.
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::iter;
 use std::path::{Component, Path, PathBuf};
 
-use super::{Driver, Entry, Error, Key, LINKS, dir, names_directory};
+use super::dir::{self, Entry};
+use super::{Driver, Error, Key, LINKS, names_directory};
 
 /// A name that the walk reached. Its resolved path is [`path`].
 #[derive(Clone, Debug)]
@@ -97,50 +99,46 @@ pub(super) fn path(steps: &[Step], index: usize) -> PathBuf {
     names.into_iter().rev().collect()
 }
 
-/// What the directories above each step of a walk hold of some keys, found in one
-/// pass, so that a check of each step costs the keys, not the depth.
+/// What the directories above each step of a walk hold, found in one pass for each
+/// key asked, so that a check of each step costs the keys, not the depth.
 pub(super) struct Above<'a> {
-    keys: &'a [Key],
-    /// At `index * keys.len() + slot`: a directory above step `index` has key `slot`.
-    held: Vec<bool>,
+    steps: &'a [Step],
+    /// For each key asked: at each step, a directory above that step has the key.
+    held: RefCell<Vec<(Key, Vec<bool>)>>,
     /// The key of the nearest directory above each step that has one.
     nearest: Vec<Option<Key>>,
 }
 
 impl<'a> Above<'a> {
-    /// What the directories above each step of `steps` hold of `keys`.
-    pub(super) fn new(steps: &[Step], keys: &'a [Key]) -> Self {
-        let width = keys.len();
-        let mut held = Vec::with_capacity(steps.len() * width);
-        let mut nearest = Vec::with_capacity(steps.len());
+    pub(super) fn new(steps: &'a [Step]) -> Self {
+        let mut nearest: Vec<Option<Key>> = Vec::with_capacity(steps.len());
         // The step above a step comes before it.
         for step in steps {
-            let Some(up) = step.up else {
-                held.extend(iter::repeat_n(false, width));
-                nearest.push(None);
-                continue;
-            };
-            let own = steps[up].own;
-            for (slot, key) in keys.iter().enumerate() {
-                held.push(held[up * width + slot] || own == Some(*key));
-            }
-            nearest.push(own.or(nearest[up]));
+            nearest.push(step.up.and_then(|up| steps[up].own.or(nearest[up])));
         }
         Self {
-            keys,
-            held,
+            steps,
+            held: RefCell::new(Vec::new()),
             nearest,
         }
     }
 
-    /// A directory above step `index` has `key`, one of the keys of [`Above::new`].
+    /// A directory above step `index` has `key`.
     pub(super) fn holds(&self, index: usize, key: Key) -> bool {
-        let slot = self
-            .keys
-            .iter()
-            .position(|&at| at == key)
-            .expect("invariant: the check asks only of its keys");
-        self.held[index * self.keys.len() + slot]
+        let mut held = self.held.borrow_mut();
+        if let Some((_, column)) = held.iter().find(|(at, _)| *at == key) {
+            return column[index];
+        }
+        let mut column: Vec<bool> = Vec::with_capacity(self.steps.len());
+        for step in self.steps {
+            column.push(
+                step.up
+                    .is_some_and(|up| column[up] || self.steps[up].own == Some(key)),
+            );
+        }
+        let holds = column[index];
+        held.push((key, column));
+        holds
     }
 
     /// The key of the nearest directory above step `index` that has one.
@@ -367,9 +365,7 @@ impl Walker<'_> {
         let Some(up) = self.steps[self.at].up else {
             return Ok(());
         };
-        let Entry::Directory(above) = dir.open(OsStr::new(".."))? else {
-            panic!("invariant: the host gives a directory above a directory");
-        };
+        let above = dir.up()?;
         if Some(above.key()) == self.steps[up].own {
             self.enter(up, Some(above));
             return Ok(());

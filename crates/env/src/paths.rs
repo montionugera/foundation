@@ -1,7 +1,6 @@
 //! The files of the host by the paths that a user gave.
 
 use std::fmt::Debug;
-use std::iter;
 use std::path::{Component, Path, PathBuf, is_separator};
 use std::rc::Rc;
 
@@ -266,21 +265,7 @@ impl Paths {
         }
         let walk = self.walk(path);
         let now: Vec<_> = self.limits.iter().map(|limit| self.now(limit)).collect();
-        let keys: Vec<_> = self
-            .limits
-            .iter()
-            .zip(&now)
-            .flat_map(|(limit, now)| {
-                let folders = limit.folders.iter().map(|(_, was)| *was);
-                let hidden = limit.hidden.iter().filter_map(|hidden| hidden.was);
-                let seen = now.hidden.iter().filter_map(|seen| match seen {
-                    Seen::There(key) => Some(*key),
-                    _ => None,
-                });
-                folders.chain(hidden).chain(seen)
-            })
-            .collect();
-        let above = walk::Above::new(&walk.steps, &keys);
+        let above = walk::Above::new(&walk.steps);
         for (index, step) in walk.steps.iter().enumerate() {
             let ask = if index + 1 == walk.steps.len() && walk.end.is_ok() {
                 Ask::Hold(call)
@@ -296,7 +281,7 @@ impl Paths {
 
     /// `Ok` when step `index` of `steps` passes each limit as `ask` gives, where `now`
     /// is what this call found of each limit, and `above` what the directories above
-    /// each step hold of the keys of `now` and of the limits.
+    /// each step of `steps` hold.
     fn allowed(
         &self,
         steps: &[Step],
@@ -343,18 +328,14 @@ impl Paths {
                 })
         {
             let path = walk::path(steps, index);
-            let keys: Vec<_> = iter::successors(Some(index), |&at| steps[at].up)
-                .filter_map(|at| steps[at].own)
-                .collect();
             let replaced = limit.folders.iter().any(|(dir, was)| {
-                keys.contains(was)
+                has(*was)
                     || path.starts_with(dir)
                     || !matches!(ask, Ask::Hold(_)) && dir.starts_with(&path)
                     || self.walk(dir).into_end().is_ok_and(|to| {
                         // A host that ignores case reaches the folder by a name
                         // in other case, which only the key tells.
-                        path.starts_with(&to.path)
-                            || to.own.is_some_and(|key| keys.contains(&key))
+                        path.starts_with(&to.path) || to.own.is_some_and(has)
                     })
             });
             return Err(if replaced {
@@ -644,26 +625,6 @@ pub trait Driver: Debug {
 /// host can take fewer.
 pub const LINKS: usize = 40;
 
-/// What [`dir::Driver::open`] found at a name, with no symbolic link followed.
-#[derive(Debug)]
-pub enum Entry {
-    /// A symbolic link, with its key and the path that it names, as written.
-    Link(Key, PathBuf),
-    /// A directory, open.
-    Directory(Box<dyn dir::Driver>),
-    /// Any other file, also a device or a FIFO, with its key.
-    File(Key),
-}
-
-impl Entry {
-    fn key(&self) -> Key {
-        match self {
-            Self::Directory(dir) => dir.key(),
-            Self::Link(key, _) | Self::File(key) => *key,
-        }
-    }
-}
-
 /// Whether `path` is empty or ends in a separator, `.`, or `..`. By its text, such a
 /// path names a directory or nothing, never a file. It reads no file. A separator is a
 /// `/`, and on Windows also a `\` (`std::path::is_separator`). The methods of `Path` do
@@ -681,6 +642,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::ffi::OsStr;
 
+    use super::dir::Entry;
     use super::*;
 
     /// The length of a path that the fake host refuses as given. It is far under the
@@ -785,20 +747,21 @@ mod tests {
 
         fn open(&self, name: &OsStr) -> Result<Entry, Error> {
             self.0.count();
-            if name == ".." {
-                let mut data = self.0.0.borrow_mut();
-                let moved = self.1.file_name() == Some(OsStr::new("moved"));
-                if moved && matches!(&data[..], b"moved" | b"away") {
-                    if *data == b"moved" {
-                        data.clear();
-                    }
-                    let out = Dir(self.0.clone(), PathBuf::from("/out"));
-                    return Ok(Entry::Directory(Box::new(out)));
-                }
-                let up = self.1.parent().unwrap_or(&self.1).to_owned();
-                return Ok(Entry::Directory(Box::new(Dir(self.0.clone(), up))));
-            }
             self.0.entry(&slashed(&self.1.join(name)))
+        }
+
+        fn up(&self) -> Result<Box<dyn dir::Driver>, Error> {
+            self.0.count();
+            let mut data = self.0.0.borrow_mut();
+            let moved = self.1.file_name() == Some(OsStr::new("moved"));
+            if moved && matches!(&data[..], b"moved" | b"away") {
+                if *data == b"moved" {
+                    data.clear();
+                }
+                return Ok(Box::new(Dir(self.0.clone(), PathBuf::from("/out"))));
+            }
+            let up = self.1.parent().unwrap_or(&self.1).to_owned();
+            Ok(Box::new(Dir(self.0.clone(), up)))
         }
     }
 

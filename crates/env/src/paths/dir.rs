@@ -2,8 +2,9 @@
 
 use std::ffi::OsStr;
 use std::fmt::Debug;
+use std::path::PathBuf;
 
-use super::{Entry, Error, Key};
+use super::{Error, Key};
 
 /// A directory of the host, open. Each call takes one name in this directory, with no
 /// symbolic link at that name followed, so it reaches this directory also after a
@@ -19,13 +20,41 @@ pub trait Driver: Debug {
     /// The key of this directory, from the open.
     fn key(&self) -> Key;
 
-    /// What is at `name`, with no symbolic link followed: a directory, open, a link
-    /// with its target as written, or another file. For `..`, the directory that the
-    /// host gives as the one above this one.
+    /// What is at `name`, a name of an entry of this directory and never `.` or `..`,
+    /// with no symbolic link followed.
     ///
     /// # Errors
     ///
     /// [`Error::NotFound`] when nothing is at `name`, else [`Error::Io`] with the code
     /// of the host.
     fn open(&self, name: &OsStr) -> Result<Entry, Error>;
+
+    /// The directory that the host gives as the one above this one, open. Above a
+    /// root, the root.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`] when this directory is not there, else [`Error::Io`] with
+    /// the code of the host.
+    fn up(&self) -> Result<Box<dyn Driver>, Error>;
+}
+
+/// What [`Driver::open`] found at a name, with no symbolic link followed.
+#[derive(Debug)]
+pub enum Entry {
+    /// A symbolic link, with its key and the path that it names, as written.
+    Link(Key, PathBuf),
+    /// A directory, open.
+    Directory(Box<dyn Driver>),
+    /// Any other file, also a device or a FIFO, with its key.
+    File(Key),
+}
+
+impl Entry {
+    pub(super) fn key(&self) -> Key {
+        match self {
+            Self::Directory(dir) => dir.key(),
+            Self::Link(key, _) | Self::File(key) => *key,
+        }
+    }
 }

@@ -9,7 +9,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use env::entropy::Driver as _;
-use env::paths::{Entry, Error, Found, Key, Kind, names_directory};
+use env::paths::dir::Entry;
+use env::paths::{Error, Found, Key, Kind, names_directory};
 use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags, Stat};
 use rustix::io::Errno;
 
@@ -131,6 +132,12 @@ impl env::paths::dir::Driver for Dir {
 
     fn open(&self, name: &OsStr) -> Result<Entry, Error> {
         self.entry(name).map_err(errno)
+    }
+
+    fn up(&self) -> Result<Box<dyn env::paths::dir::Driver>, Error> {
+        let fd = self.fd.as_ref().ok_or_else(|| errno(Errno::ACCESS))?;
+        let up = Self::open(fd.as_fd(), OsStr::new("..")).map_err(errno)?;
+        Ok(Box::new(up))
     }
 }
 
