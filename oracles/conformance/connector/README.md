@@ -15,6 +15,7 @@ The `[[test]]` entry in the `Cargo.toml` of each kind is part of this oracle: to
 it is to weaken the oracle.
 
 ```sh
+cargo test -p connector-modbus --all-features --test conformance
 cargo test -p connector-opcua --all-features --test conformance
 cargo test -p connector-influx --all-features --test conformance
 ```

@@ -391,6 +391,8 @@ struct Scene {
     device: Arc<Mutex<Device>>,
     /// The stop of the server that runs.
     server: RefCell<Option<Token>>,
+    /// Drops the server that [`Scene::serve`] started.
+    dropped: RefCell<Option<Token>>,
 }
 
 impl Scene {
@@ -412,12 +414,24 @@ impl Scene {
     /// Serves the device as [`UNIT`] on port 502.
     fn serve(&self) {
         let listener = self.listen();
-        let (stop, device) = (Token::new(), Arc::clone(&self.device));
-        let until = stop.clone();
+        let (stop, drop, device) =
+            (Token::new(), Token::new(), Arc::clone(&self.device));
+        let (until, dropped) = (stop.clone(), drop.clone());
         self.tasks.spawn(async move {
-            until.race(serve(listener, UNIT, &device)).await;
+            let served = dropped.race(serve(listener, until, UNIT, &device)).await;
+            if let Some(served) = served {
+                served.expect("the listener holds");
+            }
         });
         *self.server.borrow_mut() = Some(stop);
+        *self.dropped.borrow_mut() = Some(drop);
+    }
+
+    /// Drops the server that [`Scene::serve`] started, which resets its stream.
+    fn reset(&self) {
+        let dropped = self.dropped.borrow_mut().take();
+        dropped.expect("a server runs").cancel();
+        drop(self.server.borrow_mut().take());
     }
 
     /// Accepts one stream on port 502 and keeps it open with no answer, in place of
@@ -464,6 +478,7 @@ impl Scene {
 
     /// Stops the server, which closes its listener and its stream.
     fn stop(&self) {
+        drop(self.dropped.borrow_mut().take());
         let stop = self.server.borrow_mut().take();
         stop.expect("a server runs").cancel();
     }
@@ -607,6 +622,7 @@ where
         let scene = Rc::new(Scene {
             device: Arc::new(Mutex::new(device)),
             server: RefCell::new(None),
+            dropped: RefCell::new(None),
             node: node.clone(),
             tasks: tasks.clone(),
         });
@@ -825,8 +841,8 @@ fn ends_the_run_with_a_device_error_for_another_exception() {
         record.errors(),
         [(
             Class::Device,
-            "the device refused the read of the holding registers from address 4 with \
-             exception 11 (gateway target device failed to respond)"
+            "10.0.0.1:502 refused the read of the holding registers from address 4 \
+             with exception 11 (gateway target device failed to respond)"
                 .to_owned()
         )]
     );
@@ -867,20 +883,48 @@ fn ends_the_run_with_a_device_error_when_a_reply_is_late() {
         record.errors(),
         [(
             Class::Device,
-            "the read of the holding registers from address 0 failed: no whole reply \
-             came before the timeout"
+            "the read of the holding registers from address 0 of 10.0.0.1:502 failed: \
+             no whole reply came before the timeout"
                 .to_owned()
         )]
     );
     assert_eq!(record.frames, []);
 }
 
+#[test]
+fn keeps_the_error_of_the_last_run_while_a_run_connects_and_reads_nothing() {
+    const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 0)];
+    let record = run(
+        device(&ONE, Order::Big),
+        &ONE,
+        connector("plc", &ONE, &[]),
+        ms(10_050),
+        |scene| async move { scene.hold() },
+    );
+    let first = record
+        .statuses
+        .iter()
+        .position(|status| status.error.is_some());
+    let shown = &record.statuses[first.expect("an error")..];
+    let mut running = shown
+        .iter()
+        .filter(|status| status.state == status::State::Running);
+    let cleared = running.find(|status| status.error.is_none());
+    assert_eq!(cleared, None);
+    assert_eq!(record.frames, []);
+}
+
 /// The supervisor waits a random backoff before each new run, so each seed takes
 /// another time to read again.
 #[test]
-fn reads_again_in_order_after_the_device_resets_its_stream() {
+fn reads_again_in_order_after_the_device_resets_or_closes_its_stream() {
     const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 7)];
-    for seed in 0..16 {
+    let reset: fn(&Scene) = Scene::reset;
+    let cuts = [
+        (reset, "10.0.0.1:502 reset the stream"),
+        (Scene::stop, "the device closed the stream"),
+    ];
+    for (seed, (cut, ended)) in (0..16).flat_map(|seed| cuts.map(|cut| (seed, cut))) {
         let world = World {
             seed,
             ..World::default()
@@ -891,25 +935,26 @@ fn reads_again_in_order_after_the_device_resets_its_stream() {
             &ONE,
             connector("plc", &ONE, &[]),
             ms(30_050),
-            |scene| async move {
-                scene.after(ms(1_050), |scene| async move { scene.stop() });
+            move |scene| async move {
+                scene.after(ms(1_050), move |scene| async move { cut(&scene) });
                 scene.after(ms(3_050), |scene| async move { scene.serve() });
             },
         );
         let result = record.result.as_ref().map_err(ToString::to_string);
         assert_eq!(result, Ok(&()), "seed {seed}");
-        let reset = (
+        let cut = (
             Class::Device,
-            "the read of the holding registers from address 0 failed: 10.0.0.1:502 \
-             reset the stream"
-                .to_owned(),
+            format!(
+                "the read of the holding registers from address 0 of 10.0.0.1:502 \
+                 failed: {ended}"
+            ),
         );
         let refused = (
             Class::Device,
             "the connect to 10.0.0.1:502 failed: 10.0.0.1:502 refused the connection"
                 .to_owned(),
         );
-        assert_eq!(record.errors(), [reset, refused], "seed {seed}");
+        assert_eq!(record.errors(), [cut, refused], "seed {seed}");
         let start = record.stamps()[0];
         let stamps: Vec<_> = record.stamps().iter().map(|at| at - start).collect();
         assert!(stamps.is_sorted_by(|a, b| a < b), "seed {seed}: {stamps:?}");
@@ -922,6 +967,13 @@ fn reads_again_in_order_after_the_device_resets_its_stream() {
         );
         let frames = u64::try_from(record.frames.len()).expect("a few");
         assert_eq!(record.last("in"), frames, "seed {seed}");
+        let running = record
+            .statuses
+            .iter()
+            .rev()
+            .find(|status| status.state == connector::status::State::Running);
+        let running = running.expect("a Running status");
+        assert_eq!(running.error, None, "seed {seed}: {running:?}");
     }
 }
 
@@ -1021,8 +1073,8 @@ fn ends_the_run_with_a_device_error_for_exception_8() {
         record.errors(),
         [(
             Class::Device,
-            "the device refused the read of the holding registers from address 0 with \
-             exception 8 (memory parity error)"
+            "10.0.0.1:502 refused the read of the holding registers from address 0 \
+             with exception 8 (memory parity error)"
                 .to_owned()
         )]
     );
@@ -1059,8 +1111,8 @@ fn ends_the_run_with_a_device_error_for_a_reply_just_past_the_timeout_of_1_s() {
         record.errors(),
         [(
             Class::Device,
-            "the read of the holding registers from address 0 failed: no whole reply \
-             came before the timeout"
+            "the read of the holding registers from address 0 of 10.0.0.1:502 failed: \
+             no whole reply came before the timeout"
                 .to_owned()
         )]
     );
@@ -1084,6 +1136,27 @@ fn stops_at_once_during_the_lookup() {
     );
     assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
     assert_eq!(record.stopped, Span::ZERO);
+    assert_eq!(record.frames, []);
+}
+
+#[test]
+fn stops_at_once_during_the_connect() {
+    const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 7)];
+    let world = World {
+        link: Some(Span::HOUR),
+        ..World::default()
+    };
+    let record = run_in(
+        world,
+        device(&ONE, Order::Big),
+        &ONE,
+        connector("plc", &ONE, &[]),
+        ms(250),
+        |_| async {},
+    );
+    assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
+    assert_eq!(record.stopped, Span::ZERO);
+    assert_eq!(record.errors(), []);
     assert_eq!(record.frames, []);
 }
 
