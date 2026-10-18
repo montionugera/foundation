@@ -872,6 +872,45 @@ fn the_drop_panics_once_and_aborts_after_64_passes() {
     );
 }
 
+/// Logs a warning at level 700, when `child::running()`.
+#[test]
+fn log_at_level_700() {
+    if child::running() {
+        log_at(700, 4);
+    }
+}
+
+/// Logs a warning in category 99, when `child::running()`.
+#[test]
+fn log_in_category_99() {
+    if child::running() {
+        log_at(400, 99);
+    }
+}
+
+#[test]
+fn a_level_that_the_copy_does_not_have_aborts() {
+    assert_eq!(
+        child::panicked("event::tests::log_at_level_700", &[]),
+        ["open62541 logged at level 700"]
+    );
+}
+
+#[test]
+fn a_category_that_the_copy_does_not_have_aborts() {
+    assert_eq!(
+        child::panicked("event::tests::log_in_category_99", &[]),
+        ["open62541 logged in category 99"]
+    );
+}
+
+/// Logs `w` at `level` in `category` through the logger of a fresh loop.
+fn log_at(level: i32, category: i32) {
+    let f = Fixture::new();
+    // SAFETY: the loop lives, and the text ends with a NUL.
+    unsafe { ffi::test::shim_log_at(f.events.raw(), level, category, c"w".as_ptr()) };
+}
+
 #[test]
 fn a_client_runs_its_housekeeping_on_the_loop() {
     let mut f = Fixture::new();

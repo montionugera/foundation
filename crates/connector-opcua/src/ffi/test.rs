@@ -285,6 +285,12 @@ unsafe extern "C" {
     pub(crate) fn shim_client_message(client: *mut super::Client, size: u32);
     pub(crate) fn shim_log_fatal(el: *mut EventLoop, text: *const std::ffi::c_char);
     pub(crate) fn shim_log_warning(el: *mut EventLoop, text: *const std::ffi::c_char);
+    pub(crate) fn shim_log_at(
+        el: *mut EventLoop,
+        level: c_int,
+        category: c_int,
+        text: *const std::ffi::c_char,
+    );
     pub(crate) fn shim_server_reads(server: *mut Server, most: u32);
     pub(crate) fn shim_server_references(server: *mut Server, most: u32);
     pub(crate) fn shim_server_browses(server: *mut Server, browse: u32, translate: u32);
