@@ -421,7 +421,7 @@ pub fn create_status(
 /// Takes the events of one target from the dispatch that [`Capture::new`] gives, each
 /// as one line `<LEVEL> <message> <key>=<value>...`, with the fields of the event's
 /// explicit parent span first and each value in `Debug`.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Capture(Arc<Captured>);
 
 #[derive(Debug)]
@@ -445,7 +445,7 @@ impl Capture {
             log,
             _other: tracing::Dispatch::new(tracing::subscriber::NoSubscriber::new()),
         }));
-        let dispatch = tracing::Dispatch::new(capture.clone());
+        let dispatch = tracing::Dispatch::new(Arc::clone(&capture.0));
         (capture, dispatch)
     }
 
@@ -465,14 +465,14 @@ impl Capture {
     }
 }
 
-impl tracing::Subscriber for Capture {
+impl tracing::Subscriber for Captured {
     fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
         true
     }
 
     fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
         let fields = fields(|visit| span.record(visit));
-        let mut log = self.0.log.lock().expect("no panic holds the lock");
+        let mut log = self.log.lock().expect("no panic holds the lock");
         log.0.push(fields);
         let id = u64::try_from(log.0.len()).expect("invariant: a span count fits u64");
         tracing::span::Id::from_u64(id)
@@ -480,7 +480,7 @@ impl tracing::Subscriber for Capture {
 
     fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
         let more = fields(|visit| values.record(visit));
-        let mut log = self.0.log.lock().expect("no panic holds the lock");
+        let mut log = self.log.lock().expect("no panic holds the lock");
         let fields = &mut log.0[index(span)];
         if !more.is_empty() {
             if !fields.is_empty() {
@@ -494,7 +494,7 @@ impl tracing::Subscriber for Capture {
 
     fn event(&self, event: &tracing::Event<'_>) {
         let metadata = event.metadata();
-        if metadata.target() != self.0.target {
+        if metadata.target() != self.target {
             return;
         }
         let mut message = String::new();
@@ -508,7 +508,7 @@ impl tracing::Subscriber for Capture {
                 }
             },
         );
-        let mut log = self.0.log.lock().expect("no panic holds the lock");
+        let mut log = self.log.lock().expect("no panic holds the lock");
         let mut parts = vec![metadata.level().to_string(), message];
         if let Some(parent) = event.parent() {
             parts.extend(Some(log.0[index(parent)].clone()).filter(|f| !f.is_empty()));
