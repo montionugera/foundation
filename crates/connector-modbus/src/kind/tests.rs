@@ -1137,6 +1137,27 @@ fn stops_at_once_during_the_lookup() {
 }
 
 #[test]
+fn stops_at_once_during_the_connect() {
+    const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 7)];
+    let world = World {
+        link: Some(Span::HOUR),
+        ..World::default()
+    };
+    let record = run_in(
+        world,
+        device(&ONE, Order::Big),
+        &ONE,
+        connector("plc", &ONE, &[]),
+        ms(250),
+        |_| async {},
+    );
+    assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
+    assert_eq!(record.stopped, Span::ZERO);
+    assert_eq!(record.errors(), []);
+    assert_eq!(record.frames, []);
+}
+
+#[test]
 fn stops_at_once_during_an_exchange() {
     const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 7)];
     let record = run(
