@@ -32,7 +32,8 @@ fn seen() {
 }
 
 /// A log that wants no event. Its first interest call waits for the test to make a
-/// second log, at most 200 ms, as a thread that the OS takes off its core does.
+/// second log, at most 200 ms, as a thread that the OS takes off its core does. The
+/// test catches the defect only when it makes the second log within those 200 ms.
 struct Slow {
     /// Tells the test that the first interest call started.
     met: Mutex<Option<mpsc::Sender<()>>>,
@@ -86,6 +87,9 @@ impl Subscriber for Slow {
 #[test]
 #[expect(clippy::disallowed_methods, reason = "the race is with an OS thread")]
 fn a_log_gets_an_event_of_a_callsite_that_another_thread_meets_as_the_sim_starts() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    let log = Log::default();
     let (met, meets) = mpsc::channel();
     let (made, makes) = mpsc::channel();
     let slow = tracing::Dispatch::new(Slow {
@@ -100,9 +104,6 @@ fn a_log_gets_an_event_of_a_callsite_that_another_thread_meets_as_the_sim_starts
     meets
         .recv_timeout(Duration::from_secs(10))
         .expect("the other thread meets the callsite");
-    let mut sim = sim::Sim::new(sim::Config::default());
-    let node = sim.node(sim::node::Config::default());
-    let log = Log::default();
     let logged = node.threads().logged(log.dispatch());
     made.send(()).unwrap();
     let clock = node.clock();
