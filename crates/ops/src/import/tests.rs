@@ -59,9 +59,10 @@ fn points(paths: &[&str]) -> Value {
     paths.iter().map(|path| json!({ "path": path })).collect()
 }
 
-/// Each check fails in its order: each request fails each later check too.
+/// The checks up to the paths fail in their order: each request fails each later check
+/// too.
 #[test]
-fn checks_access_the_picks_the_paths_the_names_and_the_match_in_order() {
+fn checks_access_the_picks_and_the_paths_in_order() {
     solo(|fixture, mesh| async move {
         let node = create_browsing_node(&fixture, mesh);
         let bad = json!([
@@ -112,7 +113,15 @@ fn checks_access_the_picks_the_paths_the_names_and_the_match_in_order() {
         ];
         assert_eq!(reply, json!({ "errors": errors, "status": 2 }));
         assert_eq!(text, "");
+    });
+}
 
+/// The checks after the paths fail in their order: each request passes each earlier
+/// check and fails each later one too.
+#[test]
+fn checks_the_duplicates_the_names_and_the_match_after_the_paths_in_order() {
+    solo(|fixture, mesh| async move {
+        let node = create_browsing_node(&fixture, mesh);
         let twice = json!([
             { "path": "x", "name": "a b" },
             { "path": "x" },
