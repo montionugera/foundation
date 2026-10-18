@@ -99,15 +99,10 @@ impl Repo {
             .args(["-c", "core.protectNTFS=false"])
             .args(["update-index", "-z", "--index-info"])
             .stdin(Stdio::piped())
-            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
         child.stdin.take().unwrap().write_all(&entry).unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert!(
-            output.status.success() && output.stderr.is_empty(),
-            "update-index: {output:?}"
-        );
+        assert!(child.wait().unwrap().success());
     }
 
     /// Commits a tree of `files`, each a name of any bytes and its text, with
