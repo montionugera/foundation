@@ -1420,9 +1420,10 @@
   step that the walk did not pass. When the host gives no path, a program moved or
   removed a directory of the path during the walk, and the walk starts again from its
   first name. `os` gives the path from `F_GETPATH` on macOS and from
-  `/proc/self/fd` on Linux, and none at an error or a path that is not absolute. For a
-  removed directory, Linux gives none and macOS its last path. `sim` finds the path of
-  the inode. Each start again follows the
+  `/proc/self/fd` on Linux, and none at an error, a path that is not absolute, or a
+  path that no longer names the directory: a stat of the path must give the key of the
+  directory, since each host can give the last path of a removed directory. `sim` finds
+  the path of the inode. Each start again follows the
   links of the path again, with all `LINKS` (40) links, and past 40 starts the walk
   gives `Driver::looped`. A start again that fails gives its error, which is no error
   of a step. The free handle walks the same way in `Paths::resolve` and `Paths::home`,

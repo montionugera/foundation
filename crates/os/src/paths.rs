@@ -151,25 +151,23 @@ impl env::paths::dir::Driver for Dir {
         #[cfg(target_os = "macos")]
         let path = getpath(fd)?;
         let path = PathBuf::from(OsString::from_vec(path));
-        path.is_absolute().then_some(path)
+        // Each host can give the last path of a directory that a program removed.
+        let named = rustix::fs::statat(CWD, &path, AtFlags::empty())
+            .is_ok_and(|stat| key(&stat) == self.key);
+        (path.is_absolute() && named).then_some(path)
     }
 }
 
-/// The path that Linux gives for `fd`, or `None` at an error or for a removed
-/// directory.
+/// The path that Linux gives for `fd`, or `None` at an error.
 #[cfg(target_os = "linux")]
 fn proc_path(fd: BorrowedFd<'_>) -> Option<Vec<u8>> {
     use std::os::fd::AsRawFd;
     let link = format!("/proc/self/fd/{}", fd.as_raw_fd());
-    let path = rustix::fs::readlinkat(CWD, link, Vec::new())
-        .ok()?
-        .into_bytes();
-    // A removed directory keeps its last path with this end.
-    (!path.ends_with(b" (deleted)")).then_some(path)
+    let path = rustix::fs::readlinkat(CWD, link, Vec::new()).ok()?;
+    Some(path.into_bytes())
 }
 
-/// The path that macOS gives for `fd`, or `None` at an error. A removed directory
-/// keeps its last path.
+/// The path that macOS gives for `fd`, or `None` at an error.
 #[cfg(target_os = "macos")]
 fn getpath(fd: BorrowedFd<'_>) -> Option<Vec<u8>> {
     rustix::fs::getpath(fd)
@@ -315,9 +313,6 @@ mod tests {
         assert_eq!(a.path(), Some(scratch.join("b")));
         fs::remove_dir(scratch.join("b")).unwrap();
         fs::remove_dir(&scratch).unwrap();
-        // Linux gives the last path with " (deleted)" at its end, and macOS gives it
-        // as it was.
-        let gone = cfg!(target_os = "macos").then(|| scratch.join("b"));
-        assert_eq!(a.path(), gone);
+        assert_eq!(a.path(), None);
     }
 }
