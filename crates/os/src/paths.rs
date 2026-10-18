@@ -71,6 +71,10 @@ fn entry(path: &Path) -> io::Result<Entry> {
 
 fn read(path: &Path, most: usize) -> io::Result<Found> {
     let file = match host::open(path)? {
+        // macOS 15 opens the file of a link at a path that ends in `/`.
+        host::Readable::Regular(..) if names_directory(path) => {
+            return Err(Errno::NOTDIR.into());
+        }
         host::Readable::Regular(file, _) => file,
         host::Readable::Directory(dir) => {
             let (mut entries, mut size) = (Vec::new(), 0_usize);
@@ -97,11 +101,17 @@ fn read(path: &Path, most: usize) -> io::Result<Found> {
 
 fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     // `Path` drops an end in `/` or `.`, and takes a name after an end in `..`, so the
-    // hidden file would go beside that directory or in it. The stat does not stop
-    // this: the directory can come after it. Such a path resolves only to a
-    // directory, so the open fails.
+    // hidden file would go beside that directory or in it. Such a path names only a
+    // directory, which takes no write. No open: macOS 15 opens the file of a link at
+    // a path that ends in `/`.
     if names_directory(path) {
-        return in_place(path, bytes);
+        let found = fs::metadata(path)?;
+        let code = if found.is_dir() {
+            Errno::ISDIR
+        } else {
+            Errno::NOTDIR
+        };
+        return Err(code.into());
     }
     match fs::symlink_metadata(path) {
         Ok(old) if old.is_file() => {}
