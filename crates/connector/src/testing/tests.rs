@@ -20,6 +20,8 @@ use crate::common::{env, run_on};
 use crate::kind::{Channels, Context, Error, Kind, Table};
 use crate::status::State;
 
+mod secrets;
+
 const REFUSED: Code = Code::new("test.refused");
 
 const TEN: Span = Span::from_nanos(10_000_000_000);
