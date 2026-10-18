@@ -265,7 +265,7 @@ impl Scope {
     /// - [`Error::Read`] when it is not there or does not read.
     /// - [`Error::Outside`], [`Error::Hidden`], or [`Error::FolderChanged`] when the
     ///   limits refuse it.
-    pub(crate) fn found(&self, path: &Path) -> Result<Found, Error> {
+    fn found(&self, path: &Path) -> Result<Found, Error> {
         let unread = |cause| Error::Read {
             path: path.to_owned(),
             cause,
