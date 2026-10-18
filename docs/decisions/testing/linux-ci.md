@@ -29,12 +29,23 @@
     `needs <tool>` skip too, is an item of the list of that OS with its issue. The
     review checks that the reason is true of the behavior, not only of the tool. `cargo
     xtask skips` reads the module tree of each target of the workspace, other than the
-    body of a macro call, in the job `check` on Linux. For each test, it finds the OSes
-    of the lists on which its `cfg` and those of its modules build it and an `ignore`
-    skips it on the runner of that OS in the job `check`, and checks each reason of
-    those `ignore` attributes. A test that those attributes skip on each OS on which it
-    builds has no OS to name, so each of them is refused, unless a plain `#[ignore]`
-    skips the test on each OS. It also refuses a `path` in a `cfg_attr`.
+    `ignore` attributes in the body of a macro call, in the job `check` on Linux. For
+    each test, it finds the OSes of the lists on which its `cfg` and those of its
+    modules build it and an `ignore` skips it on the runner of that OS in the job
+    `check`, and checks each reason of those `ignore` attributes. A test that those
+    attributes skip on each OS on which it builds has no OS to name, so each of them is
+    refused, unless a plain `#[ignore]` skips the test on each OS. It also refuses a
+    `path` in a `cfg_attr`.
+  - A `cfg` that names a target and leaves out of an OS a test that no item of the same
+    path builds there is a gate. A gate is an item of the `gates` list of each OS that
+    it leaves out, as `- <file> <path in the file> # #<issue>`, or, in a case of "No
+    `#[ignore]`", the first line of the doc of the item is `Only <OS>` or starts with
+    `Only <OS>:`, where `<OS>` names each OS on which the item builds, as for a reason.
+    The list comes first, so a doc can give the OSes that no list item names. A gate
+    covers a test module, a test function, a test in the body of a macro call, and each
+    function of a test or bench target with no harness. `cargo xtask skips` refuses
+    each other gate, and each list item that names no gate. A `cfg` on a statement is
+    not read.
   - For `/review`, CI does not run an OS for a crate or a test on the list of that OS
     (`laptop.director`,
     https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229528745).
@@ -90,6 +101,9 @@
     (https://github.com/synnaxlabs/foundation/issues/3015#issuecomment-6231310442), on
     the gap that `laptop.monitor` found at 2026-10-17T07:32:46Z
     (https://github.com/synnaxlabs/foundation/issues/2954#issuecomment-6231250077).
+  - The gates on the lists: `laptop.director`, 2026-10-17T16:02:01Z, option 1
+    (https://github.com/synnaxlabs/foundation/issues/3015#issuecomment-6236264009).
+    The doc form `Only <OS>`, in place of a reason: `box1.builder-1` in #3015.
   - A new crate on a list: the person, relayed by `laptop.monitor` at
     2026-10-17T17:30:12Z
     (https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237654845):

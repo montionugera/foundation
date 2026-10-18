@@ -946,7 +946,7 @@ mod tests {
         // The lists are empty at the goal of LINUX CI, so the parse is checked by the
         // keys of each entry. Only a block list puts its items where the check below
         // reads them.
-        for key in ["crates:", "untested:", "tests:"] {
+        for key in ["crates:", "untested:", "tests:", "gates:"] {
             let entries: Vec<&str> = (check.iter())
                 .filter_map(|line| line.strip_prefix("            "))
                 .filter(|line| line.starts_with(key))

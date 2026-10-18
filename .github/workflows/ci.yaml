@@ -117,14 +117,17 @@ jobs:
         # Each OS lists the flags that leave out what fails on it, each with the open
         # issue that removes it: `crates` do not build with all their targets, the tests
         # of `untested` fail, and so do `tests`, each a full test path that `--exact`
-        # matches in its binary. The lists only shrink, other than a new crate with the
-        # open issues of the `os` items that it needs (LINUX CI).
+        # matches in its binary. Each item of `gates` names a file and the path in it of
+        # an item whose `cfg` leaves a test out of the OS, which `cargo xtask skips`
+        # reads. The lists only shrink, other than a new crate with the open issues of
+        # the `os` items that it needs (LINUX CI).
         include:
           - name: check
             runner: ubuntu-24.04
             crates: []
             untested: []
             tests: []
+            gates: []
           - name: macos
             runner: macos-15
             crates: []
@@ -193,6 +196,29 @@ jobs:
               - --skip open62541::tests::check_finds_a_read_past_a_pem_h_of_the_copy # #3041
               - --skip pem::each_read_refuses_an_encrypted_pem_with_no_prompt # #3070
               - --skip child::a_detached_child_that_reads_no_stdin_gives_its_output # #3070
+            gates:
+              - crates/node/tests/it/start.rs a_node_whose_standard_output_is_closed_runs_and_exits_0_at_sigterm # #3127
+              - crates/node/tests/it/start.rs a_node_whose_standard_output_nobody_reads_exits_0_at_sigterm # #3127
+              - crates/os/src/net/lowat.rs tests::a_socket_with_no_tcp_gives_the_kernel_code # #3129
+              - crates/os/src/net/stream.rs tests::a_close_after_a_reset_whose_error_was_read_gives_not_connected # #3129
+              - crates/os/src/net/stream.rs tests::a_write_and_a_close_after_a_timeout_the_read_found_give_the_timeout # #3129
+              - crates/os/src/net/udp.rs tests::send_all::stops_at_a_failure_of_one_datagram # #3129
+              - crates/os/tests/descriptors.rs # #3129
+              - crates/os/tests/dropped.rs # #3129
+              - crates/os/tests/interrupt/unix.rs a_signal_before_the_first_poll_completes_the_future # #3129
+              - crates/os/tests/interrupt/unix.rs early # #3129
+              - crates/os/tests/interrupt/unix.rs has_sigint # #3129
+              - crates/os/tests/interrupt/unix.rs signal_thread_blocks_sigint # #3129
+              - crates/os/tests/interrupt/unix.rs untaken # #3129
+              - crates/os/tests/it/files.rs a_create_past_the_file_size_limit_leaves_no_file # #3129
+              - crates/os/tests/it/files.rs a_new_directory_takes_the_setgid_bit_of_its_parent # #3129
+              - crates/os/tests/it/files.rs create_frees_the_blocks_past_the_end_of_an_empty_file_that_is_there # #3129
+              - crates/os/tests/it/files.rs the_file_size_limit_test_passes_under_a_limit_that_its_parent_set # #3129
+              - crates/os/tests/it/net/udp.rs each_batch_sent_one_datagram_at_a_time_arrives_whole # #3129
+              - crates/os/tests/it/paths.rs within_checks_a_relative_path_longer_once_joined_by_its_own_prefixes # #3129
+              - crates/os/tests/it/paths.rs within_stops_a_long_path_of_steps_that_resolve # #3129
+              - crates/os/tests/refused.rs # #3129
+              - crates/os/tests/udp_descriptors.rs # #3129
           - name: windows
             runner: windows-2025
             crates:
@@ -223,6 +249,85 @@ jobs:
               - --skip log::tests::refuses_a_write_after_a_failed_or_dropped_one # #2973
               - --skip daqmx::tests::names_a_library_that_does_not_load # #3033
               - --skip daqmx::tests::names_a_function_the_library_lacks # #3033
+            gates:
+              - crates/connector-opcua/src/child.rs a_detached_child_that_reads_no_stdin_gives_its_output # #2968
+              - crates/connector-opcua/src/link.rs the_shim_check_finds_a_cc_relative_to_the_crate # #2968
+              - crates/connector-opcua/src/link.rs the_shim_check_writes_no_file # #2968
+              - crates/connector-opcua/src/pem.rs each_read_refuses_an_encrypted_pem_with_no_prompt # #2968
+              - crates/env/src/files.rs tests::paths::absolute_is_a_path_from_the_root_with_no_parent_segment # #2973
+              - crates/node/tests/it/main.rs mcp_refuses_a_file_in_a_folder_made_again_in_other_case # #3127
+              - crates/node/tests/it/main.rs secret # #3127
+              - crates/node/tests/it/main.rs start # #3127
+              - crates/node/tests/it/rig.rs a_rig_does_not_sweep_a_directory_that_a_test_still_leaves # #3127
+              - crates/node/tests/it/rig.rs a_rig_ends_its_node_before_it_removes_the_directory # #3127
+              - crates/node/tests/it/rig.rs a_rig_keeps_a_file_with_the_name_of_a_directory # #3127
+              - crates/node/tests/it/rig.rs a_rig_removes_a_directory_that_a_test_left_read_only # #3127
+              - crates/node/tests/it/rig.rs a_rig_removes_the_directory_of_a_test_process_that_is_gone # #3127
+              - crates/node/tests/it/rig.rs a_run_dies_while_it_leaves_a_directory # #3127
+              - crates/node/tests/it/rig.rs a_run_ends_at_its_limit_when_a_process_of_the_command_keeps_its_errors # #3127
+              - crates/node/tests/it/rig.rs a_run_ends_at_its_limit_when_a_process_of_the_command_keeps_its_input # #3127
+              - crates/node/tests/it/rig.rs a_run_ends_at_its_limit_when_a_process_of_the_command_keeps_its_output # #3127
+              - crates/node/tests/it/rig.rs a_run_ends_at_its_limit_when_the_command_closes_its_pipes_and_runs # #3127
+              - crates/node/tests/it/rig.rs a_run_ends_at_its_limit_when_the_command_reads_none_of_its_input # #3127
+              - crates/node/tests/it/rig.rs a_run_gives_the_output_of_a_command_that_exits_before_it_reads_its_input # #3127
+              - crates/node/tests/it/rig.rs a_run_past_its_limit_kills_the_command_and_panics_with_its_output # #3127
+              - crates/node/tests/it/rig.rs a_start_on_a_data_directory_keeps_the_budget_that_it_holds # #3127
+              - crates/node/tests/it/rig.rs a_sweep_panics_when_a_remove_fails_with_another_error # #3127
+              - crates/node/tests/it/rig.rs a_sweep_passes_over_a_directory_that_a_process_writes_in # #3127
+              - crates/node/tests/it/rig.rs a_sweep_removes_the_draft_of_a_run_that_died # #3127
+              - crates/node/tests/it/rig.rs a_walk_that_another_sweep_removes_ends_only_when_it_is_gone # #3127
+              - crates/ops/src/tests.rs start::line_gives_a_data_directory_that_is_not_utf8_lossily # #2971
+              - crates/ops/tests/it/commit.rs a_commit_that_is_not_lowercase_hex_stops_the_build # #2971
+              - crates/ops/tests/it/commit.rs a_git_before_the_path_format_gives_the_commit # #2971
+              - crates/os/src/lib.rs allocate # #2956
+              - crates/os/src/lib.rs clock # #682
+              - crates/os/src/lib.rs files # #2956
+              - crates/os/src/lib.rs input # #2956
+              - crates/os/src/lib.rs memory # #477
+              - crates/os/src/lib.rs net # #2955
+              - crates/os/src/lib.rs wall # #682
+              - crates/os/tests/accept_descriptors.rs # #2955
+              - crates/os/tests/alloc/main.rs unix # #2955
+              - crates/os/tests/descriptors.rs # #2955
+              - crates/os/tests/dropped.rs # #2955
+              - crates/os/tests/exec.rs # #2955
+              - crates/os/tests/held.rs # #2955
+              - crates/os/tests/inherited.rs # #2956
+              - crates/os/tests/interrupt/main.rs unix # #2957
+              - crates/os/tests/it/main.rs clock # #682
+              - crates/os/tests/it/main.rs files # #2956
+              - crates/os/tests/it/main.rs net # #2955
+              - crates/os/tests/it/main.rs paths # #2956
+              - crates/os/tests/it/main.rs wall # #682
+              - crates/os/tests/listener_copies.rs # #2955
+              - crates/os/tests/listener_descriptors.rs # #2955
+              - crates/os/tests/lookup.rs # #2955
+              - crates/os/tests/moved_working.rs # #2956
+              - crates/os/tests/ram.rs # #2956
+              - crates/os/tests/refused.rs # #477
+              - crates/os/tests/registration_copies.rs # #2955
+              - crates/os/tests/udp_descriptors.rs # #2955
+              - crates/secret/src/resolver/tests.rs gives_the_bytes_of_a_variable_that_is_not_utf_8 # #3128
+              - crates/sim/src/tests.rs a_panic_over_a_local_that_panics_in_its_drop_in_a_task_aborts_the_process # #3130
+              - crates/waker/src/tests.rs a_clone_on_another_thread_aborts # #3130
+              - crates/waker/src/tests.rs a_drop_on_another_thread_aborts # #3130
+              - crates/waker/src/tests.rs a_last_drop_on_another_thread_aborts_before_the_value_drops # #3130
+              - crates/waker/src/tests.rs a_wake_by_reference_on_another_thread_aborts # #3130
+              - crates/waker/src/tests.rs a_wake_on_another_thread_aborts # #3130
+              - xtask/src/open62541.rs tests::check_fails_a_read_of_aws_lc_with_no_declaration # #2238
+              - xtask/src/open62541.rs tests::check_fails_a_read_of_the_copy_with_no_declaration # #2238
+              - xtask/src/open62541.rs tests::check_finds_a_read_of_the_committed_copy_that_gives_aws_lc_no_callback # #2238
+              - xtask/src/open62541.rs tests::check_finds_a_read_of_the_copy_with_its_own_declaration # #2238
+              - xtask/src/open62541.rs tests::check_finds_a_read_past_a_pem_h_of_the_copy # #2238
+              - xtask/src/open62541.rs tests::check_finds_a_read_under_a_macro_of_pem_h # #2238
+              - xtask/src/open62541.rs tests::check_passes_on_the_committed_copy # #2238
+              - xtask/src/open62541.rs tests::check_refuses_a_cc_that_is_not_gcc # #2238
+              - xtask/src/open62541.rs tests::check_runs_each_tool_in_the_c_locale # #2238
+              - xtask/src/open62541.rs tests::each_thread_of_the_committed_copy_draws_from_its_own_random_state_or_aborts # #2238
+              - xtask/src/review/history/tests.rs a_conflict_in_a_code_path_that_is_not_utf8_counts # #2238
+              - xtask/src/review/history/tests.rs names_a_path_that_is_not_utf8 # #2238
+              - xtask/src/review/history/tests.rs reads_a_link_that_a_file_replaces_as_code # #2238
+              - xtask/src/review/history/tests.rs reads_a_merge_whose_messages_are_not_utf8 # #2238
     runs-on: ${{ matrix.runner }}
     env:
       RUST: ${{ needs.changes.outputs.rust }}

@@ -1,0 +1,11 @@
+jobs:
+  check:
+    strategy:
+      matrix:
+        include:
+          - name: check
+            gates: []
+          - name: macos
+            gates: []
+          - name: windows
+            gates: []

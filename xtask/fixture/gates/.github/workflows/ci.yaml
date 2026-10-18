@@ -1,0 +1,17 @@
+jobs:
+  check:
+    strategy:
+      matrix:
+        include:
+          - name: check
+            gates: []
+          - name: macos
+            gates: []
+          - name: windows
+            gates:
+              - crates/g/src/lib.rs listed # #1
+              - crates/g/src/lib.rs both # #1
+              - crates/g/src/lib.rs stale # #1
+  next:
+    gates:
+      - crates/g/src/lib.rs refused # #1
