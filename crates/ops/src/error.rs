@@ -1038,9 +1038,10 @@ impl fmt::Display for Error {
             Self::BadPoint { .. }
             | Self::DuplicatePick { .. }
             | Self::BadName { .. }
-            | Self::UnreadablePoint { .. } => {
-                unreachable!("invariant: `problems` gives the message of each")
-            }
+            | Self::UnreadablePoint { .. } => match &*self.problems() {
+                [one] => f.write_str(&one.message),
+                problems => write!(f, "the import has {} problems", problems.len()),
+            },
         }
     }
 }

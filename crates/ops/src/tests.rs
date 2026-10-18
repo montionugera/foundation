@@ -394,6 +394,26 @@ fn a_text_error_writes_control_characters_as_escapes() {
     }
 }
 
+/// An error of a list shows its one problem, else the count of its problems, and no
+/// error panics when it is shown.
+#[test]
+fn a_list_error_shows_its_one_problem_or_the_count() {
+    let one = Error::DuplicatePick {
+        paths: vec!["x".to_owned()],
+    };
+    assert_eq!(one.to_string(), "the import picks the point `x` twice");
+    let two = Error::BadPoint {
+        points: vec![
+            ("a//b".to_owned(), Malformed::Empty),
+            ("c//d".to_owned(), Malformed::Empty),
+        ],
+    };
+    assert_eq!(two.to_string(), "the import has 2 problems");
+    for error in every() {
+        let _shown = error.to_string();
+    }
+}
+
 #[test]
 fn a_json_error_keeps_the_callers_text() {
     let exit = cli(&["\u{1b}x", "--json"]);
