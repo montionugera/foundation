@@ -238,12 +238,16 @@ exclude_re = [
   # `Holder::copy` asserts that `at` fits in 31 bits, so bit 31 is clear and `^`
   # gives the same bits as `|`.
   'crates/buffer/src/log\.rs:.*replace \| with \^ in Holder::copy$',
-  # `Items::push` checks that `next` is below `COPIED`, so `^` gives the same bits as
-  # `|`.
-  'crates/buffer/src/log\.rs:.*replace \| with \^ in marked$',
+  # `End::new` asserts that `next` fits in 63 bits, so bit 63 is clear and `^` gives
+  # the same bits as `|`.
+  'crates/buffer/src/log\.rs:.*replace \| with \^ in End::new$',
   # A node would add 2^63 items before the bound shows, which no test or node can
   # hold. `panics_on_an_item_numbered_at_the_copied_bit` kills it.
-  'crates/buffer/src/log\.rs:.*replace < with <= in Items::push$',
+  'crates/buffer/src/log\.rs:.*replace < with <= in End::new$',
+  # Each makes every record read as one with a copy, so each item takes the decode of
+  # its holder. Only the time shows it: the `wal` bench `deadline_carry` is slower in
+  # 7 of 7 pairs, and `deadline_trim/32` in 6 of 7.
+  'crates/buffer/src/log\.rs:.*(replace End::copied -> bool with true|replace & with (\||\^) in End::copied)$',
   # A read's assembly (`SKIP` false) never reaches `Skipped`: its `skip` fails to
   # build. So the arm under a true guard is never taken.
   'crates/wire/src/hub/part\.rs:.*replace match guard SKIP with true in Assembly<SKIP>::(body|take)$',
