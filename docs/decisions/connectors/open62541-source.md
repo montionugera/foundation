@@ -904,7 +904,10 @@
   (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244707524,
   2026-10-18 02:25 UTC) and `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6244728627,
-  2026-10-18 02:28 UTC), which also decided "by any name or link". `OMITTED`
+  2026-10-18 02:28 UTC), which also decided "by any name or link". The sentence on a
+  file that the unit cannot find by its name: decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3073#issuecomment-6245010018,
+  2026-10-18 03:05 UTC). `OMITTED`
   in `cargo xtask open62541` is the closed list of the release files that the library
   compiles and the copy leaves out, each with its reason: the file stores,
   `create_certificate.c`, and each policy file other than `Basic256Sha256`,
