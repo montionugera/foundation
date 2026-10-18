@@ -52,20 +52,20 @@
   90 bytes for each key.
   It appends after a named open, a close, and a takeover, and at a tick when a record
   changed: an ack that moved a named position, or a hold that ended at the mesh
-  midpoint. The tick comes each second while a named complete reader is open, or
-  records changed or wait for mesh time; else when the next hold ends. `Shard::open`
-  keeps the newest entry of each part of each index, and reads the tags from 2 up to
-  the first tag that no index has an entry of. It panics on a key in two parts. A
-  carry with mesh time restores the records. A session open at the crash counts as
-  closed at the restore, so a carry before mesh time waits for it. A shed appends, in
-  part order, an entry with no record for each part that holds one. With no mesh time,
-  a restart restores the holds. When a part finds no block or no room, a restart
-  restores the holds of that part and the parts after it. In both cases, a later carry
-  in the same run does not, and at mesh time it appends an entry with no record for
-  each such part, so a restart after that restores none of them. A named complete open
-  that adds a record, opens a held one, or takes over an open session with a new hold
-  appends its parts before it opens, and its reader takes no frame until the commit that
-  holds them. A takeover with the same hold of a session that waits for that commit
+  midpoint. The tick comes each second while a named complete reader is open, or records
+  changed, wait for mesh time, or wait for their drop after a shed; else when the next
+  hold ends. `Shard::open` keeps the newest entry of each part of each index, and reads
+  the tags from 2 up to the first tag that no index has an entry of. It panics on a key
+  in two parts. A carry with mesh time restores the records. A session open at the crash
+  counts as closed at the restore, so a carry before mesh time waits for it. A shed
+  appends, in part order, an entry with no record for each part that holds one. With no
+  mesh time, a restart restores the holds. When a part finds no block or no room, a
+  restart restores the holds of that part and the parts after it. In both cases, a later
+  carry in the same run does not, and at mesh time it appends an entry with no record
+  for each such part, so a restart after that restores none of them. A named complete
+  open that adds a record, opens a held one, or takes over an open session with a new
+  hold appends its parts before it opens, and its reader takes no frame until the commit
+  that holds them. A takeover with the same hold of a session that waits for that commit
   waits for it too. When the part of its record, or a part before it, finds no block or
   no room, it opens nothing and gives `Unopened::Unrecorded`, and `hub` gives
   `reader::Error::Unrecorded`, so a restart never loses the frames of a first open, a

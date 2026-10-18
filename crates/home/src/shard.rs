@@ -403,9 +403,9 @@ impl Shard {
             claims.all(|claim| claim.place != place),
             "a writer is open on the index at {slot:?}"
         );
-        let head = self.now().map(|mesh| self.head(place, mesh));
-        let buffer = &self.buffer;
-        let target = head.map(|head| state::Target { buffer, head });
+        let target = self
+            .now()
+            .map(|mesh| target(&self.buffer, &self.indexes[place], mesh));
         self.readers.shed(place, target);
         let last = self.indexes.len() - 1;
         self.places.remove(&slot);
@@ -426,10 +426,10 @@ impl Shard {
     /// When the shard next changes with no call, on its monotonic clock: the earliest
     /// end of a holder's control lease or of a restored holder's grace, or the next
     /// tick of the named readers. While a named complete reader is open, or records
-    /// changed or wait for mesh time, a tick comes each second; else a tick comes when
-    /// the next hold ends. `None` when only a call can change the shard. Only
-    /// [`carry`](Self::carry), [`open_writer`](Self::open_writer),
-    /// [`close_writer`](Self::close_writer), and
+    /// changed, wait for mesh time, or wait for their drop after a shed, a tick comes
+    /// each second; else a tick comes when the next hold ends. `None` when only a call
+    /// can change the shard. Only [`carry`](Self::carry),
+    /// [`open_writer`](Self::open_writer), [`close_writer`](Self::close_writer), and
     /// [`open_named_complete`](Self::open_named_complete) can make it earlier by one
     /// second or more. [`open_named_latest`](Self::open_named_latest) and
     /// [`close_reader`](Self::close_reader) can make it earlier by less: a tick before
@@ -755,17 +755,13 @@ impl Shard {
         // An open that changes the records appends them before it opens, and its reader
         // takes no frame until they commit: a restart before then would lose the frames
         // that it got and did not ack.
-        let head = self.head(place, now);
         let opened = self.readers.open_named_complete(
             place,
             reader,
             hold,
             limit_bytes,
             charge,
-            state::Target {
-                buffer: &self.buffer,
-                head,
-            },
+            target(&self.buffer, &self.indexes[place], now),
         )?;
         self.record_named(place, monotonic, Some(now));
         Ok(reader::Opened {
@@ -975,32 +971,17 @@ impl Shard {
         mesh: Option<Stamp>,
     ) {
         if let Some(mesh) = mesh {
-            let head = self.head(place, mesh);
-            let target = state::Target {
-                buffer: &self.buffer,
-                head,
-            };
+            let target = target(&self.buffer, &self.indexes[place], mesh);
             self.readers.record(place, target);
         }
         self.arm(place, monotonic, mesh);
     }
 
-    /// The head of a state entry of the index at `place` at mesh time `mesh`.
-    fn head(&self, place: usize, mesh: Stamp) -> state::Head {
-        let index = &self.indexes[place];
-        state::Head {
-            index: index.key,
-            slot: index.slot,
-            first: index.live_tail(),
-            stored_at: mesh,
-        }
-    }
-
-    /// Makes the tick no later than the next one that the named readers of the index
-    /// at `place` need, at monotonic time `monotonic` and mesh time `mesh`: one
-    /// interval later while a named complete reader of it is open, or its records
-    /// changed or wait for mesh time, else when its next hold ends. A later tick for
-    /// another index stays: that tick arms each index again.
+    /// Makes the tick no later than the next one that the named readers of the index at
+    /// `place` need, at monotonic time `monotonic` and mesh time `mesh`: one interval
+    /// later while a named complete reader of it is open, or its records changed, wait
+    /// for mesh time, or wait for their drop after a shed, else when its next hold
+    /// ends. A later tick for another index stays: that tick arms each index again.
     ///
     /// # Panics
     ///
@@ -1043,6 +1024,20 @@ impl Shard {
 fn claim(claims: &[Claim], group: u32) -> Claim {
     let group = usize::try_from(group).expect("invariant: a usize holds a u32");
     claims[group]
+}
+
+/// Where a state entry of `index` at mesh time `mesh` goes in `buffer`. It borrows no
+/// shard, so that a call can borrow the readers mutably beside it.
+fn target<'a>(buffer: &'a Buffer, index: &Index, mesh: Stamp) -> state::Target<'a> {
+    state::Target {
+        buffer,
+        head: state::Head {
+            index: index.key,
+            slot: index.slot,
+            first: index.live_tail(),
+            stored_at: mesh,
+        },
+    }
 }
 
 /// The midpoint of `mesh`, the best guess of the true time.
@@ -6423,6 +6418,63 @@ mod tests {
                     .expect("the run after the cut ends");
                 }
 
+                /// Restarts after `acked` and a tick, carries slot 0 with no mesh
+                /// time, waits for mesh time, runs `then`, and checks that `a`
+                /// resumes at its held position.
+                fn restores_after_mesh_time_and(
+                    seed: u64,
+                    then: impl FnOnce(&mut Shard) + Send + 'static,
+                ) {
+                    let (mut sim, node) = create_node(seed);
+                    sim.run_on(&node, |node, tasks| async move {
+                        let test = Test::new(node, tasks);
+                        let set = two_indexes();
+                        let mut shard = test.shard(AREA).await;
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        acked(&test, &mut shard, w).await;
+                        tick(&test, &mut shard).await;
+                        shard.committed().await.expect("the commit ends");
+                    })
+                    .expect("the first run ends");
+                    sim.crash(&node, sim::Crash::Power);
+                    sim.run_on(&node, |node, tasks| async move {
+                        let test = Test::new(node, tasks);
+                        let buffer = test.create_buffer(AREA, BODY_MAX, 4).await;
+                        let (clock, reader) = clock::Clock::new(test.clock.clone());
+                        let mut shard = Test::with(0, buffer, reader);
+                        assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
+                        let wall = test.node.wall();
+                        test.tasks.spawn(async move { clock.run(wall).await });
+                        while shard.now().is_none() {
+                            test.clock.sleep(Span::from_nanos(1)).await;
+                        }
+                        then(&mut shard);
+                        shard.committed().await.expect("the commit ends");
+                        let a = open(&mut shard, "a");
+                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(caught_up(&mut shard, a, 0).await, [seq(1, 1)]);
+                    })
+                    .expect("the run after the cut ends");
+                }
+
+                #[test]
+                fn restores_after_a_named_latest_open_at_mesh_time() {
+                    restores_after_mesh_time_and(196, |shard| {
+                        shard
+                            .open_named_latest(Slot::new(0), key("z", "r"))
+                            .expect("synced");
+                    });
+                }
+
+                #[test]
+                fn restores_after_an_unnamed_close_at_mesh_time() {
+                    restores_after_mesh_time_and(196, |shard| {
+                        let u = shard.open_latest(Slot::new(0));
+                        shard.close_reader(u.key);
+                    });
+                }
+
                 #[test]
                 fn restores_no_hold_at_a_carry_after_a_shed_with_no_mesh_time() {
                     let (mut sim, node) = create_node(197);
@@ -6445,12 +6497,20 @@ mod tests {
                         let mut shard = Test::with(0, buffer, reader);
                         assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
                         shard.shed(Slot::new(0));
+                        tick(&test, &mut shard).await;
+                        assert_eq!(shard.tick, None, "no index is carried");
+                        assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
+                        assert!(shard.tick.is_some(), "the parts wait");
                         let wall = test.node.wall();
                         test.tasks.spawn(async move { clock.run(wall).await });
                         while shard.now().is_none() {
                             test.clock.sleep(Span::from_nanos(1)).await;
                         }
-                        assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
+                        tick(&test, &mut shard).await;
+                        shard.committed().await.expect("the commit ends");
+                        let newest = crate::named::Parts::newest(&shard.buffer);
+                        assert_eq!(newest[&Slot::new(0)].records(), []);
+                        assert_eq!(shard.tick, None, "no tick is due");
                         let a = open(&mut shard, "a");
                         shard.committed().await.expect("the commit ends");
                         assert_eq!(caught_up(&mut shard, a, 0).await, [], "live tail");
@@ -7288,6 +7348,25 @@ mod tests {
                         assert_eq!(newest[&Slot::new(0)].records(), []);
                         open_longest(&mut shard, longest(448))
                             .expect("a part has room");
+                    });
+                }
+
+                #[test]
+                fn drops_at_a_tick_the_holds_of_a_shed_whose_carry_found_no_block() {
+                    run(212, |test| async move {
+                        let mut shard = test.shard(AREA).await;
+                        let held = open(&mut shard, "a");
+                        shard.committed().await.expect("the commit ends");
+                        close(&mut shard, held.into());
+                        tick(&test, &mut shard).await;
+                        let blocks = test.fill();
+                        shard.shed(Slot::new(0));
+                        assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
+                        drop(blocks);
+                        tick(&test, &mut shard).await;
+                        shard.committed().await.expect("the commit ends");
+                        let newest = crate::named::Parts::newest(&shard.buffer);
+                        assert_eq!(newest[&Slot::new(0)].records(), []);
                     });
                 }
 

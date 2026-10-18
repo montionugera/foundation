@@ -197,6 +197,9 @@ struct Entry {
     ticked: bool,
     /// The named records of the index in the buffer.
     parts: Parts,
+    /// Whether `parts` hold records that the readers do not restore, from a shed, until
+    /// a record appends the parts.
+    stale: bool,
 }
 
 impl Entry {
@@ -238,12 +241,14 @@ impl Set {
         now: Option<Stamp>,
     ) {
         assert_eq!(place, self.entries.len(), "{place} is not the next place");
+        let parts = self.parts.remove(&slot).unwrap_or_default();
         self.entries.push(Entry {
             slot,
             readers: Readers::after(live, self.first.remove(&slot).unwrap_or(0)),
             listed: false,
             ticked: false,
-            parts: self.parts.remove(&slot).unwrap_or_default(),
+            stale: parts.held() && !self.waiting.contains(&slot),
+            parts,
         });
         if let Some(now) = now {
             self.restore(place, now);
@@ -315,12 +320,14 @@ impl Set {
         });
     }
 
-    /// Whether the records of the index at `place` changed or wait for mesh time, or
-    /// a named complete reader of it is open, whose acks move its record: the index
-    /// needs a tick soon. Takes time linear in the complete readers of the index.
+    /// Whether the records of the index at `place` changed or wait for mesh time, its
+    /// parts hold records of a shed, or a named complete reader of it is open, whose
+    /// acks move its record: the index needs a tick soon. Takes time linear in the
+    /// complete readers of the index.
     pub(crate) fn busy(&self, place: usize) -> bool {
         let entry = &self.entries[place];
         entry.readers.changed()
+            || entry.stale
             || self.waiting.contains(&entry.slot)
             || entry.readers.moving()
     }
@@ -332,13 +339,18 @@ impl Set {
     }
 
     /// Appends the records of the named readers of the index at `place` in `target`,
-    /// as [`Parts::append`] does: each part whose records differ from its last entry.
-    /// Call it after each change of the named readers of the index at mesh time.
+    /// as [`Parts::append`] does, when they changed since the last append that
+    /// appended each part, or the parts hold records of a shed. Call it after each
+    /// change of the named readers of the index at mesh time.
     pub(crate) fn record(&mut self, place: usize, target: state::Target<'_>) {
         let entry = &mut self.entries[place];
+        if !entry.readers.changed() && !entry.stale {
+            return;
+        }
         let records: Vec<_> = entry.readers.records().collect();
         if entry.parts.append(target, &records) {
             entry.readers.recorded();
+            entry.stale = false;
         }
     }
 
