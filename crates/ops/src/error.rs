@@ -578,6 +578,8 @@ pub(crate) struct Problem {
 
 impl Problem {
     /// `ops.more-problems`: `count` more problems do not fit in one reply.
+    /// `serve::fitting` takes its encoded length to change only with the digits of
+    /// `count`.
     pub(crate) fn more(count: usize) -> Self {
         Self {
             code: MORE_PROBLEMS.as_str().to_owned(),

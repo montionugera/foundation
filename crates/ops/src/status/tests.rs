@@ -1124,8 +1124,8 @@ fn fails_when_the_buffer_fails_before_a_frame_of_the_status() {
     });
 }
 
-/// One apply holds less than a reply, but the `address` of a config has no bound of
-/// its own, so the connectors of some applies pass the bound of a reply.
+/// The `address` of a config has no bound of its own, so the status of 21 connectors
+/// with addresses of 800000 bytes passes the bound of a reply.
 #[test]
 fn a_status_over_the_bound_gives_its_own_code() {
     const ADDRESS: usize = 800_000;
