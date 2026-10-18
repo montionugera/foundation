@@ -1,6 +1,7 @@
 //! The reads of a client: one read stream for each index of the channels, merged by
 //! time.
 
+use std::convert::Infallible;
 use std::future::poll_fn;
 use std::mem;
 use std::ops::Range;
@@ -251,13 +252,13 @@ async fn served(session: program::Session, open: Open) {
         let (given, taken) = mpsc::channel(1);
         let (free, freed) = mpsc::channel(1);
         let places = reader.places().len();
-        parts.push(Some(Box::pin(part(
+        parts.push(Box::pin(part(
             session.clone(),
             reader,
             offset,
             given,
             freed,
-        ))));
+        )));
         merged.push(Merged {
             taken,
             free,
@@ -362,17 +363,15 @@ type Taken = (Result<Option<i64>, Error>, Frame);
 
 /// Polls each read of `parts` and each frame of `merged` that it holds none of, and
 /// when it holds any, swaps the earliest into `frame`.
-fn merge<F: Future<Output = ()>>(
+fn merge<F: Future<Output = Infallible>>(
     cx: &mut std::task::Context<'_>,
-    parts: &mut [Option<Pin<Box<F>>>],
+    parts: &mut [Pin<Box<F>>],
     merged: &mut [Merged],
     frame: &mut Frame,
 ) -> Poll<Result<(), Error>> {
     for part in parts.iter_mut() {
-        if let Some(read) = part
-            && read.as_mut().poll(cx).is_ready()
-        {
-            *part = None;
+        if let Poll::Ready(never) = part.as_mut().poll(cx) {
+            match never {}
         }
     }
     for read in merged.iter_mut().filter(|read| read.held.is_none()) {
@@ -409,15 +408,19 @@ fn earliest(firsts: impl Iterator<Item = Option<Option<i64>>>) -> Option<usize> 
 
 /// Reads the frames of `reader`, the places of `Reader::places` from `offset` on.
 /// It decodes each frame into a free frame, gives it on `given`, and takes a free
-/// frame from `freed` before it reads again. It ends after it gives an error, or when
-/// the merge drops.
+/// frame from `freed` before it reads again. It runs until the merge drops it: after an
+/// error, the merge frees no frame.
+#[expect(
+    clippy::infinite_loop,
+    reason = "the merge drops the part, and an async fn cannot give `!`"
+)]
 async fn part(
     session: program::Session,
     mut reader: program::Reader,
     offset: usize,
     given: mpsc::Sender<Taken>,
     mut freed: mpsc::Receiver<Frame>,
-) {
+) -> Infallible {
     let mut frame = Frame::default();
     loop {
         let read = match reader.next().await {
@@ -428,15 +431,15 @@ async fn part(
             }
             Err(error) => Err(failed(&session, error)),
         };
-        let ended = read.is_err();
-        // The merge takes each frame before it frees one, so the channel has room.
-        if given.try_send((read, frame)).is_err() || ended {
-            return;
-        }
-        let Some(free) = freed.recv().await else {
-            return;
-        };
-        frame = free;
+        // The merge holds each end of `given` and `freed` while it polls the part, and it
+        // takes each frame before it frees one, so the channel has room.
+        given
+            .try_send((read, frame))
+            .expect("invariant: the merge took the last frame");
+        frame = freed
+            .recv()
+            .await
+            .expect("invariant: the merge outlives its parts");
     }
 }
 

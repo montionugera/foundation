@@ -293,7 +293,7 @@ proptest::proptest! {
 /// The merge of reads of the channels of `merged`, with no read to drive.
 fn merged(merged: &mut [Merged], frame: &mut Frame) -> Poll<Result<(), Error>> {
     let mut cx = Context::from_waker(Waker::noop());
-    let parts: &mut [Option<Pin<Box<Pending<()>>>>] = &mut [];
+    let parts: &mut [Pin<Box<Pending<Infallible>>>] = &mut [];
     merge(&mut cx, parts, merged, frame)
 }
 
