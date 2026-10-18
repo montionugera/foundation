@@ -1,15 +1,18 @@
 //! The messages of a write stream.
 
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::sync::Arc;
 
 use types::authority::Authority;
 use types::ed25519::PublicKey;
 use types::frame;
+use types::frame::key_set::KeySet;
 use types::name::Name;
 use types::node;
 use types::time::Span;
 
-use super::{Body, Error, OPEN_BYTES_MAX, WRITE, fields, text};
+use super::run::Run;
+use super::{Body, Error, OPEN_BYTES_MAX, Place, Places, WRITE, fields, text};
 use crate::common::{Fields, Writer};
 
 /// The most addresses of an [`Away`]: 32, the most of a card.
@@ -348,6 +351,84 @@ impl Address {
             None if kind == UDP => Self::Udp(at),
             None => Self::Tcp(at),
         })
+    }
+}
+
+/// A decoder of the start of a write stream at the program: the places and their run,
+/// or an away.
+#[derive(Debug, Default)]
+pub struct Opening(Next);
+
+/// The message the stream expects next.
+#[derive(Debug, Default)]
+enum Next {
+    #[default]
+    First,
+    Run(Run),
+    Given,
+}
+
+/// How a write stream opened, at the program.
+#[derive(Debug)]
+pub enum Opened {
+    /// The node is the home of the index.
+    Home {
+        /// The places, in place order.
+        places: Vec<Place>,
+        /// The key set of each frame of the write, from [`KeySet::ordered`]: entry
+        /// `n` is place `n`.
+        set: Arc<KeySet>,
+    },
+    /// The node is not the home, and finished the stream.
+    Away(Away),
+}
+
+impl Opening {
+    /// Decodes the next message from the node, up to the last place, or `None` when
+    /// the node finished the stream. Gives how the write opened with an away or the
+    /// last place, else `None`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Finished`] when `message` is `None`. The first message decodes as an
+    /// [`Away`] when its kind is 7, else as [`Places`], and gives their errors. A
+    /// message of the run gives the errors of a run of places, in order: the error of
+    /// its bytes ([`Error::Empty`], [`Error::Length`], [`Error::Sample`], or
+    /// [`Error::Name`]), [`Error::Run`], and [`Error::Unstamped`], then
+    /// [`Error::Repeated`] for the last message.
+    ///
+    /// The stream is then not valid ([`MALFORMED`](crate::header::MALFORMED)), and
+    /// the caller stops it. A refused message leaves the decoder as it was.
+    ///
+    /// # Panics
+    ///
+    /// When it gave how the write opened before.
+    pub fn decode(&mut self, message: Option<&[u8]>) -> Result<Option<Opened>, Error> {
+        match (&mut self.0, message) {
+            (Next::Given, _) => {
+                panic!("a write stream is decoded after the decoder gave its start")
+            }
+            (_, None) => Err(Error::Finished),
+            (Next::First, Some(message)) if message.first() == Some(&WRITE) => {
+                let away = Away::decode(message)?;
+                self.0 = Next::Given;
+                Ok(Some(Opened::Away(away)))
+            }
+            (Next::First, Some(message)) => {
+                self.0 = Next::Run(Run::new(Places::decode(message)?));
+                Ok(None)
+            }
+            (Next::Run(run), Some(message)) => {
+                let Some((places, set)) = run.decode(message)? else {
+                    return Ok(None);
+                };
+                self.0 = Next::Given;
+                Ok(Some(Opened::Home {
+                    places,
+                    set: Arc::new(set),
+                }))
+            }
+        }
     }
 }
 

@@ -474,6 +474,164 @@ mod reply {
     }
 }
 
+mod opening {
+    use super::*;
+    use crate::hub::client::place;
+    use types::channel;
+
+    fn pt(key: u128, data_type: &str) -> Place {
+        Place {
+            key: channel::Key::from_u128(key),
+            data_type: data_type.parse().unwrap(),
+            name: "a".parse().unwrap(),
+        }
+    }
+
+    fn encode_places(places: Places) -> Vec<u8> {
+        let mut out = vec![0xaa; Places::LEN];
+        places.encode(&mut out);
+        out
+    }
+
+    fn messages(places: &[Place], max: usize) -> Vec<Vec<u8>> {
+        place::messages(places, max)
+            .map(|message| {
+                let mut out = vec![0xaa; message.encoded_len()];
+                message.encode(&mut out);
+                out
+            })
+            .collect()
+    }
+
+    /// The `(key, sample type, slot)` of each entry of `opened`'s key set, and its
+    /// places.
+    fn home(opened: Option<Opened>) -> (Vec<Place>, Vec<(channel::Key, String, u32)>) {
+        let Some(Opened::Home { places, set }) = opened else {
+            panic!("the write did not open at the home: {opened:?}");
+        };
+        let entries = set
+            .entries()
+            .iter()
+            .map(|entry| (entry.key, entry.data_type.to_string(), entry.slot.get()))
+            .collect();
+        (places, entries)
+    }
+
+    #[test]
+    fn gives_the_places_and_their_key_set_after_the_run() {
+        let run = [pt(1, "u8"), pt(2, "timestamp"), pt(3, "u8")];
+        let messages = messages(&run, 49);
+        assert_eq!(messages.len(), 2);
+        let mut opening = Opening::default();
+        let places = Places { count: 3, index: 1 };
+        assert!(matches!(
+            opening.decode(Some(&encode_places(places))),
+            Ok(None)
+        ));
+        assert!(matches!(opening.decode(Some(&messages[0])), Ok(None)));
+        let (places, entries) = home(opening.decode(Some(&messages[1])).unwrap());
+        assert_eq!(places, run);
+        assert_eq!(
+            entries,
+            [
+                (channel::Key::from_u128(1), "u8".to_owned(), 0),
+                (channel::Key::from_u128(2), "timestamp".to_owned(), 1),
+                (channel::Key::from_u128(3), "u8".to_owned(), 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn gives_the_away_of_a_first_message_of_kind_7() {
+        let away = away(vec![Address::Tcp(v4(9))]);
+        let mut opening = Opening::default();
+        let Ok(Some(Opened::Away(given))) = opening.decode(Some(&encode_away(&away)))
+        else {
+            panic!("the away gave no away");
+        };
+        assert_eq!(given, away);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "a write stream is decoded after the decoder gave its start"
+    )]
+    fn panics_on_a_decode_after_the_away() {
+        let mut opening = Opening::default();
+        opening
+            .decode(Some(&encode_away(&away(Vec::new()))))
+            .unwrap();
+        drop(opening.decode(None));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "a write stream is decoded after the decoder gave its start"
+    )]
+    fn panics_on_a_decode_after_the_places() {
+        let mut opening = Opening::default();
+        let places = Places { count: 1, index: 0 };
+        opening.decode(Some(&encode_places(places))).unwrap();
+        opening
+            .decode(Some(&messages(&[pt(1, "timestamp")], 300)[0]))
+            .unwrap();
+        drop(opening.decode(None));
+    }
+
+    #[test]
+    fn gives_finished_when_the_node_finishes_before_the_last_place() {
+        assert!(matches!(
+            Opening::default().decode(None),
+            Err(Error::Finished)
+        ));
+        let mut opening = Opening::default();
+        let places = Places { count: 2, index: 0 };
+        opening.decode(Some(&encode_places(places))).unwrap();
+        opening
+            .decode(Some(&messages(&[pt(1, "timestamp")], 300)[0]))
+            .unwrap();
+        assert!(matches!(opening.decode(None), Err(Error::Finished)));
+    }
+
+    #[test]
+    fn gives_the_errors_of_a_first_message_and_stays_as_it_was() {
+        let mut opening = Opening::default();
+        assert!(matches!(
+            opening.decode(Some(&zeros(5, Places::LEN))),
+            Err(Error::Kind { kind: 5 })
+        ));
+        assert!(matches!(
+            opening.decode(Some(&[7])),
+            Err(Error::Length { len: 1 })
+        ));
+        assert!(matches!(opening.decode(Some(&[])), Err(Error::Empty)));
+        let places = Places { count: 1, index: 0 };
+        assert!(matches!(
+            opening.decode(Some(&encode_places(places))),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn gives_the_errors_of_the_run() {
+        let mut opening = Opening::default();
+        let places = Places { count: 2, index: 0 };
+        opening.decode(Some(&encode_places(places))).unwrap();
+        assert!(matches!(
+            opening.decode(Some(&messages(&[pt(1, "u8")], 300)[0])),
+            Err(Error::Unstamped { .. })
+        ));
+        let repeated = messages(&[pt(1, "timestamp"), pt(1, "u8")], 300);
+        assert!(matches!(
+            opening.decode(Some(&repeated[0])),
+            Err(Error::Repeated { key }) if key == channel::Key::from_u128(1)
+        ));
+        let run = [pt(1, "timestamp"), pt(2, "u8")];
+        let (places, _) = home(opening.decode(Some(&messages(&run, 300)[0])).unwrap());
+        assert_eq!(places, run);
+    }
+}
+
 fn name() -> impl Strategy<Value = Name> {
     "[a-z][a-z0-9_]{0,6}(\\.[a-z0-9_]{1,6}){0,2}".prop_map(|text| text.parse().unwrap())
 }

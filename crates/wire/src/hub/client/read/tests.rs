@@ -1000,7 +1000,7 @@ mod reader {
         assert_eq!(error, Error::Finished);
         assert_eq!(
             error.to_string(),
-            "the node finished the read stream before its last place"
+            "the node finished the stream before its last place"
         );
         assert_eq!(
             event(&mut reader, &encode_run(&[byte(2)])),
@@ -1064,7 +1064,7 @@ mod reader {
         assert_eq!(
             error.to_string(),
             format!(
-                "the places of the read name channel {} more than once",
+                "the places name channel {} more than once",
                 channel::Key::from_u128(2)
             )
         );
@@ -1084,7 +1084,7 @@ mod reader {
         );
         assert_eq!(
             error.to_string(),
-            "the index place of the read has sample type timestamp[2], not timestamp"
+            "the index place has sample type timestamp[2], not timestamp"
         );
     }
 

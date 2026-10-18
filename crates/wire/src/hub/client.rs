@@ -73,6 +73,7 @@ use crate::common::{Fields, Length, Run, Writer, body};
 use crate::header::MALFORMED;
 
 mod read;
+mod run;
 pub mod text;
 pub mod write;
 
@@ -260,23 +261,23 @@ pub enum Error {
     /// The open of a read has a pattern that does not read, or none that includes
     /// names.
     Selector(text::Error<Box<name::Error>>),
-    /// The places of a read are over [`PLACES_MAX`].
+    /// The places of a read or a write are over [`PLACES_MAX`].
     Places {
         /// The count of places.
         count: u32,
         /// The cap.
         cap: u32,
     },
-    /// The places of a read name an index place that is not below their count.
+    /// The places name an index place that is not below their count.
     Index {
         /// The place of the index.
         index: u32,
         /// The count of places.
         count: u32,
     },
-    /// The sample type of a place of a read does not read.
+    /// The sample type of a place does not read.
     Sample(text::Error<sample::Error>),
-    /// The name of a place of a read does not read.
+    /// The name of a place does not read.
     Name(text::Error<Box<name::Error>>),
     /// A message of the run of places has more places than remain in the run.
     Run {
@@ -285,18 +286,18 @@ pub enum Error {
         /// The places that remain in the run.
         remain: u32,
     },
-    /// The index place of a read has a sample type that is not `Stamp`.
+    /// The index place has a sample type that is not `Stamp`.
     Unstamped {
         /// The sample type of the index place.
         sample: sample::Type,
     },
-    /// The places of a read name a channel more than once.
+    /// The places name a channel more than once.
     Repeated {
         /// The channel.
         key: channel::Key,
     },
-    /// The node finished a read stream before its last place: [`Reader::decode`] got
-    /// `None`.
+    /// The node finished a read or a write stream before its last place: the
+    /// `decode` of its [`Reader`] or [`write::Opening`] got `None`.
     Finished,
     /// The open of a write marks its lease with a byte that is neither 0 nor 1.
     Lease {
@@ -374,35 +375,29 @@ impl fmt::Display for Error {
                 write!(f, "the selector of the read does not read: {cause}")
             }
             Self::Places { count, cap } => {
-                write!(f, "the read has {count} places, over the cap of {cap}")
+                write!(f, "the stream has {count} places, over the cap of {cap}")
             }
-            Self::Index { index, count } => write!(
-                f,
-                "the places of the read put the index at place {index} of {count}"
-            ),
-            Self::Sample(cause) => write!(
-                f,
-                "the sample type of a place of the read does not read: {cause}"
-            ),
+            Self::Index { index, count } => {
+                write!(f, "the places put the index at place {index} of {count}")
+            }
+            Self::Sample(cause) => {
+                write!(f, "the sample type of a place does not read: {cause}")
+            }
             Self::Name(cause) => {
-                write!(f, "the name of a place of the read does not read: {cause}")
+                write!(f, "the name of a place does not read: {cause}")
             }
             Self::Run { items, remain } => write!(
                 f,
                 "the run message holds {items} items, and {remain} remain in the run"
             ),
-            Self::Unstamped { sample } => write!(
-                f,
-                "the index place of the read has sample type {sample}, not timestamp"
-            ),
+            Self::Unstamped { sample } => {
+                write!(f, "the index place has sample type {sample}, not timestamp")
+            }
             Self::Repeated { key } => {
-                write!(
-                    f,
-                    "the places of the read name channel {key} more than once"
-                )
+                write!(f, "the places name channel {key} more than once")
             }
             Self::Finished => {
-                f.write_str("the node finished the read stream before its last place")
+                f.write_str("the node finished the stream before its last place")
             }
             Self::Lease { byte } => write!(
                 f,

@@ -682,21 +682,21 @@ fn names_each_error() {
                 count: 65_537,
                 cap: 65_536,
             },
-            "the read has 65537 places, over the cap of 65536",
+            "the stream has 65537 places, over the cap of 65536",
         ),
         (
             Error::Index { index: 3, count: 3 },
-            "the places of the read put the index at place 3 of 3",
+            "the places put the index at place 3 of 3",
         ),
         (
             Error::Sample(text::Error::Parse(sample::Error::Syntax)),
-            "the sample type of a place of the read does not read: expected a sample \
-             type such as f64, f32[3], list<u8, 16>, string, or bytes",
+            "the sample type of a place does not read: expected a sample type such as \
+             f64, f32[3], list<u8, 16>, string, or bytes",
         ),
         (
             Error::Name(not_utf8(&[0xff])),
-            "the name of a place of the read does not read: invalid utf-8 sequence of \
-             1 bytes from index 0",
+            "the name of a place does not read: invalid utf-8 sequence of 1 bytes from \
+             index 0",
         ),
         (
             Error::Run {
@@ -709,14 +709,14 @@ fn names_each_error() {
             Error::Unstamped {
                 sample: sample::Type::Scalar(sample::Scalar::U8),
             },
-            "the index place of the read has sample type u8, not timestamp",
+            "the index place has sample type u8, not timestamp",
         ),
         (
             Error::Repeated {
                 key: channel::Key::from_u128(2),
             },
-            "the places of the read name channel 00000000-0000-0000-0000-000000000002 \
-             more than once",
+            "the places name channel 00000000-0000-0000-0000-000000000002 more than \
+             once",
         ),
         (
             Error::Lease { byte: 2 },
@@ -746,7 +746,7 @@ fn names_each_error() {
         ),
         (
             Error::Finished,
-            "the node finished the read stream before its last place",
+            "the node finished the stream before its last place",
         ),
     ];
     for (error, text) in cases {
