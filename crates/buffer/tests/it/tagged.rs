@@ -728,9 +728,10 @@ fn refuses_holders_over_a_carry_record(
     });
 }
 
-/// Two tagged entries of 3900 bytes in one record of a run with no trims, then
-/// frames over three laps after an open with trims: each frame gets room, a trim
-/// passes the first frame, and `newest` gives both entries.
+/// Tagged entries of 4032 and 3961 bytes, whose holders take a carry body of 8183
+/// bytes, the most of the layout, in one record of a run with no trims, then frames
+/// over three laps after an open with trims: each frame gets room, a trim passes the
+/// first frame, and `newest` gives both entries.
 #[test]
 fn a_ring_written_with_no_trims_opens_with_trims() {
     run(409, |shard| async move {
@@ -740,9 +741,10 @@ fn a_ring_written_with_no_trims_opens_with_trims() {
             .await
             .expect("opens");
         let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+        let (first, second) = (Layout::ENTRY_MAX_MIN, 3961);
         let batch = [
-            tagged(1, a, Path::Live, 0, 1, shard.block(3900)),
-            tagged(2, b, Path::Live, 0, 1, shard.block(3900)),
+            tagged(1, a, Path::Live, 0, 1, shard.block(first)),
+            tagged(2, b, Path::Live, 0, 1, shard.block(second)),
         ];
         commit(&shard, &buffer, &batch).await;
         let shard = trimmed(shard);
@@ -753,10 +755,12 @@ fn a_ring_written_with_no_trims_opens_with_trims() {
         }
         assert!(trimmed_past_the_start(&buffer, data).await);
         let (a, b) = (slots.index(key(1)), slots.index(key(2)));
-        let kept = kept(&shard.block(3900));
         assert_eq!(
             newest(&buffer, Path::Live, 1),
-            vec![(a, kept.clone()), (b, kept)]
+            vec![
+                (a, kept(&shard.block(first))),
+                (b, kept(&shard.block(second)))
+            ]
         );
     });
 }
