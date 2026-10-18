@@ -110,6 +110,34 @@ fn release(bencher: Bencher<'_, '_>, sessions: usize) {
     });
 }
 
+/// [`release`] with one more session that waits for a commit that never comes, so
+/// each release also walks the complete sessions.
+#[divan::bench(args = [1, 16, 256])]
+fn release_gated(bencher: Bencher<'_, '_>, sessions: usize) {
+    let (mut readers, keys) = opened(sessions, u64::MAX);
+    let start = Start::At(Position {
+        live: 0,
+        backfill: Some(0),
+    });
+    readers.open(
+        Reader::Unnamed,
+        start,
+        u64::MAX,
+        Charge::Whole,
+        Some(u64::MAX),
+    );
+    let (frame, set) = frame();
+    let mut seq = 0;
+    bencher.bench_local(|| {
+        readers.queue(&frame, &set, seq..seq + 1);
+        seq += 1;
+        divan::black_box(readers.release(seq, seq));
+        for &key in &keys {
+            divan::black_box(readers.take(key.into()));
+        }
+    });
+}
+
 /// The frames of one release in [`release_waiting`].
 const BURST: u64 = 64;
 
