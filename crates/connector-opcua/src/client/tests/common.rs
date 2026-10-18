@@ -1,7 +1,9 @@
 use std::cell::Cell;
 use std::mem;
 
-use crate::client::HEADER;
+/// The bytes of the headers of a chunk with the security mode None: the message header
+/// (8), the channel (4), the token (4), and the sequence header (8).
+const HEADER: usize = 24;
 
 /// The chunk of the kind `kind` (`b'C'`, `b'F'`, or `b'A'`) with the message,
 /// security, and sequence headers of the MSG chunk `chunk`, then `body`.

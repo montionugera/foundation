@@ -143,6 +143,39 @@ fn plan_and_apply_run_on_the_node() {
     );
 }
 
+/// `plan` of a directory reads its config files through the command line on `os`, and
+/// skips each other file.
+#[test]
+fn plan_of_a_directory_reads_its_config_files() {
+    let mut rig = Rig::new();
+    let hcl = concat!(
+        "channel \"plant.time\" { kind = \"index\" }\n",
+        "placement \"plant.home\" {\n  select = \"plant.*\"\n  home = \"edge\"\n}\n",
+    );
+    rig.config(hcl);
+    rig.start();
+    rig.apply();
+    let dir = rig.dir.join("cfg");
+    std::fs::create_dir(&dir).expect("a directory");
+    std::fs::write(dir.join("plant.hcl"), hcl).expect("a write");
+    std::fs::write(dir.join("README.md"), "not HCL").expect("a write");
+    std::fs::write(dir.join(".plant.hcl"), "not HCL").expect("a write");
+    let output = rig.run(&["plan", "cfg"], b"");
+    let unchanged = concat!(
+        "0 to add, 0 to change, 0 to remove.\n",
+        "note: 2 definitions that Foundation made are not in the files: ",
+        "@admin.@access, @admin.@subject\n",
+    );
+    assert_eq!(
+        (
+            output.status.code(),
+            text(&output.stdout),
+            text(&output.stderr)
+        ),
+        (Some(0), unchanged, "")
+    );
+}
+
 /// `status --json` gives each connector that the node places, with its error.
 #[test]
 fn status_gives_each_connector_as_json() {

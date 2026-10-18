@@ -59,10 +59,6 @@ const STATE: Node = Node {
 /// The most time that [`Client::close`] waits for the server.
 pub(crate) const GRACE: Span = Span::SECOND;
 
-/// The bytes of the headers of a chunk with the security mode None: the message header
-/// (8), the channel (4), the token (4), and the sequence header (8).
-const HEADER: usize = 24;
-
 /// The most bytes that open62541 leaves empty at the end of a chunk of a Read but the
 /// last. It moves a value of a fixed size whole to the next chunk and splits a string,
 /// so this is 1 less than the largest value of a fixed size in a Read today, a Double
@@ -346,9 +342,10 @@ impl Client {
     /// alone. Each request takes the next nodes in order while it has at most the
     /// `MaxNodesPerRead` of the server, and while it and a good answer with each field
     /// of a Double, the largest scalar, for each of its nodes fit one message of the
-    /// session: its chunk size times the smaller of [`CHUNKS`] and the
-    /// `MaxChunkCount` of the server, less 7 bytes at the end of each chunk but the
-    /// last, or the `MaxMessageSize` of the server when that is smaller.
+    /// session: the bytes of a chunk past its headers, signature, and padding times the
+    /// smaller of [`CHUNKS`] and the `MaxChunkCount` of the server, less 7 bytes at the
+    /// end of each chunk but the last, or the `MaxMessageSize` of the server when that
+    /// is smaller.
     ///
     /// A node whose request alone, or its answer, does not fit one message is in no
     /// request, and is in [`Nodes::large`].
@@ -710,17 +707,17 @@ fn limit(value: &Result<Value, Fault>) -> Option<NonZeroUsize> {
     }
 }
 
-/// Gives the most bytes of the body of one message of a Read in chunks of `buffer`
-/// bytes, with the `MaxMessageSize` `message` and the `MaxChunkCount` `chunks` of the
-/// server, each 0 for none.
-fn most(buffer: usize, message: usize, chunks: usize) -> usize {
+/// Gives the most bytes of the body of one message of a Read in chunks that each hold
+/// `payload` bytes of it, with the `MaxMessageSize` `message` and the `MaxChunkCount`
+/// `chunks` of the server, each 0 for none.
+fn most(payload: usize, message: usize, chunks: usize) -> usize {
     let local = usize::try_from(CHUNKS).expect("invariant: a usize holds CHUNKS");
     let chunks = if chunks == 0 {
         local
     } else {
         chunks.min(local)
     };
-    let most = chunks * (buffer - HEADER) - (chunks - 1) * SPLIT;
+    let most = chunks * payload - (chunks - 1) * SPLIT;
     if message == 0 {
         most
     } else {

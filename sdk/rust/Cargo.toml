@@ -10,6 +10,8 @@ block = { path = "../../crates/block" }
 env = { path = "../../crates/env" }
 os = { path = "../../crates/os", features = ["net"] }
 program = { path = "../../crates/program" }
+sector = { path = "../../crates/sector" }
+spec = { path = "../../crates/spec" }
 tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
 transport = { path = "../../crates/transport" }

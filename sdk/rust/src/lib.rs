@@ -3,12 +3,14 @@
 use std::fmt;
 use std::future::poll_fn;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::task::Poll;
 
+use env::files::Files;
 use env::tasks::{Group, Tasks};
 use env::thread::Handle;
 use tokio::sync::{oneshot, watch};
@@ -42,6 +44,103 @@ pub struct Node {
     pub key: types::node::Key,
     /// The public key that the node proves in the handshake.
     pub public_key: PublicKey,
+}
+
+impl Node {
+    /// The node that runs on the data directory `dir` (`--data` of `foundation
+    /// start`), and its first admin as the subject, or `None` when `dir` holds no
+    /// `admin.key` that a node wrote. Blocks until the read ends.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Local`] with the cause: `NotRunning` also when `dir` or `dir/data` is
+    /// not there or is not a directory. Each path of its `Files` cause is relative to
+    /// `dir/data`, and `.` is `dir/data` itself. [`Error::Thread`] when a thread that
+    /// reads the directory cannot start, and [`Error::Panicked`].
+    #[expect(
+        clippy::missing_panics_doc,
+        clippy::unwrap_in_result,
+        reason = "a shard that did not panic sent its read"
+    )]
+    pub fn local(dir: &Path) -> Result<(Self, Option<Subject>), Error> {
+        let threads = os::threads().map_err(|e| thread(&e))?;
+        let (disk, files) =
+            os::stored(dir, &threads, "foundation-sdk-files").map_err(opened)?;
+        let (sender, read) = mpsc::channel();
+        let shard = shard(move |_| async move {
+            let local = sector::local::read(&Files::new(disk)).await;
+            sender
+                .send(local)
+                .expect("invariant: `local` keeps the receiver");
+        })?;
+        let joined = shard.join().and(files.join());
+        joined.map_err(|_panicked| Error::Panicked)?;
+        let local = read
+            .try_recv()
+            .expect("invariant: a shard that did not panic sent its read")
+            .map_err(Error::Local)?;
+        let node = Self {
+            addresses: vec![local.address],
+            key: local.key,
+            public_key: local.public_key,
+        };
+        let subject = local.admin.map(|private_key| Subject {
+            name: spec::founding::admin(),
+            private_key,
+        });
+        Ok((node, subject))
+    }
+}
+
+/// The error of [`Node::local`] whose `os::stored` failed.
+fn opened(error: os::Error) -> Error {
+    match error {
+        os::Error::Dir(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Error::Local(sector::local::Error::NotRunning)
+        }
+        os::Error::Dir(error) => {
+            Error::Local(sector::local::Error::Files(env::files::Error::Io {
+                path: ".".into(),
+                operation: env::files::Operation::Open,
+                code: error.raw_os_error().expect(
+                    "invariant: each `Dir` of `os::stored` holds the code of the OS",
+                ),
+            }))
+        }
+        os::Error::Thread(error) => thread(&error),
+        error @ (os::Error::Cores(_) | os::Error::Memory(_) | os::Error::Wall(_)) => {
+            unreachable!(
+                "invariant: `os::stored` gives only `Dir` and `Thread`, not {error}"
+            )
+        }
+    }
+}
+
+/// Starts a shard of `os` that logs to the caller's dispatch, and runs `main` on it.
+fn shard<M, F>(main: M) -> Result<Handle, Error>
+where
+    M: FnOnce(Tasks) -> F + Send + 'static,
+    F: Future<Output = ()> + 'static,
+{
+    let log = tracing::dispatcher::get_default(Clone::clone);
+    let shards = os::shards().map_err(|e| thread(&e))?.logged(log);
+    let config = env::shards::Config {
+        name: "foundation-sdk".into(),
+        core: None,
+    };
+    shards.start(config, main).map_err(|e| thread(&e))
+}
+
+/// The [`Error::Thread`] of `error`.
+fn thread(error: &dyn fmt::Display) -> Error {
+    Error::Thread {
+        reason: error.to_string(),
+    }
 }
 
 /// What a program acts as on a node.
@@ -122,11 +221,6 @@ impl Client {
             + 'static,
         F: Future<Output = ()> + 'static,
     {
-        let thread = |e: &dyn fmt::Display| Error::Thread {
-            reason: e.to_string(),
-        };
-        let log = tracing::dispatcher::get_default(Clone::clone);
-        let shards = os::shards().map_err(|e| thread(&e))?.logged(log);
         let (outcomes, outcome) = mpsc::channel();
         let (sender, ended) = oneshot::channel();
         let closed = Arc::new(AtomicBool::new(false));
@@ -135,13 +229,7 @@ impl Client {
             _sender: sender,
         };
         let (requests, opened) = tokio::sync::mpsc::unbounded_channel();
-        let config = env::shards::Config {
-            name: "foundation-sdk".into(),
-            core: None,
-        };
-        let handle = shards
-            .start(config, move |tasks| main(tasks, outcomes, ended, opened))
-            .map_err(|e| thread(&e))?;
+        let handle = shard(move |tasks| main(tasks, outcomes, ended, opened))?;
         #[expect(
             clippy::disallowed_methods,
             reason = "connect blocks its caller, which may run a Tokio runtime"
@@ -217,11 +305,12 @@ impl Thread {
     }
 }
 
-/// Why [`Client::connect`] gave no client, why a call of a client or of a
-/// [`write::Writer`] failed, or why the session ended before [`Client::close`].
+/// Why [`Node::local`] gave no node, [`Client::connect`] gave no client, a call of a
+/// client or of a [`write::Writer`] failed, or the session ended before
+/// [`Client::close`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// The client's thread or its runtime cannot start.
+    /// A thread of the client or of [`Node::local`], or its runtime, cannot start.
     Thread {
         /// The text of the error of `env` or `os`.
         reason: String,
@@ -236,6 +325,8 @@ pub enum Error {
     /// writer goes on. Each other error ended the writer, and each later call of the
     /// writer gives it again.
     Stream(program::Error),
+    /// The data directory of [`Node::local`] names no node to reach, as the cause says.
+    Local(sector::local::Error),
     /// The client's thread panicked, and the panic hook of the process got its
     /// message. Only a build where panics unwind gives it: with `panic = "abort"`, the
     /// panic ends the process. Each call of a writer of the client gives it after the
@@ -262,6 +353,7 @@ impl fmt::Display for Error {
             }
             Self::Bind(error) => write!(f, "cannot bind the local UDP socket: {error}"),
             Self::Session(error) | Self::Stream(error) => write!(f, "{error}"),
+            Self::Local(error) => write!(f, "{error}"),
             Self::Panicked => write!(f, "the client thread panicked"),
             Self::Value {
                 place,

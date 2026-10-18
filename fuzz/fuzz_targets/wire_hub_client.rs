@@ -426,10 +426,16 @@ fn replies(bytes: &[u8]) {
             sent += 1;
         } else {
             let want = match Reply::decode(message) {
-                Ok(Reply::Outcome(_)) if answered == sent => {
-                    Err(hub::Error::Unasked { frames: sent })
+                Ok(Reply::Outcome { frame, .. }) if frame == 0 || frame > sent => {
+                    Err(hub::Error::Unasked { frame, sent })
                 }
-                Ok(reply @ Reply::Outcome(outcome)) => {
+                Ok(Reply::Outcome { frame, .. }) if frame != answered + 1 => {
+                    Err(hub::Error::Order {
+                        frame,
+                        next: answered + 1,
+                    })
+                }
+                Ok(reply @ Reply::Outcome { outcome, .. }) => {
                     answered += 1;
                     if let Outcome::Taken { .. } = outcome {
                         taken = answered;
@@ -600,17 +606,19 @@ fn write_write(input: &mut Unstructured) -> arbitrary::Result<()> {
         seq: input.int_in_range(0..=u64::MAX - u64::from(count))?,
         count,
     };
+    let frame = input.arbitrary()?;
+    let outcome = |outcome| Reply::Outcome { frame, outcome };
     let sent = match input.int_in_range(0..=10)? {
-        0 => Reply::Outcome(Outcome::Taken { range }),
-        1 => Reply::Outcome(Outcome::Lost { range }),
+        0 => outcome(Outcome::Taken { range }),
+        1 => outcome(Outcome::Lost { range }),
         2 => Reply::Stored { frames: range.seq },
-        3 => Reply::Outcome(Outcome::Refused(Refusal::Waiting)),
-        4 => Reply::Outcome(Outcome::Refused(Refusal::Reserved)),
-        5 => Reply::Outcome(Outcome::Refused(Refusal::Expired)),
-        6 => Reply::Outcome(Outcome::Refused(Refusal::Order)),
-        7 => Reply::Outcome(Outcome::Refused(Refusal::Codec)),
-        8 => Reply::Outcome(Outcome::Refused(Refusal::Full)),
-        _ => Reply::Outcome(Outcome::Refused(Refusal::Large)),
+        3 => outcome(Outcome::Refused(Refusal::Waiting)),
+        4 => outcome(Outcome::Refused(Refusal::Reserved)),
+        5 => outcome(Outcome::Refused(Refusal::Expired)),
+        6 => outcome(Outcome::Refused(Refusal::Order)),
+        7 => outcome(Outcome::Refused(Refusal::Codec)),
+        8 => outcome(Outcome::Refused(Refusal::Full)),
+        _ => outcome(Outcome::Refused(Refusal::Large)),
     };
     assert_eq!(Reply::decode(&reply(&sent)), Ok(sent), "the reply changed");
     Ok(())
