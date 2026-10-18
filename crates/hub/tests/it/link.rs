@@ -502,7 +502,7 @@ fn stops_a_request_before_the_hello_is_admitted() {
     );
     assert_eq!(
         serve::Error::Unadmitted.to_string(),
-        "the program sent a request or a read before the node admitted a hello"
+        "the program opened a stream before the node admitted a hello"
     );
 }
 
