@@ -517,19 +517,16 @@ mod dispatchers {
     use crate::{dispatcher, lazy::Lazy};
     use alloc::vec::Vec;
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
         RwLock, RwLockReadGuard, RwLockWriteGuard,
     };
 
     pub(super) struct Dispatchers {
-        has_just_one: AtomicBool,
     }
 
     static LOCKED_DISPATCHERS: Lazy<RwLock<Vec<dispatcher::Registrar>>> =
         Lazy::new(Default::default);
 
     pub(super) enum Rebuilder<'a> {
-        JustOne,
         Read(RwLockReadGuard<'a, Vec<dispatcher::Registrar>>),
         Write(RwLockWriteGuard<'a, Vec<dispatcher::Registrar>>),
     }
@@ -537,14 +534,10 @@ mod dispatchers {
     impl Dispatchers {
         pub(super) const fn new() -> Self {
             Self {
-                has_just_one: AtomicBool::new(true),
             }
         }
 
         pub(super) fn rebuilder(&self) -> Rebuilder<'_> {
-            if self.has_just_one.load(Ordering::SeqCst) {
-                return Rebuilder::JustOne;
-            }
             Rebuilder::Read(LOCKED_DISPATCHERS.read().unwrap())
         }
 
@@ -552,8 +545,6 @@ mod dispatchers {
             let mut dispatchers = LOCKED_DISPATCHERS.write().unwrap();
             dispatchers.retain(|d| d.upgrade().is_some());
             dispatchers.push(dispatch.registrar());
-            self.has_just_one
-                .store(dispatchers.len() <= 1, Ordering::SeqCst);
             Rebuilder::Write(dispatchers)
         }
     }
@@ -561,10 +552,6 @@ mod dispatchers {
     impl Rebuilder<'_> {
         pub(super) fn for_each(&self, mut f: impl FnMut(&dispatcher::Dispatch)) {
             let iter = match self {
-                Rebuilder::JustOne => {
-                    dispatcher::get_default(f);
-                    return;
-                }
                 Rebuilder::Read(vec) => vec.iter(),
                 Rebuilder::Write(vec) => vec.iter(),
             };

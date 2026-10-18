@@ -42,7 +42,6 @@ use std::time::Instant;
 
 use env::rng::Rng;
 use tracing::Dispatch;
-use tracing::subscriber::NoSubscriber;
 use types::time::{Monotonic, Span};
 
 use crate::files::Files;
@@ -114,10 +113,6 @@ pub struct Sim {
     scheduler: Rng,
     /// Gives each new node its entropy stream.
     streams: Rng,
-    /// With one live dispatch, `tracing` caches the interest of a callsite for the
-    /// process from the default of the thread that meets it first, which can be a
-    /// thread with no log. This second one makes it ask each live log.
-    _registered: Dispatch,
 }
 
 impl Sim {
@@ -145,7 +140,6 @@ impl Sim {
             futures: Rc::default(),
             scheduler,
             streams,
-            _registered: Dispatch::new(NoSubscriber::default()),
         }
     }
 
