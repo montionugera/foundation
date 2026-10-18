@@ -44,7 +44,14 @@
   and `Lease`, which it never gives. The plan has the full text
   (https://github.com/synnaxlabs/foundation/issues/963#issuecomment-6022924709). Decided
   by the architect, #963
-  (https://github.com/synnaxlabs/foundation/issues/963#issuecomment-6031464116). Amended
+  (https://github.com/synnaxlabs/foundation/issues/963#issuecomment-6031464116).
+  Amended (2026-10-17T18:24:36Z, #3056): `Shard::open` gives no error, because
+  `Buffer::newest` reads no file (ENTRY TAGS). Only `Buffer::open` gives the
+  `buffer::Error` that `node` puts in `Error::Buffer` (`laptop.architect`,
+  https://github.com/synnaxlabs/foundation/pull/3056#issuecomment-6238515205).
+  Supersedes the sentence "`Shard::open` gives a `buffer::Error`: `node` puts it in
+  `Error::Buffer`, and `foundation` reports its variants as it reports those of
+  `Buffer::open`." above, and the "Lost:" list after it. Amended
   (2026-10-08T22:24:43Z, #2020): `Shard::shed` stops carrying an index, the pair of
   `carry`. A shed changes no control: the shard keeps the gate of the index for the
   next carry of its slot when the gate holds a restored holder or a handoff that waits,
