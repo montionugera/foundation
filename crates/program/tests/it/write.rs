@@ -686,6 +686,39 @@ fn panics_at_a_write_with_no_draft() {
     });
 }
 
+/// A write that gives `Unsent` drops the draft, so the next write with no new draft
+/// panics.
+#[test]
+#[should_panic(expected = "a write sends the draft of a call of `Writer::draft`")]
+fn panics_at_a_write_after_an_unsent_with_no_new_draft() {
+    on_hub(720, |session, _| async move {
+        let mut writer = session.writer(config(&["value"], 1)).await.expect("opens");
+        frame(&mut writer, 1, 0, &[(2, 1)]).set_count(0, 0);
+        let unsent = Err(Error::Unsent {
+            count: 0,
+            form: Form::Raw,
+        });
+        assert_eq!(writer.write(Time::Node).await, unsent);
+        drop(writer.write(Time::Node).await);
+    });
+}
+
+/// A draft replaces the draft before it, and a write dropped before its first poll
+/// leaves the draft held for the next write.
+#[test]
+fn sends_the_last_draft_after_a_write_dropped_before_its_first_poll() {
+    on_hub(721, |session, _| async move {
+        let mut reader = reader(&session, &["value"]).await;
+        let mut writer = session.writer(config(&["value"], 1)).await.expect("opens");
+        frame(&mut writer, 1, 0, &[(2, 1)]);
+        frame(&mut writer, 1, 0, &[(2, 5)]);
+        drop(writer.write(Time::Node));
+        assert_eq!(writer.write(Time::Node).await, Ok(taken(0, 1)));
+        let got = reader.next().await.expect("a frame");
+        assert_eq!(samples(&reader, &got)[0], (key(2), vec![5]));
+    });
+}
+
 /// A `stored` dropped before it gave leaves the writer whole: the next `stored` waits
 /// for the same commit, and the next write gives its own outcome.
 #[test]
