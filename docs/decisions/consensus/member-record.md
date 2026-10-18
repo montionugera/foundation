@@ -130,7 +130,9 @@
   ticket. The expiry is the first mesh time at which the ticket admits no node, so the
   `Expired` text is "ticket {public_key} expired at {expiry}, and the join is at {at}".
   The text and the admit order approved by `laptop.architect` (2026-10-07T11:03:29Z):
-  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6036571225. The
+  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6036571225; the use
+  moved after the fit of the member
+  (https://github.com/synnaxlabs/foundation/pull/3280#issuecomment-6256084322). The
   ephemeral expiry of a `Member` comes from its ticket, because the admin decides what a
   ticket admits (BQ11a) and the joining node is outside input. Lost: a bearer secret in
   the `Join`, which every member could replay and which binds to no card. Decided by

@@ -1548,9 +1548,10 @@ mod tests {
         );
     }
 
-    // Each join fails more than one check, and the refusal names the first. Ticket 9
-    // is not recorded, so a peer with no good admission learns no key or name of the
-    // region. After ticket 7 admits node 3, a join with it fails its use last.
+    // Each join but the last fails more than one check, and the refusal names the
+    // first. Ticket 9 is not recorded, so a peer with no good admission learns no key
+    // or name of the region. After ticket 7 admits node 3, a join with it fails its use
+    // last, and the last join fails only its use.
     #[test]
     fn a_join_refusal_names_the_first_check_that_fails() {
         let mut state = open_state();

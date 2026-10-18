@@ -77,11 +77,13 @@
   fills these keys again from its log at start. When #253 compacts the log, the snapshot
   carries them: a follower can still hold a compacted join unapplied
   (`laptop.architect`, 2026-10-18T22:57:42Z,
-  https://github.com/synnaxlabs/foundation/pull/3280#issuecomment-6256217638). A leader
-  that lies can still write both, and they strand a follower. A ticket holder that
-  learns a node key out of band, and whose join gets to the leader first, takes that
-  key: the real join is refused, and the node joins with a new key (`laptop.architect`,
-  2026-10-11T03:31:12Z,
+  https://github.com/synnaxlabs/foundation/pull/3280#issuecomment-6256217638, which
+  supersedes "in an unapplied join of its log" and the `Error::Contested` text of item 1
+  of https://github.com/synnaxlabs/foundation/issues/2345#issuecomment-6105042526). A
+  leader that lies can still write both, and they strand a follower. A ticket holder
+  that learns a node key out of band, and whose join gets to the leader first, takes
+  that key: the real join is refused, and the node joins with a new key
+  (`laptop.architect`, 2026-10-11T03:31:12Z,
   https://github.com/synnaxlabs/foundation/issues/2345#issuecomment-6105042526). Since
   the voter checks a join before it stamps it (MEMBER RECORD), a peer with no ticket
   gets no join into the log of an honest voter.
