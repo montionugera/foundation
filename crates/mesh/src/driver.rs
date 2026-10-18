@@ -403,29 +403,28 @@ impl Mesh {
     ///   that write ends.
     /// - [`Error::Raft`] with [`raft::Error::NotLeader`] when this node does not
     ///   lead, or when a new leader replaces the entry before a write holds it.
-    /// - [`Error::Soon`] for a `Card` change of a member whose `Card` change at
-    ///   another version this node proposed less than a minute before, while it
-    ///   leads.
+    /// - [`Error::Soon`] for a `Card` change of a member when this node proposed
+    ///   another card of that member less than a minute before, while it leads.
     /// - [`Error::NotMember`] for a `Card` change of a node that is not a member of
     ///   the applied state, while this node leads.
     ///
     /// A repeat of a `Card` change that this node proposed in this term, less than
     /// a minute before, gets no new entry, and returns as the first call does.
     pub(crate) async fn propose(&self, change: Change) -> Result<Position, Error> {
-        let card = match &change {
-            Change::Card(card) => Some((card.key, card.card.version)),
+        let member = match &change {
+            Change::Card(card) => Some(card.key),
             _ => None,
         };
         let mut data = Vec::new();
         change.encode(&mut data);
-        let Some((member, version)) = card else {
+        let Some(member) = member else {
             return self.propose_data(data).await;
         };
         let now = self.clock.now();
         let proposal = {
             let mut group = self.group.borrow_mut();
             group.taking()?;
-            group.propose_card(member, version, now, data)?
+            group.propose_card(member, now, data)?
         };
         self.held(proposal).await
     }
@@ -504,8 +503,8 @@ impl Mesh {
     /// Proposes the `change` that `peer` forwarded, and gives the answer for the
     /// reply half of its stream: the position once the entry is on disk here, or
     /// "not the leader". A change that `peer` forwards again applies again, other
-    /// than a `Card` change that this node proposed in this term, which gets the
-    /// position of its first entry.
+    /// than a `Card` change that this node proposed in this term less than a minute
+    /// before, which gets the position of its first entry.
     ///
     /// # Errors
     ///
@@ -515,10 +514,10 @@ impl Mesh {
     /// - [`Error::PeerNotVoter`] when `peer` is the key of no voter of this node's
     ///   configuration. The group does not see the change.
     /// - [`Error::NotMember`] when `change` is a `Card` change of a node that is not
-    ///   a member. The group does not see the change.
-    /// - [`Error::Soon`] when `change` is a `Card` change of a member whose card at
-    ///   another version this node proposed less than a minute before. The group
-    ///   does not see the change.
+    ///   a member, while this node leads. The group does not see the change.
+    /// - [`Error::Soon`] when `change` is a `Card` change of a member, and this node
+    ///   leads and proposed another card of that member less than a minute before.
+    ///   The group does not see the change.
     pub(crate) async fn answer(
         &self,
         peer: PublicKey,
@@ -872,29 +871,29 @@ impl Group {
         proposal
     }
 
-    // Proposes `data`, a `Card` change of `member` at `version`, under the bound of a
-    // leader at `now`. A repeat that this node proposed in this term gets the
-    // proposal of the first.
+    // Proposes `data`, a `Card` change of `member`, under the bound of a leader at
+    // `now`. A repeat that this node proposed in this term gets the proposal of the
+    // first.
     fn propose_card(
         &mut self,
         member: node::Key,
-        version: u64,
         now: Monotonic,
         data: Vec<u8>,
     ) -> Result<Rc<Proposal>, Error> {
-        let propose = |group: &mut Self| {
+        let propose = |group: &mut Self, data| {
             let at = group.raft.propose(data)?;
             Ok(group.proposal(at))
         };
         if self.raft.role() != raft::Role::Leader {
-            return propose(self);
+            return propose(self, data);
         }
         if self.state.member(member).is_none() {
             return Err(Error::NotMember(member));
         }
         let term = self.raft.term();
         let mut bound = mem::take(&mut self.bound);
-        let proposal = bound.propose(member, version, term, now, || propose(self));
+        let proposal =
+            bound.propose(member, data, term, now, |data| propose(self, data));
         self.bound = bound;
         proposal
     }

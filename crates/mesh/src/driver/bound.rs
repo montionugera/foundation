@@ -18,42 +18,42 @@ const SPAN: Span = Span::MINUTE;
 /// [`SPAN`] before.
 #[derive(Default)]
 pub(super) struct Bound {
-    // By member: the version of the card, when it was proposed, and its proposal.
-    proposed: BTreeMap<node::Key, (u64, Monotonic, Rc<Proposal>)>,
+    // By member: the encoded change, when it was proposed, and its proposal.
+    proposed: BTreeMap<node::Key, (Vec<u8>, Monotonic, Rc<Proposal>)>,
 }
 
 impl Bound {
-    /// The proposal of a card of `member` at `version` at `now`, while this node
-    /// leads in `term`. A repeat of the card that this node proposed in `term` gets
-    /// that proposal and no new entry. Else `propose` gives it, and the bound counts
-    /// it.
+    /// The proposal of `change`, the encoded `Card` change of `member`, at `now`,
+    /// while this node leads in `term`. A repeat of the change that this node
+    /// proposed in `term` gets that proposal and no new entry. Else `propose` gives
+    /// the proposal of `change`, and the bound counts it.
     ///
     /// # Errors
     ///
-    /// - [`Error::Soon`] when this node proposed a card of `member` at another
-    ///   version less than a minute before.
+    /// - [`Error::Soon`] when this node proposed another card of `member` less than
+    ///   a minute before.
     /// - Each error of `propose`.
     pub(super) fn propose(
         &mut self,
         member: node::Key,
-        version: u64,
+        change: Vec<u8>,
         term: Term,
         now: Monotonic,
-        propose: impl FnOnce() -> Result<Rc<Proposal>, Error>,
+        propose: impl FnOnce(Vec<u8>) -> Result<Rc<Proposal>, Error>,
     ) -> Result<Rc<Proposal>, Error> {
         self.proposed.retain(|_, &mut (_, at, _)| recent(at, now));
         match self.proposed.get(&member) {
             Some((held, _, proposal))
-                if *held == version && proposal.at.term == term =>
+                if *held == change && proposal.at.term == term =>
             {
                 return Ok(Rc::clone(proposal));
             }
-            Some((held, _, _)) if *held != version => return Err(Error::Soon),
+            Some((held, _, _)) if *held != change => return Err(Error::Soon),
             _ => {}
         }
-        let proposal = propose()?;
+        let proposal = propose(change.clone())?;
         self.proposed
-            .insert(member, (version, now, Rc::clone(&proposal)));
+            .insert(member, (change, now, Rc::clone(&proposal)));
         Ok(proposal)
     }
 }
@@ -90,19 +90,19 @@ mod tests {
         assert!(recent(Monotonic(u64::MAX), Monotonic(u64::MAX)));
     }
 
-    // What `bound` gives for a card of `member` at `version` in `term` at `now`,
-    // with `at` as the entry of a new proposal: the entry, and whether it is new.
+    // What `bound` gives for the change `card` of `member` in `term` at `now`, with
+    // `at` as the entry of a new proposal: the entry, and whether it is new.
     fn propose(
         bound: &mut Bound,
         member: node::Key,
-        version: u64,
+        card: u8,
         term: u64,
         now: u64,
         at: Position,
     ) -> Result<(Position, bool), Error> {
         let mut new = false;
         let proposal =
-            bound.propose(member, version, Term(term), Monotonic(now), || {
+            bound.propose(member, vec![card], Term(term), Monotonic(now), |_| {
                 new = true;
                 Ok(Rc::new(Proposal::new(at)))
             })?;
@@ -138,10 +138,10 @@ mod tests {
     #[test]
     fn a_card_after_the_minute_may_propose() {
         let minute = 60_000_000_005;
-        for version in [2, 3] {
+        for card in [2, 3] {
             let mut bound = Bound::default();
             propose(&mut bound, member(), 2, 3, 5, entry(3, 7)).unwrap();
-            let after = propose(&mut bound, member(), version, 3, minute, entry(3, 8));
+            let after = propose(&mut bound, member(), card, 3, minute, entry(3, 8));
             assert_eq!(after, Ok((entry(3, 8), true)));
         }
     }
@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn a_proposal_that_fails_holds_back_nothing() {
         let mut bound = Bound::default();
-        let failed = bound.propose(member(), 2, Term(3), Monotonic(5), || {
+        let failed = bound.propose(member(), vec![2], Term(3), Monotonic(5), |_| {
             Err(Error::NotMember(member()))
         });
         assert_eq!(failed.err(), Some(Error::NotMember(member())));

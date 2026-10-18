@@ -19,8 +19,8 @@ impl Mesh {
     /// # Errors
     ///
     /// - [`Error::NoVote`] when this node is not a voter.
-    /// - [`Error::Soon`] when the leader proposed another version of the card of this
-    ///   node less than a minute before. Call again after a minute.
+    /// - [`Error::Soon`] when the leader proposed another card of this node less than
+    ///   a minute before. Call again after a minute.
     /// - [`Error::Files`] when a read or write of the last signed version fails.
     /// - [`Error::CardFile`] when the file of the last signed version is not valid.
     /// - [`Error::Stopped`] when the group stopped.

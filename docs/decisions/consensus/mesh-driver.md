@@ -116,10 +116,12 @@
   and the member of a `Card` change, and the check of a home at apply on each node is
   #1273. A forwarded change applies at least one time: a member that got no answer
   forwards it again, and the leader then appends a second entry, other than for a
-  `Card` change that it proposed in the same term. A try of `set_home` that gives up
-  resets its stream. A proposal that the network delivers late, before the reset, can
-  still apply after a later call returned and set the older home, until #1273 refuses
-  it (ruled by the architect, 2026-10-07T20:58:20Z:
+  `Card` change that it proposed in the same term less than a minute before
+  (`laptop.architect`, 2026-10-18T07:48:16Z, item 2:
+  https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247302177). A try
+  of `set_home` that gives up resets its stream. A proposal that the network delivers
+  late, before the reset, can still apply after a later call returned and set the
+  older home, until #1273 refuses it (ruled by the architect, 2026-10-07T20:58:20Z:
   https://github.com/synnaxlabs/foundation/pull/1607#issuecomment-6046723849).
   Supersedes the sentence that a repeat of `Change::Home` gives the state of a call
   that took effect last:
@@ -454,8 +456,9 @@
   https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245224489).
   The bound applies only while the node leads, so a node that lost its lead gives
   `NotLeader` and the call forwards the card. A repeat of the card that it proposed,
-  the same version of the same member, gets no new entry. It waits for the write of
-  that entry and gets its position, as the first call does (`laptop.architect`,
+  the same encoded change, gets no new entry. Another card of the member, also one
+  at the same version, gets `Error::Soon`. A repeat waits for the write of that entry
+  and gets its position, as the first call does (`laptop.architect`,
   2026-10-18T07:48:16Z and 2026-10-18T07:48:57Z:
   https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247302177 and
   https://github.com/synnaxlabs/foundation/pull/3155#issuecomment-6247307620). It
