@@ -15,7 +15,7 @@
 //! sync of the logs.
 //! `deadline_carry` times one that also writes a carry record of 32 tails. Its setup
 //! commits each page of the pool, so the timed deadline makes no first commit of a
-//! page, which a pool does once a page in its life.
+//! page, which a pool on `Heap` does once a page in its life.
 //! `deadline_trim` times only the deadline that trims a step of 100 blocks on the ring
 //! of ID 4096.
 
@@ -105,7 +105,7 @@ fn deadline_carry(bencher: Bencher<'_, '_>) {
     bencher
         .counter(ItemsCount::new(31_usize))
         .with_inputs(|| {
-            let mut deadline = Deadline::committed(32, 64 + PHASE);
+            let mut deadline = Deadline::new(32, 64 + PHASE);
             for _ in 0..12 {
                 deadline.commit(4096);
             }

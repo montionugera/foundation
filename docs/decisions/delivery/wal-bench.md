@@ -106,7 +106,15 @@
   finds from the period between two trims. `trimming` takes a nonzero count of indexes.
   So a time holds the mean cost of a deadline of a buffer that trims in steps,
   `deadline_trim` the cost of the deadline that trims a step, and `deadline_carry` that
-  of a carry record of 32 tails. `benches/logs.rs` also
+  of a carry record of 32 tails. `new` commits each page of the pool. Since #3172, a
+  pool on `Heap` writes zero over a page at its first commit, once a page in its life.
+  `deadline_carry` makes a new `Deadline` for each sample, so with no commit in `new`
+  its timed deadline pays that write for each page that its carry takes. Lost: a
+  second constructor that commits the pages, for `deadline_carry` only. The commit
+  before the timed deadline of `deadline_carry` is decided by `laptop.architect`
+  (#3227, 2026-10-18T19:43:43Z):
+  https://github.com/synnaxlabs/foundation/issues/3227#issuecomment-6254312922.
+  `benches/logs.rs` also
   gets the case `lap_shrink` of 10000 paths, which times only the commit of `lap_end`
   that ends the lap of 2756 paths, each with a shrink, while the other paths wait. Lost:
   a sim `Buffer` over a sim file, timed from `append` to the end of the commit, whose
