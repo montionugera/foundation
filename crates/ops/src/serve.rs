@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Write};
 use std::marker::PhantomData;
+use std::path::PathBuf;
 
 use access::Rules;
 use connector::browse;
@@ -205,7 +206,6 @@ impl Request {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Plan {
-    #[serde(deserialize_with = "objects")]
     files: Vec<File>,
 }
 
@@ -215,7 +215,6 @@ struct Plan {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Browse {
     pub(crate) connector: String,
-    #[serde(deserialize_with = "objects")]
     pub(crate) files: Vec<File>,
     pub(crate) start: Option<String>,
     #[serde(rename = "match")]
@@ -231,17 +230,16 @@ pub(crate) struct Browse {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Import {
     pub(crate) connector: String,
-    #[serde(deserialize_with = "objects")]
     pub(crate) files: Vec<File>,
     pub(crate) start: Option<String>,
-    #[serde(default, deserialize_with = "objects")]
+    #[serde(default)]
     pub(crate) points: Vec<Point>,
     #[serde(rename = "match")]
     pub(crate) pattern: Option<String>,
 }
 
 /// One point that an import picks.
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Point {
     /// Its names from the root, as `browse` gives its path.
@@ -277,12 +275,35 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
     }
 }
 
-/// A list of `T`, each only from an object.
-pub(crate) fn objects<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
-    deserializer: D,
-) -> Result<Vec<T>, D::Error> {
-    let items = Vec::<Object<T>>::deserialize(deserializer)?;
-    Ok(items.into_iter().map(|Object(item)| item).collect())
+/// The fields of a [`Point`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PointFields {
+    path: String,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for Point {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let Object(PointFields { path, name }) = Object::deserialize(deserializer)?;
+        Ok(Self { path, name })
+    }
+}
+
+/// The fields of a [`File`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileFields {
+    path: PathBuf,
+    text: String,
+}
+
+impl<'de> Deserialize<'de> for File {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let Object(FileFields { path, text }) = Object::deserialize(deserializer)?;
+        Ok(Self { path, text })
+    }
 }
 
 impl<'de> Deserialize<'de> for Request {
