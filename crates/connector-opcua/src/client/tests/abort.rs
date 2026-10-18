@@ -28,7 +28,7 @@ fn coded(chunk: &[u8], code: u32) -> Vec<u8> {
     of(chunk, &body)
 }
 
-fn too_large(chunk: &[u8]) -> Vec<u8> {
+pub(super) fn too_large(chunk: &[u8]) -> Vec<u8> {
     coded(chunk, 0x80B9_0000)
 }
 
@@ -51,10 +51,6 @@ fn orphan(chunk: &[u8]) -> Vec<u8> {
     orphan
 }
 
-/// The largest message that the client of [`reads`] takes, 10 [`CHUNK`]: an answer of
-/// [`FITS`] fits, but not with the 7 intermediate chunks of another.
-const MESSAGE: u32 = 10 << 16;
-
 /// A rewrite of the relay that sends `abort` of the next `left` final chunks in their
 /// place.
 fn aborting(left: &Cell<u16>, abort: fn(&[u8]) -> Vec<u8>) -> impl FnMut(&mut Vec<u8>) {
@@ -68,8 +64,7 @@ fn aborting(left: &Cell<u16>, abort: fn(&[u8]) -> Vec<u8>) -> impl FnMut(&mut Ve
 
 /// After `dropped` dropped reads, the answers of `aborted` reads of `target` and of two
 /// more reads of it, and the value of the server. The relay sends `abort` of the
-/// answers of the dropped reads and of the `aborted` reads in their place. The client
-/// takes messages of up to [`MESSAGE`] bytes.
+/// answers of the dropped reads and of the `aborted` reads in their place.
 fn reads(
     target: &'static Node,
     dropped: u16,
@@ -83,7 +78,8 @@ fn reads(
             let left = Cell::new(0u16);
             let reads =
                 relayed(&node, &Relay::default(), aborting(&left, abort), async {
-                    let mut client = peer.limited(&url, None, Some(MESSAGE)).await;
+                    let mut client =
+                        peer.connect(&url).await.expect("the client connects");
                     // open62541 reads the namespace array after the connect.
                     assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
                     left.set(dropped + aborted);
@@ -182,14 +178,15 @@ fn an_abort_with_an_unknown_id_ends_no_read() {
 }
 
 /// An abort after the 7 intermediate chunks of an answer of [`FITS`] deletes them, so
-/// its read gives the Error of the abort, and frees their place in the count and the
-/// length of chunks, so each next answer of 8 chunks arrives.
+/// its read gives the Error of the abort, and frees their place in the queue of the
+/// channel, which holds 64 chunks, so after 10 such aborts each next answer of 8
+/// chunks arrives.
 #[test]
 fn an_abort_after_intermediate_chunks_ends_its_read_and_frees_their_place() {
-    let (aborted, [after, again], _) = reads(&FITS, 0, 1, too_large);
+    let (aborted, [after, again], _) = reads(&FITS, 0, 10, too_large);
     assert_eq!(
         aborted,
-        vec![Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE))]
+        vec![Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE)); 10]
     );
     assert_eq!(
         (after, again),
@@ -203,7 +200,7 @@ const TWO: Node = Node {
     ..FITS
 };
 
-fn sequence(chunk: &[u8]) -> [u8; 4] {
+pub(super) fn sequence(chunk: &[u8]) -> [u8; 4] {
     chunk[16..20].try_into().expect("4 bytes")
 }
 
