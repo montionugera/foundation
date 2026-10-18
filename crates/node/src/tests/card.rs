@@ -198,7 +198,8 @@ fn a_start_after_a_card_change_of_less_than_a_minute_sets_the_card_a_minute_late
     );
 }
 
-/// A stop during the minute of a card that waits ends the node at once.
+/// A stop during the minute of a card that waits ends the node at once, and logs
+/// nothing more of the card.
 #[test]
 fn a_stop_during_the_minute_of_a_card_ends_the_node() {
     let mut sim = sim::Sim::new(sim::Config::default());
@@ -206,9 +207,11 @@ fn a_stop_during_the_minute_of_a_card_ends_the_node() {
     let ip = host.addresses()[0];
     assert_eq!(started(&mut sim, &host, listen(&host)).version, 1);
     let other = Address::Udp(SocketAddr::new(ip, PORT + 2));
+    let lines = Lines::default();
     let node = Node::start(Config {
         region: Region::Stored,
         listen: SocketAddr::new(ip, PORT + 1),
+        log: to(&lines, false, tracing::Level::WARN),
         ..config(&host, Size::MEBIBYTE, Box::new(heap))
     });
     node.operate(move |ops| async move {
@@ -222,6 +225,64 @@ fn a_stop_during_the_minute_of_a_card_ends_the_node() {
     assert_eq!(sim.run(), Ok(()));
     assert_eq!(node.join(), Ok(()));
     assert!(clock.now() < stopped + Span::SECOND, "{:?}", clock.now());
+    let warned: Vec<_> = lines
+        .read()
+        .into_iter()
+        .filter(|line| line.contains(" node::card: "))
+        .collect();
+    assert_eq!(
+        warned,
+        [
+            "2026-01-01T00:00:02.006291Z WARN node::card: the card of this node keeps \
+          its addresses, and the node tries again in a minute error=\"a card of the \
+          same member was proposed less than a minute ago; call again after a minute\""
+        ]
+    );
+}
+
+/// A mesh whose log write fails during the call of a card a minute later fails the
+/// node with that error, and logs nothing more of the card.
+#[test]
+fn a_mesh_that_stops_during_the_call_of_a_card_logs_no_more_of_it() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    let ip = host.addresses()[0];
+    assert_eq!(started(&mut sim, &host, listen(&host)).version, 1);
+    let other = Address::Udp(SocketAddr::new(ip, PORT + 2));
+    let lines = Lines::default();
+    let node = Node::start(Config {
+        region: Region::Stored,
+        listen: SocketAddr::new(ip, PORT + 1),
+        log: to(&lines, false, tracing::Level::WARN),
+        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+    });
+    node.operate(move |ops| async move {
+        let addresses = Addresses::new(vec![other]).unwrap();
+        assert_eq!(ops.mesh().set_addresses(addresses).await, Ok(()));
+    });
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    let log = Path::new("mesh/log/log-0");
+    host.fail_file(log, env::files::Operation::WriteAt);
+    assert_eq!(sim.run(), Ok(()));
+    let log = mesh::log::Error::Files(env::files::Error::Io {
+        path: log.to_path_buf(),
+        operation: env::files::Operation::WriteAt,
+        code: 5,
+    });
+    assert_eq!(node.join(), Err(Error::Group(mesh::Stopped::Write(log))));
+    let warned: Vec<_> = lines
+        .read()
+        .into_iter()
+        .filter(|line| line.contains(" node::card: "))
+        .collect();
+    assert_eq!(
+        warned,
+        [
+            "2026-01-01T00:00:02.006291Z WARN node::card: the card of this node keeps \
+          its addresses, and the node tries again in a minute error=\"a card of the \
+          same member was proposed less than a minute ago; call again after a minute\""
+        ]
+    );
 }
 
 /// A member that is not a voter keeps the addresses of its card, and warns of it.
