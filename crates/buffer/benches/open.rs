@@ -2,12 +2,15 @@
 //! Run with `cargo bench -p buffer --bench open`.
 //!
 //! Each case fills a ring once: each commit holds one data entry of each of its
-//! indexes, until the ring wrapped twice. Then it times each open of the ring. The
-//! files are in memory and each call ends at once, so a figure holds the walk and a
-//! copy of each byte of the ring in and out, as with a warm page cache, but no time of
-//! a disk. Each line gives the MiB of the ring, its indexes, and the median ms per
-//! open. The sim and the fill are the same in each run, so two builds open the same
-//! records.
+//! indexes, until the ring wrapped twice. Then it times each open of the ring. Each
+//! line gives the MiB of the ring, its indexes, and the median ms per open. The sim and
+//! the fill are the same in each run, so two builds open the same records.
+//!
+//! The files are in memory and each call ends at once, so a figure is the CPU time of
+//! the open: the walk and a copy of each byte of the ring in and out, as with a warm
+//! page cache. It is not the start time of a node, which adds the reads of a disk. The
+//! files of the sim node model a disk, which makes an open 4 to 11 times slower, so a
+//! figure on them would measure the sim.
 //!
 //! A debug build, which `cargo test` makes, runs one small case, so a test run stays
 //! fast.
@@ -27,17 +30,14 @@ use env::tasks::Tasks;
 use memory::Memory;
 use types::channel::{self, Slot, Slots};
 use types::frame::Path;
+use types::log::Mark;
 use types::time::{Span, Stamp};
 
 const WARMUP: usize = 1;
 const ROUNDS: usize = 5;
 const MIB: u64 = 1 << 20;
-const BLOCK: u64 = 4096;
-/// The bytes of a record header and of an entry header, which together bound the
-/// bytes of a record of `n` entries, so that the fill knows the commits that wrap the
-/// ring twice.
-const RECORD: u64 = 64;
-const HEADER: u64 = 51;
+/// The commits of the fill between two checks of the wrap.
+const CHECK: u64 = 256;
 
 fn main() {
     let cases: &[(u64, u32)] = if cfg!(debug_assertions) {
@@ -90,9 +90,7 @@ async fn bench(
         commit: Span::from_nanos(10_000_000),
         trimmed: true,
     };
-    let record = (RECORD + HEADER * u64::from(indexes)).div_ceil(BLOCK) * BLOCK;
-    let commits = 2 * area / record;
-    fill(config(), indexes, commits).await;
+    fill(config(), indexes).await;
     let mut nanos = Vec::new();
     for round in 0..WARMUP + ROUNDS {
         let mut slots = Slots::new();
@@ -105,8 +103,9 @@ async fn bench(
     nanos
 }
 
-/// Commits `commits` times one entry of each of `indexes` indexes.
-async fn fill(config: Config, indexes: u32, commits: u64) {
+/// Commits one entry of each of `indexes` indexes until the ring wrapped twice: the
+/// first index lost at least as many seqs as it keeps.
+async fn fill(config: Config, indexes: u32) {
     let mut slots = Slots::new();
     let buffer = Buffer::open(config, &mut slots).await.expect("opens");
     let slots: Vec<(channel::Key, Slot)> = (0..indexes)
@@ -115,24 +114,42 @@ async fn fill(config: Config, indexes: u32, commits: u64) {
             (key, slots.index(key))
         })
         .collect();
-    for seq in 0..commits {
-        let batch = slots.iter().map(|&(index, slot)| Entry {
-            index,
-            slot,
-            path: Path::Live,
-            first: seq,
-            samples: Some(Samples {
-                len: NonZeroU32::MIN,
-                last: Some(Stamp::from_nanos(7)),
-            }),
-            stored_at: Stamp::from_nanos(7),
-            tag: 0,
-            parts: Parts::default(),
-        });
-        buffer.append(batch).expect("queues");
-        buffer.committed().await.expect("commits");
+    let reader = buffer.reader();
+    let (_, first) = slots[0];
+    let mut seq = 0;
+    loop {
+        for _ in 0..CHECK {
+            commit(&buffer, &slots, seq).await;
+            seq += 1;
+        }
+        let read = reader
+            .read(first, Path::Live, Mark::at(0), 1)
+            .await
+            .expect("reads");
+        if read.gap.is_some_and(|gap| 2 * gap.end >= seq) {
+            break;
+        }
     }
     end(buffer).await;
+}
+
+/// Commits one entry at `seq` of each index of `slots`.
+async fn commit(buffer: &Buffer, slots: &[(channel::Key, Slot)], seq: u64) {
+    let batch = slots.iter().map(|&(index, slot)| Entry {
+        index,
+        slot,
+        path: Path::Live,
+        first: seq,
+        samples: Some(Samples {
+            len: NonZeroU32::MIN,
+            last: Some(Stamp::from_nanos(7)),
+        }),
+        stored_at: Stamp::from_nanos(7),
+        tag: 0,
+        parts: Parts::default(),
+    });
+    buffer.append(batch).expect("queues");
+    buffer.committed().await.expect("commits");
 }
 
 /// The value of `future`, which must open, and the ns until it ends.
