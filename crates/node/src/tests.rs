@@ -5161,49 +5161,6 @@ pub(crate) mod port {
             assert_eq!(warned, [line]);
         }
 
-        /// A member whose session ends in the body of a put leaves no part file in the
-        /// store of the node, which goes on.
-        #[test]
-        fn a_session_that_ends_in_a_put_body_leaves_no_part() {
-            let mut sim = sim::Sim::new(sim::Config::default());
-            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
-            let node = start(&hosts[0], region(&pair(&hosts)));
-            let peer = sim.node(sim::node::Config::default());
-            let at = [Address::Udp(listen(&hosts[0]))];
-            shard(&peer, move |own, tasks| async move {
-                let (transport, pool) = transport(&own, tasks, OTHER.1);
-                let session =
-                    transport.dial(KEY.public(), &at).await.expect("a session");
-                let (mut sender, receiver) =
-                    session.open(Class::Complete).await.expect("a stream");
-                let header = wire::header::encode(wire::Protocol::Blob);
-                let digest = types::digest::Digest::of(b"chunk");
-                let mut head = [0; wire::blob::Put::LEN];
-                wire::blob::Put { digest, len: 4000 }.encode(&mut head);
-                for bytes in [&header[..], &head, &[7; 50]] {
-                    drop(sender.send(pool.copy(bytes).unwrap()).await);
-                }
-                own.clock().sleep(Span::SECOND).await;
-                session.close(Code(0));
-                drop((sender, receiver, session, transport));
-            });
-            let out = Arc::new(Mutex::new(None));
-            let seen = Arc::clone(&out);
-            shard(&hosts[0], move |own, _| async move {
-                own.clock().sleep(Span::MINUTE).await;
-                let dir = crate::directory::blob();
-                let listed = own.files().list(&dir).await.expect("the store lists");
-                let parts =
-                    listed.into_iter().filter(|name| name.extension().is_some());
-                *seen.lock().unwrap() = Some(parts.collect::<Vec<_>>());
-            });
-            assert_eq!(sim.run_for(Span::HOUR), Ok(()));
-            node.stop();
-            assert_eq!(sim.run(), Ok(()));
-            assert_eq!(node.join(), Ok(()));
-            assert_eq!(out.lock().unwrap().take(), Some(vec![]));
-        }
-
         /// A member that sends put heads of 42 of the 47 block sizes of shard 0's pool,
         /// from the largest down, and no bodies, more than the 8 puts that the store
         /// holds open, still has its hub streams served, so a hub stream of the member

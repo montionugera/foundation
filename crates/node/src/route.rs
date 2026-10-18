@@ -161,7 +161,7 @@ impl Places {
 
 /// Routes each stream that the peer of `session` opens, each in its own future on
 /// `tasks`, so a stream whose header is late delays no other. Ends when the session
-/// has ended and each of its streams has completed.
+/// ends.
 async fn serve(
     session: Session,
     link: Link,
@@ -184,7 +184,6 @@ async fn serve(
         );
         streams.spawn(Box::pin(route));
     }
-    streams.join().await;
 }
 
 /// Reads the header of `incoming`, its first message, and routes the stream that `peer`
