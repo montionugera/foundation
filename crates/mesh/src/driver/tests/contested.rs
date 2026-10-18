@@ -167,3 +167,18 @@ fn a_leader_passes_a_join_whose_key_has_the_public_key_of_a_refused_join() {
         assert_eq!(admitted, Ok(Some(Ok(()))));
     });
 }
+
+// A leader that lies wrote the join of node 4 after its refused twin, so node 4 is a
+// member under its own key, and the twin's key still holds node key 4.
+#[test]
+fn a_leader_contests_a_join_whose_key_has_another_public_key_in_the_first_join() {
+    solo(|node, tasks| async move {
+        let mesh = refused_twin(&node, &tasks).await;
+        mesh.propose_data(encoded(&join_of_4())).await.unwrap();
+        let clock = node.clock();
+        while mesh.member(key(4)).is_none() {
+            clock.sleep(Span::MILLISECOND).await;
+        }
+        assert_eq!(mesh.propose(join_of_4()).await, Err(contested(4)));
+    });
+}
