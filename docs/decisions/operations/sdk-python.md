@@ -23,7 +23,9 @@
   texts:
   - `ValueError`: `node and public_key go together: give both or neither`, and
     `subject and private_key go together: give both or neither`. A `data` with a NUL
-    byte: `data: the path holds a NUL byte`, as each other value parses.
+    byte: `data: the path holds a NUL byte`, as each other value parses
+    (`laptop.architect-2`, 2026-10-18T21:14:26Z, item 5 of
+    https://github.com/synnaxlabs/foundation/pull/3255#issuecomment-6255225319).
   - `ConnectionError`, with no address and no node on `data`: `no node runs in
     <data>: pass the address of the node, or data= with the --data of foundation
     start`.
