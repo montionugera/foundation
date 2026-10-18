@@ -522,3 +522,29 @@ fn a_run_reads_its_status_up_to_the_frames_lost_for_no_room_after_a_long_sleep()
         },
     );
 }
+
+#[test]
+fn a_capture_takes_the_events_of_its_target_with_the_fields_of_their_parent() {
+    let (capture, dispatch) = super::Capture::new("plant");
+    tracing::dispatcher::with_default(&dispatch, || {
+        let bare = tracing::error_span!("bare");
+        let span = tracing::error_span!(
+            "run",
+            connector = "press",
+            gap = tracing::field::Empty
+        );
+        span.record("gap", 3);
+        tracing::warn!(target: "plant", parent: &span, count = 2, "late {}", 1);
+        tracing::error!(target: "plant", parent: &bare, "gone");
+        tracing::info!(target: "plant", "alone");
+        tracing::info!(target: "other", parent: &span, "skipped");
+    });
+    assert_eq!(
+        capture.lines(),
+        [
+            r#"WARN late 1 connector="press" gap=3 count=2"#,
+            "ERROR gone",
+            "INFO alone",
+        ]
+    );
+}

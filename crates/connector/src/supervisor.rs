@@ -3281,40 +3281,6 @@ mod tests {
         })
     }
 
-    /// Each event of `connector::status` as `<field>=<value>...`, values in `Debug`.
-    struct Capture(Arc<Mutex<Vec<String>>>);
-
-    impl tracing::Subscriber for Capture {
-        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-            true
-        }
-
-        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-
-        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-
-        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-
-        fn event(&self, event: &tracing::Event<'_>) {
-            if event.metadata().target() != "connector::status" {
-                return;
-            }
-            let mut fields = Vec::new();
-            event.record(&mut |field: &tracing::field::Field,
-                               value: &dyn fmt::Debug| {
-                fields.push(format!("{}={value:?}", field.name()));
-            });
-            let mut lines = self.0.lock().expect("no panic holds the lock");
-            lines.push(fields.join(" "));
-        }
-
-        fn enter(&self, _: &tracing::span::Id) {}
-
-        fn exit(&self, _: &tracing::span::Id) {}
-    }
-
     /// The status frames of [`tally_until`], and its events of `connector::status`.
     fn tally_logged(
         kind: impl Kind + 'static,
@@ -3333,8 +3299,7 @@ mod tests {
     ) -> (Vec<Written>, Vec<String>) {
         let mut sim = sim::Sim::new(config);
         let node = sim.node(sim::node::Config::default());
-        let lines = Arc::new(Mutex::new(Vec::new()));
-        let log = tracing::Dispatch::new(Capture(Arc::clone(&lines)));
+        let (capture, log) = testing::Capture::new("connector::status");
         let out = Arc::new(Mutex::new(None));
         let (slot, own) = (Arc::clone(&out), node.clone());
         let config = env::shards::Config {
@@ -3352,8 +3317,7 @@ mod tests {
         drop(start.expect("a shard with no core starts"));
         assert_eq!(sim.run(), Ok(()));
         let statuses = out.lock().expect("no panic holds the lock").take();
-        let lines = lines.lock().expect("no panic holds the lock").clone();
-        (statuses.expect("the run ends"), lines)
+        (statuses.expect("the run ends"), capture.lines())
     }
 
     /// A show whose frame gets no block, then a show that replaces it before the next
@@ -3382,12 +3346,13 @@ mod tests {
             errors.take(2).collect::<Vec<_>>(),
             [(Span::ZERO, ""), (ms(2_000), "y")]
         );
-        let shown = lines
-            .iter()
-            .filter(|line| line.starts_with("message=error"));
+        let shown = lines.iter().filter(|line| line.starts_with("WARN error "));
         assert_eq!(
             shown.collect::<Vec<_>>(),
-            [r#"message=error error="x""#, r#"message=error error="y""#]
+            [
+                r#"WARN error connector=plant.tally kind="tally" error="x""#,
+                r#"WARN error connector=plant.tally kind="tally" error="y""#,
+            ]
         );
     }
 
@@ -3425,18 +3390,23 @@ mod tests {
             }
         });
         let (_, lines) = tally_logged(kind, None);
-        let skipped = ["message=running", "message=restarting", "message=ended"];
+        let skipped = [
+            "INFO running ",
+            "INFO restarting ",
+            "INFO ended ",
+            "WARN ended ",
+        ];
         let shown = lines
             .iter()
             .filter(|line| !skipped.iter().any(|skipped| line.starts_with(skipped)));
         assert_eq!(
             shown.collect::<Vec<_>>(),
             [
-                r#"message=error error="x""#,
-                r#"message=note note="n""#,
-                r#"message=error error="x""#,
-                "message=cleared",
-                "message=stopped",
+                r#"WARN error connector=plant.tally kind="tally" error="x""#,
+                r#"INFO note connector=plant.tally kind="tally" note="n""#,
+                r#"WARN error connector=plant.tally kind="tally" error="x""#,
+                r#"INFO cleared connector=plant.tally kind="tally""#,
+                r#"INFO stopped connector=plant.tally kind="tally""#,
             ]
         );
     }
@@ -3469,12 +3439,10 @@ mod tests {
                 ..sim::Config::default()
             };
             let (_, lines) = tally_logged_on(config, kind, None, Some(ms(1_020)));
-            let shown = lines
-                .iter()
-                .filter(|line| line.starts_with("message=error"));
+            let shown = lines.iter().filter(|line| line.starts_with("WARN error "));
             assert_eq!(
                 shown.collect::<Vec<_>>(),
-                [r#"message=error error="a""#],
+                [r#"WARN error connector=plant.tally kind="tally" error="a""#],
                 "seed {seed}: {lines:#?}"
             );
         }
@@ -3484,10 +3452,13 @@ mod tests {
     fn names_the_class_of_an_end_in_its_line() {
         let kind = counted(|_| async { Err(Error::Device("jammed".into())) });
         let (_, lines) = tally_logged(kind, Some(ms(500)));
-        let ended = lines.iter().find(|line| line.starts_with("message=ended"));
+        let ended = lines.iter().find(|line| line.starts_with("WARN ended "));
         assert_eq!(
             ended.map(String::as_str),
-            Some(r#"message=ended class="device" error="jammed""#)
+            Some(concat!(
+                r#"WARN ended connector=plant.tally kind="tally" "#,
+                r#"class="device" error="jammed""#
+            ))
         );
     }
 
