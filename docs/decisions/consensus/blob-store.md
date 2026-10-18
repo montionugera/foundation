@@ -95,8 +95,10 @@
   https://github.com/synnaxlabs/foundation/issues/3251#issuecomment-6254577124, and
   2026-10-18T20:42:45Z,
   https://github.com/synnaxlabs/foundation/pull/3258#issuecomment-6254911451; the part
-  file, a key choice of kinds d and 4, accepted by `laptop.monitor` in a message): a put
-  of `blob::peer::serve` writes its bytes as they come to a part file of its own, and
+  file, a key choice of kinds d and 4, accepted by `laptop.monitor`,
+  2026-10-18T20:41:21Z, recorded at 2026-10-18T21:23:12Z:
+  https://github.com/synnaxlabs/foundation/pull/3258#issuecomment-6255313243): a put of
+  `blob::peer::serve` writes its bytes as they come to a part file of its own, and
   checks them at its end (BLOB PEER). The part is named by the digest, a dot, and a key
   that is new for each put of `serve` in one open of the store, so no put waits on
   another put of its digest. Only a put of `serve` writes a part: `Store::put` writes in
