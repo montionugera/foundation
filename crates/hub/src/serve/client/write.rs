@@ -187,7 +187,7 @@ async fn relay(
                 }
             }
             Due::Draft { layout, form } => {
-                let block = alloc(state, Outcome::LEN_MAX)?;
+                let block = replies.head(state)?;
                 let drafted = layout.draft(state.borrow().home.pool(), form);
                 match drafted {
                     Ok(draft) => {
@@ -307,8 +307,8 @@ fn outcome(written: Result<&[::home::Outcome], Failure>) -> Result<Outcome, Erro
 /// of the frames that it took.
 #[derive(Default)]
 struct Replies {
-    /// The count of frames of the stream that got an outcome.
-    counted: u64,
+    /// The count of frames of the stream whose head came.
+    headed: u64,
     /// The count of frames through the last one taken since the call of the commit in
     /// `due`.
     taken: Option<u64>,
@@ -320,7 +320,13 @@ struct Replies {
 }
 
 impl Replies {
-    /// Counts the next frame of the stream, and sends its `outcome` in `block`.
+    /// Counts the frame whose head came, and gives a block for its outcome.
+    fn head(&mut self, state: &RefCell<State>) -> Result<Unique, Error> {
+        self.headed += 1;
+        alloc(state, Outcome::LEN_MAX)
+    }
+
+    /// Sends `outcome`, of the frame of the last head, in `block`.
     async fn outcome(
         &mut self,
         state: &RefCell<State>,
@@ -328,12 +334,11 @@ impl Replies {
         block: Unique,
         outcome: Outcome,
     ) -> Result<(), Error> {
-        self.counted += 1;
+        let frame = self.headed;
         if let Outcome::Taken { .. } = outcome {
-            self.taken = Some(self.counted);
+            self.taken = Some(frame);
             self.call(state);
         }
-        let frame = self.counted;
         send(sender, block, Reply::Outcome { frame, outcome }).await
     }
 
