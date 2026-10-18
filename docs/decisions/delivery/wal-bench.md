@@ -137,4 +137,6 @@
   node, whose model of a disk made an open 4 to 11 times slower on box2 (916.9, 1051.5,
   and 1161.3 ms for 16, 64, and 256 indexes at 256 MiB), so a time would measure the
   sim. Lost: a count of commits from the sizes of the record format, which copies
-  private sizes and does not check the wrap.
+  private sizes and does not check the wrap. Decided by `laptop.architect` (#3092,
+  2026-10-18T00:47:37Z):
+  https://github.com/synnaxlabs/foundation/pull/3092#issuecomment-6243886565.
