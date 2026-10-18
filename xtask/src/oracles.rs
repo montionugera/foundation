@@ -163,10 +163,11 @@ mod tests {
                 "oracle test target `ignored` of `a` runs no tests. An oracle must \
                  run at least one test that is not ignored."
                     .to_string(),
-                "`oracles/orphan.rs` is not compiled by an oracle test target, so \
-                 no gate runs it. Make it the `path` of a `[[test]]` entry, or a \
-                 module of one."
-                    .to_string(),
+                format!(
+                    "`{}` is not compiled by an oracle test target, so no gate runs \
+                     it. Make it the `path` of a `[[test]]` entry, or a module of one.",
+                    crate::common::native("oracles/orphan.rs")
+                ),
             ])
         );
     }

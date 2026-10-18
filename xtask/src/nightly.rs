@@ -76,7 +76,7 @@ fn parse_host(output: &Output) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::{create_stable_root, output};
+    use crate::common::{EXITED, NO_FILE, create_stable_root, output};
     use crate::fixture;
 
     #[test]
@@ -94,7 +94,7 @@ mod tests {
         assert_eq!(
             Toolchain::read(&root).err(),
             Some(format!(
-                "{}: No such file or directory (os error 2)",
+                "{}: {NO_FILE}",
                 root.join("rust-toolchain-nightly").display()
             ))
         );
@@ -129,19 +129,22 @@ mod tests {
         let error = "error: toolchain 'nightly-x' is not installed\n";
         assert_eq!(
             parse_host(&output(1, "", error)),
-            Err("exit status: 1: error: toolchain 'nightly-x' is not installed".into())
+            Err(format!(
+                "{EXITED}: 1: error: toolchain 'nightly-x' is not installed"
+            ))
         );
         assert_eq!(
             parse_host(&output(2, "", "")),
-            Err("exit status: 2: ".into())
+            Err(format!("{EXITED}: 2: "))
         );
     }
 
     #[test]
     fn names_rustup_and_the_pin_when_the_pin_is_not_installed() {
         let error = Toolchain::read(&fixture()).unwrap().host().unwrap_err();
-        let command = "`rustup run nightly-2000-01-01 rustc -vV`: exit status: 1: ";
-        assert!(error.starts_with(command), "{error}");
+        let command =
+            format!("`rustup run nightly-2000-01-01 rustc -vV`: {EXITED}: 1: ");
+        assert!(error.starts_with(&command), "{error}");
         assert!(error.contains("'nightly-2000-01-01"), "{error}");
     }
 }

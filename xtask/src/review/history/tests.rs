@@ -9,12 +9,19 @@ pub(crate) struct Repo {
 }
 
 impl Repo {
+    /// The directory of the repository `name` of this process.
+    fn dir(name: &str) -> PathBuf {
+        std::env::temp_dir()
+            .join(format!("xtask-history-{name}-{}", std::process::id()))
+    }
+
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir()
-            .join(format!("xtask-history-{name}-{}", std::process::id()));
+        let dir = Self::dir(name);
         // A failed or killed run with the same PID can leave the directory behind.
         match std::fs::remove_dir_all(&dir) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("{e}"),
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                panic!("remove {}: {e}", dir.display())
+            }
             _ => {}
         }
         std::fs::create_dir_all(&dir).unwrap();
@@ -76,24 +83,34 @@ impl Repo {
         (repo, end)
     }
 
+    /// Puts `name`, a name of any bytes, in the index with git's `mode` and the text
+    /// `text`, through plumbing: a work tree on macOS refuses a name that is not
+    /// UTF-8, Windows passes no such name as an argument, and a link on Windows needs
+    /// a privilege.
+    fn add(&self, mode: &str, name: &[u8], text: &str) {
+        std::fs::write(self.dir.join("blob"), text).unwrap();
+        let blob = self.git(&["hash-object", "-w", "blob"]);
+        let entry =
+            [mode.as_bytes(), b" ", blob.as_bytes(), b"\t", name, b"\0"].concat();
+        // Git for Windows ignores a name that NTFS refuses, with exit 0, unless
+        // `core.protectNTFS` is off.
+        let mut child = self
+            .command()
+            .args(["-c", "core.protectNTFS=false"])
+            .args(["update-index", "-z", "--index-info"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&entry).unwrap();
+        assert!(child.wait().unwrap().success());
+    }
+
     /// Commits a tree of `files`, each a name of any bytes and its text, with
-    /// `parents`, through plumbing, since a work tree on macOS refuses a name that is
-    /// not UTF-8. Returns the commit.
-    #[cfg(unix)]
+    /// `parents`, through plumbing. Returns the commit.
     fn commit_tree(&self, files: &[(&[u8], &str)], parents: &[&str]) -> String {
-        use std::os::unix::ffi::OsStrExt;
         self.git(&["read-tree", "--empty"]);
         for (name, text) in files {
-            std::fs::write(self.dir.join("blob"), text).unwrap();
-            let blob = self.git(&["hash-object", "-w", "blob"]);
-            let info = [b"100644,", blob.as_bytes(), b",", name].concat();
-            let status = self
-                .command()
-                .args(["update-index", "--add", "--cacheinfo"])
-                .arg(std::ffi::OsStr::from_bytes(&info))
-                .status()
-                .unwrap();
-            assert!(status.success());
+            self.add("100644", name, text);
         }
         let tree = self.git(&["write-tree"]);
         let parents = parents.iter().flat_map(|p| ["-p", p]);
@@ -722,10 +739,16 @@ fn a_nul_byte_does_not_hide_code() {
 fn reads_a_name_that_git_quotes() {
     for name in ["caf\u{e9}.rs", "a b.rs", "a\tb.rs", "\"a\".rs"] {
         let (repo, _) = Repo::with_pr("quoted");
-        let from = repo.commit(name, "fn a() {}\n");
-        let docs = repo.commit(name, "// A.\nfn a() {}\n");
+        // Windows refuses a file named with a tab or a quote.
+        let commit = |text| {
+            repo.add("100644", name.as_bytes(), text);
+            repo.git(&["commit", "--quiet", "-m", "c"]);
+            repo.head()
+        };
+        let from = commit("fn a() {}\n");
+        let docs = commit("// A.\nfn a() {}\n");
         assert_eq!(repo.code_change(&from, &docs), Ok(None), "{name:?}");
-        let code = repo.commit(name, "// A.\nfn b() {}\n");
+        let code = commit("// A.\nfn b() {}\n");
         assert_eq!(
             repo.code_change(&docs, &code),
             Ok(Some(format!("changes code at `{name}:2`"))),
@@ -1012,7 +1035,6 @@ fn an_added_line_is_numbered_in_the_end() {
     repo.remove();
 }
 
-#[cfg(unix)]
 #[test]
 fn reads_a_merge_whose_messages_are_not_utf8() {
     let repo = Repo::new("merge-bytes");
@@ -1030,7 +1052,6 @@ fn reads_a_merge_whose_messages_are_not_utf8() {
     repo.remove();
 }
 
-#[cfg(unix)]
 #[test]
 fn a_conflict_in_a_code_path_that_is_not_utf8_counts() {
     let repo = Repo::new("merge-bytes-code");
@@ -1754,16 +1775,15 @@ fn names_the_file_when_a_file_and_a_directory_of_its_name_trade_places() {
     repo.remove();
 }
 
-#[cfg(unix)]
 #[test]
 fn reads_a_link_that_a_file_replaces_as_code() {
     let (repo, _) = Repo::with_pr("link");
-    std::os::unix::fs::symlink("// a", repo.dir.join("x.rs")).unwrap();
-    repo.git(&["add", "x.rs"]);
+    repo.add("120000", b"x.rs", "// a");
     repo.git(&["commit", "--quiet", "-m", "link"]);
     let from = repo.head();
-    std::fs::remove_file(repo.dir.join("x.rs")).unwrap();
-    let end = repo.commit("x.rs", "// a\n");
+    repo.add("100644", b"x.rs", "// a\n");
+    repo.git(&["commit", "--quiet", "-m", "file"]);
+    let end = repo.head();
     assert_eq!(
         repo.code_change(&from, &end),
         Ok(Some("changes code at `x.rs`".to_string()))
@@ -1802,20 +1822,10 @@ fn a_decomposed_name_does_not_hide_code() {
     repo.remove();
 }
 
-#[cfg(unix)]
 #[test]
 fn names_a_path_that_is_not_utf8() {
-    use std::os::unix::ffi::OsStrExt;
     let (repo, from) = Repo::with_pr("bytes");
-    let blob = repo.git(&["rev-parse", "HEAD:b.txt"]);
-    let info = [b"100644,", blob.as_bytes(), b",a\xff.rs"].concat();
-    let status = repo
-        .command()
-        .args(["update-index", "--add", "--cacheinfo"])
-        .arg(std::ffi::OsStr::from_bytes(&info))
-        .status()
-        .unwrap();
-    assert!(status.success());
+    repo.add("100644", b"a\xff.rs", "pr\n");
     repo.git(&["commit", "--quiet", "-m", "bytes"]);
     assert_eq!(
         repo.code_change(&from, &repo.head()),
@@ -1964,6 +1974,21 @@ fn a_failed_removal_fails_the_test() {
     assert_eq!(
         panic.downcast_ref::<String>(),
         Some(&format!("remove {}: {missing}", dir.display()))
+    );
+}
+
+#[test]
+fn a_failed_removal_of_a_left_directory_names_it() {
+    let dir = Repo::dir("left-file");
+    std::fs::write(&dir, "").unwrap();
+    let refused = std::fs::remove_dir_all(&dir).unwrap_err();
+    let panic = std::panic::catch_unwind(|| Repo::new("left-file")).err();
+    std::fs::remove_file(&dir).unwrap();
+    assert_eq!(
+        panic
+            .as_ref()
+            .and_then(|panic| panic.downcast_ref::<String>()),
+        Some(&format!("remove {}: {refused}", dir.display()))
     );
 }
 

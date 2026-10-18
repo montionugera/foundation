@@ -497,49 +497,59 @@ fn refused(shown: &str, item: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::native;
 
     #[test]
     fn refuses_each_ignore_on_an_os_outside_its_case_and_names_what_it_cannot_read() {
-        let skips = "crates/a/src";
+        let at = |file: &str| native(&format!("crates/a/src/{file}"));
+        let lib = at("lib.rs");
         let mut expected = vec![
-            refused("bench/b/src/lib.rs", "b"),
+            refused(&native("bench/b/src/lib.rs"), "b"),
             format!(
-                "`{skips}/arity.rs`: `a`: not(unix, windows)\n^^^^^^^^^^^^^^^^^^ not() \
-                 takes 1 predicate, found 2"
+                "`{}`: `a`: not(unix, windows)\n^^^^^^^^^^^^^^^^^^ not() takes 1 \
+                 predicate, found 2",
+                at("arity.rs")
             ),
-            refused(&format!("{skips}/everywhere.rs"), "a"),
-            refused(&format!("{skips}/everywhere.rs"), "b"),
-            refused(&format!("{skips}/everywhere.rs"), "c"),
-            refused(&format!("{skips}/inline_dir/inner.rs"), "a"),
-            refused("crates/a/src/lib.rs", "a"),
-            "`crates/a/src/lib.rs`: `chosen`: a `path` in a `cfg_attr`".into(),
-            "`crates/a/src/lib.rs`: `missing`: no file for the module `missing`".into(),
-            format!("`{skips}/list.rs`: `b::a`: `ignore` takes no list"),
-            format!("`{skips}/literal.rs`: `a`: a value that is no string literal"),
-            format!("`{skips}/parse.rs`: cannot parse string into token stream"),
-            refused(&format!("{skips}/pathed_file.rs"), "a"),
+            refused(&at("everywhere.rs"), "a"),
+            refused(&at("everywhere.rs"), "b"),
+            refused(&at("everywhere.rs"), "c"),
+            refused(&at("inline_dir/inner.rs"), "a"),
+            refused(&lib, "a"),
+            format!("`{lib}`: `chosen`: a `path` in a `cfg_attr`"),
+            format!("`{lib}`: `missing`: no file for the module `missing`"),
+            format!("`{}`: `b::a`: `ignore` takes no list", at("list.rs")),
+            format!(
+                "`{}`: `a`: a value that is no string literal",
+                at("literal.rs")
+            ),
+            format!(
+                "`{}`: cannot parse string into token stream",
+                at("parse.rs")
+            ),
+            refused(&at("pathed_file.rs"), "a"),
         ];
-        let reasons_rs = format!("{skips}/reasons.rs");
+        let reasons_rs = at("reasons.rs");
         expected.extend(["comma", "or", "slash"].map(|i| refused(&reasons_rs, i)));
         let items = [
             "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n::o",
             "n::p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
         ];
-        let refused_rs = format!("{skips}/refused.rs");
+        let refused_rs = at("refused.rs");
         expected.extend(items.map(|i| refused(&refused_rs, i)));
         expected.extend([
             format!(
-                "`{skips}/target.rs`: `a`: a `cfg` predicate with no known value on \
-                 `x86_64-pc-windows-msvc`"
+                "`{}`: `a`: a `cfg` predicate with no known value on \
+                 `x86_64-pc-windows-msvc`",
+                at("target.rs")
             ),
-            refused(&format!("{skips}/type.rs"), "a"),
-            refused(&format!("{skips}/unix.rs"), "b"),
+            refused(&at("type.rs"), "a"),
+            refused(&at("unix.rs"), "b"),
             format!(
-                "`{skips}/unknown.rs`: `a`: nany(unix)\n    ^ expected one of `=`, \
-                 `,`, `)` here"
+                "`{}`: `a`: nany(unix)\n    ^ expected one of `=`, `,`, `)` here",
+                at("unknown.rs")
             ),
-            refused(&format!("{skips}/windows.rs"), "a"),
-            refused("oracles/a/common.rs", "ready_on_each_os"),
+            refused(&at("windows.rs"), "a"),
+            refused(&native("oracles/a/common.rs"), "ready_on_each_os"),
             refused("outside.rs", "on_each_os"),
         ]);
         assert_eq!(check(&crate::fixture().join("skips")), Err(expected));
