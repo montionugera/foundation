@@ -15,6 +15,8 @@
 //! - `node 1x2`: as `live 1x2`, of `Time::Node`, so the node stamps the index.
 //! - `live 100x2`: as `live 1x2`, with 100 samples per series.
 //! - `live 1x64`: as `live 1x2`, with an index and 63 data channels.
+//! - `waiting 1x2`: as `live 1x2`, while a writer of the home holds control of the
+//!   channels, so the home refuses each frame as `Waiting`.
 //!
 //! Compare two builds on one pinned core whose SMT sibling is idle.
 
@@ -56,7 +58,7 @@ use types::frame::{Form, Path};
 use types::sample::{Scalar, Type};
 use types::time::Span;
 use wire::hub::client::Place;
-use wire::hub::write::{Head, Outcome, Reply, Time};
+use wire::hub::write::{Head, Outcome, Refusal, Reply, Time};
 
 #[global_allocator]
 static ALLOCATOR: counting::Allocator = counting::Allocator::new();
@@ -79,32 +81,45 @@ struct Case {
     count: u32,
     /// Series per frame: the index and its data channels.
     series: u32,
+    /// A writer of the home holds control, so each frame is refused as `Waiting`.
+    waiting: bool,
 }
 
-const CASES: [Case; 4] = [
+const CASES: [Case; 5] = [
     Case {
         name: "live 1x2",
         node: false,
         count: 1,
         series: 2,
+        waiting: false,
     },
     Case {
         name: "node 1x2",
         node: true,
         count: 1,
         series: 2,
+        waiting: false,
     },
     Case {
         name: "live 100x2",
         node: false,
         count: 100,
         series: 2,
+        waiting: false,
     },
     Case {
         name: "live 1x64",
         node: false,
         count: 1,
         series: 64,
+        waiting: false,
+    },
+    Case {
+        name: "waiting 1x2",
+        node: false,
+        count: 1,
+        series: 2,
+        waiting: true,
     },
 ];
 
@@ -173,7 +188,18 @@ async fn bench(
     let mut lines = vec![control(&node, &hub, now, &mut timer, &progress).await];
     let (session, remote) = serving::program(&transport, &hub, &tasks).await;
     let mut partial = 0;
-    for case in CASES {
+    for (at, case) in CASES.iter().enumerate() {
+        let holder = if case.waiting {
+            let config = writer::Config {
+                subject: name("holder"),
+                authority: Authority(1),
+                lease: None,
+                channels: vec![channel_name(base(at) + 1)],
+            };
+            Some(hub.writer(config).await.expect("opens"))
+        } else {
+            None
+        };
         let accepted = net::stream(&session).await;
         let mut serving = pin!(remote.serve(accepted));
         let mut line = Line::new(case.name, FRAMES);
@@ -209,6 +235,7 @@ async fn bench(
         }
         let served = serving.await;
         assert!(matches!(served, Ok(Served::Ended)), "{served:?}");
+        drop(holder);
         lines.push(line);
     }
     drop(session.closed().await);
@@ -293,6 +320,11 @@ async fn program(
             while outcomes < FRAMES {
                 match stream.reply().await {
                     Reply::Outcome(Outcome::Taken { .. }) => outcomes += 1,
+                    Reply::Outcome(Outcome::Refused(Refusal::Waiting))
+                        if case.waiting =>
+                    {
+                        outcomes += 1;
+                    }
                     Reply::Stored { .. } => {
                         progress.stored.fetch_add(1, Ordering::Relaxed);
                     }
