@@ -153,6 +153,14 @@ fn refused() -> Vec<(Document, Vec<Diagnostic>)> {
     ]
 }
 
+/// A config with no `read` block checks with no diagnostic and no write.
+#[test]
+fn checks_a_config_with_no_read() {
+    let config = config("opc.tcp://plc:4840", "10Hz", Vec::new());
+    let checked = kinds().check("opcua", None, &config);
+    assert_eq!(checked.map(|channels| channels.writes), Ok(Vec::new()));
+}
+
 fn attribute(key: &str, text: &str) -> Attribute {
     Attribute {
         key: key.into(),
