@@ -1,9 +1,11 @@
 - **BLOCK MEMORY (2026-10-04)** A `block::Pool` gets its address space through
   `block::Memory`, a small `unsafe` trait in `block`, because `block` sits below `env`.
   `os` implements it over `mmap` (reserve, commit, purge); `block::Heap` implements it
-  over `std::alloc` for tests, Miri, and `sim`. `Heap` writes zero over a page at its
-  first commit, so a pool on it touches only the pages it commits. The record of the
-  page bits is one allocation in `new`, and `commit` allocates nothing
+  over `std::alloc` for tests, Miri, `sim`, and small pools that need no mapping of
+  their own: those of a client session (the SDK and `node::client`), and those of the
+  sector reads and writes and the name read of `node`. `Heap` writes zero over a page
+  at its first commit, so a pool on it touches only the pages it commits. The record
+  of the page bits is one allocation in `new`, and `commit` allocates nothing
   (`laptop.architect`, 2026-10-18T05:38:15Z, #3136:
   https://github.com/synnaxlabs/foundation/issues/3136#issuecomment-6246174511).
   `block` makes no OS call. `alloc` takes
