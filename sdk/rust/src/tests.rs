@@ -34,13 +34,31 @@ fn each_error_names_its_cause() {
     };
     let bind = Error::Bind(transport::Error::TimedOut);
     let session = Error::Session(program::Error::Unanswered);
+    let stream = Error::Stream(program::Error::Unanswered);
+    let value = Error::Value {
+        place: 2,
+        scalar: Scalar::F64,
+        data_type: Type::Scalar(Scalar::I64),
+    };
+    let errors = [
+        thread,
+        bind,
+        session,
+        stream,
+        Error::Panicked,
+        value,
+        Error::Closed,
+    ];
     assert_eq!(
-        [thread, bind, session, Error::Panicked].map(|e| e.to_string()),
+        errors.map(|e| e.to_string()),
         [
             "cannot start the client thread: out of memory",
             "cannot bind the local UDP socket: the peer stopped answering",
             "the node finished a stream with no answer",
+            "the node finished a stream with no answer",
             "the client thread panicked",
+            "place 2 holds i64, not f64",
+            "the client is closed",
         ]
     );
 }
@@ -52,7 +70,7 @@ fn each_error_names_its_cause() {
 
 /// A client whose thread sends `Ok`, waits for its end, and then runs `after`.
 fn client(after: impl FnOnce() -> Result<(), Error> + Send + 'static) -> Client {
-    let started = Client::start(|_, outcome, ended| async move {
+    let started = Client::start(|_, outcome, ended, _| async move {
         outcome.send(Ok(())).unwrap();
         drop(ended.await);
         if let Err(error) = after() {
@@ -74,6 +92,32 @@ fn a_close_ends_the_thread_and_waits_for_it() {
 }
 
 #[test]
+fn an_open_of_a_writer_sends_its_config_to_the_thread() {
+    let (sent, received) = mpsc::channel();
+    let started = Client::start(|_, outcome, ended, mut opens| async move {
+        outcome.send(Ok(())).unwrap();
+        let open = opens.recv().await.unwrap();
+        sent.send(format!("{open:?}")).unwrap();
+        drop(open);
+        drop(ended.await);
+    });
+    let client = started.expect("a client");
+    let config = write::Config::new(vec!["count".parse().unwrap()]);
+    assert_eq!(client.open_writer(config).map(drop), Err(Error::Closed));
+    let open = received.try_recv().unwrap();
+    assert!(open.contains("count"), "{open}");
+    assert_eq!(client.close(), Ok(()));
+}
+
+#[test]
+fn an_open_of_a_writer_after_the_thread_ended_gives_closed() {
+    let client = client(|| Ok(()));
+    let config = write::Config::new(vec!["count".parse().unwrap()]);
+    assert_eq!(client.open_writer(config).map(drop), Err(Error::Closed));
+    assert_eq!(client.close(), Ok(()));
+}
+
+#[test]
 fn a_close_gives_the_error_that_ended_the_session() {
     let failed = Error::Session(program::Error::Unanswered);
     let error = failed.clone();
@@ -89,7 +133,7 @@ fn a_close_gives_panicked_when_the_thread_panicked() {
 
 #[test]
 fn a_close_gives_panicked_when_a_task_panicked() {
-    let started = Client::start(|tasks, outcome, _| async move {
+    let started = Client::start(|tasks, outcome, _, _| async move {
         outcome.send(Ok(())).unwrap();
         tasks.spawn(async { panic!("a task failed") });
         std::future::pending::<()>().await;
@@ -117,7 +161,7 @@ fn a_drop_ends_the_thread_and_does_not_wait() {
 
 #[test]
 fn a_connect_gives_panicked_when_the_thread_panics_after_its_error() {
-    let started = Client::start(|_, outcome, _| async move {
+    let started = Client::start(|_, outcome, _, _| async move {
         let error = Error::Session(program::Error::Unanswered);
         outcome.send(Err(error)).unwrap();
         panic!("the session failed");
@@ -127,7 +171,7 @@ fn a_connect_gives_panicked_when_the_thread_panics_after_its_error() {
 
 #[test]
 fn a_connect_gives_panicked_when_the_thread_panics_before_its_outcome() {
-    let started = Client::start(|_, _, _| async { panic!("the session failed") });
+    let started = Client::start(|_, _, _, _| async { panic!("the session failed") });
     assert_eq!(started.err(), Some(Error::Panicked));
 }
 
@@ -162,7 +206,7 @@ fn the_thread_logs_to_the_dispatch_of_the_caller_of_connect() {
     let count = Count::default();
     let client =
         tracing::dispatcher::with_default(&Dispatch::new(count.clone()), || {
-            Client::start(|_, outcome, _| async move {
+            Client::start(|_, outcome, _, _| async move {
                 tracing::info!("the client started");
                 outcome.send(Ok(())).unwrap();
             })

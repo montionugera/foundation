@@ -1,15 +1,21 @@
 //! The Rust SDK: a program's session with one Foundation node.
 
 use std::fmt;
+use std::future::poll_fn;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::{Mutex, mpsc};
+use std::task::Poll;
 
 use env::tasks::{Group, Tasks};
 use env::thread::Handle;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use types::ed25519::{PrivateKey, PublicKey};
 use types::name::Name;
+use types::sample::{Scalar, Type};
+
+pub mod write;
 
 /// The budget of the pool of the transport and the session. Its largest block holds a
 /// datagram.
@@ -49,7 +55,10 @@ pub struct Subject {
 /// that thread then sends the close and ends. [`Client::close`] waits for both. A
 /// panic of the thread after a drop goes to the panic hook of the process.
 #[derive(Debug)]
-pub struct Client(Mutex<Thread>);
+pub struct Client {
+    thread: Mutex<Thread>,
+    requests: tokio::sync::mpsc::UnboundedSender<write::Open>,
+}
 
 /// The thread that holds the session, the sender whose drop ends it, and the outcomes
 /// that it sends. A drop detaches the thread.
@@ -74,16 +83,22 @@ impl Client {
     /// `node` with no address is unreachable with no attempt.
     pub fn connect(node: &Node, subject: Subject) -> Result<Self, Error> {
         let node = node.clone();
-        Self::start(move |tasks, outcome, ended| {
-            run(node, subject, tasks, outcome, ended)
+        Self::start(move |tasks, outcome, ended, requests| {
+            run(node, subject, tasks, outcome, ended, requests)
         })
     }
 
     /// Starts the client's thread on a shard of `os` that logs to the caller's
-    /// dispatch, runs `main` on it, and blocks until `main` sends its outcome.
+    /// dispatch, runs `main` on it, and blocks until `main` sends its outcome. `main`
+    /// takes the requests of each call such as [`Client::open_writer`].
     fn start<M, F>(main: M) -> Result<Self, Error>
     where
-        M: FnOnce(Tasks, mpsc::Sender<Result<(), Error>>, oneshot::Receiver<()>) -> F
+        M: FnOnce(
+                Tasks,
+                mpsc::Sender<Result<(), Error>>,
+                oneshot::Receiver<()>,
+                Requests,
+            ) -> F
             + Send
             + 'static,
         F: Future<Output = ()> + 'static,
@@ -95,12 +110,13 @@ impl Client {
         let shards = os::shards().map_err(|e| thread(&e))?.logged(log);
         let (sender, outcome) = mpsc::channel();
         let (end, ended) = oneshot::channel();
+        let (requests, opened) = tokio::sync::mpsc::unbounded_channel();
         let config = env::shards::Config {
             name: "foundation-sdk".into(),
             core: None,
         };
         let handle = shards
-            .start(config, move |tasks| main(tasks, sender, ended))
+            .start(config, move |tasks| main(tasks, sender, ended, opened))
             .map_err(|e| thread(&e))?;
         #[expect(
             clippy::disallowed_methods,
@@ -113,7 +129,10 @@ impl Client {
             handle,
         };
         match connected {
-            Ok(Ok(())) => Ok(Self(Mutex::new(thread))),
+            Ok(Ok(())) => Ok(Self {
+                thread: Mutex::new(thread),
+                requests,
+            }),
             Ok(Err(error)) => thread.end().and(Err(error)),
             Err(_) => {
                 thread.end()?;
@@ -124,6 +143,21 @@ impl Client {
 }
 
 impl Client {
+    /// Opens a writer on `config.channels` at the client's node, and blocks until the
+    /// node opened it. The node must be the home of their index.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Closed`] when the client's session ended at a close or a drop.
+    /// [`Error::Session`] with the error that ended the session when it failed. Else
+    /// [`Error::Stream`] with each error of `program::Session::writer`, such as
+    /// `Refused(UNKNOWN)` for a name of no channel, `Refused(NOT_HOME)` when the node
+    /// is not the home of their index, and `Refused(MALFORMED)` for channels of more
+    /// than one index.
+    pub fn open_writer(&self, config: write::Config) -> Result<write::Writer, Error> {
+        write::Writer::open(&self.requests, config)
+    }
+
     /// Closes the session, and blocks until the close goes out, the transport drains
     /// each close (such as that of a dial that lost the stagger to another address,
     /// up to 3 s), and the client's thread ends.
@@ -138,7 +172,7 @@ impl Client {
         reason = "no call locks the thread, so it is never poisoned"
     )]
     pub fn close(self) -> Result<(), Error> {
-        self.0
+        self.thread
             .into_inner()
             .expect("invariant: no call locks the thread of a client")
             .end()
@@ -169,10 +203,24 @@ pub enum Error {
     /// The session failed before the node admitted the hello, or ended before the
     /// close.
     Session(program::Error),
+    /// The node refused the open of a stream, or a call of a writer failed. The
+    /// session goes on.
+    Stream(program::Error),
     /// The client's thread panicked, and the panic hook of the process got its
     /// message. Only a build where panics unwind gives it: with `panic = "abort"`, the
     /// panic ends the process.
     Panicked,
+    /// A value of a write is not of the type of its place. The write sent nothing.
+    Value {
+        /// The place that the value names.
+        place: usize,
+        /// The scalar of the value.
+        scalar: Scalar,
+        /// The type of the place.
+        data_type: Type,
+    },
+    /// The client's session ended at [`Client::close`] or a drop of the client.
+    Closed,
 }
 
 impl fmt::Display for Error {
@@ -182,30 +230,45 @@ impl fmt::Display for Error {
                 write!(f, "cannot start the client thread: {reason}")
             }
             Self::Bind(error) => write!(f, "cannot bind the local UDP socket: {error}"),
-            Self::Session(error) => write!(f, "{error}"),
+            Self::Session(error) | Self::Stream(error) => write!(f, "{error}"),
             Self::Panicked => write!(f, "the client thread panicked"),
+            Self::Value {
+                place,
+                scalar,
+                data_type,
+            } => {
+                let scalar = Type::Scalar(*scalar);
+                write!(f, "place {place} holds {data_type}, not {scalar}")
+            }
+            Self::Closed => write!(f, "the client is closed"),
         }
     }
 }
 
 impl std::error::Error for Error {}
 
+/// The requests of the calls of a client, which its thread serves.
+type Requests = tokio::sync::mpsc::UnboundedReceiver<write::Open>;
+
 /// The main function of the client's thread: connects, sends the outcome, and holds
-/// the session until `ended` completes. It then sends the error that ended the
-/// session before `ended`, if any, and waits for each task, so that the close of the
-/// session goes out.
+/// the session and serves each of `requests` until `ended` completes. It then ends
+/// each writer, sends the error that ended the session before `ended`, if any, and
+/// waits for each task, so that the close of the session goes out.
 async fn run(
     node: Node,
     subject: Subject,
     tasks: Tasks,
     outcome: mpsc::Sender<Result<(), Error>>,
     ended: oneshot::Receiver<()>,
+    requests: Requests,
 ) {
     let group = Group::new(tasks);
     match connect(node, subject, group.tasks().clone()).await {
         Ok(session) => {
             drop(outcome.send(Ok(())));
-            drop(ended.await);
+            // `_close` drops before the wait for the tasks, which ends each writer.
+            let (_close, closed) = watch::channel(());
+            served(&session, group.tasks(), ended, requests, &closed).await;
             if let Some(error) = session.ended() {
                 drop(outcome.send(Err(Error::Session(error))));
             }
@@ -213,6 +276,27 @@ async fn run(
         Err(error) => drop(outcome.send(Err(error))),
     }
     group.ended().await;
+}
+
+/// Serves each of `requests` in a task on `tasks` until `ended` completes or the
+/// client dropped. Each task ends when `closed` changes.
+async fn served(
+    session: &program::Session,
+    tasks: &Tasks,
+    mut ended: oneshot::Receiver<()>,
+    mut requests: Requests,
+    closed: &watch::Receiver<()>,
+) {
+    while let Some(open) = poll_fn(|cx| {
+        if Pin::new(&mut ended).poll(cx).is_ready() {
+            return Poll::Ready(None);
+        }
+        requests.poll_recv(cx)
+    })
+    .await
+    {
+        tasks.spawn(write::serve(session.clone(), open, closed.clone()));
+    }
 }
 
 /// A session with `node` as `subject`, on the drivers of `os` and `tasks`.
