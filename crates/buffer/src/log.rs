@@ -3923,6 +3923,29 @@ mod tests {
         assert_eq!(indexes(&tails), [3]);
     }
 
+    /// The record at 8192 holds two tails, and a call of limit 2 that took the tail
+    /// of 4096 leaves out both. The next call takes them from the first.
+    #[test]
+    fn a_carry_leaves_out_each_holder_of_a_record_that_does_not_fit() {
+        let mut logs = Logs::new(AREA);
+        synced(&mut logs, 1, 4096);
+        synced(&mut logs, 2, 8192);
+        synced(&mut logs, 3, 8192);
+        let indexes = |tails: &Carried| -> Vec<u128> {
+            tails
+                .tails()
+                .iter()
+                .map(|tail| tail.index.as_u128())
+                .collect()
+        };
+        let mut tails = Carried::default();
+        logs.carry(12288, tails_body(2), &mut tails);
+        assert_eq!(indexes(&tails), [1]);
+        assert_eq!(tails.len(), tails_body(1));
+        logs.carry(12288, tails_body(2), &mut tails);
+        assert_eq!(indexes(&tails), [2, 3]);
+    }
+
     /// A call clears `carried` first, so a call that takes no tail before the reach
     /// gives none and stops there, also when `carried` holds the tails of a call
     /// before it.
