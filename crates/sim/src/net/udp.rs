@@ -11,7 +11,7 @@ use env::net::{Ecn, Error};
 use types::time::Monotonic;
 
 use super::wire::Wire;
-use super::{Fate, NOT_AVAILABLE, addresses, ip_header, receives};
+use super::{Fate, INVALID, NOT_AVAILABLE, addresses, ip_header, receives};
 use crate::EIO;
 use crate::log::Waker;
 
@@ -368,8 +368,9 @@ impl<'a> Udp<'a> {
 /// # Errors
 ///
 /// [`Error::Unreachable`] when the socket's family cannot reach the destination, and
-/// [`Error::Io`] with code 99 when `transmit` names a source that is neither the
-/// link-local `local` nor the address of `node` of the destination's family.
+/// [`Error::Io`] when `transmit` names a source that is neither the link-local `local`
+/// nor the address of `node` of the destination's family: code 22 (`EINVAL`) for an
+/// IPv6 source, as on Linux, and code 99 for an IPv4 source.
 fn route(
     node: usize,
     local: SocketAddr,
@@ -397,9 +398,8 @@ fn route(
     };
     let ip = ip.or(link_local).unwrap_or(routable);
     if ip != routable && Some(ip) != link_local {
-        return Err(Error::Io {
-            code: NOT_AVAILABLE,
-        });
+        let code = if ip.is_ipv4() { NOT_AVAILABLE } else { INVALID };
+        return Err(Error::Io { code });
     }
     // A link-local `local` keeps scope 2, the one interface of each node, which is
     // the scope that the peer sees on the source.

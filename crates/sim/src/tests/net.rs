@@ -1253,6 +1253,32 @@ fn a_send_from_an_address_of_another_node_fails() {
     sent(|a| at(a, 4433), spoof, Err(Net::Io { code: 99 }));
 }
 
+/// As on Linux, a socket on the link-local address that names an IPv6 address of
+/// another node as the source gets code 22 (`EINVAL`).
+#[test]
+fn a_link_local_socket_cannot_send_from_an_address_of_another_node() {
+    let local = |a: &node::Node| {
+        let (ip, interface) = a.link_local();
+        SocketAddr::V6(SocketAddrV6::new(ip, 4433, 0, interface))
+    };
+    let spoof = |_: &node::Node, b: &node::Node| Transmit {
+        source: Some(b.addresses()[1]),
+        ..transmit(v6(b), b"spoof")
+    };
+    sent(local, spoof, Err(Net::Io { code: 22 }));
+}
+
+/// As on Linux, a socket with no interface that names its link-local address as the
+/// source gets code 22 (`EINVAL`).
+#[test]
+fn a_socket_on_the_unspecified_v6_address_cannot_send_from_its_link_local_address() {
+    let make = |a: &node::Node, b: &node::Node| Transmit {
+        source: Some(IpAddr::V6(a.link_local().0)),
+        ..transmit(v6(b), b"v6")
+    };
+    sent(|_| any(), make, Err(Net::Io { code: 22 }));
+}
+
 /// As with `IPV6_PKTINFO` on Linux, a socket on the link-local address sends from the
 /// routable IPv6 address of its node when the transmit names it.
 #[test]
