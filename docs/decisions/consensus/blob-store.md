@@ -24,10 +24,12 @@
   the cache that no sync covers, and a put that trusted a read of them would return
   before they are durable. A put refuses a chunk longer than the largest block of the
   pool before any file call. A put of a digest that a put stored since the open makes no
-  file call. A put whose future is dropped stores nothing that a get gives unchecked:
-  a get of the digest gives only bytes that it read and checked, and the next put
-  writes it again (`laptop.architect`, 2026-10-15T21:44:20Z:
-  https://github.com/synnaxlabs/foundation/pull/2565#issuecomment-6202917382). Decided
+  file call. A put whose future is dropped before it returns stores nothing that a get
+  gives unchecked: a get of the digest gives only bytes that it read and checked, and
+  the next put writes it again (`laptop.architect`, 2026-10-15T21:44:20Z:
+  https://github.com/synnaxlabs/foundation/pull/2565#issuecomment-6202917382).
+  Supersedes "the next get of the digest reads the file first" of change 1 of
+  https://github.com/synnaxlabs/foundation/pull/1515#issuecomment-6043557708. Decided
   by the builder (#1515,
   https://github.com/synnaxlabs/foundation/pull/1515) and `laptop.architect`
   (2026-10-07T17:47:50Z):

@@ -154,8 +154,8 @@ pub struct Store {
     failures: Cell<u64>,
     /// The serial of the next flight. A read that saw one flight's state must not
     /// forget a later one's, so two flights that reach their create never leave equal
-    /// states. A flight dropped before it leaves the state it took: it did not change
-    /// the file. It starts at 1: serial 0 is the open's.
+    /// `Listed` or `Held` states. A flight dropped before its create leaves the state
+    /// it took: it did not change the file. It starts at 1: serial 0 is the open's.
     flights: Cell<u64>,
     /// The key of the next call that waits for a put.
     waiters: Cell<u64>,
@@ -680,6 +680,7 @@ mod tests {
             let mut put = pin!(store.put(digest, block));
             assert_eq!(poll_once(&mut put).await, Poll::Pending);
         }
+        // A dropped call runs to its end, in 100 us at most.
         node.clock().sleep(Span::from_nanos(200_000)).await;
     }
 
