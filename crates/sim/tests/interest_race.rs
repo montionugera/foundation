@@ -1,7 +1,7 @@
 //! A thread outside the sim meets a callsite while the one live dispatch is its own
-//! log, and its interest call is still in progress when a sim with a log starts.
-//! `tracing` caches the interest of each callsite for the process, so this runs in a
-//! test binary of its own, with this one test only.
+//! log, and its interest call is still in progress when the log of a sim thread is
+//! made. `tracing` caches the interest of each callsite for the process, so this runs
+//! in a test binary of its own, with this one test only.
 
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
