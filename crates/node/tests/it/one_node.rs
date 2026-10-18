@@ -1051,13 +1051,14 @@ fn import_of_a_match_adds_channels_whose_samples_reach_influxdb() {
 }
 
 /// An OPC UA connector with only its address and rate.
-const BARE: &str = "connector \"plc\" {\n  kind    = \"opcua\"\n  node    = \"edge\"\n  \
-                    address = \"opc.tcp://localhost:50000\"\n  rate    = \"10Hz\"\n}\n";
+const BARE: &str = "connector \"plc\" {\n  kind    = \"opcua\"\n  \
+                    node    = \"edge\"\n  address = \"opc.tcp://localhost:50000\"\n  \
+                    rate    = \"10Hz\"\n}\n";
 
 /// The note of an OPC UA connector with no `read` block.
-const NO_READ: &str = "the connector has no `read` block, so it reads nothing. `browse` \
-                       lists the points of the server, and `import` adds a `read` block \
-                       for each.";
+const NO_READ: &str = "the connector has no `read` block, so it reads nothing. \
+                       `browse` lists the points of the server, and `import` adds a \
+                       `read` block for each.";
 
 /// The paths that a browse of `Plant/Line` gives.
 const LINE: [&str; 7] = [
@@ -1149,7 +1150,7 @@ fn a_connector_with_no_read_applies_and_reads_after_an_import() {
 }
 
 /// The result of the tool call `name` with `arguments` through `mcp`, as call `id`.
-/// Panics when the call fails.
+/// Panics on an error reply and on a result that is an error.
 fn tool(
     mcp: &mut crate::rig::Talk,
     id: u64,
@@ -1165,11 +1166,9 @@ fn tool(
     let reply = mcp.answer(&format!("{message}\n"));
     let reply: serde_json::Value = serde_json::from_str(&reply).expect("json");
     let result = &reply["result"];
-    assert_eq!(
-        result["isError"],
-        serde_json::Value::Null,
-        "{name}: {reply}"
-    );
+    let failed = (&reply["error"], &result["isError"]);
+    let none = &serde_json::Value::Null;
+    assert_eq!(failed, (none, none), "{name}: {reply}");
     result["structuredContent"].clone()
 }
 
