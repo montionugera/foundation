@@ -14,7 +14,9 @@ impl Repo {
             .join(format!("xtask-history-{name}-{}", std::process::id()));
         // A failed or killed run with the same PID can leave the directory behind.
         match std::fs::remove_dir_all(&dir) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("{e}"),
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                panic!("remove {}: {e}", dir.display())
+            }
             _ => {}
         }
         std::fs::create_dir_all(&dir).unwrap();
@@ -1958,6 +1960,22 @@ fn a_failed_removal_fails_the_test() {
     assert_eq!(
         panic.downcast_ref::<String>(),
         Some(&format!("remove {}: {missing}", dir.display()))
+    );
+}
+
+#[test]
+fn a_failed_removal_of_a_left_directory_names_it() {
+    let dir = std::env::temp_dir()
+        .join(format!("xtask-history-left-file-{}", std::process::id()));
+    std::fs::write(&dir, "").unwrap();
+    let refused = std::fs::remove_dir_all(&dir).unwrap_err();
+    let panic = std::panic::catch_unwind(|| Repo::new("left-file")).err();
+    std::fs::remove_file(&dir).unwrap();
+    assert_eq!(
+        panic
+            .as_ref()
+            .and_then(|panic| panic.downcast_ref::<String>()),
+        Some(&format!("remove {}: {refused}", dir.display()))
     );
 }
 
