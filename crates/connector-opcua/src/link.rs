@@ -1505,7 +1505,7 @@ fn the_production_scan_reads_the_c_but_the_server_file() {
 /// `UA_Client_new` gives a client the stdout logger, whose `UA_Log_Stdout_log`
 /// `cargo xtask open62541` lets call the global clock. The production code names
 /// neither `UA_Client_new` nor a `UA_Log_Stdout` function. `shim_client_new` gives a
-/// client the logger of its loop, and the stderr tests of `event` check that.
+/// client the logger of its loop, and the log tests of `event` check that.
 #[test]
 fn the_production_code_gives_no_client_the_stdout_logger() {
     let named = named_in_production(&root(), |name| {

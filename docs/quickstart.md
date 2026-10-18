@@ -98,8 +98,8 @@ node edge runs in foundation-data. Stop it with Ctrl-C.
 ```
 
 The first line is from the log of the node, which goes to stderr. After step 4, the
-log also has a line for each change of the status of each connector, and Ctrl-C
-writes `stopped`. `--log-level warn` keeps only the warnings and errors, and
+log also has a line when a connector runs, ends, restarts, or stops, and when its
+error or note changes, and Ctrl-C writes `stopped`. `--log-level warn` keeps only the warnings and errors, and
 `--log-format json` writes each line as a JSON object.
 
 ## 4. Plan and apply the config

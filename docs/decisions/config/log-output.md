@@ -236,7 +236,9 @@
   `UA_LogCategory`). Its text is cut at 511 bytes, and each sequence that is not UTF-8
   becomes U+FFFD. A message below warning drops at each `--log-level` (#3106). The
   warnings of the connection manager keep the target `connector_opcua::connection` and
-  get no `category`. An abort in C panics with its line inside `catch_unwind`, then
-  aborts, so the panic hook writes one `panicked` line in each build before the abort.
+  get no `category`. An abort of `shim.c` panics with its line inside `catch_unwind`,
+  then aborts, so the panic hook writes one `panicked` line in each build before the
+  abort. The abort of `UA_rng_require` in the copy still writes its line to stderr with
+  `fprintf`, past the log (#2597).
   By `laptop.architect-2` (items 1 to 4 of 2026-10-18T02:16:27Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6244633633).
