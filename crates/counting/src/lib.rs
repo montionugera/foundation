@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize};
 use std::{fmt, hint, ptr, slice};
 
 mod bytes;
+/// Only Unix: it names the calling thread with `pthread_self`.
 #[cfg(unix)]
 mod local;
 

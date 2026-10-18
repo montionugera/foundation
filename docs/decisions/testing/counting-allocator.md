@@ -13,11 +13,12 @@
   3605); when Rust has one, `freed_holding` uses it and the exception goes. A binary
   that bounds the memory of a structure holds `counting::Bytes`, an atomic count of the
   bytes it holds and of the most it held; a binary holds one counting allocator,
-  `Allocator`, `Bytes`, or `Local`. `Allocator` does not keep that count: a benchmark must not pay
-  for a count that only a test reads, or its baseline moves with no product change, as
-  `transport/benches/send.rs` did (+4.2% to +11.2% at p50). Lost: `Allocator` keeps
-  `held` (that cost in each counting binary); a `bool` at construction (a branch on each
-  allocation and free, and a `held` that must panic when it is false);
+  `Allocator`, `Bytes`, or `Local`. `Allocator` does not keep that count: a benchmark
+  must not pay for a count that only a test reads, or its baseline moves with no
+  product change, as `transport/benches/send.rs` did (+4.2% to +11.2% at p50). Lost:
+  `Allocator` keeps `held` (that cost in each counting binary); a `bool` at
+  construction (a branch on each allocation and free, and a `held` that must panic
+  when it is false);
   `Allocator<const HELD: bool>` (no branch, but `Allocator<true>` says nothing at the
   call site, and no caller needs both counts in one binary). Decided by
   `laptop.architect` on 2026-10-07T16:28:07Z
@@ -62,8 +63,9 @@
   on 2026-10-12T21:54:59Z
   (https://github.com/synnaxlabs/foundation/issues/2500#issuecomment-6133319741).
   A binary that counts the allocations of one thread holds `Local`, which reads the
-  thread with `pthread_self` (Unix only). Lost: `Allocator::count_thread`, a load and a
-  branch on each allocation of each counting binary, so each benchmark baseline moves
-  for a count that only one test reads. Decided by `laptop.architect` on
-  2026-10-18T22:40:21Z
+  thread with `pthread_self` (Unix only). It counts only the thread that calls `count`,
+  so a test binary with a harness can hold it (`crates/node/tests/it`). Lost:
+  `Allocator::count_thread`, a load and a branch on each allocation of each counting
+  binary, so each benchmark baseline moves for a count that only one test reads.
+  Decided by `laptop.architect` on 2026-10-18T22:40:21Z
   (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6256055880).

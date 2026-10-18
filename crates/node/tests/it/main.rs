@@ -3,6 +3,7 @@
 #![cfg(test)]
 // The simulated servers need `os::net()`, which a `--cfg loom` build lacks.
 #![cfg(not(loom))]
+#![cfg_attr(unix, expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR"))]
 
 mod common;
 mod log;
@@ -22,6 +23,12 @@ mod status;
 use std::collections::BTreeMap;
 
 use rig::Rig;
+
+/// Only Unix: counts the allocations of the one test thread that calls `count`, so
+/// the other tests run as they do with `System`.
+#[cfg(unix)]
+#[global_allocator]
+static ALLOCATOR: counting::Local = counting::Local::new();
 
 /// The output of `status` on a node that places no connector.
 const EMPTY: &str = "You can read no connector on this node.\n";

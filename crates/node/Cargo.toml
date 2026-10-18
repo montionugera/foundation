@@ -75,9 +75,6 @@ harness = false
 name = "memory"
 harness = false
 
-[[test]]
-name = "warm"
-harness = false
 
 [[bench]]
 name = "scope"

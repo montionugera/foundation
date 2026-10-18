@@ -6,7 +6,7 @@
   until the writer closes or drops, or the client ends. Each call copies its samples
   into a frame that the writer keeps, sends it to the task on a channel of 1, and
   blocks on a `std` channel of 1 for the outcome and the frame. So a warm write makes
-  no allocation on the caller's thread (`crates/node/tests/warm.rs`, with
+  no allocation on the caller's thread (`crates/node/tests/it/sdk.rs`, with
   `counting::Local`), and no draft is held across calls. The client's thread makes the
   ACK of each frame in `record_sent_frame` of noq, about 1.1 to 1.2 allocations a write
   (a `program::Writer` alone makes about 1.04), until #3281; `sdk` makes no other.

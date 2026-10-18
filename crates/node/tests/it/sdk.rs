@@ -567,3 +567,48 @@ fn each_call_after_the_node_ended_the_session_gives_the_cause() {
     assert_eq!(opened, Err(ended.clone()));
     assert_eq!(client.close(), Err(ended));
 }
+
+/// Only Unix: `counting::Local` names the thread with `pthread_self`. A warm `write`
+/// and `write_series` make no allocation on the caller's thread.
+#[cfg(unix)]
+#[test]
+fn a_warm_write_makes_no_allocation_on_the_thread_of_its_caller() {
+    const WARMUP: usize = 100;
+    const CALLS: usize = 1_000;
+    const SAMPLES: u32 = 64;
+    let (mut rig, node, subject) = planted();
+    let client = Client::connect(&node, subject).unwrap();
+    let channels = ["plant.a", "plant.b"].map(|name| name.parse().unwrap());
+    let config = || Config::new(channels.to_vec());
+    let mut writer = client.open_writer(config()).unwrap();
+    let values = [(0, Value::I64(1)), (1, Value::I64(2))];
+    let mut write = || {
+        let written = writer.write(&values);
+        assert!(matches!(written, Ok(Outcome::Taken { .. })), "{written:?}");
+    };
+    (0..WARMUP).for_each(|_| write());
+    let ((), allocations) = crate::ALLOCATOR.count(|| (0..CALLS).for_each(|_| write()));
+    assert_eq!(allocations, 0, "{CALLS} warm writes of values allocate");
+    assert_eq!(writer.close(), Ok(()));
+
+    let mut writer = client.open_writer(config()).unwrap();
+    let index = writer.index();
+    let len = 8 * usize::try_from(SAMPLES).unwrap();
+    let (values, mut stamps) = (vec![3_u8; len], vec![0_u8; len]);
+    let mut next = now() + 1_000_000_000;
+    let mut write = || {
+        for stamp in stamps.as_chunks_mut::<8>().0 {
+            stamp.copy_from_slice(&next.to_le_bytes());
+            next += 1;
+        }
+        let series = [(0, values.as_slice()), (index, stamps.as_slice())];
+        let written = writer.write_series(SAMPLES, &series);
+        assert!(matches!(written, Ok(Outcome::Taken { .. })), "{written:?}");
+    };
+    (0..WARMUP).for_each(|_| write());
+    let ((), allocations) = crate::ALLOCATOR.count(|| (0..CALLS).for_each(|_| write()));
+    assert_eq!(allocations, 0, "{CALLS} warm writes of series allocate");
+    assert_eq!(writer.close(), Ok(()));
+    assert_eq!(client.close(), Ok(()));
+    rig.stop();
+}
