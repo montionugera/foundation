@@ -128,9 +128,17 @@ impl Files {
     ///
     /// # Errors
     ///
-    /// As [`Files::open`], and [`Error::Io`] with code 22 (`EINVAL`) for a file that is
+    /// As [`Files::open`], [`Error::Io`] with code 21 (`EISDIR`) for a directory, also
+    /// one that this user cannot read, and code 22 (`EINVAL`) for a file that is
     /// neither a regular file nor a directory, such as a FIFO or a device. The open
-    /// does not wait for a writer of a FIFO.
+    /// does not wait for a writer of a FIFO. When another writer changes a link in
+    /// `path` during the call, it gives the error of the open of the file that the link
+    /// then names, and opens that file, also a device. On Linux, the walk of a link
+    /// that a rename replaces during the call can read only a first part of its old
+    /// target, also none of it, so the call can open the folder of the link, or a
+    /// folder on the way to that target, such as `/`, and the rest of `path` resolves
+    /// under that folder. When the link is the last part of `path`, the call gives code
+    /// 21.
     ///
     /// ```
     /// use env::files::Absolute;
@@ -369,6 +377,20 @@ impl File {
     )]
     pub fn len(&self) -> u64 {
         self.descriptor.len()
+    }
+
+    /// Whether the mode of the file gives read to other users. It does not see an ACL
+    /// entry or the modes of the directories above the file. The driver reads it at
+    /// the open, so a later change of the mode does not change it.
+    ///
+    /// ```
+    /// fn private(file: &env::files::File) -> bool {
+    ///     !file.exposed()
+    /// }
+    /// ```
+    #[must_use]
+    pub fn exposed(&self) -> bool {
+        self.descriptor.exposed()
     }
 
     /// Writes `parts` back to back at `offset`, as one vectored write. A read after
@@ -887,7 +909,8 @@ pub trait Driver {
 
     /// Opens the file at `path`, an absolute path outside the data directory, to read
     /// only, with no wait for a writer of a FIFO. It makes no file, and gives
-    /// [`Error::Io`] with code 22 (`EINVAL`) for a file that is neither a regular file
+    /// [`Error::Io`] with code 21 (`EISDIR`) for a directory, also one that this user
+    /// cannot read, and code 22 (`EINVAL`) for a file that is neither a regular file
     /// nor a directory.
     fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>>;
 
@@ -934,6 +957,10 @@ pub trait Descriptor {
     /// The length of the file in bytes. It does not change.
     fn len(&self) -> u64;
 
+    /// Whether the mode of the file gave read to other users at the open, as
+    /// [`File::exposed`] states it.
+    fn exposed(&self) -> bool;
+
     /// Writes `parts` back to back at `offset`, which [`File`] has checked.
     fn write_at<'a>(&'a self, offset: u64, parts: &'a [Block]) -> Request<'a, ()>;
 
@@ -975,6 +1002,8 @@ mod tests {
     /// Answers every call at once. Files have `len` bytes, and syncs give `sync`.
     struct Fixed {
         len: u64,
+        /// Its file is named `exposed`.
+        exposed: bool,
         sync: Result<(), Error>,
         names: Vec<PathBuf>,
         calls: Rc<RefCell<Vec<String>>>,
@@ -992,6 +1021,7 @@ mod tests {
             let calls = Rc::default();
             let driver = Self {
                 len,
+                exposed: false,
                 sync,
                 names: vec!["b".into(), "c".into(), "a".into()],
                 calls: Rc::clone(&calls),
@@ -1016,6 +1046,7 @@ mod tests {
             }
             let descriptor: Box<dyn Descriptor> = Box::new(Fixed {
                 len: self.len,
+                exposed: path.file_name() == Some(OsStr::new("exposed")),
                 sync: self.sync.clone(),
                 names: Vec::new(),
                 calls: Rc::clone(&self.calls),
@@ -1079,6 +1110,10 @@ mod tests {
     impl Descriptor for Fixed {
         fn len(&self) -> u64 {
             self.len
+        }
+
+        fn exposed(&self) -> bool {
+            self.exposed
         }
 
         fn write_at<'a>(&'a self, offset: u64, parts: &'a [Block]) -> Request<'a, ()> {
@@ -1165,6 +1200,10 @@ mod tests {
     impl Descriptor for Stuck {
         fn len(&self) -> u64 {
             0
+        }
+
+        fn exposed(&self) -> bool {
+            false
         }
 
         fn write_at<'a>(&'a self, _: u64, _: &'a [Block]) -> Request<'a, ()> {
@@ -1415,6 +1454,18 @@ mod tests {
                     found: 512,
                 }
             );
+        }
+
+        #[test]
+        fn gives_whether_the_driver_found_the_file_exposed() {
+            let (files, _) = Fixed::files(512);
+            let exposed = |path| {
+                ready(files.open(Path::new(path), Mode::Read))
+                    .expect("the driver opens")
+                    .exposed()
+            };
+            assert!(exposed("secrets/exposed"));
+            assert!(!exposed("secrets/private"));
         }
 
         #[test]
@@ -1921,6 +1972,7 @@ mod tests {
             File {
                 descriptor: Box::new(Fixed {
                     len,
+                    exposed: false,
                     sync: Ok(()),
                     names: Vec::new(),
                     calls: Rc::default(),

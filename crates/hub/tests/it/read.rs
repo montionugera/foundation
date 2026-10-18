@@ -4,6 +4,7 @@
 use std::cell::Cell;
 use std::path::{Path as FilePath, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use access::proof::{Error as Refusal, Kind};
@@ -14,7 +15,9 @@ use types::channel;
 use types::sample::Type;
 use types::time::Span;
 use wire::header::MALFORMED;
-use wire::hub::client::{self, BODY_BYTES_MAX, Mode, Open, Place, Places, REFUSED};
+use wire::hub::client::{
+    self, BODY_BYTES_MAX, Mode, Open, PLACES_MAX, Place, Places, REFUSED,
+};
 use wire::hub::{BUSY, FAILED, FromHome, NOT_HOME, UNKNOWN};
 
 use super::link::{as_agent, serve_session_on};
@@ -35,7 +38,7 @@ const START: Span = Span::from_nanos(100_000_000);
 
 /// Runs one client session on a synced [`Test`] hub, as `link::session` does, where
 /// `ready` gets the hub before the home serves the session's streams.
-fn read_session<P>(
+pub(super) fn read_session<P>(
     seed: u64,
     ready: impl AsyncFnOnce(&Test) + Send + 'static,
     program: impl FnOnce(Agent) -> P + Send + 'static,
@@ -100,7 +103,7 @@ fn place(key: u128, data_type: Type, channel: &str) -> Place {
 }
 
 /// Finishes the hello stream and waits, so the hello stream ends as `Ended`.
-async fn finish(agent: &mut Agent) {
+pub(super) async fn finish(agent: &mut Agent) {
     agent.hello.sender.finish().expect("finishes");
     agent.sleep(QUIET).await;
 }
@@ -117,12 +120,41 @@ fn sends_the_places_and_each_frame_of_a_complete_read() {
         assert_eq!(places, Places { count: 2, index: 1 });
         assert_eq!(run, [place(2, I64, "value"), place(1, STAMP, "time")]);
         for value in [10, 20] {
-            let got = got(&mut stream.receiver, &mut reader)
-                .await
-                .expect("a frame");
+            let got = got(&mut stream.receiver, &mut reader).await;
             assert_eq!(placed(&got), [0, 1]);
             assert_eq!(decoded(&got, &[I64, STAMP])[0], [value]);
         }
+        stream.sender.finish().expect("finishes");
+        assert_eq!(stream.recv().await, Ok(None));
+        finish(&mut agent).await;
+    });
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
+/// A complete read that opens after two frames gets its open position in `Opened`,
+/// and its first frame starts there.
+#[test]
+fn sends_the_open_position_of_a_complete_read_in_opened() {
+    let ready = async |test: &Test| {
+        let mut writer = test.writer("a", &["value"]).await;
+        let now = test.now();
+        for (stamp, value) in (now..).zip([10, 20]) {
+            write(&mut writer, &[stamp], &[value]);
+        }
+        let clock = test.clock.clone();
+        test.tasks.spawn(async move {
+            clock.sleep(START).await;
+            write(&mut writer, &[now + 2], &[30]);
+        });
+    };
+    let home = read_session(321, ready, |mut agent| async move {
+        agent.admit().await;
+        let mut stream = agent.read(Mode::Complete, &["value"]).await;
+        let (_, _, mut reader) = stream.opened().await;
+        assert_eq!(stream.live, Some(2));
+        let got = got(&mut stream.receiver, &mut reader).await;
+        assert_eq!(got.head.range.seq, 2);
+        assert_eq!(decoded(&got, &[I64, STAMP])[0], [30]);
         stream.sender.finish().expect("finishes");
         assert_eq!(stream.recv().await, Ok(None));
         finish(&mut agent).await;
@@ -139,9 +171,7 @@ fn sends_a_latest_read_the_index_once_when_its_selector_matches_it() {
         let (places, run, mut reader) = stream.opened().await;
         assert_eq!(places, Places { count: 2, index: 0 });
         assert_eq!(run, [place(1, STAMP, "time"), place(2, I64, "value")]);
-        let got = got(&mut stream.receiver, &mut reader)
-            .await
-            .expect("a frame");
+        let got = got(&mut stream.receiver, &mut reader).await;
         assert_eq!(placed(&got), [0, 1]);
         assert_eq!(decoded(&got, &[STAMP, I64])[1], [10]);
         stream.sender.finish().expect("finishes");
@@ -270,8 +300,9 @@ fn opens_reads_beside_a_request_and_stops_ones_over_the_share_as_busy() {
     assert_eq!(home.served[0], Err(share.clone()));
     assert_eq!(
         share.to_string(),
-        "a body of 14 bytes does not fit under the share of 16777216 bytes of subject \
-         ops.agent: its open requests and reads hold 16777208 bytes"
+        "14 bytes of a body or of the ends or names of a write do not fit under the \
+         share of 16777216 bytes of subject ops.agent: its open requests, reads, and \
+         writes hold 16777208 bytes"
     );
 }
 
@@ -377,9 +408,7 @@ fn opens_a_read_whose_places_pass_the_share() {
             .sum();
         let share = usize::try_from(BODY_BYTES_MAX).expect("fits");
         assert!(bytes > share, "the places hold {bytes} bytes");
-        let got = got(&mut stream.receiver, &mut reader)
-            .await
-            .expect("a frame");
+        let got = got(&mut stream.receiver, &mut reader).await;
         assert_eq!(placed(&got), [0, time]);
         assert_eq!(decoded(&got, &[I64, STAMP])[0], [10]);
         stream.sender.finish().expect("finishes");
@@ -387,6 +416,77 @@ fn opens_a_read_whose_places_pass_the_share() {
         finish(&mut agent).await;
     });
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
+/// The node caps the places of a read at `PLACES_MAX`: the `MANY` channels of `w` and
+/// their index are at the cap, and `value` takes them over it. The read over the cap
+/// does not carry the index, so only the read after it polls the hub's tasks, at its
+/// new carry.
+#[test]
+fn stops_a_read_whose_places_are_over_the_cap_as_malformed() {
+    const MANY: u32 = PLACES_MAX - 1;
+    let (polls, ended) = (
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let (counted, ending) = (Arc::clone(&polls), Arc::clone(&ended));
+    let ready = async move |test: &Test| {
+        let names: Vec<String> = (0..MANY).map(|n| format!("w.{n}")).collect();
+        test.define(names.iter().enumerate().map(|(n, channel)| {
+            let key = 100 + u128::try_from(n).expect("fits");
+            (key, channel.as_str(), DataType::Sample(I64), 1)
+        }))
+        .await;
+        let (pause, clock) = (Rc::clone(&test.pause), test.clock.clone());
+        let before = pause.polls.get();
+        test.tasks.spawn(async move {
+            while !ending.load(Ordering::Relaxed) {
+                counted.store(pause.polls.get() - before, Ordering::Relaxed);
+                clock.sleep(Span::MILLISECOND).await;
+            }
+        });
+    };
+    let home = read_session(322, ready, |mut agent| async move {
+        agent.admit().await;
+        let mut over = agent.read(Mode::Complete, &["w.**", "value"]).await;
+        assert_eq!(over.recv().await, reset_with(MALFORMED));
+        agent.sleep(QUIET).await;
+        assert_eq!(
+            polls.load(Ordering::Relaxed),
+            0,
+            "the read over the cap polled"
+        );
+        let mut stream = agent.read(Mode::Complete, &["w.**"]).await;
+        let (places, _, _) = stream.opened().await;
+        agent.sleep(QUIET).await;
+        assert_eq!(
+            polls.load(Ordering::Relaxed),
+            1,
+            "the new carry polled once"
+        );
+        ended.store(true, Ordering::Relaxed);
+        assert_eq!(
+            places,
+            Places {
+                count: PLACES_MAX,
+                index: MANY
+            }
+        );
+        stream.sender.finish().expect("finishes");
+        assert_eq!(stream.recv().await, Ok(None));
+        finish(&mut agent).await;
+    });
+    let over = serve::Error::Places {
+        count: usize::try_from(PLACES_MAX).expect("fits") + 1,
+    };
+    assert_eq!(
+        home.served,
+        [Err(over.clone()), Ok(Got::Ended), Ok(Got::Ended)]
+    );
+    assert_eq!(
+        over.to_string(),
+        "the open matches 65537 places, over the cap of 65536"
+    );
 }
 
 #[test]
@@ -480,7 +580,7 @@ fn stop_while_frames_come(
         let got = loop {
             match stream.recv().await {
                 Ok(Some(message)) => {
-                    if let Ok(FromHome::Head(_)) = reader.decode(&message) {
+                    if let Ok(FromHome::Head(_)) = reader.decode(Some(&message)) {
                         frames += 1;
                     }
                 }
@@ -588,10 +688,10 @@ fn stops_a_read_whose_channel_is_removed_while_its_places_wait_as_unknown() {
     );
 }
 
-/// A complete read whose program does not take its frames misses one, so the node
-/// sends `Behind` after the frames before it, and finishes the stream.
+/// A complete read whose program does not take its frames misses them live, so the
+/// node sends each of them from disk, in order.
 #[test]
-fn sends_behind_and_finishes_a_complete_read_that_misses_a_frame() {
+fn sends_a_complete_read_that_misses_a_frame_each_frame_from_disk() {
     const FRAMES: i64 = 400;
     let ready = async |test: &Test| writes_wide(test, FRAMES).await;
     let home = read_session(308, ready, |mut agent| async move {
@@ -599,14 +699,15 @@ fn sends_behind_and_finishes_a_complete_read_that_misses_a_frame() {
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
         let (_, _, mut reader) = stream.opened().await;
         agent.sleep(Span::SECOND).await;
-        let mut frames = 0;
-        while got(&mut stream.receiver, &mut reader).await.is_some() {
-            frames += 1;
+        let mut firsts = Vec::new();
+        for _ in 0..FRAMES {
+            let got = got(&mut stream.receiver, &mut reader).await;
+            firsts.push(decoded(&got, &[I64, STAMP])[1][0]);
         }
-        assert!(
-            frames > 0 && frames < FRAMES,
-            "{frames} frames before behind"
-        );
+        let expected: Vec<_> = (0..FRAMES).map(|n| firsts[0] + n * 1000).collect();
+        assert_eq!(firsts, expected);
+        stream.sender.finish().expect("finishes");
+        assert_eq!(stream.recv().await, Ok(None));
         finish(&mut agent).await;
     });
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
@@ -789,7 +890,8 @@ fn holds_the_share_of_the_open_of_a_read_while_it_waits_for_a_home() {
 }
 
 /// A node serves a read only of an index whose home it is: a read whose home is
-/// another node stops with `NOT_HOME` and interns no key set.
+/// another node stops with `NOT_HOME` and interns no key set. One over `PLACES_MAX`
+/// stops with `MALFORMED` before its home.
 #[test]
 fn stops_a_read_whose_home_is_another_node_as_not_home() {
     let (served, sets) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(None)));
@@ -806,6 +908,13 @@ fn stops_a_read_whose_home_is_another_node_as_not_home() {
         test.set_home(TIME, region::OTHER).await;
         test.set_home(TIME_B, NODE).await;
         test.hub.set_rules(rules());
+        let names: Vec<String> = (1..PLACES_MAX).map(|n| format!("w.{n}")).collect();
+        test.define(
+            names.iter().zip(100..).map(|(channel, key)| {
+                (key, channel.as_str(), DataType::Sample(I64), 1)
+            }),
+        )
+        .await;
         let before = test.writer("a", &["value-b"]).await.set().key().get();
         let session = transport.accept().await.expect("a session");
         let link = test.hub.link(session.clone());
@@ -826,6 +935,8 @@ fn stops_a_read_whose_home_is_another_node_as_not_home() {
     run_program(314, home, |node, tasks, at| {
         as_agent(node, tasks, at, |mut agent| async move {
             agent.admit().await;
+            let mut over = agent.read(Mode::Latest, &["w.**", "value"]).await;
+            assert_eq!(over.recv().await, reset_with(MALFORMED));
             let mut stream = agent.read(Mode::Latest, &["value"]).await;
             assert_eq!(stream.recv().await, reset_with(NOT_HOME));
             finish(&mut agent).await;
@@ -834,10 +945,17 @@ fn stops_a_read_whose_home_is_another_node_as_not_home() {
     let remote = reader::Error::Remote {
         home: region::OTHER,
     };
+    let over = serve::Error::Places {
+        count: usize::try_from(PLACES_MAX).expect("fits") + 1,
+    };
     let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
     assert_eq!(
         served,
-        [Err(serve::Error::Reader(Box::new(remote))), Ok(Got::Ended)]
+        [
+            Err(over),
+            Err(serve::Error::Reader(Box::new(remote))),
+            Ok(Got::Ended)
+        ]
     );
     let (before, after) = sets.lock().expect("not poisoned").take().expect("counted");
     assert_eq!(after, before + 1);

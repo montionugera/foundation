@@ -3,13 +3,13 @@
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use types::time::{Monotonic, Span, Stamp};
 
 use crate::log::Waker;
 use crate::state::lock;
-use crate::{drivers, net, shard};
+use crate::{PATH_MAX, drivers, net, shard};
 
 /// One simulated node: the `env` handles that its code gets. Clones refer to the same
 /// node.
@@ -80,6 +80,13 @@ impl Node {
     #[must_use]
     pub fn threads(&self) -> env::threads::Threads {
         env::threads::Threads::new(self.0.clone())
+    }
+
+    /// Makes the next start of a thread named `name` on the node, through
+    /// [`Node::threads`], give `thread::Error::Start` with reason `injected`. The start
+    /// drops its body. Faults on one name fire in turn, one per start.
+    pub fn fail_thread(&self, name: &str) {
+        lock(&self.0.shared).threads(self.0.node).fail(name);
     }
 
     /// The node's network, on its [`Node::addresses`].
@@ -159,6 +166,15 @@ impl Node {
         waker.wake();
     }
 
+    /// The count of open TCP streams of the node: each connect that has not given its
+    /// stream, and each stream that a connect or an accept gave and that has not
+    /// dropped. A stream that a listener holds before its accept does not count, and a
+    /// crash drops each stream of the node.
+    #[must_use]
+    pub fn streams(&self) -> usize {
+        lock(&self.0.shared).net().tcp().streams(self.0.node)
+    }
+
     /// The node's serial ports: one at each end of a line that
     /// [`Sim::line`](crate::Sim::line) joins to the node.
     ///
@@ -219,7 +235,7 @@ impl Node {
     ///   call, and [`Node::fail_file`] fails them. It gives `NotFound` when no file
     ///   is there, and the error of a read of the tree, such as one of
     ///   [`Node::fail_path`], as `Error::Io` with operation `Open`. A later write of
-    ///   the tree does not change the open file.
+    ///   the tree does not change the open file. Its file is never exposed.
     #[must_use]
     pub fn files(&self) -> env::files::Files {
         env::files::Files::new(self.0.clone())
@@ -260,23 +276,146 @@ impl Node {
             .fail(self.0.node, path, operation);
     }
 
+    /// Makes the mode of the file at `path`, relative to the data directory, give read
+    /// to other users at once, as a `chmod o+r` from outside the node does. A file
+    /// that an open makes is not exposed, as on `os`. A descriptor keeps what its open
+    /// found, and a crash keeps the setting.
+    ///
+    /// # Panics
+    ///
+    /// When `path` is absolute, has a `..` segment, or no file is at `path`.
+    pub fn expose_file(&self, path: &Path) {
+        self.set_file_exposed(path, true);
+    }
+
+    /// Makes the file at `path`, relative to the data directory, unreadable by other
+    /// users at once, as a `chmod o-r` from outside the node does.
+    ///
+    /// # Panics
+    ///
+    /// When `path` is absolute, has a `..` segment, or no file is at `path`.
+    pub fn hide_file(&self, path: &Path) {
+        self.set_file_exposed(path, false);
+    }
+
+    fn set_file_exposed(&self, path: &Path, exposed: bool) {
+        assert!(path.is_relative(), "{} is absolute", path.display());
+        let parent = path.components().any(|part| part == Component::ParentDir);
+        assert!(!parent, "{} has a `..` segment", path.display());
+        let found = lock(&self.0.shared)
+            .files()
+            .expose(self.0.node, path, exposed);
+        assert!(found, "no file is at {}", path.display());
+    }
+
     /// The files of the node's host by path: a tree in memory, apart from the node's
-    /// disk, with no file at first. A directory is there while a file is under it, so
-    /// a write makes each directory above its file. A relative path is under `/`, the
-    /// working directory. `.` and `..` act on the path as text. A call takes no time,
-    /// may come from any thread, and acts at once. A crash of the node keeps the tree.
-    /// A failure gives the code that Linux gives: 20 (`ENOTDIR`) for a path through a
-    /// file, and 21 (`EISDIR`) for a write on a directory.
+    /// disk, with no file at first. A directory is there once [`Node::make_dir`] or
+    /// `make_dir` of the paths makes it, as [`Node::link_path`] does above its link. A
+    /// relative path is under the working directory, `/` until
+    /// [`Node::set_working_dir`] sets it. A call follows each symbolic link of
+    /// [`Node::link_path`], and a `..` after a link goes above what the link names. A
+    /// call through a directory that is not there, or a read or a write of a link to
+    /// nothing, fails with `NotFound`. The home directory is the one of
+    /// [`Node::set_home`], else `None`. A call takes no time, may come from any
+    /// thread, and acts at once. A crash of the node keeps the tree, the working
+    /// directory, and the home. A failure gives the code that Linux gives: 17
+    /// (`EEXIST`) for a directory made on a file or a link, 20 (`ENOTDIR`) for a path
+    /// through a file, 21 (`EISDIR`) for a write on a directory, and 40 (`ELOOP`) for a
+    /// path through too many links.
     #[must_use]
     pub fn paths(&self) -> env::paths::Paths {
         env::paths::Paths::new(self.0.clone())
     }
 
-    /// Makes the next read or write of `path` on the node's host fail with
-    /// `env::paths::Error::Io` and `code`. Faults on one path fire in turn, one per
-    /// call, and a failed call changes no file.
+    /// Makes the next read, write, or `make_dir` of `path` on the node's host fail
+    /// with `env::paths::Error::Io` and `code`. A call is of `path` when both give one
+    /// path from the working directory at that call, with `.` and `..` taken as text
+    /// and no link followed, so a relative `path` follows a later
+    /// [`Node::set_working_dir`]. Faults that a call is of fire in the order set, one
+    /// per call, and a failed call changes no file.
     pub fn fail_path(&self, path: &Path, code: i32) {
         lock(&self.0.shared).paths().fail(self.0.node, path, code);
+    }
+
+    /// Makes a symbolic link at `path` on the node's host that names `target`, and so
+    /// each directory above it. A relative `target` is from the directory of the link,
+    /// and a link on the way to `path` is followed.
+    ///
+    /// # Panics
+    ///
+    /// When `path` is relative or `/`, has a `..` segment, goes through a file, a link
+    /// to nothing, or more than 40 links, or a file, a link, or a directory is at it,
+    /// or when `target` has 4096 bytes or more, which Linux refuses.
+    pub fn link_path(&self, path: &Path, target: &Path) {
+        assert!(path.is_absolute(), "{} is relative", path.display());
+        let long = target.as_os_str().len() >= PATH_MAX;
+        assert!(!long, "the target of {} is too long", path.display());
+        let parent = path.components().any(|part| part == Component::ParentDir);
+        assert!(!parent, "{} has a `..` segment", path.display());
+        lock(&self.0.shared).paths().link(self.0.node, path, target);
+    }
+
+    /// Makes a directory at `path` on the node's host, and so each directory above it.
+    /// A link on the way to `path` is followed, and a directory at it stays.
+    ///
+    /// # Panics
+    ///
+    /// When `path` is relative or `/`, has a `..` segment, goes through a file, a link
+    /// to nothing, or more than 40 links, or a file or a link is at it.
+    pub fn make_dir(&self, path: &Path) {
+        assert!(path.is_absolute(), "{} is relative", path.display());
+        let parent = path.components().any(|part| part == Component::ParentDir);
+        assert!(!parent, "{} has a `..` segment", path.display());
+        lock(&self.0.shared).paths().place_dir(self.0.node, path);
+    }
+
+    /// Moves the file, link, or directory at `from` on the node's host to `to`, as a
+    /// rename from outside the node does: it keeps its key, and a directory keeps
+    /// what it holds. A link on the way to `from` or `to` is followed, and a link at
+    /// `from` moves itself. When the node's working directory resolves, it stays on
+    /// the directory that it resolves to, as on a host: it moves with it when that
+    /// directory is `from` or under it, and a move of a link on its way leaves it
+    /// there. It keeps its path while that path resolves to that directory, and else
+    /// takes the path of the directory.
+    ///
+    /// # Panics
+    ///
+    /// When `from` or `to` is relative or `/`, or has a `..` segment, when nothing is
+    /// at `from`, when a file, a link, or a directory is at `to`, when the directory
+    /// of `to` is not there, or when `to` is under `from`.
+    pub fn move_path(&self, from: &Path, to: &Path) {
+        for path in [from, to] {
+            assert!(path.is_absolute(), "{} is relative", path.display());
+            let parent = path.components().any(|part| part == Component::ParentDir);
+            assert!(!parent, "{} has a `..` segment", path.display());
+        }
+        lock(&self.0.shared)
+            .paths()
+            .move_entry(self.0.node, from, to);
+    }
+
+    /// Sets the working directory of the node's host, from which each relative path
+    /// starts. Nothing need be there.
+    ///
+    /// # Panics
+    ///
+    /// When `dir` is relative or has a `..` segment.
+    pub fn set_working_dir(&self, dir: &Path) {
+        assert!(dir.is_absolute(), "{} is relative", dir.display());
+        let parent = dir.components().any(|part| part == Component::ParentDir);
+        assert!(!parent, "{} has a `..` segment", dir.display());
+        lock(&self.0.shared).paths().set_working(self.0.node, dir);
+    }
+
+    /// Sets the home directory of the user of the node's host, which
+    /// `env::paths::Paths::home` gives resolved.
+    ///
+    /// # Panics
+    ///
+    /// When `home` is relative.
+    pub fn set_home(&self, home: &Path) {
+        assert!(home.is_absolute(), "{} is relative", home.display());
+        lock(&self.0.shared).paths().set_home(self.0.node, home);
     }
 
     /// The node's IPv4 and IPv6 addresses, in that order: node `k`, from 0 in the

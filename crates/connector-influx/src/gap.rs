@@ -1,5 +1,5 @@
-//! Gap lines: one line for each run of samples that the buffer trimmed before the
-//! reader got them.
+//! Gap lines: one line for each run of samples that the reader did not get, as the
+//! buffer trimmed them or had no room for them.
 
 use std::ops::Range;
 
@@ -13,8 +13,8 @@ use crate::line::{Field, Measurement, Value};
 pub const MEASUREMENT: &str = "foundation_gaps";
 
 /// The gap of one path of one index of one connector. It holds the seqs from the first
-/// trimmed seq up to the next sample, then writes them as one line at that sample's
-/// stamp.
+/// seq that the buffer trimmed or had no room for up to the next sample, then writes
+/// them as one line at that sample's stamp.
 #[derive(Debug)]
 pub struct Gap {
     measurement: Measurement,
@@ -51,8 +51,9 @@ impl Gap {
         }
     }
 
-    /// Adds the trimmed samples with the seqs in `seqs`. The gap then holds each seq
-    /// from the least start it got, also the seqs between two ranges that do not touch.
+    /// Adds the samples that the buffer trimmed or had no room for, with the seqs in
+    /// `seqs`. The gap then holds each seq from the least start it got, also the seqs
+    /// between two ranges that do not touch.
     /// A seq that the gap already holds is held once, so a gap that the reader reports
     /// again counts once. A range with `start == end` adds nothing.
     ///
@@ -75,34 +76,31 @@ impl Gap {
         });
     }
 
-    /// Appends the gap's line to `out` and empties the gap. The line counts each seq
-    /// from the gap's first seq up to `seq`, the seq of the first sample after the
-    /// gap, and has that sample's `stamp`. An empty gap appends nothing.
+    /// Appends the gap's line to `out`, empties the gap, and gives the line's count.
+    /// The line counts each seq from the gap's first seq up to `seq`, the seq of the
+    /// first sample after the gap, and has that sample's `stamp`, but counts at most
+    /// `i64::MAX` seqs, the most that an InfluxDB integer holds. An empty gap appends
+    /// nothing and gives 0.
     ///
     /// Only `out` then holds the gap: a request built again from the samples holds
     /// it only when the reader reports the gap again.
     ///
     /// # Panics
     ///
-    /// When `seq` is below the end of a range the gap holds, or the line counts
-    /// 2^63 seqs or more.
-    pub fn line(&mut self, out: &mut Vec<u8>, seq: u64, stamp: Stamp) {
-        let Some(seqs) = self.seqs.take() else { return };
+    /// When `seq` is below the end of a range the gap holds.
+    pub fn line(&mut self, out: &mut Vec<u8>, seq: u64, stamp: Stamp) -> u64 {
+        let Some(seqs) = self.seqs.take() else {
+            return 0;
+        };
         assert!(
             seqs.end <= seq,
             "invariant: the sample after the gap {seqs:?} has seq {seq}"
         );
-        let count = seq
-            .checked_sub(seqs.start)
-            .and_then(|count| i64::try_from(count).ok())
-            .unwrap_or_else(|| {
-                panic!(
-                    "invariant: a gap counts fewer than 2^63 seqs, from {} to {seq}",
-                    seqs.start
-                )
-            });
+        let count = seq.abs_diff(seqs.start);
+        let count = i64::try_from(count).unwrap_or(i64::MAX);
         let values = [(&self.count, Value::Integer(count))];
         self.measurement.line(out, values, stamp);
+        count.unsigned_abs()
     }
 }
 

@@ -1,11 +1,12 @@
-//! The tests that bound the heap of `serve` with one count of the bytes it holds. The
-//! count covers each thread, so this binary has no test harness. The sim runs on one
-//! thread, so the count is exact.
+//! The tests that bound the heap of `serve` and of `ops::roots::Failures` with one
+//! count of the bytes they hold. The count covers each thread, so this binary has no
+//! test harness. The sim runs on one thread, so the count is exact.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
 use std::sync::Arc;
 
+use connector::supervisor::{self, Supervisor};
 use ops::{Config, FrontEnd, FrontEnds, Node, serve};
 use serde_json::{Value, json};
 use sim::Sim;
@@ -32,6 +33,29 @@ const STEPS_BYTES: usize = 8 << 20;
 fn main() {
     a_reply_of_many_problems_holds_no_more_than_the_bound();
     a_reply_of_many_changes_holds_no_more_than_the_bound();
+    roots_of_many_failures_hold_at_most_a_mebibyte();
+}
+
+/// The failures of one byte hold their `String`, and also their spare capacity.
+fn roots_of_many_failures_hold_at_most_a_mebibyte() {
+    hold_at_most_a_mebibyte("of one byte", || "x".to_owned());
+    hold_at_most_a_mebibyte("with spare", || {
+        let mut failure = String::with_capacity(64);
+        failure.push('x');
+        failure
+    });
+}
+
+fn hold_at_most_a_mebibyte(made: &str, failure: impl Fn() -> String) {
+    let before = ALLOCATOR.held();
+    let failures = (0..100_000).map(|_| failure()).collect();
+    let roots = ops::roots::Failures::new(String::new(), failures);
+    let held = ALLOCATOR.held() - before;
+    assert!(
+        held <= 1 << 20,
+        "the roots of 100000 failures {made} hold {held} bytes"
+    );
+    drop(roots);
 }
 
 fn a_reply_of_many_problems_holds_no_more_than_the_bound() {
@@ -68,9 +92,20 @@ fn serve_large(text: &str) {
             clock: sim_node.clock(),
             wall: sim_node.wall(),
             entropy: sim_node.entropy(),
-            tasks,
+            tasks: tasks.clone(),
         };
         let (hub, _) = hub::testing::open(env).await;
+        let secrets = connector::testing::create_secrets(sim_node.files());
+        let supervisor = Supervisor::new(supervisor::Config {
+            kinds: Arc::new(connector::kind::Table::new()),
+            clock: sim_node.clock(),
+            entropy: sim_node.entropy(),
+            net: sim_node.net(),
+            roots: connector::http::Roots::default(),
+            tasks,
+            hub: hub.clone(),
+            secrets,
+        });
         let front_ends = FrontEnds::new(
             "hcl",
             FrontEnd {
@@ -81,11 +116,11 @@ fn serve_large(text: &str) {
             mesh,
             keys: Box::new(|| Key::from_u128(1)),
             front_ends,
-            kinds: Arc::new(connector::kind::Table::new()),
+            supervisor,
             hub,
             clock: sim_node.clock(),
             name: "edge".parse().expect("a name"),
-            secrets: connector::testing::create_secrets(sim_node.files()),
+            roots: ops::roots::Failures::new(String::new(), Vec::new()),
         });
         let subject = "@admin".parse().expect("a name");
         let before = ALLOCATOR.held();

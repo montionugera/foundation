@@ -152,6 +152,9 @@ fn draft(writer: &Writer, stamp: i64) -> Draft {
     draft
 }
 
+/// Takes a frame, called out of line so that no line measures how the open path in
+/// the bench body inlines.
+#[inline(never)]
 fn take(reader: &mut Reader, named: bool) -> (u64, u64) {
     for _ in 0..2 {
         let (got, figures) = table::timed(&ALLOCATOR, || {

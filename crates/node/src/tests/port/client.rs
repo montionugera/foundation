@@ -399,6 +399,7 @@ fn operator(
             entropy: host.entropy(),
             tasks,
             pool,
+            frames: super::pool(),
         };
         let client = program::Session::connect(&transport, config).await;
         let reply = match client {

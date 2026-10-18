@@ -16,6 +16,7 @@ use crate::identity::{self, Identity};
 use crate::{Budget, Config, Error, Node, Region};
 
 mod address;
+mod log;
 mod region;
 
 struct Run {
@@ -33,6 +34,9 @@ const KEY: PrivateKey = PrivateKey([2; 32]);
 const OWN: types::node::Key = types::node::Key::from_u128(1);
 /// The bytes of the seal key in the data directory of [`keyed`].
 const SEAL: [u8; 32] = [3; 32];
+
+/// The DER bytes of a CA certificate, the one root of [`config`].
+const CA: &[u8] = include_bytes!("tests/ca.der");
 
 /// A disk budget of two rings of 64 MiB, with their header blocks.
 const DISK: Size = Size::from_bytes(2 * (8192 + (64 << 20)));
@@ -92,6 +96,15 @@ fn config<M>(
         name: "edge".parse().expect("a name"),
         settings: crate::Settings::default(),
         vars: std::collections::BTreeMap::new(),
+        roots: os::roots::Roots {
+            certificates: vec![CA.to_vec()],
+            ..os::roots::Roots::default()
+        },
+        log: crate::Log {
+            writer: Box::new(std::io::sink()),
+            format: ops::Log::default(),
+        },
+        threads: host.threads(),
     }
 }
 
@@ -412,7 +425,7 @@ fn join_gives_a_shard_with_no_memory_over_one_that_panicked() {
 }
 
 #[test]
-fn a_config_shows_its_budget_entropy_and_settings_but_not_its_memory_or_files() {
+fn a_config_shows_its_budget_entropy_settings_and_log_but_not_its_memory_or_files() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = sim.node(sim::node::Config::default());
     let config = config(&host, Size::from_bytes(4096), Box::new(heap));
@@ -423,7 +436,9 @@ fn a_config_shows_its_budget_entropy_and_settings_but_not_its_memory_or_files() 
             "Config {{ shards: Shards {{ .. }}, clock: {clock:?}, wall: {wall:?}, \
              budget: Budget {{ pool: Size(4096), disk: {DISK:?} }}, entropy: {entropy:?}, \
              listen: {listen:?}, region: Absent, name: Name(\"edge\"), \
-             settings: {settings:?}, .. }}",
+             settings: {settings:?}, log: Log {{ format: Log {{ json: false, level: Level(Info) }}, .. }}, \
+             threads: Threads {{ .. }}, \
+             .. }}",
             listen = config.listen,
             settings = config.settings,
         )
@@ -473,8 +488,8 @@ fn a_host_that_cannot_pin_starts_shards_on_no_core() {
     assert_eq!(run.node.join(), Ok(()));
 }
 
-/// Starts a node on `host`, runs it for an hour, stops it, and gives what `join`
-/// gives.
+/// Starts a node on `host`, runs it until its opens end, stops it, and gives what
+/// `join` gives.
 fn run_on(sim: &mut sim::Sim, host: &sim::node::Node) -> Result<(), Error> {
     run_on_disk(sim, host, DISK.bytes())
 }
@@ -492,7 +507,16 @@ fn run_on_disk(
         },
         ..config(host, Size::MEBIBYTE, Box::new(heap))
     });
-    assert_eq!(sim.run_for(Span::HOUR), Ok(()));
+    // The task runs once each file that a caller reads is there, or drops as the
+    // node fails.
+    let probe = probe(&node);
+    let mut ms = 0;
+    while fate(&probe) == Fate::Waiting {
+        let after = Span::from_nanos(ms * Span::MILLISECOND.nanos());
+        assert!(after < Span::HOUR, "the opens go on");
+        assert_eq!(sim.run_for(Span::MILLISECOND), Ok(()));
+        ms += 1;
+    }
     node.stop();
     assert_eq!(sim.run(), Ok(()));
     node.join()
@@ -700,9 +724,10 @@ fn unnamed(channel: &str, mode: ::hub::reader::Mode) -> ::hub::reader::Config {
 
 mod buffer {
     use std::cell::RefCell;
+    use std::num::NonZeroU32;
     use std::rc::Rc;
 
-    use ::buffer::{Buffer, Entry};
+    use ::buffer::{Buffer, Entry, Samples};
     use types::channel::{Key, Slots};
     use types::frame::Path as Stream;
     use types::time::Stamp;
@@ -725,6 +750,7 @@ mod buffer {
                 layout: ::buffer::Layout::new(64 << 20, crate::BODY_MAX)
                     .expect("the test sizes make a ring"),
                 commit: crate::COMMIT,
+                trimmed: false,
             };
             let mut slots = Slots::new();
             let buffer = Buffer::open(config, &mut slots).await.expect("opens");
@@ -734,9 +760,11 @@ mod buffer {
                 slot: slots.index(index),
                 path: Stream::Live,
                 first: 0,
-                len: 1,
+                samples: Some(Samples {
+                    len: NonZeroU32::MIN,
+                    last: Some(Stamp::from_nanos(1)),
+                }),
                 stored_at: Stamp::from_nanos(1),
-                last: Some(Stamp::from_nanos(1)),
                 tag: 0,
                 parts: pool.alloc(8).expect("a block").freeze().into(),
             };
@@ -900,8 +928,8 @@ mod buffer {
     #[test]
     fn a_disk_budget_that_holds_no_ring_on_each_shard_starts_no_shard() {
         let smallest = ::buffer::Layout::fit(0, crate::BODY_MAX).unwrap_err().min;
-        let min = Size::from_bytes(8_462_336);
-        let cases = [(smallest, "4132KiB"), (2 * smallest - 1, "8462335B")];
+        let min = Size::from_bytes(8_626_176);
+        let cases = [(smallest, "4212KiB"), (2 * smallest - 1, "8626175B")];
         for (bytes, shown) in cases {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = host(&mut sim, 2);
@@ -930,7 +958,7 @@ mod buffer {
                 e.to_string(),
                 format!(
                     "the disk budget {shown} holds no ring on each of 2 shards; it \
-                     needs at least 8264KiB"
+                     needs at least 8424KiB"
                 )
             );
         }
@@ -3213,7 +3241,7 @@ pub(crate) mod port {
             ..config(&host, Size::MEBIBYTE, Box::new(heap))
         });
         assert_eq!(sim.run(), Ok(()));
-        let min = Size::from_bytes(8_462_336);
+        let min = Size::from_bytes(8_626_176);
         assert_eq!(
             node.join(),
             Err(Error::Disk {
@@ -4415,12 +4443,12 @@ pub(crate) mod port {
 
         /// The first file of the mesh's log.
         const LOG: &str = "mesh/log/log-0";
-        /// A time by which the mesh of a node opens, and before its first write after
-        /// the open.
+        /// A time by which the mesh of a node opens and its group leads, with no write
+        /// of the log left.
         const OPEN: Span = Span::from_nanos(10_000_000);
-        /// The time after [`OPEN`], in nanoseconds, at which a write of [`LOG`] that
-        /// fails from [`OPEN`] stops the group in the sim.
-        const WRITE: i64 = 1_794_021_365;
+        /// The time after [`OPEN`], in nanoseconds, at which the failed write of
+        /// [`fail_write_at_open`] stops the group in the sim.
+        const WRITE: i64 = 43_081;
 
         /// Why the group stops when a write of [`LOG`] fails.
         fn write_failed() -> ::mesh::Stopped {
@@ -4429,6 +4457,20 @@ pub(crate) mod port {
                 operation: env::files::Operation::WriteAt,
                 code: 5,
             }))
+        }
+
+        /// At [`OPEN`], fails the next write of [`LOG`] on `host`, then sets the home
+        /// of a channel other than [`INDEX`] in the mesh of `node`, which makes that
+        /// write.
+        fn fail_write_at_open(node: &Node, host: &sim::node::Node) {
+            let at = sim::node::Config::default().monotonic + OPEN;
+            let own = host.clone();
+            node.operate(move |ops| async move {
+                own.clock().sleep_until(at).await;
+                own.fail_file(Path::new(LOG), env::files::Operation::WriteAt);
+                let set = ops.mesh().set_home(channel::Key::from_u128(8), OWN).await;
+                assert_eq!(set, Err(::mesh::Error::Stopped(write_failed())));
+            });
         }
 
         /// The member `key` with `private_key`, whose node listens on `host`.
@@ -4690,28 +4732,40 @@ pub(crate) mod port {
             start(host, region(&[member(OWN, &KEY, host)]))
         }
 
-        /// The operations of the member `key` of `mesh` on `hub`, as a node makes them,
-        /// with the secrets on `files`.
+        /// The operations of the member `key` of `mesh` on `hub` and `tasks`, as a node
+        /// makes them, with the clock, network, and secrets of `host`.
         fn operations(
             mesh: &::mesh::Mesh,
             key: types::node::Key,
             hub: &::hub::Hub,
-            clock: env::clock::Clock,
+            host: &sim::node::Node,
+            tasks: &env::tasks::Tasks,
             time: &clock::Reader,
             entropy: &env::entropy::Entropy,
-            files: env::files::Files,
         ) -> Rc<ops::Node> {
             let member = mesh.member(key).expect("the peer is a member");
             let name = member.card.card().name.clone();
+            let secrets = connector::testing::create_secrets(host.files());
+            let supervisor =
+                connector::supervisor::Supervisor::new(connector::supervisor::Config {
+                    kinds: Arc::new(crate::kinds()),
+                    clock: host.clock(),
+                    entropy: entropy.clone(),
+                    net: host.net(),
+                    roots: connector::http::Roots::default(),
+                    tasks: tasks.clone(),
+                    hub: hub.clone(),
+                    secrets,
+                });
             Rc::new(ops::Node::new(ops::Config {
                 mesh: mesh.clone(),
                 keys: crate::channel_keys(time, entropy),
                 front_ends: crate::front_ends(),
-                kinds: Arc::new(crate::kinds()),
+                supervisor,
                 hub: hub.clone(),
-                clock,
+                clock: host.clock(),
                 name,
-                secrets: connector::testing::create_secrets(files),
+                roots: ops::roots::Failures::new(String::new(), Vec::new()),
             }))
         }
 
@@ -4750,6 +4804,131 @@ pub(crate) mod port {
             });
             assert_eq!(sim.run_for(TEN), Ok(()));
             assert_eq!(*set.lock().unwrap(), [Ok(())]);
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+        }
+
+        /// A node of the default message limit is a voter that takes each append of
+        /// the leader: each of 50 homes, which the peer sets at once, commits within
+        /// 10 s.
+        #[test]
+        fn homes_commit_with_a_voter_of_the_default_message_limit() {
+            for seed in 0..4 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+                let members = pair(&hosts);
+                let node = start(&hosts[0], region(&members));
+                let set = Arc::new(Mutex::new(0));
+                let out = Arc::clone(&set);
+                peer(&hosts[1], &members, move |mesh, own| async move {
+                    own.clock().sleep(Span::SECOND).await;
+                    let mut sets = Vec::new();
+                    for key in 100..150 {
+                        let (mesh, out) = (mesh.clone(), Arc::clone(&out));
+                        sets.push(Box::pin(async move {
+                            let index = channel::Key::from_u128(key);
+                            if mesh.set_home(index, OTHER.0).await.is_ok() {
+                                *out.lock().unwrap() += 1;
+                            }
+                        }));
+                    }
+                    let mut end = pin!(own.clock().sleep(TEN));
+                    poll_fn(|cx| {
+                        sets.retain_mut(|set| set.as_mut().poll(cx).is_pending());
+                        if sets.is_empty() {
+                            return Poll::Ready(());
+                        }
+                        end.as_mut().poll(cx)
+                    })
+                    .await;
+                });
+                assert_eq!(sim.run_for(TWENTY), Ok(()));
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                assert_eq!(node.join(), Ok(()));
+                assert_eq!(*set.lock().unwrap(), 50, "{seed}");
+            }
+        }
+
+        /// The least pool budget that each buffer takes also holds an append of the
+        /// largest record, so `Budget::pool` names no refusal of the mesh.
+        #[test]
+        fn the_least_pool_budget_of_the_buffers_opens_the_mesh() {
+            let start = |budget| {
+                let mut sim = sim::Sim::new(sim::Config::default());
+                let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+                let node = Node::start(Config {
+                    region: Region::Given(region(&pair(&hosts))),
+                    ..config(&hosts[0], budget, Box::new(heap))
+                });
+                assert_eq!(sim.run_for(TEN), Ok(()));
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                node.join()
+            };
+            let Err(Error::Buffer {
+                error: ::buffer::Error::Budget { min, .. },
+                ..
+            }) = start(Size::from_bytes(1))
+            else {
+                panic!("a pool budget of 1 byte opens no buffer");
+            };
+            assert_eq!(
+                start(Size::from_bytes(2 * u64::try_from(min).unwrap())),
+                Ok(())
+            );
+        }
+
+        /// A node of the least message limit that its transport takes, 1472 bytes,
+        /// cannot take an append of the largest record, so its mesh does not open.
+        #[test]
+        fn a_node_of_the_least_message_limit_does_not_start() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let least = crate::Settings {
+                message_bytes_max: NonZeroUsize::new(1472).unwrap(),
+                window_bytes: 2 * 1472,
+                ..crate::Settings::default()
+            };
+            let node = Node::start(Config {
+                region: Region::Given(region(&pair(&hosts))),
+                settings: least,
+                ..config(&hosts[0], Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run(), Ok(()));
+            let limit = ::mesh::Error::Limit {
+                bytes_max: 1472,
+                bytes_min: 50_355,
+            };
+            let refused = node.join().unwrap_err();
+            assert_eq!(refused, Error::Mesh(limit));
+            assert_eq!(
+                refused.to_string(),
+                "the node's mesh did not open: this node takes messages of at most 1472 \
+                 bytes, below the 50355 bytes of an append of the largest record"
+            );
+        }
+
+        /// A node with no region opens no mesh, so it starts at that limit.
+        #[test]
+        fn a_node_with_no_region_of_the_least_message_limit_starts() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2)];
+            let least = crate::Settings {
+                message_bytes_max: NonZeroUsize::new(1472).unwrap(),
+                window_bytes: 2 * 1472,
+                ..crate::Settings::default()
+            };
+            let node = Node::start(Config {
+                region: Region::Absent,
+                settings: least,
+                ..config(&hosts[0], Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run_for(TEN), Ok(()));
             node.stop();
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Ok(()));
@@ -5677,8 +5856,7 @@ pub(crate) mod port {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = keyed(&mut sim, 2);
             let node = start_alone(&host);
-            assert_eq!(sim.run_for(OPEN), Ok(()));
-            host.fail_file(Path::new(LOG), env::files::Operation::WriteAt);
+            fail_write_at_open(&node, &host);
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Err(Error::Group(write_failed())));
             assert_eq!(
@@ -5700,6 +5878,7 @@ pub(crate) mod port {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = keyed(&mut sim, 2);
             let node = start_alone(&host);
+            fail_write_at_open(&node, &host);
             node.spawn(|_| {
                 let panics = Panics;
                 async move {
@@ -5707,8 +5886,6 @@ pub(crate) mod port {
                     drop(panics);
                 }
             });
-            assert_eq!(sim.run_for(OPEN), Ok(()));
-            host.fail_file(Path::new(LOG), env::files::Operation::WriteAt);
             assert_eq!(
                 sim.run(),
                 Err(sim::Error::Panicked {
@@ -5728,6 +5905,7 @@ pub(crate) mod port {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = keyed(&mut sim, 2);
             let node = start_alone(&host);
+            fail_write_at_open(&node, &host);
             let at = sim::node::Config::default().monotonic
                 + OPEN
                 + Span::from_nanos(WRITE - 1);
@@ -5736,8 +5914,6 @@ pub(crate) mod port {
                 own.clock().sleep_until(at).await;
                 panic!("a task panics");
             });
-            assert_eq!(sim.run_for(OPEN), Ok(()));
-            host.fail_file(Path::new(LOG), env::files::Operation::WriteAt);
             assert_eq!(
                 sim.run(),
                 Err(sim::Error::Panicked {
@@ -5756,7 +5932,7 @@ pub(crate) mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], seven idle tasks that wake at that
+        /// `join` gives the panic. At [`WRITE`], six idle tasks that wake at that
         /// instant make the sim run the group's stop, then this task, before the node
         /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
@@ -5764,9 +5940,10 @@ pub(crate) mod port {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = keyed(&mut sim, 2);
             let node = start_alone(&host);
+            fail_write_at_open(&node, &host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
-            for _ in 0..7 {
+            for _ in 0..6 {
                 let own = host.clone();
                 node.spawn(move |_| async move {
                     own.clock().sleep_until(at).await;
@@ -5782,8 +5959,6 @@ pub(crate) mod port {
                 assert_eq!(polled, Poll::Ready(Err(write_failed())));
                 panic!("a task panics");
             });
-            assert_eq!(sim.run_for(OPEN), Ok(()));
-            host.fail_file(Path::new(LOG), env::files::Operation::WriteAt);
             assert_eq!(
                 sim.run(),
                 Err(sim::Error::Panicked {
@@ -5802,13 +5977,14 @@ pub(crate) mod port {
         }
 
         /// Breaks the node's UDP socket from a task on shard 0 at `OPEN + after`, with
-        /// each write of the log failing from `OPEN`. `idle` more tasks on shard 0 wake
-        /// at that instant, which changes only the order of the sim's picks. Gives
+        /// the write of [`fail_write_at_open`] failing. `idle` more tasks on shard 0
+        /// wake at that instant, which changes only the order of the sim's picks. Gives
         /// whether the task ran, and the node's `join`.
         fn udp_fault_at(idle: usize, after: Span) -> (bool, Result<(), Error>) {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = keyed(&mut sim, 2);
             let node = start_alone(&host);
+            fail_write_at_open(&node, &host);
             let at = sim::node::Config::default().monotonic + OPEN + after;
             for _ in 0..idle {
                 let own = host.clone();
@@ -5825,8 +6001,6 @@ pub(crate) mod port {
                 done.store(true, Ordering::SeqCst);
                 std::future::pending::<()>().await;
             });
-            assert_eq!(sim.run_for(OPEN), Ok(()));
-            host.fail_file(Path::new(LOG), env::files::Operation::WriteAt);
             assert_eq!(sim.run(), Ok(()));
             (ran.load(Ordering::SeqCst), node.join())
         }
@@ -5885,6 +6059,28 @@ pub(crate) mod port {
             assert_eq!(node.join(), Ok(()));
         }
 
+        /// A lone node leads at open, so the set of a home ends within [`OPEN`] of
+        /// the start, long before one election timeout of 1 s.
+        #[test]
+        fn a_lone_node_serves_a_set_of_a_home_at_open() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let node = start_alone(&host);
+            let served = Arc::new(Mutex::new(None));
+            let (own, seen) = (host.clone(), Arc::clone(&served));
+            node.operate(move |ops| async move {
+                let set = ops.mesh().set_home(channel::Key::from_u128(8), OWN).await;
+                assert_eq!(set, Ok(()));
+                *seen.lock().unwrap() = Some(own.clock().now());
+            });
+            assert_eq!(sim.run_for(OPEN), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let served = served.lock().unwrap().expect("the set ends before `OPEN`");
+            assert!(served - sim::node::Config::default().monotonic < OPEN);
+        }
+
         /// A restart with another region, after the log holds a record, stops the
         /// node, and `join` gives the region that the first start kept.
         #[test]
@@ -5892,7 +6088,7 @@ pub(crate) mod port {
             let mut sim = sim::Sim::new(sim::Config::default());
             let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
             let node = start_alone(&hosts[0]);
-            // Past the longest election timeout, so the node votes for itself.
+            // The lone voter votes for itself at open, and its write ends in this time.
             let elected = Span::from_nanos(3 * Span::SECOND.nanos());
             assert_eq!(sim.run_for(elected), Ok(()));
             node.stop();
@@ -6120,11 +6316,23 @@ pub(crate) mod port {
         #[test]
         fn the_log_of_the_mesh_is_free_once_the_lock_is() {
             let (mut held, mut logged, mut ordered) = (false, false, false);
-            // The mesh opens at about 1.5 ms, and from 1.6 s the log writes a home
-            // about each 0.7 ms.
-            let opens = (0..200).map(|step| step * 13_000);
-            let writes = (0..100).map(|step| 1_700_000_000 + step * 7_000);
-            for after in opens.chain(writes) {
+            // The probe finds the lock free and the log made at about 4.08 ms only.
+            let mut freed = false;
+            // Three orders of the last closes of the log, `shard-1/ring`, and
+            // `address` that the stops in a write give at seed 0: the log first, the
+            // address first, and the ring first. They do not show which file call is
+            // in flight (#2778), so a drift of the writes can still keep each order.
+            let mut crossed = [false; 3];
+            // A stop from about 1.35 ms comes after the node starts to open its
+            // mesh, which opens its log at about 3.1 ms. From about 1.1 s the log
+            // writes a home about each 0.7 ms, and the stops in the writes step from
+            // before the write of one home, through its write and its sync, to after
+            // them.
+            let starts = (0..200).map(|step| step * 13_000);
+            let opens = starts.chain((0..42).map(|step| 2_626_000 + step * 52_000));
+            let opens = opens.map(|after| (after, false));
+            let writes = (0..13).map(|step| (1_700_526_000 + step * 7_000, true));
+            for (after, write) in opens.chain(writes) {
                 let mut sim = sim::Sim::new(sim::Config::default());
                 let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
                 let members = pair(&hosts);
@@ -6136,12 +6344,19 @@ pub(crate) mod port {
                 let (waited, port, log, closes) = probe(&mut sim, &hosts[0]);
                 held |= waited;
                 logged |= log.is_ok();
+                freed |= !waited && log.is_ok();
                 let busy = matches!(log, Err(env::files::Error::Busy { .. }));
                 assert!(!busy, "at {after:?}: {log:?}");
                 let last = |path| closes.iter().rposition(|c| c == Path::new(path));
                 if let (Some(log), Some(lock)) = (last(LOG), last("lock")) {
                     assert!(log < lock, "at {after:?}: {closes:?}");
                     ordered = true;
+                }
+                let order = (last(LOG), last("shard-1/ring"), last("address"));
+                if let (true, (Some(log), Some(ring), Some(address))) = (write, order) {
+                    crossed[0] |= log < ring;
+                    crossed[1] |= address < log;
+                    crossed[2] |= ring < log && log < address;
                 }
                 // A probe that takes the lock before the claim refuses the node.
                 let refused = Error::Directory(env::files::Error::Busy {
@@ -6153,7 +6368,11 @@ pub(crate) mod port {
                     assert_eq!(port, Ok(()), "at {after:?}");
                 }
             }
-            assert!(held && logged && ordered);
+            assert!(held && logged && ordered && freed);
+            assert_eq!(
+                crossed, [true; 3],
+                "the stops miss an order of the closes: find the write times again"
+            );
         }
 
         /// When the mesh's group stops the node while a peer holds a session with it,
@@ -6313,9 +6532,7 @@ pub(crate) mod port {
                 } = open(&own, &tasks, identity, founding).await;
                 let settings = crate::Settings::default();
                 let clock = own.clock();
-                let files = own.files();
-                let ops =
-                    operations(&mesh, key, &hub, clock.clone(), &time, &entropy, files);
+                let ops = operations(&mesh, key, &hub, &own, &tasks, &time, &entropy);
                 let port = route::accept(
                     transport,
                     crate::task::Handles {
@@ -6792,7 +7009,16 @@ pub(crate) mod port {
             founding: Founding,
             text: String,
         ) -> (Node, BTreeMap<Name, Definition>) {
-            let node = start(host, founding);
+            applied_on(sim, start(host, founding), text)
+        }
+
+        /// Applies `text` through the operations of the started `node`, then gives
+        /// the node and the definitions after the apply.
+        fn applied_on(
+            sim: &mut sim::Sim,
+            node: Node,
+            text: String,
+        ) -> (Node, BTreeMap<Name, Definition>) {
             let applied = Arc::new(Mutex::new(None));
             let out = Arc::clone(&applied);
             node.operate(move |ops| async move {
@@ -6979,7 +7205,7 @@ pub(crate) mod port {
             });
             node.operate(|_| async {});
             assert_eq!(sim.run(), Ok(()));
-            let min = Size::from_bytes(8_462_336);
+            let min = Size::from_bytes(8_626_176);
             assert_eq!(
                 node.join(),
                 Err(Error::Disk {
@@ -7000,8 +7226,10 @@ pub(crate) mod port {
             let planned = Arc::new(Mutex::new(Vec::new()));
             let out = Arc::clone(&planned);
             node.operate(move |ops| async move {
-                for kind in ["influx", "modbus"] {
-                    let files = vec![(PathBuf::from("plant.hcl"), connector(kind))];
+                let modbus = format!("{CHANNELS}{}", modbus());
+                let texts = [connector("influx"), modbus, connector("mqtt")];
+                for text in texts {
+                    let files = vec![(PathBuf::from("plant.hcl"), text)];
                     let plan = ops.plan(files).await;
                     let plan = plan.map(|_| ()).map_err(|error| error.to_string());
                     out.lock().unwrap().push(plan);
@@ -7013,11 +7241,12 @@ pub(crate) mod port {
             assert_eq!(node.join(), Ok(()));
             let unknown = concat!(
                 r#"{"errors":[{"code":"connector.unknown-kind","#,
-                r#""fix":"Use one of [\"influx\", \"opcua\"]","#,
-                r#""message":"this build has no connector kind \"modbus\"","#,
+                r#""fix":"Use one of [\"influx\", \"modbus\", \"opcua\"]","#,
+                r#""message":"this build has no connector kind \"mqtt\"","#,
                 r#""notes":[],"place":{"column":10,"file":"plant.hcl","line":2}}]}"#,
             );
-            assert_eq!(*planned.lock().unwrap(), [Ok(()), Err(unknown.to_owned())]);
+            let planned = planned.lock().unwrap();
+            assert_eq!(*planned, [Ok(()), Ok(()), Err(unknown.to_owned())]);
         }
 
         /// The node runs a connector that an apply places on it, and runs it again when
@@ -7075,9 +7304,97 @@ pub(crate) mod port {
             let connectors = concat!(
                 r#"{"output":{"connectors":[{"name":"plant.influx","kind":"influx","#,
                 r#""state":"stopped","address":"http://influx:8086","restarts":0,"#,
-                r#""counts":{"confirmed":0},"error":{"class":"config","text":"#,
+                r#""counts":{"confirmed":0,"lost":0,"oversized":0},"#,
+                r#""error":{"class":"config","text":"#,
                 r#""the selector matches no channel. Select a channel that the spec "#,
-                r#"defines"},"note":null}]}}"#,
+                r#"defines"},"note":null}],"roots":null}}"#,
+                "\n",
+            );
+            assert_eq!(reply, connectors);
+        }
+
+        /// `status` through `operate` gives each failure of the read of the OS roots
+        /// of the node, in full, past the 16 that the log lists.
+        #[test]
+        fn status_gives_each_failure_of_the_roots_in_full() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let founding = region(&[member(OWN, &KEY, &host)]);
+            let mut failures: Vec<String> =
+                (0..17).map(|n| format!("failure {n}")).collect();
+            failures.push(format!("head {} tail", "x".repeat(3000)));
+            let node = Node::start(Config {
+                region: Region::Given(founding),
+                roots: os::roots::Roots {
+                    failures: failures.clone(),
+                    ..os::roots::Roots::default()
+                },
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            let watch = format!(
+                "subject \"plant.operator\" {{ keys = [\"{OPERATOR}\"] }}\n\
+                 access \"plant.watch\" {{\n  subjects = \"plant.operator\"\n  \
+                 select = \"plant.node{OWN}\"\n  allow = [read]\n}}\n"
+            );
+            let (node, _) = applied_on(&mut sim, node, watch);
+            let replied = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&replied);
+            node.operate(move |ops| async move {
+                let subject = "plant.operator".parse().expect("a name");
+                let reply = ops::serve(&ops, &subject, b"{\"status\":{}}\n").await;
+                *out.lock().unwrap() = Some(reply);
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let reply = replied.lock().unwrap().take().expect("a reply");
+            let reply: serde_json::Value =
+                serde_json::from_slice(&reply).expect("JSON");
+            let roots = serde_json::json!({
+                "source": "the OS store",
+                "failures": failures,
+                "unlisted": 0,
+            });
+            let expected = serde_json::json!({
+                "output": { "connectors": [], "roots": roots },
+            });
+            assert_eq!(reply, expected);
+        }
+
+        /// The node runs a `modbus` connector that an apply places on it. With no
+        /// device at its address, `status` gives the device error of its lookup.
+        #[test]
+        fn status_gives_the_lookup_error_of_a_modbus_connector_with_no_device() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let founding = region(&[member(OWN, &KEY, &host)]);
+            let watch = format!(
+                "subject \"plant.operator\" {{ keys = [\"{OPERATOR}\"] }}\n\
+                 access \"plant.watch\" {{\n  subjects = \"plant.operator\"\n  \
+                 select = \"plant.plc.**\"\n  allow = [read]\n}}\n"
+            );
+            let text = format!("{CHANNELS}{}{watch}", modbus());
+            let (node, _) = applied(&mut sim, &host, founding, text);
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            let replied = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&replied);
+            node.operate(move |ops| async move {
+                let subject = "plant.operator".parse().expect("a name");
+                let reply = ops::serve(&ops, &subject, b"{\"status\":{}}\n").await;
+                *out.lock().unwrap() = Some(String::from_utf8(reply).expect("UTF-8"));
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let reply = replied.lock().unwrap().take().expect("a reply");
+            let connectors = concat!(
+                r#"{"output":{"connectors":[{"name":"plant.plc","kind":"modbus","#,
+                r#""state":"restarting","address":"plc:502","restarts":6,"#,
+                r#""counts":{"in":0,"lost":0,"missed":0},"error":{"class":"device","#,
+                r#""text":"the lookup of plc failed: name plc has no address"},"#,
+                r#""note":null}],"roots":null}}"#,
                 "\n",
             );
             assert_eq!(reply, connectors);
@@ -7219,6 +7536,22 @@ pub(crate) mod port {
             )
         }
 
+        /// The channels that [`modbus`] reads into.
+        const CHANNELS: &str = "channel \"plant.time\" { kind = \"index\" }\n\
+                                channel \"plant.u16\" {\n  data_type = \"u16\"\n  \
+                                index = \"plant.time\"\n}\n";
+
+        /// The text of a spec with the connector `plant.plc` of kind `modbus` on
+        /// [`OWN`], which reads `plant.u16`.
+        fn modbus() -> String {
+            format!(
+                "connector \"plant.plc\" {{\n  kind = \"modbus\"\n  \
+                 node = \"plant.node{OWN}\"\n  address = \"plc:502\"\n  \
+                 rate = \"10Hz\"\n  read \"plant.u16\" {{\n    \
+                 table = \"holding\"\n    address = 0\n  }}\n}}\n"
+            )
+        }
+
         /// `operate` refuses a node with no region, which has no mesh to operate on.
         #[test]
         #[should_panic(expected = "`operate` on a node with no region")]
@@ -7227,6 +7560,104 @@ pub(crate) mod port {
             let host = keyed(&mut sim, 2);
             let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
             node.operate(|_| async {});
+        }
+
+        /// Starts an InfluxDB sim named `server` that serves `https` on port 8086 with
+        /// the valid certificate of the test CA, and gives its store and its shard.
+        fn influx_tls(
+            sim: &mut sim::Sim,
+        ) -> (
+            Arc<Mutex<connector_influx::sim::Store>>,
+            env::thread::Handle,
+        ) {
+            let influx = sim.node(sim::node::Config::default());
+            let answer = sim::name::Answer::Addresses(vec![influx.addresses()[0]]);
+            let name = sim::name::Config {
+                answer,
+                ..sim::name::Config::default()
+            };
+            sim.name("server", name);
+            let listen = env::net::tcp::Listen {
+                local: SocketAddr::new(influx.addresses()[0], 8086),
+                backlog: 4,
+                options: env::net::tcp::Options {
+                    send_buffer_bytes: 1 << 16,
+                    recv_buffer_bytes: 1 << 16,
+                    unsent_bytes_max: NonZeroUsize::new(1 << 14).unwrap(),
+                    delayed: false,
+                },
+            };
+            let listener = influx.net().listen(&listen).expect("the port is free");
+            let store = Arc::new(Mutex::new(connector_influx::sim::Store::default()));
+            let into = Arc::clone(&store);
+            let shard = env::shards::Config {
+                name: "influx".into(),
+                core: Some(0),
+            };
+            let server = influx
+                .shards()
+                .start(shard, move |tasks| async move {
+                    let certificate = connector::http::sim::Certificate::Valid;
+                    let served = connector_influx::sim::serve_tls(
+                        listener,
+                        tasks,
+                        connector::cancel::Token::new(),
+                        into,
+                        "plant".into(),
+                        None,
+                        certificate,
+                    );
+                    panic!("the listener failed: {:?}", served.await);
+                })
+                .expect("the shard starts");
+            (store, server)
+        }
+
+        /// The roots of `Config::roots` reach the supervisor: a node whose roots hold
+        /// a root that does not parse and the test CA writes a sample to an InfluxDB
+        /// that serves `https` with a certificate that this CA signs, and the connector
+        /// has no `ca`.
+        #[test]
+        fn a_node_writes_over_https_with_the_ca_of_its_roots() {
+            use super::super::hub::{WALL, write_at, writer};
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let (store, _server) = influx_tls(&mut sim);
+            let text = format!(
+                "{}channel \"plant.value\" {{\n  data_type = \"f64\"\n  \
+                 index = \"plant.time\"\n}}\n{}",
+                text("time", &[]),
+                connector("influx")
+                    .replace("http://influx:8086", "https://server:8086")
+                    .replace("plant.*", "plant.value"),
+            );
+            let node = Node::start(Config {
+                region: Region::Given(region(&[member(OWN, &KEY, &host)])),
+                roots: os::roots::Roots {
+                    certificates: vec![b"not DER".to_vec(), CA.to_vec()],
+                    ..os::roots::Roots::default()
+                },
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            let (node, definitions) = applied_on(&mut sim, node, text);
+            let keys =
+                ["time", "value"].map(|name| key_of(&definitions, name).as_u128());
+            node.spawn(move |hub| async move {
+                let mut writer = writer(&hub, &["plant.value"]).await;
+                let value = i64::from_le_bytes(7.0_f64.to_le_bytes());
+                write_at(&mut writer, keys, WALL, value);
+                std::future::pending::<()>().await;
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let store = store.lock().unwrap();
+            let times: Vec<_> = store
+                .points("telemetry", &[])
+                .map(|point| point.time.nanos())
+                .collect();
+            assert_eq!(times, [WALL]);
         }
     }
 }
@@ -7928,7 +8359,7 @@ mod budget {
         let disk = Error::Disk {
             disk: Size::from_bytes(1),
             cores: 2,
-            min: Size::from_bytes(8_462_336),
+            min: Size::from_bytes(8_626_176),
         };
         let small = [
             (budget(512 << 10, DISK.bytes()), 16, buffer),
@@ -8007,6 +8438,33 @@ mod budget {
             }
             assert_eq!(start_and_stop(&mut sim, &host, first), Ok(()));
             assert_eq!(kept(&mut sim, &host), Ok(Some(first)));
+        }
+    }
+}
+
+/// The `Cargo.toml` of the crate of each kind of [`crate::kinds`], by kind name.
+const MANIFESTS: [(&str, &str); 3] = [
+    ("influx", include_str!("../../connector-influx/Cargo.toml")),
+    ("modbus", include_str!("../../connector-modbus/Cargo.toml")),
+    ("opcua", include_str!("../../connector-opcua/Cargo.toml")),
+];
+
+#[test]
+fn each_kind_runs_its_conformance_suite() {
+    let names: Vec<_> = MANIFESTS.iter().map(|&(name, _)| name).collect();
+    assert_eq!(crate::kinds().names().collect::<Vec<_>>(), names);
+    for (name, manifest) in MANIFESTS {
+        let entry = format!(
+            "[[test]]\nname = \"conformance\"\n\
+             path = \"../../oracles/conformance/connector/{name}/main.rs\"\n"
+        );
+        let Some((_, rest)) = manifest.split_once(&entry) else {
+            panic!("{name} runs no suite");
+        };
+        let keys = rest.lines().take_while(|line| !line.is_empty());
+        // Only the features that CI turns on, never `test = false`.
+        for key in keys {
+            assert!(key.starts_with("required-features = "), "{name}: {key}");
         }
     }
 }

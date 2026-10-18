@@ -17,7 +17,7 @@ use rustix::fs::{self, AtFlags, FileType, FlockOperation, OFlags, RenameFlags};
 use rustix::io::{self, Errno};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::dir;
+use crate::{dir, host};
 
 /// The most parts that one `pwritev` takes: `IOV_MAX` on Linux and macOS.
 const PARTS: usize = 1_024;
@@ -29,20 +29,10 @@ const DEPTH: usize = 64;
 /// The mode of a new file: it gives the group and other users no access.
 const FILE: fs::Mode = fs::Mode::from_raw_mode(0o600);
 
-/// The mode of a new directory: it gives the group and other users no access.
-const DIR: fs::Mode = fs::Mode::from_raw_mode(0o700);
-
 /// The flags that open a directory to read.
 const READ_DIR: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
     .union(OFlags::CLOEXEC);
-
-/// The flags that open a file of the host to read, with no wait for a writer of a FIFO.
-/// `NOCTTY` keeps a terminal from becoming that of a node that leads its session.
-const READ_HOST: OFlags = OFlags::RDONLY
-    .union(OFlags::CLOEXEC)
-    .union(OFlags::NONBLOCK)
-    .union(OFlags::NOCTTY);
 
 /// The real disk under one data directory: the [`env::files::Driver`] that
 /// [`files`](crate::files) gives. It is `Send`, so one thread can make it and another
@@ -121,15 +111,16 @@ impl Disk {
     fn file<'a>(
         &self,
         path: &'a Path,
-        opened: impl Future<Output = Result<(Opened, u64), Error>> + 'a,
+        opened: impl Future<Output = Result<Found, Error>> + 'a,
     ) -> Request<'a, Box<dyn Descriptor>> {
         let (data, queue) = (Arc::clone(&self.data), self.queue.clone());
         Box::pin(async move {
-            let (fd, len) = opened.await?;
+            let Found { fd, len, exposed } = opened.await?;
             let file: Box<dyn Descriptor> = Box::new(File {
                 fd: Arc::new(fd),
                 data,
                 len,
+                exposed,
                 path: RefCell::new(Arc::from(path)),
                 queue,
             });
@@ -191,6 +182,7 @@ struct File {
     /// The data directory, which a rename acts in.
     data: Arc<OwnedFd>,
     len: u64,
+    exposed: bool,
     /// The path of the file now: a rename changes it.
     path: RefCell<Arc<Path>>,
     queue: Queue,
@@ -214,6 +206,10 @@ impl File {
 impl Descriptor for File {
     fn len(&self) -> u64 {
         self.len
+    }
+
+    fn exposed(&self) -> bool {
+        self.exposed
     }
 
     fn write_at<'a>(&'a self, offset: u64, parts: &'a [Block]) -> Request<'a, ()> {
@@ -277,11 +273,11 @@ type Job = Box<dyn FnOnce() + Send>;
 
 /// The queue of one I/O thread, which ends after the last clone drops.
 #[derive(Clone)]
-struct Queue(mpsc::Sender<Job>);
+pub(crate) struct Queue(mpsc::Sender<Job>);
 
 impl Queue {
     /// Starts I/O thread `name` and gives its queue and its handle.
-    fn start(
+    pub(crate) fn start(
         threads: &Threads,
         name: &str,
     ) -> Result<(Self, Handle), env::thread::Error> {
@@ -303,14 +299,14 @@ impl Queue {
     /// # Panics
     ///
     /// When a panic ended the I/O thread.
-    async fn run<T: Send + 'static>(
+    pub(crate) async fn run<T: Send + 'static>(
         &self,
         call: impl FnOnce() -> T + Send + 'static,
     ) -> T {
         let (reply, result) = oneshot::channel();
         // A dropped future does not want the result.
         let job: Job = Box::new(move || drop(reply.send(call())));
-        let ended = "a panic ended the I/O thread of os::files";
+        let ended = "a panic ended an I/O thread of os";
         self.0.send(job).await.expect(ended);
         result.await.expect(ended)
     }
@@ -353,9 +349,16 @@ impl Drop for Opened {
     }
 }
 
-/// Opens the file at `path`, and gives it and its length. A write open locks the
-/// file first, so a held file gives `Busy` before any other check.
-fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(Opened, u64), Error> {
+/// An open file, with its length and whether other users can read it.
+struct Found {
+    fd: Opened,
+    len: u64,
+    exposed: bool,
+}
+
+/// Opens the file at `path`. A write open locks the file first, so a held file gives
+/// `Busy` before any other check.
+fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<Found, Error> {
     let failed = fail(path, Operation::Open);
     let flags = match mode {
         Mode::Read => OFlags::RDONLY,
@@ -388,7 +391,8 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(Opened, u64), Error>
         return Err(failed(Errno::ISDIR));
     }
     let found = stat.st_size.cast_unsigned();
-    match mode {
+    let exposed = exposed(&stat);
+    let len = match mode {
         // Not atomic: a crash before `allocate` sets the length leaves an empty file,
         // which this allocates.
         Mode::Create { len } if found == 0 && len != 0 => {
@@ -403,35 +407,27 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(Opened, u64), Error>
                     freed.and(Err(errno))
                 })
                 .map_err(&failed)?;
-            Ok((fd, len))
+            len
         }
-        _ => Ok((fd, found)),
-    }
-}
-
-/// Opens the file at absolute `path` to read, and gives it and its length. The open
-/// does not wait for a writer of a FIFO, and gives 21 (`EISDIR`) for a directory and
-/// 22 (`EINVAL`) for any other file that is not a regular file.
-fn open_absolute(path: &Path) -> Result<(Opened, u64), Error> {
-    let failed = fail(path, Operation::Open);
-    // The check before the open keeps the open of a socket from giving `ENXIO`, and
-    // that of a device from running its driver. The check after it covers a swap.
-    regular(&fs::stat(path).map_err(&failed)?).map_err(&failed)?;
-    let fd = Opened {
-        fd: fs::open(path, READ_HOST, fs::Mode::empty()).map_err(&failed)?,
-        locked: false,
+        _ => found,
     };
-    let len = regular(&fs::fstat(&fd).map_err(&failed)?).map_err(&failed)?;
-    Ok((fd, len))
+    Ok(Found { fd, len, exposed })
 }
 
-/// The length of the regular file of `stat`, or the error of another kind of file.
-fn regular(stat: &fs::Stat) -> Result<u64, Errno> {
-    match FileType::from_raw_mode(stat.st_mode) {
-        FileType::RegularFile => Ok(stat.st_size.cast_unsigned()),
-        FileType::Directory => Err(Errno::ISDIR),
-        _ => Err(Errno::INVAL),
-    }
+/// Opens the file at absolute `path` to read. The open does not wait for a writer of
+/// a FIFO, and gives 21 (`EISDIR`) for a directory and 22 (`EINVAL`) for any other
+/// file that is not a regular file.
+fn open_absolute(path: &Path) -> Result<Found, Error> {
+    let failed = fail(path, Operation::Open);
+    let (fd, stat) = host::file(path).map_err(&failed)?;
+    let fd = Opened { fd, locked: false };
+    let (len, exposed) = (stat.st_size.cast_unsigned(), exposed(&stat));
+    Ok(Found { fd, len, exposed })
+}
+
+/// Whether the mode of `stat` gives read to other users.
+fn exposed(stat: &fs::Stat) -> bool {
+    stat.st_mode & 0o004 != 0
 }
 
 /// Opens `dir/data`, and first makes `dir` and `dir/data` when they are not there.
@@ -443,7 +439,7 @@ fn data(dir: &Path) -> io::Result<OwnedFd> {
 /// Opens directory `path` of `at`, first makes it when it is not there, and syncs the
 /// directory that holds it, unless `path` is on another device than its holder.
 fn make(at: impl AsFd, path: &Path) -> io::Result<OwnedFd> {
-    match fs::mkdirat(&at, path, DIR) {
+    match fs::mkdirat(&at, path, dir::MODE) {
         Ok(()) | Err(Errno::EXIST) => {}
         Err(errno) => return Err(errno),
     }
@@ -468,15 +464,7 @@ fn list(data: &OwnedFd, dir: &Path) -> io::Result<Vec<PathBuf>> {
 
 /// Makes the directory `dir`, or gives `Ok` when a directory is there.
 fn create_dir(data: &OwnedFd, dir: &Path) -> io::Result<()> {
-    match fs::mkdirat(data, at(dir), DIR) {
-        Err(Errno::EXIST)
-            if fs::statat(data, at(dir), AtFlags::empty())
-                .is_ok_and(|stat| FileType::from_raw_mode(stat.st_mode).is_dir()) =>
-        {
-            Ok(())
-        }
-        made => made,
-    }
+    dir::make(data, at(dir))
 }
 
 /// Writes `parts` back to back at `offset`, in as many calls as the OS needs.
@@ -675,7 +663,10 @@ mod tests {
     /// Runs without root, on a holder that cannot sync (`EINVAL`), the case that the
     /// root test of `os::files` does not reach.
     #[test]
-    #[cfg_attr(not(target_os = "linux"), ignore = "needs sysfs")]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "only Linux: macOS has no mount point whose holder cannot sync"
+    )]
     fn make_of_a_mount_point_does_not_sync_its_holder() {
         let point = Path::new("/sys/fs/cgroup");
         let device = |path: &str| fs::stat(path).unwrap().st_dev;

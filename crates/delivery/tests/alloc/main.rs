@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use delivery::{Next, Position, Reader, Readers, Start, complete, latest};
+use delivery::{Error, Next, Position, Reader, Readers, Start, complete, latest};
 
 use types::channel;
 use types::frame::key_set::{Group, Interner, KeySet};
@@ -46,7 +46,6 @@ fn main() {
     places(&frame, &set);
     alternating();
     missed(&frame, &set);
-    lost(&frame, &set);
 }
 
 fn latest(frame: &impl Fn() -> Frame) {
@@ -148,11 +147,20 @@ fn complete(frame: &impl Fn() -> Frame, set: &Arc<KeySet>) {
         readers.close(closed.into(), Some(Stamp::from_nanos(0)));
     });
     assert_eq!(allocations, 0, "an ack or a call on a closed key allocated");
-    assert_eq!(
-        readers.floor(),
-        Some(position),
-        "each ack reached its session"
-    );
+    let flipped = Position {
+        backfill: Some(0),
+        ..position
+    };
+    for &key in &keys {
+        assert_eq!(
+            readers.ack(key, flipped),
+            Err(Error::Ack {
+                from: position,
+                to: flipped
+            }),
+            "each ack reached its session"
+        );
+    }
 }
 
 /// Opens a complete session at live seq `live` with credit for `limit_bytes`.
@@ -162,7 +170,13 @@ fn open(readers: &mut Readers, live: u64, limit_bytes: u64) -> complete::Key {
         backfill: None,
     });
     readers
-        .open(Reader::Unnamed, start, limit_bytes, complete::Charge::Whole)
+        .open(
+            Reader::Unnamed,
+            start,
+            limit_bytes,
+            complete::Charge::Whole,
+            None,
+        )
         .key
 }
 
@@ -177,7 +191,9 @@ fn places(frame: &impl Fn() -> Frame, set: &Arc<KeySet>) {
     let keys: Vec<_> = (0..SESSIONS)
         .map(|_| {
             let charge = complete::Charge::Places([slot, slot].into());
-            readers.open(Reader::Unnamed, start, u64::MAX, charge).key
+            readers
+                .open(Reader::Unnamed, start, u64::MAX, charge, None)
+                .key
         })
         .collect();
     let mut seq = 0;
@@ -208,7 +224,7 @@ fn missed(frame: &impl Fn() -> Frame, set: &Arc<KeySet>) {
         seq += 1;
     }
     assert!(
-        readers.release(seq).is_empty(),
+        readers.release(seq, 0).is_empty(),
         "the warm session has frames to take"
     );
     // A session of credit 0 waits from the first frame, one of credit 1 from the
@@ -237,57 +253,19 @@ fn missed(frame: &impl Fn() -> Frame, set: &Arc<KeySet>) {
         "the warm session takes two frames, and the release wakes it and each \
          session of credit 0"
     );
-    let drained_behind = |readers: &mut Readers, key: complete::Key| loop {
-        match readers.take(key.into()) {
-            Next::Frame(_) => {}
-            Next::Behind => break true,
-            Next::Empty => break false,
-        }
-    };
-    assert!(
-        keys.iter().all(|&key| drained_behind(&mut readers, key)),
-        "each session missed"
-    );
-}
-
-/// A thousand losses behind a queued frame, then its release, allocate nothing: a run
-/// of losses keeps one entry.
-fn lost(frame: &impl Fn() -> Frame, set: &Arc<KeySet>) {
-    let mut readers = Readers::new(0);
-    let keys: Vec<_> = (0..SESSIONS)
-        .map(|_| open(&mut readers, 0, u64::MAX))
-        .collect();
-    let mut seq = 0;
-    flow(&mut readers, &keys, frame, set, &mut seq);
-    let queued = frame();
-    let (woken, allocations) = ALLOCATOR.count(|| {
-        readers.queue(&queued, set, seq..seq + 1);
-        seq += 1;
-        let mut woken = 0;
-        for _ in 0..1_000 {
-            woken += readers.lose(seq..seq + 1).len();
-            seq += 1;
-        }
-        woken + readers.release(seq).len()
-    });
-    assert_eq!(
-        allocations, 0,
-        "lost samples behind a queued frame, or their release, allocated"
-    );
-    assert_eq!(woken, 0, "each session has frames to take, so none wakes");
-    let behind = |readers: &mut Readers, key: complete::Key| {
-        let mut frames = 0;
+    let on_disk = |readers: &mut Readers, key: complete::Key| {
+        readers.grant(key, u64::MAX);
         loop {
             match readers.take(key.into()) {
-                Next::Frame(_) => frames += 1,
-                Next::Behind => break frames,
-                Next::Empty => panic!("the session missed no samples"),
+                Next::Frame(_) => {}
+                Next::Disk { .. } => break true,
+                Next::Empty => break false,
             }
         }
     };
     assert!(
-        keys.iter().all(|&key| behind(&mut readers, key) == 3),
-        "each session takes the three frames before the lost samples, then is behind"
+        keys.iter().all(|&key| on_disk(&mut readers, key)),
+        "each session missed and reads from disk"
     );
 }
 
@@ -305,7 +283,7 @@ fn flow(
         readers.queue(&frame(), set, *seq..*seq + 1);
         *seq += 1;
     }
-    taken + readers.release(*seq).len()
+    taken + readers.release(*seq, 0).len()
 }
 
 /// The number of frames that the complete session `key` takes before
@@ -313,14 +291,14 @@ fn flow(
 ///
 /// # Panics
 ///
-/// If the session gets [`Next::Behind`].
+/// If the session reads from disk.
 fn taken(readers: &mut Readers, key: complete::Key) -> usize {
     let mut count = 0;
     loop {
         match readers.take(key.into()) {
             Next::Frame(_) => count += 1,
             Next::Empty => return count,
-            Next::Behind => panic!("the session is behind"),
+            Next::Disk { .. } => panic!("the session reads from disk"),
         }
     }
 }
@@ -373,6 +351,7 @@ fn alternating() {
             start,
             u64::MAX,
             complete::Charge::Places([slot].into()),
+            None,
         )
         .key;
     let mut seq = 0;
@@ -381,7 +360,7 @@ fn alternating() {
         readers.queue(&fa, &a, *seq..*seq + 1);
         readers.queue(&fb, &b, *seq + 1..*seq + 2);
         *seq += 2;
-        let woken = readers.release(*seq).len();
+        let woken = readers.release(*seq, 0).len();
         woken + taken(readers, key)
     };
     for _ in 0..2 {

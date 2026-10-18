@@ -1,5 +1,8 @@
 //! The Modbus PDU: requests, and the replies to them read in place.
 
+use std::fmt;
+use std::ops::Range;
+
 use crate::Error;
 
 const READ_COILS: u8 = 1;
@@ -32,7 +35,8 @@ pub enum Table {
 }
 
 impl Table {
-    fn function(self) -> u8 {
+    /// The function code that reads the table. It orders the tables.
+    pub(crate) fn function(self) -> u8 {
         match self {
             Self::Coils => READ_COILS,
             Self::DiscreteInputs => READ_DISCRETE_INPUTS,
@@ -51,8 +55,31 @@ impl Table {
         }
     }
 
-    fn bits(self) -> bool {
+    pub(crate) fn bits(self) -> bool {
         matches!(self, Self::Coils | Self::DiscreteInputs)
+    }
+
+    pub(crate) fn read_only(self) -> bool {
+        matches!(self, Self::DiscreteInputs | Self::InputRegisters)
+    }
+
+    /// The most items that one request reads.
+    pub(crate) fn max_read(self) -> u16 {
+        if self.bits() {
+            MAX_READ_BITS
+        } else {
+            MAX_READ_REGISTERS
+        }
+    }
+
+    /// The name of the table in text.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Coils => "coils",
+            Self::DiscreteInputs => "discrete inputs",
+            Self::HoldingRegisters => "holding registers",
+            Self::InputRegisters => "input registers",
+        }
     }
 }
 
@@ -270,12 +297,7 @@ impl Request {
                 start,
                 count,
             } => {
-                let max = if table.bits() {
-                    MAX_READ_BITS
-                } else {
-                    MAX_READ_REGISTERS
-                };
-                check(*start, usize::from(*count), max)?;
+                check(*start, usize::from(*count), table.max_read())?;
                 Ok(5)
             }
             Self::WriteCoil { .. } | Self::WriteRegister { .. } => Ok(5),
@@ -406,6 +428,15 @@ impl<'a> Bits<'a> {
             .flat_map(|&byte| (0..8).map(move |bit| byte >> bit & 1 == 1))
             .take(self.len())
     }
+
+    /// The bit at `index`, or `None` past the last.
+    pub(crate) fn get(&self, index: usize) -> Option<bool> {
+        if index >= self.len() {
+            return None;
+        }
+        let byte = self.bytes.get(index / 8)?;
+        Some(byte >> (index % 8) & 1 == 1)
+    }
 }
 
 /// The registers of a read reply, read in place, in address order.
@@ -433,6 +464,15 @@ impl<'a> Registers<'a> {
             .iter()
             .map(|&pair| u16::from_be_bytes(pair))
     }
+
+    /// The registers at `range`, in address order, or `None` when it passes the last.
+    pub(crate) fn get(
+        &self,
+        range: Range<usize>,
+    ) -> Option<impl DoubleEndedIterator<Item = u16>> {
+        let pairs = self.0.as_chunks::<2>().0.get(range)?;
+        Some(pairs.iter().map(|&pair| u16::from_be_bytes(pair)))
+    }
 }
 
 /// The exception codes of the Modbus specification.
@@ -450,6 +490,8 @@ pub enum Exception {
     Acknowledge,
     /// 6: the device is busy with a long request.
     Busy,
+    /// 8: the device found a parity error in the memory of a file record.
+    MemoryParity,
     /// 10: a gateway has no path to the target.
     GatewayPath,
     /// 11: the target behind a gateway did not reply.
@@ -495,10 +537,31 @@ impl Exception {
             Self::DeviceFailure => 4,
             Self::Acknowledge => 5,
             Self::Busy => 6,
+            Self::MemoryParity => 8,
             Self::GatewayPath => 10,
             Self::GatewayTarget => 11,
             Self::Other(code) => code,
         }
+    }
+}
+
+impl fmt::Display for Exception {
+    /// Writes the code and the name that the Modbus specification gives it, such as
+    /// `2 (illegal data address)`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::IllegalFunction => "illegal function",
+            Self::IllegalAddress => "illegal data address",
+            Self::IllegalValue => "illegal data value",
+            Self::DeviceFailure => "server device failure",
+            Self::Acknowledge => "acknowledge",
+            Self::Busy => "server device busy",
+            Self::MemoryParity => "memory parity error",
+            Self::GatewayPath => "gateway path unavailable",
+            Self::GatewayTarget => "gateway target device failed to respond",
+            Self::Other(_) => "a code that the specification does not name",
+        };
+        write!(f, "{} ({name})", self.code())
     }
 }
 
@@ -511,6 +574,7 @@ impl From<u8> for Exception {
             4 => Self::DeviceFailure,
             5 => Self::Acknowledge,
             6 => Self::Busy,
+            8 => Self::MemoryParity,
             10 => Self::GatewayPath,
             11 => Self::GatewayTarget,
             other => Self::Other(other),
@@ -634,6 +698,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn get_gives_none_past_the_count() {
+        let Ok(Reply::Bits(bits)) =
+            read(Table::Coils, 0, 9).decode_reply(&[1, 2, 0xFF, 0x01])
+        else {
+            panic!("bits");
+        };
+        assert_eq!((bits.get(8), bits.get(9)), (Some(true), None));
+        let Ok(Reply::Registers(registers)) =
+            read(Table::HoldingRegisters, 0, 2).decode_reply(&[3, 4, 0, 1, 0, 2])
+        else {
+            panic!("registers");
+        };
+        let got: Option<Vec<u16>> = registers.get(1..2).map(Iterator::collect);
+        assert_eq!(got, Some(vec![2]));
+        assert!(registers.get(1..3).is_none(), "a range past the count");
+    }
+
     /// The examples of the Modbus Application Protocol specification v1.1b3.
     #[test]
     fn matches_the_read_examples_of_the_specification() {
@@ -720,7 +802,7 @@ mod tests {
     #[test]
     fn reads_an_exception_reply() {
         let request = read(Table::HoldingRegisters, 0, 1);
-        let codes = [1, 2, 3, 4, 5, 6, 10, 11, 7];
+        let codes = [1, 2, 3, 4, 5, 6, 8, 10, 11, 7];
         let want = [
             Exception::IllegalFunction,
             Exception::IllegalAddress,
@@ -728,6 +810,7 @@ mod tests {
             Exception::DeviceFailure,
             Exception::Acknowledge,
             Exception::Busy,
+            Exception::MemoryParity,
             Exception::GatewayPath,
             Exception::GatewayTarget,
             Exception::Other(7),
@@ -742,6 +825,31 @@ mod tests {
             request.decode_reply(&[0x83]),
             Err(Error::Size { want: 2, got: 1 })
         );
+    }
+
+    #[test]
+    fn writes_the_code_and_the_name_of_each_exception() {
+        let texts = [
+            (Exception::IllegalFunction, "1 (illegal function)"),
+            (Exception::IllegalAddress, "2 (illegal data address)"),
+            (Exception::IllegalValue, "3 (illegal data value)"),
+            (Exception::DeviceFailure, "4 (server device failure)"),
+            (Exception::Acknowledge, "5 (acknowledge)"),
+            (Exception::Busy, "6 (server device busy)"),
+            (Exception::MemoryParity, "8 (memory parity error)"),
+            (Exception::GatewayPath, "10 (gateway path unavailable)"),
+            (
+                Exception::GatewayTarget,
+                "11 (gateway target device failed to respond)",
+            ),
+            (
+                Exception::Other(200),
+                "200 (a code that the specification does not name)",
+            ),
+        ];
+        for (exception, text) in texts {
+            assert_eq!(exception.to_string(), text);
+        }
     }
 
     #[test]

@@ -8,7 +8,9 @@
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #include <open62541/client_config_default.h>
 #include <open62541/client_highlevel_async.h>
+#include <open62541/plugin/certificategroup_default.h>
 #include <open62541/plugin/eventloop.h>
+#include <open62541/plugin/securitypolicy_default.h>
 #include <open62541/types.h>
 #include <open62541/util.h>
 #include "mp_printf.h"
@@ -22,16 +24,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
-/* The reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
- * open62541` needs encryption off. */
-#ifdef UA_ENABLE_ENCRYPTION
-#error "connector-opcua builds open62541 with encryption off"
-#endif
 
 /* The global clocks give a fixed time, so no OS clock enters through the C code.
  * `cargo xtask open62541` lists each call site. */
@@ -39,45 +31,40 @@ UA_DateTime UA_DateTime_now(void) { return 0; }
 UA_DateTime UA_DateTime_nowMonotonic(void) { return 0; }
 UA_Int64 UA_DateTime_localTimeUtcOffset(void) { return 0; }
 
-/* The bytes of a line to stderr, with its newline. */
+/* The bytes of a line, with its NUL. */
 #define LINE_BYTES 512
 
-/* Writes `connector-opcua: open62541 `, then `level` and `: ` when `level` is not NULL,
- * then `format` with `args`, to stderr as one line of at most `LINE_BYTES` bytes, in
- * one call, with the same bytes on each OS. So a line takes no `stdio` lock and does
- * not mix with a line of another thread. */
-static void put_line(const char *level, const char *format, va_list args) {
-    char line[LINE_BYTES];
-    /* `mp_vsnprintf`, not `vsnprintf`: open62541 formats `%S` and `%N`. */
-    int length = mp_snprintf(line, sizeof(line), "connector-opcua: open62541 %s%s",
-                             level ? level : "", level ? ": " : "");
-    length += mp_vsnprintf(line + length, sizeof(line) - (size_t)length, format, args);
-    if(length > LINE_BYTES - 1)
-        length = LINE_BYTES - 1;
-    line[length] = '\n';
-    /* A failed write of a line to stderr has nowhere to go. */
-#ifdef _WIN32
-    /* `write` puts a CR before each LF of fd 2, which is in text mode. */
-    DWORD written;
-    HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
-    WriteFile(err, line, (DWORD)length + 1, &written, NULL);
-#else
-    ssize_t written = write(STDERR_FILENO, line, (size_t)length + 1);
-#endif
-    (void)written;
+/* The functions of `src/log.rs`. Each takes the `length` bytes of a line at `line`,
+ * and `connector_opcua_die` does not return. `connector_opcua_admit` gives whether
+ * the log writes the next line of its level, before the line is formatted. */
+bool connector_opcua_admit(void *log, bool severe);
+void connector_opcua_put_line(void *log, bool severe, const char *category,
+                              const char *line, size_t length);
+__attribute__((noreturn)) void connector_opcua_die(const char *line, size_t length);
+
+/* Formats `format` with `args` into `line`, cut to `LINE_BYTES - 1` bytes, and gives
+ * the length. `mp_vsnprintf`, not `vsnprintf`: open62541 formats `%S` and `%N`. */
+static size_t format_line(char line[LINE_BYTES], const char *format, va_list args) {
+    int length = mp_vsnprintf(line, LINE_BYTES, format, args);
+    return length < LINE_BYTES ? (size_t)length : LINE_BYTES - 1;
 }
 
-/* Writes `format` with its arguments to stderr with `put_line`, and aborts. */
-static void die(const char *format, ...) {
+/* Formats `format` with its arguments, as `format_line` does, and gives the line to
+ * `connector_opcua_die`, which panics with it and aborts. The panic hook of the binary
+ * puts the line in its log before the abort. */
+__attribute__((noreturn)) static void die(const char *format, ...) {
+    char line[LINE_BYTES];
     va_list args;
     va_start(args, format);
-    put_line(NULL, format, args);
+    size_t length = format_line(line, format, args);
     va_end(args);
-    abort();
+    connector_opcua_die(line, length);
 }
 
-/* The library calls these only when a config has no event loop, and ours always has
- * one, so a call is a defect. */
+/* The library calls the constructors of the POSIX loop only when a config has no event
+ * loop, and ours always has one. `cargo xtask open62541` omits the file stores and the
+ * deprecated and ECC policies, and the production code adds none. So a call is a
+ * defect. */
 static void refuse(const char *name) { die("called %s, which is not built", name); }
 
 UA_EventLoop *UA_EventLoop_new_POSIX(const UA_Logger *logger) {
@@ -110,6 +97,53 @@ UA_InterruptManager *UA_InterruptManager_new_POSIX(const UA_String name) {
     return NULL;
 }
 
+#define REFUSE_RSA(name)                                                              \
+    UA_StatusCode name(UA_SecurityPolicy *policy, const UA_ByteString certificate,     \
+                       const UA_ByteString key, const UA_Logger *logger) {             \
+        (void)policy, (void)certificate, (void)key, (void)logger;                      \
+        refuse(#name);                                                                 \
+        return UA_STATUSCODE_BADINTERNALERROR;                                         \
+    }
+#define REFUSE_ECC(name)                                                              \
+    UA_StatusCode name(UA_SecurityPolicy *policy, const UA_ApplicationType type,       \
+                       const UA_ByteString certificate, const UA_ByteString key,       \
+                       const UA_Logger *logger) {                                      \
+        (void)policy, (void)type, (void)certificate, (void)key, (void)logger;          \
+        refuse(#name);                                                                 \
+        return UA_STATUSCODE_BADINTERNALERROR;                                         \
+    }
+REFUSE_RSA(UA_SecurityPolicy_Basic128Rsa15)
+REFUSE_RSA(UA_SecurityPolicy_Basic256)
+REFUSE_ECC(UA_SecurityPolicy_EccBrainpoolP256r1)
+REFUSE_ECC(UA_SecurityPolicy_EccBrainpoolP384r1)
+REFUSE_ECC(UA_SecurityPolicy_EccCurve25519)
+REFUSE_ECC(UA_SecurityPolicy_EccCurve448)
+REFUSE_ECC(UA_SecurityPolicy_EccNistP256)
+REFUSE_ECC(UA_SecurityPolicy_EccNistP256AesGcm)
+REFUSE_ECC(UA_SecurityPolicy_EccNistP256ChaChaPoly)
+REFUSE_ECC(UA_SecurityPolicy_EccNistP384)
+
+#if defined(__linux__) || defined(UA_ARCHITECTURE_WIN32)
+UA_StatusCode UA_CertificateGroup_Filestore(UA_CertificateGroup *certGroup,
+                                            UA_NodeId *certificateGroupId,
+                                            const UA_String storePath,
+                                            const UA_Logger *logger,
+                                            const UA_KeyValueMap *params) {
+    (void)certGroup, (void)certificateGroupId, (void)storePath, (void)logger,
+        (void)params;
+    refuse("UA_CertificateGroup_Filestore");
+    return UA_STATUSCODE_BADINTERNALERROR;
+}
+
+UA_StatusCode UA_SecurityPolicy_Filestore(UA_SecurityPolicy *policy,
+                                          UA_SecurityPolicy *innerPolicy,
+                                          const UA_String storePath) {
+    (void)policy, (void)innerPolicy, (void)storePath;
+    refuse("UA_SecurityPolicy_Filestore");
+    return UA_STATUSCODE_BADINTERNALERROR;
+}
+#endif
+
 /* `src/ffi.rs` mirrors these and asserts the same sizes. */
 _Static_assert(sizeof(UA_NodeId) == 24, "UA_NodeId changed");
 _Static_assert(sizeof(UA_DataType) == 96, "UA_DataType changed");
@@ -127,6 +161,27 @@ _Static_assert(UA_TYPES_BOOLEAN == 0 && UA_TYPES_SBYTE == 1 &&
                    UA_TYPES_UINT64 == 8 && UA_TYPES_FLOAT == 9 &&
                    UA_TYPES_DOUBLE == 10,
                "the scalar types of UA_TYPES moved");
+_Static_assert(UA_NS0ID_BOOLEAN == 1 && UA_NS0ID_SBYTE == 2 &&
+                   UA_NS0ID_BYTE == 3 && UA_NS0ID_INT16 == 4 &&
+                   UA_NS0ID_UINT16 == 5 && UA_NS0ID_INT32 == 6 &&
+                   UA_NS0ID_UINT32 == 7 && UA_NS0ID_INT64 == 8 &&
+                   UA_NS0ID_UINT64 == 9 && UA_NS0ID_FLOAT == 10 &&
+                   UA_NS0ID_DOUBLE == 11,
+               "the id of a scalar type is not its index in UA_TYPES plus 1");
+_Static_assert(UA_TYPES_STRING == UA_NS0ID_STRING - 1 &&
+                   UA_TYPES_DATETIME == UA_NS0ID_DATETIME - 1 &&
+                   UA_TYPES_GUID == UA_NS0ID_GUID - 1 &&
+                   UA_TYPES_BYTESTRING == UA_NS0ID_BYTESTRING - 1 &&
+                   UA_TYPES_XMLELEMENT == UA_NS0ID_XMLELEMENT - 1 &&
+                   UA_TYPES_NODEID == UA_NS0ID_NODEID - 1 &&
+                   UA_TYPES_EXPANDEDNODEID == UA_NS0ID_EXPANDEDNODEID - 1 &&
+                   UA_TYPES_STATUSCODE == UA_NS0ID_STATUSCODE - 1 &&
+                   UA_TYPES_QUALIFIEDNAME == UA_NS0ID_QUALIFIEDNAME - 1 &&
+                   UA_TYPES_LOCALIZEDTEXT == UA_NS0ID_LOCALIZEDTEXT - 1 &&
+                   UA_TYPES_DATAVALUE == UA_NS0ID_DATAVALUE - 1 &&
+                   UA_TYPES_DIAGNOSTICINFO == UA_NS0ID_DIAGNOSTICINFO - 1,
+               "the id of a built-in type is not its index in UA_TYPES plus 1");
+_Static_assert(SHIM_ARRAY == 0x8000, "SHIM_ARRAY is `ffi::ARRAY`");
 _Static_assert(UA_DATATYPEKIND_BOOLEAN == 0 && UA_DATATYPEKIND_SBYTE == 1 &&
                    UA_DATATYPEKIND_BYTE == 2 && UA_DATATYPEKIND_INT16 == 3 &&
                    UA_DATATYPEKIND_UINT16 == 4 && UA_DATATYPEKIND_INT32 == 5 &&
@@ -141,8 +196,10 @@ _Static_assert(UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME == 2258,
 _Static_assert(
     UA_NS0ID_SERVER_SERVERCAPABILITIES_OPERATIONLIMITS_MAXNODESPERREAD == 11705,
     "UA_NS0ID_SERVER_SERVERCAPABILITIES_OPERATIONLIMITS_MAXNODESPERREAD moved");
-_Static_assert(UA_SECURECHANNELSTATE_CLOSED == 0,
-               "UA_SECURECHANNELSTATE_CLOSED moved");
+_Static_assert(UA_NS0ID_SERVER_SERVERSTATUS_STATE == 2259,
+               "UA_NS0ID_SERVER_SERVERSTATUS_STATE moved");
+_Static_assert(UA_SECURECHANNELSTATE_CLOSED == 0 && UA_SECURECHANNELSTATE_OPEN == 11,
+               "UA_SecureChannelState moved");
 _Static_assert(sizeof(UA_SecureChannelState) == sizeof(int),
                "UA_SecureChannelState changed");
 _Static_assert(UA_TIMERPOLICY_ONCE == 0 && UA_TIMERPOLICY_CURRENTTIME == 1 &&
@@ -386,29 +443,60 @@ static void el_remove_delayed(UA_EventLoop *el, UA_DelayedCallback *dc) {
     }
 }
 
-static const char *const LEVELS[] = {"trace", "debug", "info", "warning", "error",
-                                     "fatal"};
+/* The name of `category`, or NULL for a value that `UA_LogCategory` does not name.
+ * The switch has no default, so a category that the copy adds fails the build. */
+static const char *category_name(UA_LogCategory category) {
+    switch(category) {
+    case UA_LOGCATEGORY_NETWORK: return "network";
+    case UA_LOGCATEGORY_SECURECHANNEL: return "securechannel";
+    case UA_LOGCATEGORY_SESSION: return "session";
+    case UA_LOGCATEGORY_SERVER: return "server";
+    case UA_LOGCATEGORY_CLIENT: return "client";
+    case UA_LOGCATEGORY_APPLICATION: return "application";
+    case UA_LOGCATEGORY_SECURITY: return "security";
+    case UA_LOGCATEGORY_EVENTLOOP: return "eventloop";
+    case UA_LOGCATEGORY_PUBSUB: return "pubsub";
+    case UA_LOGCATEGORY_DISCOVERY: return "discovery";
+    }
+    return NULL;
+}
 
-/* Writes each message of level warning and up to stderr. It allocates nothing. */
+/* Gives the message to `connector_opcua_put_line` with `context`, when
+ * `connector_opcua_admit` admits it. Out of line, so that the 512 B of `line` are on
+ * no stack of a message below warning. */
+__attribute__((noinline)) static void put_line(void *context, bool severe,
+                                               const char *category, const char *msg,
+                                               va_list args) {
+    if(!connector_opcua_admit(context, severe))
+        return;
+    char line[LINE_BYTES];
+    size_t length = format_line(line, msg, args);
+    connector_opcua_put_line(context, severe, category, line, length);
+}
+
+/* Gives each message of level warning and up to `connector_opcua_put_line` with
+ * `context`, the `Log` of the loop: severe for an error or a fatal message. It
+ * allocates nothing. The switch has no default, as in `category_name`. */
 static void log_message(void *context, UA_LogLevel level, UA_LogCategory category,
                         const char *msg, va_list args) {
-    (void)context;
-    (void)category;
-    if(level < UA_LOGLEVEL_WARNING)
-        return;
-    put_line(LEVELS[level / 100 - 1], msg, args);
+    const char *name = category_name(category);
+    if(!name)
+        die("logged in category %d", (int)category);
+    switch(level) {
+    case UA_LOGLEVEL_TRACE:
+    case UA_LOGLEVEL_DEBUG:
+    case UA_LOGLEVEL_INFO: return;
+    case UA_LOGLEVEL_WARNING: put_line(context, false, name, msg, args); return;
+    case UA_LOGLEVEL_ERROR:
+    case UA_LOGLEVEL_FATAL: put_line(context, true, name, msg, args); return;
+    }
+    die("logged at level %d", (int)level);
 }
 
-/* Logs the `length` bytes at `message` as a warning through the logger of `el`.
- * `length` is above 0: mp_printf reads a precision of 0 as none, and reads to a NUL. */
-void shim_log_warning(UA_EventLoop *el, const char *message, size_t length) {
-    int bytes = length < LINE_BYTES ? (int)length : LINE_BYTES;
-    UA_LOG_WARNING(el->logger, UA_LOGCATEGORY_NETWORK, "%.*s", bytes, message);
-}
-
-/* Gives a fresh loop whose monotonic time is `now(time)` and whose wall time is
- * `wall(time)`, or NULL when out of memory. */
-UA_EventLoop *shim_loop_new(shim_now now, shim_now wall, void *time) {
+/* Gives a fresh loop whose monotonic time is `now(time)`, whose wall time is
+ * `wall(time)`, and whose logger gives each line with `log`, or NULL when out of
+ * memory. */
+UA_EventLoop *shim_loop_new(shim_now now, shim_now wall, void *time, void *log) {
     struct shim_loop *loop = (struct shim_loop *)UA_calloc(1, sizeof(*loop));
     if(!loop)
         return NULL;
@@ -418,6 +506,7 @@ UA_EventLoop *shim_loop_new(shim_now now, shim_now wall, void *time) {
     loop->time = time;
     loop->tail = &loop->queued;
     loop->logger.log = log_message;
+    loop->logger.context = log;
     UA_EventLoop *el = &loop->el;
     el->logger = &loop->logger;
     el->start = el_start;
@@ -657,10 +746,11 @@ void shim_establish(UA_ConnectionManager *cm, uintptr_t id, void *application,
              message);
 }
 
-/* Gives a client on `el` that sends and takes at most `chunks` chunks in a message,
- * or NULL when out of memory. A failed copy of the application URI or of the URI of
- * namespace 0 gives a client with that URI empty (#2566). */
-UA_Client *shim_client_new(UA_EventLoop *el, UA_UInt32 chunks) {
+/* Gives a client on `el` that sends and takes at most `chunks` chunks in a message
+ * and queues at most `queued` intermediate chunks of all messages, or NULL when out
+ * of memory. A failed copy of the application URI or of the URI of namespace 0 gives
+ * a client with that URI empty (#2566). */
+UA_Client *shim_client_new(UA_EventLoop *el, UA_UInt32 chunks, UA_UInt32 queued) {
     UA_ClientConfig config;
     memset(&config, 0, sizeof(config));
     config.logging = &loop_of(el)->logger;
@@ -673,6 +763,9 @@ UA_Client *shim_client_new(UA_EventLoop *el, UA_UInt32 chunks) {
     /* open62541 checks the chunks of a message that it sends and of one that it takes
      * against this count, not against the count of the peer. */
     config.localConnectionConfig.localMaxChunkCount = chunks;
+    config.localConnectionConfig.localMaxQueuedChunks = queued;
+    /* No custom types: `value::mistyped` finds the type of each decoded value in
+     * `UA_TYPES`. */
     return UA_Client_newWithConfig(&config);
 }
 
@@ -730,28 +823,15 @@ UA_StatusCode shim_response_result(const void *response) {
     return ((const UA_ResponseHeader *)response)->serviceResult;
 }
 
-/* Sets `request` to a Read request of no nodes with no timestamps. `shim_read_new` and
- * `shim_read_ask` both build from it, so the size check sees each field. */
-static void read_request_init(UA_ReadRequest *request) {
-    UA_ReadRequest_init(request);
-    request->timestampsToReturn = UA_TIMESTAMPSTORETURN_NEITHER;
-}
-
-/* Sets `read` to the read of the Value of `node`, which it borrows the name of.
- * `shim_read_new` and `shim_read_item` both build from it. */
-static void read_value_init(UA_ReadValueId *read, shim_node node) {
-    UA_ReadValueId_init(read);
-    read->attributeId = UA_ATTRIBUTEID_VALUE;
-    read->nodeId = shim_node_id(node);
-}
-
-/* Gives a Read request of the Value of each of the `count` nodes at `nodes`, with no
+/* Gives a Read request of the attribute `attributes[i]`, or the Value when
+ * `attributes` is NULL, of the node `nodes[i]` for each `i` below `count`, with no
  * timestamps, which copies their names, or NULL when an allocation fails. */
-UA_ReadRequest *shim_read_new(const shim_node *nodes, size_t count) {
+static UA_ReadRequest *read_new(const shim_node *nodes, const UA_UInt32 *attributes,
+                                size_t count) {
     UA_ReadRequest *request = UA_ReadRequest_new();
     if(!request)
         return NULL;
-    read_request_init(request);
+    request->timestampsToReturn = UA_TIMESTAMPSTORETURN_NEITHER;
     request->nodesToRead =
         (UA_ReadValueId *)UA_Array_new(count, &UA_TYPES[UA_TYPES_READVALUEID]);
     if(!request->nodesToRead) {
@@ -761,11 +841,9 @@ UA_ReadRequest *shim_read_new(const shim_node *nodes, size_t count) {
     request->nodesToReadSize = count;
     for(size_t i = 0; i < count; i++) {
         UA_ReadValueId *read = &request->nodesToRead[i];
-        read_value_init(read, nodes[i]);
-        /* The copy clears its target first, so a failed copy leaves no borrowed name
-         * for the delete. */
-        UA_NodeId name = read->nodeId;
-        if(UA_NodeId_copy(&name, &read->nodeId) != UA_STATUSCODE_GOOD) {
+        read->attributeId = attributes ? attributes[i] : UA_ATTRIBUTEID_VALUE;
+        UA_NodeId id = shim_node_id(nodes[i]);
+        if(UA_NodeId_copy(&id, &read->nodeId) != UA_STATUSCODE_GOOD) {
             UA_ReadRequest_delete(request);
             return NULL;
         }
@@ -773,72 +851,42 @@ UA_ReadRequest *shim_read_new(const shim_node *nodes, size_t count) {
     return request;
 }
 
+/* Gives a Read request of the Value of each of the `count` nodes at `nodes`, as
+ * `read_new` does. */
+UA_ReadRequest *shim_read_new(const shim_node *nodes, size_t count) {
+    return read_new(nodes, NULL, count);
+}
+
 void shim_read_free(UA_ReadRequest *request) { UA_ReadRequest_delete(request); }
 
-/* Sends `request` on `client`, and has `callback` called with `data` and the answer.
- * Writes the id of the request to `id`. The request times out only after 2^32 - 1 ms
- * (49.7 days), so in practice it ends at its answer or at the close of the channel. */
-UA_StatusCode shim_client_read(UA_Client *client, UA_ReadRequest *request,
-                               UA_ClientAsyncReadCallback callback, void *data,
-                               UA_UInt32 *id) {
+/* Sends `request`, of the type `request_type`, on `client`, and has `callback` called
+ * with `data` and the answer, of the type `answer_type`. Writes the id of the request to
+ * `id`. The request times out only after 2^32 - 1 ms (49.7 days), so in practice it
+ * ends at its answer or at the close of the channel. */
+static UA_StatusCode send(UA_Client *client, void *request,
+                          const UA_DataType *request_type,
+                          UA_ClientAsyncServiceCallback callback,
+                          const UA_DataType *answer_type, void *data, UA_UInt32 *id) {
     /* open62541 takes the timeout hint of a request from the config, and makes 0
      * 2^32 - 1 ms (`src/client/ua_client.c`, lines 460 and 915). The server gets the
      * hint 0. A send keeps the handle that it gives a request with handle 0. */
     UA_ClientConfig *config = UA_Client_getConfig(client);
     UA_UInt32 timeout = config->timeout;
     config->timeout = 0;
-    request->requestHeader.requestHandle = 0;
-    UA_StatusCode status =
-        UA_Client_sendAsyncReadRequest(client, request, callback, data, id);
+    ((UA_RequestHeader *)request)->requestHandle = 0;
+    UA_StatusCode status = __UA_Client_AsyncService(client, request, request_type,
+                                                    callback, answer_type, data, id);
     config->timeout = timeout;
     return status;
 }
 
-/* Gives the bytes of the body of the message of a Read request of no nodes sent with a
- * session token of `token` encoded bytes. A request of nodes adds `shim_read_item` of
- * each. */
-size_t shim_read_ask(size_t token) {
-    const UA_DataType *type = &UA_TYPES[UA_TYPES_READREQUEST];
-    UA_ReadRequest request;
-    read_request_init(&request);
-    return UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
-           UA_calcSizeBinary(&request, type, NULL) -
-           UA_calcSizeBinary(&request.requestHeader.authenticationToken,
-                             &UA_TYPES[UA_TYPES_NODEID], NULL) +
-           token;
-}
-
-/* Gives the bytes of the read of the Value of `node` in a Read request. */
-size_t shim_read_item(shim_node node) {
-    UA_ReadValueId read;
-    read_value_init(&read, node);
-    return UA_calcSizeBinary(&read, &UA_TYPES[UA_TYPES_READVALUEID], NULL);
-}
-
-/* Gives the bytes of the body of the message of a good answer of a read of no nodes. A
- * good answer of nodes adds `shim_read_answer_item` of each. */
-size_t shim_read_answer(void) {
-    const UA_DataType *type = &UA_TYPES[UA_TYPES_READRESPONSE];
-    UA_ReadResponse response;
-    UA_ReadResponse_init(&response);
-    return UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
-           UA_calcSizeBinary(&response, type, NULL);
-}
-
-/* Gives the most bytes of the value of one node in a good answer: a Double, the largest
- * scalar of `shim_value_scalar`, with each field of the value. */
-size_t shim_read_answer_item(void) {
-    UA_Double value = 0;
-    UA_DataValue result;
-    UA_DataValue_init(&result);
-    UA_Variant_setScalar(&result.value, &value, &UA_TYPES[UA_TYPES_DOUBLE]);
-    result.hasValue = true;
-    result.hasStatus = true;
-    result.hasSourceTimestamp = true;
-    result.hasServerTimestamp = true;
-    result.hasSourcePicoseconds = true;
-    result.hasServerPicoseconds = true;
-    return UA_calcSizeBinary(&result, &UA_TYPES[UA_TYPES_DATAVALUE], NULL);
+/* Sends `request` on `client` as `send` does, with `callback` for the answer. */
+UA_StatusCode shim_client_read(UA_Client *client, UA_ReadRequest *request,
+                               UA_ClientAsyncReadCallback callback, void *data,
+                               UA_UInt32 *id) {
+    return send(client, request, &UA_TYPES[UA_TYPES_READREQUEST],
+                (UA_ClientAsyncServiceCallback)callback,
+                &UA_TYPES[UA_TYPES_READRESPONSE], data, id);
 }
 
 /* Gives the count of results of `response`, a Read response. */
@@ -862,19 +910,28 @@ UA_StatusCode shim_value_status(const void *value) {
     return answer->hasValue ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNODATA;
 }
 
-/* Writes the scalar of `value`, an answer of a read, to `out`, and its kind to `kind`.
- * Else gives the status of `shim_value_status`, or `BadTypeMismatch` for an array or a
- * kind that `shim_scalar` does not hold. */
+/* Writes the kind of `value`, a Good answer of a read, to `kind`, plus `SHIM_ARRAY` for
+ * an array, and to `out` its scalar when `shim_scalar` holds that kind, else its type.
+ * Else gives the status of `shim_value_status`, or `BadNoData` for an empty Variant. */
 UA_StatusCode shim_value_scalar(const void *value, shim_scalar *out, UA_UInt16 *kind) {
     UA_StatusCode status = shim_value_status(value);
     if(status != UA_STATUSCODE_GOOD)
         return status;
     const UA_Variant *variant = &((const UA_DataValue *)value)->value;
-    if(!UA_Variant_isScalar(variant))
-        return UA_STATUSCODE_BADTYPEMISMATCH;
+    /* Locals: with `-fno-strict-aliasing`, each store to `out` makes C load again. */
+    const UA_DataType *type = variant->type;
+    if(!UA_Variant_isScalar(variant)) {
+        if(type == NULL)
+            return UA_STATUSCODE_BADNODATA;
+        *kind = (UA_UInt16)(type->typeKind | SHIM_ARRAY);
+        out->type = type;
+        return UA_STATUSCODE_GOOD;
+    }
+    UA_UInt32 typeKind = type->typeKind;
+    *kind = (UA_UInt16)typeKind;
     /* A load of fixed size for each kind, since a `memcpy` of `memSize` calls glibc. */
     const void *data = variant->data;
-    switch(variant->type->typeKind) {
+    switch(typeKind) {
     case UA_DATATYPEKIND_BOOLEAN: out->boolean = *(const UA_Boolean *)data; break;
     case UA_DATATYPEKIND_SBYTE: out->sbyte = *(const UA_SByte *)data; break;
     case UA_DATATYPEKIND_BYTE: out->byte = *(const UA_Byte *)data; break;
@@ -886,8 +943,448 @@ UA_StatusCode shim_value_scalar(const void *value, shim_scalar *out, UA_UInt16 *
     case UA_DATATYPEKIND_UINT64: out->uint64 = *(const UA_UInt64 *)data; break;
     case UA_DATATYPEKIND_FLOAT: out->float_ = *(const UA_Float *)data; break;
     case UA_DATATYPEKIND_DOUBLE: out->double_ = *(const UA_Double *)data; break;
-    default: return UA_STATUSCODE_BADTYPEMISMATCH;
+    default: out->type = type; break;
     }
-    *kind = (UA_UInt16)variant->type->typeKind;
+    return UA_STATUSCODE_GOOD;
+}
+
+/* The services that `shim_client_service` sends, by the index of their request and
+ * answer types in `UA_TYPES`. `src/ffi.rs` mirrors the order. */
+static const struct {
+    UA_UInt16 request;
+    UA_UInt16 answer;
+} SERVICES[] = {
+    {UA_TYPES_BROWSEREQUEST, UA_TYPES_BROWSERESPONSE},
+    {UA_TYPES_BROWSENEXTREQUEST, UA_TYPES_BROWSENEXTRESPONSE},
+    {UA_TYPES_TRANSLATEBROWSEPATHSTONODEIDSREQUEST,
+     UA_TYPES_TRANSLATEBROWSEPATHSTONODEIDSRESPONSE},
+    {UA_TYPES_READREQUEST, UA_TYPES_READRESPONSE},
+};
+
+/* `shim_browse_*` read a BrowseNext answer as a Browse answer. */
+_Static_assert(sizeof(UA_BrowseResponse) == sizeof(UA_BrowseNextResponse),
+               "UA_BrowseNextResponse changed");
+_Static_assert(offsetof(UA_BrowseResponse, results) ==
+                   offsetof(UA_BrowseNextResponse, results),
+               "UA_BrowseNextResponse.results moved");
+
+/* The request type of `service`, an index of `SERVICES`. */
+static const UA_DataType *request_type(size_t service) {
+    return &UA_TYPES[SERVICES[service].request];
+}
+
+/* The answer type of `service`, an index of `SERVICES`. */
+static const UA_DataType *answer_type(size_t service) {
+    return &UA_TYPES[SERVICES[service].answer];
+}
+
+/* Sends `request`, a request of `service`, on `client` as `send` does, with `callback`
+ * for the answer. */
+UA_StatusCode shim_client_service(UA_Client *client, void *request, size_t service,
+                                  UA_ClientAsyncServiceCallback callback, void *data,
+                                  UA_UInt32 *id) {
+    return send(client, request, request_type(service), callback, answer_type(service),
+                data, id);
+}
+
+/* Gives the request type of `service` when not `answer`, else its answer type, for the
+ * test of the order of `SERVICES`. */
+const UA_DataType *shim_service_type(size_t service, UA_Boolean answer) {
+    return answer ? answer_type(service) : request_type(service);
+}
+
+/* Moves `answer`, an answer of `service` that a callback gets, to new memory that
+ * `shim_answer_free` frees, and leaves `answer` empty for open62541 to clear. Gives
+ * NULL, with `answer` as it was, when an allocation fails. */
+void *shim_answer_move(void *answer, size_t service) {
+    const UA_DataType *type = answer_type(service);
+    void *moved = UA_malloc(type->memSize);
+    if(!moved)
+        return NULL;
+    memcpy(moved, answer, type->memSize);
+    UA_init(answer, type);
+    return moved;
+}
+
+/* Frees `answer`, an answer of `service` from `shim_answer_move`. */
+void shim_answer_free(void *answer, size_t service) {
+    UA_delete(answer, answer_type(service));
+}
+
+/* `shim_answer_count` reads the count of results of each answer of `SERVICES` at one
+ * place. */
+_Static_assert(offsetof(UA_BrowseResponse, resultsSize) ==
+                   offsetof(UA_BrowseNextResponse, resultsSize),
+               "UA_BrowseNextResponse changed");
+_Static_assert(offsetof(UA_BrowseResponse, resultsSize) ==
+                   offsetof(UA_TranslateBrowsePathsToNodeIdsResponse, resultsSize),
+               "UA_TranslateBrowsePathsToNodeIdsResponse changed");
+_Static_assert(offsetof(UA_BrowseResponse, resultsSize) ==
+                   offsetof(UA_ReadResponse, resultsSize),
+               "UA_ReadResponse changed");
+
+/* Gives the count of results of `answer`, an answer of a service of `SERVICES`. */
+size_t shim_answer_count(const void *answer) {
+    return ((const UA_BrowseResponse *)answer)->resultsSize;
+}
+
+/* Frees `request`, a request of `service`. */
+void shim_request_free(void *request, size_t service) {
+    UA_delete(request, request_type(service));
+}
+
+/* Gives the bytes of the body of the message of `request`, a request of `service`,
+ * sent with a session token of `token` encoded bytes. */
+size_t shim_request_bytes(const void *request, size_t service, size_t token) {
+    const UA_DataType *type = request_type(service);
+    const UA_RequestHeader *header = (const UA_RequestHeader *)request;
+    const UA_DataType *node = &UA_TYPES[UA_TYPES_NODEID];
+    return UA_calcSizeBinary(&type->binaryEncodingId, node, NULL) +
+           UA_calcSizeBinary(request, type, NULL) -
+           UA_calcSizeBinary(&header->authenticationToken, node, NULL) + token;
+}
+
+/* Gives the bytes of the body of the message of a good answer of `service` with no
+ * results. Each result adds its `shim_item_*`. */
+size_t shim_answer_bytes(size_t service) {
+    const UA_DataType *type = answer_type(service);
+    /* The largest answer of `SERVICES`, so `UA_init` writes in bounds. */
+    UA_TranslateBrowsePathsToNodeIdsResponse answer;
+    UA_init(&answer, type);
+    return UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
+           UA_calcSizeBinary(&answer, type, NULL);
+}
+
+_Static_assert(sizeof(UA_TranslateBrowsePathsToNodeIdsResponse) >=
+                       sizeof(UA_BrowseResponse) &&
+                   sizeof(UA_TranslateBrowsePathsToNodeIdsResponse) >=
+                       sizeof(UA_BrowseNextResponse) &&
+                   sizeof(UA_TranslateBrowsePathsToNodeIdsResponse) >=
+                       sizeof(UA_ReadResponse),
+               "a response of SERVICES grew");
+
+/* The most bytes of each text and byte string of the answers that `shim_item_*`
+ * size. */
+#define TEXT_BYTES 256
+
+static const UA_Byte TEXT[TEXT_BYTES] = {0};
+
+/* A text of `TEXT_BYTES` bytes, which only a size reads. */
+static UA_String text(void) {
+    return (UA_String){TEXT_BYTES, (UA_Byte *)(uintptr_t)TEXT};
+}
+
+/* Sets `id` to the largest `ExpandedNodeId` with each text at `TEXT_BYTES`. */
+static void wide_id(UA_ExpandedNodeId *id) {
+    UA_ExpandedNodeId_init(id);
+    id->nodeId = UA_NODEID_STRING(UINT16_MAX, "");
+    id->nodeId.identifier.string = text();
+    id->namespaceUri = text();
+    id->serverIndex = UINT32_MAX;
+}
+
+/* Gives the bytes of `value` in a `DataValue` with each field. */
+static size_t value_bytes(void *value, const UA_DataType *type) {
+    UA_DataValue result;
+    UA_DataValue_init(&result);
+    UA_Variant_setScalar(&result.value, value, type);
+    result.hasValue = true;
+    result.hasStatus = true;
+    result.hasSourceTimestamp = true;
+    result.hasServerTimestamp = true;
+    result.hasSourcePicoseconds = true;
+    result.hasServerPicoseconds = true;
+    return UA_calcSizeBinary(&result, &UA_TYPES[UA_TYPES_DATAVALUE], NULL);
+}
+
+/* The functions `shim_item_*` each give the most bytes of one result of a good
+ * answer, with each text and byte string at `TEXT_BYTES`. */
+
+/* A Read result of a Double, the largest scalar of `shim_value_scalar`. */
+size_t shim_item_value(void) {
+    UA_Double value = 0;
+    return value_bytes(&value, &UA_TYPES[UA_TYPES_DOUBLE]);
+}
+
+/* A Read result of a `NodeId` by a name. */
+size_t shim_item_fact(void) {
+    UA_NodeId id = UA_NODEID_STRING(UINT16_MAX, "");
+    id.identifier.string = text();
+    return value_bytes(&id, &UA_TYPES[UA_TYPES_NODEID]);
+}
+
+/* A Read result of an `EUInformation`. */
+size_t shim_item_unit(void) {
+    UA_EUInformation unit;
+    UA_EUInformation_init(&unit);
+    unit.namespaceUri = text();
+    unit.displayName = (UA_LocalizedText){text(), text()};
+    unit.description = (UA_LocalizedText){text(), text()};
+    return value_bytes(&unit, &UA_TYPES[UA_TYPES_EUINFORMATION]);
+}
+
+/* A Translate result of one target. */
+size_t shim_item_path(void) {
+    UA_BrowsePathTarget target;
+    wide_id(&target.targetId);
+    target.remainingPathIndex = UA_UINT32_MAX;
+    UA_BrowsePathResult result = {UA_STATUSCODE_GOOD, 1, &target};
+    return UA_calcSizeBinary(&result, &UA_TYPES[UA_TYPES_BROWSEPATHRESULT], NULL);
+}
+
+/* A Browse or BrowseNext result with a continuation point and no references. */
+size_t shim_item_result(void) {
+    UA_BrowseResult result;
+    UA_BrowseResult_init(&result);
+    result.continuationPoint = text();
+    return UA_calcSizeBinary(&result, &UA_TYPES[UA_TYPES_BROWSERESULT], NULL);
+}
+
+/* One reference of a Browse result, with each field of the result mask of
+ * `shim_browse_new`. */
+size_t shim_item_reference(void) {
+    UA_ReferenceDescription reference;
+    UA_ReferenceDescription_init(&reference);
+    reference.referenceTypeId = UA_NODEID_STRING(UINT16_MAX, "");
+    reference.referenceTypeId.identifier.string = text();
+    wide_id(&reference.nodeId);
+    reference.browseName.name = text();
+    reference.displayName = (UA_LocalizedText){text(), text()};
+    return UA_calcSizeBinary(&reference, &UA_TYPES[UA_TYPES_REFERENCEDESCRIPTION],
+                             NULL);
+}
+
+/* Gives a Browse request of the references of each of the `count` nodes at `nodes`,
+ * which copies their names: the inverse references when `inverse`, else the forward,
+ * of the type `reference` and its subtypes, to the node classes of the mask `classes`,
+ * at most `most` per node, each with its reference type, node class, browse name, and
+ * display name. NULL when an allocation fails. */
+UA_BrowseRequest *shim_browse_new(const shim_node *nodes, size_t count,
+                                  UA_UInt32 reference, UA_Boolean inverse,
+                                  UA_UInt32 classes, UA_UInt32 most) {
+    UA_BrowseRequest *request = UA_BrowseRequest_new();
+    if(!request)
+        return NULL;
+    request->requestedMaxReferencesPerNode = most;
+    request->nodesToBrowse = (UA_BrowseDescription *)UA_Array_new(
+        count, &UA_TYPES[UA_TYPES_BROWSEDESCRIPTION]);
+    if(!request->nodesToBrowse) {
+        UA_BrowseRequest_delete(request);
+        return NULL;
+    }
+    request->nodesToBrowseSize = count;
+    for(size_t i = 0; i < count; i++) {
+        UA_BrowseDescription *browse = &request->nodesToBrowse[i];
+        browse->browseDirection =
+            inverse ? UA_BROWSEDIRECTION_INVERSE : UA_BROWSEDIRECTION_FORWARD;
+        browse->referenceTypeId = UA_NODEID_NUMERIC(0, reference);
+        browse->includeSubtypes = true;
+        browse->nodeClassMask = classes;
+        browse->resultMask =
+            UA_BROWSERESULTMASK_REFERENCETYPEID | UA_BROWSERESULTMASK_NODECLASS |
+            UA_BROWSERESULTMASK_BROWSENAME | UA_BROWSERESULTMASK_DISPLAYNAME;
+        UA_NodeId id = shim_node_id(nodes[i]);
+        if(UA_NodeId_copy(&id, &browse->nodeId) != UA_STATUSCODE_GOOD) {
+            UA_BrowseRequest_delete(request);
+            return NULL;
+        }
+    }
+    return request;
+}
+
+/* Gives a BrowseNext request of each of the `count` continuation points at `points`,
+ * which it copies, that releases them when `release`. NULL when an allocation fails. */
+UA_BrowseNextRequest *shim_browse_next_new(const UA_ByteString *points, size_t count,
+                                           UA_Boolean release) {
+    UA_BrowseNextRequest *request = UA_BrowseNextRequest_new();
+    if(!request)
+        return NULL;
+    request->releaseContinuationPoints = release;
+    if(UA_Array_copy(points, count, (void **)&request->continuationPoints,
+                     &UA_TYPES[UA_TYPES_BYTESTRING]) != UA_STATUSCODE_GOOD) {
+        UA_BrowseNextRequest_delete(request);
+        return NULL;
+    }
+    request->continuationPointsSize = count;
+    return request;
+}
+
+/* Gives the status of result `index` of `answer`, a Browse or BrowseNext answer with
+ * more results than `index`, and writes the count of its references to `references`
+ * and its continuation point, which borrows from `answer`, to `point`. */
+UA_StatusCode shim_browse_result(const UA_BrowseResponse *answer, size_t index,
+                                 size_t *references, UA_ByteString *point) {
+    const UA_BrowseResult *result = &answer->results[index];
+    *references = result->referencesSize;
+    *point = result->continuationPoint;
+    return result->statusCode;
+}
+
+/* Writes `id` to `out`, which borrows its name from `id`, and gives whether `id` is by
+ * a number or a name. Else `out` is `i=0`. */
+static UA_Boolean id_of(const UA_NodeId *id, shim_node *out) {
+    out->namespace = id->namespaceIndex;
+    out->number = 0;
+    out->name = NULL;
+    out->length = 0;
+    if(id->identifierType == UA_NODEIDTYPE_NUMERIC) {
+        out->number = id->identifier.numeric;
+        return true;
+    }
+    if(id->identifierType != UA_NODEIDTYPE_STRING)
+        return false;
+    /* A name is never NULL in a `shim_node`, also an empty one. */
+    out->name = id->identifier.string.data ? id->identifier.string.data
+                                           : (const UA_Byte *)"";
+    out->length = id->identifier.string.length;
+    return true;
+}
+
+/* A node of this server by a number or a name. */
+#define SHIM_HELD_NODE 0
+/* A node of this server by a GUID or opaque key. */
+#define SHIM_HELD_KEY 1
+/* A node of another server, or of a namespace by its URI. */
+#define SHIM_HELD_REMOTE 2
+_Static_assert(SHIM_HELD_NODE == 0 && SHIM_HELD_KEY == 1 && SHIM_HELD_REMOTE == 2,
+               "ffi::held changed");
+
+/* A reference of a browse, as `ffi::Reference` gives it. Each text borrows from the
+ * answer. */
+typedef struct {
+    /* The node, valid only when `held` is 0. */
+    shim_node node;
+    /* The reference type, valid only when `typed`. */
+    shim_node via;
+    UA_String name;
+    UA_String display;
+    UA_UInt32 class;
+    /* One of the `SHIM_HELD_*` values. */
+    UA_Byte held;
+    /* Whether the reference type is by a number or a name. */
+    UA_Boolean typed;
+} shim_reference;
+
+_Static_assert(sizeof(shim_reference) == 88, "shim_reference changed");
+_Static_assert(offsetof(shim_reference, class) == 80, "shim_reference.class moved");
+_Static_assert(offsetof(shim_reference, held) == 84, "shim_reference.held moved");
+_Static_assert(offsetof(shim_reference, typed) == 85, "shim_reference.typed moved");
+
+/* Writes reference `index` of result `result` of `answer`, a Browse or BrowseNext
+ * answer with more of each, to `out`, which borrows from `answer`. */
+void shim_browse_reference(const UA_BrowseResponse *answer, size_t result, size_t index,
+                           shim_reference *out) {
+    const UA_ReferenceDescription *reference =
+        &answer->results[result].references[index];
+    const UA_ExpandedNodeId *node = &reference->nodeId;
+    UA_Boolean keyed = id_of(&node->nodeId, &out->node);
+    if(node->serverIndex != 0 || node->namespaceUri.length != 0) {
+        out->held = SHIM_HELD_REMOTE;
+    } else {
+        out->held = keyed ? SHIM_HELD_NODE : SHIM_HELD_KEY;
+    }
+    out->typed = id_of(&reference->referenceTypeId, &out->via);
+    out->name = reference->browseName.name;
+    out->display = reference->displayName.text;
+    out->class = (UA_UInt32)reference->nodeClass;
+}
+
+/* Writes the text of the node of reference `index` of result `result` of `answer`, as
+ * `shim_browse_reference` reads it, to `out`, which the caller frees with
+ * `shim_buffer_free`. Gives `BadOutOfMemory` when an allocation fails. */
+UA_StatusCode shim_browse_text(const UA_BrowseResponse *answer, size_t result,
+                               size_t index, UA_String *out) {
+    const UA_ReferenceDescription *reference =
+        &answer->results[result].references[index];
+    UA_String_init(out);
+    return UA_ExpandedNodeId_print(&reference->nodeId, out);
+}
+
+/* Gives a TranslateBrowsePathsToNodeIds request of the path `HasProperty` to
+ * `0:EngineeringUnits` from each of the `count` nodes at `nodes`, which copies their
+ * names, or NULL when an allocation fails. */
+UA_TranslateBrowsePathsToNodeIdsRequest *shim_units_new(const shim_node *nodes,
+                                                        size_t count) {
+    UA_TranslateBrowsePathsToNodeIdsRequest *request =
+        UA_TranslateBrowsePathsToNodeIdsRequest_new();
+    if(!request)
+        return NULL;
+    request->browsePaths =
+        (UA_BrowsePath *)UA_Array_new(count, &UA_TYPES[UA_TYPES_BROWSEPATH]);
+    if(!request->browsePaths) {
+        UA_TranslateBrowsePathsToNodeIdsRequest_delete(request);
+        return NULL;
+    }
+    request->browsePathsSize = count;
+    for(size_t i = 0; i < count; i++) {
+        UA_BrowsePath *path = &request->browsePaths[i];
+        UA_RelativePathElement step;
+        UA_RelativePathElement_init(&step);
+        step.referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY);
+        step.targetName = UA_QUALIFIEDNAME(0, "EngineeringUnits");
+        UA_NodeId id = shim_node_id(nodes[i]);
+        UA_RelativePath relative = {1, &step};
+        if(UA_NodeId_copy(&id, &path->startingNode) != UA_STATUSCODE_GOOD ||
+           UA_RelativePath_copy(&relative, &path->relativePath) != UA_STATUSCODE_GOOD) {
+            UA_TranslateBrowsePathsToNodeIdsRequest_delete(request);
+            return NULL;
+        }
+    }
+    return request;
+}
+
+/* Writes the node of the first target of result `index` of `answer`, a
+ * TranslateBrowsePathsToNodeIds answer with more results than `index`, to `out`, which
+ * borrows its name from `answer`. Gives false when the result is not Good, or its
+ * first target is not in this server by a number or a name, or ends before the path
+ * does. */
+UA_Boolean shim_units_target(const UA_TranslateBrowsePathsToNodeIdsResponse *answer,
+                             size_t index, shim_node *out) {
+    const UA_BrowsePathResult *result = &answer->results[index];
+    if(result->statusCode != UA_STATUSCODE_GOOD || result->targetsSize == 0)
+        return false;
+    const UA_BrowsePathTarget *target = &result->targets[0];
+    return target->remainingPathIndex == UA_UINT32_MAX &&
+           target->targetId.serverIndex == 0 &&
+           target->targetId.namespaceUri.length == 0 &&
+           id_of(&target->targetId.nodeId, out);
+}
+
+/* Gives a Read request of the attribute `attributes[i]` of the node `nodes[i]` for each
+ * `i` below `count`, as `read_new` does. */
+UA_ReadRequest *shim_read_attributes_new(const shim_node *nodes,
+                                         const UA_UInt32 *attributes, size_t count) {
+    return read_new(nodes, attributes, count);
+}
+
+/* Writes the node of `value`, an answer of a read that holds a scalar `NodeId` by a
+ * number or a name, to `out`, which borrows its name from `value`. Else gives the
+ * status of `shim_value_status` when it is not Good, else `BadTypeMismatch`. */
+UA_StatusCode shim_value_node(const UA_DataValue *value, shim_node *out) {
+    UA_StatusCode status = shim_value_status(value);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    if(!UA_Variant_hasScalarType(&value->value, &UA_TYPES[UA_TYPES_NODEID]))
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    return id_of((const UA_NodeId *)value->value.data, out)
+               ? UA_STATUSCODE_GOOD
+               : UA_STATUSCODE_BADTYPEMISMATCH;
+}
+
+/* Writes the `namespaceUri` of `value`, an answer of a read that holds a scalar
+ * `EUInformation`, to `uri`, its `unitId` to `code`, and the text of its display name
+ * to `text`. Each text borrows from `value`. Else gives the status of
+ * `shim_value_status` when it is not Good, else `BadTypeMismatch`. */
+UA_StatusCode shim_value_unit(const UA_DataValue *value, UA_String *uri,
+                              UA_Int32 *code, UA_String *text) {
+    UA_StatusCode status = shim_value_status(value);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    if(!UA_Variant_hasScalarType(&value->value, &UA_TYPES[UA_TYPES_EUINFORMATION]))
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    const UA_EUInformation *unit = (const UA_EUInformation *)value->value.data;
+    *uri = unit->namespaceUri;
+    *code = unit->unitId;
+    *text = unit->displayName.text;
     return UA_STATUSCODE_GOOD;
 }

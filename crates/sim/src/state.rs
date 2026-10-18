@@ -22,7 +22,7 @@ use crate::log::{self, Kept};
 use crate::net::{self, Network};
 use crate::paths::Paths;
 use crate::serial::Serial;
-use crate::{Crash, node, shard};
+use crate::{Crash, node, shard, thread};
 
 pub(crate) type Shared = Arc<Mutex<State>>;
 
@@ -76,6 +76,7 @@ struct Node {
     arm_max: Option<Span>,
     entropy: Rng,
     shards: shard::Starts,
+    threads: thread::Faults,
     /// The monotonic reading at boot.
     boot: Monotonic,
     /// Set from the stop of a crash to the cut, while the sim drops what the crash
@@ -199,6 +200,7 @@ impl State {
             arm_max: config.arm_max,
             entropy,
             shards: shard::Starts::default(),
+            threads: thread::Faults::default(),
             boot: config.monotonic,
             crashing: false,
             life: 0,
@@ -258,6 +260,10 @@ impl State {
 
     pub(crate) fn shards(&mut self, node: usize) -> &mut shard::Starts {
         &mut self.nodes[node].shards
+    }
+
+    pub(crate) fn threads(&mut self, node: usize) -> &mut thread::Faults {
+        &mut self.nodes[node].threads
     }
 
     pub(crate) fn fill(&mut self, node: usize, bytes: &mut [u8]) {

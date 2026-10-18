@@ -1,15 +1,17 @@
-//! Runs the event loop of open62541 alone, and a connection manager with a server and
-//! clients on it, for benchmarks and allocation tests. [`client`] runs a server with
-//! clients that each have their own manager. [`kind`] writes the frames of the `opcua`
-//! kind with no server. Not part of the contract of the crate.
+//! Runs the event loop of open62541 alone, its logger, and a connection manager with a
+//! server and clients on it, for benchmarks and allocation tests. [`client`] runs a
+//! server with clients that each have their own manager. [`kind`] writes the frames of
+//! the `opcua` kind with no server. [`value`] decodes the values of a read. Not part of
+//! the contract of the crate.
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 pub mod client;
 pub mod kind;
+pub mod value;
 
 use std::cell::Cell;
-use std::ffi::{CString, c_void};
+use std::ffi::{CStr, CString, c_void};
 use std::future::{Future as _, poll_fn};
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::net::{IpAddr, SocketAddr};
@@ -23,7 +25,6 @@ use env::net::Net;
 use env::rng::Rng;
 use types::time::{Monotonic, Span};
 
-use crate::alloc;
 use crate::client::Nodes;
 use crate::connection;
 use crate::event::{self, Loop};
@@ -54,13 +55,10 @@ impl Client {
     /// says.
     #[must_use]
     pub fn new(clock: Clock, rng: &mut Rng, timers: usize) -> Self {
-        let events = Loop::new(event::Time::monotonic(clock), rng);
+        let events =
+            Loop::new(event::Time::monotonic(clock), tracing::Span::none(), rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
-        let client =
-            unsafe { ffi::shim_client_new(events.raw(), crate::connection::CHUNKS) };
-        let Some(raw) = NonNull::new(client) else {
-            alloc::exhausted()
-        };
+        let raw = unsafe { crate::client::unconnected(events.raw()) };
         let mut client = Self { raw, events };
         client.run();
         let events = &client.events;
@@ -115,6 +113,40 @@ impl Drop for Client {
     fn drop(&mut self) {
         // SAFETY: the client lives, and its loop outlives it.
         unsafe { ffi::UA_Client_delete(self.raw.as_ptr()) };
+    }
+}
+
+/// An event loop of open62541 whose logger writes each line as an event with a
+/// parent span, as the loop of a connection does.
+pub struct Log {
+    events: Loop,
+}
+
+impl Log {
+    /// Makes a loop on `clock` and `rng` whose lines have the parent `span`.
+    ///
+    /// # Aborts
+    ///
+    /// When open62541 cannot allocate the loop, as [`alloc::exhausted`] says.
+    #[must_use]
+    pub fn new(clock: Clock, rng: &mut Rng, span: tracing::Span) -> Self {
+        Self {
+            events: Loop::new(event::Time::monotonic(clock), span, rng),
+        }
+    }
+
+    /// Logs `text` as a warning of the category `client` through the logger of
+    /// open62541. Past 100 warnings in a window of 1 s of the clock, it only counts
+    /// it.
+    pub fn warn(&self, text: &CStr) {
+        // SAFETY: the loop lives, and `text` ends in a NUL.
+        unsafe { ffi::test::shim_log_warning(self.events.raw(), text.as_ptr()) };
+    }
+}
+
+impl std::fmt::Debug for Log {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Log").finish_non_exhaustive()
     }
 }
 
@@ -219,12 +251,7 @@ impl Manager {
         let clients = (0..=idle)
             .map(|_| {
                 // SAFETY: the loop outlives the client, which `close` deletes.
-                let client = unsafe {
-                    ffi::shim_client_new(events.raw(), crate::connection::CHUNKS)
-                };
-                let Some(client) = NonNull::new(client) else {
-                    alloc::exhausted()
-                };
+                let client = unsafe { crate::client::unconnected(events.raw()) };
                 // SAFETY: the client lives, and copies the URL.
                 let status = Status(unsafe {
                     ffi::UA_Client_connectAsync(client.as_ptr(), url.as_ptr())
@@ -254,7 +281,6 @@ impl Manager {
         let clients = self.clients.len();
         let mut deadline = clock.sleep(CONNECT_TIMEOUT);
         let mut connect = pin!(self.connections.drive(|_| {
-            self.connections.events().run();
             if self.connected() == clients {
                 Poll::Ready(())
             } else {
@@ -277,17 +303,17 @@ impl Manager {
 
     /// Drives the manager once: a pass, one run of the loop, and the moves after it.
     pub fn drive(&self) {
-        self.drive_after(|| ());
+        self.drive_then(|| ());
     }
 
-    /// Drives the manager once, as `drive` does, with a run that first asks the first
-    /// client for a read of the current time of the server.
+    /// Drives the manager once, as `drive` does, and asks the first client after the
+    /// run for a read of the current time of the server.
     ///
     /// # Panics
     ///
     /// If open62541 refuses the read.
     pub fn ask(&self) {
-        self.drive_after(|| self.read(&self.time));
+        self.drive_then(|| self.read(&self.time));
     }
 
     /// Asks the first client for the read of `nodes`, which holds one node.
@@ -329,7 +355,7 @@ impl Manager {
         for client in &self.clients {
             // SAFETY: the client lives.
             let status = Status(unsafe {
-                ffi::test::UA_Client_disconnectSecureChannelAsync(client.as_ptr())
+                ffi::UA_Client_disconnectSecureChannelAsync(client.as_ptr())
             });
             assert_eq!(status, Status::GOOD, "open62541 refused a disconnect");
         }
@@ -348,13 +374,13 @@ impl Manager {
         unsafe { ManuallyDrop::drop(&mut self.connections) };
     }
 
-    fn drive_after(&self, first: impl FnOnce()) {
-        let mut first = Some(first);
+    /// Drives the manager once, and calls `then` after the run of the loop.
+    fn drive_then(&self, then: impl FnOnce()) {
+        let mut then = Some(then);
         let drive = pin!(self.connections.drive(|_| {
-            if let Some(first) = first.take() {
-                first();
+            if let Some(then) = then.take() {
+                then();
             }
-            self.connections.events().run();
             Poll::Ready(())
         }));
         let ready = drive.poll(&mut Context::from_waker(Waker::noop()));
@@ -463,7 +489,7 @@ mod tests {
     use sim::{Sim, node};
     use types::time::Span;
 
-    use super::{Client, Manager};
+    use super::{Client, Log, Manager};
     use crate::client::Nodes;
     use crate::ffi;
     use crate::node::{Key, Node};
@@ -768,7 +794,7 @@ mod tests {
                 namespace: 0,
                 key: Key::Number(999_999),
             }]);
-            manager.drive_after(|| manager.read(&unknown));
+            manager.drive_then(|| manager.read(&unknown));
             clock.sleep(delay()).await;
             manager.drive();
             clock.sleep(delay()).await;
@@ -921,5 +947,28 @@ mod tests {
             format!("{client:?}"),
             "Client { next: Some(Monotonic(3601000000000)), .. }"
         );
+    }
+
+    #[test]
+    fn a_warning_goes_to_target_open62541_under_the_span_of_the_log() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let (capture, dispatch) = connector::testing::Capture::new("open62541");
+        tracing::dispatcher::with_default(&dispatch, || {
+            let span = tracing::error_span!("connector", connector = "press");
+            let log = Log::new(node.clock(), &mut node.entropy().rng(), span);
+            log.warn(c"hot");
+        });
+        let line = r#"WARN hot connector="press" category="client""#;
+        assert_eq!(capture.lines(), [line]);
+    }
+
+    #[test]
+    fn the_debug_of_a_log_gives_no_field() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let span = tracing::Span::none();
+        let log = Log::new(node.clock(), &mut node.entropy().rng(), span);
+        assert_eq!(format!("{log:?}"), "Log { .. }");
     }
 }

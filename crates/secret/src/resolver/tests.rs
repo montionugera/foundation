@@ -17,14 +17,15 @@ fn vars() -> Arc<BTreeMap<OsString, OsString>> {
     ]))
 }
 
-/// Runs `body` on a shard of a new sim node, with a resolver of [`vars`] and a
-/// file store in `secrets`.
+/// Runs `body` on a shard of a new sim node, with a resolver of [`vars`], a file
+/// store in `secrets`, and a host directory `/run/secrets`.
 fn on_sim<F>(body: impl FnOnce(sim::node::Node, Resolver) -> F + Send + 'static)
 where
     F: Future<Output = ()> + 'static,
 {
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
+    node.make_dir(Path::new("/run/secrets"));
     sim.run_on(&node, |node, _| {
         let resolver = Resolver::new(vars(), node.files(), Path::new("secrets"));
         body(node, resolver)
@@ -259,7 +260,8 @@ fn reads_a_named_secret_from_the_store() {
         assert_eq!(
             get(&resolver, &source).await,
             missing(
-                "the file /data/secrets/plant.token is not there. Write the value to it"
+                "the file /data/secrets/plant.token is not there. Write the value to it, \
+                 unreadable by other users: chmod o-r /data/secrets/plant.token"
             )
         );
         put(&node.files(), b"t\n").await;

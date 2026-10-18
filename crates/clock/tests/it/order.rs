@@ -43,7 +43,7 @@ impl env::clock::Driver for Driver {
             && self
                 .0
                 .skip
-                .fetch_update(SeqCst, SeqCst, |skip| skip.checked_sub(1))
+                .try_update(SeqCst, SeqCst, |skip| skip.checked_sub(1))
                 .is_ok()
         {
             return Monotonic(time);

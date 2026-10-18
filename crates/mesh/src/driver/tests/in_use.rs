@@ -154,7 +154,7 @@ fn a_replayed_pointer_at_or_below_the_one_in_use_leaves_the_spec_in_use() {
         create_subjects(&["plant.b"], 1),
     );
     let (first, second) = (pointer(1, &a), pointer(2, &b));
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(common::simulation(0));
     let node = sim.node(sim::node::Config::default());
     let next = b.clone();
     sim.run_on(&node, move |node, tasks| async move {
@@ -219,7 +219,7 @@ fn a_committed_spec_with_a_subject_at_admin_keeps_the_last_spec_across_a_power_c
         }),
         ..in_use(first, &a)
     };
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(common::simulation(0));
     let node = sim.node(sim::node::Config::default());
     let before = kept.clone();
     sim.run_on(&node, move |node, tasks| async move {
@@ -471,7 +471,7 @@ fn a_read_gets_no_listed_chunk_that_the_tree_in_use_holds() {
 fn a_read_after_an_open_gets_no_listed_chunk_of_the_tree_in_use() {
     let a = create_subjects(&["plant.a"], 1);
     let first = pointer(1, &a);
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(common::simulation(0));
     let node = sim.node(sim::node::Config::default());
     sim.run_on(&node, move |node, tasks| async move {
         let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
@@ -1090,10 +1090,7 @@ fn a_power_cut_before_the_sync_of_the_new_file_keeps_the_old_file() {
     let (first, second) = (pointer(1, &a), pointer(2, &b));
     let mut olds = 0;
     for seed in 0..8 {
-        let mut sim = Sim::new(sim::Config {
-            seed,
-            ..sim::Config::default()
-        });
+        let mut sim = Sim::new(common::simulation(seed));
         let node = sim.node(sim::node::Config::default());
         let (applied, next) = (a.clone(), b.clone());
         sim.run_on(&node, move |node, tasks| async move {
@@ -1136,7 +1133,7 @@ fn a_power_cut_before_the_removal_of_the_old_file_uses_the_new_spec() {
         create_subjects(&["plant.b"], 1),
     );
     let (first, second) = (pointer(1, &a), pointer(2, &b));
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(common::simulation(0));
     let node = sim.node(sim::node::Config::default());
     let next = b.clone();
     sim.run_on(&node, move |node, tasks| async move {
@@ -1459,10 +1456,7 @@ fn an_open_uses_the_spec_it_used_last_after_a_power_cut() {
     let (first, second) = (pointer(1, &a), pointer(2, &b));
     let mut found = Vec::new();
     for seed in 0..8 {
-        let mut sim = Sim::new(sim::Config {
-            seed,
-            ..sim::Config::default()
-        });
+        let mut sim = Sim::new(common::simulation(seed));
         let node = sim.node(sim::node::Config::default());
         let (applied, next) = (a.clone(), b.clone());
         sim.run_on(&node, move |node, tasks| async move {
@@ -1725,10 +1719,7 @@ fn used_keeps_the_spec_at_the_stop_when_a_read_ends_after_it() {
     let first = pointer(1, &a);
     let mut between = 0;
     for seed in 0..32 {
-        let mut sim = Sim::new(sim::Config {
-            seed,
-            ..sim::Config::default()
-        });
+        let mut sim = Sim::new(common::simulation(seed));
         let node = sim.node(sim::node::Config::default());
         let (at, _) = stop_in_a_read(&mut sim, &node, seed, in_use);
         between += usize::from(open_after_a_stop(&mut sim, &node, at, first, &a));
@@ -1748,10 +1739,7 @@ fn ended_waits_for_keep_when_the_group_stops_in_a_file_call() {
     let first = pointer(1, &a);
     let mut between = 0;
     for seed in 0..32 {
-        let mut sim = Sim::new(sim::Config {
-            seed,
-            ..sim::Config::default()
-        });
+        let mut sim = Sim::new(common::simulation(seed));
         let node = sim.node(sim::node::Config::default());
         let a = a.clone();
         let (at, held) = sim
@@ -1798,10 +1786,7 @@ fn used_keeps_the_spec_at_the_stop_when_a_failed_read_ends_after_it() {
     let first = pointer(1, &create_subjects(&["plant.a"], 1));
     let mut between = 0;
     for seed in 0..32 {
-        let mut sim = Sim::new(sim::Config {
-            seed,
-            ..sim::Config::default()
-        });
+        let mut sim = Sim::new(common::simulation(seed));
         let node = sim.node(sim::node::Config::default());
         node.fail_file(Path::new(used::SPEC), Operation::SyncDir);
         let (_, behind) = stop_in_a_read(&mut sim, &node, seed, |first, _| {
@@ -1837,10 +1822,7 @@ fn used_keeps_the_spec_at_a_stop_at_each_time_after_a_change() {
     let mut between = 0;
     for seed in 0..8 {
         for offset in (0..=300).step_by(5) {
-            let mut sim = Sim::new(sim::Config {
-                seed,
-                ..sim::Config::default()
-            });
+            let mut sim = Sim::new(common::simulation(seed));
             let node = sim.node(sim::node::Config::default());
             let (applied, next) = (a.clone(), b.clone());
             let at = sim

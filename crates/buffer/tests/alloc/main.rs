@@ -1,24 +1,27 @@
 //! `append` makes no heap allocation once the buffer has taken a batch of each
 //! shape: its slots, its entry count, and whether it closes the open record. Nor
-//! does a `Commit` that waits and drops, or a commit of the logs that marks a range
-//! and trims. This binary has no test harness: the count covers each thread, and a
-//! harness allocates on its own thread at any time.
+//! does a `Commit` that waits and drops, a commit of the logs that syncs entries
+//! with no samples and trims, or the entry of a path that a trim emptied. This
+//! binary has no test harness: the count covers each thread, and a harness
+//! allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
-#[path = "../it/memory.rs"]
+#[path = "../common/memory.rs"]
 #[expect(dead_code, reason = "this binary uses only the driver")]
 mod memory;
 
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::pin::pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 use block::{Heap, Pool};
-use buffer::{Buffer, Config, Entry, Layout, Mark, Parts, Read};
+use buffer::{Buffer, Config, Entry, Layout, Parts, Read, Samples};
 use types::channel::{self, Slots};
 use types::frame::Path;
+use types::log::Mark;
 use types::time::{Span, Stamp};
 
 use crate::memory::Memory;
@@ -44,9 +47,11 @@ fn entry(index: u32, first: u64, parts: Parts) -> Entry {
         slot: channel::Slot::new(index),
         path: Path::Live,
         first,
-        len: 1,
+        samples: Some(Samples {
+            len: NonZeroU32::MIN,
+            last: Some(Stamp::from_nanos(7)),
+        }),
         stored_at: Stamp::from_nanos(7),
-        last: Some(Stamp::from_nanos(7)),
         tag: 0,
         parts,
     }
@@ -75,8 +80,9 @@ fn batches(commit: u64, parts: &Parts, half: &Parts) -> [Vec<Entry>; 6] {
 /// Reads the whole log of `slot` in one poll, with the allocations the read
 /// made.
 fn read_once(buffer: &Buffer, slot: channel::Slot) -> (Read, u64) {
+    let reader = buffer.reader();
     let (read, allocations) = ALLOCATOR.count(|| {
-        let mut read = pin!(buffer.read(slot, Path::Live, Mark::at(0), usize::MAX));
+        let mut read = pin!(reader.read(slot, Path::Live, Mark::at(0), usize::MAX));
         match read.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
             Poll::Ready(read) => read,
             Poll::Pending => panic!("a read of the memory driver is ready at once"),
@@ -98,19 +104,96 @@ fn wait_once(buffer: &Buffer, commit: u64) {
     }
 }
 
-/// Each trim drops the range that the commit before marked, so the ranges stay in
-/// the memory that the warm-up gave them.
-fn marked_trims_take_no_allocation() {
-    let mut logs = buffer::bench::Logs::new(4);
-    for _ in 0..64 {
-        logs.mark();
+/// The allocations of 1024 calls of `commit` on logs of `indexes` indexes, after
+/// 512 calls that warm them up, which span two laps of the logs.
+fn commits(indexes: u32, mut commit: impl FnMut(&mut buffer::bench::Logs)) -> u64 {
+    let mut logs = buffer::bench::Logs::new(indexes);
+    for _ in 0..512 {
+        commit(&mut logs);
     }
-    let ((), n) = ALLOCATOR.count(|| {
-        for _ in 0..1024 {
-            logs.mark();
-        }
+    ALLOCATOR
+        .count(|| {
+            for _ in 0..1024 {
+                commit(&mut logs);
+            }
+        })
+        .1
+}
+
+/// A slow path gets `entries` entries, each in a record of its own that a read
+/// holds, with a carry record of its tail after the last. Then a commit with no
+/// entry trims to the carry record and empties its runs.
+fn slow(logs: &mut buffer::bench::Logs, entries: u64) {
+    for held in 1..entries {
+        logs.trim(1, held);
+    }
+    logs.carry();
+    logs.commit(0);
+}
+
+/// A commit of entries with no samples and its carry keep the runs and items in
+/// the memory that the warm-up gave them. The runs of the other shapes swing inside
+/// a lap, so the room of each lap holds the runs of the next.
+fn logs_take_no_allocation() {
+    let n = commits(4, buffer::bench::Logs::mark);
+    assert_eq!(
+        n, 0,
+        "{n} allocations in 1024 commits of entries with no samples"
+    );
+    let mut entries = 0;
+    let n = commits(4, |logs| {
+        entries = entries % 4 + 1;
+        slow(logs, entries);
     });
-    assert_eq!(n, 0, "{n} allocations in 1024 marked trims");
+    assert_eq!(
+        n, 0,
+        "{n} allocations in 1024 trims that empty 4 slow paths"
+    );
+    let n = commits(4, |logs| slow(logs, 6));
+    assert_eq!(
+        n, 0,
+        "{n} allocations in 1024 trims after 6 entries of 4 paths"
+    );
+    let n = commits(64, |logs| logs.trim(64, 0));
+    assert_eq!(
+        n, 0,
+        "{n} allocations in 1024 trims of 64 paths, one of them slow"
+    );
+    let mut commit = 0;
+    let n = commits(4, |logs| {
+        logs.trim(1, commit % 8);
+        commit += 1;
+    });
+    assert_eq!(n, 0, "{n} allocations in 1024 trims of a read that holds 8");
+}
+
+/// After the warm-up, a deadline of 32 tagged entries copies each into the bytes
+/// of the copy it replaces, so it allocates no more than one of untagged entries.
+/// Nor does a carry of the copy of an index that appends once each 64 deadlines,
+/// nor a record of entries of 60 bytes, whose carry body takes a block past it.
+fn tagged_deadlines_take_no_allocation() {
+    let count = |mut deadline: buffer::bench::Deadline, period| {
+        for _ in 0..4 * 64 {
+            deadline.commit(period);
+        }
+        let (tails, allocations) = ALLOCATOR
+            .count(|| (0..1024).map(|_| deadline.commit(period)).sum::<usize>());
+        assert_eq!(tails > 0, period > 1, "carried {tails} tails");
+        allocations
+    };
+    let blocks = 64 + buffer::bench::PHASE;
+    let untagged = count(buffer::bench::Deadline::new(32, blocks), 1);
+    let tagged = count(buffer::bench::Deadline::tagged(32, blocks), 1);
+    let carried = count(buffer::bench::Deadline::tagged(32, blocks), 64);
+    let mut excess = buffer::bench::Deadline::tagged(32, blocks);
+    excess.resize(60);
+    let excess = count(excess, 1);
+    assert_eq!(
+        (untagged, tagged, carried, excess),
+        (0, 0, 0, 0),
+        "allocations in 1024 deadlines of 32 entries: untagged, tagged, tagged \
+         with an index that appends once each 64, and tagged of 60 bytes"
+    );
 }
 
 fn main() {
@@ -119,11 +202,17 @@ fn main() {
         1,
         "the allocator counts"
     );
-    marked_trims_take_no_allocation();
+    logs_take_no_allocation();
+    tagged_deadlines_take_no_allocation();
+    shard_calls_take_no_allocation();
+}
+
+/// After the warm-up, appends and waits on a buffer allocate nothing, and a read
+/// allocates only what it gives and its file calls.
+fn shard_calls_take_no_allocation() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
-    let clock = node.clock();
-    let entropy = node.entropy();
+    let (clock, entropy) = (node.clock(), node.entropy());
     let config = env::shards::Config {
         name: "shard-0".into(),
         core: None,
@@ -145,6 +234,7 @@ fn main() {
                 layout: Layout::new(256 * 4096, BODY_MAX)
                     .expect("the sizes make a ring"),
                 commit: COMMIT,
+                trimmed: false,
             };
             let buffer = Buffer::open(config, &mut slots).await.expect("opens");
             for index in 0..WIDE {

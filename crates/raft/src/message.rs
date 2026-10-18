@@ -25,7 +25,8 @@ pub struct Message {
     /// The configuration entries of the sender's log below `term`, oldest first,
     /// when the message carries a proof; else empty. A receiver that cannot count
     /// `proof` against its own configuration counts it against the last link it
-    /// can trust, and keeps none of them.
+    /// can trust, and keeps none of them. A message drops its oldest links until it
+    /// [`fits`](crate::Config::fits).
     pub chain: Vec<Link>,
 }
 

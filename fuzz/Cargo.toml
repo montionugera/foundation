@@ -117,6 +117,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "connector_pem"
+path = "fuzz_targets/connector_pem.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "connector_modbus_rtu"
 path = "fuzz_targets/connector_modbus_rtu.rs"
 test = false
@@ -133,6 +140,13 @@ bench = false
 [[bin]]
 name = "document_encoding"
 path = "fuzz_targets/document_encoding.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "env_host"
+path = "fuzz_targets/env_host.rs"
 test = false
 doc = false
 bench = false
@@ -308,6 +322,20 @@ bench = false
 [[bin]]
 name = "wire_clock"
 path = "fuzz_targets/wire_clock.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_hub_frames"
+path = "fuzz_targets/wire_hub_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_hub_write"
+path = "fuzz_targets/wire_hub_write.rs"
 test = false
 doc = false
 bench = false

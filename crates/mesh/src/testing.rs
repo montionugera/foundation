@@ -170,8 +170,9 @@ mod tests {
     use types::digest::Digest;
 
     use crate::bytes::{put_change, put_position};
-    use crate::change::{CHUNKS_MAX, Malformed, Undecoded};
+    use crate::change::{self, CHUNKS_MAX, Malformed, Undecoded};
     use crate::common::{at, key};
+    use crate::message::VOTERS_MAX;
 
     #[test]
     fn a_change_gives_its_bytes_and_other_bytes_give_none() {
@@ -275,6 +276,44 @@ mod tests {
         let mut bytes = unhomed(&order);
         bytes[77..].rotate_left(16);
         assert_eq!(inputs["spec_holders_out_of_order"], bytes);
+    }
+
+    #[test]
+    fn each_card_change_input_is_what_its_name_says() {
+        let inputs =
+            inputs!("mesh_change": "card", "card_forged", "card_short", "kind_6");
+        let encoded = |change: &Change| {
+            let mut bytes = Vec::new();
+            change.encode(&mut bytes);
+            bytes
+        };
+        let mut card =
+            crate::common::unchecked(&crate::common::signed(3, "plant.edge.a"));
+        let change = Change::Card(Box::new(card.clone()));
+        assert_eq!(inputs["card"], encoded(&change));
+        card.signature[0] ^= 1;
+        let forged = Change::Card(Box::new(card));
+        assert_eq!(inputs["card_forged"], encoded(&forged));
+        for (name, change) in [("card", change), ("card_forged", forged)] {
+            let bytes = inputs[name];
+            assert_eq!(Change::decode(bytes), Ok(change), "{name}");
+            assert_eq!(round_trip_change(bytes), Some(bytes.to_vec()), "{name}");
+        }
+        // The cut is inside the name of the card, after the kind and the node key.
+        let short = &inputs["card"][..21];
+        assert_eq!(inputs["card_short"], short);
+        let body = Malformed::Body(Undecoded {
+            kind: 5,
+            length: 21,
+        });
+        assert_eq!(Change::decode(short), Err(body));
+        let home = include_bytes!("../../../oracles/fuzz/mesh_change/home");
+        let mut other = home.to_vec();
+        other[0] = 6;
+        assert_eq!(inputs["kind_6"], other);
+        let unknown = change::Unknown::Kind { kind: 6 };
+        assert_eq!(Change::decode(&other), Err(unknown.into()));
+        assert_eq!(round_trip_change(&other), None);
     }
 
     // Each decodes as its input before the homes does with the count added, which
@@ -686,6 +725,8 @@ mod tests {
             "raft_heartbeat_trailing",
             "raft_chain_cut_in_link",
             "raft_chain_count_no_link",
+            "raft_append_entry_over_bytes_max",
+            "raft_proof_over_grants_max",
         );
         assert_eq!(count_files("mesh_message"), inputs.len());
         for (name, want) in messages() {
@@ -713,10 +754,37 @@ mod tests {
         let cut = inputs["raft_chain_cut_in_link"];
         assert!(links < cut.len() && cut.len() < links + bytes.len());
         refused.push(("raft_chain_cut_in_link", chain[..cut.len()].to_vec()));
+        refused.extend(over_bounds());
         for (name, want) in refused {
             assert_eq!(inputs[name], want, "{name}");
             assert_eq!(round_trip_message(inputs[name]), None, "{name}");
         }
+    }
+
+    // The message inputs that a bound of the decode refuses.
+    fn over_bounds() -> [(&'static str, Vec<u8>); 2] {
+        let over = Entry {
+            at: at(3, 4),
+            data: Data::Bytes(vec![7; change::BYTES_MAX + 1]),
+        };
+        let body = Body::Append {
+            prev: at(2, 3),
+            entries: vec![over],
+            commit: 4,
+        };
+        let entry = message(body, None, Vec::new()).encode();
+        let grants = u8::try_from(2 * VOTERS_MAX + 1).unwrap();
+        let grant = |voter| (key(voter), Some(Signature([7; 64])));
+        let over = Proof {
+            voters: (1..=grants).map(grant).collect(),
+            ..proof()
+        };
+        let body = Body::Heartbeat { commit: 4 };
+        let proof = message(body, Some(over), Vec::new()).encode();
+        [
+            ("raft_append_entry_over_bytes_max", entry),
+            ("raft_proof_over_grants_max", proof),
+        ]
     }
 
     /// The bytes of a mesh log record header.

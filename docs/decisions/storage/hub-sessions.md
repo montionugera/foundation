@@ -56,13 +56,15 @@
   (`laptop.architect`, 2026-10-14T02:10:24Z and 02:12:26Z:
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971 and
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159349684). The hub
-  `sim` test `ends_a_complete_reader_that_sleeps_past_its_window_or_its_ring_as_behind`
-  checks the lost frame, and the `delivery` tests
-  `lose::misses_the_frame_that_a_session_waits_for_a_grant_on` and
-  `lose::misses_a_held_frame_at_the_release_that_reaches_the_lost_samples` check the
-  frame that waits for a grant then. A seq lost for no room stays a miss under the
-  catch-up of #274 B1: a reader that reaches it ends with `Behind`, never a gap, and
-  the B1 plan states how it knows that seq. Supersedes item 4 of
+  `sim` test
+  `gives_a_complete_reader_that_sleeps_past_its_window_or_its_ring_each_applied_frame`
+  checks the frame past the window, and, after #2553, that a frame lost for no room ends
+  nothing. A seq lost for no room stays a miss under the catch-up of #274 B1: a reader
+  that reaches it ends with `Behind`, never a gap, and the B1 plan states how it knows
+  that seq. Superseded by #2553 (READER RULES): a seq lost for no room is no miss, and
+  the next frame gives it as its gap (`laptop.architect`, 2026-10-15T18:12:25Z:
+  https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922).
+  Supersedes item 4 of
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971
   (`laptop.architect`, 2026-10-14T02:29:09Z:
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159543609).
@@ -359,14 +361,26 @@
   would compute the midpoint again, and a change of the home's rule would make its
   stamps `Ahead`. Connector time sync adds what it needs with its own caller. Lost: a
   writer that stamps the frame, because only the caller knows when it read each sample.
-  `writer::Writer::time` gives a `writer::Time`, which a caller keeps apart from the
+  `writer::Writer::time` gives a `hub::Time`, which a caller keeps apart from the
   writer: `Time::now` reads what `Writer::now` reads, also after the writer drops. The
   open62541 loop of the opcua kind reads it inside each client call, while the kind
-  holds its writer to write. A `Time` comes only from a writer, so mesh time is known.
-  Lost: the writer in `Rc<RefCell<_>>` in the kind, because it adds a borrow to each
-  draft and write. No `Hub::time`. Decided by `laptop.architect`
+  holds its writer to write. Lost: the writer in `Rc<RefCell<_>>` in the kind, because
+  it adds a borrow to each draft and write. Decided by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858,
   2026-10-13 13:56 UTC).
+  `Hub::time` gives a `hub::Time` to a task with no writer, such as the TLS check of
+  a kind that only reads. It waits for the node's first mesh time, as the open of a
+  writer does, so `Time::now` cannot fail. Lost: `Time::now` that gives
+  `Option<Stamp>`, or a `Time::known` beside it, because each caller then handles a
+  case that no writer has. `writer::Time` moved to `hub::Time`, because a hub gives
+  it. It has no bound: the caller races it against its own clock. Supersedes the "No
+  `Hub::time`" of
+  https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858.
+  Decided by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207425675,
+  2026-10-16 03:28 UTC;
+  https://github.com/synnaxlabs/foundation/issues/2837#issuecomment-6209931375,
+  2026-10-16 06:56 UTC).
   `writer::Writer::entries` gives the entry of each channel of
   `writer::Config::channels`, in that order: its position in the entries of
   `Writer::set`, as `Writer::draft` and `Draft::series_mut` take it. A channel named
@@ -417,9 +431,13 @@
   https://github.com/synnaxlabs/foundation/pull/2183#issuecomment-6089887271;
   `laptop.architect`, 2026-10-08T10:01:19Z and 2026-10-10T00:57:58Z:
   https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6057419592 and
-  https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6091895275), or
-  lost because the buffer had no room (`laptop.architect`, 2026-10-14T02:29:09Z:
-  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159543609).
+  https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6091895275). A
+  frame lost because the buffer had no room is not in the condition: the reader gets
+  the next frame with the lost seqs as its gap (#2553, `laptop.architect`,
+  2026-10-15T18:12:25Z:
+  https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922), which
+  supersedes `laptop.architect`, 2026-10-14T02:29:09Z:
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159543609.
   Supersedes the line of
   https://github.com/synnaxlabs/foundation/pull/2183#issuecomment-6089887271 that a
   frame lost for no room is not in the condition.
@@ -476,3 +494,86 @@
   the free port, which the transport gives, so a hub future adds a surface whose one
   caller must still wait for the transport (`laptop.architect`, 2026-10-09T21:38:13Z:
   https://github.com/synnaxlabs/foundation/issues/2185#issuecomment-6089685674).
+  Amended (#274 B1): a complete session reads a frame that it missed at its window later
+  from disk, in order. `home::Shard::take` gives `Next::Disk`, and the session runs
+  `disk::Read::read`, gives the result to `Shard::fill`, then takes again. `Behind` has
+  one meaning: the session reached a seq that the buffer lost for no room. A read from
+  disk that fails ends the session with `Ended::Buffer` and its error, and a read or a
+  fill that finds no block ends it with `Ended::Pool`, on that call and each later one.
+  `home::reader::disk::Error` holds the two errors of a read, as `hub` takes `buffer` as
+  a dev-dependency only (`laptop.architect`: the plan, 2026-10-15T16:29:36Z:
+  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6197039098; its
+  changes, 2026-10-15T16:38:55Z, 17:00:40Z, and 17:16:20Z:
+  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6197223487,
+  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6197654802, and
+  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6197956499, whose
+  name change it withdrew at 17:31:32Z:
+  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6198252050;
+  `disk::Read` and `disk::Error` in place of `Disk` and `Failure`, 2026-10-15T18:23:12Z:
+  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6199246153, item 2).
+  The hub tests named above that checked `Behind` at a miss now check each frame from
+  disk, under new names: `slow_reader_gets_every_frame_from_disk`,
+  `gives_a_complete_reader_that_holds_a_frame_past_its_window_each_later_frame`,
+  `gives_a_complete_reader_its_waiting_frames_then_the_missed_ones_from_disk`,
+  `ends_a_complete_reader_that_sleeps_past_its_ring_as_behind`, and the `serve` tests
+  `sends_behind_and_finishes_when_a_complete_session_misses_a_lost_frame` and
+  `sends_each_frame_in_order_to_a_session_that_misses_frames_before_its_credit`. The two
+  `gives_` tests keep their 32 values and their check of both orders. A session decodes
+  each entry that it reads from disk onto the key set of its index's group, which it
+  interns at its first read. A series whose channel the set no longer has drops, as the
+  reader's mask drops it, and a series whose type changed since it was stored drops too:
+  the frame carries no series of that channel
+  (`resumes_a_named_complete_reader_from_disk_with_no_series_of_a_changed_type`;
+  `laptop.architect`, 2026-10-15T18:23:12Z:
+  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6199246153, item 1).
+  `delivery::Readers::fill(key, frame, set, seq)` takes the decoded frame by value with
+  its set lent, and `delivery::Readers::reached(key, next, durable)`, which changes
+  nothing when `next < durable`, records the end of a read (`laptop.architect`,
+  2026-10-15T18:27:16Z:
+  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6199323861, items 5
+  and 6).
+  Amended (#2725, with #2723 and #2553): no case gives `Behind` now. A complete session
+  that misses a frame reads it from disk, and a seq lost for no room comes as the gap of
+  the next frame with a sample (`laptop.architect`, 2026-10-16T02:09:51Z:
+  https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206458946). The
+  variants stay until #2790 removes them (`laptop.architect`, 2026-10-16T00:46:53Z:
+  https://github.com/synnaxlabs/foundation/issues/2725#issuecomment-6205434126).
+  Amended (#2790): the `Behind` variants are removed (HUB WIRE).
+  Amended (#2897): below `durable`, `reached` moves the session's read from disk to
+  `next`, also when the read gave no frame. A read that passed lost seqs and then only
+  entries with no frame, such as a handoff, read the same entries again with no end
+  (`laptop.architect`, 2026-10-16T16:49:39Z:
+  https://github.com/synnaxlabs/foundation/issues/2897#issuecomment-6220365677).
+  Supersedes "which changes nothing when `next < durable`" above
+  (https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6199323861, item 6).
+  A `next` below the `from` of the last `Next::Disk`, the `next` of an earlier
+  `reached`, or the end of a frame that `fill` gave, is a defect of the caller, and
+  `reached` panics (`laptop.architect`, 2026-10-17T04:33:05Z:
+  https://github.com/synnaxlabs/foundation/pull/2986#issuecomment-6229674613, and
+  2026-10-17T04:55:38Z:
+  https://github.com/synnaxlabs/foundation/pull/2986#issuecomment-6229874537). A frame
+  given to `fill` that ends at or below any of those seqs is a defect of the caller
+  too, and `fill` panics (`laptop.architect`, 2026-10-17T04:51:06Z:
+  https://github.com/synnaxlabs/foundation/pull/2986#issuecomment-6229838366, and
+  2026-10-17T04:55:38Z:
+  https://github.com/synnaxlabs/foundation/pull/2986#issuecomment-6229874537).
+  Amended (#2989): `delivery` keeps the whole read cursor of a complete session on
+  disk, a `types::log::Mark`, which moves from `buffer` with no re-export.
+  `Next::Disk { from }` gives it, and `reached(key, next, durable)` takes the `next` of
+  the read whole, so a read goes on past the entries with no samples at a seq that the
+  read before it gave. A frame that `fill` gives moves the cursor to `Mark::at` its
+  end. The commit wait keeps the whole mark, so a read that stops at the durable end
+  inside the entries with no samples at a seq goes on past them after the commit. The
+  panics of `reached` compare marks in their order. `home` keeps no mark: it asks
+  `delivery::Readers::on_disk` before it decodes a read, and drops the read of a
+  session that is not on disk (`laptop.architect`, 2026-10-17T06:49:04Z:
+  https://github.com/synnaxlabs/foundation/issues/2989#issuecomment-6230866460, and
+  2026-10-17T07:50:29Z:
+  https://github.com/synnaxlabs/foundation/pull/3019#issuecomment-6231397750).
+  Amended (#2884): the one commit wait of a complete session is at its open.
+  `Readers::open` takes `until`, the commit count that the session waits for, and
+  `Readers::release(durable, commits)` ends the wait. A read that reaches the durable
+  end below the released end is a defect of the caller, and `reached` panics
+  (`laptop.architect`, 2026-10-18T09:41:10Z:
+  https://github.com/synnaxlabs/foundation/issues/2978#issuecomment-6248353319).
+  Supersedes "The commit wait keeps the whole mark" above.

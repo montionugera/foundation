@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use connector::cancel;
 use connector::kind::{self, Channels, Context, Table};
+use connector::supervisor::{self, Supervisor};
 use document::Document;
 use document::diagnostic::Diagnostic;
 use env::files::{self, Operation};
@@ -59,14 +59,15 @@ pub(crate) struct Reader {
     counts: &'static [&'static str],
 }
 
-/// The stand-in of the `opcua` kind, with the counts that #435 gives it.
+/// The stand-in of the `opcua` kind, with the counts that #435 and #2622 give it.
 pub(crate) const OPCUA: Reader = Reader {
-    counts: &["in", "lost", "missed"],
+    counts: &["in", "lost", "missed", "bad", "uncertain", "mistyped"],
 };
 
-/// The stand-in of the `influx` kind, with the count `confirmed` that #1734 gives it.
+/// The stand-in of the `influx` kind, with the count `confirmed` that #1734 gives it,
+/// the count `lost` that #2725 gives it, and the count `oversized` that #2555 gives it.
 pub(crate) const INFLUX: Reader = Reader {
-    counts: &["confirmed"],
+    counts: &["confirmed", "lost", "oversized"],
 };
 
 impl kind::Kind for Reader {
@@ -88,13 +89,6 @@ impl kind::Kind for Reader {
             writes: writes.clone(),
             counts: self.counts.iter().map(|count| name(count)).collect(),
         })
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
-        std::future::ready(Ok(Vec::new()))
     }
 
     fn run(
@@ -172,12 +166,30 @@ pub(crate) fn create_config(
         mesh,
         keys: Box::new(key),
         front_ends,
-        kinds: Arc::new(create_kinds()),
+        supervisor: create_supervisor(fixture, create_kinds(), secrets),
         hub: fixture.hub.clone(),
         clock: fixture.sim.clock(),
         name: fixture.name.clone(),
-        secrets,
+        roots: crate::roots::Failures::new(String::new(), Vec::new()),
     }
+}
+
+/// A supervisor of `kinds` on `fixture`, which reads secrets through `secrets`.
+pub(crate) fn create_supervisor(
+    fixture: &Fixture,
+    kinds: Table,
+    secrets: secret::Resolver,
+) -> Supervisor {
+    Supervisor::new(supervisor::Config {
+        kinds: Arc::new(kinds),
+        clock: fixture.sim.clock(),
+        entropy: fixture.sim.entropy(),
+        net: fixture.sim.net(),
+        roots: connector::http::Roots::default(),
+        tasks: fixture.tasks.clone(),
+        hub: fixture.hub.clone(),
+        secrets,
+    })
 }
 
 /// The plan of `files` on `applied` at `base`, as `Node::plan` makes it with no read
@@ -221,7 +233,7 @@ where
 {
     let args = ["foundation"].iter().chain(args).map(Into::into);
     let (mut output, mut errors) = (Vec::new(), Vec::new());
-    let input = std::io::empty();
+    let input = async || crate::line(&mut std::io::empty());
     let run = crate::cli(args, input, &mut output, &mut errors, paths, reach).await;
     let text = |bytes| String::from_utf8(bytes).expect("UTF-8");
     (run, text(output), text(errors))

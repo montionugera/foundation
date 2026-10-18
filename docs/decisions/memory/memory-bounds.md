@@ -5,15 +5,43 @@
   write records a gap and backfill waits. The current value of B4 pins one block per
   index that had a live frame, with no reader open and no cap. A smaller copy is a
   tunable of `docs/decisions/open/parameters.md`. The person decided on 2026-10-05:
-  "Accept it" (#139). The budget counts what stays resident. A purge of a block smaller
-  than a page gives no page back, so it frees no budget. When an allocation finds no
+  "Accept it" (#139). The budget counts what stays resident (on macOS, what the pool
+  holds: see below). A purge of a block smaller than a page gives no page back, so it
+  frees no budget. When an allocation finds no
   room, the pool gives back the whole carved range and budget of size classes whose
   carved blocks are all free, until the allocation fits. Under this pressure, at most
   two partial pages per class stay resident, and `Config::budget` states that slack. An
   idle class that no allocation presses keeps its pages until the purge after idle. A
-  class that a reader keeps partly in use keeps its budget. The person accepted this
-  (design H) on 2026-10-05 ("Ok fine"), #2, #270. Purges per block that give back every
-  page they credit (design P) wait in a follow-up issue. When the system refuses to
+  class that a reader keeps partly in use kept its budget: the person accepted this
+  (design H) on 2026-10-05 ("Ok fine"), #2, #270. Amended (#2810; this supersedes the
+  design H sentence before it, #270; `laptop.architect`, 2026-10-16T19:23:50Z:
+  https://github.com/synnaxlabs/foundation/pull/2907#issuecomment-6223028676): when the
+  sizes with no block in use do not cover an allocation, the pool gives back the payload
+  pages of free blocks of the other sizes, and credits the budget by the whole pages of
+  each payload. It gives back no page unless all of these together cover the allocation.
+  Each such block keeps its header and the partial pages at the ends of its payload,
+  with their budget. It gives back its pages with a discard, which keeps their
+  protection and their commit charge, so it splits no mapping. An allocation of its
+  size takes back its budget before it carves a new block, and makes no commit, so the
+  system cannot refuse it. Under strict overcommit (`vm.overcommit_memory=2`), the
+  charge of such a block stays until its size goes idle, and a carve past the limit of
+  the system then gets `Error::Refused`. On Linux with the default overcommit, its
+  pages leave the resident set at once. On macOS they stay resident, and in the
+  footprint of the task, until the system needs memory (BLOCK MEMORY), so there the
+  budget bounds the memory that the pool holds, not its footprint. `MADV_FREE_REUSABLE`
+  drops the footprint at once, but lost: it needs a second `Memory` call before the
+  pool writes the block again, and with no such call the footprint shows less than the
+  task holds (`laptop.architect-2`, 2026-10-16T19:41:36Z:
+  https://github.com/synnaxlabs/foundation/pull/2907#issuecomment-6223324987). A free
+  block whose payload holds no whole page keeps its budget, so a waiter of another size
+  can wait until the last block of that size frees. Decided by
+  `laptop.architect` (2026-10-16T17:05:20Z):
+  https://github.com/synnaxlabs/foundation/issues/2810#issuecomment-6220640348; the
+  discard by `laptop.architect` (2026-10-16T19:37:29Z), after the objection of
+  `laptop.monitor` to a cap on such blocks:
+  https://github.com/synnaxlabs/foundation/pull/2907#issuecomment-6223259062. The
+  rest of design P, the headers in a table and the pages of blocks with no whole page,
+  waits on #291, before the exit of ONE NODE. When the system refuses to
   commit pages, the pool gives back one idle size at a time, in the order a purge for
   room in the budget uses, and tries the commit again; after the last idle size the
   allocation fails with `Error::Refused`, a separate error from a full pool (the person
@@ -50,4 +78,30 @@
   https://github.com/synnaxlabs/foundation/issues/2483#issuecomment-6131627109, and
   #2439, 2026-10-12 20:05 UTC:
   https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6131721896, which
-  supersedes the Limits sentence of 6131627109).
+  supersedes the Limits sentence of 6131627109). Outside the pool budget, each shard's
+  `home::stored::Decoder` holds on the heap the entry maps of the last 4 key sets that
+  a read from disk filled onto, each with the capacity of the largest set that it held,
+  about 49 bytes for each channel of that set, and scratch lists with the capacity of
+  the largest entry that it decoded. Nothing frees them before #2761 (#274 B1;
+  `laptop.architect`, 2026-10-15T21:30:23Z:
+  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6202690738, item 1;
+  this text: `laptop.architect`, 2026-10-15T21:51:47Z:
+  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6203034272, item 2,
+  which supersedes the text of 6202866145 item 2). Outside the pool budget,
+  the request bodies, read opens, write opens, and ends of write streams of a hub
+  count in its body budget, `BODIES_BYTES_MAX` (32 MiB), and those of one subject in
+  `BODY_BYTES_MAX` (16 MiB) (HUB CLIENT). The ends of a write stream are 16 bytes for
+  each channel of its open and one for its index, from the decode of its open until
+  the stream ends. Its decoded names, 16 bytes and the length of each, count from that
+  decode until the stream sends its places. A write open is at most `OPEN_BYTES_MAX`
+  (64 KiB), with at least 2 bytes for each channel, so its ends are at most 512 KiB,
+  and the budget bounds the places of all write streams of a node at 2,097,152. The
+  cost: the writers of a subject hold their ends in its share until their streams end,
+  so wide writers can make the requests and read opens of that subject stop with
+  `BUSY`. Limits: the budget counts only the ends and the names. Other memory of a
+  write stream that grows with its channels (its key set and the home's writer) is not
+  counted (`laptop.architect`,
+  2026-10-18T07:45:01Z:
+  https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6247275705, item
+  5, which closes the deferral of
+  https://github.com/synnaxlabs/foundation/pull/3148#issuecomment-6246759669, item 3).

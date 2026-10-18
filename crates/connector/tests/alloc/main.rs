@@ -110,7 +110,7 @@ fn check_stamps() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let result = sim.run_on(&node, |node, tasks| async move {
-        let mut rig = Rig::open(env(&node, tasks), node.net(), Table::new()).await;
+        let rig = Rig::open(env(&node, tasks), node.net(), Table::new()).await;
         let connector: Name = "plant.stamp".parse().expect("a valid name");
         let first = channel::Key::from_u128(100);
         rig.define(testing::create_status(&connector, &[], first));
@@ -220,13 +220,6 @@ mod status {
             })
         }
 
-        fn discover(
-            &self,
-            _: &Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
-        }
-
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
             let count = ctx.count("samples");
             match self.shows {
@@ -294,7 +287,7 @@ mod status {
         let node = sim.node(sim::node::Config::default());
         let result = sim.run_on(&node, |node, tasks| async move {
             let kinds = Table::new().with("sets", kind);
-            let mut rig = Rig::open(super::env(&node, tasks), node.net(), kinds).await;
+            let rig = Rig::open(super::env(&node, tasks), node.net(), kinds).await;
             let connector: Name = "plant.sets".parse().expect("a valid name");
             let (token, config) = (Token::new(), Document::default());
             let mut run = pin!(

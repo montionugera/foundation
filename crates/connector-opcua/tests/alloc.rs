@@ -179,24 +179,24 @@ fn client_reads(variable: client::Variable, count: usize) -> Vec<u64> {
 }
 
 /// As through the manager, the ask allocates 3 and the answer allocates 1 for its
-/// results array and 1 for the value of each node. Each read is a new drive, whose
-/// sleep until the next timer of the loop allocates 1 more. The client swaps two
-/// buffers of values. The connect fills one with 1 value, and read 2 is the first to
-/// fill it with more. The sim net allocates one more for each segment of 1460 bytes
+/// results array and 1 for the value of each node. The sleep of a drive until the next
+/// timer of the loop allocates nothing, since the manager keeps it. The client swaps
+/// two buffers of values. The connect fills one with 1 value, and read 2 is the first
+/// to fill it with more. The sim net allocates one more for each segment of 1460 bytes
 /// past the first: the ask of 64 names takes 2. A read of 300 or 600 nodes takes 2 or 3
 /// requests, of [`client::PER_READ`] nodes and the rest. Each request allocates 4 for
-/// its ask and its results array, each node 1, and the read sleeps once: 309 and 613.
-/// The rest, 2 and 7, is the segments of the asks, as measured: the sim net cuts the
-/// bytes that the client writes into segments as the window of the server lets them
-/// go, so the asks of one read share segments.
+/// its ask and its results array, and each node 1: 308 and 612. The rest, 2 and 7, is
+/// the segments of the asks, as measured: the sim net cuts the bytes that the client
+/// writes into segments as the window of the server lets them go, so the asks of one
+/// read share segments.
 fn a_read_of_a_client_allocates_a_fixed_count() {
     let cases = [
-        (client::Variable::Number, 1, 6),
-        (client::Variable::Name, 1, 6),
-        (client::Variable::Number, 64, 69),
-        (client::Variable::Name, 64, 70),
-        (client::Variable::Number, 300, 311),
-        (client::Variable::Number, 600, 620),
+        (client::Variable::Number, 1, 5),
+        (client::Variable::Name, 1, 5),
+        (client::Variable::Number, 64, 68),
+        (client::Variable::Name, 64, 69),
+        (client::Variable::Number, 300, 310),
+        (client::Variable::Number, 600, 619),
     ];
     for (variable, count, each) in cases {
         let mut counts = vec![each + u64::from(count > 1)];
@@ -211,26 +211,51 @@ fn a_read_of_a_client_allocates_a_fixed_count() {
 
 /// Ticks 3 to 100 of a run of the `opcua` kind allocate what a read of a client
 /// allocates for its count of nodes, and nothing more: the frame and its write
-/// allocate nothing. Tick 1 connects, and tick 2 fills the second buffer of values.
+/// allocate nothing, also when values of another type are left out and named in the
+/// note. Tick 1 connects, and tick 2 fills the second buffer of values.
 fn a_tick_of_the_kind_allocates_what_its_read_allocates() {
-    for (nodes, read) in [(1, 6), (64, 69)] {
-        let ticks = kind::run(nodes, 100, |poll| ALLOCATOR.count(poll).1).ticks;
-        assert_eq!(ticks[2..], [read; 98], "ticks 3 to 100 of {nodes} nodes");
+    let runs: [(usize, &[Scalar], u64); 4] = [
+        (1, &[Scalar::F64], 5),
+        (64, &[Scalar::F64], 68),
+        (1, &[Scalar::F32], 5),
+        (64, &[Scalar::F64, Scalar::F32], 68),
+    ];
+    for (nodes, scalars, read) in runs {
+        let count = |poll: &mut dyn FnMut()| ALLOCATOR.count(poll).1;
+        let ticks = kind::run(nodes, scalars, 100, count).ticks;
+        let of = format!("ticks 3 to 100 of {nodes} nodes of {scalars:?}");
+        assert_eq!(ticks[2..], [read; 98], "{of}");
     }
 }
 
 /// Writes 21 to 100 of a frame of the `opcua` kind allocate nothing, for channels of
-/// each width. The test home grows the `Vec`s of its groups in its first two commits,
-/// which the first 20 writes cover, as in the `kind` bench.
+/// each width, with one value or each value left out, and with values left out that
+/// start after write 20 and change in count. The test home grows the `Vec`s of its
+/// groups in its first two commits, which the first 20 writes cover, as in the `kind`
+/// bench.
 fn a_write_of_a_frame_of_any_type_allocates_nothing() {
-    let widths: [&[Scalar]; 4] = [
-        &[Scalar::Bool],
-        &[Scalar::I16],
-        &[Scalar::F32],
-        &[Scalar::F64],
+    /// The count of Bad values of each write.
+    type Bad = fn(usize) -> usize;
+    let runs: [(&[Scalar], Bad, &str); 7] = [
+        (&[Scalar::Bool], |_| 0, "none"),
+        (&[Scalar::I16], |_| 0, "none"),
+        (&[Scalar::F32], |_| 0, "none"),
+        (&[Scalar::F64], |_| 0, "none"),
+        (&[Scalar::F64], |_| 1, "1"),
+        (&[Scalar::F64], |_| 64, "64"),
+        (
+            &[Scalar::F64],
+            |at| [0, 63, 1, 32][at.saturating_sub(16) / 8 % 4],
+            "late",
+        ),
     ];
-    for scalars in widths {
-        let writes = kind::writes(64, scalars, 100, |work| ALLOCATOR.count(work).1).0;
-        assert_eq!(writes[20..], [0; 80], "writes 21 to 100 of {scalars:?}");
+    for (scalars, bad, bads) in runs {
+        let count = |work: &mut dyn FnMut()| ALLOCATOR.count(work).1;
+        let writes = kind::writes(64, scalars, 100, bad, count).0;
+        assert_eq!(
+            writes[20..],
+            [0; 80],
+            "writes 21 to 100 of {scalars:?}, Bad values: {bads}"
+        );
     }
 }

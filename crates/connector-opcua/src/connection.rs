@@ -18,6 +18,7 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 use env::clock::{Clock, Sleep};
+use env::net::host::Host;
 use env::net::{self, Listener, Net, Tcp, tcp};
 use env::rng::Rng;
 use types::time::{Monotonic, Span};
@@ -27,7 +28,7 @@ use crate::event::{Loop, Time};
 use crate::ffi::{self, Bytes, Status};
 
 /// The options of each stream.
-const OPTIONS: tcp::Options = tcp::Options {
+pub(crate) const OPTIONS: tcp::Options = tcp::Options {
     send_buffer_bytes: 1 << 16,
     recv_buffer_bytes: 1 << 16,
     unsent_bytes_max: NonZeroUsize::new(1 << 14).expect("invariant: 2^14 is not 0"),
@@ -70,19 +71,25 @@ pub(crate) struct Manager {
 }
 
 impl Manager {
-    /// Makes a loop on `time` and `rng`, as [`Loop::new`] does, and a manager
+    /// Makes a loop on `time`, `span`, and `rng`, as [`Loop::new`] does, and a manager
     /// that connects through `net`, linked first into the event sources of the loop,
-    /// where a client finds it.
+    /// where a client finds it. Each warning of the manager has the parent `span`.
     ///
     /// # Aborts
     ///
     /// When a C allocation fails, as [`alloc::exhausted`] says.
-    pub(crate) fn new(time: Time, net: Net, rng: &mut Rng) -> Self {
-        Self::make(time, net, None, rng)
+    pub(crate) fn new(
+        time: Time,
+        span: tracing::Span,
+        net: Net,
+        rng: &mut Rng,
+    ) -> Self {
+        Self::make(time, span, net, None, rng)
     }
 
-    /// As [`Manager::new`], and the manager also accepts on a listener that it binds on
-    /// `local`, with a queue of `backlog` streams, where a server finds it.
+    /// As [`Manager::new`] with no span, and the manager also accepts on a listener
+    /// that it binds on `local`, with a queue of `backlog` streams, where a server
+    /// finds it.
     ///
     /// # Errors
     ///
@@ -125,13 +132,20 @@ impl Manager {
         listener: Listener,
         rng: &mut Rng,
     ) -> Self {
-        Self::make(time, net, Some(listener), rng)
+        Self::make(time, tracing::Span::none(), net, Some(listener), rng)
     }
 
-    fn make(time: Time, net: Net, listener: Option<Listener>, rng: &mut Rng) -> Self {
+    fn make(
+        time: Time,
+        span: tracing::Span,
+        net: Net,
+        listener: Option<Listener>,
+        rng: &mut Rng,
+    ) -> Self {
         let clock = Clock::clone(&time.clock);
-        let events = Loop::new(time, rng);
+        let events = Loop::new(time, span.clone(), rng);
         let state = NonNull::from(Box::leak(Box::new(State {
+            span,
             net,
             listener: Cell::new(listener),
             clock,
@@ -143,9 +157,12 @@ impl Manager {
             waker: RefCell::new(None),
             driving: Cell::new(false),
             held: Cell::new(false),
+            sleep: Cell::new(None),
             ahead: Cell::new(usize::MAX),
             again: RefCell::new(Vec::new()),
             accepted: Cell::new(None),
+            #[cfg(any(test, feature = "sim"))]
+            accept_error: Cell::new(None),
             #[cfg(feature = "sim")]
             moves: Cell::new(0),
             ends: RefCell::new(VecDeque::new()),
@@ -173,6 +190,14 @@ impl Manager {
         Self { state, events }
     }
 
+    /// Takes the error of the accept of the listener of [`Manager::listening`] or
+    /// [`Manager::accepting`], once the accept failed. The listen connection closes at
+    /// its failure, so a server accepts no more streams after it.
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) fn accept_error(&self) -> Option<net::Error> {
+        self.state().accept_error.take()
+    }
+
     /// Gives the loop, for a client or server config with `externalEventLoop`.
     pub(crate) fn events(&self) -> &Loop {
         &self.events
@@ -188,39 +213,40 @@ impl Manager {
         port
     }
 
-    /// Moves the connections on and calls `run` until `run` gives a value, and gives
-    /// it. `run` runs the loop with a timeout of 0, alone or through its client or
-    /// server, and may poll its own sources with the context it gets. Between calls,
-    /// the drive sleeps until the next timer of the loop or a wake, also from a send or
-    /// a close that `run` or another task asks for. After each call, also the one that
-    /// gives the value, it moves on each connection again after each connect, send, or
-    /// close on it that the call or such a step asks for, so it can also read and call
-    /// open62541 back after that call. It accepts at most one stream between two
-    /// calls: after an accept, the listen connection moves on only after the next call.
+    /// Moves the connections on, runs the loop with no wait, and calls `check` after
+    /// each run until it gives a value, and gives it. `check` reads the state that the
+    /// run left, may ask for a send or a close, and may poll its own sources with the
+    /// context it gets. Between runs, the drive sleeps until the next timer of the
+    /// loop or a wake, also from a send or a close that `check` or another task asks
+    /// for. After each call, also the one that gives the value, it moves on each
+    /// connection again after each connect, send, or close on it that the call or such
+    /// a step asks for, so it can also read and call open62541 back after that call.
+    /// It accepts at most one stream between two calls: after an accept, the listen
+    /// connection moves on only after the next call.
     ///
     /// # Panics
     ///
     /// When another drive of the manager runs, since one would take the wakes of the
-    /// other.
+    /// other. When open62541 fails a run of the loop.
     pub(crate) async fn drive<T>(
         &self,
-        run: impl FnMut(&mut Context<'_>) -> Poll<T>,
+        check: impl FnMut(&mut Context<'_>) -> Poll<T>,
     ) -> T {
-        self.drive_until(None, run)
+        self.drive_until(None, check)
             .await
             .expect("invariant: a drive with no deadline ends only with a value")
     }
 
     /// Drives as [`Manager::drive`] does, but gives `None` when the clock reaches
-    /// `deadline`, if any, before `run` gives a value.
+    /// `deadline`, if any, before `check` gives a value.
     ///
     /// # Panics
     ///
-    /// When another drive of the manager runs.
+    /// As [`Manager::drive`].
     pub(crate) async fn drive_until<T>(
         &self,
         deadline: Option<Monotonic>,
-        mut run: impl FnMut(&mut Context<'_>) -> Poll<T>,
+        mut check: impl FnMut(&mut Context<'_>) -> Poll<T>,
     ) -> Option<T> {
         let state = self.state();
         assert!(
@@ -228,13 +254,14 @@ impl Manager {
             "one drive of a manager at a time"
         );
         let _held = Held(&state.held);
-        let mut sleep: Option<Sleep> = None;
-        poll_fn(|cx| {
+        let mut sleep = state.sleep.take();
+        let out = poll_fn(|cx| {
             state.driving.set(true);
             let _driving = Held(&state.driving);
             self.pass(cx);
             loop {
-                let poll = run(cx);
+                self.events.run();
+                let poll = check(cx);
                 // Before `again`: an accept puts its new connection there.
                 state.resume(cx);
                 let moved = state.move_on_again(cx);
@@ -265,7 +292,9 @@ impl Manager {
                 }
             }
         })
-        .await
+        .await;
+        state.sleep.set(sleep);
+        out
     }
 
     /// Connects, reads, and writes each connection until each waits, and has the task
@@ -317,6 +346,8 @@ impl Drop for Manager {
 /// What the manager and its hooks share. No borrow of a `RefCell` but `read` spans a
 /// call into C, since C may call a hook again.
 struct State {
+    /// The parent of each warning.
+    span: tracing::Span,
     net: Net,
     /// The listener until a listen open takes it.
     listener: Cell<Option<Listener>>,
@@ -336,6 +367,8 @@ struct State {
     driving: Cell<bool>,
     /// Whether a drive exists, from its first poll until its drop.
     held: Cell<bool>,
+    /// The sleep of the drives, kept between them so a drive allocates none.
+    sleep: Cell<Option<Sleep>>,
     /// The first key that the running pass has not reached, or `usize::MAX` outside a
     /// pass.
     ahead: Cell<usize>,
@@ -347,6 +380,10 @@ struct State {
     /// purged. It holds the listen connection from an accept until the next run of the
     /// loop, also when the loop closes it in between.
     accepted: Cell<Option<usize>>,
+    /// The error of the failed accept of the listener, until
+    /// [`Manager::accept_error`] takes it.
+    #[cfg(any(test, feature = "sim"))]
+    accept_error: Cell<Option<net::Error>>,
     /// The calls of `move_on`, for tests of the work of a drive.
     #[cfg(feature = "sim")]
     moves: Cell<usize>,
@@ -411,11 +448,9 @@ impl State {
         }
     }
 
-    /// Logs `what` of connection `id` as a warning through the logger of the loop.
+    /// Writes `what` of connection `id` as a warning.
     fn warn(&self, id: usize, what: fmt::Arguments<'_>) {
-        let message = format!("connection {id}: {what}");
-        // SAFETY: the loop lives, and the call reads the bytes only during it.
-        unsafe { ffi::shim_log_warning(self.events, message.as_ptr(), message.len()) };
+        tracing::warn!(parent: &self.span, "connection {id}: {what}");
     }
 
     /// Starts the close of the stream of `id`, and queues its `CLOSING` once.
@@ -430,7 +465,8 @@ impl State {
                     Stream::Connecting(_) | Stream::Listening { .. } => Stream::Closed,
                     Stream::Open(tcp) => Stream::Closing {
                         tcp,
-                        linger: self.clock.sleep_until(self.clock.now() + LINGER),
+                        until: self.clock.now() + LINGER,
+                        linger: None,
                         shut: false,
                         drained: false,
                         order: self.next_order.replace(self.next_order.get() + 1),
@@ -467,6 +503,10 @@ impl State {
     /// `CLOSING` unless a close queued it.
     fn fail(&self, id: usize, failure: &Failure) {
         self.warn(id, format_args!("{failure}"));
+        #[cfg(any(test, feature = "sim"))]
+        if let Failure::Accept(e) = failure {
+            self.accept_error.set(Some(e.clone()));
+        }
         let stream = self
             .table
             .borrow_mut()
@@ -499,7 +539,7 @@ impl State {
         let mut read = self.read.borrow_mut();
         loop {
             let step = match self.table.borrow_mut().get_mut(&id) {
-                Some(connection) => connection.step(cx, &mut read),
+                Some(connection) => connection.step(cx, &mut read, &self.clock),
                 None => return,
             };
             let step = match step {
@@ -707,9 +747,12 @@ enum Stream {
     /// no reset.
     Closing {
         tcp: Tcp,
-        /// Ends the close when it takes too long, with sends or a peer that has not
-        /// closed.
-        linger: Sleep,
+        /// When the close ends if it takes too long, with sends or a peer that has
+        /// not closed.
+        until: Monotonic,
+        /// The sleep until `until`, from the first step of the close. A close in a
+        /// drop, as in a crash of a sim node, may make no sleep.
+        linger: Option<Sleep>,
         /// This side is closed for writing.
         shut: bool,
         /// The peer closed its side.
@@ -745,6 +788,8 @@ enum Step {
 enum Failure {
     /// A call to the stream failed, during the named step.
     Net(&'static str, net::Error),
+    /// The accept of a listen connection failed.
+    Accept(net::Error),
     /// The close took [`LINGER`].
     Lingered,
     /// More than [`CLOSES`] streams close, and this one started to close first.
@@ -755,6 +800,7 @@ impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Net(during, e) => write!(f, "the {during} failed: {e}"),
+            Self::Accept(e) => write!(f, "the accept failed: {e}"),
             Self::Lingered => {
                 write!(f, "the close took {LINGER}, so it drops the stream")
             }
@@ -779,7 +825,12 @@ impl Connection {
 
     /// Moves the connection on with `read` as the buffer of its reads, or gives why it
     /// fails. [`Step::Read`] gives the count of bytes read into `read`.
-    fn step(&mut self, cx: &mut Context<'_>, read: &mut [u8]) -> Result<Step, Failure> {
+    fn step(
+        &mut self,
+        cx: &mut Context<'_>,
+        read: &mut [u8],
+        clock: &Clock,
+    ) -> Result<Step, Failure> {
         match &mut self.stream {
             Stream::Connecting(connect) => match connect.as_mut().poll(cx) {
                 Poll::Pending => Ok(Step::Waiting),
@@ -796,7 +847,7 @@ impl Connection {
                     *paused = true;
                     Ok(Step::Accepted(tcp))
                 }
-                Poll::Ready(Err(e)) => Err(Failure::Net("accept", e)),
+                Poll::Ready(Err(e)) => Err(Failure::Accept(e)),
             },
             Stream::Open(tcp) => {
                 match tcp.poll_read(cx, read) {
@@ -810,11 +861,13 @@ impl Connection {
             }
             Stream::Closing {
                 tcp,
+                until,
                 linger,
                 shut,
                 drained,
                 ..
             } => {
+                let linger = linger.get_or_insert_with(|| clock.sleep_until(*until));
                 if Pin::new(linger).poll(cx).is_ready() {
                     return Err(Failure::Lingered);
                 }
@@ -961,7 +1014,10 @@ unsafe extern "C" fn open(
     };
     let net = state.net.clone();
     let connect = Box::pin(async move {
-        let addresses = net.resolve(&host, port).await?;
+        let Ok(parsed) = host.parse::<Host>() else {
+            return Err(net::Error::NotFound { host });
+        };
+        let addresses = net.resolve(&parsed, port).await?;
         let remote = addresses[0];
         net.connect(&tcp::Config {
             remote,

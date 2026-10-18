@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::task::Poll;
 
-use connector::cancel;
 use connector::kind::{self, Channels, Context, Table};
 use document::Document;
 use document::diagnostic::{Code, Diagnostic};
@@ -455,13 +454,6 @@ impl kind::Kind for Refuser {
             "refused".into(),
             "Fix it".into(),
         )])
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
-        std::future::ready(Ok(Vec::new()))
     }
 
     fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), kind::Error>> {
@@ -1092,17 +1084,20 @@ fn breaker_counts_a_kind_change_as_the_plan_counts_it() {
             output.text(),
             "+ connector site.plc\n\
              + channel site.plc.status.backoff\n\
+             + channel site.plc.status.bad\n\
              + channel site.plc.status.class\n\
              + channel site.plc.status.error\n\
              + channel site.plc.status.in\n\
              + channel site.plc.status.lost\n\
              + channel site.plc.status.missed\n\
+             + channel site.plc.status.mistyped\n\
              + channel site.plc.status.note\n\
              + channel site.plc.status.restarts\n\
              + channel site.plc.status.state\n\
              + channel site.plc.status.time\n\
+             + channel site.plc.status.uncertain\n\
              - channel site.plc\n\
-             11 to add, 0 to change, 1 to remove.\n\
+             14 to add, 0 to change, 1 to remove.\n\
              note: 2 definitions that Foundation made are not in the files: \
              @admin.@access, @admin.@subject\n"
         );
@@ -1111,7 +1106,7 @@ fn breaker_counts_a_kind_change_as_the_plan_counts_it() {
             .expect("an apply");
         assert_eq!(
             applied.text(),
-            "Applied site.plan: 11 added, 1 removed, 2 homes listed.\n",
+            "Applied site.plan: 14 added, 1 removed, 2 homes listed.\n",
             "the plan showed:\n{}",
             output.text()
         );

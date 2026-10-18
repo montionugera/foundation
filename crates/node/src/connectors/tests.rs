@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use connector::cancel;
 use connector::kind::{Channels, Context, Error, Kind, Table};
 use connector::testing;
 use document::diagnostic::Diagnostic;
@@ -57,13 +56,6 @@ impl Kind for Hold {
         Ok(Channels::default())
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     async fn run(&self, ctx: Context<usize>) -> Result<(), Error> {
         let start = (ctx.name().to_string(), ctx.clock().now(), *ctx.config());
         self.starts.lock().expect("no panic").push(start.clone());
@@ -107,13 +99,6 @@ impl Kind for Tally {
         })
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     async fn run(&self, ctx: Context<usize>) -> Result<(), Error> {
         let start = (ctx.name().to_string(), ctx.clock().now(), *ctx.config());
         self.starts.lock().expect("no panic").push(start);
@@ -138,13 +123,6 @@ impl Kind for Source {
 
     fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
         Ok(Channels::default())
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
     }
 
     async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
@@ -201,13 +179,6 @@ impl Kind for Sink {
         })
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     async fn run(&self, mut ctx: Context<()>) -> Result<(), Error> {
         let start = (ctx.name().to_string(), ctx.clock().now(), 0);
         self.starts.lock().expect("no panic").push(start);
@@ -219,6 +190,16 @@ impl Kind for Sink {
         }
         Ok(())
     }
+}
+
+/// The runs of the node `NODE` on a supervisor of `config`, on its tasks.
+fn runs(config: connector::supervisor::Config) -> Runs {
+    let tasks = config.tasks.clone();
+    Runs::new(
+        connector::supervisor::Supervisor::new(config),
+        tasks,
+        name(NODE),
+    )
 }
 
 /// `config` with its tasks counted, and the count of its tasks that have not ended.
@@ -349,7 +330,7 @@ fn record(steps: Vec<Step>, scene: Scene) -> Recorded {
         let hub = config.hub.clone();
         let clock = node.clock();
         let start = clock.now();
-        let mut runs = Runs::new(config, name(NODE));
+        let mut runs = runs(config);
         let (mut names, mut live) = (Vec::new(), Vec::new());
         for (at, spec) in steps {
             clock.sleep_until(start + at).await;
@@ -714,13 +695,6 @@ impl Kind for Write {
         Ok(Channels::default())
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
         let start = (ctx.name().to_string(), ctx.clock().now(), 0);
         self.starts.lock().expect("no panic").push(start);
@@ -756,7 +730,7 @@ fn starts_of_write(flush: Span) -> Result<(usize, usize), ::sim::Error> {
         let hub = config.hub.clone();
         let clock = node.clock();
         let start = clock.now();
-        let mut runs = Runs::new(config, name(NODE));
+        let mut runs = runs(config);
         let first = definitions(&[("plant.a", "write", NODE, 0)]);
         hub.set_definitions(&first);
         runs.apply(&first);
@@ -827,8 +801,7 @@ fn removal_as_the_mesh_time_arrives(seed: u64) -> (usize, usize) {
         let start = clock.now();
         let (config, _) = create(&node, &tasks, kinds, Mesh::Late(ms(1_000))).await;
         let hub = config.hub.clone();
-        let runs =
-            std::rc::Rc::new(std::cell::RefCell::new(Runs::new(config, name(NODE))));
+        let runs = std::rc::Rc::new(std::cell::RefCell::new(runs(config)));
         let mut placed = definitions(&[("plant.a", "quick", NODE, 0)]);
         // The channels of `plant.b` let a probe learn when the mesh time arrives.
         let probe = definitions(&[("plant.b", "quick", "plant.edge", 0)]);
@@ -890,6 +863,7 @@ async fn create(
         clock: node.clock(),
         entropy: node.entropy(),
         net: node.net(),
+        roots: connector::http::Roots::default(),
         tasks: tasks.clone(),
         hub,
         secrets,
@@ -997,7 +971,7 @@ fn a_removal_ends_the_wait_of_its_connector_for_the_other_first_opens() {
         let start = clock.now();
         let (config, live) = create(&node, &tasks, kinds, Mesh::Late(ms(5_000))).await;
         let hub = config.hub.clone();
-        let mut runs = Runs::new(config, name(NODE));
+        let mut runs = runs(config);
         let placed =
             definitions(&[("plant.a", "none", NODE, 0), ("plant.b", "quick", NODE, 0)]);
         hub.set_definitions(&placed);
@@ -1163,7 +1137,7 @@ fn change_at_the_mesh_time(seed: u64, yields: usize) -> Option<bool> {
         let clock = node.clock();
         let start = clock.now();
         let hub = config.hub.clone();
-        let mut runs = Runs::new(config, name(NODE));
+        let mut runs = runs(config);
         let mut apply = |version| {
             let spec = [
                 ("plant.a", "sink", NODE, version),
@@ -1273,7 +1247,7 @@ fn respec(
         let hub = config.hub.clone();
         let clock = node.clock();
         let start = clock.now();
-        let mut runs = Runs::new(config, name(NODE));
+        let mut runs = runs(config);
         hub.set_definitions(&first);
         runs.apply(&first);
         clock.sleep_until(start + ms(1_000)).await;
@@ -1396,8 +1370,7 @@ async fn regional(
 /// Applies `first`, then `second` 1 s after `first` is in use, each with its channels,
 /// through the mesh of [`regional`], where the status index of each connector has its
 /// home at the node and `plant.data.time` has none. Gives each start of a run until
-/// 10 s after `second` is in use, with its time from that instant: the first apply
-/// waits for the election.
+/// 10 s after `second` is in use, with its time from that instant.
 fn in_region(
     seed: u64,
     first: (Vec<Placed>, Vec<(Name, Definition)>),
@@ -1423,12 +1396,13 @@ fn in_region(
             clock: node.clock(),
             entropy: node.entropy(),
             net: node.net(),
+            roots: connector::http::Roots::default(),
             tasks: tasks.clone(),
             hub,
             secrets,
         };
         let clock = node.clock();
-        let mut runs = Runs::new(config, name(NODE));
+        let mut runs = runs(config);
         let mut apply = async |(spec, channels): (Vec<Placed>, Vec<_>)| {
             let mut definitions = definitions(&spec);
             definitions.extend(channels);

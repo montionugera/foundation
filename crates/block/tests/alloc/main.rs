@@ -5,18 +5,17 @@
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::atomic::{AtomicU64, AtomicUsize};
 
-use block::{ALIGN, Config, Heap, Pool};
+use block::{Config, Heap, Pool};
 
-/// Counts the allocations and the frees of the process, and keeps the layout of
-/// the last zeroed allocation.
+/// Counts the allocations, the bytes of zeroed allocations, and the frees of the
+/// process.
 struct Counting {
     count: AtomicU64,
+    zeroed: AtomicU64,
     freed: AtomicU64,
-    zeroed_size: AtomicUsize,
-    zeroed_align: AtomicUsize,
 }
 
 // SAFETY: every call goes to `System` unchanged.
@@ -29,8 +28,7 @@ unsafe impl GlobalAlloc for Counting {
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         self.count.fetch_add(1, Relaxed);
-        self.zeroed_size.store(layout.size(), Relaxed);
-        self.zeroed_align.store(layout.align(), Relaxed);
+        self.zeroed.fetch_add(layout.size() as u64, Relaxed);
         // SAFETY: the caller keeps the contract of `GlobalAlloc::alloc_zeroed`.
         unsafe { System.alloc_zeroed(layout) }
     }
@@ -45,9 +43,8 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOCATOR: Counting = Counting {
     count: AtomicU64::new(0),
+    zeroed: AtomicU64::new(0),
     freed: AtomicU64::new(0),
-    zeroed_size: AtomicUsize::new(0),
-    zeroed_align: AtomicUsize::new(0),
 };
 
 /// Allocations the process makes while `f` runs.
@@ -59,24 +56,7 @@ fn count(f: impl FnOnce()) -> u64 {
 
 fn main() {
     assert_eq!(count(|| drop(Box::new(1_u8))), 1, "the allocator counts");
-    let freed = ALLOCATOR.freed.load(Relaxed);
-    drop(Heap::new(64));
-    assert_eq!(
-        ALLOCATOR.freed.load(Relaxed) - freed,
-        1,
-        "a heap frees its bytes"
-    );
-    // At any larger alignment std writes zero over every page instead of `calloc`.
-    assert_eq!(
-        ALLOCATOR.zeroed_align.load(Relaxed),
-        1,
-        "a heap asks for calloc"
-    );
-    assert_eq!(
-        ALLOCATOR.zeroed_size.load(Relaxed),
-        64 + ALIGN,
-        "a heap pads"
-    );
+    heap();
 
     let config = Config::new(1 << 16).expect("the budget fits");
     let heap = Heap::new(config.reservation());
@@ -129,4 +109,73 @@ fn main() {
     });
     assert_eq!(allocations, 0, "the purge path allocated");
     assert_eq!(pool.committed(), 0, "each idle size gave its pages back");
+    cold_block();
+}
+
+/// A heap allocates once for its bytes and once for its page bits, and touches only
+/// the pages that it commits.
+fn heap() {
+    let (freed, zeroed) = (
+        ALLOCATOR.freed.load(Relaxed),
+        ALLOCATOR.zeroed.load(Relaxed),
+    );
+    let allocations = count(|| drop(Heap::new(1 << 20)));
+    assert_eq!(
+        allocations, 2,
+        "a heap allocates its bytes and its page bits"
+    );
+    assert_eq!(
+        ALLOCATOR.freed.load(Relaxed) - freed,
+        2,
+        "a heap frees both"
+    );
+    // A release build may get the page bits zeroed from the allocator.
+    let bits = (1 << 20) / 4096 / 8;
+    assert!(
+        ALLOCATOR.zeroed.load(Relaxed) - zeroed <= bits,
+        "a heap writes zero only over the pages that it commits"
+    );
+    #[cfg(all(target_os = "linux", not(miri)))]
+    untouched();
+}
+
+/// A new heap of 256 MiB adds fewer than 1024 pages to the process in memory.
+// needs /proc/self/statm
+#[cfg(all(target_os = "linux", not(miri)))]
+fn untouched() {
+    let before = resident();
+    let heap = Heap::new(1 << 28);
+    assert!(
+        resident().saturating_sub(before) < 1024,
+        "a heap touches only the pages that it commits"
+    );
+    drop(heap);
+}
+
+/// The pages of the process in memory, from Linux.
+#[cfg(all(target_os = "linux", not(miri)))]
+fn resident() -> u64 {
+    let statm = std::fs::read_to_string("/proc/self/statm").expect("Linux gives statm");
+    let pages = statm
+        .split(' ')
+        .nth(1)
+        .expect("statm gives the resident pages");
+    pages.parse().expect("the resident pages are a number")
+}
+
+/// A free large block gives its pages to a small alloc, and the large alloc takes it
+/// back.
+fn cold_block() {
+    let config = Config::new(2 * 16_448).expect("the budget fits");
+    let heap = Heap::new(config.reservation());
+    let pool = Pool::new(config, heap);
+    let held = pool.alloc(16_384).expect("the budget has room");
+    drop(pool.alloc(16_384).expect("the budget has room"));
+    let allocations = count(|| {
+        for len in [8000, 16_384].into_iter().cycle().take(64) {
+            drop(pool.alloc(len).expect("the free block gives its pages"));
+        }
+    });
+    assert_eq!(allocations, 0, "the path of a cold block allocated");
+    drop(held);
 }

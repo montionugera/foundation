@@ -154,6 +154,32 @@ fn a_failed_start_drops_its_main_with_the_log_of_its_node() {
     assert_eq!(a_log.messages(), ["a main dropped"]);
 }
 
+#[test]
+fn a_failed_thread_start_drops_its_body_with_the_log_of_its_node() {
+    let mut sim = sim(0);
+    let a = sim.node(node::Config::default());
+    let b = sim.node(node::Config::default());
+    let (a_log, b_log) = (Log::default(), Log::default());
+    a.fail_thread("a");
+    let on_a = a.threads().logged(a_log.dispatch());
+    let _b = b.threads().logged(b_log.dispatch()).start("b", move || {
+        let guard = Logs("a body dropped");
+        let started = on_a.start("a", move || {
+            let _guard = guard;
+            async {}
+        });
+        let error = env::thread::Error::Start {
+            name: "a".into(),
+            reason: "injected".into(),
+        };
+        assert_eq!(started.err(), Some(error));
+        async {}
+    });
+    sim.run().unwrap();
+    assert_eq!(b_log.messages(), Vec::<String>::new());
+    assert_eq!(a_log.messages(), ["a body dropped"]);
+}
+
 /// A waker of node code: it logs when it wakes and when it drops.
 struct Wakes(&'static str);
 

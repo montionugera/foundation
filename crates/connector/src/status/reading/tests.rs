@@ -61,8 +61,14 @@ fn read(steps: Vec<Step>, select: &'static [&'static str]) -> Option<Reading> {
                 .collect();
         hub.set_definitions(definitions.iter());
         let clock = node.clock();
-        let opened =
-            Writer::open(&hub, &connector, counts, clock.clone(), Token::new());
+        let opened = Writer::open(
+            &hub,
+            &connector,
+            counts,
+            tracing::Span::none(),
+            clock.clone(),
+            Token::new(),
+        );
         let mut open = Some(opened.await.expect("the writer opens"));
         for step in steps {
             if let Step::Program(columns) = step {
@@ -374,6 +380,12 @@ fn reads_the_note_that_the_running_kind_shows() {
         ..reading(State::Running, 0, None, 0)
     };
     assert_eq!(got, Some(want));
+}
+
+#[test]
+fn reads_no_note_after_the_running_kind_shows_an_empty_note() {
+    let got = read(vec![Step::Start, Step::Note("polls"), Step::Note("")], ALL);
+    assert_eq!(got, Some(reading(State::Running, 0, None, 0)));
 }
 
 #[test]

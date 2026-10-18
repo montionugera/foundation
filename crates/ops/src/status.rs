@@ -1,4 +1,5 @@
-//! The status of each connector on a node, read from its status channels.
+//! The status of each connector on a node, read from its status channels, and the
+//! failures of the read of its OS roots.
 
 use std::collections::BTreeMap;
 use std::future::poll_fn;
@@ -17,6 +18,7 @@ use types::time::{Monotonic, Span};
 
 use crate::Node;
 use crate::error::{Error, escape_controls};
+use crate::roots::Failures;
 
 #[cfg(test)]
 mod tests;
@@ -24,12 +26,16 @@ mod tests;
 /// The longest that `status` waits for the frames, from the request.
 const WAIT: Span = Span::SECOND;
 
-/// The status of each connector on the node, as `status` gives it.
+/// The status of each connector on the node, and the failures of its OS roots, as
+/// `status` gives them.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub(crate) struct Output {
-    /// Each connector that the spec in use places on the node, and whose status the
-    /// subject may read, in name order.
+    /// Each connector that the spec in use places on the node, and whose label and
+    /// status channels the subject may read, in name order.
     pub(crate) connectors: Vec<Status>,
+    /// The failures of the read of the OS roots of the node, or `None` when the subject
+    /// may not read the name of the node.
+    pub(crate) roots: Option<Failures>,
 }
 
 /// The status of one connector.
@@ -100,6 +106,11 @@ pub(crate) struct Placed<'a> {
 }
 
 impl Placed<'_> {
+    /// The label of the connector.
+    pub(crate) fn name(&self) -> &Name {
+        self.name
+    }
+
     /// The names of the status channels, the index too.
     pub(crate) fn channels(&self) -> impl Iterator<Item = &Name> {
         self.channels.iter().map(|(name, _)| *name)
@@ -167,15 +178,14 @@ pub(crate) async fn read(
     subject: &Name,
     placed: &[Placed<'_>],
     asked: Monotonic,
-) -> Result<Output, Error> {
+) -> Result<Vec<Status>, Error> {
     let reads = placed.iter().map(|placed| newest(node, subject, placed));
     let readings = before(reads, node.clock.sleep_until(asked + WAIT)).await;
-    let connectors = placed
+    placed
         .iter()
         .zip(readings)
         .map(|(placed, reading)| Ok(status(placed, reading.transpose()?.flatten())))
-        .collect::<Result<_, Error>>()?;
-    Ok(Output { connectors })
+        .collect()
 }
 
 /// The newest status of `placed`, or `None` when the frame holds no status or lacks a
@@ -308,8 +318,21 @@ impl Output {
     /// <text>` when it has an error. `COUNTS` holds each count as `<name>=<value>`,
     /// in name order, or `-` when `state` is `unknown`. Each control character of a
     /// value is escaped, so a value stays on its line. With no connector, one line
-    /// that does not tell whether the node places a connector.
+    /// that does not tell whether the node places a connector. With `roots` that
+    /// hold a failure, then a blank line, a line `OS roots: <count> failures, from
+    /// <source>`, a line `OS roots: error: <text>` for each kept failure, and a line
+    /// `OS roots: left out: <count>` when it does not keep each.
     pub(crate) fn text(&self) -> String {
+        let mut text = self.connectors();
+        if let Some(lines) = self.roots.as_ref().and_then(Failures::lines) {
+            text.push('\n');
+            text.push_str(&lines);
+        }
+        text
+    }
+
+    /// The text of the connectors in [`Output::text`].
+    fn connectors(&self) -> String {
         if self.connectors.is_empty() {
             return "You can read no connector on this node.\n".to_owned();
         }

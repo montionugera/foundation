@@ -1,5 +1,6 @@
 //! The gate task: at the end of each control lease and grace, it lets the home record
 //! the handoff, so that a holder that stops writing loses control with no other call.
+//! At each tick of the named readers, it lets the home record their positions.
 
 use std::cell::RefCell;
 use std::future::poll_fn;

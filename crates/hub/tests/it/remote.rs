@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::future::poll_fn;
 use std::net::SocketAddr;
+use std::ops;
 use std::pin::pin;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -17,21 +18,24 @@ use spec::data_type::DataType;
 use transport::stream::{Receiver, Sender};
 use transport::{Address, Code, Session, Transport};
 use types::frame::key_set::{Group, Interner};
-use types::frame::{self, Path, Range};
+use types::frame::{self, Form, Path, Range};
 use types::time::Span;
 use wire::Protocol;
 use wire::header::MALFORMED;
-use wire::hub::{Credit, Head, Refusal, Reply, ends};
+use wire::hub::{Credit, Due, Frames, Head, Open, Refusal, Reply, Step, ends};
 
 use super::region::OTHER;
 use super::{
     AREA, BODY_MAX, I64, NODE, POOL, TIME, TIME_B, Test, VALUE, fill, names, samples,
-    unnamed, without, write, write_series, write_wide,
+    unnamed, without, write, write_samples, write_series, write_wide,
 };
 use crate::net::{HOME, PEER, PORT, own_pool, public_key, transport_sized};
 
 /// The fewest bytes that a transport takes in one message.
 const MESSAGE_MIN: usize = 1472;
+/// The fewest bytes that the transport of a node with a region takes in one message,
+/// as `mesh::Mesh::open` refuses less.
+const REGION_MIN: usize = 50_355;
 /// The window of a transport of a test, in bytes.
 const WINDOW: usize = 1 << 20;
 
@@ -824,7 +828,7 @@ async fn fake_accept(transport: &Transport) -> (Session, Sender, Receiver) {
 /// [`fake_accept`], then `Opened` sent.
 async fn fake_open(transport: &Transport) -> (Session, Sender, Receiver) {
     let (session, mut sender, receiver) = fake_accept(transport).await;
-    send(&mut sender, 1, |out| Reply::Opened.encode(out)).await;
+    send(&mut sender, 9, |out| Reply::Opened { live: 0 }.encode(out)).await;
     (session, sender, receiver)
 }
 
@@ -989,10 +993,14 @@ async fn define_many(test: &Test, count: u128) -> Vec<String> {
 #[test]
 fn a_reader_whose_keys_and_frames_each_take_many_messages_gets_each_frame() {
     const FRAMES: i64 = 3;
+    // A frame of more bytes than the reader's limit, and at most `BODY_MAX`. Each
+    // value takes 8 bytes, and the index almost none.
+    const SAMPLES: i64 = 7_000;
+    assert!(usize::try_from(SAMPLES).unwrap() * 8 > REGION_MIN);
     remote_sized(
         9,
         sim::link::Config::default(),
-        [(MESSAGE_MIN, WINDOW); 2],
+        [(REGION_MIN, WINDOW), (MESSAGE_MIN, WINDOW)],
         |node, tasks, transport, steps| async move {
             let kept = Arc::clone(&steps);
             hub_home(node, tasks, transport, steps, |test| async move {
@@ -1001,7 +1009,7 @@ fn a_reader_whose_keys_and_frames_each_take_many_messages_gets_each_frame() {
                 until(&test.clock, &kept.opened).await;
                 let now = test.now();
                 for n in 0..FRAMES {
-                    write_wide(&mut writer, now, n);
+                    write_samples(&mut writer, now + n * SAMPLES, SAMPLES);
                 }
             })
             .await;
@@ -1025,7 +1033,10 @@ fn a_reader_whose_keys_and_frames_each_take_many_messages_gets_each_frame() {
                 stamps.extend(samples(&received, 1));
             }
             let first = stamps[0];
-            assert_eq!(stamps, (first..first + FRAMES * 1000).collect::<Vec<_>>());
+            assert_eq!(
+                stamps,
+                (first..first + FRAMES * SAMPLES).collect::<Vec<_>>()
+            );
         },
     );
 }
@@ -1528,27 +1539,216 @@ fn a_reader_gets_the_seq_and_path_of_each_frame_from_the_home() {
 }
 
 #[test]
-fn a_complete_reader_that_the_home_ends_with_behind_gets_behind_at_each_next() {
+fn a_complete_reader_gets_the_seqs_that_the_home_skipped_as_the_gap_of_the_next_frame()
+{
     remote(
-        17,
+        147,
         sim::link::Config::default(),
         |node, _, transport, steps| async move {
             let (_, mut sender, _receiver) = fake_open(&transport).await;
-            send(&mut sender, Reply::Behind.encoded_len(), |out| {
-                Reply::Behind.encode(out);
-            })
-            .await;
+            let mut seq = 0;
+            for skipped in [0, 3, 0] {
+                seq += skipped;
+                send_frame(&mut sender, &mut seq, 32).await.expect("sends");
+            }
             until(&node.clock(), &steps.done).await;
         },
         |test, _| async move {
             let mut reader = test.reader(&["value"], Mode::Complete).await;
-            let ended = reader.next().await.expect_err("the home ended the session");
-            assert_eq!(ended, Ended::Behind);
+            for gap in [None, Some(2..5), None] {
+                let received = reader.next().await.expect("a frame");
+                assert_eq!(received.gap(), gap);
+            }
+        },
+    );
+}
+
+/// A frame with no sample has no first sample to end a gap, so the gap comes on the
+/// next frame with one.
+#[test]
+fn a_complete_reader_gets_the_gap_before_a_frame_with_no_sample_on_the_next_frame() {
+    remote(
+        149,
+        sim::link::Config::default(),
+        |node, _, transport, steps| async move {
+            let (_, mut sender, _receiver) = fake_open(&transport).await;
+            let mut seq = 0;
+            send_frame(&mut sender, &mut seq, 32).await.expect("sends");
+            seq += 3;
+            send_head(&mut sender, &mut seq, 0, &[(0, 0), (1, 0)])
+                .await
+                .expect("sends");
+            send_frame(&mut sender, &mut seq, 32).await.expect("sends");
+            until(&node.clock(), &steps.done).await;
+        },
+        |test, _| async move {
+            let mut reader = test.reader(&["value"], Mode::Complete).await;
+            let mut positions = Vec::new();
+            for (count, gap) in [(2, None), (0, None), (2, Some(2..5))] {
+                let received = reader.next().await.expect("a frame");
+                let range = received.view().range(0).expect("an index");
+                assert_eq!((range.count, received.gap()), (count, gap));
+                positions.push(received.position());
+            }
             assert_eq!(
-                ended.to_string(),
-                "the reader missed a frame and gets no later one: open a new reader"
+                positions[1], positions[0],
+                "the frame with no sample keeps the position before the gap"
             );
-            assert_eq!(reader.next().await.expect_err("ended"), Ended::Behind);
+            assert_ne!(positions[2], positions[0]);
+        },
+    );
+}
+
+#[test]
+fn a_complete_reader_gets_the_seqs_from_the_open_position_as_the_gap_of_the_first_frame()
+ {
+    remote(
+        148,
+        sim::link::Config::default(),
+        |node, _, transport, steps| async move {
+            let (_, mut sender, _receiver) = fake_accept(&transport).await;
+            let opened = Reply::Opened { live: 5 };
+            send(&mut sender, 9, |out| opened.encode(out)).await;
+            let mut seq = 9;
+            for _ in 0..2 {
+                send_frame(&mut sender, &mut seq, 32).await.expect("sends");
+            }
+            until(&node.clock(), &steps.done).await;
+        },
+        |test, _| async move {
+            let mut reader = test.reader(&["value"], Mode::Complete).await;
+            for gap in [Some(5..9), None] {
+                let received = reader.next().await.expect("a frame");
+                assert_eq!(received.gap(), gap);
+            }
+        },
+    );
+}
+
+/// A message of `len` bytes that `fill` writes.
+fn message(len: usize, fill: impl FnOnce(&mut [u8])) -> Vec<u8> {
+    let mut out = vec![0; len];
+    fill(&mut out);
+    out
+}
+
+/// The messages of a home that opens at 5, then sends a frame past a gap at the open, a
+/// frame with no gap, a frame with no sample past a jump, the frame after it, and a
+/// frame past a later jump.
+fn gapped() -> Vec<Vec<u8>> {
+    let opened = Reply::Opened { live: 5 };
+    let mut messages = vec![message(9, |out| opened.encode(out))];
+    for (seq, count) in [(9, 2), (11, 2), (16, 0), (16, 2), (20, 2)] {
+        let head = Reply::Head(Head {
+            path: Path::Live,
+            range: Range { seq, count },
+            series: 2,
+        });
+        let len = 8 * count;
+        messages.push(message(head.encoded_len(), |out| head.encode(out)));
+        messages.push(message(2 * ends::LEN, |out| {
+            ends::encode([(0, len), (1, 2 * len)], out);
+        }));
+        if count > 0 {
+            let body = usize::try_from(2 * len).expect("a short body");
+            messages.push(message(body, |out| out.fill(1)));
+        }
+    }
+    messages
+}
+
+/// The [`Frames::lost`] of each frame of `messages`, which start at `Opened`, in a
+/// complete session of `time` and `value`.
+fn lost(messages: &[Vec<u8>]) -> Vec<ops::Range<u64>> {
+    let open = Open {
+        mode: wire::hub::Mode::Complete { limit_bytes: 0 },
+        channels: 2,
+    };
+    let data = [(VALUE, I64)];
+    let set = Interner::new().intern(&[Group {
+        index: TIME,
+        data: &data,
+    }]);
+    let mut messages = messages.iter().map(Vec::as_slice);
+    let mut frames = Frames::open(wire::hub::Reader::new(&open), set, messages.next())
+        .expect("opens");
+    let mut lost = Vec::new();
+    loop {
+        let step = match frames.due().expect("a layout") {
+            Due::Draft(layout) => {
+                let draft = layout.draft(&own_pool(), Form::Encoded).expect("room");
+                Ok(frames.draft(draft))
+            }
+            Due::Body(_) | Due::Message => match messages.next() {
+                Some(message) => frames.decode(Some(message)),
+                None => return lost,
+            },
+        };
+        if let Step::Frame(_) = step.expect("a step") {
+            lost.push(frames.lost());
+        }
+    }
+}
+
+/// The remote reader gives as the gap of each frame the `Frames::lost` of the same
+/// messages: a gap at the open, none, a frame with no sample, and a later jump.
+#[test]
+fn a_complete_reader_gets_the_gap_of_each_frame_that_frames_gives_as_lost() {
+    remote(
+        150,
+        sim::link::Config::default(),
+        |node, _, transport, steps| async move {
+            let (_, mut sender, _receiver) = fake_accept(&transport).await;
+            for message in gapped() {
+                send(&mut sender, message.len(), |out| {
+                    out.copy_from_slice(&message);
+                })
+                .await;
+            }
+            until(&node.clock(), &steps.done).await;
+        },
+        |test, _| async move {
+            let mut reader = test.reader(&["value"], Mode::Complete).await;
+            let mut gaps = Vec::new();
+            for _ in 0..5 {
+                let received = reader.next().await.expect("a frame");
+                gaps.push(received.gap().unwrap_or(0..0));
+            }
+            assert_eq!(gaps, lost(&gapped()));
+            assert_eq!(gaps, [5..9, 0..0, 0..0, 13..16, 18..20]);
+        },
+    );
+}
+
+#[test]
+fn a_reader_that_gets_the_retired_kind_of_behind_stops_the_stream_as_malformed() {
+    remote(
+        17,
+        sim::link::Config::default(),
+        |node, _, transport, steps| async move {
+            let (_, mut sender, mut receiver) = fake_open(&transport).await;
+            send(&mut sender, 1, |out| out[0] = 3).await;
+            let error = loop {
+                if let Err(error) = receiver.recv().await {
+                    break error;
+                }
+            };
+            assert_eq!(
+                error,
+                transport::Error::Reset {
+                    code: Code(MALFORMED)
+                }
+            );
+            steps.stopped.store(true, Ordering::Relaxed);
+            until(&node.clock(), &steps.done).await;
+        },
+        |test, steps| async move {
+            let mut reader = test.reader(&["value"], Mode::Complete).await;
+            let ended = reader.next().await.expect_err("the kind is retired");
+            let retired = Ended::Message(wire::hub::Error::Kind { kind: 3 });
+            assert_eq!(ended, retired);
+            assert_eq!(reader.next().await.expect_err("ended"), retired);
+            until(&test.clock, &steps.stopped).await;
         },
     );
 }
@@ -1634,7 +1834,7 @@ fn a_reader_whose_home_finishes_the_stream_between_frames_stops_it_as_malformed(
             assert_eq!(
                 ended.to_string(),
                 "a message from the home broke the hub protocol: the home finished the \
-                 stream before it ended the session"
+                 stream outside a body"
             );
             until(&test.clock, &steps.stopped).await;
         },
@@ -1642,8 +1842,7 @@ fn a_reader_whose_home_finishes_the_stream_between_frames_stops_it_as_malformed(
 }
 
 #[test]
-fn a_complete_remote_reader_whose_home_stops_reading_credits_gets_its_frames_then_behind()
- {
+fn a_complete_remote_reader_whose_home_stops_reading_credits_gets_every_frame() {
     remote(
         40,
         sim::link::Config::default(),
@@ -1665,10 +1864,9 @@ fn a_complete_remote_reader_whose_home_stops_reading_credits_gets_its_frames_the
             let mut reader = test.reader(&["value"], Mode::Complete).await;
             steps.open();
             test.clock.sleep(Span::from_nanos(1_000_000_000)).await;
-            let (charges, ended) = super::take_all(&mut reader).await;
-            // The home sends the 128 frames that its grant of a window holds, then
-            // Behind, finishes, and drops its receiver, which stops the stream with 0.
-            assert_eq!((charges.len(), ended), (128, Ended::Behind));
+            let taken = super::take_waiting(&test.clock, &mut reader).await;
+            let ranges: Vec<_> = taken.into_iter().map(|(range, _)| range).collect();
+            assert_eq!(ranges, super::wide(0, 201));
         },
     );
 }
@@ -1721,7 +1919,7 @@ fn a_reader_whose_pool_has_no_room_for_a_message_of_keys_stops_the_stream_with_b
     remote_sized(
         41,
         sim::link::Config::default(),
-        [(MESSAGE_MIN, WINDOW), (MESSAGE_MIN, 2 * MESSAGE_MIN)],
+        [(REGION_MIN, WINDOW), (MESSAGE_MIN, 2 * MESSAGE_MIN)],
         |node, _, transport, steps| async move {
             let session = transport.accept().await.expect("a session");
             let mut incoming = session.accept().await.expect("a stream");
@@ -1821,7 +2019,7 @@ fn a_complete_reader_whose_pool_has_no_room_for_a_credit_gives_the_frame_that_ar
         |node, _, transport, steps| async move {
             let (_, mut sender, mut receiver) = fake_open(&transport).await;
             let mut seq = 0;
-            for n in 0..33 {
+            for n in 0..34 {
                 send_credit_frame(&mut sender, &mut seq, n).await;
             }
             let error = receiver.recv().await.expect_err("the reader stopped");
@@ -1835,13 +2033,19 @@ fn a_complete_reader_whose_pool_has_no_room_for_a_credit_gives_the_frame_that_ar
             for _ in 0..32 {
                 reader.next().await.expect("a frame");
             }
-            // The task queues the 33rd frame while the caller takes nothing.
+            // The task queues the 33rd and 34th frames while the caller takes nothing.
             test.clock.sleep(Span::from_nanos(100_000_000)).await;
             let next = reader.next();
             let blocks = fill(&test.pool);
-            next.await.expect("the frame that arrived before the end");
-            let ended = reader.next().await.expect_err("the pool has no room");
+            next.await.expect("the 33rd frame");
             let expected = test.pool.alloc(Credit::LEN).expect_err("the pool is full");
+            // The task finds no block for the credit while the 34th frame waits.
+            test.clock.sleep(Span::from_nanos(100_000_000)).await;
+            reader
+                .next()
+                .await
+                .expect("the frame that arrived before the end");
+            let ended = reader.next().await.expect_err("the pool has no room");
             drop(blocks);
             assert_eq!(ended, Ended::Pool(expected));
             until(&test.clock, &steps.stopped).await;
@@ -2053,7 +2257,7 @@ fn a_reader_whose_home_finishes_the_stream_before_opened_stops_it_as_malformed()
             assert_eq!(
                 error.to_string(),
                 "the reply of the home broke the hub protocol: the home finished the \
-                 stream before it ended the session"
+                 stream outside a body"
             );
             until(&test.clock, &steps.stopped).await;
         },
@@ -2124,7 +2328,7 @@ fn a_complete_reader_whose_waiting_credit_fails_to_send_sends_no_later_credit() 
                     .await
                     .expect("sends");
             }
-            send(&mut sender, 1, |out| Reply::Behind.encode(out)).await;
+            send(&mut sender, 1, |out| out[0] = 3).await;
             until(&node.clock(), &steps.done).await;
         },
         |test, _| async move {
@@ -2139,9 +2343,9 @@ fn a_complete_reader_whose_waiting_credit_fails_to_send_sends_no_later_credit() 
             }
             let next = reader.next();
             let blocks = fill(&test.pool);
-            let ended = next.await.expect_err("behind");
+            let ended = next.await.expect_err("the kind is retired");
             drop(blocks);
-            assert_eq!(ended, Ended::Behind);
+            assert_eq!(ended, Ended::Message(wire::hub::Error::Kind { kind: 3 }));
         },
     );
 }
@@ -2400,7 +2604,7 @@ fn a_complete_reader_whose_credit_the_stream_refuses_sends_no_later_credit() {
                     .await
                     .expect("sends");
             }
-            send(&mut sender, 1, |out| Reply::Behind.encode(out)).await;
+            send(&mut sender, 1, |out| out[0] = 3).await;
             until(&node.clock(), &steps.done).await;
         },
         |test, _| async move {
@@ -2410,9 +2614,9 @@ fn a_complete_reader_whose_credit_the_stream_refuses_sends_no_later_credit() {
             }
             let next = reader.next();
             let blocks = fill(&test.pool);
-            let ended = next.await.expect_err("behind");
+            let ended = next.await.expect_err("the kind is retired");
             drop(blocks);
-            assert_eq!(ended, Ended::Behind);
+            assert_eq!(ended, Ended::Message(wire::hub::Error::Kind { kind: 3 }));
         },
     );
 }
@@ -2726,7 +2930,7 @@ async fn open_a_third(
                 .expect("open");
         }
         let mut opened = third.sender.take().expect("a two-way stream");
-        send(&mut opened, 1, |out| Reply::Opened.encode(out)).await;
+        send(&mut opened, 9, |out| Reply::Opened { live: 0 }.encode(out)).await;
         until(&node.clock(), &steps.done).await;
     };
     race(serve_third, drain)
@@ -3200,7 +3404,8 @@ fn a_reader_stops_the_stream_as_malformed_when_a_head_starts_before_the_last_end
             series: 2,
         }),
         wire::hub::Error::Seq { seq: 3, end: 11 },
-        "the frame head starts at seq 3, before the end 11 of the head before it",
+        "the frame head starts at seq 3, before seq 11, where the head before it ended or \
+         the session opened",
     );
 }
 
@@ -3222,8 +3427,8 @@ fn a_reader_stops_the_stream_as_malformed_when_a_head_ends_past_the_highest_seq(
             seq: u64::MAX,
             count: 1,
         },
-        "the frame head has 1 samples from seq 18446744073709551615, which end past \
-         the highest seq",
+        "the range has 1 samples from seq 18446744073709551615, which end past the \
+         highest seq",
     );
 }
 
@@ -3271,7 +3476,7 @@ fn a_reader_panics_on_an_ack_of_a_position_at_zero_before_it_gave_one() {
                     .expect("a message")
                     .expect("not finished");
             }
-            send(&mut second, 1, |out| Reply::Opened.encode(out)).await;
+            send(&mut second, 9, |out| Reply::Opened { live: 0 }.encode(out)).await;
             until(&node.clock(), &steps.done).await;
         },
         |test, _| async move {

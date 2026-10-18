@@ -37,7 +37,7 @@ pub(crate) async fn open(
     let mut reader = Reader::new(&open);
     let opened = receiver.recv().await.expect("receives").expect("a reply");
     assert!(
-        matches!(reader.decode(&opened), Ok(FromHome::Opened)),
+        matches!(reader.decode(Some(&opened)), Ok(FromHome::Opened { .. })),
         "the home opens the session"
     );
     (sender, receiver, reader)
@@ -49,7 +49,7 @@ pub(crate) async fn frame(receiver: &mut Receiver, reader: &mut Reader) -> usize
     let mut messages = 0;
     loop {
         let message = receiver.recv().await.expect("receives").expect("a message");
-        let decoded = reader.decode(&message).expect("a valid message");
+        let decoded = reader.decode(Some(&message)).expect("a valid message");
         messages += 1;
         let ended = matches!(
             decoded,

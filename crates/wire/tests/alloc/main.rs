@@ -1,16 +1,25 @@
-//! The hub messages on a frame's path, the blob heads, and the body counters of client
-//! requests and blob chunks, make no heap allocation, and the place messages of a read
-//! make a known count. This binary has no test harness: the count covers each thread,
-//! and a harness allocates on its own thread at any time.
+//! The hub messages on a frame's path, the frames of a warm reader session, the head,
+//! the frames, and the replies of a program's write, the blob heads, and the body
+//! counters of client requests and blob chunks, make no heap allocation, and the place
+//! messages of a read make a known count. This binary has no test harness: the count
+//! covers each thread, and a harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
+use std::sync::Arc;
+
 use types::{
     channel,
-    frame::{self, Path, Range},
+    frame::{
+        self, Form, Path, Range,
+        key_set::{Group, Interner, KeySet},
+    },
+    sample::{Scalar, Type},
 };
 use wire::hub::{
-    Credit, FromHome, FromReader, Head, Home, Mode, Open, Reader, Reply, ends, keys,
+    Credit, Due, Frames, FromHome, FromReader, Head, Home, Mode, Open, Reader, Reply,
+    Step, ends, keys,
+    write::{self, Outcome, Refusal, Time},
 };
 
 #[global_allocator]
@@ -33,11 +42,18 @@ fn main() {
         ends(series);
     }
     ends_by_place();
+    frames();
+    write_frames();
+    write_head();
+    write_replies();
     client_body();
     blob_body();
     blob_heads();
     place_messages();
 }
+
+/// An `Opened` at the open position 0.
+const OPENED: [u8; 9] = [1, 0, 0, 0, 0, 0, 0, 0, 0];
 
 /// A reader that has decoded `Opened` and a head of `series` series.
 fn reader(series: u32) -> Reader {
@@ -49,8 +65,8 @@ fn reader(series: u32) -> Reader {
     })
     .encode(&mut out);
     let mut reader = Reader::new(&OPEN);
-    for message in [[1].as_slice(), &out] {
-        reader.decode(message).expect("the head decodes");
+    for message in [OPENED.as_slice(), &out] {
+        reader.decode(Some(message)).expect("the head decodes");
     }
     reader
 }
@@ -65,13 +81,42 @@ fn head() {
     let ((), allocations) = ALLOCATOR.count(|| Reply::Head(head).encode(&mut out));
     assert_eq!(allocations, 0, "the head encode allocated");
     let mut reader = Reader::new(&OPEN);
-    reader.decode(&[1]).expect("the session opens");
-    let (decoded, allocations) = ALLOCATOR.count(|| match reader.decode(&out) {
+    reader.decode(Some(&OPENED)).expect("the session opens");
+    let (decoded, allocations) = ALLOCATOR.count(|| match reader.decode(Some(&out)) {
         Ok(FromHome::Head(decoded)) => decoded,
         other => panic!("the head did not decode: {other:?}"),
     });
     assert_eq!(allocations, 0, "the head decode allocated");
     assert_eq!(decoded, head, "the head round trips");
+}
+
+fn write_head() {
+    let head = write::Head {
+        time: Time::Frame(Path::Backfill),
+        form: Form::Encoded,
+        count: 1_000,
+        series: 3,
+    };
+    let mut out = [0; write::Head::LEN];
+    let ((), allocations) = ALLOCATOR.count(|| head.encode(&mut out));
+    assert_eq!(allocations, 0, "the write head encode allocated");
+}
+
+fn write_replies() {
+    for reply in [
+        write::Reply::Outcome(Outcome::Lost {
+            range: Range { seq: 7, count: 3 },
+        }),
+        write::Reply::Outcome(Outcome::Refused(Refusal::Order)),
+        write::Reply::Stored { frames: 9 },
+    ] {
+        let mut out = vec![0; reply.encoded_len()];
+        let ((), allocations) = ALLOCATOR.count(|| reply.encode(&mut out));
+        assert_eq!(allocations, 0, "the reply encode allocated: {reply:?}");
+        let (decoded, allocations) = ALLOCATOR.count(|| write::Reply::decode(&out));
+        assert_eq!(allocations, 0, "the reply decode allocated: {reply:?}");
+        assert_eq!(decoded, Ok(reply), "the reply round trips");
+    }
 }
 
 fn credit() {
@@ -106,7 +151,7 @@ fn ends(series: u32) {
     let ((), allocations) = ALLOCATOR.count(|| ends::encode(ends, &mut run));
     assert_eq!(allocations, 0, "the encode of {series} ends allocated");
     let mut reader = reader(series);
-    let (last, allocations) = ALLOCATOR.count(|| match reader.decode(&run) {
+    let (last, allocations) = ALLOCATOR.count(|| match reader.decode(Some(&run)) {
         Ok(FromHome::Ends { ends, last: true }) => ends.last(),
         other => panic!("the ends did not decode: {other:?}"),
     });
@@ -116,7 +161,7 @@ fn ends(series: u32) {
     for (index, message) in body.chunks(body.len().div_ceil(2)).enumerate() {
         let ((at, last), allocations) = ALLOCATOR.count(|| {
             let at = reader.body();
-            match reader.decode(message) {
+            match reader.decode(Some(message)) {
                 Ok(FromHome::Body { last, .. }) => (at, last),
                 other => panic!("the body did not decode: {other:?}"),
             }
@@ -125,6 +170,138 @@ fn ends(series: u32) {
         assert_eq!(at, Some(index * body.len().div_ceil(2)), "the body moved");
         let end = at.map(|at| at + message.len());
         assert_eq!(last, end == Some(body.len()), "the body ends at {end:?}");
+    }
+}
+
+/// Each input of a frame of a warm session, after the first frame. The draft comes
+/// from the caller's pool outside the count.
+fn frames() {
+    let set = Interner::new().intern(&[Group {
+        index: channel::Key::from_u128(1),
+        data: &[(channel::Key::from_u128(2), Type::Scalar(Scalar::I64))],
+    }]);
+    let config = block::Config::new(1 << 16).expect("the budget fits");
+    let memory = block::Heap::new(config.reservation());
+    let pool = block::Pool::new(config, memory);
+    let open = Open {
+        mode: Mode::Latest,
+        channels: 2,
+    };
+    let mut frames =
+        Frames::open(Reader::new(&open), set, Some(&OPENED)).expect("opened");
+    let mut run = [0; 2 * ends::LEN];
+    ends::encode([(0, 16), (1, 32)], &mut run);
+    let body = [7; 32];
+    for round in 0..2 {
+        let mut head = [0; 18];
+        Reply::Head(Head {
+            path: Path::Live,
+            range: Range {
+                seq: 2 * round,
+                count: 2,
+            },
+            series: 2,
+        })
+        .encode(&mut head);
+        let (steps, allocations) = ALLOCATOR.count(|| {
+            let head = frames.decode(Some(&head));
+            let ends = frames.decode(Some(&run));
+            (head, ends, matches!(frames.due(), Ok(Due::Draft(_))))
+        });
+        assert!(
+            matches!(steps, (Ok(Step::Head(_)), Ok(Step::More), true)),
+            "the head and ends did not decode: {steps:?}"
+        );
+        if round == 1 {
+            assert_eq!(allocations, 0, "the head and ends of a frame allocated");
+        }
+        let Ok(Due::Draft(layout)) = frames.due() else {
+            panic!("a draft is due");
+        };
+        let draft = layout.draft(&pool, Form::Encoded).expect("a block");
+        let (step, allocations) = ALLOCATOR.count(|| {
+            let step = frames.draft(draft);
+            let Ok(Due::Body(rest)) = frames.due() else {
+                panic!("a body is due");
+            };
+            rest[..20].copy_from_slice(&body[..20]);
+            (step, frames.received(20), frames.decode(Some(&body[20..])))
+        });
+        assert_eq!(allocations, 0, "the draft and body of a frame allocated");
+        let (Step::More, Ok(Step::More), Ok(Step::Frame(frame))) = step else {
+            panic!("the body did not give a frame: {step:?}");
+        };
+        assert_eq!(frame.series(1), Some(&body[16..]), "the body round trips");
+    }
+}
+
+/// Each input of each frame of a program's write at the node, the first frame included.
+/// The draft comes from the caller's pool outside the count.
+fn write_frames() {
+    let set = KeySet::ordered(
+        [
+            (channel::Key::from_u128(1), Type::Scalar(Scalar::Stamp)),
+            (channel::Key::from_u128(2), Type::Scalar(Scalar::I64)),
+        ],
+        0,
+    )
+    .expect("no key repeats");
+    let config = block::Config::new(1 << 16).expect("the budget fits");
+    let memory = block::Heap::new(config.reservation());
+    let pool = block::Pool::new(config, memory);
+    let mut frames = write::Frames::new(Arc::new(set));
+    let mut head = [0; write::Head::LEN];
+    write::Head {
+        time: Time::Frame(Path::Live),
+        form: Form::Raw,
+        count: 2,
+        series: 2,
+    }
+    .encode(&mut head);
+    let mut run = [0; 2 * ends::LEN];
+    ends::encode([(0, 16), (1, 32)], &mut run);
+    let body = [7; 32];
+    for round in 0..2 {
+        let (steps, allocations) = ALLOCATOR.count(|| {
+            let head = frames.decode(&head);
+            let ends = frames.decode(&run);
+            let due = matches!(frames.due(), Ok(write::Due::Draft { .. }));
+            (head, ends, due)
+        });
+        assert!(
+            matches!(
+                steps,
+                (Ok(write::Step::Head(_)), Ok(write::Step::More), true)
+            ),
+            "the head and ends did not decode: {steps:?}"
+        );
+        assert_eq!(
+            allocations, 0,
+            "the head and ends of write frame {round} allocated"
+        );
+        let Ok(write::Due::Draft { layout, form }) = frames.due() else {
+            panic!("a draft is due");
+        };
+        let draft = layout.draft(&pool, form).expect("a block");
+        let (step, allocations) = ALLOCATOR.count(|| {
+            let step = frames.draft(draft);
+            let Ok(write::Due::Body(rest)) = frames.due() else {
+                panic!("a body is due");
+            };
+            rest[..20].copy_from_slice(&body[..20]);
+            (step, frames.received(20), frames.decode(&body[20..]))
+        });
+        assert_eq!(allocations, 0, "the draft and body of a write allocated");
+        let (
+            write::Step::More,
+            Ok(write::Step::More),
+            Ok(write::Step::Frame { draft, .. }),
+        ) = step
+        else {
+            panic!("the body did not give a frame: {step:?}");
+        };
+        let frame = draft.freeze(Path::Live);
+        assert_eq!(frame.series(1), Some(&body[16..]), "the body round trips");
     }
 }
 
@@ -229,7 +406,7 @@ fn blob_heads() {
 /// The cut and the encode of a run of 3 places, one place a message. Each place is
 /// formatted once at each cut that tries it and once at its encode: 8 times in all.
 fn place_messages() {
-    use wire::hub::client::{FromNode, Mode, Place, Places, Reader, place};
+    use wire::hub::client::{Mode, Place, Places, Reader, place};
 
     let places =
         [(1, "timestamp"), (2, "u8"), (3, "u8")].map(|(key, data_type)| Place {
@@ -253,16 +430,14 @@ fn place_messages() {
     let mut reader = Reader::new(Mode::Complete);
     let mut first = [0; Places::LEN];
     Places { count: 3, index: 0 }.encode(&mut first);
-    reader.decode(&first).expect("the places decode");
+    reader.decode(Some(&first)).expect("the places decode");
     let mut rest = &out[..];
-    let mut decoded = Vec::new();
+    let mut start = None;
     for len in lens {
         let (message, after) = rest.split_at(len);
-        match reader.decode(message) {
-            Ok(FromNode::Run { places, .. }) => decoded.extend(places),
-            other => panic!("a message of the run: {other:?}"),
-        }
+        start = reader.decode(Some(message)).expect("a message of the run");
         rest = after;
     }
-    assert_eq!(decoded, places, "the run round trips");
+    let start = start.expect("the last place gives the start");
+    assert_eq!(start.places, places, "the run round trips");
 }

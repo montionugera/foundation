@@ -15,7 +15,10 @@ when its PR merges, `mcp__factory__next` clears it and starts `/build` again.
 
 ## Take an issue
 
-1. `git fetch origin`. Work only in your own worktree.
+1. `git fetch origin`. Work only in your own worktree. Remove a subagent worktree only
+   by the exact path that its task notification gives, other than after a crash or a
+   restart (`docs/coordination.md`, "Worktrees"). Never loop over `.claude/worktrees` or
+   `git worktree list`: the worktrees of other sessions are there too.
 2. An open issue labeled `owner:$FACTORY_NAME` comes first: resume it from its last
    state comment. Skip one labeled `blocked` while an issue that it waits on is open or
    a question on it has no answer. When neither holds, remove `blocked` and resume it.
@@ -60,9 +63,11 @@ or a line range.
 8. `/review <pr>`. It runs the reviewers by tier and the later rounds, at most 3
    (`/review`, "Round cap"). Fix every finding of a round in one batch of commits, with
    each merge of `main` that the PR needs, then ask for the next round. After round 3,
-   fix only each defect, with a test that fails without the fix, link each approval, OK,
-   and link that "Done" asks for, and defer the rest. A design flaw is deferred only
-   with the OK of its design approver (`/review`, "Round cap").
+   fix only each defect, with a test that fails without the fix, add each input that
+   `docs/claude/testing.md`, "Fuzzing", asks for, in a commit that changes nothing else,
+   apply each `Text fixes:` item of round 3, link each approval, OK, and link that
+   "Done" asks for, and defer the rest. A design flaw is deferred only with the OK of
+   its design approver (`/review`, "Round cap").
 9. If review changed code, run the gate again. When review is done (`/review`,
    "Done"), run `gh pr ready <n>` and `gh pr merge <n> --auto`. The merge queue takes
    it when the checks pass.
@@ -96,11 +101,11 @@ crates that use a public item you changed (`-p <a> -p <b>`):
 ```sh
 cargo fmt --check
 cargo clippy -p <crates> --all-targets --all-features -- -D warnings
-cargo xtask layers && cargo xtask globals && cargo xtask oracles
+cargo xtask layers && cargo xtask globals && cargo xtask skips && cargo xtask oracles
 cargo test -p <crates> --all-features
 cargo hack check -p <crates> --each-feature --no-dev-deps
 p=$(mktemp) && git diff origin/main...HEAD > "$p"
-cargo mutants --in-diff "$p" --jobs 4
+env -u CARGO_TARGET_DIR cargo mutants --in-diff "$p" --jobs 4
 ```
 
 - Each missed mutant is a missing test. Exit 3 with an empty `mutants.out/missed.txt` is

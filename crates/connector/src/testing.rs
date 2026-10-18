@@ -1,13 +1,13 @@
 //! A rig that runs connectors on a simulated hub, the inputs of a supervisor, and the
 //! status channels of a connector, for the tests of `connector` and of the kinds.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::future::poll_fn;
 use std::path::Path;
 use std::pin::pin;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 use document::Document;
@@ -47,9 +47,9 @@ pub struct Rig {
     kinds: Arc<Table>,
     clock: Clock,
     tasks: Tasks,
-    definitions: Vec<(Name, Definition)>,
+    definitions: RefCell<Vec<(Name, Definition)>>,
     /// The first key of the status channels of the next connector.
-    next: u128,
+    next: Cell<u128>,
 }
 
 impl Rig {
@@ -68,14 +68,15 @@ impl Rig {
             clock: config.clock.clone(),
             tasks: config.tasks.clone(),
             supervisor: Supervisor::new(config),
-            definitions: Vec::new(),
-            next: STATUS,
+            definitions: RefCell::default(),
+            next: Cell::new(STATUS),
         }
     }
 
     /// The hub, for a reader or a write that the rig does not give. The rig does not
-    /// see a call of [`Hub::set_definitions`] on it, so a later [`Self::define`] sets
-    /// only the definitions that the rig holds, and the hub removes each other channel.
+    /// see a call of [`Hub::set_definitions`] on it, so a later [`Self::define`] or
+    /// [`Self::remove`] sets only the definitions that the rig holds, and the hub
+    /// removes each other channel.
     #[must_use]
     pub fn hub(&self) -> &Hub {
         &self.hub
@@ -90,9 +91,29 @@ impl Rig {
     /// or a name that an earlier call used. The rig gives the status channels of each
     /// connector that it opens the next keys from 2^64 on, as [`create_status`] orders
     /// them.
-    pub fn define(&mut self, definitions: Vec<(Name, Definition)>) {
-        self.definitions.extend(definitions);
-        let definitions = self.definitions.iter();
+    pub fn define(&self, definitions: Vec<(Name, Definition)>) {
+        self.definitions.borrow_mut().extend(definitions);
+        self.set();
+    }
+
+    /// Removes `names` from the definitions that the rig holds, and sets the rest on
+    /// the hub, so the hub drops the channels of `names`. A name that the rig does not
+    /// hold is not an error.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::define`].
+    pub fn remove(&self, names: &[Name]) {
+        let mut definitions = self.definitions.borrow_mut();
+        definitions.retain(|(name, _)| !names.contains(name));
+        drop(definitions);
+        self.set();
+    }
+
+    /// Sets each definition that the rig holds on the hub.
+    fn set(&self) {
+        let definitions = self.definitions.borrow();
+        let definitions = definitions.iter();
         self.hub
             .set_definitions(definitions.map(|(name, definition)| (name, definition)));
     }
@@ -124,7 +145,7 @@ impl Rig {
     ///
     /// As [`kind::Table::check`](Table::check) and [`Self::define`], such as a second
     /// connector of one name, and when the status reader does not open.
-    pub async fn supervise(&mut self, kind: &str, name: Name, config: Document) -> Run {
+    pub async fn supervise(&self, kind: &str, name: Name, config: Document) -> Run {
         let reader = match self.define_status(kind, &name, &config) {
             Some(select) => Some(self.status(select).await),
             None => None,
@@ -157,7 +178,7 @@ impl Rig {
     /// As [`kind::Table::check`](Table::check) and [`Self::define`], such as a second
     /// connector of one name.
     pub async fn open_connector<'a>(
-        &'a mut self,
+        &'a self,
         kind: &'a str,
         name: Name,
         config: &'a Document,
@@ -171,16 +192,16 @@ impl Rig {
     /// of the kind's check, with the rig's next keys, and gives a selector of them.
     /// Gives `None`, and defines nothing, when the check fails.
     fn define_status(
-        &mut self,
+        &self,
         kind: &str,
         name: &Name,
         config: &Document,
     ) -> Option<Selector> {
         let counts = self.kinds.check(kind, None, config).ok()?.counts;
-        let first = channel::Key::from_u128(self.next);
+        let first = channel::Key::from_u128(self.next.get());
         let status = create_status(name, &counts, first);
         let used = u128::try_from(status.len()).expect("invariant: a few channels");
-        self.next += used;
+        self.next.set(self.next.get() + used);
         let select = Selector::new(status.iter().map(|(name, _)| name.as_str()));
         self.define(status);
         Some(select.expect("invariant: names select"))
@@ -295,8 +316,8 @@ impl Drop for Run {
 const SECRETS: &str = "secrets";
 
 /// A supervisor's inputs for the tests of `connector` and the kinds: `kinds`, the
-/// seams of `env` and `net`, a hub on a new shard in `env`, and the store of
-/// [`create_secrets`] on `env.files`.
+/// seams of `env` and `net`, a hub on a new shard in `env`, the store of
+/// [`create_secrets`] on `env.files`, and no roots.
 ///
 /// # Panics
 ///
@@ -315,6 +336,7 @@ pub async fn create_config(
         clock,
         entropy,
         net,
+        roots: crate::http::Roots::default(),
         tasks,
         hub,
         secrets: create_secrets(files),
@@ -394,4 +416,125 @@ pub fn create_status(
                 (name, Definition::Channel(Channel { key, kind }))
             });
     std::iter::once(time).chain(channels).collect()
+}
+
+/// Takes the events of one target from the dispatch that [`Capture::new`] gives, each
+/// as one line `<LEVEL> <message> <key>=<value>...`, with the fields of the event's
+/// explicit parent span first and each value in `Debug`.
+#[derive(Debug)]
+pub struct Capture(Arc<Captured>);
+
+#[derive(Debug)]
+struct Captured {
+    target: &'static str,
+    /// The fields of span `n` at index `n - 1`, and the lines.
+    log: Mutex<(Vec<String>, Vec<String>)>,
+    /// A second live dispatch. With one, `tracing` caches the interest of a callsite
+    /// from the default of the thread that first reaches it, so a test with no
+    /// dispatch on another thread turns that callsite off for each capture.
+    _other: tracing::Dispatch,
+}
+
+impl Capture {
+    /// A capture of the events of `target`, and the dispatch that feeds it.
+    #[must_use]
+    pub fn new(target: &'static str) -> (Self, tracing::Dispatch) {
+        let log = Mutex::new((Vec::new(), Vec::new()));
+        let capture = Self(Arc::new(Captured {
+            target,
+            log,
+            _other: tracing::Dispatch::new(tracing::subscriber::NoSubscriber::new()),
+        }));
+        let dispatch = tracing::Dispatch::new(Arc::clone(&capture.0));
+        (capture, dispatch)
+    }
+
+    /// The lines so far, in event order.
+    ///
+    /// # Panics
+    ///
+    /// When a panic held the lock of the lines.
+    #[must_use]
+    pub fn lines(&self) -> Vec<String> {
+        self.0
+            .log
+            .lock()
+            .expect("no panic holds the lock")
+            .1
+            .clone()
+    }
+}
+
+impl tracing::Subscriber for Captured {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        let fields = fields(|visit| span.record(visit));
+        let mut log = self.log.lock().expect("no panic holds the lock");
+        log.0.push(fields);
+        let id = u64::try_from(log.0.len()).expect("invariant: a span count fits u64");
+        tracing::span::Id::from_u64(id)
+    }
+
+    fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+        let more = fields(|visit| values.record(visit));
+        let mut log = self.log.lock().expect("no panic holds the lock");
+        let fields = &mut log.0[index(span)];
+        if !more.is_empty() {
+            if !fields.is_empty() {
+                fields.push(' ');
+            }
+            fields.push_str(&more);
+        }
+    }
+
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        let metadata = event.metadata();
+        if metadata.target() != self.target {
+            return;
+        }
+        let mut message = String::new();
+        let mut rest = Vec::new();
+        event.record(
+            &mut |field: &tracing::field::Field, value: &dyn fmt::Debug| {
+                if field.name() == "message" {
+                    message = format!("{value:?}");
+                } else {
+                    rest.push(format!("{}={value:?}", field.name()));
+                }
+            },
+        );
+        let mut log = self.log.lock().expect("no panic holds the lock");
+        let mut parts = vec![metadata.level().to_string(), message];
+        if let Some(parent) = event.parent() {
+            parts.extend(Some(log.0[index(parent)].clone()).filter(|f| !f.is_empty()));
+        }
+        parts.extend(rest);
+        log.1.push(parts.join(" "));
+    }
+
+    fn enter(&self, _: &tracing::span::Id) {}
+
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// The fields that `record` gives, as `<key>=<value>...`, values in `Debug`.
+fn fields(record: impl FnOnce(&mut dyn tracing::field::Visit)) -> String {
+    let mut fields = Vec::new();
+    record(
+        &mut |field: &tracing::field::Field, value: &dyn fmt::Debug| {
+            fields.push(format!("{}={value:?}", field.name()));
+        },
+    );
+    fields.join(" ")
+}
+
+/// The index of the fields of `span` in the log of a [`Capture`].
+fn index(span: &tracing::span::Id) -> usize {
+    let id = usize::try_from(span.into_u64()).expect("invariant: a span id fits usize");
+    id - 1
 }

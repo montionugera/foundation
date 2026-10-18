@@ -57,15 +57,22 @@ After round 3, no other round runs. Each round comment numbered 3 gives each fin
 mark of its reviewer: `defect` (wrong behavior, data loss, a crash, or an oracle
 weakening), `design flaw`, or no mark. The author fixes each finding marked `defect` in
 this PR, with a test that fails without the fix, and CI checks it. A defect is never
-deferred. Each other finding of round 3 is a deferral ("Findings" step 3) on the last
-round comment (above). The deferral of a design flaw needs the explicit OK of its design
-approver. Without that OK, the author closes the PR, and the new design starts as a new
-PR at round 1. A missing approval, OK, or link that "Done" asks for is no finding to
-defer.
+deferred. Each other finding of round 3, other than a missing input that
+`docs/claude/testing.md`, "Fuzzing", asks for, is a deferral ("Findings" step 3) on the
+last round comment (above). The deferral of a design flaw needs the explicit OK of its
+design approver. Without that OK, the author closes the PR, and the new design starts as
+a new PR at round 1. A missing approval, OK, or link that "Done" asks for is no finding
+to defer.
 
 The range after round 3 holds only these:
-- merges of `main`, and the commits that fix what a merge broke;
+- merges of `main`, and the commits that fix what a merge broke (a conflict, or code, a
+  build, or a test of the PR that the merge makes fail; a rule that the merge brings in
+  and that only a review checks breaks nothing, so a finding against it is a finding of
+  round 3);
 - the fix of each defect of round 3, with its test;
+- each input that `docs/claude/testing.md`, "Fuzzing", asks for, in a commit that
+  changes nothing else, with the arm that it reaches and how the author checked it in
+  the PR body;
 - the `Text fixes:` items of round 3, applied as "Second round" step 2 says;
 - each change that an approval or OK of "Done" asks for. The PR links the comment that
   asks for it.
@@ -121,9 +128,12 @@ Launch in parallel every reviewer the PR needs:
 | --- | --- |
 | Every PR | `reviewer` |
 | A code PR: it changes a `.rs` file, a `Cargo.toml`, or `Cargo.lock` | add `architecture` and `breaker` |
-| A hot path: it changes code that runs once per sample, series, frame, or data message, or a public item that its caller on record calls at that rate, or code in a crate's `src/` that exists only for tests and benchmarks and that a benchmark runs in its timed loop (such as a counting `GlobalAlloc`), whatever its body says. A change to a bench file alone is not one. A control message whose rate does not grow with the data (raft, membership) is not one. The `Hot path:` line of the `architecture` report decides | add `performance`. It must report measured numbers for `main` and the PR, with the machine, and, for code that exists only for tests and benchmarks, for each benchmark that runs it in its timed loop. For a stub, it states what the surface makes each message and each part cost, read from the code under it, with no numbers. Run it again if it does not |
+| A hot path: it changes code that runs once per sample, series, frame, or data message, or a public item that its caller on record calls at that rate, or code in a crate's `src/` that exists only for tests and benchmarks and that a benchmark runs in its timed loop (such as a counting `GlobalAlloc`), whatever its body says. A change to a bench file alone is not one. A control message whose rate does not grow with the data (raft, membership) is not one. The `Hot path:` line of the `architecture` report decides | add `performance`. It must report measured numbers for the base of the PR and its head (`.claude/agents/performance.md`), with the machine, and, for code that exists only for tests and benchmarks, for each benchmark that runs it in its timed loop. For a stub, it states what the surface makes each message and each part cost, read from the code under it, with no numbers. Run it again if it does not |
 | A flagged oracle weakening | add one `reviewer` per weakening, told to argue for fixing the code instead |
 | A change to a file under `patches/` | give `reviewer` and `breaker` LOCAL PATCHES in `docs/decisions/releases/local-patches.md` and "Local patches" in `docs/dependencies.md` |
+
+When the `reviewer` report of a round 1 with no `architecture` agent names an item on
+its `Build or use:` line, also run `architecture` on the PR.
 
 When the PR changes a public surface or a crate's dependencies, also send its link to
 the crate's architect (`docs/factory.md`), which reviews it before the person. A public
@@ -133,9 +143,9 @@ of a crate that is not in the crate map (`fuzz`, `xtask`, `bench/*`) is not a pu
 surface: no crate depends on it. Its doc, when it states what a crate does, still
 follows the next sentence. When the PR adds or changes a decision or a public doc that
 states what a crate does, and that crate, each other crate that the text names, the
-crate whose public doc holds it, and the crates that the PR changes are not all on one
-architect's list (a folder of `docs/decisions/` is a topic, not a crate), also send it
-to `laptop.architect`, which owns each contract between the two lists
+crate whose public doc holds it, and the crates of the crate map that the PR changes are
+not all on one architect's list (a folder of `docs/decisions/` is a topic, not a crate),
+also send it to `laptop.architect`, which owns each contract between the two lists
 (`docs/factory.md`), and link its approval. When the PR changes a file in `docs/claude/`
 or another rule that `laptop.director` owns (`/direct`, "The bar"), and
 `laptop.director` is not its author, also send it to `laptop.director`, and link its
@@ -168,8 +178,10 @@ gets no push.
 
 The `reviewer`, `architecture`, and `breaker` agents each make their own worktree, so
 no two share a copy. Never give one another path: its permission check refuses every
-command outside that worktree. Remove each worktree when its agent returns
-(`git worktree remove --force <path>`).
+command outside that worktree. Remove each worktree when its agent returns, by the
+exact path that its task notification gives (`git worktree remove --force <path>`).
+Never loop over `.claude/worktrees` or `git worktree list`: the worktrees of other
+sessions are there too.
 
 ## Findings
 
@@ -181,28 +193,30 @@ command outside that worktree. Remove each worktree when its agent returns
    (`<from>..<head sha>`), and the confirmed findings, most severe first: file and line,
    what goes wrong, the fix, and in round 3 the mark of its reviewer (Round cap). It
    links each test doc that the `reviewer` report names as the reason for a hand mutant
-   (`docs/claude/testing.md`). It ends with four lines. First `Deferred:` and `none`, or
-   the issue of each deferred finding, each with the link to the architect's OK in a
-   risk crate, and to the OK of its design approver for a design flaw (Round cap), once
-   it exists. In a PR that changes a risk crate, the issue of a deferral that is not in
-   a risk crate has the words `not in a risk crate` after it. A later round keeps each
-   deferral of the round before it. Then `Later steps:` and `none`, or each later step
-   that a round, an architect review, an architect's ruling, or an issue that the PR
-   closes names, each with the link to the open issue or the decisions entry that holds
-   it ("Done"). Then `Public surface:` and `none`, or each item that
-   `.claude/agents/architecture.md` defines for that line (the `architecture` report
-   names them, and in a round with no `architecture` agent the `reviewer` report names
-   those of its range) and each rule change that Round 1 sends to `laptop.director`,
-   each with the link to its approval once it exists. An approval holds for the text at
-   the SHA that it approves: after a commit or an edit of the PR body changes the item,
-   the line gives it `approval owed` in place of the link until a new approval exists. A
-   later round keeps each item of the round before it. Then `Hot path:` as the
-   `architecture` report gives it, or, in a round with no `architecture` agent, the
-   `reviewer` report. A report that comes after its round comment goes in a new round
-   comment with the number of the round comment before it (Round cap), with its
-   findings. Its range is `<head>..<head>`, so it also runs `reviewer` and skips
-   `breaker` (Round comment). The old round adds the reviewer to its `Reviewers:` line,
-   and links the new comment after its findings.
+   (`docs/claude/testing.md`). It copies the `Revert:` line of the `reviewer` report
+   after the findings, then the `Build or use:` line of the `architecture` report, or of
+   the `reviewer` report in a round with no `architecture` agent. It ends with four
+   lines. First `Deferred:` and `none`, or the issue of each deferred finding, each with
+   the link to the architect's OK in a risk crate, and to the OK of its design approver
+   for a design flaw (Round cap), once it exists. In a PR that changes a risk crate, the
+   issue of a deferral that is not in a risk crate has the words `not in a risk crate`
+   after it. A later round keeps each deferral of the round before it. Then
+   `Later steps:` and `none`, or each later step that a round, an architect review, an
+   architect's ruling, or an issue that the PR closes names, each with the link to the
+   open issue or the decisions entry that holds it ("Done"). Then `Public surface:` and
+   `none`, or each item that `.claude/agents/architecture.md` defines for that line (the
+   `architecture` report names them, and in a round with no `architecture` agent the
+   `reviewer` report names those of its range) and each rule change that Round 1 sends
+   to `laptop.director`, each with the link to its approval once it exists. An approval
+   holds for the text at the SHA that it approves: after a commit or an edit of the PR
+   body changes the item, the line gives it `approval owed` in place of the link until a
+   new approval exists. A later round keeps each item of the round before it. Then
+   `Hot path:` as the `architecture` report gives it, or, in a round with no
+   `architecture` agent, the `reviewer` report. A report that comes after its round
+   comment goes in a new round comment with the number of the round comment before it
+   (Round cap), with its findings. Its range is `<head>..<head>`, so it also runs
+   `reviewer` and skips `breaker` (Round comment). The old round adds the reviewer to
+   its `Reviewers:` line, and links the new comment after its findings.
 3. Fix each finding in this PR, or answer it on the PR. A deferral is an issue that
    states the item, linked in the answer, also when the code is already on `main` or
    another crate does the work. Before round 3 (Round cap), a finding whose fix is a
@@ -266,6 +280,10 @@ Findings: <count, or none>
 <the findings, most severe first; in round 3, each with its mark: `defect`,
 `design flaw`, or no mark>
 
+Revert: <the `Revert:` line of the `reviewer` report>
+Build or use: <the `Build or use:` line of the `architecture` report, or of the
+`reviewer` report>
+
 Text fixes:
 <each item and its exact new text, or a Low item's place and problem; leave out this
 line and its items when none>
@@ -312,42 +330,49 @@ nothing checked again. So when round 1 led to fix commits:
    `architecture` when the range adds, changes, or removes a file under
    `docs/decisions/`, or, in a `.rs` file under `crates/*/src/`, a public item, a
    variant of a public enum, a `//!` line, or a line of the doc comment of a public item
-   or variant. Only a range in which the check counts no code change (Round comment)
-   skips `breaker`, and its round comment says so. The `reviewer` also gets each answer
-   that changed no code, and checks it (`.claude/agents/reviewer.md`). The round comment
-   puts each deferral that its report names on its `Deferred:` line. Its report gives
-   the `Public surface:` and `Hot path:` lines for the range. The round comment adds
-   each item of the first to its own `Public surface:` line, and copies the second. When
-   the `Hot path:` line names a function, run `performance` again on the range, and
-   update the Performance section with its numbers.
+   or variant, or when the `Build or use:` line of the `reviewer` report names an item.
+   Only a range in which the check counts no code change (Round comment) skips
+   `breaker`, and its round comment says so. The `reviewer` also gets each answer that
+   changed no code, and checks it (`.claude/agents/reviewer.md`). The round comment puts
+   each deferral that its report names on its `Deferred:` line. Its report gives the
+   `Public surface:`, `Hot path:`, and `Build or use:` lines for the range. The round
+   comment adds each item of the first to its own `Public surface:` line, copies the
+   second, and copies the third after its findings. When the `Hot path:` line names a
+   function, run `performance` again on the functions that the range changes, at the
+   head against the base of the PR, and update the Performance section with its numbers.
+   A run against an earlier commit of the PR shows where a cost came from, and is no
+   finding.
 2. Handle their findings as above. A round that has a finding gets another round, up to
-   round 3 (Round cap). A finding in text only (a `.md` file, a `.rs` comment line that,
-   trimmed, starts with `//` and is not a doctest line, the PR title or body, an end
-   line of a round comment, or the text with which the author states a later step of the
-   PR or a deferral that is not in a risk crate, other than a test in it) is not counted
-   when the `reviewer` gives its fix as the exact new text, at any severity, or when it
-   is Low: the round comment lists it under a line `Text fixes:` after its findings. A
-   Low finding is a problem of a citation (a link, a SHA, a time, an issue number, a
-   name) or of that text of a deferral or a later step, and its fix makes no sentence
-   state another thing about what the code, a test, a decision, a ruling, or a contract
-   does. A problem of wording that leaves each statement true is no finding
-   (`.claude/agents/reviewer.md`). Each other finding
-   is Medium or higher. A missing or stale link to an approval, an OK, or a ruling that
-   Round 1, "Findings" step 3, or "Done" asks for is no Low finding. That text of a
-   deferral or a later step is the body of the issue that the author files for it, or
-   the author's comment on an existing issue, never text that another session wrote. A
-   test in it is the code of the test, and each sentence that states what the test
-   asserts or what must pass. A finding in that body or comment is no `Text fixes:` item
-   when the body or comment states a deferral in a risk crate, also when it states a
-   later step or another deferral. An item that is not Low and that gives only facts and
-   links or asks the author to find a fact, and an item that asks the author to give a
-   reason, is a finding. The author applies each item as given, and a Low item with no
-   new text as it states, by a commit that changes no code (Round comment), in the PR
-   title or body, in that text of a deferral or a later step, or by an edit of the round
-   comment that holds the line and in the same line of the `Text fixes:` round. That
-   needs no further round, and the `reviewer` of the next round, when one runs, checks
-   it where the author applied it. An item still needs each approval that its file needs
-   (Round 1, `docs/factory.md`).
+   round 3 (Round cap). A finding in text only is not counted when the `reviewer` gives
+   its fix as the exact new text, at any severity, or when it is Low: the round comment
+   lists it under a line `Text fixes:` after its findings.
+   - Text only: a `.md` file, a `.rs` comment line that, trimmed, starts with `//` and
+     is not a doctest line, the PR title or body, an end line of a round comment, or the
+     text with which the author states a later step of the PR or a deferral that is not
+     in a risk crate, other than a test in it. That text of a deferral or a later step
+     is the body of the issue that the author files for it, or the author's comment on
+     an existing issue, never text that another session wrote. A test in it is the code
+     of the test, and each sentence that states what the test asserts or what must pass.
+     A finding in that body or comment is no `Text fixes:` item when the body or comment
+     states a deferral in a risk crate, also when it states a later step or another
+     deferral.
+   - Low: a problem of a citation (a link, a SHA, a time, an issue number, a name) or of
+     that text of a deferral or a later step, and its fix makes no sentence state
+     another thing about what the code, a test, a decision, a ruling, or a contract
+     does. Each other finding is Medium or higher. A missing or stale link to an
+     approval, an OK, or a ruling that Round 1, "Findings" step 3, or "Done" asks for is
+     no Low finding.
+   - No finding: a problem of wording that leaves each statement true
+     (`.claude/agents/reviewer.md`).
+   - A finding: an item that is not Low and that gives only facts and links or asks the
+     author to find a fact, and an item that asks the author to give a reason.
+   - How the author applies an item: as given, and a Low item with no new text as it
+     states, by a commit that changes no code (Round comment), in the PR title or body,
+     in that text of a deferral or a later step, or by an edit of the round comment that
+     holds the line and in the same line of the `Text fixes:` round. That needs no
+     further round, and the `reviewer` of the next round, when one runs, checks it where
+     the author applied it. An item still needs each approval that its file needs (Round
+     1, `docs/factory.md`).
 
 After round 1, bring in `main` with a merge, never a rebase. A rebase moves the reviewed
 commits and the fix commits out of every round range. A clean merge needs no round: its
@@ -364,14 +389,14 @@ Review is done when the last round finds nothing (Round cap), and its last round
 ends at the PR head, or at a commit from which only clean merges of `main` and commits
 that only apply its `Text fixes:` items reach the head, each item applied as "Second
 round" step 2 says, each round comment names each reviewer its round requires (the first
-round comment of the PR: the table; a later round comment, whatever its number:
-`reviewer`, `breaker` unless the check counts no code change in its range,
-`architecture` when "Second round" step 1 asks for it, and `performance` with new
-numbers when its `Hot path:` line names a function), the `Deferred:` line of the last
-round comment lists each deferral of every round, each with the link to the OK of its
-architect in a risk crate, the `Public surface:` line of the
-last round comment links the approval of each item, at a SHA after which no commit
-changes the item's surface or the meaning of a ruling
+round comment of the PR: the table, and `architecture` when the paragraph after the
+table asks for it; a later round comment, whatever its number: `reviewer`, `breaker`
+unless the check counts no code change in its range, `architecture` when "Second round"
+step 1 asks for it, and `performance` with new numbers when its `Hot path:` line names a
+function), the `Deferred:` line of the last round comment lists each deferral of every
+round, each with the link to the OK of its architect in a risk crate, the
+`Public surface:` line of the last round comment links the approval of each item, at a
+SHA after which no commit changes the item's surface or the meaning of a ruling
 (`.claude/skills/architect/SKILL.md`, "Review before the person" step 3) and no edit of
 the PR body changes the approved text in the body, each run that Round 1 asks for (an OS
 that CI does not run, a `build.rs` that compiles C or C++) is linked on the PR, at a

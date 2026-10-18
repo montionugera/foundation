@@ -51,7 +51,8 @@ disallowed-methods = [
   { path = "clock::source::Wall::measure", reason = "read mesh time from clock" },
   { path = "clock::log::Reader::now", reason = "only the log of node reads it" },
   # rustls: its default provider is a process global and its default time the OS
-  # clock. `transport::tls` builds every config, with `builder_with_details`.
+  # clock. `transport::tls` and `connector::http` build every config, with
+  # `builder_with_details`.
   { path = "rustls::ClientConfig::builder", reason = "use tls" },
   { path = "rustls::ServerConfig::builder", reason = "use tls" },
   { path = "rustls::ClientConfig::builder_with_protocol_versions", reason = "use tls" },
@@ -82,6 +83,12 @@ disallowed-methods = [
   # and thread gets the log of its node from `env`.
   { path = "tracing::dispatcher::set_global_default", reason = "no mutable globals" },
   { path = "tracing::subscriber::set_global_default", reason = "no mutable globals" },
+  { path = "tracing_subscriber::util::SubscriberInitExt::init", reason = "no mutable globals" },
+  { path = "tracing_subscriber::util::SubscriberInitExt::try_init", reason = "no mutable globals" },
+  { path = "tracing_subscriber::fmt::init", reason = "no mutable globals" },
+  { path = "tracing_subscriber::fmt::try_init", reason = "no mutable globals" },
+  { path = "tracing_subscriber::fmt::SubscriberBuilder::init", reason = "no mutable globals" },
+  { path = "tracing_subscriber::fmt::SubscriberBuilder::try_init", reason = "no mutable globals" },
 ]
 disallowed-types = [
   { path = "std::collections::HashMap", reason = "use types::hash::Map" },

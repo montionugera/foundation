@@ -35,6 +35,7 @@ fn node(id: u8, term: u64, voters: Voters, entries: Vec<Entry>, applied: u64) ->
         key: key(id),
         election_ticks: 10,
         heartbeat_ticks: 1,
+        fits: |_| true,
     };
     let start = Start {
         hard: Hard {

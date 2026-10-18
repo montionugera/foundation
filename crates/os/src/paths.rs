@@ -1,15 +1,20 @@
 //! The files of the host by the paths that a user gave.
 
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
 
 use env::entropy::Driver as _;
-use env::paths::{Error, Found, names_directory};
+use env::paths::{Entry, Error, Found, Key, Kind, names_directory};
 use rustix::io::Errno;
 
-use crate::{dir, entropy};
+use crate::{dir, entropy, host};
+
+/// The longest path that the host takes, with its end NUL.
+const PATH_MAX: usize = libc::PATH_MAX.unsigned_abs() as usize;
 
 #[derive(Debug)]
 pub(crate) struct Driver;
@@ -22,40 +27,91 @@ impl env::paths::Driver for Driver {
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
         write(path, bytes).map_err(|e| error(&e))
     }
+
+    fn make_dir(&self, path: &Path) -> Result<(), Error> {
+        make_dir(path).map_err(|e| error(&e))
+    }
+
+    fn home(&self) -> Option<PathBuf> {
+        std::env::home_dir()
+    }
+
+    fn entry(&self, path: &Path) -> Result<Entry, Error> {
+        entry(path).map_err(|e| error(&e))
+    }
+
+    fn absolute(&self, path: &Path) -> Result<PathBuf, Error> {
+        // The walk takes a step for each name, so this bounds its work.
+        if path.as_os_str().len() >= PATH_MAX {
+            return Err(Error::Io {
+                code: Errno::NAMETOOLONG.raw_os_error(),
+            });
+        }
+        std::path::absolute(path).map_err(|e| error(&e))
+    }
+
+    fn looped(&self) -> Error {
+        Error::Io {
+            code: Errno::LOOP.raw_os_error(),
+        }
+    }
+}
+
+fn entry(path: &Path) -> io::Result<Entry> {
+    let file = fs::symlink_metadata(path)?;
+    let key = Key::new(file.dev(), file.ino());
+    Ok(if file.is_symlink() {
+        Entry::Link(key, fs::read_link(path)?)
+    } else if file.is_dir() {
+        Entry::Directory(key)
+    } else {
+        Entry::File(key)
+    })
 }
 
 fn read(path: &Path, most: usize) -> io::Result<Found> {
-    #[expect(clippy::disallowed_methods, reason = "os reads the user's files")]
-    let file = File::open(path)?;
-    if file.metadata()?.is_dir() {
-        let (mut entries, mut size) = (Vec::new(), 0_usize);
-        for name in dir::names(file)? {
-            let entry = path.join(name?);
-            size = size.saturating_add(entry.as_os_str().len());
-            if size > most {
-                return Ok(Found::Large);
-            }
-            entries.push(entry);
+    let file = match host::open(path)? {
+        // macOS 15 opens the file of a link at a path that ends in `/`.
+        host::Readable::Regular(..) if names_directory(path) => {
+            return Err(Errno::NOTDIR.into());
         }
-        entries.sort_unstable();
-        return Ok(Found::Directory(entries));
-    }
+        host::Readable::Regular(file, _) => file,
+        host::Readable::Directory(dir) => {
+            let (mut entries, mut size) = (Vec::new(), 0_usize);
+            for name in dir::names(dir)? {
+                let entry = path.join(name?);
+                size = size.saturating_add(entry.as_os_str().len());
+                if size > most {
+                    return Ok(Found::Large(Kind::Directory));
+                }
+                entries.push(entry);
+            }
+            entries.sort_unstable();
+            return Ok(Found::Directory(entries));
+        }
+    };
     let over = u64::try_from(most).map_or(u64::MAX, |most| most.saturating_add(1));
     let mut bytes = Vec::new();
-    file.take(over).read_to_end(&mut bytes)?;
+    File::from(file).take(over).read_to_end(&mut bytes)?;
     if bytes.len() > most {
-        return Ok(Found::Large);
+        return Ok(Found::Large(Kind::File));
     }
     Ok(Found::File(bytes))
 }
 
 fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     // `Path` drops an end in `/` or `.`, and takes a name after an end in `..`, so the
-    // hidden file would go beside that directory or in it. The stat does not stop
-    // this: the directory can come after it. Such a path resolves only to a
-    // directory, so the open fails.
+    // hidden file would go beside that directory or in it. Such a path names only a
+    // directory, which takes no write. No open: macOS 15 opens the file of a link at
+    // a path that ends in `/`.
     if names_directory(path) {
-        return in_place(path, bytes);
+        let found = fs::metadata(path)?;
+        let code = if found.is_dir() {
+            Errno::ISDIR
+        } else {
+            Errno::NOTDIR
+        };
+        return Err(code.into());
     }
     match fs::symlink_metadata(path) {
         Ok(old) if old.is_file() => {}
@@ -70,6 +126,19 @@ fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     fill(open(&new)?, bytes)
         .and_then(|()| fs::rename(&new, path))
         .or_else(|e| fs::remove_file(&new).and(Err(e)))
+}
+
+/// Makes a directory at `path` as [`dir::make`] does.
+fn make_dir(path: &Path) -> io::Result<()> {
+    // macOS makes the target of a link to nothing at a path that ends in `/`, and
+    // Linux gives `EEXIST`.
+    let bytes = path.as_os_str().as_bytes();
+    let end = bytes
+        .iter()
+        .rposition(|&byte| byte != b'/')
+        .map_or(1, |at| at + 1);
+    let path = Path::new(OsStr::from_bytes(bytes.get(..end).unwrap_or(bytes)));
+    dir::make(rustix::fs::CWD, path).map_err(io::Error::from)
 }
 
 /// Makes a file at `path` whose permission bits give only this user access.

@@ -405,6 +405,54 @@ fn refuses_an_unsigned_integer_and_stores_no_field_of_its_line() {
 }
 
 #[test]
+fn stores_an_unsigned_integer_when_made_unsigned() {
+    let mut store = Store::unsigned();
+    let max = format!("m u={}u 10\n", u64::MAX);
+    store.write(max.as_bytes()).unwrap();
+    store.write(b"m u=0u 20\n").unwrap();
+    let fields: Vec<_> = (store.points("m", &[]))
+        .map(|point| owned(point.fields))
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            BTreeMap::from([("u".into(), Field::Unsigned(u64::MAX))]),
+            BTreeMap::from([("u".into(), Field::Unsigned(0))]),
+        ]
+    );
+}
+
+#[test]
+fn refuses_a_signed_integer_in_an_unsigned_column_and_the_reverse() {
+    let mut store = Store::unsigned();
+    let error = store.write(b"m u=3u 10\nm u=3i 20\nm i=1i 30\nm i=1u 40\n");
+    assert_eq!(
+        error,
+        Err(Error::Conflict {
+            line: "m u=3i 20".into(),
+            key: "u".into(),
+            stored: Kind::Unsigned,
+            written: Kind::Integer,
+        })
+    );
+    assert_eq!(
+        error.unwrap_err().to_string(),
+        "the line \"m u=3i 20\" writes the unsigned column \"u\" as integer"
+    );
+    let error = store.write(b"m i=1u 50\n").unwrap_err();
+    assert_eq!(
+        error,
+        Error::Conflict {
+            line: "m i=1u 50".into(),
+            key: "i".into(),
+            stored: Kind::Integer,
+            written: Kind::Unsigned,
+        }
+    );
+    assert_eq!(times(&store, "m", &[]), [10, 30]);
+}
+
+#[test]
 fn refuses_a_field_of_another_type_and_stores_no_field_of_its_line() {
     let (store, error) =
         refused("m v=1 10\nm w=1i,v=1i 20\nm w=t 30\nm v=2 40\nn v=1i 50\n");
@@ -476,11 +524,12 @@ fn names_each_kind() {
         Field::Integer(0),
         Field::Boolean(false),
         Field::String(String::new()),
+        Field::Unsigned(0),
     ]
     .iter()
     .map(|field| field.kind().to_string())
     .collect();
-    assert_eq!(names, ["float", "integer", "boolean", "string"]);
+    assert_eq!(names, ["float", "integer", "boolean", "string", "unsigned"]);
     assert_eq!(Kind::Tag.to_string(), "tag");
 }
 
@@ -511,6 +560,7 @@ fn value() -> impl Strategy<Value = Value> {
             .prop_map(Value::Float),
         any::<i64>().prop_map(Value::Integer),
         any::<bool>().prop_map(Value::Boolean),
+        any::<u64>().prop_map(Value::Unsigned),
     ]
 }
 
@@ -519,6 +569,7 @@ fn field(value: Value) -> Field {
         Value::Float(float) => Field::Float(float.get()),
         Value::Integer(integer) => Field::Integer(integer),
         Value::Boolean(boolean) => Field::Boolean(boolean),
+        Value::Unsigned(unsigned) => Field::Unsigned(unsigned),
     }
 }
 
@@ -550,7 +601,7 @@ proptest! {
         let mut out = Vec::new();
         let wrote = line.line(&mut out, values, Stamp::from_nanos(time));
         prop_assert_eq!(wrote, fields.len());
-        let mut store = Store::default();
+        let mut store = Store::unsigned();
         store.write(&out).unwrap();
         let fields: Vec<(&str, Field)> =
             fields.iter().map(|&(key, value)| (key, field(value))).collect();
@@ -580,7 +631,7 @@ fn run() -> impl Strategy<Value = Run> {
         1..4_i64,
         1..6_000_i64,
         prop_oneof![Just(None), Just(Some("a")), Just(Some("b"))],
-        1..16_u8,
+        1..32_u8,
     )
         .prop_map(|(start, step, count, tag, fields)| Run {
             start,
@@ -603,6 +654,7 @@ fn fields_of(run: usize, time: i64, mask: u8) -> Vec<(&'static str, Field)> {
         ),
         ("i", Field::Integer(time * 10 + run)),
         ("s", Field::String(format!("r{run}"))),
+        ("u", Field::Unsigned(u64::try_from(time).unwrap())),
     ]
     .into_iter()
     .enumerate()
@@ -617,6 +669,7 @@ fn text(field: &Field) -> String {
         Field::Float(value) => format!("{value:?}"),
         Field::Integer(value) => format!("{value}i"),
         Field::String(value) => format!("{value:?}"),
+        Field::Unsigned(value) => format!("{value}u"),
     }
 }
 
@@ -628,7 +681,7 @@ proptest! {
         runs in proptest::collection::vec(run(), 1..6),
     ) {
         type Model = BTreeMap<(Stamp, Tags), BTreeMap<String, Field>>;
-        let mut store = Store::default();
+        let mut store = Store::unsigned();
         let mut model = Model::new();
         for (at, run) in runs.iter().enumerate() {
             let mut body = String::new();

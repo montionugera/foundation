@@ -107,13 +107,6 @@ impl Kind for Large {
         Ok(Channels::default())
     }
 
-    fn discover(
-        &self,
-        _: &Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     fn run(&self, ctx: Context<()>) -> impl Future<Output = Result<(), Error>> {
         let run = self.runs.fetch_add(1, Relaxed);
         self.peaks[run].fetch_max(ALLOCATOR.held(), Relaxed);
@@ -212,7 +205,7 @@ fn held(last: Last, pool: Pool) -> usize {
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("large", kind);
-        let mut rig = Rig::open(env, node.net(), kinds).await;
+        let rig = Rig::open(env, node.net(), kinds).await;
         let connector: Name = "plant.large".parse().expect("a valid name");
         if let Pool::Full = pool {
             tasks.spawn(hog(rig.hub().clone(), clock.clone(), Arc::clone(&runs)));

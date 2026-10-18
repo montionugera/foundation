@@ -1,10 +1,11 @@
 //! `wire::hub::Reader` never panics, each event encodes to its message and comes in the
 //! order of a session, each head is live, ends at or below `u64::MAX`, and starts at or
-//! after the end of the head before it, each refusal is one that the order, the mode,
-//! or the heads before it give, the body
-//! starts after the ends run and ends at its last end, the stream may end only after
-//! `Behind`, and each valid message that the home writes reads back. A latest and a
-//! complete session each read the input.
+//! after the end of the head before it or, for the first head, the open position of
+//! `Opened`, each refusal is one that the order or the heads before it give,
+//! the body starts after the ends run and ends at its last end, a reply of the retired
+//! kind 3 gives `Error::Kind`, each finish of the stream gives the error of its point,
+//! and each valid message that the home writes reads back. A latest and a complete
+//! session each read the input.
 //!
 //! Input: one byte, the places of the session less 1, then the messages from the home
 //! (`fuzz::messages`).
@@ -34,8 +35,6 @@ enum Next {
         end: usize,
         remain: usize,
     },
-    /// The home sent `Behind`, and no message may follow.
-    Ended,
 }
 
 /// A complete session's mode.
@@ -50,19 +49,20 @@ fn reader(places: u32, mode: Mode) -> Reader {
 }
 
 /// The reply in `message`, read where its kind is in order: an opened by a reader that
-/// decoded nothing, and a head or a behind by a complete reader that has a place for
-/// each series and took no head. A head that it refuses for its path reads from its
+/// decoded nothing, and a head by a complete reader that has a place for each series
+/// and took no head. A head that it refuses for its path reads from its
 /// bytes.
 fn reply(message: &[u8]) -> Result<Reply, Error> {
-    if let Ok(FromHome::Opened) = reader(u32::MAX, COMPLETE).decode(message) {
-        return Ok(Reply::Opened);
+    if let Ok(FromHome::Opened { live }) =
+        reader(u32::MAX, COMPLETE).decode(Some(message))
+    {
+        return Ok(Reply::Opened { live });
     }
-    match opened(u32::MAX).decode(message) {
+    match opened(u32::MAX).decode(Some(message)) {
         Ok(FromHome::Head(head)) => Ok(Reply::Head(head)),
-        Ok(FromHome::Behind) => Ok(Reply::Behind),
         Err(Error::Backfill) => Ok(Reply::Head(head(message))),
         Err(error) => Err(error),
-        Ok(event) => panic!("{event:?} came where only a head or a behind is in order"),
+        Ok(event) => panic!("{event:?} came where only a head is in order"),
     }
 }
 
@@ -87,7 +87,8 @@ fn head(message: &[u8]) -> Head {
 }
 
 /// The refusal of `head` by a session of `places` places whose last head ended at
-/// `end`, or `None` when the session takes it.
+/// `end`, or that opened at `end` and took no head, or `None` when the session takes
+/// it.
 fn refusal(head: Head, places: u32, end: u64) -> Option<Error> {
     let seq = head.range.seq;
     if head.series > places {
@@ -124,33 +125,22 @@ fn malformed(error: &Error) -> bool {
     )
 }
 
-/// Whether a reader of `places` places in `mode` that must take `next`, and whose last
-/// head ended at `end`, refuses `message` with `error`. Only one error is correct.
-fn refused(
-    next: Next,
-    places: u32,
-    mode: Mode,
-    end: u64,
-    message: &[u8],
-    error: &Error,
-) -> bool {
+/// Whether a reader of `places` places that must take `next`, and whose last head ended
+/// at `end`, or that opened at `end` and took no head, refuses `message` with `error`.
+/// Only one error is correct.
+fn refused(next: Next, places: u32, end: u64, message: &[u8], error: &Error) -> bool {
     let len = message.len();
     match next {
         Next::Opened => match reply(message) {
-            Ok(Reply::Opened) => false,
+            Ok(Reply::Opened { .. }) => false,
             Ok(reply) => *error == Error::Unopened { kind: kind(reply) },
             Err(other) => malformed(&other) && *error == other,
         },
         Next::Head => match reply(message) {
-            Ok(Reply::Opened) => {
-                let kind = kind(Reply::Opened);
-                *error == Error::Reopen { kind }
+            Ok(reply @ Reply::Opened { .. }) => {
+                *error == Error::Reopen { kind: kind(reply) }
             }
             Ok(Reply::Head(head)) => refusal(head, places, end).as_ref() == Some(error),
-            Ok(Reply::Behind) => {
-                let kind = kind(Reply::Behind);
-                mode == Mode::Latest && *error == Error::Latest { kind }
-            }
             Err(other) => malformed(&other) && *error == other,
         },
         Next::Ends(run) => run.refused(message, error),
@@ -158,14 +148,13 @@ fn refused(
         Next::Body { remain, .. } => {
             len > remain && *error == Error::Body { len, remain }
         }
-        Next::Ended => *error == Error::Ended,
     }
 }
 
 /// Each event of the session in `bytes` must encode to its message and come in the
-/// order of a session, each refusal must be the one that the order or the mode gives,
-/// the body must be where [`Reader::body`] says, and [`Reader::end`] must refuse each
-/// point before `Behind`.
+/// order of a session, each refusal must be the one that the order or the heads give,
+/// the body must be where [`Reader::body`] says, and [`Reader::decode`] of `None` must
+/// give the error of each point and leave the reader as it was.
 fn read(bytes: &[u8]) {
     let [places, rest @ ..] = bytes else {
         return;
@@ -182,9 +171,17 @@ fn read_session(places: u32, mode: Mode, rest: &[u8]) {
     let mut next = Next::Opened;
     let mut end = 0;
     for message in fuzz::messages(rest) {
-        next = match (next, reader.decode(message)) {
-            (Next::Opened, Ok(FromHome::Opened)) => {
-                assert_eq!(message, [kind(Reply::Opened)], "the opened changed");
+        let decoded = reader.decode(Some(message));
+        if matches!(next, Next::Opened | Next::Head) && message.first() == Some(&3) {
+            let refused = matches!(decoded, Err(Error::Kind { kind: 3 }));
+            assert!(refused, "the retired kind 3 gave {decoded:?}");
+        }
+        next = match (next, decoded) {
+            (Next::Opened, Ok(FromHome::Opened { live })) => {
+                let mut out = vec![0; Reply::Opened { live }.encoded_len()];
+                Reply::Opened { live }.encode(&mut out);
+                assert_eq!(out, message, "the opened changed");
+                end = live;
                 Next::Head
             }
             (Next::Head, Ok(FromHome::Head(head))) => {
@@ -198,11 +195,6 @@ fn read_session(places: u32, mode: Mode, rest: &[u8]) {
                 );
                 end = head.range.seq + u64::from(head.range.count);
                 Next::Ends(Run::new(ends::LEN, head.series))
-            }
-            (Next::Head, Ok(FromHome::Behind)) => {
-                assert_eq!(message, [kind(Reply::Behind)], "the behind changed");
-                assert_eq!(mode, COMPLETE, "a latest session took a behind");
-                Next::Ended
             }
             (Next::Ends(run), Ok(FromHome::Ends { ends, last })) => {
                 let ends: Vec<_> = ends.collect();
@@ -235,7 +227,7 @@ fn read_session(places: u32, mode: Mode, rest: &[u8]) {
             }
             (next, Err(error)) => {
                 assert!(
-                    refused(next, places, mode, end, message, &error),
+                    refused(next, places, end, message, &error),
                     "{error:?} is not the refusal of {message:?} for {next:?}"
                 );
                 next
@@ -247,22 +239,25 @@ fn read_session(places: u32, mode: Mode, rest: &[u8]) {
             _ => None,
         };
         assert_eq!(reader.body(), body, "the body is not where it should be");
-        let end = match next {
-            Next::Ended => Ok(()),
-            Next::Body { remain, .. } => Err(Error::Unfinished { remain }),
-            Next::Opened | Next::Head | Next::Ends(_) => Err(Error::Finished),
+        let finished = match next {
+            Next::Body { remain, .. } => Error::Unfinished { remain },
+            Next::Opened | Next::Head | Next::Ends(_) => Error::Finished,
         };
-        assert_eq!(reader.end(), end, "the stream may not end here");
+        assert_eq!(
+            reader.decode(None).err(),
+            Some(finished),
+            "the finish gave another error"
+        );
     }
 }
 
-/// A complete reader of `places` places that decoded the home's `Opened`.
+/// A complete reader of `places` places that decoded the home's `Opened` at seq 0.
 fn opened(places: u32) -> Reader {
     let mut reader = reader(places, COMPLETE);
-    let mut out = vec![0; Reply::Opened.encoded_len()];
-    Reply::Opened.encode(&mut out);
-    match reader.decode(&out) {
-        Ok(FromHome::Opened) => reader,
+    let mut out = vec![0; Reply::Opened { live: 0 }.encoded_len()];
+    Reply::Opened { live: 0 }.encode(&mut out);
+    match reader.decode(Some(&out)) {
+        Ok(FromHome::Opened { live: 0 }) => reader,
         other => panic!("an opened did not read back: {other:?}"),
     }
 }
@@ -277,13 +272,6 @@ fn write(input: &mut Unstructured) -> arbitrary::Result<()> {
         seq: seq.min(u64::MAX - u64::from(count)),
         count,
     };
-    let mut out = vec![0; Reply::Behind.encoded_len()];
-    Reply::Behind.encode(&mut out);
-    match opened(1).decode(&out) {
-        Ok(FromHome::Behind) => {}
-        other => panic!("a behind did not read back: {other:?}"),
-    }
-
     let series = input.arbitrary::<u32>()?.max(1);
     let head = Head {
         path: Path::Live,
@@ -292,7 +280,7 @@ fn write(input: &mut Unstructured) -> arbitrary::Result<()> {
     };
     let mut out = vec![0; Reply::Head(head).encoded_len()];
     Reply::Head(head).encode(&mut out);
-    match opened(series).decode(&out) {
+    match opened(series).decode(Some(&out)) {
         Ok(FromHome::Head(decoded)) => assert_eq!(decoded, head, "the head changed"),
         other => panic!("a head did not read back: {other:?}"),
     }
@@ -305,18 +293,28 @@ fn write(input: &mut Unstructured) -> arbitrary::Result<()> {
     });
     let mut out = vec![0; head.encoded_len()];
     head.encode(&mut out);
-    let mut reader = opened(series);
-    reader.decode(&out).expect("the head decodes");
+    let mut decoder = opened(series);
+    decoder.decode(Some(&out)).expect("the head decodes");
     let written = (0..series)
         .map(|_| input.arbitrary::<(u32, u32)>())
         .collect::<arbitrary::Result<Vec<_>>>()?;
     let mut out = vec![0; written.len() * ends::LEN];
     ends::encode(written.iter().copied(), &mut out);
-    match reader.decode(&out) {
+    match decoder.decode(Some(&out)) {
         Ok(FromHome::Ends { ends, last: true }) => {
             assert_eq!(ends.collect::<Vec<_>>(), written, "the ends changed");
         }
         other => panic!("the ends did not read back: {other:?}"),
+    }
+
+    let live: u64 = input.arbitrary()?;
+    let mut out = vec![0; Reply::Opened { live }.encoded_len()];
+    Reply::Opened { live }.encode(&mut out);
+    match reader(1, COMPLETE).decode(Some(&out)) {
+        Ok(FromHome::Opened { live: read }) => {
+            assert_eq!(read, live, "the opened changed")
+        }
+        other => panic!("an opened did not read back: {other:?}"),
     }
     Ok(())
 }

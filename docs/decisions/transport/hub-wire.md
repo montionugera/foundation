@@ -79,11 +79,11 @@
   the start of its series is not valid; `types` refuses it, as `frame::check` does. The
   padding may hold any bytes (FRAME LAYOUT). Each direction has its own messages: the
   reader sends `Open`, then `Credit`; the home sends a `Reply`, `Opened`, `Head`, or
-  `Behind`. The home sends `Behind` after the last frame before a miss of the session,
-  then finishes its stream. The reader's `next` gives each frame before it, then
-  `Ended::Behind`. `hub` builds both in #340 PR 4. A message after `Behind` is not
-  valid (lost: a stop code, which can cut off the frames sent before it; the architect,
-  2026-10-07T21:07:50Z,
+  `Behind`. The home sends `Behind` after the last frame before the first frame of the
+  session that the buffer lost, then finishes its stream. The reader's `next` gives each
+  frame before it, then `Ended::Behind`. `hub` builds both in #340 PR 4. A message after
+  `Behind` is not valid (lost: a stop code, which can cut off the frames sent before it;
+  the architect, 2026-10-07T21:07:50Z,
   https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6046877541).
   `Behind` and `Credit` in a latest session are not valid (lost: accept them in either
   mode, which lets a remote latest reader give `Ended::Behind`; the architect,
@@ -175,9 +175,9 @@
   (https://github.com/synnaxlabs/foundation/issues/1068#issuecomment-6031655359). The
   byte form, little-endian: `Open` is kind 1 (latest) or 2 (complete, then `limit_bytes`
   `u64`), then `channels` `u32`; `Credit` is kind 3, then `limit_bytes` `u64`; `Reply`
-  is kind 1 (opened), 2 (head: path `u8`, live 0 and backfill 1, seq `u64`, count
-  `u32`, series `u32`), or 3 (behind, no fields, by the Behind rule: the architect,
-  2026-10-07T21:07:50Z,
+  is kind 1 (opened, then `live` `u64`), 2 (head: path `u8`, live 0 and backfill 1,
+  seq `u64`, count `u32`, series `u32`), or 3 (behind, no fields, by the Behind rule:
+  the architect, 2026-10-07T21:07:50Z,
   https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6046877541); a key is
   a `u128`; an end is place and end, each `u32`. Amended (2026-10-07, #1196): the
   message order, the runs, and the head bound move from `hub` to two stateful decoders
@@ -241,3 +241,124 @@
   home's receive half resets with code 0, not the refusal code, until #2031
   (`laptop.architect`, 2026-10-08T23:49:49Z:
   https://github.com/synnaxlabs/foundation/pull/2003#issuecomment-6071319399).
+  Amended (#2553): `Opened` carries `live`, the open position of the session: the
+  first live seq of the index that it can get, in each mode, with no sentinel
+  (`laptop.architect`, 2026-10-15T20:18:28Z:
+  https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6201432448).
+  A latest session opens at the first seq of the newest frame of the index, or at the
+  live tail when there is none (`laptop.architect`, 2026-10-15T22:10:13Z:
+  https://github.com/synnaxlabs/foundation/pull/2765#issuecomment-6203316949). The home
+  reads that seq from the one range of the frame that `delivery::Readers::newest`
+  gives, and keeps no copy of it (`laptop.architect`, 2026-10-15T23:09:09Z:
+  https://github.com/synnaxlabs/foundation/pull/2765#issuecomment-6204168857).
+  `wire::hub::Reader` refuses a first head that starts before `live` with `Seq`, in each
+  mode, as it refuses a head that starts before the end of the head before it. Lost: the
+  live tail as the open position of a latest session, which made the decoder and the
+  fuzz harness check the mode (`laptop.architect`, 2026-10-15T22:10:13Z:
+  https://github.com/synnaxlabs/foundation/pull/2765#issuecomment-6203316949). A
+  complete remote reader gives the seqs from `live` to its first frame with a sample as
+  the gap of that frame (`hub::reader::Received::gap`). A complete client read gets
+  `live`, from which the client finds the seqs before the seq of its first head.
+  `wire::hub::Gaps` holds the rule of the gap of each frame: from `live`, or the end of
+  the last frame with a sample, to the first seq of the frame. The remote reader of
+  `hub`, its local sessions, and `wire::hub::Frames` each call it. `Frames::lost` gives
+  the gap of each frame, and `program::Reader` builds the lost seqs of each entry from
+  it (HUB CLIENT) (#2829; `laptop.architect`,
+  2026-10-16T09:44:59Z:
+  https://github.com/synnaxlabs/foundation/pull/2856#issuecomment-6212746993). This
+  replaces the ruling under which `program::Reader` dropped `live`
+  (https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6208645775). Lost:
+  `Opened` with no field, so a loss between the open and the first frame was silent.
+  Decided by `laptop.architect` (2026-10-15T19:40:52Z,
+  https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6200757306).
+  Amended (#2725, with #2723 and #2553): no case gives `Behind` now. A complete session
+  that misses a frame reads it from disk, and a seq lost for no room comes as the gap of
+  the next frame. The variants stay until #2790 removes them (`laptop.architect`,
+  2026-10-16T00:46:53Z:
+  https://github.com/synnaxlabs/foundation/issues/2725#issuecomment-6205434126).
+  Message kind 3 stays retired after #2790: no new reply takes it.
+  `wire::hub::Frames` builds the frames of a reader session from its messages, from
+  `Opened` on, for the reader's node and for a program, so the reader end of HUB WIRE
+  is in one place (`laptop.architect`, 2026-10-15T23:19:38Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204306531; lost:
+  a copy of the loop in `program`, which can drift from the one in `hub` with no test
+  that sees it). It takes no pool, so `wire` takes `block` only in its tests
+  (`laptop.architect`, 2026-10-15T23:56:49Z:
+  https://github.com/synnaxlabs/foundation/pull/2779#issuecomment-6204779426).
+  `Frames::open` takes the first message of the session, which is `Opened`, and gives
+  its `live` with the frames (#2553; `laptop.architect`, 2026-10-16T02:54:38Z:
+  https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206979704), so a
+  `Frames` is open from its start, `Step` has no opened, and no caller restates the
+  order of the open (`laptop.architect`, 2026-10-16T00:47:46Z:
+  https://github.com/synnaxlabs/foundation/pull/2779#issuecomment-6205447213; lost: an
+  `opened` call on a `Frames` made before the first message, whose state a failed
+  attempt can leave open).
+  `Frames::due` gives what comes next: a message, the body slice for `recv_into`, or
+  the `Layout` of a draft that the caller makes from its own pool and gives to
+  `Frames::draft`. So a call that drops at its wait for the pool asks `due` again and
+  resumes. A full pool is the caller's case: `hub` gives `Ended::Pool`, and `program`
+  waits. A layout error stays a `types::frame::Error` from `due`, so
+  `wire::hub::Error` stays `Copy` (`laptop.architect`, 2026-10-15T23:41:49Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204591536, with
+  `due` in place of its `layout` and `body` at 2026-10-16T00:11:01Z:
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204972440).
+  A program's reader has no `Behind` error: after #2723 and #2725 no case gives it
+  (`laptop.architect`, 2026-10-16T00:46:53Z,
+  https://github.com/synnaxlabs/foundation/issues/2725#issuecomment-6205434126). Until
+  #2790 makes `wire` refuse it, `program` gives `Error::Reply` of
+  `wire::hub::Error::Kind { kind: 3 }` for a `Step::Behind`, and never calls
+  `Frames::finished` after it (`laptop.architect`, 2026-10-16T01:51:28Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6206217799; lost:
+  a hold of the program reader on #2725 and #2790, and a public variant of `program`
+  that no case gives).
+  Amended (#2790): `Behind` is removed: `wire::hub::Reply::Behind`, `FromHome::Behind`,
+  `Step::Behind`, and `Error::Ended`, with `delivery::Next::Behind`,
+  `home::reader::Next::Behind`, and `hub::reader::Ended::Behind`. Reply kind 3 stays
+  retired: where a reply is due, a message of kind 3 gives `Error::Kind { kind: 3 }`,
+  so a reader stops the stream as `MALFORMED` and a program's reader gives
+  `Error::Reply` of it. Kind 3 stays reserved: no new reply takes it, so a peer of
+  another version never reads a new reply as `Behind` (`laptop.monitor`, go on the
+  key choice of kind (f), 2026-10-16T21:05Z:
+  https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6227366041). The
+  home finishes its stream only after the reader finished its own (`laptop.architect`,
+  2026-10-17T00:30:34Z:
+  https://github.com/synnaxlabs/foundation/pull/2959#issuecomment-6227359257), so
+  `wire::hub::Reader::finished` gives the error of each finish, `Unfinished` inside a
+  body and `Finished` at each other point, in place of `Reader::end`
+  (`laptop.architect`, 2026-10-16T20:56:06Z:
+  https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6224535856; plan:
+  https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6224525816).
+  Supersedes these sentences above: "or `Behind`" of the messages that the home sends;
+  "The home sends `Behind` after the last frame before the first frame of the session
+  that the buffer lost, then finishes its stream. The reader's `next` gives each frame
+  before it, then `Ended::Behind`."; "A message after `Behind` is not valid"
+  (https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6046877541); the
+  `Behind` half of "`Behind` and `Credit` in a latest session are not valid"
+  (https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6047310321), where
+  the refusal of `Credit` in a latest session stands; "The `Ended` state and the mode
+  flag of `Reader`, for `Behind`, cost a body message up to +0.37 ns and a frame up to
+  +1 ns."; "3 (behind, no fields, by the Behind rule ...)" of the byte form of `Reply`;
+  the #1631 amendment
+  (https://github.com/synnaxlabs/foundation/issues/1689#issuecomment-6050026992); and
+  the `Step::Behind` arm of the program's reader
+  (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6206217799).
+  Amended (#2790, PR 2): the end of the stream is one more input.
+  `wire::hub::Frames::decode` takes `Option<&[u8]>`, so `Frames::finished` goes
+  (`laptop.architect`, 2026-10-17T00:30:34Z:
+  https://github.com/synnaxlabs/foundation/pull/2959#issuecomment-6227359257, item 1).
+  `Reader::decode` takes it too, `None` gives the error of the finish at that point and
+  changes nothing (`laptop.architect`, 2026-10-17T07:11:33Z:
+  https://github.com/synnaxlabs/foundation/pull/3009#issuecomment-6231063968, item 1),
+  and `Reader::finished` is private. `Frames::open` gives the frames alone, and
+  `Frames::live` gives the open position, then the end of the last frame with a
+  sample, from one `Gaps` that a latest session keeps too. The mode stays in
+  `Reader`, which both the reader's node and the program make for a session
+  (`laptop.architect`, 2026-10-17T06:34:47Z:
+  https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6230737986, items
+  1 and 3; lost: a mode argument of `Frames::open`, which a program maps from the
+  client mode).
+  Supersedes "and gives its `live` with the frames" of `Frames::open` above
+  (https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206979704), and
+  "`wire::hub::Reader::finished` gives the error of each finish" above
+  (https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6224535856):
+  `decode(None)` gives it now.

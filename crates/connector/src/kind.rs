@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use document::diagnostic::{Code, Diagnostic};
-use document::{Document, Span};
+use document::{Block, Document, Span};
 use env::clock::Clock;
 use env::net::Net;
 use env::rng::Rng;
@@ -15,7 +15,7 @@ use types::authority::Authority;
 use types::name::Name;
 use types::time;
 
-use crate::{cancel, reader, status, supervisor};
+use crate::{browse, cancel, http, reader, status, supervisor};
 
 /// The noun of the document that [`Kind::parse`] gets, for the text of a diagnostic.
 pub const NOUN: &str = "the connector";
@@ -42,17 +42,90 @@ pub trait Kind: Send + Sync + 'static {
     /// One diagnostic for each thing the device cannot do.
     fn check(&self, config: &Self::Config) -> Result<Channels, Vec<Diagnostic>>;
 
-    /// Finds connectors this node can run, as config documents.
+    /// Finds the devices that this node can reach, as connector blocks. The default
+    /// gives [`Error::Config`] with `connector.no-discover`: the kind cannot find
+    /// devices.
+    ///
+    /// # Errors
+    ///
+    /// The default gives [`Error::Config`] with `connector.no-discover`.
     fn discover(
         &self,
         cancel: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>>;
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        let _: &cancel::Token = cancel;
+        std::future::ready(Err(config_error(
+            NO_DISCOVER,
+            &"this connector kind cannot find its devices",
+            "Write the connector block by hand",
+        )))
+    }
 
     /// Runs one connector until `ctx.cancel()` is cancelled or an error leaves it.
+    /// Call [`Context::clear_error`] once the run reaches the device: until then, the
+    /// status shows the error of the last run.
     fn run(
         &self,
         ctx: Context<Self::Config>,
     ) -> impl Future<Output = Result<(), Error>>;
+
+    /// The blocks to add to the body of the connector block, so that it reads or
+    /// writes the point `tag` as the channel `channel`. `tag` and `facts` are those of
+    /// a [`browse::Shape::Point`] that a browse of the kind gave. The blocks hold only
+    /// how the kind reaches the point: the `channel` block holds the sample type and
+    /// the unit. A point whose `facts.access` is `Write` gets a write block. Each other
+    /// point, `None` too, gets a read block, since a write to a device needs the
+    /// user's choice. For each value that the kind needs and the browse does not give,
+    /// the blocks hold [`fill`](crate::import::fill).
+    ///
+    /// # Errors
+    ///
+    /// The default gives `connector.no-import`.
+    fn block(
+        &self,
+        tag: &str,
+        facts: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Vec<Block>, Vec<Diagnostic>> {
+        let _: (&str, &browse::Facts, &Name) = (tag, facts, channel);
+        Err(vec![Diagnostic::new(
+            NO_IMPORT,
+            None,
+            "this connector kind cannot write the block of a point".into(),
+            "Write the blocks of the points by hand".into(),
+        )])
+    }
+
+    /// The tag of the point that `block`, a block of the body of a connector block of
+    /// the kind, reads or writes, in the form that a browse of the kind gives it, or
+    /// `None` when it names no point. A kind that gives blocks with [`Kind::block`]
+    /// gives this too. The default gives `None`.
+    fn tag(&self, block: &Block) -> Option<String> {
+        let _: &Block = block;
+        None
+    }
+
+    /// Browses the device of the connector block `ctx.config()` as `query` asks. A
+    /// kind connects to its device and gives [`browse::walk`] over it. The default
+    /// gives [`Error::Config`] with `connector.no-browse`: the kind cannot browse.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] when the block does not name a device that the kind can
+    /// reach, and the errors of [`browse::walk`]. [`Error::Device`] when the device
+    /// fails. The errors of [`browse::Context::secret`] for each secret that it reads.
+    fn browse(
+        &self,
+        ctx: &browse::Context<'_>,
+        query: &browse::Query,
+    ) -> impl Future<Output = Result<browse::Found, Error>> {
+        let _: (&browse::Context<'_>, &browse::Query) = (ctx, query);
+        std::future::ready(Err(config_error(
+            NO_BROWSE,
+            &"this connector kind cannot browse its device",
+            "Write the blocks of the points by hand",
+        )))
+    }
 }
 
 /// What a checked connector reads and writes.
@@ -73,7 +146,8 @@ pub struct Channels {
 /// Why a run or a discovery stopped. One handler for each variant.
 #[derive(Debug)]
 pub enum Error {
-    /// The config cannot work. The connector stops until the next spec change.
+    /// Not retried: a browse or a discover fails, and a run stops until the next spec
+    /// change.
     Config(Vec<Diagnostic>),
     /// The device or endpoint is in a bad state. Restarted with backoff.
     Device(Box<dyn std::error::Error + Send + Sync>),
@@ -86,8 +160,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Config(diagnostics) => {
-                write!(f, "the config cannot work")?;
-                let mut separator = ": ";
+                let mut separator = "";
                 for diagnostic in diagnostics {
                     write!(f, "{separator}{diagnostic}")?;
                     separator = "; ";
@@ -227,14 +300,14 @@ impl<C> Context<C> {
     /// Takes the reader that the supervisor opened for this run, under the connector's
     /// name, from the settings that `check` gave. `None` when `check` gave none, or
     /// after the first call. Return the end of the reader with `?`: KIND TABLE gives
-    /// its class. After [`hub::reader::Ended::Behind`] or
-    /// [`hub::reader::Ended::Removed`], the supervisor opens a new reader from the
-    /// selector before the next run, so a channel that the spec defined again with a
-    /// new key is read, and the open gives `Config` when the selector matches nothing.
+    /// its class. After [`hub::reader::Ended::Removed`], the supervisor opens a new
+    /// reader from the selector before the next run, so a channel that the spec defined
+    /// again with a new key is read, and the open gives `Config` when the selector
+    /// matches nothing.
     /// A reader with a hold opens again at its held position while its index keeps its
-    /// key. While the home keeps no frame there, each later run gets `Behind`. Each
-    /// close starts the hold again, so a hold longer than the wait between two runs
-    /// never ends.
+    /// key, and reads the frames after it from disk. Past a frame that the buffer lost
+    /// for no room, the next run reads the frame after it. Each close starts the hold
+    /// again, so a hold longer than the wait between two runs never ends.
     pub fn reader(&mut self) -> Option<hub::reader::Reader> {
         self.reader.take()
     }
@@ -253,7 +326,9 @@ impl<C> Context<C> {
 
     /// Shows `error` in the status of the running connector, as an attempt that
     /// failed with the class `retry`. The status gives it within one second. The end
-    /// of the run replaces it, and a call after the run returned shows nothing.
+    /// of the run replaces it, and a call after the run returned shows nothing. Each
+    /// time the status takes a show that changes its text or its class, it also
+    /// writes the log line `error` (WARN).
     pub fn error(&self, error: &dyn fmt::Display) {
         self.status.show(error);
     }
@@ -262,7 +337,8 @@ impl<C> Context<C> {
     /// connector, within one second: the one that [`Context::error`] showed, or the
     /// end of the last run. Until the first call of `error` or `clear_error` in a
     /// run, the status keeps the end of the last run. A call after the run returned
-    /// shows nothing.
+    /// shows nothing. Each time the status takes a clear that changes its text or its
+    /// class, it also writes the log line `cleared` (INFO).
     pub fn clear_error(&self) {
         self.status.clear();
     }
@@ -271,8 +347,10 @@ impl<C> Context<C> {
     /// next call: a short text of how the run works other than its spec asks, such as
     /// a mode that the device forces. The status gives it within one second. A note of
     /// more than 1024 bytes keeps its first and last 510 bytes or less at char
-    /// boundaries, joined by `…`. The end of the run clears it, and a call after the
-    /// run returned shows nothing.
+    /// boundaries, joined by `…`. An empty `note` shows none. The end of the run
+    /// clears it, and a call after the run returned shows nothing. Each time the
+    /// status takes a note that changes its note, it also writes the log line `note`
+    /// (INFO).
     pub fn note(&self, note: &dyn fmt::Display) {
         self.status.note(note);
     }
@@ -281,6 +359,20 @@ impl<C> Context<C> {
     #[must_use]
     pub fn net(&self) -> &Net {
         &self.inputs.net
+    }
+
+    /// The roots that an `https` connect trusts, as `supervisor::Config::roots`
+    /// gives them.
+    #[must_use]
+    pub fn roots(&self) -> &http::Roots {
+        &self.inputs.roots
+    }
+
+    /// The mesh time of the run's hub, which stamps samples. Waits for the node's first
+    /// mesh time. Dropping the future ends the wait, so race it with
+    /// [`Context::cancel`]. [`Context::clock`] is the clock of deadlines.
+    pub fn time(&self) -> impl Future<Output = hub::Time> {
+        self.inputs.hub.time()
     }
 
     /// Reads the value of `source`. Each call reads the file or the store again, so
@@ -300,19 +392,7 @@ impl<C> Context<C> {
         &self,
         source: &secret::Source,
     ) -> Result<secret::Value, Error> {
-        let get = self.inputs.secrets.get(source).await;
-        get.map_err(|error| match error {
-            secret::Error::BadName { detail } => {
-                let error = format!(
-                    "the secret {source} has a name that the store cannot hold"
-                );
-                config_error(BAD_SECRET_NAME, &error, &detail)
-            }
-            error => {
-                let source = source.clone();
-                Error::Retry(Box::new(Unread { source, error }))
-            }
-        })
+        read_secret(&self.inputs.secrets, source).await
     }
 
     /// Runs the kind's own tasks on its shard. Each task must end when
@@ -323,6 +403,35 @@ impl<C> Context<C> {
     pub fn tasks(&self) -> &Tasks {
         &self.tasks
     }
+
+    /// The span `connector` of this run, with the fields `connector` and `kind`. Give
+    /// it as the parent of each event of the kind
+    /// (`tracing::warn!(parent: ctx.span(), ..)`), so its line names the connector. No
+    /// poll enters it. A task spawned through [`Context::tasks`] that writes an event
+    /// takes a clone of it.
+    #[must_use]
+    pub fn span(&self) -> &tracing::Span {
+        self.status.span()
+    }
+}
+
+/// The value of `source` from `secrets`, with the errors of [`Context::secret`].
+pub(crate) async fn read_secret(
+    secrets: &secret::Resolver,
+    source: &secret::Source,
+) -> Result<secret::Value, Error> {
+    let get = secrets.get(source).await;
+    get.map_err(|error| match error {
+        secret::Error::BadName { detail } => {
+            let error =
+                format!("the secret {source} has a name that the store cannot hold");
+            config_error(BAD_SECRET_NAME, &error, &detail)
+        }
+        error => {
+            let source = source.clone();
+            Error::Retry(Box::new(Unread { source, error }))
+        }
+    })
 }
 
 /// The kinds this binary has, by name. `node` builds it once.
@@ -348,6 +457,11 @@ impl Table {
         let old = self.kinds.insert(name, Box::new(kind));
         assert!(old.is_none(), "the kind {name:?} is in the table twice");
         self
+    }
+
+    /// Gives the name of each kind, in byte order.
+    pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.kinds.keys().copied()
     }
 
     /// Parses and checks one connector's config.
@@ -379,7 +493,7 @@ impl Table {
         Ok(channels)
     }
 
-    /// Finds connectors of `kind` that this node can run.
+    /// Finds the devices of `kind` that this node can reach, as connector blocks.
     ///
     /// # Errors
     ///
@@ -395,6 +509,46 @@ impl Table {
             .map_err(Error::Config)?
             .discover(cancel)
             .await
+    }
+
+    /// The blocks of `kind` that read or write the point `tag` as `channel`, as
+    /// [`Kind::block`] gives them.
+    ///
+    /// # Errors
+    ///
+    /// The kind's diagnostics, or `connector.unknown-kind`.
+    pub fn block(
+        &self,
+        kind: &str,
+        tag: &str,
+        facts: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Vec<Block>, Vec<Diagnostic>> {
+        self.get(kind, None)?.block(tag, facts, channel)
+    }
+
+    /// The tag of the point that `block` of a connector block of `kind` reads or
+    /// writes, as [`Kind::tag`] gives it.
+    ///
+    /// # Errors
+    ///
+    /// `connector.unknown-kind`.
+    pub fn tag(
+        &self,
+        kind: &str,
+        block: &Block,
+    ) -> Result<Option<String>, Vec<Diagnostic>> {
+        Ok(self.get(kind, None)?.tag(block))
+    }
+
+    /// Starts a browse with `kind` as `query` asks.
+    pub(crate) fn browse<'a>(
+        &'a self,
+        kind: &str,
+        ctx: &'a browse::Context<'a>,
+        query: &'a browse::Query,
+    ) -> Result<Browse<'a>, Vec<Diagnostic>> {
+        Ok(self.get(kind, None)?.browse(ctx, query))
     }
 
     /// Parses `config` and starts one run of `kind` with `ctx`.
@@ -437,6 +591,9 @@ impl fmt::Debug for Table {
 }
 
 const UNKNOWN_KIND: Code = Code::new("connector.unknown-kind");
+const NO_BROWSE: Code = Code::new("connector.no-browse");
+const NO_DISCOVER: Code = Code::new("connector.no-discover");
+const NO_IMPORT: Code = Code::new("connector.no-import");
 const UNKNOWN_CHANNEL: Code = Code::new("connector.unknown-channel");
 const NO_CHANNEL: Code = Code::new("connector.no-channel");
 const MANY_INDEXES: Code = Code::new("connector.many-indexes");
@@ -465,6 +622,23 @@ impl std::error::Error for Unread {
     }
 }
 
+/// The hub's `Full`, with the fixes that a spec can make.
+#[derive(Debug)]
+struct Full(hub::reader::Error);
+
+impl fmt::Display for Full {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}: read the index from fewer connectors in complete mode, set `mode = \
+             \"latest\"` on one, or wait for the hold of a removed reader to end",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for Full {}
+
 /// The class of `error` of the open of a named reader.
 ///
 /// # Panics
@@ -476,7 +650,10 @@ pub(crate) fn reader_error(error: hub::reader::Error) -> Error {
     let (code, fix) = match error {
         Hub::Empty => (NO_CHANNEL, "Select a channel that the spec defines"),
         Hub::ManyIndexes { .. } => (MANY_INDEXES, "Select channels of one index"),
-        Hub::Remote { .. } | Hub::Mesh(_) => return Error::Retry(Box::new(error)),
+        Hub::Full => return Error::Retry(Box::new(Full(error))),
+        Hub::Remote { .. } | Hub::Mesh(_) | Hub::Unrecorded => {
+            return Error::Retry(Box::new(error));
+        }
         Hub::Unsynced => panic!("invariant: a reader opened before mesh time: {error}"),
         Hub::Transport(_) | Hub::Refused(_) | Hub::Message(_) | Hub::Pool(_) => {
             panic!("invariant: a named reader away from its home gave: {error}")
@@ -506,7 +683,7 @@ fn writer_error(error: hub::writer::Error) -> Error {
 }
 
 /// The class of the end of the reader of a run, for a kind that returns it with `?`:
-/// `Retry` for `Behind`, `Removed`, `Replaced`, and `Buffer`.
+/// `Retry` for `Removed`, `Replaced`, `Buffer`, and `Pool`.
 ///
 /// # Panics
 ///
@@ -520,14 +697,13 @@ impl From<hub::reader::Ended> for Error {
     fn from(ended: hub::reader::Ended) -> Self {
         use hub::reader::Ended;
         match ended {
-            Ended::Behind | Ended::Removed(_) | Ended::Replaced | Ended::Buffer(_) => {
+            Ended::Removed(_) | Ended::Replaced | Ended::Buffer(_) | Ended::Pool(_) => {
                 Self::Retry(Box::new(ended))
             }
             Ended::Stream(_)
             | Ended::Refused(_)
             | Ended::Message(_)
             | Ended::Frame(_)
-            | Ended::Pool(_)
             | Ended::Credit { .. } => {
                 panic!("invariant: a named reader away from its home gave: {ended}")
             }
@@ -597,7 +773,7 @@ impl From<types::frame::Error> for Error {
 }
 
 /// [`Error::Config`] with one diagnostic and no span, whose message is `error`.
-fn config_error(code: Code, error: &dyn fmt::Display, fix: &str) -> Error {
+pub(crate) fn config_error(code: Code, error: &dyn fmt::Display, fix: &str) -> Error {
     Error::Config(vec![Diagnostic::new(
         code,
         None,
@@ -608,6 +784,10 @@ fn config_error(code: Code, error: &dyn fmt::Display, fix: &str) -> Error {
 
 /// One run of a kind.
 pub(crate) type Run<'a> = Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>;
+
+/// One browse of a kind.
+pub(crate) type Browse<'a> =
+    Pin<Box<dyn Future<Output = Result<browse::Found, Error>> + 'a>>;
 
 /// A [`Kind`] with its config type erased, so one table holds every kind.
 trait Erased: Send + Sync {
@@ -623,6 +803,21 @@ trait Erased: Send + Sync {
         config: &Document,
         ctx: Context<()>,
     ) -> Result<Run<'_>, Vec<Diagnostic>>;
+
+    fn browse<'a>(
+        &'a self,
+        ctx: &'a browse::Context<'a>,
+        query: &'a browse::Query,
+    ) -> Browse<'a>;
+
+    fn block(
+        &self,
+        tag: &str,
+        facts: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Vec<Block>, Vec<Diagnostic>>;
+
+    fn tag(&self, block: &Block) -> Option<String>;
 }
 
 impl<K: Kind> Erased for K {
@@ -644,6 +839,27 @@ impl<K: Kind> Erased for K {
     ) -> Result<Run<'_>, Vec<Diagnostic>> {
         let config = self.parse(config)?;
         Ok(Box::pin(Kind::run(self, ctx.with(config))))
+    }
+
+    fn browse<'a>(
+        &'a self,
+        ctx: &'a browse::Context<'a>,
+        query: &'a browse::Query,
+    ) -> Browse<'a> {
+        Box::pin(Kind::browse(self, ctx, query))
+    }
+
+    fn block(
+        &self,
+        tag: &str,
+        facts: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Vec<Block>, Vec<Diagnostic>> {
+        Kind::block(self, tag, facts, channel)
+    }
+
+    fn tag(&self, block: &Block) -> Option<String> {
+        Kind::tag(self, block)
     }
 }
 
@@ -783,6 +999,13 @@ mod tests {
         assert_eq!(table.check("modbus", None, &config(1)), Err(vec![expected]));
     }
 
+    #[test]
+    fn gives_the_name_of_each_kind_in_byte_order() {
+        let table = Table::new().with("other", Counter).with("counter", Counter);
+        assert_eq!(table.names().collect::<Vec<_>>(), ["counter", "other"]);
+        assert_eq!(Table::new().names().count(), 0);
+    }
+
     /// The span from `start` to `end` on line 0 of source 2.
     fn span(start: u32, end: u32) -> Option<Span> {
         let position = |offset| Position {
@@ -860,13 +1083,6 @@ mod tests {
                 counts: self.0.iter().map(|count| name(count)).collect(),
                 ..Channels::default()
             })
-        }
-
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
         }
 
         fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
@@ -985,6 +1201,23 @@ mod tests {
     }
 
     #[test]
+    fn refuses_to_discover_with_a_kind_that_cannot_look() {
+        let table = Table::new().with("counts", Counts(&[]));
+        let found =
+            run(|_, _, _| async move { table.discover("counts", &Token::new()).await });
+        let Err(Error::Config(diagnostics)) = found else {
+            panic!("a config error: {found:?}");
+        };
+        let expected = Diagnostic::new(
+            NO_DISCOVER,
+            None,
+            "this connector kind cannot find its devices".into(),
+            "Write the connector block by hand".into(),
+        );
+        assert_eq!(diagnostics, [expected]);
+    }
+
+    #[test]
     fn says_an_empty_table_has_no_kinds() {
         let result = Table::new().check("modbus", None, &config(1));
         let expected = Diagnostic::new(
@@ -1007,7 +1240,7 @@ mod tests {
                 3,
                 token.clone(),
                 tasks.clone(),
-                status::Status::new(Vec::new()),
+                status::Status::new(Vec::new(), tracing::Span::none()),
                 None,
                 inputs,
             );
@@ -1036,7 +1269,7 @@ mod tests {
         let (a, b) = run_on(|node, tasks| async move {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
-            let status = status::Status::new(Vec::new());
+            let status = status::Status::new(Vec::new(), tracing::Span::none());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             (ctx.rng().next_u64(), ctx.rng().next_u64())
@@ -1049,7 +1282,7 @@ mod tests {
         let (missing, read, changed) = run_on(|node, tasks| async move {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
-            let status = status::Status::new(Vec::new());
+            let status = status::Status::new(Vec::new(), tracing::Span::none());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             let token = name("plant.influx_token");
@@ -1070,14 +1303,16 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "the secret secret(\"plant.influx_token\"): the file \
-             /data/secrets/plant.influx_token is not there. Write the value to it"
+             /data/secrets/plant.influx_token is not there. Write the value to it, \
+             unreadable by other users: chmod o-r /data/secrets/plant.influx_token"
         );
         let source = error.source().map(ToString::to_string);
         assert_eq!(
             source.as_deref(),
             Some(
                 "the file /data/secrets/plant.influx_token is not there. Write the \
-                 value to it"
+                 value to it, unreadable by other users: chmod o-r \
+                 /data/secrets/plant.influx_token"
             )
         );
         assert_eq!(read.expect("the store has the value"), b"t0");
@@ -1089,7 +1324,7 @@ mod tests {
         let missing = run_on(|node, tasks| async move {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
-            let status = status::Status::new(Vec::new());
+            let status = status::Status::new(Vec::new(), tracing::Span::none());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             let source = secret::Source::Env("INFLUX_TOKEN".into());
@@ -1110,7 +1345,7 @@ mod tests {
         let bad = run_on(|node, tasks| async move {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
-            let status = status::Status::new(Vec::new());
+            let status = status::Status::new(Vec::new(), tracing::Span::none());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             let source = secret::Source::Secret(name("plant.Token"));
@@ -1169,6 +1404,27 @@ mod tests {
             "an attempt failed: the mesh stopped: each mesh of the group dropped";
         assert_eq!(reader(hub::reader::Error::Mesh(stopped())), mesh);
         assert_eq!(writer(hub::writer::Error::Mesh(stopped())), mesh);
+        assert_eq!(
+            reader(hub::reader::Error::Unrecorded),
+            "an attempt failed: the home had no room to record the position of the \
+             named reader: open it again later"
+        );
+    }
+
+    /// Calls the mapping directly: on the ring of the test hub, the entries that the
+    /// opens append fill the ring before the records reach the limit, until a trim
+    /// frees the ring (#406).
+    #[test]
+    fn retries_when_the_named_readers_fill_an_entry() {
+        let full = reader_error(hub::reader::Error::Full);
+        assert!(matches!(full, Error::Retry(_)), "{full:?}");
+        assert_eq!(
+            full.to_string(),
+            "an attempt failed: no part of the named records of the index has room for \
+             the reader: read the index from fewer connectors in complete mode, \
+             set `mode = \"latest\"` on one, or wait for the hold of a removed reader \
+             to end"
+        );
     }
 
     /// Calls the mapping directly: the supervisor opens a reader only after the status
@@ -1278,21 +1534,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(
-        expected = "invariant: a named reader away from its home gave: the pool had \
-                    no block for the reader: pool is full: asked for 8 bytes, 0 bytes \
-                    free"
-    )]
-    fn panics_for_a_pool_end_of_a_reader_away_from_its_home() {
-        drop(Error::from(hub::reader::Ended::Pool(
-            block::Error::Exhausted {
-                requested: 8,
-                available: 0,
-            },
-        )));
-    }
-
-    #[test]
     #[should_panic(expected = "invariant: a kind labels no frame resend")]
     fn panics_for_a_write_of_a_resend_frame() {
         let resend = hub::home::Error::Resend;
@@ -1307,7 +1548,7 @@ mod tests {
         ]);
         assert_eq!(
             config.to_string(),
-            "the config cannot work: n is over 8. Fix it; no integer n. Fix it"
+            "n is over 8. Fix it; no integer n. Fix it"
         );
         assert!(std::error::Error::source(&config).is_none());
     }

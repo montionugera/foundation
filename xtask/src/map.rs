@@ -26,6 +26,7 @@ pub(crate) const TEST_EDGES: &[(&str, &str)] = &[
     ("connector-ni", "daqmx-stub"),
     ("hub", "buffer"),
     ("hub", "blob"),
+    ("program", "codec"),
     ("program", "hub"),
     ("program", "spec"),
     ("access", "document"),
@@ -33,6 +34,8 @@ pub(crate) const TEST_EDGES: &[(&str, &str)] = &[
     ("config", "connector-influx"),
     ("ops", "config-hcl"),
     ("ops", "transport"),
+    ("node", "sdk"),
+    ("sdk-python", "transport"),
 ];
 
 /// Every crate with its layer and the workspace crates it may depend on.
@@ -253,6 +256,16 @@ pub(crate) const CRATES: &[Crate] = &[
         name: "acceptance",
         layer: 4,
         deps: Deps::Any,
+    },
+    Crate {
+        name: "sdk",
+        layer: 4,
+        deps: Deps::Only(&["program", "transport", "os", "env", "types", "block"]),
+    },
+    Crate {
+        name: "sdk-python",
+        layer: 4,
+        deps: Deps::Only(&["sdk", "types"]),
     },
 ];
 

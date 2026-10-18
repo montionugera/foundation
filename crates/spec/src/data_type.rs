@@ -24,8 +24,11 @@ impl DataType {
         }
     }
 
-    /// Reports whether the values are numbers, so they can have a unit.
-    pub(crate) const fn numeric(&self) -> bool {
+    /// Reports whether the values are numbers, so they can have a unit: each sample type
+    /// whose element is a number. A bool, a stamp, a span, a UUID, a string, bytes,
+    /// and quality are not.
+    #[must_use]
+    pub const fn numeric(&self) -> bool {
         let element = match self {
             Self::Sample(
                 sample::Type::Scalar(element)

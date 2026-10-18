@@ -11,6 +11,7 @@ mod run_on;
 mod serial;
 mod shards;
 mod tcp;
+mod threads;
 
 use std::collections::BTreeSet;
 use std::future::{Ready, pending, poll_fn};

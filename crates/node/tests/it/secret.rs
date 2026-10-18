@@ -1,7 +1,9 @@
 //! The file store of secrets on the real disk reads a secret from the file that its
-//! own text names, in the data directory that `foundation start --data` gets, and
-//! `create_secret` writes each name there.
+//! own text names, in the data directory that `foundation start --data` gets, unless
+//! other users can read it, and `create_secret` writes each name there.
 
+use std::fs::Permissions;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -30,13 +32,30 @@ fn reads_the_secret_from_the_file_that_its_text_names() {
         assert_eq!(
             detail,
             format!(
-                "the file {} is not there. Write the value to it",
-                file.display()
+                "the file {shown} is not there. Write the value to it, unreadable by \
+                 other users: chmod o-r {shown}",
+                shown = file.display()
             )
         );
         std::fs::create_dir_all(file.parent().expect("a directory"))
             .expect("makes the directory");
         std::fs::write(&file, b"t\n").expect("writes it");
+        std::fs::set_permissions(&file, Permissions::from_mode(0o604))
+            .expect("lets other users read it");
+        let exposed = resolver
+            .get(&source)
+            .await
+            .map(|value| value.expose().to_vec());
+        let shown = file.display();
+        let refused = Err(Error::Unavailable {
+            detail: format!(
+                "other users can read the file {shown}. Make it unreadable by other \
+                 users: chmod o-r {shown}"
+            ),
+        });
+        assert_eq!(exposed, refused);
+        std::fs::set_permissions(&file, Permissions::from_mode(0o660))
+            .expect("gives the group read and write, as `fsGroup` does");
         let read = resolver
             .get(&source)
             .await
@@ -51,13 +70,15 @@ fn reads_the_secret_from_the_file_that_its_text_names() {
 }
 
 #[test]
-fn reads_a_file_at_an_absolute_path_outside_the_data_directory() {
+fn reads_a_file_outside_the_data_directory_that_all_users_can_read() {
     let dir = std::env::temp_dir()
         .join(format!("foundation-secret-absolute-{}", std::process::id()));
     let threads = os::threads().expect("the OS gives the cores");
     let (disk, io) = os::files(&dir, &threads, "files").expect("the disk opens");
     let file = dir.join("token");
     std::fs::write(&file, b"t\r\n").expect("writes it");
+    std::fs::set_permissions(&file, Permissions::from_mode(0o644))
+        .expect("lets all users read it");
     let get = threads.start("get", move || async move {
         let resolver =
             Resolver::new(Arc::default(), Files::new(disk), Path::new("secrets"));

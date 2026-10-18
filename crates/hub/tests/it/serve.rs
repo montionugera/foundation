@@ -13,6 +13,7 @@ use std::task::Poll;
 use block::Pool;
 use env::files::Operation;
 use env::tasks::Tasks;
+use hub::home::Outcome;
 use hub::{Link, Served, serve};
 use spec::data_type::DataType;
 use spec::definition::Definition;
@@ -25,7 +26,7 @@ use types::name::Name;
 use types::sample::{Scalar, Type};
 use types::time::Span;
 use wire::Protocol;
-use wire::hub::{Credit, FromHome, Head, Mode, Open, Reader, keys};
+use wire::hub::{Credit, FromHome, Head, Mode, Open, Reader, Reply, keys};
 
 use super::definitions::I32;
 use super::{
@@ -233,11 +234,19 @@ pub(super) async fn stopped(peer: &mut Peer) -> transport::Error {
     }
 }
 
+/// The `Opened` of a session whose open position is `live`.
+fn opened(live: u64) -> Vec<u8> {
+    let reply = Reply::Opened { live };
+    let mut out = vec![0; reply.encoded_len()];
+    reply.encode(&mut out);
+    out
+}
+
 #[test]
 fn opens_a_session_of_known_keys() {
     let served = served(41, Class::Complete, false, |mut peer| async move {
         peer.open(Mode::Complete { limit_bytes: 0 }, &[1, 2]).await;
-        assert_eq!(peer.recv().await, Ok(Some(vec![1])));
+        assert_eq!(peer.recv().await, Ok(Some(opened(0))));
         peer.sender.finish().expect("finishes");
         assert_eq!(peer.recv().await, Ok(None));
     });
@@ -325,7 +334,7 @@ fn keeps_an_open_session_through_a_call_with_the_same_definitions() {
     };
     session(73, Class::Complete, false, home, |mut peer| async move {
         let mut reader = open_complete(&mut peer, &[2, 1], 1 << 20).await;
-        let got = got(peer.receiver(), &mut reader).await.expect("a frame");
+        let got = got(peer.receiver(), &mut reader).await;
         assert_eq!(decoded(&got, &[I64, STAMP])[0], [10]);
         peer.sender.finish().expect("finishes");
         assert_eq!(peer.recv().await, Ok(None));
@@ -615,7 +624,7 @@ fn stops_a_one_way_stream_as_malformed() {
 fn stops_a_second_open_as_malformed() {
     let served = served(46, Class::Complete, false, |mut peer| async move {
         peer.open(Mode::Complete { limit_bytes: 0 }, &[1, 2]).await;
-        assert_eq!(peer.recv().await, Ok(Some(vec![1])));
+        assert_eq!(peer.recv().await, Ok(Some(opened(0))));
         peer.open(Mode::Complete { limit_bytes: 0 }, &[1, 2]).await;
         let code = Code(wire::header::MALFORMED);
         assert_eq!(peer.recv().await, Err(transport::Error::Reset { code }));
@@ -633,7 +642,7 @@ fn stops_a_second_open_as_malformed() {
 fn stops_a_credit_in_a_latest_session_as_malformed() {
     let served = served(47, Class::Latest, false, |mut peer| async move {
         peer.open(Mode::Latest, &[1, 2]).await;
-        assert_eq!(peer.recv().await, Ok(Some(vec![1])));
+        assert_eq!(peer.recv().await, Ok(Some(opened(0))));
         peer.credit(1).await.expect("sends the credit");
         let code = Code(wire::header::MALFORMED);
         assert_eq!(peer.recv().await, Err(transport::Error::Reset { code }));
@@ -642,40 +651,51 @@ fn stops_a_credit_in_a_latest_session_as_malformed() {
     assert_eq!(served, Some(Err(serve::Error::Message(latest))));
 }
 
+/// A complete session gets the frame after one that the home lost for no room, at
+/// the seq past the lost ones.
 #[test]
-fn sends_behind_and_finishes_when_a_complete_session_misses_a_frame() {
-    let result = Arc::new(Mutex::new(None));
-    let kept = Arc::clone(&result);
+fn sends_the_frame_after_a_lost_frame_to_a_complete_session() {
+    let lost = Arc::new(Mutex::new(None));
+    let kept = Arc::clone(&lost);
     let home = move |test: Test, link: Link, incoming| async move {
         let mut writer = test.writer("a", &["value"]).await;
-        let now = test.now();
-        let clock = test.clock.clone();
+        let (clock, pool, now) =
+            (test.clock.clone(), Rc::clone(&test.pool), test.now());
         test.tasks.spawn(async move {
             clock.sleep(SETTLE).await;
-            super::write_wide(&mut writer, now, 0);
+            write_wide(&mut writer, now, 0);
             clock.sleep(SETTLE).await;
-            // The first frame waits for credit, so it misses at this commit.
-            super::write_wide(&mut writer, now, 1);
+            let mut blocks = fill(&pool);
+            drop(blocks.pop());
+            let outcomes = write(&mut writer, &[now + 1000], &[8]);
+            let [Outcome::Lost { range, .. }] = outcomes[..] else {
+                panic!("{outcomes:?}");
+            };
+            *kept.lock().expect("not poisoned") = range.end();
+            drop(blocks);
+            clock.sleep(SETTLE).await;
+            write_wide(&mut writer, now, 2);
             clock.sleep(SETTLE).await;
         });
-        let served = serve(&link, incoming).await;
-        *kept.lock().expect("not poisoned") = Some(served);
+        assert_eq!(serve(&link, incoming).await, Ok(()));
     };
     session(48, Class::Complete, false, home, |mut peer| async move {
-        peer.open(Mode::Complete { limit_bytes: 0 }, &[1, 2]).await;
-        assert_eq!(peer.recv().await, Ok(Some(vec![1])));
-        assert_eq!(peer.recv().await, Ok(Some(vec![3])));
+        let mut reader = open_complete(&mut peer, &[1, 2], 1 << 20).await;
+        let first = got(peer.receiver(), &mut reader).await;
+        let next = got(peer.receiver(), &mut reader).await;
+        let end = lost.lock().expect("not poisoned").expect("an end");
+        assert!(first.head.range.seq < end, "{:?}", first.head);
+        assert_eq!(next.head.range.seq, end);
+        peer.sender.finish().expect("finishes");
         assert_eq!(peer.recv().await, Ok(None));
     });
-    let served = result.lock().expect("not poisoned").take();
-    assert_eq!(served, Some(Ok(())));
 }
 
 #[test]
 fn ends_with_the_error_of_the_stream_when_the_peer_resets_it() {
     let served = served(49, Class::Complete, false, |mut peer| async move {
         peer.open(Mode::Complete { limit_bytes: 0 }, &[1, 2]).await;
-        assert_eq!(peer.recv().await, Ok(Some(vec![1])));
+        assert_eq!(peer.recv().await, Ok(Some(opened(0))));
         let Peer { node, sender, .. } = peer;
         sender.reset(Code(7));
         node.clock().sleep(QUIET).await;
@@ -769,14 +789,58 @@ fn keeps_the_highest_credit_sent_while_the_open_waits_for_a_home() {
             peer.credit(0).await.expect("sends the credit");
             let mut reader = Reader::new(&Open { mode, channels: 2 });
             let opened = peer.recv().await.expect("receives").expect("a message");
-            assert!(matches!(reader.decode(&opened), Ok(FromHome::Opened)));
-            let got = got(peer.receiver(), &mut reader).await.expect("a frame");
+            assert!(matches!(
+                reader.decode(Some(&opened)),
+                Ok(FromHome::Opened { live: 0 })
+            ));
+            let got = got(peer.receiver(), &mut reader).await;
             assert_eq!(places(&got), [0, 1]);
             assert_eq!(decoded(&got, &[I64])[0], [10]);
             peer.sender.finish().expect("finishes");
             assert_eq!(peer.recv().await, Ok(None));
         },
     );
+}
+
+/// `Opened` gives the open position of a complete session that opens after three
+/// frames, and its first head starts there.
+#[test]
+fn sends_the_open_position_in_opened_and_starts_the_first_head_at_it() {
+    let home = |test: Test, link: Link, incoming| async move {
+        let test = Rc::new(test);
+        let writing = Rc::clone(&test);
+        test.tasks.spawn(async move {
+            let mut writer = writing.writer("a", &["value"]).await;
+            for value in [10, 11, 12] {
+                writing.clock.sleep(SETTLE).await;
+                write(&mut writer, &[writing.now()], &[value]);
+            }
+            writing.clock.sleep(QUIET).await;
+            writing.clock.sleep(SETTLE).await;
+            write(&mut writer, &[writing.now()], &[13]);
+            writing.clock.sleep(SETTLE).await;
+        });
+        assert_eq!(serve(&link, incoming).await, Ok(()));
+    };
+    session(79, Class::Complete, false, home, |mut peer| async move {
+        peer.sleep(QUIET).await;
+        let mode = Mode::Complete {
+            limit_bytes: 1 << 20,
+        };
+        peer.open(mode, &[2, 1]).await;
+        let mut reader = Reader::new(&Open { mode, channels: 2 });
+        let opened = peer.recv().await.expect("receives").expect("a message");
+        assert_eq!(opened, self::opened(3));
+        assert!(matches!(
+            reader.decode(Some(&opened)),
+            Ok(FromHome::Opened { live: 3 })
+        ));
+        let got = got(peer.receiver(), &mut reader).await;
+        assert_eq!(got.head.range.seq, 3);
+        assert_eq!(decoded(&got, &[I64])[0], [13]);
+        peer.sender.finish().expect("finishes");
+        assert_eq!(peer.recv().await, Ok(None));
+    });
 }
 
 /// Runs a latest session whose peer opens `[value, time]` and waits for the home of
@@ -872,7 +936,7 @@ async fn stopped_as_failed(mut peer: Peer) {
     .await;
     let code = Code(wire::hub::FAILED);
     let mut message = peer.recv().await;
-    if message == Ok(Some(vec![1])) {
+    if message == Ok(Some(opened(0))) {
         message = peer.recv().await;
     }
     assert_eq!(message, Err(transport::Error::Reset { code }));
@@ -923,7 +987,7 @@ fn stops_a_session_whose_home_fails_after_the_open_with_failed() {
             &[1, 2],
         )
         .await;
-        assert_eq!(peer.recv().await, Ok(Some(vec![1])));
+        assert_eq!(peer.recv().await, Ok(Some(opened(0))));
         let code = Code(wire::hub::FAILED);
         assert_eq!(peer.recv().await, Err(transport::Error::Reset { code }));
     });
@@ -959,9 +1023,48 @@ fn closes_the_session_when_the_future_drops() {
     };
     session(55, Class::Complete, false, home, |mut peer| async move {
         peer.open(Mode::Complete { limit_bytes: 0 }, &[1, 2]).await;
-        assert_eq!(peer.recv().await, Ok(Some(vec![1])));
+        assert_eq!(peer.recv().await, Ok(Some(opened(0))));
         let code = Code(0);
         assert_eq!(peer.recv().await, Err(transport::Error::Reset { code }));
+    });
+}
+
+/// `Opened` gives the open position of a latest session that opens after three
+/// frames: the first seq of the newest frame, not 0 or the live tail.
+#[test]
+fn sends_the_newest_frame_in_the_opened_of_a_latest_session() {
+    let home = |test: Test, link: Link, incoming| async move {
+        let test = Rc::new(test);
+        let writing = Rc::clone(&test);
+        test.tasks.spawn(async move {
+            let mut writer = writing.writer("a", &["value"]).await;
+            for value in [10, 11, 12] {
+                writing.clock.sleep(SETTLE).await;
+                write(&mut writer, &[writing.now()], &[value]);
+            }
+            writing.clock.sleep(QUIET).await;
+            writing.clock.sleep(SETTLE).await;
+        });
+        assert_eq!(serve(&link, incoming).await, Ok(()));
+    };
+    session(80, Class::Latest, false, home, |mut peer| async move {
+        peer.sleep(QUIET).await;
+        peer.open(Mode::Latest, &[2, 1]).await;
+        let mut reader = Reader::new(&Open {
+            mode: Mode::Latest,
+            channels: 2,
+        });
+        let opened = peer.recv().await.expect("receives").expect("a message");
+        assert_eq!(opened, self::opened(2));
+        assert!(matches!(
+            reader.decode(Some(&opened)),
+            Ok(FromHome::Opened { live: 2 })
+        ));
+        let got = got(peer.receiver(), &mut reader).await;
+        assert_eq!(got.head.range.seq, 2);
+        assert_eq!(decoded(&got, &[I64])[0], [12]);
+        peer.sender.finish().expect("finishes");
+        assert_eq!(peer.recv().await, Ok(None));
     });
 }
 
@@ -981,7 +1084,10 @@ async fn open_complete(peer: &mut Peer, keys: &[u128], limit_bytes: u64) -> Read
     let channels = u32::try_from(keys.len()).expect("the keys fit a u32");
     let mut reader = Reader::new(&Open { mode, channels });
     let opened = peer.recv().await.expect("receives").expect("a message");
-    assert!(matches!(reader.decode(&opened), Ok(FromHome::Opened)));
+    assert!(matches!(
+        reader.decode(Some(&opened)),
+        Ok(FromHome::Opened { live: 0 })
+    ));
     reader
 }
 
@@ -991,22 +1097,18 @@ impl Peer {
     }
 }
 
-/// The next frame on `receiver`, or `None` after `Behind` and the finish.
-pub(super) async fn got(receiver: &mut Receiver, reader: &mut Reader) -> Option<Got> {
+/// The next frame on `receiver`.
+pub(super) async fn got(receiver: &mut Receiver, reader: &mut Reader) -> Got {
     let message = next(receiver).await;
-    let head = match reader.decode(&message).expect("a valid message") {
+    let head = match reader.decode(Some(&message)).expect("a valid message") {
         FromHome::Head(head) => head,
-        FromHome::Behind => {
-            let finished = receiver.recv().await.expect("receives");
-            assert!(finished.is_none(), "the home finished after behind");
-            return None;
-        }
         other => panic!("{other:?} came, not a head"),
     };
     let (mut ends, mut body) = (Vec::new(), Vec::new());
     loop {
         let message = next(receiver).await;
-        let Ok(FromHome::Ends { ends: run, last }) = reader.decode(&message) else {
+        let Ok(FromHome::Ends { ends: run, last }) = reader.decode(Some(&message))
+        else {
             panic!("a message of the ends run");
         };
         ends.extend(run);
@@ -1016,12 +1118,12 @@ pub(super) async fn got(receiver: &mut Receiver, reader: &mut Reader) -> Option<
     }
     while reader.body().is_some() {
         let message = next(receiver).await;
-        let Ok(FromHome::Body { bytes, .. }) = reader.decode(&message) else {
+        let Ok(FromHome::Body { bytes, .. }) = reader.decode(Some(&message)) else {
             panic!("a message of the body");
         };
         body.extend_from_slice(bytes);
     }
-    Some(Got { head, ends, body })
+    Got { head, ends, body }
 }
 
 /// The next message on `receiver`, which must come before the finish.
@@ -1074,7 +1176,7 @@ fn sends_the_place_of_the_listing_past_a_channel_the_frame_lacks() {
     };
     session(95, Class::Complete, false, home, |mut peer| async move {
         let mut reader = open_complete(&mut peer, &[2, 7, 1], 1 << 20).await;
-        let got = got(peer.receiver(), &mut reader).await.expect("a frame");
+        let got = got(peer.receiver(), &mut reader).await;
         assert_eq!(got.head.series, 2);
         assert_eq!(places(&got), [0, 2]);
         peer.sender.finish().expect("finishes");
@@ -1100,7 +1202,7 @@ fn sends_each_frame_through_the_places_of_the_open() {
         let mut reader = open_complete(&mut peer, &[2, 1], 1 << 20).await;
         let mut first = None;
         for (values, stamps) in [(&[10, 20][..], &[0, 1][..]), (&[30], &[2])] {
-            let got = got(peer.receiver(), &mut reader).await.expect("a frame");
+            let got = got(peer.receiver(), &mut reader).await;
             assert_eq!(got.head.path, FramePath::Live);
             assert_eq!(got.head.series, 2);
             assert_eq!(places(&got), [0, 1]);
@@ -1142,7 +1244,7 @@ fn sends_the_range_of_the_group_of_the_session() {
     };
     session(74, Class::Complete, false, home, |mut peer| async move {
         let mut reader = open_complete(&mut peer, &[4, 3], 1 << 20).await;
-        let got = got(peer.receiver(), &mut reader).await.expect("a frame");
+        let got = got(peer.receiver(), &mut reader).await;
         assert_eq!(got.head.range, frame::Range { seq: 0, count: 3 });
         assert_eq!(places(&got), [0, 1]);
         let [values, stamps] =
@@ -1188,7 +1290,7 @@ fn sends_a_frame_wider_than_a_message_of_the_peer() {
     session(64, Class::Complete, false, home, |mut peer| async move {
         let keys: Vec<_> = KEYS.chain([1]).collect();
         let mut reader = open_complete(&mut peer, &keys, 1 << 20).await;
-        let got = got(peer.receiver(), &mut reader).await.expect("a frame");
+        let got = got(peer.receiver(), &mut reader).await;
         let series = u32::try_from(keys.len()).expect("fits");
         assert_eq!(places(&got), (0..series).collect::<Vec<_>>());
         let types: Vec<_> = KEYS.map(|_| I64).collect();
@@ -1239,7 +1341,7 @@ fn sends_the_zeros_after_a_series_cut_at_the_message_limit() {
     };
     session(66, Class::Complete, false, home, |mut peer| async move {
         let mut reader = open_complete(&mut peer, &[6, 2, 1], 1 << 20).await;
-        let got = got(peer.receiver(), &mut reader).await.expect("a frame");
+        let got = got(peer.receiver(), &mut reader).await;
         assert_eq!(places(&got), [0, 1, 2]);
         let end = usize::try_from(got.ends[0].1).expect("fits");
         assert!(end > PEER_MESSAGE);
@@ -1314,7 +1416,7 @@ fn sends_no_message_for_a_last_series_of_no_bytes() {
     session(67, Class::Complete, false, home, |mut peer| async move {
         let keys: Vec<_> = KEYS.chain([1, EMPTY]).collect();
         let mut reader = open_complete(&mut peer, &keys, 1 << 20).await;
-        let got = got(peer.receiver(), &mut reader).await.expect("a frame");
+        let got = got(peer.receiver(), &mut reader).await;
         let series = u32::try_from(keys.len()).expect("fits");
         assert_eq!(places(&got), (0..series).collect::<Vec<_>>());
         let two = u32::try_from(2 * PEER_MESSAGE).expect("fits");
@@ -1340,7 +1442,7 @@ fn sends_a_frame_once_a_credit_raises_the_grant() {
     session(61, Class::Complete, false, home, |mut peer| async move {
         let mut reader = open_complete(&mut peer, &[2, 1], 0).await;
         peer.credit(1 << 20).await.expect("sends the credit");
-        let got = got(peer.receiver(), &mut reader).await.expect("a frame");
+        let got = got(peer.receiver(), &mut reader).await;
         assert_eq!(places(&got), [0, 1]);
         assert_eq!(decoded(&got, &[I64])[0], [10]);
         peer.sender.finish().expect("finishes");
@@ -1370,7 +1472,7 @@ fn sends_each_frame_of_a_commit_past_the_window_as_credits_come() {
         let mut reader = open_complete(&mut peer, &[1, 2], LIMIT).await;
         let (mut firsts, mut spent, mut credit, mut grants) = (Vec::new(), 0, LIMIT, 0);
         for _ in 0..FRAMES {
-            let got = got(peer.receiver(), &mut reader).await.expect("a frame");
+            let got = got(peer.receiver(), &mut reader).await;
             firsts.push(decoded(&got, &[STAMP])[0][0]);
             let series = usize::try_from(got.head.series).expect("fits");
             spent += types::frame::charge(series, got.body.len());
@@ -1388,11 +1490,11 @@ fn sends_each_frame_of_a_commit_past_the_window_as_credits_come() {
     });
 }
 
-/// Over many runs, a session that spends its window and sends no credit gets each
-/// frame before the one it missed at the next commit, in order, then `Behind` and the
-/// finish.
+/// Over many runs, a session that spends its window and misses frames before its
+/// credit comes gets each frame in order, the missed ones from disk.
 #[test]
-fn sends_each_frame_before_a_miss_then_behind() {
+fn sends_each_frame_in_order_to_a_session_that_misses_frames_before_its_credit() {
+    const WINDOW: u64 = 1 << 15;
     for seed in 0..32 {
         let home = |test: Test, link: Link, incoming| async move {
             let mut writer = test.writer("a", &["value"]).await;
@@ -1415,17 +1517,27 @@ fn sends_each_frame_before_a_miss_then_behind() {
             false,
             home,
             |mut peer| async move {
-                let mut reader = open_complete(&mut peer, &[1, 2], 1 << 15).await;
-                let mut firsts = Vec::new();
-                while let Some(got) = got(peer.receiver(), &mut reader).await {
+                let mut reader = open_complete(&mut peer, &[1, 2], WINDOW).await;
+                let (mut firsts, mut spent, mut credited) = (Vec::new(), 0, false);
+                while firsts.len() < 9 {
+                    let got = got(peer.receiver(), &mut reader).await;
+                    let series = usize::try_from(got.head.series).expect("fits");
+                    spent += types::frame::charge(series, got.body.len());
                     firsts.push(decoded(&got, &[STAMP])[0][0]);
+                    if spent >= WINDOW && !credited {
+                        assert!(firsts.len() < 8, "{firsts:?}");
+                        peer.sleep(Span::from_nanos(2 * SETTLE.nanos())).await;
+                        peer.credit(1 << 30).await.expect("sends the credit");
+                        credited = true;
+                    }
                 }
-                assert!(!firsts.is_empty() && firsts.len() < 8, "{firsts:?}");
                 let expected: Vec<_> = (0..)
                     .map(|n| firsts[0] + n * 1000)
                     .take(firsts.len())
                     .collect();
                 assert_eq!(firsts, expected);
+                peer.sender.finish().expect("finishes");
+                assert_eq!(peer.recv().await, Ok(None));
             },
         );
     }
@@ -1433,7 +1545,7 @@ fn sends_each_frame_before_a_miss_then_behind() {
 
 /// A session of `value` and `time` spends the charge of the frame the peer builds,
 /// not of the home's frame, which also holds `value-c`: it gets each frame until those
-/// charges reach its window, then `Behind` at the next commit.
+/// charges reach its window, then no frame until its credit.
 #[test]
 fn charges_a_complete_session_by_the_frame_the_peer_builds() {
     const LIMIT: u64 = 1 << 16;
@@ -1457,14 +1569,18 @@ fn charges_a_complete_session_by_the_frame_the_peer_builds() {
     session(62, Class::Complete, false, home, |mut peer| async move {
         let mut reader = open_complete(&mut peer, &[2, 1], LIMIT).await;
         let mut charges = Vec::new();
-        while let Some(got) = got(peer.receiver(), &mut reader).await {
+        while charges.iter().sum::<u64>() < LIMIT {
+            let got = got(peer.receiver(), &mut reader).await;
             let series = usize::try_from(got.head.series).expect("fits");
             charges.push(types::frame::charge(series, got.body.len()));
         }
-        let (last, before) = charges.split_last().expect("a frame");
+        let (_, before) = charges.split_last().expect("a frame");
         assert!(charges.len() < 16, "{charges:?}");
         assert!(before.iter().sum::<u64>() < LIMIT, "{charges:?}");
-        assert!(before.iter().sum::<u64>() + last >= LIMIT, "{charges:?}");
+        let clock = peer.node.clock();
+        assert_eq!(super::within(&clock, QUIET, peer.recv()).await, None);
+        peer.sender.finish().expect("finishes");
+        assert_eq!(peer.recv().await, Ok(None));
     });
 }
 
@@ -1486,13 +1602,13 @@ fn stops_an_open_whose_reply_finds_the_pool_empty_with_busy() {
     });
     let served = result.lock().expect("not poisoned").take();
     let exhausted = block::Error::Exhausted {
-        requested: 1,
+        requested: 9,
         available: 64,
     };
     assert_eq!(served, Some(Err(serve::Error::Pool(exhausted.clone()))));
     assert_eq!(
         serve::Error::Pool(exhausted).to_string(),
-        "the home's pool had no block for a reply: pool is full: asked for 1 bytes, 64 \
+        "the home's pool had no block for a reply: pool is full: asked for 9 bytes, 64 \
          bytes free"
     );
 }

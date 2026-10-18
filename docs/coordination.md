@@ -36,8 +36,16 @@ Never share `CARGO_TARGET_DIR` between worktrees. Cargo gives a path crate the s
 in each, so a stale build of another worktree's code can pass or fail a gate.
 
 Delete a scratch copy of the repo, with its `target`, when its job ends: a review copy,
-a breaker worktree, or a cargo-mutants copy. Each takes 1 to 9 GiB. On 2026-10-05 stale
-copies filled the disk, and Bash failed in every local session.
+a breaker worktree, or a cargo-mutants copy. Each takes 1 to 9 GiB. Delete a copy that
+your own session made by the exact path that its task notification or its command gave.
+Never loop over `.claude/worktrees` or `git worktree list`: the worktrees of other
+sessions are there too. Delete a copy of another session only after a crash or a
+restart, in this order: the session of that machine that `laptop.monitor` names lists
+the copies of the machine once, `laptop.monitor` asks each session of the machine which
+copies of that list it still uses, and the named session deletes each copy of that list
+that no session uses, one exact path at a time. It never deletes a copy that is not on
+that list. On 2026-10-05 stale copies filled the disk, and Bash failed in every local
+session.
 
 ## Heavy runs on the laptop
 
@@ -48,6 +56,10 @@ background, because it waits for the lock:
 ```sh
 lockf -k ~/.cache/foundation-heavy.lock <command>
 ```
+
+Unset `CARGO_TARGET_DIR` for `cargo mutants`: each copy builds in its own target. With
+it set, the copies run each other's binaries, and a result is wrong in either direction
+(https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6208749857).
 
 A benchmark starts only when `uptime` shows a load under 8, and its PR names the load.
 Builds and the PR gates do not take the lock. On 2026-10-05 the load reached 170, and a

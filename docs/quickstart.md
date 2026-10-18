@@ -93,8 +93,14 @@ The node runs until you stop it with Ctrl-C. It keeps its data in `foundation-da
 and the first start gives it the name `edge`. It prints:
 
 ```text
+2026-10-17T23:25:38.180662Z INFO node: started name=edge address=127.0.0.1:57215 shards=32
 node edge runs in foundation-data. Stop it with Ctrl-C.
 ```
+
+The first line is from the log of the node, which goes to stderr. After step 4, the log
+also has a line when a connector runs, ends, restarts, or stops, and when its error or
+note changes, and Ctrl-C writes `stopped`. `--log-level warn` keeps only the warnings
+and errors, and `--log-format json` writes each line as a JSON object.
 
 ## 4. Plan and apply the config
 
@@ -111,25 +117,30 @@ foundation plan plant.hcl --out plant.plan
 + channel plant.trend
 + connector plc
 + channel plc.status.backoff
++ channel plc.status.bad
 + channel plc.status.class
 + channel plc.status.error
 + channel plc.status.in
 + channel plc.status.lost
 + channel plc.status.missed
++ channel plc.status.mistyped
 + channel plc.status.note
 + channel plc.status.restarts
 + channel plc.status.state
 + channel plc.status.time
++ channel plc.status.uncertain
 + connector influx
 + channel influx.status.backoff
 + channel influx.status.class
 + channel influx.status.confirmed
 + channel influx.status.error
++ channel influx.status.lost
 + channel influx.status.note
++ channel influx.status.oversized
 + channel influx.status.restarts
 + channel influx.status.state
 + channel influx.status.time
-24 to add, 0 to change, 0 to remove.
+29 to add, 0 to change, 0 to remove.
 note: 2 definitions that Foundation made are not in the files: @admin.@access, @admin.@subject
 ```
 
@@ -148,7 +159,7 @@ foundation apply plant.plan
 ```
 
 ```text
-Applied plant.plan: 24 added, 3 homes listed.
+Applied plant.plan: 29 added, 3 homes listed.
 ```
 
 `apply` refuses a plan when the node's config changed after the plan. Plan again.
@@ -161,13 +172,19 @@ foundation status
 
 ```text
 CONNECTOR  KIND    STATE    ADDRESS                    COUNTS
-influx     influx  running  http://localhost:8086      confirmed=1517
-plc        opcua   running  opc.tcp://localhost:50000  in=1520 lost=0 missed=0
+influx     influx  running  http://localhost:8086      confirmed=1517 lost=0 oversized=0
+plc        opcua   running  opc.tcp://localhost:50000  bad=0 in=1520 lost=0 missed=0 mistyped=0 uncertain=0
 ```
 
 `in` counts the samples that the connector read from the server and the node stored.
-`confirmed` counts the samples that InfluxDB confirmed. Run `status` again, and both
-grow.
+`confirmed` counts the samples that InfluxDB confirmed, and `lost` the sample times that
+the node lost before InfluxDB got them, not the lines of only NaN or infinite values
+that the run leaves out. A gap that the node reports again after a restart counts again.
+`oversized` counts the `string` and `bytes` samples that the run leaves out as a field
+of over 65,536 bytes.
+Run `status` again, and `in` and `confirmed` grow. `bad`, `uncertain`, and `mistyped`
+count the values that the connector left out: a value that is not Good, or one of
+another type than its channel.
 
 See the samples in InfluxDB:
 

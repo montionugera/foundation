@@ -5,7 +5,9 @@
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
+use std::fs::Permissions;
 use std::future::poll_fn;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Command;
@@ -50,7 +52,10 @@ where
     let data = dir.join("data");
     std::fs::create_dir(data.join("secrets")).expect("makes the directory");
     let token = [&PLAIN[..], b"\n"].concat();
-    std::fs::write(data.join("secrets/site.token"), token).expect("writes it");
+    let file = data.join("secrets/site.token");
+    std::fs::write(&file, token).expect("writes it");
+    std::fs::set_permissions(&file, Permissions::from_mode(0o600))
+        .expect("makes it private");
     let ((), found) = ALLOCATOR.freed_holding(&PLAIN, || {
         let get = threads.start("get", move || case(Files::new(disk), data));
         get.expect("the thread starts")

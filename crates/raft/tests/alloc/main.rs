@@ -61,6 +61,7 @@ fn node() -> Raft {
         key: key(1),
         election_ticks: 10,
         heartbeat_ticks: 1,
+        fits: |_| true,
     };
     let start = Start {
         voters: voters(&[1, 2, 3]),

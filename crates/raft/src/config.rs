@@ -1,9 +1,9 @@
 use types::node;
 
-use crate::{Entry, Hard, Voters};
+use crate::{Entry, Hard, Message, Voters};
 
 /// The fixed inputs of a [`Raft`](crate::Raft).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct Config {
     /// This node.
     pub key: node::Key,
@@ -13,6 +13,13 @@ pub struct Config {
     /// The ticks between a leader's heartbeats. Must be at least 1 and lower than
     /// `election_ticks`.
     pub heartbeat_ticks: u32,
+    /// Whether the caller can send `message` to each peer. An `Append` with no proof
+    /// drops its last entries until it fits, down to one, so `fits` must hold an
+    /// `Append` of the largest entry with no proof. A message with a proof drops its
+    /// entries, then the oldest links of its chain, so `fits` must hold each message
+    /// with no entry and no link. `raft` panics when `fits` is false for an `Append`
+    /// of one entry with no proof, or for a message with no entry and no link.
+    pub fits: fn(&Message) -> bool,
 }
 
 /// The state a [`Raft`](crate::Raft) starts from: what the node had on disk. A node

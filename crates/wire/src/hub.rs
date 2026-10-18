@@ -9,7 +9,8 @@
 //! ends run exactly [`Head::series`] ends, so the receiver counts them to find where a
 //! run ends. The body starts a new message.
 //!
-//! The streams of a program's session are in [`client`].
+//! The streams of a program's session are in [`client`], and the frames of its write
+//! stream and their replies in [`write`](mod@write).
 //!
 //! [`Home`] decodes the messages from the reader's node, and [`Reader`] those from the
 //! home. Each checks the order and the runs of its side of the session.
@@ -22,20 +23,28 @@
 //! - [`Open`]: kind 1 (latest) or 2 (complete), then for complete `limit_bytes`
 //!   (`u64`), then the channel count (`u32`).
 //! - [`Credit`]: kind 3, then `limit_bytes` (`u64`).
-//! - [`Reply`]: kind 1 (opened). Kind 2 (head): path (`u8`, live 0, backfill 1), seq
-//!   (`u64`), count (`u32`), and the series count (`u32`). Kind 3 (behind).
+//! - [`Reply`]: kind 1 (opened), then `live` (`u64`). Kind 2 (head): path (`u8`, live
+//!   0, backfill 1), seq (`u64`), count (`u32`), and the series count (`u32`). Kind 3
+//!   is retired.
 //! - [`keys`]: each channel key (`u128`).
 //! - [`ends`]: place and end (each `u32`) for each series.
 
 pub mod client;
+mod frames;
+mod gaps;
 mod home;
+mod part;
 mod reader;
+pub mod write;
 
 use std::fmt;
+use std::num::NonZeroUsize;
 
+pub use frames::{Due, Frames, Step};
+pub use gaps::Gaps;
 pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
-use types::frame::{Path, Range};
+use types::frame::{Form, Path, Range};
 
 use crate::common::{Fields, Length, Run, Writer, body};
 
@@ -45,7 +54,7 @@ const CREDIT: u8 = 3;
 
 const OPENED: u8 = 1;
 const HEAD: u8 = 2;
-const BEHIND: u8 = 3;
+// Reply kind 3 is retired: no reply takes it.
 
 /// Stop code: the home does not know a channel of the open.
 pub const UNKNOWN: u32 = 16;
@@ -243,13 +252,14 @@ impl Credit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reply {
     /// The session is open at the home.
-    Opened,
+    Opened {
+        /// The first live seq of the index that the session can get: its open
+        /// position. A latest session opens at the first seq of the newest frame of
+        /// the index, or at the live tail when there is none.
+        live: u64,
+    },
     /// The head of one frame. The run of its [`ends`] follows, then its body.
     Head(Head),
-    /// The session missed a frame, so the home ends it. It follows each frame
-    /// before the miss, and no message follows it: the home then finishes its
-    /// stream.
-    Behind,
 }
 
 /// The head of one frame that the home sends.
@@ -271,7 +281,7 @@ impl Reply {
     #[must_use]
     pub fn encoded_len(&self) -> usize {
         match self {
-            Self::Opened | Self::Behind => 1,
+            Self::Opened { .. } => 9,
             Self::Head(_) => 18,
         }
     }
@@ -285,8 +295,10 @@ impl Reply {
     pub fn encode(&self, out: &mut [u8]) {
         let mut out = Writer::new(out, self.encoded_len());
         match self {
-            Self::Opened => out.put(&[OPENED]),
-            Self::Behind => out.put(&[BEHIND]),
+            Self::Opened { live } => {
+                out.put(&[OPENED]);
+                out.put(&live.to_le_bytes());
+            }
             Self::Head(head) => {
                 assert!(head.series > 0, "a head names at least one series");
                 assert!(
@@ -318,12 +330,9 @@ impl Reply {
         };
         match kind {
             OPENED => {
+                let live = u64::from_le_bytes(*fields.take()?);
                 fields.end()?;
-                Ok(Self::Opened)
-            }
-            BEHIND => {
-                fields.end()?;
-                Ok(Self::Behind)
+                Ok(Self::Opened { live })
             }
             HEAD => {
                 let [path] = *fields.take()?;
@@ -496,8 +505,9 @@ pub mod ends {
     }
 }
 
-/// A message of a reader session that is not valid. The decoders of [`client`] give
-/// [`client::Error`].
+/// A message of a reader session or of a write stream that is not valid, or a write
+/// stream that ends inside a frame.
+/// The decoders of [`client`] give [`client::Error`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The message has no bytes.
@@ -516,14 +526,15 @@ pub enum Error {
     Channels,
     /// A head names no series.
     Series,
-    /// A head's range ends past the highest seq.
+    /// The range of a head or of a write's reply ends past the highest seq.
     Range {
         /// The seq of the range.
         seq: u64,
         /// The count of the range.
         count: u32,
     },
-    /// A head names no path.
+    /// A head names no path: no read head has this path byte, and no write head has
+    /// this time byte.
     Path {
         /// The path byte.
         byte: u8,
@@ -534,7 +545,7 @@ pub enum Error {
         kind: u8,
     },
     /// A message comes before the session is open: a credit before the open, or a
-    /// head or a behind before opened.
+    /// head before opened.
     Unopened {
         /// The kind byte of the message.
         kind: u8,
@@ -549,12 +560,12 @@ pub enum Error {
     /// A head of a reader session is on the backfill path. A session gets only live
     /// frames.
     Backfill,
-    /// A head starts before the end of the head before it. The heads of a session
-    /// rise.
+    /// A head starts before the end of the head before it, or the first head before
+    /// the open position. The heads of a session rise from that position.
     Seq {
         /// The seq of the head.
         seq: u64,
-        /// The seq plus the count of the head before it.
+        /// The seq plus the count of the head before it, or the open position.
         end: u64,
     },
     /// A message of a run has more keys or ends than remain in the run.
@@ -571,8 +582,6 @@ pub enum Error {
         /// The bytes that remain in the body.
         remain: usize,
     },
-    /// A message comes after the home ended the session with `Behind`.
-    Ended,
     /// A message that only a complete session has comes in a latest session.
     Latest {
         /// The kind byte of the message.
@@ -583,8 +592,41 @@ pub enum Error {
         /// The bytes of the body that did not come.
         remain: usize,
     },
-    /// The home finished the stream outside a body, before it ended the session.
+    /// The home finished the stream outside a body.
     Finished,
+    /// The range of a write's reply holds no sample.
+    Count {
+        /// The seq of the range.
+        seq: u64,
+    },
+    /// A write's reply refuses a frame with a code that no
+    /// [`write::Refusal`] has.
+    Refusal {
+        /// The code.
+        code: u8,
+    },
+    /// A write's head holds no sample.
+    Samples,
+    /// A write's head names no form.
+    Form {
+        /// The form byte.
+        byte: u8,
+    },
+    /// A write's head of [`write::Time::Node`] has a count other than 1 or the encoded
+    /// form.
+    Stamp {
+        /// The samples of each series.
+        count: u32,
+        /// The form.
+        form: Form,
+    },
+    /// The program finished its write stream inside a frame.
+    Cut {
+        /// The bytes of the frame that came: its head, its ends, and its body.
+        received: usize,
+        /// The bytes of the frame, once its ends are whole.
+        len: Option<NonZeroUsize>,
+    },
 }
 
 // Frame decoders give it for each message: it stays `Copy`, with no drop glue.
@@ -594,6 +636,7 @@ const _: fn() = || {
 };
 
 impl fmt::Display for Error {
+    #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str("the hub message is empty"),
@@ -609,12 +652,13 @@ impl fmt::Display for Error {
             Self::Series => f.write_str("the frame head names no series"),
             Self::Range { seq, count } => write!(
                 f,
-                "the frame head has {count} samples from seq {seq}, which end past the \
+                "the range has {count} samples from seq {seq}, which end past the \
                  highest seq"
             ),
             Self::Path { byte } => write!(
                 f,
-                "the frame head names path {byte}, which this node does not know"
+                "the frame head names path or time {byte}, which this node does not \
+                 know"
             ),
             Self::Reopen { kind } => write!(
                 f,
@@ -635,8 +679,8 @@ impl fmt::Display for Error {
             }
             Self::Seq { seq, end } => write!(
                 f,
-                "the frame head starts at seq {seq}, before the end {end} of the head \
-                 before it"
+                "the frame head starts at seq {seq}, before seq {end}, where the head \
+                 before it ended or the session opened"
             ),
             Self::Run { items, remain } => write!(
                 f,
@@ -646,9 +690,6 @@ impl fmt::Display for Error {
                 f,
                 "the body message has {len} bytes, and {remain} remain in the body"
             ),
-            Self::Ended => {
-                f.write_str("a hub message came after the home ended the session")
-            }
             Self::Latest { kind } => write!(
                 f,
                 "the hub message has kind {kind}, which a latest session does not have"
@@ -658,8 +699,38 @@ impl fmt::Display for Error {
                 "the stream ended with {remain} bytes of its body to come"
             ),
             Self::Finished => {
-                f.write_str("the home finished the stream before it ended the session")
+                f.write_str("the home finished the stream outside a body")
             }
+            Self::Count { seq } => {
+                write!(f, "the reply's range from seq {seq} holds no sample")
+            }
+            Self::Refusal { code } => {
+                write!(f, "the refused frame has code {code}, which no refusal has")
+            }
+            Self::Samples => f.write_str("the frame head holds no sample"),
+            Self::Form { byte } => {
+                write!(f, "the frame head names form {byte}, which no frame has")
+            }
+            Self::Stamp { count, form } => write!(
+                f,
+                "the frame head that the node stamps has {count} samples in the \
+                 {form:?} form, not 1 in the raw form"
+            ),
+            Self::Cut {
+                received,
+                len: Some(len),
+            } => write!(
+                f,
+                "the stream ended inside a frame: {received} of {len} bytes"
+            ),
+            Self::Cut {
+                received,
+                len: None,
+            } => write!(
+                f,
+                "the stream ended inside a frame: {received} bytes, before the end of \
+                 its ends"
+            ),
         }
     }
 }
@@ -950,8 +1021,12 @@ mod tests {
 
         #[test]
         fn pins_the_wire_values() {
-            assert_eq!(encode_reply(Reply::Opened), [1]);
-            assert_eq!(encode_reply(Reply::Behind), [3]);
+            assert_eq!(
+                encode_reply(Reply::Opened {
+                    live: 0x0102_0304_0506_0708
+                }),
+                [1, 8, 7, 6, 5, 4, 3, 2, 1]
+            );
             let backfill = head(Path::Backfill, 0x0102_0304_0506_0708, 0x0a0b_0c0d, 3);
             assert_eq!(
                 encode_reply(backfill),
@@ -971,14 +1046,28 @@ mod tests {
 
         #[test]
         fn refuses_unknown_kinds_before_the_length() {
-            check_kinds(Reply::decode, &[1, 2, 3], &[1, 18]);
+            check_kinds(Reply::decode, &[1, 2], &[1, 9, 18]);
+        }
+
+        #[test]
+        fn refuses_the_retired_kind_of_behind() {
+            assert_eq!(Reply::decode(&[3]), Err(Error::Kind { kind: 3 }));
         }
 
         #[test]
         fn refuses_each_wrong_length() {
-            check(Reply::decode, 1, &[2, 18]);
+            check(Reply::decode, 1, &[1, 2, 8, 10, 18]);
             check(Reply::decode, 2, &[1, 2, 17, 19]);
-            check(Reply::decode, 3, &[2, 18]);
+        }
+
+        #[test]
+        fn refuses_an_opened_of_one_byte() {
+            let error = Reply::decode(&[1]).expect_err("an opened has 9 bytes");
+            assert_eq!(error, Error::Length { len: 1 });
+            assert_eq!(
+                error.to_string(),
+                "the hub message has 1 bytes, which no message of its kind has"
+            );
         }
 
         #[test]
@@ -1289,11 +1378,11 @@ mod tests {
             (Error::Series, "the frame head names no series"),
             (
                 Error::Range { seq: 7, count: 2 },
-                "the frame head has 2 samples from seq 7, which end past the highest seq",
+                "the range has 2 samples from seq 7, which end past the highest seq",
             ),
             (
                 Error::Path { byte: 2 },
-                "the frame head names path 2, which this node does not know",
+                "the frame head names path or time 2, which this node does not know",
             ),
             (
                 Error::Reopen { kind: 1 },
@@ -1317,7 +1406,8 @@ mod tests {
             ),
             (
                 Error::Seq { seq: 3, end: 11 },
-                "the frame head starts at seq 3, before the end 11 of the head before it",
+                "the frame head starts at seq 3, before seq 11, where the head before it ended \
+                 or the session opened",
             ),
             (
                 Error::Run {
@@ -1334,10 +1424,6 @@ mod tests {
                 "the body message has 11 bytes, and 10 remain in the body",
             ),
             (
-                Error::Ended,
-                "a hub message came after the home ended the session",
-            ),
-            (
                 Error::Latest { kind: 3 },
                 "the hub message has kind 3, which a latest session does not have",
             ),
@@ -1347,7 +1433,15 @@ mod tests {
             ),
             (
                 Error::Finished,
-                "the home finished the stream before it ended the session",
+                "the home finished the stream outside a body",
+            ),
+            (
+                Error::Count { seq: 7 },
+                "the reply's range from seq 7 holds no sample",
+            ),
+            (
+                Error::Refusal { code: 8 },
+                "the refused frame has code 8, which no refusal has",
             ),
         ];
         for (error, text) in cases {
@@ -1366,8 +1460,7 @@ mod tests {
     fn reply() -> impl Strategy<Value = Reply> {
         let path = prop_oneof![Just(Path::Live), Just(Path::Backfill)];
         prop_oneof![
-            Just(Reply::Opened),
-            Just(Reply::Behind),
+            any::<u64>().prop_map(|live| Reply::Opened { live }),
             (path, any::<u64>(), any::<u32>(), 1..=u32::MAX).prop_map(
                 |(path, seq, count, series)| {
                     head(
@@ -1446,6 +1539,11 @@ mod tests {
         #[test]
         fn round_trips_a_reply(reply in reply()) {
             prop_assert_eq!(Reply::decode(&encode_reply(reply)), Ok(reply));
+        }
+
+        #[test]
+        fn encodes_no_reply_of_the_retired_kind(reply in reply()) {
+            prop_assert_ne!(encode_reply(reply)[0], 3);
         }
 
         #[test]

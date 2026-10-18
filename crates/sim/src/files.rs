@@ -144,6 +144,7 @@ pub(crate) enum Done {
     Open {
         handle: Handle,
         len: u64,
+        exposed: bool,
     },
     Names(Vec<PathBuf>),
     Unit,
@@ -381,9 +382,14 @@ impl Files {
                 Err(Cause::Code(EIO))
             }
             _ if failed => Err(Cause::Code(EIO)),
-            Call::Open(mode) => disk
-                .open(key, &path, *mode)
-                .map(|(handle, len)| Done::Open { handle, len }),
+            Call::Open(mode) => {
+                disk.open(key, &path, *mode)
+                    .map(|(handle, len, exposed)| Done::Open {
+                        handle,
+                        len,
+                        exposed,
+                    })
+            }
             Call::List => disk.list(&path).map(Done::Names),
             Call::CreateDir => disk.create_dir(key, &path).map(|()| Done::Unit),
             Call::Remove => disk.remove(&path).map(|()| Done::Unit),
@@ -551,6 +557,12 @@ impl Files {
     /// The path of descriptor `handle` of `node` now, as its open or rename gave it.
     pub(crate) fn path(&self, node: usize, handle: Handle) -> PathBuf {
         self.disks[node].path(handle).to_path_buf()
+    }
+
+    /// Sets whether other users can read the file at `path` on `node`. Gives whether a
+    /// file is there.
+    pub(crate) fn expose(&mut self, node: usize, path: &Path, exposed: bool) -> bool {
+        self.disks[node].expose(path, exposed)
     }
 
     /// Makes `handle`, which an open of `path` on `node` gave, a descriptor.

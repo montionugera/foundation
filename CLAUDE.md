@@ -96,10 +96,12 @@ A PR gets at most 3 review rounds (`/review`, "Round cap"). Reviewers report eve
 finding in one round, never a few at a time. The author fixes all findings of a round in
 one batch of commits, then asks for the next round. After round 3, only a defect (wrong
 behavior, data loss, a crash, or an oracle weakening) gets its fix, with a test that
-fails without it. Each other finding goes to an issue, other than a missing approval,
-OK, or link that `/review`, "Done", asks for. A design flaw (`/review`, "Round cap")
-goes to an issue only with the OK of its design approver, or the PR closes for a new
-design. Review hunts deep flaws (a wrong design, wrong behavior, lost data), not style.
+fails without it, and only a missing fuzz input that `docs/claude/testing.md`,
+"Fuzzing", asks for gets its input. Each other finding goes to an issue, other than a
+missing approval, OK, or link that `/review`, "Done", asks for. A design flaw
+(`/review`, "Round cap") goes to an issue only with the OK of its design approver, or
+the PR closes for a new design. Review hunts deep flaws (a wrong design, wrong behavior,
+lost data), not style.
 
 ## 🚨 The repo is the memory 🚨
 
@@ -117,7 +119,8 @@ GitHub issue.
 2. **Layer 1 decides. Layer 2 does.** Layer 1 is pure logic: no I/O, no clock, no
    threads, no async runtime. Layer 2 drives I/O. It gets clock, network, disk, and
    randomness as inputs (`env`), never from the OS directly. Wall time comes only from
-   `clock`. One exception: TLS draws its own randomness from aws-lc (TLS RANDOMNESS).
+   `clock`. One exception: TLS and the OPC UA secure channel draw their own randomness
+   from aws-lc (TLS RANDOMNESS).
 3. **Layer 3 reaches the core only through `hub`.** Connectors and calculations never
    import another layer 2 crate.
 4. **`node` is the composition root.** It is the only crate that knows every other

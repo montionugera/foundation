@@ -43,6 +43,7 @@ fn receiver(term: u64) -> Raft {
         key: key(2),
         election_ticks: 10,
         heartbeat_ticks: 1,
+        fits: |_| true,
     };
     let start = Start {
         hard: Hard {

@@ -1,29 +1,137 @@
 //! `foundation start`: a node on a data directory until SIGTERM.
 
-use crate::quickstart::shown;
+use crate::quickstart::blocks;
 use crate::rig::{self, Rig};
-use crate::text;
+use crate::{after_stamp, logged, text};
 
-/// The exit status, the standard output, and the standard error of `output`.
+/// The exit status, the standard output, and the standard error of `output` after the
+/// log of the node.
+///
+/// # Panics
+///
+/// When the log is not the events of a run that `start` gives: none, `started` then
+/// `stopped`, or `stopped` alone.
 fn ended(output: &std::process::Output) -> (Option<i32>, &str, &str) {
-    (
-        output.status.code(),
-        text(&output.stdout),
-        text(&output.stderr),
-    )
+    let (log, errors) = logged(&output.stderr);
+    let events: Vec<String> = log.lines().map(event).collect();
+    let events: Vec<&str> = events.iter().map(String::as_str).collect();
+    assert!(
+        [
+            &[][..],
+            &["INFO node: started", "INFO node: stopped"],
+            &["INFO node: started", "ERROR node: stopped"],
+            &["ERROR node: stopped"],
+        ]
+        .contains(&&events[..]),
+        "not the log of a run: {log:?}"
+    );
+    (output.status.code(), text(&output.stdout), errors)
 }
 
-/// What `foundation start --name edge` prints on a first start: the start block of the
-/// quickstart page.
+/// The level, the target, and the message of the text or JSON log line `line`.
+fn event(line: &str) -> String {
+    if line.starts_with('{') {
+        let line: serde_json::Value = serde_json::from_str(line).expect("a JSON line");
+        let part =
+            |value: &serde_json::Value| value.as_str().expect("a string").to_owned();
+        let (level, target) = (part(&line["level"]), part(&line["target"]));
+        format!("{level} {target}: {}", part(&line["fields"]["message"]))
+    } else {
+        let line = after_stamp(line).expect("a stamp");
+        line.split(' ').take(3).collect::<Vec<_>>().join(" ")
+    }
+}
+
+/// `log` with the stamp and the field `mesh_time` cut from each line: the OS gives
+/// both.
+fn unstamped(log: &str) -> Vec<&str> {
+    (log.lines())
+        .map(|line| {
+            let line = after_stamp(line).expect("a stamp");
+            line.split_once(" mesh_time=")
+                .map_or(line, |(line, _)| line)
+        })
+        .collect()
+}
+
+#[test]
+fn a_node_logs_that_it_started_and_that_it_stopped_before_its_lines() {
+    let mut rig = Rig::new();
+    rig.start();
+    let output = rig.stop();
+    let (log, errors) = logged(&output.stderr);
+    let [started, stopped] = unstamped(log)[..] else {
+        panic!("not two lines: {log:?}")
+    };
+    let shards = os::shards().expect("read the cores").cores();
+    let address = (started.strip_prefix("INFO node: started name=edge address="))
+        .and_then(|rest| rest.strip_suffix(&format!(" shards={shards}")))
+        .unwrap_or_else(|| panic!("not the line of a start: {started:?}"));
+    address.parse::<std::net::SocketAddr>().expect("an address");
+    assert_eq!((stopped, errors), ("INFO node: stopped", ""));
+}
+
+#[test]
+fn a_node_that_fails_logs_its_error_before_its_lines() {
+    let rig = Rig::new();
+    let output = rig.run(&["start", "--name", "@x"], b"");
+    let (log, errors) = logged(&output.stderr);
+    let error = "the name @x has a segment that starts with `@`, which is reserved for \
+                 Foundation; give another name";
+    assert_eq!(
+        unstamped(log),
+        [format!("ERROR node: stopped error=\"{error}\"").as_str()]
+    );
+    assert!(errors.starts_with("error[node.reserved]: "), "{errors:?}");
+}
+
+#[test]
+fn a_node_with_json_logs_json() {
+    let mut rig = Rig::new();
+    rig.start_with(&["--name", "edge", "--json"]);
+    let output = rig.stop();
+    let (log, _) = logged(&output.stderr);
+    let messages: Vec<_> = (log.lines())
+        .map(|line| {
+            let line: serde_json::Value = serde_json::from_str(line).expect("JSON");
+            line["fields"]["message"].clone()
+        })
+        .collect();
+    assert_eq!(messages, ["started", "stopped"]);
+}
+
+/// What `foundation start --name edge` prints to standard output on a first start.
 fn runs() -> &'static str {
-    shown("node ")
+    started().1
+}
+
+/// The start block of the quickstart page: the log of a first start on stderr, then
+/// its standard output.
+fn started() -> (&'static str, &'static str) {
+    let shown: Vec<_> = blocks("text")
+        .filter(|block| block.contains(" INFO node: started "))
+        .collect();
+    let [block] = shown[..] else {
+        panic!("the page has {} start blocks, not one", shown.len());
+    };
+    logged(block.as_bytes())
+}
+
+/// Each word of the first line of `log` after its stamp, with no value after a `=`.
+fn shape(log: &str) -> Vec<&str> {
+    (unstamped(log)[0].split(' '))
+        .map(|word| word.split_once('=').map_or(word, |(key, _)| key))
+        .collect()
 }
 
 #[test]
 fn a_node_prints_that_it_runs_and_exits_0_at_sigterm() {
     let mut rig = Rig::new();
     rig.start();
-    assert_eq!(ended(&rig.stop()), (Some(0), runs(), ""));
+    let output = rig.stop();
+    let (log, stdout) = started();
+    assert_eq!(ended(&output), (Some(0), stdout, ""));
+    assert_eq!(shape(logged(&output.stderr).0), shape(log));
 }
 
 #[test]
@@ -346,7 +454,6 @@ fn a_kept_pool_budget_that_gives_a_shard_too_little_fails() {
 
 /// A file `budget` with a checksum that matches and the largest pool budget. On one
 /// core, the part of shard 0 is the whole budget.
-#[cfg_attr(not(target_os = "linux"), ignore = "needs taskset")]
 #[test]
 fn a_kept_pool_budget_too_large_for_the_host_fails_with_no_panic() {
     let rig = Rig::new();
@@ -366,7 +473,6 @@ fn a_kept_pool_budget_too_large_for_the_host_fails_with_no_panic() {
 
 /// A kept pool budget of 1 PiB, whose part on one core is under `usize::MAX` bytes and
 /// more than the address space of the host.
-#[cfg_attr(not(target_os = "linux"), ignore = "needs taskset")]
 #[test]
 fn a_kept_pool_budget_that_the_system_cannot_reserve_fails() {
     let rig = Rig::new();
@@ -386,7 +492,14 @@ fn a_kept_pool_budget_that_the_system_cannot_reserve_fails() {
 }
 
 /// A first start under an address space of 1 GiB, which its pool budget does not fit.
-#[cfg_attr(not(target_os = "linux"), ignore = "needs taskset and prlimit")]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "only Linux: macOS does not enforce a limit of address space"
+)]
+#[cfg_attr(
+    windows,
+    ignore = "only Linux: Windows has no limit on the address space of a process"
+)]
 #[test]
 fn a_first_pool_budget_that_the_system_cannot_reserve_fails() {
     let rig = Rig::new();
@@ -642,7 +755,8 @@ fn a_node_whose_standard_output_is_closed_runs_and_exits_0_at_sigterm() {
     let status = rig.wait("the node exits at SIGTERM", || {
         node.exited().ok_or_else(String::new)
     });
-    assert_eq!((status.code(), node.errors().as_str()), (Some(0), ""));
+    let errors = node.errors();
+    assert_eq!((status.code(), logged(errors.as_bytes()).1), (Some(0), ""));
 }
 
 /// Linux only: the test reads where each thread waits from `/proc`.

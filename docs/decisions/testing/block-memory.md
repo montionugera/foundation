@@ -1,7 +1,18 @@
 - **BLOCK MEMORY (2026-10-04)** A `block::Pool` gets its address space through
   `block::Memory`, a small `unsafe` trait in `block`, because `block` sits below `env`.
   `os` implements it over `mmap` (reserve, commit, purge); `block::Heap` implements it
-  over `std::alloc` for tests, Miri, and `sim`. `block` makes no OS call. `alloc` takes
+  over `std::alloc` for tests, Miri, `sim`, and a pool that can hold each page it
+  touched until it drops. The shard pools of the `foundation` binary use
+  `os::Memory`, and `sim` tests pass `Heap` (SHARD POOLS; `laptop.architect`,
+  2026-10-18T09:49:05Z, #3172:
+  https://github.com/synnaxlabs/foundation/pull/3172#issuecomment-6248421277, which
+  supersedes "`block::Heap` implements it over `std::alloc` for tests, Miri, and
+  `sim`", #2, commit 355682156). `Heap`
+  writes zero over a page at its first commit, so a pool on it touches only the pages
+  it commits. The record of the page bits is one allocation in `new`, and `commit`
+  allocates nothing (`laptop.architect`, 2026-10-18T05:38:15Z, #3136:
+  https://github.com/synnaxlabs/foundation/issues/3136#issuecomment-6246174511).
+  `block` makes no OS call. `alloc` takes
   back returned blocks when its size has no free block, and `purge` takes them back
   first. `block` exports no call for it, and no shard takes them back on a loop turn.
   `purge` gives idle pages back on a timer that the shard owns (#2; SHARD POOLS;
@@ -11,7 +22,14 @@
   bytes of a `Memory` are usable from the start: they hold the pool's header, so
   `Pool::new` makes no commit that can fail. A purged page stops counting against the
   memory the system can commit. On Linux with strict overcommit, `madvise` and
-  `mprotect` keep that charge, so `os` purges with a `MAP_FIXED` remap (#475).
+  `mprotect` keep that charge, so `os` purges with a `MAP_FIXED` remap (#475). A
+  discard gives back the memory of pages and keeps their protection and their commit
+  charge, so a free block between blocks in use splits no mapping (#2907). `os`
+  discards with `MADV_DONTNEED` on Linux (the POSIX advice of rustix is a no-op there)
+  and `MADV_FREE` on macOS, where the OS takes the pages when it needs memory, so the
+  footprint of the task can count them until then. A failed discard panics and leaks
+  nothing (`laptop.architect-2`, 2026-10-16T19:41:36Z:
+  https://github.com/synnaxlabs/foundation/pull/2907#issuecomment-6223324987).
   `os::memory::Memory` reserves `PROT_NONE` pages, which take no charge, and commits
   with `mprotect`; `ENOMEM` gives `Refused`, and a refused commit can leave part of its
   range committed and charged until a purge or the drop. A failed purge remap panics,
@@ -31,3 +49,7 @@
   such as `os::memory::Memory` in `node` and `testing::Scarce` in a test (decided by the
   architect, 2026-10-07T08:55:57Z, #1294:
   https://github.com/synnaxlabs/foundation/issues/1294#issuecomment-6034509040).
+  `Pool::erased(config)` makes the same pool on heap memory that, once the pool and
+  its blocks have dropped, writes zero over the first `ALIGN` bytes and each range
+  that the pool committed, for secrets (`laptop.architect`, 2026-10-14T02:00:07Z,
+  #2650: https://github.com/synnaxlabs/foundation/issues/2650#issuecomment-6159203859).

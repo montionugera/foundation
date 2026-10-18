@@ -69,6 +69,7 @@ fn peak(len: usize, gets: usize, kinds: usize, cloned: bool) -> usize {
         file.write_at(0, &[block]).await.expect("writes it");
         file.close().await;
         drop(pool);
+        node.make_dir(Path::new("/run/secrets"));
         let absolute = Path::new("/run/secrets/plant.key");
         node.paths()
             .write(absolute, &vec![b'k'; len])

@@ -9,6 +9,7 @@ publish.workspace = true
 access = { path = "../access" }
 block = { path = "../block" }
 env = { path = "../env" }
+tracing.workspace = true
 transport = { path = "../transport" }
 types = { path = "../types" }
 wire = { path = "../wire" }
@@ -16,9 +17,21 @@ wire = { path = "../wire" }
 [dev-dependencies]
 aws-lc-rs.workspace = true
 block = { path = "../block", features = ["sim"] }
+codec = { path = "../codec" }
+counting = { path = "../counting" }
 hub = { path = "../hub", features = ["sim"] }
+proptest.workspace = true
 sim = { path = "../sim" }
 spec = { path = "../spec" }
+
+[[test]]
+name = "alloc"
+harness = false
+
+[[bench]]
+name = "read"
+harness = false
+test = true
 
 [lints]
 workspace = true

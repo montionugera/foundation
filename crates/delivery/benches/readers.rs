@@ -1,16 +1,19 @@
-//! The cost of one acknowledgment, which runs per message, of one live frame to the
-//! complete readers, which runs per frame, and of one floor, which the home reads when
-//! `buffer` trims.
+//! The cost of one acknowledgment, which runs per message, by an unnamed and by a named
+//! reader, of one live frame to the complete readers, and of one frame from disk to a
+//! complete reader, which run per frame.
 
 use std::sync::Arc;
 
 use delivery::complete::{Charge, Key};
-use delivery::{Next, Position, Reader, Readers, Start};
+use delivery::{Next, Position, Reader, Readers, Start, named};
 use divan::Bencher;
+use divan::counter::ItemsCount;
 use types::channel;
 use types::frame::key_set::{Group, Interner, KeySet};
 use types::frame::{Draft, Form, Frame, Path};
+use types::log::Mark;
 use types::sample::{Scalar, Type};
+use types::time::Span;
 
 fn main() {
     divan::main();
@@ -18,15 +21,25 @@ fn main() {
 
 /// `sessions` recording readers, each with credit for `limit_bytes`.
 fn opened(sessions: usize, limit_bytes: u64) -> (Readers, Vec<Key>) {
+    opened_as(sessions, limit_bytes, |_| Reader::Unnamed)
+}
+
+/// `sessions` recording readers that `reader` makes from each number, each with
+/// credit for `limit_bytes`.
+fn opened_as(
+    sessions: usize,
+    limit_bytes: u64,
+    reader: impl Fn(usize) -> Reader,
+) -> (Readers, Vec<Key>) {
     let start = Start::At(Position {
         live: 0,
         backfill: Some(0),
     });
     let mut readers = Readers::new(0);
     let keys = (0..sessions)
-        .map(|_| {
+        .map(|n| {
             readers
-                .open(Reader::Unnamed, start, limit_bytes, Charge::Whole)
+                .open(reader(n), start, limit_bytes, Charge::Whole, None)
                 .key
         })
         .collect();
@@ -36,8 +49,25 @@ fn opened(sessions: usize, limit_bytes: u64) -> (Readers, Vec<Key>) {
 /// The last of `sessions` recording readers acknowledges.
 #[divan::bench(args = [1, 16])]
 fn ack(bencher: Bencher<'_, '_>, sessions: usize) {
-    let (mut readers, keys) = opened(sessions, 0);
-    let key = keys[sessions - 1];
+    let (readers, keys) = opened(sessions, 0);
+    acked(bencher, readers, keys[sessions - 1]);
+}
+
+/// The last of `sessions` named recording readers acknowledges.
+#[divan::bench(args = [1, 16])]
+fn ack_named(bencher: Bencher<'_, '_>, sessions: usize) {
+    let (readers, keys) = opened_as(sessions, 0, |n| Reader::Named {
+        reader: named::Key {
+            subject: "bench".parse().expect("valid name"),
+            name: format!("r{n}").parse().expect("valid name"),
+        },
+        hold: Span::from_nanos(1),
+    });
+    acked(bencher, readers, keys[sessions - 1]);
+}
+
+/// `key`, a session of `readers`, acknowledges a higher position each time.
+fn acked(bencher: Bencher<'_, '_>, mut readers: Readers, key: Key) {
     let mut seq = 0;
     bencher.bench_local(|| {
         seq += 1;
@@ -73,7 +103,35 @@ fn release(bencher: Bencher<'_, '_>, sessions: usize) {
     bencher.bench_local(|| {
         readers.queue(&frame, &set, seq..seq + 1);
         seq += 1;
-        divan::black_box(readers.release(seq));
+        divan::black_box(readers.release(seq, 0));
+        for &key in &keys {
+            divan::black_box(readers.take(key.into()));
+        }
+    });
+}
+
+/// [`release`] with one more session that waits for a commit that never comes, so
+/// each release also walks the complete sessions.
+#[divan::bench(args = [1, 16, 256])]
+fn release_gated(bencher: Bencher<'_, '_>, sessions: usize) {
+    let (mut readers, keys) = opened(sessions, u64::MAX);
+    let start = Start::At(Position {
+        live: 0,
+        backfill: Some(0),
+    });
+    readers.open(
+        Reader::Unnamed,
+        start,
+        u64::MAX,
+        Charge::Whole,
+        Some(u64::MAX),
+    );
+    let (frame, set) = frame();
+    let mut seq = 0;
+    bencher.bench_local(|| {
+        readers.queue(&frame, &set, seq..seq + 1);
+        seq += 1;
+        divan::black_box(readers.release(seq, seq));
         for &key in &keys {
             divan::black_box(readers.take(key.into()));
         }
@@ -98,7 +156,7 @@ fn release_waiting(bencher: Bencher<'_, '_>, sessions: usize) {
             readers.queue(&frame, &set, seq..seq + 1);
             seq += 1;
         }
-        divan::black_box(readers.release(seq));
+        divan::black_box(readers.release(seq, 0));
         for (&key, spent) in keys.iter().zip(&mut spent) {
             while let Next::Frame(frame) = readers.take(key.into()) {
                 *spent += frame.charge();
@@ -108,36 +166,46 @@ fn release_waiting(bencher: Bencher<'_, '_>, sessions: usize) {
     });
 }
 
-/// [`BURST`] lost live frames behind one queued frame, then its release, to `sessions`
-/// recording readers that keep up: each session misses them.
-#[divan::bench(args = [1, 16])]
-fn lose(bencher: Bencher<'_, '_>, sessions: usize) {
+/// [`BURST`] frames from disk to one recording reader that opened below them, as one
+/// read gives them and ends, and its take of each: the cost of each frame of a
+/// catch-up, past the read.
+#[divan::bench]
+fn fill(bencher: Bencher<'_, '_>) {
     let (frame, set) = frame();
     bencher
+        .counter(ItemsCount::new(usize::try_from(BURST).expect("few")))
         .with_inputs(|| {
-            let (mut readers, _) = opened(sessions, u64::MAX);
-            readers.queue(&frame, &set, 0..1);
-            readers
-        })
-        .bench_local_refs(|readers| {
-            for seq in 1..=BURST {
-                divan::black_box(readers.lose(seq..seq + 1));
+            let mut readers = Readers::new(0);
+            for seq in 0..BURST {
+                readers.queue(&frame, &set, seq..seq + 1);
             }
-            divan::black_box(readers.release(BURST + 1).len())
+            let start = Start::At(Position {
+                live: 0,
+                backfill: None,
+            });
+            let key = readers
+                .open(Reader::Unnamed, start, u64::MAX, Charge::Whole, None)
+                .key;
+            readers.queue(&frame, &set, BURST..BURST + 1);
+            let read: Vec<_> = (0..BURST).map(|_| frame.clone()).collect();
+            (readers, key, read)
+        })
+        .bench_local_refs(|(readers, key, read)| {
+            let Next::Disk { .. } = readers.take((*key).into()) else {
+                panic!("the reader reads from disk");
+            };
+            for (seq, frame) in (0..BURST).zip(read.drain(..)) {
+                let filled = readers.fill(*key, frame, &set, seq..seq + 1);
+                assert!(filled, "filled");
+            }
+            readers.reached(*key, Mark::at(BURST), BURST);
+            for _ in 0..BURST {
+                let Next::Frame(frame) = readers.take((*key).into()) else {
+                    panic!("each frame from disk waits for the reader");
+                };
+                divan::black_box(frame);
+            }
         });
-}
-
-/// One lost live frame with no frame queued, as when the ring is full, to `sessions`
-/// recording readers. Each session misses the first, so later ones walk sessions that
-/// are behind.
-#[divan::bench(args = [1, 16, 256])]
-fn lose_at_once(bencher: Bencher<'_, '_>, sessions: usize) {
-    let (mut readers, _) = opened(sessions, u64::MAX);
-    let mut seq = 0;
-    bencher.bench_local(|| {
-        divan::black_box(readers.lose(seq..seq + 1).len());
-        seq += 1;
-    });
 }
 
 /// The channels of [`wide`]: one index and its data channels.
@@ -207,13 +275,14 @@ fn release_places_first(bencher: Bencher<'_, '_>) {
                     start,
                     u64::MAX,
                     Charge::Places(slots.clone()),
+                    None,
                 )
                 .key;
             readers.queue(&frame, &set, 0..1);
             (readers, key)
         })
         .bench_local_values(|(mut readers, key)| {
-            divan::black_box(readers.release(1));
+            divan::black_box(readers.release(1, 0));
             divan::black_box(readers.take(key.into()));
             readers
         });
@@ -232,13 +301,19 @@ fn release_through(
         backfill: Some(0),
     });
     let key = readers
-        .open(Reader::Unnamed, start, u64::MAX, Charge::Places(slots))
+        .open(
+            Reader::Unnamed,
+            start,
+            u64::MAX,
+            Charge::Places(slots),
+            None,
+        )
         .key;
     let mut seq = 0;
     bencher.bench_local(|| {
         readers.queue(&frame, &set, seq..seq + 1);
         seq += 1;
-        divan::black_box(readers.release(seq));
+        divan::black_box(readers.release(seq, 0));
         divan::black_box(readers.take(key.into()));
     });
 }
@@ -289,6 +364,7 @@ fn release_places_alternating(bencher: Bencher<'_, '_>, channels: usize) {
             start,
             u64::MAX,
             Charge::Places([slot].into()),
+            None,
         )
         .key;
     let mut seq = 0;
@@ -296,14 +372,8 @@ fn release_places_alternating(bencher: Bencher<'_, '_>, channels: usize) {
         readers.queue(&fa, &a, seq..seq + 1);
         readers.queue(&fb, &b, seq + 1..seq + 2);
         seq += 2;
-        divan::black_box(readers.release(seq));
+        divan::black_box(readers.release(seq, 0));
         divan::black_box(readers.take(key.into()));
         divan::black_box(readers.take(key.into()));
     });
-}
-
-#[divan::bench(args = [1, 16, 256])]
-fn floor(bencher: Bencher<'_, '_>, sessions: usize) {
-    let (readers, _) = opened(sessions, 0);
-    bencher.bench_local(|| divan::black_box(&readers).floor());
 }

@@ -2,18 +2,24 @@
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
-use std::ffi::CStr;
+use std::ffi::{CStr, c_int};
 use std::future::poll_fn;
 use std::mem::ManuallyDrop;
 use std::panic::{self, AssertUnwindSafe};
 use std::pin::pin;
 use std::ptr::NonNull;
 use std::task::Poll;
+use std::thread;
+
+use env::net;
 
 use crate::connection::Manager;
+use crate::event;
 use crate::ffi::{self, Status};
-use crate::node::{Key, Node};
+use crate::node::{Key, Node, ns0};
 use crate::value::Value;
+#[cfg(test)]
+use types::time::Span;
 
 /// A started test server of open62541 on the loop of a connection manager.
 /// [`Server::close`] deletes it, and a drop leaks it.
@@ -84,11 +90,52 @@ impl Server {
     /// If `manager` has no listener that a listen open did not take, or open62541
     /// refuses the server or its start.
     pub(crate) unsafe fn start(manager: &Manager, host: &CStr, sessions: u16) -> Self {
+        // SAFETY: as the caller ensures.
+        unsafe { Self::started(manager, host, sessions, std::ptr::null()) }
+    }
+
+    /// Makes and starts the test server as [`Server::start`] does, which also has each
+    /// of the three policies in `Sign` and in `SignAndEncrypt` on the certificate and
+    /// key of `security`, and whose channels trust only the certificate that
+    /// `security` trusts.
+    ///
+    /// # Safety
+    ///
+    /// As [`Server::start`].
+    ///
+    /// # Panics
+    ///
+    /// As [`Server::start`].
+    #[cfg(test)]
+    pub(crate) unsafe fn start_secure(
+        manager: &Manager,
+        host: &CStr,
+        sessions: u16,
+        security: &crate::secure::Security,
+    ) -> Self {
+        let security = security.raw();
+        // SAFETY: as the caller ensures, and the server copies `security`.
+        unsafe { Self::started(manager, host, sessions, &raw const security) }
+    }
+
+    /// [`Server::start`], with the policies of `security` when it is not null.
+    ///
+    /// # Safety
+    ///
+    /// As [`Server::start`], and `security` is null or points at a live
+    /// `shim_security`.
+    unsafe fn started(
+        manager: &Manager,
+        host: &CStr,
+        sessions: u16,
+        security: *const ffi::test::Security,
+    ) -> Self {
         let port = manager
             .port()
             .expect("a server starts on a manager with a listener that no server took");
         let events = manager.events().raw();
-        // SAFETY: the loop outlives the server, as the caller ensures.
+        // SAFETY: the loop outlives the server, as the caller ensures, and `security`
+        // is null or live.
         let raw = unsafe {
             ffi::test::shim_server_new(
                 events,
@@ -96,6 +143,7 @@ impl Server {
                 host.as_ptr(),
                 sessions,
                 crate::connection::CHUNKS,
+                security,
             )
         };
         let raw = NonNull::new(raw).expect("open62541 refused the server");
@@ -117,37 +165,57 @@ impl Server {
         unsafe { ffi::test::UA_Server_addNamespace(self.raw(), uri.as_ptr()) }
     }
 
-    /// Adds the variable `node` with `value`.
+    /// Adds the variable `node` with `value`, of its type, under the Objects folder.
     ///
     /// # Panics
     ///
     /// If open62541 refuses the node, or the key of `node` is the number 0.
     pub(crate) fn add_scalar(&self, node: &Node, value: Value) {
-        let (scalar, kind) = value.raw();
-        // SAFETY: the server lives, and it copies the name of `node` and `scalar`.
+        let (id, value) = variant(value);
+        self.add_variable(&objects(node, c"value", id, value));
+    }
+
+    /// Adds `variable`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node or the decode of its value, or the key of its node
+    /// is the number 0.
+    pub(crate) fn add_variable(&self, variable: &Variable<'_>) {
+        let (value, size) = variable
+            .value
+            .as_ref()
+            .map_or((std::ptr::null(), 0), |value| (value.as_ptr(), value.len()));
+        // SAFETY: the server lives, and it copies each name and the decoded value.
         let status = Status(unsafe {
-            ffi::test::shim_server_add_scalar(
+            ffi::test::shim_server_add_variable(
                 self.raw(),
-                added(node),
-                &raw const scalar,
-                kind,
+                added(&variable.node),
+                (&variable.parent).into(),
+                variable.reference,
+                variable.name.as_ptr(),
+                (&variable.data_type).into(),
+                variable.rank,
+                variable.access,
+                value,
+                size,
             )
         });
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
 
-    /// Adds the variable `node` with an array of two Doubles.
+    /// Adds the variable `node` with an array of two Doubles, under the Objects
+    /// folder.
     ///
     /// # Panics
     ///
     /// If open62541 refuses the node, or the key of `node` is the number 0.
     #[cfg(test)]
     pub(crate) fn add_doubles(&self, node: &Node) {
-        // SAFETY: the server lives, and it copies the name of `node`.
-        let status = Status(unsafe {
-            ffi::test::shim_server_add_doubles(self.raw(), added(node))
+        self.add_variable(&Variable {
+            rank: 1,
+            ..objects(node, c"doubles", ns0::DOUBLE, doubles())
         });
-        assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
 
     /// Adds the scalar variable `node` of the `DataType` `BaseDataType`, and answers
@@ -163,12 +231,7 @@ impl Server {
         node: &Node,
         answer: impl FnMut() -> (Value, types::quality::Quality) + 'static,
     ) {
-        let source = NonNull::from(Box::leak(Box::new(Source {
-            read,
-            answer: Box::new(answer),
-            added: false,
-        })));
-        self.sources.push(source);
+        let source = self.source(Box::new(answer), false);
         // SAFETY: the server lives, it copies the name of `node`, and the close frees
         // `source` after the delete.
         let status = Status(unsafe {
@@ -181,6 +244,66 @@ impl Server {
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
         // SAFETY: it lives, and the server reads it only while the loop runs.
         unsafe { (*source.as_ptr()).added = true };
+    }
+
+    /// Caps each page of a Browse of the server at `most` references.
+    #[cfg(feature = "sim")]
+    pub(crate) fn cap_references(&self, most: u32) {
+        // SAFETY: the server lives.
+        unsafe { ffi::test::shim_server_references(self.raw(), most) };
+    }
+
+    /// Makes `answer` answer each later read of the variable `node`, which open62541
+    /// adds, such as the state of the server, as [`Server::add_source`] does.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 has no variable `node`, or its key is the number 0.
+    #[cfg(test)]
+    pub(crate) fn set_source(
+        &mut self,
+        node: &Node,
+        answer: impl FnMut() -> (Value, types::quality::Quality) + 'static,
+    ) {
+        let source = self.source(Box::new(answer), true);
+        // SAFETY: the server lives, and the close frees `source` after the delete.
+        let status = Status(unsafe {
+            ffi::test::shim_server_set_source(
+                self.raw(),
+                added(node),
+                source.as_ptr().cast(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the source");
+    }
+
+    /// Makes a [`Source`] of `answer` that the close frees.
+    #[cfg(feature = "sim")]
+    fn source(
+        &mut self,
+        answer: Box<dyn FnMut() -> (Value, types::quality::Quality)>,
+        added: bool,
+    ) -> NonNull<Source> {
+        let source = NonNull::from(Box::leak(Box::new(Source {
+            read,
+            answer,
+            added,
+        })));
+        self.sources.push(source);
+        source
+    }
+
+    /// Sets the most session timeout that the server gives a later session, in whole
+    /// ms.
+    ///
+    /// # Panics
+    ///
+    /// If `most` is past `u32::MAX` ms.
+    #[cfg(test)]
+    pub(crate) fn set_session_timeout(&self, most: Span) {
+        let ms = u32::try_from(most.nanos() / 1_000_000).expect("a timeout of u32 ms");
+        // SAFETY: the server lives.
+        unsafe { ffi::test::shim_server_session_timeout(self.raw(), ms) };
     }
 
     /// The number of the `DataType` of the variable `node`, in namespace 0.
@@ -200,18 +323,40 @@ impl Server {
         id
     }
 
-    /// Adds the variable `node` with a `ByteString` of `length` zero bytes.
+    /// Adds the variable `node` with the String `text`, under the Objects folder.
     ///
     /// # Panics
     ///
     /// If open62541 refuses the node, or the key of `node` is the number 0.
     #[cfg(test)]
+    pub(crate) fn add_string(&self, node: &Node) {
+        let text = [&4_i32.to_le_bytes()[..], b"text"].concat();
+        let value = scalar(ns0::STRING, &text);
+        self.add_variable(&objects(node, c"string", ns0::STRING, value));
+    }
+
+    /// Adds the variable `node` with a `ByteString` of `size` zero bytes, under the
+    /// Objects folder.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node, `size` is past `i32::MAX`, or the key of `node`
+    /// is the number 0.
     pub(crate) fn add_bytes(&self, node: &Node, size: usize) {
-        // SAFETY: the server lives, and it copies the name of `node`.
-        let status = Status(unsafe {
-            ffi::test::shim_server_add_bytes(self.raw(), added(node), size)
-        });
-        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+        let length =
+            i32::try_from(size).expect("a ByteString of at most i32::MAX bytes");
+        let mut bytes = length.to_le_bytes().to_vec();
+        bytes.resize(4 + size, 0);
+        let value = scalar(ns0::BYTE_STRING, &bytes);
+        self.add_variable(&objects(node, c"bytes", ns0::BYTE_STRING, value));
+    }
+
+    /// Refuses each Read of more than `most` nodes, 0 for none, with
+    /// `BadTooManyOperations`. It adds no variable `ns=0;i=11705`, so a client does
+    /// not know the limit.
+    pub(crate) fn refuse_reads_past(&self, most: u32) {
+        // SAFETY: the server lives.
+        unsafe { ffi::test::shim_server_reads(self.raw(), most) };
     }
 
     /// Sets the limits of each later channel of the server.
@@ -235,13 +380,207 @@ impl Server {
     ///
     /// On a second call, as open62541 refuses the second add of the variable.
     pub(crate) fn set_per_read(&self, most: u32) {
+        self.refuse_reads_past(most);
+        self.add_scalar(&Node::ns0(ffi::MAX_NODES_PER_READ), Value::U32(most));
+    }
+
+    /// Sets the `MaxNodesPerBrowse` of the server to `browse` and its
+    /// `MaxNodesPerTranslateBrowsePathsToNodeIds` to `translate`, each 0 for none, and
+    /// adds the variables `ns=0;i=11710` and `ns=0;i=11712` that give them.
+    ///
+    /// # Panics
+    ///
+    /// On a second call, as open62541 refuses the second add of each variable.
+    #[cfg(test)]
+    pub(crate) fn set_per_browse(&self, browse: u32, translate: u32) {
         // SAFETY: the server lives.
-        unsafe { ffi::test::shim_server_reads(self.raw(), most) };
-        let node = Node {
-            namespace: 0,
-            key: Key::Number(ffi::MAX_NODES_PER_READ),
-        };
-        self.add_scalar(&node, Value::U32(most));
+        unsafe { ffi::test::shim_server_browses(self.raw(), browse, translate) };
+        for (number, most) in [(11710, browse), (11712, translate)] {
+            self.add_scalar(&Node::ns0(number), Value::U32(most));
+        }
+    }
+
+    /// Counts each Browse request that the server processes from now, and the most
+    /// continuation points that one session holds.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 cannot allocate the counts.
+    #[cfg(test)]
+    pub(crate) fn count(&self) -> Counts<'_> {
+        // SAFETY: the server lives.
+        let counts = unsafe { ffi::test::shim_server_count(self.raw()) };
+        Counts {
+            counts: NonNull::new(counts.cast_mut())
+                .expect("open62541 allocates the counts"),
+            server: std::marker::PhantomData,
+        }
+    }
+
+    /// Adds the variable `ns=0;i=2735` that gives `most` as the
+    /// `MaxBrowseContinuationPoints` of the server. The server holds 32 points for each
+    /// session, whatever it gives.
+    ///
+    /// # Panics
+    ///
+    /// On a second call, as open62541 refuses the second add of the variable.
+    #[cfg(test)]
+    pub(crate) fn report_points(&self, most: u16) {
+        self.add_scalar(&Node::ns0(2735), Value::U16(most));
+    }
+
+    /// Adds the folder `node` with the browse name `name` and the display name
+    /// `display`, under `parent` by the reference type of the number `reference` in
+    /// namespace 0.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
+    pub(crate) fn add_folder(
+        &self,
+        node: &Node,
+        parent: &Node,
+        reference: u32,
+        name: &CStr,
+        display: &CStr,
+    ) {
+        // SAFETY: the server lives, and it copies each name.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_folder(
+                self.raw(),
+                added(node),
+                parent.into(),
+                reference,
+                name.as_ptr(),
+                display.as_ptr(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Adds the folder of a GUID in namespace 1 with the browse and display name
+    /// `guid`, under `parent` by `Organizes`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node.
+    pub(crate) fn add_guid(&self, parent: &Node) {
+        // SAFETY: the server lives, and it copies the name of `parent`.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_guid(self.raw(), parent.into())
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Adds the data type `node` with the browse name `name`, a subtype of `parent`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
+    pub(crate) fn add_data_type(&self, node: &Node, parent: &Node, name: &CStr) {
+        // SAFETY: the server lives, and it copies each name.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_data_type(
+                self.raw(),
+                added(node),
+                parent.into(),
+                name.as_ptr(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Adds the property `0:EngineeringUnits` `node` of `variable`, an
+    /// `EUInformation` of the `namespaceUri` `uri`, the display name `text`, and the
+    /// `unitId` `code`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
+    pub(crate) fn add_unit(
+        &self,
+        node: &Node,
+        variable: &Node,
+        uri: &CStr,
+        text: &CStr,
+        code: i32,
+    ) {
+        // SAFETY: the server lives, and it copies each name and text.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_unit(
+                self.raw(),
+                added(node),
+                variable.into(),
+                uri.as_ptr(),
+                text.as_ptr(),
+                code,
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Adds a reference of the type of the number `reference` in namespace 0 from
+    /// `source` to `target`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the reference.
+    pub(crate) fn add_reference(&self, source: &Node, reference: u32, target: &Node) {
+        // SAFETY: the server lives, and it copies each name.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_reference(
+                self.raw(),
+                source.into(),
+                reference,
+                target.into(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the reference");
+    }
+
+    /// Adds the view `node` with the browse and display name `name`, under `parent` by
+    /// `Organizes`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
+    #[cfg(test)]
+    pub(crate) fn add_view(&self, node: &Node, parent: &Node, name: &CStr) {
+        // SAFETY: the server lives, and it copies each name.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_view(
+                self.raw(),
+                added(node),
+                parent.into(),
+                name.as_ptr(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Deletes the reference of the type of the number `reference` in namespace 0
+    /// from `source` to `target`, in both directions.
+    ///
+    /// # Panics
+    ///
+    /// If the server has no such reference.
+    #[cfg(test)]
+    pub(crate) fn delete_reference(
+        &self,
+        source: &Node,
+        reference: u32,
+        target: &Node,
+    ) {
+        // SAFETY: the server lives, and it copies each name.
+        let status = Status(unsafe {
+            ffi::test::shim_server_delete_reference(
+                self.raw(),
+                source.into(),
+                reference,
+                target.into(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the delete");
     }
 
     /// Gives the server, for a call that reads or changes it.
@@ -251,45 +590,59 @@ impl Server {
 
     /// Starts a server on `manager` with an empty host and room for `sessions`
     /// sessions, as [`Server::start`] does, and gives it to `add`. Then drives
-    /// `manager` until `until` completes, closes the server as [`Server::close`] does,
-    /// drops `manager`, and gives the output of `until`.
+    /// `manager` until `until` completes or the accept of its listener fails, closes
+    /// the server as [`Server::close`] does, drops `manager`, and gives the output of
+    /// `until`.
+    ///
+    /// # Errors
+    ///
+    /// The error of the accept, when it fails before `until` completes. A failure in
+    /// the same poll as the end of `until` wins.
     ///
     /// # Panics
     ///
     /// As [`Server::start`] and [`Server::close`] do. A panic of `add` closes the
     /// server and drops `manager` before it goes on. Another panic leaks the server and
-    /// `manager`.
+    /// `manager`. A drop of the future while it waits, as in a crash of its node,
+    /// closes the server and drops `manager` in the drop, with no wait.
     pub(crate) async fn serve<T>(
         manager: Manager,
         sessions: u16,
         add: impl FnOnce(&mut Self),
         until: impl Future<Output = T>,
-    ) -> T {
+    ) -> Result<T, net::Error> {
         let manager = ManuallyDrop::new(manager);
-        // SAFETY: each close below deletes the server before the manager drops. A
-        // panic out of `start` leaks the manager, and the server if open62541 made
-        // it. A panic out of the drive, `until`, or a close, and a drop of this future
-        // while it waits, leak both.
-        let mut server = unsafe { Self::start(&manager, c"", sessions) };
-        if let Err(panic) = panic::catch_unwind(AssertUnwindSafe(|| add(&mut server))) {
-            server.close(&manager).await;
-            drop(ManuallyDrop::into_inner(manager));
+        // SAFETY: each close deletes the server before the manager drops. A panic out
+        // of `start` leaks the manager, and the server if open62541 made it.
+        let server = unsafe { Self::start(&manager, c"", sessions) };
+        let mut serving = Serving {
+            server: Some(server),
+            manager,
+        };
+        let added = panic::catch_unwind(AssertUnwindSafe(|| {
+            add(serving.server.as_mut().expect("invariant: not closed yet"));
+        }));
+        if let Err(panic) = added {
+            serving.close().await;
+            drop(serving);
             panic::resume_unwind(panic);
         }
+        let manager = &serving.manager;
         let out = {
-            let mut drive = pin!(manager.drive(|_| {
-                manager.events().run();
-                Poll::<()>::Pending
+            let mut drive = pin!(manager.drive(|_| match manager.accept_error() {
+                Some(e) => Poll::Ready(e),
+                None => Poll::Pending,
             }));
             let mut until = pin!(until);
             poll_fn(|cx| {
-                assert!(drive.as_mut().poll(cx).is_pending(), "a drive never ends");
-                until.as_mut().poll(cx)
+                if let Poll::Ready(e) = drive.as_mut().poll(cx) {
+                    return Poll::Ready(Err(e));
+                }
+                until.as_mut().poll(cx).map(Ok)
             })
             .await
         };
-        server.close(&manager).await;
-        drop(ManuallyDrop::into_inner(manager));
+        serving.close().await;
         out
     }
 
@@ -304,6 +657,33 @@ impl Server {
     /// defect. Each panic but the refused delete comes before the delete, so the
     /// server still lives after it.
     pub(crate) async fn close(self, manager: &Manager) {
+        let events = self.stop(manager);
+        let mut runs = 0;
+        manager.drive(|_| drained(events, &mut runs)).await;
+        self.delete();
+    }
+
+    /// Closes the server as [`Server::close`] does, but only runs the loop: no
+    /// connection reads, writes, or sleeps, so it can run in a drop where no I/O can.
+    /// Each connection closes with what waits on it unsent.
+    ///
+    /// # Panics
+    ///
+    /// As [`Server::close`].
+    fn close_now(self, manager: &Manager) {
+        let events = self.stop(manager);
+        let mut runs = 0;
+        loop {
+            events.run();
+            if drained(events, &mut runs).is_ready() {
+                break;
+            }
+        }
+        self.delete();
+    }
+
+    /// Stops the server, and gives the loop of `manager`.
+    fn stop<'m>(&self, manager: &'m Manager) -> &'m event::Loop {
         let events = manager.events();
         assert!(
             events.raw() == self.events,
@@ -312,24 +692,11 @@ impl Server {
         // SAFETY: the server lives.
         let status = Status(unsafe { ffi::test::UA_Server_run_shutdown(self.raw()) });
         assert_eq!(status, Status::GOOD, "open62541 refused the server stop");
-        // SAFETY: a constant of `shim.c`.
-        let passes = unsafe { ffi::shim_free_passes };
-        let mut runs = 0;
-        manager
-            .drive(|_| {
-                events.run();
-                runs += 1;
-                if !events.delayed() {
-                    return Poll::Ready(());
-                }
-                assert!(
-                    runs < passes,
-                    "open62541 queued delayed callbacks for {passes} runs of a server \
-                     close"
-                );
-                Poll::Pending
-            })
-            .await;
+        events
+    }
+
+    /// Deletes the stopped server, and frees the context of each source.
+    fn delete(self) {
         // SAFETY: the server lives.
         let state = unsafe { ffi::test::UA_Server_getLifecycleState(self.raw()) };
         assert_eq!(
@@ -348,6 +715,56 @@ impl Server {
     }
 }
 
+/// Counts a run of the loop of a close in `runs`, and gives `Ready` once no delayed
+/// callback waits on `events`.
+///
+/// # Panics
+///
+/// If one still waits after run 64.
+fn drained(events: &event::Loop, runs: &mut c_int) -> Poll<()> {
+    *runs += 1;
+    if !events.delayed() {
+        return Poll::Ready(());
+    }
+    // SAFETY: a constant of `shim.c`.
+    let passes = unsafe { ffi::shim_free_passes };
+    assert!(
+        *runs < passes,
+        "open62541 queued delayed callbacks for {passes} runs of a server close"
+    );
+    Poll::Pending
+}
+
+/// A server of [`Server::serve`] and its manager. A drop that is not in a panic
+/// closes the server, if it still lives, as [`Server::close_now`] does, and drops the
+/// manager. A drop in a panic leaks both, as the server may be in a call that
+/// panicked.
+struct Serving {
+    server: Option<Server>,
+    manager: ManuallyDrop<Manager>,
+}
+
+impl Serving {
+    /// Closes the server as [`Server::close`] does.
+    async fn close(&mut self) {
+        let server = self.server.take().expect("invariant: one close");
+        server.close(&self.manager).await;
+    }
+}
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            return;
+        }
+        if let Some(server) = self.server.take() {
+            server.close_now(&self.manager);
+        }
+        // SAFETY: the server is deleted, and nothing drops the manager again.
+        unsafe { ManuallyDrop::drop(&mut self.manager) };
+    }
+}
+
 /// The limits of the channels of a [`Server`], each 0 for the default of open62541:
 /// 65536 bytes, 512 MiB, and 16384 chunks.
 #[cfg(test)]
@@ -359,6 +776,120 @@ pub(crate) struct Limits {
     pub(crate) message: u32,
     /// The `MaxChunkCount`.
     pub(crate) chunks: u32,
+}
+
+/// The count of the Browse requests of a [`Server`], and the most continuation points
+/// that one of its sessions held, from [`Server::count`].
+#[cfg(test)]
+pub(crate) struct Counts<'s> {
+    /// Lives until the delete of the server.
+    counts: NonNull<ffi::test::Counts>,
+    server: std::marker::PhantomData<&'s Server>,
+}
+
+#[cfg(test)]
+impl Counts<'_> {
+    /// Gives the count of the Browse requests.
+    pub(crate) fn browses(&self) -> usize {
+        // SAFETY: the server lives, and runs on this thread.
+        unsafe { self.counts.as_ref().browses }
+    }
+
+    /// Gives the most continuation points that one session held when the server
+    /// processed a request, from the count.
+    pub(crate) fn points(&self) -> usize {
+        // SAFETY: as `browses`.
+        unsafe { self.counts.as_ref().points }
+    }
+}
+
+/// A variable of [`Server::add_variable`].
+pub(crate) struct Variable<'a> {
+    /// Its node, whose key is not the number 0.
+    pub(crate) node: Node,
+    /// The node that it is under, by `reference`.
+    pub(crate) parent: Node,
+    /// Its reference type from `parent`, by its number in namespace 0.
+    pub(crate) reference: u32,
+    /// Its browse and display name.
+    pub(crate) name: &'a CStr,
+    /// Its `DataType`.
+    pub(crate) data_type: Node,
+    /// Its `ValueRank`. The rank 1 also gives it the `ArrayDimensions` 0.
+    pub(crate) rank: i32,
+    /// Its `AccessLevel` and `UserAccessLevel`.
+    pub(crate) access: u8,
+    /// The OPC UA binary encoding of its value, a `Variant`, or `None` for no value.
+    pub(crate) value: Option<Vec<u8>>,
+}
+
+/// The `AccessLevel` bit `CurrentRead`.
+pub(crate) const READ: u8 = 1;
+
+/// The scalar variable `node` under the Objects folder by `Organizes`, of the browse
+/// name `name`, the `DataType` of the number `data_type` in namespace 0, the access
+/// [`READ`], and the encoded `Variant` `value`.
+fn objects(
+    node: &Node,
+    name: &'static CStr,
+    data_type: u32,
+    value: Vec<u8>,
+) -> Variable<'static> {
+    Variable {
+        node: node.clone(),
+        parent: Node::ns0(ns0::OBJECTS),
+        reference: ns0::ORGANIZES,
+        name,
+        data_type: Node::ns0(data_type),
+        rank: -1,
+        access: READ,
+        value: Some(value),
+    }
+}
+
+/// The OPC UA binary encoding of a scalar `Variant` of the built-in type of the number
+/// `id` in namespace 0, whose value has the encoding `encoded`.
+///
+/// # Panics
+///
+/// If `id` is past 63, which the mask of a `Variant` cannot hold.
+pub(crate) fn scalar(id: u32, encoded: &[u8]) -> Vec<u8> {
+    let mask = u8::try_from(id)
+        .ok()
+        .filter(|mask| *mask < 64)
+        .expect("a built-in type of at most 63");
+    [&[mask][..], encoded].concat()
+}
+
+/// The OPC UA binary encoding of a `Variant` of the Doubles 1.5 and 2.5.
+pub(crate) fn doubles() -> Vec<u8> {
+    let mask = u8::try_from(ns0::DOUBLE).expect("invariant: Double is 11") | 0x80;
+    [
+        &[mask][..],
+        &2_i32.to_le_bytes(),
+        &1.5_f64.to_le_bytes(),
+        &2.5_f64.to_le_bytes(),
+    ]
+    .concat()
+}
+
+/// The number in namespace 0 of the built-in type of `value`, and the OPC UA binary
+/// encoding of a scalar `Variant` that holds `value`.
+pub(crate) fn variant(value: Value) -> (u32, Vec<u8>) {
+    let (id, encoded) = match value {
+        Value::Bool(boolean) => (1, vec![u8::from(boolean)]),
+        Value::I8(sbyte) => (2, sbyte.to_le_bytes().to_vec()),
+        Value::U8(byte) => (3, vec![byte]),
+        Value::I16(int16) => (4, int16.to_le_bytes().to_vec()),
+        Value::U16(uint16) => (5, uint16.to_le_bytes().to_vec()),
+        Value::I32(int32) => (6, int32.to_le_bytes().to_vec()),
+        Value::U32(uint32) => (7, uint32.to_le_bytes().to_vec()),
+        Value::I64(int64) => (8, int64.to_le_bytes().to_vec()),
+        Value::U64(uint64) => (9, uint64.to_le_bytes().to_vec()),
+        Value::F32(float) => (10, float.to_le_bytes().to_vec()),
+        Value::F64(double) => (11, double.to_le_bytes().to_vec()),
+    };
+    (id, scalar(id, &encoded))
 }
 
 /// `node` for an add.

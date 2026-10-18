@@ -7,25 +7,129 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #include <open62541/client.h>
+#include <open62541/plugin/certificategroup_default.h>
+#include <open62541/plugin/securitypolicy_default.h>
 #include <open62541/server_config_default.h>
+/* For the continuation points that each session holds. */
+#include "server/ua_server_internal.h"
 #pragma GCC diagnostic pop
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "shim.h"
 
+/* The certificate and private key (DER) of a test peer, the application URI in its
+ * certificate, which only a client reads, and the one certificate that its trust list
+ * holds. */
+typedef struct {
+    UA_ByteString certificate;
+    UA_ByteString key;
+    UA_ByteString trusted;
+    const char *uri;
+} shim_security;
+
+/* `Security` and `Mode` of `ffi/test.rs` hold the same layout and values. */
+_Static_assert(sizeof(shim_security) == 3 * sizeof(UA_ByteString) + sizeof(char *),
+               "shim_security changed");
+_Static_assert(sizeof(UA_MessageSecurityMode) == sizeof(int) &&
+                   UA_MESSAGESECURITYMODE_SIGN == 2 &&
+                   UA_MESSAGESECURITYMODE_SIGNANDENCRYPT == 3,
+               "UA_MessageSecurityMode changed");
+
+typedef UA_StatusCode (*shim_policy)(UA_SecurityPolicy *policy,
+                                     const UA_ByteString certificate,
+                                     const UA_ByteString key, const UA_Logger *logger);
+
+/* The three policies that the copy compiles, in the order of the index of
+ * `shim_client_secure`. */
+static const shim_policy POLICIES[] = {UA_SecurityPolicy_Basic256Sha256,
+                                       UA_SecurityPolicy_Aes128Sha256RsaOaep,
+                                       UA_SecurityPolicy_Aes256Sha256RsaPss};
+
+#define POLICY_COUNT (sizeof(POLICIES) / sizeof(POLICIES[0]))
+
+/* Adds each of `POLICIES` on the certificate and key of `security` after the
+ * `*size` policies of `*policies`. */
+static UA_StatusCode add_policies(UA_SecurityPolicy **policies, size_t *size,
+                                  const shim_security *security,
+                                  const UA_Logger *logger) {
+    UA_SecurityPolicy *grown = (UA_SecurityPolicy *)UA_realloc(
+        *policies, sizeof(UA_SecurityPolicy) * (*size + POLICY_COUNT));
+    if(!grown)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    *policies = grown;
+    for(size_t i = 0; i < POLICY_COUNT; i++) {
+        UA_StatusCode status =
+            POLICIES[i](&grown[*size], security->certificate, security->key, logger);
+        if(status != UA_STATUSCODE_GOOD)
+            return status;
+        (*size)++;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
+/* Makes `group`, which holds no group, a memory group with the id `group_id` whose
+ * trust list holds `trusted`, or nothing when it is NULL, and which reads the time of
+ * `el`. */
+static UA_StatusCode trust(UA_CertificateGroup *group, UA_NodeId group_id,
+                           const UA_ByteString *trusted, const UA_Logger *logger,
+                           UA_EventLoop *el) {
+    memset(group, 0, sizeof(*group));
+    UA_TrustListDataType list;
+    UA_TrustListDataType_init(&list);
+    if(trusted) {
+        list.specifiedLists = UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES;
+        list.trustedCertificates = (UA_ByteString *)(uintptr_t)trusted;
+        list.trustedCertificatesSize = 1;
+    }
+    return UA_CertificateGroup_Memorystore(group, &group_id, &list, logger, el, NULL);
+}
+
+static const UA_NodeId APPLICATION_GROUP = {
+    0, UA_NODEIDTYPE_NUMERIC,
+    {UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP}};
+
+/* Gives `server` the policies of `security`, each in Sign and in SignAndEncrypt, and a
+ * channel check that trusts only the certificate that `security` trusts. */
+static UA_StatusCode secure_server(UA_ServerConfig *config,
+                                   const shim_security *security) {
+    size_t first = config->securityPoliciesSize;
+    UA_StatusCode status = add_policies(&config->securityPolicies,
+                                        &config->securityPoliciesSize, security,
+                                        config->logging);
+    for(size_t i = first; status == UA_STATUSCODE_GOOD && i < first + POLICY_COUNT;
+        i++) {
+        UA_String uri = config->securityPolicies[i].policyUri;
+        status = UA_ServerConfig_addEndpoint(config, uri, UA_MESSAGESECURITYMODE_SIGN);
+        if(status == UA_STATUSCODE_GOOD)
+            status = UA_ServerConfig_addEndpoint(config, uri,
+                                                 UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
+    }
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    /* `UA_ServerConfig_setMinimal` gives the group the accept-all group. */
+    config->secureChannelPKI.clear(&config->secureChannelPKI);
+    return trust(&config->secureChannelPKI, APPLICATION_GROUP, &security->trusted,
+                 config->logging, config->eventLoop);
+}
+
 /* Gives a server on `el` with the minimal config, the one server URL
  * `opc.tcp://{host}:{port}`, room for `sessions` sessions and secure channels, and at
- * most `chunks` chunks in a message, or NULL on a failure. */
+ * most `chunks` chunks in a message, or NULL on a failure. With `security`, the server
+ * also has each of the three policies in Sign and in SignAndEncrypt, and its channels
+ * trust only the certificate that `security` trusts. */
 UA_Server *shim_server_new(UA_EventLoop *el, UA_UInt16 port, const char *host,
-                           UA_UInt16 sessions, UA_UInt32 chunks) {
+                           UA_UInt16 sessions, UA_UInt32 chunks,
+                           const shim_security *security) {
     UA_ServerConfig config;
     memset(&config, 0, sizeof(config));
     /* The loop of `shim_loop_new` owns its logger, which is not const. */
     config.logging = (UA_Logger *)(uintptr_t)el->logger;
     config.eventLoop = el;
     config.externalEventLoop = true;
-    if(UA_ServerConfig_setMinimal(&config, port, NULL) != UA_STATUSCODE_GOOD) {
+    if(UA_ServerConfig_setMinimal(&config, port, NULL) != UA_STATUSCODE_GOOD ||
+       (security && secure_server(&config, security) != UA_STATUSCODE_GOOD)) {
         UA_ServerConfig_clear(&config);
         return NULL;
     }
@@ -43,6 +147,49 @@ UA_Server *shim_server_new(UA_EventLoop *el, UA_UInt16 port, const char *host,
     return UA_Server_newWithConfig(&config);
 }
 
+/* Makes `client`, which has not connected, ask for the mode `mode` and the policy of
+ * index `policy` in `POLICIES`, on the certificate and key of `security`, with the
+ * application URI of `security`, and trust only the certificate that `security`
+ * trusts. Aborts on an index past the last policy. */
+UA_StatusCode shim_client_secure(UA_Client *client, UA_MessageSecurityMode mode,
+                                 size_t policy, const shim_security *security) {
+    if(policy >= POLICY_COUNT)
+        abort();
+    UA_ClientConfig *config = UA_Client_getConfig(client);
+    size_t first = config->securityPoliciesSize;
+    UA_StatusCode status = add_policies(&config->securityPolicies,
+                                        &config->securityPoliciesSize, security,
+                                        config->logging);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    config->securityMode = mode;
+    UA_String_clear(&config->securityPolicyUri);
+    status = UA_String_copy(&config->securityPolicies[first + policy].policyUri,
+                            &config->securityPolicyUri);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    UA_String *uri = &config->clientDescription.applicationUri;
+    UA_String_clear(uri);
+    *uri = UA_STRING_ALLOC(security->uri);
+    /* `UA_ClientConfig_setDefault` gives the group the accept-all group. */
+    config->certificateVerification.clear(&config->certificateVerification);
+    return trust(&config->certificateVerification, APPLICATION_GROUP,
+                 &security->trusted, config->logging, config->eventLoop);
+}
+
+/* Gives the policy URI of the channel of `client`, which lives as long as the client
+ * config, and its mode in `mode`, or NULL with no channel. */
+const UA_String *shim_client_channel(UA_Client *client, UA_MessageSecurityMode *mode) {
+    UA_Variant policy, held;
+    if(UA_Client_getConnectionAttribute(client, UA_QUALIFIEDNAME(0, "securityPolicyUri"),
+                                        &policy) != UA_STATUSCODE_GOOD ||
+       UA_Client_getConnectionAttribute(client, UA_QUALIFIEDNAME(0, "securityMode"),
+                                        &held) != UA_STATUSCODE_GOOD)
+        return NULL;
+    *mode = *(const UA_MessageSecurityMode *)held.data;
+    return (const UA_String *)policy.data;
+}
+
 /* Gives discovery URL `index` of `server`, or NULL past the last. */
 const UA_String *shim_server_discovery_url(UA_Server *server, size_t index) {
     const UA_ApplicationDescription *description =
@@ -50,60 +197,6 @@ const UA_String *shim_server_discovery_url(UA_Server *server, size_t index) {
     if(index >= description->discoveryUrlsSize)
         return NULL;
     return &description->discoveryUrls[index];
-}
-
-/* Adds to `server` the variable `node`, which holds `value` of the kind `kind`, under
- * the Objects folder. */
-UA_StatusCode shim_server_add_scalar(UA_Server *server, shim_node node,
-                                     const shim_scalar *value, UA_UInt16 kind) {
-    UA_VariableAttributes attributes = UA_VariableAttributes_default;
-    UA_Variant_setScalar(&attributes.value, (void *)(uintptr_t)value, &UA_TYPES[kind]);
-    attributes.dataType = UA_TYPES[kind].typeId;
-    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
-    return UA_Server_addVariableNode(
-        server, shim_node_id(node),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
-        UA_QUALIFIEDNAME(node.namespace, "value"),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
-}
-
-/* Adds to `server` the variable `node`, which holds an array of two Doubles, under the
- * Objects folder. */
-UA_StatusCode shim_server_add_doubles(UA_Server *server, shim_node node) {
-    UA_Double doubles[2] = {1.5, 2.5};
-    UA_VariableAttributes attributes = UA_VariableAttributes_default;
-    UA_Variant_setArray(&attributes.value, doubles, 2, &UA_TYPES[UA_TYPES_DOUBLE]);
-    attributes.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
-    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
-    return UA_Server_addVariableNode(
-        server, shim_node_id(node),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
-        UA_QUALIFIEDNAME(node.namespace, "doubles"),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
-}
-
-/* Adds to `server` the variable `node`, which holds a ByteString of `size` zero
- * bytes, under the Objects folder. */
-UA_StatusCode shim_server_add_bytes(UA_Server *server, shim_node node, size_t size) {
-    UA_ByteString bytes;
-    UA_StatusCode status = UA_ByteString_allocBuffer(&bytes, size);
-    if(status != UA_STATUSCODE_GOOD)
-        return status;
-    memset(bytes.data, 0, size);
-    UA_VariableAttributes attributes = UA_VariableAttributes_default;
-    UA_Variant_setScalar(&attributes.value, &bytes, &UA_TYPES[UA_TYPES_BYTESTRING]);
-    attributes.dataType = UA_TYPES[UA_TYPES_BYTESTRING].typeId;
-    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
-    status = UA_Server_addVariableNode(
-        server, shim_node_id(node),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
-        UA_QUALIFIEDNAME(node.namespace, "bytes"),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
-    UA_ByteString_clear(&bytes);
-    return status;
 }
 
 /* Sets the buffer size, the MaxMessageSize, and the MaxChunkCount of each later channel
@@ -121,9 +214,108 @@ void shim_server_reads(UA_Server *server, UA_UInt32 most) {
     UA_Server_getConfig(server)->maxNodesPerRead = most;
 }
 
+/* Sets the most references of each page of a Browse of `server`. */
+void shim_server_references(UA_Server *server, UA_UInt32 most) {
+    UA_Server_getConfig(server)->maxReferencesPerNode = most;
+}
+
+/* Sets the MaxNodesPerBrowse and the MaxNodesPerTranslateBrowsePathsToNodeIds of
+ * `server`, each 0 for none. */
+void shim_server_browses(UA_Server *server, UA_UInt32 browse, UA_UInt32 translate) {
+    UA_ServerConfig *config = UA_Server_getConfig(server);
+    config->maxNodesPerBrowse = browse;
+    config->maxNodesPerTranslateBrowsePathsToNodeIds = translate;
+}
+
+/* The counts of a `shim_counter`. */
+typedef struct {
+    /* The Browse requests. */
+    size_t browses;
+    /* The most continuation points that one session held at a message. */
+    size_t points;
+} shim_counts;
+
+/* A logger that counts the Browse requests of its server and the continuation points
+ * of its sessions, and passes each message to the logger before it. */
+typedef struct {
+    UA_Logger logger;
+    const UA_Logger *next;
+    UA_Server *server;
+    shim_counts counts;
+} shim_counter;
+
+static void count_message(void *context, UA_LogLevel level, UA_LogCategory category,
+                          const char *msg, va_list args) {
+    shim_counter *counter = (shim_counter *)context;
+    /* The end of the format of the debug message of open62541 for each Browse
+     * request, from UA_LOG_SESSION_INTERNAL. */
+    static const char browse[] = "| Processing BrowseRequest%.0s";
+    size_t length = strlen(msg);
+    if(length >= sizeof(browse) - 1 &&
+       strcmp(msg + length - (sizeof(browse) - 1), browse) == 0)
+        counter->counts.browses++;
+    session_list_entry *entry;
+    LIST_FOREACH(entry, &counter->server->sessions, pointers) {
+        size_t held = entry->session.continuationPointsSize;
+        if(held > counter->counts.points)
+            counter->counts.points = held;
+    }
+    counter->next->log(counter->next->context, level, category, msg, args);
+}
+
+static void count_clear(UA_Logger *logger) { UA_free(logger->context); }
+
+/* Counts each Browse request that `server` processes from now, and the most
+ * continuation points that one of its sessions holds, and gives the counts, which live
+ * until the delete of `server`, or NULL when out of memory. */
+const shim_counts *shim_server_count(UA_Server *server) {
+    shim_counter *counter = (shim_counter *)UA_calloc(1, sizeof(*counter));
+    if(!counter)
+        return NULL;
+    UA_ServerConfig *config = UA_Server_getConfig(server);
+    counter->next = config->logging;
+    counter->logger.log = count_message;
+    counter->logger.context = counter;
+    counter->logger.clear = count_clear;
+    counter->server = server;
+    config->logging = &counter->logger;
+    return &counter->counts;
+}
+
+/* Logs `text` at level fatal in category `client` through the logger of `el`. No
+ * message of the copy that a test reaches is fatal. */
+void shim_log_fatal(UA_EventLoop *el, const char *text) {
+    UA_LOG_FATAL(el->logger, UA_LOGCATEGORY_CLIENT, "%s", text);
+}
+
+/* Logs `text` at level warning in category `client` through the logger of `el`. */
+void shim_log_warning(UA_EventLoop *el, const char *text) {
+    UA_LOG_WARNING(el->logger, UA_LOGCATEGORY_CLIENT, "%s", text);
+}
+
+/* Logs `format` with its arguments at `level` in `category` through `logger`. */
+static void log_at(const UA_Logger *logger, UA_LogLevel level,
+                   UA_LogCategory category, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    logger->log(logger->context, level, category, format, args);
+    va_end(args);
+}
+
+/* Logs `text` at `level` in `category` through the logger of `el`, also at a value
+ * that the enums do not name. */
+void shim_log_at(UA_EventLoop *el, int level, int category, const char *text) {
+    log_at(el->logger, (UA_LogLevel)level, (UA_LogCategory)category, "%s", text);
+}
+
 /* Sets the receive buffer size that `client` gives in its next HEL. */
 void shim_client_receive(UA_Client *client, UA_UInt32 size) {
     UA_Client_getConfig(client)->localConnectionConfig.recvBufferSize = size;
+}
+
+/* Sets the MaxMessageSize that `client` gives in its next HEL and takes. */
+void shim_client_message(UA_Client *client, UA_UInt32 size) {
+    UA_Client_getConfig(client)->localConnectionConfig.localMaxMessageSize = size;
 }
 
 /* The node context of a variable of `shim_server_add_source`, as the first field of
@@ -178,6 +370,24 @@ UA_StatusCode shim_server_add_source(UA_Server *server, shim_node node,
         source, NULL);
 }
 
+/* Makes `source` answer each later read of the variable `node` of `server`, which
+ * open62541 adds, as `shim_server_add_source` does. `source` lives until the server
+ * is deleted. */
+UA_StatusCode shim_server_set_source(UA_Server *server, shim_node node,
+                                     shim_source *source) {
+    UA_NodeId id = shim_node_id(node);
+    UA_StatusCode status = UA_Server_setNodeContext(server, id, source);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    UA_CallbackValueSource callbacks = {.read = shim_source_read, .write = NULL};
+    return UA_Server_setVariableNode_callbackValueSource(server, id, callbacks);
+}
+
+/* Sets the most session timeout of `server`, in ms. */
+void shim_server_session_timeout(UA_Server *server, UA_UInt32 ms) {
+    UA_Server_getConfig(server)->maxSessionTimeout = ms;
+}
+
 /* Gives in `id` the number of the DataType of the variable `node` of `server`.
  * Returns `UA_STATUSCODE_BADTYPEMISMATCH` when the DataType is not a number of
  * namespace 0. */
@@ -191,5 +401,160 @@ UA_StatusCode shim_server_data_type(UA_Server *server, shim_node node, UA_UInt32
     else
         *id = type.identifier.numeric;
     UA_NodeId_clear(&type);
+    return status;
+}
+
+/* Gives the text `name` in the namespace of `node`, which borrows `name`. */
+static UA_QualifiedName name_of(shim_node node, const char *name) {
+    return UA_QUALIFIEDNAME(node.namespace, (char *)(uintptr_t)name);
+}
+
+/* Adds to `server` the folder `node` with the browse name `name` and the display name
+ * `display`, under `parent` by the reference of the number `reference`. */
+UA_StatusCode shim_server_add_folder(UA_Server *server, shim_node node,
+                                     shim_node parent, UA_UInt32 reference,
+                                     const char *name, const char *display) {
+    UA_ObjectAttributes attributes = UA_ObjectAttributes_default;
+    attributes.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)display);
+    return UA_Server_addObjectNode(
+        server, shim_node_id(node), shim_node_id(parent),
+        UA_NODEID_NUMERIC(0, reference), name_of(node, name),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_FOLDERTYPE), attributes, NULL, NULL);
+}
+
+/* Adds to `server` the folder of the GUID 1-2-3-4 in namespace 1, with the browse name
+ * `guid`, under `parent`. */
+UA_StatusCode shim_server_add_guid(UA_Server *server, shim_node parent) {
+    UA_Guid guid = {1, 2, 3, {4, 0, 0, 0, 0, 0, 0, 0}};
+    UA_ObjectAttributes attributes = UA_ObjectAttributes_default;
+    attributes.displayName = UA_LOCALIZEDTEXT("", "guid");
+    return UA_Server_addObjectNode(
+        server, UA_NODEID_GUID(1, guid), shim_node_id(parent),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES), UA_QUALIFIEDNAME(1, "guid"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_FOLDERTYPE), attributes, NULL, NULL);
+}
+
+/* Adds to `server` the variable `node` with the browse and display name `name`, the
+ * DataType `type`, the ValueRank `rank`, with the ArrayDimensions 0 for the rank 1, and
+ * the AccessLevel and UserAccessLevel `access`, under `parent` by the reference of the
+ * number `reference`. Its value is the OPC UA binary encoding `encoded` of `size` bytes
+ * of a Variant, or none for NULL. */
+UA_StatusCode shim_server_add_variable(UA_Server *server, shim_node node,
+                                       shim_node parent, UA_UInt32 reference,
+                                       const char *name, shim_node type, UA_Int32 rank,
+                                       UA_Byte access, const UA_Byte *encoded,
+                                       size_t size) {
+    UA_VariableAttributes attributes = UA_VariableAttributes_default;
+    attributes.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)name);
+    attributes.dataType = shim_node_id(type);
+    attributes.valueRank = rank;
+    UA_UInt32 dimensions[1] = {0};
+    if(rank == 1) {
+        attributes.arrayDimensions = dimensions;
+        attributes.arrayDimensionsSize = 1;
+    }
+    attributes.accessLevel = access;
+    attributes.userAccessLevel = access;
+    if(encoded != NULL) {
+        const UA_ByteString bytes = {size, (UA_Byte *)(uintptr_t)encoded};
+        UA_StatusCode status = UA_decodeBinary(&bytes, &attributes.value,
+                                               &UA_TYPES[UA_TYPES_VARIANT], NULL);
+        if(status != UA_STATUSCODE_GOOD)
+            return status;
+    }
+    UA_StatusCode status = UA_Server_addVariableNode(
+        server, shim_node_id(node), shim_node_id(parent),
+        UA_NODEID_NUMERIC(0, reference), name_of(node, name),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
+    UA_Variant_clear(&attributes.value);
+    return status;
+}
+
+/* Adds to `server` the data type `node` with the browse name `name`, a subtype of
+ * `parent`. */
+UA_StatusCode shim_server_add_data_type(UA_Server *server, shim_node node,
+                                        shim_node parent, const char *name) {
+    UA_DataTypeAttributes attributes = UA_DataTypeAttributes_default;
+    attributes.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)name);
+    return UA_Server_addDataTypeNode(server, shim_node_id(node), shim_node_id(parent),
+                                     UA_NODEID_NUMERIC(0, UA_NS0ID_HASSUBTYPE),
+                                     name_of(node, name), attributes, NULL, NULL);
+}
+
+/* Adds to `server` the property `0:EngineeringUnits` `node` of the variable
+ * `variable`, whose value is the EUInformation of the namespaceUri `uri`, the display
+ * name `text`, and the unitId `code`. */
+UA_StatusCode shim_server_add_unit(UA_Server *server, shim_node node,
+                                   shim_node variable, const char *uri,
+                                   const char *text, UA_Int32 code) {
+    UA_EUInformation unit;
+    UA_EUInformation_init(&unit);
+    unit.namespaceUri = UA_STRING((char *)(uintptr_t)uri);
+    unit.unitId = code;
+    unit.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)text);
+    UA_VariableAttributes attributes = UA_VariableAttributes_default;
+    attributes.displayName = UA_LOCALIZEDTEXT("", "EngineeringUnits");
+    attributes.dataType = UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATATYPE);
+    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
+    UA_Variant_setScalar(&attributes.value, &unit, &UA_TYPES[UA_TYPES_EUINFORMATION]);
+    return UA_Server_addVariableNode(
+        server, shim_node_id(node), shim_node_id(variable),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY),
+        UA_QUALIFIEDNAME(0, "EngineeringUnits"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_PROPERTYTYPE), attributes, NULL, NULL);
+}
+
+/* Adds to `server` a reference of the number `reference` from `source` to `target`. */
+UA_StatusCode shim_server_add_reference(UA_Server *server, shim_node source,
+                                        UA_UInt32 reference, shim_node target) {
+    UA_ExpandedNodeId to = UA_EXPANDEDNODEID_NULL;
+    to.nodeId = shim_node_id(target);
+    return UA_Server_addReference(server, shim_node_id(source),
+                                  UA_NODEID_NUMERIC(0, reference), to, true);
+}
+
+/* Deletes from `server` the reference of the number `reference` from `source` to
+ * `target`, in both directions. */
+UA_StatusCode shim_server_delete_reference(UA_Server *server, shim_node source,
+                                           UA_UInt32 reference, shim_node target) {
+    UA_ExpandedNodeId to = UA_EXPANDEDNODEID_NULL;
+    to.nodeId = shim_node_id(target);
+    return UA_Server_deleteReference(server, shim_node_id(source),
+                                     UA_NODEID_NUMERIC(0, reference), true, to, true);
+}
+
+/* Adds to `server` the view `node` with the browse and display name `name`, under
+ * `parent` by Organizes. */
+UA_StatusCode shim_server_add_view(UA_Server *server, shim_node node, shim_node parent,
+                                   const char *name) {
+    UA_ViewAttributes attributes = UA_ViewAttributes_default;
+    attributes.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)name);
+    return UA_Server_addViewNode(server, shim_node_id(node), shim_node_id(parent),
+                                 UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+                                 name_of(node, name), attributes, NULL, NULL);
+}
+
+/* Gives the status of `verifyCertificate` of a memory certificate group, the check of
+ * the remote certificate of each channel, on `certificate`, or the status of the
+ * constructor of the group when it fails. The trust list holds `trusted`, or nothing
+ * when it is NULL, and the group reads the time of `el`. */
+UA_StatusCode shim_verify_certificate(const UA_ByteString *certificate,
+                                      const UA_ByteString *trusted, UA_EventLoop *el) {
+    UA_CertificateGroup group;
+    UA_StatusCode status = trust(&group, APPLICATION_GROUP, trusted, NULL, el);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    status = group.verifyCertificate(&group, certificate);
+    group.clear(&group);
+    return status;
+}
+
+/* Gives the status of the constructor of a memory certificate group with an empty trust
+ * list and the loop `el`, and clears the group that it makes. */
+UA_StatusCode shim_memory_group(UA_EventLoop *el) {
+    UA_CertificateGroup group;
+    UA_StatusCode status = trust(&group, APPLICATION_GROUP, NULL, NULL, el);
+    if(status == UA_STATUSCODE_GOOD)
+        group.clear(&group);
     return status;
 }

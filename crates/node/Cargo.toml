@@ -24,6 +24,7 @@ clock = { path = "../clock" }
 config-hcl = { path = "../config-hcl" }
 connector = { path = "../connector" }
 connector-influx = { path = "../connector-influx" }
+connector-modbus = { path = "../connector-modbus" }
 connector-opcua = { path = "../connector-opcua", features = ["open62541"] }
 crc32c = { workspace = true }
 document = { path = "../document" }
@@ -35,7 +36,11 @@ mesh = { path = "../mesh" }
 ops = { path = "../ops" }
 os = { path = "../os" }
 secret = { path = "../secret" }
+serde = { workspace = true }
+serde_json = { workspace = true }
 spec = { path = "../spec" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 transport = { path = "../transport" }
 types = { path = "../types" }
 wire = { path = "../wire" }
@@ -54,9 +59,11 @@ hub = { path = "../hub", features = ["sim"] }
 # Turns on `sim` for the bench, since the bench host runs no features.
 node = { path = ".", features = ["sim"] }
 proptest = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 sim = { path = "../sim" }
+
+# Under `--cfg loom`, Tokio has no `net`.
+[target.'cfg(not(loom))'.dev-dependencies]
+sdk = { path = "../../sdk/rust" }
 
 [[test]]
 name = "erase"
@@ -68,6 +75,11 @@ harness = false
 
 [[bench]]
 name = "scope"
+harness = false
+test = true
+
+[[bench]]
+name = "log"
 harness = false
 test = true
 

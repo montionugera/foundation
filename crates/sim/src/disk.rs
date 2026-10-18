@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use env::files::Mode;
 use env::rng::Rng;
 
-use crate::{Crash, DIRECTORY, NOT_DIRECTORY};
+use crate::{Crash, DIRECTORY, EXISTS, NOT_DIRECTORY};
 
 /// The key of the data directory.
 pub(crate) const ROOT: u64 = 0;
@@ -18,8 +18,6 @@ pub(crate) const ROOT: u64 = 0;
 const SECTOR: u64 = env::files::SECTOR as u64;
 /// The bytes that a directory takes, as on ext4.
 const DIR_BYTES: u64 = 4_096;
-/// The Linux code for a path that is there (`EEXIST`).
-const EXISTS: i32 = 17;
 
 /// Why a call failed, before its path and operation are known.
 pub(crate) enum Cause {
@@ -88,6 +86,8 @@ struct Dir {
 
 pub(crate) struct File {
     len: u64,
+    /// Other users can read it.
+    exposed: bool,
     /// The sectors written, by index. A missing sector holds zeros.
     sectors: BTreeMap<u64, Sector>,
     /// The sectors whose `writes` is not empty.
@@ -216,20 +216,21 @@ impl Disk {
         }
     }
 
-    /// Opens the file at `path`, and gives its handle and length. The open holds it.
-    /// A file that it makes takes the key `key`.
+    /// Opens the file at `path`, and gives its handle, its length, and whether it is
+    /// exposed. The open holds it. A file that it makes takes the key `key`.
     pub(crate) fn open(
         &mut self,
         key: u64,
         path: &Path,
         mode: Mode,
-    ) -> Result<(Handle, u64), Cause> {
+    ) -> Result<(Handle, u64, bool), Cause> {
         let inode = match self.target(path, mode)? {
             Target::File(inode) => inode,
             Target::New { dir, name, len } => {
                 self.take(len)?;
                 let file = File {
                     len,
+                    exposed: false,
                     sectors: BTreeMap::new(),
                     dirty: BTreeSet::new(),
                     holds: 0,
@@ -255,14 +256,24 @@ impl Disk {
             }
             self.file(inode).len = len;
         }
-        let len = self.file(inode).len;
+        let File { len, exposed, .. } = *self.file(inode);
         let handle = Handle {
             inode,
             writable,
             key,
         };
         self.hold(handle);
-        Ok((handle, len))
+        Ok((handle, len, exposed))
+    }
+
+    /// Sets whether other users can read the file at `path`. Gives whether a file is
+    /// there.
+    pub(crate) fn expose(&mut self, path: &Path, exposed: bool) -> bool {
+        let Ok(Target::File(inode)) = self.target(path, Mode::Read) else {
+            return false;
+        };
+        self.file(inode).exposed = exposed;
+        true
     }
 
     /// The names in the directory at `path`.
@@ -875,6 +886,7 @@ mod tests {
     fn file() -> File {
         File {
             len: 2 * SECTOR,
+            exposed: false,
             sectors: BTreeMap::new(),
             dirty: BTreeSet::new(),
             holds: 0,

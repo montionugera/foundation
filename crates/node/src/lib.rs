@@ -17,6 +17,7 @@ mod directory;
 pub mod fuzz;
 mod handoff;
 mod identity;
+mod log;
 mod name;
 mod root;
 mod route;
@@ -33,6 +34,7 @@ mod task;
 #[cfg(test)]
 #[cfg(not(loom))]
 mod tests;
+mod trust;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -53,6 +55,7 @@ use types::time::{Span, Stamp};
 
 pub use crate::budget::{Budget, budget};
 use crate::handoff::{Give, Take};
+pub use crate::log::{Flush, Log};
 pub use crate::settings::Settings;
 use crate::stop::{Guard, Stop};
 
@@ -106,6 +109,22 @@ pub struct Config<M> {
     /// The environment of the node process, which `env()` in a config reads. Main
     /// gives `std::env::vars_os()`.
     pub vars: BTreeMap<OsString, OsString>,
+    /// The CA certificates that each `https` connect of a connector trusts. Main gives
+    /// [`os::roots::read()`]. When the read has a failure, shard 0 logs a warning with
+    /// the count of its failures and its [`os::roots::Source`], cut to 1024 bytes, then
+    /// one for each of the first 16 failures, its text cut the same way. It logs one
+    /// for the count of certificates that do not parse, and one when no certificate is
+    /// left. It logs each of them also with [`Region::Absent`], which runs no
+    /// connector. With a region, the node gives the failures to
+    /// [`ops::Config::roots`], which `foundation status` shows, and the first warning
+    /// names that command.
+    pub roots: os::roots::Roots,
+    /// Where and how the node writes its log. Each shard writes the events of its
+    /// thread there, and [`Node::join`] the event `stopped`.
+    pub log: Log,
+    /// Starts the thread `log`, which writes each line of the log, so no event waits
+    /// on [`Log::writer`]. Its events go nowhere.
+    pub threads: env::threads::Threads,
 }
 
 impl<M> fmt::Debug for Config<M> {
@@ -120,6 +139,8 @@ impl<M> fmt::Debug for Config<M> {
             .field("region", &self.region)
             .field("name", &self.name)
             .field("settings", &self.settings)
+            .field("log", &self.log)
+            .field("threads", &self.threads)
             .finish_non_exhaustive()
     }
 }
@@ -162,6 +183,8 @@ pub struct Node {
     queue: task::Queue<task::Task>,
     /// The node has a region, so shard 0 has an `ops::Node`.
     regional: bool,
+    /// Where the node writes its log.
+    log: Flush,
 }
 
 /// A started shard, with its error once it fails.
@@ -228,67 +251,40 @@ impl Node {
     /// If the disk budget holds a ring on each of more than `u32::MAX` cores.
     #[must_use = "a dropped Node leaves its shards running"]
     pub fn start<M: block::Memory + 'static>(config: Config<M>) -> Self {
-        let cores = config.shards.cores().get();
+        let (mesh, time) = clock::Clock::new(config.clock.clone());
         let regional = !matches!(config.region, Region::Absent);
-        if config.name.reserved() {
-            let name = config.name;
-            return Self::failed(Error::Reserved { name }, regional);
-        }
-        if config.name.as_str().len() > name::MAX_BYTES {
-            let name = config.name;
-            return Self::failed(Error::Long { name }, regional);
-        }
-        if unreachable(config.listen.ip()) {
-            let listen = config.listen;
-            return Self::failed(Error::Listen { listen }, regional);
-        }
-        let parts = match parts(config.budget.pool, config.budget.disk, cores) {
-            Ok(parts) => parts,
-            Err(small) => {
-                let count =
-                    u64::try_from(cores).expect("invariant: a core count fits a u64");
-                let min =
-                    types::byte::Size::from_bytes(small.min.saturating_mul(count));
-                let error = Error::Disk {
-                    disk: config.budget.disk,
-                    cores,
-                    min,
-                };
-                return Self::failed(error, regional);
+        match plan(&config) {
+            Ok(parts) => Self::launch(config, parts, (mesh, time), regional),
+            Err(error) => {
+                let log = log::open(config.log, &config.threads, config.wall, time);
+                Self::failed(error, log, regional)
             }
-        };
-        let Ok(count) = u32::try_from(cores) else {
-            panic!("the host has {cores} cores, more than a node numbers");
-        };
-        let parts = parts
-            .into_iter()
-            .map(|(pool, layout)| Ok((block::Config::new(pool)?, layout)))
-            .collect::<Result<Vec<_>, block::Unfit>>();
-        let Ok(parts) = parts else {
-            let pool = config.budget.pool;
-            return Self::failed(Error::Pool { pool, cores }, regional);
-        };
-        Self::launch(config, regional, parts.into_iter().zip(0..count))
+        }
     }
 
-    /// A node that failed with `error` before any shard started. `regional` is whether
-    /// its config has a region.
-    fn failed(error: Error, regional: bool) -> Self {
+    /// A node that failed with `error` before any shard started.
+    fn failed(error: Error, log: Flush, regional: bool) -> Self {
         Self {
             stop: Stop::default(),
             shards: Vec::new(),
             failed: Some(error),
             queue: task::pair().0,
             regional,
+            log,
         }
     }
 
-    /// Starts the shards of `config`, each with its part and its number in `parts`.
-    /// `regional` is whether `config` has a region.
+    /// Starts the shards of `config`, each with its number and part in `parts`,
+    /// with the mesh clock and its reader in `clock`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the start of each shard, whose parts each come from the one before"
+    )]
     fn launch<M: block::Memory + 'static>(
         config: Config<M>,
+        parts: Vec<(u32, block::Config, buffer::Layout)>,
+        (mesh, clock): (clock::Clock, clock::Reader),
         regional: bool,
-        parts: impl Iterator<Item = ((block::Config, buffer::Layout), u32)>,
     ) -> Self {
         let bind = Bind::new(&config);
         let Config {
@@ -298,25 +294,35 @@ impl Node {
             mut memory,
             mut files,
             entropy,
+            log,
+            threads,
             ..
         } = config;
         let stop = Stop::default();
         let cores = shards.cores().get();
         let handoff::Chain { first, last, links } = handoff::chain(cores);
         let (queue, inbox) = task::pair();
-        let (mesh, clock) = clock::Clock::new(monotonic.clone());
+        let log = log::open(log, &threads, wall.clone(), clock.clone());
+        let hold = match log.hold() {
+            Ok(hold) => Arc::new(hold),
+            Err(e) => return Self::failed(Error::Start(e), log, regional),
+        };
+        let shards = shards.logged(log.dispatch.clone());
         let serve = Serve {
             interner: last,
             budget: config.budget,
             inbox,
             time: clock.clone(),
             vars: Arc::new(config.vars),
+            roots: config.roots,
+            name: config.name.clone(),
+            shards: cores,
         };
-        let roles = Role::all(mesh, wall, first, bind, serve, config.name, cores);
+        let roles = Role::all(mesh, wall, first, bind, serve, cores);
         let mut started = Vec::new();
         let mut error = None;
-        for (core, ((((config, layout), number), role), (take, give))) in
-            parts.zip(roles).zip(links).enumerate()
+        for (core, (((number, config, layout), role), (take, give))) in
+            parts.into_iter().zip(roles).zip(links).enumerate()
         {
             let pool = match memory(config.reservation()) {
                 Ok(m) => block::Pool::new(config, m),
@@ -344,7 +350,14 @@ impl Node {
                 stop: stop.clone(),
             };
             let make = files();
-            let main = move |tasks| open.main(role, make(), pool, tasks, guard);
+            let hold = Arc::clone(&hold);
+            let main = move |tasks| {
+                let main = open.main(role, make(), pool, tasks, guard);
+                async move {
+                    main.await;
+                    drop(hold);
+                }
+            };
             match shards.start(shard, main) {
                 Ok(handle) => started.push(Shard { handle, failed }),
                 Err(e) => {
@@ -360,6 +373,7 @@ impl Node {
             failed: error,
             queue,
             regional,
+            log,
         }
     }
 
@@ -412,14 +426,23 @@ impl Node {
         self.stop.set();
     }
 
+    /// A handle that waits for the log to reach its writer, for the end of a process.
+    #[must_use]
+    pub fn flush(&self) -> Flush {
+        self.log.clone()
+    }
+
     /// A handle that stops this node from another thread.
     #[must_use]
     pub fn stopper(&self) -> Stopper {
         Stopper(self.stop.clone())
     }
 
-    /// Blocks until every shard has ended. Call it on a thread that `env` did not
-    /// start. Under `sim`, run the sim to its end first.
+    /// Blocks until every shard has ended, then writes the event `stopped` to the log:
+    /// INFO, or ERROR with the field `error`. Does not wait for the log to write it:
+    /// call [`Flush::wait`], or under `sim`, run the sim again. When the thread `log`
+    /// cannot start here, the line waits for [`Flush::wait`]. Call it on a thread that
+    /// `env` did not start. Under `sim`, run the sim to its end first.
     ///
     /// # Errors
     ///
@@ -428,18 +451,18 @@ impl Node {
     /// [`Config::listen`] with a multicast IP or the IPv4 broadcast IP, [`Error::Disk`]
     /// for a disk budget that holds no ring on each shard, [`Error::Pool`] for a part
     /// of the pool budget that needs a reservation of more than `usize::MAX` bytes,
-    /// [`Error::Start`] for a shard that could not start or pin, or [`Error::Memory`]
-    /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for a
-    /// data directory that shard 0 could not claim, else [`Error::NoCard`] for a data
-    /// directory with the directory of a mesh and no file `node.key`, or
-    /// [`Error::Directory`] for a check of them that fails, else [`Error::Name`],
-    /// [`Error::Renamed`], [`Error::NoCard`], [`Error::Mesh`], [`Error::Key`], or
-    /// [`Error::Directory`] for a stored name that it could not read or a name it could
-    /// not keep, else [`Error::Port`] for a port that did not bind, else
-    /// [`Error::Buffer`] for the first shard by core whose buffer, or the home over it,
-    /// did not open, [`Error::Budget`] or [`Error::Directory`] for a file `budget` that
-    /// shard 0 could not read or write, [`Error::Key`], [`Error::Admin`], or
-    /// [`Error::Directory`] for a key file that shard 0 could not read or write,
+    /// [`Error::Start`] for the thread `log` or a shard that could not start, or a
+    /// shard that could not pin, or [`Error::Memory`] for a shard with no memory, else
+    /// [`Error::Shards`] or [`Error::Directory`] for a data directory that shard 0
+    /// could not claim, else [`Error::NoCard`] for a data directory with the directory
+    /// of a mesh and no file `node.key`, or [`Error::Directory`] for a check of them
+    /// that fails, else [`Error::Name`], [`Error::Renamed`], [`Error::NoCard`],
+    /// [`Error::Mesh`], [`Error::Key`], or [`Error::Directory`] for a stored name that
+    /// it could not read or a name it could not keep, else [`Error::Port`] for a port
+    /// that did not bind, else [`Error::Buffer`] for the first shard by core whose
+    /// buffer did not open, [`Error::Budget`] or [`Error::Directory`] for a file
+    /// `budget` that shard 0 could not read or write, [`Error::Key`], [`Error::Admin`],
+    /// or [`Error::Directory`] for a key file that shard 0 could not read or write,
     /// [`Error::Transport`] for a value of [`Config::settings`] that the transport
     /// refuses, [`Error::Blob`] for a chunk store or [`Error::Mesh`] for a stored
     /// region or a mesh that did not open, [`Error::Directory`] for a file `address`
@@ -453,7 +476,14 @@ impl Node {
             let joined = shard.handle.join();
             (joined, shard.failed.get().cloned())
         });
-        error(self.failed, shards.collect())
+        let joined = error(self.failed, shards.collect());
+        tracing::dispatcher::with_default(&self.log.dispatch, || match &joined {
+            Ok(()) => tracing::info!("stopped"),
+            Err(error) => tracing::error!(%error, "stopped"),
+        });
+        // A thread that cannot start leaves the line for `Flush::wait`.
+        self.log.resume();
+        joined
     }
 }
 
@@ -565,8 +595,6 @@ struct Open {
 /// node's tasks.
 struct First {
     mesh: clock::Clock,
-    /// The node's name, which the claim keeps in the data directory.
-    name: types::name::Name,
     wall: env::wall::Wall,
     give: Give<Interner>,
     bind: Bind,
@@ -593,14 +621,12 @@ impl Role {
         give: Give<Interner>,
         bind: Bind,
         serve: Serve,
-        name: types::name::Name,
         cores: usize,
     ) -> impl Iterator<Item = Self> {
         let (ends, closed): (Vec<_>, Vec<_>) =
             (1..cores).map(|_| handoff::pair()).unzip();
         let first = First {
             mesh,
-            name,
             wall,
             give,
             bind,
@@ -615,6 +641,54 @@ impl Role {
 fn unreachable(ip: IpAddr) -> bool {
     let ip = ip.to_canonical();
     ip.is_multicast() || ip == Ipv4Addr::BROADCAST
+}
+
+/// The plan of the shards of a `config` that passes its checks: the number, the part,
+/// and the layout of each shard, in order of core. Else the error that stops the node
+/// before any shard starts.
+///
+/// # Panics
+///
+/// If the disk budget holds a ring on each of more than `u32::MAX` cores.
+fn plan<M>(
+    config: &Config<M>,
+) -> Result<Vec<(u32, block::Config, buffer::Layout)>, Error> {
+    let cores = config.shards.cores().get();
+    if config.name.reserved() {
+        let name = config.name.clone();
+        return Err(Error::Reserved { name });
+    }
+    if config.name.as_str().len() > name::MAX_BYTES {
+        let name = config.name.clone();
+        return Err(Error::Long { name });
+    }
+    if unreachable(config.listen.ip()) {
+        let listen = config.listen;
+        return Err(Error::Listen { listen });
+    }
+    let parts =
+        parts(config.budget.pool, config.budget.disk, cores).map_err(|small| {
+            let count =
+                u64::try_from(cores).expect("invariant: a core count fits a u64");
+            Error::Disk {
+                disk: config.budget.disk,
+                cores,
+                min: types::byte::Size::from_bytes(small.min.saturating_mul(count)),
+            }
+        })?;
+    let Ok(count) = u32::try_from(cores) else {
+        panic!("the host has {cores} cores, more than a node numbers");
+    };
+    let parts = parts
+        .into_iter()
+        .zip(0..count)
+        .map(|((pool, layout), shard)| Ok((shard, block::Config::new(pool)?, layout)))
+        .collect::<Result<Vec<_>, block::Unfit>>();
+    let Ok(parts) = parts else {
+        let pool = config.budget.pool;
+        return Err(Error::Pool { pool, cores });
+    };
+    Ok(parts)
 }
 
 /// The part of `budget` of each shard, and the layout of its ring from its part of
@@ -656,7 +730,6 @@ impl Open {
             Role::First(first) => {
                 let First {
                     mesh,
-                    name,
                     wall,
                     give,
                     bind,
@@ -664,8 +737,8 @@ impl Open {
                     closed,
                 } = *first;
                 tasks.spawn(async { mesh.run(wall).await });
-                let cores = closed.len() + 1;
-                let claimed = self.claim(&files, cores, &name, bind, give).await;
+                let (cores, name) = (serve.shards, &serve.name);
+                let claimed = self.claim(&files, cores, name, bind, give).await;
                 let Some((lock, endpoint)) = claimed else {
                     return;
                 };
@@ -787,19 +860,16 @@ impl Open {
             entropy: self.entropy,
             layout: self.layout,
             commit: COMMIT,
+            trimmed: false,
         };
-        let opened = async {
-            let buffer = buffer::Buffer::open(config, interner.slots()).await?;
-            let config = home::Config {
-                shard: self.shard,
-                buffer,
-                clock: self.clock,
-                limits: LIMITS,
-            };
-            home::Shard::open(config).await
-        };
-        match opened.await {
-            Ok(shard) => {
+        match buffer::Buffer::open(config, interner.slots()).await {
+            Ok(buffer) => {
+                let shard = home::Shard::open(home::Config {
+                    shard: self.shard,
+                    buffer,
+                    clock: self.clock,
+                    limits: LIMITS,
+                });
                 self.give.give(interner);
                 Some(shard)
             }
@@ -824,6 +894,12 @@ struct Serve {
     time: clock::Reader,
     /// The environment of the node process, which the node's connectors read.
     vars: Arc<BTreeMap<OsString, OsString>>,
+    /// The CA certificates that the node's connectors trust, which the event `started`
+    /// follows.
+    roots: os::roots::Roots,
+    /// The node's name and shard count, which the claim and the event `started` read.
+    name: types::name::Name,
+    shards: usize,
 }
 
 /// What shard 0 binds the node's port with, once it claimed the data directory.
@@ -1107,7 +1183,9 @@ impl Serve {
         let (key, entropy) = (identity.key, endpoint.entropy.clone());
         let (clock, net) = (endpoint.clock.clone(), endpoint.net.clone());
         let address = endpoint.address(&identity);
-        let (settings, vars) = (endpoint.settings, self.vars);
+        let (settings, vars, name) = (endpoint.settings, self.vars, self.name);
+        let roots = self.roots;
+        let shards = self.shards;
         let opened =
             endpoint.open(identity, files.clone(), pool, &self.time, tasks.clone());
         let Ok((transport, mesh)) = opened.await.map_err(&fail) else {
@@ -1127,6 +1205,18 @@ impl Serve {
             let secrets =
                 secret::Resolver::new(vars, files.clone(), &directory::secrets());
             let serve = pin!(async move {
+                // `hold` polls `serve` only once the file `address` holds the address.
+                let trusted = trust::roots(&roots, mesh.is_some());
+                let os::roots::Roots {
+                    certificates,
+                    failures,
+                    source,
+                } = roots;
+                // Each local of this block lives until the node stops.
+                drop(certificates);
+                let text = source.to_string();
+                drop(source);
+                tracing::info!(%name, address = %address.bound, shards, "started");
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,
                     transport: Rc::clone(&transport),
@@ -1140,36 +1230,38 @@ impl Serve {
                     entropy: entropy.clone(),
                     region,
                 });
-                let (ops, followed) = match mesh.as_ref() {
-                    Some(mesh) => {
-                        let member = mesh.member(key);
-                        let member =
-                            member.expect("invariant: a mesh opens only on a member");
-                        let name = member.card.card().name.clone();
-                        let kinds = Arc::new(kinds());
-                        let ops = Rc::new(ops::Node::new(ops::Config {
-                            mesh: mesh.clone(),
-                            keys: channel_keys(&time, &entropy),
-                            front_ends: front_ends(),
-                            kinds: Arc::clone(&kinds),
-                            hub: hub.clone(),
+                let (ops, followed) = if let Some(mesh) = mesh.as_ref() {
+                    let member = mesh.member(key);
+                    let member =
+                        member.expect("invariant: a mesh opens only on a member");
+                    let name = member.card.card().name.clone();
+                    let supervisor = connector::supervisor::Supervisor::new(
+                        connector::supervisor::Config {
+                            kinds: Arc::new(kinds()),
                             clock: clock.clone(),
-                            name: name.clone(),
-                            secrets: secrets.clone(),
-                        }));
-                        let config = connector::supervisor::Config {
-                            kinds,
-                            clock: clock.clone(),
-                            entropy,
+                            entropy: entropy.clone(),
                             net,
+                            roots: trusted,
                             tasks: tasks.clone(),
                             hub: hub.clone(),
                             secrets,
-                        };
-                        let runs = connectors::Runs::new(config, name);
-                        (Some(ops), Some(follow(mesh, hub.clone(), runs).await))
-                    }
-                    None => (None, None),
+                        },
+                    );
+                    let ops = Rc::new(ops::Node::new(ops::Config {
+                        mesh: mesh.clone(),
+                        keys: channel_keys(&time, &entropy),
+                        front_ends: front_ends(),
+                        supervisor: supervisor.clone(),
+                        hub: hub.clone(),
+                        clock: clock.clone(),
+                        name: name.clone(),
+                        roots: ops::roots::Failures::new(text, failures),
+                    }));
+                    let runs = connectors::Runs::new(supervisor, tasks.clone(), name);
+                    (Some(ops), Some(follow(mesh, hub.clone(), runs).await))
+                } else {
+                    drop((text, failures));
+                    (None, None)
                 };
                 let handles = task::Handles { hub, ops };
                 let port = route::accept(
@@ -1282,6 +1374,7 @@ async fn follow(
 fn kinds() -> connector::kind::Table {
     connector::kind::Table::new()
         .with("influx", connector_influx::Kind::default())
+        .with("modbus", connector_modbus::Kind::default())
         .with("opcua", connector_opcua::Kind::default())
 }
 
@@ -1331,7 +1424,7 @@ fn end(
 /// budgets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// A shard could not start or pin.
+    /// A shard or the thread `log` could not start, or a shard could not pin.
     Start(env::thread::Error),
     /// A shard panicked.
     Panicked(env::thread::Panicked),
@@ -1342,7 +1435,7 @@ pub enum Error {
         /// Why the OS gave none.
         error: os::memory::Error,
     },
-    /// The buffer of the shard on `core`, or the home over it, did not open.
+    /// The buffer of the shard on `core` did not open.
     Buffer {
         /// The core of the shard.
         core: usize,

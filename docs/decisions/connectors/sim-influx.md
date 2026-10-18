@@ -39,6 +39,15 @@
   https://github.com/synnaxlabs/foundation/issues/1210#issuecomment-6055875543), which
   supersedes the `u` answer of
   https://github.com/synnaxlabs/foundation/pull/1239#issuecomment-6032970676.
+  `Store::unsigned()` makes a store that relaxes only the `u` rule, as InfluxDB 2 and 3
+  do: it stores a `u` integer as `Field::Unsigned`, of `Kind::Unsigned`, and a `u` and
+  an `i` integer of one key are a conflict. These supersede their removal in
+  https://github.com/synnaxlabs/foundation/issues/1210#issuecomment-6055802089 and
+  https://github.com/synnaxlabs/foundation/issues/1210#issuecomment-6055875543 for that
+  store only; the default store keeps the strictest rule of each version. Trigger
+  for a store by version (`Store::new(version)`): a second rule that differs by version
+  and that a test needs relaxed. Decided by `laptop.architect-2` on 2026-10-16T09:09:18Z
+  (https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6212098264).
   Memory: each series keeps its points in chunks, one time column and one typed
   column for each field key, so the STORE AND FORWARD scenario holds about 6e7 points
   on a CI runner (#1149). `Point::fields` is a `Fields` view of the chunk.
@@ -83,9 +92,11 @@
   supersedes the paired run against `77e13735` of
   https://github.com/synnaxlabs/foundation/pull/1448#issuecomment-6045453368, and
   turns on `sim` for the bench.
-  `connector_influx::sim::serve(listener, tasks, store, database, token)` is its HTTP
-  front, on `connector::http::sim::serve` (HTTP SIM SERVER). `POST /write?db=`
-  (InfluxDB 1) and
+  `connector_influx::sim::serve(listener, tasks, until, store, database, token)` is its
+  HTTP front, on `connector::http::sim::serve` (HTTP SIM SERVER). It stops at `until`
+  as HTTP SIM SERVER stops (`laptop.architect-2`, 2026-10-17T16:05:31Z:
+  https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6236306639, item
+  1). `POST /write?db=` (InfluxDB 1) and
   `POST /api/v2/write?bucket=` (InfluxDB 2 and 3) give 204 when the store takes each
   line, and 400 with the text of the store's error when it refuses one. A missing or
   empty `db` or `bucket`, or on `/api/v2/write` a missing or empty `org` and `orgID`,

@@ -59,7 +59,12 @@ impl Woken {
         for &entry in set.groups() {
             let Entry { slot, key, .. } = set.entries()[entry];
             assert!(shard.carry(slot, key), "each index is new");
-            readers.push(shard.open_complete(slot, u64::MAX, Charge::Whole).into());
+            readers.push(
+                shard
+                    .open_complete(slot, u64::MAX, Charge::Whole)
+                    .key
+                    .into(),
+            );
         }
         let writer = shard
             .open_writer(home::writer::Writer {

@@ -7,9 +7,11 @@
 //! - `round`: the ns from the first poll of that read to its value, with the server,
 //!   the sim net, and the sim scheduler.
 //! - `name client` and `name round`: the same for a read of a node by name.
+//! - `bytes client` and `bytes round`: the same for a read of a `ByteString` whose
+//!   answer takes 8 chunks.
 //! - `client N` and `round N`: the same for one read of N nodes by number. A read of
 //!   512 nodes sends 2 requests of [`PER_READ`] nodes, and a read of 4352 sends 17,
-//!   one more than the requests in flight.
+//!   more than the requests in flight.
 //!
 //! [`PER_READ`]: connector_opcua::bench::client::PER_READ
 
@@ -53,6 +55,9 @@ async fn bench(node: sim::node::Node, _: env::tasks::Tasks) -> Vec<(String, Vec<
                 let [polls, rounds] = reads(&mut client, Variable::Name).await;
                 lines.push(("name client".to_owned(), polls));
                 lines.push(("name round".to_owned(), rounds));
+                let [polls, rounds] = reads(&mut client, Variable::Bytes).await;
+                lines.push(("bytes client".to_owned(), polls));
+                lines.push(("bytes round".to_owned(), rounds));
             }
             client.close().await;
         }

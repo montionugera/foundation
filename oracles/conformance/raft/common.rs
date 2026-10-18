@@ -119,6 +119,7 @@ pub(crate) fn start(
         key: key(id),
         election_ticks: election,
         heartbeat_ticks: 1,
+        fits: |_| true,
     };
     let start = Start {
         hard: hard.clone(),

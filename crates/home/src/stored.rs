@@ -1,11 +1,15 @@
 //! The data entry of an index frame. Its body is a header that describes each series by
 //! its channel and type, then the frame's series bytes.
 
+use std::num::NonZeroU32;
+use std::sync::Arc;
+
 use block::Block;
-use buffer::Entry;
+use buffer::{Entry, Samples, Stored};
 use types::channel;
-use types::frame::key_set::KeySet;
-use types::frame::{self, Form, Frame};
+use types::frame::key_set::{self, KeySet};
+use types::frame::{self, Form, Frame, Layout, Path};
+use types::hash;
 use types::sample::{Scalar, Sides, Type};
 use types::time::Stamp;
 
@@ -35,7 +39,8 @@ mod at {
 ///
 /// # Panics
 ///
-/// If `frame` is not encoded, not of `set`, of more than one group, or of no series.
+/// If `frame` is not encoded, not of `set`, of more than one group, of no series, or
+/// of no sample.
 pub(crate) fn entry(
     pool: &block::Pool,
     frame: &Frame,
@@ -50,15 +55,20 @@ pub(crate) fn entry(
     let Some(range) = frame.range(index.group) else {
         unreachable!("invariant: a frame holds the index of each series");
     };
+    let Some(len) = NonZeroU32::new(range.count) else {
+        panic!("the frame has no sample");
+    };
     let parts = body(pool, frame, set)?;
     Ok(Entry {
         index: index.key,
         slot: index.slot,
         path: frame.path(),
         first: range.seq,
-        len: range.count,
+        samples: Some(Samples {
+            len,
+            last: Some(last),
+        }),
         stored_at,
-        last: Some(last),
         tag: TAG,
         parts: parts.into(),
     })
@@ -129,10 +139,6 @@ pub(crate) struct Series<'a> {
 /// If `body` is shorter than its header. The iterator panics on an unknown kind or
 /// scalar, and on ends that do not fit the series bytes. Bytes from another node must
 /// be checked before they reach `read`.
-#[cfg_attr(
-    not(any(test, feature = "sim")),
-    expect(dead_code, reason = "catch-up from disk (#274) is the first user")
-)]
 pub(crate) fn read(body: &[u8]) -> impl Iterator<Item = Series<'_>> {
     let Some(count) = body.first_chunk() else {
         panic!("the stored body of {} bytes has no count", body.len());
@@ -154,6 +160,122 @@ pub(crate) fn read(body: &[u8]) -> impl Iterator<Item = Series<'_>> {
         data_type: data_type(descriptor),
         bytes,
     })
+}
+
+/// The most key sets whose maps one [`Decoder`] keeps.
+const SETS: usize = 4;
+
+/// Makes the frames of stored data entries again, of the key set that the caller
+/// gives. It keeps the map of each of the last [`SETS`] key sets it was given and of
+/// the channels of the last entry, so a run of entries of one key set and one list of
+/// channels maps each series once. Each key set given to one decoder comes from one
+/// interner.
+#[derive(Debug, Default)]
+pub(crate) struct Decoder {
+    /// The key and the entry of each channel and type of each of the last [`SETS`]
+    /// key sets given, the key set of the last frame first.
+    maps: Vec<(key_set::Key, EntryOf)>,
+    /// The channel and type of each series of the last entry, in entry order.
+    channels: Vec<(channel::Key, Type)>,
+    /// The entry in the key set of the last frame and the position in `channels` of
+    /// each series that the key set holds, in increasing entry order.
+    kept: Vec<(usize, usize)>,
+    /// The start and length of each series in the body of the entry.
+    spans: Vec<(usize, usize)>,
+    lens: Vec<(usize, usize)>,
+}
+
+/// The entry in a key set of each channel and type.
+type EntryOf = hash::Map<(channel::Key, Type), usize>;
+
+impl Decoder {
+    /// The live frame of key set `set` that `stored` holds, an entry of the index of
+    /// the one group of `set`. It drops each series whose channel and type `set` does
+    /// not hold. `None` when `stored` is not a data entry with samples.
+    ///
+    /// # Errors
+    ///
+    /// [`block::Error`] when `pool` has no block for the frame.
+    ///
+    /// # Panics
+    ///
+    /// As [`read`] does, and if `set` does not hold the index series of `stored`.
+    pub(crate) fn frame(
+        &mut self,
+        pool: &block::Pool,
+        set: &Arc<KeySet>,
+        stored: &Stored,
+    ) -> Result<Option<Frame>, block::Error> {
+        if stored.tag != TAG {
+            return Ok(None);
+        }
+        let Some(samples) = stored.samples else {
+            return Ok(None);
+        };
+        let body = &stored.bytes;
+        self.map(set, body);
+        self.spans.clear();
+        let start = body.as_ptr().addr();
+        let spans = read(body)
+            .map(|series| (series.bytes.as_ptr().addr() - start, series.bytes.len()));
+        self.spans.extend(spans);
+        self.lens.clear();
+        let lens = self
+            .kept
+            .iter()
+            .map(|&(entry, at)| (entry, self.spans[at].1));
+        self.lens.extend(lens);
+        let layout = Layout::new(set, &self.lens).unwrap_or_else(|error| {
+            panic!(
+                "the entry has no frame of key set {}: {error}",
+                set.key().get()
+            )
+        });
+        let mut draft = layout.draft(pool, Form::Encoded)?;
+        for ((_, to), &(_, at)) in draft.iter_mut().zip(&self.kept) {
+            let (from, len) = self.spans[at];
+            to.copy_from_slice(&body[from..from + len]);
+        }
+        draft.set_count(0, samples.len.get());
+        draft.set_seq(0, stored.first);
+        Ok(Some(draft.freeze(Path::Live)))
+    }
+
+    /// Maps the series of `body`, the body of an entry, to the entries of `set`.
+    fn map(&mut self, set: &KeySet, body: &[u8]) {
+        let channels = || read(body).map(|series| (series.channel, series.data_type));
+        let key = set.key();
+        let last = self.maps.first().map(|&(last, _)| last);
+        if last == Some(key) && channels().eq(self.channels.iter().copied()) {
+            return;
+        }
+        let at = self.maps.iter().position(|&(other, _)| other == key);
+        let at = at.unwrap_or_else(|| {
+            let evicted = (self.maps.len() == SETS).then(|| self.maps.pop());
+            let mut entry_of =
+                evicted.flatten().map(|(_, map)| map).unwrap_or_default();
+            entry_of.clear();
+            let entries = set.entries().iter().enumerate();
+            entry_of
+                .extend(entries.map(|(at, entry)| ((entry.key, entry.data_type), at)));
+            self.maps.push((key, entry_of));
+            self.maps.len() - 1
+        });
+        self.maps[..=at].rotate_right(1);
+        let entry_of = &self.maps[0].1;
+        self.channels.clear();
+        self.channels.extend(channels());
+        self.kept.clear();
+        let kept = self
+            .channels
+            .iter()
+            .enumerate()
+            .filter_map(|(at, channel)| {
+                entry_of.get(channel).map(|&entry| (entry, at))
+            });
+        self.kept.extend(kept);
+        self.kept.sort_unstable();
+    }
 }
 
 /// The kind code, element code, and `n` of `data_type`. The `n` of a matrix is
@@ -266,7 +388,10 @@ mod tests {
     use types::frame::{Draft, Path};
 
     use super::*;
-    use crate::common::{create_interner, create_pool, data_type, intern, key};
+    use crate::common::{
+        SCALARS, create_interner, create_pool, data_type, intern, key,
+    };
+    use crate::split;
 
     /// A live frame of `set` in `form` with each present entry and its bytes, in
     /// entry order.
@@ -342,14 +467,15 @@ mod tests {
 
             let entry = entry(&pool, &frame, &set, last, stored_at).expect("room");
 
-            let place = (entry.index, entry.slot, entry.path, entry.first, entry.len);
+            let place = (entry.index, entry.slot, entry.path, entry.first);
+            assert_eq!(place, (key(Slot::new(3)), Slot::new(3), Path::Backfill, 40));
+            let samples = Samples {
+                len: NonZeroU32::new(2).expect("not 0"),
+                last: Some(last),
+            };
             assert_eq!(
-                place,
-                (key(Slot::new(3)), Slot::new(3), Path::Backfill, 40, 2)
-            );
-            assert_eq!(
-                (entry.stored_at, entry.last, entry.tag),
-                (stored_at, Some(last), 0)
+                (entry.samples, entry.stored_at, entry.tag),
+                (Some(samples), stored_at, 0)
             );
             let parts: Vec<_> = entry.parts.into_iter().collect();
             let body = body(&pool, &frame, &set).expect("room");
@@ -377,6 +503,91 @@ mod tests {
                 Stamp::from_nanos(0),
                 Stamp::from_nanos(0),
             ));
+        }
+
+        #[test]
+        #[should_panic(expected = "the frame has no sample")]
+        fn panics_on_a_frame_of_no_sample() {
+            let set = intern(&[Group {
+                index: key(Slot::new(1)),
+                data: &[],
+            }]);
+            let pool = create_pool(4096);
+            let draft = Draft::new(&pool, &set, Form::Encoded, &[(0, 8)])
+                .expect("a valid frame");
+            let frame = draft.freeze(Path::Live);
+            drop(entry(
+                &pool,
+                &frame,
+                &set,
+                Stamp::from_nanos(0),
+                Stamp::from_nanos(0),
+            ));
+        }
+
+        /// The body bytes of the entry of a writer's raw frame of one sample on an
+        /// index and on each of 256 data channels of `scalar`, as a shard splits and
+        /// stores it.
+        fn polled(scalar: Scalar) -> usize {
+            let mut interner = Interner::new();
+            let index = channel::Key::from_u128(1);
+            interner.slots().index(index);
+            let data: Vec<_> = (2..258)
+                .map(|n| (channel::Key::from_u128(n), Type::Scalar(scalar)))
+                .collect();
+            for &(key, data_type) in &data {
+                interner.slots().data(key, data_type);
+            }
+            let set = interner.intern(&[Group { index, data: &data }]);
+            let pool = create_pool(1 << 20);
+            let lens: Vec<_> = (0..set.entries().len())
+                .map(|entry| {
+                    let index = set.index(entry) == entry;
+                    (entry, if index { 8 } else { scalar.width() })
+                })
+                .collect();
+            let mut draft =
+                Draft::new(&pool, &set, Form::Raw, &lens).expect("a valid frame");
+            for (_, bytes) in draft.iter_mut() {
+                bytes.fill(1);
+            }
+            let group = set.entries()[0].group;
+            draft.set_count(group, 1);
+            let mut scratch = split::Scratch::default();
+            let mut writer = split::Writer::new(Arc::clone(&set));
+            let mut split = scratch.split(&mut writer, draft);
+            let frame = split.frame(&pool, group).expect("room");
+            let frame = frame.freeze(Path::Live);
+            let stamp = Stamp::from_nanos(1);
+            let entry = entry(&pool, &frame, &set, stamp, stamp).expect("room");
+            entry.parts.into_iter().map(|part| part.len()).sum()
+        }
+
+        #[test]
+        fn stores_a_poll_of_256_channels_in_26_bytes_a_series_and_its_vector() {
+            // The count, and a descriptor of 26 bytes for each of the 257 series: 6686
+            // bytes. Then 16 bytes of the index vector, and the vector of each data
+            // series, each but the last padded to 8 bytes.
+            let poll =
+                |vector: usize| 6686 + 16 + 255 * vector.next_multiple_of(8) + vector;
+            let expected = [
+                (Scalar::Bool, poll(3)),
+                (Scalar::I8, poll(3)),
+                (Scalar::I16, poll(4)),
+                (Scalar::I32, poll(8)),
+                (Scalar::I64, poll(16)),
+                (Scalar::U8, poll(3)),
+                (Scalar::U16, poll(4)),
+                (Scalar::U32, poll(8)),
+                (Scalar::U64, poll(16)),
+                (Scalar::F32, poll(8)),
+                (Scalar::F64, poll(16)),
+                (Scalar::Stamp, poll(16)),
+                (Scalar::Span, poll(16)),
+                (Scalar::Uuid, poll(32)),
+            ];
+            let stored = SCALARS.map(|scalar| (scalar, polled(scalar)));
+            assert_eq!(stored, expected);
         }
     }
 
@@ -621,6 +832,245 @@ mod tests {
                 body.push(0);
                 read(&body).for_each(drop);
             }
+        }
+    }
+
+    mod decoder {
+        use types::frame::Range;
+
+        use super::*;
+
+        const I64: Type = Type::Scalar(Scalar::I64);
+
+        /// A data channel of type `I64` for each slot of `slots`.
+        fn data(slots: &[u32]) -> Vec<(channel::Key, Type)> {
+            slots.iter().map(|&n| (key(Slot::new(n)), I64)).collect()
+        }
+
+        /// The stored entry of one sample at `seq` of each series of `set`, as the
+        /// buffer reads it back.
+        fn stored(pool: &block::Pool, set: &KeySet, seq: u64) -> (Frame, Stored) {
+            let series: Vec<_> = (0..set.entries().len()).map(|e| (e, 8)).collect();
+            let mut draft =
+                Draft::new(pool, set, Form::Encoded, &series).expect("a valid frame");
+            for ((e, to), byte) in draft.iter_mut().zip(1..) {
+                to.fill(byte + u8::try_from(e).expect("few entries"));
+            }
+            draft.set_count(0, 1);
+            draft.set_seq(0, seq);
+            let frame = draft.freeze(Path::Live);
+            let bytes = joined(&body(pool, &frame, set).expect("room"));
+            let mut block = pool.alloc(bytes.len()).expect("room");
+            block.copy_from_slice(&bytes);
+            let stored = Stored {
+                first: seq,
+                samples: Some(Samples {
+                    len: NonZeroU32::MIN,
+                    last: Some(Stamp::from_nanos(9)),
+                }),
+                stored_at: Stamp::from_nanos(9),
+                tag: TAG,
+                bytes: block.freeze(),
+            };
+            (frame, stored)
+        }
+
+        /// The key and bytes of each present entry of `frame`, of key set `set`.
+        fn series(frame: &Frame, set: &KeySet) -> Vec<(channel::Key, Vec<u8>)> {
+            let entries = set.entries();
+            frame
+                .iter()
+                .map(|(e, bytes)| (entries[e].key, bytes.to_vec()))
+                .collect()
+        }
+
+        #[test]
+        fn makes_the_frame_of_a_data_entry_again() {
+            let data = data(&[2, 3]);
+            let groups = [Group {
+                index: key(Slot::new(1)),
+                data: &data,
+            }];
+            let mut interner = create_interner(&[1], &groups);
+            let set = interner.intern(&groups);
+            let pool = create_pool(1 << 16);
+            let (frame, stored) = stored(&pool, &set, 5);
+
+            let decoded = Decoder::default().frame(&pool, &set, &stored);
+
+            let decoded = decoded.expect("room").expect("a data entry");
+            assert_eq!(decoded.key_set(), frame.key_set());
+            assert_eq!(decoded.path(), Path::Live);
+            assert_eq!(decoded.form(), Form::Encoded);
+            assert_eq!(decoded.range(0), Some(Range { seq: 5, count: 1 }));
+            assert_eq!(
+                decoded.iter().collect::<Vec<_>>(),
+                frame.iter().collect::<Vec<_>>()
+            );
+        }
+
+        #[test]
+        fn makes_no_frame_of_a_caller_record_or_another_tag() {
+            let groups = [Group {
+                index: key(Slot::new(1)),
+                data: &[],
+            }];
+            let mut interner = create_interner(&[1], &groups);
+            let set = interner.intern(&groups);
+            let pool = create_pool(1 << 16);
+            let (_, stored) = stored(&pool, &set, 5);
+            let mut decoder = Decoder::default();
+            for stored in [
+                Stored {
+                    samples: None,
+                    ..stored.clone()
+                },
+                Stored {
+                    tag: 1,
+                    ..stored.clone()
+                },
+            ] {
+                let made = decoder.frame(&pool, &set, &stored);
+                assert!(made.expect("no block taken").is_none(), "{stored:?}");
+            }
+        }
+
+        /// A channel defined again with a new type has a new slot, so the live path
+        /// gives a reader of the new type no series of the old one. Neither does this.
+        #[test]
+        fn drops_each_series_of_a_channel_or_type_the_set_does_not_hold() {
+            let stored_data = data(&[2, 3, 4]);
+            let index = key(Slot::new(1));
+            let groups = [Group {
+                index,
+                data: &stored_data,
+            }];
+            let mut interner = create_interner(&[1], &groups);
+            let written = interner.intern(&groups);
+            let f64 = Type::Scalar(Scalar::F64);
+            let now = [(key(Slot::new(2)), f64), (key(Slot::new(4)), I64)];
+            let set = interner.intern(&[Group { index, data: &now }]);
+            let pool = create_pool(1 << 16);
+            let (frame, stored) = stored(&pool, &written, 5);
+
+            let decoded = Decoder::default().frame(&pool, &set, &stored);
+
+            let decoded = decoded.expect("room").expect("a data entry");
+            assert_eq!(decoded.key_set(), set.key());
+            let kept: Vec<_> = series(&frame, &written)
+                .into_iter()
+                .filter(|(channel, _)| [index, key(Slot::new(4))].contains(channel))
+                .collect();
+            assert_eq!(series(&decoded, &set), kept);
+            assert_eq!(decoded.range(0), Some(Range { seq: 5, count: 1 }));
+        }
+
+        /// After a restart, the slot table can give the channels of an entry stored
+        /// before it slots in another order.
+        #[test]
+        fn maps_each_series_to_its_channel_in_a_set_of_another_slot_order() {
+            let data = data(&[2, 3]);
+            let index = key(Slot::new(1));
+            let groups = [Group { index, data: &data }];
+            let written = create_interner(&[1], &groups).intern(&groups);
+            let mut interner = Interner::new();
+            interner.slots().index(index);
+            interner.slots().data(key(Slot::new(3)), I64);
+            let set = interner.intern(&groups);
+            let pool = create_pool(1 << 16);
+            let (frame, stored) = stored(&pool, &written, 5);
+
+            let decoded = Decoder::default().frame(&pool, &set, &stored);
+
+            let decoded = decoded.expect("room").expect("a data entry");
+            let mut want = series(&frame, &written);
+            want.swap(1, 2);
+            assert_eq!(series(&decoded, &set), want);
+        }
+
+        #[test]
+        #[should_panic(expected = "the entry has no frame of key set")]
+        fn panics_when_the_set_holds_no_index_of_the_entry() {
+            let data = data(&[2]);
+            let groups = [Group {
+                index: key(Slot::new(1)),
+                data: &data,
+            }];
+            let mut interner = create_interner(&[1, 5], &groups);
+            let written = interner.intern(&groups);
+            let other = interner.intern(&[Group {
+                index: key(Slot::new(5)),
+                data: &data,
+            }]);
+            let pool = create_pool(1 << 16);
+            let (_, stored) = stored(&pool, &written, 5);
+
+            drop(Decoder::default().frame(&pool, &other, &stored));
+        }
+
+        /// The decoder keeps its map of the last set and channels: each change of
+        /// either maps again, also back to a set it mapped before.
+        #[test]
+        fn maps_again_at_a_change_of_set_or_channels() {
+            let (one, two) = (data(&[2]), data(&[2, 3]));
+            let index = key(Slot::new(1));
+            let group = |data| Group { index, data };
+            let mut interner = create_interner(&[1], &[group(&one), group(&two)]);
+            let first = interner.intern(&[group(&one)]);
+            let second = interner.intern(&[group(&two)]);
+            let third = interner.intern(&[group(&data(&[3]))]);
+            let pool = create_pool(1 << 16);
+            let (_, a) = stored(&pool, &first, 1);
+            let (_, b) = stored(&pool, &second, 2);
+            let mut decoder = Decoder::default();
+            let mut keys = |stored: &Stored, set: &Arc<KeySet>| {
+                let made = decoder.frame(&pool, set, stored);
+                let made = made.expect("room").expect("a data entry");
+                series(&made, set)
+                    .into_iter()
+                    .map(|(key, _)| key)
+                    .collect::<Vec<_>>()
+            };
+            let at = |slots: &[u32]| -> Vec<_> {
+                slots.iter().map(|&n| key(Slot::new(n))).collect()
+            };
+            assert_eq!(keys(&a, &second), at(&[1, 2]));
+            assert_eq!(keys(&b, &second), at(&[1, 2, 3]));
+            assert_eq!(keys(&b, &third), at(&[1, 3]));
+            assert_eq!(keys(&a, &third), at(&[1]));
+            assert_eq!(keys(&a, &first), at(&[1, 2]));
+            assert_eq!(keys(&b, &second), at(&[1, 2, 3]));
+            assert_eq!(keys(&b, &third), at(&[1, 3]));
+        }
+        #[test]
+        fn keeps_the_maps_of_the_last_key_sets_only() {
+            let all = data(&[2, 3, 4, 5, 6]);
+            let index = key(Slot::new(1));
+            let mut interner = create_interner(&[1], &[Group { index, data: &all }]);
+            let full = interner.intern(&[Group { index, data: &all }]);
+            let sets: Vec<_> = (2..=6)
+                .map(|n| {
+                    interner.intern(&[Group {
+                        index,
+                        data: &data(&[n]),
+                    }])
+                })
+                .collect();
+            let pool = create_pool(1 << 16);
+            let (_, stored) = stored(&pool, &full, 1);
+            let mut decoder = Decoder::default();
+            for n in [0, 1, 2, 3, 4, 0, 3] {
+                let set = &sets[n];
+                let made = decoder.frame(&pool, set, &stored);
+                let made = made.expect("room").expect("a data entry");
+                let keys: Vec<_> =
+                    series(&made, set).into_iter().map(|(k, _)| k).collect();
+                let slot = u32::try_from(n + 2).expect("few sets");
+                assert_eq!(keys, [key(Slot::new(1)), key(Slot::new(slot))]);
+            }
+            // The bound on memory shows in no frame, so this reads `maps`.
+            let held: Vec<_> = decoder.maps.iter().map(|&(set, _)| set).collect();
+            assert_eq!(held, [3, 0, 4, 2].map(|n| sets[n].key()));
         }
     }
 

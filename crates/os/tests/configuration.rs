@@ -36,7 +36,8 @@ fn a_lookup_that_cannot_read_its_configuration_is_io() {
         .build()
         .expect("a current-thread runtime builds");
     refuse_host_conf();
-    let found = runtime.block_on(os::net().resolve("foundation.invalid", 4433));
+    let found = runtime
+        .block_on(os::net().resolve(&"foundation.invalid".parse().unwrap(), 4433));
     let code = Errno::MFILE.raw_os_error();
     assert_eq!(found, Err(Error::Io { code }));
 }

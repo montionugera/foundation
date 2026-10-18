@@ -5,16 +5,18 @@ pub(crate) mod remote;
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::future::poll_fn;
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 
-use ::home::reader::Next;
+use ::home::reader::{Next, disk};
 use types::channel;
-use types::frame::key_set::KeySet;
-use types::frame::{Frame, Mask, View};
+use types::frame::key_set::{Group, KeySet};
+use types::frame::{self, Frame, Mask, View};
 use types::name::{Name, Selector};
 use types::time::Span;
+use wire::hub::Gaps;
 
 use crate::channel::Channel;
 use crate::pending::Pending;
@@ -33,11 +35,10 @@ pub enum Mode {
     /// Each live frame, after the commit that holds it. Once the frames that the
     /// reader has not given back (the one it holds and those it has not taken) reach
     /// a window, a later frame waits until the reader gives frames back. A frame that
-    /// still waits when the hub releases the next commit with frames of the index is
-    /// a miss: the session ends with [`Ended::Behind`] after the frames before it. A
-    /// live frame that finds no room in the buffer is a miss too, and so is each frame
-    /// that waits for the window then. So a reader that takes the frames of each
-    /// commit before the next such commit ends misses none while the buffer has room.
+    /// still waits when the hub releases the next commit with frames of the index
+    /// comes later from disk, in order. Samples that the buffer trimmed before the
+    /// reader got them, or that found no room in the buffer, never reach it: the next
+    /// frame with a sample gives them as its [`Received::gap`].
     Complete,
     /// The newest live frame, before its commit.
     Latest,
@@ -59,9 +60,7 @@ pub struct Config {
     /// index: an open takes over the session of the same subject and name on its index.
     /// A named complete reader that opens while the home holds its position resumes at
     /// the position that the acks of its last complete session recorded, or where that
-    /// session opened when they recorded none. It ends with [`Ended::Behind`] when a
-    /// frame after that position was released, dropped because no complete session on
-    /// its index was open, or lost because the buffer had no room.
+    /// session opened when they recorded none.
     pub name: Option<Name>,
     /// How long the home holds a named complete reader's position after its session
     /// closes. Zero or more. It must be zero when the reader is unnamed or latest.
@@ -109,12 +108,31 @@ impl<'a> Received<'a> {
     }
 
     /// The reader's position after this frame. Give it to [`Reader::ack`] when the
-    /// frame is safe at its target.
+    /// frame is safe at its target. A frame with no sample keeps the position before
+    /// the gap that a later frame gives.
     #[must_use]
     pub fn position(&self) -> Position {
-        let position = self.lens.after(self.view.frame());
+        let live = match &self.lent.gaps {
+            Some(gaps) => gaps.live(),
+            None => self.lens.end(self.view.frame()),
+        };
+        let position = Position {
+            index: self.lens.index,
+            live,
+        };
         self.lent.given.set(Some(position.live));
         position
+    }
+
+    /// The seqs of the index just before this frame that the reader did not get, as
+    /// the buffer trimmed them or had no room for them. `None` for each frame of a
+    /// latest reader and for most frames of a complete one, and never an empty range.
+    /// Its end is the seq of the frame's first sample. A frame with no sample gives
+    /// `None`, and the next frame with one gives the gap.
+    #[must_use]
+    pub fn gap(&self) -> Option<Range<u64>> {
+        let gap = self.lent.gaps.as_ref()?.last();
+        (!gap.is_empty()).then_some(gap)
     }
 }
 
@@ -159,29 +177,27 @@ impl Lens {
         }
     }
 
-    /// The position of the reader after `frame`, a frame of this lens's key set. The
-    /// mask holds the index, so the frame's range of its group is the view's.
-    fn after(&self, frame: &Frame) -> Position {
-        let range = frame
+    /// The range of the index in `frame`, a frame of this lens's key set. The mask
+    /// holds the index, so the frame's range of its group is the view's.
+    fn range(&self, frame: &Frame) -> frame::Range {
+        frame
             .range(self.group)
-            .expect("invariant: a frame holds the range of each group");
-        Position {
-            index: self.index,
-            live: range
-                .end()
-                .expect("invariant: the home gives no range past u64::MAX"),
-        }
+            .expect("invariant: a frame holds the range of each group")
+    }
+
+    /// The seq after the last sample of the index of `frame`.
+    fn end(&self, frame: &Frame) -> u64 {
+        self.range(frame)
+            .end()
+            .expect("invariant: the home gives no range past u64::MAX")
     }
 }
 
 /// Why a reader session gives no more frames.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ended {
-    /// The shard's buffer failed.
+    /// The shard's buffer failed, or a read from disk of the reader failed.
     Buffer(env::files::Error),
-    /// A complete reader missed a frame: [`Mode::Complete`] and [`Config::name`] state
-    /// when.
-    Behind,
     /// A channel of the reader was removed from the definitions.
     Removed(channel::Key),
     /// A later open of the same subject and name took over the session.
@@ -196,8 +212,8 @@ pub enum Ended {
     /// The ends of a frame from the home of another node break a rule of a frame. The
     /// reader stopped the stream with code `MALFORMED`.
     Frame(types::frame::Error),
-    /// The shard's pool had no block for a frame or a credit. The reader stopped the
-    /// stream with code `BUSY`.
+    /// The shard's pool had no block for a frame, a credit, or a read from disk. A
+    /// reader of the home of another node stopped the stream with code `BUSY`.
     Pool(block::Error),
     /// The home of another node started a frame once the charges of the frames that
     /// arrived reached the grant that the reader sent. The reader stopped the stream
@@ -212,9 +228,6 @@ impl fmt::Display for Ended {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Buffer(error) => write!(f, "the buffer of the shard failed: {error}"),
-            Self::Behind => f.write_str(
-                "the reader missed a frame and gets no later one: open a new reader",
-            ),
             Self::Removed(key) => {
                 write!(f, "channel {key} was removed: open a new reader")
             }
@@ -261,6 +274,16 @@ pub enum Error {
     },
     /// The reader is named and the node has no mesh time yet. Open it again later.
     Unsynced,
+    /// The reader is named and complete, its open adds a record, and no part of the
+    /// named records of the index has room for it: at least 448 records of the
+    /// longest subjects and names. Close a named reader of the index whose hold is
+    /// zero, wait for a hold to end, or open this one unnamed. A reopen or a takeover
+    /// never gives it. The room of a closed reader's record is free when the entry
+    /// that drops it appends, at the close or a later tick.
+    Full,
+    /// The reader is named and complete, and the home had no room to record its
+    /// position, so a restart would not resume it. Open it again later.
+    Unrecorded,
     /// The home of the index is `home`, another node, and this reader opens only at the
     /// home of its index: a named reader, or the reader of a program's read.
     Remote {
@@ -292,6 +315,13 @@ impl fmt::Display for Error {
             ),
             Self::Unsynced => f.write_str(
                 "the node has no mesh time yet: open the named reader again later",
+            ),
+            Self::Full => f.write_str(
+                "no part of the named records of the index has room for the reader",
+            ),
+            Self::Unrecorded => f.write_str(
+                "the home had no room to record the position of the named reader: \
+                 open it again later",
             ),
             Self::Remote { home } => write!(
                 f,
@@ -325,6 +355,16 @@ impl From<::home::reader::Unsynced> for Error {
     }
 }
 
+impl From<::home::reader::Unopened> for Error {
+    fn from(unopened: ::home::reader::Unopened) -> Self {
+        match unopened {
+            ::home::reader::Unopened::Unsynced => Self::Unsynced,
+            ::home::reader::Unopened::Full => Self::Full,
+            ::home::reader::Unopened::Unrecorded => Self::Unrecorded,
+        }
+    }
+}
+
 /// A reader session through the reader's channels. Dropping it closes the session;
 /// frames that wait do not go out.
 #[derive(Debug)]
@@ -339,13 +379,26 @@ pub struct Reader {
 
 /// What a reader lends to each [`Received`], by one reference, so that `Received`
 /// stays as small as with no names.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Lent {
     /// `None` for a reader of a client read. A box keeps the reader small.
     names: Option<Box<Names>>,
     /// The `live` of the last position that [`Received::position`] gave, or `None`
     /// before it gave one. The positions of a reader rise, so it is the highest.
     given: Cell<Option<u64>>,
+    /// The gaps of a complete reader, `None` for a latest reader, which gets no gap.
+    gaps: Option<Gaps>,
+}
+
+impl Lent {
+    /// What a reader in `mode` that opened at `live` lends before its first frame.
+    fn at(mode: Mode, live: u64) -> Self {
+        Self {
+            names: None,
+            given: Cell::new(None),
+            gaps: (mode == Mode::Complete).then(|| Gaps::new(live)),
+        }
+    }
 }
 
 /// Where a reader's frames come from.
@@ -367,51 +420,75 @@ struct Local {
     complete: Option<(Complete, u64)>,
 }
 
+/// What each frame of a complete local session spends of its grant.
+const CHARGE: ::home::reader::complete::Charge =
+    ::home::reader::complete::Charge::Whole;
+
 impl Local {
-    /// Opens a session on `channels` at this node, the home of their index.
-    fn open(
+    /// Opens an unnamed session on `channels` at this node, the home of their index.
+    /// Returns the session and its open position: the seq of the first live sample
+    /// that it can get.
+    fn open(state: &Rc<RefCell<State>>, channels: Channels, mode: Mode) -> (Self, u64) {
+        let (session, live, complete) = match mode {
+            Mode::Complete => {
+                let (session, complete, live) =
+                    Session::complete(state, channels, WINDOW, CHARGE);
+                (session, live, Some(complete))
+            }
+            Mode::Latest => {
+                let (session, live) = Session::latest(state, channels);
+                (session, live, None)
+            }
+        };
+        (Self::new(session, complete), live)
+    }
+
+    /// Opens the session of `named` on `channels` at this node, the home of their
+    /// index, which a complete one holds for `hold` after it ends. Returns the session
+    /// and its open position.
+    fn named(
         state: &Rc<RefCell<State>>,
         channels: Channels,
         mode: Mode,
-        named: Option<::home::reader::named::Key>,
+        named: ::home::reader::named::Key,
         hold: Span,
-    ) -> Result<Self, Error> {
-        let charge = ::home::reader::complete::Charge::Whole;
-        let (session, complete) = match (mode, named) {
-            (Mode::Complete, None) => {
-                let (session, complete) =
-                    Session::complete(state, channels, WINDOW, charge);
-                (session, Some(complete))
-            }
-            (Mode::Complete, Some(named)) => {
-                let key = {
+    ) -> Result<(Self, u64), Error> {
+        let (session, live, complete) = match mode {
+            Mode::Complete => {
+                let (key, live) = {
                     let mut state = state.borrow_mut();
                     let opened = state.home.open_named_complete(
                         channels.index,
                         named,
                         hold,
                         WINDOW,
-                        charge,
+                        CHARGE,
                     )?;
-                    state.take_over(opened)
+                    state.gate.wake();
+                    let live = opened.live;
+                    (state.take_over(opened), live)
                 };
                 let (session, complete) = Session::with_complete(state, key, channels);
-                (session, Some(complete))
+                (session, live, Some(complete))
             }
-            (Mode::Latest, None) => (Session::latest(state, channels), None),
-            (Mode::Latest, Some(named)) => {
-                let key = {
+            Mode::Latest => {
+                let (key, live) = {
                     let mut state = state.borrow_mut();
                     let opened = state.home.open_named_latest(channels.index, named)?;
-                    state.take_over(opened)
+                    let live = opened.live;
+                    (state.take_over(opened), live)
                 };
-                (Session::new(state, key, channels), None)
+                (Session::new(state, key, channels, None), live, None)
             }
         };
-        Ok(Self {
+        Ok((Self::new(session, complete), live))
+    }
+
+    fn new(session: Session, complete: Option<Complete>) -> Self {
+        Self {
             session,
             complete: complete.map(|complete| (complete, 0)),
-        })
+        }
     }
 
     /// Raises the grant by the charge of `frame`, which the reader gave back.
@@ -460,19 +537,27 @@ impl Reader {
         let mut listed =
             listed.expect("invariant: `find` calls `items` before it returns");
         let mut reader = match home {
-            Home::Here(channels) => {
+            Home::Here(here) => {
+                let channels = here.carry(&mut state.borrow_mut());
                 listed.slot(&channels.slots);
-                Self::local(state, channels, mode, named, hold)?
+                let index = channels.index;
+                let (local, live) = match named {
+                    None => Local::open(state, channels, mode),
+                    Some(named) => Local::named(state, channels, mode, named, hold)?,
+                };
+                Self::local(local, index, mode, live)
             }
             Home::Away(home) if named.is_some() => return Err(Error::Remote { home }),
             Home::Away(home) => {
                 let index = matched.index;
-                let (remote, slots) = Remote::open(state, home, matched, mode).await?;
+                let (remote, slots, live) =
+                    Remote::open(state, home, matched, mode).await?;
                 listed.slot(&slots);
                 Self {
                     index: slots[index],
                     source: Source::Remote(Box::new(remote)),
-                    lent: Lent::default(),
+                    // A session that ended before it opened gives no frame.
+                    lent: Lent::at(mode, live.unwrap_or_default()),
                     frame: None,
                 }
             }
@@ -481,33 +566,28 @@ impl Reader {
         Ok(reader)
     }
 
-    /// Opens an unnamed reader on `channels` from [`Home::Here`], with no wait since
+    /// Opens an unnamed reader on `channels` from [`Here::carry`], with no wait since
     /// [`find`] gave them. It holds no names: the places of a served read carry them,
-    /// so [`Received::name`] panics.
+    /// so [`Received::name`] panics. Returns the reader and its open position: the
+    /// first live seq of the index that the session can get.
     pub(crate) fn here(
         state: &Rc<RefCell<State>>,
         channels: Channels,
         mode: Mode,
-    ) -> Result<Self, Error> {
-        Self::local(state, channels, mode, None, Span::ZERO)
+    ) -> (Self, u64) {
+        let index = channels.index;
+        let (local, live) = Local::open(state, channels, mode);
+        (Self::local(local, index, mode, live), live)
     }
 
-    /// Opens a reader on `channels` at this node, the home of their index.
-    fn local(
-        state: &Rc<RefCell<State>>,
-        channels: Channels,
-        mode: Mode,
-        named: Option<::home::reader::named::Key>,
-        hold: Span,
-    ) -> Result<Self, Error> {
-        let slot = channels.index;
-        let local = Local::open(state, channels, mode, named, hold)?;
-        Ok(Self {
+    /// A reader of `local`, whose index is at `index`, at its open position `live`.
+    fn local(local: Local, index: channel::Slot, mode: Mode, live: u64) -> Self {
+        Self {
             source: Source::Local(local),
-            index: slot,
-            lent: Lent::default(),
+            index,
+            lent: Lent::at(mode, live),
             frame: None,
-        })
+        }
     }
 
     /// The next frame, as a view of the reader's channels. The view borrows the
@@ -520,8 +600,7 @@ impl Reader {
     /// [`Ended::Removed`] once a channel of the reader is removed, or
     /// [`Ended::Replaced`] once a later open takes over the session, before any frame
     /// that waits. Else [`Ended`] once no frame waits and the session can give no
-    /// more. Either on this and every later call: [`Ended::Behind`] before
-    /// [`Ended::Buffer`].
+    /// more. Either on this and every later call.
     #[expect(
         clippy::should_implement_trait,
         reason = "it gives a future, which `Iterator::next` cannot"
@@ -544,6 +623,9 @@ impl Reader {
                 },
                 Source::Remote(remote) => remote.take().await?,
             };
+            if let Some(gaps) = &mut self.lent.gaps {
+                gaps.pass(lens.range(&frame));
+            }
             let frame = self.frame.insert(frame);
             Ok(Received {
                 view: View::new(frame, &lens.mask),
@@ -581,12 +663,10 @@ impl Reader {
             position.live,
             given
         );
-        match &self.source {
-            Source::Local(Local {
-                complete: Some((complete, _)),
-                ..
-            }) => complete.ack(position.live),
-            Source::Local(_) | Source::Remote(_) => {}
+        if let Source::Local(local) = &self.source
+            && let Some((complete, _)) = &local.complete
+        {
+            complete.ack(position.live);
         }
     }
 }
@@ -594,14 +674,23 @@ impl Reader {
 /// Why a [`Session`] at this node's home gives no more frames.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Stop {
-    /// The shard's buffer failed.
+    /// The shard's buffer failed, or a read from disk of the session failed.
     Buffer(env::files::Error),
-    /// A complete session missed a frame.
-    Behind,
+    /// The shard's pool had no block for a read from disk or its frames.
+    Pool(block::Error),
     /// A channel of the session was removed from the definitions.
     Removed(channel::Key),
     /// A later open of the same named reader took over the session.
     Replaced,
+}
+
+impl From<disk::Error> for Stop {
+    fn from(error: disk::Error) -> Self {
+        match error {
+            disk::Error::Files(error) => Self::Buffer(error),
+            disk::Error::Pool(error) => Self::Pool(error),
+        }
+    }
 }
 
 impl From<End> for Stop {
@@ -617,7 +706,7 @@ impl From<Stop> for Ended {
     fn from(stop: Stop) -> Self {
         match stop {
             Stop::Buffer(error) => Self::Buffer(error),
-            Stop::Behind => Self::Behind,
+            Stop::Pool(error) => Self::Pool(error),
             Stop::Removed(key) => Self::Removed(key),
             Stop::Replaced => Self::Replaced,
         }
@@ -744,9 +833,8 @@ pub(crate) struct Matched<T> {
 /// The home of the index of what a selector matched.
 #[derive(Debug)]
 pub(crate) enum Home {
-    /// This node, which carries the index, with the channels as the frames of a reader
-    /// hold them.
-    Here(Channels),
+    /// This node, which carries the index once [`Here::carry`] runs.
+    Here(Here),
     /// Another node.
     Away(types::node::Key),
 }
@@ -787,17 +875,11 @@ pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
         keys[found.index], index,
         "invariant: no registered channel changed, so the index stays"
     );
-    let home = if let Some(home) = away {
-        Home::Away(home)
-    } else {
-        // With no wait since `matched`, so each of `keys` is defined.
-        let slots = state.borrow_mut().slots(index, &keys);
-        Home::Here(Channels {
-            index: slots[found.index],
-            keys,
-            slots,
-        })
+    let here = Here {
+        keys,
+        at: found.index,
     };
+    let home = away.map_or(Home::Here(here), Home::Away);
     Ok((found, home))
 }
 
@@ -838,12 +920,7 @@ fn matched<T>(
     {
         at
     } else {
-        let named = state
-            .channels
-            .iter()
-            .find(|(_, channel)| channel.key() == index)
-            .expect("invariant: the index of a defined channel is defined");
-        found.push(named);
+        found.push(state.channels.index(index));
         found.len() - 1
     };
     let keys = found.iter().map(|(_, channel)| channel.key()).collect();
@@ -864,9 +941,23 @@ pub(crate) struct Session {
     slots: Box<[channel::Slot]>,
     /// The slot of their index.
     index: channel::Slot,
+    /// `None` for a latest session, which never reads from disk. Boxed, as only a read
+    /// from disk uses it.
+    disk: Option<Box<Disk>>,
     /// The lens of the key set of the last frame.
     lens: Option<Lens>,
     streak: Streak,
+    /// Why a read from disk of the session failed.
+    failed: Option<Box<Stop>>,
+}
+
+/// The group that a read from disk of a [`Session`] makes its frames of.
+#[derive(Debug)]
+struct Disk {
+    /// The key of the index.
+    index: channel::Key,
+    /// The key set of the group, once a read ran.
+    set: Option<Arc<KeySet>>,
 }
 
 /// The channels of a [`Session`]: the key and slot of each, and the slot of their
@@ -878,27 +969,55 @@ pub(crate) struct Channels {
     pub(crate) index: channel::Slot,
 }
 
+/// The channels of a match whose index has its home at this node, with no slots yet.
+#[derive(Debug)]
+pub(crate) struct Here {
+    /// The key of each channel, in the order of the matched items.
+    keys: Box<[channel::Key]>,
+    /// The position of the index in `keys`.
+    at: usize,
+}
+
+impl Here {
+    /// The channels with their slots, with no wait since [`find`] gave them. This node
+    /// carries the index from then on.
+    pub(crate) fn carry(self, state: &mut State) -> Channels {
+        let slots = state.slots(self.keys[self.at], &self.keys);
+        Channels {
+            index: slots[self.at],
+            keys: self.keys,
+            slots,
+        }
+    }
+}
+
 impl Session {
     /// Opens a complete session on `channels`, with a grant of `limit_bytes` that each
-    /// frame spends as `charge` says. Returns the session and its grant and ack.
+    /// frame spends as `charge` says. Returns the session, its grant and ack, and the
+    /// seq of the first live sample that it can get.
     pub(crate) fn complete(
         state: &Rc<RefCell<State>>,
         channels: Channels,
         limit_bytes: u64,
         charge: ::home::reader::complete::Charge,
-    ) -> (Self, Complete) {
-        let key =
+    ) -> (Self, Complete, u64) {
+        let opened =
             state
                 .borrow_mut()
                 .home
                 .open_complete(channels.index, limit_bytes, charge);
-        Self::with_complete(state, key, channels)
+        let (session, complete) = Self::with_complete(state, opened.key, channels);
+        (session, complete, opened.live)
     }
 
-    /// Opens a latest session on `channels`.
-    pub(crate) fn latest(state: &Rc<RefCell<State>>, channels: Channels) -> Self {
-        let key = state.borrow_mut().home.open_latest(channels.index);
-        Self::new(state, key, channels)
+    /// Opens a latest session on `channels`. Returns the session and its open
+    /// position: the first seq of the newest frame of the index, or its live tail.
+    pub(crate) fn latest(
+        state: &Rc<RefCell<State>>,
+        channels: Channels,
+    ) -> (Self, u64) {
+        let opened = state.borrow_mut().home.open_latest(channels.index);
+        (Self::new(state, opened.key, channels, None), opened.live)
     }
 
     fn with_complete(
@@ -906,7 +1025,13 @@ impl Session {
         key: ::home::reader::complete::Key,
         channels: Channels,
     ) -> (Self, Complete) {
-        let session = Self::new(state, key.into(), channels);
+        let at = channels
+            .slots
+            .iter()
+            .position(|&slot| slot == channels.index);
+        let index = channels.keys[at.expect("invariant: the channels hold the index")];
+        let disk = Box::new(Disk { index, set: None });
+        let session = Self::new(state, key.into(), channels, Some(disk));
         let complete = Complete {
             state: Rc::clone(state),
             key,
@@ -919,6 +1044,7 @@ impl Session {
         state: &Rc<RefCell<State>>,
         key: ::home::reader::Key,
         channels: Channels,
+        disk: Option<Box<Disk>>,
     ) -> Self {
         let ending = state
             .borrow_mut()
@@ -930,8 +1056,10 @@ impl Session {
             ending,
             slots: channels.slots,
             index: channels.index,
+            disk,
             lens: None,
             streak: Streak::default(),
+            failed: None,
         }
     }
 
@@ -943,23 +1071,46 @@ impl Session {
     /// [`Stop::Removed`] once a channel of the session is removed, or
     /// [`Stop::Replaced`] once a takeover ends it, before any frame that waits. Else
     /// [`Stop`] once no frame waits and the session can give no more. Either on this
-    /// and every later call: [`Stop::Behind`] before [`Stop::Buffer`].
+    /// and every later call. Also
+    /// [`Stop::Buffer`] or [`Stop::Pool`] when a read from disk that the session needs
+    /// fails, on this and every later call.
     ///
     /// # Panics
     ///
     /// When the interner does not hold the key set of the frame, which a writer of
     /// this hub made.
     pub(crate) async fn take(&mut self) -> Result<(Frame, &Lens), Stop> {
-        let frame = poll_fn(|cx| {
-            if let Some(end) = self.ending.get() {
-                return Poll::Ready(Err(end.into()));
+        let frame = loop {
+            let taken = poll_fn(|cx| {
+                if let Some(end) = self.ending.get() {
+                    return Poll::Ready(Err(end.into()));
+                }
+                ready!(self.streak.poll(cx));
+                let state = &mut self.state.borrow_mut();
+                let polled = poll_take(state, self.key, self.failed.as_deref(), cx);
+                self.streak.count(&polled);
+                polled
+            })
+            .await?;
+            let disk = match taken {
+                Taken::Frame(frame) => break frame,
+                Taken::Disk(disk) => disk,
+            };
+            // Boxed, so that the future of each take stays small.
+            let filled = match Box::pin(disk.read()).await {
+                Ok(entries) => {
+                    let state = &mut *self.state.borrow_mut();
+                    let disk =
+                        self.disk.as_mut().expect("invariant: complete reads disk");
+                    let set = disk.set.get_or_insert_with(|| group(state, disk.index));
+                    state.home.fill(entries, set).map_err(Stop::Pool)
+                }
+                Err(error) => Err(error.into()),
+            };
+            if let Err(stop) = filled {
+                return Err(Stop::clone(self.failed.insert(Box::new(stop))));
             }
-            ready!(self.streak.poll(cx));
-            let polled = poll_take(&mut self.state.borrow_mut(), self.key, cx);
-            self.streak.count(&polled);
-            polled
-        })
-        .await?;
+        };
         let key = frame.key_set();
         let lens = match self.lens.take() {
             Some(lens) if lens.set.key() == key => self.lens.insert(lens),
@@ -976,17 +1127,43 @@ impl Session {
     }
 }
 
-/// The next frame of the session `key`, or the waker of `cx` kept to wake once one
-/// waits.
+/// The key set of one group: `index` and each data channel defined on it. A read
+/// from disk of a session on `index` makes its frames of it.
+fn group(state: &mut State, index: channel::Key) -> Arc<KeySet> {
+    let data: Vec<_> = state
+        .channels
+        .iter()
+        .map(|(_, channel)| channel)
+        .filter(|channel| channel.index() == index && channel.key() != index)
+        .map(|channel| (channel.key(), channel.sample()))
+        .collect();
+    state.interner.intern(&[Group { index, data: &data }])
+}
+
+/// What one take of a session gives.
+enum Taken {
+    Frame(Frame),
+    /// The read that the session needs before its next frame.
+    Disk(disk::Read),
+}
+
+/// The next frame of the session `key` or the read it needs, or the waker of `cx`
+/// kept to wake once one waits. `failed` is why a read from disk of the session
+/// failed, which ends it once no frame waits.
 fn poll_take(
     state: &mut State,
     key: ::home::reader::Key,
+    failed: Option<&Stop>,
     cx: &Context<'_>,
-) -> Poll<Result<Frame, Stop>> {
-    match state.home.take(key) {
-        Next::Frame(frame) => return Poll::Ready(Ok(frame)),
-        Next::Behind => return Poll::Ready(Err(Stop::Behind)),
-        Next::Empty => {}
+) -> Poll<Result<Taken, Stop>> {
+    // After a failed read, the session's next take is that read again, or none.
+    match (state.home.take(key), failed) {
+        (Next::Frame(frame), _) => return Poll::Ready(Ok(Taken::Frame(frame))),
+        (Next::Disk(_) | Next::Empty, Some(failed)) => {
+            return Poll::Ready(Err(failed.clone()));
+        }
+        (Next::Disk(disk), None) => return Poll::Ready(Ok(Taken::Disk(disk))),
+        (Next::Empty, None) => {}
     }
     if let Some(error) = &state.failed {
         return Poll::Ready(Err(Stop::Buffer(error.clone())));

@@ -8,8 +8,11 @@ conclusion together". Each one is listed below.
   R16-3 to R16-9 (r16 Rust guides).
 - Memory and performance: X8 (seq per index group), X30 (merge rule), X42 (interner),
   S4 disk format starting point and its ring sizing (#637), `Layout::new` refuses a
-  `body_max` under one block less the record header (#627), r12 I4 (`buffer`
-  driven, not self-running), `ring` holds its own unsafe slot code
+  `body_max` under 8183 bytes, the whole blocks that hold a record of the carry body of
+  one tail and one tagged entry of 4032 bytes, less the record header (#627, raised from
+  4087 by `laptop.architect` in
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6243088231), r12 I4
+  (`buffer` driven, not self-running), `ring` holds its own unsafe slot code
   (`docs/decisions/crate-map.md`).
 - Failover: X18 (gate start from log records, R13-5 "held, not connected" grace), X43
   (copy mode), R13-10 (three voters for failover; `plan` warns with fewer), R13-6 (send

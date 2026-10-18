@@ -35,6 +35,21 @@ fn writes_one_line_at_the_stamp_after_the_gap() {
 }
 
 #[test]
+fn gives_the_count_of_its_line() {
+    let mut gap = gap();
+    let mut out = Vec::new();
+    assert_eq!(gap.line(&mut out, 15, Stamp::from_nanos(1_000)), 0);
+    assert!(out.is_empty());
+    gap.add(10..12);
+    gap.add(13..14);
+    assert_eq!(gap.line(&mut out, 15, Stamp::from_nanos(1_000)), 5);
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "foundation_gaps,connector=influx,index=edge.time,path=live count=5i 1000\n"
+    );
+}
+
+#[test]
 fn tags_a_backfill_gap_with_its_path() {
     let mut gap = named("influx", "edge.time", Path::Backfill);
     gap.add(10..15);
@@ -151,12 +166,19 @@ fn counts_i64_max_seqs() {
     );
 }
 
+/// Only a home that lies gives such a gap, as the open position of the session.
 #[test]
-#[should_panic(expected = "invariant: a gap counts fewer than 2^63 seqs, from 0 to \
-                9223372036854775808")]
-fn panics_on_2_pow_63_seqs() {
+fn counts_a_gap_of_2_pow_63_seqs_or_more_as_i64_max() {
     let max = u64::try_from(i64::MAX).unwrap();
-    let mut gap = gap();
-    gap.add(0..1);
-    written(&mut gap, max + 1, 1_000);
+    for seq in [max + 1, u64::MAX] {
+        let mut gap = gap();
+        gap.add(0..1);
+        let mut out = Vec::new();
+        assert_eq!(gap.line(&mut out, seq, Stamp::from_nanos(1_000)), max);
+        let line = String::from_utf8(out).unwrap();
+        assert!(
+            line.ends_with(&format!(" count={}i 1000\n", i64::MAX)),
+            "{line}"
+        );
+    }
 }

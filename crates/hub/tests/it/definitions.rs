@@ -593,7 +593,7 @@ fn seq_after_restart(n: u64, first: Option<BTreeMap<Name, Definition>>) -> u64 {
 
 /// A hub on the ring that a hub of `node` left, as after a restart, with no
 /// definitions.
-async fn reopen(
+pub(super) async fn reopen(
     node: &sim::node::Node,
     tasks: env::tasks::Tasks,
     mesh: clock::Reader,
@@ -616,6 +616,7 @@ async fn reopen(
         entropy: node.entropy(),
         layout,
         commit: super::COMMIT,
+        trimmed: false,
     };
     let buffer = buffer::Buffer::open(ring, interner.slots())
         .await
@@ -625,9 +626,7 @@ async fn reopen(
         buffer,
         clock: mesh.clone(),
         limits: super::LIMITS,
-    })
-    .await
-    .expect("opens");
+    });
     hub::Hub::new(hub::Config {
         home,
         interner,

@@ -101,7 +101,9 @@ impl<'a> View<'a> {
     ///
     /// # Panics
     ///
-    /// If `mask` is of another key set than `frame`.
+    /// If the key set key of `mask` is not that of `frame`. Every set from
+    /// [`KeySet::ordered`](crate::frame::key_set::KeySet::ordered) has one key, so two
+    /// such sets pass.
     #[must_use]
     pub fn new(frame: &'a Frame, mask: &'a Mask) -> Self {
         assert!(

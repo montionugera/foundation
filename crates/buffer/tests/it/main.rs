@@ -3,11 +3,14 @@
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
 
+mod carry;
+#[path = "../common/memory.rs"]
 mod memory;
+mod tagged;
 
 use std::collections::BTreeSet;
 use std::future::poll_fn;
-use std::num::NonZeroU8;
+use std::num::{NonZeroU8, NonZeroU32};
 use std::ops::Range;
 use std::path::{Path as FilePath, PathBuf};
 use std::pin::{Pin, pin};
@@ -18,8 +21,8 @@ use std::task::{Context, Poll, Wake, Waker};
 
 use block::{Block, Heap, Pool};
 use buffer::{
-    Buffer, Commit, Config, End, Entry, Error, Layout, Limit, Mark, Parts, Read,
-    Rejected, Stored, Tail, Unfit,
+    Buffer, Commit, Config, End, Entry, Error, Layout, Limit, Parts, Read, Rejected,
+    Samples, Stored, Tail, Unfit,
 };
 use env::clock::Clock;
 use env::entropy::Entropy;
@@ -28,6 +31,7 @@ use env::tasks::Tasks;
 use proptest::prelude::*;
 use types::channel::{self, Slot, Slots};
 use types::frame::Path;
+use types::log::Mark;
 use types::time::{Span, Stamp};
 
 use crate::memory::Memory;
@@ -35,8 +39,8 @@ use crate::memory::Memory;
 const BLOCK: u64 = 4096;
 /// Sixteen records of one block.
 const AREA: u64 = 16 * BLOCK;
-/// A body that keeps a record in one block.
-const BODY_MAX: usize = 4087;
+/// The least body, so the largest record takes two blocks.
+const BODY_MAX: usize = 8183;
 /// The two header blocks come before the area.
 const AREA_START: u64 = 2 * BLOCK;
 const COMMIT: Span = Span::from_nanos(10_000_000);
@@ -74,6 +78,8 @@ struct Shard {
     clock: Clock,
     tasks: Tasks,
     entropy: Entropy,
+    /// The opens of [`Shard::open`] trim, as [`Config::trimmed`] states.
+    trimmed: bool,
 }
 
 impl Shard {
@@ -87,6 +93,7 @@ impl Shard {
             entropy: self.entropy.clone(),
             layout,
             commit: COMMIT,
+            trimmed: self.trimmed,
         };
         Buffer::open(config, slots).await
     }
@@ -294,7 +301,7 @@ impl Shard {
     /// Makes a ring with a data record of two blocks at `BLOCK` and a data record at
     /// `3 * BLOCK`, and gives its layout.
     async fn create_long_record(&self) -> Layout {
-        let ring = layout(AREA, 3 * to_usize(BLOCK) - 9);
+        let ring = layout(19 * BLOCK, 3 * to_usize(BLOCK) - 9);
         let mut slots = Slots::new();
         let buffer = self.open(ring, &mut slots).await.expect("opens");
         let a = slots.index(key(1));
@@ -353,12 +360,21 @@ fn entry(
         slot,
         path,
         first,
-        len,
+        samples: samples(len, last),
         stored_at: Stamp::from_nanos(7),
-        last: last.map(Stamp::from_nanos),
         tag: 0,
         parts,
     }
+}
+
+/// The samples of an entry of `len` samples with the newest stamp `last`.
+fn samples(len: u32, last: Option<i64>) -> Option<Samples> {
+    let Some(len) = NonZeroU32::new(len) else {
+        assert_eq!(last, None, "an entry with no samples has no stamp");
+        return None;
+    };
+    let last = last.map(Stamp::from_nanos);
+    Some(Samples { len, last })
 }
 
 fn tail(seq: u64, stamp: Option<i64>) -> Tail {
@@ -398,9 +414,8 @@ fn carry_body(tails: &[Vec<u8>]) -> Vec<u8> {
 fn stored(first: u64, len: u32, last: Option<i64>, bytes: Block) -> Stored {
     Stored {
         first,
-        len,
+        samples: samples(len, last),
         stored_at: Stamp::from_nanos(7),
-        last: last.map(Stamp::from_nanos),
         tag: 0,
         bytes,
     }
@@ -431,6 +446,7 @@ async fn read_all(
     let mut from = from;
     loop {
         let read = buffer
+            .reader()
             .read(slot, path, from, budget)
             .await
             .expect("the read passes");
@@ -445,7 +461,7 @@ async fn read_all(
             } else {
                 assert_eq!(entry.first, at, "a gap before entry {number}");
             }
-            at = entry.first + u64::from(entry.len);
+            at = entry.seqs().end;
         }
         if read.entries.is_empty() {
             assert_eq!(read.gap, None, "a gap with no entry");
@@ -483,18 +499,22 @@ where
     };
     let handle = node
         .shards()
-        .start(config, move |tasks| {
-            main(Shard {
-                files: node.files(),
-                pool: Rc::new(pool()),
-                clock: node.clock(),
-                tasks,
-                entropy: node.entropy(),
-                disk: Disk::Sim(node),
-            })
-        })
+        .start(config, move |tasks| main(shard_on(node, tasks)))
         .expect("the shard starts");
     (sim, handle)
+}
+
+/// A shard on the disk of `node`, with `tasks`, whose opens do not trim.
+fn shard_on(node: sim::node::Node, tasks: Tasks) -> Shard {
+    Shard {
+        files: node.files(),
+        pool: Rc::new(pool()),
+        clock: node.clock(),
+        tasks,
+        entropy: node.entropy(),
+        disk: Disk::Sim(node),
+        trimmed: false,
+    }
 }
 
 /// Runs `main` as [`start`] does, until it returns.
@@ -663,7 +683,11 @@ fn a_new_ring_keeps_its_layout_across_opens() {
         let first = layout(AREA, BODY_MAX);
         let buffer = shard.open(first, &mut Slots::new()).await.expect("opens");
         assert_eq!(buffer.layout(), first);
-        assert_eq!(shard.memory().syncs(), 2, "the header and the open");
+        assert_eq!(
+            shard.memory().syncs(),
+            3,
+            "the header and the two of the open"
+        );
         drop(buffer);
         let header = shard.bytes().await[..to_usize(AREA_START)].to_vec();
         let other = layout(2 * AREA, 2 * BODY_MAX);
@@ -719,7 +743,7 @@ fn entries_are_durable_at_committed_and_recovered_at_open() {
         buffer.committed().await.expect("commits");
         assert_eq!(buffer.durable(a, Path::Live), live);
         assert_eq!(buffer.durable(b, Path::Backfill), backfill);
-        assert_eq!(shard.memory().syncs(), 3, "one sync per commit");
+        assert_eq!(shard.memory().syncs(), 4, "one sync per commit");
         drop(buffer);
         let mut slots = Slots::new();
         let buffer = shard
@@ -755,6 +779,7 @@ fn a_read_gives_each_entry_its_own_stored_at() {
             .expect("queues");
         buffer.committed().await.expect("commits");
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
@@ -764,6 +789,45 @@ fn a_read_gives_each_entry_its_own_stored_at() {
             .map(|entry| entry.stored_at.nanos())
             .collect();
         assert_eq!(stamps, [7, 8]);
+    });
+}
+
+/// A `Reader` taken before the buffer drops gives the entries made durable before the
+/// drop, as before it, and keeps the ring file open until it drops.
+#[test]
+fn reader_reads_after_the_buffer_drops() {
+    run_on_memory(28, |shard| async move {
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let a = slots.index(key(1));
+        let parts = Parts::from(shard.block(100));
+        buffer
+            .append([
+                entry(1, a, Path::Live, 0, 3, Some(30), parts.clone()),
+                entry(1, a, Path::Live, 3, 2, Some(31), parts),
+            ])
+            .expect("queues");
+        buffer.committed().await.expect("commits");
+        let reader = buffer.reader();
+        let before = reader
+            .read(a, Path::Live, Mark::at(1), usize::MAX)
+            .await
+            .expect("reads");
+        assert_eq!(before.entries.len(), 2);
+        let ended = buffer.ended();
+        drop(buffer);
+        ended.await.expect("ends");
+        let after = reader
+            .read(a, Path::Live, Mark::at(1), usize::MAX)
+            .await
+            .expect("reads");
+        assert_eq!(after, before);
+        assert_eq!(shard.memory().open_files(), 1, "the reader holds the ring");
+        drop(reader);
+        assert_eq!(shard.memory().open_files(), 0);
     });
 }
 
@@ -925,7 +989,11 @@ fn committed_on_an_idle_buffer_resolves_at_once() {
         let polled = poll_fn(|cx| Poll::Ready(commit.as_mut().poll(cx))).await;
         assert_eq!(polled, Poll::Ready(Ok(())), "the first poll resolves");
         shard.clock.sleep(commits(4)).await;
-        assert_eq!(shard.memory().syncs(), 2, "the header and the open only");
+        assert_eq!(
+            shard.memory().syncs(),
+            3,
+            "the header and the two of the open only"
+        );
         assert_eq!(shard.clock.now() - before, commits(4), "no deadline ran");
     });
 }
@@ -947,7 +1015,7 @@ fn the_first_append_after_an_idle_span_commits_after_one_commit() {
         assert_eq!(buffer.durable(a, Path::Live), tail(0, None));
         shard.clock.sleep(tenths(2)).await;
         assert_eq!(buffer.durable(a, Path::Live), tail(3, Some(30)));
-        assert_eq!(shard.memory().syncs(), 3, "the append alone woke the task");
+        assert_eq!(shard.memory().syncs(), 4, "the append alone woke the task");
     });
 }
 
@@ -969,7 +1037,7 @@ fn a_busy_buffer_keeps_one_deadline_per_commit() {
             .append([entry(1, a, Path::Live, 1, 1, Some(2), Parts::default())])
             .expect("queues during the first sync");
         shard.clock.sleep(tenths(12)).await;
-        assert_eq!(shard.memory().syncs(), 4, "two deadlines, one commit apart");
+        assert_eq!(shard.memory().syncs(), 5, "two deadlines, one commit apart");
         assert_eq!(buffer.durable(a, Path::Live), tail(2, Some(2)));
     });
 }
@@ -995,7 +1063,7 @@ fn an_append_at_the_deadline_of_a_parked_task_commits_at_once() {
             .await;
         assert_eq!(
             shard.memory().syncs(),
-            3,
+            4,
             "the passed deadline fired at the wake"
         );
         assert_eq!(buffer.durable(a, Path::Live), tail(1, Some(1)));
@@ -1081,7 +1149,7 @@ fn a_batch_past_the_open_group_starts_the_next_record() {
         assert_eq!(buffer.tail(a, Path::Live), tail(3, Some(3)));
         buffer.committed().await.expect("commits");
         assert_eq!(buffer.durable(a, Path::Live), tail(3, Some(3)));
-        assert_eq!(shard.memory().syncs(), 3, "both records go in one sync");
+        assert_eq!(shard.memory().syncs(), 4, "both records go in one sync");
         drop(buffer);
         let mut slots = Slots::new();
         let buffer = shard
@@ -1100,17 +1168,17 @@ fn a_full_ring_queues_nothing() {
     run(5, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(7 * BLOCK, BODY_MAX), &mut slots)
+            .open(layout(13 * BLOCK, BODY_MAX), &mut slots)
             .await
             .expect("opens");
         let a = slots.index(key(1));
         let parts = Parts::from(shard.block(3900));
-        for seq in 0..3 {
+        for seq in 0..7 {
             buffer
                 .append([entry(1, a, Path::Live, seq, 1, None, parts.clone())])
                 .expect("the record has room");
         }
-        let full = buffer.append([entry(1, a, Path::Live, 3, 1, None, parts.clone())]);
+        let full = buffer.append([entry(1, a, Path::Live, 7, 1, None, parts.clone())]);
         assert_eq!(
             full,
             Err(Rejected::Full {
@@ -1118,9 +1186,9 @@ fn a_full_ring_queues_nothing() {
                 free: 0
             })
         );
-        assert_eq!(buffer.tail(a, Path::Live), tail(3, None));
+        assert_eq!(buffer.tail(a, Path::Live), tail(7, None));
         buffer.committed().await.expect("commits");
-        assert_eq!(buffer.durable(a, Path::Live), tail(3, None));
+        assert_eq!(buffer.durable(a, Path::Live), tail(7, None));
     });
 }
 
@@ -1129,7 +1197,7 @@ fn a_batch_is_queued_whole_or_not_at_all() {
     run(6, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(11 * BLOCK, 8183), &mut slots)
+            .open(layout(13 * BLOCK, 8183), &mut slots)
             .await
             .expect("opens");
         let a = slots.index(key(1));
@@ -1157,7 +1225,7 @@ fn a_batch_is_queued_whole_or_not_at_all() {
         drop(buffer);
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(11 * BLOCK, 8183), &mut slots)
+            .open(layout(13 * BLOCK, 8183), &mut slots)
             .await
             .expect("reopens");
         assert_eq!(buffer.tail(slots.index(key(1)), Path::Live), tail(3, None));
@@ -1196,11 +1264,11 @@ fn a_batch_no_record_holds_is_large_and_queues_nothing() {
             (
                 vec![entry(1, a, Path::Live, 1, 1, None, body.clone())],
                 Limit::Body {
-                    len: 4088,
-                    max: 4087,
+                    len: 8184,
+                    max: 8183,
                 },
-                "the batch needs a record body of 4088 bytes, and a record of this \
-                 ring holds at most 4087",
+                "the batch needs a record body of 8184 bytes, and a record of this \
+                 ring holds at most 8183",
             ),
         ];
         for (batch, limit, message) in cases {
@@ -1316,10 +1384,10 @@ fn a_failed_append_holds_no_part() {
     });
 }
 
-/// A reopen syncs the ring once before it reports the tails durable, and a failed
-/// sync fails the reopen.
+/// A reopen syncs the ring twice, the records it read, then its restart record,
+/// before it reports the tails durable, and a failed sync fails the reopen.
 #[test]
-fn a_reopen_syncs_the_ring_once() {
+fn a_reopen_syncs_the_ring_twice() {
     run_on_memory(26, |shard| async move {
         let ring = layout(AREA, BODY_MAX);
         let mut slots = Slots::new();
@@ -1343,8 +1411,8 @@ fn a_reopen_syncs_the_ring_once() {
         drop(shard.open(ring, &mut Slots::new()).await.expect("reopens"));
         assert_eq!(
             shard.memory().syncs(),
-            5,
-            "the header, the open, two commits, the reopen"
+            7,
+            "the header, two of the open, two commits, two of the reopen"
         );
         shard.memory().fail_syncs();
         let reopened = shard.open(ring, &mut Slots::new()).await.map(drop);
@@ -1355,6 +1423,44 @@ fn a_reopen_syncs_the_ring_once() {
         });
         assert_eq!(reopened, Err(failed));
     });
+}
+
+/// An open syncs the header and the records that it walked, as read, before it
+/// writes a new byte, with a trim and with none: when that sync fails, the ring holds
+/// what it held before the open.
+#[test]
+fn an_open_whose_first_sync_fails_leaves_the_ring_as_it_was() {
+    for trimmed in [false, true] {
+        run_on_memory(21, move |shard| async move {
+            let shard = Shard { trimmed, ..shard };
+            let ring = layout(13 * BLOCK, BODY_MAX);
+            let mut slots = Slots::new();
+            let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let a = slots.index(key(1));
+            let parts = Parts::from(shard.block(3900));
+            for seq in 0..7 {
+                buffer
+                    .append([entry(1, a, Path::Live, seq, 1, None, parts.clone())])
+                    .expect("the record has room");
+            }
+            buffer.committed().await.expect("commits");
+            drop(buffer);
+            let before = shard.bytes().await;
+            shard.memory().fail_syncs();
+            let reopened = shard.open(ring, &mut Slots::new()).await.map(drop);
+            let failed = Error::Files(FileError::Io {
+                path: PathBuf::from(RING),
+                operation: Operation::Sync,
+                code: 5,
+            });
+            assert_eq!(reopened, Err(failed), "trimmed: {trimmed}");
+            let changed = shard.bytes().await != before;
+            assert!(
+                !changed,
+                "trimmed: {trimmed}: the open wrote before its sync"
+            );
+        });
+    }
 }
 
 /// A failed write of a window that the walk read fails the open with the write's
@@ -1417,7 +1523,7 @@ fn a_failed_sync_ends_the_buffer_with_its_error() {
         assert_eq!(buffer.committed().await, ended);
         assert_eq!(
             shard.memory().syncs(),
-            3,
+            4,
             "the task ended at the failed sync"
         );
     });
@@ -1525,7 +1631,7 @@ fn durable_changes_only_at_a_commit_that_moves_commits() {
         let empty = (0, tail(0, None), tail(0, None));
         assert_eq!(read(&buffer), empty, "an append moves nothing");
         shard.clock.sleep(tenths(12)).await;
-        assert_eq!(shard.memory().syncs(), 3, "the first sync runs");
+        assert_eq!(shard.memory().syncs(), 4, "the first sync runs");
         assert_eq!(read(&buffer), empty, "a sync in flight moves nothing");
         let big = Parts::from(shard.block(2000));
         let rest = Parts::from(shard.block(1500));
@@ -1564,7 +1670,7 @@ fn a_drop_ends_the_commit_task() {
             .append([entry(1, a, Path::Live, 0, 3, Some(30), Parts::default())])
             .expect("queues");
         buffer.committed().await.expect("commits");
-        assert_eq!(shard.memory().syncs(), 3);
+        assert_eq!(shard.memory().syncs(), 4);
         buffer
             .append([entry(1, a, Path::Live, 3, 1, Some(31), Parts::default())])
             .expect("queues");
@@ -1572,7 +1678,7 @@ fn a_drop_ends_the_commit_task() {
         shard.clock.sleep(commits(10)).await;
         assert_eq!(
             shard.memory().syncs(),
-            4,
+            5,
             "one deadline runs after the drop"
         );
         assert_eq!(shard.memory().open_files(), 0, "the task ended");
@@ -1650,7 +1756,7 @@ fn committed_waits_for_an_entry_appended_during_a_commit() {
         assert_eq!(buffer.durable(a, Path::Live), tail(2, Some(2)));
         assert_eq!(
             shard.memory().syncs(),
-            4,
+            5,
             "the second entry took its own sync"
         );
     });
@@ -1704,7 +1810,7 @@ fn next_commit_during_a_commit_resolves_at_its_end() {
             shard.clock.now() - before,
             Span::from_nanos(sync.nanos() / 2)
         );
-        assert_eq!(shard.memory().syncs(), 3, "the commit in flight only");
+        assert_eq!(shard.memory().syncs(), 4, "the commit in flight only");
     });
 }
 
@@ -1746,7 +1852,7 @@ fn next_commit_held_past_the_drop_of_an_idle_buffer_resolves_at_its_end() {
         drop(buffer);
         ended.await.expect("ends");
         assert_eq!(next.await, Ok(()));
-        assert_eq!(shard.memory().syncs(), 2, "no commit after the open");
+        assert_eq!(shard.memory().syncs(), 3, "no commit after the open");
     });
 }
 
@@ -1893,34 +1999,29 @@ fn an_open_of_a_fit_layout_makes_a_file_of_at_most_its_length() {
     }
 }
 
-/// An entry of the pool's largest block, written under a larger pool: `newest` lets
-/// go of the table first.
+/// A tagged entry of `Layout::ENTRY_MAX_MIN` bytes comes back from `newest` after a
+/// reopen, and one byte more is large.
 #[test]
-fn newest_gives_an_entry_of_the_largest_block() {
-    run(188, |mut shard| async move {
-        let largest = 1 << 17;
-        let fits = shard.block(largest);
+fn newest_gives_a_tagged_entry_of_entry_max_min_after_a_reopen() {
+    run(188, |shard| async move {
+        let max = Layout::ENTRY_MAX_MIN;
         let ring = least(600_000);
         let mut slots = Slots::new();
         let buffer = shard.open(ring, &mut slots).await.expect("opens");
-        assert!(buffer.block_max() >= largest);
         let a = slots.index(key(1));
+        let over = tagged(1, a, Path::Live, 0, 1, shard.block(max + 1));
+        let large = Rejected::Large(Limit::Tagged { len: max + 1, max });
+        assert_eq!(buffer.append([over]).map(drop), Err(large));
         buffer
-            .append([tagged(1, a, Path::Live, 0, 1, fits)])
+            .append([tagged(1, a, Path::Live, 0, 1, shard.block(max))])
             .expect("queues");
         buffer.committed().await.expect("commits");
         drop(buffer);
-        let budget = u64::try_from(block::footprint(largest)).expect("fits in u64");
-        let config = block::Config::new(budget).expect("the budget fits");
-        shard.pool =
-            Rc::new(Pool::new(config.clone(), Heap::new(config.reservation())));
-        assert_eq!(shard.pool.largest(), largest);
         let mut slots = Slots::new();
         let buffer = shard.open(ring, &mut slots).await.expect("reopens");
-        let found = buffer.newest(Path::Live, NonZeroU8::MIN).await;
-        let lens =
-            found.map(|f| f.iter().map(|(_, s)| s.bytes.len()).collect::<Vec<_>>());
-        assert_eq!(lens, Ok(vec![largest]));
+        let found = newest(&buffer, Path::Live, 1);
+        let expected = vec![(slots.index(key(1)), kept(&shard.block(max)))];
+        assert_eq!(found, expected);
     });
 }
 
@@ -2042,6 +2143,23 @@ fn create_node(seed: u64) -> (sim::Sim, sim::node::Node) {
     (sim, node)
 }
 
+/// Appends `batch`, and waits one commit span after each [`Rejected::Full`], at
+/// most `spans` times. Gives the result of the last append.
+async fn append_within(
+    buffer: &Buffer,
+    clock: &Clock,
+    batch: &[Entry],
+    spans: u32,
+) -> Result<(), Rejected> {
+    for _ in 0..spans {
+        match buffer.append(batch.iter().cloned()) {
+            Err(Rejected::Full { .. }) => clock.sleep(COMMIT).await,
+            done => return done,
+        }
+    }
+    buffer.append(batch.iter().cloned())
+}
+
 /// Starts a shard named `name` on `node` to run `main`.
 fn on_node<F>(
     node: &sim::node::Node,
@@ -2071,6 +2189,7 @@ fn node_config(node: &sim::node::Node, tasks: Tasks, dir: &str) -> Config {
         entropy: node.entropy(),
         layout: layout(AREA, BODY_MAX),
         commit: COMMIT,
+        trimmed: false,
     }
 }
 
@@ -2085,19 +2204,22 @@ fn each_cut(seeds: Range<u64>, step: i64, mut at: impl FnMut(u64, i64) -> bool) 
     }
 }
 
-/// Starts an open of the ring on `node`, and stops the node with `crash` `cut`
-/// nanoseconds into it. Returns whether the open had ended.
+/// Starts an open of the ring on `node`, which trims when `trimmed`, and stops the
+/// node with `crash` `cut` nanoseconds into it. Returns whether the open had ended.
 fn cut_an_open(
     sim: &mut sim::Sim,
     node: &sim::node::Node,
-    cut: i64,
+    (cut, trimmed): (i64, bool),
     crash: sim::Crash,
 ) -> bool {
     let ended = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&ended);
     let own = node.clone();
     drop(on_node(node, "cut", move |tasks| async move {
-        let config = node_config(&own, tasks, DIR);
+        let config = Config {
+            trimmed,
+            ..node_config(&own, tasks, DIR)
+        };
         let _buffer = Buffer::open(config, &mut Slots::new())
             .await
             .expect("the open ends well");
@@ -2118,7 +2240,7 @@ fn cut_the_first_open(
     crash: sim::Crash,
 ) -> (sim::Sim, sim::node::Node, bool) {
     let (mut sim, node) = create_node(seed);
-    let ended = cut_an_open(&mut sim, &node, cut, crash);
+    let ended = cut_an_open(&mut sim, &node, (cut, false), crash);
     (sim, node, ended)
 }
 
@@ -2285,7 +2407,7 @@ fn a_crash_while_a_ring_is_made_again_leaves_a_ring_that_opens() {
             for layout in [old, new] {
                 let (mut sim, node) = create_node(seed);
                 create_unwritten(&mut sim, &node, lens[0]);
-                ended = cut_an_open(&mut sim, &node, cut, crash);
+                ended = cut_an_open(&mut sim, &node, (cut, false), crash);
                 let (found, opened, len) = open_with(&mut sim, &node, layout);
                 let at = format!("seed {seed}, {crash:?} at {cut} ns, {layout:?}");
                 assert!(found == Found::Written || !ended, "{at}");
@@ -2349,7 +2471,7 @@ fn a_crash_in_an_open_leaves_a_ring_that_opens_in_the_room_of_one() {
             if unwritten {
                 create_unwritten(&mut sim, &node, len);
             }
-            let ended = cut_an_open(&mut sim, &node, cut, crash);
+            let ended = cut_an_open(&mut sim, &node, (cut, false), crash);
             let opened = open_with(&mut sim, &node, new);
             let at = format!("seed {seed}, {crash:?} at {cut} ns, {unwritten}");
             assert_eq!((opened.1, opened.2), (Ok(new), len), "{at}");
@@ -2577,15 +2699,13 @@ fn commit_and_close_during_another_open(
 ///
 /// The runs hang on the delay of each file call. After a change that moves those
 /// delays, the later open of a run can get `Busy`, and the tests of these runs fail:
-/// a search of the first 200,000 values of `seed` at these 3 gaps then finds such
-/// runs again.
-const CLOSED_BEFORE_THE_CREATE: [(u64, i64); 6] = [
-    (83_501, 100_000),
-    (4_232, 125_000),
-    (20_350, 125_000),
-    (21_616, 125_000),
-    (6_747, 150_000),
-    (30_651, 150_000),
+/// a search of the first 200,000 values of `seed` at the gaps of 100,000, 125,000,
+/// and 150,000 ns then finds such runs again.
+const CLOSED_BEFORE_THE_CREATE: [(u64, i64); 4] = [
+    (32_511, 125_000),
+    (199_239, 125_000),
+    (35_100, 150_000),
+    (93_218, 150_000),
 ];
 
 /// An open that finds no ring makes one later, with `Mode::Create`. Another open can
@@ -2918,10 +3038,10 @@ fn a_reopen_after_a_failed_sync_keeps_what_it_reports_across_a_power_cut() {
     }
 }
 
-/// A ring of 64 blocks with records of up to 60,000 bytes, on the files of `node`.
+/// A ring of 83 blocks with records of up to 60,000 bytes, on the files of `node`.
 fn long_config(node: &sim::node::Node, tasks: Tasks) -> Config {
     Config {
-        layout: layout(64 * BLOCK, 60_000),
+        layout: layout(83 * BLOCK, 60_000),
         ..node_config(node, tasks, DIR)
     }
 }
@@ -3097,7 +3217,7 @@ fn a_power_cut_during_a_restart_over_an_old_one_keeps_the_entries() {
             );
         })
         .expect("the run ends");
-        let ended = cut_an_open(&mut sim, &node, cut, sim::Crash::Power);
+        let ended = cut_an_open(&mut sim, &node, (cut, false), sim::Crash::Power);
         let recovered = sim.run_on(&node, |node, tasks| async move {
             let mut slots = Slots::new();
             let config = node_config(&node, tasks, DIR);
@@ -3575,9 +3695,15 @@ fn an_open_gives_the_carried_tail_of_a_path_with_no_record() {
             let (a, b) = (slots.index(key(1)), slots.index(key(2)));
             assert_eq!(buffer.tail(a, Path::Live), tail(3, Some(30)), "{open}");
             assert_eq!(buffer.durable(a, Path::Live), tail(3, Some(30)), "{open}");
-            let read = buffer.read(a, Path::Live, mark(0, 0), usize::MAX).await;
+            let read = buffer
+                .reader()
+                .read(a, Path::Live, mark(0, 0), usize::MAX)
+                .await;
             assert_eq!(read, Ok(hidden.clone()), "{open}");
-            let read = buffer.read(b, Path::Live, mark(0, 0), usize::MAX).await;
+            let read = buffer
+                .reader()
+                .read(b, Path::Live, mark(0, 0), usize::MAX)
+                .await;
             let entries = vec![stored(0, 2, Some(40), shard.block(20))];
             assert_eq!(read, Ok(whole(entries, mark(2, 0))), "{open}");
         }
@@ -3592,7 +3718,10 @@ fn an_open_gives_the_carried_tail_of_a_path_with_no_record() {
         let buffer = shard.open(ring, &mut slots).await.expect("opens");
         let a = slots.index(key(1));
         assert_eq!(buffer.durable(a, Path::Live), tail(6, Some(30)));
-        let read = buffer.read(a, Path::Live, mark(0, 0), usize::MAX).await;
+        let read = buffer
+            .reader()
+            .read(a, Path::Live, mark(0, 0), usize::MAX)
+            .await;
         let expected = Read {
             gap: Some(0..3),
             entries: vec![stored(3, 3, None, shard.block(10))],
@@ -3628,7 +3757,10 @@ fn an_open_refuses_a_carried_tail_that_is_not_the_tail_of_the_records() {
             let buffer = shard.open(ring, &mut slots).await.expect("opens");
             let a = slots.index(key(1));
             assert_eq!(buffer.durable(a, Path::Live), tail(6, Some(60)));
-            let read = buffer.read(a, Path::Live, mark(0, 0), usize::MAX).await;
+            let read = buffer
+                .reader()
+                .read(a, Path::Live, mark(0, 0), usize::MAX)
+                .await;
             let entries = vec![
                 stored(0, 3, Some(30), shard.block(0)),
                 stored(3, 3, Some(60), shard.block(0)),
@@ -3639,10 +3771,10 @@ fn an_open_refuses_a_carried_tail_that_is_not_the_tail_of_the_records() {
 }
 
 /// A carried `given` of `u64::MAX`, then a data record with an entry with no
-/// samples at the carried seq. The open refuses the carry record, and does not
-/// count past `u64::MAX`.
+/// samples at the carried seq. The open takes the carry record and refuses the data
+/// record: it does not count past `u64::MAX`.
 #[test]
-fn an_open_refuses_a_carried_given_that_no_ring_holds() {
+fn an_open_refuses_an_entry_with_no_samples_after_a_carried_given_of_u64_max() {
     run(161, |shard| async move {
         shard.create_two_records().await;
         shard
@@ -3663,23 +3795,19 @@ fn an_open_refuses_a_carried_given_that_no_ring_holds() {
             .put_carry(3 * BLOCK, &carry_body(&[carried(2, 4, u64::MAX, None)]))
             .await;
         shard.seal(4 * BLOCK).await;
-        shard.open_invalid(ring, 3 * BLOCK).await;
+        shard.open_invalid(ring, 5 * BLOCK).await;
     });
 }
 
-/// A carried `given` of 2^63 - 1 is the largest that the open takes.
+/// The open takes each carried `given`, up to `u64::MAX`.
 #[test]
-fn an_open_takes_a_carried_given_up_to_2_pow_63_less_one() {
-    for (given, taken) in [((1 << 63) - 1, true), (1 << 63, false)] {
+fn an_open_takes_a_carried_given_up_to_u64_max() {
+    for given in [(1 << 63) - 1, 1 << 63, u64::MAX] {
         run(163, move |shard| async move {
             shard.create_two_records().await;
             let body = carry_body(&[carried(2, 4, given, None)]);
             shard.put_carry(3 * BLOCK, &body).await;
             let ring = layout(AREA, BODY_MAX);
-            if !taken {
-                shard.open_invalid(ring, 3 * BLOCK).await;
-                return;
-            }
             let mut slots = Slots::new();
             let buffer = shard.open(ring, &mut slots).await.expect("opens");
             let b = slots.index(key(2));
@@ -3694,9 +3822,13 @@ fn an_open_takes_a_carried_given_up_to_2_pow_63_less_one() {
 fn an_open_ends_at_a_carry_record_over_body_max() {
     run(162, |shard| async move {
         shard.create_two_records().await;
-        let tails: Vec<_> = (2..=99).map(|index| carried(index, 4, 0, None)).collect();
+        let tails: Vec<_> = (2..=196).map(|index| carried(index, 4, 0, None)).collect();
         let body = carry_body(&tails);
-        assert!(body.len() > BODY_MAX, "a body of {} bytes", body.len());
+        assert!(
+            body.len() > 2 * to_usize(BLOCK) - 9,
+            "a body of {} bytes",
+            body.len()
+        );
         shard.put_carry(3 * BLOCK, &body).await;
         let mut slots = Slots::new();
         let buffer = shard.open(layout(AREA, BODY_MAX), &mut slots).await;
@@ -3707,12 +3839,12 @@ fn an_open_ends_at_a_carry_record_over_body_max() {
 }
 
 /// A record that follows the chain with a body over `body_max` is a wrong shape, also
-/// within the window. At a `body_max` of 4088 the window is two blocks, so a body of
-/// 4120 bytes fits it.
+/// within the window. At a `body_max` of 8184 the window is three blocks, so a body of
+/// 8194 bytes fits it.
 #[test]
 fn an_open_refuses_a_carry_body_over_body_max_within_the_window() {
     run(162, |shard| async move {
-        let ring = layout(AREA, 4088);
+        let ring = layout(19 * BLOCK, 8184);
         {
             let mut slots = Slots::new();
             let buffer = shard.open(ring, &mut slots).await.expect("opens");
@@ -3725,28 +3857,39 @@ fn an_open_refuses_a_carry_body_over_body_max_within_the_window() {
                 buffer.committed().await.expect("commits");
             }
         }
-        let tails: Vec<_> = (2..=99).map(|index| carried(index, 4, 0, None)).collect();
+        let tails: Vec<_> = (2..=196).map(|index| carried(index, 4, 0, None)).collect();
         let body = carry_body(&tails);
-        assert!(body.len() > 4088, "a body of {} bytes", body.len());
+        assert!(body.len() > 8184, "a body of {} bytes", body.len());
         shard.put_carry(3 * BLOCK, &body).await;
         shard.open_invalid(ring, 3 * BLOCK).await;
     });
 }
 
 /// A data record over `body_max` within the window is a wrong shape too: the header
-/// of a ring of three-block records says 4088, so its two-block record passes it.
+/// of a ring of four-block records says 8184, so its three-block record passes it.
 #[test]
 fn an_open_refuses_a_data_body_over_body_max_within_the_window() {
     run(164, |shard| async move {
-        shard.create_long_record().await;
-        shard.tamper(BODY_MAX_AT, &4088_u32.to_le_bytes()).await;
-        shard.open_invalid(layout(AREA, 4088), BLOCK).await;
+        let area = 25 * BLOCK;
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(area, 4 * to_usize(BLOCK) - 9), &mut slots)
+            .await
+            .expect("opens");
+        let a = slots.index(key(1));
+        let long = Parts::from(shard.block(8300));
+        buffer
+            .append([entry(1, a, Path::Live, 0, 3, Some(30), long)])
+            .expect("queues");
+        buffer.committed().await.expect("commits");
+        drop(buffer);
+        shard.tamper(BODY_MAX_AT, &8184_u32.to_le_bytes()).await;
+        shard.open_invalid(layout(area, 8184), BLOCK).await;
     });
 }
 
 /// A carry record of the wrong shape: no count, a count over the tails it holds,
-/// bytes after its tails, a wrong path byte, a `given` over the maximum, and a wrong
-/// presence byte.
+/// bytes after its tails, a wrong path byte, and a wrong presence byte.
 #[test]
 fn an_open_refuses_a_carry_record_of_the_wrong_shape() {
     let one = carry_body(&[carried(2, 4, 0, None)]);
@@ -3762,7 +3905,6 @@ fn an_open_refuses_a_carry_record_of_the_wrong_shape() {
         short,
         [one.clone(), vec![0]].concat(),
         with(16, 2),
-        with(32, 0x80),
         with(33, 2),
     ];
     for body in bodies {
@@ -3774,23 +3916,72 @@ fn an_open_refuses_a_carry_record_of_the_wrong_shape() {
     }
 }
 
+/// The body of a carry record with the tail of index 2 at seq 4 and `entries`, each a
+/// sample of index 2 at seq 3 with `tag` and the bytes `[9; 3]`.
+fn carry_entries(tags: &[u8]) -> Vec<u8> {
+    let mut body = carry_body(&[carried(2, 4, 0, Some(30))]);
+    body[2] = u8::try_from(tags.len()).expect("few entries");
+    let headers = tags.iter().map(|&tag| {
+        [
+            &2_u128.to_le_bytes()[..],
+            &[0],
+            &3_u64.to_le_bytes(),
+            &1_u32.to_le_bytes(),
+            &7_i64.to_le_bytes(),
+            &[1],
+            &30_i64.to_le_bytes(),
+            &[tag],
+            &3_u32.to_le_bytes(),
+        ]
+        .concat()
+    });
+    let bytes = tags.iter().map(|_| vec![9; 3]);
+    [
+        body,
+        headers.collect::<Vec<_>>().concat(),
+        bytes.collect::<Vec<_>>().concat(),
+    ]
+    .concat()
+}
+
+/// An open takes a carried entry of tag 1 as the newest of its key, and refuses a
+/// carried entry of tag 0 and a key that one body gives twice.
+#[test]
+fn an_open_takes_a_carried_tagged_entry_and_refuses_a_wrong_one() {
+    run(160, move |shard| async move {
+        shard.create_two_records().await;
+        shard.put_carry(3 * BLOCK, &carry_entries(&[1])).await;
+        let mut slots = Slots::new();
+        let opened = shard.open(layout(AREA, BODY_MAX), &mut slots).await;
+        let buffer = opened.expect("the body with a tagged entry opens");
+        let b = slots.index(key(2));
+        assert_eq!(newest(&buffer, Path::Live, 1), vec![(b, kept(&[9; 3]))]);
+        drop(buffer);
+        for tags in [&[0][..], &[1, 1]] {
+            shard.put_carry(3 * BLOCK, &carry_entries(tags)).await;
+            shard.open_invalid(layout(AREA, BODY_MAX), 3 * BLOCK).await;
+        }
+    });
+}
+
 /// A trim passed the record with the first entry with no samples that index 1 has at
 /// seq 3, and kept a record with two more. A carry record after the kept ones gives
 /// the count of them all. Each case: the seqs of the entries with no samples of each
 /// record, the count of a carry record at seq 3 in place of the first kept record,
-/// the carried count, and whether the open takes it. A carried count below the walked
-/// one, above it while a walked entry is not one at the carried seq, or above it
-/// after a carry record that came first, is a wrong shape.
+/// the carried count, and the block of the record that the open refuses. A count
+/// that is not the walked one is a wrong shape.
 #[test]
 fn an_open_counts_the_entries_with_no_samples_that_a_trim_passed() {
     type Records = &'static [&'static [u64]];
-    let cases: [(Records, Option<u64>, u64, bool); 4] = [
-        (&[&[3], &[3, 3]], None, 3, true),
-        (&[&[3], &[3, 3]], None, 1, false),
-        (&[&[3], &[3, 3], &[4]], None, 2, false),
-        (&[&[3], &[3], &[3]], Some(1), 3, false),
+    let cases: [(Records, Option<u64>, u64, Option<u64>); 6] = [
+        (&[&[3], &[3, 3]], None, 3, None),
+        (&[&[3], &[3, 3]], None, 1, Some(3)),
+        (&[&[3], &[3, 3]], None, 4, Some(3)),
+        (&[&[3], &[3, 3], &[4]], None, 2, Some(4)),
+        (&[&[3], &[3], &[3]], Some(2), 4, Some(4)),
+        (&[&[3], &[3], &[3]], Some(1), 3, Some(3)),
     ];
-    for (records, first, given, taken) in cases {
+    for (records, first, given, refused) in cases {
         run(188, move |shard| async move {
             let ring = layout(AREA, BODY_MAX);
             let mut slots = Slots::new();
@@ -3820,39 +4011,48 @@ fn an_open_counts_the_entries_with_no_samples_that_a_trim_passed() {
             let chain = shard.bytes().await[chain..chain + 4].to_vec();
             shard.tamper(TAIL_AT, &(2 * BLOCK).to_le_bytes()).await;
             shard.tamper(CHAIN_AT, &chain).await;
-            if !taken {
-                return shard.open_invalid(ring, carry).await;
+            if let Some(block) = refused {
+                return shard.open_invalid(ring, block * BLOCK).await;
             }
             let mut slots = Slots::new();
             let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let reader = buffer.reader();
             let a = slots.index(key(1));
             assert_eq!(buffer.durable(a, Path::Live), tail(3, Some(30)));
             let stored = || stored(3, 0, None, shard.block(0));
-            let read = buffer.read(a, Path::Live, mark(0, 0), usize::MAX).await;
+            let read = reader.read(a, Path::Live, mark(0, 0), usize::MAX).await;
             let expected = Read {
                 gap: Some(0..3),
                 entries: vec![stored(), stored()],
                 next: mark(3, 3),
             };
             assert_eq!(read, Ok(expected));
-            let read = buffer.read(a, Path::Live, mark(3, 2), usize::MAX).await;
+            let read = reader.read(a, Path::Live, mark(3, 2), usize::MAX).await;
             assert_eq!(read, Ok(whole(vec![stored()], mark(3, 3))));
-            let read = buffer.read(a, Path::Live, mark(3, 3), usize::MAX).await;
+            let read = reader.read(a, Path::Live, mark(3, 3), usize::MAX).await;
             assert_eq!(read, Ok(whole(vec![], mark(3, 3))));
             buffer.append([empty(3)]).expect("queues");
             buffer.committed().await.expect("commits");
-            let read = buffer.read(a, Path::Live, mark(3, 3), usize::MAX).await;
+            let read = reader.read(a, Path::Live, mark(3, 3), usize::MAX).await;
             assert_eq!(read, Ok(whole(vec![stored()], mark(3, 4))));
         });
     }
 }
 
-/// Data records at 1, 2, and 4 blocks each hold an entry with no samples at seq 3.
-/// The carry record at 3 blocks, written over the third, takes two more, which a
-/// trim passed. It gives an exact count, so the one at 5 blocks takes no more.
+/// Data records at 1, 2, and 4 blocks each hold an entry with no samples at seq 3,
+/// and a trim passed the first two. The carry record at 3 blocks, written over the
+/// third, gives a count, and the records after it count on from it. Each case: the
+/// count of the carry record at 3 blocks, the count of the one at 5 blocks, and the
+/// block of the record that the open refuses.
 #[test]
-fn an_open_refuses_more_entries_with_no_samples_after_a_carry_record_of_the_path() {
-    for (given, taken) in [(5, true), (6, false)] {
+fn an_open_refuses_a_count_after_a_carry_record_that_is_not_the_walked_one() {
+    let cases = [
+        (3, 4, None),
+        (3, 5, Some(5)),
+        (3, 3, Some(5)),
+        (2, 4, Some(4)),
+    ];
+    for (first, given, refused) in cases {
         run(189, move |shard| async move {
             let ring = layout(AREA, BODY_MAX);
             let mut slots = Slots::new();
@@ -3865,14 +4065,18 @@ fn an_open_refuses_more_entries_with_no_samples_after_a_carry_record_of_the_path
             }
             drop(buffer);
             shard
-                .put_carry(3 * BLOCK, &carry_body(&[carried(1, 3, 4, None)]))
+                .put_carry(3 * BLOCK, &carry_body(&[carried(1, 3, first, None)]))
                 .await;
             shard.seal(4 * BLOCK).await;
             shard
                 .put_carry(5 * BLOCK, &carry_body(&[carried(1, 3, given, None)]))
                 .await;
-            if !taken {
-                return shard.open_invalid(ring, 5 * BLOCK).await;
+            let chain = to_usize(AREA_START + 2 * BLOCK) + 4;
+            let chain = shard.bytes().await[chain..chain + 4].to_vec();
+            shard.tamper(TAIL_AT, &(3 * BLOCK).to_le_bytes()).await;
+            shard.tamper(CHAIN_AT, &chain).await;
+            if let Some(block) = refused {
+                return shard.open_invalid(ring, block * BLOCK).await;
             }
             let mut slots = Slots::new();
             let buffer = shard.open(ring, &mut slots).await.expect("opens");
@@ -4027,7 +4231,7 @@ fn opens_with_no_data_leave_room_for_the_largest_record() {
 fn opens_with_no_data_after_an_entry_leave_room_for_the_next() {
     for torn in [false, true] {
         run(25, move |shard| async move {
-            let ring = layout(7 * BLOCK, BODY_MAX);
+            let ring = layout(13 * BLOCK, BODY_MAX);
             let mut slots = Slots::new();
             let buffer = shard.open(ring, &mut slots).await.expect("opens");
             let a = slots.index(key(1));
@@ -4068,16 +4272,16 @@ fn opens_with_no_data_after_an_entry_leave_room_for_the_next() {
 }
 
 /// Each record leaves a block free for the restart record of the next open, so a
-/// full ring reopens. It then takes no entry before its tail moves.
+/// full ring reopens. With no trim, it then takes no entry before its tail moves.
 #[test]
 fn a_full_ring_reopens_into_the_block_that_its_records_leave_free() {
     run(21, |shard| async move {
-        let ring = layout(7 * BLOCK, BODY_MAX);
+        let ring = layout(13 * BLOCK, BODY_MAX);
         let mut slots = Slots::new();
         let buffer = shard.open(ring, &mut slots).await.expect("opens");
         let a = slots.index(key(1));
         let parts = Parts::from(shard.block(3900));
-        for seq in 0..3 {
+        for seq in 0..7 {
             buffer
                 .append([entry(1, a, Path::Live, seq, 1, None, parts.clone())])
                 .expect("the record has room");
@@ -4087,8 +4291,8 @@ fn a_full_ring_reopens_into_the_block_that_its_records_leave_free() {
         let mut slots = Slots::new();
         let buffer = shard.open(ring, &mut slots).await.expect("reopens");
         let a = slots.index(key(1));
-        assert_eq!(buffer.tail(a, Path::Live), tail(3, None));
-        let full = buffer.append([entry(1, a, Path::Live, 3, 1, None, parts.clone())]);
+        assert_eq!(buffer.tail(a, Path::Live), tail(7, None));
+        let full = buffer.append([entry(1, a, Path::Live, 7, 1, None, parts.clone())]);
         assert_eq!(
             full,
             Err(Rejected::Full {
@@ -4097,6 +4301,553 @@ fn a_full_ring_reopens_into_the_block_that_its_records_leave_free() {
             })
         );
     });
+}
+
+/// The reopen of a full ring syncs the header and the records it walked, as read,
+/// then frees its oldest records up to the record of seq 6, which holds the tail,
+/// in the sync of its restart record. The next entry then fits, and a read from
+/// seq 0 gives the freed seqs as a gap.
+#[test]
+fn an_open_that_trims_adds_no_sync() {
+    run_on_memory(21, |shard| async move {
+        let shard = Shard {
+            trimmed: true,
+            ..shard
+        };
+        let ring = layout(13 * BLOCK, BODY_MAX);
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("opens");
+        let a = slots.index(key(1));
+        let parts = Parts::from(shard.block(3900));
+        for seq in 0..7 {
+            buffer
+                .append([entry(1, a, Path::Live, seq, 1, None, parts.clone())])
+                .expect("the record has room");
+        }
+        buffer.committed().await.expect("commits");
+        drop(buffer);
+        let syncs = shard.memory().syncs();
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("reopens");
+        assert_eq!(
+            shard.memory().syncs(),
+            syncs + 2,
+            "the walked records, then the restart record and the trim"
+        );
+        let a = slots.index(key(1));
+        assert_eq!(buffer.tail(a, Path::Live), tail(7, None));
+        buffer
+            .append([entry(1, a, Path::Live, 7, 1, None, parts.clone())])
+            .expect("the open freed room");
+        buffer.committed().await.expect("commits");
+        let reads = read_all(&buffer, a, Path::Live, Mark::at(0), usize::MAX).await;
+        let firsts: Vec<u64> =
+            entries(&reads).iter().map(|entry| entry.first).collect();
+        assert_eq!((reads[0].gap.clone(), firsts), (Some(0..6), vec![6, 7]));
+    });
+}
+
+/// After a commit cut in its sync, with its record on the disk and its tail not, the
+/// open frees past the headroom: two records of the largest size then fit, the
+/// second placed while the first syncs. With no trim at the open, the second gets
+/// `Full { needed: 16384, free: 8192 }`.
+#[test]
+fn an_open_after_a_cut_commit_frees_past_the_headroom() {
+    run_on_memory(167, |shard| async move {
+        let shard = Shard {
+            trimmed: true,
+            ..shard
+        };
+        let ring = layout(25 * BLOCK, 4 * to_usize(BLOCK) - 9);
+        let record = |a: Slot, seq: u64, blocks: u64| {
+            let parts = Parts::from(shard.block(to_usize(blocks * BLOCK) - 400));
+            entry(1, a, Path::Live, seq, 1, None, parts)
+        };
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("opens");
+        let a = slots.index(key(1));
+        buffer.append([record(a, 0, 4)]).expect("queues");
+        buffer.committed().await.expect("commits");
+        shard.memory().fail_syncs();
+        buffer.append([record(a, 1, 4)]).expect("queues");
+        let cut = buffer.committed().await;
+        let failed = FileError::Io {
+            path: PathBuf::from(RING),
+            operation: Operation::Sync,
+            code: 5,
+        };
+        assert_eq!(cut, Err(failed));
+        assert_eq!(buffer.durable(a, Path::Live), tail(1, None));
+        drop(buffer);
+        shard.memory().pass_syncs();
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("reopens");
+        let a = slots.index(key(1));
+        assert_eq!(buffer.tail(a, Path::Live), tail(2, None));
+        let sync = Span::from_nanos(4_000_000);
+        shard.memory().slow_syncs(shard.clock.clone(), sync);
+        buffer.append([record(a, 2, 4)]).expect("the first fits");
+        shard
+            .clock
+            .sleep(Span::from_nanos(COMMIT.nanos() + sync.nanos() / 2))
+            .await;
+        let second = buffer.append([record(a, 3, 4)]);
+        assert_eq!(second, Ok(()), "placed while the first syncs");
+        buffer.committed().await.expect("commits");
+        assert_eq!(buffer.durable(a, Path::Live), tail(4, None));
+    });
+}
+
+/// Takes each block that `pool` has room for, so that each later alloc fails until
+/// they drop.
+fn drain(pool: &Pool) -> Vec<block::Unique> {
+    let mut held = Vec::new();
+    let mut len = pool.largest();
+    while len > 0 {
+        match pool.alloc(len) {
+            Ok(block) => held.push(block),
+            Err(_) => len /= 2,
+        }
+    }
+    held
+}
+
+/// Commits of index 2 whose carry finds no pool block fill the ring as far as its
+/// records let it, with the tail of index 1 in the first data record. The buffer
+/// then drops, which writes nothing, as a crash does. The open succeeds and gives
+/// each tail. The next two commits carry the tail of index 1 and trim past its
+/// record, so an append fits again.
+#[test]
+fn a_crash_after_a_commit_with_no_carry_block_opens() {
+    run_on_memory(169, |shard| async move {
+        let shard = Shard {
+            trimmed: true,
+            ..shard
+        };
+        let ring = layout(AREA, BODY_MAX);
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("opens");
+        let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+        let next = |seq: u64| {
+            let stamp = 40 + i64::try_from(seq).expect("a small seq");
+            [entry(
+                2,
+                b,
+                Path::Live,
+                seq,
+                1,
+                Some(stamp),
+                Parts::default(),
+            )]
+        };
+        let first = entry(1, a, Path::Live, 0, 3, Some(30), Parts::default());
+        buffer.append([first]).expect("queues");
+        buffer.committed().await.expect("commits");
+        let mut held = Vec::new();
+        for seq in 0..9 {
+            held.clear();
+            buffer.append(next(seq)).expect("the ring has room");
+            held = drain(&shard.pool);
+            buffer.committed().await.expect("commits");
+        }
+        let full = Rejected::Full {
+            needed: 4096,
+            free: 0,
+        };
+        assert_eq!(buffer.append(next(9)), Err(full.clone()));
+        for _ in 0..4 {
+            shard.clock.sleep(commits(1)).await;
+            held.extend(drain(&shard.pool));
+        }
+        drop(buffer);
+        drop(held);
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("opens");
+        let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+        assert_eq!(buffer.tail(a, Path::Live), tail(3, Some(30)));
+        assert_eq!(buffer.tail(b, Path::Live), tail(9, Some(48)));
+        for commit in ["the carry", "the trim"] {
+            assert_eq!(buffer.append(next(9)), Err(full.clone()), "{commit}");
+            shard.clock.sleep(commits(4)).await;
+        }
+        buffer.append(next(9)).expect("the trim freed room");
+        buffer.committed().await.expect("commits");
+        let read = buffer
+            .reader()
+            .read(a, Path::Live, mark(0, 0), usize::MAX)
+            .await;
+        let hidden = Read {
+            gap: Some(0..3),
+            entries: vec![],
+            next: mark(3, 0),
+        };
+        assert_eq!(read, Ok(hidden));
+        assert_eq!(buffer.tail(a, Path::Live), tail(3, Some(30)));
+    });
+}
+
+/// Makes a ring of `AREA` with a data record of index 1 at `BLOCK`, one of index 2
+/// at `2 * BLOCK`, and a carry record of `tails` in each block after them but the
+/// last `free`.
+async fn create_carried_ring(shard: &Shard, tails: &[Vec<u8>], free: u64) {
+    let mut slots = Slots::new();
+    let buffer = shard
+        .open(layout(AREA, BODY_MAX), &mut slots)
+        .await
+        .expect("opens");
+    let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+    for appended in [
+        entry(1, a, Path::Live, 0, 3, Some(30), Parts::default()),
+        entry(2, b, Path::Live, 0, 2, Some(40), Parts::default()),
+    ] {
+        buffer.append([appended]).expect("queues");
+        buffer.committed().await.expect("commits");
+    }
+    drop(buffer);
+    let body = carry_body(tails);
+    for block in 3..AREA / BLOCK - free {
+        shard.put_carry(block * BLOCK, &body).await;
+    }
+}
+
+/// An open of a ring with no free block for its restart record syncs the records
+/// it walked, frees the oldest records a step past the headroom in a second sync,
+/// then writes its restart record in a freed block in a third. Each path keeps its
+/// tail.
+#[test]
+fn an_open_of_a_ring_with_no_free_block_frees_its_oldest_records() {
+    run_on_memory(163, |shard| async move {
+        let shard = Shard {
+            trimmed: true,
+            ..shard
+        };
+        let tails = [carried(1, 3, 0, Some(30)), carried(2, 2, 0, Some(40))];
+        create_carried_ring(&shard, &tails, 0).await;
+        let ring = layout(AREA, BODY_MAX);
+        let syncs = shard.memory().syncs();
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("opens");
+        let synced = shard.memory().syncs();
+        assert_eq!(synced, syncs + 3, "the walk, the trim, then the restart");
+        let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+        assert_eq!(buffer.tail(a, Path::Live), tail(3, Some(30)));
+        assert_eq!(buffer.tail(b, Path::Live), tail(2, Some(40)));
+        let read = buffer
+            .reader()
+            .read(a, Path::Live, mark(0, 0), usize::MAX)
+            .await;
+        let hidden = Read {
+            gap: Some(0..3),
+            entries: vec![],
+            next: mark(3, 0),
+        };
+        assert_eq!(read, Ok(hidden));
+        let parts = Parts::from(shard.block(3900));
+        for seq in 3..11 {
+            let next = entry(1, a, Path::Live, seq, 1, None, parts.clone());
+            assert_eq!(buffer.append([next]), Ok(()), "seq {seq}");
+        }
+        let full = buffer.append([entry(1, a, Path::Live, 11, 1, None, parts)]);
+        let refused = Rejected::Full {
+            needed: 4096,
+            free: 0,
+        };
+        assert_eq!(full, Err(refused), "a step past the headroom");
+        buffer.committed().await.expect("commits");
+        drop(buffer);
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("reopens");
+        let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+        assert_eq!(buffer.tail(a, Path::Live), tail(11, Some(30)));
+        assert_eq!(buffer.tail(b, Path::Live), tail(2, Some(40)));
+    });
+}
+
+/// An open of a ring with no free block, whose oldest record holds the only tail
+/// of index 1, frees nothing and gives `Full`.
+#[test]
+fn an_open_that_kept_stops_gives_full() {
+    run(165, |shard| async move {
+        let shard = Shard {
+            trimmed: true,
+            ..shard
+        };
+        let tails = [carried(2, 2, 0, Some(40))];
+        create_carried_ring(&shard, &tails, 0).await;
+        let file = shard.bytes().await;
+        let at = |offset: u64| to_usize(AREA_START + offset);
+        let u32_at = |at: usize| {
+            u32::from_le_bytes(file[at..at + 4].try_into().expect("four bytes"))
+        };
+        let restart = u32_at(at(0) + 9);
+        let chain = u32_at(at(AREA - BLOCK) + 4);
+        let body = carry_body(&tails);
+        let len = u32::try_from(body.len()).expect("a short body");
+        let mut record = [&len.to_le_bytes()[..], &[0; 4], &[CARRY], &body].concat();
+        let crc = crc32c::crc32c_append(chain, &record[..4]);
+        let crc = crc32c::crc32c_append(crc, &record[8..]);
+        record[4..8].copy_from_slice(&crc.to_le_bytes());
+        shard.put(at(0), &record).await;
+        shard.tamper(TAIL_AT, &BLOCK.to_le_bytes()).await;
+        shard.tamper(CHAIN_AT, &restart.to_le_bytes()).await;
+        let full = Error::Full {
+            needed: 4096,
+            free: 0,
+        };
+        assert_eq!(
+            full.to_string(),
+            "the ring has no room for its restart record: it needs 4096 bytes and 0 \
+             are free"
+        );
+        let ring = layout(AREA, BODY_MAX);
+        shard
+            .open_refused(ring, full, "a ring that no trim frees")
+            .await;
+    });
+}
+
+/// A power cut at any point of an open that trims, with a free block for its
+/// restart record and with none, leaves a ring that opens. Each path keeps its
+/// tail, and a read of index 1 gives its entry or the gap of its trim.
+#[test]
+fn a_cut_at_each_file_call_of_an_open_that_trims_keeps_each_tail() {
+    for free in [1, 0] {
+        each_cut(0..8, 10_000, |seed, cut| {
+            let (mut sim, node) = create_node(seed);
+            sim.run_on(&node, move |node, tasks| async move {
+                let tails = [carried(1, 3, 0, Some(30)), carried(2, 2, 0, Some(40))];
+                create_carried_ring(&shard_on(node, tasks), &tails, free).await;
+            })
+            .expect("the ring is made");
+            let ended = cut_an_open(&mut sim, &node, (cut, true), sim::Crash::Power);
+            let opened = sim.run_on(&node, |node, tasks| async move {
+                let mut slots = Slots::new();
+                let config = Config {
+                    trimmed: true,
+                    ..node_config(&node, tasks, DIR)
+                };
+                let buffer = Buffer::open(config, &mut slots).await?;
+                let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+                let tails = [a, b].map(|slot| buffer.tail(slot, Path::Live));
+                let read = buffer
+                    .reader()
+                    .read(a, Path::Live, mark(0, 0), usize::MAX)
+                    .await;
+                Ok::<_, Error>((tails, read))
+            });
+            let case = format!("{free} free, seed {seed}, cut at {cut} ns");
+            let opened = opened.unwrap_or_else(|e| panic!("{case}: {e}"));
+            let (tails, read) = opened.unwrap_or_else(|e| panic!("{case}: {e}"));
+            assert_eq!(tails, [tail(3, Some(30)), tail(2, Some(40))], "{case}");
+            let empty = pool().alloc(0).expect("a block").freeze();
+            let kept = whole(vec![stored(0, 3, Some(30), empty)], mark(3, 0));
+            let hidden = Read {
+                gap: Some(0..3),
+                entries: vec![],
+                next: mark(3, 0),
+            };
+            let read = read.unwrap_or_else(|e| panic!("{case}: {e}"));
+            assert!(read == kept || read == hidden, "{case}: {read:?}");
+            ended
+        });
+    }
+}
+
+/// Starts an open that trims of the ring on `node`, as the shard `name`, and keeps
+/// its buffer. Gives what the open gave once it ends.
+fn start_open(
+    node: &sim::node::Node,
+    name: &str,
+) -> Arc<Mutex<Option<Result<(), Error>>>> {
+    let ended = Arc::new(Mutex::new(None));
+    let gave = Arc::clone(&ended);
+    let own = node.clone();
+    drop(on_node(node, name, move |tasks| async move {
+        let config = Config {
+            trimmed: true,
+            ..node_config(&own, tasks, DIR)
+        };
+        let opened = Buffer::open(config, &mut Slots::new()).await;
+        *gave.lock().expect("no panic") =
+            Some(opened.as_ref().map(drop).map_err(Clone::clone));
+        std::future::pending::<()>().await;
+        drop(opened);
+    }));
+    ended
+}
+
+/// The first multiple of `step` at which `ended` holds, when it holds at each one
+/// after that too and not at 0.
+fn first_end(step: i64, mut ended: impl FnMut(i64) -> bool) -> i64 {
+    let (mut low, mut high) = (0, step);
+    while !ended(high) {
+        (low, high) = (high, 2 * high);
+    }
+    while high - low > step {
+        let mid = i64::midpoint(low, high) / step * step;
+        if ended(mid) {
+            high = mid;
+        } else {
+            low = mid;
+        }
+    }
+    high
+}
+
+/// On a new node with `seed`, makes a ring with no free block, starts an open that
+/// trims, fails its next sync `fault` ns into it, and stops the process. Then
+/// starts a second open and cuts the power `cut` ns into it. Gives the sim, the
+/// node, whether the first open failed, and whether the second had ended before its
+/// cut.
+fn fail_then_cut(
+    seed: u64,
+    fault: i64,
+    cut: i64,
+) -> (sim::Sim, sim::node::Node, bool, bool) {
+    let (mut sim, node) = create_node(seed);
+    sim.run_on(&node, move |node, tasks| async move {
+        let tails = [carried(1, 3, 0, Some(30)), carried(2, 2, 0, Some(40))];
+        create_carried_ring(&shard_on(node, tasks), &tails, 0).await;
+    })
+    .expect("the ring is made");
+    let first = start_open(&node, "first");
+    sim.run_for(Span::from_nanos(fault))
+        .expect("the run goes on");
+    node.fail_file(FilePath::new(RING), Operation::Sync);
+    sim.run_for(Span::from_nanos(10_000_000))
+        .expect("the run goes on");
+    let first = first.lock().expect("no panic").take();
+    let failed = first.expect("the first open ends").is_err();
+    sim.crash(&node, sim::Crash::Process);
+    let second = start_open(&node, "second");
+    sim.run_for(Span::from_nanos(cut)).expect("the run goes on");
+    let second = second.lock().expect("no panic").is_some();
+    sim.crash(&node, sim::Crash::Power);
+    (sim, node, failed, second)
+}
+
+/// A failed sync near the end of an open that trims a ring with no free block, then a
+/// power cut during the next open, keeps each tail. The failed sync can leave the
+/// checkpoint of the trim in the cache only, and the next open reads it there: it
+/// writes over the records that it frees only once it is durable. Each fault fails a
+/// sync of the first open: a later fault would fail a sync of the next.
+#[test]
+fn a_cut_open_after_a_failed_sync_of_an_open_that_trims_keeps_each_tail() {
+    for seed in 0..2 {
+        let last = first_end(10_000, |fault| !fail_then_cut(seed, fault, 0).2);
+        for fault in ((last - 300_000).max(0)..last).step_by(10_000) {
+            let second = first_end(2_000, |cut| fail_then_cut(seed, fault, cut).3);
+            for cut in ((second - 400_000).max(0)..second).step_by(2_000) {
+                let (mut sim, node, ..) = fail_then_cut(seed, fault, cut);
+                let opened = sim.run_on(&node, |node, tasks| async move {
+                    let mut slots = Slots::new();
+                    let config = Config {
+                        trimmed: true,
+                        ..node_config(&node, tasks, DIR)
+                    };
+                    let buffer = Buffer::open(config, &mut slots).await?;
+                    let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+                    Ok::<_, Error>([a, b].map(|slot| buffer.tail(slot, Path::Live)))
+                });
+                let case = format!("seed {seed}, fault at {fault} ns, cut at {cut} ns");
+                let opened = opened.unwrap_or_else(|e| panic!("{case}: {e}"));
+                let tails = opened.unwrap_or_else(|e| panic!("{case}: {e}"));
+                assert_eq!(tails, [tail(3, Some(30)), tail(2, Some(40))], "{case}");
+            }
+        }
+    }
+}
+
+/// On a new node with `seed`, appends a record of index 1 at each seq in a commit of
+/// its own to a ring that trims, and fails the sync of the commit of seq `failed`.
+/// Then stops the process, starts an open, and cuts the power `cut` ns into it.
+/// Gives the sim, the node, whether the last two commits wrote a checkpoint, and
+/// whether the open had ended before its cut.
+fn fail_a_commit_then_cut(
+    seed: u64,
+    failed: u64,
+    cut: i64,
+) -> (sim::Sim, sim::node::Node, bool, bool) {
+    let (mut sim, node) = create_node(seed);
+    let trimmed = sim.run_on(&node, move |node, tasks| async move {
+        let shard = Shard {
+            trimmed: true,
+            ..shard_on(node, tasks)
+        };
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let a = slots.index(key(1));
+        let parts = Parts::from(shard.block(3900));
+        let record = |seq: u64| {
+            let last = i64::try_from(seq).expect("a small seq") + 1;
+            [entry(1, a, Path::Live, seq, 1, Some(last), parts.clone())]
+        };
+        let headers = to_usize(AREA_START);
+        let mut before = shard.bytes().await[..headers].to_vec();
+        for seq in 0..failed {
+            if seq + 1 == failed {
+                before = shard.bytes().await[..headers].to_vec();
+            }
+            buffer.append(record(seq)).expect("the ring has room");
+            buffer.committed().await.expect("commits");
+        }
+        shard.node().fail_file(FilePath::new(RING), Operation::Sync);
+        buffer.append(record(failed)).expect("the ring has room");
+        let fault = Err(FileError::Io {
+            path: PathBuf::from(RING),
+            operation: Operation::Sync,
+            code: 5,
+        });
+        assert_eq!(buffer.committed().await, fault, "seq {failed}");
+        shard.bytes().await[..headers] != before
+    });
+    let trimmed = trimmed.expect("the commits run");
+    sim.crash(&node, sim::Crash::Process);
+    let open = start_open(&node, "open");
+    sim.run_for(Span::from_nanos(cut)).expect("the run goes on");
+    let ended = open.lock().expect("no panic").is_some();
+    sim.crash(&node, sim::Crash::Power);
+    (sim, node, trimmed, ended)
+}
+
+/// A failed sync of a commit that trims, then a power cut during the next open, keeps
+/// each durable tail. The failed sync can leave the checkpoint in the cache only, and
+/// the open reads it there.
+#[test]
+fn a_cut_open_after_a_failed_sync_of_a_commit_that_trims_keeps_each_tail() {
+    for seed in 0..2 {
+        let mut trims = 0;
+        for failed in 0..24 {
+            if !fail_a_commit_then_cut(seed, failed, 0).2 {
+                continue;
+            }
+            trims += 1;
+            let end =
+                first_end(2_000, |cut| fail_a_commit_then_cut(seed, failed, cut).3);
+            for cut in (0..end).step_by(10_000) {
+                let (mut sim, node, ..) = fail_a_commit_then_cut(seed, failed, cut);
+                let opened = sim.run_on(&node, |node, tasks| async move {
+                    let mut slots = Slots::new();
+                    let config = Config {
+                        trimmed: true,
+                        ..node_config(&node, tasks, DIR)
+                    };
+                    let buffer = Buffer::open(config, &mut slots).await?;
+                    Ok::<_, Error>(buffer.tail(slots.index(key(1)), Path::Live))
+                });
+                let case = format!("seed {seed}, seq {failed} failed, cut at {cut} ns");
+                let opened = opened.unwrap_or_else(|e| panic!("{case}: {e}"));
+                let got = opened.unwrap_or_else(|e| panic!("{case}: {e}"));
+                let last = i64::try_from(failed).expect("a small seq");
+                let kept = [tail(failed, Some(last)), tail(failed + 1, Some(last + 1))];
+                assert!(kept.contains(&got), "{case}: {got:?}");
+            }
+        }
+        assert!(trims > 1, "seed {seed}: {trims} failed commits trimmed");
+    }
 }
 
 #[test]
@@ -4606,7 +5357,7 @@ fn an_end_taken_at_a_drop_during_a_failing_sync_gives_its_error() {
             .append([entry(1, a, Path::Live, 0, 1, Some(1), Parts::default())])
             .expect("queues");
         shard.clock.sleep(tenths(12)).await;
-        assert_eq!(shard.memory().syncs(), 3, "the sync runs");
+        assert_eq!(shard.memory().syncs(), 4, "the sync runs");
         let end = buffer.ended();
         drop(buffer);
         let failed = FileError::Io {
@@ -4819,7 +5570,7 @@ fn step() -> impl Strategy<Value = Step> {
                 skip,
                 len,
                 bytes,
-                last,
+                last: last.filter(|_| len != 0),
             }),
         2 => Just(Step::Commit),
         1 => Just(Step::Reopen),
@@ -4922,15 +5673,15 @@ fn a_drop_right_after_the_first_append_of_an_idle_span_ends_the_task_at_its_dead
         shard.clock.sleep(tenths(9)).await;
         assert_eq!(
             shard.memory().syncs(),
-            2,
+            3,
             "the entry waits for the deadline"
         );
         assert_eq!(shard.memory().open_files(), 1, "the task runs");
         shard.clock.sleep(tenths(2)).await;
-        assert_eq!(shard.memory().syncs(), 3, "the deadline writes the entry");
+        assert_eq!(shard.memory().syncs(), 4, "the deadline writes the entry");
         assert_eq!(shard.memory().open_files(), 0, "the task ended");
         shard.clock.sleep(commits(10)).await;
-        assert_eq!(shard.memory().syncs(), 3, "no later deadline runs");
+        assert_eq!(shard.memory().syncs(), 4, "no later deadline runs");
         let mut slots = Slots::new();
         let buffer = shard
             .open(layout(AREA, BODY_MAX), &mut slots)
@@ -4972,10 +5723,10 @@ fn a_drop_during_a_commit_ends_the_task_after_the_next_commit() {
             "the task syncs the first entry"
         );
         shard.clock.sleep(sync).await;
-        assert_eq!(shard.memory().syncs(), 3, "the first sync ended");
+        assert_eq!(shard.memory().syncs(), 4, "the first sync ended");
         assert_eq!(shard.memory().open_files(), 1, "the second entry waits");
         shard.clock.sleep(commits(10)).await;
-        assert_eq!(shard.memory().syncs(), 4, "the next deadline writes it");
+        assert_eq!(shard.memory().syncs(), 5, "the next deadline writes it");
         assert_eq!(shard.memory().open_files(), 0, "the task ended");
         let mut slots = Slots::new();
         let buffer = shard
@@ -5111,7 +5862,10 @@ fn an_entry_over_block_max_is_large() {
             .expect("queues");
         buffer.committed().await.expect("commits");
         assert_eq!(buffer.durable(a, Path::Live), tail(1, Some(1)));
-        let read = buffer.read(a, Path::Live, Mark::at(0), usize::MAX).await;
+        let read = buffer
+            .reader()
+            .read(a, Path::Live, Mark::at(0), usize::MAX)
+            .await;
         let lens =
             read.map(|read| read.entries.iter().map(|e| e.bytes.len()).collect());
         assert_eq!(lens, Ok(vec![max]));
@@ -5216,10 +5970,11 @@ fn an_entry_of_block_max_made_from_the_pool_of_the_buffer_appends() {
     });
 }
 
-/// The limit of `block_max`: a free block of a size with a block in use keeps its
-/// budget, so an entry at `block_max` gets `Exhausted` when the pool keeps a second
-/// block of the size of a part. After two purges the pool commits nothing, and the
-/// same entry appends.
+/// The limit of `block_max`: a free block of a size with a block in use keeps the
+/// budget of its payload when the payload holds no whole page, as a payload of 4096
+/// bytes that starts off a page. So an entry at `block_max` gets `Exhausted` when the
+/// pool keeps a second block of the size of a part. After two purges the pool
+/// commits nothing, and the same entry appends.
 #[test]
 fn an_entry_of_block_max_beside_a_free_block_of_its_size_is_exhausted() {
     run(206, |mut shard| async move {
@@ -5358,6 +6113,17 @@ proptest! {
     }
 }
 
+/// An open refuses a data record with a tagged entry of 4244 bytes, over
+/// `Layout::ENTRY_MAX_MIN`: no carry record can hold its copy.
+#[test]
+fn an_open_refuses_a_tagged_entry_over_the_tag_limit() {
+    run(161, |shard| async move {
+        let ring = shard.create_long_record().await;
+        shard.tamper_record(BLOCK, 4 + 46, &[1]).await;
+        shard.open_invalid(ring, BLOCK).await;
+    });
+}
+
 /// An open fails with `Pool(TooLarge)` when a recovered entry is over the largest
 /// block of its pool, as after a restart with a smaller budget, and leaves the ring
 /// as it is: an open with the larger pool recovers the entry.
@@ -5408,7 +6174,7 @@ fn one_entry_of_the_entry_max_commits_and_is_recovered() {
         let a = slots.index(key(1));
         let small = Parts::from(shard.block(10));
         let max = Parts::from(shard.block(buffer.layout().entry_max()));
-        assert_eq!(buffer.layout().entry_max(), 4032);
+        assert_eq!(buffer.layout().entry_max(), 8128);
         let appended = buffer.append([entry(1, a, Path::Live, 0, 1, None, small)]);
         assert_eq!(appended, Ok(()));
         let appended = buffer.append([entry(1, a, Path::Live, 1, 1, Some(1), max)]);
@@ -5447,7 +6213,7 @@ fn a_synced_commit_resolves_well_after_a_later_commit_failed() {
         shard.clock.sleep(commits(3)).await;
         assert_eq!(
             shard.memory().syncs(),
-            4,
+            5,
             "the second commit failed its sync"
         );
         assert_eq!(buffer.durable(a, Path::Live), tail(3, Some(30)));
@@ -5516,7 +6282,7 @@ fn a_commit_made_after_its_entries_synced_resolves_well_after_a_later_failure() 
         shard.clock.sleep(commits(3)).await;
         assert_eq!(
             shard.memory().syncs(),
-            4,
+            5,
             "the second commit failed its sync"
         );
         assert_eq!(buffer.durable(a, Path::Live), tail(3, Some(30)));
@@ -5579,7 +6345,7 @@ fn a_commit_made_during_a_sync_resolves_with_that_sync() {
         shard.clock.sleep(commits(3)).await;
         assert_eq!(
             shard.memory().syncs(),
-            4,
+            5,
             "the second commit failed its sync"
         );
         assert_eq!(first.await, Ok(()), "its entries synced");
@@ -5731,7 +6497,7 @@ fn a_commit_held_past_the_drop_resolves_after_the_last_write() {
             tenths(12),
             "after the second sync"
         );
-        assert_eq!(shard.memory().syncs(), 4);
+        assert_eq!(shard.memory().syncs(), 5);
         assert_eq!(shard.memory().open_files(), 0, "the task ended");
         let mut slots = Slots::new();
         let buffer = shard
@@ -5877,6 +6643,7 @@ fn a_read_gives_the_entries_of_one_path_in_order() {
             .open(layout(AREA, BODY_MAX), &mut slots)
             .await
             .expect("opens");
+        let reader = buffer.reader();
         let a = slots.index(key(1));
         let b = slots.index(key(2));
         let live = |first, len, last, bytes| {
@@ -5907,7 +6674,7 @@ fn a_read_gives_the_entries_of_one_path_in_order() {
             buffer.append(batch).expect("queues");
             buffer.committed().await.expect("commits");
         }
-        let read = buffer
+        let read = reader
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
@@ -5917,13 +6684,13 @@ fn a_read_gives_the_entries_of_one_path_in_order() {
             stored(4, 2, Some(60), shard.block(0)),
         ];
         assert_eq!(read, whole(expected, mark(6, 0)));
-        let read = buffer
+        let read = reader
             .read(a, Path::Backfill, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
         let expected = vec![stored(0, 1, Some(1), shard.block(7))];
         assert_eq!(read, whole(expected, mark(1, 0)));
-        let read = buffer
+        let read = reader
             .read(b, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
@@ -5932,7 +6699,7 @@ fn a_read_gives_the_entries_of_one_path_in_order() {
             stored(2, 2, Some(4), shard.block(21)),
         ];
         assert_eq!(read, whole(expected, mark(4, 0)));
-        let read = buffer
+        let read = reader
             .read(b, Path::Backfill, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
@@ -5999,6 +6766,7 @@ fn a_budget_splits_the_log_over_reads_that_follow_next() {
         let expected = vec![whole(all, mark(5, 1)), whole(Vec::new(), mark(5, 1))];
         assert_eq!(reads, expected, "no budget");
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), 0)
             .await
             .expect("reads");
@@ -6034,11 +6802,13 @@ fn a_handoff_at_the_tail_is_given_once() {
             },
         ];
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
         assert_eq!(read, whole(expected, mark(3, 1)));
         let read = buffer
+            .reader()
             .read(a, Path::Live, mark(3, 1), usize::MAX)
             .await
             .expect("reads");
@@ -6046,6 +6816,7 @@ fn a_handoff_at_the_tail_is_given_once() {
         let frame = entry(1, a, Path::Live, 3, 2, Some(50), shard.block(11).into());
         buffer.append([frame]).expect("queues");
         let read = buffer
+            .reader()
             .read(a, Path::Live, mark(3, 1), usize::MAX)
             .await
             .expect("reads");
@@ -6056,6 +6827,7 @@ fn a_handoff_at_the_tail_is_given_once() {
         );
         buffer.committed().await.expect("commits");
         let read = buffer
+            .reader()
             .read(a, Path::Live, mark(3, 1), usize::MAX)
             .await
             .expect("reads");
@@ -6099,11 +6871,13 @@ fn a_read_stops_before_a_skip_and_the_next_reports_the_gap() {
             stored(7, 1, None, shard.block(80)),
         ];
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
         assert_eq!(read, whole(before, mark(3, 0)), "stops before the skip");
         let read = buffer
+            .reader()
             .read(a, Path::Live, mark(3, 0), usize::MAX)
             .await
             .expect("reads");
@@ -6114,6 +6888,7 @@ fn a_read_stops_before_a_skip_and_the_next_reports_the_gap() {
         };
         assert_eq!(read, expected, "reports the gap");
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(4), usize::MAX)
             .await
             .expect("reads");
@@ -6139,6 +6914,7 @@ fn a_read_gives_only_durable_entries() {
         let frame = entry(1, a, Path::Live, 0, 3, Some(30), shard.block(10).into());
         buffer.append([frame]).expect("queues");
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
@@ -6147,6 +6923,7 @@ fn a_read_gives_only_durable_entries() {
         let frame = entry(1, a, Path::Live, 3, 1, Some(40), shard.block(11).into());
         buffer.append([frame]).expect("queues");
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
@@ -6154,6 +6931,7 @@ fn a_read_gives_only_durable_entries() {
         assert_eq!(read, whole(expected, mark(3, 0)), "after the first commit");
         buffer.committed().await.expect("commits");
         let read = buffer
+            .reader()
             .read(a, Path::Live, mark(3, 0), usize::MAX)
             .await
             .expect("reads");
@@ -6194,18 +6972,21 @@ fn a_mark_inside_an_entry_gives_it_whole_and_one_past_the_tail_gives_nothing() {
         ];
         for seq in [1, 2] {
             let read = buffer
+                .reader()
                 .read(a, Path::Live, Mark::at(seq), usize::MAX)
                 .await
                 .expect("reads");
             assert_eq!(read, whole(all.clone(), mark(7, 0)), "from {seq}");
         }
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(5), usize::MAX)
             .await
             .expect("reads");
         assert_eq!(read, whole(all[1..].to_vec(), mark(7, 0)), "from 5");
         for from in [mark(7, 0), mark(7, 5), mark(9, 0)] {
             let read = buffer
+                .reader()
                 .read(a, Path::Live, from, usize::MAX)
                 .await
                 .expect("reads");
@@ -6233,16 +7014,19 @@ fn a_failed_ring_read_gives_its_error_and_a_later_read_passes() {
             operation: Operation::ReadAt,
             code: 5,
         };
-        let read = buffer.read(a, Path::Live, Mark::at(0), usize::MAX).await;
+        let read = buffer
+            .reader()
+            .read(a, Path::Live, Mark::at(0), usize::MAX)
+            .await;
         assert_eq!(read, Err(Error::Files(failed)));
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("the next read passes");
         assert_eq!(read.entries.len(), 1);
         assert_eq!(read.entries[0].first, 0);
-        assert_eq!(read.entries[0].len, 3);
-        assert_eq!(read.entries[0].last, Some(Stamp::from_nanos(30)));
+        assert_eq!(read.entries[0].samples, samples(3, Some(30)));
         assert_eq!(&*read.entries[0].bytes, &[]);
         assert_eq!(read.next, mark(3, 0));
     })
@@ -6271,17 +7055,21 @@ fn a_read_with_no_block_for_the_table_gives_the_pool_error() {
             }
             len -= len.div_ceil(16);
         }
-        let read = buffer.read(a, Path::Live, Mark::at(0), usize::MAX).await;
+        let read = buffer
+            .reader()
+            .read(a, Path::Live, Mark::at(0), usize::MAX)
+            .await;
         let exhausted = block::Error::Exhausted {
             requested: 4096,
             available: 0,
         };
         assert_eq!(read, Err(Error::Pool(exhausted)));
-        let read = buffer.read(a, Path::Live, Mark::at(0), 0).await;
+        let read = buffer.reader().read(a, Path::Live, Mark::at(0), 0).await;
         let empty = whole(Vec::new(), mark(0, 0));
         assert_eq!(read, Ok(empty), "a budget of zero takes no block");
         drop(held);
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("the next read passes");
@@ -6313,7 +7101,10 @@ fn a_read_after_a_failed_sync_gives_the_error_that_ended_the_buffer() {
             code: 5,
         };
         assert_eq!(buffer.committed().await, Err(failed.clone()));
-        let read = buffer.read(a, Path::Live, Mark::at(0), usize::MAX).await;
+        let read = buffer
+            .reader()
+            .read(a, Path::Live, Mark::at(0), usize::MAX)
+            .await;
         assert_eq!(read, Err(Error::Files(failed)));
     });
 }
@@ -6344,7 +7135,11 @@ fn a_read_across_a_failed_sync_gives_the_error_that_ended_the_buffer() {
             .expect("queues");
         let mut errors = Vec::new();
         while errors.len() < 2 {
-            match buffer.read(a, Path::Live, Mark::at(0), usize::MAX).await {
+            match buffer
+                .reader()
+                .read(a, Path::Live, Mark::at(0), usize::MAX)
+                .await
+            {
                 Ok(read) => assert_eq!(read.entries.len(), 20),
                 Err(error) => errors.push(error),
             }
@@ -6390,6 +7185,7 @@ fn a_read_ends_at_a_pool_shortage_and_keeps_what_it_holds() {
         }
         drop(one);
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("the read keeps the first entry");
@@ -6397,6 +7193,7 @@ fn a_read_ends_at_a_pool_shortage_and_keeps_what_it_holds() {
         assert_eq!(read, whole(expected, mark(3, 0)));
         drop(held);
         let read = buffer
+            .reader()
             .read(a, Path::Live, read.next, usize::MAX)
             .await
             .expect("the next read passes");
@@ -6411,7 +7208,7 @@ fn a_record_with_a_table_over_one_block_is_read() {
     run(154, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(2 * AREA, BODY_MAX * 4), &mut slots)
+            .open(layout(AREA, BODY_MAX), &mut slots)
             .await
             .expect("opens");
         let a = slots.index(key(1));
@@ -6421,6 +7218,7 @@ fn a_record_with_a_table_over_one_block_is_read() {
         buffer.append(batch).expect("queues");
         buffer.committed().await.expect("commits");
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
@@ -6486,17 +7284,11 @@ fn a_read_after_a_power_cut_gives_the_entries_the_tail_reports() {
             (tail, reads)
         });
         let (tail, reads) = read.unwrap_or_else(|e| panic!("cut at {cut} ns: {e}"));
-        let firsts: Vec<(u64, u32)> = entries(&reads)
-            .iter()
-            .map(|entry| (entry.first, entry.len))
-            .collect();
-        let expected = if tail.seq == 5 {
-            vec![(0, 3), (3, 2)]
-        } else {
-            vec![(0, 3)]
-        };
+        let seqs: Vec<Range<u64>> = entries(&reads).iter().map(Stored::seqs).collect();
+        let entries = if tail.seq == 5 { 2 } else { 1 };
         assert_eq!(
-            firsts, expected,
+            seqs,
+            &[0..3, 3..5][..entries],
             "seed {seed}, cut at {cut} ns, tail {tail:?}"
         );
         assert!(cut != 0 || !ended, "seed {seed}: the cut missed the commit");
@@ -6519,25 +7311,17 @@ fn tagged(
     }
 }
 
-/// What a read gives back for a `tagged` entry.
-fn stored_tagged(first: u64, tag: u8, bytes: Block) -> Stored {
-    Stored {
-        tag,
-        ..stored(first, 0, None, bytes)
-    }
+/// What `newest` gives: the bytes of each entry, with its slot.
+type Kept = Vec<(Slot, Box<[u8]>)>;
+
+/// What `newest` gives back for an entry of `bytes`.
+fn kept(bytes: &[u8]) -> Box<[u8]> {
+    Box::from(bytes)
 }
 
-/// What `newest` gives, by slot.
-async fn newest(
-    buffer: &Buffer,
-    path: Path,
-    tag: u8,
-) -> Result<Vec<(Slot, Stored)>, Error> {
-    let mut newest = buffer
-        .newest(path, NonZeroU8::new(tag).expect("a tag over 0"))
-        .await?;
-    newest.sort_by_key(|(slot, _)| *slot);
-    Ok(newest)
+/// What `newest` gives for `tag`, which is over 0.
+fn newest(buffer: &Buffer, path: Path, tag: u8) -> Kept {
+    buffer.newest(path, NonZeroU8::new(tag).expect("a tag over 0"))
 }
 
 /// `newest` gives the last durable entry with the tag on the path of each index,
@@ -6588,14 +7372,11 @@ fn newest_gives_the_last_durable_entry_of_the_tag_on_the_path_of_each_index() {
             .append([data(1, a, 0), data(2, b, 0), data(3, c, 1)])
             .expect("queues");
         buffer.committed().await.expect("commits");
-        let expected = vec![
-            (a, stored_tagged(0, 1, shard.block(3))),
-            (b, stored_tagged(0, 1, shard.block(4))),
-        ];
-        assert_eq!(newest(&buffer, Path::Live, 1).await, Ok(expected));
-        let backfill = vec![(a, stored_tagged(0, 1, shard.block(5)))];
-        assert_eq!(newest(&buffer, Path::Backfill, 1).await, Ok(backfill));
-        assert_eq!(newest(&buffer, Path::Live, 4).await, Ok(Vec::new()));
+        let expected = vec![(a, kept(&shard.block(3))), (b, kept(&shard.block(4)))];
+        assert_eq!(newest(&buffer, Path::Live, 1), expected);
+        let backfill = vec![(a, kept(&shard.block(5)))];
+        assert_eq!(newest(&buffer, Path::Backfill, 1), backfill);
+        assert_eq!(newest(&buffer, Path::Live, 4), Vec::new());
         buffer
             .append([tagged(1, a, Path::Live, 1, 1, shard.block(7))])
             .expect("queues");
@@ -6607,17 +7388,62 @@ fn newest_gives_the_last_durable_entry_of_the_tag_on_the_path_of_each_index() {
             .await
             .expect("reopens");
         let (a, b) = (slots.index(key(1)), slots.index(key(2)));
-        let reopened = vec![
-            (a, stored_tagged(1, 1, shard.block(7))),
-            (b, stored_tagged(0, 1, shard.block(4))),
-        ];
-        assert_eq!(newest(&buffer, Path::Live, 1).await, Ok(reopened));
+        let reopened = vec![(a, kept(&shard.block(7))), (b, kept(&shard.block(4)))];
+        assert_eq!(newest(&buffer, Path::Live, 1), reopened);
     });
 }
 
-/// A failed read of the ring gives its error, and a later `newest` passes.
+/// Entries of tags 1 and 2 on both paths of two indexes: a reopen gives the same
+/// entries for each tag and path.
 #[test]
-fn newest_gives_the_error_of_a_failed_ring_read() {
+fn newest_gives_the_copy_after_a_reopen() {
+    run(189, |shard| async move {
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+        let mut len = 0;
+        let mut batch = Vec::new();
+        for (index, slot) in [(1, a), (2, b)] {
+            for path in [Path::Live, Path::Backfill] {
+                for tag in [1, 2] {
+                    len += 1;
+                    batch.push(tagged(
+                        index,
+                        slot,
+                        path,
+                        len,
+                        tag,
+                        shard.block(to_usize(len)),
+                    ));
+                }
+            }
+        }
+        buffer.append(batch).expect("queues");
+        buffer.committed().await.expect("commits");
+        let all = |buffer: &Buffer| {
+            let found = [Path::Live, Path::Backfill]
+                .map(|path| [1, 2].map(|tag| newest(buffer, path, tag)));
+            assert!(found.iter().flatten().all(|found| found.len() == 2));
+            found
+        };
+        let before = all(&buffer);
+        drop(buffer);
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("reopens");
+        assert_eq!((slots.index(key(1)), slots.index(key(2))), (a, b));
+        assert_eq!(all(&buffer), before);
+    });
+}
+
+/// `newest` reads no file: with a ring read set to fail, it gives the entry.
+#[test]
+fn newest_reads_no_file() {
     let (mut sim, node) = create_node(171);
     sim.run_on(&node, |node, tasks| async move {
         let config = node_config(&node, tasks, DIR);
@@ -6635,53 +7461,15 @@ fn newest_gives_the_error_of_a_failed_ring_read() {
             .expect("queues");
         buffer.committed().await.expect("commits");
         node.fail_file(FilePath::new(RING), Operation::ReadAt);
-        let failed = FileError::Io {
-            path: PathBuf::from(RING),
-            operation: Operation::ReadAt,
-            code: 5,
-        };
-        let found = buffer.newest(Path::Live, NonZeroU8::MIN).await;
-        assert_eq!(found, Err(Error::Files(failed)));
-        let found = buffer.newest(Path::Live, NonZeroU8::MIN).await;
-        assert_eq!(found, Ok(vec![(a, stored_tagged(0, 1, bytes()))]));
+        let found = buffer.newest(Path::Live, NonZeroU8::MIN);
+        assert_eq!(found, vec![(a, kept(&bytes()))]);
     })
     .expect("the buffer ends");
 }
 
-/// A pool with no block for the table gives `Error::Pool`.
+/// After a failed sync, `newest` gives the entry that was durable before it.
 #[test]
-fn newest_with_no_block_for_the_table_gives_the_pool_error() {
-    run(172, |shard| async move {
-        let mut slots = Slots::new();
-        let buffer = shard
-            .open(layout(AREA, BODY_MAX), &mut slots)
-            .await
-            .expect("opens");
-        let a = slots.index(key(1));
-        buffer
-            .append([tagged(1, a, Path::Live, 0, 1, shard.block(1))])
-            .expect("queues");
-        buffer.committed().await.expect("commits");
-        let mut held = Vec::new();
-        let mut len = shard.pool.largest();
-        while len > 0 {
-            while let Ok(block) = shard.pool.alloc(len) {
-                held.push(block);
-            }
-            len -= len.div_ceil(16);
-        }
-        let exhausted = block::Error::Exhausted {
-            requested: 4096,
-            available: 0,
-        };
-        let found = buffer.newest(Path::Live, NonZeroU8::MIN).await;
-        assert_eq!(found, Err(Error::Pool(exhausted)));
-    });
-}
-
-/// After a failed sync, `newest` gives the error that ended the buffer.
-#[test]
-fn newest_after_a_failed_sync_gives_the_error_that_ended_the_buffer() {
+fn newest_after_a_failed_sync_gives_the_durable_entry() {
     run(173, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
@@ -6702,58 +7490,50 @@ fn newest_after_a_failed_sync_gives_the_error_that_ended_the_buffer() {
             operation: Operation::Sync,
             code: 5,
         };
-        assert_eq!(buffer.committed().await, Err(failed.clone()));
-        let found = buffer.newest(Path::Live, NonZeroU8::MIN).await;
-        assert_eq!(found, Err(Error::Files(failed)));
+        assert_eq!(buffer.committed().await, Err(failed));
+        let found = buffer.newest(Path::Live, NonZeroU8::MIN);
+        assert_eq!(found, vec![(a, kept(&shard.block(1)))]);
     });
 }
 
-/// `newest` runs back to back while a commit's sync fails. Each call gives the
-/// entries of its 20 indexes or, once the sync failed, the error that ended the
-/// buffer, also a call in flight when the sync failed.
+/// Before the commit with a failing sync runs, and after it failed, `newest` gives
+/// the entries of the 20 indexes that were durable before it, not the newer one of
+/// the same tag in the failed commit.
 #[test]
-fn newest_across_a_failed_sync_gives_the_error_that_ended_the_buffer() {
+fn newest_across_a_failed_sync_gives_the_durable_entries() {
     let (mut sim, node) = create_node(185);
-    let errors = sim.run_on(&node, |node, tasks| async move {
+    let found = sim.run_on(&node, |node, tasks| async move {
         let config = node_config(&node, tasks, DIR);
         let pool = Rc::clone(&config.pool);
+        let block = |index: u8| pool.copy(&[index; 8]).expect("a block");
         let mut slots = Slots::new();
         let buffer = Buffer::open(config, &mut slots).await.expect("opens");
-        let batch: Vec<Entry> = (1..=20)
+        let (batch, durable): (Vec<Entry>, Kept) = (1..=20)
             .map(|index| {
                 let slot = slots.index(key(index));
-                let bytes = pool.alloc(8).expect("a block").freeze();
-                tagged(index, slot, Path::Live, 0, 1, bytes)
+                let byte = u8::try_from(index).expect("20 fits a u8");
+                let entry = tagged(index, slot, Path::Live, 0, 1, block(byte));
+                (entry, (slot, kept(&block(byte))))
             })
-            .collect();
+            .unzip();
         buffer.append(batch).expect("queues");
         buffer.committed().await.expect("commits");
         node.fail_file(FilePath::new(RING), Operation::Sync);
         let a = slots.index(key(1));
         buffer
-            .append([entry(1, a, Path::Live, 0, 1, None, Parts::default())])
+            .append([tagged(1, a, Path::Live, 0, 1, block(0xff))])
             .expect("queues");
-        let mut errors = Vec::new();
-        while errors.len() < 2 {
-            match buffer.newest(Path::Live, NonZeroU8::MIN).await {
-                Ok(found) => assert_eq!(found.len(), 20),
-                Err(error) => errors.push(error),
-            }
-        }
-        errors
+        let during = newest(&buffer, Path::Live, 1);
+        let failed = buffer.committed().await.map_err(drop);
+        (durable, during, failed, newest(&buffer, Path::Live, 1))
     });
-    let failed = Error::Files(FileError::Io {
-        path: PathBuf::from(RING),
-        operation: Operation::Sync,
-        code: 5,
-    });
-    assert_eq!(errors.expect("the run ends"), [failed.clone(), failed]);
+    let (durable, during, failed, after) = found.expect("the run ends");
+    assert_eq!((during, failed, after), (durable.clone(), Err(()), durable));
 }
 
-/// With a block for the table but none for the entry, `newest` gives the pool
-/// error of the entry's bytes, and a later call passes.
+/// `newest` takes no block of the pool: with each block held, it gives the entry.
 #[test]
-fn newest_with_no_block_for_the_entry_gives_the_pool_error() {
+fn newest_with_no_free_block_gives_the_entry() {
     run(186, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
@@ -6761,10 +7541,10 @@ fn newest_with_no_block_for_the_entry_gives_the_pool_error() {
             .await
             .expect("opens");
         let a = slots.index(key(1));
-        let tag = tagged(1, a, Path::Live, 0, 1, shard.block(5000));
+        let tag = tagged(1, a, Path::Live, 0, 1, shard.block(4000));
         buffer.append([tag]).expect("queues");
         buffer.committed().await.expect("commits");
-        let one = shard.pool.alloc(4096).expect("a block for the table");
+        let expected = vec![(a, kept(&shard.block(4000)))];
         let mut held = Vec::new();
         let mut len = shard.pool.largest();
         while len > 0 {
@@ -6773,24 +7553,19 @@ fn newest_with_no_block_for_the_entry_gives_the_pool_error() {
             }
             len -= len.div_ceil(16);
         }
-        drop(one);
         let exhausted = block::Error::Exhausted {
-            requested: 5000,
+            requested: 4000,
             available: 0,
         };
-        let found = buffer.newest(Path::Live, NonZeroU8::MIN).await;
-        assert_eq!(found, Err(Error::Pool(exhausted)));
-        drop(held);
-        let expected = vec![(a, stored_tagged(0, 1, shard.block(5000)))];
-        assert_eq!(newest(&buffer, Path::Live, 1).await, Ok(expected));
+        assert_eq!(shard.pool.alloc(4000).map(drop), Err(exhausted));
+        assert_eq!(newest(&buffer, Path::Live, 1), expected);
     });
 }
 
-/// `newest` reads the table of a record once for all indexes tagged in it, then the
-/// bytes of each entry it gives. Three indexes, each tagged in the first record and
-/// with data in the second: one table and three entries make four reads.
+/// Three indexes, each tagged in the first record and with data in the second:
+/// `newest` gives the three entries with no read.
 #[test]
-fn newest_reads_one_table_for_the_indexes_tagged_in_one_record() {
+fn newest_gives_the_indexes_tagged_in_one_record_with_no_read() {
     run_on_memory(180, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
@@ -6826,17 +7601,16 @@ fn newest_reads_one_table_for_the_indexes_tagged_in_one_record() {
             .expect("queues");
         buffer.committed().await.expect("commits");
         let before = shard.memory().reads();
-        let found = newest(&buffer, Path::Live, 1).await.expect("reads");
+        let found = newest(&buffer, Path::Live, 1);
         assert_eq!(found.len(), 3);
-        assert_eq!(shard.memory().reads() - before, 4);
+        assert_eq!(shard.memory().reads() - before, 0);
     });
 }
 
-/// `newest` reads the table of each record once, also when the ring holds the newest
-/// entries of the indexes in more than one record. Odd indexes are tagged in the
-/// first record and even ones in the second: two tables and 16 entries make 18 reads.
+/// Odd indexes are tagged in the first record and even ones in the second:
+/// `newest` gives the 16 entries with no read.
 #[test]
-fn newest_reads_each_table_once_for_the_indexes_tagged_in_two_records() {
+fn newest_gives_the_indexes_tagged_in_two_records_with_no_read() {
     run_on_memory(186, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
@@ -6853,43 +7627,16 @@ fn newest_reads_each_table_once_for_the_indexes_tagged_in_two_records() {
             buffer.committed().await.expect("commits");
         }
         let before = shard.memory().reads();
-        let found = newest(&buffer, Path::Live, 1).await.expect("reads");
+        let found = newest(&buffer, Path::Live, 1);
         assert_eq!(found.len(), 16);
-        assert_eq!(shard.memory().reads() - before, 18);
+        assert_eq!(shard.memory().reads() - before, 0);
     });
 }
 
-/// `newest` gives the entries of one record in table order, also entries with no
-/// bytes, which share a body offset. Its doc gives no order, but hash order must not
-/// decide one.
+/// A is tagged 1 in the first record and 2 in the second: `newest` of tag 1 gives
+/// the first with no read.
 #[test]
-fn newest_gives_the_entries_of_a_record_in_table_order() {
-    run(181, |shard| async move {
-        let mut slots = Slots::new();
-        let buffer = shard
-            .open(layout(AREA, BODY_MAX), &mut slots)
-            .await
-            .expect("opens");
-        let batch: Vec<Entry> = (1..=8)
-            .map(|n| tagged(n, slots.index(key(n)), Path::Live, 0, 1, shard.block(0)))
-            .collect();
-        let table: Vec<Slot> = batch.iter().map(|entry| entry.slot).collect();
-        buffer.append(batch).expect("queues");
-        buffer.committed().await.expect("commits");
-        let found = buffer
-            .newest(Path::Live, NonZeroU8::MIN)
-            .await
-            .expect("reads");
-        let given: Vec<Slot> = found.iter().map(|(slot, _)| *slot).collect();
-        assert_eq!(given, table);
-    });
-}
-
-/// `newest` reads no table of a record that holds only an entry of another tag. A
-/// is tagged 1 in the first record and 2 in the second: one table and one entry
-/// make two reads.
-#[test]
-fn newest_reads_no_record_of_another_tag() {
+fn newest_gives_no_entry_of_another_tag() {
     run_on_memory(187, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
@@ -6904,17 +7651,16 @@ fn newest_reads_no_record_of_another_tag() {
             buffer.committed().await.expect("commits");
         }
         let before = shard.memory().reads();
-        let found = newest(&buffer, Path::Live, 1).await.expect("reads");
-        assert_eq!(found, vec![(a, stored_tagged(0, 1, shard.block(1)))]);
-        assert_eq!(shard.memory().reads() - before, 2);
+        let found = newest(&buffer, Path::Live, 1);
+        assert_eq!(found, vec![(a, kept(&shard.block(1)))]);
+        assert_eq!(shard.memory().reads() - before, 0);
     });
 }
 
-/// `newest` reads no table of a record that holds no newest tagged entry. A is
-/// tagged in the first record and b in the third, so the second and the fourth are
-/// not read: two tables and two entries make four reads.
+/// A is tagged in the first record and b in the third, with data after each:
+/// `newest` gives both with no read.
 #[test]
-fn newest_reads_only_the_records_of_the_newest_tagged_entries() {
+fn newest_gives_the_newest_tagged_entries_past_later_records() {
     run_on_memory(184, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
@@ -6943,18 +7689,14 @@ fn newest_reads_only_the_records_of_the_newest_tagged_entries() {
             buffer.committed().await.expect("commits");
         }
         let before = shard.memory().reads();
-        let expected = vec![
-            (a, stored_tagged(0, 1, shard.block(1))),
-            (b, stored_tagged(1, 1, shard.block(2))),
-        ];
-        assert_eq!(newest(&buffer, Path::Live, 1).await, Ok(expected));
-        assert_eq!(shard.memory().reads() - before, 4);
+        let expected = vec![(a, kept(&shard.block(1))), (b, kept(&shard.block(2)))];
+        assert_eq!(newest(&buffer, Path::Live, 1), expected);
+        assert_eq!(shard.memory().reads() - before, 0);
     });
 }
 
 /// 64 indexes tagged in the first record, then 400 records that each hold data of
-/// all 64. The reads do not grow with the records after the tags: one table and one
-/// read for each entry given.
+/// all 64: `newest` gives the 64 entries with no read.
 #[test]
 fn newest_reads_no_record_after_the_tags() {
     run_on_memory(183, |shard| async move {
@@ -6989,9 +7731,9 @@ fn newest_reads_no_record_after_the_tags() {
             buffer.committed().await.expect("commits");
         }
         let before = shard.memory().reads();
-        let found = newest(&buffer, Path::Live, 1).await.expect("reads");
+        let found = newest(&buffer, Path::Live, 1);
         assert_eq!(found.len(), 64);
-        assert_eq!(shard.memory().reads() - before, 1 + 64);
+        assert_eq!(shard.memory().reads() - before, 0);
     });
 }
 
@@ -7024,11 +7766,8 @@ fn newest_reads_an_entry_after_a_table_of_two_blocks() {
         ));
         buffer.append(batch).expect("queues");
         buffer.committed().await.expect("commits");
-        let expected = vec![
-            (a, stored_tagged(0, 1, shard.block(77))),
-            (b, stored_tagged(90, 1, shard.block(55))),
-        ];
-        assert_eq!(newest(&buffer, Path::Live, 1).await, Ok(expected));
+        let expected = vec![(a, kept(&shard.block(77))), (b, kept(&shard.block(55)))];
+        assert_eq!(newest(&buffer, Path::Live, 1), expected);
     });
 }
 
@@ -7050,13 +7789,93 @@ fn newest_gives_an_entry_with_no_bytes() {
             .append([tagged(1, a, Path::Live, 0, 1, shard.block(0))])
             .expect("queues");
         buffer.committed().await.expect("commits");
-        let found = newest(&buffer, Path::Live, 1).await;
-        assert_eq!(found, Ok(vec![(a, stored_tagged(0, 1, shard.block(0)))]));
+        let found = newest(&buffer, Path::Live, 1);
+        assert_eq!(found, vec![(a, kept(&shard.block(0)))]);
+    });
+}
+
+/// `newest` gives the entries in the order of their slots, not the order of the
+/// table or of a hash map.
+#[test]
+fn newest_gives_the_entries_in_slot_order() {
+    run(181, |shard| async move {
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let keyed: Vec<Slot> = (1..=8).map(|n| slots.index(key(n))).collect();
+        let batch: Vec<Entry> = (1..=8)
+            .rev()
+            .zip(keyed.iter().rev())
+            .map(|(n, &slot)| tagged(n, slot, Path::Live, 0, 1, shard.block(0)))
+            .collect();
+        buffer.append(batch).expect("queues");
+        buffer.committed().await.expect("commits");
+        let found = newest(&buffer, Path::Live, 1);
+        let given: Vec<Slot> = found.iter().map(|&(slot, _)| slot).collect();
+        assert_eq!(given, keyed);
+    });
+}
+
+/// A newer tagged entry of an index moves its copy to its own record: after a trim
+/// passes the record of the older entry but not the record of the newer, `newest`
+/// gives the newer bytes.
+#[test]
+fn newest_after_a_trim_past_the_older_record_gives_the_newer_entry() {
+    run(190, |shard| async move {
+        let shard = Shard {
+            trimmed: true,
+            ..shard
+        };
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let (a, b) = (slots.index(key(1)), slots.index(key(2)));
+        let data = |seq| {
+            let last = Some(i64::try_from(seq).expect("a small seq") + 1);
+            entry(2, b, Path::Live, seq, 1, last, shard.block(1000).into())
+        };
+        let newer = 8;
+        for seq in 0..=newer {
+            let tag = match seq {
+                0 => vec![tagged(1, a, Path::Live, 0, 1, shard.block(1))],
+                _ if seq == newer => {
+                    vec![tagged(1, a, Path::Live, 0, 1, shard.block(2))]
+                }
+                _ => Vec::new(),
+            };
+            buffer
+                .append([data(seq)].into_iter().chain(tag))
+                .expect("queues");
+            buffer.committed().await.expect("commits");
+        }
+        let mut between = false;
+        for seq in newer + 1..200 {
+            append_within(&buffer, &shard.clock, &[data(seq)], 100)
+                .await
+                .expect("the ring frees room");
+            buffer.committed().await.expect("commits");
+            let read = buffer
+                .reader()
+                .read(b, Path::Live, mark(0, 0), usize::MAX)
+                .await
+                .expect("reads");
+            let oldest = read.entries.first().expect("an entry").first;
+            if (1..=newer).contains(&oldest) {
+                between = true;
+                let found = newest(&buffer, Path::Live, 1);
+                assert_eq!(found, vec![(a, kept(&shard.block(2)))], "seq {seq}");
+            }
+        }
+        assert!(between, "a trim lands between the two records");
     });
 }
 
 /// An appended entry that is not durable yet is absent, also while its commit
-/// runs, and a commit that ends while `newest` reads changes nothing it gives.
+/// runs.
 #[test]
 fn newest_gives_no_entry_that_is_not_durable() {
     run(182, |shard| async move {
@@ -7081,21 +7900,184 @@ fn newest_gives_no_entry_that_is_not_durable() {
                 tagged(2, b, Path::Live, 0, 1, shard.block(6)),
             ])
             .expect("queues");
-        let found = newest(&buffer, Path::Live, 1).await;
+        let found = newest(&buffer, Path::Live, 1);
         assert!(
             shard.clock.now() - appended < COMMIT,
             "the commit is pending"
         );
-        let first = vec![
-            (a, stored_tagged(0, 1, shard.block(1))),
-            (b, stored_tagged(0, 1, shard.block(2))),
-        ];
-        let second = vec![
-            (a, stored_tagged(0, 1, shard.block(5))),
-            (b, stored_tagged(0, 1, shard.block(6))),
-        ];
-        assert_eq!(found, Ok(first));
+        let first = vec![(a, kept(&shard.block(1))), (b, kept(&shard.block(2)))];
+        let second = vec![(a, kept(&shard.block(5))), (b, kept(&shard.block(6)))];
+        assert_eq!(found, first);
         buffer.committed().await.expect("commits");
-        assert_eq!(newest(&buffer, Path::Live, 1).await, Ok(second));
+        assert_eq!(newest(&buffer, Path::Live, 1), second);
+    });
+}
+
+/// Writes an entry with no samples of index 1 at seq 0, `between` records of index
+/// 2, and a second entry with no samples of index 1 at seq 0, each its own commit.
+/// With `held`, the record of the second entry also holds the only entry of index 3.
+/// Then 200 records of index 2 fill a ring of 32 blocks, with trims. Gives the first
+/// of them that the ring still refuses after 100 commit spans, with its error.
+fn refused_after_entries_with_no_samples_at_a_seq(
+    between: u64,
+    held: bool,
+) -> Option<(u64, Rejected)> {
+    let (mut sim, node) = create_node(0);
+    let own = node.clone();
+    let found = Arc::new(Mutex::new(None));
+    let given = Arc::clone(&found);
+    drop(on_node(&node, "stall", move |tasks| async move {
+        let config = Config {
+            layout: layout(32 * BLOCK, BODY_MAX),
+            trimmed: true,
+            ..node_config(&own, tasks, DIR)
+        };
+        let pool = Rc::clone(&config.pool);
+        let clock = own.clock();
+        let mut slots = Slots::new();
+        let buffer = Buffer::open(config, &mut slots).await.expect("opens");
+        let one = slots.index(key(1));
+        let two = slots.index(key(2));
+        let empty = || entry(1, one, Path::Live, 0, 0, None, Parts::default());
+        let data = |seq: u64| {
+            let parts = Parts::from(pool.alloc(100).expect("a block").freeze());
+            let last = i64::try_from(seq).expect("a small seq") + 1;
+            entry(2, two, Path::Live, seq, 1, Some(last), parts)
+        };
+        let three = slots.index(key(3));
+        let mut last = vec![empty()];
+        if held {
+            let parts = Parts::from(pool.alloc(100).expect("a block").freeze());
+            last.push(entry(3, three, Path::Live, 0, 1, Some(1), parts));
+        }
+        let mut batches = vec![vec![empty()]];
+        batches.extend((0..between).map(|seq| vec![data(seq)]));
+        batches.push(last);
+        for batch in batches {
+            buffer.append(batch).expect("the ring has room");
+            buffer.committed().await.expect("commits");
+        }
+        for (n, seq) in (between..between + 200).enumerate() {
+            if let Err(error) = append_within(&buffer, &clock, &[data(seq)], 100).await
+            {
+                let n = u64::try_from(n).expect("a small count");
+                *given.lock().expect("no panic held the lock") = Some((n, error));
+                return;
+            }
+            buffer.committed().await.expect("commits");
+        }
+    }));
+    sim.run_for(Span::from_nanos(60_000_000_000))
+        .expect("the run goes on");
+    found.lock().expect("no panic held the lock").take()
+}
+
+/// A trim lands in the records between two entries with no samples at one seq, so
+/// the ring frees room for each later record. When the record of the second entry
+/// holds another path, a carry first moves that path out, also when the record is
+/// past the room that the trim wants.
+#[test]
+fn a_trim_between_entries_with_no_samples_at_a_seq_frees_room() {
+    for held in [false, true] {
+        for between in 0..8 {
+            let refused = refused_after_entries_with_no_samples_at_a_seq(between, held);
+            assert_eq!(refused, None, "with {between} records between, held {held}");
+        }
+    }
+}
+
+/// Writes an entry with no samples of index 1 at seq 0, sets its stored count to
+/// `count`, and reopens the ring.
+async fn reopen_with_count(shard: &Shard, count: u64) -> (Buffer, Slot) {
+    let ring = layout(AREA, BODY_MAX);
+    let mut slots = Slots::new();
+    let buffer = shard.open(ring, &mut slots).await.expect("opens");
+    let one = slots.index(key(1));
+    buffer
+        .append([entry(1, one, Path::Live, 0, 0, None, Parts::default())])
+        .expect("queues");
+    buffer.committed().await.expect("commits");
+    let ending = buffer.ended();
+    drop(buffer);
+    ending.await.expect("ends");
+    // The table count, then `index`, `path`, `first`, `len`, `stored_at`, and the
+    // presence byte come before the count.
+    let at = 4 + 16 + 1 + 8 + 4 + 8 + 1;
+    shard.tamper_record(BLOCK, at, &count.to_le_bytes()).await;
+    let mut slots = Slots::new();
+    let buffer = shard.open(ring, &mut slots).await.expect("the count opens");
+    (buffer, slots.index(key(1)))
+}
+
+/// An entry with no samples after a count of 2^63 - 1 commits a count of 2^63, and
+/// the ring reopens.
+#[test]
+fn a_count_past_two_to_the_63_reopens() {
+    run(211, |shard| async move {
+        let (buffer, one) = reopen_with_count(&shard, (1 << 63) - 1).await;
+        buffer
+            .append([entry(1, one, Path::Live, 0, 0, None, Parts::default())])
+            .expect("queues");
+        buffer.committed().await.expect("commits");
+        let ending = buffer.ended();
+        drop(buffer);
+        ending.await.expect("ends");
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("a count the buffer wrote opens");
+        let read = buffer
+            .reader()
+            .read(slots.index(key(1)), Path::Live, Mark::at(0), usize::MAX)
+            .await
+            .expect("reads");
+        assert_eq!(read.next, mark(0, 1 << 63));
+    });
+}
+
+/// The ring opens with the largest count, and the next entry with no samples at its
+/// seq panics.
+#[test]
+#[should_panic(
+    expected = "invariant: an entry of index 00000000-0000-0000-0000-000000000001 on \
+                path Live with no samples follows u64::MAX of them at seq 0"
+)]
+fn an_entry_with_no_samples_after_the_largest_count_panics() {
+    run(212, |shard| async move {
+        let (buffer, one) = reopen_with_count(&shard, u64::MAX).await;
+        buffer
+            .append([entry(1, one, Path::Live, 0, 0, None, Parts::default())])
+            .expect("queues");
+    });
+}
+
+/// After the largest count, an entry with samples at its seq and an entry with no
+/// samples at a later seq commit, and the ring reopens.
+#[test]
+fn after_the_largest_count_other_entries_commit_and_reopen() {
+    run(213, |shard| async move {
+        let (buffer, one) = reopen_with_count(&shard, u64::MAX).await;
+        buffer
+            .append([
+                entry(1, one, Path::Live, 0, 1, Some(9), Parts::default()),
+                entry(1, one, Path::Live, 1, 0, None, Parts::default()),
+            ])
+            .expect("queues");
+        buffer.committed().await.expect("commits");
+        let ending = buffer.ended();
+        drop(buffer);
+        ending.await.expect("ends");
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("reopens");
+        let read = buffer
+            .reader()
+            .read(slots.index(key(1)), Path::Live, Mark::at(0), usize::MAX)
+            .await
+            .expect("reads");
+        assert_eq!(read.next, mark(1, 1));
     });
 }

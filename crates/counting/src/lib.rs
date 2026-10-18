@@ -128,7 +128,7 @@ impl Scan {
 
     fn start<'a>(&'a self, needle: &'a [u8]) -> Running<'a> {
         assert!(!needle.is_empty(), "a needle holds at least one byte");
-        let idle = self.state.fetch_update(Acquire, Relaxed, |state| {
+        let idle = self.state.try_update(Acquire, Relaxed, |state| {
             (state & PHASE == IDLE).then_some(state + BUSY)
         });
         assert!(idle.is_ok(), "calls to `freed_holding` do not overlap");

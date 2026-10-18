@@ -57,6 +57,10 @@ pub enum Error {
     /// This node is not a voter of its configuration, and only a voter proposes a
     /// change. Call it on a voter.
     NoVote,
+    /// This node, or the leader that it forwarded to, proposed a card of the same
+    /// member less than a minute before, and refused this one before the log. Call
+    /// again after a minute.
+    Soon,
     /// The region cannot hold a member record of the config.
     Member(Unfit),
     /// This node's private key is not the key of its member.
@@ -126,6 +130,22 @@ pub enum Error {
         /// The most homes that one change gives.
         most: usize,
     },
+    /// A set of voters holds more voters than one set can hold. Give a smaller set.
+    Voters {
+        /// The count of voters in the set.
+        voters: usize,
+        /// The most voters that one set holds.
+        most: usize,
+    },
+    /// This node takes messages of at most `bytes_max` bytes: the smaller of its
+    /// transport's limit and its pool's largest block. Each member must take an append
+    /// of the largest record, `bytes_min` bytes.
+    Limit {
+        /// The bytes this node takes.
+        bytes_max: usize,
+        /// The bytes each member must take.
+        bytes_min: usize,
+    },
     /// `Config::founding` is not the region in the founding file of the mesh
     /// directory. Each field sets the state at version 0, so a node with another value
     /// applies the log to another state.
@@ -139,6 +159,12 @@ pub enum Error {
     /// there while the log holds a record.
     Unfounded {
         /// The path of the founding file.
+        path: PathBuf,
+    },
+    /// The file of the last card version that this node signed holds no valid slot that
+    /// a torn write explains.
+    CardFile {
+        /// The path of the file.
         path: PathBuf,
     },
 }
@@ -172,6 +198,10 @@ impl fmt::Display for Error {
             }
             Self::NoVote => f.write_str(
                 "this node is not a voter, and only a voter proposes a change",
+            ),
+            Self::Soon => f.write_str(
+                "a card of the same member was proposed less than a minute ago; call \
+                 again after a minute",
             ),
             Self::Member(refused) => refused.fmt(f),
             Self::WrongKey => {
@@ -219,11 +249,29 @@ impl fmt::Display for Error {
                 "the change gives {homes} homes, more than the {most} that one change \
                  can give"
             ),
+            Self::Voters { voters, most } => write!(
+                f,
+                "the set holds {voters} voters, more than the {most} that one set can \
+                 hold"
+            ),
+            Self::Limit {
+                bytes_max,
+                bytes_min,
+            } => write!(
+                f,
+                "this node takes messages of at most {bytes_max} bytes, below the \
+                 {bytes_min} bytes of an append of the largest record"
+            ),
             Self::Founding { stored, given } => founded(f, stored, given),
             Self::Unfounded { path } => write!(
                 f,
                 "{} does not read back whole, or is not there while the log of the mesh \
                  directory holds a record",
+                path.display()
+            ),
+            Self::CardFile { path } => write!(
+                f,
+                "the file {} holds no valid card version that this node signed",
                 path.display()
             ),
         }

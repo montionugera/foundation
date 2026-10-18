@@ -502,7 +502,7 @@ fn stops_a_request_before_the_hello_is_admitted() {
     );
     assert_eq!(
         serve::Error::Unadmitted.to_string(),
-        "the program sent a request or a read before the node admitted a hello"
+        "the program opened a stream before the node admitted a hello"
     );
 }
 
@@ -570,6 +570,35 @@ fn takes_each_request_sent_once_the_last_reply_ends() {
         .chain([Err(serve::Error::Stream(closed_with(0)))])
         .collect();
     assert_eq!(home.served, expected);
+}
+
+/// A write stream whose open the subject did not sign stops as `REFUSED` before the
+/// open decodes, and the session stays open.
+#[test]
+fn stops_a_write_stream_that_the_subject_did_not_sign() {
+    let home = session(110, true, |mut agent| async move {
+        agent.admit().await;
+        let mut write = agent.open().await;
+        let mut bytes = vec![0; wire::hub::client::write::Write::LEN];
+        wire::hub::client::write::Write {
+            length: 1,
+            signature: [0; 64],
+        }
+        .encode(&mut bytes);
+        write.send(&bytes).await;
+        write.send(&[0]).await;
+        assert_eq!(write.recv().await, reset_with(REFUSED));
+        let mut stream = agent.request(2, b"ab").await;
+        assert_eq!(stream.response().await, b"ba");
+    });
+    assert_eq!(
+        home.served,
+        [
+            Err(serve::Error::Access(Refusal::Signature)),
+            Ok(Got::Request(name(SUBJECT), b"ab".to_vec())),
+            Err(serve::Error::Stream(closed_with(0))),
+        ]
+    );
 }
 
 /// A hello on a stream after the first stops as `MALFORMED`, and the session stays
@@ -698,8 +727,9 @@ fn stops_a_request_whose_body_is_over_the_room_of_the_hub() {
     );
     assert_eq!(
         over.to_string(),
-        "a body of 16777216 bytes does not fit under the cap of 33554432 bytes: the \
-         open requests and reads of the hub hold 16777217 bytes"
+        "16777216 bytes of a body or of the ends or names of a write do not fit under \
+         the cap of 33554432 bytes: the open requests, reads, and writes of the hub \
+         hold 16777217 bytes"
     );
 }
 
@@ -825,8 +855,9 @@ fn takes_a_request_of_another_subject_while_a_body_trickles() {
     );
     assert_eq!(
         over.to_string(),
-        "a body of 1 bytes does not fit under the share of 16777216 bytes of subject \
-         ops.agent: its open requests and reads hold 16777216 bytes"
+        "1 bytes of a body or of the ends or names of a write do not fit under the \
+         share of 16777216 bytes of subject ops.agent: its open requests, reads, and \
+         writes hold 16777216 bytes"
     );
 }
 

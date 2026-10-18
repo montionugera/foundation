@@ -1,4 +1,4 @@
-//! `Scope`, for the bench target only. Not a stable surface.
+//! `Scope` and the log dispatch, for the bench targets only. Not a stable surface.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -50,5 +50,49 @@ struct Spawned(Rc<Cell<Option<Task>>>);
 impl env::tasks::Driver for Spawned {
     fn spawn(&self, task: Task) {
         self.0.set(Some(task));
+    }
+}
+
+/// The log of a node, with its thread `log` running until the drop.
+#[derive(Debug)]
+pub struct Log {
+    flush: crate::Flush,
+    hold: Option<crate::log::Hold>,
+}
+
+impl Drop for Log {
+    /// Ends the thread `log` and joins it, after it writes each line, or after 60 s.
+    fn drop(&mut self) {
+        drop(self.hold.take());
+        self.flush.wait(std::time::Duration::from_mins(1));
+    }
+}
+
+impl Log {
+    /// The dispatch that a node sets for each shard.
+    #[must_use]
+    pub fn dispatch(&self) -> &tracing::Dispatch {
+        &self.flush.dispatch
+    }
+}
+
+/// The log that a node opens: each event of its level or above, stamped with the time
+/// of `wall` and the mesh time of `mesh`, and written on a thread of `threads`.
+///
+/// # Panics
+///
+/// When the thread `log` cannot start.
+#[must_use]
+pub fn log(
+    log: crate::Log,
+    threads: &env::threads::Threads,
+    wall: env::wall::Wall,
+    mesh: clock::Reader,
+) -> Log {
+    let flush = crate::log::open(log, threads, wall, mesh);
+    let hold = flush.hold().expect("the thread log starts");
+    Log {
+        flush,
+        hold: Some(hold),
     }
 }

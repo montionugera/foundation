@@ -1,6 +1,6 @@
-use std::cell::Cell;
-use std::ffi::CString;
-use std::future::poll_fn;
+use std::cell::{Cell, RefCell};
+use std::ffi::{CStr, CString};
+use std::future::{self, poll_fn};
 use std::io::IoSlice;
 use std::mem;
 use std::net::SocketAddr;
@@ -14,20 +14,24 @@ use env::clock::Clock;
 use env::net::{Net, Tcp, tcp};
 use env::rng::Rng;
 use sim::{Sim, node};
-use types::time::Span;
+use types::quality::Quality;
+use types::time::{Span, Stamp};
 
 use super::{
-    Client, Large, Nodes, READS, Reads, Request, SPLIT, Slots, UNREAD, answer,
-    id_bytes, most,
+    Calls, Client, Flight, GRACE, Large, Nodes, READS, Request, SPLIT, STATE, Slots,
+    UNREAD, answer, id_bytes, most,
 };
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::event;
+use crate::ffi::test::Mode;
 use crate::ffi::{self, Status};
+use crate::gate::Gate;
 use crate::node::{Key, Name, Node};
+use crate::secure::{Policy, Security};
 use crate::server::{Limits, Server};
 use crate::unwind::caught;
-use crate::value::Value;
+use crate::value::{self, Fault, Value};
 
 /// The port of the test server.
 const PORT: u16 = 4840;
@@ -62,11 +66,11 @@ const TIME: Node = Node {
 
 impl Client {
     /// Reads the Value of `node` alone.
-    pub(crate) async fn read_one(&mut self, node: &Node) -> Result<Value, Status> {
-        let nodes = self
-            .nodes(std::slice::from_ref(node))
-            .expect("one node fits");
-        self.read(&nodes).await.and_then(|values| values[0])
+    pub(crate) async fn read_one(&mut self, node: &Node) -> Result<Value, Fault> {
+        let nodes = fits(self.nodes(std::slice::from_ref(node)));
+        (self.read(&nodes).await)
+            .map_err(Fault::status)
+            .and_then(|values| values[0])
     }
 
     /// Builds one Read request of `nodes` for this client with no check of its size.
@@ -86,15 +90,19 @@ struct Peer<'s> {
     url: String,
     /// The value of [`VALUE`].
     value: Value,
-    /// The server does not run while it is set.
-    paused: Rc<Cell<bool>>,
+    /// The server does not run while it is closed.
+    gate: Gate,
+    /// The reads of the state of the server that it answered.
+    states: Rc<Cell<u32>>,
+    /// The quality of each answer of the state of the server, at first Good.
+    quality: Rc<Cell<Quality>>,
 }
 
 impl Peer<'_> {
     async fn connect(&mut self, url: &str) -> Result<Client, Status> {
         let url = CString::new(url).expect("the URL holds no NUL");
         let time = event::Time::monotonic(Clock::clone(&self.clock));
-        Client::connect(time, Net::clone(&self.net), &mut self.rng, &url).await
+        open(time, Net::clone(&self.net), &mut self.rng, &url).await
     }
 
     async fn connected(&mut self) -> Client {
@@ -102,22 +110,102 @@ impl Peer<'_> {
         self.connect(&url).await.expect("the client connects")
     }
 
-    /// Connects a client whose receive buffer is `receive` bytes.
-    async fn receiving(&mut self, receive: u32) -> Client {
-        let clock = Clock::clone(&self.clock);
-        let time = event::Time::monotonic(Clock::clone(&clock));
-        let connections = Manager::new(time, self.net.clone(), &mut self.rng);
+    /// Connects a client to `url` whose receive buffer is `receive` bytes and whose
+    /// largest message is `message` bytes, each `None` for the default of open62541.
+    async fn limited(
+        &mut self,
+        url: &str,
+        receive: Option<u32>,
+        message: Option<u32>,
+    ) -> Client {
+        let time = event::Time::monotonic(Clock::clone(&self.clock));
+        let setup = |raw: NonNull<ffi::Client>| {
+            if let Some(size) = receive {
+                // SAFETY: the client lives and has not connected.
+                unsafe { ffi::test::shim_client_receive(raw.as_ptr(), size) };
+            }
+            if let Some(size) = message {
+                // SAFETY: the client lives and has not connected.
+                unsafe { ffi::test::shim_client_message(raw.as_ptr(), size) };
+            }
+        };
+        self.client(url, time, setup)
+            .await
+            .expect("the client connects")
+    }
+
+    /// Connects a client that asks for `policy` in `mode` on `security`, on a loop
+    /// whose wall time starts at `wall`.
+    async fn secure(
+        &mut self,
+        policy: Policy,
+        mode: Mode,
+        security: &Security,
+        wall: Stamp,
+    ) -> Result<Client, Status> {
+        let time = event::Time::since(Clock::clone(&self.clock), wall);
+        let security = security.raw();
+        let setup = |raw: NonNull<ffi::Client>| {
+            // SAFETY: the client lives and has not connected, and it copies
+            // `security`.
+            let status = Status(unsafe {
+                ffi::test::shim_client_secure(
+                    raw.as_ptr(),
+                    mode,
+                    policy as usize,
+                    &raw const security,
+                )
+            });
+            assert_eq!(status, Status::GOOD, "open62541 refused the policies");
+        };
+        let url = self.url.clone();
+        self.client(&url, time, setup).await
+    }
+
+    /// Connects a client to `url` on a loop that reads `time`, after `setup` sets the
+    /// config of the client, and closes a client that does not connect.
+    async fn client(
+        &mut self,
+        url: &str,
+        time: event::Time,
+        setup: impl FnOnce(NonNull<ffi::Client>),
+    ) -> Result<Client, Status> {
+        let connections =
+            Manager::new(time, tracing::Span::none(), self.net.clone(), &mut self.rng);
         // SAFETY: the loop outlives the client, which the drop of the client deletes
         // first.
-        let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
-        let raw = NonNull::new(raw).expect("open62541 refused the client");
-        // SAFETY: the client lives and has not connected.
-        unsafe { ffi::test::shim_client_receive(raw.as_ptr(), receive) };
-        let url = CString::new(self.url.clone()).expect("the URL holds no NUL");
+        let raw = unsafe { crate::client::unconnected(connections.events().raw()) };
+        setup(raw);
+        let url = CString::new(url).expect("the URL holds no NUL");
         // SAFETY: `raw` is a new client of the loop of `connections`.
-        let client = unsafe { Client::start(clock, connections, raw, &url) }.await;
-        client.expect("the client connects")
+        let mut client =
+            unsafe { Client::of(Clock::clone(&self.clock), connections, raw, url) };
+        match client.open().await {
+            Ok(()) => Ok(client),
+            Err(status) => {
+                client.close().await;
+                Err(status)
+            }
+        }
     }
+}
+
+/// Connects a new client to `url`, with no wait that ends it.
+async fn open(
+    time: event::Time,
+    net: Net,
+    rng: &mut Rng,
+    url: &CStr,
+) -> Result<Client, Status> {
+    let connect = Client::connect(
+        time,
+        tracing::Span::none(),
+        net,
+        rng,
+        url,
+        future::pending(),
+    );
+    Ok(connect.await?.expect("a pending wait never ends"))
 }
 
 /// Runs `test` on a node of a run of `seed`, and gives its value and the digest of
@@ -139,26 +227,46 @@ fn run<T: Send + 'static>(
 
 /// Starts a test server on `node`, with room for `sessions` sessions and a Double at
 /// [`VALUE`] from its random values, runs `body` while the server runs, except while
-/// [`Peer::paused`] is set, then closes the server.
+/// [`Peer::gate`] is closed, then closes the server.
 async fn serve<T>(
     node: &node::Node,
     sessions: u16,
     body: impl AsyncFnOnce(Peer<'_>) -> T,
 ) -> T {
+    let time = event::Time::monotonic(node.clock());
+    serve_on(node, sessions, time, None, body).await
+}
+
+/// [`serve`], on a loop that reads `time`, with the policies of `security` when it is
+/// given.
+async fn serve_on<T>(
+    node: &node::Node,
+    sessions: u16,
+    time: event::Time,
+    security: Option<&Security>,
+    body: impl AsyncFnOnce(Peer<'_>) -> T,
+) -> T {
     let mut rng = node.entropy().rng();
     let local = SocketAddr::new(node.addresses()[0], PORT);
-    let manager = Manager::listening(
-        event::Time::monotonic(node.clock()),
-        node.net(),
-        local,
-        4,
-        &mut rng,
-    )
-    .expect("the port is free");
-    // SAFETY: the close below deletes the server before the manager drops.
-    let server = unsafe { Server::start(&manager, c"", sessions) };
+    let manager = Manager::listening(time, node.net(), local, 4, &mut rng)
+        .expect("the port is free");
+    let mut server = match security {
+        // SAFETY: the close below deletes the server before the manager drops.
+        Some(security) => unsafe {
+            Server::start_secure(&manager, c"", sessions, security)
+        },
+        // SAFETY: as above.
+        None => unsafe { Server::start(&manager, c"", sessions) },
+    };
     let value = Value::F64(f64::from(u32::try_from(rng.below(1 << 20)).expect("fits")));
     server.add_scalar(&VALUE, value);
+    let states = Rc::new(Cell::new(0));
+    let quality = Rc::new(Cell::new(Quality::GOOD));
+    let (count, answer) = (Rc::clone(&states), Rc::clone(&quality));
+    server.set_source(&STATE, move || {
+        count.set(count.get() + 1);
+        (Value::I32(0), answer.get())
+    });
     let peer = Peer {
         server: &server,
         clock: node.clock(),
@@ -166,19 +274,16 @@ async fn serve<T>(
         rng,
         url: format!("opc.tcp://{local}"),
         value,
-        paused: Rc::default(),
+        gate: Gate::default(),
+        states,
+        quality,
     };
-    let paused = Rc::clone(&peer.paused);
+    let gate = peer.gate.clone();
     let out = {
-        let mut server_drive = pin!(manager.drive(|_| {
-            manager.events().run();
-            Poll::<()>::Pending
-        }));
+        let mut server_drive = pin!(gate.hold(manager.drive(|_| Poll::<()>::Pending)));
         let mut body = pin!(body(peer));
         poll_fn(|cx| {
-            if !paused.get() {
-                assert!(server_drive.as_mut().poll(cx).is_pending(), "it never ends");
-            }
+            assert!(server_drive.as_mut().poll(cx).is_pending(), "it never ends");
             body.as_mut().poll(cx)
         })
         .await
@@ -188,7 +293,7 @@ async fn serve<T>(
 }
 
 /// The value of [`VALUE`] and the answer of a read of it, in a run of `seed`.
-fn spike(seed: u64) -> ((Value, Result<Value, Status>), u64) {
+fn spike(seed: u64) -> ((Value, Result<Value, Fault>), u64) {
     run(seed, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
@@ -221,7 +326,35 @@ fn a_read_of_an_unknown_node_fails_with_its_status() {
         })
         .await
     });
-    assert_eq!(read, Err(Status::BAD_NODE_ID_UNKNOWN));
+    assert_eq!(read, Err(Fault::status(Status::BAD_NODE_ID_UNKNOWN)));
+}
+
+/// Calls the private `Client::new`, as no caller holds a client before its open:
+/// `Client::connect` opens it at once.
+#[test]
+fn a_client_gives_its_url_before_and_after_its_open() {
+    let (urls, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let url = CString::new(peer.url.clone()).expect("the URL holds no NUL");
+            let time = event::Time::monotonic(Clock::clone(&peer.clock));
+            let net = Net::clone(&peer.net);
+            let mut client = Client::new(
+                time,
+                tracing::Span::none(),
+                net,
+                &mut peer.rng,
+                url.clone(),
+            );
+            let before = client.url().to_owned();
+            client.open().await.expect("the client connects");
+            let after = client.url().to_owned();
+            client.close().await;
+            (url, before, after)
+        })
+        .await
+    });
+    let (url, before, after) = urls;
+    assert_eq!((before, after), (url.clone(), url));
 }
 
 /// The name `node` must reach the server whole: it holds a `;`, an `=`, and a byte
@@ -256,7 +389,7 @@ fn a_read_of_a_name_node_gives_its_value() {
         })
         .await
     });
-    let unknown = Err(Status::BAD_NODE_ID_UNKNOWN);
+    let unknown = Err(Fault::status(Status::BAD_NODE_ID_UNKNOWN));
     let expected = (Ok(Value::F64(2.5)), Ok(Value::F64(3.5)), unknown, unknown);
     assert_eq!(reads, expected);
 }
@@ -270,7 +403,7 @@ fn a_read_of_another_type_fails_with_a_type_mismatch() {
         })
         .await
     });
-    assert_eq!(read, Err(Status::BAD_TYPE_MISMATCH));
+    assert_eq!(read, mistyped("DateTime"));
 }
 
 /// A scalar of each type at its bounds, and each special value of a float.
@@ -328,7 +461,12 @@ enum Exact {
     Other(Value),
 }
 
-fn exact(value: Result<Value, Status>) -> Result<Exact, Status> {
+/// The fault of a Good value of the OPC UA type `name`, such as `array of Double`.
+fn mistyped(name: &str) -> Result<Value, Fault> {
+    Err(Fault::of_type(value::Type::named(name)))
+}
+
+fn exact(value: Result<Value, Fault>) -> Result<Exact, Fault> {
     value.map(|value| match value {
         Value::F32(float) => Exact::F32(float.to_bits()),
         Value::F64(double) => Exact::F64(double.to_bits()),
@@ -352,7 +490,7 @@ fn a_read_gives_each_scalar_type_at_its_bounds() {
                 })
                 .collect();
             let mut client = peer.connected().await;
-            let nodes = client.nodes(&nodes).expect("30 nodes fit");
+            let nodes = fits(client.nodes(&nodes));
             let values = client.read(&nodes).await.map(<[_]>::to_vec);
             client.close().await;
             values
@@ -408,8 +546,7 @@ fn a_read_of_an_array_or_a_byte_string_fails_with_a_type_mismatch() {
         })
         .await
     });
-    let mismatch = Err(Status::BAD_TYPE_MISMATCH);
-    assert_eq!(reads, (mismatch, mismatch));
+    assert_eq!(reads, (mistyped("array of Double"), mistyped("ByteString")));
 }
 
 #[test]
@@ -421,7 +558,7 @@ fn a_read_of_nodes_gives_the_value_of_each_in_order() {
                 key: Key::Number(1001),
                 ..VALUE
             };
-            let nodes = client.nodes(&[TIME, VALUE, unknown, VALUE]).expect("4 fit");
+            let nodes = fits(client.nodes(&[TIME, VALUE, unknown, VALUE]));
             let values = client.read(&nodes).await.map(<[_]>::to_vec);
             client.close().await;
             (values, peer.value)
@@ -429,9 +566,9 @@ fn a_read_of_nodes_gives_the_value_of_each_in_order() {
         .await
     });
     let expected = [
-        Err(Status::BAD_TYPE_MISMATCH),
+        mistyped("DateTime"),
         Ok(value),
-        Err(Status::BAD_NODE_ID_UNKNOWN),
+        Err(Fault::status(Status::BAD_NODE_ID_UNKNOWN)),
         Ok(value),
     ];
     assert_eq!(values, Ok(expected.to_vec()));
@@ -442,16 +579,16 @@ fn a_read_of_nodes_gives_the_value_of_each_in_order() {
 /// reads in flight, while that read waits to send.
 fn read_after_late_answer(
     dropped: u16,
-) -> (Result<Vec<Result<Value, Status>>, Status>, Value) {
+) -> (Result<Vec<Result<Value, Fault>>, Status>, Value) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            peer.paused.set(true);
+            peer.gate.close();
             drop_reads(&mut client, dropped).await;
-            let late = client.nodes(&[TIME, VALUE]).expect("2 nodes fit");
+            let late = fits(client.nodes(&[TIME, VALUE]));
             assert_eq!(client.read(&late).await, Err(Status::BAD_TIMEOUT));
-            peer.paused.set(false);
-            let nodes = client.nodes(&[VALUE]).expect("one node fits");
+            peer.gate.open();
+            let nodes = fits(client.nodes(&[VALUE]));
             let values = client.read(&nodes).await.map(<[_]>::to_vec);
             client.close().await;
             (values, peer.value)
@@ -463,7 +600,7 @@ fn read_after_late_answer(
 
 #[test]
 fn the_late_answer_of_a_read_does_not_change_the_next_read() {
-    for dropped in [0, 15] {
+    for dropped in [0, READS - 1] {
         let (values, value) = read_after_late_answer(dropped);
         assert_eq!(values, Ok(vec![Ok(value)]), "{dropped} dropped");
     }
@@ -549,8 +686,8 @@ fn a_read_after_the_server_closes_fails_and_open62541_refuses_the_next() {
     assert_eq!(
         reads,
         (
-            Err(Status::BAD_SECURE_CHANNEL_CLOSED),
-            Err(Status::BAD_SERVER_NOT_CONNECTED)
+            Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
+            Err(Fault::status(Status::BAD_SERVER_NOT_CONNECTED))
         )
     );
 }
@@ -580,22 +717,24 @@ fn a_read_after_a_dropped_read_gets_its_own_answer() {
         .await
     });
     let (time, value, expected) = reads;
-    assert_eq!(
-        (time, value),
-        (Err(Status::BAD_TYPE_MISMATCH), Ok(expected))
-    );
+    assert_eq!((time, value), (mistyped("DateTime"), Ok(expected)));
 }
 
-/// Starts `count` reads of `client`, each polled once and then dropped.
+/// Starts `count` reads of [`VALUE`] by `client`, each polled once and then dropped.
 async fn drop_reads(client: &mut Client, count: u16) {
     for _ in 0..count {
-        let mut read = pin!(client.read_one(&VALUE));
-        poll_fn(|cx| {
-            assert!(read.as_mut().poll(cx).is_pending(), "a read waits");
-            Poll::Ready(())
-        })
-        .await;
+        drop_read(client, &VALUE).await;
     }
+}
+
+/// Starts a read of `node` by `client`, polled once and then dropped.
+async fn drop_read(client: &mut Client, node: &Node) {
+    let mut read = pin!(client.read_one(node));
+    poll_fn(|cx| {
+        assert!(read.as_mut().poll(cx).is_pending(), "a read waits");
+        Poll::Ready(())
+    })
+    .await;
 }
 
 /// Without the bound on the reads in flight, the server answers the 257 requests of
@@ -617,17 +756,17 @@ fn a_read_after_255_dropped_reads_gives_the_value() {
 
 /// While the server stops, a read after `dropped` dropped reads starts 2 s after them.
 /// Gives its answer and the time it took.
-fn read_after(dropped: u16) -> (Result<Value, Status>, Span) {
+fn read_after(dropped: u16) -> (Result<Value, Fault>, Span) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            peer.paused.set(true);
+            peer.gate.close();
             drop_reads(&mut client, dropped).await;
             peer.clock.sleep(Span::from_nanos(2_000_000_000)).await;
             let start = peer.clock.now();
             let read = client.read_one(&VALUE).await;
             let took = peer.clock.now() - start;
-            peer.paused.set(false);
+            peer.gate.open();
             client.close().await;
             (read, took)
         })
@@ -640,13 +779,13 @@ fn read_after(dropped: u16) -> (Result<Value, Status>, Span) {
 /// reads stay in flight, so it fails at the end of its wait and sends nothing.
 #[test]
 fn a_read_at_the_bound_fails_when_no_read_ends() {
-    let (below, below_took) = read_after(15);
-    let (at, at_took) = read_after(16);
+    let (below, below_took) = read_after(READS - 1);
+    let (at, at_took) = read_after(READS);
     assert_eq!(
         (below, at),
         (
-            Err(Status::BAD_TIMEOUT),
-            Err(Status::BAD_TOO_MANY_OPERATIONS)
+            Err(Fault::status(Status::BAD_TIMEOUT)),
+            Err(Fault::status(Status::BAD_TOO_MANY_OPERATIONS))
         )
     );
     let timeout = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
@@ -654,13 +793,13 @@ fn a_read_at_the_bound_fails_when_no_read_ends() {
     assert!(timeout.contains(&at_took), "{at_took:?}");
 }
 
-/// Reads [`VALUE`] while [`Peer::paused`] is set, except for one pass of the server
+/// Reads [`VALUE`] while [`Peer::gate`] is closed, except for one pass of the server
 /// `at` after the read starts. Gives its answer and the time it took.
 async fn read_with_pass(
     client: &mut Client,
     peer: &Peer<'_>,
     at: Span,
-) -> (Result<Value, Status>, Span) {
+) -> (Result<Value, Fault>, Span) {
     let start = peer.clock.now();
     let mut pass = pin!(peer.clock.sleep(at));
     let (mut woke, mut passed) = (false, false);
@@ -668,13 +807,13 @@ async fn read_with_pass(
     let read = poll_fn(|cx| {
         if !woke && pass.as_mut().poll(cx).is_ready() {
             woke = true;
-            peer.paused.set(false);
+            peer.gate.open();
             cx.waker().wake_by_ref();
             return Poll::Pending;
         }
         if woke && !passed {
             passed = true;
-            peer.paused.set(true);
+            peer.gate.close();
         }
         read.as_mut().poll(cx)
     })
@@ -688,37 +827,37 @@ fn the_timeout_of_a_read_counts_its_wait() {
     let ((read, took), _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            peer.paused.set(true);
-            drop_reads(&mut client, 16).await;
+            peer.gate.close();
+            drop_reads(&mut client, READS).await;
             let out =
                 read_with_pass(&mut client, &peer, Span::from_nanos(3_000_000_000))
                     .await;
-            peer.paused.set(false);
+            peer.gate.open();
             client.close().await;
             out
         })
         .await
     });
-    assert_eq!(read, Err(Status::BAD_TIMEOUT));
+    assert_eq!(read, Err(Fault::status(Status::BAD_TIMEOUT)));
     let timeout = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
     assert!(timeout.contains(&took), "{took:?}");
 }
 
-/// The answers of 16 dropped reads end them all, so a read after one more dropped read
-/// sends its request at once and gets its answer in one pass of the server.
+/// The answers of [`READS`] dropped reads end them all, so a read after one more dropped
+/// read sends its request at once and gets its answer in one pass of the server.
 #[test]
 fn the_answers_of_dropped_reads_end_them() {
     let ((read, value), _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            drop_reads(&mut client, 16).await;
+            drop_reads(&mut client, READS).await;
             peer.clock.sleep(Span::from_nanos(1_000_000_000)).await;
-            peer.paused.set(true);
+            peer.gate.close();
             drop_reads(&mut client, 1).await;
             let (read, _) =
                 read_with_pass(&mut client, &peer, Span::from_nanos(1_000_000_000))
                     .await;
-            peer.paused.set(false);
+            peer.gate.open();
             client.close().await;
             (read, peer.value)
         })
@@ -735,12 +874,12 @@ fn a_read_after_272_dropped_reads_on_a_stalled_server_gives_the_value() {
     let ((read, value), _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            peer.paused.set(true);
+            peer.gate.close();
             for _ in 0..17 {
                 drop_reads(&mut client, 16).await;
                 peer.clock.sleep(Span::from_nanos(6_000_000_000)).await;
             }
-            peer.paused.set(false);
+            peer.gate.open();
             peer.clock.sleep(Span::from_nanos(10_000_000)).await;
             let read = client.read_one(&VALUE).await;
             client.close().await;
@@ -753,7 +892,7 @@ fn a_read_after_272_dropped_reads_on_a_stalled_server_gives_the_value() {
 
 /// Reads [`FITS`] and then [`PAST`] from a server that sends at most `chunks` chunks in
 /// a message.
-fn read_large(chunks: u32) -> (Result<Value, Status>, Result<Value, Status>) {
+fn read_large(chunks: u32) -> (Result<Value, Fault>, Result<Value, Fault>) {
     let (reads, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             peer.server.add_bytes(&FITS, 7 * CHUNK);
@@ -775,12 +914,12 @@ fn read_large(chunks: u32) -> (Result<Value, Status>, Result<Value, Status>) {
 /// The answer of [`FITS`] arrives and is not a Double. The answer of [`PAST`] needs
 /// more than [`CHUNKS`] chunks. The test server refuses to send it, and sends an
 /// error that closes the channel. A server that sends it makes the client close the
-/// channel at the chunk past the bound.
+/// channel at its final chunk.
 #[test]
 fn an_answer_of_more_chunks_than_the_bound_fails() {
     let large = (
-        Err(Status::BAD_TYPE_MISMATCH),
-        Err(Status::BAD_SECURE_CHANNEL_CLOSED),
+        mistyped("ByteString"),
+        Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
     );
     assert_eq!(read_large(CHUNKS), large);
     assert_eq!(read_large(0), large);
@@ -795,7 +934,7 @@ fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
     let (value, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let client = peer.connected().await;
-            let outside = Reads::default();
+            let outside = Calls::default();
             let nodes = Nodes::unchecked(&[VALUE]);
             let mut request = 0;
             // SAFETY: the client and `nodes` live, and `outside` outlives the client.
@@ -810,13 +949,13 @@ fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
             });
             assert_eq!(status, Status::GOOD);
             outside.pending.set(1);
-            outside.requests.borrow_mut().push(Request {
+            outside.reads.requests.borrow_mut().push(Flight {
                 key: request,
                 slots: Slots { first: 0, count: 1 },
             });
-            outside.values.set(vec![UNREAD]);
+            outside.reads.values.set(vec![UNREAD]);
             drop(client);
-            outside.failed.get()
+            outside.reads.failed.get()
         })
         .await
     });
@@ -856,7 +995,7 @@ async fn connect_to_listener(
     let start = clock.now();
     let mut rng = node.entropy().rng();
     let url = CString::new(format!("opc.tcp://{local}")).expect("no NUL");
-    let mut connect = pin!(Client::connect(
+    let mut connect = pin!(open(
         event::Time::monotonic(node.clock()),
         node.net(),
         &mut rng,
@@ -908,43 +1047,43 @@ fn a_connect_to_a_listener_that_closes_each_stream_ends_after_one_dial() {
 }
 
 /// A close waits for the answer of the server, which a server that stops never gives,
-/// until the request times out after 5 s. open62541 checks the timeouts of requests
-/// once a second.
+/// for [`GRACE`].
 #[test]
-fn a_close_of_a_client_whose_server_stops_ends_at_the_request_timeout() {
+fn a_close_of_a_client_whose_server_stops_ends_after_the_grace() {
     let (took, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let client = peer.connected().await;
-            peer.paused.set(true);
+            peer.gate.close();
             let start = peer.clock.now();
             client.close().await;
-            peer.paused.set(false);
+            peer.gate.open();
             peer.clock.now() - start
         })
         .await
     });
-    let window = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
-    assert!(window.contains(&took), "{took:?}");
+    assert_eq!(took, GRACE);
 }
 
-/// A read restores the request timeout of the client after it sends, so a close after a
-/// read on a server that stops still ends 5 to 6 s after it starts.
+/// A read sends its requests with no timeout of open62541, and restores the request
+/// timeout of the client for each other request, such as the `CloseSession`.
 #[test]
-fn a_close_after_a_read_of_a_client_whose_server_stops_ends_at_the_request_timeout() {
-    let (took, _) = run(0, async |node| {
+fn a_read_restores_the_request_timeout_of_the_client() {
+    let (timeouts, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
+            // SAFETY: the client lives.
+            let timeout = |client: &Client| unsafe {
+                ffi::shim_client_timeout(client.raw.as_ptr())
+            };
+            let before = timeout(&client);
             assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
-            peer.paused.set(true);
-            let start = peer.clock.now();
+            let after = timeout(&client);
             client.close().await;
-            peer.paused.set(false);
-            peer.clock.now() - start
+            (before, after)
         })
         .await
     });
-    let window = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
-    assert!(window.contains(&took), "{took:?}");
+    assert_eq!(timeouts, (5_000, 5_000));
 }
 
 /// A read that a server that stops never answers ends with `BadTimeout` at the request
@@ -954,58 +1093,63 @@ fn a_read_of_a_client_whose_server_stops_times_out() {
     let ((value, took), _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            peer.paused.set(true);
+            peer.gate.close();
             let start = peer.clock.now();
             let value = client.read_one(&VALUE).await;
             let took = peer.clock.now() - start;
-            peer.paused.set(false);
+            peer.gate.open();
             client.close().await;
             (value, took)
         })
         .await
     });
-    assert_eq!(value, Err(Status::BAD_TIMEOUT));
+    assert_eq!(value, Err(Fault::status(Status::BAD_TIMEOUT)));
     let window = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
     assert!(window.contains(&took), "{took:?}");
 }
 
 /// A connect that times out after the server makes its session closes the session, so
 /// a server with room for one session takes the next client. In the run of seed 0, the
-/// server makes the session 3 ms after the connect starts and activates it later.
+/// server makes the session 5.5 ms after the connect starts and activates it later.
 #[test]
 fn a_connect_that_times_out_closes_its_session() {
-    times_out_and_closes(&[Span::from_nanos(3_000_000)]);
+    let (_, closes) = times_out_and_closes(&[Span::from_nanos(6_000_000)]);
+    assert_eq!(closes, 1);
 }
 
 /// A connect that times out before the server answers its `CreateSession` closes the
 /// session that the server makes after the deadline. In the run of seed 0, the server
-/// gets the `CreateSession` before 2.5 ms and answers it 100 us after the deadline.
+/// stops at 5.25 ms, before it gets the `CreateSession`, and answers it 100 us after
+/// the deadline.
 #[test]
 fn a_connect_that_times_out_before_the_server_makes_its_session_closes_it() {
-    times_out_and_closes(&[
-        Span::from_nanos(2_500_000),
+    let (_, closes) = times_out_and_closes(&[
+        Span::from_nanos(5_250_000),
         Span::from_nanos(5_000_100_000),
     ]);
+    assert_eq!(closes, 1);
 }
 
 /// A connect that times out before a server that stops answers its `CreateSession`
-/// ends once that request times out, and leaves no session.
+/// ends one grace after the deadline, sends no `CloseSession`, and leaves no session.
 #[test]
 fn a_connect_whose_create_session_gets_no_answer_ends() {
-    times_out_and_closes(&[Span::from_nanos(2_500_000)]);
+    let took = times_out_and_closes(&[Span::from_nanos(5_250_000)]);
+    assert_eq!(took, (Span::from_nanos(5_000_000_000 + GRACE.nanos()), 0));
 }
 
-/// The close after a connect that times out can take two more request timeouts: one for
-/// the answer to the `CreateSession`, then one for the `CloseSession`. The server gets
-/// the `CreateSession` just before the deadline and answers it at 9 s, or gets it just
-/// after the check of timeouts at 4 s and answers it just before its timeout, and then
-/// stops. open62541 checks the timeouts of requests once a second from the start of the
-/// connect, so the close ends at most 10 s after the deadline.
+/// The close after a connect that times out waits for the answer to the
+/// `CreateSession` and for the `CloseSession` for [`GRACE`] in all. The client sends
+/// the `CreateSession` just before the deadline and the server answers it at 9 s, or
+/// the client sends it just after the check of timeouts at 4 s and the server answers
+/// it just before its timeout, and then stops. The client sends no `CloseSession`,
+/// and the second client still connects: the server drops a session that is not
+/// active when its channel closes.
 #[test]
-fn a_connect_whose_create_session_answers_late_ends_two_request_timeouts_later() {
+fn a_connect_whose_create_session_answers_late_ends_one_grace_later() {
     let before_the_deadline = times_out_and_closes(&[
         Span::from_nanos(0),
-        Span::from_nanos(4_998_000_000),
+        Span::from_nanos(4_996_000_000),
         Span::from_nanos(4_999_500_000),
         Span::from_nanos(9_000_000_000),
         Span::from_nanos(9_000_100_000),
@@ -1013,12 +1157,176 @@ fn a_connect_whose_create_session_answers_late_ends_two_request_timeouts_later()
     let after_a_check = times_out_and_closes(&[
         Span::from_nanos(0),
         Span::from_nanos(4_001_000_000),
-        Span::from_nanos(4_002_500_000),
+        Span::from_nanos(4_004_500_000),
         Span::from_nanos(9_999_000_000),
         Span::from_nanos(9_999_100_000),
     ]);
-    let bound = Span::from_nanos(15_000_000_000);
+    let bound = (Span::from_nanos(5_000_000_000 + GRACE.nanos()), 0);
     assert_eq!((before_the_deadline, after_a_check), (bound, bound));
+}
+
+/// A client that waits in [`Client::idle`] for longer than the channel lifetime of the
+/// server (10 minutes) keeps its channel, and reads after it.
+#[test]
+fn a_client_idle_for_eleven_minutes_reads() {
+    let (reads, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            let first = client.read_one(&VALUE).await;
+            let idle = peer
+                .clock
+                .sleep(Span::from_nanos(11 * Span::MINUTE.nanos()));
+            client
+                .idle(idle)
+                .await
+                .expect("the client keeps its session");
+            (first, client.read_one(&VALUE).await, peer.value)
+        })
+        .await
+    });
+    let (first, second, value) = reads;
+    assert_eq!((first, second), (Ok(value), Ok(value)));
+}
+
+/// A client idle for longer than the session timeout that it asks for (20 min) keeps
+/// its session, as it reads the state of the server once per 10 s of the idle.
+#[test]
+fn a_client_idle_for_twenty_one_minutes_reads() {
+    let (reads, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            let first = client.read_one(&VALUE).await;
+            let idle = peer
+                .clock
+                .sleep(Span::from_nanos(21 * Span::MINUTE.nanos()));
+            client
+                .idle(idle)
+                .await
+                .expect("the client keeps its session");
+            let states = peer.states.get();
+            (first, client.read_one(&VALUE).await, peer.value, states)
+        })
+        .await
+    });
+    let (first, second, value, states) = reads;
+    assert_eq!((first, second, states), (Ok(value), Ok(value), 21 * 6));
+}
+
+/// A server that closes while the client waits in [`Client::idle`] ends the wait when
+/// the close reaches the client, one hop (250 us) later.
+#[test]
+fn a_server_that_closes_ends_idle_at_once() {
+    let (idle, _) = run(0, async |node| {
+        let clock = node.clock();
+        let mut client = serve(&node, 4, async |mut peer| peer.connected().await).await;
+        let start = clock.now();
+        let idle = client.idle(clock.sleep(Span::MINUTE)).await;
+        (idle, clock.now() - start)
+    });
+    let closed = Err(Status::BAD_CONNECTION_CLOSED);
+    assert_eq!(idle, (closed, Span::from_nanos(250_000)));
+}
+
+/// A client whose session the server dropped ends [`Client::idle`] at once with
+/// `BadSessionClosed`: the read that finds the drop leaves the channel open.
+#[test]
+fn a_client_with_no_session_ends_idle_at_once() {
+    let (idle, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            peer.server
+                .set_session_timeout(Span::from_nanos(5_000_000_000));
+            let mut client = peer.connected().await;
+            peer.clock.sleep(Span::from_nanos(6_000_000_000)).await;
+            let read = client.read_one(&VALUE).await;
+            let start = peer.clock.now();
+            let idle = client.idle(peer.clock.sleep(Span::MINUTE)).await;
+            (read, idle, peer.clock.now() - start)
+        })
+        .await
+    });
+    let lost = Err(Fault::status(Status::BAD_SESSION_ID_INVALID));
+    let closed = Err(Status::BAD_SESSION_CLOSED);
+    assert_eq!(idle, (lost, closed, Span::ZERO));
+}
+
+/// A check passes on each status of the state of the server: Uncertain, and Bad,
+/// `BadNoData` too.
+#[test]
+fn a_check_passes_on_each_status_of_the_state() {
+    let idle = |quality: Quality| {
+        run(0, async move |node| {
+            serve(&node, 4, async |mut peer| {
+                peer.quality.set(quality);
+                let mut client = peer.connected().await;
+                client
+                    .idle(peer.clock.sleep(Span::from_nanos(15_000_000_000)))
+                    .await
+            })
+            .await
+        })
+        .0
+    };
+    assert_eq!(idle(Quality(0x4000_0000)), Ok(()));
+    assert_eq!(idle(Quality(Status::BAD_NO_DATA.0)), Ok(()));
+    assert_eq!(idle(Quality(Status::BAD_NODE_ID_UNKNOWN.0)), Ok(()));
+}
+
+/// A connect whose wait has already ended gives no client.
+#[test]
+fn a_connect_whose_wait_has_ended_gives_none() {
+    let (connect, _) = run(0, async |node| {
+        serve(&node, 1, async |mut peer| {
+            let url = CString::new(peer.url.clone()).expect("the URL holds no NUL");
+            let time = event::Time::monotonic(Clock::clone(&peer.clock));
+            let net = Net::clone(&peer.net);
+            let ended = future::ready(());
+            let connect = Client::connect(
+                time,
+                tracing::Span::none(),
+                net,
+                &mut peer.rng,
+                &url,
+                ended,
+            )
+            .await;
+            connect.map(|client| client.is_none())
+        })
+        .await
+    });
+    assert_eq!(connect, Ok(true));
+}
+
+/// The close of a client idle for 15 min frees its session on a server with room for
+/// one, so the next client connects.
+#[test]
+fn the_close_of_a_client_idle_for_fifteen_minutes_frees_its_session() {
+    let (connect, _) = run(0, async |node| {
+        serve(&node, 1, async |mut peer| {
+            let mut client = peer.connected().await;
+            let idle = peer
+                .clock
+                .sleep(Span::from_nanos(15 * Span::MINUTE.nanos()));
+            client
+                .idle(idle)
+                .await
+                .expect("the client keeps its session");
+            client.close().await;
+            let url = peer.url.clone();
+            let client = peer.connect(&url).await;
+            let read = match client {
+                Ok(mut client) => {
+                    let read = client.read_one(&VALUE).await;
+                    client.close().await;
+                    Ok(read)
+                }
+                Err(status) => Err(status),
+            };
+            (read, peer.value)
+        })
+        .await
+    });
+    let (read, value) = connect;
+    assert_eq!(read, Ok(Ok(value)));
 }
 
 /// A connect to a server that activates the session and then stops fails with
@@ -1049,56 +1357,67 @@ fn a_connect_to_a_server_that_stops_after_the_activation_ends_in_four_request_ti
     assert!(took <= Span::from_nanos(20_000_000_000), "{took:?}");
 }
 
-/// Connects to a server with room for one session that stops at the first time of
-/// `flips` after the connect starts, runs again at the next, and so on, and runs from
-/// the end of the connect. Asserts that the connect fails with `BadTimeout` and that
-/// a second client then connects, so the first left no session. Gives the time that
-/// the first connect took.
-fn times_out_and_closes(flips: &[Span]) -> Span {
+/// Connects through [`RELAY`] to a server with room for one session that stops at the
+/// first time of `flips` after the connect starts, runs again at the next, and so on,
+/// and runs from the end of the connect. Asserts that the connect fails with
+/// `BadTimeout` and that a second client then connects, so the first left no session.
+/// Gives the time that the first connect took, and the `CloseSession` requests that
+/// it sent.
+fn times_out_and_closes(flips: &[Span]) -> (Span, usize) {
     let flips = flips.to_vec();
-    let ((first, took, second), _) = run(0, async move |node| {
+    let ((first, took, second, closes), _) = run(0, async move |node| {
         serve(&node, 1, async |mut peer| {
-            let (url, paused) = (peer.url.clone(), Rc::clone(&peer.paused));
-            let raw = CString::new(url.as_str()).expect("no NUL");
+            let (url, gate) = (peer.url.clone(), peer.gate.clone());
+            let control = Relay::default();
+            let raw = CString::new(relay_url(&node)).expect("no NUL");
             let time = event::Time::monotonic(Clock::clone(&peer.clock));
             let net = Net::clone(&peer.net);
-            let start = peer.clock.now();
-            let first = {
-                let mut connect = pin!(Client::connect(time, net, &mut peer.rng, &raw));
-                let mut flips: Vec<_> = flips
-                    .iter()
-                    .map(|at| Box::pin(peer.clock.sleep(*at)))
-                    .collect();
-                let mut flipped = 0;
-                poll_fn(|cx| {
-                    while flipped < flips.len()
-                        && flips[flipped].as_mut().poll(cx).is_ready()
-                    {
-                        flipped += 1;
-                        paused.set(!paused.get());
-                        // `serve` runs the server before this body.
-                        cx.waker().wake_by_ref();
+            // The relay runs until the second connect ends, so it moves each late
+            // byte of the first client.
+            let body = async {
+                let start = peer.clock.now();
+                let first = {
+                    let mut connect = pin!(open(time, net, &mut peer.rng, &raw));
+                    let mut flips: Vec<_> = flips
+                        .iter()
+                        .map(|at| Box::pin(peer.clock.sleep(*at)))
+                        .collect();
+                    let mut flipped = 0;
+                    let connect = poll_fn(|cx| {
+                        while flipped < flips.len()
+                            && flips[flipped].as_mut().poll(cx).is_ready()
+                        {
+                            flipped += 1;
+                            if flipped % 2 == 1 {
+                                gate.close();
+                            } else {
+                                gate.open();
+                            }
+                            // `serve` runs the server before this body.
+                            cx.waker().wake_by_ref();
+                        }
+                        connect.as_mut().poll(cx)
+                    });
+                    connect.await.err()
+                };
+                let took = peer.clock.now() - start;
+                gate.open();
+                let second = match peer.connect(&url).await {
+                    Ok(client) => {
+                        client.close().await;
+                        None
                     }
-                    connect.as_mut().poll(cx)
-                })
-                .await
-                .err()
+                    Err(status) => Some(status),
+                };
+                (first, took, second)
             };
-            let took = peer.clock.now() - start;
-            paused.set(false);
-            let second = match peer.connect(&url).await {
-                Ok(client) => {
-                    client.close().await;
-                    None
-                }
-                Err(status) => Some(status),
-            };
-            (first, took, second)
+            let (first, took, second) = relayed(&node, &control, |_| {}, body).await;
+            (first, took, second, control.closes.get())
         })
         .await
     });
     assert_eq!((first, second), (Some(Status::BAD_TIMEOUT), None));
-    took
+    (took, closes)
 }
 
 /// A server adds a namespace after a client connects, and a Double in it. The client
@@ -1141,7 +1460,21 @@ fn long(length: usize) -> Node {
 
 /// Gives the counts of the requests of `nodes` on `client`, or the error.
 fn counts(client: &Client, nodes: &[Node]) -> Result<Vec<usize>, Large> {
-    client.nodes(nodes).map(|nodes| nodes.counts())
+    let nodes = client.nodes(nodes);
+    nodes
+        .large()
+        .first()
+        .map_or_else(|| Ok(nodes.counts()), |large| Err(large.clone()))
+}
+
+/// Gives the nodes of `split`, a [`Client::nodes`] in which each node fits.
+///
+/// # Panics
+///
+/// If a node does not fit.
+fn fits(nodes: Nodes) -> Nodes {
+    assert_eq!(nodes.large(), [], "each node fits");
+    nodes
 }
 
 /// Gives the largest of 1 to `past` (not included) for which `fits` holds, as `fits`
@@ -1188,10 +1521,10 @@ fn a_request_takes_the_chunks_of_one_message() {
             let mut client = peer.connected().await;
             let length = fitting(&client, &[], 1 << 20);
             peer.server.add_scalar(&long(length), Value::F64(2.5));
-            let fits = client.nodes(&[VALUE, long(length)]).expect("it fits");
-            let split = fits.counts();
-            let read = client.read(&fits).await.map(<[_]>::to_vec);
-            let past = client.nodes(&[VALUE, long(length + 1)]).map(drop);
+            let fit = fits(client.nodes(&[VALUE, long(length)]));
+            let split = fit.counts();
+            let read = client.read(&fit).await.map(<[_]>::to_vec);
+            let past = client.nodes(&[VALUE, long(length + 1)]).large().to_vec();
             let after = client.read_one(&VALUE).await;
             let unchecked = client.unchecked(&[long(length + 49)]);
             let full = client.read(&unchecked).await.map(<[_]>::to_vec);
@@ -1205,14 +1538,17 @@ fn a_request_takes_the_chunks_of_one_message() {
     let (split, read, past, after, full, sent, value) = reads;
     assert_eq!(split, [1, 1]);
     assert_eq!(read, Ok(vec![Ok(value), Ok(Value::F64(2.5))]));
-    assert_eq!(full, Ok(vec![Err(Status::BAD_NODE_ID_UNKNOWN)]));
+    assert_eq!(
+        full,
+        Ok(vec![Err(Fault::status(Status::BAD_NODE_ID_UNKNOWN))])
+    );
     let most = 8 * (65_536 - 24) - 7 * 7;
     let large = Large {
-        node: 1,
+        index: 1,
         bytes: most + 1,
         most,
     };
-    assert_eq!(past, Err(large));
+    assert_eq!(past, [large]);
     assert_eq!(after, Ok(value));
     assert_eq!(sent, Err(Status::BAD_RESPONSE_TOO_LARGE));
 }
@@ -1232,12 +1568,12 @@ fn a_read_takes_the_max_message_size_of_the_server() {
             let mut client = peer.connected().await;
             let length = fitting(&client, &[], 9000);
             peer.server.add_scalar(&long(length), Value::F64(2.5));
-            let fits = client.nodes(&[long(length)]).expect("it fits");
-            let read = client.read(&fits).await.map(<[_]>::to_vec);
-            let past = client.nodes(&[long(length + 1)]).map(drop);
-            let most = client.nodes(&[VALUE; 239]).expect("239 nodes fit");
+            let fit = fits(client.nodes(&[long(length)]));
+            let read = client.read(&fit).await.map(<[_]>::to_vec);
+            let past = client.nodes(&[long(length + 1)]).large().to_vec();
+            let most = fits(client.nodes(&[VALUE; 239]));
             let values = client.read(&most).await.map(<[_]>::to_vec);
-            let split = client.nodes(&[VALUE; 240]).expect("240 nodes fit");
+            let split = fits(client.nodes(&[VALUE; 240]));
             let counts = split.counts();
             let split = client.read(&split).await.map(<[_]>::to_vec);
             let unchecked = client.unchecked(&[long(length + 1)]);
@@ -1250,11 +1586,11 @@ fn a_read_takes_the_max_message_size_of_the_server() {
     let (read, past, values, counts, split, sent, value) = reads;
     assert_eq!(read, Ok(vec![Ok(Value::F64(2.5))]));
     let large = Large {
-        node: 0,
+        index: 0,
         bytes: 8193,
         most: 8192,
     };
-    assert_eq!(past, Err(large));
+    assert_eq!(past, [large]);
     assert_eq!(values, Ok(vec![Ok(value); 239]));
     assert_eq!((counts, split), (vec![239, 1], Ok(vec![Ok(value); 240])));
     assert_eq!(sent, Err(Status::BAD_SECURE_CHANNEL_CLOSED));
@@ -1272,7 +1608,7 @@ fn a_read_takes_the_buffers_and_chunks_of_the_server() {
                 ..Limits::default()
             });
             let mut client = peer.connected().await;
-            let nodes = client.nodes(&vec![VALUE; 960]).expect("960 nodes fit");
+            let nodes = fits(client.nodes(&vec![VALUE; 960]));
             let values = client.read(&nodes).await.map(<[_]>::to_vec);
             client.close().await;
             (nodes.counts(), values, peer.value)
@@ -1290,10 +1626,11 @@ fn a_read_takes_the_buffers_and_chunks_of_the_server() {
 fn a_request_and_an_answer_each_take_the_buffer_of_their_side() {
     let (reads, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
-            let mut client = peer.receiving(8192).await;
+            let url = peer.url.clone();
+            let mut client = peer.limited(&url, Some(8192), None).await;
             let length = fitting(&client, &[], 1 << 20);
-            let request = client.nodes(&[long(length + 1)]).map(drop);
-            let nodes = client.nodes(&vec![VALUE; 1920]).expect("1920 nodes fit");
+            let request = client.nodes(&[long(length + 1)]).large().to_vec();
+            let nodes = fits(client.nodes(&vec![VALUE; 1920]));
             let values = client.read(&nodes).await.map(<[_]>::to_vec);
             client.close().await;
             (request, nodes.counts(), values, peer.value)
@@ -1303,11 +1640,11 @@ fn a_request_and_an_answer_each_take_the_buffer_of_their_side() {
     let (request, counts, values, value) = reads;
     let most = 8 * (65_536 - 24) - 7 * 7;
     let large = Large {
-        node: 0,
+        index: 0,
         bytes: most + 1,
         most,
     };
-    assert_eq!(request, Err(large));
+    assert_eq!(request, [large]);
     assert_eq!((counts, values), (vec![1919, 1], Ok(vec![Ok(value); 1920])));
 }
 
@@ -1376,7 +1713,7 @@ fn the_most_nodes_of_one_request_are_read() {
             let mut reads = Vec::new();
             for length in [37, 44] {
                 let count = most_of(&client, length);
-                let nodes = client.nodes(&vec![long(length); count]).expect("it fits");
+                let nodes = fits(client.nodes(&vec![long(length); count]));
                 reads.push((count, client.read(&nodes).await.map(<[_]>::len)));
             }
             client.close().await;
@@ -1389,7 +1726,7 @@ fn the_most_nodes_of_one_request_are_read() {
             for count in 450..470 {
                 let mut list = vec![VALUE; count];
                 list.push(long(fitting(&client, &list, 1 << 15)));
-                let nodes = client.nodes(&list).expect("it fits");
+                let nodes = fits(client.nodes(&list));
                 reads.push((count + 1, client.read(&nodes).await.map(<[_]>::len)));
             }
             client.close().await;
@@ -1408,7 +1745,7 @@ fn a_read_of_no_nodes_gives_no_values() {
     let (reads, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            let none = client.nodes(&[]).expect("no nodes fit");
+            let none = fits(client.nodes(&[]));
             let read = client.read(&none).await.map(<[_]>::to_vec);
             let after = client.read_one(&VALUE).await;
             client.close().await;
@@ -1449,14 +1786,14 @@ fn read_on(
             for index in 0..count {
                 if index == 3 {
                     nodes.push(long(1));
-                    values.push(Err(Status::BAD_NODE_ID_UNKNOWN));
+                    values.push(Err(Fault::status(Status::BAD_NODE_ID_UNKNOWN)));
                 }
                 peer.server.add_scalar(&numbered(index), Value::U32(index));
                 nodes.push(numbered(index));
                 values.push(Ok(Value::U32(index)));
             }
             let mut client = peer.connected().await;
-            let nodes = client.nodes(&nodes).expect("the nodes fit");
+            let nodes = fits(client.nodes(&nodes));
             let read = client.read(&nodes).await.map(<[_]>::to_vec);
             client.close().await;
             (nodes.counts(), read, values)
@@ -1485,8 +1822,7 @@ fn the_size_of_the_read_of_a_node_is_its_size_in_open62541() {
         namespace: 0,
         key: Key::Number(0),
     };
-    // SAFETY: `zero` has no name.
-    let rest = unsafe { ffi::shim_read_item((&zero).into()) } - id_bytes(&zero);
+    let one = |node: &Node| Request::values(&[node.into()]).bytes(0);
     let number = |namespace, key| Node {
         namespace,
         key: Key::Number(key),
@@ -1508,9 +1844,8 @@ fn the_size_of_the_read_of_a_node_is_its_size_in_open62541() {
         name(3, &"n".repeat(300)),
     ];
     for node in &nodes {
-        // SAFETY: the name of `node` lives through the call.
-        let open62541 = unsafe { ffi::shim_read_item(node.into()) };
-        assert_eq!(rest + id_bytes(node), open62541, "{node:?}");
+        let open62541 = one(node) - one(&zero);
+        assert_eq!(id_bytes(node) - id_bytes(&zero), open62541, "{node:?}");
     }
 }
 
@@ -1545,7 +1880,7 @@ fn a_max_nodes_per_read_that_is_absent_or_of_another_type_is_no_limit() {
                 let read = relayed(&node, &Relay::default(), rewrite, async {
                     let mut client =
                         peer.connect(&url).await.expect("the client connects");
-                    let nodes = client.nodes(&nodes).expect("the nodes fit");
+                    let nodes = fits(client.nodes(&nodes));
                     let read = client.read(&nodes).await.map(<[_]>::to_vec);
                     client.close().await;
                     read
@@ -1576,7 +1911,7 @@ fn read_on_another_client(nodes: &'static [Node]) -> Option<&'static str> {
         serve(&node, 4, async |mut peer| {
             let first = peer.connected().await;
             let mut second = peer.connected().await;
-            let nodes = first.nodes(nodes).expect("the nodes fit");
+            let nodes = fits(first.nodes(nodes));
             let panic = caught(second.read(&nodes))
                 .await
                 .expect_err("the read panics");
@@ -1607,19 +1942,44 @@ fn a_read_of_no_nodes_of_another_client_panics() {
 }
 
 /// The port of the relay of [`relayed`].
-const RELAY: u16 = 4841;
+pub(crate) const RELAY: u16 = 4841;
 
 /// The binary encoding of a Read response, a `NodeId` of 4 bytes.
 const READ_RESPONSE: [u8; 4] = [0x01, 0x00, 0x7A, 0x02];
 
-/// Runs `body` while [`relay`] runs on `node` with `control` and `rewrite`.
-async fn relayed<T>(
+/// The binary encoding of a `CloseSession` request, a `NodeId` of 4 bytes.
+const CLOSE_SESSION: [u8; 4] = [0x01, 0x00, 0xD9, 0x01];
+
+/// The binary encoding of a Browse request, a `NodeId` of 4 bytes.
+const BROWSE: [u8; 4] = [0x01, 0x00, 0x0F, 0x02];
+
+/// Runs `body` while [`relay`] runs on `node` with `control`, and gives each message
+/// of the server to `rewrite`.
+pub(crate) async fn relayed<T>(
     node: &node::Node,
     control: &Relay,
     rewrite: impl FnMut(&mut Vec<u8>),
     body: impl Future<Output = T>,
 ) -> T {
-    let mut relay = pin!(relay(node, control, rewrite));
+    beside(relay(node, control, |_| {}, rewrite), body).await
+}
+
+/// Runs `body` while [`relay`] runs on `node`, and gives each message of the client to
+/// `up`.
+pub(crate) async fn relayed_up<T>(
+    node: &node::Node,
+    up: impl FnMut(&mut Vec<u8>),
+    body: impl Future<Output = T>,
+) -> T {
+    beside(relay(node, &Relay::default(), up, |_| {}), body).await
+}
+
+/// Runs `body` while `relay` runs.
+async fn beside<T>(
+    relay: impl Future<Output = ()>,
+    body: impl Future<Output = T>,
+) -> T {
+    let mut relay = pin!(relay);
     let mut body = pin!(body);
     poll_fn(|cx| {
         assert!(relay.as_mut().poll(cx).is_pending(), "it never ends");
@@ -1630,7 +1990,7 @@ async fn relayed<T>(
 
 /// What a test reads and sets of a [`relay`].
 #[derive(Default)]
-struct Relay {
+pub(crate) struct Relay {
     /// The streams that it accepted.
     accepts: Cell<usize>,
     /// When set, it closes its listener at each accept and binds it again this long
@@ -1639,16 +1999,23 @@ struct Relay {
     /// When set, it drops both streams of the relay that runs at its next poll, and
     /// clears it.
     cut: Cell<bool>,
+    /// The `CloseSession` requests that it moved to the server.
+    closes: Cell<usize>,
+    /// The time of the request header of each Browse request that it moved to the
+    /// server, in 100 ns from 1601.
+    pub(crate) browses: RefCell<Vec<i64>>,
 }
 
 /// Moves the bytes of each stream to [`RELAY`], one at a time, to the test server and
-/// back, and gives each message of the server to `rewrite` before the client gets it.
-/// A relay ends when the client ends its side or `control` cuts it.
+/// back. It gives each message of the client to `up` before the server gets it, and
+/// each message of the server to `down` before the client gets it. A relay ends when
+/// the client ends its side or `control` cuts it.
 #[expect(clippy::infinite_loop, reason = "it runs until its test ends")]
 async fn relay(
     node: &node::Node,
     control: &Relay,
-    mut rewrite: impl FnMut(&mut Vec<u8>),
+    mut up: impl FnMut(&mut Vec<u8>),
+    mut down: impl FnMut(&mut Vec<u8>),
 ) {
     let address = node.addresses()[0];
     let listen = tcp::Listen {
@@ -1677,13 +2044,25 @@ async fn relay(
             .connect(&config)
             .await
             .expect("the server listens");
-        let (mut up, mut down) = (Pipe::default(), Pipe::default());
+        let (mut to_server, mut to_client) = (Pipe::default(), Pipe::default());
         poll_fn(|cx| {
             if control.cut.take() {
                 return Poll::Ready(());
             }
-            let ended = up.pump(cx, &mut client, &mut server, |_| {});
-            down.pump(cx, &mut server, &mut client, &mut rewrite);
+            let ended = to_server.pump(cx, &mut client, &mut server, |message| {
+                let close =
+                    message.starts_with(b"MSG") && message[24..28] == CLOSE_SESSION;
+                control
+                    .closes
+                    .set(control.closes.get() + usize::from(close));
+                if message.starts_with(b"MSG") && message[24..28] == BROWSE {
+                    assert_eq!(message[28], 4, "a token that is a GUID");
+                    let time = message[47..55].try_into().expect("8 bytes");
+                    control.browses.borrow_mut().push(i64::from_le_bytes(time));
+                }
+                up(message);
+            });
+            to_client.pump(cx, &mut server, &mut client, &mut down);
             if ended {
                 Poll::Ready(())
             } else {
@@ -1903,8 +2282,8 @@ fn a_message_that_the_client_cannot_process_ends_the_session_with_no_dial() {
         .await
     });
     let reads = (
-        Err(Status::BAD_SECURE_CHANNEL_CLOSED),
-        Err(Status::BAD_SERVER_NOT_CONNECTED),
+        Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
+        Err(Fault::status(Status::BAD_SERVER_NOT_CONNECTED)),
     );
     assert_eq!(out, (reads, 2));
 }
@@ -1973,8 +2352,8 @@ fn a_read_after_a_reset_of_an_active_session_fails_with_no_dial() {
         .await
     });
     let reads = (
-        Err(Status::BAD_SECURE_CHANNEL_CLOSED),
-        Err(Status::BAD_SERVER_NOT_CONNECTED),
+        Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
+        Err(Fault::status(Status::BAD_SERVER_NOT_CONNECTED)),
     );
     assert_eq!(out, (reads, 1));
 }
@@ -2053,7 +2432,7 @@ fn recount_of(message: &mut Vec<u8>, count: i32) {
 }
 
 /// The value of each node of a read.
-type Values = Vec<Result<Value, Status>>;
+type Values = Vec<Result<Value, Fault>>;
 
 /// The values of a read, or its error.
 type Read = Result<Values, Status>;
@@ -2077,10 +2456,10 @@ fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, Value, Values) {
             };
             let (reads, copied) = relayed(&node, &Relay::default(), rewrite, async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
-                let nodes = client.nodes(&[VALUE]).expect("one node fits");
+                let nodes = fits(client.nodes(&[VALUE]));
                 let first = client.read(&nodes).await.map(<[_]>::to_vec);
-                let copied = client.reads.values.take();
-                client.reads.values.set(copied.clone());
+                let copied = client.calls.reads.values.take();
+                client.calls.reads.values.set(copied.clone());
                 let second = client.read(&nodes).await.map(<[_]>::to_vec);
                 client.close().await;
                 ([first, second], copied)
@@ -2157,8 +2536,8 @@ fn read_split(
             };
             relayed(&node, &Relay::default(), rewrite, async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
-                let first = client.nodes(&[numbered(1), numbered(2)]).expect("2 fit");
-                let second = client.nodes(&[numbered(3), numbered(4)]).expect("2 fit");
+                let first = fits(client.nodes(&[numbered(1), numbered(2)]));
+                let second = fits(client.nodes(&[numbered(3), numbered(4)]));
                 let first = client.read(&first).await.map(<[_]>::to_vec);
                 let second = client.read(&second).await.map(<[_]>::to_vec);
                 client.close().await;
@@ -2269,7 +2648,7 @@ fn a_read_sends_no_request_after_an_answer_of_it_fails() {
             };
             let read = relayed(&node, &Relay::default(), rewrite, async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
-                let nodes = client.nodes(&nodes).expect("the nodes fit");
+                let nodes = fits(client.nodes(&nodes));
                 let read = client.read(&nodes).await.map(<[_]>::to_vec);
                 client.close().await;
                 read
@@ -2286,8 +2665,8 @@ fn a_read_sends_no_request_after_an_answer_of_it_fails() {
 }
 
 /// A connect whose read of the `MaxNodesPerRead` of the server fails gives the status
-/// of the read, and closes its session: a server with room for one session takes the
-/// next client.
+/// of the read, and closes its session with one `CloseSession`: a server with room
+/// for one session takes the next client.
 #[test]
 fn a_connect_whose_read_of_the_max_nodes_per_read_fails_closes_its_session() {
     let (connect, _) = run(0, async |node| {
@@ -2298,12 +2677,20 @@ fn a_connect_whose_read_of_the_max_nodes_per_read_fails_closes_its_session() {
                     recount_of(message, 0);
                 }
             };
-            let connect =
-                relayed(&node, &Relay::default(), rewrite, peer.connect(&url)).await;
+            let control = Relay::default();
+            let connect = relayed(&node, &control, rewrite, peer.connect(&url)).await;
             peer.connected().await.close().await;
-            connect.err()
+            (connect.err(), control.closes.get())
         })
         .await
     });
-    assert_eq!(connect, Some(Status::BAD_UNEXPECTED_ERROR));
+    assert_eq!(connect, (Some(Status::BAD_UNEXPECTED_ERROR), 1));
 }
+
+mod abort;
+mod browse;
+mod chunks;
+mod common;
+mod flood;
+mod secure;
+mod walk;

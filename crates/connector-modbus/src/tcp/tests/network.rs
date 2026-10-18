@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
+use connector::cancel::Token;
 use env::clock::Clock;
 use env::net::{self, Listener, Tcp, tcp};
 use env::thread::Handle;
@@ -109,8 +110,8 @@ impl Network {
     fn serve(&mut self, device: &Arc<Mutex<Device>>) {
         let device = Arc::clone(device);
         self.on_device(1 << 16, move |listener, _| async move {
-            let error = modbus::serve(listener, UNIT, &device).await;
-            panic!("the listener failed: {error}");
+            let end = modbus::serve(listener, Token::new(), UNIT, &device).await;
+            panic!("the serve ended: {end:?}");
         });
     }
 
@@ -365,8 +366,8 @@ fn sends_the_rest_of_a_request_that_timed_out_first() {
     let served = Arc::clone(&device);
     network.on_device(64, move |listener, clock| async move {
         clock.sleep(ms(400)).await;
-        let error = modbus::serve(listener, UNIT, &served).await;
-        panic!("the listener failed: {error}");
+        let end = modbus::serve(listener, Token::new(), UNIT, &served).await;
+        panic!("the serve ended: {end:?}");
     });
     let (first, second) = network.client(64, |mut client, _| async move {
         let write = Request::WriteRegisters {
@@ -458,6 +459,29 @@ fn refuses_a_connect_with_no_listener() {
 }
 
 #[test]
+fn gives_up_a_connect_after_the_timeout() {
+    let mut network = Network::new(16);
+    let slow = sim::link::Config {
+        delay: Span::SECOND,
+        ..sim::link::Config::default()
+    };
+    network.sim.link(&network.client, &network.device, slow);
+    let _listener = network.listen(1 << 16);
+    let (net, clock) = (network.client.net(), network.client.clock());
+    let remote = network.remote();
+    let got = network.on_client(move || async move {
+        let config = tcp::Config {
+            remote,
+            options: options(1 << 16),
+        };
+        let start = clock.now();
+        let got = Client::connect(&net, &config, clock.clone(), TIMEOUT).await;
+        (got.err(), clock.now() - start)
+    });
+    assert_eq!(got, (Some(net::Error::TimedOut { remote }), TIMEOUT));
+}
+
+#[test]
 fn serves_the_next_stream_after_one_ends_or_is_out_of_step() {
     let mut network = Network::new(11);
     network.serve(&device());
@@ -523,8 +547,8 @@ fn drops_a_request_that_timed_out_before_any_byte_left() {
     let served = Arc::clone(&device);
     network.on_device(64, move |listener, clock| async move {
         clock.sleep(ms(1_000)).await;
-        let error = modbus::serve(listener, UNIT, &served).await;
-        panic!("the listener failed: {error}");
+        let end = modbus::serve(listener, Token::new(), UNIT, &served).await;
+        panic!("the serve ended: {end:?}");
     });
     let (first, second, read) = network.client(64, |mut client, clock| async move {
         let write = Request::WriteRegisters {
@@ -585,14 +609,7 @@ fn serves_a_client_that_comes_back_after_a_power_cut() {
 #[test]
 fn a_timeout_below_zero_acts_as_zero() {
     let mut network = Network::new(15);
-    network.on_device(1 << 16, |mut listener, clock| async move {
-        let mut stream = poll_fn(|cx| listener.poll_accept(cx))
-            .await
-            .expect("a stream comes");
-        request(&mut stream).await;
-        clock.sleep(Span::HOUR).await;
-        drop((stream, listener));
-    });
+    let _listener = network.listen(1 << 16);
     let (net, clock) = (network.client.net(), network.client.clock());
     let remote = network.remote();
     let got = network.on_client(move || async move {
@@ -601,12 +618,330 @@ fn a_timeout_below_zero_acts_as_zero() {
             options: options(1 << 16),
         };
         let timeout = Span::from_nanos(i64::MIN);
-        let mut client = Client::connect(&net, &config, clock.clone(), timeout)
-            .await
-            .expect("the device listens");
         let start = clock.now();
-        let got = said(client.exchange(UNIT, &read(Table::Coils, 0, 1)).await);
-        (got, clock.now() - start)
+        let got = Client::connect(&net, &config, clock.clone(), timeout).await;
+        (got.err(), clock.now() - start)
     });
-    assert_eq!(got, (Err(Failure::Timeout), Span::ZERO));
+    assert_eq!(got, (Some(net::Error::TimedOut { remote }), Span::ZERO));
+}
+
+/// The link back from the device keeps its 250 us, so a one-way delay of 299.75 ms
+/// makes a handshake of exactly `TIMEOUT`.
+#[test]
+fn connects_at_the_timeout_and_gives_up_just_past_it() {
+    let cases = [
+        (299_749_999, true, Span::from_nanos(299_999_999)),
+        (299_750_000, true, TIMEOUT),
+        (299_750_001, false, TIMEOUT),
+    ];
+    for (delay, connected, spent) in cases {
+        for seed in 0..32 {
+            let mut network = Network::new(1000 + seed);
+            let slow = sim::link::Config {
+                delay: Span::from_nanos(delay),
+                ..sim::link::Config::default()
+            };
+            network.sim.link(&network.client, &network.device, slow);
+            let _listener = network.listen(1 << 16);
+            let (net, clock) = (network.client.net(), network.client.clock());
+            let remote = network.remote();
+            let got = network.on_client(move || async move {
+                let config = tcp::Config {
+                    remote,
+                    options: options(1 << 16),
+                };
+                let start = clock.now();
+                let got = Client::connect(&net, &config, clock.clone(), TIMEOUT).await;
+                (got.map(drop), clock.now() - start)
+            });
+            let want = if connected {
+                Ok(())
+            } else {
+                Err(net::Error::TimedOut { remote })
+            };
+            assert_eq!(got, (want, spent), "delay {delay}, seed {seed}");
+        }
+    }
+}
+
+/// Each way of the link takes 250 us, so a device that waits 299.5 ms answers in
+/// exactly `TIMEOUT`.
+#[test]
+fn takes_a_reply_at_the_timeout_and_drops_one_just_past_it() {
+    let cases = [
+        (299_499_999, true, Span::from_nanos(299_999_999)),
+        (299_500_000, true, TIMEOUT),
+        (299_500_001, false, TIMEOUT),
+    ];
+    for (wait, answered, spent) in cases {
+        for seed in 0..32 {
+            let mut network = Network::new(3000 + seed);
+            network.raw(move |mut stream, clock| async move {
+                let first = request(&mut stream).await;
+                write(&mut stream, &registers(first, &[1])).await;
+                let second = request(&mut stream).await;
+                clock.sleep(Span::from_nanos(wait)).await;
+                write(&mut stream, &registers(second, &[2])).await;
+                stream
+            });
+            let got = network.client(1 << 16, |mut client, clock| async move {
+                let request = read(Table::HoldingRegisters, 0, 1);
+                let first = said(client.exchange(UNIT, &request).await);
+                let start = clock.now();
+                let second = said(client.exchange(UNIT, &request).await);
+                (first, second, clock.now() - start)
+            });
+            let second = if answered {
+                Ok(Said::Registers(vec![2]))
+            } else {
+                Err(Failure::Timeout)
+            };
+            let want = (Ok(Said::Registers(vec![1])), second, spent);
+            assert_eq!(got, want, "wait {wait}, seed {seed}");
+        }
+    }
+}
+
+#[test]
+fn gives_each_exchange_its_whole_timeout_after_the_sleep_of_the_one_before() {
+    for seed in 0..32 {
+        let mut network = Network::new(2000 + seed);
+        network.raw(|mut stream, clock| async move {
+            let first = request(&mut stream).await;
+            write(&mut stream, &registers(first, &[1])).await;
+            let second = request(&mut stream).await;
+            clock.sleep(ms(299)).await;
+            write(&mut stream, &registers(second, &[2])).await;
+            let _third = request(&mut stream).await;
+            let fourth = request(&mut stream).await;
+            clock.sleep(ms(299)).await;
+            write(&mut stream, &registers(fourth, &[4])).await;
+            stream
+        });
+        let got = network.client(1 << 16, |mut client, clock| async move {
+            let request = read(Table::HoldingRegisters, 0, 1);
+            let mut got = Vec::new();
+            for _ in 0..4 {
+                let start = clock.now();
+                let said = said(client.exchange(UNIT, &request).await);
+                got.push((said, clock.now() - start));
+            }
+            got
+        });
+        let answered = Span::from_nanos(299_500_000);
+        assert_eq!(
+            got,
+            [
+                (Ok(Said::Registers(vec![1])), Span::from_nanos(500_000)),
+                (Ok(Said::Registers(vec![2])), answered),
+                (Err(Failure::Timeout), TIMEOUT),
+                (Ok(Said::Registers(vec![4])), answered),
+            ],
+            "seed {seed}"
+        );
+    }
+}
+
+/// What `serve` gave, and the count of open streams of the device node at its return.
+type Ended = (Result<(), net::Error>, usize);
+
+/// How the stream of a client ended, and how a later connect ended.
+type Peer = (Result<usize, net::Error>, Result<(), net::Error>);
+
+/// Serves on the device node until `until`, and gives the slot of [`Ended`].
+fn served(network: &mut Network, until: &Token) -> Arc<Mutex<Option<Ended>>> {
+    let (device, node, until) = (device(), network.device.clone(), until.clone());
+    let ended = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&ended);
+    network.on_device(1 << 16, move |listener, _| async move {
+        let end = modbus::serve(listener, until, UNIT, &device).await;
+        *slot.lock().expect("no panic under the lock") = Some((end, node.streams()));
+        // The streams it accepted end when this shard ends.
+        std::future::pending::<()>().await;
+    });
+    ended
+}
+
+/// Opens a stream to the device, has one reply to a read on it, and writes `sent`.
+/// Then runs `stop` 500 ms into the run. Gives what `serve` gave, how the stream
+/// ended for the client, how a later connect ended, and the address of the device.
+fn stopped(
+    stop: fn(&Network, &Token),
+    sent: &'static [u8],
+) -> (Option<Ended>, Option<Peer>, SocketAddr) {
+    let mut network = Network::new(21);
+    let until = Token::new();
+    let ended = served(&mut network, &until);
+    let (net, remote) = (network.client.net(), network.remote());
+    let peer = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&peer);
+    let handle = network
+        .client
+        .shards()
+        .start(shard("client"), move |_| async move {
+            let config = tcp::Config {
+                remote,
+                options: options(1 << 16),
+            };
+            let mut stream = net.connect(&config).await.expect("the device listens");
+            let header = Header {
+                transaction: 1,
+                unit: UNIT,
+            };
+            let mut frame = Vec::new();
+            modbus::encode(header, &read(Table::HoldingRegisters, 4, 1), &mut frame)
+                .expect("a valid request");
+            write(&mut stream, &frame).await;
+            let mut reply = [0; 11];
+            let mut got = 0;
+            while got < reply.len() {
+                got += poll_fn(|cx| stream.poll_read(cx, &mut reply[got..]))
+                    .await
+                    .expect("the reply comes");
+            }
+            assert_eq!(reply.to_vec(), registers(header, &[4]));
+            write(&mut stream, sent).await;
+            let mut buffer = [0; 1];
+            let end = poll_fn(|cx| stream.poll_read(cx, &mut buffer)).await;
+            let again = net.connect(&config).await.map(drop);
+            *slot.lock().expect("no panic under the lock") = Some((end, again));
+        });
+    network.handles.push(handle.expect("the shard starts"));
+    network.sim.run_for(ms(500)).expect("the run goes on");
+    assert_eq!(network.device.streams(), 1);
+    stop(&network, &until);
+    network.sim.run_for(Span::MINUTE).expect("the run ends");
+    let ended = ended.lock().expect("no panic under the lock").take();
+    let peer = peer.lock().expect("no panic under the lock").take();
+    (ended, peer, remote)
+}
+
+#[test]
+fn a_cancel_closes_the_stream_with_a_fin_and_returns_once_it_ended() {
+    let (ended, peer, remote) = stopped(|_, until| until.cancel(), b"");
+    assert_eq!(ended, Some((Ok(()), 0)));
+    let refused = Err(net::Error::Refused { remote });
+    assert_eq!(peer, Some((Ok(0), refused)));
+}
+
+#[test]
+fn a_cancel_closes_a_stream_in_the_middle_of_a_frame_with_a_fin() {
+    let (ended, peer, remote) = stopped(|_, until| until.cancel(), &[0, 2, 0, 0, 0]);
+    assert_eq!(ended, Some((Ok(()), 0)));
+    let refused = Err(net::Error::Refused { remote });
+    assert_eq!(peer, Some((Ok(0), refused)));
+}
+
+#[test]
+fn a_failed_accept_closes_the_stream_and_gives_its_error_once_it_ended() {
+    let fail = |network: &Network, _: &Token| {
+        network.device.fail_listener(network.remote());
+    };
+    let (ended, peer, remote) = stopped(fail, b"");
+    assert_eq!(ended, Some((Err(net::Error::Io { code: 5 }), 0)));
+    let refused = Err(net::Error::Refused { remote });
+    assert_eq!(peer, Some((Ok(0), refused)));
+}
+
+#[test]
+fn a_listener_that_fails_and_a_cancel_in_one_step_give_the_error() {
+    let both = |network: &Network, until: &Token| {
+        network.device.fail_listener(network.remote());
+        until.cancel();
+    };
+    let (ended, _, _) = stopped(both, b"");
+    assert_eq!(ended, Some((Err(net::Error::Io { code: 5 }), 0)));
+}
+
+#[test]
+fn a_cancel_returns_while_a_client_reads_nothing_and_its_window_is_full() {
+    let mut network = Network::new(22);
+    let until = Token::new();
+    let ended = served(&mut network, &until);
+    let (net, remote) = (network.client.net(), network.remote());
+    let handle = network
+        .client
+        .shards()
+        .start(shard("client"), move |_| async move {
+            let config = tcp::Config {
+                remote,
+                options: options(512),
+            };
+            let mut stream = net.connect(&config).await.expect("the device listens");
+            let mut frame = Vec::new();
+            for transaction in 0..1_000 {
+                let header = Header {
+                    transaction,
+                    unit: UNIT,
+                };
+                let request = read(Table::HoldingRegisters, 0, 100);
+                modbus::encode(header, &request, &mut frame).expect("a valid request");
+            }
+            // The device resets the stream at the cancel, so this write ends.
+            let mut sent = 0;
+            while sent < frame.len() {
+                let parts = [IoSlice::new(&frame[sent..])];
+                match poll_fn(|cx| stream.poll_write(cx, &parts)).await {
+                    Ok(n) => sent += n,
+                    Err(_) => break,
+                }
+            }
+            std::future::pending::<()>().await;
+        });
+    network.handles.push(handle.expect("the shard starts"));
+    network.sim.run_for(Span::SECOND).expect("the run goes on");
+    assert_eq!(*ended.lock().expect("no panic under the lock"), None);
+    until.cancel();
+    network.sim.run_for(Span::SECOND).expect("the run goes on");
+    let ended = ended.lock().expect("no panic under the lock").take();
+    assert_eq!(ended, Some((Ok(()), 0)));
+}
+
+#[test]
+fn a_cancel_reads_the_unread_bytes_of_a_stream_before_its_fin() {
+    let mut network = Network::new(23);
+    let (device, until) = (device(), Token::new());
+    let ended = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&ended);
+    network.on_device(1 << 16, move |listener, clock| async move {
+        clock.sleep(ms(400)).await;
+        until.cancel();
+        let end = modbus::serve(listener, until, UNIT, &device).await;
+        *slot.lock().expect("no panic under the lock") = Some(end);
+        std::future::pending::<()>().await;
+    });
+    let (net, remote) = (network.client.net(), network.remote());
+    let peer = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&peer);
+    let handle = network
+        .client
+        .shards()
+        .start(shard("client"), move |_| async move {
+            let config = tcp::Config {
+                remote,
+                options: options(1 << 16),
+            };
+            let mut stream = net.connect(&config).await.expect("the device listens");
+            // 360 bytes, more than one read of `close` takes.
+            let mut frame = Vec::new();
+            for transaction in 1..=30 {
+                let header = Header {
+                    transaction,
+                    unit: UNIT,
+                };
+                let request = read(Table::HoldingRegisters, 4, 1);
+                modbus::encode(header, &request, &mut frame).expect("a valid request");
+            }
+            write(&mut stream, &frame).await;
+            let mut buffer = [0; 1];
+            let end = poll_fn(|cx| stream.poll_read(cx, &mut buffer)).await;
+            *slot.lock().expect("no panic under the lock") = Some(end);
+        });
+    network.handles.push(handle.expect("the shard starts"));
+    network.sim.run_for(Span::MINUTE).expect("the run ends");
+    assert_eq!(
+        *ended.lock().expect("no panic under the lock"),
+        Some(Ok(()))
+    );
+    assert_eq!(*peer.lock().expect("no panic under the lock"), Some(Ok(0)));
 }

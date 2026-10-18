@@ -30,7 +30,7 @@ attacker can use is a GitHub issue with the `security` label and a failing test.
 | Subject | Sign hellos and session opens with a key in the spec | Go past its `access` allows |
 | Member node | Act as itself and as the connectors placed on it; read and change the traffic of subjects connected through it; use their open sessions until the hello expires; drop or delay what it forwards | Hold another node's key; change the spec |
 | Home of an index | Write any data into the index, run its gate, lie to its readers | Act outside its placement |
-| Voter | Vote and stall its region; break `raft` safety (Node to node); until #1273, commit a home that is not a member, so that each node that opens an unnamed reader of its index aborts | Forge a spec change, not built (#1213), or move a home outside placement, not built (#2287) |
+| Voter | Vote and stall its region; break `raft` safety (Node to node); until #1273, commit a home that is not a member, so that each node that opens an unnamed reader of its index aborts; until #3179, hold back the card of a member, a minute at a time, with a forged or old card | Forge a spec change, not built (#1213), or move a home outside placement, not built (#2287) |
 | Time source | Shift the clocks that follow it, within what the estimator accepts | |
 | Device | Send any bytes to a connector | Reach the core except through `hub` |
 | Local user that runs the node | Read and write the node's files and memory, and so hold its keys and cached secrets and become that member node. On the node that founds the root region, read `admin.key` and so be the first admin of the region, not only that node | |
@@ -162,13 +162,12 @@ state on `main`.
 
 ### Agent host and CLI to `ops`
 
-- Caller to `ops`: the CLI and the MCP surface have only `version` and `docs`
-  today. #353: `call` accepts a list as arguments, but the schema says `object`; a
-  text error prints the caller's text raw, so a new line forges a `fix:` line. It
-  does not have the `security` label while no operation takes real arguments.
-- Mesh to agent, to attack when `ops` gets real operations: text from a spec file
-  or a peer that reaches a tool description or a tool result, as an instruction to
-  the agent.
+- Caller to `ops`: the CLI and the MCP surface have `version`, `docs`, `plan`,
+  `apply`, and `status`. The MCP tools read and write files only under their
+  folders, never in the data directory (OPS OUTPUT). `tools/call` takes only an
+  object as arguments (#310), and a text error escapes the caller's text (#377).
+- Mesh to agent: text from a spec file or a peer that reaches a tool description or a
+  tool result (`status`, `plan`), as an instruction to the agent (#2924).
 - A change of each definition other than a channel needs `admin` on its key, because
   a policy governs its whole region, a subject's keys decide who acts as it, a region
   record makes a region, and a connector reaches channels by `select` (SERVE ACCESS).
@@ -304,7 +303,8 @@ state on `main`.
   reads the documents into definitions, and the influx kind reads the config of each
   `connector` block of kind `influx`. Fuzzed: `config_check`, which only the inputs
   `influx_*` take to the influx kind, through `connector::reader::read`,
-  `connector::http::uri`, `secret::Source::read` (the inputs `influx_token_*`), and
+  `connector::http::uri`, `secret::Source::read` (the inputs `influx_token_*`, and
+  `influx_ca_*` and `influx_address_https` for `ca`), and
   `connector_influx::Kind::parse` (#1817).
 - A person or an agent reviews the files and the plan before `apply` (K3). Text
   that shows one thing and reads as another defeats that review. Questions for a
@@ -348,14 +348,37 @@ state on `main`.
   path byte, and a carried tail below the path's tail, one that continues the chain
   only from the second header, one inside a data record, off the way, one that only
   the older header reaches, one that passes the end of the area, and one after a
-  data record longer than the window. Six more reach the rule for a path that the
-  walk met: `carry_passed` gives a larger count to a path whose only entry has no
-  samples, which the open takes; `carry_seq`, `carry_stamp`, and
-  `carry_more_after_carry` give another seq, another stamp, and a larger count after
-  a carried tail, which it refuses; `carry_met_after_carry` gives a larger count
-  again after the open took one, which it refuses; and `carry_twice` lists one path
-  twice in one record, which it refuses. The `body_over_max` input holds a data
-  record that follows the chain with a body over `body_max`.
+  data record longer than the window. Six more reach the rule for a path that the walk
+  met: `carry_passed` gives a larger count to a path whose only entry has no samples,
+  and `carry_seq`, `carry_stamp`, and `carry_more_after_carry` give another seq, another
+  stamp, and a larger count after a carried tail: the open refuses each (#2796);
+  `carry_met_after_carry` gives a larger count to a path whose only entry has no
+  samples, then a second carry record, and the open refuses the first; and `carry_twice`
+  lists one path twice in one record, which it refuses. Nine hold entries in a carry
+  record. The open takes three: `carry_entry_tagged` holds a new tagged entry,
+  `carry_entry_older` one of an earlier mark than the copy of its data record, and
+  `carry_entry_replaces` one of the same mark, which replaces that copy. It refuses
+  six: `carry_entry` holds an entry with tag 0, `carry_entry_past` one that ends past
+  the last seq, `carry_entry_twice` one tagged entry twice, `carry_entry_unmet` one of a
+  path that no record holds, `carry_entry_cut` counts one entry that the body does not
+  hold, and `carry_entries_over_max` counts 1024 entries. The open refuses
+  `tagged_over_max`, a data record with a tagged entry of 4244 bytes, over
+  `Layout::ENTRY_MAX_MIN`. Four reach the count of an
+  entry with no samples (#2796), and the open refuses each: `empty_count_zero` gives a
+  count of 0, `empty_presence` a presence byte of 2, `empty_counted` a count that is not
+  the walked one on a path that the walk met, and `empty_crowded` an entry with no
+  samples after a count of `u64::MAX` at its seq. The `body_over_max` input holds a data
+  record that follows the chain with a body over `body_max`. In `carry_limit`, the
+  carry record of the holders of a batch of tagged entries passes the carry limit,
+  and the append refuses it as `Limit::Carry`. The build of `offsets_past_tail_25`
+  and `offsets_walk_25` starts at a late block of the area, and each moves the tail
+  to its last lap: the record at the tail, or the one after it, passes the last
+  offset, and the open refuses it. `open_full_tail_25` moves the tail to the last lap
+  of a block with no room for the restart record of the open, and the build of
+  `wrap_start` wraps. In `wrap_full_25`, the commit fits only without the end of the
+  area that it skips, and the append refuses it as `Full`. `holders_over_carry` sets
+  the `body_max` of both headers between the body of a record of three tagged entries
+  and the carry body of its holders, and the open refuses it.
 
 ### Device to connector
 
@@ -368,6 +391,11 @@ state on `main`.
   from it. OPEN62541 SOURCE bars it for each nonce, key, and session token of Foundation
   code, and states what a security policy that encrypts, or an OPC UA server of
   Foundation, changes first. Neither is built.
+- A certificate that a server sends is untrusted input, and so is a key or a
+  certificate that the node loads. No PEM read of the open62541 copy waits on the
+  console or sets a signal handler: each refuses an encrypted PEM that it has no
+  password for, and a password that does not fit in the buffer of aws-lc (OPEN62541
+  SOURCE).
 
 ### Encoded series
 
@@ -433,6 +461,13 @@ state on `main`.
   the time until the allocator gives that memory again. Trigger for a request path
   that clears them: an attacker who reads freed heap of the node and not its live
   heap.
+- Whoever can write the `ca` source of an `influx` connector can make the node trust
+  a server of their own, so they can stand in for the InfluxDB server and get the
+  token. A `ca` adds to the roots of the node and never replaces them, so it cannot
+  make a node trust fewer servers. Over `http`, the token crosses the network in clear,
+  with or without a `ca`. `plan` refuses a `ca` with an `http` address, so its user
+  does not think that the token goes under TLS (INFLUX KIND). `Roots::with_pem` reads
+  the text of the `ca`. Fuzzed: `connector_pem`.
 - A join ticket is a secret (BQ11a).
 - Rule for every crate: no secret value in a log, a status channel, an error, or
   plan output.
@@ -470,10 +505,13 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `wire_clock` | `wire::clock::decode` | Encodes to the same bytes |
 | `wire_hub_home` | `wire::hub::Home::decode`, `Open::encode`, `Credit::encode`, `keys::encode` | Each message encodes to the same bytes; each event comes in the order of a session, and each refusal is one that the order or the mode of the session gives; each valid message made from the input decodes to itself |
 | `wire_blob` | `wire::blob::Server::decode`, `Requester::decode`, `Put::body`, `Reply::body`, `Body::take`, `Body::end`, `get::encode`, `Put::encode`, `Reply::encode` | Each message encodes to the same bytes; each body counts exactly the bytes of its head, and each refusal of a body is the one that its rest gives; a body ends unfinished while bytes remain; each valid message made from the input decodes to itself |
-| `wire_hub_reader` | `wire::hub::Reader::decode`, `Reader::end`, `Reply::encode`, `ends::encode` | Each message encodes to the same bytes; each event comes in the order of a session; each head is live, ends at or below `u64::MAX`, and starts at or after the end of the head before it; each refusal is one that the order, the mode, or the heads of the session give; the body is where `Reader::body` says; `Reader::end` refuses each point before `Behind`, with `Unfinished` inside a body; each valid message made from the input decodes to itself |
-| `wire_hub_client` | `wire::hub::client::Challenge::decode`, `Signed::decode`, `Request::decode`, `Response::decode`, `First::decode`, `Read::decode`, `Open::decode`, `Reader::decode` (with `Places` and the run of places in it), `Body::take`, `Body::end`, and the encoders of each message | Each message encodes to the same bytes; each decoder but `Open::decode` and `Reader::decode` refuses another kind with `Error::Kind`, and `Reader::decode` refuses a first message of another kind with it; `First::decode` gives what the decoder of the kind of the message gives; each body ends at its length and nowhere else, and each refusal of a body is the one that its rest gives; a `Reader` of each mode gives the places, then a run with no more places than remain and a stamp at the index place, and with the last place, and at no message before it, the `hub::Reader` of their count and the mode; each valid message made from the input decodes to itself |
+| `wire_hub_reader` | `wire::hub::Reader::decode`, `Reply::encode`, `ends::encode` | Each message encodes to the same bytes; each event comes in the order of a session; each head is live, ends at or below `u64::MAX`, and starts at or after the end of the head before it or, for the first head, the `live` of `Opened`; each refusal is one that the order or the heads of the session give; a reply of the retired kind 3 gives `Error::Kind { kind: 3 }`; the body is where `Reader::body` says; `Reader::decode` of `None` gives `Unfinished` inside a body and `Finished` at each other point, and leaves the reader as it was; each valid message made from the input decodes to itself |
+| `wire_hub_frames` | `wire::hub::Frames::open`, `due`, `decode`, `received`, `draft`, `live`, with a small pool | No input panics; each frame has the path and range of its head; a layout error comes again from the next `due`; a reply of the retired kind 3 gives `Error::Kind { kind: 3 }`; a run that receives each body message in place gives the same steps as a run that gives each whole to `decode`; in a complete session, the lost seqs of each frame (`Frames::lost`) and the ranges of its frames with a sample tile the seqs from the open position on, and a latest session or a frame with no sample loses none; `Frames::live` is the open position, then the end of the last frame with a sample |
+| `wire_hub_write` | `wire::hub::write::Frames::due`, `decode`, `received`, `draft`, `skip`, `finish`, with a small pool | No input panics; a frame that finds the pool full is skipped and the stream goes on; each head that it gives encodes back to its message, so no head that `write::Head::encode` panics on gives a step; each error is one that `decode` lists for the part that was due; each frame has the time, form, and count of its head; a layout error comes again from the next `due`; at the end of the input, `finish` gives `Ok` between frames, else `Error::Cut` with the bytes of the frame that came; a run that receives each body message in place gives the same steps as a run that gives each whole to `decode` |
+| `wire_hub_client` | `wire::hub::client::Challenge::decode`, `Signed::decode`, `Request::decode`, `Response::decode`, `First::decode`, `Read::decode`, `Open::decode`, `Reader::decode`, `Places::decode`, `place::decode`, `Body::take`, `Body::end`, `write::Write::decode`, `write::Open::decode`, `write::Opening::decode`, `wire::hub::write::Reply::decode`, and the encoders of each message | Each message encodes to the same bytes; each decoder but the two opens, `Reader::decode`, and `write::Opening::decode` refuses another kind with its `Kind` error, and `Reader::decode` and `write::Opening::decode` refuse a first message of another kind with it; `First::decode` gives what the decoder of the kind of the message gives; each body ends at its length and nowhere else, and each refusal of a body is the one that its rest gives; a `Reader` of each mode gives nothing before the last place; a `Places` over `PLACES_MAX` gives `Error::Places`; each message of the run holds no more places than remain, and a stamp at the index place; with the last place, and at no message before it, the reader gives the start: the places of the run, their key set in place order with the index group at the index place, and the `hub::Reader` of their count and the mode; places that name a channel twice give `Error::Repeated`; a refused message leaves the reader as it was, and the end of the stream before the last place gives `Error::Finished`; a `write::Opening` gives for each message what a `Reader` gives, and at the last place the reader's places and key set (a `Reader` holds an `Opening`, so the checks of the `Reader` are the checks of the run of both); a `Reply` that decodes holds a range of at least one sample that ends at or below `u64::MAX`; each valid message made from the input decodes to itself |
 | `transport_hello` | `transport::fuzzing::Hello::decode`, `Hello::encode` (feature `fuzzing`) | Gives the hello, or the refusal, that a second reader of the STREAM WIRE rules gives; its encoding decodes to itself |
 | `transport_certificate` | `transport::fuzzing::peer`: the client verifier and the peer of a node's server, for a dialer's chain of 0 to 3 certificates (feature `fuzzing`) | Gives the peer that a second reader of the rules gives: a client for no certificate, none for a chain of more than one or a certificate over 1024 bytes, and else none or the node whose key follows the Ed25519 key header in the certificate; a certificate that a node issues reads back to its key, and two of it are refused. Not reached: the handshake signature, which fuzzed bytes cannot make |
+| `env_host` | `env::net::host::Host::from_str` and `env::net::host::uri` | A host from either reads back from its text, and a name has no uppercase letter |
 | `mesh_change` | `mesh::change::Change::decode`, and `Card::decode` and `Status::decode` through a `Join`, by `mesh::testing::round_trip_change` | Encodes to the same bytes |
 | `mesh_message` | The decode of a mesh message, with its `raft` proof, chain, and entries, by `mesh::testing::round_trip_message` | Encodes to the same bytes |
 | `mesh_entries` | The decode of `raft` entries one after another, as a mesh log record body and an append hold them, by `mesh::testing::round_trip_entries` | Encode to the same bytes |
@@ -494,9 +532,10 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `config_hcl_write` | `config_hcl::write` | Its text reads back as an equal document |
 | `config_plan` | `config::plan::Plan::decode` | Encodes to the same bytes |
 | `config_check` | `config::check` on the documents that `config_hcl::read` reads from up to three files, with the influx kind in the kind table | The same entries or the same problems for the files in either order; with no problem, one entry for each block and one for each status channel of each connector, and no other, unique in any case, each policy and connector decodes to itself, and each edge of a channel names a channel entry; each problem's span is in its file, in the order of the files, then of the source; files that pass alone, with keys that differ in more than case and no subject named as a connector in any ASCII case, pass together and give the union of their entries |
+| `connector_pem` | `connector::http::Roots::with_pem` on the text of a `ca` | The same error with a UTF-8 byte order mark put at the start; an `Ok` holds a root |
 | `connector_modbus_rtu` | `connector_modbus::rtu::decode_request`, `decode_reply`, `pdu::Request::decode`, `Request::decode_reply` | A request reads back unchanged; a reply has the asked count |
-| `connector_modbus_tcp` | `connector_modbus::tcp::decode`, `pdu::Request::decode`, `decode_reply` | A request reads back unchanged; a reply has the asked count |
-| `connector_opcua_decode` | `connector_opcua::fuzz::decode`: `UA_decodeBinary` of open62541, as each type of `UA_TYPES` | No memory fault or leak; a decoded value encodes to its `UA_calcSizeBinary` length, and that encoding decodes, reads exactly its length, and encodes to the same bytes. Until #435 is fixed, the encoding decodes with as many zeros after it as its length. |
+| `connector_modbus_tcp` | `connector_modbus::tcp::decode`, `pdu::Request::decode`, `decode_reply`, `read::groups`, `read::Group::values` | A request reads back unchanged; a reply has the asked count; reads of each register type that tile a read request group into that request, and give the values of its reply in address order, in each register order |
+| `connector_opcua_decode` | `connector_opcua::fuzz::decode`: `UA_decodeBinary` of open62541, as each type of `UA_TYPES` | No memory fault or leak; a decoded value encodes to its `UA_calcSizeBinary` length, and that encoding decodes, reads exactly its length, and encodes to the same bytes. A decoded `DataValue` gives the same read of its value (`Value::of` of the kind), or the same fault, from both decodes. Until #435 is fixed, the encoding decodes with as many zeros after it as its length. |
 | `ops_mcp` | `foundation mcp`, through `ops::cli` | No error, and at most one reply for each line |
 | `types_name` | `Name` | Prints as the text it was read from |
 | `types_selector` | `Pattern`, `Selector` | Agree with a second matcher |
@@ -508,22 +547,31 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `types_channel` | `channel::Key` | Printed text reads back to the same key |
 | `types_sample` | `sample::Type` | Prints as the text it was read from |
 | `types_frame_ends` | `frame::Layout::from_ends`, `frame::check`, `frame::split` | Refuses exactly the ends that break a rule, with an error that names a broken rule; the layout is the one that `Layout::new` gives for the lengths; a frame drafted from the ends has them, and `split` cuts its series at them; `check` refuses exactly the ends that do not fit a body whose length the input gives, and `split` cuts a body that `check` took at them. Not reached: the panics of `split`, a body over 64 KiB |
-| `buffer_open` | `Buffer::open` and `Buffer::read` on an edited ring | An `Err`, or a commit survives a reopen; a read gives each path as the doc of `Buffer::read` says, up to the tail, the same in one read, in steps, from inside an entry or a gap, and after a reopen. Not reached: a pool with no block, a read before a commit ends |
+| `buffer_open` | `Buffer::open` and `Reader::read` on an edited ring | An `Err`, or a commit survives a reopen; a read gives each path as the doc of `Reader::read` says, up to the tail, the same in one read, in steps, from inside an entry or a gap, and after a reopen. Not reached: a pool with no block, a read before a commit ends |
 | `secret_sealed` | `secret::store::Sealed::put` | Takes only the one real sealed value; refuses any other bytes, name, or version; a refused `put` leaves the store as it was |
 | `node_identity` | `node::sector::written` with `node::identity::fields` and `encode` (the checks `node::identity::check` and `node::admin::check`, which call `node::sector::check`), by `node::fuzz::identity` (feature `sim`), on 100 bytes, or on 96 bytes with their CRC32C; the same for `admin.key`, on 54 bytes, or on 50 bytes with their CRC32C; and the decode and encode of `address` (the check `node::address::check`), on 99 bytes, or on 95 bytes with their CRC32C | Gives an identity or an admin key exactly for bytes with the tag and the CRC32C, and an address exactly for the bytes that the encode writes, with the tag and the CRC32C, and that value encodes to the same bytes |
 
 No target yet, because the decoder is private, not built, not reached from a file, or
 not reached from the corpus: `transport::message` (#2139), the QUIC hello
 (`transport::quic::hello::Hello::decode`), the file `founding` of the mesh directory
-(`mesh::region::Founding::decode`, with `mesh::Member::decode` in it, #2311), the join
+(`mesh::region::Founding::decode`, with `mesh::Member::decode` in it, #2311), the file
+`card` of the mesh directory (`mesh::driver::version::read`, #2311), the join
 answer (`mesh::Member::decode` from a peer, #336 adds its target),
 each connector's protocol parser, the `node_id`
 text of the `opcua` kind
 (`connector_opcua::node`, #2523), its `address`, which `UA_parseEndpointUrl` of
-open62541 reads (`connector_opcua::Kind::parse`, #2523), the file `name` of the data
-directory (`node::name::decode`, #2174), the file `budget` of the data directory
-(`node::budget::decode`, #2174), the parsers of `/proc/self/mountinfo` and
+open62541 reads (`connector_opcua::Kind::parse`, #2523), the readers of the answers of
+a browse and a describe, which the browse of the kind calls (`node_of`, `unit_of`,
+`Answer::browsed`, and `Answer::target` in `connector_opcua::client`, #2914), the
+`address` of the
+`modbus` kind (`connector_modbus::Kind::parse`, #2789), the text of a browse path and
+pattern, which no front end reads yet (`connector::browse`, #2827), the file `name` of
+the data directory (`node::name::decode`, #2174), the file `budget` of the data
+directory (`node::budget::decode`, #2174), the parsers of `/proc/self/mountinfo` and
 `/proc/self/cgroup` in `os::memory` (#2226), the request of a remote program and the
 reply of its node (`ops::serve`, #2563), the newest handoff record of each index in the
-ring (`home::handoff::read`, #2278), and the chunk processing of open62541
-(`ua_securechannel.c`, #1990).
+ring (`home::handoff::read`, #2278), the newest named reader entry of each index in
+the ring (`home::named::read`, #2278), the buffer entry that a complete reader reads from
+disk (`home::stored::Decoder::frame`, #2738), the chunk processing of open62541
+(`ua_securechannel.c`, #1990), and the read of the certificate that an OPC UA server
+sends (`openSSLLoadLeafCertificate` of the OpenSSL plugins, #3058).

@@ -24,7 +24,7 @@ use types::digest::Digest;
 use types::ed25519::{PrivateKey, PublicKey};
 use types::name::Name;
 use types::node;
-use types::time::{Span, Stamp};
+use types::time::{Monotonic, Span, Stamp};
 use wire::Protocol;
 
 use crate::applied::Applied;
@@ -33,20 +33,24 @@ use crate::claim::{self, Known, Signer};
 use crate::error::{self, Error, Stopped};
 use crate::log::{self, Log};
 use crate::member::Member;
-use crate::message::Message;
+use crate::message::{self, Message};
 use crate::region::{self, Refused, Request};
 use crate::status::{self, Status};
+use bound::Bound;
 pub use founding::founding;
 use send::Senders;
 use used::{Opening, Used};
 
+mod addresses;
 mod apply;
+mod bound;
 mod founding;
 mod home;
 mod propose;
 mod send;
 mod stream;
 pub(crate) mod used;
+mod version;
 
 /// The time of one `raft` tick.
 const TICK: Span = Span::from_nanos(100 * Span::MILLISECOND.nanos());
@@ -66,6 +70,9 @@ const REFUSED: Code = Code(16);
 /// The code of a stream with a request from a node that a committed configuration
 /// removed.
 const REMOVED: Code = Code(17);
+/// The code of a stream with a `Card` change of a member whose card the leader
+/// proposed less than a minute before.
+const SOON: Code = Code(18);
 
 /// What a [`Mesh`] is built from.
 #[derive(Debug)]
@@ -120,6 +127,7 @@ pub struct Mesh {
     pool: Rc<Pool>,
     store: Rc<blob::Store>,
     clock: Clock,
+    cards: Rc<version::Cards>,
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "the join answer of #336 is the first user")
@@ -134,18 +142,19 @@ impl fmt::Debug for Mesh {
 }
 
 impl Mesh {
-    /// Reads the log from `config.dir`, starts the group as a follower, and spawns
-    /// its tasks on `config.tasks`. It puts each chunk of the founding tree in
-    /// `config.store`. It reads the spec of the newest pointer that a file in
-    /// `<config.dir>/spec` names, or the founding spec when there is no file, and
-    /// removes the file of each older pointer. A spec that does not read or has
-    /// problems is not an error: the node then uses no spec, and [`Mesh::spec`] gives
-    /// the cause in `behind`.
+    /// Reads the log from `config.dir`, starts the group, and spawns its tasks on
+    /// `config.tasks`. The group starts as a follower, or it leads at once when the
+    /// vote of this node is a quorum of its configuration in force. It puts each chunk
+    /// of the founding tree in `config.store`. It reads the spec of the newest pointer
+    /// that a file in `<config.dir>/spec` names, or the founding spec when there is no
+    /// file, and removes the file of each older pointer. A spec that does not read or
+    /// has problems is not an error: the node then uses no spec, and [`Mesh::spec`]
+    /// gives the cause in `behind`.
     ///
     /// At each open, its state starts at the founding: `pointer` gives version 0, and a
     /// watch gives each home of `config.founding.homes`. The state moves on when this
-    /// node applies the log, after it hears the leader. Until then, a watch can give a
-    /// founding home that the log moved, as at a follower behind the leader.
+    /// node applies the log. Until then, a watch can give a founding home that the log
+    /// moved, as at a follower behind the leader.
     ///
     /// The group sends its messages on a session to each member. It dials a member at
     /// the addresses of its card, at the first message for it, and again after the
@@ -159,6 +168,11 @@ impl Mesh {
     ///   or the node of a home.
     /// - [`Error::WrongKey`] when `config.private_key` is not the key of this node in
     ///   `config.founding.members`.
+    /// - [`Error::Limit`] when this node takes messages of fewer than the bytes of an
+    ///   append of the largest record: the smaller of the limit of `config.transport`
+    ///   and the largest block of `config.pool`.
+    /// - [`Error::Voters`] when the voters that the node starts with are more than one
+    ///   set can hold.
     /// - [`Error::Pool`] when the pool has no block for a chunk or the founding file,
     ///   and [`Error::Blob`] when a call of the store fails.
     /// - [`Error::Founding`] when the log holds a record and `config.dir` holds another
@@ -183,6 +197,16 @@ impl Mesh {
             "invariant: the transport of a mesh proves the public half of its private \
              key: it proves {proved}, not {own}"
         );
+        let bytes_max = config
+            .transport
+            .message_bytes_max()
+            .min(config.pool.largest());
+        if bytes_max < message::BYTES_MIN {
+            return Err(Error::Limit {
+                bytes_max,
+                bytes_min: message::BYTES_MIN,
+            });
+        }
         let transport = Rc::clone(&config.transport);
         let mesh = Self::start(config).await?;
         let senders = Senders {
@@ -205,6 +229,7 @@ impl Mesh {
             definitions,
             homes,
         } = config.founding.clone();
+        check_voters(voters.len())?;
         let tree = spec::region::tree(&mut chunks, &definitions);
         let state =
             region::State::new(prefix, members, tree.root, voters.clone(), homes)
@@ -213,13 +238,14 @@ impl Mesh {
         put(&config.store, &config.pool, &chunks, &tree.chunks).await?;
         let signer = Signer::new(config.key, &config.private_key);
         let pool = Rc::clone(&config.pool);
-        let files = config.files.clone();
-        let (log, stored) = open_log(config.files, &config.dir, config.pool).await?;
+        let files = &config.files;
+        let (log, stored) = open_log(files, &config.dir, Rc::clone(&pool)).await?;
         let logged = stored != log::Stored::default();
         let blocks = log.blocks();
-        founding::keep(&files, &config.dir, blocks, &config.founding, logged).await?;
+        founding::keep(files, &config.dir, blocks, &config.founding, logged).await?;
+        let cards = version::Cards::new(&config, blocks.clone());
         let used = used::open(Opening {
-            files: &files,
+            files,
             dir: &config.dir,
             store: &config.store,
             prefix: state.prefix(),
@@ -229,7 +255,11 @@ impl Mesh {
         })
         .await?;
         let unapplied = written(&stored.entries).collect();
-        let raft = follower(config.key, stored, voters)?;
+        let mut raft = follower(config.key, stored, voters)?;
+        // One voter cannot split a vote, so the election timeout buys nothing.
+        if raft.voters().quorum(|key| key == config.key).is_ok() {
+            raft.campaign();
+        }
         let group = Group::new(raft, state, unapplied, used);
         let group = Rc::new(RefCell::new(group));
         let weak = Rc::downgrade(&group);
@@ -237,7 +267,7 @@ impl Mesh {
         tasks.tasks().spawn(used::keep(
             Weak::clone(&weak),
             Rc::clone(&config.store),
-            files,
+            config.files,
             config.dir,
             config.clock.clone(),
         ));
@@ -254,6 +284,7 @@ impl Mesh {
             pool,
             store: config.store,
             clock: config.clock,
+            cards: Rc::new(cards),
             entropy: config.entropy,
         })
     }
@@ -372,10 +403,30 @@ impl Mesh {
     ///   that write ends.
     /// - [`Error::Raft`] with [`raft::Error::NotLeader`] when this node does not
     ///   lead, or when a new leader replaces the entry before a write holds it.
+    /// - [`Error::Soon`] for a `Card` change of a member when this node proposed
+    ///   another card of that member less than a minute before, while it leads.
+    /// - [`Error::NotMember`] for a `Card` change of a node that is not a member of
+    ///   the applied state, while this node leads.
+    ///
+    /// A repeat of a `Card` change that this node proposed in this term, less than
+    /// a minute before, gets no new entry, and returns as the first call does.
     pub(crate) async fn propose(&self, change: Change) -> Result<Position, Error> {
+        let member = match &change {
+            Change::Card(card) => Some(card.key),
+            _ => None,
+        };
         let mut data = Vec::new();
         change.encode(&mut data);
-        self.propose_data(data).await
+        let Some(member) = member else {
+            return self.propose_data(data).await;
+        };
+        let now = self.clock.now();
+        let proposal = {
+            let mut group = self.group.borrow_mut();
+            group.taking()?;
+            group.propose_card(member, now, data)?
+        };
+        self.held(proposal).await
     }
 
     /// Proposes `voters` as the next set of voters, and returns once the entry is on
@@ -384,6 +435,7 @@ impl Mesh {
     ///
     /// # Errors
     ///
+    /// - [`Error::Voters`] when the set holds more voters than one set can hold.
     /// - [`Error::Stopped`] when the group stopped, or stops before the write ends.
     /// - [`Error::NotMember`] when a node of the set is not a member in the applied
     ///   state of this node.
@@ -398,6 +450,7 @@ impl Mesh {
         &self,
         voters: BTreeSet<node::Key>,
     ) -> Result<Position, Error> {
+        check_voters(voters.len())?;
         self.proposed(|group| {
             let mut members = voters.iter();
             if let Some(&key) = members.find(|&&key| group.state.member(key).is_none())
@@ -423,16 +476,13 @@ impl Mesh {
             let mut group = self.group.borrow_mut();
             group.taking()?;
             let at = propose(&mut group)?;
-            group.sync();
-            let proposal = Rc::new(Proposal {
-                at,
-                held: Cell::new(None),
-                waker: Cell::new(None),
-            });
-            group.proposals.push(Rc::clone(&proposal));
-            group.wake();
-            proposal
+            group.proposal(at)
         };
+        self.held(proposal).await
+    }
+
+    // Waits for the write of the entry of `proposal`.
+    async fn held(&self, proposal: Rc<Proposal>) -> Result<Position, Error> {
         poll_fn(|cx| {
             let group = self.group.borrow();
             match proposal.held.get() {
@@ -444,7 +494,7 @@ impl Mesh {
                 None => {}
             }
             group.running()?;
-            proposal.waker.set(Some(cx.waker().clone()));
+            proposal.wait(cx.waker());
             Poll::Pending
         })
         .await
@@ -452,7 +502,9 @@ impl Mesh {
 
     /// Proposes the `change` that `peer` forwarded, and gives the answer for the
     /// reply half of its stream: the position once the entry is on disk here, or
-    /// "not the leader". A change that `peer` forwards again applies again.
+    /// "not the leader". A change that `peer` forwards again applies again, other
+    /// than a `Card` change that this node proposed in this term less than a minute
+    /// before, which gets the position of its first entry.
     ///
     /// # Errors
     ///
@@ -461,6 +513,11 @@ impl Mesh {
     ///   that write ends. The group does not see the change.
     /// - [`Error::PeerNotVoter`] when `peer` is the key of no voter of this node's
     ///   configuration. The group does not see the change.
+    /// - [`Error::NotMember`] when `change` is a `Card` change of a node that is not
+    ///   a member, while this node leads. The group does not see the change.
+    /// - [`Error::Soon`] when `change` is a `Card` change of a member, and this node
+    ///   leads and proposed another card of that member less than a minute before.
+    ///   The group does not see the change.
     pub(crate) async fn answer(
         &self,
         peer: PublicKey,
@@ -717,6 +774,7 @@ struct Group {
     // for a read of the spec.
     calls: BTreeMap<u64, Waker>,
     used: Used,
+    bound: Bound,
 }
 
 impl Group {
@@ -744,6 +802,7 @@ impl Group {
             applied: Applied::default(),
             calls: BTreeMap::new(),
             used,
+            bound: Bound::default(),
         }
     }
 
@@ -801,6 +860,42 @@ impl Group {
         let (_, new) = unstable.split_at(unstable.len().saturating_sub(new));
         self.unapplied.extend(written(new));
         self.synced = last.at;
+    }
+
+    // The proposal of the entry at `at`, which `raft` just appended.
+    fn proposal(&mut self, at: Position) -> Rc<Proposal> {
+        self.sync();
+        let proposal = Rc::new(Proposal::new(at));
+        self.proposals.push(Rc::clone(&proposal));
+        self.wake();
+        proposal
+    }
+
+    // Proposes `data`, a `Card` change of `member`, under the bound of a leader at
+    // `now`. A repeat that this node proposed in this term less than a minute before
+    // gets the proposal of the first.
+    fn propose_card(
+        &mut self,
+        member: node::Key,
+        now: Monotonic,
+        data: Vec<u8>,
+    ) -> Result<Rc<Proposal>, Error> {
+        let propose = |group: &mut Self, data| {
+            let at = group.raft.propose(data)?;
+            Ok(group.proposal(at))
+        };
+        if self.raft.role() != raft::Role::Leader {
+            return propose(self, data);
+        }
+        if self.state.member(member).is_none() {
+            return Err(Error::NotMember(member));
+        }
+        let term = self.raft.term();
+        let mut bound = mem::take(&mut self.bound);
+        let proposal =
+            bound.propose(member, data, term, now, |data| propose(self, data));
+        self.bound = bound;
+        proposal
     }
 
     fn running(&self) -> Result<(), Error> {
@@ -920,7 +1015,10 @@ impl Group {
     fn apply_change(&mut self, change: Change) -> Result<bool, Refused> {
         let listed = match &change {
             Change::Spec { chunks, .. } => Some(chunks.clone()),
-            Change::Home { .. } | Change::Join(_) | Change::Ticket { .. } => None,
+            Change::Home { .. }
+            | Change::Join(_)
+            | Change::Ticket { .. }
+            | Change::Card(_) => None,
         };
         let applied = self.state.apply(change)?;
         if let Some(listed) = listed {
@@ -971,15 +1069,30 @@ struct Proposal {
     // Whether the write of the first `Ready` after the call held the entry. `None`
     // until that write ends.
     held: Cell<Option<bool>>,
-    // The task of the call, while it waits.
-    waker: Cell<Option<Waker>>,
+    // The task of each call that waits: the call that proposed it, and its repeats.
+    wakers: RefCell<Vec<Waker>>,
 }
 
 impl Proposal {
-    fn wake(&self) {
-        if let Some(waker) = self.waker.take() {
-            waker.wake();
+    fn new(at: Position) -> Self {
+        Self {
+            at,
+            held: Cell::new(None),
+            wakers: RefCell::default(),
         }
+    }
+
+    // Keeps `waker` until the write ends.
+    fn wait(&self, waker: &Waker) {
+        let mut wakers = self.wakers.borrow_mut();
+        if !wakers.iter().any(|kept| kept.will_wake(waker)) {
+            wakers.push(waker.clone());
+        }
+    }
+
+    fn wake(&self) {
+        let wakers = mem::take(&mut *self.wakers.borrow_mut());
+        wakers.into_iter().for_each(Waker::wake);
     }
 }
 
@@ -1043,6 +1156,7 @@ fn follower(
         key,
         election_ticks: ELECTION_TICKS,
         heartbeat_ticks: HEARTBEAT_TICKS,
+        fits: message::fits,
     };
     Ok(Raft::new(fixed, start)?)
 }
@@ -1086,6 +1200,17 @@ fn request(body: &Body) -> bool {
     }
 }
 
+// Checks that a set of `voters` voters fits one message with its proof.
+fn check_voters(voters: usize) -> Result<(), Error> {
+    if voters > message::VOTERS_MAX {
+        return Err(Error::Voters {
+            voters,
+            most: message::VOTERS_MAX,
+        });
+    }
+    Ok(())
+}
+
 // Checks that `own`, each of `voters`, and the node of each home are members of
 // `state`, and that `private_key` is the key of `own`.
 fn check_members(
@@ -1127,7 +1252,7 @@ async fn put(
 
 // Makes `dir`, durable in its parent, and opens the log in `LOG` in it.
 async fn open_log(
-    files: Files,
+    files: &Files,
     dir: &Path,
     pool: Rc<Pool>,
 ) -> Result<(Log, log::Stored), log::Error> {
@@ -1135,7 +1260,7 @@ async fn open_log(
     files
         .sync_dir(dir.parent().unwrap_or(Path::new("")))
         .await?;
-    Log::open(files, dir.join(LOG), pool).await
+    Log::open(files.clone(), dir.join(LOG), pool).await
 }
 
 // Ticks the group and does what each `Ready` says, in the order that `raft` needs:
@@ -1261,7 +1386,6 @@ mod tests {
     use transport::{Address, Peer, Port};
     use types::name::{Name, Prefix};
     use types::node::SealKey;
-    use types::time::Monotonic;
     use wire::Protocol;
 
     use super::*;
@@ -1318,10 +1442,12 @@ mod tests {
         forwards: BTreeMap<u8, (u8, Change)>,
         /// The answer of each node to the change that it got.
         answers: BTreeMap<u8, Message>,
-        /// The members from 1 to 9 on each node, when its watch last gave a home.
+        /// The members from 1 to 109 on each node, when its watch last gave a home.
         members: BTreeMap<u8, BTreeSet<u8>>,
         /// The voter whose card has no address on each node.
         hidden: Option<u8>,
+        /// The message limit of each voter that does not take `BYTES_MAX`.
+        limits: BTreeMap<u8, usize>,
         /// The records of those members on each node, at the same time.
         records: BTreeMap<u8, BTreeMap<u8, Member>>,
         /// The home of `SECOND` on each node, at the same time.
@@ -1343,6 +1469,11 @@ mod tests {
         /// Each call of `set_home` that returned, in order: its node, the home on
         /// that node at the return, and what the call gave.
         set: Vec<(u8, Option<node::Key>, Result<(), Error>)>,
+        /// The addresses that each node sets on its card next.
+        addresses: BTreeMap<u8, card::addresses::Addresses>,
+        /// Each call of `set_addresses` that returned, in order: its node, what the
+        /// call gave, and the card of that node at the return.
+        moved: Vec<(u8, Result<(), Error>, card::Card)>,
         /// The voters that each node proposes next.
         configurations: BTreeMap<u8, BTreeSet<u8>>,
         /// The spec change that each node proposes next.
@@ -1402,15 +1533,20 @@ mod tests {
         members: &[u8],
         voters: &[u8],
     ) -> Config {
-        config_at(node, tasks, id, 0, members, voters).await
+        config_at(node, tasks, id, 0, BYTES_MAX, members, voters).await
     }
 
-    /// As [`config`], with the transport at `port` of `node`.
+    /// The message limit of a transport, unless a test gives another.
+    const BYTES_MAX: usize = 1 << 16;
+
+    /// As [`config`], with the transport at `port` of `node`, which takes messages of
+    /// at most `bytes` bytes.
     async fn config_at(
         node: &sim::node::Node,
         tasks: &Tasks,
         id: u8,
         port: u16,
+        bytes: usize,
         members: &[u8],
         voters: &[u8],
     ) -> Config {
@@ -1438,12 +1574,13 @@ mod tests {
             clock: node.clock(),
             entropy: node.entropy(),
             tasks: tasks.clone(),
-            transport: Rc::new(create_transport(
+            transport: Rc::new(bind(
                 node,
-                tasks,
-                id,
                 port,
-                Rc::clone(&pool),
+                transport::Config {
+                    message_bytes_max: NonZeroUsize::new(bytes).unwrap(),
+                    ..transport_config(node, tasks, id, Rc::clone(&pool))
+                },
             )),
             pool,
             store: Rc::new(store),
@@ -1459,21 +1596,10 @@ mod tests {
         members: &[u8],
         voters: &[u8],
     ) -> Config {
-        let mut config = config_at(node, tasks, id, port, members, voters).await;
+        let mut config =
+            config_at(node, tasks, id, port, BYTES_MAX, members, voters).await;
         config.founding.members = members.iter().map(|&of| create_voter(of)).collect();
         config
-    }
-
-    /// A transport of node `id` at `port` of `node`, with `pool`. Port 0 is a free
-    /// port.
-    fn create_transport(
-        node: &sim::node::Node,
-        tasks: &Tasks,
-        id: u8,
-        port: u16,
-        pool: Rc<Pool>,
-    ) -> Transport {
-        bind(node, port, transport_config(node, tasks, id, pool))
     }
 
     fn transport_config(
@@ -1484,7 +1610,7 @@ mod tests {
     ) -> transport::Config {
         transport::Config {
             private_key: private(id),
-            message_bytes_max: NonZeroUsize::new(1 << 16).unwrap(),
+            message_bytes_max: NonZeroUsize::new(BYTES_MAX).unwrap(),
             window_bytes: 1 << 20,
             streams_max: NonZeroU32::new(16).unwrap(),
             idle: IDLE,
@@ -1557,7 +1683,19 @@ mod tests {
 
     /// A pool of one page.
     fn small_pool() -> Rc<Pool> {
-        let budget = block::Config::new(4096).expect("the budget fits");
+        pool_of(4096)
+    }
+
+    /// A pool whose largest block takes an append of the largest record.
+    fn open_pool() -> Rc<Pool> {
+        let pool = pool_of(1 << 16);
+        assert!(pool.largest() >= message::BYTES_MIN);
+        pool
+    }
+
+    /// A pool of a budget of `bytes`.
+    fn pool_of(bytes: u64) -> Rc<Pool> {
+        let budget = block::Config::new(bytes).expect("the budget fits");
         let memory = block::Heap::new(budget.reservation());
         Rc::new(Pool::new(budget, memory))
     }
@@ -1609,7 +1747,7 @@ mod tests {
                         let protocol = wire::header::decode(&header).unwrap();
                         assert_eq!(protocol, (Protocol::Mesh, &[][..]));
                         match mesh.serve(peer, incoming).await {
-                            Ok(()) | Err(Error::Stream(_)) => {}
+                            Ok(()) | Err(Error::Stream(_) | Error::Soon) => {}
                             Err(error) => panic!("a voter refused a message: {error}"),
                         }
                     });
@@ -1693,6 +1831,26 @@ mod tests {
         }
     }
 
+    /// Sets the addresses that the board gives node `id`, and puts the result on the
+    /// board.
+    async fn readdress(
+        mesh: Mesh,
+        clock: Clock,
+        id: u8,
+        board: Arc<Mutex<Board>>,
+    ) -> ! {
+        loop {
+            clock.sleep(TICK).await;
+            let addresses = board.lock().unwrap().addresses.remove(&id);
+            let Some(addresses) = addresses else {
+                continue;
+            };
+            let result = mesh.set_addresses(addresses).await;
+            let card = mesh.member(key(id)).unwrap().card.card().clone();
+            board.lock().unwrap().moved.push((id, result, card));
+        }
+    }
+
     /// Proposes the voters that the board gives node `id`, and waits for the write.
     async fn configure(
         mesh: Mesh,
@@ -1767,10 +1925,7 @@ mod tests {
 
     impl Cluster {
         fn new(seed: u64) -> Self {
-            let mut sim = Sim::new(sim::Config {
-                seed,
-                ..sim::Config::default()
-            });
+            let mut sim = Sim::new(crate::common::simulation(seed));
             let node = |_| sim.node(sim::node::Config::default());
             Self {
                 nodes: IDS.map(node).into(),
@@ -1870,6 +2025,10 @@ mod tests {
         tasks.spawn(async move {
             set(setting, clock, id, sets).await;
         });
+        let (moving, clock, moves) = (mesh.clone(), node.clock(), Arc::clone(board));
+        tasks.spawn(async move {
+            readdress(moving, clock, id, moves).await;
+        });
         let (applying, clock, applies) =
             (mesh.clone(), node.clock(), Arc::clone(board));
         tasks.spawn(async move {
@@ -1903,15 +2062,21 @@ mod tests {
         id: u8,
         board: Arc<Mutex<Board>>,
     ) -> ! {
-        let (hidden, learners, founding) = {
+        let (hidden, learners, founding, bytes) = {
             let board = board.lock().unwrap();
-            (board.hidden, board.learners.clone(), board.founding.clone())
+            let bytes = board.limits.get(&id).copied().unwrap_or(BYTES_MAX);
+            (
+                board.hidden,
+                board.learners.clone(),
+                board.founding.clone(),
+                bytes,
+            )
         };
         let voters: Vec<u8> = IDS
             .into_iter()
             .filter(|of| !learners.contains(of))
             .collect();
-        let base = config_at(&node, &tasks, id, PORT, &IDS, &voters).await;
+        let base = config_at(&node, &tasks, id, PORT, bytes, &IDS, &voters).await;
         let transport = Rc::clone(&base.transport);
         let member = |of| {
             if hidden == Some(of) {
@@ -1932,7 +2097,7 @@ mod tests {
         let mut watch = mesh.watch(INDEX);
         loop {
             let home = watch.next().await.unwrap();
-            let records: BTreeMap<_, _> = (1..10)
+            let records: BTreeMap<_, _> = (1..110)
                 .filter_map(|of| Some((of, mesh.member(key(of))?)))
                 .collect();
             // No call of `Mesh` gives the use count of a ticket.
@@ -2129,6 +2294,172 @@ mod tests {
         assert_eq!(cluster.board().pointers, pointers);
     }
 
+    // Two changes from one base, each of the most chunks, are over 64 KiB together.
+    // The second is refused as stale.
+    #[test]
+    fn a_late_voter_gets_two_spec_changes_of_the_most_chunks() {
+        let mut cluster = Cluster::new(2);
+        let founding = create_founding();
+        let base = Pointer {
+            version: 0,
+            root: spec::region::tree(&mut Chunks::default(), &founding).root,
+        };
+        cluster.board.lock().unwrap().founding = founding;
+        let change = |byte: u8| Change::Spec {
+            base,
+            root: common::digest(byte),
+            chunks: (0..CHUNKS_MAX)
+                .map(|at| {
+                    let mut chunk = [byte; 32];
+                    let at = u16::try_from(at).unwrap();
+                    chunk[..2].copy_from_slice(&at.to_be_bytes());
+                    Digest(chunk)
+                })
+                .collect(),
+            holders: IDS.map(key).into(),
+            homes: BTreeMap::new(),
+        };
+        let changes = [change(1), change(2), home_to(1)];
+        cluster.script_each(&changes.map(|change| encoded(&change)));
+        cluster.start_voter(1);
+        cluster.start_voter(2);
+        cluster.run(seconds(5));
+        assert_eq!(cluster.board.lock().unwrap().led.len(), 3);
+        cluster.start_voter(3);
+        cluster.run(seconds(10));
+        let moved = Pointer {
+            version: 1,
+            root: common::digest(1),
+        };
+        let pointers: BTreeMap<_, _> = IDS.map(|id| (id, moved)).into();
+        assert_eq!(cluster.board().pointers, pointers);
+    }
+
+    // The pointer of each voter after a change of the most chunks and `homes` homes,
+    // then one of `chunks` chunks, when voter 3 starts after both commit.
+    fn late(homes: u128, chunks: usize) -> BTreeMap<u8, Pointer> {
+        let mut cluster = Cluster::new(3);
+        let founding = create_founding();
+        let base = Pointer {
+            version: 0,
+            root: spec::region::tree(&mut Chunks::default(), &founding).root,
+        };
+        cluster.board.lock().unwrap().founding = founding;
+        let first = Change::Spec {
+            base,
+            root: common::digest(1),
+            chunks: (0..CHUNKS_MAX)
+                .map(|at| Digest::of(&at.to_le_bytes()))
+                .collect(),
+            holders: IDS.map(key).into(),
+            homes: (0..homes)
+                .map(|at| (channel::Key::from_u128(at.saturating_add(100)), key(2)))
+                .collect(),
+        };
+        let second = Change::Spec {
+            base: base.next(common::digest(1)),
+            root: common::digest(2),
+            chunks: (0..chunks)
+                .map(|at| Digest::of(&at.saturating_add(5000).to_le_bytes()))
+                .collect(),
+            holders: IDS.map(key).into(),
+            homes: BTreeMap::new(),
+        };
+        let changes = [first, second, home_to(1)];
+        cluster.script_each(&changes.map(|change| encoded(&change)));
+        cluster.start_voter(1);
+        cluster.start_voter(2);
+        cluster.run(seconds(5));
+        cluster.start_voter(3);
+        cluster.run(seconds(60));
+        cluster.board().pointers
+    }
+
+    #[test]
+    fn a_late_voter_gets_a_change_of_the_most_homes_and_one_of_512_chunks() {
+        let moved = Pointer {
+            version: 2,
+            root: common::digest(2),
+        };
+        let most = u128::try_from(crate::change::HOMES_MAX).unwrap();
+        assert_eq!(late(most, 512), IDS.map(|id| (id, moved)).into());
+    }
+
+    /// The board after voters 1 and 2 commit `changes` and then the home of node 2,
+    /// and voter 3 starts after them. Each voter takes messages of at most
+    /// `BYTES_MIN` bytes.
+    fn behind(changes: &[Change]) -> Board {
+        let mut cluster = Cluster::new(6);
+        let limits = IDS.map(|id| (id, message::BYTES_MIN)).into();
+        cluster.board.lock().unwrap().limits = limits;
+        let mut script: Vec<_> = changes.iter().map(encoded).collect();
+        script.push(encoded(&home_to(2)));
+        cluster.script_each(&script);
+        cluster.start_voter(1);
+        cluster.start_voter(2);
+        cluster.run(seconds(30));
+        assert_eq!(cluster.board.lock().unwrap().led.len(), script.len());
+        cluster.start_voter(3);
+        cluster.run(seconds(10));
+        cluster.board()
+    }
+
+    // Voter 3 applies the last home only after each entry before it. A full `Append` of
+    // home changes fits `BYTES_MIN`, so `raft` cuts none.
+    #[test]
+    fn a_voter_of_the_least_limit_gets_100_home_changes_behind() {
+        let changes: Vec<_> = (0..100).map(|at| home_to(1 + at % 3)).collect();
+        let board = behind(&changes);
+        let last = |homes: &Vec<_>| homes.last().copied().flatten();
+        let homes: BTreeMap<_, _> = board
+            .homes
+            .iter()
+            .map(|(&id, homes)| (id, last(homes)))
+            .collect();
+        assert_eq!(homes, IDS.map(|id| (id, Some(key(2)))).into());
+    }
+
+    // An `Append` of the backlog holds at most three of these joins.
+    #[test]
+    fn a_voter_of_the_least_limit_gets_100_joins_behind() {
+        let ticket = common::ticket_change(7, common::options("plant", true));
+        let joins = (10..110).map(|id| {
+            let name = format!("plant.joined{id}");
+            let card = common::signed(id, &name);
+            // The most status channels, each of a name of the most bytes.
+            let width = Name::MAX_BYTES - name.len() - 1;
+            let statuses = (0..crate::status::MAX).map(|at| {
+                let end = format!("s{at}");
+                let channel = common::index(u128::from(id) << 8 | u128::from(at));
+                (common::name(&format!("{end:a>width$}")), channel)
+            });
+            let status = Status::new(statuses.collect()).unwrap();
+            let join = common::join_with(&card, 7, common::BEFORE_EXPIRY, status);
+            Change::Join(Box::new(join))
+        });
+        let changes: Vec<_> = iter::once(ticket).chain(joins).collect();
+        assert!(encoded(&changes[1]).len() * 4 > message::BYTES_MIN);
+        let board = behind(&changes);
+        let homes = |id| (id, board.homes[&id].last().copied().flatten());
+        assert_eq!(IDS.map(homes), IDS.map(|id| (id, Some(key(2)))));
+        let joined = (10..110).collect::<BTreeSet<_>>();
+        assert!(board.members[&3].is_superset(&joined));
+        assert_eq!(board.records[&3], board.records[&1]);
+        // No call of `Mesh` gives the use count of a ticket.
+        assert_eq!(board.states[&3], board.states[&1]);
+    }
+
+    #[test]
+    fn voters_of_the_least_limit_commit_the_largest_change_of_each_kind() {
+        let largest = common::create_largest();
+        let lengths = largest.each_ref().map(|change| encoded(change).len());
+        assert_eq!(lengths, [33, 19_601, 307, crate::change::BYTES_MAX, 2_081]);
+        let board = behind(&largest);
+        let homes = |id| (id, board.homes[&id].last().copied().flatten());
+        assert_eq!(IDS.map(homes), IDS.map(|id| (id, Some(key(2)))));
+        assert_eq!(board.states[&3], board.states[&1]);
+    }
+
     #[test]
     fn a_voter_gets_the_home_again_after_its_power_cut() {
         let mut cluster = Cluster::new(4);
@@ -2289,10 +2620,7 @@ mod tests {
         seed: u64,
         body: impl FnOnce(sim::node::Node, Tasks) -> F + Send + 'static,
     ) {
-        let mut sim = Sim::new(sim::Config {
-            seed,
-            ..sim::Config::default()
-        });
+        let mut sim = Sim::new(crate::common::simulation(seed));
         let node = sim.node(sim::node::Config::default());
         sim.run_on(&node, body).unwrap();
     }
@@ -2648,11 +2976,13 @@ mod tests {
     }
 
     mod apply;
+    mod cards;
     mod founding;
     mod home;
     mod in_use;
     mod send;
     mod serve;
+    mod version;
 
     /// The entries in the log of `node`, which had a power cut.
     fn stored(sim: &mut Sim, node: &sim::node::Node) -> Vec<Entry> {
@@ -2669,7 +2999,7 @@ mod tests {
     fn solo_stored<F: Future<Output = ()> + 'static>(
         body: impl FnOnce(sim::node::Node, Tasks) -> F + Send + 'static,
     ) -> Vec<Entry> {
-        let mut sim = Sim::new(sim::Config::default());
+        let mut sim = Sim::new(crate::common::simulation(0));
         let node = sim.node(sim::node::Config::default());
         sim.run_on(&node, body).unwrap();
         sim.crash(&node, Crash::Power);
@@ -2850,7 +3180,6 @@ mod tests {
                 // No write of the log ends from here on.
                 let _held = ManuallyDrop::new(fill(&pool));
                 let answers = Answers::default();
-                // Longer than each election timeout.
                 for _ in 0..30 {
                     node.clock().sleep(TICK).await;
                     forward(&mesh, &tasks, &answers);
@@ -2859,47 +3188,29 @@ mod tests {
                 let answers = answers.take();
                 let full = Err(exhausted(200));
                 let waits = answers.iter().position(|answer| *answer == full);
-                let (before, from) = answers.split_at(waits.unwrap());
-                let follows = Ok(Message::NotLeader { leader: None });
-                assert_eq!(before, vec![follows; before.len()]);
-                assert_eq!(from, vec![full; from.len()]);
-                assert_eq!(answers.len(), 30);
+                assert_eq!(waits, Some(0));
+                assert_eq!(answers, vec![full; 30]);
             });
         }
 
-        // The change comes while the node writes the term that it now leads, and a
-        // power cut follows. A disk call takes 100 us at most, so the voter gives the
-        // change each 10 us for 500 us before and after each tick.
+        // The change comes while the node writes, at open, the term that it now leads,
+        // and a power cut follows. The sleep of 1 ns lets the group start that write
+        // first, so the change goes in a later write.
         #[test]
         fn a_position_in_an_answer_names_no_other_change_after_a_power_cut() {
             let mut reused = Vec::new();
             for seed in 0..16 {
-                let mut sim = Sim::new(sim::Config {
-                    seed,
-                    ..sim::Config::default()
-                });
+                let mut sim = Sim::new(crate::common::simulation(seed));
                 let node = sim.node(sim::node::Config::default());
                 let answered = sim
                     .run_on(&node, |node, tasks| async move {
                         let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-                        let clock = node.clock();
-                        let steps = |count| Span::from_nanos(count * 10_000);
-                        clock.sleep(steps(TICK.nanos() / 10_000 - 50)).await;
-                        loop {
-                            for _ in 0..100 {
-                                let mut answer =
-                                    pin!(mesh.answer(public(1), home_to(3)));
-                                match now(answer.as_mut()).await {
-                                    Poll::Ready(Ok(Message::NotLeader {
-                                        leader: None,
-                                    })) => {}
-                                    Poll::Ready(first) => return first,
-                                    Poll::Pending => return answer.await,
-                                }
-                                clock.sleep(steps(1)).await;
-                            }
-                            clock.sleep(steps(TICK.nanos() / 10_000 - 100)).await;
+                        node.clock().sleep(Span::from_nanos(1)).await;
+                        let mut answer = pin!(mesh.answer(public(1), home_to(3)));
+                        if let Poll::Ready(first) = now(answer.as_mut()).await {
+                            panic!("no wait for {first:?}");
                         }
+                        answer.await
                     })
                     .unwrap();
                 let Ok(Message::Proposed { at: answered }) = answered else {
@@ -4371,17 +4682,14 @@ mod tests {
     }
 
     #[test]
-    fn a_lone_voter_leads_after_one_election_timeout() {
+    fn a_lone_voter_leads_at_start_whatever_its_election_timeout() {
         for seed in 0..16 {
             solo_at(seed, move |node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
                 let clock = node.clock();
                 let opened = clock.now();
                 let (asked, _) = lead_at(&mesh, &clock, home_to(1)).await;
-                let asked = asked - opened;
-                // The timeout is 10 to 19 ticks, and `lead_at` asks once per tick.
-                let timeout = seconds(1)..=seconds(2);
-                assert!(timeout.contains(&asked), "run {seed}: it led at {asked}");
+                assert_eq!(asked - opened, Span::ZERO, "run {seed}");
             });
         }
     }
@@ -4825,10 +5133,7 @@ mod tests {
         let mut lost = Vec::new();
         let mut gave = 0_usize;
         for run in 0..64 {
-            let mut sim = Sim::new(sim::Config {
-                seed: run,
-                ..sim::Config::default()
-            });
+            let mut sim = Sim::new(crate::common::simulation(run));
             let node = sim.node(sim::node::Config::default());
             sim.run_on(&node, |node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
@@ -5489,6 +5794,137 @@ mod tests {
         }
 
         #[test]
+        fn refuses_a_founding_set_of_more_voters_than_one_set_holds() {
+            solo(|node, tasks| async move {
+                let ids: Vec<u8> = (1..=128).collect();
+                let refused = open(&node, &tasks, 1, &ids, &ids).await.err().unwrap();
+                assert_eq!(
+                    refused,
+                    Error::Voters {
+                        voters: 128,
+                        most: 127
+                    }
+                );
+                let text = "the set holds 128 voters, more than the 127 that one set can \
+                            hold";
+                assert_eq!(refused.to_string(), text);
+                assert_eq!(
+                    node.files().list(Path::new("")).await,
+                    Ok(vec![BLOB.into()])
+                );
+                let ids = &ids[..127];
+                open(&node, &tasks, 1, ids, ids).await.unwrap();
+            });
+        }
+
+        // With 629 voters, the pre-vote proof of a candidate that each voter grants
+        // fits no message, and `raft` panics at its next `Vote`.
+        #[test]
+        fn refuses_a_founding_set_whose_pre_vote_proof_fits_no_message() {
+            fn peer_private(id: u16) -> PrivateKey {
+                let mut bytes = [0x5a; 32];
+                bytes[..2].copy_from_slice(&id.to_le_bytes());
+                PrivateKey(bytes)
+            }
+            fn peer_key(id: u16) -> node::Key {
+                node::Key::from_u128(u128::from(id))
+            }
+            fn peer_member(id: u16) -> Member {
+                let mut card = common::member(1).card.card().clone();
+                card.name = format!("plant.node{id}").parse().unwrap();
+                card.public_key = peer_private(id).public();
+                Member {
+                    card: card::Signed::sign(peer_key(id), card, &peer_private(id)),
+                    ..common::member(1)
+                }
+            }
+            solo(|node, tasks| async move {
+                let mut config = config(&node, &tasks, 1, &[1], &[1]).await;
+                let peers = 2..=629;
+                let founding = &mut config.founding;
+                founding.members.extend(peers.clone().map(peer_member));
+                founding.voters.extend(peers.clone().map(peer_key));
+                let mesh = match Mesh::start(config).await {
+                    Err(refused) => {
+                        let most = message::VOTERS_MAX;
+                        assert_eq!(refused, Error::Voters { voters: 629, most });
+                        return;
+                    }
+                    Ok(mesh) => mesh,
+                };
+                let sent = mesh.outgoing(key(2)).await.unwrap();
+                for id in peers {
+                    let answer = Answer::Granted(None);
+                    let mut ready = Ready {
+                        messages: vec![raft::Message {
+                            from: peer_key(id),
+                            to: key(1),
+                            term: sent.term,
+                            body: Body::PreVoteReply { answer },
+                            proof: None,
+                            chain: Vec::new(),
+                        }],
+                        ..Ready::default()
+                    };
+                    Signer::new(peer_key(id), &peer_private(id)).sign(&mut ready);
+                    let granted = ready.messages.remove(0);
+                    assert_eq!(
+                        mesh.receive(peer_private(id).public(), granted),
+                        Ok(())
+                    );
+                }
+                panic!("the mesh started with 629 voters");
+            });
+        }
+
+        #[test]
+        fn refuses_a_transport_that_takes_less_than_an_append_of_the_largest_record() {
+            solo(|node, tasks| async move {
+                let config =
+                    config_at(&node, &tasks, 1, 0, message::BYTES_MIN - 1, &IDS, &IDS)
+                        .await;
+                let refused = Mesh::open(config).await.err().unwrap();
+                let limit = Error::Limit {
+                    bytes_max: 50_354,
+                    bytes_min: 50_355,
+                };
+                assert_eq!(refused, limit);
+                assert_eq!(
+                    refused.to_string(),
+                    "this node takes messages of at most 50354 bytes, below the 50355 \
+                     bytes of an append of the largest record"
+                );
+            });
+        }
+
+        #[test]
+        fn opens_with_a_transport_that_takes_an_append_of_the_largest_record() {
+            solo(|node, tasks| async move {
+                let config =
+                    config_at(&node, &tasks, 1, 0, message::BYTES_MIN, &IDS, &IDS)
+                        .await;
+                assert_eq!(Mesh::open(config).await.err(), None);
+            });
+        }
+
+        #[test]
+        fn refuses_a_pool_whose_largest_block_is_below_an_append_of_the_largest_record()
+        {
+            solo(|node, tasks| async move {
+                let config = Config {
+                    pool: pool_of(1 << 15),
+                    ..config(&node, &tasks, 1, &IDS, &IDS).await
+                };
+                assert_eq!(config.transport.message_bytes_max(), 1 << 16);
+                let limit = Error::Limit {
+                    bytes_max: 28_672,
+                    bytes_min: message::BYTES_MIN,
+                };
+                assert_eq!(Mesh::open(config).await.err(), Some(limit));
+            });
+        }
+
+        #[test]
         fn refuses_the_first_founding_home_at_a_node_that_is_not_a_member() {
             solo(|node, tasks| async move {
                 let mut config = config(&node, &tasks, 1, &IDS, &IDS).await;
@@ -5620,10 +6056,7 @@ mod tests {
         }
 
         fn create_sim(run: u64) -> (Sim, sim::node::Node) {
-            let mut sim = Sim::new(sim::Config {
-                seed: run,
-                ..sim::Config::default()
-            });
+            let mut sim = Sim::new(crate::common::simulation(run));
             let node = sim.node(sim::node::Config::default());
             (sim, node)
         }
@@ -5875,10 +6308,7 @@ mod tests {
         fn keeps_the_founding_and_the_log_through_a_power_cut_right_after() {
             let names = |names: &[&str]| Ok(names.iter().map(PathBuf::from).collect());
             for seed in 0..32 {
-                let mut sim = Sim::new(sim::Config {
-                    seed,
-                    ..sim::Config::default()
-                });
+                let mut sim = Sim::new(crate::common::simulation(seed));
                 let node = sim.node(sim::node::Config::default());
                 sim.run_on(&node, |node, tasks| async move {
                     let config = Config {
@@ -5909,10 +6339,7 @@ mod tests {
         #[test]
         fn keeps_a_directory_of_two_parts_in_its_parent_through_a_power_cut() {
             for seed in 0..32 {
-                let mut sim = Sim::new(sim::Config {
-                    seed,
-                    ..sim::Config::default()
-                });
+                let mut sim = Sim::new(crate::common::simulation(seed));
                 let node = sim.node(sim::node::Config::default());
                 sim.run_on(&node, |node, tasks| async move {
                     let files = node.files();
@@ -5971,6 +6398,72 @@ mod tests {
         }
     }
 
+    mod lone {
+        use super::*;
+        use crate::common::{proven_at, voters_entry_voted};
+
+        // Node 2 never answers.
+        #[test]
+        fn a_voter_of_two_campaigns_only_after_the_timeout() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1, 2], &[1, 2]).await.unwrap();
+                node.clock().sleep(TICK).await;
+                assert!(quiet(&mesh, 2).await);
+                node.clock().sleep(seconds(2)).await;
+                let asked = now(pin!(pre_vote_term(&mesh, 2))).await;
+                assert!(asked.is_ready());
+            });
+        }
+
+        // Node 2 never answers, so the joint entry that adds it does not commit.
+        #[test]
+        fn a_lone_voter_whose_newest_configuration_adds_a_voter_waits() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
+                lead(&mesh, &node.clock(), home_to(1)).await;
+                mesh.propose_voters([key(1), key(2)].into()).await.unwrap();
+                drop(mesh);
+                node.clock().sleep(TICK).await;
+                let again = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
+                let joint = Voters {
+                    incoming: [key(1), key(2)].into(),
+                    outgoing: [key(1)].into(),
+                };
+                // Without the joint configuration, a quiet node 2 shows nothing.
+                assert_eq!(again.group.borrow().raft.voters(), &joint);
+                node.clock().sleep(TICK).await;
+                assert!(quiet(&again, 2).await);
+            });
+        }
+
+        // The joint entry that removes node 2 needs its vote too.
+        #[test]
+        fn a_lone_incoming_voter_of_a_joint_configuration_waits() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1, 2], &[1, 2]).await.unwrap();
+                let joint = Voters {
+                    incoming: [key(1)].into(),
+                    outgoing: [key(1), key(2)].into(),
+                };
+                let append = Body::Append {
+                    prev: Position::default(),
+                    entries: vec![voters_entry_voted(2, at(1), joint.clone(), &[1, 2])],
+                    commit: 0,
+                };
+                let append = proven_at(2, 1, common::TERM, &[(1, 1), (2, 2)], append);
+                assert_eq!(mesh.receive(public(2), append), Ok(()));
+                node.clock().sleep(TICK).await;
+                drop(mesh);
+                node.clock().sleep(TICK).await;
+                let again = open(&node, &tasks, 1, &[1, 2], &[1, 2]).await.unwrap();
+                // Without the joint configuration, a quiet node 2 shows nothing.
+                assert_eq!(again.group.borrow().raft.voters(), &joint);
+                node.clock().sleep(TICK).await;
+                assert!(quiet(&again, 2).await);
+            });
+        }
+    }
+
     mod propose_voters {
         use super::unapplied::{changes, write};
         use super::*;
@@ -6001,6 +6494,26 @@ mod tests {
                 };
                 let proposed = mesh.propose_voters([key(2)].into()).await;
                 assert_eq!(proposed, Err(Error::Raft(follower)));
+            });
+        }
+
+        #[test]
+        fn refuses_a_set_of_more_than_voters_max() {
+            solo(|node, tasks| async move {
+                let members: Vec<u8> = (1..=127).collect();
+                let mesh = open(&node, &tasks, 1, &members, &[1]).await.unwrap();
+                let at = lead(&mesh, &node.clock(), home_to(1)).await;
+                let refused = mesh.propose_voters((1..=128).map(key).collect()).await;
+                let voters = Error::Voters {
+                    voters: 128,
+                    most: 127,
+                };
+                assert_eq!(refused, Err(voters));
+                let text = "the set holds 128 voters, more than the 127 that one set can \
+                            hold";
+                assert_eq!(refused.unwrap_err().to_string(), text);
+                let most = mesh.propose_voters((1..=127).map(key).collect()).await;
+                assert_eq!(most, Ok(after(at, 1)));
             });
         }
     }
@@ -6415,7 +6928,7 @@ mod tests {
 
         impl Run {
             fn new() -> Self {
-                let mut sim = Sim::new(sim::Config::default());
+                let mut sim = Sim::new(crate::common::simulation(0));
                 let node = |_| sim.node(sim::node::Config::default());
                 Self {
                     nodes: MEMBERS.map(node).into(),
@@ -7147,7 +7660,7 @@ mod tests {
         // proposal, node 1 holds the whole log of node 2 after the next heartbeat.
         #[test]
         fn a_follower_that_cut_a_run_holds_the_whole_log_after_the_next_heartbeat() {
-            let mut sim = Sim::new(sim::Config::default());
+            let mut sim = Sim::new(crate::common::simulation(0));
             let nodes = [1, 2].map(|_| sim.node(sim::node::Config::default()));
             let bodies = Arc::new(Mutex::new(Vec::new()));
             for (node, id) in nodes.iter().zip([1, 2]) {

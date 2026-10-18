@@ -7,7 +7,7 @@ use std::pin::pin;
 use std::rc::{Rc, Weak};
 use std::task::Poll;
 
-use block::Pool;
+use block::{Block, Pool};
 use env::tasks;
 use transport::stream::Sender;
 use transport::{Class, Session, Transport};
@@ -29,8 +29,8 @@ pub(super) struct Senders {
 }
 
 // Why a message did not go.
-enum Failure {
-    // The pool had no block for the message, or for the header of its stream.
+pub(super) enum Failure {
+    // The pool had no room for the message, or for the header of its stream.
     Pool,
     // The group has no record of the member, so no address to dial.
     Unknown,
@@ -40,6 +40,24 @@ enum Failure {
 impl From<block::Error> for Failure {
     fn from(_: block::Error) -> Self {
         Self::Pool
+    }
+}
+
+/// The byte form of `message` in a block of `pool`.
+///
+/// # Panics
+///
+/// When no block of `pool` fits the message. `Mesh::open` refuses a pool whose largest
+/// block is below `BYTES_MIN`, and `raft` sends no larger message.
+pub(super) fn copy(pool: &Pool, message: raft::Message) -> Result<Block, Failure> {
+    match pool.copy(&Message::Raft(message).encode()) {
+        Ok(block) => Ok(block),
+        Err(error @ block::Error::TooLarge { .. }) => {
+            panic!(
+                "invariant: each message of the mesh fits a block of its pool: {error}"
+            )
+        }
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -84,6 +102,8 @@ impl Senders {
             match failure {
                 Failure::Pool | Failure::Unknown => {}
                 Failure::Transport(error) => match error {
+                    // Only a peer that opens no mesh, or skipped the check of
+                    // `Mesh::open`, takes less than `BYTES_MIN`.
                     transport::Error::TooLarge { .. } => {}
                     // Only a voter of this node's own configuration tells it that
                     // it is out.
@@ -182,8 +202,7 @@ impl Senders {
             sender.send(header(&self.pool)?).await?;
             stream.insert(sender)
         };
-        let block = self.pool.copy(&Message::Raft(message).encode())?;
-        Ok(sender.send(block).await?)
+        Ok(sender.send(copy(&self.pool, message)?).await?)
     }
 
     // Dials `to` at the addresses of its card, as the group holds it now, and gives

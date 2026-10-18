@@ -26,20 +26,24 @@
   fail. It tries again every 10 ms, the span of the transport's reads, and the wait ends
   when the session closes, with the error of the close. Only `Exhausted` and `Refused`
   wait: `TooLarge` never succeeds, so it gives `Error::Pool` at once, which means that
-  no block of the pool can hold a message that the session sends. Lost: a bound of two
+  no block of `pool` can hold a message that the session sends. Lost: a bound of two
   windows from the stream credit, which ack loss can exceed; a `Bytes` body with no
-  copy; a wait in `block::Pool` that wakes at each free. Two callers poll the pool now:
-  the transport's reads and this session. Trigger: a third caller that waits for a
-  block, or a measured request latency from the poll, adds the wait to `block`.
-  `Session` is `Clone`, and a clone is the same session. When the last clone drops, it
-  closes the session with `Code(0)`. A node's stop and close with a code are one error:
-  `Error::Refused(wire::hub::client::Refusal)`, a closed set in `wire` with `from_code`
-  and `code`, of each code that a node stops a client stream or closes a client session
-  with (`MALFORMED`, `BUSY`, and `REFUSED` to `CHANGED`). Each meaning of a code is
-  stated once, in `wire`, and its `Display` gives the cause. A close with 0 or a code
-  outside the set stays `Error::Transport`. Lost: one dial for each request (a handshake
-  for each request, and a read stream of HUB LINK needs a session that lives;
-  `laptop.architect`, 2026-10-13T02:42:31Z,
+  copy; a wait in `block::Pool` that wakes at each free. Four callers poll a pool now:
+  three in a program (the transport's reads, the session's sends on `pool`, and the
+  frames of a read on `frames`), and the wait of a node for the block of the last
+  `Stored` of a client write. The trigger fired with the third (#2802;
+  `laptop.architect`, 2026-10-16T03:39:42Z,
+  https://github.com/synnaxlabs/foundation/pull/2802#issuecomment-6207544466): #2811
+  adds the wait that a free wakes to `block`.
+  `Session` is `Clone`, and a clone is the same session. When the last clone and the
+  last `Reader` drop, it closes the session with `Code(0)`. A node's stop and close with
+  a code are one error: `Error::Refused(wire::hub::client::Refusal)`, a closed set in
+  `wire` with `from_code` and `code`, of each code that a node stops a client stream or
+  closes a client session with (`MALFORMED`, `BUSY`, and `REFUSED` to `CHANGED`). Each
+  meaning of a code is stated once, in `wire`, and its `Display` gives the cause. A
+  close with 0 or a code outside the set stays `Error::Transport`. Lost: one dial for
+  each request (a handshake for each request, and a read stream of HUB LINK needs a
+  session that lives; `laptop.architect`, 2026-10-13T02:42:31Z,
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724); `&mut
   self` with the renewal inside `request` (an idle program loses its session at the
   expiry); a queue in a task that owns the session; a lock of a library
@@ -77,3 +81,173 @@
   (https://github.com/synnaxlabs/foundation/pull/2009#issuecomment-6070527522), and at
   22:46:20Z
   (https://github.com/synnaxlabs/foundation/pull/2009#issuecomment-6070562330).
+  `Session::reader(select, mode)` opens a read stream as the subject and gives a
+  `Reader`, whose `next` gives each frame that the node sends, in order. A read takes no
+  turn: it runs beside the requests. A reader holds a clone of its session. It keeps
+  the error that ended it and gives it again at each `next`, and the error that ended
+  the renewal replaces it, as for `request`. The key set of a reader is of no node:
+  `wire::hub::client::Reader` builds it with `KeySet::ordered` at the last place, so
+  entry `n` is place `n`, its slots are not the node's, and places that name a channel
+  twice give `client::Error::Repeated` (`laptop.architect`, 2026-10-16T03:12:49Z, item
+  1 of https://github.com/synnaxlabs/foundation/pull/2802#issuecomment-6207214002;
+  #2808). Its key is `u32::MAX`, and `Interner::intern` panics before it gives that
+  key, so a lens that `hub` matches by `set.key()` never takes it for a node's set
+  (`laptop.architect`, 2026-10-16T06:47:02Z,
+  https://github.com/synnaxlabs/foundation/issues/2808#issuecomment-6209795527).
+  `Frames::open` takes the end of the stream as `None` (`laptop.architect`,
+  2026-10-16T06:47:02Z,
+  https://github.com/synnaxlabs/foundation/issues/2808#issuecomment-6209795527). So
+  does the decoder, and a message that the decoder refuses leaves it as it was
+  (`laptop.architect`, 2026-10-16T07:19:58Z,
+  https://github.com/synnaxlabs/foundation/pull/2839#issuecomment-6210275086). The plan
+  (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204280445) was
+  approved by `laptop.architect` at 2026-10-15T23:19:38Z
+  (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204306531).
+  A frame takes a block of `Config::frames`, a pool apart from `pool` and from the
+  transport's, and holds it until it drops. So frames that the program holds never stop
+  the renewal of the hello (`laptop.architect`, 2026-10-16T03:12:49Z,
+  https://github.com/synnaxlabs/foundation/pull/2802#issuecomment-6207214002). A frame
+  that finds `frames` full waits as a message does (#2810 ends a wait that the carve of
+  another size blocks), and a frame that no block of `frames` can hold gives
+  `Error::Pool` at once. Lost: one
+  reserved block for the renewal, a second pool that the caller cannot see.
+  Amended (#2829): a complete `program::Reader` goes on past seqs that the node's
+  buffer lost. `Reader::next` gives only frames. `Reader::lost(entry)` gives the seqs
+  of the index lost after the last series of `entry` with a sample up to the frame
+  that the last `next` gave, as one range from the first lost seq to the last, and an
+  empty range when that frame holds no sample of `entry` or none was lost. The entry of
+  the index gives the gap of the frame. The reader writes one `tracing::warn!` for each
+  gap of the index, with the index's name and the lost seqs as fields. A latest reader
+  gives no gap. No strict mode: a program that must stop at a loss checks `lost`.
+  `wire::hub::Gaps` holds the rule of the gap of a frame, and `wire::hub::Frames` and
+  the reader of `hub` each call it. The person decided the shape (2026-10-16T05:22:29Z:
+  "We need to preserve the sanctity of the python clients nominal path"; 05:23:50Z, on
+  a gap on each channel's data with a warning by default: "Yes that's fine";
+  https://github.com/synnaxlabs/foundation/issues/2829#issuecomment-6208729798). Lost:
+  an item that is a frame or a gap, which breaks the nominal path. The names, the doc,
+  and the warning are by `laptop.architect` (2026-10-16T05:26:47Z,
+  https://github.com/synnaxlabs/foundation/issues/2829#issuecomment-6208760389). Lost:
+  `next` giving `(Frame, Range<u64>)`, and a second `Frame` type that wraps the first.
+  The gap of each entry, and `Gaps` in place of a copy of the rule in `hub` and in
+  `wire`, are by `laptop.architect` (2026-10-16T09:44:59Z,
+  https://github.com/synnaxlabs/foundation/pull/2856#issuecomment-6212746993). Lost:
+  one gap for each frame, which a channel that the gap's frame does not hold never
+  sees, and two copies of the rule with a test that pins them to each other. A series
+  with no sample takes no gap, as `Gaps` keeps the gap of a frame with no sample for the
+  next frame with one (`laptop.architect`, 2026-10-16T14:52:46Z,
+  https://github.com/synnaxlabs/foundation/pull/2856#issuecomment-6218152463). `Gaps`
+  keeps the gap of the last frame, and the lost seqs of each entry stay in a private
+  pure type of `program` until a second crate needs them (#2865; `laptop.architect`,
+  2026-10-16T10:25:00Z,
+  https://github.com/synnaxlabs/foundation/pull/2856#issuecomment-6213418531). Lost: a
+  copy of the gap in each caller of `Gaps`, and a public type in `wire` with one caller.
+  The Python SDK, when the `sdk` crate exists, gives `frame["tc1"].lost` from
+  `lost` of the entry of `tc1`, built only when the caller reads it, and logs one
+  WARNING for each gap on its own logger with no setup. It installs no `tracing`
+  subscriber (the person and `laptop.architect`, the same comments).
+  Amended (#2718): a program writes on a write stream that it opens at its node. Its
+  first message is `client::write::Write` (kind 7: the length of the open and the
+  signature of a write proof). The open is `write::Open { authority, lease, channels
+  }`. The node replies the `Places` (kind 6, as on a read) and their run.
+  `client::write::Opening` decodes them, and `client::Reader` holds an `Opening` and
+  adds the `hub::Reader` of the session to its start. Then the program sends each frame
+  as a `wire::hub::write::Head { time, form, count, series }`, the run of its ends
+  (`wire::hub::ends`), and its body. A `Head` of `Time::Node` holds one raw sample of
+  each series, and the node writes a stamp over its 8-byte index sample. The node
+  replies `wire::hub::write::Reply`: an `Outcome` for each frame (`Taken` or `Lost`
+  with its `frame::Range`, or `Refused` with a `Refusal`), and `Stored { frames }`. A
+  frame that finds the pool full gets `Refused(Full)` and the stream stays open. An
+  untimed frame behind a later stamp of another writer, or of a timed frame of its own
+  stream, gets `Refused(Order)`. `client::write` is a public module with no re-export,
+  as its `Open` collides with that of the read. Until the forward of BQ12 (#3104), a
+  write at a node that is not the home stops with `NOT_HOME`. The plan
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244711745) was
+  approved by `laptop.architect` at 2026-10-18T02:34:55Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244779011), and
+  the `Head` at 2026-10-18T02:42:50Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244840425). The
+  person objected to its design 1, an `Away` that sends the program to the home, at
+  2026-10-18T02:39:23Z (the time that `laptop.monitor` gave): "No, I disagree. What
+  does cockroachdb do?" (relayed at 02:40:07Z,
+  https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244819528).
+  So BQ12 holds: the program reaches only its node, and the node forwards the signed
+  hello and open to the home (`laptop.architect`, 2026-10-18T02:46:04Z,
+  https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244865133). Lost:
+  the `Away` with typed addresses, and a `label` and an `untimed` flag in the `Head`,
+  which let a `Resend` or an untimed backfill frame be sent.
+  Two shape changes from the plan: `Outcome::Taken` and `Lost` carry a
+  `frame::Range { seq, count }`, the form of the home's `Outcome` and of the head of
+  HUB WIRE, so a reversed range cannot be sent; and `Opening` gives one
+  `Start { places, set }`, which keeps the order of the messages in one decoder.
+  Approved by `laptop.architect` at 2026-10-18T03:10:22Z
+  (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245051476).
+  `Reply::decode` refuses a range of no sample, which no node sends, and one that ends
+  past the highest seq, as HUB WIRE refuses such a head. Found in finding 2 of round 1
+  (2026-10-18T03:46:28Z,
+  https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245328844), and
+  approved with the new `hub::Error` variants by `laptop.architect` at
+  2026-10-18T03:48:25Z
+  (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245343667).
+  The frame messages of a write, `Head`, `Time`, `Reply`, `Outcome`, and `Refusal`,
+  are in `wire::hub::write`, as the session codec of a read is in `wire::hub`, so the
+  forward of BQ12 uses them with no client type. Their errors are in `hub::Error`,
+  which stays `Copy`. One private codec gives the signed first message of a read and
+  of a write by kind, and one private module holds `Places`, `Place`, `place`,
+  `PLACES_MAX`, and `OPEN_BYTES_MAX`, which `client` exports. At the node,
+  `hub::write::Frames` decodes the frames of a write after the places. It refuses
+  each head that `Head::encode` panics on and each head of more series than places,
+  and `Head` has no public decode. When the program finishes its stream inside a
+  frame, `Frames::finish` gives `Error::Cut` with the bytes of the frame that came,
+  and the node stops the stream as `MALFORMED`. The home takes no part of a frame and
+  gives it no outcome. For a frame that finds the pool full, the node refuses it and
+  calls `Frames::skip`, which drops the frame's body and keeps the stream open
+  (`laptop.architect`, 2026-10-18T06:08:47Z,
+  https://github.com/synnaxlabs/foundation/pull/3148#issuecomment-6246407916). Decided
+  by `laptop.architect` at 2026-10-18T03:22:04Z
+  (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245142760), with
+  the surface of `Frames` approved at 2026-10-18T05:42:24Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6246204678). The
+  plan first dropped a cut frame with no error. `laptop.monitor` refused that silent
+  end, because a program finishes inside a frame only through a defect or a crash, and
+  a silent drop hides the defect of an SDK. `laptop.architect` gave `Error::Cut` at
+  2026-10-18T05:43:30Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6246212678).
+  Amended (#2718 PR 2): the node serves a write stream at the home of its index. The
+  open holds its `length` in the hub's body budget until it decodes. Then the stream
+  holds 16 bytes for each channel of the open and one for its index until the stream
+  ends, and its decoded names, 16 bytes and the length of each, until it sends its
+  places. Ends or names that do not fit stop with `BUSY` before the writer opens (MEMORY
+  BOUNDS). A write whose channels are on more than one index stops with `MALFORMED`
+  before the node waits for a home, so a refused open takes no control at the gate. A
+  frame of `Time::Node` gets mesh time, or 1 ns after the last stamp that the node gave
+  a frame of the stream that the home took or lost, when mesh time is not after it.
+  After each commit, the node sends `Stored { frames }` with the count of frames of the
+  stream through the last frame that it took before it called the commit. Refused and
+  lost frames count, and frames of both paths count in the one count, so a program drops
+  the first `frames` of the frames that it keeps. When the program finishes, the node
+  waits for the commit of each taken frame, sends its `Stored`, and then finishes the
+  stream, so the program learns that each taken frame is on disk. Control ends when the
+  program finishes the stream: the writer closes before the node waits for those
+  commits. Each frame takes a block for its outcome from the home's pool before it takes
+  a draft, and a frame that finds none stops the stream with `BUSY`, so the home took no
+  frame past the last outcome. During the stream, a `Stored` that finds no block is not
+  sent: the next one covers it, as `frames` never goes back. At the finish, the last
+  `Stored` waits for a block until the session closes, so no `Stored` stops a stream. A
+  write takes a stream of any class: at the node, the class sets only the priority and
+  the carrier of its replies. The two key choices, the wait at the finish and the ends
+  in the body budget, went to `laptop.monitor` at 2026-10-18T07:43:08Z, with no
+  objection. Approved by `laptop.architect` at 2026-10-18T07:45:01Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6247275705) and
+  2026-10-18T08:03:14Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6247422979). Lost:
+  a count cap on write streams, which bounds no bytes without the widest open. The reply
+  block and the rule for `Stored` approved by `laptop.architect` at 2026-10-18T08:45:22Z
+  (https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6247800403), and sent
+  to `laptop.monitor` as a key choice with that ruling at 2026-10-18T08:53:42Z, with no
+  objection. The wait of the last `Stored` until the session closes, not the stream,
+  approved by `laptop.architect` at 2026-10-18T09:33:51Z
+  (https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6248291282).
+  `Stored { frames }`, a count of the frames of the stream, in place of a path and a
+  last seq of each path, decided by `laptop.architect` at 2026-10-18T10:09:56Z
+  (https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6248601265), who sent
+  it to `laptop.monitor` as a key choice.

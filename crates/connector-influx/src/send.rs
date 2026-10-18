@@ -4,20 +4,22 @@ use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::future::{self, Future as _, poll_fn};
 use std::pin::pin;
+use std::rc::Rc;
 use std::task::Poll;
 
 use bytes::Bytes;
-use connector::http::Client;
+use connector::http::{Client, Pem};
 use connector::kind::{Context, Error};
 use connector::retry::{self, Backoff};
 use connector::secret;
 use http::header::{AUTHORIZATION, HeaderValue};
+use http::uri::Authority;
 use http::{Method, Request, StatusCode, Uri};
-use hub::reader::{Ended, Position, Received};
+use hub::reader::{Ended, Received};
 use types::time::Span;
 
-use crate::batch::{Batch, Taken};
-use crate::{CONFIRMED, Config, Target};
+use crate::batch::{Ack, Batch, Taken};
+use crate::{CONFIRMED, Config, LOST, OVERSIZED, Target};
 
 /// The longest name of a database, bucket, or org, in bytes.
 pub(crate) const NAME_MAX: usize = 4_096;
@@ -30,7 +32,7 @@ const _: () = assert!(
 const TIMEOUT: Span = Span::from_nanos(10_000_000_000);
 /// The largest answer body read, for the text of an error.
 const BODY_MAX: usize = 1 << 16;
-/// The waits between the attempts of one batch.
+/// The waits between the attempts of one request.
 const RETRY: retry::Config = retry::Config {
     first: Span::SECOND,
     cap: Span::MINUTE,
@@ -38,49 +40,41 @@ const RETRY: retry::Config = retry::Config {
 
 enum Event<'a> {
     Cancelled,
-    /// The position after the batch that InfluxDB took and its samples, or the error
-    /// of a read of the token.
-    Sent(Result<(Position, u64), Error>),
+    /// What the request body that InfluxDB took acks and counts.
+    Sent(Option<Ack>),
     Frame(Result<Received<'a>, Ended>),
 }
 
 /// Writes the frames of the run's reader to InfluxDB until the cancel, with one
-/// request in flight. While one is in flight it reads the next batch, up to 5,000
-/// lines, and acks a batch and counts its samples only after InfluxDB answers 204.
+/// request in flight. While one is in flight it reads the next batch, until a request
+/// body closes, or holds 5,000 lines or 4 MiB of them, so the lines of a frame can span
+/// requests.
+/// It acks a frame and counts its samples, lost seqs, and oversized samples only after
+/// InfluxDB answers 204 to the request of its last line, or with no request when no
+/// line waits for one.
 pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let mut reader = ctx.reader().expect("invariant: check gives a reader");
     let ctx = &ctx;
     let config = ctx.config();
-    let client = Client::new(connector::http::Config {
-        net: ctx.net().clone(),
-        clock: ctx.clock().clone(),
-        tasks: ctx.tasks().clone(),
-        timeout: TIMEOUT,
-        body_max: BODY_MAX,
-    });
+    let client = RefCell::new(Rc::new(client(ctx).await?));
     let uri = write_uri(&config.address, &config.target);
     let token = RefCell::new(Token::read(ctx).await?);
-    let confirmed = ctx.count(CONFIRMED);
-    let mut batch = Batch::new(&config.measurement);
+    let (confirmed, lost) = (ctx.count(CONFIRMED), ctx.count(LOST));
+    let oversized = ctx.count(OVERSIZED);
+    let mut batch = Batch::new(config.measurement.clone(), &config.target, ctx.name());
     let mut cancelled = pin!(ctx.cancel().wait());
     let mut flight = pin!(None);
     loop {
         if flight.is_none()
-            && let Some(Taken {
-                body,
-                position,
-                samples,
-            }) = batch.take()
+            && let Some(Taken { body, ack }) = batch.take()
         {
-            if body.is_empty() {
-                reader.ack(position);
-            } else {
-                let (client, uri, token) = (&client, &uri, &token);
-                flight.set(Some(async move {
-                    send(client, ctx, uri, token, body.into()).await?;
-                    Ok((position, samples))
-                }));
-            }
+            let (client, uri, token) = (&client, &uri, &token);
+            flight.set(Some(async move {
+                if !body.is_empty() {
+                    send(client, ctx, uri, token, body.into()).await;
+                }
+                ack
+            }));
         }
         let full = batch.full();
         let event = {
@@ -106,11 +100,14 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
         };
         match event {
             Event::Cancelled => return Ok(()),
-            Event::Sent(Err(error)) => return Err(error),
-            Event::Sent(Ok((position, samples))) => {
+            Event::Sent(ack) => {
                 flight.set(None);
-                reader.ack(position);
-                confirmed.add(samples);
+                if let Some(ack) = ack {
+                    reader.ack(ack.position);
+                    confirmed.add(ack.counts.samples);
+                    lost.add(ack.counts.lost);
+                    oversized.add(ack.counts.oversized);
+                }
             }
             Event::Frame(Ok(received)) => batch.add(&received)?,
             Event::Frame(Err(ended)) => return Err(ended.into()),
@@ -118,65 +115,188 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     }
 }
 
-/// Sends `body` until InfluxDB answers 204. Shows each other answer as the run's
-/// error and waits a backoff before the next attempt. After a 401 or a 403, it reads
-/// the token again before that attempt. Never ends after the cancel of the run, which
-/// the caller sees first.
+/// The client of a run, which checks a certificate at the mesh time of its hub. It
+/// trusts the roots of the node and the `ca`.
 ///
 /// # Errors
 ///
-/// The error of [`Token::read`] when a read of the token fails.
+/// The error of [`Context::secret`] when a read of the `ca` fails, and
+/// [`Error::Retry`] when the `ca` holds no PEM certificate or one that does not parse.
+async fn client(ctx: &Context<Config>) -> Result<Client, Error> {
+    let config = ctx.config();
+    let roots = match &config.ca {
+        Some(source) => {
+            let pem = ctx.secret(source).await?;
+            let roots = ctx.roots().with_pem(&String::from_utf8_lossy(pem.expose()));
+            roots.map_err(|error| {
+                let held = match error {
+                    Pem::Empty => "no PEM certificate",
+                    Pem::Invalid => "a PEM certificate that does not parse",
+                };
+                Error::Retry(
+                    format!(
+                        "the ca {source} holds {held}. Write the CA certificate of the \
+                         server in PEM"
+                    )
+                    .into(),
+                )
+            })?
+        }
+        None => ctx.roots().clone(),
+    };
+    // The reader opened, so the node has mesh time and this gives at once.
+    let time = ctx.time().await;
+    Ok(Client::new(connector::http::Config {
+        net: ctx.net().clone(),
+        clock: ctx.clock().clone(),
+        tasks: ctx.tasks().clone(),
+        timeout: TIMEOUT,
+        body_max: BODY_MAX,
+        tls: Some(connector::http::Tls { roots, time }),
+    }))
+}
+
+/// What an attempt that failed makes the next attempt read again.
+enum Read {
+    Token,
+    Ca,
+}
+
+/// Shows the answer `status` with `body` of InfluxDB at `at` as the run's error.
+/// Gives whether the token is the cause.
+fn answered(
+    ctx: &Context<Config>,
+    at: &Authority,
+    status: StatusCode,
+    body: &[u8],
+) -> bool {
+    let text = String::from_utf8_lossy(body);
+    let text = text.trim();
+    let token = matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
+    if let Some(source) = ctx.config().token.as_ref().filter(|_| token) {
+        ctx.error(&format_args!(
+            "InfluxDB at {at} answered {status}. Check the token {source}: {text}"
+        ));
+        return true;
+    }
+    ctx.error(&format_args!(
+        "InfluxDB at {at} answered {status}: {text}{}",
+        fix(status)
+    ));
+    false
+}
+
+/// Sends `body` until InfluxDB answers 204. Shows each other answer as the run's
+/// error, with the fix for a 400, a 404, a 413, or a 422, and waits a backoff before
+/// the next attempt. After a 401 or a 403, it reads the token again before that
+/// attempt, and after a TLS failure of a run with a `ca`, the `ca` and a new `client`.
+/// A read that fails shows its error and keeps the old value, and `send` makes it again
+/// after each backoff, with no attempt, until it gives a value. Never ends after the
+/// cancel of the run, which the caller sees first.
 async fn send(
-    client: &Client,
+    client: &RefCell<Rc<Client>>,
     ctx: &Context<Config>,
     uri: &Uri,
     token: &RefCell<Option<Token>>,
     body: Bytes,
-) -> Result<(), Error> {
+) {
     let mut backoff = None;
     loop {
         let request = request(uri, &body, token.borrow().as_ref());
-        let refused = match client.send(request).await {
-            Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
-                ctx.clear_error();
-                return Ok(());
-            }
-            Ok(answer) => {
-                let status = answer.status();
-                let text = String::from_utf8_lossy(answer.body());
-                let refused =
-                    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
-                let source = ctx.config().token.as_ref().filter(|_| refused);
-                match source {
-                    Some(source) => {
-                        ctx.error(&format_args!(
-                            "InfluxDB answered {status}. Check the token {source}: {}",
-                            text.trim()
-                        ));
-                    }
-                    None => {
-                        ctx.error(&format_args!(
-                            "InfluxDB answered {status}: {}",
-                            text.trim()
-                        ));
-                    }
+        // A block, so that `answer` does not grow the future across the backoff.
+        let read = {
+            let sending = Rc::clone(&client.borrow());
+            let mut read = None;
+            let answer = match sending.send(request).await {
+                Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
+                    ctx.clear_error();
+                    return;
                 }
-                source.is_some()
-            }
-            Err(error) => {
-                ctx.error(&format_args!("the write to InfluxDB failed: {error}"));
-                false
+                Ok(answer) => Some((answer.status(), answer.into_body())),
+                Err(connector::http::Error::TooLarge { status, body, .. }) => {
+                    Some((status, body))
+                }
+                Err(error) => {
+                    if let (connector::http::Error::Tls { .. }, Some(ca)) =
+                        (&error, &ctx.config().ca)
+                    {
+                        ctx.error(&format_args!(
+                            "the write to InfluxDB failed: {error}. Check the ca {ca}"
+                        ));
+                        read = Some(Read::Ca);
+                    } else {
+                        ctx.error(&format_args!(
+                            "the write to InfluxDB failed: {error}"
+                        ));
+                    }
+                    None
+                }
+            };
+            match answer {
+                Some((status, body)) => {
+                    let at =
+                        uri.authority().expect("invariant: a write URI has a host");
+                    answered(ctx, at, status, &body).then_some(Read::Token)
+                }
+                None => read,
             }
         };
         let backoff =
             backoff.get_or_insert_with(|| Backoff::new(ctx.clock(), ctx.rng(), RETRY));
-        if !backoff.wait(ctx.cancel()).await {
-            future::pending::<()>().await;
+        loop {
+            if !backoff.wait(ctx.cancel()).await {
+                future::pending::<()>().await;
+            }
+            let Some(read) = &read else {
+                break;
+            };
+            // Boxed, so each rare read does not grow the future of `send`.
+            let Err(error) = Box::pin(read_again(read, ctx, client, token)).await
+            else {
+                break;
+            };
+            ctx.error(&error);
         }
-        if refused {
-            // Boxed, so this rare read does not grow the future of `send`.
-            *token.borrow_mut() = Box::pin(Token::read(ctx)).await?;
+    }
+}
+
+/// Makes the read that `read` names, and on success puts its value in `client` or
+/// `token`.
+///
+/// # Errors
+///
+/// The error of [`Token::read`] or of [`client`].
+async fn read_again(
+    read: &Read,
+    ctx: &Context<Config>,
+    client: &RefCell<Rc<Client>>,
+    token: &RefCell<Option<Token>>,
+) -> Result<(), Error> {
+    match read {
+        Read::Token => *token.borrow_mut() = Token::read(ctx).await?,
+        Read::Ca => *client.borrow_mut() = Rc::new(self::client(ctx).await?),
+    }
+    Ok(())
+}
+
+/// The fix that the error text of an answer of `status` ends with, after its body.
+fn fix(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
+            ". For a field type conflict, write to another `measurement` or delete the \
+             old field in InfluxDB. For points older than the retention period, raise \
+             it or write to another bucket"
         }
+        StatusCode::NOT_FOUND => {
+            ". Create the database, the bucket, or the org in InfluxDB, or name one \
+             that exists"
+        }
+        StatusCode::PAYLOAD_TOO_LARGE => {
+            ". Raise the request size limit of InfluxDB (`--max-http-request-size` of \
+             InfluxDB 3, `max-body-size` of InfluxDB 1), or write fewer channels or \
+             shorter samples at each sample time"
+        }
+        _ => "",
     }
 }
 

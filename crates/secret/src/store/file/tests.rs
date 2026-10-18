@@ -55,7 +55,10 @@ fn store(files: Files) -> File {
 
 fn missing(path: &str) -> Result<Vec<u8>, Error> {
     Err(Error::Missing {
-        detail: format!("the file /data/{path} is not there. Write the value to it"),
+        detail: format!(
+            "the file /data/{path} is not there. Write the value to it, unreadable by \
+             other users: chmod o-r /data/{path}"
+        ),
     })
 }
 
@@ -207,6 +210,55 @@ fn gives_a_failed_file_call_as_unavailable() {
             assert_eq!(get(&store, "plant.token").await, failed);
         }
         assert_eq!(get(&store, "plant.token").await, Ok(b"t".to_vec()));
+    });
+}
+
+fn exposed(path: &str) -> Result<Vec<u8>, Error> {
+    Err(Error::Unavailable {
+        detail: format!(
+            "other users can read the file /data/{path}. Make it unreadable by other \
+             users: chmod o-r /data/{path}"
+        ),
+    })
+}
+
+#[test]
+fn refuses_a_file_that_other_users_can_read_until_its_mode_is_fixed() {
+    on_sim(|node, files| async move {
+        let store = store(files.clone());
+        let path = Path::new("secrets/plant.token");
+        put(&files, "secrets/plant.token", b"t").await;
+        node.expose_file(path);
+        node.fail_file(path, Operation::ReadAt);
+        assert_eq!(
+            get(&store, "plant.token").await,
+            exposed("secrets/plant.token")
+        );
+        node.hide_file(path);
+        let unread = Err(Error::Unavailable {
+            detail: "the read_at of the file /data/secrets/plant.token failed with OS \
+                     error 5. Check the path and the file"
+                .into(),
+        });
+        assert_eq!(
+            get(&store, "plant.token").await,
+            unread,
+            "the refused get read no byte, so the fault of the read waits"
+        );
+        assert_eq!(get(&store, "plant.token").await, Ok(b"t".to_vec()));
+    });
+}
+
+#[test]
+fn refuses_an_exposed_file_before_it_checks_the_length() {
+    on_sim(|node, files| async move {
+        let store = store(files.clone());
+        put(&files, "secrets/plant.token", &vec![b't'; (1 << 16) + 1]).await;
+        node.expose_file(Path::new("secrets/plant.token"));
+        assert_eq!(
+            get(&store, "plant.token").await,
+            exposed("secrets/plant.token")
+        );
     });
 }
 

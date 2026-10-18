@@ -3,15 +3,18 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use types::name::Name;
 
-use crate::Start;
+use crate::apply::Applied;
 use crate::error::{Among, Error};
+use crate::remote::{self, Link};
+use crate::scope::Scope;
+use crate::{Failure, Log, Start, plan, status};
 
 /// The data directory of a command that names none.
 pub(crate) const DATA: &str = "foundation-data";
@@ -39,6 +42,25 @@ pub(crate) const TABLE: &[Spec] = &[
         read_only: true,
         destructive: false,
     },
+    Spec {
+        name: "plan",
+        summary: "Show the change from config files to the spec of the node of `--data`",
+        read_only: false,
+        destructive: true,
+    },
+    Spec {
+        name: "apply",
+        summary: "Apply a plan file of `foundation plan --out` on the node of `--data`",
+        read_only: false,
+        destructive: true,
+    },
+    Spec {
+        name: "status",
+        summary: "Show the state of each connector and the OS root failures of the node \
+                  of `--data`",
+        read_only: true,
+        destructive: false,
+    },
 ];
 
 #[derive(Parser)]
@@ -56,23 +78,25 @@ struct Cli {
     command: Command,
 }
 
+/// The commands. [`command`] gives each operation its summary from `TABLE`.
 #[derive(Subcommand)]
 enum Command {
-    #[command(flatten)]
-    Run(Request),
+    Version(Empty),
+    Docs(Empty),
     /// Start a node on a data directory, and run it until Ctrl-C.
     Start(StartArgs),
-    /// Show the change from config files to the spec of the node of `--data`.
     Plan(PlanArgs),
-    /// Apply a plan file of `foundation plan --out` on the node of `--data`.
     Apply(ApplyArgs),
-    /// Show the state of each connector on the node of `--data`.
     Status(NodeArgs),
     /// Answer MCP messages on standard input, one JSON-RPC message per line, until it
-    /// closes.
-    Mcp,
+    /// closes. Each tool call of `plan`, `apply`, and `status` runs on the node of
+    /// `--data`, and reads and writes only under the folders of `--files`, never in
+    /// the data directory.
+    Mcp(McpArgs),
     /// Print this help, or the help of one command.
-    Help { command: Option<String> },
+    Help {
+        command: Option<String>,
+    },
 }
 
 #[derive(clap::Args)]
@@ -89,25 +113,68 @@ struct StartArgs {
     /// takes no session from another host.
     #[arg(long, default_value = "127.0.0.1:0")]
     listen: SocketAddr,
+    /// The least level of an event that the log of the node holds. `debug` and `trace`
+    /// write lines for each packet and slow the node.
+    #[arg(long, value_enum, default_value_t = Level::Info)]
+    log_level: Level,
+    /// The form of each line of the log of the node, on standard error. The default is
+    /// `json` with `--json`, else `text`.
+    #[arg(long, value_enum)]
+    log_format: Option<Format>,
+}
+
+/// The values of `--log-level`.
+#[derive(Clone, Copy, ValueEnum)]
+enum Level {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl From<Level> for tracing::Level {
+    fn from(level: Level) -> Self {
+        match level {
+            Level::Error => Self::ERROR,
+            Level::Warn => Self::WARN,
+            Level::Info => Self::INFO,
+            Level::Debug => Self::DEBUG,
+            Level::Trace => Self::TRACE,
+        }
+    }
+}
+
+/// The values of `--log-format`.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Format {
+    Text,
+    Json,
 }
 
 #[derive(clap::Args)]
 struct PlanArgs {
-    /// The config files.
-    #[arg(required = true)]
-    files: Vec<PathBuf>,
-    /// Write the plan file here, for `foundation apply`. With none, `plan` writes no
-    /// file.
-    #[arg(long)]
-    out: Option<PathBuf>,
+    #[command(flatten)]
+    input: Plan,
     #[command(flatten)]
     node: NodeArgs,
 }
 
 #[derive(clap::Args)]
 struct ApplyArgs {
-    /// The plan file.
-    plan: PathBuf,
+    #[command(flatten)]
+    input: Apply,
+    #[command(flatten)]
+    node: NodeArgs,
+}
+
+#[derive(clap::Args)]
+struct McpArgs {
+    /// A folder that the tools may read and write, with each folder under it. Give it
+    /// once for each folder. The default is the working directory, unless it is `/`
+    /// or the home folder.
+    #[arg(long, value_name = "DIR")]
+    files: Vec<PathBuf>,
     #[command(flatten)]
     node: NodeArgs,
 }
@@ -120,17 +187,51 @@ struct NodeArgs {
     data: PathBuf,
 }
 
-/// The input of each operation. Clap and serde both name a variant in kebab case.
-#[derive(Subcommand, Deserialize, JsonSchema)]
+/// The input of each operation, by the name of its tool.
+#[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Request {
     Version(Empty),
     Docs(Empty),
+    Plan(Plan),
+    Apply(Apply),
+    Status(Empty),
 }
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Empty {}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Plan {
+    /// The config files.
+    #[arg(required = true)]
+    #[serde(deserialize_with = "some")]
+    #[schemars(length(min = 1))]
+    files: Vec<PathBuf>,
+    /// Write the plan file here, for `foundation apply`. With none, `plan` writes no
+    /// file.
+    #[arg(long)]
+    #[serde(default)]
+    out: Option<PathBuf>,
+}
+
+#[derive(clap::Args, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Apply {
+    /// The plan file.
+    plan: PathBuf,
+}
+
+/// A list of at least one path.
+fn some<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<PathBuf>, D::Error> {
+    let paths = Vec::<PathBuf>::deserialize(deserializer)?;
+    if paths.is_empty() {
+        return Err(serde::de::Error::invalid_length(0, &"at least one path"));
+    }
+    Ok(paths)
+}
 
 /// The output of each operation. Serde tags it with the operation's name; `json` and
 /// `text` leave the tag out.
@@ -139,6 +240,9 @@ pub(crate) struct Empty {}
 pub(crate) enum Response {
     Version(Version),
     Docs(Reference),
+    Plan(plan::Output),
+    Apply(Applied),
+    Status(status::Output),
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -157,22 +261,20 @@ pub(crate) struct Reference {
 }
 
 pub(crate) enum Parsed {
-    Run(Request),
+    /// Run `request` on the node of `data`, which is `foundation-data` for an
+    /// operation that runs on no node.
+    Run {
+        request: Request,
+        data: PathBuf,
+    },
     Start(Start),
-    Plan {
-        files: Vec<PathBuf>,
-        out: Option<PathBuf>,
-        data: PathBuf,
-    },
-    Apply {
-        plan: PathBuf,
-        data: PathBuf,
-    },
-    Status {
-        data: PathBuf,
-    },
     Help(String),
-    Mcp,
+    /// Serve MCP, with each tool call on the node of `data`, and its files under the
+    /// folders `files`, else the working directory.
+    Mcp {
+        data: PathBuf,
+        files: Vec<PathBuf>,
+    },
 }
 
 /// The command tree, with each operation's summary from `TABLE`.
@@ -191,31 +293,49 @@ pub(crate) fn parse(args: &[OsString], json: bool) -> Result<Parsed, Error> {
             return Ok(Parsed::Help(e.to_string()));
         }
         Err(e) if e.kind() == ErrorKind::DisplayVersion => {
-            return Ok(Parsed::Run(Request::Version(Empty {})));
+            return Ok(offline(Request::Version(Empty {})));
         }
         Err(e) => return Err(from_clap(&e)),
     };
     let cli = Cli::from_arg_matches(&matches).map_err(|e| from_clap(&e))?;
+    let on = |request, NodeArgs { data }| Parsed::Run { request, data };
     match cli.command {
-        Command::Run(request) => Ok(Parsed::Run(request)),
-        Command::Start(StartArgs { data, name, listen }) => Ok(Parsed::Start(Start {
+        Command::Version(empty) => Ok(offline(Request::Version(empty))),
+        Command::Docs(empty) => Ok(offline(Request::Docs(empty))),
+        Command::Start(StartArgs {
+            data,
+            name,
+            listen,
+            log_level,
+            log_format,
+        }) => Ok(Parsed::Start(Start {
             data,
             json,
             name,
             listen,
+            log: Log {
+                json: log_format.map_or(json, |format| format == Format::Json),
+                level: log_level.into(),
+            },
         })),
-        Command::Plan(PlanArgs { files, out, node }) => Ok(Parsed::Plan {
+        Command::Plan(PlanArgs { input, node }) => Ok(on(Request::Plan(input), node)),
+        Command::Apply(ApplyArgs { input, node }) => {
+            Ok(on(Request::Apply(input), node))
+        }
+        Command::Status(node) => Ok(on(Request::Status(Empty {}), node)),
+        Command::Mcp(McpArgs {
             files,
-            out,
-            data: node.data,
-        }),
-        Command::Apply(ApplyArgs { plan, node }) => Ok(Parsed::Apply {
-            plan,
-            data: node.data,
-        }),
-        Command::Status(NodeArgs { data }) => Ok(Parsed::Status { data }),
-        Command::Mcp => Ok(Parsed::Mcp),
+            node: NodeArgs { data },
+        }) => Ok(Parsed::Mcp { data, files }),
         Command::Help { command } => help(command.as_deref()),
+    }
+}
+
+/// The run of `request`, an operation that runs on no node.
+fn offline(request: Request) -> Parsed {
+    Parsed::Run {
+        request,
+        data: PathBuf::from(DATA),
     }
 }
 
@@ -248,7 +368,11 @@ pub(crate) fn read(
 
 /// The unknown-operation error for `name`, with the closest operation name.
 fn unknown(name: &str, among: Among) -> Error {
-    let operations = Request::augment_subcommands(clap::Command::new("foundation"))
+    let operations = TABLE
+        .iter()
+        .fold(clap::Command::new("foundation"), |command, spec| {
+            command.subcommand(clap::Command::new(spec.name))
+        })
         .disable_help_subcommand(true)
         .disable_help_flag(true);
     let closest = operations
@@ -290,6 +414,13 @@ fn from_clap(e: &clap::Error) -> Error {
     // The error of a value's parser, such as why a name is not one.
     if let Some(source) = std::error::Error::source(e) {
         message = format!("{message}: {source}");
+    }
+    if let (Some(ContextValue::String(value)), Some(ContextValue::Strings(valid))) = (
+        e.get(ContextKind::InvalidValue),
+        e.get(ContextKind::ValidValue),
+    ) {
+        let valid = valid.join(", ");
+        message = format!("{message}: `{value}` is not one of {valid}");
     }
     Error::Argument { message }
 }
@@ -345,14 +476,35 @@ pub(crate) fn docs() -> String {
 }
 
 impl Request {
-    pub(crate) fn run(self) -> Response {
-        match self {
+    /// Runs the operation, with the files it names read and written through `scope`,
+    /// and its request to the node sent through `link`.
+    ///
+    /// # Errors
+    ///
+    /// Each error of [`remote::plan`], [`remote::apply`], and [`remote::status`].
+    pub(crate) async fn run<R, C>(
+        self,
+        scope: &Scope,
+        link: &mut Link<R, C>,
+    ) -> Result<Response, Error>
+    where
+        R: AsyncFnMut() -> Result<C, Failure>,
+        C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+    {
+        Ok(match self {
             Self::Version(Empty {}) => Response::Version(Version {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
                 commit: commit(env!("FOUNDATION_COMMIT")),
             }),
             Self::Docs(Empty {}) => Response::Docs(Reference { markdown: docs() }),
-        }
+            Self::Plan(Plan { files, out }) => {
+                Response::Plan(remote::plan(&files, out.as_deref(), scope, link).await?)
+            }
+            Self::Apply(Apply { plan }) => {
+                Response::Apply(remote::apply(&plan, scope, link).await?)
+            }
+            Self::Status(Empty {}) => Response::Status(remote::status(link).await?),
+        })
     }
 }
 
@@ -369,6 +521,9 @@ impl Response {
         match self {
             Self::Version(output) => crate::value(output),
             Self::Docs(output) => crate::value(output),
+            Self::Plan(output) => crate::value(output),
+            Self::Apply(output) => crate::value(output),
+            Self::Status(output) => crate::value(output),
         }
     }
 
@@ -383,6 +538,9 @@ impl Response {
                 format!("{} ({commit})\n", output.version)
             }
             Self::Docs(output) => output.markdown.clone(),
+            Self::Plan(output) => output.text(),
+            Self::Apply(output) => output.text(),
+            Self::Status(output) => output.text(),
         }
     }
 }

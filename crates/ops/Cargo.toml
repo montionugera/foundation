@@ -19,6 +19,7 @@ serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true }
 secret = { path = "../secret" }
 spec = { path = "../spec" }
+tracing = { workspace = true }
 types = { path = "../types" }
 wire = { path = "../wire" }
 
@@ -32,6 +33,7 @@ config-hcl = { path = "../config-hcl" }
 connector = { path = "../connector", features = ["sim"] }
 counting = { path = "../counting" }
 hub = { path = "../hub", features = ["sim"] }
+proptest = { workspace = true }
 sim = { path = "../sim" }
 transport = { path = "../transport" }
 

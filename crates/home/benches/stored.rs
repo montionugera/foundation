@@ -1,6 +1,7 @@
-//! The time to make the stored entry of an index frame and drop it, and to read each
-//! series of its body, for frames of 16, 1000, and 100,000 series of one sample: each
-//! an `f32`, or a mix of scalars, an array, a matrix, a list, a string, and bytes.
+//! The time to make the stored entry of an index frame and drop it, to read each
+//! series of its body, and to make the frame of a read entry again, for frames of 16,
+//! 1000, and 100,000 series of one sample: each an `f32`, or a mix of scalars, an
+//! array, a matrix, a list, a string, and bytes.
 
 mod common;
 
@@ -10,7 +11,7 @@ use std::sync::Arc;
 use common::MIXED;
 use divan::Bencher;
 use divan::counter::ItemsCount;
-use types::frame::key_set::KeySet;
+use types::frame::key_set::{Interner, KeySet};
 use types::frame::{Draft, Form, Frame, Path};
 use types::sample::{Scalar, Type};
 use types::time::Stamp;
@@ -33,6 +34,7 @@ const VARIABLE: usize = 16;
 struct Case {
     name: &'static str,
     series: usize,
+    types: &'static [Type],
     set: Arc<KeySet>,
 }
 
@@ -43,9 +45,14 @@ impl fmt::Display for Case {
 }
 
 impl Case {
-    fn new(name: &'static str, series: usize, types: &[Type]) -> Self {
+    fn new(name: &'static str, series: usize, types: &'static [Type]) -> Self {
         let set = common::set(series, types);
-        Self { name, series, set }
+        Self {
+            name,
+            series,
+            types,
+            set,
+        }
     }
 
     /// An encoded index frame with one sample of each series.
@@ -114,5 +121,67 @@ fn read(bencher: Bencher<'_, '_>, case: &Case) {
             for series in home::bench::read(divan::black_box(&body)) {
                 divan::black_box(series);
             }
+        });
+}
+
+#[divan::bench(args = cases(), sample_count = 1000)]
+fn frame(bencher: Bencher<'_, '_>, case: &Case) {
+    let pool = block::Pool::heap(POOL);
+    let frame = case.frame(&pool);
+    let stored = home::bench::stored(&pool, &frame, &case.set).expect("room");
+    let mut decoder = home::bench::Decoder::default();
+    let made = decoder
+        .frame(&pool, &case.set, &stored)
+        .expect("room")
+        .expect("a data entry");
+    assert_eq!(
+        made.body()[..],
+        frame.body()[..],
+        "{case}: the body is not the same"
+    );
+    bencher
+        .counter(ItemsCount::new(case.series))
+        .bench_local(|| {
+            let made = decoder.frame(&pool, &case.set, divan::black_box(&stored));
+            drop(divan::black_box(made));
+        });
+}
+
+/// As `frame`, with each frame made of the other of two key sets of one interner, as
+/// when two sessions on one shard read from disk in turn. The second set has one more
+/// data channel, which the frame does not hold.
+#[divan::bench(args = cases(), sample_count = 1000)]
+fn frame_alternating(bencher: Bencher<'_, '_>, case: &Case) {
+    alternate(bencher, case, case.series);
+}
+
+/// As `frame_alternating`, with sets of 100,000 and 100,001 channels for frames of 16
+/// series, as when two sessions read a few channels of a large group.
+#[divan::bench(
+    args = cases().into_iter().filter(|case| case.series == 16),
+    sample_count = 1000,
+)]
+fn frame_alternating_large_set(bencher: Bencher<'_, '_>, case: &Case) {
+    alternate(bencher, case, 100_000);
+}
+
+/// Makes the frame of `case` of the other of two key sets of `channels` and
+/// `channels + 1` channels in turn.
+fn alternate(bencher: Bencher<'_, '_>, case: &Case, channels: usize) {
+    let pool = block::Pool::heap(POOL);
+    let frame = case.frame(&pool);
+    let stored = home::bench::stored(&pool, &frame, &case.set).expect("room");
+    let mut interner = Interner::new();
+    let one = common::intern(&mut interner, channels, case.types);
+    let other = common::intern(&mut interner, channels + 1, case.types);
+    let sets = [&one, &other];
+    let mut decoder = home::bench::Decoder::default();
+    let mut turn = 0;
+    bencher
+        .counter(ItemsCount::new(case.series))
+        .bench_local(|| {
+            turn ^= 1;
+            let made = decoder.frame(&pool, sets[turn], divan::black_box(&stored));
+            drop(divan::black_box(made));
         });
 }

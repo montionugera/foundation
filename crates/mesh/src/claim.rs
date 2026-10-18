@@ -264,6 +264,7 @@ mod tests {
             key,
             election_ticks: 10,
             heartbeat_ticks: 2,
+            fits: |_| true,
         };
         let start = Start {
             voters: Voters {

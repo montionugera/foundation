@@ -33,6 +33,34 @@ impl Unit {
         Ok(Self(text.into()))
     }
 
+    /// The unit that an import gives a channel from what a device gives: `text`, the
+    /// unit as text, and `code`, its UN/CEFACT Recommendation 20 common code, each
+    /// `None` when the device gives none. The first of these that gives a unit wins:
+    /// the table's unit for `code` (`CEL` gives `degC`), whatever `text` is; `text`
+    /// when [`Unit::new`] takes it; `text` as a common spelling that is not ASCII, in
+    /// its ASCII form (`°C` gives `degC`, `Ω` gives `ohm`, `m³` gives `m3`), where a
+    /// first `µ` gives `u` and the rest is read by these same two steps. `None` when
+    /// none gives a unit.
+    #[must_use]
+    pub fn given(text: Option<&str>, code: Option<&str>) -> Option<Self> {
+        if let Some((unit, _)) = TABLE.iter().find(|(_, of)| Some(*of) == code) {
+            return Some(Self((*unit).into()));
+        }
+        let text = text?;
+        Self::spelled(text).or_else(|| {
+            let rest = text.strip_prefix(['\u{B5}', '\u{3BC}'])?;
+            Self::new(&format!("u{}", Self::spelled(rest)?.0)).ok()
+        })
+    }
+
+    /// `text` when [`Unit::new`] takes it, or the unit of its spelling in `SPELLINGS`.
+    fn spelled(text: &str) -> Option<Self> {
+        Self::new(text).ok().or_else(|| {
+            let (_, unit) = SPELLINGS.iter().find(|(spelling, _)| *spelling == text)?;
+            Some(Self((*unit).into()))
+        })
+    }
+
     /// The text of the unit.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -100,6 +128,16 @@ const TABLE: &[(&str, &str)] = &[
     ("psi", "PS"),
     ("rad", "C81"),
     ("s", "SEC"),
+];
+
+/// Common spellings of a whole unit that are not ASCII, and the unit of each.
+const SPELLINGS: [(&str, &str); 6] = [
+    ("°C", "degC"),
+    ("°F", "degF"),
+    ("\u{3A9}", "ohm"),
+    ("\u{2126}", "ohm"),
+    ("m³", "m3"),
+    ("m/s²", "m/s2"),
 ];
 
 /// A text that is not a unit.

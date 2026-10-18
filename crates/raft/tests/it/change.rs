@@ -31,6 +31,7 @@ fn node(id: u8, voters: &[u8]) -> Raft {
         key: key(id),
         election_ticks: ELECTION,
         heartbeat_ticks: 1,
+        fits: |_| true,
     };
     let start = Start {
         hard: Hard::default(),
@@ -425,6 +426,7 @@ fn a_removed_leader_that_restarts_before_the_leave_commits_finishes_the_change()
             key: key(2),
             election_ticks: ELECTION,
             heartbeat_ticks: 1,
+            fits: |_| true,
         },
         restart,
     )
@@ -492,6 +494,7 @@ fn removed_holds_once_a_leader_gives_the_commit_of_the_leave() {
             key: key(2),
             election_ticks: ELECTION,
             heartbeat_ticks: 1,
+            fits: |_| true,
         },
         restart,
     )
@@ -570,6 +573,7 @@ fn removed_holds_for_a_node_that_only_a_committed_entry_held() {
             key: key(2),
             election_ticks: ELECTION,
             heartbeat_ticks: 1,
+            fits: |_| true,
         };
         let raft = Raft::new(config, start).unwrap();
         assert!(raft.voters().contains(key(4)), "applied {applied}");
@@ -830,6 +834,7 @@ pub(crate) fn joining() -> (Raft, Raft) {
         key: key(4),
         election_ticks: ELECTION,
         heartbeat_ticks: 1,
+        fits: |_| true,
     };
     let mut node = Raft::new(config, Start::default()).unwrap();
     let at = |index| Position {
@@ -915,6 +920,7 @@ fn a_new_node_that_holds_the_leave_follows_a_leader_elected_before_the_change() 
         key: key(4),
         election_ticks: ELECTION,
         heartbeat_ticks: 1,
+        fits: |_| true,
     };
     let start = Start {
         hard: Hard {

@@ -1,7 +1,8 @@
 #![expect(clippy::arithmetic_side_effects, reason = "a test may panic")]
 
+use connector::browse::{Access, Facts};
 use document::value::Kind as Value;
-use document::{Attribute, Label, Map, Position, Source, Span};
+use document::{Position, Source, Span};
 use proptest::prelude::*;
 
 use super::*;
@@ -411,7 +412,82 @@ fn refuses_each_key_and_block_it_does_not_take() {
     );
 }
 
+/// The block that the kind gives for `tag` with `access`, as `plant.spike`.
+fn point(tag: &str, access: Option<Access>) -> Result<Vec<Block>, Vec<Diagnostic>> {
+    let facts = Facts {
+        access,
+        ..Facts::default()
+    };
+    connector::kind::Kind::block(&crate::Kind, tag, &facts, &spike())
+}
+
+fn spike() -> Name {
+    "plant.spike".parse().expect("a name")
+}
+
+#[test]
+fn gives_a_read_block_for_each_point_that_a_connector_can_read() {
+    for access in [None, Some(Access::Read), Some(Access::ReadWrite)] {
+        assert_eq!(
+            point("ns=3;i=1001", access),
+            Ok(vec![read(0, "plant.spike", "ns=3;i=1001")]),
+            "{access:?}"
+        );
+    }
+}
+
+#[test]
+fn refuses_the_block_of_a_tag_that_is_not_a_node_id() {
+    assert_eq!(
+        point("ns=3;g=09087e75-8e5e-499b-954f-f2a9603db28a", None),
+        Err(vec![Diagnostic::new(
+            Code::new("opcua.bad-node-id"),
+            None,
+            "the tag \"ns=3;g=09087e75-8e5e-499b-954f-f2a9603db28a\": a GUID (g=) or \
+             opaque (b=) key is not supported: give a number (i=) or a name (s=)"
+                .into(),
+            "Write a node ID such as \"ns=3;s=SpikeData\" or \"ns=3;i=1001\"".into(),
+        )])
+    );
+}
+
+fn tag(block: &Block) -> Option<String> {
+    connector::kind::Kind::tag(&crate::Kind, block)
+}
+
+#[test]
+fn gives_the_tag_of_a_read_in_the_form_of_a_browse() {
+    assert_eq!(
+        tag(&read(0, "plant.spike", "ns=0;i=2258")),
+        Some("i=2258".into())
+    );
+    assert_eq!(
+        tag(&read(0, "plant.spike", "ns=3;s=a")),
+        Some("ns=3;s=a".into())
+    );
+}
+
+#[test]
+fn gives_no_tag_for_another_block_or_a_bad_node_id() {
+    let mut other = read(0, "plant.spike", "ns=3;i=1001");
+    other.keyword = "write".into();
+    assert_eq!(tag(&other), None);
+    assert_eq!(tag(&read(0, "plant.spike", "ns=3;g=x")), None);
+    let mut empty = read(0, "plant.spike", "ns=3;i=1001");
+    empty.body = Document::default();
+    assert_eq!(tag(&empty), None);
+}
+
 proptest! {
+    /// The tag of each block that the kind gives for a tag of a browse is that tag.
+    #[test]
+    fn gives_the_tag_of_each_block_that_it_gives(node in crate::node::tests::node()) {
+        let text = node.to_string();
+        for block in point(&text, None).expect("a block") {
+            prop_assert_eq!(tag(&block), Some(text.clone()));
+        }
+    }
+
     /// Each text of a node that `Node` reads parses as the `node_id` of a read.
     #[test]
     fn reads_each_node_id_that_node_reads(
@@ -425,6 +501,20 @@ proptest! {
         let node: Node = text.parse().expect("a node");
         let config = config(string(ADDRESS), vec![read(20, "plant.spike", &text)]);
         let reads = parse(&config).map(|config| config.reads);
+        prop_assert_eq!(
+            reads,
+            Ok(vec![Read { channel: "plant.spike".parse().expect("a name"), node }])
+        );
+    }
+
+    /// The block of each node that `Node` reads is a read of that node, which
+    /// `parse` reads back.
+    #[test]
+    fn parses_the_block_of_each_node(node in crate::node::tests::node()) {
+        let text = node.to_string();
+        let blocks = point(&text, None).expect("a block");
+        prop_assert_eq!(&blocks, &vec![read(0, "plant.spike", &text)]);
+        let reads = parse(&config(string(ADDRESS), blocks)).map(|config| config.reads);
         prop_assert_eq!(
             reads,
             Ok(vec![Read { channel: "plant.spike".parse().expect("a name"), node }])

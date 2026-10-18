@@ -660,6 +660,7 @@ createServerSecureChannel(UA_BinaryProtocolManager *bpm, UA_ConnectionManager *c
         connConfig.localMaxChunkCount = 1 << 14; /* 16384 */
     if(connConfig.remoteMaxChunkCount == 0)
         connConfig.remoteMaxChunkCount = 1 << 14; /* 16384 */
+    connConfig.localMaxQueuedChunks = connConfig.localMaxChunkCount;
 
     /* Set up the new SecureChannel */
     UA_SecureChannel_init(channel);
@@ -866,7 +867,8 @@ serverNetworkCallbackLocked(UA_ConnectionManager *cm, uintptr_t connectionId,
         UA_ByteString payload = UA_BYTESTRING_NULL;
         UA_Boolean copied = false;
         retval = UA_SecureChannel_getCompleteMessage(channel, &messageType, &requestId,
-                                                     &payload, &copied, nowMonotonic);
+                                                     &payload, &copied, NULL,
+                                                     nowMonotonic);
         if(retval != UA_STATUSCODE_GOOD || payload.length == 0)
             break;
         retval = processSecureChannelMessage(bpm->sc.server, channel,
@@ -1340,7 +1342,8 @@ serverReverseConnectCallbackLocked(UA_ConnectionManager *cm, uintptr_t connectio
         UA_ByteString payload = UA_BYTESTRING_NULL;
         UA_Boolean copied = false;
         retval = UA_SecureChannel_getCompleteMessage(context->channel, &messageType,
-                                                     &requestId, &payload, &copied, nowMonotonic);
+                                                     &requestId, &payload, &copied,
+                                                     NULL, nowMonotonic);
         if(retval != UA_STATUSCODE_GOOD || payload.length == 0)
             break;
         retval = processSecureChannelMessage(bpm->sc.server, context->channel,

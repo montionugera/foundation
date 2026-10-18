@@ -12,7 +12,7 @@ use crate::bytes::{take_name, take_rising};
 // A node's status channels are a fixed set per release; the cap leaves room for later
 // releases. Every member keeps every member's status, so one node must not set the
 // size of each member's state.
-const MAX: u8 = 64;
+pub(crate) const MAX: u8 = 64;
 
 /// A node's status channel keys, by name under the node's name: at most 64.
 #[derive(Clone, Debug, PartialEq, Eq)]

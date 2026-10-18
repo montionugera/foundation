@@ -81,7 +81,7 @@ fn opens_a_new_stream_after_a_timeout() {
     let log = network.serve_each(PORT, |n| if n == 0 { Reply::Nothing } else { ok(n) });
     let outcomes = network.run(sends(&network, PORT, 2));
     assert!(
-        matches!(outcomes[0], Err(Error::TimedOut)),
+        matches!(outcomes[0], Err(Error::TimedOut { .. })),
         "{:?}",
         outcomes[0]
     );
@@ -106,7 +106,7 @@ fn opens_a_new_stream_after_a_body_over_the_cap() {
     });
     let outcomes = network.run(sends(&network, PORT, 2));
     assert!(
-        matches!(outcomes[0], Err(Error::TooLarge { max: BODY_MAX })),
+        matches!(outcomes[0], Err(Error::TooLarge { max: BODY_MAX, .. })),
         "{:?}",
         outcomes[0]
     );
@@ -248,10 +248,11 @@ fn fails_a_post_when_the_server_closed_the_idle_stream_first() {
     let outcomes = network.run(steps);
     all_ok(&outcomes[..1]);
     let error = outcomes[1].as_ref().expect_err("the stream closed");
-    assert!(matches!(error, Error::Protocol(_)), "{error:?}");
+    assert!(matches!(error, Error::Protocol { .. }), "{error:?}");
     assert_eq!(
         error.to_string(),
-        "the exchange failed: connection closed before message completed"
+        "the exchange with 10.0.0.2:8086 failed: connection closed before message \
+         completed"
     );
     assert_eq!(log.lock().expect("no panic").requests, [0]);
 }
@@ -287,7 +288,7 @@ fn fails_a_get_after_a_broken_response() {
     let error = outcomes[1].as_ref().expect_err("a bad status");
     assert_eq!(
         error.to_string(),
-        "the exchange failed: invalid HTTP status-code parsed"
+        "the exchange with 10.0.0.2:8086 failed: invalid HTTP status-code parsed"
     );
     assert_eq!(
         log.lock().expect("no panic under the lock").requests,
@@ -307,7 +308,8 @@ fn fails_a_get_after_part_of_a_response() {
     let error = outcomes[1].as_ref().expect_err("a partial response");
     assert_eq!(
         error.to_string(),
-        "the exchange failed: connection closed before message completed"
+        "the exchange with 10.0.0.2:8086 failed: connection closed before message \
+         completed"
     );
     assert_eq!(
         log.lock().expect("no panic under the lock").requests,

@@ -8,9 +8,17 @@ use wire::hub::client::Refusal;
 
 use crate::{address, admin};
 
-/// The pool of the transport and of the `program::Session`. Its largest block holds a
-/// datagram, and the session sends a body in chunks of its largest block.
+/// The budget of the pool of the transport and the `program::Session`. Its largest
+/// block holds a datagram, and the session sends a body in chunks of its largest block.
 const POOL: block::Config = match block::Config::new(1 << 21) {
+    Ok(config) => config,
+    Err(_) => panic!("invariant: the budget fits"),
+};
+
+/// The budget of the pool of the frames of the session's reads. No command reads yet,
+/// so it is small. Its largest block is the largest frame that a read takes: a larger
+/// one gives `program::Error::Pool`.
+const FRAMES: block::Config = match block::Config::new(64 << 10) {
     Ok(config) => config,
     Err(_) => panic!("invariant: the budget fits"),
 };
@@ -70,6 +78,7 @@ pub async fn reach(config: Config) -> Result<program::Session, Error> {
         entropy,
         tasks,
         pool,
+        frames: Rc::new(block::Pool::heap(FRAMES)),
     };
     program::Session::connect(&transport, config)
         .await
@@ -143,6 +152,13 @@ mod tests {
     fn the_pool_holds_a_datagram() {
         let pool = block::Pool::heap(POOL);
         assert!(pool.largest() >= 1472, "{}", pool.largest());
+    }
+
+    #[test]
+    #[cfg(not(loom))]
+    fn the_frames_pool_holds_a_frame_of_32_kib() {
+        let pool = block::Pool::heap(FRAMES);
+        assert!(pool.largest() >= 32 << 10, "{}", pool.largest());
     }
 
     proptest! {

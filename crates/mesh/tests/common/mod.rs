@@ -19,6 +19,10 @@ use types::name::Prefix;
 use types::node::{self, SealKey};
 use types::time::Span;
 
+mod steps;
+
+pub(crate) use steps::simulation;
+
 pub(crate) const KEY: node::Key = node::Key::from_u128(1);
 pub(crate) const PRIVATE_KEY: PrivateKey = PrivateKey([1; 32]);
 

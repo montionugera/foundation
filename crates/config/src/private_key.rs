@@ -1,13 +1,15 @@
 use std::collections::BTreeMap;
 
 use document::diagnostic::{Code, Diagnostic};
-use document::value::{Kind, Value};
-use document::{Document, Map, Span};
+use document::value::Kind;
+use document::{Document, Span};
 use spec::channel;
 use spec::definition::Definition;
 use spec::time::Peers;
 use spec::unit::Unit;
 use types::name::{Name, Selector, Written};
+
+use crate::walk::{self, Part};
 
 const PRIVATE_KEY: Code = Code::new("config.private-key");
 /// Text that only a private key holds: the OpenSSH, PEM, and RFC 4716 forms, a `.ppk`
@@ -92,37 +94,28 @@ pub(crate) fn in_definitions(
 }
 
 fn in_document(document: &Document, alarms: &mut Vec<Diagnostic>) {
-    in_map(&document.attributes, alarms);
-    for block in &document.blocks {
-        in_text(&block.keyword, block.keyword_span, alarms);
-        for label in &block.labels {
-            in_text(&label.text, label.span, alarms);
+    walk::each(document, &mut |part| {
+        match part {
+            Part::Block(block) => {
+                in_text(&block.keyword, block.keyword_span, alarms);
+                for label in &block.labels {
+                    in_text(&label.text, label.span, alarms);
+                }
+            }
+            Part::Key(key, span) => in_text(key, span, alarms),
+            Part::Value(value) => match &value.kind {
+                Kind::String(text) => in_text(text, value.span, alarms),
+                Kind::Reference(name) => in_text(name.as_str(), value.span, alarms),
+                Kind::Call(call) => in_text(&call.function, call.function_span, alarms),
+                Kind::List(_)
+                | Kind::Map(_)
+                | Kind::Bool(_)
+                | Kind::Integer(_)
+                | Kind::Float(_) => {}
+            },
         }
-        in_document(&block.body, alarms);
-    }
-}
-
-fn in_map(map: &Map, alarms: &mut Vec<Diagnostic>) {
-    for attribute in map.iter() {
-        in_text(&attribute.key, attribute.key_span, alarms);
-        in_value(&attribute.value, alarms);
-    }
-}
-
-fn in_value(value: &Value, alarms: &mut Vec<Diagnostic>) {
-    match &value.kind {
-        Kind::String(text) => in_text(text, value.span, alarms),
-        Kind::Reference(name) => in_text(name.as_str(), value.span, alarms),
-        Kind::List(items) => items.iter().for_each(|item| in_value(item, alarms)),
-        Kind::Map(map) => in_map(map, alarms),
-        Kind::Call(call) => {
-            in_text(&call.function, call.function_span, alarms);
-            call.arguments
-                .iter()
-                .for_each(|item| in_value(item, alarms));
-        }
-        Kind::Bool(_) | Kind::Integer(_) | Kind::Float(_) => {}
-    }
+        true
+    });
 }
 
 fn in_text(text: &str, span: Option<Span>, alarms: &mut Vec<Diagnostic>) {

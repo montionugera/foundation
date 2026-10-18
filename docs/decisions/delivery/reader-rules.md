@@ -31,17 +31,29 @@
   Supersedes https://github.com/synnaxlabs/foundation/pull/89 in its clause that
   `buffer` trims below the floor, past retention (by store time), and under disk
   pressure. A resume takes, per path, the position the reader's `hub` presents, then the
-  position at this home, then the home's fallback. A position below the floor or past
-  the head is accepted as is; the `buffer` read reports any gap (B2). A resume starts a
-  `buffer` read at `Mark::at(position)`, so the entries with no samples at the position
-  come again. Between reads, the caller keeps the mark the last read gave, in memory
-  (#510). Named readers write a position record at once when they open, close, or are
-  taken over, and on the home's interval when the position changed. A session open at a
-  crash restores as closed at the restore. The home drops a grant, ack, or close for a
-  key it gave that is no longer open: a late message after a close or a takeover. A take
-  of such a key gives nothing. After a home sheds an index (HOME SURFACE), a call with a
-  key of a reader of the index panics until the home carries it again; after that carry,
-  the home drops the call as late (`laptop.architect`, 2026-10-08T22:24:43Z:
+  position at this home, then the home's fallback. A position below the floor is
+  accepted as is; the `buffer` read reports any gap (B2). A presented live position past
+  the live tail takes the live tail, so a reader whose seqs a restart or a shed lost
+  gets the new frames at those seqs (#274 C; `laptop.architect`, 2026-10-14T01:45:42Z,
+  item 9 of
+  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6159035426).
+  Supersedes https://github.com/synnaxlabs/foundation/pull/89 in its clause that a
+  presented live position past the head is accepted as is. A presented backfill position
+  past the head is accepted as is. A resume starts a `buffer` read at
+  `Mark::at(position)`, so the entries with no samples at the position come again.
+  Between reads, `delivery::Readers` keeps the mark where the session's read goes on, in
+  memory: `Mark::at` the seq where a read from disk starts (at the open, or at the first
+  frame that a miss leaves), then the `next` of the last read, or `Mark::at` the end of
+  the last frame that `fill` gave (#510; HUB SESSIONS, amended #2989;
+  `laptop.architect`, 2026-10-17T06:49:04Z:
+  https://github.com/synnaxlabs/foundation/issues/2989#issuecomment-6230866460). Named
+  readers write a position record at once when they open, close, or are taken over, and
+  on the home's interval when the position changed. A session open at a crash restores
+  as closed at the restore. The home drops a grant, ack, or close for a key it gave that
+  is no longer open: a late message after a close or a takeover. A take of such a key
+  gives nothing. After a home sheds an index (HOME SURFACE), a call with a key of a
+  reader of the index panics until the home carries it again; after that carry, the home
+  drops the call as late (`laptop.architect`, 2026-10-08T22:24:43Z:
   https://github.com/synnaxlabs/foundation/issues/2020#issuecomment-6070259814). A key
   is the home's own value, in memory only, and keys start again at a restore. No hub
   message carries a key: the home maps each one to a key it gave, so a key it never gave
@@ -73,8 +85,27 @@
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971). A
   session that waits for a grant then misses that frame too (`laptop.architect`,
   2026-10-14T02:12:26Z:
-  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159349684). A named
-  complete session that the home holds over such a frame resumes with `Behind`
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159349684). It
+  first reads the frames from the one it waits on from disk (#274 B1;
+  `laptop.architect`, 2026-10-15T18:27:16Z:
+  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6199323861, item 4). A
+  named complete session that the home holds over such a frame resumes with `Behind`
   (`laptop.architect`, 2026-10-14T02:29:09Z:
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159543609). Basis:
   A6, A8, B2, B3, S10, X14, #41.
+  Amended (#2553): a live frame that finds no room in the buffer is no miss. It ends no
+  session, and a named session that the home holds over it resumes with no `Behind`. The
+  next frame with a sample that a complete session gets gives the lost seqs as its gap,
+  from `hub::reader::Received::gap`, and a frame with no sample keeps the position
+  before the gap (`laptop.architect`, 2026-10-16T02:09:51Z:
+  https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206458946). A run
+  that a trim freed joins the gap once a reader reads from disk (#2723)
+  (`laptop.architect`, 2026-10-15T18:12:25Z:
+  https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922).
+  Amended (#2790): the `Behind` variants are removed (HUB WIRE).
+  Supersedes the three rulings of #2649 above on a frame that finds no room. Amended
+  (`laptop.architect`, #406, 2026-10-14T01:56:45Z:
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6159164617): a trim keeps
+  the newest entry of each nonzero tag on each path (STORE TRIM), and a read never
+  gives that copy. A read gives only the entries of the log of the
+  path, and the seqs that a trim freed are its gap.

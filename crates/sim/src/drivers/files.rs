@@ -60,13 +60,22 @@ impl env::files::Driver for Node {
         mode: Mode,
     ) -> Request<'a, Box<dyn env::files::Descriptor>> {
         self.request(path, Call::Open(mode), |done| {
-            let Done::Open { handle, len } = done else {
+            let Done::Open {
+                handle,
+                len,
+                exposed,
+            } = done
+            else {
                 unreachable!("invariant: an open gives a file")
             };
             lock(&self.shared).files().opened(self.node, handle, path);
             let node = self.clone();
-            let descriptor: Box<dyn env::files::Descriptor> =
-                Box::new(Descriptor { node, handle, len });
+            let descriptor: Box<dyn env::files::Descriptor> = Box::new(Descriptor {
+                node,
+                handle,
+                len,
+                exposed,
+            });
             descriptor
         })
     }
@@ -97,13 +106,21 @@ impl env::files::Driver for Node {
                     Ok(descriptor)
                 }
                 Ok(Found::Directory(_)) => Err(io(DIRECTORY)),
-                Ok(Found::Large) => {
-                    unreachable!("invariant: no file is over usize::MAX")
+                Ok(Found::Large(_)) => {
+                    unreachable!("invariant: no read is over usize::MAX")
                 }
                 Err(env::paths::Error::NotFound) => Err(Error::NotFound {
                     path: path.to_path_buf(),
                 }),
                 Err(env::paths::Error::Io { code }) => Err(io(code)),
+                Err(
+                    env::paths::Error::Outside
+                    | env::paths::Error::Hidden
+                    | env::paths::Error::Vacant
+                    | env::paths::Error::Replaced,
+                ) => {
+                    unreachable!("invariant: the paths of a host have no limit")
+                }
             }
         })
     }
@@ -177,6 +194,7 @@ struct Descriptor {
     node: Node,
     handle: Handle,
     len: u64,
+    exposed: bool,
 }
 
 impl Descriptor {
@@ -192,6 +210,10 @@ impl Descriptor {
 impl env::files::Descriptor for Descriptor {
     fn len(&self) -> u64 {
         self.len
+    }
+
+    fn exposed(&self) -> bool {
+        self.exposed
     }
 
     fn write_at<'a>(&'a self, offset: u64, parts: &'a [Block]) -> Request<'a, ()> {
@@ -285,6 +307,11 @@ struct Host {
 impl env::files::Descriptor for Host {
     fn len(&self) -> u64 {
         u64::try_from(self.bytes.len()).expect("invariant: usize fits u64")
+    }
+
+    /// The host tree keeps no modes.
+    fn exposed(&self) -> bool {
+        false
     }
 
     fn write_at<'a>(&'a self, _: u64, _: &'a [Block]) -> Request<'a, ()> {

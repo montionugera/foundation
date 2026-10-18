@@ -14,6 +14,7 @@ dependencies = [
  "mesh",
  "node",
  "ops",
+ "os",
  "proptest",
  "serde_json",
  "sim",
@@ -246,6 +247,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfg-expr"
+version = "0.20.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ba9e9ec16c447027685b1f897b720e18e9a8afd00bd7332c483537e38086c9f"
+dependencies = [
+ "smallvec",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -418,9 +428,14 @@ dependencies = [
  "hyper",
  "loom",
  "proptest",
+ "rustls",
+ "rustls-webpki",
  "secret",
  "sim",
  "spec",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
  "types",
  "wire",
 ]
@@ -429,6 +444,7 @@ dependencies = [
 name = "connector-influx"
 version = "0.0.0"
 dependencies = [
+ "base64ct",
  "bytes",
  "codec",
  "connector",
@@ -451,9 +467,16 @@ dependencies = [
 name = "connector-modbus"
 version = "0.0.0"
 dependencies = [
+ "codec",
+ "connector",
+ "counting",
+ "divan",
+ "document",
  "env",
+ "hub",
  "proptest",
  "sim",
+ "spec",
  "types",
 ]
 
@@ -470,6 +493,7 @@ dependencies = [
 name = "connector-opcua"
 version = "0.0.0"
 dependencies = [
+ "aws-lc-sys",
  "block",
  "cc",
  "codec",
@@ -483,6 +507,7 @@ dependencies = [
  "proptest",
  "sim",
  "spec",
+ "tracing",
  "types",
 ]
 
@@ -510,6 +535,22 @@ checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
 dependencies = [
  "unicode-segmentation",
 ]
+
+[[package]]
+name = "core-foundation"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+]
+
+[[package]]
+name = "core-foundation-sys"
+version = "0.8.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "core_affinity"
@@ -696,6 +737,8 @@ name = "env"
 version = "0.0.0"
 dependencies = [
  "block",
+ "counting",
+ "divan",
  "proptest",
  "tracing",
  "types",
@@ -1185,6 +1228,7 @@ dependencies = [
  "config-hcl",
  "connector",
  "connector-influx",
+ "connector-modbus",
  "connector-opcua",
  "counting",
  "crc32c",
@@ -1202,11 +1246,14 @@ dependencies = [
  "os",
  "program",
  "proptest",
+ "sdk",
  "secret",
  "serde",
  "serde_json",
  "sim",
  "spec",
+ "tracing",
+ "tracing-subscriber",
  "transport",
  "types",
  "wire",
@@ -1321,6 +1368,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
+name = "openssl-probe"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+
+[[package]]
 name = "ops"
 version = "0.0.0"
 dependencies = [
@@ -1336,12 +1389,14 @@ dependencies = [
  "env",
  "hub",
  "mesh",
+ "proptest",
  "schemars",
  "secret",
  "serde",
  "serde_json",
  "sim",
  "spec",
+ "tracing",
  "transport",
  "types",
  "wire",
@@ -1362,6 +1417,7 @@ dependencies = [
  "os",
  "proptest",
  "rustix",
+ "rustls-native-certs",
  "tokio",
  "tracing",
  "types",
@@ -1446,6 +1502,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "portable-atomic"
+version = "1.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
+
+[[package]]
 name = "ppv-lite86"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1470,10 +1532,14 @@ dependencies = [
  "access",
  "aws-lc-rs",
  "block",
+ "codec",
+ "counting",
  "env",
  "hub",
+ "proptest",
  "sim",
  "spec",
+ "tracing",
  "transport",
  "types",
  "wire",
@@ -1492,6 +1558,63 @@ dependencies = [
  "rand_xorshift",
  "regex-syntax",
  "unarray",
+]
+
+[[package]]
+name = "pyo3"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "229ca13b8a15bb0d1487b81ab975bfcd97513416499a8312011b6036e42e0de4"
+dependencies = [
+ "libc",
+ "once_cell",
+ "portable-atomic",
+ "pyo3-build-config",
+ "pyo3-ffi",
+ "pyo3-macros",
+]
+
+[[package]]
+name = "pyo3-build-config"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70130e2b6dd1ee589a8788026a429561ca5c40fa7a2fa7914c2282eddae24700"
+dependencies = [
+ "target-lexicon",
+]
+
+[[package]]
+name = "pyo3-ffi"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e7ff73c555c286d212d4ce7e5fbda845a973c4f61bd5f160f5f2c3c2a04d1c4"
+dependencies = [
+ "libc",
+ "pyo3-build-config",
+]
+
+[[package]]
+name = "pyo3-macros"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c46d2e5862c7bb8207e3b639f713dda3c499933444784154c11d013c5a691b60"
+dependencies = [
+ "proc-macro2",
+ "pyo3-macros-backend",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
+name = "pyo3-macros-backend"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38b89f066f2ae72a2aef52d1537ca2fcd104440ebfadee06e97aa90738a25b9b"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -1703,6 +1826,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustls-native-certs"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a073f5dc7469f984c52ad2752b63b0807745133b6de880b7b64c1ac4c48aec4"
+dependencies = [
+ "openssl-probe",
+ "rustls-pki-types",
+ "schannel",
+ "security-framework",
+]
+
+[[package]]
 name = "rustls-pki-types"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1729,6 +1864,15 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "schannel"
+version = "0.1.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
+dependencies = [
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "schemars"
@@ -1762,6 +1906,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
 
 [[package]]
+name = "sdk"
+version = "0.0.0"
+dependencies = [
+ "block",
+ "env",
+ "os",
+ "program",
+ "tokio",
+ "tracing",
+ "transport",
+ "types",
+]
+
+[[package]]
+name = "sdk-python"
+version = "0.0.0"
+dependencies = [
+ "pyo3",
+ "sdk",
+ "transport",
+ "types",
+]
+
+[[package]]
 name = "secret"
 version = "0.0.0"
 dependencies = [
@@ -1774,6 +1942,29 @@ dependencies = [
  "sim",
  "types",
  "zeroize",
+]
+
+[[package]]
+name = "security-framework"
+version = "3.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7f4bc775c73d9a02cde8bf7b2ec4c9d12743edf609006c7facc23998404cd1d"
+dependencies = [
+ "bitflags",
+ "core-foundation",
+ "core-foundation-sys",
+ "libc",
+ "security-framework-sys",
+]
+
+[[package]]
+name = "security-framework-sys"
+version = "2.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
 ]
 
 [[package]]
@@ -2023,6 +2214,12 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "target-lexicon"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "terminal_size"
@@ -2499,6 +2696,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 name = "wire"
 version = "0.0.0"
 dependencies = [
+ "block",
  "counting",
  "divan",
  "proptest",
@@ -2515,10 +2713,12 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 name = "xtask"
 version = "0.0.0"
 dependencies = [
+ "cfg-expr",
  "comrak",
  "proptest",
  "semver",
  "serde_json",
+ "syn 3.0.6",
 ]
 
 [[package]]

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use connector::cancel;
 use connector::kind::{self, Channels, Context, Table};
-use connector::supervisor::{self, Supervisor};
+use connector::supervisor::Supervisor;
 use document::Document;
 use document::diagnostic::Diagnostic;
 use env::paths::Paths;
@@ -21,6 +21,7 @@ use types::time::Span;
 
 use super::{Class, Failure, Output, State, Status};
 use crate::common::{self, Fixture, SAM, founded, front_ends, name, solo};
+use crate::roots::Failures;
 use crate::serve::serve;
 use crate::{Config, Failure as Lost, Node, Run};
 
@@ -69,13 +70,6 @@ impl kind::Kind for Scripted {
         })
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     async fn run(&self, context: Context<()>) -> Result<(), kind::Error> {
         match self.script {
             Script::Steady => {}
@@ -109,6 +103,14 @@ fn kinds() -> Table {
     let failing = "no route to the device";
     let forging = "refused\nsite.a: config error: forged by the device";
     let wide = &[("in", 0), ("confirmed", 0), ("extra", 0)];
+    let opcua = &[
+        ("in", 1520),
+        ("lost", 0),
+        ("missed", 0),
+        ("bad", 0),
+        ("uncertain", 0),
+        ("mistyped", 0),
+    ];
     Table::new()
         .with("steady", Scripted::new(counts, Script::Steady))
         .with("failing", Scripted::new(counts, Script::Fails(failing)))
@@ -120,13 +122,13 @@ fn kinds() -> Table {
             "shifted",
             Scripted::new(&[("in", 0), ("other", 0)], Script::Steady),
         )
-        .with(
-            "opcua",
-            Scripted::new(&[("in", 1520), ("lost", 0), ("missed", 0)], Script::Steady),
-        )
+        .with("opcua", Scripted::new(opcua, Script::Steady))
         .with(
             "influx",
-            Scripted::new(&[("confirmed", 1517)], Script::Steady),
+            Scripted::new(
+                &[("confirmed", 1517), ("lost", 0), ("oversized", 0)],
+                Script::Steady,
+            ),
         )
 }
 
@@ -138,8 +140,10 @@ fn gives_unknown_while_the_hub_lacks_one_status_channel_of_the_spec() {
         supervise(&fixture, &node, &["site.a"]).await;
         applied_alone(&node, &connector("site.a", "wide", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "wide")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "wide")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -158,8 +162,10 @@ fn gives_unknown_until_the_run_of_a_spec_with_more_counts_writes_its_start_frame
             waited < Span::SECOND,
             "the reply waited {waited} for the frame, not under 1 s"
         );
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "wide")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "wide")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
         supervise(&fixture, &node, &["site.a"]).await;
@@ -173,7 +179,7 @@ fn gives_unknown_until_the_run_of_a_spec_with_more_counts_writes_its_start_frame
             "counts": { "confirmed": 0, "extra": 0, "in": 0 },
             "error": null,
             "note": null,
-        }]}});
+        }], "roots": clean()}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -192,8 +198,10 @@ fn gives_unknown_until_the_run_of_a_spec_with_another_count_writes_its_start_fra
             waited < Span::SECOND,
             "the reply waited {waited} for the frame, not under 1 s"
         );
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "shifted")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "shifted")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
         supervise(&fixture, &node, &["site.a"]).await;
@@ -207,7 +215,7 @@ fn gives_unknown_until_the_run_of_a_spec_with_another_count_writes_its_start_fra
             "counts": { "in": 0, "other": 0 },
             "error": null,
             "note": null,
-        }]}});
+        }], "roots": clean()}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -231,7 +239,7 @@ fn gives_the_old_state_until_the_run_with_fewer_counts_writes_its_start_frame() 
                 "counts": counts,
                 "error": null,
                 "note": null,
-            }]}})
+            }], "roots": clean()}})
         };
         let (head, rest) = status(&node, "@admin").await;
         assert_eq!(head, running(json!({ "confirmed": 0, "in": 0 })));
@@ -264,8 +272,20 @@ fn escapes_a_newline_in_the_text_of_an_error() {
     });
 }
 
+/// A supervisor of the kinds of [`kinds`] on `fixture`.
+fn supervisor(fixture: &Fixture) -> Supervisor {
+    let secrets = connector::testing::create_secrets(fixture.sim.files());
+    crate::common::create_supervisor(fixture, kinds(), secrets)
+}
+
 /// The node of `mesh` on `fixture`, with the kinds of [`kinds`].
 fn create_node(fixture: &Fixture, mesh: mesh::Mesh) -> Node {
+    create_node_on(fixture, mesh, Failures::new(String::new(), Vec::new()))
+}
+
+/// The node of `mesh` on `fixture`, with the kinds of [`kinds`] and the failures of
+/// `roots`.
+fn create_node_on(fixture: &Fixture, mesh: mesh::Mesh, roots: Failures) -> Node {
     let made = Cell::new(0);
     let key = move || {
         made.set(made.get() + 1);
@@ -275,11 +295,11 @@ fn create_node(fixture: &Fixture, mesh: mesh::Mesh) -> Node {
         mesh,
         keys: Box::new(key),
         front_ends: front_ends(),
-        kinds: Arc::new(kinds()),
+        supervisor: supervisor(fixture),
         hub: fixture.hub.clone(),
         clock: fixture.sim.clock(),
         name: fixture.name.clone(),
-        secrets: connector::testing::create_secrets(fixture.sim.files()),
+        roots,
     })
 }
 
@@ -316,15 +336,7 @@ async fn applied_alone(node: &Node, text: &str) {
 /// Runs a supervisor of each connector `names` of the spec of `node`, as the node
 /// does, until the run ends. Gives the token that cancels each run.
 async fn supervise(fixture: &Fixture, node: &Node, names: &[&str]) -> cancel::Token {
-    let supervisor = Supervisor::new(supervisor::Config {
-        kinds: Arc::new(kinds()),
-        clock: fixture.sim.clock(),
-        entropy: fixture.sim.entropy(),
-        net: fixture.sim.net(),
-        tasks: fixture.tasks.clone(),
-        hub: fixture.hub.clone(),
-        secrets: connector::testing::create_secrets(fixture.sim.files()),
-    });
+    let supervisor = supervisor(fixture);
     let spec = node.mesh().spec().await.expect("a spec");
     let cancel = cancel::Token::new();
     for connector in names {
@@ -415,6 +427,12 @@ async fn timed_status(
     (head, rest, clock.now() - start)
 }
 
+/// The roots of a node of `create_node`, whose read had no failure, as `status` gives
+/// them.
+fn clean() -> Value {
+    json!({ "source": "", "failures": [], "unlisted": 0 })
+}
+
 /// The status of `name` of `kind` with no frame of its status.
 fn unknown(name: &str, kind: &str) -> Value {
     json!({
@@ -457,13 +475,13 @@ fn gives_the_state_counts_and_error_of_each_connector_on_the_node() {
                 "kind": "failing",
                 "state": "restarting",
                 "address": "opc.tcp://site.b:4840",
-                "restarts": 3,
+                "restarts": 2,
                 "counts": { "confirmed": 0, "in": 0 },
                 "error": { "class": "device", "text": "no route to the device" },
                 "note": null,
             },
             unknown("site.c", "steady"),
-        ]}});
+        ], "roots": clean()}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -519,7 +537,11 @@ fn the_command_line_writes_the_status_of_a_node_with_no_connector() {
         let line = "You can read no connector on this node.\n";
         assert_eq!(shown, (Run::Exit(0), line.to_owned(), String::new()));
         let shown = cli(&node, &paths, &["status", "--json"]).await;
-        let json = "{\"connectors\":[]}\n";
+        let json = concat!(
+            r#"{"connectors":[],"#,
+            r#""roots":{"failures":[],"source":"","unlisted":0}}"#,
+            "\n",
+        );
         assert_eq!(shown, (Run::Exit(0), json.to_owned(), String::new()));
     });
 }
@@ -560,7 +582,7 @@ fn gives_the_error_and_the_note_that_a_running_kind_shows() {
             "counts": { "confirmed": 10, "in": 12 },
             "error": { "class": "retry", "text": "busy" },
             "note": "polls",
-        }]}});
+        }], "roots": clean()}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -582,7 +604,7 @@ fn gives_no_error_once_the_running_kind_clears_the_error_of_a_failed_run() {
             "counts": { "confirmed": 10, "in": 12 },
             "error": null,
             "note": null,
-        }]}});
+        }], "roots": clean()}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -602,7 +624,10 @@ fn waits_one_second_in_all_for_connectors_that_no_supervisor_started() {
         assert_eq!(waited, Span::SECOND);
         let connectors: Vec<_> =
             names.iter().map(|name| unknown(name, "steady")).collect();
-        assert_eq!(head, json!({ "output": { "connectors": connectors } }));
+        assert_eq!(
+            head,
+            json!({ "output": { "connectors": connectors, "roots": clean() } })
+        );
     });
 }
 
@@ -642,8 +667,10 @@ fn gives_unknown_for_a_frame_with_no_status() {
             waited < Span::SECOND,
             "the reply waited {waited} for the frame, not under 1 s"
         );
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
     });
 }
@@ -659,13 +686,15 @@ fn leaves_out_each_connector_on_another_node() {
         ];
         applied(&fixture, &node, &text.concat()).await;
         let (head, _) = status(&node, "@admin").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
     });
 }
 
-/// The head of the refusal of `subject`, which reads no status channel.
+/// The head of the refusal of `subject`, which reads no connector of the node.
 fn refused(subject: &str) -> Value {
     let message = format!(
         "no access policy gives `{subject}` the action `read` on a request that names \
@@ -688,7 +717,7 @@ fn gives_no_connector_to_an_admin_on_a_node_that_places_none() {
         let node = create_node(&fixture, mesh);
         applied(&fixture, &node, "").await;
         let (head, rest, waited) = timed_status(&fixture, &node, "@admin").await;
-        let expected = json!({ "output": { "connectors": [] } });
+        let expected = json!({ "output": { "connectors": [], "roots": clean() } });
         assert_eq!((head, rest, waited), (expected, Vec::new(), Span::ZERO));
     });
 }
@@ -710,7 +739,10 @@ fn gives_no_connector_to_a_subject_that_may_read_the_node() {
         let text = reader("edge");
         applied(&fixture, &node, &text).await;
         let (head, _) = status(&node, "sam").await;
-        assert_eq!(head, json!({ "output": { "connectors": [] } }));
+        assert_eq!(
+            head,
+            json!({ "output": { "connectors": [], "roots": clean() } })
+        );
     });
 }
 
@@ -721,7 +753,7 @@ fn gives_no_connector_to_a_subject_that_may_read_the_node_and_no_status_channel(
         let text = [reader("edge"), connector("site.a", "steady", "edge")];
         applied(&fixture, &node, &text.concat()).await;
         let (head, rest) = status(&node, "sam").await;
-        let expected = json!({ "output": { "connectors": [] } });
+        let expected = json!({ "output": { "connectors": [], "roots": clean() } });
         assert_eq!((&head, rest), (&expected, Vec::new()));
         let output: Output =
             serde_json::from_value(head["output"].clone()).expect("output");
@@ -737,7 +769,7 @@ fn gives_no_connector_to_a_subject_whose_grant_on_the_node_is_a_connector_of_its
         let text = [reader("edge"), connector("edge", "steady", "edge")];
         applied(&fixture, &node, &text.concat()).await;
         let (head, rest) = status(&node, "sam").await;
-        let expected = json!({ "output": { "connectors": [] } });
+        let expected = json!({ "output": { "connectors": [], "roots": clean() } });
         assert_eq!((head, rest), (expected, Vec::new()));
     });
 }
@@ -754,7 +786,7 @@ fn gives_no_connector_to_a_subject_whose_grant_on_the_node_is_a_channel_of_its_n
         ];
         applied(&fixture, &node, &text.concat()).await;
         let (head, rest) = status(&node, "sam").await;
-        let expected = json!({ "output": { "connectors": [] } });
+        let expected = json!({ "output": { "connectors": [], "roots": clean() } });
         assert_eq!((head, rest), (expected, Vec::new()));
     });
 }
@@ -769,7 +801,7 @@ fn gives_no_connector_to_a_subject_whose_pattern_holds_the_name_of_the_node() {
             let text = reader("site.**");
             applied(&fixture, &node, &text).await;
             let (head, rest) = status(&node, "sam").await;
-            let expected = json!({ "output": { "connectors": [] } });
+            let expected = json!({ "output": { "connectors": [], "roots": clean() } });
             assert_eq!((head, rest), (expected, Vec::new()));
         },
     );
@@ -809,8 +841,10 @@ fn leaves_out_each_connector_whose_status_the_subject_may_not_read() {
         ];
         applied(&fixture, &node, &text.concat()).await;
         let (head, _) = status(&node, "sam").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": null,
+        }});
         assert_eq!(head, expected);
     });
 }
@@ -828,11 +862,28 @@ fn refuses_a_subject_that_may_read_no_connector_on_the_node() {
 }
 
 #[test]
+fn refuses_a_subject_that_may_read_the_status_but_not_the_connector() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = [
+            reader("site.a.status.**"),
+            connector("site.a", "steady", "edge"),
+        ];
+        applied(&fixture, &node, &text.concat()).await;
+        let (head, rest) = status(&node, "sam").await;
+        assert_eq!((head, rest), (refused("sam"), Vec::new()));
+    });
+}
+
+#[test]
 fn refuses_a_subject_that_may_read_only_some_status_channels() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         let text = [
             reader("site.a.status.state"),
+            "access \"label\" {\n  subjects = \"sam\"\n  select = \"site.a\"\n  allow = \
+             [read]\n}\n"
+                .to_owned(),
             connector("site.a", "steady", "edge"),
         ];
         applied(&fixture, &node, &text.concat()).await;
@@ -848,8 +899,10 @@ fn gives_unknown_when_the_hub_does_not_define_the_status_channels_yet() {
         let node = create_node(&fixture, mesh);
         applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -880,7 +933,10 @@ fn gives_unknown_for_a_connector_whose_channels_go_during_the_read() {
         });
         let (head, _) = status(&node, "@admin").await;
         let connectors = [unknown("site.a", "steady"), unknown("site.b", "steady")];
-        assert_eq!(head, json!({ "output": { "connectors": connectors } }));
+        assert_eq!(
+            head,
+            json!({ "output": { "connectors": connectors, "roots": clean() } })
+        );
     });
 }
 
@@ -897,8 +953,10 @@ fn waits_one_second_from_the_request_also_while_the_node_reads_a_new_spec() {
         applied_alone(&node, &text.concat()).await;
         let (head, _, waited) = timed_status(&fixture, &node, "@admin").await;
         assert_eq!(waited, Span::SECOND);
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
     });
 }
@@ -917,8 +975,10 @@ fn gives_unknown_while_the_hub_holds_old_status_names_on_another_index() {
         applied(&fixture, &node, &[old, EDGE].concat()).await;
         applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -984,8 +1044,10 @@ fn gives_unknown_while_the_hub_holds_an_old_status_name_of_another_type() {
         write_user(&fixture, "site.a.status.time", &[7; 16]).await;
         applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -1004,8 +1066,10 @@ fn gives_unknown_while_the_hub_holds_old_status_names_with_other_keys() {
         .await;
         applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -1019,8 +1083,10 @@ fn gives_unknown_while_the_hub_holds_old_status_names_on_an_index_of_no_status()
         write_user(&fixture, "x.time", &[0]).await;
         applied_alone(&node, &connector("site.a", "steady", "edge")).await;
         let (head, rest) = status(&node, "@admin").await;
-        let expected =
-            json!({ "output": { "connectors": [unknown("site.a", "steady")] } });
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": clean(),
+        }});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
     });
@@ -1114,6 +1180,7 @@ fn escapes_a_newline_in_each_value_of_the_table() {
             note: Some("n\nn".to_owned()),
             ..line("plant.plc", State::Running, None, Some(error))
         }],
+        roots: None,
     };
     let text = "CONNECTOR  KIND  STATE    ADDRESS  COUNTS\n\
                 a\\nb       k\\nk  running  x\\ny     -\n\
@@ -1149,6 +1216,7 @@ fn writes_a_table_of_each_count_then_the_note_and_the_error_of_each_connector() 
                 ..line("yard.meter", State::Unknown, None, None)
             },
         ],
+        roots: None,
     };
     let expected = "\
 CONNECTOR    KIND    STATE    ADDRESS                     COUNTS
@@ -1203,6 +1271,109 @@ fn the_command_line_writes_the_status_block_of_the_quickstart_page() {
 fn writes_a_line_in_place_of_the_table_with_no_connector() {
     let output = Output {
         connectors: Vec::new(),
+        roots: None,
     };
     assert_eq!(output.text(), "You can read no connector on this node.\n");
+}
+
+/// The failures `failure 0` to `failure <count - 1>`.
+fn failures(count: usize) -> Vec<String> {
+    (0..count).map(|n| format!("failure {n}")).collect()
+}
+
+#[test]
+fn gives_each_failure_of_the_roots_in_full_to_a_subject_that_may_read_the_node() {
+    solo(|fixture, mesh| async move {
+        let mut failed = failures(17);
+        failed.push(format!("head {} tail", "x".repeat(3000)));
+        let roots = Failures::new("the OS store".into(), failed.clone());
+        let node = create_node_on(&fixture, mesh, roots);
+        applied(&fixture, &node, &reader("edge")).await;
+        let (head, _) = status(&node, "sam").await;
+        let expected = json!({ "output": {
+            "connectors": [],
+            "roots": { "source": "the OS store", "failures": failed, "unlisted": 0 },
+        }});
+        assert_eq!(head, expected);
+    });
+}
+
+#[test]
+fn gives_no_roots_to_a_subject_that_may_read_a_connector_but_not_the_node() {
+    solo(|fixture, mesh| async move {
+        let roots = Failures::new("the OS store".into(), failures(1));
+        let node = create_node_on(&fixture, mesh, roots);
+        let text = [reader("site.a.**"), connector("site.a", "steady", "edge")];
+        applied(&fixture, &node, &text.concat()).await;
+        let (head, _) = status(&node, "sam").await;
+        let expected = json!({ "output": {
+            "connectors": [unknown("site.a", "steady")],
+            "roots": null,
+        }});
+        assert_eq!(head, expected);
+    });
+}
+
+#[test]
+fn the_command_line_writes_the_failures_of_the_roots_after_the_connectors() {
+    solo(|fixture, mesh| async move {
+        let mut failed = failures(2);
+        failed.push("bad\nline".into());
+        failed.push("x".repeat(1 << 20));
+        let roots = Failures::new("SSL_CERT_DIR=/a".into(), failed);
+        let node = create_node_on(&fixture, mesh, roots);
+        applied(&fixture, &node, &connector("site.a", "steady", "edge")).await;
+        supervise(&fixture, &node, &["site.a"]).await;
+        let shown = "\
+CONNECTOR  KIND    STATE    ADDRESS                COUNTS
+site.a     steady  running  opc.tcp://site.a:4840  confirmed=10 in=12
+
+OS roots: 4 failures, from SSL_CERT_DIR=/a
+OS roots: error: failure 0
+OS roots: error: failure 1
+OS roots: error: bad\\nline
+OS roots: left out: 1
+";
+        let paths = fixture.sim.paths();
+        let written = cli(&node, &paths, &["status"]).await;
+        assert_eq!(written, (Run::Exit(0), shown.to_owned(), String::new()));
+    });
+}
+
+#[test]
+fn writes_the_failures_of_the_roots_after_the_line_of_no_connector() {
+    let output = Output {
+        connectors: Vec::new(),
+        roots: Some(Failures::new("the OS store".into(), failures(1))),
+    };
+    let text = "You can read no connector on this node.\n\nOS roots: 1 failures, \
+                from the OS store\nOS roots: error: failure 0\n";
+    assert_eq!(output.text(), text);
+}
+
+#[test]
+fn gives_the_count_of_a_first_failure_over_the_bound() {
+    solo(|fixture, mesh| async move {
+        let roots = Failures::new("s".into(), vec!["x".repeat((1 << 20) + 1)]);
+        let node = create_node_on(&fixture, mesh, roots);
+        applied(&fixture, &node, &reader("edge")).await;
+        let (head, _) = status(&node, "sam").await;
+        let expected = json!({ "output": {
+            "connectors": [],
+            "roots": { "source": "s", "failures": [], "unlisted": 1 },
+        }});
+        assert_eq!(head, expected);
+    });
+}
+
+#[test]
+fn writes_the_count_of_a_first_failure_over_the_bound() {
+    let roots = Failures::new("s".into(), vec!["x".repeat((1 << 20) + 1)]);
+    let output = Output {
+        connectors: Vec::new(),
+        roots: Some(roots),
+    };
+    let text = "You can read no connector on this node.\n\nOS roots: 1 failures, from \
+                s\nOS roots: left out: 1\n";
+    assert_eq!(output.text(), text);
 }

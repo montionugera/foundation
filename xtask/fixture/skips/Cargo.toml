@@ -1,0 +1,4 @@
+# A workspace for the tests of the skips check: each file holds its cases.
+[workspace]
+members = ["crates/*", "bench/*"]
+resolver = "3"

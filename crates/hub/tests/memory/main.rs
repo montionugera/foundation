@@ -1,9 +1,9 @@
 //! A request that the hub refuses for its length allocates no body, the heap of a hub
 //! does not grow over many opens and closes of a named complete reader, a served open
 //! holds and copies each of its keys once, a read that waits for its home holds no
-//! places, and an open defines no channel of the spec that its hub applied again. This
-//! binary has no test harness: the count covers each thread, and a harness allocates on
-//! its own thread at any time.
+//! places, the channels of a hub hold each name once, and an open defines no channel of
+//! the spec that its hub applied again. This binary has no test harness: the count
+//! covers each thread, and a harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -24,29 +24,34 @@ mod region;
 mod sessions;
 
 use std::cell::Cell;
+use std::path::PathBuf;
 use std::pin::pin;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Waker};
 
 use agent::{Agent, SUBJECT, name, reset_with};
+use block::{Heap, Pool};
 use hub::reader::{self, Mode};
 use hub::serve;
 use sessions::{closed_after, rules, serve_each, sessions};
 use transport::{Class, Code};
 use types::channel;
+use types::frame::key_set::Interner;
 use types::name::Selector;
-use types::time::Span;
+use types::time::{Span, Stamp};
 use wire::hub::client::{self, BODY_BYTES_MAX, OPEN_BYTES_MAX, Place};
 use wire::hub::{BUSY, Open, keys};
 
 #[global_allocator]
 static ALLOCATOR: counting::Bytes = counting::Bytes::new();
 
-/// The opens after which the heap is read the first time.
-const FEW: usize = 10;
-/// The opens after which the heap is read the last time.
+/// The opens over which the heap does not grow.
 const MANY: usize = 1000;
+/// The opens of a named reader after which the commits of its named entries wrapped
+/// the ring of 1024 blocks that [`trimmed_hub`] gives. Until then the sim disk grows
+/// the heap by each block.
+const WRAPPED: usize = 1500;
 
 fn main() {
     refuses_a_request_over_the_share_before_it_allocates_the_body();
@@ -56,6 +61,9 @@ fn main() {
     holds_no_places_while_a_read_waits_for_its_home();
     holds_no_more_for_a_read_of_one_channel_whose_open_is_at_the_cap();
     holds_no_places_once_a_read_opens();
+    holds_no_names_once_a_write_opens();
+    holds_the_names_of_a_write_once_while_it_waits_for_its_home();
+    holds_each_channel_name_once();
     defines_no_channel_again_at_an_open_of_the_spec_applied();
     defines_no_channel_again_at_the_first_poll_of_the_spec_task();
 }
@@ -328,13 +336,14 @@ fn refuses_a_request_over_the_share_before_it_allocates_the_body() {
     );
 }
 
-/// After [`FEW`] opens and drops of a named complete reader, [`MANY`] leave the heap
-/// at the same bytes. The sim runs on one thread, so the count is exact.
+/// After [`WRAPPED`] opens and drops of a named complete reader, [`MANY`] more leave
+/// the heap at the same bytes. The sim runs on one thread, so the count is exact.
+/// Each open and drop appends a named entry and waits for its commit.
 fn holds_the_same_bytes_over_many_opens_of_a_named_reader() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     sim.run_on(&node, |node, tasks| async move {
-        let (hub, _) = common::hub(&node, tasks).await;
+        let hub = trimmed_hub(&node, tasks).await;
         let config = || reader::Config {
             select: Selector::new(["value"]).expect("a selector"),
             mode: Mode::Complete,
@@ -342,16 +351,70 @@ fn holds_the_same_bytes_over_many_opens_of_a_named_reader() {
             name: Some(common::name("r")),
             hold: Span::SECOND,
         };
-        let mut few = 0;
-        for n in 1..=MANY {
-            drop(hub.reader(config()).await.expect("opens"));
-            if n == FEW {
-                few = ALLOCATOR.held();
+        let mut wrapped = 0;
+        for n in 1..=WRAPPED + MANY {
+            drop(
+                hub.reader(config())
+                    .await
+                    .unwrap_or_else(|e| panic!("open {n}: {e}")),
+            );
+            node.clock().sleep(common::SETTLE).await;
+            if n == WRAPPED {
+                wrapped = ALLOCATOR.held();
             }
         }
-        assert_eq!(ALLOCATOR.held(), few, "bytes held after {MANY} opens");
+        assert_eq!(ALLOCATOR.held(), wrapped, "bytes held after {MANY} opens");
     })
     .expect("the run ends");
+}
+
+/// A hub as [`common::hub`] gives, on a ring whose commits trim it, so that its
+/// named entries wrap it. Entries with no samples on many paths can stall a trim until
+/// #2796; the named entries of this hub are on one path.
+async fn trimmed_hub(node: &sim::node::Node, tasks: env::tasks::Tasks) -> hub::Hub {
+    let config = block::Config::new(1 << 23).expect("the budget fits");
+    let pool = Rc::new(Pool::new(config.clone(), Heap::new(config.reservation())));
+    let (clock, mesh) = clock::Clock::new(node.clock());
+    let wall = node.wall();
+    tasks.spawn(async move { clock.run(wall).await });
+    let mut interner = Interner::new();
+    let config = buffer::Config {
+        files: node.files(),
+        dir: PathBuf::from("shard-0"),
+        pool,
+        clock: node.clock(),
+        tasks: tasks.clone(),
+        entropy: node.entropy(),
+        layout: buffer::Layout::new(1 << 22, 1 << 16).expect("a ring"),
+        commit: Span::from_nanos(10_000_000),
+        trimmed: true,
+    };
+    let buffer = buffer::Buffer::open(config, interner.slots())
+        .await
+        .expect("opens");
+    let home = home::Shard::open(home::Config {
+        shard: 0,
+        buffer,
+        clock: mesh.clone(),
+        limits: home::order::Limits {
+            earliest: Stamp::from_nanos(1),
+            ahead: Span::SECOND,
+        },
+    });
+    while home.now().is_none() {
+        node.clock().sleep(Span::from_nanos(1)).await;
+    }
+    let hub = hub::Hub::new(hub::Config {
+        home,
+        interner,
+        tasks,
+        node: types::node::Key::from_u128(1),
+        time: mesh,
+        entropy: node.entropy(),
+        region: None,
+    });
+    hub.set_definitions(&common::definitions(&[]));
+    hub
 }
 
 /// The channels that the wide read of
@@ -478,6 +541,196 @@ fn holds_no_places_once_a_read_opens() {
     );
 }
 
+/// The channels of each write of [`holds_no_names_once_a_write_opens`], whose open of
+/// long names fits [`OPEN_BYTES_MAX`].
+const NAMED: usize = 200;
+
+/// A write of [`NAMED`] channels with long names holds, once it has its places, about
+/// as many bytes as a write of [`NAMED`] channels with short names: at most a tenth of
+/// the bytes by which their names differ. The bytes of a write are those that its end
+/// frees, so that no growth at its open counts.
+fn holds_no_names_once_a_write_opens() {
+    let long = "x".repeat(240);
+    let longs = (0..NAMED).map(|n| name(&format!("l.{long}.{n}")));
+    let shorts = (0..NAMED).map(|n| name(&format!("s.{n}")));
+    let more: Vec<_> = longs.chain(shorts).collect();
+    let (longs, shorts) = more.split_at(NAMED);
+    let differ: usize = longs
+        .iter()
+        .zip(shorts)
+        .map(|(long, short)| long.as_str().len() - short.as_str().len())
+        .sum();
+    let [longs, shorts] = [longs, shorts]
+        .map(|names| names.iter().map(ToString::to_string).collect::<Vec<_>>());
+    let measured = Arc::new(Mutex::new(None));
+    let kept = Arc::clone(&measured);
+    let home = |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
+        let transport =
+            net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
+        let hub = common::hub_alone(&node, tasks.clone(), &more).await;
+        hub.set_rules(rules());
+        let session = transport.accept().await.expect("a session");
+        let link = hub.link(session.clone());
+        let (served, accepted) = (Arc::default(), Rc::new(Cell::new(0)));
+        let clock = node.clock();
+        tasks.spawn(serve_each(
+            &session, &link, &tasks, &clock, &served, &accepted,
+        ));
+        drop(session.closed().await);
+    };
+    let program = move |node: sim::node::Node, tasks, at| async move {
+        let mut agent = Agent::dial(&node, tasks, at, name(SUBJECT)).await;
+        agent.admit().await;
+        // Three writes of each set at once grow the pools and the state of the
+        // channels.
+        let mut firsts = Vec::new();
+        for names in [&longs, &shorts].repeat(3) {
+            firsts.push(started(&agent, names).await);
+        }
+        for mut first in firsts {
+            first.sender.finish().expect("finishes");
+            while first.recv().await.expect("receives").is_some() {}
+        }
+        let mut freed = Vec::new();
+        for names in [&longs, &shorts] {
+            let mut stream = started(&agent, names).await;
+            agent.sleep(common::SETTLE).await;
+            let open = ALLOCATOR.held();
+            stream.sender.finish().expect("finishes");
+            while stream.recv().await.expect("receives").is_some() {}
+            drop(stream);
+            agent.sleep(common::SETTLE).await;
+            freed.push(open - ALLOCATOR.held());
+        }
+        *kept.lock().expect("not poisoned") = Some((freed[0], freed[1]));
+        agent.session.close(Code(0));
+        node.clock().sleep(Span::MILLISECOND).await;
+    };
+    sessions::run_program(5, home, program);
+    let (long, short) = measured
+        .lock()
+        .expect("not poisoned")
+        .take()
+        .expect("the program measured");
+    assert!(
+        long.abs_diff(short) < differ / 10,
+        "a write of {NAMED} channels with long names holds {long} bytes, and one with \
+         short names holds {short}: their names differ by {differ} bytes"
+    );
+}
+
+/// The mesh names no home of `time`, so each write waits for it. While it waits, a
+/// write holds the names of its open once: a write of [`NAMED`] long names holds at
+/// most 1.5 bytes more than a write of [`NAMED`] short names for each byte by which
+/// their names differ.
+fn holds_the_names_of_a_write_once_while_it_waits_for_its_home() {
+    let long = "x".repeat(240);
+    let longs = (0..NAMED).map(|n| name(&format!("l.{long}.{n}")));
+    let shorts = (0..NAMED).map(|n| name(&format!("s.{n}")));
+    let more: Vec<_> = longs.chain(shorts).collect();
+    let (longs, shorts) = more.split_at(NAMED);
+    let differ: usize = longs
+        .iter()
+        .zip(shorts)
+        .map(|(long, short)| long.as_str().len() - short.as_str().len())
+        .sum();
+    let [longs, shorts] = [longs, shorts]
+        .map(|names| names.iter().map(ToString::to_string).collect::<Vec<_>>());
+    let measured = Arc::new(Mutex::new(None));
+    let kept = Arc::clone(&measured);
+    let home = |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
+        let transport =
+            net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
+        let transport = Rc::new(transport);
+        let region = region::open(
+            &node,
+            &tasks,
+            Rc::clone(&transport),
+            Vec::new(),
+            common::definitions(&more),
+        )
+        .await;
+        let hub = common::hub_in(&node, tasks.clone(), region).await;
+        hub.set_rules(rules());
+        let session = transport.accept().await.expect("a session");
+        let link = hub.link(session.clone());
+        let (served, accepted) = (Arc::default(), Rc::new(Cell::new(0)));
+        let clock = node.clock();
+        tasks.spawn(serve_each(
+            &session, &link, &tasks, &clock, &served, &accepted,
+        ));
+        drop(session.closed().await);
+    };
+    let program = move |node: sim::node::Node, tasks, at| async move {
+        let mut agent = Agent::dial(&node, tasks, at, name(SUBJECT)).await;
+        agent.admit().await;
+        let open = async |names: &[String]| {
+            let channels: Vec<&str> = names.iter().map(String::as_str).collect();
+            agent.write(&channels).await
+        };
+        // A write of each set grows the pools first.
+        let _first = open(&longs).await;
+        let _second = open(&shorts).await;
+        agent.sleep(common::SETTLE).await;
+        let before = ALLOCATOR.held();
+        let _long = open(&longs).await;
+        agent.sleep(common::SETTLE).await;
+        let long = ALLOCATOR.held();
+        let _short = open(&shorts).await;
+        agent.sleep(common::SETTLE).await;
+        let short = ALLOCATOR.held();
+        *kept.lock().expect("not poisoned") = Some((long - before, short - long));
+        agent.session.close(Code(0));
+        node.clock().sleep(Span::MILLISECOND).await;
+    };
+    sessions::run_program(6, home, program);
+    let (long, short) = measured
+        .lock()
+        .expect("not poisoned")
+        .take()
+        .expect("the program measured");
+    assert!(
+        long.abs_diff(short) < differ * 3 / 2,
+        "a write of {NAMED} channels with long names holds {long} bytes while it \
+         waits, and one with short names holds {short}: their names differ by {differ} \
+         bytes"
+    );
+}
+
+/// The channels of a hub hold each name once: [`WIDE`] channels with long names hold
+/// at most 1.1 bytes more than [`WIDE`] channels with short names for each byte by
+/// which their names differ.
+fn holds_each_channel_name_once() {
+    let long = "x".repeat(240);
+    let longs: Vec<_> = (0..WIDE).map(|n| name(&format!("l.{long}.{n}"))).collect();
+    let shorts: Vec<_> = (0..WIDE).map(|n| name(&format!("s.{n}"))).collect();
+    let differ: usize = longs
+        .iter()
+        .zip(&shorts)
+        .map(|(long, short)| long.as_str().len() - short.as_str().len())
+        .sum();
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    sim.run_on(&node, move |node, tasks| async move {
+        let mut held = Vec::new();
+        for names in [&longs, &shorts] {
+            let definitions = common::definitions(names);
+            let hub = common::hub_alone(&node, tasks.clone(), &[]).await;
+            let before = ALLOCATOR.held();
+            hub.set_definitions(&definitions);
+            held.push(ALLOCATOR.held() - before);
+            drop(hub);
+        }
+        let (long, short) = (held[0], held[1]);
+        assert!(
+            (long - short) * 10 < differ * 11,
+            "{WIDE} channels with long names hold {long} bytes, and with short names \
+             {short}: their names differ by {differ} bytes"
+        );
+    })
+    .expect("the run ends");
+}
+
 /// On a hub whose region uses the spec that the hub applied, the first poll of an
 /// open allocates less than a pointer for each of the [`WIDE`] channels of that spec.
 fn defines_no_channel_again_at_an_open_of_the_spec_applied() {
@@ -540,6 +793,15 @@ fn defines_no_channel_again_at_the_first_poll_of_the_spec_task() {
         drop(hub);
     })
     .expect("the run ends");
+}
+
+/// A write of `channels` by `agent`, after the program got its places. The program
+/// holds nothing of the places.
+async fn started(agent: &Agent, channels: &[String]) -> agent::Stream {
+    let channels: Vec<&str> = channels.iter().map(String::as_str).collect();
+    let mut stream = agent.write(&channels).await;
+    stream.started().await;
+    stream
 }
 
 /// A complete read of `select` by `agent`, after the program got its places, their

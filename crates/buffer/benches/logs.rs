@@ -1,7 +1,10 @@
 //! The time to sync the durable logs of a shard at each commit, for each entry: one
 //! record with data entries of each index, after a trim that hides each older record.
-//! Also the time to append an entry, to carry a tail, the time of a commit that
-//! trims to the oldest holder, and the time of a commit that marks a range.
+//! Also the time to append an entry, to carry a tail, and a tail and a copy, the time
+//! of a commit that trims to the oldest holder, the time of a commit whose carry
+//! fills past its reach, the time of a commit that syncs entries with no samples, and
+//! the time of the commits that end a lap of each index, and of the first of them
+//! alone.
 
 use buffer::bench::Logs;
 use divan::Bencher;
@@ -58,6 +61,17 @@ fn carry(bencher: Bencher<'_, '_>, indexes: u32) {
     bencher.counter(count(indexes)).bench_local(|| logs.carry());
 }
 
+/// As `carry`, with each entry of tag 1, so each carry record also holds a copy of
+/// 8 bytes of each index and writes its body.
+#[divan::bench(args = [1, 64, 256])]
+fn carry_tagged(bencher: Bencher<'_, '_>, indexes: u32) {
+    let mut logs = Logs::tagged(indexes);
+    for _ in 0..16 {
+        logs.commit(1);
+    }
+    bencher.counter(count(indexes)).bench_local(|| logs.carry());
+}
+
 /// One index syncs each 64th commit, so the records after its holder stay.
 #[divan::bench(args = [64, 256])]
 fn trim(bencher: Bencher<'_, '_>, indexes: u32) {
@@ -77,9 +91,28 @@ fn trim_held(bencher: Bencher<'_, '_>, indexes: u32) {
         .bench_local(|| logs.trim(64, 64));
 }
 
-/// Each commit syncs an entry with no samples of each index, so each marks a range,
-/// and carries each tail. The trim of the next commit passes the range. The oldest
-/// holder is the carry record, past each range, so no landing moves.
+/// One index syncs each 128th commit, and the carry reaches 64 records back. The
+/// time of the commit whose carry takes its tail and fills from at most 4000 stale
+/// items after its reach: the first 4 of the 64 records and 4 items of the fifth.
+#[divan::bench(args = [1000])]
+fn fill(bencher: Bencher<'_, '_>, indexes: u32) {
+    bencher
+        .counter(count(indexes))
+        .with_inputs(|| {
+            let mut logs = Logs::new(indexes);
+            for _ in 0..65 {
+                logs.fill(128, 64);
+            }
+            logs
+        })
+        .bench_local_values(|mut logs| {
+            logs.fill(128, 64);
+            logs
+        });
+}
+
+/// Each commit syncs an entry with no samples of each index and carries each tail.
+/// The trim of the next commit lands at the oldest holder, the carry record.
 #[divan::bench(args = [1, 64, 256])]
 fn mark(bencher: Bencher<'_, '_>, indexes: u32) {
     let mut logs = Logs::new(indexes);
@@ -87,6 +120,51 @@ fn mark(bencher: Bencher<'_, '_>, indexes: u32) {
         logs.mark();
     }
     bencher.counter(count(indexes)).bench_local(|| logs.mark());
+}
+
+/// A read holds 16 records for 40 commits, so the room of the runs of each index
+/// grows to 32, then no read holds a record. The commit at the end of the next lap
+/// shrinks the room of as many indexes as its budget allows, and the next three end
+/// the wait of the rest. The time of those four commits.
+#[divan::bench(args = [10_000])]
+fn lap_end(bencher: Bencher<'_, '_>, indexes: u32) {
+    bencher
+        .counter(count(4 * indexes))
+        .with_inputs(|| lapped(indexes))
+        .bench_local_values(|mut logs| {
+            for _ in 0..4 {
+                logs.trim(1, 0);
+            }
+            logs
+        });
+}
+
+/// As `lap_end`, the time of the first of the four commits alone, for each of the
+/// 256 + `indexes / 4` shrinks that it makes.
+#[divan::bench(args = [10_000])]
+fn lap_shrink(bencher: Bencher<'_, '_>, indexes: u32) {
+    bencher
+        .counter(ItemsCount::new(
+            256 + usize::try_from(indexes / 4).expect("u32 fits usize"),
+        ))
+        .with_inputs(|| lapped(indexes))
+        .bench_local_values(|mut logs| {
+            logs.trim(1, 0);
+            logs
+        });
+}
+
+/// The logs of `indexes` indexes after a read held 16 records for 40 commits, then
+/// none, up to the commit that ends the next lap.
+fn lapped(indexes: u32) -> Logs {
+    let mut logs = Logs::new(indexes);
+    for _ in 0..40 {
+        logs.trim(1, 16);
+    }
+    for _ in 40..512 {
+        logs.trim(1, 0);
+    }
+    logs
 }
 
 fn trimmed(indexes: u32, held: u64) -> Logs {

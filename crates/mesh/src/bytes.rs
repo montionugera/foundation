@@ -267,6 +267,23 @@ pub(crate) fn put_change(change: &Change, out: &mut Vec<u8>) {
     put_signature(change.signature, out);
 }
 
+/// The bytes that [`put_proof`] adds for `proof`, with 64 for each signature, also one
+/// not yet made.
+pub(crate) fn proof_len(proof: &Proof) -> usize {
+    let voters = proof.voters.len().saturating_mul(16 + 64);
+    voters.saturating_add(1 + 16 + 8)
+}
+
+/// The bytes that [`put_change`] adds for `change`, with 64 for each signature, also
+/// one not yet made.
+pub(crate) fn change_len(change: &Change) -> usize {
+    let keys = |keys: &BTreeSet<node::Key>| keys.len().saturating_mul(16);
+    let voters = &change.voters;
+    let lengths = [keys(&voters.incoming), keys(&voters.outgoing)];
+    let proof = proof_len(&change.votes).saturating_add(8 + 8 + 64);
+    lengths.into_iter().fold(proof, usize::saturating_add)
+}
+
 /// Takes what [`put_change`] gives. `None` when keys or voters are not in rising
 /// order.
 pub(crate) fn take_change(bytes: &mut &[u8]) -> Option<Change> {

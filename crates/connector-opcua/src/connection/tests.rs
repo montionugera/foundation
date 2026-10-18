@@ -16,6 +16,7 @@ use std::time::Instant;
 use env::clock::{Clock, Driver, Sleep, Timer};
 use env::net::{self, Tcp, tcp};
 use sim::{Sim, node};
+use tracing::Dispatch;
 use types::time::{Monotonic, Span};
 
 use super::{CLOSES, LINGER, Manager, OPTIONS, READ_BYTES, SENDS};
@@ -151,10 +152,12 @@ struct Side {
 }
 
 impl Side {
+    /// A side whose manager has the span of the connector `press` of kind `opcua`.
     fn new(node: &node::Node) -> Self {
         let clock = node.clock();
         let manager = Manager::new(
             event::Time::monotonic(node.clock()),
+            tracing::error_span!("connector", connector = "press", kind = "opcua"),
             node.net(),
             &mut node.entropy().rng(),
         );
@@ -303,7 +306,6 @@ impl Side {
         let mut end = self.clock.sleep(span);
         let mut drive = pin!(self.manager.drive(|_| {
             runs.set(runs.get() + 1);
-            self.events().run();
             Poll::<Infallible>::Pending
         }));
         poll_fn(|cx| {
@@ -433,6 +435,38 @@ impl Network {
         let local = sim.node(node::Config::default());
         let peer = sim.node(node::Config::default());
         Self { sim, local, peer }
+    }
+
+    /// Runs `body` on the local node as `Sim::run_on` does, on a shard that logs to
+    /// `log`.
+    ///
+    /// # Panics
+    ///
+    /// When the run does not end.
+    fn run<T, F>(
+        &mut self,
+        log: Dispatch,
+        body: impl FnOnce(node::Node) -> F + Send + 'static,
+    ) -> T
+    where
+        T: Send + 'static,
+        F: Future<Output = T> + 'static,
+    {
+        let out = Arc::new(Mutex::new(None));
+        let (slot, node) = (Arc::clone(&out), self.local.clone());
+        let config = env::shards::Config {
+            name: "run".into(),
+            core: None,
+        };
+        let shards = self.local.shards().logged(log);
+        let start = shards.start(config, move |_| async move {
+            let value = body(node).await;
+            *slot.lock().expect("no panic under the lock") = Some(value);
+        });
+        drop(start.expect("a shard with no core starts"));
+        self.sim.run().expect("the run ends");
+        let value = out.lock().expect("no panic under the lock").take();
+        value.expect("the run ends after its body")
     }
 
     fn remote(&self) -> SocketAddr {
@@ -747,24 +781,17 @@ fn the_peer_reads_each_byte_of_sends_that_the_stream_takes_in_parts() {
     assert!(reads.ended.is_some());
 }
 
-/// Connects with no listener, when `child::running()`.
-#[test]
-fn refused() {
-    if !child::running() {
-        return;
-    }
+/// Connects with no listener.
+fn refused(log: Dispatch) {
     let mut network = Network::new();
     let remote = network.remote();
-    let calls = network
-        .sim
-        .run_on(&network.local.clone(), move |node, _| async move {
-            let side = Side::new(&node);
-            assert_eq!(side.connect(remote), Status::GOOD);
-            side.drive(Span::SECOND).await;
-            assert_eq!(side.close(1), Status::BAD_NOT_FOUND);
-            side.calls()
-        })
-        .expect("the run ends");
+    let calls = network.run(log, move |node| async move {
+        let side = Side::new(&node);
+        assert_eq!(side.connect(remote), Status::GOOD);
+        side.drive(Span::SECOND).await;
+        assert_eq!(side.close(1), Status::BAD_NOT_FOUND);
+        side.calls()
+    });
     assert_eq!(
         calls,
         [(1, ffi::OPENING, vec![]), (1, ffi::CLOSING, vec![])]
@@ -774,9 +801,40 @@ fn refused() {
 #[test]
 fn a_connect_with_no_listener_gives_closing_a_warning_and_no_established() {
     assert_eq!(
-        stderr("refused"),
-        "connector-opcua: open62541 warning: connection 1: the connect failed: \
-         10.0.0.2:4840 refused the connection\n"
+        warnings(refused),
+        [warning(
+            "connection 1: the connect failed: 10.0.0.2:4840 refused the connection"
+        )]
+    );
+}
+
+/// Connects to a host that `env` refuses.
+fn not_a_host(log: Dispatch) {
+    let mut network = Network::new();
+    let calls = network.run(log, move |node| async move {
+        let side = Side::new(&node);
+        let open = side.open(&[
+            ("address", Value::String("127.1")),
+            ("port", Value::UInt16(4840)),
+        ]);
+        assert_eq!(open, Status::GOOD);
+        side.drive(Span::SECOND).await;
+        assert_eq!(side.close(1), Status::BAD_NOT_FOUND);
+        side.calls()
+    });
+    assert_eq!(
+        calls,
+        [(1, ffi::OPENING, vec![]), (1, ffi::CLOSING, vec![])]
+    );
+}
+
+#[test]
+fn a_connect_to_a_host_that_env_refuses_has_no_address() {
+    assert_eq!(
+        warnings(not_a_host),
+        [warning(
+            "connection 1: the connect failed: name 127.1 has no address"
+        )]
     );
 }
 
@@ -1018,10 +1076,8 @@ fn a_client_sends_hel_and_its_disconnect_ends_the_stream() {
         .run_on(&network.local.clone(), move |node, _| async move {
             let side = Side::new(&node);
             // SAFETY: the loop outlives the client, which the test deletes.
-            let client = unsafe {
-                ffi::shim_client_new(side.events().raw(), crate::connection::CHUNKS)
-            };
-            assert!(!client.is_null());
+            let client =
+                unsafe { crate::client::unconnected(side.events().raw()) }.as_ptr();
             let url = CString::new(format!("opc.tcp://{remote}")).expect("no NUL");
             let url: *const c_char = url.as_ptr();
             // SAFETY: the client lives, and copies the URL.
@@ -1060,7 +1116,6 @@ fn a_drive_ends_with_the_first_value_of_run() {
             let at = side
                 .manager
                 .drive(|_| {
-                    side.events().run();
                     if side.calls().len() == 2 {
                         Poll::Ready(side.clock.now())
                     } else {
@@ -1151,7 +1206,6 @@ fn a_send_from_the_run_that_ends_a_drive_goes_out() {
             side.add_timer(act, 10.0, ptr::from_ref(&later).cast_mut().cast());
             side.manager
                 .drive(|_| {
-                    side.events().run();
                     if side.clock.now() >= due {
                         Poll::Ready(())
                     } else {
@@ -1269,10 +1323,7 @@ fn a_source_that_run_polls_wakes_the_drive() {
             let mut source = side.clock.sleep(Span::SECOND);
             let at = side
                 .manager
-                .drive(|cx| {
-                    side.events().run();
-                    Pin::new(&mut source).poll(cx).map(|()| side.clock.now())
-                })
+                .drive(|cx| Pin::new(&mut source).poll(cx).map(|()| side.clock.now()))
                 .await;
             assert_eq!(at, start + Span::SECOND);
         })
@@ -1403,7 +1454,6 @@ fn a_closing_with_no_stream_drops_the_connection_at_once() {
             assert_eq!(side.close(1), Status::GOOD);
             let mut end = side.clock.sleep(Span::SECOND);
             let mut drive = pin!(side.manager.drive(|_| {
-                side.events().run();
                 if side.connections() == 0 {
                     Poll::Ready(side.clock.now())
                 } else {
@@ -1526,7 +1576,6 @@ fn a_close_drops_the_connection_when_the_peer_closes_its_side() {
             let dropped = side
                 .manager
                 .drive(|cx| {
-                    side.events().run();
                     if side.connections() == 0 {
                         Poll::Ready(Some(side.clock.now()))
                     } else {
@@ -1691,13 +1740,8 @@ fn a_close_writes_each_send_to_a_peer_that_writes_as_it_reads() {
     assert_eq!(reads.bytes(), sends.concat());
 }
 
-/// The peer reads nothing until 12 s, and the stream closes at 1 s and 6 s, when
-/// `child::running()`.
-#[test]
-fn lingers() {
-    if !child::running() {
-        return;
-    }
+/// The peer reads nothing until 12 s, and the stream closes at 1 s and 6 s.
+fn lingers(log: Dispatch) {
     let mut network = Network::new();
     let reads = Arc::new(Mutex::new(Reads::default()));
     let slot = Arc::clone(&reads);
@@ -1706,26 +1750,23 @@ fn lingers() {
         read_all(&mut stream, &clock, &slot, Span::ZERO).await;
     });
     let remote = network.remote();
-    let states = network
-        .sim
-        .run_on(&network.local.clone(), move |node, _| async move {
-            let side = Side::new(&node);
-            assert_eq!(side.connect(remote), Status::GOOD);
-            side.drive(Span::SECOND).await;
-            for send in sends(10, 30_000) {
-                assert_eq!(side.send(1, &send), Status::GOOD);
-            }
-            assert_eq!(side.close(1), Status::GOOD);
-            side.clock.sleep(Span::from_nanos(5_000_000_000)).await;
-            assert_eq!(side.close(1), Status::GOOD);
-            side.drive(Span::from_nanos(4_999_000_000)).await;
-            assert_eq!(side.connections(), 1);
-            side.drive(Span::from_nanos(1_000_000)).await;
-            assert_eq!(side.connections(), 0);
-            side.clock.sleep(Span::from_nanos(2_000_000_000)).await;
-            side.states()
-        })
-        .expect("the run ends");
+    let states = network.run(log, move |node| async move {
+        let side = Side::new(&node);
+        assert_eq!(side.connect(remote), Status::GOOD);
+        side.drive(Span::SECOND).await;
+        for send in sends(10, 30_000) {
+            assert_eq!(side.send(1, &send), Status::GOOD);
+        }
+        assert_eq!(side.close(1), Status::GOOD);
+        side.clock.sleep(Span::from_nanos(5_000_000_000)).await;
+        assert_eq!(side.close(1), Status::GOOD);
+        side.drive(Span::from_nanos(4_999_000_000)).await;
+        assert_eq!(side.connections(), 1);
+        side.drive(Span::from_nanos(1_000_000)).await;
+        assert_eq!(side.connections(), 0);
+        side.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        side.states()
+    });
     assert_eq!(states, [ffi::OPENING, ffi::ESTABLISHED, ffi::CLOSING]);
     let reads = reads.lock().expect("no panic under the lock");
     let error = reads.error.as_deref();
@@ -1743,9 +1784,10 @@ fn lingers() {
 #[test]
 fn a_close_drops_a_stream_that_takes_no_bytes_after_it_lingers() {
     assert_eq!(
-        stderr("lingers"),
-        "connector-opcua: open62541 warning: connection 1: the close took 10s, so it \
-         drops the stream\n"
+        warnings(lingers),
+        [warning(
+            "connection 1: the close took 10s, so it drops the stream"
+        )]
     );
 }
 
@@ -1810,116 +1852,108 @@ fn a_send_after_a_drive_that_panics_wakes_its_task() {
     assert_eq!(woken, 1);
 }
 
-/// Runs the test `name` of this module in a child process, asserts that it passes,
-/// and gives what it wrote to stderr.
-fn stderr(name: &str) -> String {
-    let output = child::output(&format!("connection::tests::{name}"), &[]);
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        output.status.success() && stdout.contains("test result: ok. 1 passed"),
-        "{stdout}"
-    );
-    String::from_utf8(output.stderr).unwrap()
+/// Runs `test` with a capture of the warnings of the manager, which it gives to
+/// [`Network::run`], and gives their lines.
+fn warnings(test: fn(Dispatch)) -> Vec<String> {
+    let (capture, log) =
+        connector::testing::Capture::new("connector_opcua::connection");
+    test(log);
+    capture.lines()
 }
 
-/// The peer resets the stream as it accepts it, when `child::running()`.
-#[test]
-fn reset_as_open() {
-    if !child::running() {
-        return;
-    }
+/// The text of the warning of a close past [`CLOSES`], after the connection.
+const DROPS: &str = "more than 100 streams close, so it drops the oldest";
+
+/// The warnings of `test` that a close past [`CLOSES`] gives.
+fn dropped(test: fn(Dispatch)) -> Vec<String> {
+    let mut lines = warnings(test);
+    lines.retain(|line| line.contains(DROPS));
+    lines
+}
+
+/// The line of a warning `text` of a side of [`Side::new`].
+fn warning(text: &str) -> String {
+    format!(r#"WARN {text} connector="press" kind="opcua""#)
+}
+
+/// The peer resets the stream as it accepts it.
+fn reset_as_open(log: Dispatch) {
     let mut network = Network::new();
     network.accept(|stream, _| async move { drop(stream) });
     let remote = network.remote();
-    let states = network
-        .sim
-        .run_on(&network.local.clone(), move |node, _| async move {
-            let side = Side::new(&node);
-            assert_eq!(side.connect(remote), Status::GOOD);
-            side.drive(Span::SECOND).await;
-            assert_eq!(side.connections(), 0);
-            assert_eq!(side.close(1), Status::BAD_NOT_FOUND);
-            side.states()
-        })
-        .expect("the run ends");
+    let states = network.run(log, move |node| async move {
+        let side = Side::new(&node);
+        assert_eq!(side.connect(remote), Status::GOOD);
+        side.drive(Span::SECOND).await;
+        assert_eq!(side.connections(), 0);
+        assert_eq!(side.close(1), Status::BAD_NOT_FOUND);
+        side.states()
+    });
     assert_eq!(states, [ffi::OPENING, ffi::ESTABLISHED, ffi::CLOSING]);
 }
 
 #[test]
 fn a_reset_gives_closing_and_a_warning() {
     assert_eq!(
-        stderr("reset_as_open"),
-        "connector-opcua: open62541 warning: connection 1: the read failed: \
-         10.0.0.2:4840 reset the stream\n"
+        warnings(reset_as_open),
+        [warning(
+            "connection 1: the read failed: 10.0.0.2:4840 reset the stream"
+        )]
     );
 }
 
-/// The peer resets the stream 100 ms after it accepts it, and reads nothing, when
-/// `child::running()`.
-#[test]
-fn reset_as_closing() {
-    if !child::running() {
-        return;
-    }
+/// The peer resets the stream 100 ms after it accepts it, and reads nothing.
+fn reset_as_closing(log: Dispatch) {
     let mut network = Network::new();
     network.accept(|stream, clock| async move {
         clock.sleep(Span::from_nanos(100_000_000)).await;
         drop(stream);
     });
     let remote = network.remote();
-    let states = network
-        .sim
-        .run_on(&network.local.clone(), move |node, _| async move {
-            let side = Side::new(&node);
-            assert_eq!(side.connect(remote), Status::GOOD);
-            side.drive(Span::from_nanos(10_000_000)).await;
-            for send in sends(10, 30_000) {
-                assert_eq!(side.send(1, &send), Status::GOOD);
-            }
-            assert_eq!(side.close(1), Status::GOOD);
-            side.drive(Span::SECOND).await;
-            assert_eq!(side.connections(), 0);
-            side.states()
-        })
-        .expect("the run ends");
+    let states = network.run(log, move |node| async move {
+        let side = Side::new(&node);
+        assert_eq!(side.connect(remote), Status::GOOD);
+        side.drive(Span::from_nanos(10_000_000)).await;
+        for send in sends(10, 30_000) {
+            assert_eq!(side.send(1, &send), Status::GOOD);
+        }
+        assert_eq!(side.close(1), Status::GOOD);
+        side.drive(Span::SECOND).await;
+        assert_eq!(side.connections(), 0);
+        side.states()
+    });
     assert_eq!(states, [ffi::OPENING, ffi::ESTABLISHED, ffi::CLOSING]);
 }
 
 #[test]
 fn a_reset_of_a_closed_connection_drops_it_before_it_lingers() {
     assert_eq!(
-        stderr("reset_as_closing"),
-        "connector-opcua: open62541 warning: connection 1: the read failed: \
-         10.0.0.2:4840 reset the stream\n"
+        warnings(reset_as_closing),
+        [warning(
+            "connection 1: the read failed: 10.0.0.2:4840 reset the stream"
+        )]
     );
 }
 
-/// Sends one more than [`SENDS`] with no poll between, when `child::running()`.
-#[test]
-fn send_past_the_bound() {
-    if !child::running() {
-        return;
-    }
+/// Sends one more than [`SENDS`] with no poll between.
+fn send_past_the_bound(log: Dispatch) {
     let mut network = Network::new();
     let reads = network.serve(None);
     let remote = network.remote();
     let sends = sends(SENDS, 100);
     let written = sends.clone();
-    let states = network
-        .sim
-        .run_on(&network.local.clone(), move |node, _| async move {
-            let side = Side::new(&node);
-            assert_eq!(side.connect(remote), Status::GOOD);
-            side.drive(Span::SECOND).await;
-            for send in &written {
-                assert_eq!(side.send(1, send), Status::GOOD);
-            }
-            assert_eq!(side.send(1, b"past"), Status::BAD_CONNECTION_CLOSED);
-            side.drive(Span::SECOND).await;
-            assert_eq!(side.connections(), 0);
-            side.states()
-        })
-        .expect("the run ends");
+    let states = network.run(log, move |node| async move {
+        let side = Side::new(&node);
+        assert_eq!(side.connect(remote), Status::GOOD);
+        side.drive(Span::SECOND).await;
+        for send in &written {
+            assert_eq!(side.send(1, send), Status::GOOD);
+        }
+        assert_eq!(side.send(1, b"past"), Status::BAD_CONNECTION_CLOSED);
+        side.drive(Span::SECOND).await;
+        assert_eq!(side.connections(), 0);
+        side.states()
+    });
     assert_eq!(states, [ffi::OPENING, ffi::ESTABLISHED, ffi::CLOSING]);
     let reads = reads.lock().expect("no panic under the lock");
     assert_eq!(reads.bytes(), sends.concat());
@@ -1929,19 +1963,14 @@ fn send_past_the_bound() {
 #[test]
 fn a_send_past_the_bound_closes_the_connection_with_a_warning() {
     assert_eq!(
-        stderr("send_past_the_bound"),
-        "connector-opcua: open62541 warning: connection 1: 256 sends wait, so it \
-         closes\n"
+        warnings(send_past_the_bound),
+        [warning("connection 1: 256 sends wait, so it closes")]
     );
 }
 
 /// The peer closes its side at 50 ms and drops the stream at 150 ms, and reads
-/// nothing, while the stream closes with sends that wait, when `child::running()`.
-#[test]
-fn reset_as_writing() {
-    if !child::running() {
-        return;
-    }
+/// nothing, while the stream closes with sends that wait.
+fn reset_as_writing(log: Dispatch) {
     let mut network = Network::new();
     network.accept(|mut stream, clock| async move {
         clock.sleep(Span::from_nanos(50_000_000)).await;
@@ -1952,30 +1981,28 @@ fn reset_as_writing() {
         drop(stream);
     });
     let remote = network.remote();
-    let states = network
-        .sim
-        .run_on(&network.local.clone(), move |node, _| async move {
-            let side = Side::new(&node);
-            assert_eq!(side.connect(remote), Status::GOOD);
-            side.drive(Span::from_nanos(10_000_000)).await;
-            for send in sends(10, 30_000) {
-                assert_eq!(side.send(1, &send), Status::GOOD);
-            }
-            assert_eq!(side.close(1), Status::GOOD);
-            side.drive(Span::SECOND).await;
-            assert_eq!(side.connections(), 0);
-            side.states()
-        })
-        .expect("the run ends");
+    let states = network.run(log, move |node| async move {
+        let side = Side::new(&node);
+        assert_eq!(side.connect(remote), Status::GOOD);
+        side.drive(Span::from_nanos(10_000_000)).await;
+        for send in sends(10, 30_000) {
+            assert_eq!(side.send(1, &send), Status::GOOD);
+        }
+        assert_eq!(side.close(1), Status::GOOD);
+        side.drive(Span::SECOND).await;
+        assert_eq!(side.connections(), 0);
+        side.states()
+    });
     assert_eq!(states, [ffi::OPENING, ffi::ESTABLISHED, ffi::CLOSING]);
 }
 
 #[test]
 fn a_write_to_a_reset_stream_gives_closing_and_a_warning() {
     assert_eq!(
-        stderr("reset_as_writing"),
-        "connector-opcua: open62541 warning: connection 1: the write failed: \
-         10.0.0.2:4840 reset the stream\n"
+        warnings(reset_as_writing),
+        [warning(
+            "connection 1: the write failed: 10.0.0.2:4840 reset the stream"
+        )]
     );
 }
 
@@ -2428,29 +2455,22 @@ fn a_send_on_the_listen_connection_is_refused() {
     assert_eq!(status, Status::BAD_CONNECTION_CLOSED);
 }
 
-/// Fails the listener once it accepted one stream, when `child::running()`.
-#[test]
-fn failed_listener() {
-    if !child::running() {
-        return;
-    }
+/// Fails the listener once it accepted one stream.
+fn failed_listener(log: Dispatch) {
     let mut network = Network::new();
     let first = network.dial(Span::ZERO, b"a");
     let at = network.listening();
-    let calls = network
-        .sim
-        .run_on(&network.local.clone(), move |node, _| async move {
-            let side = listening(&node);
-            assert_eq!(side.listen(PORT), Status::GOOD);
-            side.drive(Span::from_nanos(10_000_000)).await;
-            node.fail_listener(at);
-            side.drive(Span::from_nanos(10_000_000)).await;
-            assert_eq!(side.close(1), Status::BAD_NOT_FOUND);
-            assert_eq!(side.send(2, b"on"), Status::GOOD);
-            side.drive(Span::from_nanos(10_000_000)).await;
-            side.calls()
-        })
-        .expect("the run ends");
+    let calls = network.run(log, move |node| async move {
+        let side = listening(&node);
+        assert_eq!(side.listen(PORT), Status::GOOD);
+        side.drive(Span::from_nanos(10_000_000)).await;
+        node.fail_listener(at);
+        side.drive(Span::from_nanos(10_000_000)).await;
+        assert_eq!(side.close(1), Status::BAD_NOT_FOUND);
+        assert_eq!(side.send(2, b"on"), Status::GOOD);
+        side.drive(Span::from_nanos(10_000_000)).await;
+        side.calls()
+    });
     assert_eq!(
         calls,
         [
@@ -2466,14 +2486,13 @@ fn failed_listener() {
 #[test]
 fn an_accept_error_gives_closing_of_the_listen_and_a_warning() {
     assert_eq!(
-        stderr("failed_listener"),
-        "connector-opcua: open62541 warning: connection 1: the accept failed: \
-         network call failed with OS error 5\n"
+        warnings(failed_listener),
+        ["WARN connection 1: the accept failed: network call failed with OS error 5"]
     );
 }
 
 /// Opens a listen on `port`, with a listener at [`PORT`] unless `none`, and a second
-/// listen when `twice`, when `child::running()`.
+/// listen when `twice`.
 fn listen_and_abort(port: u16, none: bool, twice: bool) {
     if !child::running() {
         return;
@@ -2597,10 +2616,8 @@ fn a_stopped_server_with_a_session_is_deleted_with_its_session() {
             // SAFETY: the server is deleted before `side` drops.
             let server = unsafe { Server::start(&side.manager, c"", 1) };
             // SAFETY: the loop outlives the client, which the test deletes.
-            let client = unsafe {
-                ffi::shim_client_new(side.events().raw(), crate::connection::CHUNKS)
-            };
-            assert!(!client.is_null());
+            let client =
+                unsafe { crate::client::unconnected(side.events().raw()) }.as_ptr();
             let url = c"opc.tcp://10.0.0.1:4840";
             // SAFETY: the client lives, and copies the URL.
             let status =
@@ -2998,10 +3015,8 @@ fn a_session_that_its_client_closes_is_removed_after_the_service() {
             // SAFETY: the server is deleted before `side` drops.
             let server = unsafe { Server::start(&side.manager, c"", 1) };
             // SAFETY: the loop outlives the client, which the test deletes.
-            let client = unsafe {
-                ffi::shim_client_new(side.events().raw(), crate::connection::CHUNKS)
-            };
-            assert!(!client.is_null());
+            let client =
+                unsafe { crate::client::unconnected(side.events().raw()) }.as_ptr();
             let url = c"opc.tcp://10.0.0.1:4840";
             // SAFETY: the client lives, and copies the URL.
             let status =
@@ -3009,8 +3024,7 @@ fn a_session_that_its_client_closes_is_removed_after_the_service() {
             assert_eq!(status, Status::GOOD);
             side.drive(Span::SECOND).await;
             // SAFETY: the client lives.
-            let status =
-                Status(unsafe { ffi::test::UA_Client_disconnectAsync(client) });
+            let status = Status(unsafe { ffi::UA_Client_disconnectAsync(client) });
             assert_eq!(status, Status::GOOD);
             side.drive(Span::SECOND).await;
             server.close(&side.manager).await;
@@ -3053,10 +3067,8 @@ fn a_stopped_server_is_deleted_when_no_delayed_callback_waits() {
                 // SAFETY: the server is deleted before `side` drops.
                 let server = unsafe { Server::start(&side.manager, c"", 1) };
                 // SAFETY: the loop outlives the client, which the test deletes.
-                let client = unsafe {
-                    ffi::shim_client_new(side.events().raw(), crate::connection::CHUNKS)
-                };
-                assert!(!client.is_null());
+                let client =
+                    unsafe { crate::client::unconnected(side.events().raw()) }.as_ptr();
                 let url = c"opc.tcp://10.0.0.1:4840";
                 // SAFETY: the client lives, and copies the URL.
                 let status = Status(unsafe {
@@ -3325,13 +3337,9 @@ fn bound(mut network: Network, peers: Vec<Arc<Mutex<Held>>>) -> (usize, usize, u
 }
 
 /// One more peer than the server holds channels and [`CLOSES`] closing streams
-/// together, each of which reads until its stream ends and never closes, when
-/// `child::running()`. The server purges the oldest channel at each accept past 100.
-#[test]
-fn closes_past_the_bound() {
-    if !child::running() {
-        return;
-    }
+/// together, each of which reads until its stream ends and never closes. The server
+/// purges the oldest channel at each accept past 100.
+fn closes_past_the_bound(log: Dispatch) {
     let mut network = Network::new();
     let peers: Vec<_> = (0..=100 + CLOSES)
         .map(|i| {
@@ -3340,18 +3348,15 @@ fn closes_past_the_bound() {
             network.probe(delay, Span::from_nanos(500_000_000))
         })
         .collect();
-    let held = network
-        .sim
-        .run_on(&network.local.clone(), |node, _| async move {
-            let side = Side::listening(&node, local(&node));
-            // SAFETY: the server is deleted before `side` drops.
-            let server = unsafe { Server::start(&side.manager, c"", 100) };
-            side.drive(Span::SECOND).await;
-            let held = (side.connections(), snapshot(&peers));
-            server.close(&side.manager).await;
-            held
-        })
-        .expect("the run ends");
+    let held = network.run(log, |node| async move {
+        let side = Side::listening(&node, local(&node));
+        // SAFETY: the server is deleted before `side` drops.
+        let server = unsafe { Server::start(&side.manager, c"", 100) };
+        side.drive(Span::SECOND).await;
+        let held = (side.connections(), snapshot(&peers));
+        server.close(&side.manager).await;
+        held
+    });
     let mut expected = vec![Held::Dropped];
     expected.extend([Held::Closing; CLOSES]);
     expected.extend([Held::Open; 100]);
@@ -3363,20 +3368,10 @@ fn closes_past_the_bound() {
 /// channel.
 #[test]
 fn a_close_past_the_bound_drops_the_oldest_closing_stream() {
-    let stderr = stderr("closes_past_the_bound");
-    let dropped: Vec<&str> = stderr
-        .lines()
-        .filter(|line| line.contains("streams close"))
-        .collect();
     let expected: Vec<String> = (2..=102)
-        .map(|id| {
-            format!(
-                "connector-opcua: open62541 warning: connection {id}: more than 100 \
-                 streams close, so it drops the oldest"
-            )
-        })
+        .map(|id| format!("WARN connection {id}: {DROPS}"))
         .collect();
-    assert_eq!(dropped, expected);
+    assert_eq!(dropped(closes_past_the_bound), expected);
 }
 
 /// A close past [`CLOSES`] from inside a run of the loop drops a stream that leaves
@@ -3417,45 +3412,30 @@ fn a_stream_that_a_close_past_the_bound_drops_leaves_in_the_same_drive() {
     assert_eq!(counts, (102, 102, 101));
 }
 
-/// Closes 102 down to 2 at one instant, when `child::running()`.
-#[test]
-fn closes_at_one_instant() {
-    if !child::running() {
-        return;
-    }
+/// Closes 102 down to 2 at one instant.
+fn closes_at_one_instant(log: Dispatch) {
     let mut network = Network::new();
     for i in 0..=CLOSES {
         let i = i64::try_from(i).expect("a small count");
         network.hold(Span::from_nanos((i + 1) * 1_000_000));
     }
-    network
-        .sim
-        .run_on(&network.local.clone(), |node, _| async move {
-            let side = Side::listening(&node, local(&node));
-            assert_eq!(side.listen(PORT), Status::GOOD);
-            side.drive(Span::SECOND).await;
-            for id in (2..=102).rev() {
-                assert_eq!(side.close(id), Status::GOOD);
-            }
-        })
-        .expect("the run ends");
+    network.run(log, |node| async move {
+        let side = Side::listening(&node, local(&node));
+        assert_eq!(side.listen(PORT), Status::GOOD);
+        side.drive(Span::SECOND).await;
+        for id in (2..=102).rev() {
+            assert_eq!(side.close(id), Status::GOOD);
+        }
+    });
 }
 
 /// Of the streams that start to close at one instant, a close past [`CLOSES`] drops
 /// the first to close, not the one with the lowest key.
 #[test]
 fn a_close_past_the_bound_drops_the_first_to_close_at_one_instant() {
-    let stderr = stderr("closes_at_one_instant");
-    let dropped: Vec<&str> = stderr
-        .lines()
-        .filter(|line| line.contains("streams close"))
-        .collect();
     assert_eq!(
-        dropped,
-        [
-            "connector-opcua: open62541 warning: connection 102: more than 100 streams \
-             close, so it drops the oldest"
-        ]
+        dropped(closes_at_one_instant),
+        [format!("WARN connection 102: {DROPS}")]
     );
 }
 

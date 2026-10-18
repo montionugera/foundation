@@ -20,7 +20,8 @@ fn a_lookup_whose_thread_cannot_start_is_io() {
     seccomp::answer_calls(&[libc::SYS_clone3, libc::SYS_clone], |_, _| {
         Some(libc::EAGAIN)
     });
-    let found = runtime.block_on(os::net().resolve("localhost", 4433));
+    let found =
+        runtime.block_on(os::net().resolve(&"localhost".parse().unwrap(), 4433));
     let code = Errno::AGAIN.raw_os_error();
     assert_eq!(found, Err(Error::Io { code }));
 }

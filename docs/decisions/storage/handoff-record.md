@@ -1,9 +1,9 @@
 - **HANDOFF RECORD (#191)** The home records each handoff that `Gate::handoff` gives
   (GATE RULES) as a buffer entry on the live path of the index, with tag `HANDOFF`,
-  `len` 0, and `first` at the live tail. It records a handoff after the gate input that
-  gave it and before the next stored frame of its index. It records it before the next
-  input too, except for a handoff with no room or after a failed commit
-  (`laptop.architect`, #2318, 2026-10-11T10:46:58Z:
+  no samples (`samples: None`, `len` 0 on disk), and `first` at the live tail. It
+  records a handoff after the gate input that gave it and before the next stored frame
+  of its index. It records it before the next input too, except for a handoff with no
+  room or after a failed commit (`laptop.architect`, #2318, 2026-10-11T10:46:58Z:
   https://github.com/synnaxlabs/foundation/pull/2318#issuecomment-6108217840).
   Supersedes "before the next input or frame" of
   https://github.com/synnaxlabs/foundation/pull/402. Its bytes are empty when no writer
@@ -66,9 +66,10 @@
   milestone path where a holder that had a grace in an earlier run refuses a writer
   (`laptop.architect`, #2314, 2026-10-11T13:00:55Z, item 2:
   https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6109289345).
-  Trimming must keep the last record of each index (#406). Until it does, a trim (STORE
-  TRIM) can free that record, and a holder whose record a trim freed gets no grace after
-  a restart. Retention deletes nothing (decided by `laptop.architect`,
+  A trim keeps the newest handoff of each index (STORE TRIM; `laptop.architect`, #406,
+  2026-10-14T01:56:45Z:
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6159164617).
+  Retention deletes nothing (decided by `laptop.architect`,
   2026-10-07T12:30:53Z and 2026-10-07T12:59:37Z:
   https://github.com/synnaxlabs/foundation/issues/1377#issuecomment-6037946637 and
   https://github.com/synnaxlabs/foundation/issues/1377#issuecomment-6038431739).

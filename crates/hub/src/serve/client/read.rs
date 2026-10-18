@@ -8,14 +8,14 @@ use access::proof;
 use transport::Class;
 use transport::stream::{Receiver, Sender};
 use types::name::{Name, Selector};
-use wire::hub::client::{Mode, Open, Place, Places, Read, Refusal, place};
+use wire::hub::client::{Mode, Open, PLACES_MAX, Place, Read, Refusal};
 
 use super::{Reserved, body, verify};
 use crate::State;
 use crate::channel::Channel;
 use crate::link::Session;
-use crate::reader::{self, Home, Matched, Reader};
-use crate::serve::{Error, Layout, alloc, reply, unless};
+use crate::reader::{self, Home, Reader};
+use crate::serve::{Error, Layout, reply, unless};
 
 /// Serves the read of `subject` that `read` starts: verifies its open, opens its
 /// reader, and sends its places, then each frame of the reader until the program
@@ -36,13 +36,13 @@ pub(super) async fn serve(
         }
     });
     let state = &session.state;
-    let Some((reader, places, layout)) =
+    let Some((reader, live, index, places, layout)) =
         here(state, open, mode, program.as_mut()).await?
     else {
         sender.finish()?;
         return Ok(());
     };
-    start(state, sender, places).await?;
+    start(state, sender, index, places, live).await?;
     relay(state, reader, layout, program, sender).await
 }
 
@@ -89,14 +89,17 @@ async fn open(
 }
 
 /// Opens the reader of `open` at this node, the home of its index, and gives it with
-/// its places and their layout, or `None` when `program` finishes first. Holds the
-/// reservation of `open` until the open decodes after the wait for the home.
+/// its open position, the place of its index, its places, and their layout, or `None`
+/// when `program` finishes first. Holds the reservation of `open` until the open
+/// decodes after the wait for the home. Places over [`PLACES_MAX`] give
+/// [`Error::Places`], also when the home is another node, and this node then
+/// carries no index and gives no slot.
 async fn here<F>(
     state: &Rc<RefCell<State>>,
     open: Held,
     mode: reader::Mode,
     program: Pin<&mut F>,
-) -> Result<Option<(Reader, Matched<Place>, Layout)>, Error>
+) -> Result<Option<(Reader, u64, usize, Vec<Place>, Layout)>, Error>
 where
     F: Future<Output = Result<(), Error>>,
 {
@@ -113,42 +116,38 @@ where
         return Ok(None);
     };
     let (places, home) = found.map_err(refused)?;
-    let channels = match home {
-        Home::Here(channels) => channels,
+    let count = places.items.len();
+    if count > usize::try_from(PLACES_MAX).expect("invariant: a usize holds a u32") {
+        return Err(Error::Places { count });
+    }
+    let here = match home {
+        Home::Here(here) => here,
         Home::Away(home) => return Err(refused(reader::Error::Remote { home })),
     };
+    let channels = here.carry(&mut state.borrow_mut());
     let layout = Layout::new(channels.slots.clone(), channels.index);
-    let reader = Reader::here(state, channels, mode).map_err(refused)?;
-    Ok(Some((reader, places, layout)))
+    let (reader, live) = Reader::here(state, channels, mode);
+    Ok(Some((reader, live, places.index, places.items, layout)))
 }
 
-/// Sends `places`, their run, and `Opened`, and drops the places.
+/// Sends `places`, whose index is place `index`, and `Opened` with `live`, the open
+/// position, and
+/// drops the places.
 async fn start(
     state: &RefCell<State>,
     sender: &mut Sender,
-    places: Matched<Place>,
+    index: usize,
+    places: Vec<Place>,
+    live: u64,
 ) -> Result<(), Error> {
-    let mut block = alloc(state, Places::LEN)?;
-    Places {
-        count: u32::try_from(places.items.len())
-            .expect("invariant: each place has its own slot, a u32"),
-        index: u32::try_from(places.index)
-            .expect("invariant: the index is one of the places"),
-    }
-    .encode(&mut block);
-    sender.send(block.freeze()).await?;
-    let most = sender.bytes_max().min(state.borrow().home.pool().largest());
-    for message in place::messages(&places.items, most) {
-        let mut block = alloc(state, message.encoded_len())?;
-        message.encode(&mut block);
-        sender.send(block.freeze()).await?;
-    }
-    sender.send(reply(state, wire::hub::Reply::Opened)?).await?;
+    super::places(state, sender, index, &places).await?;
+    sender
+        .send(reply(state, wire::hub::Reply::Opened { live })?)
+        .await?;
     Ok(())
 }
 
-/// Sends each frame of `reader` until `program` finishes, or `Behind` and the finish
-/// when the reader missed a frame.
+/// Sends each frame of `reader` until `program` finishes.
 async fn relay<F>(
     state: &RefCell<State>,
     mut reader: Reader,
@@ -170,11 +169,6 @@ where
                     .send(state, sender, taken.view().frame(), taken.set())
                     .await?;
             }
-            Err(reader::Ended::Behind) => {
-                sender.send(reply(state, wire::hub::Reply::Behind)?).await?;
-                sender.finish()?;
-                return Ok(());
-            }
             Err(ended) => return Err(Error::Ended(Box::new(ended))),
         }
     }
@@ -184,7 +178,7 @@ where
 ///
 /// # Panics
 ///
-/// For `Unsynced`, which only a named reader gives.
+/// For `Unsynced`, `Full`, and `Unrecorded`, which only a named reader gives.
 pub(in crate::serve) fn refused(error: &reader::Error) -> Refusal {
     match error {
         reader::Error::Empty => Refusal::Unknown,
@@ -195,7 +189,7 @@ pub(in crate::serve) fn refused(error: &reader::Error) -> Refusal {
         reader::Error::Mesh(_)
         | reader::Error::Transport(_)
         | reader::Error::Message(_) => Refusal::Failed,
-        reader::Error::Unsynced => {
+        reader::Error::Unsynced | reader::Error::Full | reader::Error::Unrecorded => {
             panic!("invariant: an unnamed reader does not give {error:?}")
         }
     }
@@ -205,8 +199,7 @@ pub(in crate::serve) fn refused(error: &reader::Error) -> Refusal {
 ///
 /// # Panics
 ///
-/// For `Behind`, which a read sends as a reply, and `Replaced`, which only a named
-/// reader gives.
+/// For `Replaced`, which only a named reader gives.
 pub(in crate::serve) fn ended(ended: &reader::Ended) -> Refusal {
     match ended {
         reader::Ended::Removed(_) => Refusal::Unknown,
@@ -217,7 +210,7 @@ pub(in crate::serve) fn ended(ended: &reader::Ended) -> Refusal {
         | reader::Ended::Message(_)
         | reader::Ended::Frame(_)
         | reader::Ended::Credit { .. } => Refusal::Failed,
-        reader::Ended::Behind | reader::Ended::Replaced => {
+        reader::Ended::Replaced => {
             panic!("invariant: a read does not end as {ended:?}")
         }
     }

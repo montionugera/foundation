@@ -6,18 +6,22 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-open62541 = ["dep:cc"]
-# Exposes `bench` to the `run`, `manager`, `client`, and `kind` benches, `fuzz` to the
-# fuzz target, both to the `alloc` and `memory` tests, and `sim` to the tests of other
-# crates.
+open62541 = ["dep:aws-lc-sys", "dep:cc", "dep:tracing"]
+# Exposes `bench` to the `run`, `manager`, `client`, `kind`, and `value` benches,
+# `fuzz` to the fuzz target, both to the `alloc` and `memory` tests, and `sim` to the
+# tests of other crates.
 sim = ["open62541"]
 
 [dependencies]
+# The libcrypto of the OpenSSL plugins of open62541. Its `links` gives `build.rs` its
+# headers.
+aws-lc-sys = { workspace = true, optional = true }
 block = { path = "../block" }
 connector = { path = "../connector" }
 document = { path = "../document" }
 env = { path = "../env" }
 hub = { path = "../hub" }
+tracing = { workspace = true, optional = true }
 types = { path = "../types" }
 
 [build-dependencies]
@@ -39,6 +43,11 @@ spec = { path = "../spec" }
 [[test]]
 name = "alloc"
 harness = false
+
+[[test]]
+name = "conformance"
+path = "../../oracles/conformance/connector/opcua/main.rs"
+required-features = ["open62541"]
 
 [[test]]
 name = "memory"
@@ -68,6 +77,11 @@ test = true
 
 [[bench]]
 name = "kind"
+harness = false
+test = true
+
+[[bench]]
+name = "value"
 harness = false
 test = true
 

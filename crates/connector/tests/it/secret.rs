@@ -169,13 +169,6 @@ impl Kind for Watch {
         Ok(Channels::default())
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
         let source = Source::Secret("plant.token".parse().unwrap());
         loop {

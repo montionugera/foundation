@@ -15,7 +15,7 @@
   each with `cargo mutants --shard <k>/4 --sharding round-robin` on its own runner, and
   the required check `mutants` passes when each shard passed. In the queue no shard
   runs, and `mutants` carries the result at the head of the PR to the group, as before.
-  Each shard runs on its own hosted VM (`ubuntu-latest`, #2727). `cargo mutants` runs in
+  Each shard runs on its own hosted VM (`ubuntu-24.04`, #2727). `cargo mutants` runs in
   a systemd scope with a memory cap, no swap, and `OOMPolicy=continue`, so a mutant that
   allocates in a loop kills only its test, and the shard reports the mutant. Cost: each
   shard that gets a mutant builds and tests the code without mutants, so a PR with eight
@@ -25,3 +25,11 @@
   runners are free. The test timeout is 3 times the test time of the baseline
   (`--timeout-multiplier 3`), not the default 5, so a mutant that hangs costs about 14
   min, not 23.5. Four jobs on 4 vCPU can run slower than the baseline, so not lower.
+  Amended (#2756): `sim` builds at opt-level 2 in the dev profile, with its checks. It
+  is a dev-dependency only. At opt-level 0 it took most of the time of the `mesh`
+  tests: `cargo test -p mesh --all-features` took 342 s of user CPU on box2 (AWS Xeon
+  Platinum 8488C), and 79 s at opt-level 2. OK of `laptop.architect` as the advisor
+  (2026-10-15T21:31:59Z):
+  https://github.com/synnaxlabs/foundation/issues/2756#issuecomment-6202718051, and of
+  `laptop.architect-2` for `sim` (2026-10-15T21:32:24Z):
+  https://github.com/synnaxlabs/foundation/issues/2756#issuecomment-6202725115.

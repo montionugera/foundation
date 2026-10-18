@@ -5,6 +5,7 @@ use std::future::poll_fn;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::pin::pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Poll;
 
 use block::{Block, Pool};
@@ -241,6 +242,55 @@ fn open_absolute_reads_a_file_outside_the_data_directory() {
     });
 }
 
+#[test]
+fn an_open_gives_whether_other_users_can_read_the_file() {
+    run(|files, data| async move {
+        let made = create(&files, "made", KIB).await;
+        assert!(!made.exposed(), "a file that an open makes is mode 0600");
+        made.close().await;
+        let host = data.parent().unwrap().join("token");
+        std::fs::write(&host, b"abc").unwrap();
+        let chmod = |bits| {
+            for path in [data.join("made"), host.clone()] {
+                let bits = std::fs::Permissions::from_mode(bits);
+                std::fs::set_permissions(&path, bits).unwrap();
+            }
+        };
+        let modes = [
+            (0o600, false),
+            (0o400, false),
+            (0o700, false),
+            (0o620, false),
+            (0o640, false),
+            (0o660, false),
+            (0o602, false),
+            (0o601, false),
+            (0o604, true),
+            (0o644, true),
+        ];
+        for (mode, exposed) in modes {
+            chmod(mode);
+            if mode & 0o200 != 0 {
+                let write = files.open(Path::new("made"), Mode::Write).await.unwrap();
+                assert_eq!(write.exposed(), exposed, "a write open at {mode:o}");
+                write.close().await;
+            }
+            let file = files.open(Path::new("made"), Mode::Read).await.unwrap();
+            let outside = files.open_absolute(&absolute(&host)).await.unwrap();
+            assert_eq!((file.exposed(), outside.exposed()), (exposed, exposed));
+            if exposed {
+                chmod(0o600);
+                let kept = (file.exposed(), outside.exposed());
+                assert_eq!(
+                    kept,
+                    (true, true),
+                    "an open file keeps what its open found"
+                );
+            }
+        }
+    });
+}
+
 /// A write open of a mode 0444 file gives `EACCES` to a user other than root, and
 /// its lock gives `Busy` to a second open.
 #[test]
@@ -317,6 +367,67 @@ fn open_absolute_refuses_a_file_that_is_not_regular_and_waits_for_no_writer() {
         io(socket, 22),
     ];
     assert_eq!(found.expect("no open blocks"), expected);
+}
+
+/// As root the open passes the mode, so the test fails without the check only as
+/// another user.
+#[test]
+fn open_absolute_of_a_directory_that_this_user_cannot_read_gives_eisdir() {
+    run(|files, data| async move {
+        let dir = data.parent().unwrap().join("private");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let found = files.open_absolute(&absolute(&dir)).await.map(drop);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let expected = Error::Io {
+            path: dir,
+            operation: Operation::Open,
+            code: 21,
+        };
+        assert_eq!(found, Err(expected));
+    });
+}
+
+/// `link` names a file or a directory at each instant. An open gives the file or 21,
+/// also when the swap comes between the stat and the open, and on macOS also 22
+/// (#2964).
+#[test]
+fn open_absolute_of_a_link_that_swaps_a_file_for_a_directory_gives_eisdir() {
+    run(|files, data| async move {
+        let root = data.parent().unwrap().to_path_buf();
+        let (dir, file) = (root.join("dir"), root.join("file"));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(&file, b"x").unwrap();
+        let (link, next) = (root.join("link"), root.join("next"));
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        let stopped = std::sync::Arc::new(AtomicBool::new(false));
+        let swapper = {
+            let (stopped, link) = (std::sync::Arc::clone(&stopped), link.clone());
+            #[expect(clippy::disallowed_methods, reason = "the test races the open")]
+            std::thread::spawn(move || {
+                while !stopped.load(Ordering::Relaxed) {
+                    for target in [&dir, &file] {
+                        std::os::unix::fs::symlink(target, &next).unwrap();
+                        std::fs::rename(&next, &link).unwrap();
+                    }
+                }
+            })
+        };
+        let mut other = None;
+        for _ in 0..20_000 {
+            match files.open_absolute(&absolute(&link)).await {
+                Ok(_) | Err(Error::Io { code: 21, .. }) => {}
+                Err(Error::Io { code: 22, .. }) if cfg!(target_os = "macos") => {}
+                Err(e) => {
+                    other = Some(e);
+                    break;
+                }
+            }
+        }
+        stopped.store(true, Ordering::Relaxed);
+        swapper.join().unwrap();
+        assert_eq!(other, None);
+    });
 }
 
 #[test]
