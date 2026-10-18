@@ -10,6 +10,7 @@ use access::proof::{Error as Refusal, Kind};
 use block::Unique;
 use env::files::Operation;
 use hub::{serve, writer};
+use spec::data_type::DataType;
 use transport::Class;
 use types::authority::Authority;
 use types::channel;
@@ -968,6 +969,35 @@ fn stops_a_write_whose_last_commit_failed_as_failed() {
 /// The home of `TIME` is another node and that of `TIME_B` is this node: it serves
 /// one session of a program and records what each stream gave into `kept`.
 async fn split_home(node: sim::node::Node, tasks: env::tasks::Tasks, kept: Kept) {
+    in_region(node, tasks, kept, async |test| {
+        test.set_home(TIME, region::OTHER).await;
+    })
+    .await;
+}
+
+/// `TIME` has no home and that of `TIME_B` is this node: it serves one session of a
+/// program, records what each stream gave into `kept`, and moves `value` to `TIME_B`
+/// at [`START`].
+async fn moves_at_start(node: sim::node::Node, tasks: env::tasks::Tasks, kept: Kept) {
+    in_region(node, tasks, kept, async |test| {
+        test.clock.sleep(START).await;
+        let mut moved = channels();
+        let definition = super::definition(2, DataType::Sample(I64), 3);
+        moved.insert(name("value"), definition);
+        test.set_spec(moved).await;
+    })
+    .await;
+}
+
+/// A hub in a region where the home of `TIME_B` is this node: it serves one session of
+/// a program and records what each stream gave into `kept`, and runs `then` while the
+/// session is open.
+async fn in_region(
+    node: sim::node::Node,
+    tasks: env::tasks::Tasks,
+    kept: Kept,
+    then: impl AsyncFnOnce(&Test),
+) {
     let transport = Rc::new(transport(&node, &tasks, &own_pool(), HOME, 1 << 16));
     let region =
         region::open(&node, &tasks, Rc::clone(&transport), Vec::new(), channels())
@@ -976,7 +1006,6 @@ async fn split_home(node: sim::node::Node, tasks: env::tasks::Tasks, kept: Kept)
     let mut test =
         Test::new(node.clone(), tasks.clone(), layout, POOL, Some(region)).await;
     test.sync().await;
-    test.set_home(TIME, region::OTHER).await;
     test.set_home(TIME_B, NODE).await;
     test.hub.set_rules(rules());
     let session = transport.accept().await.expect("a session");
@@ -990,6 +1019,7 @@ async fn split_home(node: sim::node::Node, tasks: env::tasks::Tasks, kept: Kept)
         &kept,
         &accepted,
     ));
+    then(&test).await;
     session.closed().await;
     recorded(&node, &kept, accepted.get()).await;
 }
@@ -1036,4 +1066,23 @@ fn stops_a_write_whose_home_is_another_node_as_not_home() {
         served,
         [Err(serve::Error::Writer(Box::new(remote))), Ok(Got::Ended)]
     );
+}
+
+/// A write whose channel moves to a second index while it waits for the home of its
+/// index stops as `MALFORMED`, and takes no control.
+#[test]
+fn stops_a_write_whose_channel_moves_to_a_second_index_during_its_home_wait() {
+    let served = Arc::new(Mutex::new(Vec::new()));
+    let kept = Arc::clone(&served);
+    let home = move |node, tasks| moves_at_start(node, tasks, kept);
+    run_program(437, home, |node, tasks, at| {
+        as_agent(node, tasks, at, |mut agent| async move {
+            agent.admit().await;
+            let mut stream = agent.write(&["time", "value"]).await;
+            assert_eq!(stream.recv().await, reset_with(MALFORMED));
+            finish(&mut agent).await;
+        })
+    });
+    let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
+    assert_eq!(served, [Err(serve::Error::ManyIndexes), Ok(Got::Ended)]);
 }

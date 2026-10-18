@@ -182,22 +182,23 @@ impl Homed {
         state: &Rc<RefCell<State>>,
         config: Config,
     ) -> Result<Self, Error> {
-        let homed = Self::most(state, config, usize::MAX).await?;
+        let homed = Self::within(state, config, usize::MAX).await?;
         Ok(homed.expect("invariant: no writer has more than usize::MAX indexes"))
     }
 
-    /// As [`Homed::new`] for a writer on one index. Gives `None`, before any wait,
-    /// when its channels resolve to more than one.
+    /// As [`Homed::new`] for a writer on one index. Gives `None` when its channels
+    /// resolve to more than one index: before the wait for the home, or when a change
+    /// of a channel during that wait gives them a second.
     pub(crate) async fn one(
         state: &Rc<RefCell<State>>,
         config: Config,
     ) -> Result<Option<Self>, Error> {
-        Self::most(state, config, 1).await
+        Self::within(state, config, 1).await
     }
 
     /// As [`Homed::new`], or `None` when the channels resolve to more than `indexes`
-    /// indexes.
-    async fn most(
+    /// indexes after the wait for mesh time.
+    async fn within(
         state: &Rc<RefCell<State>>,
         config: Config,
         indexes: usize,
@@ -211,11 +212,8 @@ impl Homed {
         if channels.is_empty() {
             return Err(Error::Empty);
         }
-        // An unknown name, or more indexes than the caller takes, fails before the
-        // wait. Once the node has mesh time, the wait is ready at once.
-        if resolve(&mut state.borrow_mut(), &channels)?.1.len() > indexes {
-            return Ok(None);
-        }
+        // An unknown name fails before the wait for mesh time.
+        resolve(&mut state.borrow_mut(), &channels)?;
         crate::time::known(state).await;
         let (keys, groups) = loop {
             let (keys, groups) = resolve(&mut state.borrow_mut(), &channels)?;
