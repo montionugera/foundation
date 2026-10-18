@@ -1066,7 +1066,7 @@ fn the_scan_names_only_the_files_outside_tests() {
         named_in(&src().join("ffi.rs"), client),
     ]
     .concat();
-    assert_eq!(found.len(), 3, "{found:?}");
+    assert_eq!(found.len(), 2, "{found:?}");
     assert_eq!(named, found);
 }
 
@@ -1562,11 +1562,11 @@ fn stub(line: &str) -> Option<&str> {
         .or_else(named)
 }
 
-/// Checks the reasons of the clock keys of `encryptUserIdentityTokenEcc` and
-/// `openSSL_verifyChain` in `cargo xtask open62541`: the default config of a client
-/// has only the policy `None`, and the production code names no security policy, no
-/// certificate group, no certificate function, and no function that adds one, other
-/// than at the stubs of `shim.c` that abort.
+/// Checks the reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
+/// open62541`: the default config of a client has only the policy `None`, and the
+/// production code names no security policy, no certificate group, no certificate
+/// function, and no function that adds one, other than at the stubs of `shim.c` that
+/// abort.
 #[test]
 fn the_production_code_gives_a_client_no_security_policy() {
     let policy = |name: &str| {

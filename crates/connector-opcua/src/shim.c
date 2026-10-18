@@ -725,10 +725,11 @@ void shim_establish(UA_ConnectionManager *cm, uintptr_t id, void *application,
              message);
 }
 
-/* Gives a client on `el` that sends and takes at most `chunks` chunks in a message,
- * or NULL when out of memory. A failed copy of the application URI or of the URI of
- * namespace 0 gives a client with that URI empty (#2566). */
-UA_Client *shim_client_new(UA_EventLoop *el, UA_UInt32 chunks) {
+/* Gives a client on `el` that sends and takes at most `chunks` chunks in a message
+ * and queues at most `queued` intermediate chunks of all messages, or NULL when out
+ * of memory. A failed copy of the application URI or of the URI of namespace 0 gives
+ * a client with that URI empty (#2566). */
+UA_Client *shim_client_new(UA_EventLoop *el, UA_UInt32 chunks, UA_UInt32 queued) {
     UA_ClientConfig config;
     memset(&config, 0, sizeof(config));
     config.logging = &loop_of(el)->logger;
@@ -741,6 +742,7 @@ UA_Client *shim_client_new(UA_EventLoop *el, UA_UInt32 chunks) {
     /* open62541 checks the chunks of a message that it sends and of one that it takes
      * against this count, not against the count of the peer. */
     config.localConnectionConfig.localMaxChunkCount = chunks;
+    config.localConnectionConfig.localMaxQueuedChunks = queued;
     /* No custom types: `value::mistyped` finds the type of each decoded value in
      * `UA_TYPES`. */
     return UA_Client_newWithConfig(&config);

@@ -52,7 +52,7 @@ const fn ns1(id: u32) -> Node {
 
 /// The variable `node` under [`ROOT`] by `HasComponent`, with the browse name `v`,
 /// the `DataType` `data_type`, the rank -1, the access 3, and no value.
-fn child(node: &Node, data_type: &Node) -> Variable {
+fn child(node: &Node, data_type: &Node) -> Variable<'static> {
     Variable {
         node: node.clone(),
         parent: ROOT,
