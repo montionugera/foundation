@@ -48,7 +48,7 @@ pub enum Certificate {
 /// How [`serve`] serves each stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scheme {
-    /// Plain HTTP/1.1.
+    /// HTTP/1.1 with no TLS.
     Plain,
     /// HTTP/1.1 under TLS 1.2 or 1.3, with this certificate.
     Tls(Certificate),
