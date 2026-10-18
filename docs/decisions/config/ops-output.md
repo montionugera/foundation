@@ -397,7 +397,7 @@
   `import` (IMPORT OP) replace a file that is there, so a client that asks the person
   before a destructive tool asks for each (`laptop.architect-2`, 2026-10-18T07:39:38Z:
   https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247231298). It
-  supersedes the text of
+  supersedes the OPS OUTPUT text of
   https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247188650.
   `foundation mcp` reaches its node at the first tool call that needs it, keeps that
   session, and reaches again only at the call after a failure of a reach or a request.
