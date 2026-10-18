@@ -26,6 +26,11 @@ const VALUE: Node = Node {
     namespace: 1,
     key: Key::Number(1000),
 };
+/// A `ByteString` of 7 chunks of 64 KiB, an answer of 8 chunks.
+const BYTES: Node = Node {
+    namespace: 1,
+    key: Key::Number(1002),
+};
 /// The name of the Double variable of a [`Server`] that has a name key.
 const NAME: &str = "SpikeData";
 /// The value of each variable.
@@ -42,10 +47,12 @@ pub enum Variable {
     Number,
     /// `ns=1;s=SpikeData`.
     Name,
+    /// `ns=1;i=1002`, a `ByteString` whose answer takes 8 chunks.
+    Bytes,
 }
 
 /// A test server of open62541 on its own connection manager over `env::net`, with a
-/// Double variable of each [`Variable`] and a `MaxNodesPerRead` of [`PER_READ`], for
+/// variable of each [`Variable`] and a `MaxNodesPerRead` of [`PER_READ`], for
 /// the clients of [`Server::connect`].
 pub struct Server {
     clock: Clock,
@@ -111,6 +118,7 @@ impl Server {
             server.add_scalar(&VALUE, Value::F64(double));
             server.add_scalar(&named(), Value::F64(double));
             server.set_per_read(PER_READ);
+            server.add_bytes(&BYTES, 7 << 16);
         };
         let body = caught(async { body(&this).await });
         let value = crate::server::Server::serve(manager, SESSIONS, add, body).await;
@@ -152,10 +160,12 @@ impl Server {
             nodes
         };
         let (number, name) = (nodes(VALUE), nodes(named()));
+        let bytes = session.nodes(&[BYTES]);
         Client {
             session,
             number,
             name,
+            bytes,
         }
     }
 }
@@ -181,10 +191,12 @@ pub struct Client {
     session: crate::client::Client,
     number: Nodes,
     name: Nodes,
+    bytes: Nodes,
 }
 
 impl Client {
-    /// Reads the Double of each copy of `variable`.
+    /// Reads the Double of each copy of `variable`, or the `ByteString` of
+    /// [`Variable::Bytes`], which gives the fault of a value that is not a sample.
     ///
     /// # Panics
     ///
@@ -193,6 +205,11 @@ impl Client {
         let nodes = match variable {
             Variable::Number => &self.number,
             Variable::Name => &self.name,
+            Variable::Bytes => {
+                let values = self.session.read(&self.bytes).await;
+                assert!(matches!(values, Ok([Err(_)])), "read {values:?}");
+                return;
+            }
         };
         let values = match self.session.read(nodes).await {
             Ok(values) => values,
