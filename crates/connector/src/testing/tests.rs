@@ -10,7 +10,7 @@ use document::diagnostic::{Code, Diagnostic};
 use env::clock::Clock;
 use hub::reader::{Mode, Reader};
 use types::authority::Authority;
-use types::channel;
+use types::channel::{self, Slot};
 use types::name::{Name, Selector};
 use types::time::Span;
 
@@ -521,6 +521,28 @@ fn a_run_whose_status_reader_sleeps_past_its_ring_reads_each_frame() {
                 taken += 1;
             }
             assert_eq!(taken, 1_101);
+        },
+    );
+}
+
+/// A status frame after a gap panics: a hold keeps the ring of the home from a trim,
+/// so it fills and the home loses the status frames that have no room.
+#[test]
+#[should_panic(expected = "the rig lost the status seqs 1021..1102")]
+fn next_panics_on_a_status_frame_after_a_gap() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |rig, clock| async move {
+            let config = Document::default();
+            let mut run = rig.supervise("ticks", name("plant.ticks"), config).await;
+            run.next().await;
+            // The status index takes the first slot.
+            let held = hub::testing::hold(rig.hub(), Slot::new(0));
+            clock.sleep(Span::from_nanos(1_100_000_000_000)).await;
+            drop(held);
+            for _ in 0..2_000 {
+                run.next().await;
+            }
         },
     );
 }
