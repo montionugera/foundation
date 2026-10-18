@@ -58,9 +58,11 @@ a cgroup with a memory cap of 16G and no swap: `systemd-run --user --scope -p
 MemoryMax=16G -p MemorySwapMax=0 -p OOMPolicy=continue env -u CARGO_TARGET_DIR cargo
 mutants --jobs 4 ...`. So does each test run on a box that a review agent starts
 (`.claude/agents/reviewer.md`, `.claude/agents/breaker.md`), also of a mutant made by
-hand, with `cargo test` in place of `cargo mutants`. 16G is a quarter of a box of 61 GB
-that runs 3 or 4 sessions (the person, 2026-10-17 16:13Z, <record link>). A session runs
-one mutants run at a time (`laptop.monitor`,
+hand, with `cargo test` in place of `cargo mutants`. The person approved a cap of these
+runs, with 32 GB as an example (2026-10-17T16:07:01Z, `laptop.monitor`'s record:
+https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246411064). After
+that OK, `laptop.monitor` chose 16G, a quarter of a box of 61 GB. A session runs one
+mutants run at a time (`laptop.monitor`,
 https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6043431001,
 2026-10-07T17:40:51Z). A mutant that allocates in a loop then dies alone, its test
 fails, and the run counts it as caught. With no cap, the mutant fills the box and the
