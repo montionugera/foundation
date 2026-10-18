@@ -127,12 +127,13 @@
   `config.duplicate-name` with the path and the name, or one `config.duplicate-name`
   that names both paths. Each has the fix "Give another name, or leave it out for
   `<default>`", with the default of the run with each refused name left out, or "Give
-  another name" when that run gives none, refuses a name, or has a pick that is not present, with no name, whose path is not under `start`. `add` gives no problem of a block outside the connector
-  block other than `config.private-key`. An `index` that is not a name, in the `channel`
-  block of the first channel that the connector writes that has one, gives its
-  diagnostic. The implied names of the other connectors with their counts, the
-  diagnostic of a bad `index`, "or that the connector writes", and "other than
-  `config.private-key`": `laptop.architect-2`, 2026-10-18T03:14:04Z, items 2 and 4
+  another name" when that run gives none, refuses a name, or has a pick that is not
+  present, with no name, whose path is not under `start`. `add` gives no problem of a
+  block outside the connector block other than `config.private-key`. An `index` that is
+  not a name, in the `channel` block of the first channel that the connector writes that
+  has one, gives its diagnostic. The implied names of the other connectors with their
+  counts, the diagnostic of a bad `index`, "or that the connector writes", and "other
+  than `config.private-key`": `laptop.architect-2`, 2026-10-18T03:14:04Z, items 2 and 4
   (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245080635), and
   2026-10-18T03:34:05Z
   (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245234973). "or that
@@ -141,7 +142,10 @@
   one-pass shape that lost: `laptop.architect-2`, 2026-10-18T04:22:50Z
   (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245610148); "or
   refuses a name": `laptop.architect-2`, 2026-10-18T04:32:21Z
-  (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245680650); "or has a pick that is not present, with no name, whose path is not under `start`", and the panic without "or a refused one": `laptop.architect-2`, 2026-10-18T04:54:49Z (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245847948).
+  (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245680650); "or has
+  a pick that is not present, with no name, whose path is not under `start`", and the
+  panic without "or a refused one": `laptop.architect-2`, 2026-10-18T04:54:49Z
+  (https://github.com/synnaxlabs/foundation/pull/3109#issuecomment-6245847948).
   `Outcome`, `Pick`, `add`, the errors, and the name order: `laptop.architect-2`,
   2026-10-18T02:10:56Z, items 2, 3, 4, 5, and 11
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074).
