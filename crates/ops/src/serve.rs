@@ -483,14 +483,14 @@ fn first_line(body: &[u8]) -> Option<(&[u8], &[u8])> {
 }
 
 /// The most bytes of the cause that `ops.bad-request` quotes.
-const CAUSE_MAX: usize = 256;
+const CAUSE_BYTES_MAX: usize = 256;
 
-/// `Request` with the first `CAUSE_MAX` bytes of `message`, cut at a char boundary,
-/// then `...` when it cuts.
+/// `Request` with the first `CAUSE_BYTES_MAX` bytes of `message`, cut at a char
+/// boundary, then `...` when it cuts.
 fn bad_request(message: impl Into<String>) -> Error {
     let mut message = message.into();
-    if message.len() > CAUSE_MAX {
-        message.truncate(message.floor_char_boundary(CAUSE_MAX));
+    if message.len() > CAUSE_BYTES_MAX {
+        message.truncate(message.floor_char_boundary(CAUSE_BYTES_MAX));
         message.push_str("...");
     }
     Error::Request { message }
