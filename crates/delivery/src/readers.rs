@@ -298,8 +298,10 @@ impl Readers {
     /// frames at them. With `until`, the count of commits at which each entry that the
     /// caller appended before the open is durable, the session takes no frame until a
     /// [`Readers::release`] at that count or later. Pass it while that commit has not
-    /// ended. A session that starts below a live frame that memory no longer holds
-    /// reads from disk, after that commit: [`Readers::take`] gives [`Next::Disk`].
+    /// ended, and for each open that can start below a frame given to
+    /// [`Readers::queue`] that is not on disk yet: else [`Readers::reached`] panics. A
+    /// session that starts below a live frame that memory no longer holds reads from
+    /// disk, after that commit: [`Readers::take`] gives [`Next::Disk`].
     ///
     /// # Panics
     ///
@@ -454,7 +456,8 @@ impl Readers {
     /// later frame. A frame that still waits for a grant when a later call releases a
     /// frame drops, and the session reads it from disk. `commits` commits have ended:
     /// a session whose `until` of [`Readers::open`] is at or below it reads from disk
-    /// the frames released since its open, or takes this call's frames when none were.
+    /// when a frame past its position was released before this call, else it takes
+    /// this call's frames.
     /// Returns the complete sessions that had no frame to take and now have one, or
     /// that read from disk now and have none to take, each once: wake them.
     #[must_use]
@@ -588,8 +591,8 @@ impl Readers {
     }
 
     /// Whether a queued live frame waits to be on disk, or a complete session waits
-    /// for its next frames to be on disk. While one does, call [`Readers::release`]
-    /// after each commit.
+    /// for the commit count `until` of its [`Readers::open`]. While one does, call
+    /// [`Readers::release`] after each commit.
     #[must_use]
     pub fn pending(&self) -> bool {
         self.queue.len() > self.held || self.committing != 0
@@ -3937,10 +3940,10 @@ pub(super) mod tests {
             for n in 0..3 {
                 assert!(fill(&mut readers, &frames, key, n + 1, n..n + 1));
             }
-            readers.reached(key, Mark::at(3), 6);
+            readers.reached(key, Mark::at(5), 6);
             assert_eq!(taken(&mut readers, key), [1, 2, 3]);
             readers.ack(key, live(3)).expect("forward");
-            assert_eq!(read(&mut readers, key), (vec![], Mark::at(3)));
+            assert_eq!(read(&mut readers, key), (vec![], Mark::at(5)));
         }
 
         #[test]
