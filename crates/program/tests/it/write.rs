@@ -489,7 +489,8 @@ fn sends_an_open_at_the_cap() {
 }
 
 /// A frame whose ends are over the most bytes of one message sends them in more than
-/// one, each of whole ends, and the node takes them in order.
+/// one, each but the last of the most whole ends that a body message holds, and the
+/// node takes them in order.
 #[test]
 fn sends_ends_over_one_message_as_whole_ends() {
     const SERIES: usize = 1 << 15;
@@ -515,14 +516,13 @@ fn sends_ends_over_one_message_as_whole_ends() {
             };
             next().await;
             let mut ends = Vec::new();
-            let mut messages = 0;
+            let mut runs = Vec::new();
             while ends.len() < SERIES * 8 {
                 let message = next().await;
-                assert_eq!(message.len() % 8, 0, "whole ends");
                 ends.extend_from_slice(&message);
-                messages += 1;
+                runs.push(message.len());
             }
-            assert!(messages > 1, "the ends go in {messages} messages");
+            assert!(runs.len() > 1, "the ends go in {} messages", runs.len());
             let want: Vec<u8> = (1..=SERIES)
                 .flat_map(|at| {
                     let at = u32::try_from(at).expect("fits");
@@ -530,10 +530,17 @@ fn sends_ends_over_one_message_as_whole_ends() {
                 })
                 .collect();
             assert_eq!(ends, want);
-            let mut body = 0;
+            let most = next().await.len();
+            let mut body = most;
             while body < SERIES * 8 {
                 body += next().await.len();
             }
+            let (last, full) = runs.split_last().expect("ends");
+            assert!(
+                full.iter().all(|&run| run == most / 8 * 8),
+                "{runs:?} of {most}"
+            );
+            assert_eq!(last % 8, 0, "whole ends");
             let reply = wire::hub::write::Reply::Outcome(taken(0, 1));
             let mut bytes = vec![0; reply.encoded_len()];
             reply.encode(&mut bytes);
