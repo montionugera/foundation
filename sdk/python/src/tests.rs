@@ -52,6 +52,9 @@ fn the_python_suite_passes() {
     assert!(passed, "{report}");
 }
 
+/// Maps `Bind`, which no test of the suite reaches: the bind of an ephemeral port fails
+/// only when the process has no free file descriptor, and the count of free ones
+/// changes with the process.
 #[test]
 fn bind_raises_os_error() {
     Python::initialize();
