@@ -1055,12 +1055,12 @@
   no settings reads. So the client never trusts a certificate past what its trust file
   says (`laptop.architect-2`, 2026-10-18 23:40 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256613286, which
-  supersedes item 1 of 6256562565). Lost: a read of the settings for the use of the
-  group (#3300, closed), and the verify of aws-lc in place of the chain walk of the
-  copy, which comes back only when a user needs a system trust bundle. Cost: a trust
+  supersedes item 1 of 6256562565). Lost, with no form of them for now: a read of the
+  settings for the use of the group, and the verify of aws-lc in place of the chain
+  walk of the copy, which comes back only when a user needs a system trust bundle. Cost: a trust
   file with settings, such as a system bundle in `TRUSTED CERTIFICATE` form, is
   refused, and `openssl x509` writes it again without them. The person approved this
-  form (`laptop.monitor`, 2026-10-18 23:41 UTC,
+  form (`laptop.monitor`, 2026-10-18 23:41:44 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256621478): "Yeah
   fine".
   `laptop.monitor` accepted that the readers of aws-lc read the trust, and our own PEM
