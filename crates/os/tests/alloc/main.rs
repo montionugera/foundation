@@ -6,13 +6,13 @@
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
-#[cfg(any(target_os = "linux", target_os = "macos"))] // #2955
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unix;
 
 #[global_allocator]
 static ALLOCATOR: counting::Allocator = counting::Allocator::new();
 
 fn main() {
-    #[cfg(any(target_os = "linux", target_os = "macos"))] // #2955
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     unix::main();
 }

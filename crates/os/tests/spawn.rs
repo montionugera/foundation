@@ -1,3 +1,5 @@
+//! Only Linux: the test refuses calls with a seccomp filter.
+//!
 //! A lookup whose thread cannot start. The filter acts on the test thread and each
 //! thread it starts, so it runs in a test binary of its own, with this one test only.
 

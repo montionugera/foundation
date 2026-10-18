@@ -627,10 +627,21 @@ pub enum Error {
         /// The bytes of the frame, once its ends are whole.
         len: Option<NonZeroUsize>,
     },
-    /// An outcome of a write stream comes with no frame waiting for one.
+    /// An outcome of a write stream answers a frame that the program did not send
+    /// whole.
     Unasked {
-        /// The frames that the program sent, each with its outcome.
-        frames: u64,
+        /// The frame that it answers.
+        frame: u64,
+        /// The frames that the program sent whole.
+        sent: u64,
+    },
+    /// An outcome of a write stream answers a frame that the program sent, other than
+    /// the one that the next outcome answers.
+    Order {
+        /// The frame that it answers.
+        frame: u64,
+        /// The frame that the next outcome answers.
+        next: u64,
     },
     /// A `Stored` of a write stream covers fewer frames than the last `Stored`, or
     /// more than got an outcome.
@@ -747,9 +758,14 @@ impl fmt::Display for Error {
                 "the stream ended inside a frame: {received} bytes, before the end of \
                  its ends"
             ),
-            Self::Unasked { frames } => write!(
+            Self::Unasked { frame, sent } => write!(
                 f,
-                "the outcome answers no frame: each of the {frames} frames sent has one"
+                "the outcome answers frame {frame}, not one of the {sent} frames sent"
+            ),
+            Self::Order { frame, next } => write!(
+                f,
+                "the outcome answers frame {frame}, not frame {next}, which the next \
+                 outcome answers"
             ),
             Self::Stored { frames, bound } if frames < bound => write!(
                 f,

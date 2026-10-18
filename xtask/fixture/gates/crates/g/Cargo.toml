@@ -1,0 +1,24 @@
+[package]
+name = "g"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[test]]
+name = "free"
+path = "tests/free.rs"
+harness = false
+
+[[bench]]
+name = "timed"
+harness = false
+test = true
+
+[[bin]]
+name = "quiet"
+path = "src/quiet.rs"
+test = false
+
+[[bench]]
+name = "untimed"
+harness = false

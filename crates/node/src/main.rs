@@ -43,6 +43,7 @@ const FAILED: Code = Code::new("node.failed");
 const NOT_RUNNING: Code = Code::new("node.not-running");
 const UNREADABLE: Code = Code::new("node.unreadable");
 const ADMIN_KEY: Code = Code::new("node.admin-key");
+const VERSION: Code = Code::new("node.version");
 const SOCKET: Code = Code::new("node.socket");
 const UNANSWERED: Code = Code::new("node.unanswered");
 const SESSION: Code = Code::new("node.session");
@@ -215,12 +216,30 @@ fn stored(dir: &Path, error: os::Error) -> Failure {
 fn unreached(dir: &Path, error: node::client::Error) -> Failure {
     let data = dir.display();
     let (code, message, fix): (_, _, String) = match error {
-        node::client::Error::NotRunning => return not_running(dir),
-        node::client::Error::Files(error) => return unreadable(dir, error),
+        node::client::Error::Local(sector::local::Error::NotRunning) => {
+            return not_running(dir);
+        }
+        node::client::Error::Local(sector::local::Error::Files(error)) => {
+            return unreadable(dir, error);
+        }
         node::client::Error::Key => (
             ADMIN_KEY,
             format!("{data} holds no admin.key that a node wrote"),
             "Put back the `admin.key` that the first start wrote".into(),
+        ),
+        node::client::Error::Local(sector::local::Error::Version {
+            file,
+            found,
+            expected,
+        }) => (
+            VERSION,
+            format!(
+                "{} holds format version {}, and this foundation reads version {}",
+                data_file(dir, file),
+                char::from(found),
+                char::from(expected)
+            ),
+            "Use a `foundation` program of the same version as the node".into(),
         ),
         node::client::Error::Transport(error) => (
             SOCKET,
@@ -248,11 +267,19 @@ fn unreached(dir: &Path, error: node::client::Error) -> Failure {
         ),
         node::client::Error::Refused(refusal) => (
             REFUSED,
-            format!("the node refused the key in {data}/data/admin.key: {refusal}"),
+            format!(
+                "the node refused the key in {}: {refusal}",
+                data_file(dir, sector::admin::FILE)
+            ),
             "Use the key of a subject in the node's spec".into(),
         ),
     };
     Failure { code, message, fix }
+}
+
+/// The path of the file `file` of the node in the data directory `dir`.
+fn data_file(dir: &Path, file: &str) -> String {
+    dir.join("data").join(file).display().to_string()
 }
 
 /// The failure of a data directory `dir` where no node runs.
@@ -1297,7 +1324,10 @@ mod tests {
         let not_running =
             of_reach(NOT_RUNNING, "no node runs in plant", NOT_RUNNING_FIX);
         assert_eq!(
-            unreached(plant, node::client::Error::NotRunning),
+            unreached(
+                plant,
+                node::client::Error::Local(sector::local::Error::NotRunning)
+            ),
             not_running
         );
         let missing = io::Error::from(io::ErrorKind::NotFound);
@@ -1431,7 +1461,10 @@ mod tests {
             code: 13,
         };
         assert_eq!(
-            unreached(dir(), node::client::Error::Files(error)),
+            unreached(
+                dir(),
+                node::client::Error::Local(sector::local::Error::Files(error))
+            ),
             of_reach(
                 UNREADABLE,
                 "cannot read the data directory foundation-data: read_at of admin.key \
@@ -1471,6 +1504,24 @@ mod tests {
                 ADMIN_KEY,
                 "foundation-data holds no admin.key that a node wrote",
                 "Put back the `admin.key` that the first start wrote",
+            )
+        );
+    }
+
+    #[test]
+    fn a_file_of_another_version_names_both_versions() {
+        let error = node::client::Error::Local(sector::local::Error::Version {
+            file: "address",
+            found: b'2',
+            expected: b'1',
+        });
+        assert_eq!(
+            unreached(dir(), error),
+            of_reach(
+                VERSION,
+                "foundation-data/data/address holds format version 2, and this \
+                 foundation reads version 1",
+                "Use a `foundation` program of the same version as the node",
             )
         );
     }

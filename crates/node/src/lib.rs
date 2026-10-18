@@ -23,7 +23,6 @@ mod name;
 mod root;
 mod route;
 mod scope;
-mod sector;
 mod settings;
 #[cfg_attr(
     not(test),

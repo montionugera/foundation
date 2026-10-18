@@ -271,17 +271,23 @@ state on `main`.
   that hashes to its digest (BLOB PEER). It trusts no length: a head over the largest
   block of the pool stops the stream with `TOO_LARGE`, a body is counted against its
   head, and a chunk is stored only when its bytes hash to the digest, else `MISMATCH`. A
-  peer can fill the disk only to the free floor of the store, plus at most one chunk for
-  each put in flight; then each put of a chunk that the disk does not hold stops with
-  `FULL`. No code removes a chunk (#1233), so that room stays taken, and the node's own
-  puts of new chunks then give `Error::Floor` too. `serve` holds at most one chunk in
-  memory for each stream. `transport` also holds each chunk whole while noq keeps a sent
-  byte of it (STREAM WIRE), so a get can hold more than one chunk. The chunks that
-  `transport` holds for a session have at most `window_bytes` bytes together, plus two
-  chunks for each stream (#2361). Who may open a blob stream is not built: `node`
-  rejects each one until it routes them from member nodes only (#1229).
-  The requester is not built (#1229). To attack when it lands: a binary that a peer
-  serves under a hash it does not match (C9d).
+  peer can fill the disk only to the free floor of the store, plus, for each put in
+  flight, its chunk rounded up to whole blocks of the disk and the growth of its
+  directory; then each put of a chunk with no file of its length at its name stops with
+  `FULL`, also the empty chunk. No code removes a chunk (#1233), so that room stays
+  taken, and the node's own puts of new chunks then give `Error::Floor` too. `serve`
+  holds at most one chunk in memory for each stream. `transport` copies each part of a
+  chunk and holds no block of it, so a peer that delays its acks pins only copies inside
+  `window_bytes`. Who may open a blob stream is not built: `node` rejects each one until
+  it routes them from member nodes only (#1232).
+- `blob::peer::get` trusts the peer no more than `serve` does: a head of the oldest open
+  digest over the largest block of its pool stops the stream with `TOO_LARGE`, and bytes
+  that do not hash to the digest stop it with `MISMATCH` and are not stored. So a binary
+  that a peer serves under a hash that it does not match is never stored (C9d). The
+  digests still open go again on a new stream, so each refused chunk costs the peer one
+  stream. A reply out of order, or an end with digests open, stops the stream with
+  `MALFORMED`. `get` and `put` hold at most one chunk of their own. Nothing bounds a
+  silent peer but a drop of the future, which `mesh` owns (#1231).
 
 ### Time source to `estimate`
 
@@ -549,7 +555,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `types_frame_ends` | `frame::Layout::from_ends`, `frame::check`, `frame::split` | Refuses exactly the ends that break a rule, with an error that names a broken rule; the layout is the one that `Layout::new` gives for the lengths; a frame drafted from the ends has them, and `split` cuts its series at them; `check` refuses exactly the ends that do not fit a body whose length the input gives, and `split` cuts a body that `check` took at them. Not reached: the panics of `split`, a body over 64 KiB |
 | `buffer_open` | `Buffer::open` and `Reader::read` on an edited ring | An `Err`, or a commit survives a reopen; a read gives each path as the doc of `Reader::read` says, up to the tail, the same in one read, in steps, from inside an entry or a gap, and after a reopen. Not reached: a pool with no block, a read before a commit ends |
 | `secret_sealed` | `secret::store::Sealed::put` | Takes only the one real sealed value; refuses any other bytes, name, or version; a refused `put` leaves the store as it was |
-| `node_identity` | `node::sector::written` with `node::identity::fields` and `encode` (the checks `node::identity::check` and `node::admin::check`, which call `node::sector::check`), by `node::fuzz::identity` (feature `sim`), on 100 bytes, or on 96 bytes with their CRC32C; the same for `admin.key`, on 54 bytes, or on 50 bytes with their CRC32C; and the decode and encode of `address` (the check `node::address::check`), on 99 bytes, or on 95 bytes with their CRC32C | Gives an identity or an admin key exactly for bytes with the tag and the CRC32C, and an address exactly for the bytes that the encode writes, with the tag and the CRC32C, and that value encodes to the same bytes |
+| `node_identity` | `sector::written` with `node::identity::fields` and `encode` (the checks `node::identity::check` and `sector::admin::check`, which call `sector::check`), by `node::fuzz::identity` (feature `sim`), on 100 bytes, or on 96 bytes with their CRC32C; the same for `admin.key`, on 54 bytes, or on 50 bytes with their CRC32C; and the decode and encode of `address` (the check `sector::address::check`), on 99 bytes, or on 95 bytes with their CRC32C | Gives an identity or an admin key exactly for bytes with the tag and the CRC32C, and an address exactly for the bytes that the encode writes, with the tag and the CRC32C, and that value encodes to the same bytes |
 
 No target yet, because the decoder is private, not built, not reached from a file, or
 not reached from the corpus: `transport::message` (#2139), the QUIC hello

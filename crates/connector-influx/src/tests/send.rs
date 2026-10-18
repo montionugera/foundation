@@ -7,6 +7,7 @@ use std::rc::Rc;
 use bytes::Bytes;
 use connector::http::Roots;
 use connector::http::sim::Certificate;
+use connector::testing::Run;
 use env::clock::Clock;
 use env::net::tcp;
 use http::{Request, Response, StatusCode};
@@ -75,8 +76,6 @@ const TYPED: [(&str, u128, Type); 17] = [
         },
     ),
 ];
-/// The key of the first status channel of `influx`.
-const STATUS: u128 = 100;
 /// The file of the token of `file(TOKEN_FILE)`.
 const TOKEN_FILE: &str = "/run/secrets/influx";
 /// The value of `connector::status::Class::Retry` on the `class` channel.
@@ -97,9 +96,6 @@ const BODY_LIMIT: usize = 10 << 20;
 
 /// One request that the InfluxDB of a plant got: its path and query, and its body.
 type Got = (String, String);
-
-/// The end of one supervised run, once it returned.
-type End = Rc<RefCell<Option<Result<(), Error>>>>;
 
 /// A node with a hub that defines `edge.time` (key 1), the `f64` channels `edge.a`
 /// (2) and `edge.b` (3), the `i64` channel `edge.count` (4), the `f64` channel `time`
@@ -181,6 +177,7 @@ impl Plant {
         let token = "plant.influx_token".parse().expect("a name");
         testing::create_secret(&node.files(), &token, b"s3cret").await;
         define(&rig);
+        rig.define_status("influx", &name("influx"), &config_at(address, certificate));
         let hub = rig.hub();
         let errors = read_errors(hub, &tasks).await;
         let classes = read_status(hub, &tasks, "class", |sample| sample[0]).await;
@@ -280,31 +277,12 @@ impl Plant {
 
     /// The config of an influx connector at this plant's InfluxDB.
     fn config(&self) -> Document {
-        match self.certificate {
-            Some(_) => config(string(&format!("https://server:{PORT}"))),
-            None => config(string(&format!("http://{}", self.address))),
-        }
+        config_at(self.address, self.certificate)
     }
 
-    /// Supervises the connector `influx` with `config` until the token it gives is
-    /// cancelled.
-    fn start(&self, config: Document) -> (cancel::Token, End) {
-        let (token, end) = (cancel::Token::new(), Rc::new(RefCell::new(None)));
-        let supervisor = self.rig.supervisor().clone();
-        let (cancel, into) = (token.clone(), Rc::clone(&end));
-        self.tasks.spawn(async move {
-            let name = "influx".parse().expect("a name");
-            let opened = supervisor.open("influx", name, &config, &cancel).await;
-            *into.borrow_mut() = Some(opened.run().await);
-        });
-        (token, end)
-    }
-
-    /// Cancels the run of `token`, and gives its end.
-    async fn stop(&self, (token, end): (cancel::Token, End)) -> Result<(), Error> {
-        token.cancel();
-        self.clock.sleep(Span::SECOND).await;
-        end.borrow_mut().take().expect("the run ended")
+    /// Supervises the connector `influx` of `config` through the rig.
+    async fn supervise(&self, config: Document) -> Run {
+        self.rig.supervise("influx", name("influx"), config).await
     }
 
     async fn writer(&self, channels: &[&str]) -> hub::writer::Writer {
@@ -319,6 +297,15 @@ impl Plant {
 
     fn got(&self) -> Vec<Got> {
         self.got.borrow().clone()
+    }
+}
+
+/// The config of an influx connector at an InfluxDB on `address` that serves TLS with
+/// `certificate`, or plain HTTP.
+fn config_at(address: SocketAddr, certificate: Option<Certificate>) -> Document {
+    match certificate {
+        Some(_) => config(string(&format!("https://server:{PORT}"))),
+        None => config(string(&format!("http://{address}"))),
     }
 }
 
@@ -341,12 +328,7 @@ fn define(rig: &Rig) {
         error: None,
         control: None,
     };
-    let mut definitions = testing::create_status(
-        &name("influx"),
-        &[name(CONFIRMED), name(LOST), name(OVERSIZED)],
-        channel::Key::from_u128(STATUS),
-    );
-    definitions.extend([
+    let mut definitions = vec![
         (
             name("edge.time"),
             Definition::Channel(Channel {
@@ -366,7 +348,7 @@ fn define(rig: &Rig) {
             }),
         ),
         (name("site.c"), site(7)),
-    ]);
+    ];
     let typed =
         TYPED.map(|(text, key, data_type)| (name(text), on(time, key, data_type)));
     definitions.extend(typed);
@@ -588,14 +570,16 @@ fn line(a: &str, b: &str, time: i64) -> String {
 fn writes_one_line_for_each_sample_time_to_its_database() {
     let got = run(|node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
-        let run = plant.start(with(plant.config(), "database", &string("plant a/b")));
+        let run = plant
+            .supervise(with(plant.config(), "database", &string("plant a/b")))
+            .await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
         let samples = [(1.5, 2.0), (f64::NAN, 4.0), (f64::NAN, f64::INFINITY)];
         write(&mut writer, first, &samples);
         plant.clock.sleep(Span::SECOND).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         (plant.got(), first)
     });
     let (got, first) = got;
@@ -614,13 +598,15 @@ fn writes_to_a_bucket_in_its_org() {
     let got = run(|node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
         let target = [(60, "bucket", string("edge/1")), (62, "org", string("a b"))];
-        let run = plant.start(plus(without(plant.config(), "database"), &target));
+        let run = plant
+            .supervise(plus(without(plant.config(), "database"), &target))
+            .await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
         write(&mut writer, first, &[(1.0, 2.0)]);
         plant.clock.sleep(Span::SECOND).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         (plant.got(), first)
     });
     let (got, first) = got;
@@ -638,13 +624,15 @@ fn writes_to_a_bucket_and_an_org_of_the_longest_names() {
             (60, "bucket", string(&longest)),
             (62, "org", string(&longest)),
         ];
-        let run = plant.start(plus(without(plant.config(), "database"), &target));
+        let run = plant
+            .supervise(plus(without(plant.config(), "database"), &target))
+            .await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
         write(&mut writer, first, &[(1.0, 2.0)]);
         plant.clock.sleep(Span::SECOND).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         (plant.got(), first)
     });
     let encoded = "%2F".repeat(4_096);
@@ -697,13 +685,13 @@ fn sends_a_batch_again_after_each_other_answer_and_shows_the_error_until_a_204()
             (StatusCode::NOT_FOUND, large),
             (StatusCode::OK, "ok"),
         ]);
-        let run = plant.start(plant.config());
+        let run = plant.supervise(plant.config()).await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
         write(&mut writer, first, &[(1.0, 2.0)]);
         plant.clock.sleep(Span::from_nanos(600_000_000_000)).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         let got = (plant.got().into_iter())
             .map(|(uri, body)| (uri, body == line("1e0", "2e0", first)))
             .collect::<Vec<_>>();
@@ -753,14 +741,14 @@ async fn send_one(
     plant: &Plant,
     config: Document,
 ) -> (Vec<Option<String>>, Vec<String>, Option<Result<(), Error>>) {
-    let run = plant.start(config);
+    let run = plant.supervise(config).await;
     let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
     plant.clock.sleep(Span::SECOND).await;
     let first = writer.now().nanos();
     write(&mut writer, first, &[(1.0, 2.0)]);
     plant.clock.sleep(Span::from_nanos(20_000_000_000)).await;
-    let end = run.1.borrow_mut().take();
-    run.0.cancel();
+    let end = run.end().await;
+    // The status readers take the last status after the home applied it.
     plant.clock.sleep(Span::SECOND).await;
     let auth = plant.auth.borrow().clone();
     (auth, plant.errors.borrow().clone(), end)
@@ -1021,7 +1009,7 @@ fn after_a_bad_token(
         });
         let mut config = with_token(&plant, "file", TOKEN_FILE);
         config.blocks.clear();
-        let run = plant.start(config);
+        let run = plant.supervise(config).await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         for _ in 0..2 {
             plant.clock.sleep(Span::SECOND).await;
@@ -1030,7 +1018,7 @@ fn after_a_bad_token(
             plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
         }
         plant.clock.sleep(Span::MINUTE).await;
-        let end = plant.stop(run).await;
+        let end = run.stop().await;
         assert!(end.is_ok(), "ok after a cancel");
         let points = plant.store.borrow().points("telemetry", &[]).count();
         let restarts = plant.restarts.borrow().clone();
@@ -1170,7 +1158,7 @@ fn keeps_the_reason_of_an_empty_token_file_with_a_long_source() {
 fn confirms_the_samples_of_each_batch_after_its_204_and_no_nan_or_infinity() {
     let confirmed = run(|node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
-        let run = plant.start(plant.config());
+        let run = plant.supervise(plant.config()).await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
@@ -1179,7 +1167,7 @@ fn confirms_the_samples_of_each_batch_after_its_204_and_no_nan_or_infinity() {
         plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
         write(&mut writer, first + 3, &[(4.0, 5.0)]);
         plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         plant.confirmed.borrow().clone()
     });
     assert_eq!(confirmed, [0, 3, 5]);
@@ -1189,7 +1177,7 @@ fn confirms_the_samples_of_each_batch_after_its_204_and_no_nan_or_infinity() {
 fn keeps_the_confirmed_count_across_a_restart_of_the_run() {
     let confirmed = run(|node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
-        let run = plant.start(plant.config());
+        let run = plant.supervise(plant.config()).await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
@@ -1212,7 +1200,7 @@ fn keeps_the_confirmed_count_across_a_restart_of_the_run() {
         drop(replaced);
         write(&mut writer, first + 1, &[(3.0, 4.0)]);
         plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         plant.confirmed.borrow().clone()
     });
     assert_eq!(confirmed, [0, 2, 4]);
@@ -1222,7 +1210,7 @@ fn keeps_the_confirmed_count_across_a_restart_of_the_run() {
 fn writes_the_gap_line_of_a_run_lost_for_no_room_and_counts_its_seqs_after_a_204() {
     let (lost, stamp, bodies, counts) = run(|node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
-        let run = plant.start(plant.config());
+        let run = plant.supervise(plant.config()).await;
         drop(plant.writer(&["site.time", "site.c"]).await);
         let channels = ["site.time", "site.c", "edge.time", "edge.a", "edge.b"];
         let mut writer = plant.writer(&channels).await;
@@ -1239,7 +1227,7 @@ fn writes_the_gap_line_of_a_run_lost_for_no_room_and_counts_its_seqs_after_a_204
         let lost = write_lost(&mut writer, first + 1);
         write(&mut writer, first + 4, &[(3.0, 4.0)]);
         plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         let bodies: Vec<_> = (plant.got().into_iter().skip(sent))
             .map(|(_, body)| body)
             .collect();
@@ -1269,7 +1257,7 @@ fn after_a_loss(
     run(move |node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
-        let run = plant.start(plant.config());
+        let run = plant.supervise(plant.config()).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
         write(&mut writer, first, &[(1.0, 2.0)]);
@@ -1278,17 +1266,17 @@ fn after_a_loss(
         write_lost(&mut writer, first + 1);
         after(&mut writer, first + 4);
         plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         let bodies = |got: Vec<Got>, skip| -> String {
             got.into_iter().skip(skip).map(|(_, body)| body).collect()
         };
         let body = bodies(std::mem::take(&mut *plant.got.borrow_mut()), sent);
         let lost = plant.lost.borrow().clone();
-        let run = plant.start(plant.config());
+        let run = plant.supervise(plant.config()).await;
         plant.clock.sleep(Span::SECOND).await;
         write(&mut writer, first + 10, &[(5.0, 6.0)]);
         plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         (body, lost, bodies(plant.got(), 0), first + 4)
     })
 }
@@ -1327,7 +1315,7 @@ fn confirms_no_sample_of_a_batch_until_its_204() {
         let plant = Plant::new(node, tasks).await;
         let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
         plant.answers.borrow_mut().extend([failed; 100]);
-        let run = plant.start(plant.config());
+        let run = plant.supervise(plant.config()).await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
@@ -1336,7 +1324,7 @@ fn confirms_no_sample_of_a_batch_until_its_204() {
         let failing = (plant.confirmed.borrow().clone(), plant.got().len());
         plant.answers.borrow_mut().clear();
         plant.clock.sleep(Span::from_nanos(70_000_000_000)).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         (failing, plant.confirmed.borrow().clone())
     });
     let (values, requests) = failing;
@@ -1367,12 +1355,12 @@ fn runs<const N: usize>(
         let mut bodies = Vec::new();
         for value in values {
             plant.errors.borrow_mut().clear();
-            let run = plant.start(plant.config());
+            let run = plant.supervise(plant.config()).await;
             plant.clock.sleep(Span::SECOND).await;
             let first = writer.now().nanos();
             write(&mut writer, first, &[(value, value)]);
             plant.clock.sleep(Span::from_nanos(3_000_000_000)).await;
-            plant.stop(run).await.expect("ok after a cancel");
+            run.stop().await.expect("ok after a cancel");
             plant.answers.borrow_mut().clear();
             let got = std::mem::take(&mut *plant.got.borrow_mut());
             bodies.push(got.into_iter().map(|(_, body)| body).collect::<Vec<_>>());
@@ -1451,7 +1439,7 @@ fn requests(
     run(move |node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
         plant.answers.borrow_mut().extend(answers);
-        let run = plant.start(plant.config());
+        let run = plant.supervise(plant.config()).await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let mut first = writer.now().nanos();
@@ -1471,7 +1459,7 @@ fn requests(
             write(&mut writer, first, &vec![(value, value); count]);
         }
         plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         let got = plant.got();
         let lines = (got.iter()).map(|(_, body)| body.lines().count()).collect();
         (lines, plant.confirmed.borrow().clone())
@@ -1546,7 +1534,9 @@ fn reads_no_frame_into_a_batch_of_4_mib_or_more() {
         let plant = Plant::new(node, tasks).await;
         let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
         plant.answers.borrow_mut().push_back(failed);
-        let run = plant.start(with(plant.config(), "select", &string("edge.*")));
+        let run = plant
+            .supervise(with(plant.config(), "select", &string("edge.*")))
+            .await;
         let mut writer = plant.writer(&["edge.time", "edge.text"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
@@ -1566,7 +1556,7 @@ fn reads_no_frame_into_a_batch_of_4_mib_or_more() {
             }
         }
         plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         let got = plant.got();
         (got.iter()).map(|(_, body)| body.len()).collect::<Vec<_>>()
     });
@@ -1622,7 +1612,7 @@ fn wide(answers: &[(StatusCode, &'static str)], frames: &'static [usize]) -> Wid
         let mut writer = plant.writer(&names.collect::<Vec<_>>()).await;
         let mut lines = Vec::new();
         for frames in [frames, &[]] {
-            let run = plant.start(plant.config());
+            let run = plant.supervise(plant.config()).await;
             plant.clock.sleep(Span::SECOND).await;
             let mut first = writer.now().nanos();
             for (n, &count) in frames.iter().enumerate() {
@@ -1633,7 +1623,7 @@ fn wide(answers: &[(StatusCode, &'static str)], frames: &'static [usize]) -> Wid
                 }
             }
             plant.clock.sleep(Span::from_nanos(10_000_000_000)).await;
-            plant.stop(run).await.expect("ok after a cancel");
+            run.stop().await.expect("ok after a cancel");
             plant.answers.borrow_mut().clear();
             let got = std::mem::take(&mut *plant.got.borrow_mut());
             lines.push(got.iter().map(|(_, body)| body.lines().count()).collect());
@@ -1812,7 +1802,7 @@ fn counts_the_lost_and_oversized_of_a_frame_in_more_requests_after_its_last() {
         let channels = ["edge.time", "edge.a", "edge.b", "edge.text"];
         let channels = channels.into_iter().chain(names.iter().map(String::as_str));
         let mut writer = plant.writer(&channels.collect::<Vec<_>>()).await;
-        let run = plant.start(plant.config());
+        let run = plant.supervise(plant.config()).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
         write(&mut writer, first, &[(1.0, 2.0)]);
@@ -1835,16 +1825,16 @@ fn counts_the_lost_and_oversized_of_a_frame_in_more_requests_after_its_last() {
         columns.push((23, &text));
         write_raw(&mut writer, first + 4, 266, &columns);
         plant.clock.sleep(Span::from_nanos(10_000_000_000)).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         plant.answers.borrow_mut().clear();
         let lines = |got: &[Got]| -> Vec<usize> {
             got.iter().map(|(_, body)| body.lines().count()).collect()
         };
         let mut runs = vec![lines(&plant.got()[sent..])];
         plant.got.borrow_mut().clear();
-        let run = plant.start(plant.config());
+        let run = plant.supervise(plant.config()).await;
         plant.clock.sleep(Span::from_nanos(10_000_000_000)).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         runs.push(lines(&plant.got()));
         let counts = (
             plant.lost.borrow().clone(),
@@ -1895,7 +1885,7 @@ fn one_frame(
             let target = [(60, "bucket", string("edge")), (62, "org", string("o"))];
             config = plus(without(config, "database"), &target);
         }
-        let (_, end) = plant.start(config);
+        let run = plant.supervise(config).await;
         let names = columns.iter().map(|&(name, _, _)| name);
         let names: Vec<_> = std::iter::once("edge.time").chain(names).collect();
         let mut writer = plant.writer(&names).await;
@@ -1910,7 +1900,7 @@ fn one_frame(
             .all(|outcome| matches!(outcome, hub::home::Outcome::Applied { .. }));
         assert!(applied, "the frame applies: {outcomes:?}");
         plant.clock.sleep(Span::SECOND).await;
-        let end = end.borrow_mut().take();
+        let end = run.end().await;
         let points = (plant.store.borrow().points("telemetry", &[]))
             .map(|point| {
                 let fields = point.fields.iter();
@@ -2161,7 +2151,9 @@ fn counts_oversized_bytes_whose_line_is_left_out() {
 fn counts_each_oversized_sample_in_the_batch_that_left_it_out() {
     let oversized = run(|node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
-        let run = plant.start(with(plant.config(), "select", &string("edge.*")));
+        let run = plant
+            .supervise(with(plant.config(), "select", &string("edge.*")))
+            .await;
         let mut writer = plant.writer(&["edge.time", "edge.text"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
@@ -2173,7 +2165,7 @@ fn counts_each_oversized_sample_in_the_batch_that_left_it_out() {
             write_raw(&mut writer, at, 2, &[(23, &column)]);
             plant.clock.sleep(Span::SECOND).await;
         }
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         assert_eq!(plant.got().len(), 1, "the second batch is sent");
         plant.oversized.borrow().clone()
     });
@@ -2238,7 +2230,7 @@ fn stops_with_a_config_error_at_a_channel_whose_name_is_no_field_key() {
 fn writes_the_fields_of_the_channels_of_each_frame() {
     let (got, first) = run(|node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
-        let run = plant.start(plant.config());
+        let run = plant.supervise(plant.config()).await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
@@ -2248,7 +2240,7 @@ fn writes_the_fields_of_the_channels_of_each_frame() {
         write_columns(&mut writer, first + 3, &[]);
         write(&mut writer, first + 4, &[(5.0, 6.0)]);
         plant.clock.sleep(Span::SECOND).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         (plant.got(), first)
     });
     let body = [
@@ -2266,7 +2258,7 @@ fn writes_the_fields_of_the_channels_of_each_frame() {
 fn names_each_field_by_the_key_set_of_its_frame() {
     let (got, first) = run(|node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
-        let run = plant.start(plant.config());
+        let run = plant.supervise(plant.config()).await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
@@ -2275,7 +2267,7 @@ fn names_each_field_by_the_key_set_of_its_frame() {
         let mut writer = plant.writer(&["edge.time", "edge.b"]).await;
         write_columns(&mut writer, first + 1, &[(3, &[3.0])]);
         plant.clock.sleep(Span::SECOND).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         (plant.got(), first)
     });
     let body = [
@@ -2291,13 +2283,17 @@ fn shows_a_write_that_fails_until_the_run_ends() {
     let errors = run(|node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
         let address = format!("http://{}:{}", plant.address.ip(), PORT + 1);
-        let run = plant.start(with(plant.config(), "address", &string(&address)));
+        let run = plant
+            .supervise(with(plant.config(), "address", &string(&address)))
+            .await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
         write(&mut writer, first, &[(1.0, 2.0)]);
         plant.clock.sleep(Span::from_nanos(3_000_000_000)).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
+        // The status readers take the last status after the home applied it.
+        plant.clock.sleep(Span::SECOND).await;
         plant.errors.borrow().clone()
     });
     let refused = "the write to InfluxDB failed: the connect failed: 10.0.0.1:8087 \
@@ -2327,7 +2323,7 @@ fn stores_each_sample_once_after_writes_that_fail(blockless: bool) {
         if blockless {
             config.blocks.clear();
         }
-        let run = plant.start(config);
+        let run = plant.supervise(config).await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
@@ -2340,7 +2336,7 @@ fn stores_each_sample_once_after_writes_that_fail(blockless: bool) {
             plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
         }
         plant.clock.sleep(Span::MINUTE).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         let store = plant.store.borrow();
         let points: Vec<_> = (store.points("telemetry", &[]))
             .map(|point| (point.time.nanos(), format!("{:?}", point.fields)))
@@ -2371,14 +2367,14 @@ fn stores_each_sample_once_after_writes_that_fail(blockless: bool) {
 fn adds_a_field_before_the_fields_of_the_layout() {
     let (got, first) = run(|node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
-        let run = plant.start(plant.config());
+        let run = plant.supervise(plant.config()).await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
         write_columns(&mut writer, first, &[(3, &[3.0])]);
         write(&mut writer, first + 1, &[(1.0, 2.0)]);
         plant.clock.sleep(Span::SECOND).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        run.stop().await.expect("ok after a cancel");
         (plant.got(), first)
     });
     let body = [
@@ -2402,12 +2398,12 @@ fn loses_the_batch_in_flight_at_a_restart_with_no_hold() {
         for value in [1.0, 2.0] {
             let mut config = plant.config();
             config.blocks.clear();
-            let run = plant.start(config);
+            let run = plant.supervise(config).await;
             plant.clock.sleep(Span::SECOND).await;
             let first = writer.now().nanos();
             write(&mut writer, first, &[(value, value)]);
             plant.clock.sleep(Span::from_nanos(3_000_000_000)).await;
-            plant.stop(run).await.expect("ok after a cancel");
+            run.stop().await.expect("ok after a cancel");
             plant.answers.borrow_mut().clear();
             let got = std::mem::take(&mut *plant.got.borrow_mut());
             bodies.push(got.into_iter().map(|(_, body)| body).collect::<Vec<_>>());
@@ -2593,7 +2589,7 @@ fn after_a_new_ca(
             Plant::tls(node, tasks, Certificate::OtherCa, Roots::default()).await;
         let mut config = with_ca(&plant, "file", CA_FILE);
         config.blocks.clear();
-        let run = plant.start(config);
+        let run = plant.supervise(config).await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
@@ -2614,7 +2610,7 @@ fn after_a_new_ca(
         let second = writer.now().nanos();
         write(&mut writer, second, &[(1.0, 2.0)]);
         plant.clock.sleep(Span::from_nanos(80_000_000_000)).await;
-        let end = plant.stop(run).await;
+        let end = run.stop().await;
         assert!(end.is_ok(), "ok after a cancel");
         let points = plant.store.borrow().points("telemetry", &[]).count();
         let errors = plant.errors.borrow().clone();
@@ -2682,7 +2678,7 @@ fn after_a_close_in_the_handshake(ca: bool) -> (usize, Vec<u64>) {
             plant.config()
         };
         config.blocks.clear();
-        let run = plant.start(config);
+        let run = plant.supervise(config).await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
@@ -2694,7 +2690,7 @@ fn after_a_close_in_the_handshake(ca: bool) -> (usize, Vec<u64>) {
         plant.clock.sleep(Span::from_nanos(10_000_000)).await;
         plant.serve();
         plant.clock.sleep(Span::MINUTE).await;
-        let end = plant.stop(run).await;
+        let end = run.stop().await;
         assert!(end.is_ok(), "ok after a cancel");
         let points = plant.store.borrow().points("telemetry", &[]).count();
         let restarts = plant.restarts.borrow().clone();
@@ -2783,7 +2779,7 @@ fn retries_a_refused_connect_in_the_run_with_a_ca() {
             .expect("writes");
         let plant =
             Plant::with(node, tasks, Some(Certificate::Valid), Roots::default()).await;
-        let run = plant.start(with_ca(&plant, "file", CA_FILE));
+        let run = plant.supervise(with_ca(&plant, "file", CA_FILE)).await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
@@ -2795,7 +2791,7 @@ fn retries_a_refused_connect_in_the_run_with_a_ca() {
         plant.clock.sleep(Span::from_nanos(5_500_000_000)).await;
         plant.serve();
         plant.clock.sleep(Span::MINUTE).await;
-        let end = plant.stop(run).await;
+        let end = run.stop().await;
         assert!(end.is_ok(), "ok after a cancel");
         let points = plant.store.borrow().points("telemetry", &[]).count();
         let errors = plant.errors.borrow().clone();

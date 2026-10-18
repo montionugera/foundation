@@ -6,10 +6,10 @@
 //! `ignored`, one that ignores SIGINT and sends it to itself. With `both`, it blocks
 //! both and writes whether the future stays pending.
 
-#[cfg(any(target_os = "linux", target_os = "macos"))] // #2957
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unix;
 
 fn main() {
-    #[cfg(any(target_os = "linux", target_os = "macos"))] // #2957
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     unix::main();
 }

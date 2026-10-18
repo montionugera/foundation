@@ -27,14 +27,6 @@ const PARTITION: &str = "hash";
 /// `connector-opcua`.
 pub(crate) const SKIPPED: [&str; 2] = ["os", crate::sanitizers::CRATE];
 
-/// The package of each crate of [`crates`], for the tests of `main.rs`.
-#[cfg(test)]
-pub(crate) fn packages(metadata: &Value) -> Result<Vec<select::Package>, String> {
-    Ok((crates(metadata)?.into_iter())
-        .map(|found| found.package)
-        .collect())
-}
-
 /// A part of the Miri tests for one CI job: of the units in order, each `count`th one
 /// from `index`, and the nextest partition of the lib tests with the same numbers.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -121,7 +113,8 @@ impl fmt::Display for Part {
 /// A part of one pass: its `MIRIFLAGS`, its crate, and the part.
 pub(crate) type Unit<'a> = (&'a str, &'a select::Package, &'a Part);
 
-/// A crate of [`crates`], with the parts of its tests that `cargo miri test` runs.
+/// A crate of [`crates`], with each other target of its tests that `cargo miri test`
+/// runs.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Crate {
     pub(crate) package: select::Package,
@@ -129,8 +122,7 @@ pub(crate) struct Crate {
     pub(crate) lib: bool,
     /// Whether Cargo runs its doc tests.
     pub(crate) doctest: bool,
-    /// A [`Part::Target`] for each other target that `cargo test` runs, after the
-    /// [`Part::Doc`] that [`Crate::add_doc`] adds.
+    /// A [`Part::Target`] for each other target that `cargo test` runs.
     pub(crate) parts: Vec<Part>,
 }
 
@@ -168,28 +160,12 @@ impl Crate {
         }
         Ok(read)
     }
-
-    /// Adds [`Part::Doc`] first when Cargo runs its doc tests and `doc` gives a doc
-    /// test of its package that Miri runs.
-    ///
-    /// # Errors
-    ///
-    /// An error of `doc`.
-    pub(crate) fn add_doc(
-        &mut self,
-        doc: impl FnOnce(&select::Package) -> Result<Tests, String>,
-    ) -> Result<(), String> {
-        if self.doctest && !doc(&self.package)?.is_empty() {
-            self.parts.insert(0, Part::Doc);
-        }
-        Ok(())
-    }
 }
 
 /// Each workspace crate whose source names `unsafe_code`, the lint that each `unsafe`
 /// use must expect, except those in [`SKIPPED`], in the order of `metadata`.
 pub(crate) fn crates(metadata: &Value) -> Result<Vec<Crate>, String> {
-    let objects = select::objects(metadata, |s| select::has_word(s, "unsafe_code"))?;
+    let objects = select::matching(metadata, |s| select::has_word(s, "unsafe_code"))?;
     let mut crates = (objects.into_iter())
         .map(Crate::read)
         .collect::<Result<Vec<_>, _>>()?;
@@ -197,14 +173,32 @@ pub(crate) fn crates(metadata: &Value) -> Result<Vec<Crate>, String> {
     Ok(crates)
 }
 
-/// The id of each crate of `crates` whose lib target has tests, or `None` when none
-/// has, as `cargo nextest` with no `-p` runs each lib of the workspace.
-pub(crate) fn libs(crates: &[Crate]) -> Option<Vec<String>> {
-    let libs: Vec<_> = (crates.iter())
+/// The id of each crate of `crates` whose lib target has tests.
+pub(crate) fn libs(crates: &[Crate]) -> Vec<String> {
+    (crates.iter())
         .filter(|found| found.lib)
         .map(|found| found.package.id.clone())
-        .collect();
-    (!libs.is_empty()).then_some(libs)
+        .collect()
+}
+
+/// The id of each crate of `crates` whose doc tests Cargo runs and for which `list`
+/// gives a doc test that Miri runs. It calls `list` only for the crates whose doc
+/// tests Cargo runs.
+///
+/// # Errors
+///
+/// An error of `list`.
+pub(crate) fn docs(
+    crates: &[Crate],
+    mut list: impl FnMut(&select::Package) -> Result<Tests, String>,
+) -> Result<BTreeSet<String>, String> {
+    let mut docs = BTreeSet::new();
+    for found in crates.iter().filter(|found| found.doctest) {
+        if !list(&found.package)?.is_empty() {
+            docs.insert(found.package.id.clone());
+        }
+    }
+    Ok(docs)
 }
 
 /// The id of each package with a test in `list`, the JSON of `cargo nextest list`,
@@ -229,16 +223,21 @@ pub(crate) fn tested(list: &Value) -> Result<BTreeSet<String>, String> {
     Ok(tested)
 }
 
-/// The units of `shard`, and a problem for each crate of `crates` with no part whose
-/// id `tested` does not hold. Each pass of a part comes after the one before it, so
-/// the passes of a slow target fall in different shards.
+/// The units of `shard`, and a problem for each crate of `crates` with no test that
+/// Miri runs. A crate whose id `docs` holds runs its doc tests first, and one whose id
+/// `tested` holds runs its lib tests. Each pass of a part comes after the one before
+/// it, so the passes of a slow target fall in different shards.
 pub(crate) fn plan<'a>(
     crates: &'a [Crate],
+    docs: &BTreeSet<String>,
     tested: &BTreeSet<String>,
     shard: Shard,
 ) -> (Vec<Unit<'a>>, Vec<String>) {
+    let ran = |found: &Crate| {
+        docs.contains(&found.package.id) || tested.contains(&found.package.id)
+    };
     let problems = (crates.iter())
-        .filter(|found| found.parts.is_empty() && !tested.contains(&found.package.id))
+        .filter(|found| found.parts.is_empty() && !ran(found))
         .map(|found| {
             format!(
                 "`{}` names `unsafe_code` but runs no tests under Miri. Add tests that \
@@ -248,7 +247,8 @@ pub(crate) fn plan<'a>(
         })
         .collect();
     let all = crates.iter().flat_map(|found| {
-        (found.parts.iter())
+        let doc = docs.contains(&found.package.id).then_some(&Part::Doc);
+        (doc.into_iter().chain(&found.parts))
             .flat_map(move |part| PASSES.map(|flags| (flags, &found.package, part)))
     });
     (shard.pick(all), problems)
@@ -285,27 +285,18 @@ pub(crate) fn problem(
 pub(crate) fn run(root: &Path, shard: Shard) -> Result<(), Vec<String>> {
     let nightly = crate::nightly::Toolchain::read(root).map_err(|e| vec![e])?;
     let metadata = crate::metadata(root).map_err(|e| vec![e])?;
-    let mut crates = crates(&metadata).map_err(|e| vec![e])?;
+    let crates = crates(&metadata).map_err(|e| vec![e])?;
     if crates.is_empty() {
         eprintln!("no crate names `unsafe_code`, so Miri has nothing to check");
         return Ok(());
     }
     let libs = libs(&crates);
-    let tested = match &libs {
-        Some(libs) => {
-            tested(&list(&nightly, libs).map_err(|e| vec![e])?).map_err(|e| vec![e])?
-        }
-        None => BTreeSet::new(),
-    };
-    for found in &mut crates {
-        (found.add_doc(|package| doc_tests(&nightly, package))).map_err(|e| vec![e])?;
-    }
-    let (units, mut problems) = plan(&crates, &tested, shard);
-    if let Some(libs) = &libs {
-        for flags in PASSES {
-            problems
-                .extend(nextest(&nightly, libs, flags, shard).map_err(|e| vec![e])?);
-        }
+    let tested = list(&nightly, &libs).map_err(|e| vec![e])?;
+    let docs =
+        docs(&crates, |package| doc_tests(&nightly, package)).map_err(|e| vec![e])?;
+    let (units, mut problems) = plan(&crates, &docs, &tested, shard);
+    for flags in PASSES {
+        problems.extend(nextest(&nightly, &libs, flags, shard).map_err(|e| vec![e])?);
     }
     let next = AtomicUsize::new(0);
     #[expect(clippy::disallowed_methods, reason = "a dev tool uses each core")]
@@ -340,7 +331,7 @@ pub(crate) fn run(root: &Path, shard: Shard) -> Result<(), Vec<String>> {
 
 /// Runs each unit of `units` from the index `next` that no other worker takes, one
 /// at a time, and gives the problem of each run.
-fn worker(
+pub(crate) fn worker(
     nightly: &crate::nightly::Toolchain,
     units: &[Unit<'_>],
     next: &AtomicUsize,
@@ -356,8 +347,16 @@ fn worker(
     Ok(problems)
 }
 
-/// The JSON of `cargo miri nextest list` of the lib tests of the packages `libs`.
-fn list(nightly: &crate::nightly::Toolchain, libs: &[String]) -> Result<Value, String> {
+/// The [`tested`] ids of `cargo miri nextest list` of the lib tests of the packages
+/// `libs`. It starts no process when `libs` is empty, as nextest with no `-p` lists
+/// each lib of the workspace.
+pub(crate) fn list(
+    nightly: &crate::nightly::Toolchain,
+    libs: &[String],
+) -> Result<BTreeSet<String>, String> {
+    if libs.is_empty() {
+        return Ok(BTreeSet::new());
+    }
     let mut command = nextest_command(nightly, Nextest::List, libs, PASSES[0]);
     let output = (command.stderr(Stdio::inherit()).output())
         .map_err(|e| format!("{}: {e}", command.get_program().to_string_lossy()))?;
@@ -366,18 +365,23 @@ fn list(nightly: &crate::nightly::Toolchain, libs: &[String]) -> Result<Value, S
             "`cargo miri nextest list` could not list the lib tests".to_string()
         );
     }
-    serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("`cargo miri nextest list` gave no JSON: {e}"))
+    let list = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("`cargo miri nextest list` gave no JSON: {e}"))?;
+    tested(&list)
 }
 
 /// Runs the lib tests of the packages `libs` in the partition of `shard` with
-/// `flags`, and gives the problem when they do not pass.
-fn nextest(
+/// `flags`, and gives the problem when they do not pass. It starts no process when
+/// `libs` is empty.
+pub(crate) fn nextest(
     nightly: &crate::nightly::Toolchain,
     libs: &[String],
     flags: &str,
     shard: Shard,
 ) -> Result<Option<String>, String> {
+    if libs.is_empty() {
+        return Ok(None);
+    }
     let mut command = nextest_command(nightly, Nextest::Run(shard), libs, flags);
     let status = (command.status())
         .map_err(|e| format!("{}: {e}", command.get_program().to_string_lossy()))?;
@@ -387,7 +391,7 @@ fn nextest(
 }
 
 /// The doc tests of `package` that Miri runs: each that it lists and does not ignore.
-fn doc_tests(
+pub(crate) fn doc_tests(
     nightly: &crate::nightly::Toolchain,
     package: &select::Package,
 ) -> Result<Tests, String> {
@@ -466,14 +470,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    #[test]
-    fn packages_are_the_crates_that_name_unsafe_code() {
-        let metadata = crate::metadata(&crate::fixture()).unwrap();
-        let picked = packages(&metadata).unwrap();
-        let names: Vec<_> = picked.into_iter().map(|p| p.name).collect();
-        assert_eq!(names, ["model"]);
-    }
 
     #[test]
     fn selects_the_package_by_its_id() {
@@ -652,48 +648,50 @@ mod tests {
     }
 
     #[test]
-    fn a_crate_adds_its_doc_tests_first_when_listed() {
-        let it = || found("model", true, vec![target("test", "it")]);
-        let mut listed = it();
-        let mut asked = Vec::new();
-        let added = listed.add_doc(|package| {
-            asked.push(package.name.clone());
-            Ok(BTreeSet::from(["src/lib.rs - c (line 3)".to_string()]))
-        });
-        assert_eq!(added, Ok(()));
-        assert_eq!(asked, ["model"]);
-        assert_eq!(listed.parts, [Part::Doc, target("test", "it")]);
-        let mut off = Crate {
+    fn docs_are_the_crates_with_a_doc_test_that_miri_runs() {
+        let listed = found("listed", false, vec![]);
+        let empty = found("empty", false, vec![]);
+        let off = Crate {
             doctest: false,
-            ..it()
+            ..found("off", false, vec![])
         };
-        assert_eq!(off.add_doc(|_| panic!("no doc tests to list")), Ok(()));
-        assert_eq!(off.parts, [target("test", "it")]);
-        let mut none = it();
-        assert_eq!(none.add_doc(|_| Ok(BTreeSet::new())), Ok(()));
-        assert_eq!(none.parts, [target("test", "it")]);
-        let failed = it().add_doc(|_| Err("no list".to_string()));
+        let crates = [listed, empty, off];
+        let mut asked = Vec::new();
+        let picked = docs(&crates, |package| {
+            asked.push(package.name.clone());
+            Ok(match package.name.as_str() {
+                "listed" => BTreeSet::from(["src/lib.rs - c (line 3)".to_string()]),
+                _ => BTreeSet::new(),
+            })
+        });
+        assert_eq!(picked, Ok(BTreeSet::from([crates[0].package.id.clone()])));
+        assert_eq!(asked, ["listed", "empty"]);
+        let failed = docs(&crates, |_| Err("no list".to_string()));
         assert_eq!(failed, Err("no list".to_string()));
     }
 
     #[test]
     fn libs_are_the_crates_whose_lib_has_tests() {
         let crates = [found("a", true, vec![]), found("b", false, vec![])];
-        assert_eq!(libs(&crates), Some(vec![crates[0].package.id.clone()]));
-        assert_eq!(libs(&crates[1..]), None);
+        assert_eq!(libs(&crates), [crates[0].package.id.clone()]);
+        assert_eq!(libs(&crates[1..]), Vec::<String>::new());
     }
 
     #[test]
     fn a_crate_with_no_test_that_miri_runs_is_a_problem() {
         let crates = [found("model", true, vec![])];
-        let (units, problems) = plan(&crates, &BTreeSet::new(), Shard::ALL);
+        let none = BTreeSet::new();
+        let (units, problems) = plan(&crates, &none, &none, Shard::ALL);
         assert_eq!(units, []);
         let problem = "`model` names `unsafe_code` but runs no tests under Miri. Add \
                        tests that reach its unsafe code.";
         assert_eq!(problems, [problem]);
-        let tested = BTreeSet::from([crates[0].package.id.clone()]);
-        let (_, problems) = plan(&crates, &tested, Shard::ALL);
+        let model = BTreeSet::from([crates[0].package.id.clone()]);
+        let (_, problems) = plan(&crates, &none, &model, Shard::ALL);
         assert_eq!(problems, Vec::<String>::new());
+        let (units, problems) = plan(&crates, &model, &none, Shard::ALL);
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(units.len(), PASSES.len());
     }
 
     #[test]
@@ -762,11 +760,12 @@ mod tests {
     fn a_plan_puts_the_passes_of_a_part_next_to_each_other() {
         let (a, it) = (target("bin", "a"), target("test", "it"));
         let crates = [
-            found("model", false, vec![Part::Doc, a.clone()]),
+            found("model", false, vec![a.clone()]),
             found("other", false, vec![it.clone()]),
         ];
         let (model, other) = (&crates[0].package, &crates[1].package);
-        let (units, problems) = plan(&crates, &BTreeSet::new(), Shard::ALL);
+        let (docs, none) = (BTreeSet::from([model.id.clone()]), BTreeSet::new());
+        let (units, problems) = plan(&crates, &docs, &none, Shard::ALL);
         assert_eq!(problems, Vec::<String>::new());
         let [first, second] = PASSES;
         assert_eq!(
@@ -780,7 +779,7 @@ mod tests {
                 (second, other, &it),
             ]
         );
-        let (units, _) = plan(&crates, &BTreeSet::new(), Shard { index: 1, count: 2 });
+        let (units, _) = plan(&crates, &docs, &none, Shard { index: 1, count: 2 });
         assert_eq!(
             units,
             [
@@ -789,5 +788,154 @@ mod tests {
                 (second, other, &it),
             ]
         );
+    }
+
+    #[test]
+    fn a_plan_runs_doc_tests_only_of_the_crates_in_docs() {
+        let it = target("test", "it");
+        let crates = [found("model", false, vec![it.clone()])];
+        let model = &crates[0].package;
+        let none = BTreeSet::new();
+        let (units, _) = plan(&crates, &none, &none, Shard::ALL);
+        let [first, second] = PASSES;
+        assert_eq!(units, [(first, model, &it), (second, model, &it)]);
+    }
+
+    #[test]
+    fn each_command_names_the_part_that_cannot_run_miri() {
+        // `cargo miri` cannot start on stable, so each command fails.
+        let root = crate::common::create_stable_root("xtask-miri-stable");
+        let nightly = crate::nightly::Toolchain::read(&root).unwrap();
+        let (package, libs) = (model(), [model().id]);
+        let units = [(PASSES[0], &package, &Part::Doc)];
+        let worked = worker(&nightly, &units, &AtomicUsize::new(0));
+        let ran = nextest(&nightly, &libs, PASSES[1], Shard::ALL);
+        let listed = list(&nightly, &libs);
+        let docs = doc_tests(&nightly, &package);
+        let empty = (
+            list(&nightly, &[]),
+            nextest(&nightly, &[], PASSES[0], Shard::ALL),
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            worked,
+            Ok(vec![format!(
+                "Miri with `{}` failed on the doc tests of `model`",
+                PASSES[0]
+            )])
+        );
+        assert_eq!(
+            ran,
+            Ok(Some(format!(
+                "Miri with `{}` failed on the lib tests of shard 0/1",
+                PASSES[1]
+            )))
+        );
+        assert_eq!(
+            listed,
+            Err("`cargo miri nextest list` could not list the lib tests".to_string())
+        );
+        assert_eq!(
+            docs,
+            Err("Miri could not list the doc tests of `model`".to_string())
+        );
+        assert_eq!(empty, (Ok(BTreeSet::new()), Ok(None)), "a process started");
+    }
+
+    /// A workspace at a stable root whose crate `model` names `unsafe_code`, has the
+    /// test target `it`, and has `lib`, the lines of its `[lib]` table.
+    fn create_model_root(name: &str, lib: &str) -> std::path::PathBuf {
+        let root = crate::common::create_stable_root(name);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        let manifest = format!(
+            "[package]\nname = \"model\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
+             [lib]\n{lib}\n\n[[test]]\nname = \"it\"\npath = \"tests/it.rs\"\n"
+        );
+        std::fs::write(root.join("Cargo.toml"), manifest).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "#![deny(unsafe_code)]\n").unwrap();
+        std::fs::write(root.join("tests/it.rs"), "#[test]\nfn a() {}\n").unwrap();
+        root
+    }
+
+    #[test]
+    fn run_gives_the_problem_of_each_command_that_cannot_run_miri() {
+        let run = |name, lib| {
+            let root = create_model_root(name, lib);
+            let ran = run(&root, Shard::ALL);
+            std::fs::remove_dir_all(&root).unwrap();
+            ran.map_err(|mut problems| {
+                problems.sort();
+                problems
+            })
+        };
+        let target = run("xtask-miri-run-target", "test = false\ndoctest = false");
+        let failed = |flags| {
+            format!("Miri with `{flags}` failed on the test target `it` of `model`")
+        };
+        assert_eq!(target, Err(vec![failed(PASSES[1]), failed(PASSES[0])]));
+        assert_eq!(
+            run("xtask-miri-run-lib", "test = true\ndoctest = false"),
+            Err(vec![
+                "`cargo miri nextest list` could not list the lib tests".to_string()
+            ])
+        );
+        assert_eq!(
+            run("xtask-miri-run-doc", "test = false\ndoctest = true"),
+            Err(vec![
+                "Miri could not list the doc tests of `model`".to_string()
+            ])
+        );
+    }
+
+    /// The source of a `cargo` for a toolchain folder that lists one doc test of
+    /// `model`, no lib test, and fails each other command.
+    const CARGO: &str = r#"fn main() {
+    let args = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
+    if args.contains("nextest list") {
+        println!("{{\"rust-suites\":{{}}}}");
+    } else if args.contains("--ignored") {
+    } else if args.contains("--list") {
+        println!("src/lib.rs - x (line 1): test");
+    } else {
+        std::process::exit(1);
+    }
+}
+"#;
+
+    #[test]
+    fn run_runs_each_part_of_each_pass_and_the_lib_tests() {
+        let root =
+            create_model_root("xtask-miri-run-all", "test = true\ndoctest = true");
+        let toolchain = root.join("toolchain");
+        std::fs::create_dir_all(toolchain.join("bin")).unwrap();
+        std::fs::write(root.join("cargo.rs"), CARGO).unwrap();
+        let cargo = format!("bin/cargo{}", std::env::consts::EXE_SUFFIX);
+        let built = Command::new("rustc")
+            .arg(root.join("cargo.rs"))
+            .arg("-o")
+            .arg(toolchain.join(cargo))
+            .status()
+            .unwrap();
+        assert!(built.success(), "rustc failed on the stand-in cargo");
+        let pin = toolchain.to_str().unwrap();
+        std::fs::write(root.join("rust-toolchain-nightly"), pin).unwrap();
+        let ran = run(&root, Shard::ALL).map_err(|mut problems| {
+            problems.sort();
+            problems
+        });
+        std::fs::remove_dir_all(&root).unwrap();
+        let failed = |flags, part| format!("Miri with `{flags}` failed on {part}");
+        let parts = [
+            "the doc tests of `model`",
+            "the lib tests of shard 0/1",
+            "the test target `it` of `model`",
+        ];
+        let [first, second] = PASSES;
+        let problems = [second, first]
+            .into_iter()
+            .flat_map(|flags| parts.map(|part| failed(flags, part)))
+            .collect();
+        assert_eq!(ran, Err(problems));
     }
 }

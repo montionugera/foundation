@@ -427,8 +427,8 @@ mod tests {
         )
     }
 
-    /// XNU posts the write event at the bound, so one more write of the bound fills
-    /// it twice.
+    /// Only macOS: XNU posts the write event at the bound, so one more write of the
+    /// bound fills it twice.
     #[test]
     #[cfg(target_os = "macos")]
     fn the_unsent_bytes_stay_at_most_twice_the_bound() {
@@ -441,8 +441,8 @@ mod tests {
         assert!(held <= 2 * options.unsent_bytes_max.get(), "{held}");
     }
 
-    /// With `delayed`, XNU also posts the write event under one segment, whatever
-    /// the bound.
+    /// Only macOS: with `delayed`, XNU also posts the write event under one segment,
+    /// whatever the bound.
     #[test]
     #[cfg(target_os = "macos")]
     fn delayed_unsent_bytes_stay_at_most_the_bound_plus_one_segment() {

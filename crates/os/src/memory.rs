@@ -670,6 +670,7 @@ mod tests {
         Memory::new(100).unwrap().commit(99, 2).unwrap();
     }
 
+    /// Only Linux: macOS keeps no commit charge.
     #[test]
     #[cfg(target_os = "linux")]
     fn only_a_committed_page_takes_a_commit_charge() {
