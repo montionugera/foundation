@@ -432,6 +432,11 @@ prependHeadersAsym(UA_SecureChannel *const channel, UA_Byte *header_pos,
 UA_UInt32
 UA_SecureChannel_nextSequenceNumber(UA_SecureChannel *channel);
 
+/* Gives the payload bytes of a symmetric chunk of `length` bytes on `channel`: the
+ * length less the headers, the signature, and the padding that setBufPos leaves. */
+size_t
+UA_SecureChannel_chunkPayload(const UA_SecureChannel *channel, size_t length);
+
 void
 setBufPos(UA_MessageContext *mc);
 

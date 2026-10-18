@@ -774,7 +774,8 @@ UA_UInt32 shim_client_timeout(UA_Client *client) {
     return UA_Client_getConfig(client)->timeout;
 }
 
-/* Writes to `limits` the send and receive buffer sizes of the channel of `client`, the
+/* Writes to `limits` the payload bytes of a chunk that `client` sends and of one that
+ * it receives, past the headers, the signature, and the padding of its channel, the
  * MaxMessageSize and the MaxChunkCount of its server (0 for none), and the encoded size
  * of the session token of `client`. Gives `BadInternalError` when the copy gives
  * another value than 5 `UInt32` values. */
