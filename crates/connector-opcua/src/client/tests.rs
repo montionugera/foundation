@@ -2310,6 +2310,67 @@ fn bad_connect_message(bad: usize) -> (Option<Status>, usize) {
     })
 }
 
+/// A read whose answer is an `ERR` with more bytes behind it in one buffer gives the
+/// status of the `ERR`, not that of the bytes that the closed channel cannot process.
+#[test]
+fn a_read_whose_answer_is_an_err_and_more_bytes_gives_the_status_of_the_err() {
+    let (read, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let bad = Cell::new(false);
+            let mut to = to_server(&node);
+            let rewrite = |message: &mut Vec<u8>| {
+                to(message);
+                if bad.get() && is(message, READ_RESPONSE) {
+                    let mut both = err(Status::BAD_RESPONSE_TOO_LARGE);
+                    both.append(message);
+                    *message = both;
+                }
+            };
+            relayed(&node, &control, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                bad.set(true);
+                client.read_one(&VALUE).await
+            })
+            .await
+        })
+        .await
+    });
+    assert_eq!(read, Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE)));
+}
+
+/// An `ERR` in place of the answer to `ActivateSession` ends the connect with the
+/// status of the `ERR`, not that of the new session that the client then asks for.
+#[test]
+fn an_err_in_place_of_the_activate_answer_ends_the_connect_with_its_status() {
+    let out = relayed_connect(|node| {
+        let mut to = to_server(node);
+        move |_: &Relay, message: &mut Vec<u8>| {
+            to(message);
+            if is(message, ACTIVATE_RESPONSE) {
+                *message = err(Status::BAD_SESSION_CLOSED);
+            }
+        }
+    });
+    assert_eq!(out, (Some(Status::BAD_SESSION_CLOSED), 2));
+}
+
+/// The type of an `ActivateSession` answer.
+const ACTIVATE_RESPONSE: [u8; 4] = [0x01, 0x00, 0xD6, 0x01];
+
+/// Whether `message` is a `MSG` of the answer type `kind`.
+fn is(message: &[u8], kind: [u8; 4]) -> bool {
+    message.starts_with(b"MSG") && message[24..28] == kind
+}
+
+/// Gives an `ERR` of `status` with no reason.
+fn err(status: Status) -> Vec<u8> {
+    let mut body = status.0.to_le_bytes().to_vec();
+    body.extend((-1_i32).to_le_bytes());
+    crate::peer::frame(*b"ERRF", &body)
+}
+
 /// Connects through a relay that gives the client the first `pass` messages of the
 /// server, and cuts both streams at the next one. Gives the status of the connect, and
 /// the accepts 10 ms after it ends.

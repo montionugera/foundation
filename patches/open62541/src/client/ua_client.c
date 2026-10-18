@@ -369,7 +369,9 @@ void
 setConnectStatus(UA_Client *client, UA_StatusCode status) {
     UA_LOCK_ASSERT(&client->clientMutex);
 
-    client->connectStatus = status;
+    /* The first error stays until connectInternal resets it. */
+    if(client->connectStatus == UA_STATUSCODE_GOOD)
+        client->connectStatus = status;
     if(status != UA_STATUSCODE_GOOD)
         closeSecureChannel(client);
 
