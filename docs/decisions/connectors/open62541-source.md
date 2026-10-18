@@ -1029,4 +1029,12 @@
   of each refusal in `kind.rs` move to PR 2b (`laptop.architect-2`,
   2026-10-18 21:37 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255457069, items 1
-  and 2).
+  and 2). The person accepted the trust as one byte string, through `laptop.monitor`
+  (2026-10-18 22:11 UTC), on one condition: the user never sees only
+  `BadInternalError`. The check of PR 2b names the source and the certificate that
+  does not parse, before the run, and the plan of PR 2b names the test that pins that
+  text (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6255781688).
+  `Client::connect` keeps its `Option`, on the condition that PR 2b makes `kind.rs`
+  pass the value of the config, or splits `connect` or gives it an enum
+  (`laptop.director`, 2026-10-18 21:48 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255562713).
