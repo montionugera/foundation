@@ -6,6 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, c_void};
 use std::future;
+use std::marker::PhantomData;
 use std::mem;
 use std::num::NonZeroUsize;
 use std::ops::Range;
@@ -108,13 +109,14 @@ pub(crate) struct Credentials<'a> {
     pub(crate) trust: &'a [u8],
 }
 
-impl Credentials<'_> {
-    /// Gives the `shim_security` of the credentials, which borrows them.
-    pub(crate) fn raw(&self) -> ffi::Security {
+impl<'a> Credentials<'a> {
+    /// Gives the `shim_security` of the credentials, which borrows their bytes.
+    pub(crate) fn raw(&self) -> ffi::Security<'a> {
         ffi::Security {
             certificate: ffi::Bytes::of(self.certificate),
             key: ffi::Bytes::of(self.key),
             trust: ffi::Bytes::of(self.trust),
+            borrowed: PhantomData,
         }
     }
 }
@@ -257,8 +259,7 @@ impl Client {
         let mut client = Self::new(time, span, net, rng, url.to_owned());
         if let Some((credentials, mode)) = security {
             let raw = credentials.raw();
-            // SAFETY: the client lives and has not connected, `raw` borrows the live
-            // `credentials`, and the client copies it.
+            // SAFETY: the client lives and has not connected, and it copies `raw`.
             let status = Status(unsafe {
                 ffi::shim_client_secure(
                     client.raw.as_ptr(),

@@ -524,10 +524,11 @@ pub(crate) struct Client([u8; 0]);
 
 /// `shim_security` of `shim.h`, which borrows each of its byte strings.
 #[repr(C)]
-pub(crate) struct Security {
+pub(crate) struct Security<'a> {
     pub(crate) certificate: Bytes,
     pub(crate) key: Bytes,
     pub(crate) trust: Bytes,
+    pub(crate) borrowed: PhantomData<&'a [u8]>,
 }
 
 /// `UA_MessageSecurityMode`, the modes of a channel that signs.
@@ -708,7 +709,7 @@ unsafe extern "C" {
     pub(crate) fn shim_client_secure(
         client: *mut Client,
         mode: Mode,
-        security: *const Security,
+        security: *const Security<'_>,
     ) -> u32;
     pub(crate) fn shim_client_timeout(client: *mut Client) -> u32;
     pub(crate) fn shim_client_limits(

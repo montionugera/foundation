@@ -119,8 +119,7 @@ impl Server {
             .iter()
             .map(|policy| policy.uri().as_ptr())
             .collect();
-        // SAFETY: as the caller ensures, `raw` borrows the live `credentials`, and the
-        // server copies `raw` and `uris`.
+        // SAFETY: as the caller ensures, and the server copies `raw` and `uris`.
         unsafe { Self::started(manager, host, sessions, &raw const raw, &uris) }
     }
 
@@ -135,7 +134,7 @@ impl Server {
         manager: &Manager,
         host: &CStr,
         sessions: u16,
-        security: *const ffi::Security,
+        security: *const ffi::Security<'_>,
         policies: &[*const std::ffi::c_char],
     ) -> Self {
         let port = manager

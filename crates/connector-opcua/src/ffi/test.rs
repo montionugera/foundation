@@ -273,7 +273,7 @@ unsafe extern "C" {
         host: *const std::ffi::c_char,
         sessions: u16,
         chunks: u32,
-        security: *const super::Security,
+        security: *const super::Security<'_>,
         policies: *const *const std::ffi::c_char,
         count: usize,
     ) -> *mut Server;
@@ -291,7 +291,7 @@ unsafe extern "C" {
     ) -> u32;
     pub(crate) fn shim_read_certificate(
         certificate: *const Bytes,
-        security: *const super::Security,
+        security: *const super::Security<'_>,
         el: *mut EventLoop,
         verified: *mut u32,
         named: *mut u32,
