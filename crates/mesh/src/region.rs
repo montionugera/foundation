@@ -1040,8 +1040,8 @@ mod tests {
     // A `Card` change of `card` for node `key`, which the private key of node `signer`
     // signed, with its signature bits flipped when `forged`.
     fn card_change(key: u8, card: card::Card, signer: u8, forged: bool) -> Change {
-        let signed = card::Signed::sign(node(key), card, &private(signer));
-        let mut card = unchecked(&signed);
+        let mut card =
+            unchecked(&card::Signed::sign(node(key), card, &private(signer)));
         if forged {
             card.signature[0] ^= 1;
         }
@@ -1620,6 +1620,15 @@ mod tests {
                 "a change of kind 2 and 40 bytes is not in the byte form of its kind"
                     .to_owned(),
             ),
+        ];
+        for (refused, text) in cases {
+            assert_eq!(refused.to_string(), text);
+        }
+    }
+
+    #[test]
+    fn a_refused_card_says_what_is_wrong() {
+        let cases = [
             (
                 Refused::Stranger { key: node(3) },
                 format!("node {} is not a member", node(3)),
