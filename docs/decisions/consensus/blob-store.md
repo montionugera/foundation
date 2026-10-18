@@ -93,14 +93,30 @@
   https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108706010).
   Amended (`laptop.architect`, 2026-10-18T20:10:11Z,
   https://github.com/synnaxlabs/foundation/issues/3251#issuecomment-6254577124, and
-  2026-10-18T20:24:48Z,
-  https://github.com/synnaxlabs/foundation/issues/3251#issuecomment-6254727641): a put
-  of `blob::peer::serve` writes its bytes as they come and checks them at its end (BLOB
-  PEER). Until then its digest is in flight, as for `Store::put`: a get and a put of the
-  digest wait for it. A put of `serve` that fails other than by a drop removes the file
-  only when it created it: its digest was absent when it took it. A digest that was
-  listed keeps its file and stays `Listed`, because `Mode::Create` keeps a file of the
-  same length, so the file can hold whole bytes of an earlier put, and a get checks
-  them. The digest stays in flight until the remove returns, so a put that waits for it
-  opens no file that the remove takes. A remove that fails leaves the digest `Listed`
-  and counts in `Status::failures`. A drop is a dropped put.
+  2026-10-18T20:42:45Z,
+  https://github.com/synnaxlabs/foundation/pull/3258#issuecomment-6254911451; the part
+  file, a key choice of kinds d and 4, accepted by `laptop.monitor` in a message): a put
+  of `blob::peer::serve` writes its bytes as they come to a part file of its own, and
+  checks them at its end (BLOB PEER). The part is named by the digest, a dot, and a key
+  that is new for each put of `serve` in one open of the store, so no put waits on
+  another put of its digest. Only a put of `serve` writes a part: `Store::put` writes in
+  place, because its bytes are in hand and checked. The put takes no flight of its
+  digest until its end, so no get and no put waits on a peer while its body comes. The
+  floor check runs before the create of the part. The end checks the digest and syncs
+  the part. Then, in the flight of the digest, it removes a listed file, renames the
+  part to the digest, and syncs the directory, and `serve` sends `Stored` only after
+  that sync. A digest that is `Held` at the end keeps its file: the put removes its part
+  and gives `Stored`. A put whose body fails or does not match removes its part, and a
+  listed file keeps its bytes. An error of the remove of the listed file leaves the
+  digest `Listed`. An error of the rename or later makes the digest absent, so the next
+  put writes it again. A remove of a part that fails counts in `Status::failures`, and a
+  dropped put leaves its part. The open removes each part whose digest has a file, and
+  renames each other part to its digest, which is then `Listed` as a file of an earlier
+  open (`corruptions` above). A crash that undoes that remove or rename makes the next
+  open do it again, so the open does not sync the directory. Each other name, neither a
+  digest nor a part, gives `Error::Stray`. Supersedes "A write to a second name and a
+  rename (`File::rename`, #1503) lost" of
+  https://github.com/synnaxlabs/foundation/issues/1226#issuecomment-6046560177, item 1,
+  for the puts of a peer only, because a peer must not hold the chunk's name while its
+  body comes, and both conditions of
+  https://github.com/synnaxlabs/foundation/issues/3251#issuecomment-6254727641.
