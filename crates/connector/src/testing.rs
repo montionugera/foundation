@@ -311,6 +311,30 @@ impl Rig {
             .run = Some(run);
     }
 
+    /// Records each status of the connector whose status channels are `names`, as
+    /// [`Self::define_status`] gives them, from now on, in a task of the rig's shard.
+    /// The record goes on across the runs of the connector, and ends when the hub
+    /// closes.
+    ///
+    /// # Panics
+    ///
+    /// When the status reader does not open, such as when the hub defines no channel
+    /// of `names`.
+    pub async fn record(&self, names: &[Name]) -> Record {
+        let mut reader = self.status(names).await;
+        let record = Record(Rc::default());
+        let into = Rc::clone(&record.0);
+        self.tasks.spawn(async move {
+            while let Ok(received) = reader.next().await {
+                let readings = Reading::each(&received);
+                let readings = readings
+                    .expect("invariant: each status frame holds the whole status");
+                into.borrow_mut().extend(readings);
+            }
+        });
+        record
+    }
+
     /// Opens a reader of the status channels `names`.
     async fn status(&self, names: &[Name]) -> Reader {
         let select = Selector::new(names.iter().map(Name::as_str));
@@ -336,6 +360,19 @@ struct Held {
     /// Cancelled once the last run that [`Rig::supervise`] started for the connector
     /// ends. `None` when it started none.
     run: Option<Token>,
+}
+
+/// Each status of one connector that [`Rig::record`] read, one for each sample time
+/// of its status channels.
+#[derive(Debug)]
+pub struct Record(Rc<RefCell<Vec<Reading>>>);
+
+impl Record {
+    /// Each status so far, oldest first.
+    #[must_use]
+    pub fn readings(&self) -> Vec<Reading> {
+        self.0.borrow().clone()
+    }
 }
 
 /// A connector that [`Rig::supervise`] started, and a reader of its status. A drop

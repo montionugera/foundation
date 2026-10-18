@@ -311,6 +311,44 @@ fn a_connector_reads_the_secrets_that_create_secret_writes_on_the_files_of_env()
 }
 
 #[test]
+fn a_record_reads_each_status_of_a_connector_across_its_runs() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |rig, _| async move {
+            let (config, plant) = (Document::default(), name("plant.ticks"));
+            let record = rig
+                .record(&rig.define_status("ticks", &plant, &config))
+                .await;
+            for _ in 0..2 {
+                let mut run =
+                    rig.supervise("ticks", plant.clone(), config.clone()).await;
+                run.until(TEN, ticking).await;
+                assert_eq!(run.stop().await.map_err(|e| e.to_string()), Ok(()));
+            }
+            let readings = record.readings().into_iter();
+            let got: Vec<_> =
+                (readings.map(|r| (r.state, r.counts[&name("ticks")]))).collect();
+            let (running, ending) = (State::Running, State::Ending);
+            let first = [(running, 0), (running, 10), (ending, 10)];
+            let stopped = (State::Stopped, 10);
+            let want: Vec<_> =
+                first.into_iter().chain([stopped]).chain(first).collect();
+            assert_eq!(got, want);
+        },
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "the status reader does not open: the selector matches no channel"
+)]
+fn a_record_of_status_channels_that_the_hub_does_not_define_panics() {
+    on_rig(Table::new, |rig, _| async move {
+        rig.record(&[name("plant.ticks.status.time")]).await;
+    });
+}
+
+#[test]
 fn a_second_open_of_one_name_reuses_its_status() {
     on_rig(
         || Table::new().with("ticks", Ticks::default()),
