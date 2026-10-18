@@ -15,13 +15,14 @@
   heads and no bodies holds only that pool, and the transport and the mesh go on
   (`laptop.architect`, 2026-10-18T19:07:27Z:
   https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6253931889, option
-  A). The pool has a quarter of the part (`laptop.architect-2`, 2026-10-18T19:36:18Z:
-  https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6254240239, which
-  supersedes the eighth of
-  https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6253982711), only on a
-  node with a region (`laptop.architect-2`, 2026-10-18T19:19:06Z:
+  A). The pool has an eighth of the part (`laptop.architect-2`, 2026-10-18T19:12:02Z:
+  https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6253982711, and
+  2026-10-18T19:43:23Z:
+  https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6254309658, which
+  withdraws the quarter of the comment that decides the route), only on a node with a
+  region (`laptop.architect-2`, 2026-10-18T19:19:06Z:
   https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6254066588, which
-  supersedes "also for a node with no region" of the first; trigger: a join of a
+  supersedes "also for a node with no region" of 6253982711; trigger: a join of a
   running node, #1157, makes the pool at the join).
   Deferred: a put that writes and hashes each body message as it comes, so a head
   holds no block. Trigger: a blob stream from a peer that is not a member.
