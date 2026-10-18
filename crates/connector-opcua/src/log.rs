@@ -29,6 +29,13 @@ pub(crate) struct Log {
     error: Budget,
 }
 
+/// The level of a line that the logger writes.
+#[derive(Clone, Copy)]
+enum Level {
+    Warn,
+    Error,
+}
+
 #[derive(Default)]
 struct Budget {
     /// The start of the window, or `None` before its first line.
@@ -56,14 +63,14 @@ impl Log {
             return;
         }
         let now = self.clock.now();
-        self.flush_at(false, now);
-        self.flush_at(true, now);
+        self.flush_at(Level::Warn, now);
+        self.flush_at(Level::Error, now);
     }
 
-    fn put(&self, severe: bool, category: &str, text: &str) {
+    fn put(&self, level: Level, category: &str, text: &str) {
         let now = self.clock.now();
-        self.flush_at(severe, now);
-        let budget = self.budget(severe);
+        self.flush_at(level, now);
+        let budget = self.budget(level);
         if budget.start.get().is_none() {
             budget.start.set(Some(now));
             budget.written.set(0);
@@ -74,45 +81,54 @@ impl Log {
         }
         budget.written.set(budget.written.get() + 1);
         let span = &self.span;
-        if severe {
-            tracing::error!(target: "open62541", parent: span, category, "{text}");
-        } else {
-            tracing::warn!(target: "open62541", parent: span, category, "{text}");
+        match level {
+            Level::Warn => {
+                tracing::warn!(target: "open62541", parent: span, category, "{text}");
+            }
+            Level::Error => {
+                tracing::error!(target: "open62541", parent: span, category, "{text}");
+            }
         }
     }
 
-    fn flush_at(&self, severe: bool, now: Monotonic) {
-        let start = self.budget(severe).start.get();
+    fn flush_at(&self, level: Level, now: Monotonic) {
+        let start = self.budget(level).start.get();
         if start.is_some_and(|start| now - start >= WINDOW) {
-            self.end(severe);
+            self.end(level);
         }
     }
 
-    /// Ends the window of the level, and writes its count when it dropped lines.
-    fn end(&self, severe: bool) {
-        let budget = self.budget(severe);
+    /// Ends the window of `level`, and writes its count when it dropped lines.
+    fn end(&self, level: Level) {
+        let budget = self.budget(level);
         budget.start.set(None);
         let lines = budget.dropped.replace(0);
         if lines == 0 {
             return;
         }
         let span = &self.span;
-        if severe {
-            tracing::error!(target: "open62541", parent: span, lines, "dropped");
-        } else {
-            tracing::warn!(target: "open62541", parent: span, lines, "dropped");
+        match level {
+            Level::Warn => {
+                tracing::warn!(target: "open62541", parent: span, lines, "dropped");
+            }
+            Level::Error => {
+                tracing::error!(target: "open62541", parent: span, lines, "dropped");
+            }
         }
     }
 
-    fn budget(&self, severe: bool) -> &Budget {
-        if severe { &self.error } else { &self.warn }
+    fn budget(&self, level: Level) -> &Budget {
+        match level {
+            Level::Warn => &self.warn,
+            Level::Error => &self.error,
+        }
     }
 }
 
 impl Drop for Log {
     fn drop(&mut self) {
-        self.end(false);
-        self.end(true);
+        self.end(Level::Warn);
+        self.end(Level::Error);
     }
 }
 
@@ -141,7 +157,11 @@ unsafe extern "C" fn connector_opcua_put_line(
         .expect("the shim names a category in ASCII");
     // SAFETY: the caller gives `length` bytes at `line`.
     let text = unsafe { text(line, length) };
-    log.put(severe, category, &text);
+    log.put(
+        if severe { Level::Error } else { Level::Warn },
+        category,
+        &text,
+    );
 }
 
 /// Panics with `open62541 ` and the `length` bytes at `line`, as [`text`] reads them,
