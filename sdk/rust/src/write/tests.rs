@@ -46,6 +46,11 @@ type Sent = Vec<(Frame, Time)>;
 /// `time`, whose calls a thread serves: it answers each write with `outcome` and the
 /// close with `Ok`, and gives each write that it served.
 fn writer(outcome: Outcome) -> (Writer, JoinHandle<Sent>) {
+    writer_of(&["count", "level"], outcome)
+}
+
+/// A writer of `channels`, served as [`writer`] serves it.
+fn writer_of(channels: &[&str], outcome: Outcome) -> (Writer, JoinHandle<Sent>) {
     let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
     let served = spawn(move || {
         let Open {
@@ -76,7 +81,7 @@ fn writer(outcome: Outcome) -> (Writer, JoinHandle<Sent>) {
         }
         sent
     });
-    let channels = vec!["count".parse().unwrap(), "level".parse().unwrap()];
+    let channels = channels.iter().map(|name| name.parse().unwrap()).collect();
     (
         Writer::open(&opens, &Arc::default(), Config::new(channels)).unwrap(),
         served,
@@ -277,6 +282,59 @@ fn a_call_of_a_place_past_the_places_gives_out_of_range_and_sends_nothing() {
     let sent = served.join().unwrap();
     assert_eq!(sent.len(), 1);
     assert_eq!(series(&sent[0].0)[1], (1, 2_i64.to_le_bytes().to_vec()));
+}
+
+fn layout(error: frame::Error) -> Result<Outcome, Error> {
+    Err(Error::Stream(program::Error::Layout(error)))
+}
+
+#[test]
+fn a_call_of_two_series_of_one_channel_gives_unordered_in_its_places_and_sends_nothing()
+{
+    let (mut writer, served) = writer(WAITING);
+    let twice = [
+        (1, Value::F64(1.0)),
+        (0, Value::I64(1)),
+        (1, Value::F64(2.0)),
+    ];
+    let unordered = |entry, last| layout(frame::Error::Unordered { entry, last });
+    assert_eq!(writer.write(&twice), unordered(1, 1));
+    let (stamp, count) = (1_i64.to_le_bytes(), 2_i64.to_le_bytes());
+    let series_of = [(0, count.as_slice()), (2, &stamp), (0, &count)];
+    assert_eq!(writer.write_series(1, &series_of), unordered(0, 0));
+    assert_eq!(writer.write(&[(0, Value::I64(4))]), Ok(WAITING));
+    assert_eq!(writer.close(), Ok(()));
+    assert_eq!(served.join().unwrap().len(), 1);
+    let (mut writer, served) = writer_of(&["count", "count"], WAITING);
+    let both = [(1, Value::I64(1)), (0, Value::I64(2))];
+    assert_eq!(writer.write(&both), unordered(1, 0));
+    assert_eq!(writer.write(&[(1, Value::I64(3))]), Ok(WAITING));
+    assert_eq!(writer.close(), Ok(()));
+    let sent = served.join().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(series(&sent[0].0)[1], (1, 3_i64.to_le_bytes().to_vec()));
+}
+
+#[test]
+fn a_write_of_series_with_none_of_the_index_gives_index_absent_and_sends_nothing() {
+    let (mut writer, served) = writer(WAITING);
+    let (level, count) = (1.5_f64.to_le_bytes(), 2_i64.to_le_bytes());
+    let absent = layout(frame::Error::IndexAbsent { entry: 0, index: 2 });
+    let series_of = [(1, level.as_slice()), (0, &count)];
+    assert_eq!(writer.write_series(1, &series_of), absent);
+    let absent = layout(frame::Error::IndexAbsent { entry: 1, index: 2 });
+    assert_eq!(writer.write_series(1, &[(1, &level)]), absent);
+    let stamp = 1_i64.to_le_bytes();
+    assert_eq!(
+        writer.write_series(1, &[(1, &level), (2, &stamp)]),
+        Ok(WAITING)
+    );
+    assert_eq!(writer.write_series(1, &[]), Ok(WAITING));
+    assert_eq!(writer.close(), Ok(()));
+    let sent = served.join().unwrap();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0].0.series, [(0, 8), (2, 8)]);
+    assert_eq!(sent[1].0.series, []);
 }
 
 #[test]

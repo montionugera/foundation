@@ -497,9 +497,10 @@ fn a_writer_that_names_the_index_writes_its_stamp_at_that_place() {
     rig.stop();
 }
 
-/// A write of no values, a place past the places, and a series past the largest block
-/// of the frames each give their exact error with nothing sent, and the writer goes
-/// on.
+/// A write of no values, a place past the places, a place given twice, series with
+/// none of the index, and a series past the largest block of the frames each give
+/// their exact error in the places of the writer with nothing sent, and the writer
+/// goes on.
 #[test]
 fn a_call_that_the_writer_cannot_send_gives_its_error_and_the_writer_goes_on() {
     let (mut rig, node, subject) = planted();
@@ -521,6 +522,15 @@ fn a_call_that_the_writer_cannot_send_gives_its_error_and_the_writer_goes_on() {
         writer.write_series(1, &[(2, 1_i64.to_le_bytes().as_slice())]),
         past
     );
+    let layout = |error| Err(Error::Stream(program::Error::Layout(error)));
+    let twice = [(0, Value::I64(1)), (0, Value::I64(2))];
+    let unordered = types::frame::Error::Unordered { entry: 0, last: 0 };
+    assert_eq!(writer.write(&twice), layout(unordered));
+    let absent = types::frame::Error::IndexAbsent { entry: 0, index: 1 };
+    assert_eq!(
+        writer.write_series(1, &[(0, 1_i64.to_le_bytes().as_slice())]),
+        layout(absent)
+    );
     let samples = 4096_u32;
     let stamps: Vec<u8> = (1..=i64::from(samples))
         .flat_map(i64::to_le_bytes)
@@ -535,6 +545,35 @@ fn a_call_that_the_writer_cannot_send_gives_its_error_and_the_writer_goes_on() {
         Err(Error::Stream(program::Error::Pool(large)))
     );
     assert_eq!(writer.write(&[(0, Value::I64(5))]), Ok(taken(0, 1)));
+    assert_eq!(writer.close(), Ok(()));
+    assert_eq!(client.close(), Ok(()));
+    rig.stop();
+}
+
+/// A `Layout` error of a writer whose places are not in the order of the node's places
+/// names the places of the writer.
+#[test]
+fn a_layout_error_names_the_places_of_the_writer() {
+    let (mut rig, node, subject) = planted();
+    let client = Client::connect(&node, subject).unwrap();
+    let channels = ["plant.b".parse().unwrap(), "plant.a".parse().unwrap()];
+    let mut writer = client.open_writer(Config::new(channels.into())).unwrap();
+    let (b, a, time) = (0, 1, 2);
+    assert_eq!(writer.index(), time);
+    let one = 1_i64.to_le_bytes();
+    let absent = writer.write_series(1, &[(a, one.as_slice())]);
+    let twice = writer.write(&[(b, Value::I64(1)), (b, Value::I64(2))]);
+    let layout = |error| Err(Error::Stream(program::Error::Layout(error)));
+    assert_eq!(
+        (absent, twice),
+        (
+            layout(types::frame::Error::IndexAbsent {
+                entry: a,
+                index: time
+            }),
+            layout(types::frame::Error::Unordered { entry: b, last: b }),
+        )
+    );
     assert_eq!(writer.close(), Ok(()));
     assert_eq!(client.close(), Ok(()));
     rig.stop();
