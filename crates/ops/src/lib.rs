@@ -72,8 +72,9 @@ pub enum Run {
 /// with that data directory once, and calls what it gives with the body of one request.
 /// A [`Failure`] of either is the error of the command, with status 1. A config path of
 /// `plan`, `browse`, or `import` that is a directory gives each file in it whose name
-/// has an extension of `front_ends` and does not start with `.`, in name order, and
-/// `ops.read` for such an entry that is a directory; it reads no file of a directory in
+/// has an extension of `front_ends` and does not start with `.`, in name order. It
+/// gives `ops.no-config` when it has no such file, and `ops.read` for such an entry
+/// that is a directory; it reads no file of a directory in
 /// it. `foundation mcp` runs each tool call of `plan`, `apply`, `status`, `browse`, and
 /// `import` on the node of its own `--data`. It calls `reach` at its first such call,
 /// and again only at the call after a [`Failure`] of what `reach` gave. `start` and the
