@@ -266,11 +266,13 @@ class ClientTest(unittest.TestCase):
             during = False
             while True:
                 child = spawn(client.close)
-                alive = closing.is_alive()
+                # The close can hold the lock of the client only before it returns.
+                alive = not ends
                 self.assertEqual(exit_code(child), 0)
                 if not alive:
                     break
                 during = True
+                self.assertLess(time.monotonic(), deadline, "the close did not end")
             closing.join(PATIENCE)
             self.assertFalse(closing.is_alive())
             self.assertEqual(ends, [None])
