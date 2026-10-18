@@ -108,6 +108,19 @@ fn reads_the_address_the_rate_and_each_read() {
     );
 }
 
+/// A connector with no `read` block reads nothing until an import adds reads.
+#[test]
+fn reads_a_config_with_no_read() {
+    assert_eq!(
+        parse(&config(string(ADDRESS), Vec::new())),
+        Ok(Config {
+            address: CString::new(ADDRESS).expect("no NUL"),
+            rate: Rate::new(10, 1).expect("a rate"),
+            reads: Vec::new(),
+        })
+    );
+}
+
 #[test]
 fn refuses_a_bad_address() {
     let fix = "Write an address such as \"opc.tcp://plc:4840\"";
@@ -198,7 +211,7 @@ fn reads_an_address_with_no_port_a_path_or_an_ipv6_host() {
 }
 
 #[test]
-fn refuses_a_config_with_no_address_rate_or_read() {
+fn refuses_a_config_with_no_address_or_rate() {
     assert_eq!(
         parse(&document(&[], Vec::new())),
         Err(vec![
@@ -215,14 +228,6 @@ fn refuses_a_config_with_no_address_rate_or_read() {
                 None,
                 "the connector has no `rate`".into(),
                 "Add a `rate` attribute with the reads per second, such as \"10Hz\""
-                    .into(),
-            ),
-            Diagnostic::new(
-                Code::new("opcua.no-read"),
-                None,
-                "the connector has no `read` block".into(),
-                "Add a `read` block for each channel, such as `read \"plant.spike\" { \
-                 node_id = \"ns=3;s=SpikeData\" }`"
                     .into(),
             ),
         ])

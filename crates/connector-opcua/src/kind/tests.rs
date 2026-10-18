@@ -841,6 +841,50 @@ fn keeps_the_run_when_a_check_answers_with_a_bad_state() {
     }
 }
 
+/// The note of a run with no `read` block.
+const NO_READ: &str = "the connector has no `read` block, so it reads nothing. `browse` \
+                       lists the points of the server, and `import` adds a `read` block \
+                       for each.";
+
+/// A run with no `read` block keeps its session until the cancel: it checks the
+/// connection each 10 s, notes that it reads nothing, and writes no frame. The cancel
+/// ends it once the server answers its `CloseSession`, 500 us later.
+#[test]
+fn a_run_with_no_read_keeps_its_session_and_notes_that_it_reads_nothing() {
+    let setup = Setup {
+        reads: Vec::new(),
+        ..Setup::three()
+    };
+    let outcome = run(setup, |scene| async move {
+        let end = ends_after_the_cancel(&scene, ms(41_050)).await;
+        assert_eq!(end, Span::from_nanos(500_000));
+        Ok(())
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(errors(&outcome.statuses), []);
+    assert_eq!(notes(&outcome.statuses), [NO_READ]);
+    assert_eq!(last(&outcome.statuses, RESTARTS), 0);
+    assert_eq!((outcome.frames.len(), outcome.states), (0, 4));
+}
+
+/// A run with no `read` block and no server ends with the error of the connect.
+#[test]
+fn a_run_with_no_read_and_no_server_ends_with_the_error_of_the_connect() {
+    let setup = Setup {
+        reads: Vec::new(),
+        ..Setup::three()
+    };
+    let outcome = run(setup, |scene| async move {
+        scene.stop().await;
+        scene.supervise(ms(1_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let connect =
+        "the connect to opc.tcp://10.0.0.1:4840 failed with BadConnectionRejected";
+    assert_eq!(errors(&outcome.statuses), [(DEVICE, connect.to_owned())]);
+    assert_eq!(notes(&outcome.statuses), Vec::<String>::new());
+}
+
 /// A run at 10 Hz reads more often than each 10 s, so it sends no check of the
 /// connection.
 #[test]
