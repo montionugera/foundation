@@ -71,10 +71,11 @@ impl Server {
     ///
     /// # Panics
     ///
-    /// If the port is taken, or if open62541 refuses the server, a Double, a run of its
-    /// loop, or a step of its close. A panic of its start, a run of its loop, or its
-    /// close leaks the manager and the server that it made by then, and a panic of the
-    /// close replaces a panic of a Double or of `body`.
+    /// If the port is taken, if the accept of its listener fails, or if open62541
+    /// refuses the server, a Double, a run of its loop, or a step of its close. A panic
+    /// of its start, a run of its loop, or its close leaks the manager and the server
+    /// that it made by then, and a panic of the close replaces a panic of a Double or
+    /// of `body`.
     ///
     /// # Aborts
     ///
@@ -122,6 +123,7 @@ impl Server {
         };
         let body = caught(async { body(&this).await });
         let value = crate::server::Server::serve(manager, SESSIONS, add, body).await;
+        let value = value.expect("the listener of a bench does not fail");
         value.unwrap_or_else(|panic| panic::resume_unwind(panic))
     }
 

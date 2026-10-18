@@ -103,8 +103,16 @@ async fn simulate(inputs: Serve) {
     let now = move || wall.now().time;
     let mut rng = inputs.node.entropy().rng();
     let (clock, variables) = (inputs.node.clock(), Variables::new(&NODES));
-    let until = inputs.until.wait();
-    serve(clock, now, net, listener, &mut rng, &variables, until).await;
+    let served = serve(
+        clock,
+        now,
+        net,
+        listener,
+        &mut rng,
+        &variables,
+        inputs.until,
+    );
+    served.await.expect("the listener holds");
 }
 
 /// Configs with a missing scheme, no `read` block, and a node id that does not parse.

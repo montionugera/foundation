@@ -371,9 +371,8 @@ impl Scene {
         let (variables, until) = (self.variables.clone(), stop.clone());
         let (mut rng, gate) = (self.node.entropy().rng(), self.gate.clone());
         group.tasks().spawn(async move {
-            let until = until.wait();
             let serve = serve(clock, wall, net, listener, &mut rng, &variables, until);
-            gate.hold(serve).await;
+            gate.hold(serve).await.expect("the listener does not fail");
         });
         *self.server.borrow_mut() = Some((stop, group));
     }
