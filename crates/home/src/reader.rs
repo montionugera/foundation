@@ -406,8 +406,7 @@ impl Set {
                 return Err(Unopened::Unrecorded);
             }
         }
-        let buffer = target.buffer;
-        let until = Some(buffer.durable_at()).filter(|&at| at > buffer.commits());
+        let until = target.buffer.durable_at();
         let reader = Reader::Named { reader, hold };
         Ok(self.resume(place, reader, live, limit_bytes, charge, until))
     }
