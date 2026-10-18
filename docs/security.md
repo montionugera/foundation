@@ -283,13 +283,13 @@ state on `main`.
   not built: `node` rejects each one until it routes them from member nodes only
   (#1232).
 - `blob::peer::get` trusts the peer no more than `serve` does: a head of the oldest open
-  digest over the largest block of its pool stops the stream with `TOO_LARGE`, and bytes that do not hash to the
-  digest stop it with `MISMATCH` and are not stored. So a binary that a peer serves
-  under a hash that it does not match is never stored (C9d). The digests still open go
-  again on a new stream, so each refused chunk costs the peer one stream. A reply out of
-  order, or an end with digests open, stops the stream with `MALFORMED`. `get` and
-  `put` hold at most one chunk of their own. Nothing bounds a silent peer but a drop of
-  the future, which `mesh` owns (#1231).
+  digest over the largest block of its pool stops the stream with `TOO_LARGE`, and bytes
+  that do not hash to the digest stop it with `MISMATCH` and are not stored. So a binary
+  that a peer serves under a hash that it does not match is never stored (C9d). The
+  digests still open go again on a new stream, so each refused chunk costs the peer one
+  stream. A reply out of order, or an end with digests open, stops the stream with
+  `MALFORMED`. `get` and `put` hold at most one chunk of their own. Nothing bounds a
+  silent peer but a drop of the future, which `mesh` owns (#1231).
 
 ### Time source to `estimate`
 
