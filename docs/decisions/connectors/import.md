@@ -39,7 +39,7 @@
   channels of a connector. The path of a pick with no given name that is not below
   `start` panics: the walk gives each path below its start, so it is a defect of the
   caller. The fix of a refused given name, "Give another name, or leave it out for
-  `<default>`", needs no other item: `ops` calls `names` again with the refused names as
+  `<default>`", needs no other item: `config::import::add` calls `names` again with the refused names as
   `None`, on the failure path only. No name of a path is empty: `walk` refuses an entry
   that a kind gives with an empty name (BROWSE), and `Path::from_str` refuses an empty
   name. `names` takes the characters of a segment from `Name::segment_char` (A3), so its
@@ -115,13 +115,18 @@
   new `<connector>.time`, or the first free of `_2`, `_3`, and on, with case folded,
   added only when a pick adds a channel. The blocks of `Table::block` go after the last
   item of the connector body; the new index and the `channel` blocks go at the end of
-  the file. A given name that is reserved, that the files define or imply in any ASCII
-  case, or that two picks get, fails the call before the write, with each diagnostic
+  the file. A given name that is reserved, that the files define or imply or that the
+  connector writes, in any ASCII case, or that two picks get, fails the call before the write, with each diagnostic
   at once: `config.reserved-name`, or `config.duplicate-name` with the path and the
   name, or one `config.duplicate-name` that names both paths. Each has the fix "Give
   another name, or leave it out for `<default>`", with the default of `names` when the
   refused names are `None`, or "Give another name" when that default is `None`. `add`
-  gives no problem of a block outside the connector block. `Outcome`, `Pick`, `add`,
-  the errors, and the name order: `laptop.architect-2`, 2026-10-18T02:10:56Z, items 3,
+  gives no problem of a block outside the connector block other than
+  `config.private-key`. An `index` that is not a name, in the `channel` block of the
+  first channel that the connector writes that has one, gives its diagnostic.
+  `Outcome`, `Pick`, `add`,
+  the errors, and the name order: `laptop.architect-2`, 2026-10-18T02:10:56Z, items 2, 3,
   4, 5, and 11
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074).
+  Supersedes https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6213124219,
+  item 5: the second call of `names` by `ops`.
