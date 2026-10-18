@@ -7,11 +7,12 @@ use std::path::{Path, PathBuf};
 
 use cfg_expr::targets::{TargetInfo, get_builtin_target_by_triple};
 use cfg_expr::{Expression, Predicate};
+use quote::ToTokens;
 use syn::ext::IdentExt;
 use syn::parse::ParseStream;
 use syn::punctuated::Punctuated;
 use syn::visit::Visit;
-use syn::{Attribute, Expr, Ident, Item, Lit, Meta, Token, Type};
+use syn::{Attribute, Expr, Ident, Item, Lit, Meta, Token};
 
 use crate::{field, files, workflow};
 
@@ -600,8 +601,10 @@ impl<'ast> Visit<'ast> for Items<'_> {
     /// another `impl`.
     fn visit_item_impl(&mut self, i: &'ast syn::ItemImpl) {
         let name = match &i.trait_ {
-            Some((path, _)) => format!("<{} as {}>", shown(&i.self_ty), named(path)),
-            None => shown(&i.self_ty),
+            Some((path, _)) => {
+                format!("<{} as {}>", spelled(&i.self_ty), spelled(path))
+            }
+            None => spelled(&i.self_ty),
         };
         self.enter(&i.attrs, Some(name), |s, _| {
             syn::visit::visit_item_impl(s, i);
@@ -643,50 +646,30 @@ impl<'ast> Visit<'ast> for Items<'_> {
         });
     }
 }
-/// The text of `ty`, with `_` for each type that is not a path, a reference, a slice,
-/// an array, or a tuple.
-fn shown(ty: &Type) -> String {
-    match ty {
-        Type::Path(path) if path.qself.is_none() => named(&path.path),
-        Type::Reference(reference) => {
-            let mutable = if reference.mutability.is_some() {
-                "mut "
-            } else {
-                ""
-            };
-            format!("&{mutable}{}", shown(&reference.elem))
-        }
-        Type::Slice(slice) => format!("[{}]", shown(&slice.elem)),
-        Type::Array(array) => format!("[{}; _]", shown(&array.elem)),
-        Type::Tuple(tuple) => {
-            let elems: Vec<_> = tuple.elems.iter().map(shown).collect();
-            format!("({})", elems.join(", "))
-        }
-        _ => "_".to_string(),
-    }
-}
-
-/// The text of `path`, with the types of its generic arguments, and `_` for each other
-/// argument.
-fn named(path: &syn::Path) -> String {
-    let segments: Vec<_> = (path.segments.iter())
-        .map(|segment| {
-            let ident = segment.ident.unraw();
-            match &segment.arguments {
-                syn::PathArguments::AngleBracketed(arguments) => {
-                    let arguments: Vec<_> = (arguments.args.iter())
-                        .map(|argument| match argument {
-                            syn::GenericArgument::Type(ty) => shown(ty),
-                            _ => "_".to_string(),
-                        })
-                        .collect();
-                    format!("{ident}<{}>", arguments.join(", "))
-                }
-                _ => ident.to_string(),
+/// The text of `tokens`, with a space only between two words, in a string literal,
+/// and after a `,` or a `;` that no closing bracket follows.
+fn spelled(tokens: &impl ToTokens) -> String {
+    let spaced = tokens.to_token_stream().to_string();
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut text = String::with_capacity(spaced.len());
+    let (mut quoted, mut escaped) = (false, false);
+    let mut chars = spaced.chars().peekable();
+    while let Some(c) = chars.next() {
+        if quoted {
+            (quoted, escaped) = (escaped || c != '"', !escaped && c == '\\');
+        } else if c == '"' {
+            quoted = true;
+        } else if c == ' ' {
+            let last = text.chars().last().unwrap_or(' ');
+            let next = chars.peek().copied().unwrap_or(' ');
+            let closing = matches!(next, ')' | ']' | '>');
+            if !(word(last) && word(next) || matches!(last, ',' | ';') && !closing) {
+                continue;
             }
-        })
-        .collect();
-    segments.join("::")
+        }
+        text.push(c);
+    }
+    text
 }
 
 /// A function, a module, or a brace group in the body of a macro call: its attributes,
@@ -1149,10 +1132,11 @@ mod tests {
             gated(&format!("{free} <[u8] as Case>"), "Windows"),
             gated(&format!("{free} <Rig as std::fmt::Debug>"), "Windows"),
             gated(&format!("{free} <&mut Rig as Case>"), "Windows"),
-            gated(&format!("{free} <[u8; _] as Case>"), "Windows"),
+            gated(&format!("{free} <[u8; 2] as Case>"), "Windows"),
             gated(&format!("{free} <(u8, Rig) as Case>"), "Windows"),
-            gated(&format!("{free} <_ as Case>"), "Windows"),
-            gated(&format!("{free} <Cell<Rig, _> as Case>"), "Windows"),
+            gated(&format!("{free} <<Rig as Case>::Out as Case>"), "Windows"),
+            gated(&format!("{free} <Cell<'static, Rig> as Case>"), "Windows"),
+            gated(&format!("{free} <fn() as Other>"), "Windows"),
             gated(&format!("{free} konst"), "Windows"),
             gated(&format!("{free} risky"), "Windows"),
             gated(&format!("{free} foreign"), "Windows"),
@@ -1164,6 +1148,23 @@ mod tests {
         ];
         expected.sort();
         assert_eq!(check(&crate::fixture().join("gates")), Err(expected));
+    }
+
+    #[test]
+    fn spells_a_type_with_a_space_only_where_its_tokens_need_one() {
+        for (ty, expected) in [
+            ("&'a mut Rig", "&'a mut Rig"),
+            ("[u8; N]", "[u8; N]"),
+            ("(u8,)", "(u8,)"),
+            ("Cell<'static, Rig,>", "Cell<'static, Rig,>"),
+            ("fn(u8) -> u8", "fn(u8)->u8"),
+            ("<Rig as Case>::Out", "<Rig as Case>::Out"),
+            ("dyn A + Send", "dyn A+Send"),
+            (r#"Arr<"a  b\" c">"#, r#"Arr<"a  b\" c">"#),
+        ] {
+            let parsed: syn::Type = syn::parse_str(ty).unwrap();
+            assert_eq!(spelled(&parsed), expected, "{ty}");
+        }
     }
 
     #[test]

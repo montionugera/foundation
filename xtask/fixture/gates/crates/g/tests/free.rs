@@ -64,6 +64,23 @@ impl Case for <Rig as Case>::Out {
 }
 
 #[cfg(unix)]
-impl Case for Cell<Rig, 'static> {
+impl Case for Cell<'static, Rig> {
     fn case() {}
+}
+
+impl Case for [u8; 3] {
+    fn case() {}
+}
+
+trait Other {
+    fn other();
+}
+
+#[cfg(unix)]
+impl Other for fn() {
+    fn other() {}
+}
+
+impl Other for dyn Fn() {
+    fn other() {}
 }
