@@ -28,10 +28,11 @@
   wait: `TooLarge` never succeeds, so it gives `Error::Pool` at once, which means that
   no block of `pool` can hold a message that the session sends. Lost: a bound of two
   windows from the stream credit, which ack loss can exceed; a `Bytes` body with no
-  copy; a wait in `block::Pool` that wakes at each free. Three callers in a program
-  poll a pool now: the transport's reads, the session's sends on `pool`, and the frames
-  of a read on `frames`. The trigger fired with the third (#2802; `laptop.architect`,
-  2026-10-16T03:39:42Z,
+  copy; a wait in `block::Pool` that wakes at each free. Four callers poll a pool now:
+  three in a program (the transport's reads, the session's sends on `pool`, and the
+  frames of a read on `frames`), and the wait of a node for the block of the last
+  `Stored` of a client write. The trigger fired with the third (#2802;
+  `laptop.architect`, 2026-10-16T03:39:42Z,
   https://github.com/synnaxlabs/foundation/pull/2802#issuecomment-6207544466): #2811
   adds the wait that a free wakes to `block`.
   `Session` is `Clone`, and a clone is the same session. When the last clone and the
@@ -154,12 +155,12 @@
   (`wire::hub::ends`), and its body. A `Head` of `Time::Node` holds one raw sample of
   each series, and the node writes a stamp over its 8-byte index sample. The node
   replies `wire::hub::write::Reply`: an `Outcome` for each frame (`Taken` or `Lost`
-  with its `frame::Range`, or `Refused` with a `Refusal`), and `Stored { through }`. A
+  with its `frame::Range`, or `Refused` with a `Refusal`), and `Stored { frames }`. A
   frame that finds the pool full gets `Refused(Full)` and the stream stays open. An
-  untimed frame behind a later stamp of another writer gets `Refused(Order)`.
-  `client::write` is a public module with no re-export, as its `Open` collides with
-  that of the read. Until the forward of BQ12 (#3104), a write at a node that is not
-  the home stops with `NOT_HOME`. The plan
+  untimed frame behind a later stamp of another writer, or of a timed frame of its own
+  stream, gets `Refused(Order)`. `client::write` is a public module with no re-export,
+  as its `Open` collides with that of the read. Until the forward of BQ12 (#3104), a
+  write at a node that is not the home stops with `NOT_HOME`. The plan
   (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244711745) was
   approved by `laptop.architect` at 2026-10-18T02:34:55Z
   (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244779011), and
@@ -211,3 +212,42 @@
   a silent drop hides the defect of an SDK. `laptop.architect` gave `Error::Cut` at
   2026-10-18T05:43:30Z
   (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6246212678).
+  Amended (#2718 PR 2): the node serves a write stream at the home of its index. The
+  open holds its `length` in the hub's body budget until it decodes. Then the stream
+  holds 16 bytes for each channel of the open and one for its index until the stream
+  ends, and its decoded names, 16 bytes and the length of each, until it sends its
+  places. Ends or names that do not fit stop with `BUSY` before the writer opens (MEMORY
+  BOUNDS). A write whose channels are on more than one index stops with `MALFORMED`
+  before the node waits for a home, so a refused open takes no control at the gate. A
+  frame of `Time::Node` gets mesh time, or 1 ns after the last stamp that the node gave
+  a frame of the stream that the home took or lost, when mesh time is not after it.
+  After each commit, the node sends `Stored { frames }` with the count of frames of the
+  stream through the last frame that it took before it called the commit. Refused and
+  lost frames count, and frames of both paths count in the one count, so a program drops
+  the first `frames` of the frames that it keeps. When the program finishes, the node
+  waits for the commit of each taken frame, sends its `Stored`, and then finishes the
+  stream, so the program learns that each taken frame is on disk. Control ends when the
+  program finishes the stream: the writer closes before the node waits for those
+  commits. Each frame takes a block for its outcome from the home's pool before it takes
+  a draft, and a frame that finds none stops the stream with `BUSY`, so the home took no
+  frame past the last outcome. During the stream, a `Stored` that finds no block is not
+  sent: the next one covers it, as `frames` never goes back. At the finish, the last
+  `Stored` waits for a block until the session closes, so no `Stored` stops a stream. A
+  write takes a stream of any class: at the node, the class sets only the priority and
+  the carrier of its replies. The two key choices, the wait at the finish and the ends
+  in the body budget, went to `laptop.monitor` at 2026-10-18T07:43:08Z, with no
+  objection. Approved by `laptop.architect` at 2026-10-18T07:45:01Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6247275705) and
+  2026-10-18T08:03:14Z
+  (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6247422979). Lost:
+  a count cap on write streams, which bounds no bytes without the widest open. The reply
+  block and the rule for `Stored` approved by `laptop.architect` at 2026-10-18T08:45:22Z
+  (https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6247800403), and sent
+  to `laptop.monitor` as a key choice with that ruling at 2026-10-18T08:53:42Z, with no
+  objection. The wait of the last `Stored` until the session closes, not the stream,
+  approved by `laptop.architect` at 2026-10-18T09:33:51Z
+  (https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6248291282).
+  `Stored { frames }`, a count of the frames of the stream, in place of a path and a
+  last seq of each path, decided by `laptop.architect` at 2026-10-18T10:09:56Z
+  (https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6248601265), who sent
+  it to `laptop.monitor` as a key choice.

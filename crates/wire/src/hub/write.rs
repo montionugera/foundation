@@ -8,7 +8,7 @@
 //!   (`u32`).
 //! - [`Reply`]: taken 1 or lost 2, then the seq (`u64`) and the count (`u32`); refused
 //!   3, then the code (`u8`, waiting 1, reserved 2, expired 3, order 4, codec 5, full
-//!   6, large 7); stored 4, then the last seq on disk (`u64`).
+//!   6, large 7); stored 4, then the count of frames that it covers (`u64`).
 
 use types::frame::{self, Form, Path};
 
@@ -140,10 +140,12 @@ impl Head {
 pub enum Reply {
     /// What the home did with the next frame.
     Outcome(Outcome),
-    /// Each seq of the index up to `through` that a frame took is on disk.
+    /// Each frame of the stream among the first `frames` that the home took is on
+    /// disk. `frames` counts each frame that got an [`Outcome`], in their order, and
+    /// never goes back.
     Stored {
-        /// The last seq on disk.
-        through: u64,
+        /// The count of frames that it covers.
+        frames: u64,
     },
 }
 
@@ -164,6 +166,11 @@ pub enum Outcome {
     },
     /// The home refused the frame, and no seq moved.
     Refused(Refusal),
+}
+
+impl Outcome {
+    /// The most bytes that a [`Reply::Outcome`] encodes to.
+    pub const LEN_MAX: usize = 13;
 }
 
 /// Why the home refused a frame.
@@ -215,7 +222,9 @@ impl Reply {
     #[must_use]
     pub const fn encoded_len(&self) -> usize {
         match self {
-            Self::Outcome(Outcome::Taken { .. } | Outcome::Lost { .. }) => 13,
+            Self::Outcome(Outcome::Taken { .. } | Outcome::Lost { .. }) => {
+                Outcome::LEN_MAX
+            }
             Self::Outcome(Outcome::Refused(_)) => 2,
             Self::Stored { .. } => 9,
         }
@@ -237,9 +246,9 @@ impl Reply {
             Self::Outcome(Outcome::Refused(refusal)) => {
                 out.put(&[REFUSED, refusal.code()]);
             }
-            Self::Stored { through } => {
+            Self::Stored { frames } => {
                 out.put(&[STORED]);
-                out.put(&through.to_le_bytes());
+                out.put(&frames.to_le_bytes());
             }
         }
     }
@@ -271,9 +280,9 @@ impl Reply {
                     .ok_or(Error::Refusal { code });
             }
             STORED => {
-                let through = u64::from_le_bytes(*fields.take()?);
+                let frames = u64::from_le_bytes(*fields.take()?);
                 fields.end()?;
-                Self::Stored { through }
+                Self::Stored { frames }
             }
             kind => return Err(Error::Kind { kind }),
         };

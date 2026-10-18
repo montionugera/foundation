@@ -552,7 +552,7 @@ fn write_write(input: &mut Unstructured) -> arbitrary::Result<()> {
     let sent = match input.int_in_range(0..=10)? {
         0 => Reply::Outcome(Outcome::Taken { range }),
         1 => Reply::Outcome(Outcome::Lost { range }),
-        2 => Reply::Stored { through: range.seq },
+        2 => Reply::Stored { frames: range.seq },
         3 => Reply::Outcome(Outcome::Refused(Refusal::Waiting)),
         4 => Reply::Outcome(Outcome::Refused(Refusal::Reserved)),
         5 => Reply::Outcome(Outcome::Refused(Refusal::Expired)),

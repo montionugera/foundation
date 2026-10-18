@@ -1259,7 +1259,9 @@ mod tests {
     /// Heap memory with a `base` that is off by 8 bytes.
     struct Misaligned(Heap);
 
-    // SAFETY: the range is 8 bytes shorter than the heap, and inside it.
+    // SAFETY: the range is 8 bytes shorter than the heap, and inside it. A commit is
+    // the commit of the heap of the same bytes, and the first `ALIGN` bytes lie in
+    // the first page, which the heap commits at its start.
     unsafe impl Memory for Misaligned {
         fn base(&self) -> NonNull<u8> {
             // SAFETY: the heap has more than 8 bytes.
@@ -1270,8 +1272,8 @@ mod tests {
             self.0.len() - 8
         }
 
-        fn commit(&self, _offset: usize, _len: usize) -> Result<(), Refused> {
-            Ok(())
+        fn commit(&self, offset: usize, len: usize) -> Result<(), Refused> {
+            self.0.commit(offset + 8, len)
         }
 
         fn purge(&self, _offset: usize, _len: usize) {}
@@ -1503,15 +1505,15 @@ mod tests {
         }
 
         #[test]
-        fn is_aligned_and_zeroed() {
+        fn is_aligned_and_zeroed_in_its_first_page() {
             for len in (1..=512).chain([4_097]) {
                 let heap = Heap::new(len);
                 assert_eq!(heap.base().addr().get() % ALIGN, 0, "{len}");
                 assert_eq!(heap.len(), len);
-                for offset in [0, ALIGN.min(len - 1), len - 1] {
+                for offset in [0, ALIGN.min(len - 1), len.min(4096) - 1] {
                     // SAFETY: `offset` is under `len`.
                     let byte = unsafe { heap.base().add(offset) };
-                    // SAFETY: the bytes are initialized from the start.
+                    // SAFETY: `new` commits the first page.
                     let byte = unsafe { byte.read() };
                     assert_eq!(byte, 0, "{len} at {offset}");
                 }
@@ -1520,15 +1522,15 @@ mod tests {
 
         #[test]
         #[should_panic(expected = "heap memory of 9223372036854775807 bytes is too")]
-        fn panics_when_the_padded_layout_is_too_large() {
+        fn panics_when_the_layout_is_too_large() {
             drop(Heap::new(isize::MAX as usize));
         }
 
         #[test]
         #[cfg_attr(miri, ignore = "Miri stops at an allocation it cannot make")]
-        #[should_panic(expected = "heap memory of 9223372036854775743 bytes is too")]
-        fn panics_when_the_padded_layout_fits_but_cannot_be_allocated() {
-            drop(Heap::new(isize::MAX as usize - ALIGN));
+        #[should_panic(expected = "heap memory of 9223372036854771712 bytes is too")]
+        fn panics_when_the_layout_fits_but_cannot_be_allocated() {
+            drop(Heap::new(isize::MAX as usize - 4095));
         }
 
         mod pool {

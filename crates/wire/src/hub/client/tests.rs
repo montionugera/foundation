@@ -573,23 +573,25 @@ fn gives_the_code_and_the_text_of_each_refusal() {
         (
             Refusal::Unknown,
             16,
-            "the selector matches no channel, or a channel of the read was removed",
+            "the selector matches no channel, or a channel of the read or write is \
+             unknown or was removed",
         ),
         (
             Refusal::NotHome,
             17,
-            "the home of the index of the read is another node",
+            "the home of the index of the read or write is another node",
         ),
         (
             Refusal::Failed,
             18,
-            "the reader failed: the buffer or the mesh of the home of the index \
-             stopped, or the path from the node to that home failed",
+            "the reader or writer failed: the buffer or the mesh of the home of the \
+             index stopped, or the path from the node to that home failed",
         ),
         (
             Refusal::Busy,
             19,
-            "the node had no memory for a response, a request body, or a read",
+            "the node had no memory for a response, a request body, a read, or a \
+             write",
         ),
         (
             Refusal::Refused,
