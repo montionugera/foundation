@@ -81,8 +81,7 @@ fn two_at_once(seed: u64, names: [&'static str; 2]) -> [Option<Vec<u8>>; 2] {
 
 #[test]
 fn two_secrets_written_at_once_both_land() {
-    // The second pair has one `DefaultHasher` hash, `b2ce31a3c857fea4`, so a staged
-    // file named by a hash of the name is one file for both.
+    // Two names that a staged file named by a hash of the name would put in one file.
     let pairs = [
         ["plant.a", "plant.b"],
         ["p.ac5d98e62022af56d", "p.a8f75ad3ac7923eff"],
