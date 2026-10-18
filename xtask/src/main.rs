@@ -230,6 +230,12 @@ mod common {
     pub(crate) const NO_FOLDER: &str =
         "The system cannot find the path specified. (os error 3)";
 
+    /// The text of the error of a removal of a folder at a file.
+    #[cfg(unix)]
+    pub(crate) const NOT_FOLDER: &str = "Not a directory (os error 20)";
+    #[cfg(windows)]
+    pub(crate) const NOT_FOLDER: &str = "The directory name is invalid. (os error 267)";
+
     /// `path`, written with `/`, with the separator of the OS.
     pub(crate) fn native(path: &str) -> String {
         path.replace('/', std::path::MAIN_SEPARATOR_STR)

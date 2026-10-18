@@ -101,4 +101,4 @@
     (https://github.com/synnaxlabs/foundation/pull/3163#issuecomment-6248122830): "a
     crate item that leaves a list, replaced by one `tests` item for each of its tests
     that still fails, each with an open issue, is a shrink." So `xtask` leaves the
-    Windows lists with 37 `tests` items of #3165 and #3166.
+    Windows lists with 32 `tests` items of #3165 and #3166.

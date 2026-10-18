@@ -2039,7 +2039,10 @@ fn wait((name, child): (String, Child)) -> Result<(String, String), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::MAIN_SEPARATOR;
+
     use super::*;
+    use crate::common::{NO_FOLDER, NOT_FOLDER, native};
 
     /// A reference of `function` from `section`.
     fn labeled(
@@ -2421,7 +2424,10 @@ Disassembly of section .text.stamp:
             includes(&preprocessed, &root.join("copy"), flags, &dirs),
             [
                 "includes <local.h>, which no include directory holds".to_owned(),
-                "includes src/../../out.h, which is outside the copy".to_owned(),
+                format!(
+                    "includes {}, which is outside the copy",
+                    Path::new("src").join("../../out.h").display()
+                ),
                 "includes UA_X, which is not a file name".to_owned(),
                 "includes <none.h>, which no include directory holds".to_owned(),
                 "uses #include_next <stdio.h>, which the check cannot follow"
@@ -2763,8 +2769,9 @@ n = read_x(b, 0, 0, 0);
         std::fs::write(copy.join("src/e.c"), b"/* Andr\xe9 */\n#line 2\n").unwrap();
         let held = |at: &str| {
             format!(
-                "{at}: holds a line directive, which moves the file that the include \
-                 check reads"
+                "{}: holds a line directive, which moves the file that the include \
+                 check reads",
+                native(at)
             )
         };
         assert_eq!(
@@ -2788,7 +2795,7 @@ n = read_x(b, 0, 0, 0);
         assert_eq!(
             line_directives(&missing, Path::new("")),
             Err(format!(
-                "{}/: No such file or directory (os error 2)",
+                "{}{MAIN_SEPARATOR}: {NO_FOLDER}",
                 missing.display()
             ))
         );
@@ -3037,7 +3044,10 @@ End of search list.
         );
         assert_eq!(
             trees.relative(Path::new("/w/build/other.h")),
-            Err("/w/build/other.h is outside the clone".to_owned())
+            Err(format!(
+                "{} is outside the clone",
+                native("/w/build/other.h")
+            ))
         );
     }
 
@@ -3115,10 +3125,10 @@ End of search list.
         };
         assert_eq!(
             collect(&trees).map(|found| found.flags),
-            Err(
-                "src/ua_types.c: `-fplugin=x` is in neither CODE_FLAGS nor LEFT_OUT"
-                    .to_owned()
-            )
+            Err(format!(
+                "{}: `-fplugin=x` is in neither CODE_FLAGS nor LEFT_OUT",
+                native("src/ua_types.c")
+            ))
         );
         remove(&dir).unwrap();
     }
@@ -4742,12 +4752,12 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
     #[test]
     fn remove_fails_on_an_error_other_than_a_missing_directory() {
         let dir = temp("remove");
-        std::fs::write(dir.join("file"), "").unwrap();
-        let path = dir.join("file/child");
+        let path = dir.join("file");
+        std::fs::write(&path, "").unwrap();
         assert_eq!(remove(&dir.join("missing")), Ok(()));
         assert_eq!(
             remove(&path),
-            Err(format!("{}: Not a directory (os error 20)", path.display()))
+            Err(format!("{}: {NOT_FOLDER}", path.display()))
         );
         remove(&dir).unwrap();
     }
