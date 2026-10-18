@@ -170,3 +170,9 @@ cfg_if::cfg_if! {
 #[cfg(target_arch = "aarch64")]
 #[test]
 fn falsemac() {}
+#[cfg(unix)]
+#[path = "pathed.rs"]
+mod first;
+#[cfg(not(windows))]
+#[path = "pathed.rs"]
+mod second;

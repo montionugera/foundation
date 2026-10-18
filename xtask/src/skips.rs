@@ -165,13 +165,9 @@ pub(crate) fn check(root: &Path) -> Result<(), Vec<String>> {
 fn problems(root: &Path) -> Result<Vec<String>, String> {
     let mut lists = lists(root)?;
     let mut modules = roots(root)?;
-    let mut seen = BTreeSet::new();
     let mut problems = BTreeSet::new();
     let mut catalog = Catalog::default();
     while let Some(module) = modules.pop() {
-        if !seen.insert((module.file.clone(), module.on, module.target)) {
-            continue;
-        }
         let shown = module
             .file
             .strip_prefix(root)
@@ -1123,6 +1119,7 @@ mod tests {
             gated(&format!("{lib} intel"), "macOS"),
             gated(&format!("{lib} falsemac"), "Linux"),
             gated(&format!("{lib} falsemac"), "Windows"),
+            gated(&format!("{lib} first"), "Windows"),
             gated(&format!("{lib} colon"), "Linux"),
             gated(&format!("{lib} colon"), "macOS"),
             gated(&format!("{lib} colon"), "Windows"),
