@@ -196,9 +196,12 @@
   `dup` or registration gives `Io` for that poll alone, and the next poll tries again;
   nothing stores a failure. For a source that is not local or is of the other family,
   `os` gives the kernel's answer (on Linux, `Unreachable` or `Io { code: 22 }`), and
-  `sim` gives `Io { code: 99 }`. For port 0, `os` gives the kernel's answer. Such a
-  transmit changes no state of the socket (`laptop.architect-2`, 2026-10-08 21:15 UTC,
+  `sim` gives the codes that SIM NETWORK states. For port 0, `os` gives the kernel's
+  answer. Such a transmit changes no state of the socket (`laptop.architect-2`,
+  2026-10-08 21:15 UTC,
   https://github.com/synnaxlabs/foundation/issues/1972#issuecomment-6069193130).
+  Amended (2026-10-18, #3185): supersedes "`sim` gives `Io { code: 99 }`" of
+  https://github.com/synnaxlabs/foundation/issues/1972#issuecomment-6069193130.
   Decided by `laptop.architect-2` (2026-10-08 18:56 and 19:02 UTC, #1965,
   https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6066909518,
   https://github.com/synnaxlabs/foundation/pull/1965#issuecomment-6067014743).
