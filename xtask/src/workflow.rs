@@ -1,13 +1,21 @@
 //! A reader of the lines of `.github/workflows/ci.yaml`: it refuses each node that can
 //! run on into the next line, so that each check can read one line as one node.
 
+/// A line of YAML: its text, and its code, the text before its comment, which a line
+/// of the text of a block scalar does not have.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Line<'a> {
+    pub(crate) text: &'a str,
+    pub(crate) code: Option<&'a str>,
+}
+
 /// The lines of the YAML `text`, with no blank or comment line, which YAML skips.
 ///
 /// # Errors
 ///
-/// When `text` has a character that is not printable ASCII or LF, or a line that `code`
-/// refuses.
-pub(crate) fn lines(text: &str) -> Result<Vec<&str>, String> {
+/// When `text` has a character that is not printable ASCII or LF, or a line outside
+/// the text of a block scalar that `code` refuses.
+pub(crate) fn lines(text: &str) -> Result<Vec<Line<'_>>, String> {
     // YAML breaks a line at CR, NEL, LS, and PS too, and a parser can read other white
     // space as text, so `str::lines` and `str::trim` would drop a line that YAML reads.
     if let Some(c) = text.chars().find(|c| *c != '\n' && !matches!(c, ' '..='~')) {
@@ -20,16 +28,22 @@ pub(crate) fn lines(text: &str) -> Result<Vec<&str>, String> {
         .collect();
     // The text of a block scalar is not YAML.
     let mut block = None;
-    for line in &lines {
-        if block.is_some_and(|key| indent(line) > key) {
+    let mut read = Vec::with_capacity(lines.len());
+    for text in lines {
+        if block.is_some_and(|key| indent(text) > key) {
+            read.push(Line { text, code: None });
             continue;
         }
-        let code = code(line)?;
+        let code = code(text)?;
         let header = code.trim_end_matches(['-', '+']);
         block = (header.ends_with(": |") || header.ends_with(": >"))
-            .then(|| line.len() - line.trim_start_matches([' ', '-']).len());
+            .then(|| text.len() - text.trim_start_matches([' ', '-']).len());
+        read.push(Line {
+            text,
+            code: Some(code),
+        });
     }
-    Ok(lines)
+    Ok(read)
 }
 
 /// The text of the YAML `line` before its comment.
@@ -40,7 +54,7 @@ pub(crate) fn lines(text: &str) -> Result<Vec<&str>, String> {
 /// sequence holds more than plain words, or `line` has a flow mapping, an anchor,
 /// alias, or tag, a `?` or `:` at the start of a node, a `#` after a character that is
 /// not a space, or a document marker, any of which can make a node run on.
-pub(crate) fn code(line: &str) -> Result<&str, String> {
+fn code(line: &str) -> Result<&str, String> {
     let refused = || Err(format!("ci.yaml has a node that can run on: `{line}`"));
     if line.starts_with("---") || line.starts_with("...") {
         return refused();
@@ -114,4 +128,147 @@ pub(crate) fn under<'a>(lines: &[&'a str], key: &str) -> Result<Vec<&'a str>, St
     Ok((lines[start + 1..].iter().copied())
         .take_while(|line| indent(line) > indent(key))
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn texts(text: &str) -> Vec<&str> {
+        lines(text)
+            .unwrap()
+            .into_iter()
+            .map(|line| line.text)
+            .collect()
+    }
+
+    fn refused(line: &str) -> Result<Vec<Line<'_>>, String> {
+        Err(format!("ci.yaml has a node that can run on: `{line}`"))
+    }
+
+    #[test]
+    fn lines_skips_each_blank_and_comment_line() {
+        let text = "a:\n\n  \n  # x\n  b: 1 # c\n";
+        assert_eq!(
+            lines(text),
+            Ok(vec![
+                Line {
+                    text: "a:",
+                    code: Some("a:"),
+                },
+                Line {
+                    text: "  b: 1 # c",
+                    code: Some("  b: 1"),
+                },
+            ])
+        );
+        let printable: String = (' '..='~').collect();
+        let text = format!("a: |\n  {printable}");
+        assert_eq!(texts(&text), ["a: |", &format!("  {printable}")]);
+    }
+
+    #[test]
+    fn lines_gives_no_code_to_the_text_of_a_block_scalar() {
+        let text = concat!(
+            "a: |\n",
+            "  [ \"$A\" = b ] # c\n",
+            "  - b: >-\n",
+            "      echo \"a#b\"\n",
+            "c: d\n",
+        );
+        let codes: Vec<_> = lines(text).unwrap().into_iter().map(|l| l.code).collect();
+        assert_eq!(codes, [Some("a: |"), None, None, None, Some("c: d")]);
+    }
+
+    #[test]
+    fn lines_keeps_each_node_that_closes_on_its_line() {
+        let text = concat!(
+            "a: 'b''c'\n",
+            "b: \"c\\\"d\" # e\n",
+            "c: it's a b # c\n",
+            "d: [e, f-g, h_i.j/k] # it's\n",
+            "e: \"!cancelled()\"\n",
+            "f: |\n",
+            "  [echo \"it's\n",
+            "  - g: >-\n",
+            "      [h\n",
+            "i: 'j\\'\n",
+            "a: b[c\n",
+            "d: e,'f\n",
+            "g: |+\n",
+            "  'h\n",
+            "[i]: j\n",
+        );
+        assert_eq!(texts(text), text.lines().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn lines_keeps_each_quoted_key() {
+        let text = concat!(
+            "env:\n",
+            "  \"A\": b\n",
+            "  'C': d # e\n",
+            "steps:\n",
+            "  - \"f\": |\n",
+            "      g\n",
+        );
+        assert_eq!(texts(text), text.lines().collect::<Vec<_>>());
+    }
+    #[test]
+    fn lines_refuses_each_node_that_can_run_on() {
+        for line in [
+            "    runs-on: \"${{ 'ubuntu-latest' || '",
+            "      [{name: Miri, run: \"true",
+            "  - [x, [y]",
+            "          key: 'x",
+            "      - name: 'Miri",
+            "     note: \"",
+            "a'b: 'c",
+            "a: {\"b\":'c}",
+            "a: \"b\\\"",
+            "a: [b, # c",
+            "a: &b 'c'",
+            "a: !b c",
+            "a: *b",
+            "  ? a",
+            "  : b: |",
+            "a: [? b]",
+            "a: [b:'c, [d']",
+            "a: [b:'#, [c']",
+            "a: [b, [c]]",
+            "a: [b, c",
+            "--- 'a",
+            "... [a",
+            "a: {b: c}",
+            "a: 'b''c",
+            "a: b#c",
+            "a: [\"b\"#c]",
+            "a: ['b'#]",
+            "a: ['b',#]",
+            "a: {'b':#}",
+            "a: [b - 'c, [d']",
+            "a: [b - '#, [d']",
+            "a: [-'b, [c']",
+        ] {
+            let text = format!("x: |\n  y\nz:\n{line}\n");
+            assert_eq!(lines(&text), refused(line), "{line}");
+        }
+        let text = "  - a: |\n      b\n    c: 'd\n";
+        assert_eq!(lines(text), refused("    c: 'd"));
+    }
+
+    #[test]
+    fn lines_refuses_each_character_that_is_not_printable_ascii_or_lf() {
+        for c in [
+            '\r', '\t', '\u{85}', '\u{a0}', '\u{2028}', '\u{2029}', '\u{7f}',
+        ] {
+            let text = format!("a:\n  #{c}  b:\n");
+            assert_eq!(
+                lines(&text),
+                Err(format!(
+                    "ci.yaml has a character that is not printable ASCII or LF: {c:?}"
+                )),
+            );
+        }
+    }
 }

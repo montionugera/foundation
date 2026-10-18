@@ -243,7 +243,11 @@ mod tests {
     }
 
     fn yaml_lines(text: &str) -> Vec<&str> {
-        workflow::lines(text).unwrap_or_else(|e| panic!("{e}"))
+        (workflow::lines(text)
+            .unwrap_or_else(|e| panic!("{e}"))
+            .into_iter())
+        .map(|line| line.text)
+        .collect()
     }
 
     fn under<'a>(lines: &[&'a str], key: &str) -> Vec<&'a str> {
@@ -445,118 +449,6 @@ mod tests {
                     )),
                 );
             }
-        }
-    }
-
-    #[test]
-    fn yaml_lines_skips_each_blank_and_comment_line() {
-        let text = "a:\n\n  \n  # x\n  b: 1 # c\n";
-        assert_eq!(yaml_lines(text), ["a:", "  b: 1 # c"]);
-        let printable: String = (' '..='~').collect();
-        let text = format!("a: |\n  {printable}");
-        assert_eq!(yaml_lines(&text), ["a: |", &format!("  {printable}")]);
-    }
-
-    #[test]
-    fn yaml_lines_keeps_each_node_that_closes_on_its_line() {
-        let text = concat!(
-            "a: 'b''c'\n",
-            "b: \"c\\\"d\" # e\n",
-            "c: it's a b # c\n",
-            "d: [e, f-g, h_i.j/k] # it's\n",
-            "e: \"!cancelled()\"\n",
-            "f: |\n",
-            "  [echo \"it's\n",
-            "  - g: >-\n",
-            "      [h\n",
-            "i: 'j\\'\n",
-            "a: b[c\n",
-            "d: e,'f\n",
-            "g: |+\n",
-            "  'h\n",
-            "[i]: j\n",
-        );
-        assert_eq!(yaml_lines(text), text.lines().collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn yaml_lines_keeps_each_quoted_key() {
-        let text = concat!(
-            "env:\n",
-            "  \"A\": b\n",
-            "  'C': d # e\n",
-            "steps:\n",
-            "  - \"f\": |\n",
-            "      g\n",
-        );
-        assert_eq!(yaml_lines(text), text.lines().collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn yaml_lines_refuses_each_node_that_can_run_on() {
-        for line in [
-            "    runs-on: \"${{ 'ubuntu-latest' || '",
-            "      [{name: Miri, run: \"true",
-            "  - [x, [y]",
-            "          key: 'x",
-            "      - name: 'Miri",
-            "     note: \"",
-            "a'b: 'c",
-            "a: {\"b\":'c}",
-            "a: \"b\\\"",
-            "a: [b, # c",
-            "a: &b 'c'",
-            "a: !b c",
-            "a: *b",
-            "  ? a",
-            "  : b: |",
-            "a: [? b]",
-            "a: [b:'c, [d']",
-            "a: [b:'#, [c']",
-            "a: [b, [c]]",
-            "a: [b, c",
-            "--- 'a",
-            "... [a",
-            "a: {b: c}",
-            "a: 'b''c",
-            "a: b#c",
-            "a: [\"b\"#c]",
-            "a: ['b'#]",
-            "a: ['b',#]",
-            "a: {'b':#}",
-            "a: [b - 'c, [d']",
-            "a: [b - '#, [d']",
-            "a: [-'b, [c']",
-        ] {
-            let text = format!("x: |\n  y\nz:\n{line}\n");
-            let panic = std::panic::catch_unwind(|| yaml_lines(&text)).expect_err(line);
-            assert_eq!(
-                panic.downcast_ref::<String>(),
-                Some(&format!("ci.yaml has a node that can run on: `{line}`")),
-            );
-        }
-        let text = "  - a: |\n      b\n    c: 'd\n";
-        let panic = std::panic::catch_unwind(|| yaml_lines(text)).expect_err(text);
-        assert_eq!(
-            panic.downcast_ref::<String>(),
-            Some(&"ci.yaml has a node that can run on: `    c: 'd`".to_owned()),
-        );
-    }
-
-    #[test]
-    fn yaml_lines_refuses_each_character_that_is_not_printable_ascii_or_lf() {
-        for c in [
-            '\r', '\t', '\u{85}', '\u{a0}', '\u{2028}', '\u{2029}', '\u{7f}',
-        ] {
-            let text = format!("a:\n  #{c}  b:\n");
-            let panic =
-                std::panic::catch_unwind(|| yaml_lines(&text)).expect_err("refused");
-            assert_eq!(
-                panic.downcast_ref::<String>(),
-                Some(&format!(
-                    "ci.yaml has a character that is not printable ASCII or LF: {c:?}"
-                )),
-            );
         }
     }
 

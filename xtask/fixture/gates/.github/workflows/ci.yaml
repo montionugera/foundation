@@ -18,6 +18,9 @@ jobs:
               - crates/g/src/lib.rs stale # #1
             tests:
               - --skip a # #1
+    steps:
+      - run: |
+          [ "$A" = b ] && echo "a#b"
   next:
     gates:
       - crates/g/src/lib.rs refused # #1

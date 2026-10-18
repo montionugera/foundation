@@ -9,5 +9,3 @@ jobs:
             gates: []
           - name: windows
             gates: []
-            tests:
-              - --skip passed::listed # #1

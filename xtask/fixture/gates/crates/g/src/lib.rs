@@ -86,3 +86,71 @@ fn armed() {}
 #[cfg(target_arch = "aarch64")]
 #[test]
 fn misarmed() {}
+
+/// Only aarch64: a case.
+#[cfg(target_os = "macos")]
+#[test]
+fn apple() {}
+
+/// Only x86_64: a case.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn intel() {}
+
+/// Only : a case.
+#[cfg(all(unix, windows))]
+#[test]
+fn colon() {}
+
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        #[test]
+        fn hidden() {}
+    } else if #[cfg(target_os = "linux")] {
+        #[test]
+        fn shadowed() {}
+    } else {
+        #[test]
+        fn rest() {}
+    }
+}
+
+#[cfg(unix)]
+m! {
+    {
+        #[test]
+        fn grouped() {}
+    }
+}
+
+#[cfg(unix)]
+m! {
+    #![proptest_config(c)]
+    const unsafe X: u8 = 1;
+    #[a] y;
+    pub z;
+    mod declared;
+    struct S {}
+    #[test]
+    fn tail() {}
+    pub
+}
+
+m! {
+    mod inside {
+        #![cfg(unix)]
+        #[test]
+        fn kept() {}
+    }
+}
+
+/// Only aarch64
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn bare() {}
+
+#[cfg_attr(target_os = "freebsd", test)]
+fn unbuilt() {}
+
+#[cfg_attr(miri, test)]
+fn flagged_test() {}

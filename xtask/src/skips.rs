@@ -23,11 +23,17 @@ struct Runner {
     entry: &'static str,
 }
 
-impl Runner {
-    fn target(&self) -> &'static TargetInfo {
-        get_builtin_target_by_triple(self.triple)
-            .expect("invariant: rustc knows the target of each runner")
-    }
+/// The triple of the runner of `arm.yaml`, which has no lists.
+const ARM: &str = "aarch64-unknown-linux-gnu";
+
+/// The target of each runner of `Runners`, in the order of its bits.
+fn targets() -> impl Iterator<Item = &'static TargetInfo> {
+    (RUNNERS.iter().map(|runner| runner.triple))
+        .chain([ARM])
+        .map(|triple| {
+            get_builtin_target_by_triple(triple)
+                .expect("invariant: rustc knows the target of each runner")
+        })
 }
 
 /// The runners of the lists of LINUX CI, one for each OS, in the order in which a
@@ -50,12 +56,15 @@ const RUNNERS: [Runner; 3] = [
     },
 ];
 
-/// A set of the runners of `RUNNERS`, one bit for each by its index.
+/// A set of runners: one bit for each of `RUNNERS` by its index, and the next bit for
+/// the runner of `arm.yaml`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Runners(u8);
 
 impl Runners {
-    const ALL: Self = Self((1 << RUNNERS.len()) - 1);
+    const ALL: Self = Self((1 << (RUNNERS.len() + 1)) - 1);
+    /// The runners of the job `check`.
+    const CHECK: Self = Self((1 << RUNNERS.len()) - 1);
     const NONE: Self = Self(0);
 
     /// The runners on which `predicate`, the predicate of a `cfg`, holds in `cargo test
@@ -68,8 +77,7 @@ impl Runners {
             .predicates()
             .any(|predicate| matches!(predicate, Predicate::Target(_)));
         let mut runners = Self::NONE;
-        for (i, runner) in RUNNERS.iter().enumerate() {
-            let target = runner.target();
+        for (i, target) in targets().enumerate() {
             let holds = expression.eval(|predicate| match predicate {
                 Predicate::Target(name) => Some(name.matches(target)),
                 Predicate::Test
@@ -86,7 +94,7 @@ impl Runners {
                 None => {
                     return Err(format!(
                         "a `cfg` predicate with no known value on `{}`",
-                        runner.triple
+                        target.triple.as_str()
                     ));
                 }
             }
@@ -97,8 +105,8 @@ impl Runners {
     /// The runners whose target has the `target_arch` `arch`.
     fn arch(arch: &str) -> Self {
         let mut runners = Self::NONE;
-        for (i, runner) in RUNNERS.iter().enumerate() {
-            if runner.target().arch.as_str() == arch {
+        for (i, target) in targets().enumerate() {
+            if target.arch.as_str() == arch {
                 runners.0 |= 1 << i;
             }
         }
@@ -134,13 +142,15 @@ impl Runners {
 /// gate, a `cfg` that names a target and leaves a test out of an OS, that no `gates`
 /// list item and no `Only <OS>` or `Only <arch>` doc gives, and each list item that
 /// names no gate. A `cfg_attr` that applies `test` on some runners is a gate on the
-/// others. In the body of a macro call, it reads only the functions and modules in the
-/// tokens of the call, and no `ignore`.
+/// others. In the body of a macro call, it reads only the functions, modules, and brace
+/// groups in the tokens of the call, and the `cfg` of each branch of `cfg_if!`, and no
+/// `ignore`.
 ///
 /// It also refuses a file that does not parse, a `mod` with no file, a `path` in a
 /// `cfg_attr`, a `cfg` predicate that is not one of Rust or whose value on a runner is
 /// not known, an `ignore` reason that is not a string literal, and a `ci.yaml` that
-/// `workflow` refuses or with no block `gates` list for an entry of the job `check`.
+/// `workflow` refuses, that has no `gates` list for an entry of the job `check`, or
+/// whose `gates` value is not a block list or `[]`.
 pub(crate) fn check(root: &Path) -> Result<(), Vec<String>> {
     let problems = problems(root).map_err(|e| vec![e])?;
     if problems.is_empty() {
@@ -498,6 +508,9 @@ impl Items<'_> {
                     let name = name.unraw().to_string();
                     self.enter(&attributes, Some(name), |s, _| s.body(&[], items));
                 }
+                Body::Group(attributes, items) => {
+                    self.body(&[outer, attributes].concat(), items);
+                }
             }
         }
     }
@@ -514,12 +527,9 @@ impl Items<'_> {
             .fold(Runners::NONE, |skipped, ignore| skipped.or(ignore.on));
         let runs = self.on.without(skipped);
         for ignore in ignores {
-            let given = runs != Runners::NONE
-                && ignore
-                    .reason
-                    .as_deref()
-                    .is_some_and(|r| gives(r, &runs.oses()));
-            if ignore.on.and(self.on) != Runners::NONE && !given {
+            let given =
+                (ignore.reason.as_deref()).is_some_and(|r| gives(r, &runs.oses()));
+            if ignore.on.and(self.on).and(Runners::CHECK) != Runners::NONE && !given {
                 self.problems
                     .insert(refused(self.shown, &self.item.join("::")));
             }
@@ -587,15 +597,14 @@ impl<'ast> Visit<'ast> for Items<'_> {
         });
     }
 
-    /// The items of an `impl` take the name of its type in their path, so that none
-    /// shares the path of a free function.
+    /// The items of an `impl` take its type, and its trait as `<type as trait>`, in
+    /// their path, so that none shares the path of a free function or of an item of
+    /// another `impl`.
     fn visit_item_impl(&mut self, i: &'ast syn::ItemImpl) {
-        let name = match &*i.self_ty {
-            Type::Path(path) => path.path.segments.last().map(|s| s.ident.unraw()),
-            _ => None,
+        let name = match &i.trait_ {
+            Some((path, _)) => format!("<{} as {}>", shown(&i.self_ty), named(path)),
+            None => shown(&i.self_ty),
         };
-        // No item can be named `impl`.
-        let name = name.map_or("impl".to_string(), |name| name.to_string());
         self.enter(&i.attrs, Some(name), |s, _| {
             syn::visit::visit_item_impl(s, i);
         });
@@ -633,18 +642,93 @@ impl<'ast> Visit<'ast> for Items<'_> {
         });
     }
 }
-/// A function or a module in the body of a macro call: its attributes, its name, and
-/// the items of the module.
+/// The text of `ty`, with `_` for each type that is not a path, a reference, a slice,
+/// an array, or a tuple.
+fn shown(ty: &Type) -> String {
+    match ty {
+        Type::Path(path) if path.qself.is_none() => named(&path.path),
+        Type::Reference(reference) => {
+            let mutable = if reference.mutability.is_some() {
+                "mut "
+            } else {
+                ""
+            };
+            format!("&{mutable}{}", shown(&reference.elem))
+        }
+        Type::Slice(slice) => format!("[{}]", shown(&slice.elem)),
+        Type::Array(array) => format!("[{}; _]", shown(&array.elem)),
+        Type::Tuple(tuple) => {
+            let elems: Vec<_> = tuple.elems.iter().map(shown).collect();
+            format!("({})", elems.join(", "))
+        }
+        _ => "_".to_string(),
+    }
+}
+
+/// The text of `path`, with the types of its generic arguments, and `_` for each other
+/// argument.
+fn named(path: &syn::Path) -> String {
+    let segments: Vec<_> = (path.segments.iter())
+        .map(|segment| {
+            let ident = segment.ident.unraw();
+            match &segment.arguments {
+                syn::PathArguments::AngleBracketed(arguments) => {
+                    let arguments: Vec<_> = (arguments.args.iter())
+                        .map(|argument| match argument {
+                            syn::GenericArgument::Type(ty) => shown(ty),
+                            _ => "_".to_string(),
+                        })
+                        .collect();
+                    format!("{ident}<{}>", arguments.join(", "))
+                }
+                _ => ident.to_string(),
+            }
+        })
+        .collect();
+    segments.join("::")
+}
+
+/// A function, a module, or a brace group in the body of a macro call: its attributes,
+/// those inside a module too, its name, and its items.
 enum Body {
     Function(Vec<Attribute>, Ident),
     Module(Vec<Attribute>, Ident, Vec<Body>),
+    Group(Vec<Attribute>, Vec<Body>),
 }
 
 /// The functions and modules of the body of a macro call, as `proptest!` takes them,
-/// with the items of each module. Each other token is passed.
+/// and those in each brace group, with the attributes before it. A group after `if
+/// #[cfg(<p>)]` or `else`, as `cfg_if!` takes them, builds only where no `<p>` before
+/// it in its chain holds. Each other token is passed.
 fn body(input: ParseStream<'_>) -> syn::Result<Vec<Body>> {
     let mut items = Vec::new();
+    // The predicates of the chain that an `else` at the next token continues.
+    let mut chain = Vec::new();
     while !input.is_empty() {
+        let continued = input.parse::<Option<Token![else]>>()?.is_some();
+        if input.peek(Token![if]) && input.peek2(Token![#]) {
+            input.parse::<Token![if]>()?;
+            let attribute = cfg(input)?;
+            if !continued {
+                chain.clear();
+            }
+            let content;
+            syn::braced!(content in input);
+            items.push(Body::Group(
+                branch(input, &chain, Some(&attribute))?,
+                body(&content)?,
+            ));
+            chain.push(attribute);
+            continue;
+        }
+        if continued && input.peek(syn::token::Brace) {
+            let content;
+            syn::braced!(content in input);
+            items.push(Body::Group(branch(input, &chain, None)?, body(&content)?));
+            chain.clear();
+            continue;
+        }
+        chain.clear();
         let attributes = if input.peek(Token![#]) && input.peek2(syn::token::Bracket) {
             input.call(Attribute::parse_outer)?
         } else {
@@ -666,7 +750,13 @@ fn body(input: ParseStream<'_>) -> syn::Result<Vec<Body>> {
             let name = input.call(Ident::parse_any)?;
             let content;
             syn::braced!(content in input);
+            let attributes =
+                [attributes, content.call(Attribute::parse_inner)?].concat();
             items.push(Body::Module(attributes, name, body(&content)?));
+        } else if input.peek(syn::token::Brace) {
+            let content;
+            syn::braced!(content in input);
+            items.push(Body::Group(attributes, body(&content)?));
         } else if !input.is_empty() {
             // No function or module starts at the token after a prefix, so a skip of
             // it loses none.
@@ -679,6 +769,39 @@ fn body(input: ParseStream<'_>) -> syn::Result<Vec<Body>> {
         }
     }
     Ok(items)
+}
+
+/// The predicate of the attributes at the start of `input`, which must be one `cfg`.
+fn cfg(input: ParseStream<'_>) -> syn::Result<Meta> {
+    match input.call(Attribute::parse_outer)?.as_slice() {
+        [attribute] if attribute.path().is_ident("cfg") => {
+            attribute.meta.require_list()?.parse_args()
+        }
+        _ => Err(input.error("an `if` of a `cfg_if` with no one `cfg`")),
+    }
+}
+
+/// The attributes of a branch at `input` of a `cfg_if` chain after `chain`: its own
+/// predicate when it has one, and none of `chain`.
+fn branch(
+    input: ParseStream<'_>,
+    chain: &[Meta],
+    own: Option<&Meta>,
+) -> syn::Result<Vec<Attribute>> {
+    let text = |m: &Meta| text(m).map_err(|e| input.error(e));
+    let mut predicates = Vec::new();
+    if !chain.is_empty() {
+        let before: Vec<_> = chain.iter().map(text).collect::<syn::Result<_>>()?;
+        predicates.push(format!("not(any({}))", before.join(", ")));
+    }
+    predicates.extend(own.map(text).transpose()?);
+    if predicates.is_empty() {
+        return Ok(Vec::new());
+    }
+    syn::parse::Parser::parse_str(
+        Attribute::parse_outer,
+        &format!("#[cfg(all({}))]", predicates.join(", ")),
+    )
 }
 
 /// The first line of the doc in `attributes`.
@@ -699,12 +822,14 @@ fn lists(root: &Path) -> Result<Vec<BTreeSet<String>>, String> {
     let path = root.join(".github/workflows/ci.yaml");
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    let lines = workflow::lines(&text)?;
-    let job = workflow::under(&workflow::under(&lines, "jobs:")?, "  check:")?;
+    let nodes: Vec<&str> = (workflow::lines(&text)?.into_iter())
+        .filter_map(|line| line.code)
+        .collect();
+    let job = workflow::under(&workflow::under(&nodes, "jobs:")?, "  check:")?;
     let mut lists: Vec<Option<BTreeSet<String>>> = vec![None; RUNNERS.len()];
     let (mut entry, mut list) = (None, None);
     for line in job {
-        let text = workflow::code(line)?.trim();
+        let text = line.trim();
         if let Some(name) = text.strip_prefix("- name: ") {
             entry = RUNNERS.iter().position(|runner| runner.entry == name);
             list = None;
@@ -861,7 +986,11 @@ fn string(expr: &Expr) -> Result<String, String> {
 
 /// Reports whether `reason` is `only <OS>` or starts with `only <OS>:`, where `<OS>`
 /// names `oses` and no more: their names joined by `and`, or Unix for Linux and macOS.
+/// No reason gives an empty `oses`.
 fn gives(reason: &str, oses: &[&str]) -> bool {
+    if oses.is_empty() {
+        return false;
+    }
     let joined = oses.join(" and ");
     let unix = (oses == ["Linux", "macOS"]).then_some("Unix");
     [Some(joined.as_str()), unix]
@@ -878,7 +1007,7 @@ fn gives(reason: &str, oses: &[&str]) -> bool {
 /// Reports whether `doc`, the first line of the doc of a gate that builds its item on
 /// `on`, is `Only <OS>` or `Only <arch>`, or starts with either and `:`, where `<OS>`
 /// names the OSes of `on` as a reason does, and `<arch>` is the `target_arch` of each
-/// runner of `on` and of no other.
+/// runner of `on`, that of `arm.yaml` too, and of no other.
 fn covers(doc: &str, on: Runners) -> bool {
     let Some(rest) = doc.strip_prefix("Only ") else {
         return false;
@@ -987,6 +1116,24 @@ mod tests {
             gated(&format!("{lib} nowhere"), "Windows"),
             gated(&format!("{lib} misarmed"), "Linux"),
             gated(&format!("{lib} misarmed"), "Windows"),
+            gated(&format!("{lib} apple"), "Linux"),
+            gated(&format!("{lib} apple"), "Windows"),
+            gated(&format!("{lib} intel"), "macOS"),
+            gated(&format!("{lib} colon"), "Linux"),
+            gated(&format!("{lib} colon"), "macOS"),
+            gated(&format!("{lib} colon"), "Windows"),
+            gated(&format!("{lib} hidden"), "Windows"),
+            gated(&format!("{lib} shadowed"), "Linux"),
+            gated(&format!("{lib} shadowed"), "macOS"),
+            gated(&format!("{lib} shadowed"), "Windows"),
+            gated(&format!("{lib} rest"), "Linux"),
+            gated(&format!("{lib} rest"), "macOS"),
+            gated(&format!("{lib} grouped"), "Windows"),
+            gated(&format!("{lib} tail"), "Windows"),
+            gated(&format!("{lib} inside"), "Windows"),
+            gated(&format!("{lib} unbuilt"), "Linux"),
+            gated(&format!("{lib} unbuilt"), "macOS"),
+            gated(&format!("{lib} unbuilt"), "Windows"),
             format!("`{lib}`: ``: unexpected token, expected `]`"),
             gated("crates/g/src/module.rs inner", "Linux"),
             gated("crates/g/src/module.rs inner", "macOS"),
@@ -994,7 +1141,11 @@ mod tests {
             gated(&format!("{free} case"), "Windows"),
             gated(&format!("{free} Rig::gated"), "Windows"),
             gated(&format!("{free} Case::case"), "Windows"),
-            gated(&format!("{free} impl"), "Windows"),
+            gated(&format!("{free} <[u8] as Case>"), "Windows"),
+            gated(&format!("{free} <Rig as std::fmt::Debug>"), "Windows"),
+            gated(&format!("{free} konst"), "Windows"),
+            gated(&format!("{free} risky"), "Windows"),
+            gated(&format!("{free} foreign"), "Windows"),
             gated("crates/g/tests/filed.rs", "Windows"),
             gated("crates/g/benches/timed.rs case", "Windows"),
             "`ci.yaml`: the item `crates/g/src/lib.rs stale` of the `gates` list of \
@@ -1042,23 +1193,6 @@ mod tests {
         assert!(!gives("only Linux and Windows: a case", &["Linux"]));
         assert!(!gives("only Linux: a case", &["Linux", "Windows"]));
         assert!(!gives("only Linuxes", &["Linux"]));
-    }
-
-    #[test]
-    fn a_macro_body_gives_each_function_and_module_and_passes_each_other_token() {
-        fn names(items: &[Body]) -> Vec<String> {
-            (items.iter())
-                .flat_map(|item| match item {
-                    Body::Function(_, name) => vec![name.to_string()],
-                    Body::Module(_, name, items) => std::iter::once(name.to_string())
-                        .chain(names(items))
-                        .collect(),
-                })
-                .collect()
-        }
-        let text = "#![proptest_config(c)] const unsafe X: u8 = 1; #[a] y; pub z; \
-                    async move {} pub const fn f() {} mod m { fn g() {} } unsafe";
-        let items = syn::parse::Parser::parse_str(body, text).unwrap();
-        assert_eq!(names(&items), ["f", "m", "g"]);
+        assert!(!gives("only : a case", &[]));
     }
 }
