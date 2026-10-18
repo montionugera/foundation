@@ -3,11 +3,13 @@
 `FOUNDATION_NODE` is the path of the `foundation` binary that each test starts.
 """
 
+import gc
 import ipaddress
 import os
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -225,10 +227,13 @@ class ClientTest(unittest.TestCase):
     def test_a_child_forked_with_an_open_client_does_not_end_the_session(self) -> None:
         clients = [self.node.connect()]
 
-        def close_and_drop() -> None:
+        def close_and_drop() -> object:
+            raised = []
+            sys.unraisablehook = raised.append
             closed = clients[0].close()
             clients.clear()
-            return closed
+            gc.collect()
+            return raised or closed
 
         self.assertEqual(fork(close_and_drop), 0)
         self.assertIsNone(clients[0].close())
