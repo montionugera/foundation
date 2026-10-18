@@ -206,6 +206,7 @@ jobs:
               - --exclude sim # #2973
               - --exclude secret # #2973
               - --exclude connector-influx # #2973
+              - --exclude xtask # #3165, #3166
             tests:
               - --skip kind::tests::reads_a_secret_at_each_call_and_retries_one_the_store_has_not # #2973
               - --skip supervisor::tests::heals_a_run_when_a_secret_file_too_large_is_cut # #2973
