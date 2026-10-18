@@ -5,8 +5,8 @@ use types::frame::key_set::KeySet;
 use types::frame::{Draft, Form, Layout};
 
 use super::{Error, Head, Time};
-use crate::hub::part::{Assembly, Next, to_usize};
-use crate::hub::{self, ends};
+use crate::hub::ends;
+use crate::hub::part::{self, Assembly, Next, to_usize};
 
 /// The frames of a program's write stream after the places, at the node. The node
 /// receives each message and makes each draft from the pool of the home. The entries
@@ -85,13 +85,15 @@ impl Frames {
     #[inline]
     pub fn due(&mut self) -> Result<Due<'_>, types::frame::Error> {
         Ok(match (self.assembly.due(self.next.body())?, self.head) {
-            (hub::Due::Message, _) => Due::Message,
-            (hub::Due::Body(rest), _) => Due::Body(rest),
-            (hub::Due::Draft(layout), Some(head)) => Due::Draft {
+            (part::Due::Message, _) => Due::Message,
+            (part::Due::Body(rest), _) => Due::Body(rest),
+            (part::Due::Draft(layout), Some(head)) => Due::Draft {
                 layout,
                 form: head.form,
             },
-            (hub::Due::Draft(_), None) => unreachable!("invariant: a draft has a head"),
+            (part::Due::Draft(_), None) => {
+                unreachable!("invariant: a draft has a head")
+            }
         })
     }
 
@@ -156,7 +158,7 @@ impl Frames {
     /// When [`Frames::due`] does not give [`Due::Draft`].
     #[inline]
     pub fn draft(&mut self, draft: Draft) -> Step {
-        self.assembly.draft(Some(draft));
+        self.assembly.draft(draft);
         match self.next.body() {
             Some(_) => Step::More,
             None => self.frame(),
@@ -173,7 +175,10 @@ impl Frames {
     /// When [`Frames::due`] does not give [`Due::Draft`].
     #[inline]
     pub fn skip(&mut self) {
-        self.assembly.draft(None);
+        self.assembly.skip();
+        if self.next.body().is_none() {
+            self.frame();
+        }
     }
 
     /// Checks the end of the stream, when the program finished it.
@@ -204,10 +209,12 @@ impl Frames {
                 received: run,
                 len: None,
             },
-            // Never `None`: a frame holds its head.
             Some(body) => Error::Cut {
                 received: sum(run, body.at()),
-                len: NonZeroUsize::new(sum(sum(run, body.at()), body.remain())),
+                len: Some(
+                    NonZeroUsize::new(sum(sum(run, body.at()), body.remain()))
+                        .expect("invariant: a frame holds its head"),
+                ),
             },
         })
     }

@@ -412,6 +412,7 @@ fn takes_the_next_frame_after_a_frame_of_no_body_finds_the_pool_full() {
     let (held, error) = create_full(&mut frames, &pool);
     assert!(matches!(error, block::Error::Exhausted { .. }), "{error:?}");
     frames.skip();
+    assert!(frames.head.is_none(), "the skipped frame ended");
     drop(held);
     assert!(matches!(frames.due(), Ok(Due::Message)));
     assert_eq!(frames.finish(), Ok(()));
@@ -469,6 +470,38 @@ fn refuses_an_empty_or_long_body_message_of_a_skipped_frame() {
 fn panics_on_a_skip_when_no_draft_is_due() {
     let mut frames = Frames::new(create_set());
     frames.skip();
+}
+
+/// Frames after ends whose layout is not valid, with the layout error given.
+fn create_refused() -> Frames {
+    let mut frames = Frames::new(create_set());
+    frames
+        .decode(&encode_head(LIVE, Form::Raw, 1, 2))
+        .expect("the head");
+    frames
+        .decode(&encode_ends(&[(0, 16), (1, 8)]))
+        .expect("the ends");
+    assert!(frames.due().is_err(), "the layout is not valid");
+    frames
+}
+
+#[test]
+#[should_panic(expected = "no draft is due")]
+fn panics_on_a_skip_after_a_layout_error() {
+    create_refused().skip();
+}
+
+#[test]
+#[should_panic(expected = "no draft is due")]
+fn panics_on_a_draft_after_a_layout_error() {
+    let pool = create_pool();
+    let mut other = Frames::new(create_set());
+    ends(&mut other);
+    let Ok(Due::Draft { layout, form }) = other.due() else {
+        panic!("a draft is due");
+    };
+    let draft = layout.draft(&pool, form).expect("a block");
+    let _step = create_refused().draft(draft);
 }
 
 #[test]

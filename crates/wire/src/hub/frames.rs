@@ -4,7 +4,7 @@ use std::sync::Arc;
 use types::frame::key_set::KeySet;
 use types::frame::{Draft, Frame, Layout};
 
-use super::part::Assembly;
+use super::part::{self, Assembly};
 use super::{Error, FromHome, Gaps, Head, Reader};
 
 /// The frames of a reader session, built from its replies from `Opened` on, at the
@@ -111,7 +111,11 @@ impl Frames {
     /// caller then stops the stream as `MALFORMED`.
     #[inline]
     pub fn due(&mut self) -> Result<Due<'_>, types::frame::Error> {
-        self.assembly.due(self.reader.body())
+        Ok(match self.assembly.due(self.reader.body())? {
+            part::Due::Message => Due::Message,
+            part::Due::Body(rest) => Due::Body(rest),
+            part::Due::Draft(layout) => Due::Draft(layout),
+        })
     }
 
     /// Takes the next message, whole, or the end of the stream when `None`. A body
@@ -177,7 +181,7 @@ impl Frames {
     /// When [`Frames::due`] does not give [`Due::Draft`].
     #[inline]
     pub fn draft(&mut self, draft: Draft) -> Step {
-        self.assembly.draft(Some(draft));
+        self.assembly.draft(draft);
         match self.reader.body() {
             Some(_) => Step::More,
             None => Step::Frame(self.freeze()),
@@ -526,6 +530,24 @@ mod tests {
         let twice = layout.draft(&pool, Form::Encoded).expect("a block");
         draft(&mut frames, &pool);
         frames.draft(twice);
+    }
+
+    #[test]
+    #[should_panic(expected = "no draft is due")]
+    fn panics_at_a_draft_after_a_layout_error() {
+        let (pool, mut other) = (create_pool(), opened(false));
+        ends(&mut other);
+        let Ok(Due::Draft(layout)) = other.due() else {
+            panic!("a draft is due");
+        };
+        let draft = layout.draft(&pool, Form::Encoded).expect("a block");
+        let mut frames = opened(false);
+        frames.decode(Some(&head(4, 2, 2))).expect("a head");
+        frames
+            .decode(Some(&encode_ends(&[(0, 16), (1, 8)])))
+            .expect("ends");
+        assert!(frames.due().is_err(), "the layout is not valid");
+        frames.draft(draft);
     }
 
     #[test]

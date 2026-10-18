@@ -6,7 +6,7 @@ use std::sync::Arc;
 use types::frame::key_set::KeySet;
 use types::frame::{Draft, Layout};
 
-use super::{Due, Error, ends};
+use super::{Error, ends};
 use crate::common::{body, rest_of_run};
 
 /// The part of a frame that a stream expects next.
@@ -113,6 +113,18 @@ impl Next {
     }
 }
 
+/// What a decoder waits for next, as [`Assembly::due`] gives it. Each decoder gives
+/// its own public `Due` from it.
+#[derive(Debug)]
+pub(super) enum Due<'a> {
+    /// A whole message: a head, a message of the run, or a body message to drop.
+    Message,
+    /// Body bytes, into the rest of the draft's body.
+    Body(&'a mut [u8]),
+    /// A draft of this layout.
+    Draft(Layout<'a>),
+}
+
 /// The ends and the draft of the frame that arrives, from its run of ends to the last
 /// byte of its body.
 #[derive(Debug)]
@@ -120,10 +132,22 @@ pub(super) struct Assembly {
     set: Arc<KeySet>,
     /// The entry and end of each series.
     ends: Vec<(usize, usize)>,
+    stage: Stage,
+}
+
+/// Where the frame that arrives is, after its head.
+#[derive(Debug)]
+enum Stage {
+    /// In the run of ends, or between frames.
+    Run,
     /// The ends are whole and the draft is not given.
-    drafting: bool,
-    /// `None` in the body of a skipped frame.
-    draft: Option<Draft>,
+    Drafting,
+    /// The ends are whole and their layout is not valid, so no draft comes.
+    Refused,
+    /// The body fills the draft.
+    Body(Draft),
+    /// The body of a skipped frame, which is dropped.
+    Skipped,
 }
 
 impl Assembly {
@@ -132,8 +156,7 @@ impl Assembly {
         Self {
             ends: Vec::with_capacity(set.entries().len()),
             set,
-            drafting: false,
-            draft: None,
+            stage: Stage::Run,
         }
     }
 
@@ -147,18 +170,26 @@ impl Assembly {
         &mut self,
         body: Option<usize>,
     ) -> Result<Due<'_>, types::frame::Error> {
-        if self.drafting {
-            return Layout::from_ends(&self.set, &self.ends).map(Due::Draft);
+        if matches!(self.stage, Stage::Drafting | Stage::Refused) {
+            return match Layout::from_ends(&self.set, &self.ends) {
+                Ok(layout) => Ok(Due::Draft(layout)),
+                Err(error) => {
+                    self.stage = Stage::Refused;
+                    Err(error)
+                }
+            };
         }
-        Ok(match (body, self.draft.as_mut()) {
-            (Some(start), Some(draft)) => Due::Body(rest(draft, start)),
-            _ => Due::Message,
-        })
+        let Stage::Body(draft) = &mut self.stage else {
+            return Ok(Due::Message);
+        };
+        let start = body.expect("invariant: a draft is taken at its last byte");
+        Ok(Due::Body(rest(draft, start)))
     }
 
     /// Starts the frame of a head.
     pub(super) fn head(&mut self) {
         self.ends.clear();
+        self.stage = Stage::Run;
     }
 
     /// Takes the ends of a run message. The draft is due after the `last`.
@@ -166,46 +197,81 @@ impl Assembly {
     pub(super) fn ends(&mut self, ends: ends::Iter<'_>, last: bool) {
         self.ends
             .extend(ends.map(|(place, end)| (to_usize(place), to_usize(end))));
-        self.drafting = last;
+        if last {
+            self.stage = Stage::Drafting;
+        }
     }
 
     /// Copies body bytes that start at `start` into the draft. A skipped frame drops
     /// them.
     #[inline]
     pub(super) fn body(&mut self, start: usize, bytes: &[u8]) {
-        if let Some(draft) = self.draft.as_mut() {
-            prefix(rest(draft, start), bytes.len()).copy_from_slice(bytes);
+        match &mut self.stage {
+            Stage::Body(draft) => {
+                prefix(rest(draft, start), bytes.len()).copy_from_slice(bytes);
+            }
+            Stage::Skipped => {}
+            stage => {
+                unreachable!("invariant: body bytes come after a draft, not {stage:?}")
+            }
         }
     }
 
     /// Panics with `what` when a draft is due.
     #[inline]
     pub(super) fn check_undrafted(&self, what: &str) {
-        assert!(!self.drafting, "a draft is due before {what}");
+        assert!(
+            !matches!(self.stage, Stage::Drafting | Stage::Refused),
+            "a draft is due before {what}"
+        );
     }
 
     /// Panics unless body bytes are due into a draft.
     #[inline]
     pub(super) fn check_body(&self) {
-        assert!(self.draft.is_some(), "a body is due");
+        assert!(matches!(self.stage, Stage::Body(_)), "a body is due");
     }
 
-    /// Takes the draft that is due, or none for a skipped frame.
+    /// Takes the draft that is due.
     ///
     /// # Panics
     ///
     /// When no draft is due.
     #[inline]
-    pub(super) fn draft(&mut self, draft: Option<Draft>) {
-        assert!(self.drafting, "no draft is due");
-        self.drafting = false;
-        self.draft = draft;
+    pub(super) fn draft(&mut self, draft: Draft) {
+        self.check_drafting();
+        self.stage = Stage::Body(draft);
+    }
+
+    /// Takes no draft for the frame whose draft is due, and drops its body.
+    ///
+    /// # Panics
+    ///
+    /// When no draft is due.
+    #[inline]
+    pub(super) fn skip(&mut self) {
+        self.check_drafting();
+        self.stage = Stage::Skipped;
     }
 
     /// The draft of the frame that arrived, `None` for a skipped frame.
+    ///
+    /// # Panics
+    ///
+    /// When the frame has neither a draft nor a skip.
     #[inline]
     pub(super) fn take(&mut self) -> Option<Draft> {
-        self.draft.take()
+        match std::mem::replace(&mut self.stage, Stage::Run) {
+            Stage::Body(draft) => Some(draft),
+            Stage::Skipped => None,
+            stage => {
+                unreachable!("invariant: a frame ends after a draft, not {stage:?}")
+            }
+        }
+    }
+
+    fn check_drafting(&self) {
+        assert!(matches!(self.stage, Stage::Drafting), "no draft is due");
     }
 }
 
