@@ -223,15 +223,14 @@
   read, where each file counts first by its bytes, before the check of its text, or for
   the encoded request (`laptop.architect-2`, 2026-10-18T20:17:02Z,
   https://github.com/synnaxlabs/foundation/pull/3241#issuecomment-6254647508), status
-  2, fix `Make the config files smaller`; the
-  check comes before the reach. `ops.write`: `the directory of the plan file <path> is
-  not there` or `the write of the plan file <path> failed with OS error <code>`, status
-  1, fix ``Give `--out`, or `out` of the MCP tool, a path in a directory that can be
-  written``. `ops.no-config`: `<path> holds no config file`, status 2, fix ``Add a file
-  whose name ends in `.hcl` and does not start with `.` to <path>, or give another
-  path``, which names each extension of the table, for a directory of `plan`, `browse`,
-  or `import` that gives no config file (FRONT ENDS; `laptop.architect-2`,
-  2026-10-18T18:23:36Z,
+  2, fix `Make the config files smaller`; the check comes before the reach. `ops.write`:
+  `the directory of the plan file <path> is not there` or `the write of the plan file
+  <path> failed with OS error <code>`, status 1, fix ``Give `--out`, or `out` of the MCP
+  tool, a path in a directory that can be written``. `ops.no-config`: `<path> holds no
+  config file`, status 2, fix ``Add a file whose name ends in `.hcl` and does not start
+  with `.` to <path>, or give another path``, which names each extension of the table,
+  for a directory of `plan`, `browse`, or `import` that gives no config file (FRONT
+  ENDS; `laptop.architect-2`, 2026-10-18T18:23:36Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253485402, and for
   `browse` and `import`, 2026-10-18T18:34:45Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253598063).
