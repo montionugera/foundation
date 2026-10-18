@@ -64,7 +64,7 @@
   that the node stamps can get `Refusal::Order` (#3282). Each writer holds a stream of
   the session, and the node bounds the streams of a session (64 by default, one of
   them the hello): past that bound, an open waits until another writer closes or drops.
-  `crates/node/benches/sdk.rs` gives the p50 and p99 of each round of
+  `crates/node/benches/sdk/` gives the p50 and p99 of each round of
   `sdk::Writer::write` and of `program::Writer` with 2 values, and of each leg between
   the caller and the writer task, with the task parked before each call. Decided by
   `laptop.architect-2` on 2026-10-18T22:28:03Z
