@@ -48,6 +48,15 @@ fn most() -> usize {
     }
 }
 
+/// The most symbolic links that the host follows in one path.
+fn links() -> usize {
+    if cfg!(target_os = "macos") {
+        32
+    } else {
+        env::paths::LINKS
+    }
+}
+
 /// The bound of a worst-case read: far above one `lstat` for each name on a slow CI
 /// host, far below a resolve of each prefix.
 const WORST: Span = Span::from_nanos(5_000_000_000);
@@ -1448,9 +1457,9 @@ fn within_stops_a_long_path_of_dots_from_a_deep_directory() {
     });
 }
 
-/// A chain of `LINKS` links in a directory 1900 names deep, each through a long target
-/// of `s/..`: each name of the walk is one call, so it takes about what the free handle
-/// takes, not the names times the depth.
+/// A chain of the most links that the host follows, in a directory 1900 names deep,
+/// each through a long target of `s/..`: each name of the walk is one call, so it
+/// takes about what the free handle takes, not the names times the depth.
 #[test]
 fn within_reads_through_links_of_long_dots_in_a_deep_directory_in_bounded_time() {
     run(|host| {
@@ -1459,8 +1468,9 @@ fn within_reads_through_links_of_long_dots_in_a_deep_directory_in_bounded_time()
         fs::create_dir(deep.dir.join("s")).unwrap();
         fs::write(deep.dir.join("f"), b"x").unwrap();
         let dots = "s/../".repeat((most() - 50) / 5);
-        for at in 0..env::paths::LINKS {
-            let next = if at + 1 == env::paths::LINKS {
+        let links = links();
+        for at in 0..links {
+            let next = if at + 1 == links {
                 "f".to_owned()
             } else {
                 format!("l{}", at + 1)
