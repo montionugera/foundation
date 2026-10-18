@@ -152,15 +152,11 @@ pub(crate) struct Set {
     /// The place of each index with named state ([`Entry::named`]), each once: the
     /// indexes that a tick visits.
     ticked: Vec<usize>,
-    /// Each index whose records from the open of the shard wait to restore: until its
-    /// carry with mesh time, its first [`advance`](Set::advance) after the carry, or
-    /// its shed.
-    waiting: hash::Set<Slot>,
     /// The named records in the buffer of each index that the set does not carry and
-    /// that holds one: from the open of the shard, or from a shed whose entries found
-    /// no block or no room, or that had no mesh time. Its carry places each record in
-    /// the part that holds it.
-    parts: hash::Map<Slot, Parts>,
+    /// that holds one, with what they owe: from the open of the shard, to restore, or
+    /// from a shed whose entries found no block or no room, or that had no mesh time,
+    /// to drop. Its carry places each record in the part that holds it.
+    parts: hash::Map<Slot, (Parts, Due)>,
     /// Each reader to wake: one with a frame to take, or a complete reader that missed
     /// a frame with none waiting. A key can repeat.
     keys: Vec<Key>,
@@ -183,9 +179,18 @@ struct Entry {
     ticked: bool,
     /// The named records of the index in the buffer.
     parts: Parts,
-    /// Whether `parts` hold records that the readers do not restore, from a shed, until
-    /// a record appends the parts.
-    stale: bool,
+    /// What `parts` owe the readers, until a restore or an append ends it.
+    due: Option<Due>,
+}
+
+/// What the named records of an index in the buffer owe its readers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Due {
+    /// The readers restore the holds of the records at mesh time.
+    Restore,
+    /// The records are from a shed: the readers restore none, and the next append
+    /// drops them.
+    Drop,
 }
 
 impl Entry {
@@ -200,12 +205,12 @@ impl Set {
     /// A set that carries no index, with the parts of each index in the buffer, by
     /// slot. The first carry of each index restores the records of its parts.
     pub(crate) fn new(newest: hash::Map<Slot, Parts>) -> Self {
-        let parts: hash::Map<_, _> = newest
+        let parts = newest
             .into_iter()
             .filter(|(_, parts)| parts.held())
+            .map(|(slot, parts)| (slot, (parts, Due::Restore)))
             .collect();
         Self {
-            waiting: parts.keys().copied().collect(),
             parts,
             ..Self::default()
         }
@@ -227,14 +232,14 @@ impl Set {
         now: Option<Stamp>,
     ) {
         assert_eq!(place, self.entries.len(), "{place} is not the next place");
-        let parts = self.parts.remove(&slot).unwrap_or_default();
+        let (parts, due) = self.parts.remove(&slot).unzip();
         self.entries.push(Entry {
             slot,
             readers: Readers::after(live, self.first.remove(&slot).unwrap_or(0)),
             listed: false,
             ticked: false,
-            stale: parts.held() && !self.waiting.contains(&slot),
-            parts,
+            parts: parts.unwrap_or_default(),
+            due,
         });
         if let Some(now) = now {
             self.restore(place, now);
@@ -260,10 +265,9 @@ impl Set {
             entry.parts.append(target, &[]);
         }
         if entry.parts.held() {
-            self.parts.insert(entry.slot, entry.parts);
+            self.parts.insert(entry.slot, (entry.parts, Due::Drop));
         }
         self.first.insert(entry.slot, entry.readers.end());
-        self.waiting.remove(&entry.slot);
         for places in [&mut self.listed, &mut self.ticked] {
             places.retain(|&listed| listed != place);
             if let Some(listed) = places.iter_mut().find(|listed| **listed == last) {
@@ -276,8 +280,9 @@ impl Set {
     /// wait for mesh time, as at mesh time `now`.
     fn restore(&mut self, place: usize, now: Stamp) {
         let entry = &mut self.entries[place];
-        if self.waiting.remove(&entry.slot) {
+        if entry.due == Some(Due::Restore) {
             entry.readers.restore(entry.parts.records(), now);
+            entry.due = None;
         }
     }
 
@@ -312,10 +317,7 @@ impl Set {
     /// complete readers of the index.
     pub(crate) fn busy(&self, place: usize) -> bool {
         let entry = &self.entries[place];
-        entry.readers.changed()
-            || entry.stale
-            || self.waiting.contains(&entry.slot)
-            || entry.readers.moving()
+        entry.readers.changed() || entry.due.is_some() || entry.readers.moving()
     }
 
     /// The mesh time at which the next hold of the index at `place` ends, or `None`
@@ -326,17 +328,23 @@ impl Set {
 
     /// Appends the records of the named readers of the index at `place` in `target`,
     /// as [`Parts::append`] does, when they changed since the last append that
-    /// appended each part, or the parts hold records of a shed. Call it after each
-    /// change of the named readers of the index at mesh time.
+    /// appended each part, or the parts hold records of a shed. Appends nothing while
+    /// the records wait to restore. Call it after each change of the named readers of
+    /// the index at mesh time.
     pub(crate) fn record(&mut self, place: usize, target: state::Target<'_>) {
         let entry = &mut self.entries[place];
-        if !entry.readers.changed() && !entry.stale {
+        let appends = match entry.due {
+            Some(Due::Restore) => false,
+            Some(Due::Drop) => true,
+            None => entry.readers.changed(),
+        };
+        if !appends {
             return;
         }
         let records: Vec<_> = entry.readers.records().collect();
         if entry.parts.append(target, &records) {
             entry.readers.recorded();
-            entry.stale = false;
+            entry.due = None;
         }
     }
 
@@ -1275,6 +1283,20 @@ mod tests {
             set.carry(1, Slot::new(1), 0, None);
             assert!(set.busy(1), "the records wait");
             assert!(!set.busy(0), "each index is busy alone");
+        }
+
+        #[test]
+        fn restore_no_hold_at_a_carry_after_a_shed_of_waiting_records() {
+            let mut set = restoring(&[(0, vec![record("a", Some(1))])], 1);
+            set.shed(0, None);
+            assert!(set.ticked().is_empty(), "no index is carried");
+            set.carry(0, Slot::new(0), 0, None);
+            assert!(set.busy(0), "the parts wait for their drop");
+            assert_eq!(set.ticked(), [0]);
+            set.advance(0, Stamp::from_nanos(2));
+            assert!(!changed(&set, 0));
+            assert_eq!(set.records(0), []);
+            assert!(set.busy(0), "only an append drops them");
         }
 
         #[test]
