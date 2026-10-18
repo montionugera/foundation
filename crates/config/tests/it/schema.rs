@@ -98,8 +98,7 @@ fn without(document: Document, path: &[usize], key: &str) -> Option<Document> {
     }))
 }
 
-/// Whether `block` of `body` needs `key`: its absence gives no value, or gives a
-/// diagnostic.
+/// Whether `block` of `body` needs `key`: its absence gives a diagnostic.
 fn needs(body: &Body, key: &str, block: &Block) -> bool {
     presence(body, key).needed(&block.body.attributes)
 }
