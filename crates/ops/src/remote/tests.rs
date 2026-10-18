@@ -8,12 +8,12 @@ use document::diagnostic::Code;
 use env::paths::{self, Found, Paths};
 use serde_json::{Value, json};
 
-use super::{Link, apply, most, plan, status};
+use super::{Link, apply, browse, most, plan, status};
 use crate::apply::Applied;
-use crate::common::{self, create_node, name, placed_site, solo};
+use crate::common::{self, create_browsing_node, create_node, name, placed_site, solo};
 use crate::error::{Error, Problem, Unread, Unusable, Unwritten};
 use crate::front_end::File;
-use crate::operation::{DATA, Response};
+use crate::operation::{self, DATA, Response};
 use crate::plan::Output;
 use crate::scope::{Limits, Scope};
 use crate::{Failure, Node, Run, serve};
@@ -53,8 +53,8 @@ enum Mode {
     Unsent,
 }
 
-/// Runs `plan`, `apply`, and the command line with a `reach` to `node`, and counts
-/// what each call of `reach` saw.
+/// Runs `plan`, `apply`, `browse`, and the command line with a `reach` to `node`, and
+/// counts what each call of `reach` saw.
 struct Remote {
     node: Node,
     mode: Mode,
@@ -115,6 +115,27 @@ impl Remote {
             Ok(async |body: &[u8]| self.send(body).await)
         };
         apply(file, &Scope::free(paths), &mut Link::new(reach)).await
+    }
+
+    /// The browse of the root of `plant` in `files`.
+    async fn browse(
+        &self,
+        paths: &Paths,
+        files: Vec<PathBuf>,
+    ) -> Result<crate::browse::Output, Error> {
+        let reach = async || {
+            self.reached()?;
+            Ok(async |body: &[u8]| self.send(body).await)
+        };
+        let input = operation::Browse {
+            connector: "plant".to_owned(),
+            files,
+            start: None,
+            pattern: None,
+            cursor: None,
+            values: false,
+        };
+        browse(input, &Scope::free(paths), &mut Link::new(reach)).await
     }
 
     async fn status(&self) -> Result<crate::status::Output, Error> {
@@ -668,7 +689,7 @@ fn an_error_of_the_node_keeps_its_problems_and_status() {
 }
 
 #[test]
-fn plan_and_apply_of_a_path_that_is_not_utf8_reach_no_node() {
+fn plan_apply_and_browse_of_a_path_that_is_not_utf8_reach_no_node() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
 
@@ -686,6 +707,12 @@ fn plan_and_apply_of_a_path_that_is_not_utf8_reach_no_node() {
             panic!("a path that is not UTF-8");
         };
         assert_eq!(error.problems()[0].code, "ops.path-not-utf8");
+        let browsed = remote.browse(&paths, vec![path]).await;
+        let Err(error) = browsed else {
+            panic!("a path that is not UTF-8");
+        };
+        assert_eq!(error.problems()[0].code, "ops.path-not-utf8");
+        assert_eq!(error.status(), 2);
         assert_eq!(remote.calls(), (0, 0));
     });
 }
@@ -822,6 +849,88 @@ fn mcp_plans_applies_and_shows_status_on_one_reach_of_the_node_of_data() {
         assert_eq!(mesh.pointer().version, 1);
         assert_eq!(remote.calls(), (1, 3));
         assert_eq!(*remote.data.borrow(), [PathBuf::from("other")]);
+    });
+}
+
+/// Asserts that `tools` holds `browse`, read-only, with its input.
+fn assert_browse_tool(tools: &Value) {
+    let tool = tools
+        .as_array()
+        .expect("a list")
+        .iter()
+        .find(|tool| tool["name"] == "browse")
+        .expect("a browse tool");
+    let annotations = &tool["annotations"];
+    assert_eq!(annotations["readOnlyHint"], true);
+    assert_eq!(annotations["destructiveHint"], false);
+    let schema = &tool["inputSchema"];
+    let properties: Vec<_> = schema["properties"]
+        .as_object()
+        .expect("an object")
+        .keys()
+        .collect();
+    let names = ["connector", "cursor", "files", "match", "start", "values"];
+    assert_eq!(properties, names);
+    assert_eq!(schema["required"], json!(["connector", "files"]));
+}
+
+/// `tools/list` holds `browse` with its input, and a tool call of `browse` gives the
+/// JSON of `foundation browse --json`, and takes `match`.
+#[test]
+fn mcp_browse_gives_the_json_of_the_command_line() {
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        let plant = "connector \"plant\" {\n  kind = \"tree\"\n  node = \"edge\"\n}\n";
+        paths
+            .write(Path::new("plant.hcl"), plant.as_bytes())
+            .expect("a write");
+        let remote = Remote::new(create_browsing_node(&fixture, mesh));
+        let level = json!({
+            "connector": "plant",
+            "files": ["plant.hcl"],
+            "start": "Line3",
+            "values": true,
+        });
+        let pattern = json!({
+            "connector": "plant",
+            "files": ["plant.hcl"],
+            "start": "Types",
+            "match": "b*",
+        });
+        let list = json!({ "jsonrpc": "2.0", "id": 0, "method": "tools/list" });
+        let messages = [list, call(1, "browse", &level), call(2, "browse", &pattern)];
+        let (run, mut replies) = remote.mcp(&paths, &[], &messages).await;
+        assert_eq!(run, Run::Exit(0));
+        assert_browse_tool(&replies.remove(0)["result"]["tools"]);
+        let args = [
+            "browse",
+            "plant",
+            "plant.hcl",
+            "--start",
+            "Line3",
+            "--values",
+            "--json",
+        ];
+        let (run, json, errors) = remote.cli(&paths, &args).await;
+        assert_eq!((run, errors.as_str()), (Run::Exit(0), ""));
+        let output: Value = serde_json::from_str(&json).expect("JSON");
+        assert_eq!(replies[0]["result"]["structuredContent"], output);
+        assert_eq!(output["end"], json!({ "next": "4" }));
+        assert_eq!(output["entries"][1]["value"], 21.5);
+        let found = &replies[1]["result"]["structuredContent"];
+        let expected = json!({
+            "entries": [{
+                "path": "Types/bool",
+                "tag": "types.bool",
+                "shape": "point",
+                "type": "bool",
+                "unit": null,
+                "unit_code": null,
+                "access": "read",
+            }],
+            "end": "done",
+        });
+        assert_eq!(*found, expected);
     });
 }
 

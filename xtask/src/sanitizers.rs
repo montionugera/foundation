@@ -27,7 +27,7 @@ pub(crate) fn run(root: &Path) -> Result<(), Vec<String>> {
 fn verdict(run: &Run) -> Result<(), Vec<String>> {
     match run {
         Run::Failed => Err(vec![format!("the sanitizer tests of `{CRATE}` failed")]),
-        Run::Empty => Err(vec![format!(
+        Run::Empty | Run::Silent => Err(vec![format!(
             "`{CRATE}` runs no tests under the sanitizers"
         )]),
         Run::Passed => Ok(()),
@@ -105,6 +105,12 @@ mod tests {
         );
         assert_eq!(
             verdict(&Run::Empty),
+            Err(vec![
+                "`connector-opcua` runs no tests under the sanitizers".to_string()
+            ])
+        );
+        assert_eq!(
+            verdict(&Run::Silent),
             Err(vec![
                 "`connector-opcua` runs no tests under the sanitizers".to_string()
             ])

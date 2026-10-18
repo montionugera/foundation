@@ -454,6 +454,11 @@
   call gets `Error::Soon`. So such a card never gets into the log (decided by
   `laptop.monitor`, 2026-10-18T03:32:43Z:
   https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245224489).
+  The count is in memory and ends at a restart of the node, as at a change of leader.
+  So a node that leads after its own restart, such as the one voter of its mesh,
+  proposes its new card at once: its cards follow its starts that change its
+  addresses (`laptop.architect`, 2026-10-18T11:22:56Z:
+  https://github.com/synnaxlabs/foundation/pull/3185#issuecomment-6249316017).
   The bound applies only while the node leads, so a node that lost its lead gives
   `NotLeader` and the call forwards the card. A repeat of the card that it proposed,
   the same encoded change, gets no new entry. Another card of the member, also one
