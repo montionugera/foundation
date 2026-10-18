@@ -740,19 +740,15 @@ signAndEncryptSym(UA_MessageContext *messageContext,
 }
 
 size_t
-UA_SecureChannel_chunkPayload(const UA_SecureChannel *channel, size_t length) {
-    size_t payload = length - UA_SECURECHANNEL_SYMMETRIC_HEADER_TOTALLENGTH;
-    if(channel->securityMode == UA_MESSAGESECURITYMODE_NONE)
-        return payload;
-
+UA_SecureChannel_securedOverhead(const UA_SecureChannel *channel, size_t length) {
     const UA_SecurityPolicy *sp = channel->securityPolicy;
     void *cc = channel->channelContext;
 
     /* Reserve space for the signature. For AEAD (ChaCha20-Poly1305), it is the
      * authentication tag, with no padding and no block alignment. */
-    payload -= sp->symSignatureAlgorithm.getLocalSignatureSize(sp, cc);
+    size_t overhead = sp->symSignatureAlgorithm.getLocalSignatureSize(sp, cc);
     if(UA_SecurityPolicy_isAead(sp))
-        return payload;
+        return overhead;
 
     size_t plainBlockSize =
         sp->symEncryptionAlgorithm.getRemotePlainTextBlockSize(sp, cc);
@@ -764,15 +760,15 @@ UA_SecureChannel_chunkPayload(const UA_SecureChannel *channel, size_t length) {
 
     /* Leave enough space for the padding */
     UA_assert(plainBlockSize > 0);
-    payload -= length % plainBlockSize;
+    overhead += length % plainBlockSize;
 
     if(channel->securityMode == UA_MESSAGESECURITYMODE_SIGNANDENCRYPT) {
         /* Reserve space for the padding bytes */
         UA_Boolean extraPadding =
             (sp->symEncryptionAlgorithm.getRemoteKeyLength(sp, cc) > 2048);
-        payload -= (UA_LIKELY(!extraPadding)) ? 1 : 2;
+        overhead += (UA_LIKELY(!extraPadding)) ? 1 : 2;
     }
-    return payload;
+    return overhead;
 }
 
 size_t
