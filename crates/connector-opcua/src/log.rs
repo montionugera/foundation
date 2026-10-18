@@ -67,7 +67,9 @@ impl Log {
         self.flush_at(Level::Error, now);
     }
 
-    fn put(&self, level: Level, category: &str, text: &str) {
+    /// Gives whether the window of `level` has room for a line, and counts the line:
+    /// as written when it has room, else as dropped.
+    fn admit(&self, level: Level) -> bool {
         let now = self.clock.now();
         self.flush_at(level, now);
         let budget = self.budget(level);
@@ -77,9 +79,13 @@ impl Log {
         }
         if budget.written.get() == LINES {
             budget.dropped.set(budget.dropped.get() + 1);
-            return;
+            return false;
         }
         budget.written.set(budget.written.get() + 1);
+        true
+    }
+
+    fn put(&self, level: Level, category: &str, text: &str) {
         let span = &self.span;
         match level {
             Level::Warn => {
@@ -132,9 +138,24 @@ impl Drop for Log {
     }
 }
 
+/// Gives whether the [`Log`] at `log` writes the next line at ERROR when `severe`, else
+/// at WARN, and counts that line in its window. Only a line that it admits goes to
+/// [`connector_opcua_put_line`].
+///
+/// # Safety
+///
+/// `log` points at a live `Log` that no `&mut` borrows.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn connector_opcua_admit(log: *const c_void, severe: bool) -> bool {
+    // SAFETY: the caller keeps the log live.
+    let log = unsafe { &*log.cast::<Log>() };
+    log.admit(level(severe))
+}
+
 /// Writes the `length` bytes at `line`, a message of the logger of a loop in
-/// `category`, through the [`Log`] at `log`: at ERROR when `severe`, else at WARN.
-/// Each byte sequence that is not UTF-8 becomes U+FFFD.
+/// `category` that [`connector_opcua_admit`] admitted, through the [`Log`] at `log`: at
+/// ERROR when `severe`, else at WARN. Each byte sequence that is not UTF-8 becomes
+/// U+FFFD.
 ///
 /// # Safety
 ///
@@ -157,11 +178,11 @@ unsafe extern "C" fn connector_opcua_put_line(
         .expect("the shim names a category in ASCII");
     // SAFETY: the caller gives `length` bytes at `line`.
     let text = unsafe { text(line, length) };
-    log.put(
-        if severe { Level::Error } else { Level::Warn },
-        category,
-        &text,
-    );
+    log.put(level(severe), category, &text);
+}
+
+fn level(severe: bool) -> Level {
+    if severe { Level::Error } else { Level::Warn }
 }
 
 /// Panics with `open62541 ` and the `length` bytes at `line`, as [`text`] reads them,

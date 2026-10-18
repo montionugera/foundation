@@ -35,7 +35,9 @@ UA_Int64 UA_DateTime_localTimeUtcOffset(void) { return 0; }
 #define LINE_BYTES 512
 
 /* The functions of `src/log.rs`. Each takes the `length` bytes of a line at `line`,
- * and `connector_opcua_die` does not return. */
+ * and `connector_opcua_die` does not return. `connector_opcua_admit` gives whether
+ * the log writes the next line of its level, before the line is formatted. */
+bool connector_opcua_admit(void *log, bool severe);
 void connector_opcua_put_line(void *log, bool severe, const char *category,
                               const char *line, size_t length);
 void connector_opcua_die(const char *line, size_t length);
@@ -459,9 +461,12 @@ static const char *category_name(UA_LogCategory category) {
     return NULL;
 }
 
-/* Gives the message to `connector_opcua_put_line` with `context`. */
+/* Gives the message to `connector_opcua_put_line` with `context`, when
+ * `connector_opcua_admit` admits it. */
 static void put_line(void *context, bool severe, const char *category, const char *msg,
                      va_list args) {
+    if(!connector_opcua_admit(context, severe))
+        return;
     char line[LINE_BYTES];
     size_t length = format_line(line, msg, args);
     connector_opcua_put_line(context, severe, category, line, length);

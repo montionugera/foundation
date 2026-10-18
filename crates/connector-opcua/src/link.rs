@@ -423,7 +423,7 @@ fn the_copy_links_the_timer() {
 /// that they may name in glibc, other than [`PLUGINS`]: on x86-64 with GCC or Clang at
 /// each optimization level, and on 64-bit Arm with Clang at `-O2` and
 /// `-moutline-atomics`.
-const OUTSIDE: [&str; 42] = [
+const OUTSIDE: [&str; 43] = [
     "_GLOBAL_OFFSET_TABLE_",
     "__ctype_b_loc",
     "__errno_location",
@@ -440,6 +440,7 @@ const OUTSIDE: [&str; 42] = [
     "abort",
     "access",
     "bcmp",
+    "connector_opcua_admit",
     "connector_opcua_calloc",
     "connector_opcua_die",
     "connector_opcua_free",
