@@ -218,9 +218,8 @@ async fn run(ctx: Context<Config>) -> Result<(), Error> {
 /// Connects, notes [`NO_READ`], and keeps the session until the cancel. A writer
 /// refuses no channel, so this run opens none.
 async fn idle(ctx: &Context<Config>) -> Result<(), Error> {
-    let Some(mesh) = ctx.cancel().race(ctx.time()).await else {
-        return Ok(());
-    };
+    // The status channels opened, so the node has mesh time and this gives at once.
+    let mesh = ctx.time().await;
     let ran = session(
         event::Time::mesh(ctx.clock().clone(), mesh),
         ctx.span().clone(),
