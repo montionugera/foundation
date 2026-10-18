@@ -572,10 +572,10 @@ fn takes_each_request_sent_once_the_last_reply_ends() {
     assert_eq!(home.served, expected);
 }
 
-/// A write stream stops as `MALFORMED` while this node serves none, and the session
-/// stays open.
+/// A write stream whose open the subject did not sign stops as `REFUSED` before the
+/// open decodes, and the session stays open.
 #[test]
-fn stops_a_write_stream() {
+fn stops_a_write_stream_that_the_subject_did_not_sign() {
     let home = session(110, true, |mut agent| async move {
         agent.admit().await;
         let mut write = agent.open().await;
@@ -586,16 +586,15 @@ fn stops_a_write_stream() {
         }
         .encode(&mut bytes);
         write.send(&bytes).await;
-        assert_eq!(write.recv().await, reset_with(MALFORMED));
+        write.send(&[0]).await;
+        assert_eq!(write.recv().await, reset_with(REFUSED));
         let mut stream = agent.request(2, b"ab").await;
         assert_eq!(stream.response().await, b"ba");
     });
     assert_eq!(
         home.served,
         [
-            Err(serve::Error::Client(wire::hub::client::Error::Kind {
-                kind: 7
-            })),
+            Err(serve::Error::Access(Refusal::Signature)),
             Ok(Got::Request(name(SUBJECT), b"ab".to_vec())),
             Err(serve::Error::Stream(closed_with(0))),
         ]
@@ -728,8 +727,9 @@ fn stops_a_request_whose_body_is_over_the_room_of_the_hub() {
     );
     assert_eq!(
         over.to_string(),
-        "a body of 16777216 bytes does not fit under the cap of 33554432 bytes: the \
-         open requests and reads of the hub hold 16777217 bytes"
+        "16777216 bytes of a body or of the ends or names of a write do not fit under \
+         the cap of 33554432 bytes: the open requests, reads, and writes of the hub \
+         hold 16777217 bytes"
     );
 }
 
@@ -855,8 +855,9 @@ fn takes_a_request_of_another_subject_while_a_body_trickles() {
     );
     assert_eq!(
         over.to_string(),
-        "a body of 1 bytes does not fit under the share of 16777216 bytes of subject \
-         ops.agent: its open requests and reads hold 16777216 bytes"
+        "1 bytes of a body or of the ends or names of a write do not fit under the \
+         share of 16777216 bytes of subject ops.agent: its open requests, reads, and \
+         writes hold 16777216 bytes"
     );
 }
 

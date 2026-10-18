@@ -7,6 +7,7 @@
 //! - `timer`: an empty closure, the floor of each line's figure.
 //! - `open 1/<n>`: the polls of one `Hub::reader` open of a latest reader of `value`.
 //! - `open <n>/<n>`: the same, of a latest reader of `w.**`.
+//! - `write 1/<n>`: the polls of one `Hub::writer` open of `value`.
 //! - `name <m>`: one `Received::name` for each entry of a view of a reader of `w.**`,
 //!   figured per call. The frame holds `time` and up to 1,000 of `w.*`, the most that
 //!   one frame of the sim home holds.
@@ -70,23 +71,25 @@ async fn bench(
     node: sim::node::Node,
     tasks: env::tasks::Tasks,
     n: u64,
-) -> (Line, [Line; 4]) {
+) -> (Line, [Line; 5]) {
     let more: Vec<_> = (0..n).map(|at| name(&format!("w.{at}"))).collect();
     let hub = common::hub_alone(&node, tasks, &more).await;
     let leak = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
     let mut timer = Line::new("timer", 1);
     let mut one = Line::new(leak(format!("open 1/{n}")), 1);
     let mut every = Line::new(leak(format!("open {n}/{n}")), 1);
+    let mut write = Line::new(leak(format!("write 1/{n}")), 1);
     for round in 0..WARMUP + ROUNDS {
         timer.add(table::timed(&ALLOCATOR, || ()).1);
         one.add(open(&hub, &node, unnamed(&["value"], Mode::Latest)).await.1);
         every.add(open(&hub, &node, unnamed(&["w.**"], Mode::Latest)).await.1);
-        for line in [&mut timer, &mut one, &mut every] {
+        write.add(open_writer(&hub, &node).await);
+        for line in [&mut timer, &mut one, &mut every, &mut write] {
             line.close(round >= WARMUP);
         }
     }
     let (named, looped) = names(&hub, &node, more, leak).await;
-    (timer, [one, every, named, looped])
+    (timer, [one, every, write, named, looped])
 }
 
 /// The `name` line and its control, over a view of up to [`WRITTEN`] of `more` and
@@ -167,6 +170,31 @@ async fn open(
         allocations += allocated;
         if let Poll::Ready(reader) = poll {
             return (reader.expect("opens"), (nanos, allocations));
+        }
+        node.clock().sleep(Span::MILLISECOND).await;
+    }
+}
+
+/// The ns and allocations of the polls of one writer open of `value`. The writer
+/// drops at once.
+async fn open_writer(hub: &Hub, node: &sim::node::Node) -> (u64, u64) {
+    let config = writer::Config {
+        subject: name("bench"),
+        authority: Authority(1),
+        lease: None,
+        channels: vec![name("value")],
+    };
+    let mut open = pin!(hub.writer(config));
+    let mut context = Context::from_waker(Waker::noop());
+    let (mut nanos, mut allocations) = (0, 0);
+    loop {
+        let (poll, (more, allocated)) =
+            table::timed(&ALLOCATOR, || open.as_mut().poll(&mut context));
+        nanos += more;
+        allocations += allocated;
+        if let Poll::Ready(writer) = poll {
+            drop(writer.expect("opens"));
+            return (nanos, allocations);
         }
         node.clock().sleep(Span::MILLISECOND).await;
     }
