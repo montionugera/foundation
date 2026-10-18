@@ -3,7 +3,6 @@
 
 use std::ffi::CString;
 use std::future::{self, poll_fn};
-use std::io::IoSlice;
 use std::net::SocketAddr;
 use std::pin::{Pin, pin};
 use std::sync::{Arc, Mutex};
@@ -16,51 +15,7 @@ use types::time::Span;
 
 use super::{Client, PORT, options};
 use crate::event;
-
-const NONE: &[u8] = b"http://opcfoundation.org/UA/SecurityPolicy#None";
-
-fn frame(kind: [u8; 4], body: &[u8]) -> Vec<u8> {
-    let length = u32::try_from(8 + body.len()).unwrap();
-    let mut bytes = kind.to_vec();
-    bytes.extend(length.to_le_bytes());
-    bytes.extend(body);
-    bytes
-}
-
-fn push_string(bytes: &mut Vec<u8>, text: Option<&[u8]>) {
-    match text {
-        None => bytes.extend((-1_i32).to_le_bytes()),
-        Some(text) => {
-            bytes.extend(u32::try_from(text.len()).unwrap().to_le_bytes());
-            bytes.extend(text);
-        }
-    }
-}
-
-async fn read_exact(stream: &mut Tcp, mut bytes: &mut [u8]) {
-    while !bytes.is_empty() {
-        let read = poll_fn(|cx| stream.poll_read(cx, bytes)).await.unwrap();
-        assert!(read > 0, "the client closed the stream");
-        bytes = &mut bytes[read..];
-    }
-}
-
-async fn message(stream: &mut Tcp) -> Vec<u8> {
-    let mut bytes = vec![0; 8];
-    read_exact(stream, &mut bytes).await;
-    let length = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-    bytes.resize(usize::try_from(length).unwrap(), 0);
-    read_exact(stream, &mut bytes[8..]).await;
-    bytes
-}
-
-async fn write(stream: &mut Tcp, bytes: &[u8]) {
-    let mut sent = 0;
-    while sent < bytes.len() {
-        let parts = [IoSlice::new(&bytes[sent..])];
-        sent += poll_fn(|cx| stream.poll_write(cx, &parts)).await.unwrap();
-    }
-}
+use crate::peer::{self, frame, write};
 
 /// The MSG chunks of `count` request ids from `first` on, which the client never sent.
 fn unknown(first: u32, count: u32) -> Vec<u8> {
@@ -78,35 +33,7 @@ fn unknown(first: u32, count: u32) -> Vec<u8> {
 /// A device that answers the HEL and the OPN of a client, sends 2000 MSG chunks of
 /// unknown request ids, and after 1.1 s one more.
 async fn device(mut stream: Tcp, clock: Clock) {
-    let hel = message(&mut stream).await;
-    assert_eq!(&hel[..4], b"HELF");
-    let mut ack = Vec::new();
-    for field in [0_u32, 1 << 16, 1 << 16, 0, 0] {
-        ack.extend(field.to_le_bytes());
-    }
-    write(&mut stream, &frame(*b"ACKF", &ack)).await;
-    let opn = message(&mut stream).await;
-    assert_eq!(&opn[..4], b"OPNF");
-    let mut body = 1_u32.to_le_bytes().to_vec(); // channel id
-    push_string(&mut body, Some(NONE));
-    push_string(&mut body, None);
-    push_string(&mut body, None);
-    body.extend(1_u32.to_le_bytes()); // sequence number
-    body.extend(1_u32.to_le_bytes()); // request id
-    body.extend([0x01, 0, 0xC1, 0x01]); // OpenSecureChannelResponse
-    body.extend(0_i64.to_le_bytes()); // timestamp
-    body.extend(0_u32.to_le_bytes()); // request handle
-    body.extend(0_u32.to_le_bytes()); // Good
-    body.push(0); // no diagnostics
-    body.extend((-1_i32).to_le_bytes()); // no string table
-    body.extend([0, 0, 0]); // no additional header
-    body.extend(0_u32.to_le_bytes()); // server protocol version
-    body.extend(1_u32.to_le_bytes()); // token channel id
-    body.extend(1_u32.to_le_bytes()); // token id
-    body.extend(0_i64.to_le_bytes()); // created at
-    body.extend(600_000_u32.to_le_bytes()); // revised lifetime
-    push_string(&mut body, None); // nonce
-    write(&mut stream, &frame(*b"OPNF", &body)).await;
+    peer::opened(&mut stream).await;
     write(&mut stream, &unknown(0, 2000)).await;
     clock.sleep(Span::from_nanos(1_100_000_000)).await;
     write(&mut stream, &unknown(2000, 1)).await;
