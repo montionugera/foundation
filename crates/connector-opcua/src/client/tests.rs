@@ -501,7 +501,7 @@ fn read_after_late_answer(
 
 #[test]
 fn the_late_answer_of_a_read_does_not_change_the_next_read() {
-    for dropped in [0, 15] {
+    for dropped in [0, READS - 1] {
         let (values, value) = read_after_late_answer(dropped);
         assert_eq!(values, Ok(vec![Ok(value)]), "{dropped} dropped");
     }
@@ -680,8 +680,8 @@ fn read_after(dropped: u16) -> (Result<Value, Fault>, Span) {
 /// reads stay in flight, so it fails at the end of its wait and sends nothing.
 #[test]
 fn a_read_at_the_bound_fails_when_no_read_ends() {
-    let (below, below_took) = read_after(15);
-    let (at, at_took) = read_after(16);
+    let (below, below_took) = read_after(READS - 1);
+    let (at, at_took) = read_after(READS);
     assert_eq!(
         (below, at),
         (
@@ -729,7 +729,7 @@ fn the_timeout_of_a_read_counts_its_wait() {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
             peer.gate.close();
-            drop_reads(&mut client, 16).await;
+            drop_reads(&mut client, READS).await;
             let out =
                 read_with_pass(&mut client, &peer, Span::from_nanos(3_000_000_000))
                     .await;
@@ -744,14 +744,14 @@ fn the_timeout_of_a_read_counts_its_wait() {
     assert!(timeout.contains(&took), "{took:?}");
 }
 
-/// The answers of 16 dropped reads end them all, so a read after one more dropped read
-/// sends its request at once and gets its answer in one pass of the server.
+/// The answers of [`READS`] dropped reads end them all, so a read after one more dropped
+/// read sends its request at once and gets its answer in one pass of the server.
 #[test]
 fn the_answers_of_dropped_reads_end_them() {
     let ((read, value), _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            drop_reads(&mut client, 16).await;
+            drop_reads(&mut client, READS).await;
             peer.clock.sleep(Span::from_nanos(1_000_000_000)).await;
             peer.gate.close();
             drop_reads(&mut client, 1).await;

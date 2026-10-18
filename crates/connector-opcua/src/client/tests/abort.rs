@@ -75,14 +75,15 @@ fn reads(
     .0
 }
 
-/// An abort chunk answers its read with its Error, so after 16 of them the client
-/// holds no read and a later read that the server answers in full gives the value.
+/// An abort chunk answers its read with its Error, so after [`READS`] of them the
+/// client holds no read and a later read that the server answers in full gives the
+/// value.
 #[test]
-fn a_read_after_16_aborted_answers_gives_the_value() {
-    let (aborted, [after, again], value) = reads(&VALUE, 0, 16, too_large);
+fn a_read_after_an_aborted_answer_of_each_read_in_flight_gives_the_value() {
+    let (aborted, [after, again], value) = reads(&VALUE, 0, READS, too_large);
     assert_eq!(
         aborted,
-        vec![Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE)); 16]
+        vec![Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE)); usize::from(READS)]
     );
     assert_eq!((after, again), (Ok(value), Ok(value)));
 }
