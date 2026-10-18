@@ -729,36 +729,6 @@ fn names_each_error() {
         ),
         (Error::Unnamed, "the open of the write names no channel"),
         (
-            Error::Time { time: 3 },
-            "the head names time 3, which no time has",
-        ),
-        (
-            Error::Form { form: 2 },
-            "the head names form 2, which no form has",
-        ),
-        (Error::Count, "the head holds no samples"),
-        (Error::Series, "the head names no series"),
-        (
-            Error::Untimed {
-                form: Form::Encoded,
-                count: 1,
-            },
-            "the head that the node stamps holds 1 samples in the encoded form, not 1 \
-             raw sample",
-        ),
-        (
-            Error::Untimed {
-                form: Form::Raw,
-                count: 2,
-            },
-            "the head that the node stamps holds 2 samples in the raw form, not 1 raw \
-             sample",
-        ),
-        (
-            Error::Refusal { code: 8 },
-            "the refused frame has code 8, which no refusal has",
-        ),
-        (
             Error::Finished,
             "the node finished the stream before its last place",
         ),

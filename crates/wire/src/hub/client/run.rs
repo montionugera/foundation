@@ -23,11 +23,6 @@ impl Run {
         }
     }
 
-    /// The count of places, the index too.
-    pub(super) fn count(&self) -> u32 {
-        self.places.count
-    }
-
     /// Decodes the next message of the run. Gives the places and their key set, from
     /// [`KeySet::ordered`], with the last message, else `None`. A refused message
     /// leaves the run as it was.

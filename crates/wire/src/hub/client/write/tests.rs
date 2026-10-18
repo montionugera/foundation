@@ -2,7 +2,7 @@ use proptest::prelude::*;
 use types::name;
 
 use super::*;
-use crate::hub::client::First;
+use crate::hub::client::{First, OPEN_BYTES_MAX};
 
 fn write(length: u64) -> Write {
     Write {
@@ -31,27 +31,6 @@ fn encode_open(open: &Open) -> Vec<u8> {
     out
 }
 
-fn head(time: Time, form: Form, count: u32) -> Head {
-    Head {
-        time,
-        form,
-        count,
-        series: 2,
-    }
-}
-
-fn encode_head(head: Head) -> Vec<u8> {
-    let mut out = vec![0xaa; Head::LEN];
-    head.encode(&mut out);
-    out
-}
-
-fn encode_reply(reply: Reply) -> Vec<u8> {
-    let mut out = vec![0xaa; reply.encoded_len()];
-    reply.encode(&mut out);
-    out
-}
-
 fn not_utf8(bytes: &[u8]) -> text::Error<Box<name::Error>> {
     text::Error::Utf8(std::str::from_utf8(bytes).unwrap_err())
 }
@@ -62,22 +41,6 @@ fn zeros(kind: u8, len: usize) -> Vec<u8> {
     bytes[0] = kind;
     bytes
 }
-
-fn taken(seq: u64, count: u32) -> Reply {
-    Reply::Outcome(Outcome::Taken {
-        range: frame::Range { seq, count },
-    })
-}
-
-const REFUSALS: [(Refusal, u8); 7] = [
-    (Refusal::Waiting, 1),
-    (Refusal::Reserved, 2),
-    (Refusal::Expired, 3),
-    (Refusal::Order, 4),
-    (Refusal::Codec, 5),
-    (Refusal::Full, 6),
-    (Refusal::Large, 7),
-];
 
 mod pins {
     use super::*;
@@ -104,44 +67,6 @@ mod pins {
         bytes.extend([1, b'y']);
         assert_eq!(lease.encoded_len(), 12);
         assert_eq!(encode_open(&lease), bytes);
-    }
-
-    #[test]
-    fn the_head() {
-        let mut head = head(Time::Frame(Path::Live), Form::Raw, 0x0102);
-        head.series = 0x0304;
-        let mut bytes = vec![7, 0, 0, 0x02, 0x01, 0, 0, 0x04, 0x03, 0, 0];
-        assert_eq!(encode_head(head), bytes);
-        head.time = Time::Frame(Path::Backfill);
-        head.form = Form::Encoded;
-        bytes[1..3].copy_from_slice(&[1, 1]);
-        assert_eq!(encode_head(head), bytes);
-        let node = Head {
-            time: Time::Node,
-            form: Form::Raw,
-            count: 1,
-            series: 3,
-        };
-        assert_eq!(encode_head(node), [7, 2, 0, 1, 0, 0, 0, 3, 0, 0, 0]);
-    }
-
-    #[test]
-    fn the_replies() {
-        let range = frame::Range {
-            seq: 0x0102,
-            count: 0x0304,
-        };
-        let mut bytes = vec![1, 0x02, 0x01, 0, 0, 0, 0, 0, 0, 0x04, 0x03, 0, 0];
-        assert_eq!(encode_reply(taken(0x0102, 0x0304)), bytes);
-        bytes[0] = 2;
-        let lost = Reply::Outcome(Outcome::Lost { range });
-        assert_eq!(encode_reply(lost), bytes);
-        for (refusal, code) in REFUSALS {
-            let refused = Reply::Outcome(Outcome::Refused(refusal));
-            assert_eq!(encode_reply(refused), [3, code]);
-        }
-        let stored = Reply::Stored { through: 0x0506 };
-        assert_eq!(encode_reply(stored), [4, 0x06, 0x05, 0, 0, 0, 0, 0, 0]);
     }
 }
 
@@ -309,184 +234,11 @@ mod open {
     }
 }
 
-mod head {
-    use super::*;
-
-    fn bytes(time: u8, form: u8, count: u32, series: u32) -> Vec<u8> {
-        let mut bytes = vec![7, time, form];
-        bytes.extend(count.to_le_bytes());
-        bytes.extend(series.to_le_bytes());
-        bytes
-    }
-
-    #[test]
-    fn refuses_each_other_kind() {
-        for kind in (0..=u8::MAX).filter(|&kind| kind != 7) {
-            assert_eq!(
-                Head::decode(&zeros(kind, Head::LEN)),
-                Err(Error::Kind { kind })
-            );
-        }
-    }
-
-    #[test]
-    fn refuses_an_empty_message() {
-        assert_eq!(Head::decode(&[]), Err(Error::Empty));
-    }
-
-    #[test]
-    fn refuses_each_wrong_length() {
-        for len in (1..=Head::LEN + 1).filter(|&len| len != Head::LEN) {
-            assert_eq!(Head::decode(&zeros(7, len)), Err(Error::Length { len }));
-        }
-    }
-
-    #[test]
-    fn refuses_a_time_that_no_time_has() {
-        for time in 3..=u8::MAX {
-            assert_eq!(
-                Head::decode(&bytes(time, 0, 1, 1)),
-                Err(Error::Time { time })
-            );
-        }
-    }
-
-    #[test]
-    fn refuses_a_form_that_no_form_has() {
-        for form in 2..=u8::MAX {
-            assert_eq!(
-                Head::decode(&bytes(0, form, 1, 1)),
-                Err(Error::Form { form })
-            );
-        }
-    }
-
-    #[test]
-    fn refuses_no_samples_and_no_series() {
-        assert_eq!(Head::decode(&bytes(0, 0, 0, 1)), Err(Error::Count));
-        assert_eq!(Head::decode(&bytes(0, 0, 1, 0)), Err(Error::Series));
-    }
-
-    #[test]
-    fn refuses_a_node_head_that_is_encoded_or_holds_more_than_one_sample() {
-        assert_eq!(
-            Head::decode(&bytes(2, 1, 1, 1)),
-            Err(Error::Untimed {
-                form: Form::Encoded,
-                count: 1
-            })
-        );
-        assert_eq!(
-            Head::decode(&bytes(2, 0, 2, 1)),
-            Err(Error::Untimed {
-                form: Form::Raw,
-                count: 2
-            })
-        );
-        assert_eq!(
-            Head::decode(&bytes(2, 0, 1, 1)),
-            Ok(head(Time::Node, Form::Raw, 1)).map(|head| Head { series: 1, ..head })
-        );
-    }
-
-    #[test]
-    fn gives_the_first_defect_in_the_order_of_the_bytes() {
-        assert_eq!(
-            Head::decode(&bytes(3, 2, 0, 0)),
-            Err(Error::Time { time: 3 })
-        );
-        assert_eq!(
-            Head::decode(&bytes(2, 2, 0, 0)),
-            Err(Error::Form { form: 2 })
-        );
-        assert_eq!(Head::decode(&bytes(2, 1, 0, 0)), Err(Error::Count));
-        assert_eq!(Head::decode(&bytes(2, 1, 2, 0)), Err(Error::Series));
-    }
-
-    #[test]
-    #[should_panic(expected = "a head has 0 samples of 2 series, not at least 1 of 1")]
-    fn panics_on_an_encode_with_no_samples() {
-        encode_head(head(Time::Frame(Path::Live), Form::Raw, 0));
-    }
-
-    #[test]
-    #[should_panic(expected = "a head has 1 samples of 0 series, not at least 1 of 1")]
-    fn panics_on_an_encode_with_no_series() {
-        let head = head(Time::Frame(Path::Live), Form::Raw, 1);
-        encode_head(Head { series: 0, ..head });
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "a head that the node stamps has 1 samples in the Encoded form"
-    )]
-    fn panics_on_an_encode_of_an_encoded_node_head() {
-        encode_head(head(Time::Node, Form::Encoded, 1));
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "a head that the node stamps has 2 samples in the Raw form"
-    )]
-    fn panics_on_an_encode_of_a_node_head_of_two_samples() {
-        encode_head(head(Time::Node, Form::Raw, 2));
-    }
-}
-
-mod reply {
-    use super::*;
-
-    #[test]
-    fn refuses_each_kind_that_no_reply_has() {
-        for kind in (0..=u8::MAX).filter(|kind| !(1..=4).contains(kind)) {
-            assert_eq!(Reply::decode(&zeros(kind, 13)), Err(Error::Kind { kind }));
-        }
-    }
-
-    #[test]
-    fn refuses_an_empty_message() {
-        assert_eq!(Reply::decode(&[]), Err(Error::Empty));
-    }
-
-    #[test]
-    fn refuses_each_wrong_length() {
-        for (kind, len) in [(1, 12), (1, 14), (2, 1), (2, 14), (3, 1), (3, 3), (4, 8)] {
-            assert_eq!(
-                Reply::decode(&zeros(kind, len)),
-                Err(Error::Length { len }),
-                "{kind}"
-            );
-        }
-        assert_eq!(Reply::decode(&zeros(4, 10)), Err(Error::Length { len: 10 }));
-    }
-
-    #[test]
-    fn refuses_a_code_that_no_refusal_has() {
-        for code in (0..=u8::MAX).filter(|code| !(1..=7).contains(code)) {
-            assert_eq!(Reply::decode(&[3, code]), Err(Error::Refusal { code }));
-        }
-    }
-
-    #[test]
-    fn checks_the_length_before_the_code() {
-        assert_eq!(Reply::decode(&[3, 0, 0]), Err(Error::Length { len: 3 }));
-    }
-
-    #[test]
-    fn decodes_each_refusal() {
-        for (refusal, code) in REFUSALS {
-            assert_eq!(
-                Reply::decode(&[3, code]),
-                Ok(Reply::Outcome(Outcome::Refused(refusal)))
-            );
-        }
-    }
-}
-
 mod opening {
-    use super::*;
-    use crate::hub::client::place;
     use types::channel;
+
+    use super::*;
+    use crate::hub::client::{Place, Places, place};
 
     fn pt(key: u128, data_type: &str) -> Place {
         Place {
@@ -551,9 +303,7 @@ mod opening {
     }
 
     #[test]
-    #[should_panic(
-        expected = "a write stream is decoded after the decoder gave its start"
-    )]
+    #[should_panic(expected = "a stream is decoded after the decoder gave its start")]
     fn panics_on_a_decode_after_the_places() {
         let mut opening = Opening::default();
         let places = Places { count: 1, index: 0 };
@@ -626,46 +376,6 @@ fn name() -> impl Strategy<Value = Name> {
     "[a-z][a-z0-9_]{0,6}(\\.[a-z0-9_]{1,6}){0,2}".prop_map(|text| text.parse().unwrap())
 }
 
-fn head_strategy() -> impl Strategy<Value = Head> {
-    let time = prop_oneof![
-        Just(Time::Frame(Path::Live)),
-        Just(Time::Frame(Path::Backfill)),
-    ];
-    let form = prop_oneof![Just(Form::Raw), Just(Form::Encoded)];
-    prop_oneof![
-        (time, form, 1..=u32::MAX, 1..=u32::MAX).prop_map(
-            |(time, form, count, series)| {
-                Head {
-                    time,
-                    form,
-                    count,
-                    series,
-                }
-            }
-        ),
-        (1..=u32::MAX).prop_map(|series| Head {
-            time: Time::Node,
-            form: Form::Raw,
-            count: 1,
-            series,
-        }),
-    ]
-}
-
-fn reply() -> impl Strategy<Value = Reply> {
-    let range = (any::<u64>(), any::<u32>())
-        .prop_map(|(seq, count)| frame::Range { seq, count });
-    prop_oneof![
-        range
-            .clone()
-            .prop_map(|range| Reply::Outcome(Outcome::Taken { range })),
-        range.prop_map(|range| Reply::Outcome(Outcome::Lost { range })),
-        (0..REFUSALS.len())
-            .prop_map(|at| Reply::Outcome(Outcome::Refused(REFUSALS[at].0))),
-        any::<u64>().prop_map(|through| Reply::Stored { through }),
-    ]
-}
-
 proptest! {
     #[test]
     fn round_trips_a_write(length in 0..=OPEN_BYTES_MAX, signature: [u8; 32]) {
@@ -689,13 +399,4 @@ proptest! {
         prop_assert_eq!(Open::decode(&encode_open(&open)), Ok(open));
     }
 
-    #[test]
-    fn round_trips_a_head(head in head_strategy()) {
-        prop_assert_eq!(Head::decode(&encode_head(head)), Ok(head));
-    }
-
-    #[test]
-    fn round_trips_a_reply(reply in reply()) {
-        prop_assert_eq!(Reply::decode(&encode_reply(reply)), Ok(reply));
-    }
 }

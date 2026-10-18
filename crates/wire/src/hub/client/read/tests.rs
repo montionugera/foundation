@@ -1,11 +1,14 @@
 use proptest::prelude::*;
-use types::name;
+use types::channel;
+use types::name::{self, Name};
+use types::sample::Type;
 use types::sample::{self, Scalar, Sides};
 
 use super::*;
 use crate::hub::client::First;
 use crate::hub::client::Request;
 use crate::hub::client::text;
+use crate::hub::client::{OPEN_BYTES_MAX, PLACES_MAX, Place, Places, place};
 
 fn read(length: u64) -> Read {
     Read {
@@ -964,9 +967,7 @@ mod reader {
     }
 
     #[test]
-    #[should_panic(
-        expected = "a read stream is decoded after the decoder gave its start"
-    )]
+    #[should_panic(expected = "a stream is decoded after the decoder gave its start")]
     fn panics_on_a_decode_after_the_last_place() {
         let places = Places { count: 1, index: 0 };
         let mut reader = in_run(Mode::Complete, places);
@@ -975,9 +976,7 @@ mod reader {
     }
 
     #[test]
-    #[should_panic(
-        expected = "a read stream is decoded after the decoder gave its start"
-    )]
+    #[should_panic(expected = "a stream is decoded after the decoder gave its start")]
     fn panics_on_the_end_after_the_last_place() {
         let mut reader = in_run(Mode::Complete, Places { count: 1, index: 0 });
         last(&mut reader, &encode_run(&[stamp(1)]));

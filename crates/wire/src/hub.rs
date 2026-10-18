@@ -9,7 +9,8 @@
 //! ends run exactly [`Head::series`] ends, so the receiver counts them to find where a
 //! run ends. The body starts a new message.
 //!
-//! The streams of a program's session are in [`client`].
+//! The streams of a program's session are in [`client`], and the frames of its write
+//! stream and their replies in [`write`].
 //!
 //! [`Home`] decodes the messages from the reader's node, and [`Reader`] those from the
 //! home. Each checks the order and the runs of its side of the session.
@@ -33,6 +34,7 @@ mod frames;
 mod gaps;
 mod home;
 mod reader;
+pub mod write;
 
 use std::fmt;
 
@@ -501,8 +503,8 @@ pub mod ends {
     }
 }
 
-/// A message of a reader session that is not valid. The decoders of [`client`] give
-/// [`client::Error`].
+/// A message of a reader session, or a reply of a write stream, that is not valid.
+/// The decoders of [`client`] give [`client::Error`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The message has no bytes.
@@ -521,7 +523,7 @@ pub enum Error {
     Channels,
     /// A head names no series.
     Series,
-    /// A head's range ends past the highest seq.
+    /// The range of a head or of a write's reply ends past the highest seq.
     Range {
         /// The seq of the range.
         seq: u64,
@@ -588,6 +590,17 @@ pub enum Error {
     },
     /// The home finished the stream outside a body.
     Finished,
+    /// The range of a write's reply holds no sample.
+    Count {
+        /// The seq of the range.
+        seq: u64,
+    },
+    /// A write's reply refuses a frame with a code that no
+    /// [`write::Refusal`] has.
+    Refusal {
+        /// The code.
+        code: u8,
+    },
 }
 
 // Frame decoders give it for each message: it stays `Copy`, with no drop glue.
@@ -612,7 +625,7 @@ impl fmt::Display for Error {
             Self::Series => f.write_str("the frame head names no series"),
             Self::Range { seq, count } => write!(
                 f,
-                "the frame head has {count} samples from seq {seq}, which end past the \
+                "the range has {count} samples from seq {seq}, which end past the \
                  highest seq"
             ),
             Self::Path { byte } => write!(
@@ -659,6 +672,12 @@ impl fmt::Display for Error {
             ),
             Self::Finished => {
                 f.write_str("the home finished the stream outside a body")
+            }
+            Self::Count { seq } => {
+                write!(f, "the reply's range from seq {seq} holds no sample")
+            }
+            Self::Refusal { code } => {
+                write!(f, "the refused frame has code {code}, which no refusal has")
             }
         }
     }
@@ -1307,7 +1326,7 @@ mod tests {
             (Error::Series, "the frame head names no series"),
             (
                 Error::Range { seq: 7, count: 2 },
-                "the frame head has 2 samples from seq 7, which end past the highest seq",
+                "the range has 2 samples from seq 7, which end past the highest seq",
             ),
             (
                 Error::Path { byte: 2 },
@@ -1363,6 +1382,14 @@ mod tests {
             (
                 Error::Finished,
                 "the home finished the stream outside a body",
+            ),
+            (
+                Error::Count { seq: 7 },
+                "the reply's range from seq 7 holds no sample",
+            ),
+            (
+                Error::Refusal { code: 8 },
+                "the refused frame has code 8, which no refusal has",
             ),
         ];
         for (error, text) in cases {

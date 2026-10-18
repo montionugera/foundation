@@ -14,9 +14,9 @@
 //! - A write stream carries one writer session. The program sends a [`write::Write`]
 //!   and then its [`write::Open`] as a body. The node sends [`Places`] and the run of
 //!   its [`place`]s. The program decodes them with [`write::Opening`]. Then the
-//!   program sends each frame as a [`write::Head`], the run of its
-//!   [`ends`](super::ends), and its body, and the node sends a [`write::Reply`] for
-//!   each frame and each commit.
+//!   program sends each frame as a [`super::write::Head`], the run of its
+//!   [`ends`](super::ends), and its body, and the node sends a
+//!   [`super::write::Reply`] for each frame and each commit.
 //!
 //! A body goes as a run of stream messages back to back, with no prefix, each at most
 //! the peer's `message_bytes_max` and none empty. It holds exactly the length of its
@@ -50,19 +50,15 @@
 //! - [`write::Open`]: the authority (`u8`), the lease (`u8`, none 0, a lease 1, then
 //!   the lease as `i64` nanoseconds), then each channel's name: its length (`u8`) and
 //!   the name.
-//! - [`write::Head`]: kind 7, the time (`u8`, live 0, backfill 1, node 2), the form
-//!   (`u8`, raw 0, encoded 1), the samples of each series (`u32`), and the count of
-//!   series (`u32`).
-//! - [`write::Reply`]: taken 1 or lost 2, then the seq (`u64`) and the count (`u32`);
-//!   refused 3, then the code (`u8`, waiting 1, reserved 2, expired 3, order 4, codec
-//!   5, full 6, large 7); stored 4, then the last seq on disk (`u64`).
+//!
+//! The formats of a write's frames and of the node's replies are in
+//! [`super::write`].
 
 use std::fmt;
 
 use types::channel;
 use types::connection;
 use types::ed25519::PublicKey;
-use types::frame::Form;
 use types::hello::Hello;
 use types::name::{self, Name};
 use types::node;
@@ -75,17 +71,17 @@ use crate::header::MALFORMED;
 
 mod read;
 mod run;
+mod stream;
 pub mod text;
 pub mod write;
 
-pub use read::{
-    Mode, OPEN_BYTES_MAX, Open, PLACES_MAX, Place, Places, Read, Reader, Start, place,
-};
+pub use read::{Mode, Open, Read, Reader, Start};
+pub use stream::{OPEN_BYTES_MAX, PLACES_MAX, Place, Places, place};
 
 const HELLO: u8 = 4;
 const REQUEST: u8 = 5;
 const READ: u8 = 6;
-const WRITE: u8 = 7;
+pub(super) const WRITE: u8 = 7;
 
 /// Stop code: the hello, request, or read failed the access check. The spec has no such
 /// subject, does not list the key for it, or the signature is not valid. The node's
@@ -309,32 +305,6 @@ pub enum Error {
     Channel(text::Error<Box<name::Error>>),
     /// The open of a write names no channel.
     Unnamed,
-    /// A head of a write names a time that no [`write::Time`] has.
-    Time {
-        /// The time byte.
-        time: u8,
-    },
-    /// A head of a write names a form that no [`Form`] has.
-    Form {
-        /// The form byte.
-        form: u8,
-    },
-    /// A head of a write holds no samples.
-    Count,
-    /// A head of a write names no series.
-    Series,
-    /// A head of [`write::Time::Node`] is encoded or holds more than one sample.
-    Untimed {
-        /// The form of the head.
-        form: Form,
-        /// The samples of each series.
-        count: u32,
-    },
-    /// A refused frame of a write has a code that no refusal has.
-    Refusal {
-        /// The code.
-        code: u8,
-    },
 }
 
 impl fmt::Display for Error {
@@ -413,28 +383,6 @@ impl fmt::Display for Error {
                 "a channel name of the open of the write does not read: {cause}"
             ),
             Self::Unnamed => f.write_str("the open of the write names no channel"),
-            Self::Time { time } => {
-                write!(f, "the head names time {time}, which no time has")
-            }
-            Self::Form { form } => {
-                write!(f, "the head names form {form}, which no form has")
-            }
-            Self::Count => f.write_str("the head holds no samples"),
-            Self::Series => f.write_str("the head names no series"),
-            Self::Untimed { form, count } => {
-                let form = match form {
-                    Form::Raw => "raw",
-                    Form::Encoded => "encoded",
-                };
-                write!(
-                    f,
-                    "the head that the node stamps holds {count} samples in the {form} \
-                     form, not 1 raw sample"
-                )
-            }
-            Self::Refusal { code } => {
-                write!(f, "the refused frame has code {code}, which no refusal has")
-            }
         }
     }
 }
