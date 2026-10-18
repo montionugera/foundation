@@ -180,6 +180,25 @@ mod golden {
     }
 
     #[test]
+    fn gives_the_exact_bytes_of_a_write_open_and_its_signature_verifies() {
+        let bytes = signed(Kind::Write, create_hello().connection, b"open site_a.pt_1");
+
+        assert_eq!(
+            bytes,
+            hex::<50>(concat!(
+                "666f756e646174696f6e2f77726974652f31",
+                "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+                "6f70656e20736974655f612e70745f31",
+            ))
+        );
+        let signature = hex(concat!(
+            "c2ac0f0c241ef09bff2831b0b38d361c4965fd7ce559163a57f0551a094f92f0",
+            "54b799655a7ae18b4335886a0169fc817baca651337d1facb8f4f030f7d03a04",
+        ));
+        assert_eq!(create_hello().key.verify(&bytes, &signature), Ok(()));
+    }
+
+    #[test]
     fn holds_a_subject_of_the_most_bytes_a_name_has() {
         let subject = "a".repeat(Name::MAX_BYTES);
         let hello = Hello {
@@ -231,13 +250,16 @@ mod golden {
         fn never_gives_the_bytes_of_one_kind_for_another(
             request in proptest::collection::vec(any::<u8>(), 0..128),
             read in proptest::collection::vec(any::<u8>(), 0..128),
+            write in proptest::collection::vec(any::<u8>(), 0..128),
         ) {
             let connection = create_hello().connection;
+            let request = signed(Kind::Request, connection, &request);
+            let read = signed(Kind::Read, connection, &read);
+            let write = signed(Kind::Write, connection, &write);
 
-            prop_assert_ne!(
-                signed(Kind::Request, connection, &request),
-                signed(Kind::Read, connection, &read)
-            );
+            prop_assert_ne!(&request, &read);
+            prop_assert_ne!(&request, &write);
+            prop_assert_ne!(&read, &write);
         }
     }
 }
@@ -768,6 +790,32 @@ mod verify {
         );
 
         assert_eq!(verified, Err(Error::Signature));
+    }
+
+    #[test]
+    fn refuses_the_signature_of_a_read_open_as_a_write_open() {
+        let open = b"open site_a.pt_1";
+        let signature = sign(
+            &pair(TEST_1),
+            &signed(Kind::Read, create_hello().connection, open),
+        );
+
+        let verified = listed().verify(&admitted(), NOW, Kind::Write, open, &signature);
+
+        assert_eq!(verified, Err(Error::Signature));
+    }
+
+    #[test]
+    fn verifies_a_write_open_signed_with_the_key_of_the_hello() {
+        let open = b"open site_a.pt_1";
+        let signature = sign(
+            &pair(TEST_1),
+            &signed(Kind::Write, create_hello().connection, open),
+        );
+
+        let verified = listed().verify(&admitted(), NOW, Kind::Write, open, &signature);
+
+        assert_eq!(verified, Ok(()));
     }
 
     #[test]

@@ -1221,8 +1221,8 @@ fn names_each_error() {
             Error::Message(wire::hub::client::Error::Repeated {
                 key: types::channel::Key::from_u128(1),
             }),
-            "the node sent a message that is not valid: the places of the read name \
-             channel 00000000-0000-0000-0000-000000000001 more than once",
+            "the node sent a message that is not valid: the places name channel \
+             00000000-0000-0000-0000-000000000001 more than once",
         ),
         (
             Error::Reply(wire::hub::Error::Reopen { kind: 1 }),
