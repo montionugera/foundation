@@ -40,7 +40,7 @@ UA_Int64 UA_DateTime_localTimeUtcOffset(void) { return 0; }
 bool connector_opcua_admit(void *log, bool severe);
 void connector_opcua_put_line(void *log, bool severe, const char *category,
                               const char *line, size_t length);
-void connector_opcua_die(const char *line, size_t length);
+__attribute__((noreturn)) void connector_opcua_die(const char *line, size_t length);
 
 /* Formats `format` with `args` into `line`, cut to `LINE_BYTES - 1` bytes, and gives
  * the length. `mp_vsnprintf`, not `vsnprintf`: open62541 formats `%S` and `%N`. */
@@ -52,7 +52,7 @@ static size_t format_line(char line[LINE_BYTES], const char *format, va_list arg
 /* Formats `format` with its arguments, as `format_line` does, and gives the line to
  * `connector_opcua_die`, which panics with it and aborts. The panic hook of the binary
  * puts the line in its log before the abort. */
-static void die(const char *format, ...) {
+__attribute__((noreturn)) static void die(const char *format, ...) {
     char line[LINE_BYTES];
     va_list args;
     va_start(args, format);
@@ -462,9 +462,11 @@ static const char *category_name(UA_LogCategory category) {
 }
 
 /* Gives the message to `connector_opcua_put_line` with `context`, when
- * `connector_opcua_admit` admits it. */
-static void put_line(void *context, bool severe, const char *category, const char *msg,
-                     va_list args) {
+ * `connector_opcua_admit` admits it. Out of line, so that the 512 B of `line` are on
+ * no stack of a message below warning. */
+__attribute__((noinline)) static void put_line(void *context, bool severe,
+                                               const char *category, const char *msg,
+                                               va_list args) {
     if(!connector_opcua_admit(context, severe))
         return;
     char line[LINE_BYTES];
