@@ -35,11 +35,11 @@
   (`UA_SecureChannel_receivedPayload`).
   open62541 moves a value of a fixed size that does not fit whole to the next chunk, and
   splits a string. The largest such value of a Read today is a Double (8 bytes), so the
-  check takes 7 bytes off each chunk but the last (`SPLIT`). The answer takes it on
-  trust: a server that leaves more gives a read near the bound `BadSecureChannelClosed`.
-  So does a server that fills a chunk of an answer with less than the smaller of the
-  two payloads above, or that uses an AEAD policy, for which Part 6 gives no
-  MaxBodySize.
+  check takes 7 bytes off each chunk but the last (`SPLIT`). The answer takes on trust
+  that each chunk of an answer but the last holds at least the smaller of the two
+  payloads above less `SPLIT`: a server that holds less gives a read near the bound
+  `BadSecureChannelClosed`. With an AEAD policy, for which Part 6 gives no
+  MaxBodySize, the payload is that of open62541 alone.
   The change that adds a GUID key also changes `SPLIT`, to 18, and `id_bytes`, whose
   match does not build until it gives the size of the new form: a test of the client
   fails to build until it gives the size of each form of a key. Decided by
@@ -60,7 +60,9 @@
   https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6138683801.
   The payload of a chunk from the copy, and the smaller of two payloads for an answer:
   `laptop.architect-2` at 2026-10-18T19:02:21Z,
-  https://github.com/synnaxlabs/foundation/pull/3243#issuecomment-6253878750.
+  https://github.com/synnaxlabs/foundation/pull/3243#issuecomment-6253878750, and the
+  AEAD payload at 2026-10-18T19:15:14Z,
+  https://github.com/synnaxlabs/foundation/pull/3243#issuecomment-6254024497.
   A close or reset of the stream by the server ends the connect, or the session, with
   an error status and no new dial, and the supervisor paces the next run
   (`laptop.architect-2`, 2026-10-13T16:56:50Z:
