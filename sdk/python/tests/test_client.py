@@ -81,10 +81,14 @@ def exit_code(pid: int) -> int:
         time.sleep(0.01)
 
 
-def close(client: foundation.Client, entered: threading.Event) -> None:
-    """Sets `entered`, then closes `client`."""
+def close(client: foundation.Client, entered: threading.Event, ends: list) -> None:
+    """Sets `entered`, then closes `client`, and adds to `ends` what the close gives or
+    raises."""
     entered.set()
-    client.close()
+    try:
+        ends.append(client.close())
+    except Exception as error:
+        ends.append(error)
 
 
 class Node:
@@ -244,26 +248,39 @@ class ClientTest(unittest.TestCase):
 
     def test_a_child_forked_during_a_close_gives_none(self) -> None:
         deadline = time.monotonic() + PATIENCE
+        late = True
         while True:
             client = self.node.connect()
             self.node.pause()
             entered = threading.Event()
+            ends: list = []
             closing = threading.Thread(
-                target=close, args=(client, entered), daemon=True
+                target=close, args=(client, entered, ends), daemon=True
             )
             closing.start()
             self.assertTrue(entered.wait(PATIENCE))
-            child = spawn(client.close)
-            during = closing.is_alive()
-            self.assertEqual(exit_code(child), 0)
+            if late:
+                # The first try forks after the close, as on a slow runner, so each run
+                # takes the path that tries again.
+                closing.join(PATIENCE)
+            during = False
+            while True:
+                child = spawn(client.close)
+                alive = closing.is_alive()
+                self.assertEqual(exit_code(child), 0)
+                if not alive:
+                    break
+                during = True
             closing.join(PATIENCE)
             self.assertFalse(closing.is_alive())
+            self.assertEqual(ends, [None])
             if during:
                 return
-            # The close of a paused node takes about 0.1 s, so on a slow runner the
-            # fork can come after it. Such a try proves nothing.
+            # The close of a paused node is short (about 0.1 s on x86_64 Linux), so on
+            # a slow runner the first fork can come after it. Such a try proves nothing.
             self.assertLess(time.monotonic(), deadline, "each fork came after a close")
             self.node.resume()
+            late = False
 
     def test_a_child_forked_with_an_open_client_does_not_end_the_session(self) -> None:
         clients = [self.node.connect()]
