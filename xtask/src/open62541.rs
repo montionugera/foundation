@@ -3874,6 +3874,10 @@ void *UA_read(void) { return PEM_read_bio_X509(1, 0, 2); }
         ];
         problems.extend(Uses::default().mismatches());
         assert_eq!(inspect(&["crypto/x/..", "second"]), Err(problems));
+        let none = dir.join("none/openssl");
+        let missing =
+            format!("{}: No such file or directory (os error 2)", none.display());
+        assert_eq!(inspect(&["crypto", "none"]), Err(vec![missing]));
         let error = inspect(&["bad"]).unwrap_err().concat();
         let place = format!("{}:1:2: error: ", dir.join("bad/openssl/f.h").display());
         let failed = format!("{} failed: ", cc.display());
