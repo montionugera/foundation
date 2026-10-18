@@ -381,6 +381,36 @@ fn reads_a_bucket_and_an_org() {
     );
 }
 
+/// Each config of a target holds each attribute that the body requires there, and
+/// gives `document.missing-attribute` without it. Without one that the body does not
+/// require, it still parses.
+#[test]
+fn each_config_of_a_target_holds_what_the_body_requires() {
+    for config in [influx(), bucket()] {
+        drop(Kind.parse(&config).expect("the config parses"));
+        let holds = |key: &str| config.attributes.get(key).is_some();
+        for attribute in BODY.attributes {
+            let parsed = Kind.parse(&without(config.clone(), attribute.name));
+            let required = match attribute.presence {
+                Presence::Required => true,
+                Presence::Unless(others) => !others.iter().all(|other| holds(other)),
+                Presence::Default(_) | Presence::Optional => false,
+            };
+            if required {
+                assert!(holds(attribute.name), "{}", attribute.name);
+                let codes: Vec<_> = parsed
+                    .expect_err(attribute.name)
+                    .iter()
+                    .map(|problem| problem.code.as_str())
+                    .collect();
+                assert_eq!(codes, ["document.missing-attribute"], "{}", attribute.name);
+            } else if holds(attribute.name) {
+                assert!(parsed.is_ok(), "{}: {parsed:?}", attribute.name);
+            }
+        }
+    }
+}
+
 #[test]
 fn refuses_a_database_and_a_bucket() {
     let config = plus(influx(), &[(60, "bucket", string("edge"))]);

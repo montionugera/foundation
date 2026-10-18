@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use document::diagnostic::{Code, Diagnostic};
-use document::schema::{self, Attribute, Body};
+use document::schema::{self, Attribute, Body, Presence};
 use document::{Block, Span, read};
 use spec::definition;
 use spec::placement::{Error, Nodes, Policy};
@@ -26,31 +26,34 @@ const BODY: Body = Body {
         Attribute {
             name: "select",
             value: "a selector",
-            default: None,
+            presence: Presence::Required,
             summary: "The connectors and indexes that it places.",
         },
         Attribute {
             name: "home",
             value: "the name of a node",
-            default: Some("none"),
+            presence: Presence::Optional,
             summary: "The node that orders, buffers, and gates the selected indexes.",
         },
         Attribute {
             name: "standby",
             value: "the name of a node",
-            default: Some("none"),
+            presence: Presence::Optional,
             summary: "The node that takes over when the home fails.",
         },
         Attribute {
             name: "copies",
             value: "the name of a node, or a list of them",
-            default: Some("none"),
+            presence: Presence::Optional,
             summary: "The nodes that keep a copy that is never promoted.",
         },
     ],
     blocks: &[],
     examples: &[EXAMPLE],
 };
+
+/// The attributes that name nodes, in the order of their roles.
+const ROLES: [&str; 3] = ["home", "standby", "copies"];
 
 const EXAMPLE: &str = "\
 placement \"site_a\" {
@@ -111,11 +114,9 @@ pub(crate) fn nodes(policy: &Policy) -> impl Iterator<Item = &Name> {
 /// The span of the first `home`, `standby`, or copy of `block`, a checked `placement`
 /// block, that names each node.
 pub(crate) fn spans(block: &Block) -> BTreeMap<Name, Option<Span>> {
-    let attributes = BODY
-        .attributes
-        .iter()
-        .filter(|key| key.name != "select")
-        .filter_map(|key| block.body.attributes.get(key.name));
+    let attributes = ROLES
+        .into_iter()
+        .filter_map(|role| block.body.attributes.get(role));
     let values = attributes.flat_map(|attribute| read::items(&attribute.value));
     let mut spans = BTreeMap::new();
     for value in values {
@@ -138,13 +139,14 @@ fn refuse(found: &mut Found<'_>, block: &Block, nodes: &Nodes, error: &Error) {
             "Name a `home`, a `standby`, or a node in `copies`".into(),
         ),
         Error::Overlap(node) => {
-            let roles = [
-                ("home", nodes.home.as_ref() == Some(node)),
-                ("standby", nodes.standby.as_ref() == Some(node)),
-                ("copies", nodes.copies.contains(node)),
+            let named = [
+                nodes.home.as_ref() == Some(node),
+                nodes.standby.as_ref() == Some(node),
+                nodes.copies.contains(node),
             ];
-            let last = roles
+            let last = ROLES
                 .into_iter()
+                .zip(named)
                 .filter(|(_, named)| *named)
                 .filter_map(|(role, _)| span(block, role))
                 .max();

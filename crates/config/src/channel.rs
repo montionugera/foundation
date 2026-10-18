@@ -1,5 +1,5 @@
 use document::diagnostic::{Code, Diagnostic};
-use document::schema::{self, Attribute, Body};
+use document::schema::{self, Attribute, Body, Presence};
 use document::value::Value;
 use document::{Block, read};
 use spec::channel::{Data, Edge, Error, Kind};
@@ -28,7 +28,7 @@ const INDEX: Body = Body {
         Attribute {
             name: "kind",
             value: "\"index\"",
-            default: None,
+            presence: Presence::Required,
             summary: "Makes the channel an index.",
         },
         ERROR,
@@ -47,7 +47,7 @@ const DATA: Body = Body {
 };
 
 /// What each kind of channel takes, for a block whose `kind` does not read.
-const ANY: Body = Body {
+pub(crate) const ANY: Body = Body {
     summary: "A channel of either kind.",
     attributes: &[
         CONTROL, DATA_TYPE, ERROR, INDEX_EDGE, KIND_DATA, QUALITY, UNIT,
@@ -59,21 +59,21 @@ const ANY: Body = Body {
 const ERROR: Attribute = Attribute {
     name: "error",
     value: "the name of a data channel",
-    default: Some("none"),
+    presence: Presence::Optional,
     summary: "The channel that holds the clock error bound of its timestamps.",
 };
 
 const CONTROL: Attribute = Attribute {
     name: "control",
     value: "the name of a data channel on another index",
-    default: Some("none"),
+    presence: Presence::Optional,
     summary: "The channel that the home writes control handoffs to.",
 };
 
 const KIND_DATA: Attribute = Attribute {
     name: "kind",
     value: "\"data\"",
-    default: Some("\"data\""),
+    presence: Presence::Default("\"data\""),
     summary: "Makes the channel a data channel.",
 };
 
@@ -81,28 +81,28 @@ const DATA_TYPE: Attribute = Attribute {
     name: "data_type",
     value: "a data type, such as \"f64\", \"f32[3]\", \"list<u8, 16>\", \
             \"string\", \"bytes\", or \"quality\"",
-    default: None,
+    presence: Presence::Required,
     summary: "The type of each sample.",
 };
 
 const INDEX_EDGE: Attribute = Attribute {
     name: "index",
     value: "the name of an index channel",
-    default: None,
+    presence: Presence::Required,
     summary: "The index channel that times its samples.",
 };
 
 const QUALITY: Attribute = Attribute {
     name: "quality",
     value: "the name of a data channel of type \"quality\"",
-    default: Some("none"),
+    presence: Presence::Optional,
     summary: "The channel that holds the quality of its samples.",
 };
 
 const UNIT: Attribute = Attribute {
     name: "unit",
     value: "a unit, such as \"kPa\"",
-    default: Some("none"),
+    presence: Presence::Optional,
     summary: "The unit of a numeric sample.",
 };
 

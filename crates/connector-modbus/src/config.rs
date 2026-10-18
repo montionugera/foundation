@@ -5,7 +5,7 @@ use std::collections::btree_map::Entry;
 
 use connector::kind;
 use document::diagnostic::{Code, Diagnostic, Note};
-use document::schema::{self, Attribute, Body};
+use document::schema::{self, Attribute, Body, Presence};
 use document::value::{Kind as Of, Value};
 use document::{Block, Document, read};
 use env::net::host::{self, Host};
@@ -47,25 +47,25 @@ const BODY: Body = Body {
         Attribute {
             name: "address",
             value: "a host and an optional port, such as \"plc:502\"",
-            default: None,
+            presence: Presence::Required,
             summary: "The endpoint of the device. Port 502 when it has none.",
         },
         Attribute {
             name: "order",
             value: "\"big\" or \"little\"",
-            default: Some("\"big\""),
+            presence: Presence::Default("\"big\""),
             summary: "The word order of a value that spans registers.",
         },
         Attribute {
             name: "rate",
             value: "a rate, such as \"10Hz\"",
-            default: None,
+            presence: Presence::Required,
             summary: "The reads per second.",
         },
         Attribute {
             name: "unit",
             value: "an integer, 0 to 255",
-            default: Some("1"),
+            presence: Presence::Default("1"),
             summary: "The unit of the device.",
         },
     ],
@@ -84,13 +84,13 @@ const READ: Body = Body {
         Attribute {
             name: "address",
             value: "an integer, 0 to 65535",
-            default: None,
+            presence: Presence::Required,
             summary: "The address of the protocol, from 0.",
         },
         Attribute {
             name: "table",
             value: "\"coil\", \"discrete\", \"holding\", or \"input\"",
-            default: None,
+            presence: Presence::Required,
             summary: "The table of the value.",
         },
     ],

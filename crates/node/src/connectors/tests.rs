@@ -407,7 +407,7 @@ fn kinds(
 const READS: Body = Body {
     summary: "A reader.",
     attributes: &[connector::reader::SELECT],
-    blocks: &[connector::reader::READER],
+    blocks: &[connector::reader::BLOCK],
     examples: &[],
 };
 

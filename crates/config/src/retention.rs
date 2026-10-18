@@ -1,4 +1,4 @@
-use document::schema::{self, Attribute, Body};
+use document::schema::{self, Attribute, Body, Presence};
 use document::{Block, read};
 use spec::definition;
 use spec::retention::Policy;
@@ -20,13 +20,13 @@ const BODY: Body = Body {
         Attribute {
             name: "select",
             value: "a selector",
-            default: None,
+            presence: Presence::Required,
             summary: "The indexes that it caps.",
         },
         Attribute {
             name: "keep",
             value: "a span of zero or more, such as \"3d\"",
-            default: None,
+            presence: Presence::Required,
             summary: "The most time that a hold keeps a sample after its store time.",
         },
     ],

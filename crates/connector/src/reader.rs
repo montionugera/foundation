@@ -1,7 +1,7 @@
 //! The reader settings that each out connector reads from its config.
 
 use document::diagnostic::{Code, Diagnostic};
-use document::schema::{self, Attribute, Body};
+use document::schema::{self, Attribute, Body, Presence};
 use document::value::Value;
 use document::{Block, Document};
 use hub::reader::Mode;
@@ -17,30 +17,30 @@ const LATEST_HOLD: Code = Code::new("connector.latest-hold");
 pub const SELECT: Attribute = Attribute {
     name: "select",
     value: "a selector",
-    default: None,
+    presence: Presence::Required,
     summary: "The channels that the connector reads.",
 };
 
 /// The `reader` block, which the body of each kind that reads states.
-pub const READER: schema::Block = schema::Block {
+pub const BLOCK: schema::Block = schema::Block {
     keyword: "reader",
     label: None,
-    forms: &[READER_BODY],
+    forms: &[BODY],
 };
 
-const READER_BODY: Body = Body {
+const BODY: Body = Body {
     summary: "How the connector reads its channels. At most one.",
     attributes: &[
         Attribute {
             name: "mode",
             value: "\"complete\" or \"latest\"",
-            default: Some("\"complete\""),
+            presence: Presence::Default("\"complete\""),
             summary: "Which frames the reader gets: each frame, or only the latest.",
         },
         Attribute {
             name: "hold",
             value: "a span",
-            default: Some("\"0s\""),
+            presence: Presence::Default("\"0s\""),
             summary: "How long the home holds the position of a complete reader after \
                       its session closes.",
         },
@@ -79,11 +79,11 @@ pub struct Settings {
 ///
 /// # Panics
 ///
-/// When `body` does not state [`SELECT`] and [`READER`]: the kind's body is internal.
+/// When `body` does not state [`SELECT`] and [`BLOCK`]: the kind's body is internal.
 pub fn read(config: &Document, body: &Body) -> Result<Settings, Vec<Diagnostic>> {
     assert!(
-        body.attributes.contains(&SELECT) && body.blocks.contains(&READER),
-        "the body of a kind that reads states `SELECT` and `READER`: {body:?}"
+        body.attributes.contains(&SELECT) && body.blocks.contains(&BLOCK),
+        "the body of a kind that reads states `SELECT` and `BLOCK`: {body:?}"
     );
     let mut diagnostics = document::read::unknown(config, kind::NOUN, body);
     let select = keep(
@@ -122,7 +122,7 @@ fn block(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> (Mode, Span) {
     diagnostics.extend(document::read::unknown(
         &block.body,
         "the `reader` block",
-        &READER_BODY,
+        &BODY,
     ));
     let attribute = |key: &str| block.body.attributes.get(key);
     let mode = attribute("mode").map(|mode| keep(self::mode(&mode.value), diagnostics));

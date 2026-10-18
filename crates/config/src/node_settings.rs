@@ -1,5 +1,5 @@
 use document::diagnostic::{Code, Diagnostic};
-use document::schema::{self, Attribute, Body};
+use document::schema::{self, Attribute, Body, Presence};
 use document::{Block, read};
 use spec::definition;
 use spec::node_settings::{Error, Policy};
@@ -22,19 +22,19 @@ const BODY: Body = Body {
         Attribute {
             name: "select",
             value: "a selector",
-            default: None,
+            presence: Presence::Required,
             summary: "The nodes that it sets.",
         },
         Attribute {
             name: "disk",
             value: "a size above zero, such as \"10GiB\"",
-            default: Some("the budget of a less specific policy"),
+            presence: Presence::Default("the budget of a less specific policy"),
             summary: "The disk budget of each node.",
         },
         Attribute {
             name: "pool",
             value: "a size above zero, such as \"512MiB\"",
-            default: Some("the budget of a less specific policy"),
+            presence: Presence::Default("the budget of a less specific policy"),
             summary: "The pool budget of each node.",
         },
     ],

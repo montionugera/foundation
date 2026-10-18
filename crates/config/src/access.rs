@@ -1,7 +1,7 @@
 use std::slice;
 
 use document::diagnostic::{Code, Diagnostic};
-use document::schema::{self, Attribute, Body};
+use document::schema::{self, Attribute, Body, Presence};
 use document::value::{Kind, Value};
 use document::{Block, read};
 use spec::access::{Action, Actions, Error, Policy};
@@ -29,26 +29,26 @@ const BODY: Body = Body {
         Attribute {
             name: "subjects",
             value: "a selector",
-            default: None,
+            presence: Presence::Required,
             summary: "The subjects that it allows.",
         },
         Attribute {
             name: "select",
             value: "a selector",
-            default: None,
+            presence: Presence::Required,
             summary: "The names that it allows them to use.",
         },
         Attribute {
             name: "allow",
             value: "an action, or a list of them: \"read\", \"write\", \"plan\", \
                     \"apply\", \"secret\", or \"admin\"",
-            default: None,
+            presence: Presence::Required,
             summary: "The actions that it allows.",
         },
         Attribute {
             name: "authority",
             value: "an integer, 0 to 255",
-            default: Some("0"),
+            presence: Presence::Default("0"),
             summary: "The highest control authority that a write may claim. Only a \
                       policy that allows \"write\" takes it.",
         },

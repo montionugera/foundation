@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::slice;
 
 use document::diagnostic::{Code, Diagnostic, Note};
-use document::schema::{self, Attribute, Body};
+use document::schema::{self, Attribute, Body, Presence};
 use document::value::{Kind, Value};
 use document::{Block, Span};
 use spec::definition;
@@ -31,7 +31,7 @@ const BODY: Body = Body {
     attributes: &[Attribute {
         name: "keys",
         value: "the line of an OpenSSH ed25519 `.pub` file, or a list of them",
-        default: None,
+        presence: Presence::Required,
         summary: "The public keys of the subject.",
     }],
     blocks: &[],

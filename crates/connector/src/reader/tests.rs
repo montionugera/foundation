@@ -22,7 +22,7 @@ const fn body(
 const ADDRESS: schema::Attribute = schema::Attribute {
     name: "address",
     value: "a string",
-    default: None,
+    presence: schema::Presence::Required,
     summary: "",
 };
 
@@ -33,10 +33,10 @@ const CHANNEL: schema::Block = schema::Block {
 };
 
 /// The body of a kind that takes only what `read` reads.
-const ONLY: Body = body(&[SELECT], &[READER]);
+const ONLY: Body = body(&[SELECT], &[BLOCK]);
 
 /// The body of a kind with an attribute and a block of its own.
-const KIND: Body = body(&[SELECT, ADDRESS], &[READER, CHANNEL]);
+const KIND: Body = body(&[SELECT, ADDRESS], &[BLOCK, CHANNEL]);
 
 /// A one-byte span at `offset`.
 fn at(offset: u32) -> Option<document::Span> {
@@ -198,13 +198,13 @@ fn refuses_a_key_that_neither_it_nor_the_kind_reads() {
 }
 
 #[test]
-#[should_panic(expected = "the body of a kind that reads states `SELECT` and `READER`")]
+#[should_panic(expected = "the body of a kind that reads states `SELECT` and `BLOCK`")]
 fn panics_when_the_body_does_not_state_select() {
-    drop(read(&config(&[]), &body(&[ADDRESS], &[READER])));
+    drop(read(&config(&[]), &body(&[ADDRESS], &[BLOCK])));
 }
 
 #[test]
-#[should_panic(expected = "the body of a kind that reads states `SELECT` and `READER`")]
+#[should_panic(expected = "the body of a kind that reads states `SELECT` and `BLOCK`")]
 fn panics_when_the_body_does_not_state_reader() {
     drop(read(&config(&[]), &body(&[SELECT], &[CHANNEL])));
 }

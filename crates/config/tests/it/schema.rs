@@ -3,7 +3,7 @@
 use config::SCHEMA;
 use connector::kind::Table;
 use document::diagnostic::Diagnostic;
-use document::schema::Body;
+use document::schema::{Body, Presence};
 use document::value::{self, Value};
 use document::{Attribute, Document, Map, Source};
 
@@ -55,6 +55,24 @@ fn without(document: Document, key: &str) -> Option<Document> {
     }))
 }
 
+/// Whether `example` needs `key` of `body`: its absence gives no value, or gives a
+/// diagnostic.
+fn needs(body: &Body, key: &str, example: &Document) -> bool {
+    let first = example.blocks.first().expect("an example holds a block");
+    let attribute = body
+        .attributes
+        .iter()
+        .find(|attribute| attribute.name == key)
+        .expect("a key of the body");
+    match attribute.presence {
+        Presence::Required => true,
+        Presence::Unless(others) => !others
+            .iter()
+            .all(|other| first.body.attributes.get(other).is_some()),
+        Presence::Default(_) | Presence::Optional => false,
+    }
+}
+
 fn codes(problems: &[Diagnostic]) -> Vec<&'static str> {
     problems
         .iter()
@@ -72,11 +90,14 @@ fn check_takes_each_example() {
 }
 
 #[test]
-fn check_takes_each_example_without_an_attribute_that_has_a_default() {
+fn check_takes_each_example_without_an_attribute_that_it_does_not_need() {
     let mut removed = 0;
     for body in bodies() {
-        for attribute in body.attributes.iter().filter(|key| key.default.is_some()) {
+        for attribute in body.attributes {
             for example in examples(body) {
+                if needs(body, attribute.name, &example) {
+                    continue;
+                }
                 let Some(example) = without(example, attribute.name) else {
                     continue;
                 };
@@ -89,11 +110,14 @@ fn check_takes_each_example_without_an_attribute_that_has_a_default() {
 }
 
 #[test]
-fn an_example_without_a_required_attribute_misses_an_attribute() {
+fn an_example_without_an_attribute_that_it_needs_misses_an_attribute() {
     let mut removed = 0;
     for body in bodies() {
-        for attribute in body.attributes.iter().filter(|key| key.default.is_none()) {
+        for attribute in body.attributes {
             for example in examples(body) {
+                if !needs(body, attribute.name, &example) {
+                    continue;
+                }
                 let Some(example) = without(example, attribute.name) else {
                     continue;
                 };
@@ -165,13 +189,25 @@ fn each_attribute_and_block_of_a_body_is_in_an_example() {
     }
 }
 
+/// Of a block with more than one form, the first block of an example holds only
+/// attributes that its form states.
 #[test]
-fn the_first_block_of_each_example_is_of_its_block() {
+fn the_first_block_of_each_example_is_of_its_block_and_form() {
     for block in SCHEMA {
         for body in block.forms {
             for example in examples(body) {
                 let first = example.blocks.first().expect("a block");
                 assert_eq!(&*first.keyword, block.keyword, "{}", body.summary);
+                if block.forms.len() == 1 {
+                    continue;
+                }
+                for attribute in first.body.attributes.iter() {
+                    let stated = body
+                        .attributes
+                        .iter()
+                        .any(|key| key.name == &*attribute.key);
+                    assert!(stated, "{}: {}", body.summary, attribute.key);
+                }
             }
         }
     }

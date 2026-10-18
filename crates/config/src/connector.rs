@@ -2,7 +2,7 @@ use ::connector::kind::{Channels, Table};
 use ::connector::status;
 use document::diagnostic::{Code, Diagnostic, Note};
 use document::encoding::Checked;
-use document::schema::{self, Attribute, Body};
+use document::schema::{self, Attribute, Body, Presence};
 use document::{Block, Document, Map, Span, read};
 use spec::channel::{Data, Kind};
 use spec::connector::Connector;
@@ -37,13 +37,13 @@ const BODY: Body = Body {
         Attribute {
             name: "kind",
             value: "the name of a connector kind, such as \"influx\"",
-            default: None,
+            presence: Presence::Required,
             summary: "The kind of external system, which checks the rest of the body.",
         },
         Attribute {
             name: "node",
             value: "the name of a node",
-            default: None,
+            presence: Presence::Required,
             summary: "The node that runs the connector.",
         },
     ],

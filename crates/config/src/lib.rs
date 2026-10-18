@@ -47,7 +47,7 @@ const KINDS: [(Kind, Check); 7] = [
     (Kind::Subject, subject::check),
 ];
 
-/// Each core block, in the order that `check` checks them.
+/// Each core block, in the order that the fix of an unknown block names them.
 pub const SCHEMA: &[schema::Block] = &[
     access::BLOCK,
     channel::BLOCK,
@@ -358,8 +358,8 @@ impl<'a> Found<'a> {
             .transpose()
     }
 
-    /// Reports each attribute of `block` that `body` does not state, and each block in
-    /// its body, since a block that `config` checks holds none.
+    /// Reports each attribute and block in the body of `block` that `body` does not
+    /// state.
     ///
     /// # Errors
     ///
@@ -367,8 +367,9 @@ impl<'a> Found<'a> {
     /// check of the definition.
     fn unknown(&mut self, block: &Block, body: &Body) -> Result<(), Reported> {
         let found = read::unknown(&block.body, &of(block), body);
-        // Each block inside gives one diagnostic, so any more are attributes.
-        let attributes = found.len() > block.body.blocks.len();
+        let attributes = found
+            .iter()
+            .any(|problem| problem.code.as_str() == "document.unknown-attribute");
         self.diagnostics.extend(found);
         if attributes { Err(Reported) } else { Ok(()) }
     }
@@ -429,9 +430,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schema_holds_each_kind_of_block_in_the_order_of_the_checks() {
+    fn schema_holds_each_kind_of_block_in_the_order_of_the_kinds() {
         let keywords: Vec<_> = SCHEMA.iter().map(|block| block.keyword).collect();
         assert_eq!(keywords, KINDS.map(|(kind, _)| kind.as_str()));
+    }
+
+    #[test]
+    fn a_channel_of_either_kind_takes_each_attribute_of_each_form() {
+        let names = |bodies: &[Body]| -> BTreeSet<&str> {
+            let attributes = bodies.iter().flat_map(|body| body.attributes);
+            attributes.map(|attribute| attribute.name).collect()
+        };
+        let any: Vec<_> = channel::ANY.attributes.iter().map(|key| key.name).collect();
+        assert_eq!(any, Vec::from_iter(names(channel::BLOCK.forms)));
     }
 
     /// Checks `documents` with no connector kinds.

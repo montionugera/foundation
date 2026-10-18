@@ -1303,7 +1303,7 @@ mod tests {
             schema::Attribute {
                 name,
                 value: "a string",
-                default: None,
+                presence: schema::Presence::Required,
                 summary: "",
             }
         }

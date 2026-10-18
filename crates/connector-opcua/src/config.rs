@@ -6,7 +6,7 @@ use std::ffi::CString;
 
 use connector::kind;
 use document::diagnostic::{Code, Diagnostic, Note};
-use document::schema::{self, Body};
+use document::schema::{self, Body, Presence};
 use document::value::Value;
 use document::{Attribute, Block, Document, Label, Map, read};
 use types::name::Name;
@@ -46,13 +46,13 @@ const BODY: Body = Body {
         schema::Attribute {
             name: "address",
             value: "an `opc.tcp://` URL",
-            default: None,
+            presence: Presence::Required,
             summary: "The endpoint of the server.",
         },
         schema::Attribute {
             name: "rate",
             value: "a rate, such as \"10Hz\"",
-            default: None,
+            presence: Presence::Required,
             summary: "The reads per second.",
         },
     ],
@@ -70,7 +70,7 @@ const READ: Body = Body {
     attributes: &[schema::Attribute {
         name: "node_id",
         value: "a node ID, such as \"ns=3;s=SpikeData\"",
-        default: None,
+        presence: Presence::Required,
         summary: "The node whose value the channel holds.",
     }],
     blocks: &[],

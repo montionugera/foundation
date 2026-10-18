@@ -28,7 +28,7 @@ pub mod sim;
 use connector::kind::{self, Channels, Context, Error};
 use connector::{reader, secret};
 use document::diagnostic::{Code, Diagnostic};
-use document::schema::{Attribute, Body};
+use document::schema::{Attribute, Body, Presence};
 use document::value::{self, Value};
 use document::{Document, read};
 use http::Uri;
@@ -44,56 +44,56 @@ const ORG_WITH_DATABASE: Code = Code::new("influx.org-with-database");
 const TWO_TARGETS: Code = Code::new("influx.two-targets");
 /// The body of the config.
 const BODY: Body = Body {
-    summary: "Writes the samples of the channels that it reads to InfluxDB 1, 2, or 3.",
+    summary: "Writes the samples of the channels that it reads to InfluxDB 1, 2, or 3. \
+              It takes a `database`, or a `bucket` and an `org`, never both.",
     attributes: &[
         reader::SELECT,
         Attribute {
             name: "address",
             value: "an `http` or `https` URI with no path",
-            default: None,
+            presence: Presence::Required,
             summary: "The InfluxDB endpoint.",
         },
         Attribute {
             name: "database",
             value: "a string",
-            default: None,
-            summary: "The InfluxDB 1 database. Give it, or `bucket` and `org`.",
+            presence: Presence::Unless(&["bucket", "org"]),
+            summary: "The InfluxDB 1 database.",
         },
         Attribute {
             name: "bucket",
             value: "a string",
-            default: None,
-            summary: "The InfluxDB 2 bucket, or the InfluxDB 3 database. Give it and \
-                      `org`, or `database`.",
+            presence: Presence::Unless(&["database"]),
+            summary: "The InfluxDB 2 bucket, or the InfluxDB 3 database.",
         },
         Attribute {
             name: "org",
             value: "a string",
-            default: None,
+            presence: Presence::Unless(&["database"]),
             summary: "The organization of the `bucket`. InfluxDB 3 takes any name.",
         },
         Attribute {
             name: "measurement",
             value: "a string",
-            default: None,
+            presence: Presence::Required,
             summary: "The measurement of each line.",
         },
         Attribute {
             name: "token",
             value: "a secret",
-            default: Some("no `Authorization` header"),
+            presence: Presence::Default("no `Authorization` header"),
             summary: "The token that each request sends as `Authorization: Token \
                       <value>`.",
         },
         Attribute {
             name: "ca",
             value: "a secret",
-            default: Some("only the roots of the node"),
+            presence: Presence::Default("only the roots of the node"),
             summary: "PEM certificates that an `https` connect trusts in addition to \
                       the roots of the node. Only an `https` address takes it.",
         },
     ],
-    blocks: &[reader::READER],
+    blocks: &[reader::BLOCK],
     examples: &[],
 };
 /// The count of the samples of the frames that the run acks, which InfluxDB confirmed

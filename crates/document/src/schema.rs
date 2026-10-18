@@ -12,9 +12,9 @@ pub struct Body {
     pub attributes: &'static [Attribute],
     /// Each block that the body can hold.
     pub blocks: &'static [Block],
-    /// Examples that the check takes with no diagnostic. Each attribute and block
-    /// above is in at least one. The body of a block inside another body has none:
-    /// the examples of that body show it.
+    /// Examples in HCL that the check takes with no diagnostic. Each attribute and
+    /// block above is in an example of this body or of a body that holds its block.
+    /// A body that `foundation docs` does not state has none.
     pub examples: &'static [&'static str],
 }
 
@@ -36,8 +36,22 @@ pub struct Attribute {
     pub name: &'static str,
     /// The value it takes, as the docs state it, such as `a string`.
     pub value: &'static str,
-    /// `None` when the attribute is required, or the value that its absence gives.
-    pub default: Option<&'static str>,
+    /// When the check needs the attribute.
+    pub presence: Presence,
     /// One sentence on what the attribute sets.
     pub summary: &'static str,
+}
+
+/// When the check of a body needs an attribute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Presence {
+    /// Each body holds it.
+    Required,
+    /// Each body holds it, or each attribute that this names in its place.
+    Unless(&'static [&'static str]),
+    /// A body can leave it out, which gives this value, as the docs state it.
+    Default(&'static str),
+    /// A body can leave it out, which gives no value. The summary of the body states
+    /// each rule that needs it with other attributes.
+    Optional,
 }
