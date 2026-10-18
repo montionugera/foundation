@@ -1788,13 +1788,14 @@ const ARCHITECTURES: [Architecture; 2] = [
 
 /// [`Architecture::instructions`] of x86-64.
 #[rustfmt::skip]
-const X86_64: [&str; 109] = [
+const X86_64: [&str; 110] = [
     "adc", "add", "addsd", "addss", "and", "call", "cdq", "cdqe", "cmp", "comisd",
     "comiss", "cqo", "cvtsi2sd", "cvtsi2ss", "cvtss2sd", "cvttsd2si", "cwde", "div",
     "divsd", "divss", "idiv", "imul", "lea", "leave", "mov", "movabs", "movapd",
-    "movaps", "movdqa", "movq", "movsd", "movss", "movsx", "movsxd", "movzx", "mul",
-    "mulsd", "neg", "nop", "not", "or", "pop", "push", "pxor", "ret", "ror", "sar",
-    "shl", "shld", "shr", "sub", "subsd", "test", "ucomisd", "ucomiss", "xor",
+    "movaps", "movdqa", "movq", "movsd", "movss", "movsx", "movsxd", "movups",
+    "movzx", "mul", "mulsd", "neg", "nop", "not", "or", "pop", "push", "pxor", "ret",
+    "ror", "sar", "shl", "shld", "shr", "sub", "subsd", "test", "ucomisd", "ucomiss",
+    "xor",
     // A copy of memory, and a fill of it.
     "rep movs", "rep stos",
     // `endbr64` marks the target of an indirect jump; `notrack jmp` is an indirect jump
