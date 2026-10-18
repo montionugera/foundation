@@ -13,14 +13,16 @@ pub(crate) struct Line<'a> {
 ///
 /// # Errors
 ///
-/// When `text` has a character that is not printable ASCII or LF, or a line outside
-/// the text of a block scalar that `code` refuses.
+/// When `text` has a character that is not printable ASCII, LF, or the CR of a CR LF,
+/// or a line outside the text of a block scalar that `code` refuses.
 pub(crate) fn lines(text: &str) -> Result<Vec<Line<'_>>, String> {
     // YAML breaks a line at CR, NEL, LS, and PS too, and a parser can read other white
     // space as text, so `str::lines` and `str::trim` would drop a line that YAML reads.
-    if let Some(c) = text.chars().find(|c| *c != '\n' && !matches!(c, ' '..='~')) {
+    // A checkout on Windows gives CR LF.
+    let mut chars = text.split("\r\n").flat_map(str::chars);
+    if let Some(c) = chars.find(|c| *c != '\n' && !matches!(c, ' '..='~')) {
         return Err(format!(
-            "ci.yaml has a character that is not printable ASCII or LF: {c:?}"
+            "ci.yaml has a character that is not printable ASCII, LF, or CR LF: {c:?}"
         ));
     }
     let lines: Vec<&str> = (text.lines())
@@ -326,15 +328,24 @@ mod tests {
     }
 
     #[test]
+    fn lines_reads_cr_lf_as_lf() {
+        assert_eq!(
+            lines("a:\r\n  b: |\r\n    c\r\n"),
+            lines("a:\n  b: |\n    c\n")
+        );
+    }
+
+    #[test]
     fn lines_refuses_each_character_that_is_not_printable_ascii_or_lf() {
         for c in [
             '\r', '\t', '\u{85}', '\u{a0}', '\u{2028}', '\u{2029}', '\u{7f}',
         ] {
-            let text = format!("a:\n  #{c}  b:\n");
+            let text = format!("a:\r\n  #{c}  b:\n\r");
             assert_eq!(
                 lines(&text),
                 Err(format!(
-                    "ci.yaml has a character that is not printable ASCII or LF: {c:?}"
+                    "ci.yaml has a character that is not printable ASCII, LF, or CR \
+                     LF: {c:?}"
                 )),
             );
         }

@@ -350,17 +350,17 @@ jobs:
               - crates/waker/src/tests.rs a_last_drop_on_another_thread_aborts_before_the_value_drops # #3130
               - crates/waker/src/tests.rs a_wake_by_reference_on_another_thread_aborts # #3130
               - crates/waker/src/tests.rs a_wake_on_another_thread_aborts # #3130
-              - xtask/src/open62541.rs tests::check_builds_against_the_headers_of_the_crypto # #2238
-              - xtask/src/open62541.rs tests::check_fails_a_read_of_aws_lc_with_no_declaration # #2238
-              - xtask/src/open62541.rs tests::check_fails_a_read_of_the_copy_with_no_declaration # #2238
-              - xtask/src/open62541.rs tests::check_finds_a_read_of_the_committed_copy_that_gives_aws_lc_no_callback # #2238
-              - xtask/src/open62541.rs tests::check_finds_a_read_of_the_copy_with_its_own_declaration # #2238
-              - xtask/src/open62541.rs tests::check_finds_a_read_past_a_pem_h_of_the_copy # #2238
-              - xtask/src/open62541.rs tests::check_finds_a_read_under_a_macro_of_pem_h # #2238
-              - xtask/src/open62541.rs tests::check_passes_on_the_committed_copy # #2238
-              - xtask/src/open62541.rs tests::check_refuses_a_cc_that_is_not_gcc # #2238
-              - xtask/src/open62541.rs tests::check_runs_each_tool_in_the_c_locale # #2238
-              - xtask/src/open62541.rs tests::each_thread_of_the_committed_copy_draws_from_its_own_random_state_or_aborts # #2238
+              - xtask/src/open62541.rs tests::check_builds_against_the_headers_of_the_crypto # #3166
+              - xtask/src/open62541.rs tests::check_fails_a_read_of_aws_lc_with_no_declaration # #3166
+              - xtask/src/open62541.rs tests::check_fails_a_read_of_the_copy_with_no_declaration # #3166
+              - xtask/src/open62541.rs tests::check_finds_a_read_of_the_committed_copy_that_gives_aws_lc_no_callback # #3166
+              - xtask/src/open62541.rs tests::check_finds_a_read_of_the_copy_with_its_own_declaration # #3166
+              - xtask/src/open62541.rs tests::check_finds_a_read_past_a_pem_h_of_the_copy # #3166
+              - xtask/src/open62541.rs tests::check_finds_a_read_under_a_macro_of_pem_h # #3166
+              - xtask/src/open62541.rs tests::check_passes_on_the_committed_copy # #3166
+              - xtask/src/open62541.rs tests::check_refuses_a_cc_that_is_not_gcc # #3166
+              - xtask/src/open62541.rs tests::check_runs_each_tool_in_the_c_locale # #3166
+              - xtask/src/open62541.rs tests::each_thread_of_the_committed_copy_draws_from_its_own_random_state_or_aborts # #3166
     runs-on: ${{ matrix.runner }}
     env:
       RUST: ${{ needs.changes.outputs.rust }}

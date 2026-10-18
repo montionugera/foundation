@@ -175,6 +175,7 @@ fn problems(root: &Path) -> Result<Vec<String>, String> {
             .unwrap_or(&module.file)
             .display()
             .to_string();
+        let listed = shown.replace(std::path::MAIN_SEPARATOR, "/");
         let text = std::fs::read_to_string(&module.file)
             .map_err(|e| format!("{}: {e}", module.file.display()))?;
         let file = match syn::parse_file(&text) {
@@ -191,6 +192,7 @@ fn problems(root: &Path) -> Result<Vec<String>, String> {
         };
         let mut items = Items {
             shown: &shown,
+            listed: &listed,
             file: &module.file,
             above: &module.above,
             dir: module.dir,
@@ -376,6 +378,8 @@ struct Ignore {
 /// Walks the items of one file.
 struct Items<'a> {
     shown: &'a str,
+    /// The file as a `gates` item names it, with `/` on each OS.
+    listed: &'a str,
     file: &'a Path,
     /// The files of the modules that hold the file.
     above: &'a [PathBuf],
@@ -439,7 +443,7 @@ impl Items<'_> {
         let item = self.item.join("::");
         self.gates.push(self.catalog.gates.len());
         self.catalog.gates.push(Gate {
-            named: [self.shown, &item].join(" ").trim_end().to_string(),
+            named: [self.listed, &item].join(" ").trim_end().to_string(),
             out,
             on,
             doc: doc(attributes),
@@ -1081,7 +1085,7 @@ fn unlisted(item: &str, os: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::native;
+    use crate::common::{NO_FOLDER, native};
 
     #[test]
     fn refuses_each_ignore_on_an_os_outside_its_case_and_names_what_it_cannot_read() {
@@ -1244,13 +1248,7 @@ mod tests {
             "`ci.yaml`: a `gates` list that is no block: `gates: [a]`".into(),
         );
         let absent = gates.join("absent/.github/workflows/ci.yaml");
-        refused(
-            "absent",
-            format!(
-                "{}: No such file or directory (os error 2)",
-                absent.display()
-            ),
-        );
+        refused("absent", format!("{}: {NO_FOLDER}", absent.display()));
     }
 
     #[test]
