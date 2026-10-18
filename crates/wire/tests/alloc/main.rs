@@ -235,8 +235,8 @@ fn frames() {
     }
 }
 
-/// Each input of a frame of a program's write at the node, after the first frame. The
-/// draft comes from the caller's pool outside the count.
+/// Each input of each frame of a program's write at the node, the first frame included.
+/// The draft comes from the caller's pool outside the count.
 fn write_frames() {
     let set = KeySet::ordered(
         [
