@@ -166,8 +166,8 @@ fn the_close_of_a_client_sends_the_close_to_the_node() {
     rig.stop();
 }
 
-/// The node sends its close before it exits. No call of the client shows that the
-/// client took it, so the test gives the client 1 s on loopback.
+/// The node sends its close before it exits. The client takes it in real time, so the
+/// test opens writers until an open gives the end of the session.
 #[test]
 fn the_close_of_a_client_gives_the_cause_when_the_node_closed_the_session() {
     let mut rig = Rig::new();
@@ -175,11 +175,12 @@ fn the_close_of_a_client_gives_the_cause_when_the_node_closed_the_session() {
     let (node, subject) = admin(&rig);
     let client = Client::connect(&node, subject).unwrap();
     rig.stop();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the client takes the close of a node process in real time"
-    )]
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    rig.wait("an open gives the end of the session", || {
+        match client.open_writer(Config::new(vec!["plant.a".parse().unwrap()])) {
+            Err(Error::Session(_)) => Ok(()),
+            other => Err(format!("{:?}", other.map(drop))),
+        }
+    });
     let closed = transport::Error::PeerClosed {
         code: transport::Code(0),
     };
@@ -580,8 +581,8 @@ fn a_layout_error_names_the_places_of_the_writer() {
 }
 
 /// Once the node ends the session, each call of a writer and of its client gives the
-/// cause. The client gets the close of the node in real time, so the test gives it
-/// 1 s on loopback.
+/// cause. The client gets the close of the node in real time, so the test writes
+/// until a write fails.
 #[test]
 fn each_call_after_the_node_ended_the_session_gives_the_cause() {
     let (mut rig, node, subject) = planted();
@@ -590,16 +591,17 @@ fn each_call_after_the_node_ended_the_session_gives_the_cause() {
     let mut writer = client.open_writer(Config::new(channels())).unwrap();
     let other = client.open_writer(Config::new(channels())).unwrap();
     rig.stop();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the client takes the close of a node process in real time"
-    )]
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    let failed = rig.wait("a write fails after the node stops", || {
+        match writer.write(&[(0, Value::I64(1))]) {
+            Ok(outcome) => Err(format!("{outcome:?}")),
+            Err(error) => Ok(error),
+        }
+    });
     let closed = transport::Error::PeerClosed {
         code: transport::Code(0),
     };
     let ended = Error::Session(program::Error::Transport(closed));
-    assert_eq!(writer.write(&[(0, Value::I64(1))]), Err(ended.clone()));
+    assert_eq!(failed, ended);
     assert_eq!(writer.close(), Err(ended.clone()));
     assert_eq!(other.close(), Err(ended.clone()));
     let opened = client.open_writer(Config::new(channels())).map(drop);
