@@ -174,7 +174,7 @@ fn a_detached_child_that_reads_no_stdin_gives_its_output() {
     assert!(output.status.success(), "{output:?}");
 }
 
-/// The child that `detached` starts leads its own session.
+/// Only Unix: the child that `detached` starts leads its own session.
 #[test]
 #[cfg(unix)]
 fn a_detached_child_leads_its_own_session() {
@@ -186,7 +186,8 @@ fn a_detached_child_leads_its_own_session() {
     );
 }
 
-/// Asserts that this process leads its session. Does nothing outside a child.
+/// Only Unix: asserts that this process leads its session. Does nothing outside a
+/// child.
 #[test]
 #[cfg(unix)]
 #[expect(unsafe_code, reason = "`getsid` is a call of the C library")]
