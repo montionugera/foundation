@@ -23,7 +23,6 @@ use crate::alloc;
 use crate::connection::{CHUNKS, Manager, SENDS};
 use crate::event::Time;
 use crate::ffi::{self, Status};
-use crate::kind::{Action, Failure};
 use crate::node::{Key, Node};
 use crate::value::{Fault, Value};
 
@@ -254,13 +253,9 @@ impl Client {
         }
     }
 
-    /// The failure of `action` on the server of the client with `status`.
-    pub(crate) fn failure(&self, action: Action, status: Status) -> Failure {
-        Failure::Client {
-            address: self.url.to_string_lossy().into_owned(),
-            action,
-            status,
-        }
+    /// The endpoint that the client connects to.
+    pub(crate) fn url(&self) -> &CStr {
+        &self.url
     }
 
     /// Connects the new client to its URL, as [`Client::connect`] does. The client

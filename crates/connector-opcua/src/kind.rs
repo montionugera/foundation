@@ -206,13 +206,8 @@ async fn session<T>(
     work: impl AsyncFnOnce(&mut Client) -> T,
 ) -> Result<Option<T>, Error> {
     let connected = Client::connect(time, net, rng, address, until).await;
-    let connected = connected.map_err(|status| {
-        device(Failure::Client {
-            address: address.to_string_lossy().into_owned(),
-            action: Action::Connect,
-            status,
-        })
-    })?;
+    let connected =
+        connected.map_err(|status| failed(address, Call::Connect, status))?;
     let Some(mut client) = connected else {
         return Ok(None);
     };
@@ -239,7 +234,7 @@ async fn read(
     loop {
         let idle = client.idle(timer.tick(ctx.cancel())).await;
         let Some(tick) =
-            idle.map_err(|status| device(client.failure(Action::Check, status)))?
+            idle.map_err(|status| failed(client.url(), Call::Check, status))?
         else {
             break;
         };
@@ -253,7 +248,7 @@ async fn read(
         };
         let values = match read {
             Ok(values) => values,
-            Err(status) => return Err(device(client.failure(Action::Read, status))),
+            Err(status) => return Err(failed(client.url(), Call::Read, status)),
         };
         frames.write(values, stamp)?;
     }
@@ -512,7 +507,7 @@ fn large_read(reads: &[Read], &Large { index, bytes, most }: &Large) -> Error {
 
 /// A call to the server that a [`Failure::Client`] names.
 #[derive(Debug)]
-pub(crate) enum Action {
+pub(crate) enum Call {
     Connect,
     Read,
     Check,
@@ -522,10 +517,10 @@ pub(crate) enum Action {
 /// Why a run ended with [`Error::Device`].
 #[derive(Debug)]
 pub(crate) enum Failure {
-    /// `action` on the server at `address` failed with `status`.
+    /// `call` to the server at `address` failed with `status`.
     Client {
         address: String,
-        action: Action,
+        call: Call,
         status: Status,
     },
     /// The tags and names before the pages of a browse pass [`crate::browse::BYTES`].
@@ -540,16 +535,16 @@ impl fmt::Display for Failure {
         match self {
             Self::Client {
                 address,
-                action,
+                call,
                 status,
             } => {
-                let action = match action {
-                    Action::Connect => "the connect to",
-                    Action::Read => "the read from",
-                    Action::Check => "the connectivity check of",
-                    Action::Browse => "the browse of",
+                let call = match call {
+                    Call::Connect => "the connect to",
+                    Call::Read => "the read from",
+                    Call::Check => "the connectivity check of",
+                    Call::Browse => "the browse of",
                 };
-                write!(f, "{action} {address} failed with {}", status.name())
+                write!(f, "{call} {address} failed with {}", status.name())
             }
             Self::Names => write!(
                 f,
@@ -569,4 +564,14 @@ impl std::error::Error for Failure {}
 
 pub(crate) fn device(failure: Failure) -> Error {
     Error::Device(Box::new(failure))
+}
+
+/// The [`Error::Device`] of `call` to the server at `address` that failed with
+/// `status`.
+pub(crate) fn failed(address: &CStr, call: Call, status: Status) -> Error {
+    device(Failure::Client {
+        address: address.to_string_lossy().into_owned(),
+        call,
+        status,
+    })
 }

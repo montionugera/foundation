@@ -26,7 +26,6 @@ use crate::connection::Manager;
 use crate::event;
 use crate::ffi::{self, Status};
 use crate::gate::Gate;
-use crate::kind::Action;
 use crate::node::{Key, Name, Node};
 use crate::server::{Limits, Server};
 use crate::unwind::caught;
@@ -259,27 +258,26 @@ fn a_read_of_an_unknown_node_fails_with_its_status() {
     assert_eq!(read, Err(Fault::status(Status::BAD_NODE_ID_UNKNOWN)));
 }
 
+/// Calls the private `Client::new`, as no caller holds a client before its open:
+/// `Client::connect` opens it at once.
 #[test]
-fn a_client_names_its_url_in_a_failure_before_and_after_its_open() {
-    let (texts, _) = run(0, async |node| {
+fn a_client_gives_its_url_before_and_after_its_open() {
+    let (urls, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let url = CString::new(peer.url.clone()).expect("the URL holds no NUL");
             let time = event::Time::monotonic(Clock::clone(&peer.clock));
-            let new = Client::new(time, Net::clone(&peer.net), &mut peer.rng, url);
-            let before = new.failure(Action::Read, Status::BAD_TIMEOUT).to_string();
-            drop(new);
-            let client = peer.connected().await;
-            let after = client.failure(Action::Browse, Status::BAD_TIMEOUT);
-            (before, after.to_string(), peer.url.clone())
+            let net = Net::clone(&peer.net);
+            let mut client = Client::new(time, net, &mut peer.rng, url.clone());
+            let before = client.url().to_owned();
+            client.open().await.expect("the client connects");
+            let after = client.url().to_owned();
+            client.close().await;
+            (url, before, after)
         })
         .await
     });
-    let (before, after, url) = texts;
-    assert_eq!(
-        before,
-        format!("the read from {url} failed with BadTimeout")
-    );
-    assert_eq!(after, format!("the browse of {url} failed with BadTimeout"));
+    let (url, before, after) = urls;
+    assert_eq!((before, after), (url.clone(), url));
 }
 
 /// The name `node` must reach the server whole: it holds a `;`, an `=`, and a byte
