@@ -44,6 +44,11 @@ name = "alloc"
 harness = false
 
 [[test]]
+name = "conformance"
+path = "../../oracles/conformance/connector/opcua/main.rs"
+required-features = ["open62541"]
+
+[[test]]
 name = "memory"
 harness = false
 required-features = ["open62541"]

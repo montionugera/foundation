@@ -28,7 +28,7 @@ use crate::event::{Loop, Time};
 use crate::ffi::{self, Bytes, Status};
 
 /// The options of each stream.
-const OPTIONS: tcp::Options = tcp::Options {
+pub(crate) const OPTIONS: tcp::Options = tcp::Options {
     send_buffer_bytes: 1 << 16,
     recv_buffer_bytes: 1 << 16,
     unsent_bytes_max: NonZeroUsize::new(1 << 14).expect("invariant: 2^14 is not 0"),
@@ -438,7 +438,8 @@ impl State {
                     Stream::Connecting(_) | Stream::Listening { .. } => Stream::Closed,
                     Stream::Open(tcp) => Stream::Closing {
                         tcp,
-                        linger: self.clock.sleep_until(self.clock.now() + LINGER),
+                        until: self.clock.now() + LINGER,
+                        linger: None,
                         shut: false,
                         drained: false,
                         order: self.next_order.replace(self.next_order.get() + 1),
@@ -507,7 +508,7 @@ impl State {
         let mut read = self.read.borrow_mut();
         loop {
             let step = match self.table.borrow_mut().get_mut(&id) {
-                Some(connection) => connection.step(cx, &mut read),
+                Some(connection) => connection.step(cx, &mut read, &self.clock),
                 None => return,
             };
             let step = match step {
@@ -715,9 +716,12 @@ enum Stream {
     /// no reset.
     Closing {
         tcp: Tcp,
-        /// Ends the close when it takes too long, with sends or a peer that has not
-        /// closed.
-        linger: Sleep,
+        /// When the close ends if it takes too long, with sends or a peer that has
+        /// not closed.
+        until: Monotonic,
+        /// The sleep until `until`, from the first step of the close. A close in a
+        /// drop, as in a crash of a sim node, may make no sleep.
+        linger: Option<Sleep>,
         /// This side is closed for writing.
         shut: bool,
         /// The peer closed its side.
@@ -787,7 +791,12 @@ impl Connection {
 
     /// Moves the connection on with `read` as the buffer of its reads, or gives why it
     /// fails. [`Step::Read`] gives the count of bytes read into `read`.
-    fn step(&mut self, cx: &mut Context<'_>, read: &mut [u8]) -> Result<Step, Failure> {
+    fn step(
+        &mut self,
+        cx: &mut Context<'_>,
+        read: &mut [u8],
+        clock: &Clock,
+    ) -> Result<Step, Failure> {
         match &mut self.stream {
             Stream::Connecting(connect) => match connect.as_mut().poll(cx) {
                 Poll::Pending => Ok(Step::Waiting),
@@ -818,11 +827,13 @@ impl Connection {
             }
             Stream::Closing {
                 tcp,
+                until,
                 linger,
                 shut,
                 drained,
                 ..
             } => {
+                let linger = linger.get_or_insert_with(|| clock.sleep_until(*until));
                 if Pin::new(linger).poll(cx).is_ready() {
                     return Err(Failure::Lingered);
                 }
