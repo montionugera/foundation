@@ -115,6 +115,13 @@ impl kind::Kind for Kind {
         config::block(tag, channel)
     }
 
+    /// Gives the node of the `node_id` of a `read` block in the form of a browse, so
+    /// `"ns=0;i=2258"` gives `"i=2258"`. `None` for another block, or a `node_id`
+    /// that `parse` refuses.
+    fn tag(&self, block: &Block) -> Option<String> {
+        config::tag(block)
+    }
+
     /// Reads only `address`, as `parse` does, connects as `run` does, and walks
     /// `query` over the tree of the server from its Objects folder. An entry is a
     /// forward hierarchical reference to an Object, a View, or a Variable, with the

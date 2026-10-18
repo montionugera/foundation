@@ -96,6 +96,15 @@ pub trait Kind: Send + Sync + 'static {
         )])
     }
 
+    /// The tag of the point that `block`, a block of the body of a connector block of
+    /// the kind, reads or writes, in the form that a browse of the kind gives it, or
+    /// `None` when it names no point. A kind that gives blocks with [`Kind::block`]
+    /// gives this too. The default gives `None`.
+    fn tag(&self, block: &Block) -> Option<String> {
+        let _: &Block = block;
+        None
+    }
+
     /// Browses the device of the connector block `ctx.config()` as `query` asks. A
     /// kind connects to its device and gives [`browse::walk`] over it. The default
     /// gives [`Error::Config`] with `connector.no-browse`: the kind cannot browse.
@@ -508,6 +517,20 @@ impl Table {
         self.get(kind, None)?.block(tag, facts, channel)
     }
 
+    /// The tag of the point that `block` of a connector block of `kind` reads or
+    /// writes, as [`Kind::tag`] gives it.
+    ///
+    /// # Errors
+    ///
+    /// `connector.unknown-kind`.
+    pub fn tag(
+        &self,
+        kind: &str,
+        block: &Block,
+    ) -> Result<Option<String>, Vec<Diagnostic>> {
+        Ok(self.get(kind, None)?.tag(block))
+    }
+
     /// Browses with `kind` as `query` asks.
     pub(crate) async fn browse(
         &self,
@@ -783,6 +806,8 @@ trait Erased: Send + Sync {
         facts: &browse::Facts,
         channel: &Name,
     ) -> Result<Vec<Block>, Vec<Diagnostic>>;
+
+    fn tag(&self, block: &Block) -> Option<String>;
 }
 
 impl<K: Kind> Erased for K {
@@ -821,6 +846,10 @@ impl<K: Kind> Erased for K {
         channel: &Name,
     ) -> Result<Vec<Block>, Vec<Diagnostic>> {
         Kind::block(self, tag, facts, channel)
+    }
+
+    fn tag(&self, block: &Block) -> Option<String> {
+        Kind::tag(self, block)
     }
 }
 

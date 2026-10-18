@@ -17,7 +17,15 @@
   `no-browse` and `no-discover` do: a default that cannot fail adds a channel that
   nothing reads, and one that panics stops the node on the defect of a kind.
   `Table::block` finds the kind by name, as `Table::discover` does, and gives
-  `connector.unknown-kind` for a name that it does not have. `import::names(connector,
+  `connector.unknown-kind` for a name that it does not have.
+  `Kind::tag(block) -> Option<String>` gives the tag of the point that a block of the
+  body of a connector block reads or writes, in the form that a browse of the kind
+  gives it, or `None` when it names no point. The default gives `None`, and
+  `Table::tag` finds the kind as `Table::block` does. So an import finds a pick that is
+  present by the kind's compare of node IDs, not by text: the OPC UA kind gives
+  `i=2258` for a written `ns=0;i=2258` (`laptop.architect-2`, 2026-10-18T02:10:56Z,
+  item 2: https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074).
+  `import::names(connector,
   start, picks, taken)` gives the channel name of each pick, in pick order: each given
   name as it is, then the default `<connector>.<path>` of each other pick. Each name of
   the path below `start` is one segment, with `_` in place of each character other than
