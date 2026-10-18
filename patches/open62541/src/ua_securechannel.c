@@ -949,8 +949,8 @@ UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
     /* Process the chunk */
     switch(chunk.chunkType) {
     case UA_CHUNKTYPE_ABORT:
-        /* Remove the chunks of the aborted message. Then continue extracting
-         * chunks. */
+        /* Remove the queued chunks of the abort's request id. Then continue
+         * extracting chunks. */
         TAILQ_FOREACH_SAFE(pchunk, &channel->chunks, pointers, next) {
             if(pchunk->requestId != chunk.requestId)
                 continue;
@@ -960,8 +960,10 @@ UA_SecureChannel_getCompleteMessage(UA_SecureChannel *channel,
             UA_Chunk_delete(pchunk);
         }
         if(aborted) {
+            /* No chunk of its request id is left, so the abort is a message
+             * of one chunk */
             *aborted = true;
-            break; /* No chunk of its message is left, so it is one chunk */
+            break;
         }
         if(chunk.copied)
             UA_ByteString_clear(&chunk.bytes);
