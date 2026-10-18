@@ -60,6 +60,19 @@ fn within_checks_a_relative_link_by_its_place() {
     );
 }
 
+/// The Linux `PATH_MAX` holds 4095 bytes and the end NUL.
+#[test]
+fn a_path_as_long_as_the_host_takes_reads_and_one_byte_longer_fails() {
+    run(|host| cases::a_path_as_long_as_the_host_takes(host, 4095, 36));
+}
+
+#[test]
+#[should_panic(expected = "the target of /link is too long")]
+fn a_link_takes_no_target_that_linux_refuses() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.link_path(Path::new("/link"), Path::new(&"a".repeat(4096)));
+}
+
 #[test]
 fn a_write_on_the_root_is_on_a_directory() {
     let node = Sim::new(Config::default()).node(node::Config::default());

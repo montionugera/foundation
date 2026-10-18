@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 
 use env::paths::{self, Error, Found, Key, Kind, LINKS, names_directory};
 
-use crate::{DIRECTORY, EXISTS, LOOP, NOT_DIRECTORY};
+use crate::{DIRECTORY, EXISTS, LOOP, NOT_DIRECTORY, PATH_MAX, TOO_LONG};
 
 /// The files of the hosts of a run.
 #[derive(Default)]
@@ -196,6 +196,7 @@ impl Paths {
         node: usize,
         path: &Path,
     ) -> Result<paths::Entry, Error> {
+        bound(path)?;
         let at = match last(path) {
             Some((dir, name)) if !names_directory(path) => {
                 let dir = self.resolve(node, dir)?;
@@ -222,10 +223,11 @@ impl Paths {
         })
     }
 
-    /// `path` on the resolved working directory, with each `..` kept and an end in
-    /// `/` or `/.` as an end in `/`, as `std::path::absolute` gives it. `NotFound`
-    /// when the working directory is not there.
+    /// `path` on the resolved working directory, with each `..` kept, as
+    /// `std::path::absolute` gives it. `NotFound` when the working directory is not
+    /// there, or the error of [`bound`].
     pub(crate) fn absolute(&self, node: usize, path: &Path) -> Result<PathBuf, Error> {
+        bound(path)?;
         let mut at = PathBuf::new();
         if !path.has_root() {
             at = self.resolve(node, &self.working(node))?;
@@ -234,9 +236,6 @@ impl Paths {
             }
         }
         at.extend(path.components().filter(|part| *part != Component::CurDir));
-        if names_directory(path) && !names_directory(&at) {
-            at.as_mut_os_string().push("/");
-        }
         Ok(at)
     }
 
@@ -388,11 +387,13 @@ impl Paths {
         self.resolve(node, path)
     }
 
-    /// The fault that waits on the path of a call, or `NotFound` for an empty path.
+    /// The fault that waits on the path of a call, `NotFound` for an empty path, or
+    /// the error of [`bound`].
     fn fault(&mut self, node: usize, path: &Path) -> Result<(), Error> {
         if path.as_os_str().is_empty() {
             return Err(Error::NotFound);
         }
+        bound(path)?;
         let at = self.lexical(node, path);
         let fault = self
             .faults
@@ -448,6 +449,14 @@ impl Paths {
         }
         at
     }
+}
+
+/// `ENAMETOOLONG` for a path that [`PATH_MAX`] does not hold.
+fn bound(path: &Path) -> Result<(), Error> {
+    if path.as_os_str().len() >= PATH_MAX {
+        return Err(Error::Io { code: TOO_LONG });
+    }
+    Ok(())
 }
 
 /// The directory and the last name of `path`, or `None` when that name, with no end

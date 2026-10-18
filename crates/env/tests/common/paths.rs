@@ -89,7 +89,7 @@ macro_rules! tests {
             within_hides_a_hidden_file_on_each_end,
             within_checks_each_part_of_a_path_that_does_not_resolve,
             within_checks_each_step_of_a_path_that_resolves,
-            within_stops_a_long_path_at_its_first_step_that_fails,
+            within_refuses_a_long_path_as_the_host_does,
             within_makes_no_directory_on_a_step_that_fails,
             within_hides_each_name_of_a_hidden_folder_on_the_way,
             within_refuses_each_name_outside_on_the_way,
@@ -366,6 +366,38 @@ pub(crate) fn within_work(host: &Host<'_>) -> (Paths, PathBuf) {
     let base = paths.resolve(dir).unwrap();
     let within = paths.within(&[base.join("work")], &[base.join("work/data")]);
     (within.unwrap(), base)
+}
+
+/// A path of `most` bytes reads on each handle, and a path one byte longer fails on
+/// each with `Io` and `code`. Each pads `work/a.hcl` with `./`, which the walk drops.
+pub(crate) fn a_path_as_long_as_the_host_takes(
+    host: &Host<'_>,
+    most: usize,
+    code: i32,
+) {
+    let (within, base) = within_work(host);
+    let dir = base.join("work").into_os_string();
+    let padded = |len: usize| {
+        let pad = len - dir.len() - "/a.hcl".len();
+        let mut path = dir.clone();
+        path.push("/".repeat(pad % 2 + 1));
+        path.push("./".repeat(pad / 2));
+        path.push("a.hcl");
+        PathBuf::from(path)
+    };
+    let held = padded(most);
+    assert_eq!(held.as_os_str().len(), most);
+    let file = Ok(Found::File(b"x".to_vec()));
+    let read = (host.paths.read(&held, 1), within.read(&held, 1));
+    assert_eq!(read, (file.clone(), file));
+    let long = padded(most + 1);
+    let too_long = Err(Error::Io { code });
+    let got = [
+        host.paths.read(&long, 1).map(|_| ()),
+        within.read(&long, 1).map(|_| ()),
+        host.paths.resolve(&long).map(|_| ()),
+    ];
+    assert_eq!(got, [too_long; 3]);
 }
 
 pub(crate) fn within_gives_not_found_through_a_directory_that_is_not_there(
@@ -1206,12 +1238,15 @@ pub(crate) fn within_checks_each_step_of_a_path_that_resolves(host: &Host<'_>) {
     assert_eq!(within.read(&path, 1), Ok(Found::File(b"y".to_vec())));
 }
 
-pub(crate) fn within_stops_a_long_path_at_its_first_step_that_fails(host: &Host<'_>) {
+/// The host takes no path this long, so the walk takes no step of it.
+pub(crate) fn within_refuses_a_long_path_as_the_host_does(host: &Host<'_>) {
     let (within, base) = within_work(host);
     let steps = "/x".repeat(100_000);
-    for (name, error) in [("none", Error::Outside), ("work/none", Error::NotFound)] {
+    for name in ["none", "work/none"] {
         let path = base.join(format!("{name}{steps}"));
-        assert_eq!(within.read(&path, 1), Err(error), "{name}");
+        let free = host.paths.read(&path, 1);
+        assert!(matches!(free, Err(Error::Io { .. })), "{name}: {free:?}");
+        assert_eq!(within.read(&path, 1), free, "{name}");
     }
 }
 

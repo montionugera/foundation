@@ -75,6 +75,10 @@ impl Paths {
     ///   replaces, and a hidden folder made after this call, are hidden. A directory
     ///   on the way that was at a hidden path at this call hides too, so a hidden
     ///   folder that a program renames away stays hidden, but not its own listing.
+    ///   When the host refuses the walk of a hidden path at a call, other than with
+    ///   [`Error::NotFound`] or the error of [`Driver::looped`], each step that passes
+    ///   the folders is hidden at that call, since another name of the file there can
+    ///   reach it.
     /// - [`Error::Vacant`]: while nothing is at a hidden path, a write or a `make_dir`
     ///   whose path ends at a new name in the deepest directory on the way to that
     ///   path. A read there finds nothing, and fails with [`Error::NotFound`].
@@ -136,8 +140,8 @@ impl Paths {
     /// [`Error::NotFound`] when `path` is empty or a directory on the way is not there,
     /// the error of [`Driver::looped`] past [`LINKS`] symbolic links, else
     /// [`Error::Io`], also for a `.`, a `..`, or an end in `/` after a file. Each name
-    /// goes to the host by its resolved path, so a name whose resolved path is longer
-    /// than the host takes fails with [`Error::Io`].
+    /// goes to the host by its resolved path, so `path`, or a name whose resolved
+    /// path, is longer than the host takes fails with [`Error::Io`].
     ///
     /// ```
     /// use std::path::{Path, PathBuf};
@@ -232,8 +236,9 @@ impl Paths {
     /// makes no directory above it, and none through a symbolic link at `path`. A
     /// directory that it makes gives the group and other users no access. On a handle
     /// of [`Paths::within`], `path` first passes the limits of [`Paths::within`]. When
-    /// the walk of `path` fails at its last name and the directory is made, the call
-    /// checks `path` again and gives the error of that check.
+    /// the host refuses the last name of `path` to the walk, such as for a resolved
+    /// path longer than the host takes, the limits check that name at its place as a
+    /// new name, and the call gives the result of the host.
     ///
     /// # Errors
     ///
@@ -253,13 +258,9 @@ impl Paths {
     /// ```
     pub fn make_dir(&self, path: &Path) -> Result<(), Error> {
         match self.check(path, Call::Make)? {
-            // The host takes the last name with no link followed, so its error can
-            // differ from that of the walk.
-            Err(_) => {
-                self.driver.make_dir(path)?;
-                self.check(path, Call::Make)?
-            }
-            Ok(()) => self.driver.make_dir(path),
+            // The host takes the last name with no link followed, so its result
+            // stands for an error of the walk at that name.
+            Ok(()) | Err(_) => self.driver.make_dir(path),
         }
     }
 
@@ -309,7 +310,8 @@ impl Paths {
                         vacant |= own.is_none() && dirs.first() == deepest.as_ref();
                         false
                     }
-                    Seen::Refused => false,
+                    Seen::Refused => true,
+                    Seen::Unreached => false,
                 };
                 veiled |= moved || hidden;
             }
@@ -376,7 +378,12 @@ impl Paths {
                     Ok(Ok(())) | Err(Error::NotFound),
                     Some(step @ Step { own: None, .. }),
                 ) => Seen::Vacant(deepest(step)),
-                _ => Seen::Refused,
+                (Ok(Err(error)) | Err(error), _)
+                    if ![Error::NotFound, self.driver.looped()].contains(error) =>
+                {
+                    Seen::Refused
+                }
+                _ => Seen::Unreached,
             }
         });
         Now {
@@ -448,8 +455,12 @@ enum Seen {
     There(Key),
     /// Nothing, with the key of the deepest directory on the way that is there.
     Vacant(Option<Key>),
-    /// The host refused the path.
+    /// The host refused the walk other than for a name that is not there or a loop.
+    /// The file there can have another name, so each step is hidden.
     Refused,
+    /// The host reaches no file by the path: a name on the way is not there, or the
+    /// walk passes [`LINKS`] links.
+    Unreached,
 }
 
 /// The key of a file of the host: two paths that name the same file have the same
@@ -568,11 +579,12 @@ pub trait Driver: Debug {
     /// The absolute path that the host walks for `path`, as text: a relative path on
     /// the resolved working directory, and on Windows the path that Win32 makes of it.
     /// It reads no file other than the working directory. On a host other than
-    /// Windows, it keeps each `..`, and it gives an end `/` or `/.` as an end `/`.
+    /// Windows, it keeps each `..`.
     ///
     /// # Errors
     ///
-    /// [`Error::NotFound`] when the working directory is gone, else [`Error::Io`].
+    /// [`Error::NotFound`] when the working directory is gone, else [`Error::Io`], also
+    /// when `path` is longer than the host takes.
     fn absolute(&self, path: &Path) -> Result<PathBuf, Error>;
 
     /// The error that the host gives for a path through more than [`LINKS`] symbolic
@@ -1024,7 +1036,10 @@ mod tests {
         let paths = Paths::new(One::default())
             .within(&["/".into()], &[])
             .unwrap();
-        assert_eq!(reached(&paths, "/work/io"), Err(Error::Io { code: 5 }));
+        let path = Path::new("/work/io");
+        let io = Err(Error::Io { code: 5 });
+        let got = (paths.write(path, b"x"), paths.read(path, 1).map(|_| ()));
+        assert_eq!(got, (io, io));
     }
 
     #[test]
@@ -1112,7 +1127,12 @@ mod tests {
             "/work/a.hcl/..",
             "/work/a.hcl/x",
         ] {
-            assert_eq!(reached(&paths, path), Err(Error::Io { code: 20 }), "{path}");
+            let not_directory = Err(Error::Io { code: 20 });
+            let got = (
+                paths.write(Path::new(path), b"y"),
+                paths.read(Path::new(path), 1).map(|_| ()),
+            );
+            assert_eq!(got, (not_directory, not_directory), "{path}");
         }
     }
 
@@ -1136,13 +1156,36 @@ mod tests {
         assert_eq!(made, Err(Error::Replaced));
     }
 
+    /// A hidden path that the host refuses at a call (`Io` 13) hides each step that
+    /// passes the folders, and the root passes on the way to each. One past a loop or
+    /// one that is gone hides nothing.
+    #[test]
+    fn a_hidden_path_that_the_host_refuses_hides_each_step_in_the_folders() {
+        let hidden = (Err(Error::Hidden), Err(Error::Hidden));
+        let open = (Ok(()), Err(Error::Outside));
+        for (before, after, hidden, (read, out)) in [
+            ("x", "gone", "/work/Gone", hidden),
+            ("x", "loop", "/work/loop", open),
+            ("dir", "x", "/none/a/x", open),
+        ] {
+            let free = Paths::new(One::default());
+            free.write(Path::new("/a"), before.as_bytes()).unwrap();
+            let paths = free.within(&["/work".into()], &[hidden.into()]).unwrap();
+            free.write(Path::new("/a"), after.as_bytes()).unwrap();
+            let got = [
+                paths.read(Path::new("/work/x"), 1).map(|_| ()),
+                paths.read(Path::new("/out/x"), 1).map(|_| ()),
+            ];
+            assert_eq!(got, [read, out], "{hidden}");
+        }
+    }
+
     #[test]
     fn make_dir_reaches_the_host_when_the_host_refuses_the_last_name() {
         let paths = Paths::new(One::default())
             .within(&["/work".into()], &[])
             .unwrap();
-        let made = paths.make_dir(Path::new("/work/io"));
-        assert_eq!(made, Err(Error::Io { code: 5 }));
+        assert_eq!(paths.make_dir(Path::new("/work/io")), Ok(()));
         let file = Ok(Found::File(b"dir".to_vec()));
         assert_eq!(paths.read(Path::new("/work/a"), 3), file);
     }

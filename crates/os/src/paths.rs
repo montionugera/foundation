@@ -13,6 +13,9 @@ use rustix::io::Errno;
 
 use crate::{dir, entropy, host};
 
+/// The longest path that the host takes, with its end NUL.
+const PATH_MAX: usize = libc::PATH_MAX.unsigned_abs() as usize;
+
 #[derive(Debug)]
 pub(crate) struct Driver;
 
@@ -38,12 +41,13 @@ impl env::paths::Driver for Driver {
     }
 
     fn absolute(&self, path: &Path) -> Result<PathBuf, Error> {
-        let mut absolute = std::path::absolute(path).map_err(|e| error(&e))?;
-        // Std drops an end `/.`.
-        if names_directory(path) && !names_directory(&absolute) {
-            absolute.as_mut_os_string().push("/");
+        // The walk takes a step for each name, so this bounds its work.
+        if path.as_os_str().len() >= PATH_MAX {
+            return Err(Error::Io {
+                code: Errno::NAMETOOLONG.raw_os_error(),
+            });
         }
-        Ok(absolute)
+        std::path::absolute(path).map_err(|e| error(&e))
     }
 
     fn looped(&self) -> Error {

@@ -116,8 +116,8 @@ impl Walker<'_> {
 
     /// Starts again at the root of the absolute path of `path`, with its names first.
     fn root(&mut self, path: &Path) -> Result<(), Error> {
-        let path = self.driver.absolute(path)?;
-        let root: PathBuf = path
+        let absolute = self.driver.absolute(path)?;
+        let root: PathBuf = absolute
             .components()
             .take_while(|part| {
                 matches!(part, Component::Prefix(_) | Component::RootDir)
@@ -132,12 +132,14 @@ impl Walker<'_> {
             directory: matches!(entry, Entry::Directory(_)),
         });
         self.at = self.steps.len() - 1;
-        self.push(&path);
+        // `std::path::absolute` drops an end `/.`, so the end comes from `path`.
+        self.push(&absolute, names_directory(path));
         Ok(())
     }
 
-    /// Puts the names of `path` before the rest.
-    fn push(&mut self, path: &Path) {
+    /// Puts the names of `path` before the rest, with an end that must be a directory
+    /// when `directory`.
+    fn push(&mut self, path: &Path, directory: bool) {
         let mut names: Vec<_> = path
             .components()
             .filter_map(|part| match part {
@@ -146,7 +148,7 @@ impl Walker<'_> {
                 _ => None,
             })
             .collect();
-        if names_directory(path) && matches!(names.last(), Some(Name::Normal(_))) {
+        if directory && matches!(names.last(), Some(Name::Normal(_))) {
             names.push(Name::Directory);
         }
         for name in names.into_iter().rev() {
@@ -182,7 +184,7 @@ impl Walker<'_> {
                 if target.has_root() {
                     self.root(&target)?;
                 } else {
-                    self.push(&target);
+                    self.push(&target, names_directory(&target));
                 }
                 Ok(false)
             }

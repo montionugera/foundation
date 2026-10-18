@@ -254,8 +254,7 @@ fn a_hidden_folder_that_a_program_moves_and_makes_again_stays_hidden() {
 
 /// A relative link in `work` to a deep directory, so the given path is short and the
 /// resolved path of a new name in it is one byte past the longest path of the OS. The
-/// walk gives the error of the host, and `make_dir` makes the directory before its
-/// second check.
+/// walk gives the error of the host, and `make_dir` gives the result of the host.
 #[test]
 fn within_refuses_a_new_name_whose_resolved_path_is_too_long() {
     run(|host| {
@@ -288,7 +287,7 @@ fn within_refuses_a_new_name_whose_resolved_path_is_too_long() {
         assert_eq!(
             found,
             [
-                (Ok(()), too_long, too_long, true),
+                (Ok(()), too_long, Ok(()), true),
                 (Ok(()), Err(Error::Hidden), Err(Error::Hidden), false),
             ]
         );
@@ -396,6 +395,40 @@ fn within_refuses_a_long_hidden_file() {
             .within(slice::from_ref(&top), slice::from_ref(&key));
         let too_long = Error::Io { code: too_long() };
         assert_eq!(within.err(), Some(too_long));
+    });
+}
+
+/// A hidden file whose resolved path is longer than the OS takes, made after `within`
+/// through a link that a program points at a deep directory. The host refuses its
+/// walk, so it is hidden at its path and through a hard link.
+#[test]
+fn within_hides_a_hard_link_to_a_long_hidden_file_made_after_within() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let most = most();
+        let top = base.join("work");
+        let (mut deep, mut relative) = (top.clone(), PathBuf::new());
+        while deep.as_os_str().len() + 201 < most - 50 {
+            deep.push("d".repeat(200));
+            relative.push("d".repeat(200));
+            fs::create_dir(&deep).unwrap();
+        }
+        let s = top.join("s");
+        symlink("data", &s).unwrap();
+        let name = "f".repeat(most - deep.as_os_str().len());
+        let key = s.join(&name);
+        let within = host
+            .paths
+            .within(slice::from_ref(&top), slice::from_ref(&key))
+            .unwrap();
+        fs::remove_file(&s).unwrap();
+        symlink(&relative, &s).unwrap();
+        fs::write(&key, b"secret").unwrap();
+        let link = top.join("k2");
+        fs::hard_link(&key, &link).unwrap();
+        let hidden = Err(Error::Hidden);
+        let read = (within.read(&key, 64), within.read(&link, 64));
+        assert_eq!(read, (hidden.clone(), hidden));
     });
 }
 
@@ -517,8 +550,13 @@ fn within_hides_a_link_that_does_not_resolve_in_a_moved_hidden_folder() {
     });
 }
 
-/// A long path of names that each resolve stops at the longest path that the host
-/// takes.
+#[test]
+fn a_path_as_long_as_the_host_takes_reads_and_one_byte_longer_fails() {
+    run(|host| cases::a_path_as_long_as_the_host_takes(host, most(), too_long()));
+}
+
+/// A long path of names that each resolve fails at once, since the host takes no path
+/// that long.
 #[test]
 fn within_stops_a_long_path_of_steps_that_resolve() {
     run(|host| {
@@ -530,9 +568,9 @@ fn within_stops_a_long_path_of_steps_that_resolve() {
     });
 }
 
-/// An end in `/.` after a file, by a relative path and by an absolute path. Std drops
-/// that end from an absolute path. The relative path climbs from the working
-/// directory, so the folder is `/`.
+/// An end in `/.` after a file, by a relative path, by an absolute path, and by a
+/// link to each. Std drops that end from an absolute path. The relative path climbs
+/// from the working directory, so the folder is `/`.
 #[test]
 fn within_refuses_a_file_with_a_slash_and_a_dot_by_each_path() {
     run(|host| {
@@ -542,7 +580,12 @@ fn within_refuses_a_file_with_a_slash_and_a_dot_by_each_path() {
         let up = "../".repeat(working.components().count() - 1);
         let relative = Path::new(&up).join(base.strip_prefix("/").unwrap());
         let not_directory = Err(Error::Io { code: 20 });
-        for path in [relative, base].map(|dir| dir.join("work/a.hcl/.")) {
+        let rooted = base.join("work/rooted");
+        symlink(base.join("work/a.hcl/."), &rooted).unwrap();
+        let near = base.join("work/near");
+        symlink("a.hcl/.", &near).unwrap();
+        let ends = [relative, base].map(|dir| dir.join("work/a.hcl/."));
+        for path in ends.into_iter().chain([rooted, near]) {
             let got = [
                 within.read(&path, 1).map(|_| ()),
                 host.paths.read(&path, 1).map(|_| ()),
@@ -1292,10 +1335,10 @@ fn within_makes_no_file_at_a_hidden_name_in_other_case() {
     });
 }
 
-/// A program replaces the directory above a hidden file with a file, or
-/// takes search from it. A path in the folder that is not hidden still reads.
+/// A program replaces the directory above a hidden file with a file, or takes search
+/// from it. The file can have another name, so each call is hidden.
 #[test]
-fn a_hidden_path_that_fails_its_key_fails_no_other_call() {
+fn a_hidden_path_that_the_host_refuses_hides_each_call() {
     run(|host| {
         let (_, base) = cases::within_work(host);
         let data = base.join("work/data");
@@ -1311,14 +1354,13 @@ fn a_hidden_path_that_fails_its_key_fails_no_other_call() {
         fs::remove_dir_all(&data).unwrap();
         fs::write(&data, b"file").unwrap();
         let through_file = within.read(&plan, 1);
-        let ok = Ok(Found::File(b"x".to_vec()));
-        assert_eq!((unsearchable, through_file), (ok.clone(), ok));
+        let hidden = Err(Error::Hidden);
+        assert_eq!((unsearchable, through_file), (hidden.clone(), hidden));
     });
 }
 
-/// A path of `s/..` from a directory 1900 names deep, longer than the host takes: the
-/// host refuses it at once, and the walk stops at the longest path that the host
-/// takes, in the bound of ENV SEAMS.
+/// A path of 1 MiB of `s/..` from a directory 1900 names deep: the host refuses it at
+/// once, and so does the walk, with no step of it.
 #[test]
 fn within_stops_a_long_path_of_dots_from_a_deep_directory() {
     run(|host| {
@@ -1334,7 +1376,7 @@ fn within_stops_a_long_path_of_dots_from_a_deep_directory() {
         }
         fs::create_dir(dir.join("s")).unwrap();
         let mut path = dir.into_os_string();
-        while path.len() < 64 * 1024 {
+        while path.len() < 1 << 20 {
             path.push("/s/..");
         }
         let path = PathBuf::from(path).join("f");
