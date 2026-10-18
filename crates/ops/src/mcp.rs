@@ -12,6 +12,19 @@ use crate::{Failure, Stop};
 /// this one, and may then disconnect.
 const VERSION: &str = "2025-06-18";
 
+/// The guide for an agent, which `initialize` gives as its `instructions`. Each name
+/// in backticks is a tool, an input of one, or the call `fill`.
+pub(crate) const GUIDE: &str = "To read the points of a device into Foundation:\n\
+    1. Run `browse` on a connector in its config files, from the root or a `start`, \
+    to find the paths of its points. The files must hold the connector block.\n\
+    2. Run `import` with those paths as `points`, or with a `match` pattern, to add a \
+    channel for each point to the config file of the connector.\n\
+    3. Write a value in place of each `fill` that `import` names.\n\
+    4. Run `plan` on the config files, and show the change to the person.\n\
+    5. Run `apply` on the plan file that `plan` wrote to `out`, only when the person \
+    agrees.\n\
+    `status` shows the state of each connector.\n";
+
 const PARSE: (i64, &str) = (-32700, "Parse error");
 const REQUEST: (i64, &str) = (-32600, "Invalid Request");
 const METHOD: (i64, &str) = (-32601, "Method not found");
@@ -178,6 +191,7 @@ fn initialize() -> Value {
         "protocolVersion": VERSION,
         "capabilities": { "tools": {} },
         "serverInfo": { "name": "foundation", "version": env!("CARGO_PKG_VERSION") },
+        "instructions": GUIDE,
     })
 }
 

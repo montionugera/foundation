@@ -1191,6 +1191,8 @@ mod mcp {
     use serde_json::{Value, json};
 
     use super::{ask, respond};
+    use crate::mcp::GUIDE;
+    use crate::operation::{self, TABLE};
 
     fn request(id: Value, method: &str, params: Value) -> Value {
         let mut request = json!({ "jsonrpc": "2.0", "method": method });
@@ -1222,9 +1224,27 @@ mod mcp {
                     "protocolVersion": "2025-06-18",
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "foundation", "version": env!("CARGO_PKG_VERSION") },
+                    "instructions": GUIDE,
                 },
             })
         );
+    }
+
+    /// Each name in backticks in the guide is a tool, an input of one, or `fill`.
+    #[test]
+    fn the_guide_names_only_tools_their_inputs_and_fill() {
+        let inputs = operation::inputs();
+        let named: Vec<&str> = GUIDE.split('`').skip(1).step_by(2).collect();
+        assert!(named.contains(&"import"), "{named:?}");
+        for name in named {
+            let input = inputs.values().any(|schema| {
+                schema["properties"]
+                    .as_object()
+                    .is_some_and(|properties| properties.contains_key(name))
+            });
+            let tool = TABLE.iter().any(|spec| spec.name == name);
+            assert!(tool || input || name == "fill", "`{name}` in the guide");
+        }
     }
 
     #[test]
