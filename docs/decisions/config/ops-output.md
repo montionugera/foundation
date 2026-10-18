@@ -188,7 +188,9 @@
   holds``, fix `Read the status channels of each connector with a client of the node`,
   since a `status` request cannot ask for less (`laptop.architect-2`,
   2026-10-18T00:09:33Z,
-  https://github.com/synnaxlabs/foundation/issues/3084#issuecomment-6243561471). `serve`
+  https://github.com/synnaxlabs/foundation/issues/3084#issuecomment-6243561471;
+  `laptop.architect-2`, 2026-10-18T00:32:33Z,
+  https://github.com/synnaxlabs/foundation/pull/3096#issuecomment-6243760762). `serve`
   stops writing a reply at the bound. The places of the problems of one file share its
   path (`laptop.architect`, 2026-10-12T20:11:00Z,
   https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6131805444;
