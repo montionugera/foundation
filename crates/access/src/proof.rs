@@ -47,9 +47,9 @@ pub enum Kind {
 }
 
 /// The bytes that the signature of `bytes`, of `kind`, on `connection` covers: the
-/// tag of `kind` (the 20 bytes `foundation/request/1`, the 17 bytes `foundation/read/1`,
-/// or the 18 bytes `foundation/write/1`), the connection (16), and `bytes`, the exact
-/// bytes that the program sent.
+/// tag of `kind` (the 20 bytes `foundation/request/1`, the 17 bytes
+/// `foundation/read/1`, or the 18 bytes `foundation/write/1`), the connection (16),
+/// and `bytes`, the exact bytes that the program sent.
 #[must_use]
 pub fn signed(kind: Kind, connection: connection::Key, bytes: &[u8]) -> Vec<u8> {
     let tag = match kind {

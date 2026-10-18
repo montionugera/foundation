@@ -173,3 +173,9 @@
   https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6244865133). Lost:
   the `Away` with typed addresses, and a `label` and an `untimed` flag in the `Head`,
   which let a `Resend` or an untimed backfill frame be sent.
+  Two shape changes from the plan: `Outcome::Taken` and `Lost` carry a
+  `frame::Range { seq, count }`, the form of the home's `Outcome` and of the head of
+  HUB WIRE, so a reversed range cannot be sent; and `write::Opening` gives one
+  `write::Start { places, set }`, which keeps the order of the messages in one decoder.
+  Approved by `laptop.architect` at 2026-10-18T03:10:22Z
+  (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245051476).
