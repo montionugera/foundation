@@ -13,7 +13,7 @@ sys.path.insert(0, str(package))
 stream = io.StringIO()
 suite = unittest.TestLoader().discover(start, pattern, top)
 result = unittest.TextTestRunner(stream, verbosity=2).run(suite)
-passed = result.wasSuccessful() and result.testsRun > 0
+passed = result.wasSuccessful() and result.testsRun > len(result.skipped)
 report = stream.getvalue()
 ";
 
@@ -45,6 +45,7 @@ fn a_file_that_runs_no_test_fails() {
         ("more/test_more.py", false),
         ("test_some.py", false),
         ("test_none.py", false),
+        ("test_skip.py", true),
     ];
     let problem = run(&fixture(), &files, false).unwrap_err();
     assert!(problem.starts_with("test_none.py: "), "{problem}");
@@ -52,10 +53,24 @@ fn a_file_that_runs_no_test_fails() {
 }
 
 #[test]
+fn a_file_whose_tests_all_skip_fails() {
+    let files = [
+        ("more/test_more.py", false),
+        ("test_some.py", false),
+        ("test_skip.py", false),
+        ("test_none.py", false),
+    ];
+    let problem = run(&fixture(), &files, false).unwrap_err();
+    assert!(problem.starts_with("test_skip.py: "), "{problem}");
+    assert!(problem.contains("skipped=1"), "{problem}");
+}
+
+#[test]
 fn a_file_of_the_sim_feature_runs_only_with_it() {
     let files = [
         ("more/test_more.py", false),
         ("test_none.py", true),
+        ("test_skip.py", true),
         ("test_some.py", false),
     ];
     assert_eq!(run(&fixture(), &files, false), Ok(()));
@@ -68,7 +83,7 @@ fn an_unlisted_file_fails() {
         run(&fixture(), &files, false),
         Err(
             "the test files of the suite are [\"more/test_more.py\", \"test_none.py\", \
-             \"test_some.py\"]: change `FILES` to them"
+             \"test_skip.py\", \"test_some.py\"]: change `FILES` to them"
                 .to_owned()
         )
     );
@@ -81,8 +96,8 @@ fn fixture() -> std::path::PathBuf {
 
 /// Runs each of `files`, the `test_*.py` files under `dir` with whether each runs only
 /// with the feature `sim`, on its own, in their order. `sim` is whether the feature is
-/// on. Returns the report of the first file that fails or runs no test, and an error
-/// when `files` are not the `test_*.py` files under `dir`.
+/// on. Returns the report of the first file that fails or runs no test that it does not
+/// skip, and an error when `files` are not the `test_*.py` files under `dir`.
 fn run(dir: &Path, files: &[(&str, bool)], sim: bool) -> Result<(), String> {
     let mut found = Vec::new();
     tests(dir, "", &mut found);
