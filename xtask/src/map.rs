@@ -275,6 +275,7 @@ pub(crate) const CRATES: &[Crate] = &[
             "env",
             "types",
             "block",
+            "codec",
         ]),
     },
     Crate {
