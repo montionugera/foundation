@@ -952,8 +952,11 @@ impl Bind {
     }
 }
 
-/// A mesh that opened, and the chunk store that it holds.
-type Opened = (mesh::Mesh, Rc<blob::Store>);
+/// The mesh of a region that the node opened, and the chunk store that it holds.
+struct Joined {
+    mesh: mesh::Mesh,
+    store: Rc<blob::Store>,
+}
 
 /// What shard 0 opens the node's transport and mesh from, but its files, pool, and
 /// tasks.
@@ -1072,7 +1075,7 @@ impl Endpoint {
         pool: Rc<block::Pool>,
         time: &clock::Reader,
         tasks: env::tasks::Tasks,
-    ) -> Result<(Rc<transport::Transport>, Result<Option<Opened>, Error>), Error> {
+    ) -> Result<(Rc<transport::Transport>, Result<Option<Joined>, Error>), Error> {
         let config = transport::Config {
             private_key: identity.private_key.clone(),
             message_bytes_max: self.settings.message_bytes_max,
@@ -1124,7 +1127,7 @@ impl Endpoint {
             store: Rc::clone(&store),
         };
         let mesh = mesh::Mesh::open(config).await;
-        let opened = mesh.map(|mesh| Some((mesh, store)));
+        let opened = mesh.map(|mesh| Some(Joined { mesh, store }));
         Ok((transport, opened.map_err(Error::Mesh)))
     }
 }
@@ -1208,7 +1211,8 @@ impl Serve {
             let Ok(opened) = mesh.map_err(&fail) else {
                 return None;
             };
-            let (mesh, store) = opened.unzip();
+            let (mesh, store) =
+                opened.map(|joined| (joined.mesh, joined.store)).unzip();
             let ended = mesh.as_ref().map(mesh::Mesh::ended);
             let secrets =
                 secret::Resolver::new(vars, files.clone(), &directory::secrets());
@@ -1239,7 +1243,9 @@ impl Serve {
                     entropy: entropy.clone(),
                     region,
                 });
-                let (ops, followed) = if let Some(mesh) = mesh.as_ref() {
+                let (region, followed) = if let Some((mesh, store)) =
+                    mesh.as_ref().zip(store)
+                {
                     let member = mesh.member(key);
                     let member =
                         member.expect("invariant: a mesh opens only on a member");
@@ -1274,18 +1280,20 @@ impl Serve {
                         clock.clone(),
                     );
                     calls.spawn(Box::pin(set));
-                    (Some(ops), Some(follow(mesh, hub.clone(), runs).await))
+                    let region = route::Region { ops, store };
+                    (Some(region), Some(follow(mesh, hub.clone(), runs).await))
                 } else {
                     drop((text, failures, addresses));
                     (None, None)
                 };
+                let ops = region.as_ref().map(|region| Rc::clone(&region.ops));
                 let handles = task::Handles { hub, ops };
                 let port = route::accept(
                     transport,
-                    handles.clone(),
+                    handles.hub.clone(),
+                    region,
                     clock,
                     tasks.clone(),
-                    store,
                     settings.header_wait,
                     settings.places_max,
                 );

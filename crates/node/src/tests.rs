@@ -3154,6 +3154,18 @@ pub(crate) mod port {
         assert_eq!(read, Err(transport::Error::Reset { code }));
     }
 
+    /// A node with no region has no store, so it stops a blob stream of a node, and
+    /// resets its reply half, with the code of a rejected header.
+    #[test]
+    fn rejects_a_blob_stream_of_a_node_with_no_region() {
+        let header = wire::header::encode(wire::Protocol::Blob);
+        let Seen { sent, read, .. } =
+            sees(Dialer::Node(CLIENT), &[&header], Size::MEBIBYTE);
+        let code = Code(wire::header::REJECTED);
+        assert_eq!(sent, transport::Error::Stopped { code });
+        assert_eq!(read, Err(transport::Error::Reset { code }));
+    }
+
     /// A node with no region stops a hub stream of a program, and resets its reply
     /// half, with the code of a rejected header.
     #[test]
@@ -4545,7 +4557,8 @@ pub(crate) mod port {
                 tasks.clone(),
             );
             let (transport, mesh) = opened.await.expect("the transport opens");
-            let (mesh, store) = mesh.expect("the mesh opens").expect("a region");
+            let joined = mesh.expect("the mesh opens").expect("a region");
+            let (mesh, store) = (joined.mesh, joined.store);
             let hub = ::hub::Hub::new(::hub::Config {
                 home,
                 interner,
@@ -6609,13 +6622,10 @@ pub(crate) mod port {
                 let ops = operations(&mesh, key, &hub, &own, &tasks, &time, &entropy);
                 let port = route::accept(
                     transport,
-                    crate::task::Handles {
-                        hub: hub.clone(),
-                        ops: Some(ops),
-                    },
+                    hub.clone(),
+                    Some(route::Region { ops, store }),
                     clock,
                     tasks,
-                    Some(store),
                     settings.header_wait,
                     settings.places_max,
                 );
