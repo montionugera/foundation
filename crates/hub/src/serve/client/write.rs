@@ -213,11 +213,8 @@ async fn relay(
         let block = reply
             .take()
             .expect("invariant: a draft comes with its block");
-        let outcome = match stored.reserve(state) {
-            Ok(()) => write(&mut writer, draft, time, &mut stamped)?,
-            Err(_) => Outcome::Refused(Refusal::Full),
-        };
-        stored.counted(state, outcome);
+        let outcome =
+            stored.write(state, || write(&mut writer, draft, time, &mut stamped))?;
         send(sender, block, Reply::Outcome(outcome)).await?;
     }
 }
@@ -314,8 +311,8 @@ struct Stored {
     /// The count of frames through the last one taken since the call of the commit in
     /// `due`.
     taken: Option<u64>,
-    /// The block of the next `Stored`. Between frames, it is `Some` exactly when `taken`
-    /// is.
+    /// The block of the next `Stored`. Outside [`Stored::write`], it is `Some` exactly
+    /// when `taken` is.
     next: Option<Unique>,
     /// The commit that is due, the count of frames that it covers, and the block of its
     /// `Stored`.
@@ -323,18 +320,33 @@ struct Stored {
 }
 
 impl Stored {
-    /// Takes the block of the next `Stored` from the home's pool when the stream holds
-    /// none. Call it right before the home takes each frame, with no await between, and
-    /// refuse the frame when it fails, so each taken frame has the block of its
-    /// `Stored`.
-    fn reserve(&mut self, state: &RefCell<State>) -> Result<(), block::Error> {
+    /// Writes the next frame of the stream with `write`, counts it, and gives its
+    /// outcome. First takes the block of the next `Stored` from the home's pool when the
+    /// stream holds none, so each taken frame has the block of its `Stored`. A frame
+    /// that finds none gets `Refused(Full)`, and `write` is not called.
+    ///
+    /// # Errors
+    ///
+    /// The error of `write`.
+    fn write(
+        &mut self,
+        state: &RefCell<State>,
+        write: impl FnOnce() -> Result<Outcome, Error>,
+    ) -> Result<Outcome, Error> {
         if self.next.is_none() {
-            self.next = Some(state.borrow().alloc(STORED_BYTES)?);
+            self.next = state.borrow().alloc(STORED_BYTES).ok();
         }
-        Ok(())
+        let outcome = match self.next {
+            Some(_) => write()?,
+            None => Outcome::Refused(Refusal::Full),
+        };
+        self.counted(state, outcome);
+        Ok(outcome)
     }
 
-    /// Counts the next frame of the stream, whose outcome is `outcome`.
+    /// Counts the next frame of the stream, whose outcome is `outcome`. A frame that the
+    /// home did not take gives back the block of the next `Stored` while no taken frame
+    /// waits for one.
     fn counted(&mut self, state: &RefCell<State>, outcome: Outcome) {
         self.counted += 1;
         if let Outcome::Taken { .. } = outcome {
